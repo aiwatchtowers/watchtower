@@ -9,15 +9,33 @@ import WatchtowerInterface
 /// `InboxFeedParityTests` can compare them with the Go feed over the shared
 /// fixture `internal/inboxfeed/testdata/inbox_feed_cases.json`.
 ///
-/// The mapping is the only code here: every value comes from a Swift
-/// builder, except the fields listed in `goOnlyFields`, which the Swift side
-/// does not compute and the comparison blanks on both sides.
+/// The mapping is the only code here. Two lists name every card or folder
+/// field a Swift builder does not hand over as is:
+/// - `goOnlyFields`: the Swift side does not compute it; the comparison
+///   blanks it on both sides.
+/// - `restatedFields`: the adapter derives it from Swift data with the rule a
+///   Swift builder applies (which it does not expose); it is compared.
 enum SwiftFeedAdapter {
-    /// What the adapter leaves to Go, each with why. Never silently skipped:
-    /// `blankGoOnly` clears exactly these.
+    /// Not computed by Swift, each with why: `blankGoOnly` clears exactly these.
     static let goOnlyFields: [String: String] = [
         "folders[].waiting": "Task 6 sends 0 (pre-flight ruling F4); Task 7 ports the waiting count",
-        "cards[].automation.builtin_id": "AutomationOutputCard does not carry its automation's built-in id"
+        "cards[].automation.builtin_id": "AutomationOutputCard does not carry its automation's built-in id",
+        "cards[].body_clipped": "Clip is a Go-only option (the Mac never clips); no parity case sets it",
+        "cards[].actions": "button states are Task 7's (InboxCardAction); both sides send none here",
+        "cards[].ref_facts": "ref facts are Task 7's (InboxRefState facts); both sides send none here",
+        "notice cards' source_line": "the Mac's notice row has no source line",
+        "notice cards' preview": "the Mac's notice row has no summary line",
+        "notice cards' priority": "a built-in move has no priority; the feed sends medium",
+        "notice cards' content_hash": "a built-in move has no content hash; no write is guarded by one"
+    ]
+
+    /// Derived here with a Swift builder's own rule, each with where the rule
+    /// lives; compared, not blanked.
+    static let restatedFields: [String: String] = [
+        "cards[].pinned": "InboxFolderEntries.build's pin: Waiting for me's card with rows that wait",
+        "cards[].stamp": "InboxFolderEntries.row's detail time: written_at on a living card, else created_at",
+        "cards[].source_line": "InboxCardTexts.sourceLine without its last ' · <time>' part (the models add it)",
+        "notice cards' id": "Swift keys a notice by built-in id; the feed's n<rowid> is read from builtin_migrations"
     ]
 
     /// The entry kinds the Swift builder lists that Task 7 ports (approvals,
@@ -33,13 +51,19 @@ enum SwiftFeedAdapter {
 
     /// The Swift builders' Inbox at `now` (zone UTC), narrowed to `folder`
     /// as `FeedRequest.folder` narrows it (every folder is still listed).
-    static func feed(_ db: Database, now: Date, folder: Int64?) throws -> Mapped {
+    /// `disabledFeatures` is the Mac's feature list (ActionStripViewModel's
+    /// `disabledFeatures`), passed to every reader as the app passes it.
+    static func feed(_ db: Database, now: Date, folder: Int64?, disabledFeatures: Set<String>) throws -> Mapped {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC") ?? .current
         let nowUTC = AutomationDates.format(now)
-        let snapshot = try InboxFolderMenuSnapshot.read(db, nowUTC: nowUTC)
-        let feedSnapshot = try InboxFeedQueries.read(db, nowUTC: nowUTC, dayLimit: ActionStripViewModel.dayPage)
-        let inputs = InboxFolderEntries.Inputs(feed: feedSnapshot, folders: snapshot, now: now, calendar: calendar)
+        let snapshot = try InboxFolderMenuSnapshot.read(db, nowUTC: nowUTC, disabledFeatures: disabledFeatures)
+        let feedSnapshot = try InboxFeedQueries.read(
+            db, nowUTC: nowUTC, dayLimit: ActionStripViewModel.dayPage, disabledFeatures: disabledFeatures)
+        let inputs = InboxFolderEntries.Inputs(
+            feed: feedSnapshot, folders: snapshot,
+            approvalsOn: !disabledFeatures.contains(ActionStripViewModel.approvalsFeatureID),
+            now: now, calendar: calendar)
         let tree = snapshot.tree
         let folders = tree.folders.map { item in
             Folder(
@@ -77,6 +101,15 @@ enum SwiftFeedAdapter {
         out.cards = out.cards.map { card in
             var card = card
             card.automation?.builtinID = ""
+            card.bodyClipped = false
+            card.actions = []
+            card.refFacts = []
+            if card.cardKind == .notice, card.id.hasPrefix("n") {
+                card.sourceLine = ""
+                card.preview = ""
+                card.priority = ""
+                card.contentHash = ""
+            }
             return card
         }
         return out

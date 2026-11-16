@@ -69,7 +69,7 @@ func TestBuild_IsOneReadOnlySnapshot(t *testing.T) {
 		"VALUES (2, 1, 1, 'inbox', 'Two', 'Body', '2026-11-16T09:00:00Z')"); err != nil {
 		t.Fatal(err)
 	}
-	s, err := read(ctx, tx, testNow)
+	s, err := read(ctx, tx, testNow, true)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -19,6 +19,10 @@ const (
 	needsApprovalBuiltinID = "needs-approval"
 )
 
+// waitingForMeFeatureID is Waiting for me's feature (builtin.Entry
+// FeatureIDs): attention detection, config key inbox.enabled.
+const waitingForMeFeatureID = "secretary-inbox"
+
 // openMessageLimit is how many open messages the Messages entry lists and
 // counts (InboxQueries.openMessageLimit).
 const openMessageLimit = 200
@@ -141,23 +145,26 @@ func (w waitingForMe) hides(automation int64) bool {
 	return w.automationID != 0 && automation == w.automationID && (w.standIn || w.turnedOff)
 }
 
-// readWaitingForMe reads the built-in's state. The feature switch is read
-// from its row: turning attention detection off turns the row off with no
-// disabled_reason (turnOffBuiltinsOfDisabled, the built-in sync).
-func readWaitingForMe(ctx context.Context, tx *sql.Tx) (waitingForMe, error) {
+// readWaitingForMe reads the built-in's state (InboxFolderQueries.waitingForMe).
+// featureOn is attention detection's switch. Turned off, nothing is shown
+// and nothing counts: the switch off, or the row disabled with no
+// disabled_reason. The owner's off wins over a daemon stop (a row with a
+// disabled_reason), which SetBuiltinEnabled leaves unchanged. Stopped while
+// the switch is on, it is a failed run: the Messages entry stands in.
+func readWaitingForMe(ctx context.Context, tx *sql.Tx, featureOn bool) (waitingForMe, error) {
 	var id int64
 	var enabled bool
 	var reason string
 	err := tx.QueryRowContext(ctx, `SELECT id, enabled, disabled_reason FROM automations WHERE builtin_id = ?`,
 		waitingForMeBuiltinID).Scan(&id, &enabled, &reason)
 	if errors.Is(err, sql.ErrNoRows) {
-		return waitingForMe{standIn: true}, nil
+		return waitingForMe{standIn: featureOn, turnedOff: !featureOn}, nil
 	}
 	if err != nil {
 		return waitingForMe{}, fmt.Errorf("inboxfeed: reading Waiting for me: %w", err)
 	}
 	stopped := reason != ""
-	if !enabled && !stopped {
+	if !featureOn || (!enabled && !stopped) {
 		return waitingForMe{automationID: id, turnedOff: true}, nil
 	}
 	if stopped {

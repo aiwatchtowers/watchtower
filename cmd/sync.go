@@ -30,6 +30,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/extsync"
+	"watchtower/internal/features"
 	"watchtower/internal/fsutil"
 	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
@@ -1051,7 +1052,7 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	defer tower.StartPrune(ctx, database, time.Now)()
 	// The tower socket, hub or no hub: stopped (its calls waited for) before
 	// the database closes.
-	defer serveTower(ctx, ws, database, noSync, logger)()
+	defer serveTower(ctx, ws, database, noSync, towerDisabledFeatures(cfg, logger), logger)()
 	return d.Run(ctx)
 }
 
@@ -1059,9 +1060,10 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 // (tower.ServeWorkspace) with every registered command, the change watch and
 // the pause; a socket that cannot be served is logged and the daemon runs
 // without it. The returned func stops it.
-func serveTower(ctx context.Context, ws string, database *db.DB, noSync bool, logger *log.Logger) (stop func()) {
+func serveTower(ctx context.Context, ws string, database *db.DB, noSync bool,
+	disabledFeatures func() []string, logger *log.Logger) (stop func()) {
 	var reg tower.Registry
-	commands.RegisterAll(&reg, commands.Deps{})
+	commands.RegisterAll(&reg, commands.Deps{DisabledFeatures: disabledFeatures})
 	t := tower.New(database, tower.Options{
 		Registry:  &reg,
 		Build:     Version,
@@ -1075,6 +1077,22 @@ func serveTower(ctx context.Context, ws string, database *db.DB, noSync bool, lo
 		return func() {}
 	}
 	return stop
+}
+
+// towerDisabledFeatures returns the feature ids config.yaml has off, read
+// again at each call: the owner turns features on and off (`features
+// enable|disable`, the Desktop's Feature Manager) while the daemon runs. A
+// config that cannot be read now is logged and the daemon's start config
+// answers instead.
+func towerDisabledFeatures(start *config.Config, logger *log.Logger) func() []string {
+	return func() []string {
+		cfg, err := config.Load(flagConfig)
+		if err != nil {
+			logger.Printf("tower: reading the feature switches: %v (the start config is used)", err)
+			cfg = start
+		}
+		return features.DisabledIDs(cfg)
+	}
 }
 
 // startGoHub starts the Go hub beside the daemon when hub.Resolve says so

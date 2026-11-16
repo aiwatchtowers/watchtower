@@ -1,16 +1,16 @@
 package inboxfeed
 
 import (
-	"strconv"
+	"bytes"
 	"strings"
 
+	"github.com/rivo/uniseg"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
 	extast "github.com/yuin/goldmark/extension/ast"
 	"github.com/yuin/goldmark/text"
-
-	"watchtower/internal/tower/api"
+	"github.com/yuin/goldmark/util"
 )
 
 // PreviewLimit is the most characters a card's preview holds, "…" included
@@ -83,11 +83,53 @@ func Preview(markdown string) string {
 		parts = append(parts, blockText(n, src))
 	}
 	words := strings.Join(strings.Fields(strings.Join(parts, " ")), " ")
-	runes := []rune(words)
-	if len(runes) <= PreviewLimit {
+	// Characters as Swift counts them: grapheme clusters, so an emoji
+	// sequence counts once and is never cut.
+	if uniseg.GraphemeClusterCount(words) <= PreviewLimit {
 		return words
 	}
-	return strings.TrimSpace(string(runes[:PreviewLimit-1])) + "…"
+	var b strings.Builder
+	g := uniseg.NewGraphemes(words)
+	for n := 0; n < PreviewLimit-1 && g.Next(); n++ {
+		b.WriteString(g.Str())
+	}
+	return strings.TrimRight(b.String(), " \t") + "…"
+}
+
+// literalText is a text segment as the markdown means it: a backslash
+// before ASCII punctuation escapes it, and an entity or numeric character
+// reference is its character, resolved in one pass (so `\&amp;` stays
+// "&amp;"), as cmark-gfm's text nodes hold them.
+func literalText(raw []byte) string {
+	var b strings.Builder
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		switch {
+		case c == '\\' && i+1 < len(raw) && isASCIIPunct(raw[i+1]):
+			i++
+			b.WriteByte(raw[i])
+		case c == '&':
+			end := bytes.IndexByte(raw[i:min(len(raw), i+40)], ';')
+			if end > 1 {
+				ref := raw[i : i+end+1]
+				if resolved := util.ResolveEntityNames(util.ResolveNumericReferences(ref)); !bytes.Equal(resolved, ref) {
+					b.Write(resolved)
+					i += end
+					continue
+				}
+			}
+			b.WriteByte(c)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+// isASCIIPunct is CommonMark's ASCII punctuation, the characters a
+// backslash escapes.
+func isASCIIPunct(c byte) bool {
+	return strings.IndexByte("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~", c) >= 0
 }
 
 // blockText is one block's plain text (InboxCardTexts.text(MarkdownBlock)).
@@ -140,7 +182,7 @@ func inlineText(n ast.Node, src []byte) string {
 	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
 		switch c := c.(type) {
 		case *ast.Text:
-			b.Write(c.Segment.Value(src))
+			b.WriteString(literalText(c.Segment.Value(src)))
 			if c.SoftLineBreak() || c.HardLineBreak() {
 				b.WriteByte(' ')
 			}
@@ -166,60 +208,4 @@ func inlineText(n ast.Node, src []byte) string {
 		}
 	}
 	return b.String()
-}
-
-// CardNotice is one announcement of new or changed cards (InboxCardNotice):
-// at most one per automation and run, naming the count. No notice is posted
-// today; whatever posts one builds it here.
-type CardNotice struct {
-	AutomationID   int64
-	AutomationName string
-	RunID          int64
-	Count          int
-}
-
-// Text is "Threads waiting for me: 3 cards changed".
-func (n CardNotice) Text() string {
-	noun := "cards"
-	if n.Count == 1 {
-		noun = "card"
-	}
-	return n.AutomationName + ": " + strconv.Itoa(n.Count) + " " + noun + " changed"
-}
-
-// CardNotices are the notices for the artifact cards of cards against the
-// feed before it (previous): one per automation and run among the cards
-// that are new or whose content changed (its content hash moved; a
-// same-hash rewrite is never news), in the order their first card appears.
-func CardNotices(cards, previous []api.Card) []CardNotice {
-	before := map[string]string{}
-	for _, c := range previous {
-		if _, ok := before[c.ID]; !ok {
-			before[c.ID] = c.ContentHash
-		}
-	}
-	type key struct{ automation, run int64 }
-	var order []key
-	groups := map[key]*CardNotice{}
-	for _, c := range cards {
-		if c.Automation == nil {
-			continue
-		}
-		if old, ok := before[c.ID]; ok && old == c.ContentHash {
-			continue
-		}
-		k := key{c.Automation.ID, c.Automation.RunID}
-		g, ok := groups[k]
-		if !ok {
-			g = &CardNotice{AutomationID: k.automation, AutomationName: c.Automation.Name, RunID: k.run}
-			groups[k] = g
-			order = append(order, k)
-		}
-		g.Count++
-	}
-	out := make([]CardNotice, 0, len(order))
-	for _, k := range order {
-		out = append(out, *groups[k])
-	}
-	return out
 }

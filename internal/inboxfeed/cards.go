@@ -255,6 +255,7 @@ func (s *snapshot) artifactCard(o output, folder int64) api.Card {
 		Pinned:     s.waitingForMe.automationID != 0 && o.AutomationID == s.waitingForMe.automationID && waiting > 0,
 		Automation: &api.CardAutomation{ID: o.AutomationID, Name: o.Name, BuiltinID: o.BuiltinID, RunID: o.RunID},
 		Blocks:     o.BlocksJSON, Body: o.Body, ContentHash: o.ContentHash,
+		Actions: []api.CardAction{}, RefFacts: []api.RefFacts{},
 	}
 	if len(c.Blocks) > MaxBlocksBytes {
 		c.CardKind, c.Blocks = api.CardNotice, ""
@@ -301,6 +302,6 @@ func noticeCard(n notice, folder int64) api.Card {
 	return api.Card{
 		ID: NoticeCardID(n.RowID), FolderID: folder, CardKind: api.CardNotice,
 		Title: noticeTitle(n.BuiltinID), Stamp: formatStamp(n.UpdatedAt), Unread: true,
-		Priority: "medium", Body: n.Error,
+		Priority: "medium", Body: n.Error, Actions: []api.CardAction{}, RefFacts: []api.RefFacts{},
 	}
 }

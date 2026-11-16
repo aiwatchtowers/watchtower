@@ -24,11 +24,14 @@ const casesPath = "testdata/inbox_feed_cases.json"
 // must produce (built_at blank). InboxFeedParityTests runs the Swift
 // builders over the same cases.
 type feedCase struct {
-	Name   string          `json:"name"`
-	Now    string          `json:"now"`
-	Seed   []string        `json:"seed"`
-	Opts   api.FeedRequest `json:"opts"`
-	Expect api.Feed        `json:"expect"`
+	Name string          `json:"name"`
+	Now  string          `json:"now"`
+	Seed []string        `json:"seed"`
+	Opts api.FeedRequest `json:"opts"`
+	// DisabledFeatures are the feature ids turned off for the case (the
+	// Mac's feature list; Options.DisabledFeatures).
+	DisabledFeatures []string `json:"disabled_features,omitempty"`
+	Expect           api.Feed `json:"expect"`
 }
 
 func loadCases(t testing.TB) []feedCase {
@@ -137,6 +140,7 @@ func buildCase(t testing.TB, c feedCase) api.Feed {
 	d := seeded(t, c.Seed)
 	feed, err := Build(context.Background(), d, Options{
 		Folder: c.Opts.Folder, Limit: c.Opts.Limit, Clip: c.Opts.Clip, Now: now.UTC(),
+		DisabledFeatures: c.DisabledFeatures,
 	})
 	if err != nil {
 		t.Fatalf("%s: %v", c.Name, err)

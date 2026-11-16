@@ -26,6 +26,12 @@ final class InboxFeedParityTests: XCTestCase {
         let seed: [String]
         let opts: FeedRequest
         let expect: Feed
+        let disabledFeatures: [String]?
+
+        enum CodingKeys: String, CodingKey {
+            case name, now, seed, opts, expect
+            case disabledFeatures = "disabled_features"
+        }
     }
 
     private var savedZone: TimeZone?
@@ -46,7 +52,7 @@ final class InboxFeedParityTests: XCTestCase {
     func testSwiftBuilderMatchesEveryGoCase() throws {
         let data = try Data(contentsOf: Self.testdata.appendingPathComponent("inbox_feed_cases.json"))
         let cases = try JSONDecoder().decode([FeedCase].self, from: data)
-        XCTAssertGreaterThanOrEqual(cases.count, 10)
+        XCTAssertGreaterThanOrEqual(cases.count, 17)
         for item in cases {
             let now = try XCTUnwrap(AutomationDates.parse(item.now), item.name)
             XCTAssertNil(item.opts.clip == true ? "clip" : nil, "\(item.name): Clip is Go-only; no parity case uses it")
@@ -54,7 +60,8 @@ final class InboxFeedParityTests: XCTestCase {
             let mapped = try queue.write { db -> SwiftFeedAdapter.Mapped in
                 try Self.seedLikeAFreshGoFile(db)
                 for statement in item.seed { try db.execute(sql: statement) }
-                return try SwiftFeedAdapter.feed(db, now: now, folder: item.opts.folder)
+                return try SwiftFeedAdapter.feed(
+                    db, now: now, folder: item.opts.folder, disabledFeatures: Set(item.disabledFeatures ?? []))
             }
             for id in mapped.unmapped {
                 let kind = String(id.split(separator: ":").first ?? "")

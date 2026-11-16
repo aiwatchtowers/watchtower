@@ -10,11 +10,16 @@ import (
 // Deps are what some commands need at call time. Its zero value is valid:
 // the generator and tests register with it, and a command whose dependency is
 // missing answers unsupported when called.
-type Deps struct{}
+type Deps struct {
+	// DisabledFeatures returns the feature registry ids the config has off
+	// now (inbox.feed reads attention detection's switch from it); nil
+	// means none.
+	DisabledFeatures func() []string
+}
 
 // RegisterAll registers every tower command in r.
-func RegisterAll(r *tower.Registry, _ Deps) {
+func RegisterAll(r *tower.Registry, d Deps) {
 	tower.RegisterBuiltins(r)
 	tower.RegisterPause(r)
-	inboxfeed.Register(r)
+	inboxfeed.Register(r, d.DisabledFeatures)
 }

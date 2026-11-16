@@ -181,8 +181,8 @@
           "body": "Stays in the root.",
           "body_clipped": false,
           "content_hash": "",
-          "actions": null,
-          "ref_facts": null
+          "actions": [],
+          "ref_facts": []
         },
         {
           "id": "o5",
@@ -206,8 +206,8 @@
           "body": "Routed home by its automation.",
           "body_clipped": false,
           "content_hash": "",
-          "actions": null,
-          "ref_facts": null
+          "actions": [],
+          "ref_facts": []
         },
         {
           "id": "o1",
@@ -231,8 +231,8 @@
           "body": "A note for work.",
           "body_clipped": false,
           "content_hash": "",
-          "actions": null,
-          "ref_facts": null
+          "actions": [],
+          "ref_facts": []
         },
         {
           "id": "o2",
@@ -256,8 +256,8 @@
           "body": "A note in mail.",
           "body_clipped": false,
           "content_hash": "",
-          "actions": null,
-          "ref_facts": null
+          "actions": [],
+          "ref_facts": []
         },
         {
           "id": "o3",
@@ -281,8 +281,8 @@
           "body": "An old note.",
           "body_clipped": false,
           "content_hash": "",
-          "actions": null,
-          "ref_facts": null
+          "actions": [],
+          "ref_facts": []
         },
         {
           "id": "o4",
@@ -306,8 +306,8 @@
           "body": "Hidden away.",
           "body_clipped": false,
           "content_hash": "",
-          "actions": null,
-          "ref_facts": null
+          "actions": [],
+          "ref_facts": []
         }
       ]
     }
@@ -375,8 +375,8 @@
           "body": "Opened already.",
           "body_clipped": false,
           "content_hash": "",
-          "actions": null,
-          "ref_facts": null
+          "actions": [],
+          "ref_facts": []
         },
         {
           "id": "o1",
@@ -400,8 +400,8 @@
           "body": "Not opened yet.",
           "body_clipped": false,
           "content_hash": "",
-          "actions": null,
-          "ref_facts": null
+          "actions": [],
+          "ref_facts": []
         }
       ]
     }
@@ -472,8 +472,8 @@
           "body": "Its rows are closed.",
           "body_clipped": false,
           "content_hash": "h2",
-          "actions": null,
-          "ref_facts": null
+          "actions": [],
+          "ref_facts": []
         },
         {
           "id": "o1",
@@ -497,8 +497,8 @@
           "body": "Three rows wait.",
           "body_clipped": false,
           "content_hash": "h1",
-          "actions": null,
-          "ref_facts": null
+          "actions": [],
+          "ref_facts": []
         }
       ]
     }
@@ -564,8 +564,8 @@
           "body": "word0 word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12 word13 word14 word15 word16 word17 word18 word19 word20 word21 word22 word23 word24 word25 word26 word27 word28 word29 word30 word31 word32 word33 word34 word35 word36 word37 word38 word39 word40 word41 word42 word43 word44 word45 word46 word47 word48 word49 word50 word51 word52 word53 word54 word55 word56 word57 word58 word59",
           "body_clipped": false,
           "content_hash": "",
-          "actions": null,
-          "ref_facts": null
+          "actions": [],
+          "ref_facts": []
         },
         {
           "id": "o1",
@@ -589,8 +589,8 @@
           "body": "# Summary\n\nThe **release** went out on *Friday*.\n\n- Fixed the `login` bug\n- Read [the docs](https://example.com/docs)\n\n> A quote\n\n---\n\n```\ncode line\n```",
           "body_clipped": false,
           "content_hash": "",
-          "actions": null,
-          "ref_facts": null
+          "actions": [],
+          "ref_facts": []
         }
       ]
     }
@@ -657,8 +657,8 @@
           "body": "A one-off card.",
           "body_clipped": false,
           "content_hash": "",
-          "actions": null,
-          "ref_facts": null
+          "actions": [],
+          "ref_facts": []
         },
         {
           "id": "o1",
@@ -682,8 +682,8 @@
           "body": "Everything is green.",
           "body_clipped": false,
           "content_hash": "h",
-          "actions": null,
-          "ref_facts": null
+          "actions": [],
+          "ref_facts": []
         }
       ]
     }
@@ -780,8 +780,8 @@
           "body": "a watch file is missing",
           "body_clipped": false,
           "content_hash": "",
-          "actions": null,
-          "ref_facts": null
+          "actions": [],
+          "ref_facts": []
         },
         {
           "id": "n1",
@@ -799,8 +799,8 @@
           "body": "the old settings could not be read",
           "body_clipped": false,
           "content_hash": "",
-          "actions": null,
-          "ref_facts": null
+          "actions": [],
+          "ref_facts": []
         }
       ]
     }
@@ -887,8 +887,8 @@
           "body": "One thread waits.",
           "body_clipped": false,
           "content_hash": "w",
-          "actions": null,
-          "ref_facts": null
+          "actions": [],
+          "ref_facts": []
         },
         {
           "id": "o3",
@@ -912,8 +912,8 @@
           "body": "New card.",
           "body_clipped": false,
           "content_hash": "",
-          "actions": null,
-          "ref_facts": null
+          "actions": [],
+          "ref_facts": []
         },
         {
           "id": "n1",
@@ -931,8 +931,8 @@
           "body": "could not move",
           "body_clipped": false,
           "content_hash": "",
-          "actions": null,
-          "ref_facts": null
+          "actions": [],
+          "ref_facts": []
         }
       ],
       "more": [
@@ -1023,8 +1023,457 @@
           "body": "Work card.",
           "body_clipped": false,
           "content_hash": "",
-          "actions": null,
-          "ref_facts": null
+          "actions": [],
+          "ref_facts": []
+        }
+      ]
+    }
+  },
+  {
+    "name": "preview_escapes_entities_and_graphemes",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, disabled_reason, origin, builtin_id) VALUES (1, 'notes', 'personal', '/recipes/notes.md', 'Notes', 1, '', 'owner', NULL)",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, 1, 'manual', 'succeeded')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, read_at, blocks_json, output_key, content_hash, written_at, changed_at, folder_id) VALUES (1, 1, 1, 'inbox', 'Escapes', 'a \\* b \\_c\\_ Tom &amp; Jerry &copy; &lt;tag&gt; &#35;1 &#x41; \\&amp; `&amp;`', 'medium', '2026-11-16T10:00:00Z', NULL, '', NULL, '', '2026-11-16T10:00:00Z', '2026-11-16T10:00:00Z', NULL)",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, read_at, blocks_json, output_key, content_hash, written_at, changed_at, folder_id) VALUES (2, 1, 1, 'inbox', 'Emoji at the cut', 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx 👩‍👩‍👧‍👦 tail words here', 'medium', '2026-11-16T10:01:00Z', NULL, '', NULL, '', '2026-11-16T10:01:00Z', '2026-11-16T10:01:00Z', NULL)",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, read_at, blocks_json, output_key, content_hash, written_at, changed_at, folder_id) VALUES (3, 1, 1, 'inbox', 'Emoji under the cap', 'yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy 👩‍👩‍👧‍👦', 'medium', '2026-11-16T10:02:00Z', NULL, '', NULL, '', '2026-11-16T10:02:00Z', '2026-11-16T10:02:00Z', NULL)"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 3,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "o3",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "Emoji under the cap",
+          "source_line": "Notes",
+          "preview": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy 👩‍👩‍👧‍👦",
+          "stamp": "2026-11-16T10:02:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Notes",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "",
+          "body": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy 👩‍👩‍👧‍👦",
+          "body_clipped": false,
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": []
+        },
+        {
+          "id": "o2",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "Emoji at the cut",
+          "source_line": "Notes",
+          "preview": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx 👩‍👩‍👧‍👦…",
+          "stamp": "2026-11-16T10:01:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Notes",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "",
+          "body": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx 👩‍👩‍👧‍👦 tail words here",
+          "body_clipped": false,
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": []
+        },
+        {
+          "id": "o1",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "Escapes",
+          "source_line": "Notes",
+          "preview": "a * b _c_ Tom & Jerry © <tag> #1 A &amp; &amp;",
+          "stamp": "2026-11-16T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Notes",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "",
+          "body": "a \\* b \\_c\\_ Tom &amp; Jerry &copy; &lt;tag&gt; &#35;1 &#x41; \\&amp; `&amp;`",
+          "body_clipped": false,
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": []
+        }
+      ]
+    }
+  },
+  {
+    "name": "attention_off_row_indexed",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, disabled_reason, origin, builtin_id) VALUES (1, 'waiting-for-me', 'personal', '/recipes/waiting-for-me.md', 'Waiting for me', 1, '', 'builtin', 'waiting-for-me')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, 1, 'sync', 'succeeded')",
+      "INSERT INTO tracks (id, text) VALUES (1, 'Answer colleague A')",
+      "INSERT INTO inbox_items (id, channel_id, message_ts, sender_user_id, trigger_type, created_at) VALUES (1, 'C1', '1.0', 'U1', 'mention', '2026-11-16T07:00:00Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, read_at, blocks_json, output_key, content_hash, written_at, changed_at, folder_id) VALUES (1, 1, 1, 'inbox', 'Waiting for me', 'One thread waits.', 'medium', '2026-11-16T08:00:00Z', NULL, '{\"v\":1,\"blocks\":[{\"type\":\"list\",\"title\":\"Waiting\",\"rows\":[{\"title\":\"Answer colleague A\",\"ref\":{\"kind\":\"track\",\"id\":1}}]}]}', 'waiting', 'w', '2026-11-16T08:00:00Z', '2026-11-16T08:00:00Z', NULL)"
+    ],
+    "opts": {},
+    "disabled_features": [
+      "secretary-inbox"
+    ],
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": []
+    }
+  },
+  {
+    "name": "attention_off_row_not_indexed",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, sender_user_id, trigger_type, created_at) VALUES (1, 'C1', '1.0', 'U1', 'mention', '2026-11-16T07:00:00Z')"
+    ],
+    "opts": {},
+    "disabled_features": [
+      "secretary-inbox"
+    ],
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": []
+    }
+  },
+  {
+    "name": "attention_off_stopped_row",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, disabled_reason, origin, builtin_id) VALUES (1, 'waiting-for-me', 'personal', '/recipes/waiting-for-me.md', 'Waiting for me', 1, 'runaway script', 'builtin', 'waiting-for-me')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, 1, 'sync', 'succeeded')",
+      "INSERT INTO tracks (id, text) VALUES (1, 'Answer colleague A')",
+      "INSERT INTO inbox_items (id, channel_id, message_ts, sender_user_id, trigger_type, created_at) VALUES (1, 'C1', '1.0', 'U1', 'mention', '2026-11-16T07:00:00Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, read_at, blocks_json, output_key, content_hash, written_at, changed_at, folder_id) VALUES (1, 1, 1, 'inbox', 'Waiting for me', 'One thread waits.', 'medium', '2026-11-16T08:00:00Z', NULL, '{\"v\":1,\"blocks\":[{\"type\":\"list\",\"title\":\"Waiting\",\"rows\":[{\"title\":\"Answer colleague A\",\"ref\":{\"kind\":\"track\",\"id\":1}}]}]}', 'waiting', 'w', '2026-11-16T08:00:00Z', '2026-11-16T08:00:00Z', NULL)"
+    ],
+    "opts": {},
+    "disabled_features": [
+      "secretary-inbox"
+    ],
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": []
+    }
+  },
+  {
+    "name": "attention_on_stopped_row_stands_in",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, disabled_reason, origin, builtin_id) VALUES (1, 'waiting-for-me', 'personal', '/recipes/waiting-for-me.md', 'Waiting for me', 1, 'runaway script', 'builtin', 'waiting-for-me')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, 1, 'sync', 'succeeded')",
+      "INSERT INTO tracks (id, text) VALUES (1, 'Answer colleague A')",
+      "INSERT INTO inbox_items (id, channel_id, message_ts, sender_user_id, trigger_type, created_at) VALUES (1, 'C1', '1.0', 'U1', 'mention', '2026-11-16T07:00:00Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, read_at, blocks_json, output_key, content_hash, written_at, changed_at, folder_id) VALUES (1, 1, 1, 'inbox', 'Waiting for me', 'One thread waits.', 'medium', '2026-11-16T08:00:00Z', NULL, '{\"v\":1,\"blocks\":[{\"type\":\"list\",\"title\":\"Waiting\",\"rows\":[{\"title\":\"Answer colleague A\",\"ref\":{\"kind\":\"track\",\"id\":1}}]}]}', 'waiting', 'w', '2026-11-16T08:00:00Z', '2026-11-16T08:00:00Z', NULL)"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": []
+    }
+  },
+  {
+    "name": "idea_refs_and_root_legacy_counts",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, disabled_reason, origin, builtin_id) VALUES (1, 'ideas', 'personal', '/recipes/ideas.md', 'Ideas digest', 1, '', 'owner', NULL)",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, 1, 'manual', 'succeeded')",
+      "INSERT INTO ideas (id, kind, title, status) VALUES (1, 'idea', 'Proposed idea', 'proposed')",
+      "INSERT INTO ideas (id, kind, title, status, snooze_until) VALUES (2, 'idea', 'Not now till tomorrow', 'proposed', '2026-11-17')",
+      "INSERT INTO ideas (id, kind, title, status, snooze_until) VALUES (3, 'idea', 'Snooze over', 'proposed', '2026-11-16')",
+      "INSERT INTO ideas (id, kind, title, status, snooze_until) VALUES (4, 'idea', 'Snoozed to tonight', 'proposed', '2026-11-16T20:00:00Z')",
+      "INSERT INTO ideas (id, kind, title, status) VALUES (5, 'idea', 'Active', 'active')",
+      "INSERT INTO ideas (id, kind, title, status) VALUES (6, 'decision', 'A decision', 'proposed')",
+      "INSERT INTO briefings (id, user_id, date, created_at) VALUES (1, 'U1', '2026-11-16', '2026-11-16T06:00:00Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, read_at, blocks_json, output_key, content_hash, written_at, changed_at, folder_id) VALUES (1, 1, 1, 'inbox', 'Ideas', 'Idea rows.', 'medium', '2026-11-16T09:00:00Z', NULL, '{\"v\":1,\"blocks\":[{\"type\":\"list\",\"title\":\"Waiting\",\"rows\":[{\"title\":\"r1\",\"ref\":{\"kind\":\"idea\",\"id\":1}},{\"title\":\"r2\",\"ref\":{\"kind\":\"idea\",\"id\":2}},{\"title\":\"r3\",\"ref\":{\"kind\":\"idea\",\"id\":3}},{\"title\":\"r4\",\"ref\":{\"kind\":\"idea\",\"id\":4}},{\"title\":\"r5\",\"ref\":{\"kind\":\"idea\",\"id\":5}},{\"title\":\"r6\",\"ref\":{\"kind\":\"idea\",\"id\":6}},{\"title\":\"r7\",\"ref\":{\"kind\":\"idea\",\"id\":7}}]}]}', 'ideas', 'i', '2026-11-16T09:00:00Z', '2026-11-16T09:00:00Z', NULL)"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 7,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "o1",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "Ideas",
+          "source_line": "Ideas digest",
+          "preview": "Idea rows.",
+          "stamp": "2026-11-16T09:00:00Z",
+          "living": true,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Ideas digest",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "{\"v\":1,\"blocks\":[{\"type\":\"list\",\"title\":\"Waiting\",\"rows\":[{\"title\":\"r1\",\"ref\":{\"kind\":\"idea\",\"id\":1}},{\"title\":\"r2\",\"ref\":{\"kind\":\"idea\",\"id\":2}},{\"title\":\"r3\",\"ref\":{\"kind\":\"idea\",\"id\":3}},{\"title\":\"r4\",\"ref\":{\"kind\":\"idea\",\"id\":4}},{\"title\":\"r5\",\"ref\":{\"kind\":\"idea\",\"id\":5}},{\"title\":\"r6\",\"ref\":{\"kind\":\"idea\",\"id\":6}},{\"title\":\"r7\",\"ref\":{\"kind\":\"idea\",\"id\":7}}]}]}",
+          "body": "Idea rows.",
+          "body_clipped": false,
+          "content_hash": "i",
+          "actions": [],
+          "ref_facts": []
+        }
+      ]
+    }
+  },
+  {
+    "name": "tree_without_needs_approval",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "DELETE FROM inbox_folders WHERE kind = 'approvals'",
+      "INSERT INTO builtin_migrations (builtin_id, status, error, attempts, updated_at) VALUES ('reactions', 'failed', 'could not move', 1, '2026-11-10T07:00:00Z')",
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, disabled_reason, origin, builtin_id) VALUES (1, 'digest', 'personal', '/recipes/digest.md', 'Digest', 1, '', 'owner', NULL)",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, 1, 'manual', 'succeeded')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, read_at, blocks_json, output_key, content_hash, written_at, changed_at, folder_id) VALUES (1, 1, 1, 'inbox', 'Old', 'Old card.', 'medium', '2026-11-12T08:00:00Z', NULL, '', NULL, '', '2026-11-12T08:00:00Z', '2026-11-12T08:00:00Z', NULL)",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, read_at, blocks_json, output_key, content_hash, written_at, changed_at, folder_id) VALUES (2, 1, 1, 'inbox', 'New', 'New card.', 'medium', '2026-11-16T08:00:00Z', NULL, '', NULL, '', '2026-11-16T08:00:00Z', '2026-11-16T08:00:00Z', NULL)",
+      "INSERT INTO reminders (id, note, remind_at) VALUES (1, 'Call back', '2026-11-16T11:00:00Z')"
+    ],
+    "opts": {
+      "limit": 2
+    },
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 4,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "o2",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "New",
+          "source_line": "Digest",
+          "preview": "New card.",
+          "stamp": "2026-11-16T08:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Digest",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "",
+          "body": "New card.",
+          "body_clipped": false,
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": []
+        },
+        {
+          "id": "n1",
+          "folder_id": 1,
+          "card_kind": "notice",
+          "title": "Couldn't move Reactions to Automations",
+          "source_line": "",
+          "preview": "",
+          "stamp": "2026-11-10T07:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "could not move",
+          "body_clipped": false,
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": []
+        }
+      ],
+      "more": [
+        {
+          "folder_id": 1,
+          "count": 1
         }
       ]
     }

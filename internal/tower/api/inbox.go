@@ -58,8 +58,10 @@ type Folder struct {
 	// ParentID is nil only for the root.
 	ParentID *int64 `json:"parent_id,omitempty"`
 	Position int    `json:"position"`
-	// Hidden is set when the folder or one of its ancestors is hidden: it
-	// leaves the menu (unless the owner shows hidden folders) and the badge.
+	// Hidden is the effective value, not the row's own flag: set when the
+	// folder or one of its ancestors is hidden. Such a folder leaves the menu
+	// (unless the owner shows hidden folders) and the badge; which ancestor
+	// hid it is found by walking parent_id.
 	Hidden bool `json:"hidden"`
 	// Count is the folder's own count (not its children's).
 	Count int `json:"count"`

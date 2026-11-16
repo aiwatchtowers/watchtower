@@ -11,6 +11,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"time"
 
 	"watchtower/internal/db"
@@ -32,6 +33,11 @@ type Options struct {
 	Limit int
 	// Clip clips each body to ClipBytes on a rune boundary.
 	Clip bool
+	// DisabledFeatures are the feature registry ids turned off (the
+	// config's switches, as `features list` reports them "disabled"): the
+	// Mac's own feature list. Attention detection off ("secretary-inbox")
+	// turns Waiting for me and its Messages stand-in off.
+	DisabledFeatures []string
 	// Now is the moment the feed is read at. Its location is the owner's
 	// zone for the one date-only value the read compares (an idea's
 	// "not now" day); every stamp the feed carries is UTC.
@@ -53,7 +59,7 @@ func Build(ctx context.Context, d *db.DB, o Options) (api.Feed, error) {
 		return api.Feed{}, fmt.Errorf("inboxfeed: opening the read: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	s, err := read(ctx, tx, o.Now)
+	s, err := read(ctx, tx, o.Now, !slices.Contains(o.DisabledFeatures, waitingForMeFeatureID))
 	if err != nil {
 		return api.Feed{}, err
 	}
@@ -74,7 +80,12 @@ func compose(s *snapshot, o Options) api.Feed {
 		cards = append(cards, s.cards(f)...)
 	}
 	if o.Limit > 0 {
-		cards, feed.More = Limit(cards, s.tree.approvalsID(), o.Limit)
+		var approvals *int64
+		if s.tree.hasApprovals() {
+			id := s.tree.approvalsID()
+			approvals = &id
+		}
+		cards, feed.More = Limit(cards, approvals, o.Limit)
 	}
 	if o.Clip {
 		for i := range cards {
@@ -104,14 +115,15 @@ type snapshot struct {
 	counts map[int64]int
 }
 
-// read reads the snapshot at now.
-func read(ctx context.Context, tx *sql.Tx, now time.Time) (*snapshot, error) {
+// read reads the snapshot at now; attentionOn is attention detection's
+// switch (Waiting for me's feature).
+func read(ctx context.Context, tx *sql.Tx, now time.Time, attentionOn bool) (*snapshot, error) {
 	t, err := readTree(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
 	s := &snapshot{tree: t}
-	if s.waitingForMe, err = readWaitingForMe(ctx, tx); err != nil {
+	if s.waitingForMe, err = readWaitingForMe(ctx, tx, attentionOn); err != nil {
 		return nil, err
 	}
 	approvalsAutomation, err := builtinAutomationID(ctx, tx, needsApprovalBuiltinID)

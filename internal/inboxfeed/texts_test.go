@@ -56,27 +56,6 @@ func TestPreview_PlainTextOfTheMarkdown(t *testing.T) {
 	}
 }
 
-func TestCardNotices_OnePerAutomationAndRunOnlyForNews(t *testing.T) {
-	card := func(id, hash string, automation, run int64) api.Card {
-		return api.Card{ID: id, ContentHash: hash, Automation: &api.CardAutomation{ID: automation, Name: "Threads", RunID: run}}
-	}
-	previous := []api.Card{card("o1", "a", 1, 1), card("o2", "b", 1, 1)}
-	cards := []api.Card{
-		card("o1", "a", 1, 2),  // same hash: a rewrite, never news
-		card("o2", "b2", 1, 2), // changed
-		card("o3", "c", 1, 2),  // new
-		card("o4", "d", 2, 5),  // new, another automation
-		{ID: "n1"},             // no automation: not an artifact
-	}
-	got := CardNotices(cards, previous)
-	if len(got) != 2 || got[0].Count != 2 || got[0].RunID != 2 || got[1].AutomationID != 2 || got[1].Count != 1 {
-		t.Fatalf("notices: %+v", got)
-	}
-	if got[0].Text() != "Threads: 2 cards changed" || got[1].Text() != "Threads: 1 card changed" {
-		t.Fatalf("texts: %q, %q", got[0].Text(), got[1].Text())
-	}
-}
-
 func TestRefsOf_UnreadableDocumentsHaveNone(t *testing.T) {
 	ok := `{"v":1,"blocks":[{"type":"text","text":"x"},{"type":"list","rows":[` +
 		`{"title":"a","ref":{"kind":"track","id":3}},{"title":"b"},{"title":"c","ref":null}]}]}`

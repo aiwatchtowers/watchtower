@@ -9,7 +9,7 @@ Stage 1 of #1170 (spec `docs/superpowers/specs/2026-11-15-mobile-inbox-design.md
 `api.Feed{v, built_at, folders[], cards[], more}` (`internal/tower/api/inbox.go`, `FeedVersion = 1`):
 
 - **Folders** come in pre-order: the root, then each folder followed by its children, by `position` and then `id`. Each folder carries `{id, kind (root|approvals|owner), slug, title, icon, parent_id, position, hidden, count, waiting}`.
-  - `hidden` is set when the folder or one of its ancestors is hidden. Such a folder leaves the menu and the badge, but it is still sent, because the Mac's **Show Hidden Folders** draws it.
+  - `hidden` is the effective value, not the row's own flag: it is set when the folder or one of its ancestors is hidden. Such a folder leaves the menu and the badge, but it is still sent, because the Mac's **Show Hidden Folders** draws it. Which ancestor hid it is found by walking `parent_id`.
   - `count` is the folder's own count, not its children's (`InboxFolderCounts`):
     - an artifact with no row ref counts 1 while it is unread;
     - an artifact with row refs counts its rows whose record waits on the owner, whatever its read state;
@@ -23,11 +23,12 @@ Stage 1 of #1170 (spec `docs/superpowers/specs/2026-11-15-mobile-inbox-design.md
 - **Stamps** are UTC (RFC 3339, whole seconds). A living card's stamp is its last write (`written_at`); any other card's stamp is its creation. `source_line` carries the source only, for example the automation's name. The time ("· 10:00", "· Updated 10 min ago") and the Today/Earlier grouping belong to the screen models, which use the client's own time zone.
 - **Card texts** (`texts.go`):
   - `title` is the card's title, or the automation's name when the card has none.
-  - `preview` is the body's markdown as plain text on one line, clipped to 140 characters with "…" (`InboxCardTexts.preview`, through goldmark with the GFM extensions).
+  - `preview` is the body's markdown as plain text on one line, clipped to 140 characters with "…" (`InboxCardTexts.preview`, through goldmark with the GFM extensions). As in cmark-gfm's text nodes, backslash escapes are resolved, and so are entity and numeric references, in one pass. Characters are grapheme clusters (`rivo/uniseg`), as Swift counts them, so an emoji sequence counts once and is never cut.
   - `priority` is high, medium or low; any other value reads as medium.
   - A notice reads "Couldn't move <built-in> to Automations".
   - `unread` is "never opened" for a card without row refs, and "a row waits" for a card with them.
-- **Blocks:** `blocks` holds the stored document, or `""` for a markdown card. A document past `MaxBlocksBytes` (128 KB) is sent as a `notice` card whose body and preview are `TooLargeSentence`; it keeps its `content_hash`.
+- **Blocks:** `blocks` holds the stored document, or `""` for a markdown card. A document past `MaxBlocksBytes` (128 KB) is sent as a `notice` card whose body and preview are `TooLargeSentence`; it keeps its `content_hash`. The check uses the stored `blocks_json` length, which the writers store canonical. Such a card still counts its waiting rows and shows unread as the artifact would.
+- **Actions and ref facts** are sent as empty lists, never `null`, until the next part fills them.
 
 ## Card ids
 
@@ -45,13 +46,14 @@ Stage 1 of #1170 (spec `docs/superpowers/specs/2026-11-15-mobile-inbox-design.md
 ## Options
 
 - `Folder` narrows the cards to one folder. Every folder and its count are still sent.
-- `Limit` (300 on the phone, none on the Mac) keeps Needs approval's cards first, then the pinned cards, then the rest by `stamp`, newest first. The kept cards stay in list order. `more` counts the cut cards per folder.
+- `Limit` (300 on the phone, none on the Mac) keeps Needs approval's cards first, then the pinned cards, then the rest by `stamp`, newest first. On a tree without Needs approval, the approval entries the root lists (`a…`, `r…`, `n…`) come first instead. The kept cards stay in list order. `more` counts the cut cards per folder.
 - `Clip` clips each `body` to `ClipBytes` (16 KB) on a rune boundary and sets `body_clipped`.
+- `DisabledFeatures` are the feature ids the config has off: the Mac's own feature list (`features list --json` reports them as `disabled`). Here only attention detection (`secretary-inbox`, config key `inbox.enabled`) matters. When it is off, Waiting for me is turned off whatever its row says, as `InboxFolderQueries.waitingForMe(featureOn:)` has it: its artifacts are not shown and nothing counts for it, the Messages stand-in included. The owner's off wins over a stop by the daemon.
 - `Now` is the moment the feed is read. Its location is used for one date-only value, an idea's "not now" day, which the owner's zone wrote.
 
 ## Commands
 
-`inboxfeed.Register(r)` registers two commands in `commands.RegisterAll`:
+`inboxfeed.Register(r, disabledFeatures)` registers two commands in `commands.RegisterAll`. `disabledFeatures` is `commands.Deps.DisabledFeatures`, which the daemon fills (`cmd/sync.go` `towerDisabledFeatures`). It re-reads `config.yaml` (`config.Load(flagConfig)` → `features.DisabledIDs`) at each `inbox.feed` call, because the owner flips features while the daemon runs (`watchtower features enable|disable`, or the Desktop's Feature Manager through that CLI). A config that cannot be read is logged, and the daemon's start config answers instead. A zero `Deps` (the generator, tests) means nothing is off. The commands:
 
 - `inbox.feed`: `Spec{Read: true, ChangeTables}`; `api.FeedRequest` → `api.Feed`.
 - `inbox.watch`: `Spec{Watch: true, ChangeTables}`; `api.WatchRequest` → `api.WatchResponse`. It answers ok, then the socket streams `ChangedEvent` frames.
@@ -66,7 +68,6 @@ Stage 1 of #1170 (spec `docs/superpowers/specs/2026-11-15-mobile-inbox-design.md
 | `InboxFolderCounts` (`counts`, `artifactCount`) | `counts.go`. `badge` becomes the screen models' sum of `waiting` |
 | `InboxFolderQueries.tree`/`artifactsByFolder`/`waitingForMe`, `InboxRef.refs`, the waits half of `InboxRefState.read` | `folders.go`, `counts.go` |
 | `InboxCardTexts` (`preview`; `sourceLine`'s source part), `InboxCardSubject` (title, priority), `BuiltinUpgradeNotice` (title) | `texts.go` |
-| `InboxCardNotice` | `CardNotices` (no notice is posted today) |
 | `SaveAutomationProposalSummary` with `AutomationTriggerText`/`CronText` and `AutomationCardPresentation.permissionLine` | `SummarizeSaveAutomation`, `PermissionLine` (`savesummary.go`); the approval cards use them in the next part |
 
 These stay on the Mac:
@@ -75,7 +76,9 @@ These stay on the Mac:
 - the handoff texts (`discussMessage`, `handToAgentTask`, `agentActionTask`, `agentActionHelp`, `attachmentMarkdown`, `notice`, `readingSourceLine`);
 - the time part of `sourceLine`, `stamped` and `updated`, which belong to the screen models.
 
-**Known difference:** the Mac reads the attention-detection switch from its feature list. Go reads the switch from the `waiting-for-me` row, which is disabled with no `disabled_reason` when the switch is off (`turnOffBuiltinsOfDisabled`, the built-in sync). With the switch off and no row yet, the Mac shows no Messages stand-in, while Go counts the unread open messages.
+`InboxCardNotice` is not ported: no notice is posted on either side today.
+
+The switch the Mac reads (its feature list) and the one Go reads (`config.yaml` through `features.DisabledIDs`) are the same config keys. The Mac also folds in a toggle it has staged but not yet written; Go sees the toggle once the CLI writes it.
 
 ## The parity fixture
 
@@ -84,6 +87,8 @@ These stay on the Mac:
 - Go runs it in `TestInboxFeedCases`; `go test ./internal/inboxfeed/ -run TestInboxFeedCases -update` rewrites the expects.
 - The Mac runs it in `WatchtowerDesktop/Tests/Core/InboxFeedParityTests.swift`. That test seeds a `TestDatabase` with the migration's root and Needs approval rows, runs today's Swift builders at `now` in UTC, maps them through `Tests/Core/Support/SwiftFeedAdapter.swift` and compares the result with `expect`:
   - The fields Swift does not compute are listed in `SwiftFeedAdapter.goOnlyFields`, each with a reason, and blanked on both sides.
+  - The fields the adapter derives from Swift data with a Swift builder's own rule (pin, stamp, the source line without its time, a notice's id) are listed in `restatedFields` and compared.
+  - A case's `disabled_features` reach the Go `Options` and the Swift readers alike.
   - The entries the next part ports (approvals, thread briefs, legacy lists) are reported in `unmapped`.
   - A limited case checks that the Go cards are the Swift cards in order with the cut ones out, and that `more` counts the cut.
 
