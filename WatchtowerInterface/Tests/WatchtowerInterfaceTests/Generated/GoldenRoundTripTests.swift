@@ -18,8 +18,192 @@ final class GoldenRoundTripTests: XCTestCase {
         .deletingLastPathComponent()  // the repository
         .appendingPathComponent("internal/tower/api/testdata")
 
+    func testChatArtifactKeepRequestRoundTrip() throws {
+        try assertRoundTrip(ChatArtifactKeepRequest.self, golden: "ChatArtifactKeepRequest")
+    }
+
+    func testChatArtifactSaveEditRequestRoundTrip() throws {
+        try assertRoundTrip(ChatArtifactSaveEditRequest.self, golden: "ChatArtifactSaveEditRequest")
+    }
+
+    func testChatArtifactSaveEditResponseRoundTrip() throws {
+        try assertRoundTrip(ChatArtifactSaveEditResponse.self, golden: "ChatArtifactSaveEditResponse")
+    }
+
+    func testChatArtifactUnkeepRequestRoundTrip() throws {
+        try assertRoundTrip(ChatArtifactUnkeepRequest.self, golden: "ChatArtifactUnkeepRequest")
+    }
+
+    func testChatAttachLinkRequestRoundTrip() throws {
+        try assertRoundTrip(ChatAttachLinkRequest.self, golden: "ChatAttachLinkRequest")
+    }
+
+    func testChatAttachRequestRoundTrip() throws {
+        try assertRoundTrip(ChatAttachRequest.self, golden: "ChatAttachRequest")
+    }
+
+    func testChatAttachResponseRoundTrip() throws {
+        try assertRoundTrip(ChatAttachResponse.self, golden: "ChatAttachResponse")
+    }
+
+    func testChatAttachmentRequestRoundTrip() throws {
+        try assertRoundTrip(ChatAttachmentRequest.self, golden: "ChatAttachmentRequest")
+    }
+
+    func testChatBranchRequestRoundTrip() throws {
+        try assertRoundTrip(ChatBranchRequest.self, golden: "ChatBranchRequest")
+    }
+
+    func testChatChangedRoundTrip() throws {
+        try assertRoundTrip(ChatChanged.self, golden: "ChatChanged")
+    }
+
+    func testChatCommentAddRequestRoundTrip() throws {
+        try assertRoundTrip(ChatCommentAddRequest.self, golden: "ChatCommentAddRequest")
+    }
+
+    func testChatCommentAddResponseRoundTrip() throws {
+        try assertRoundTrip(ChatCommentAddResponse.self, golden: "ChatCommentAddResponse")
+    }
+
+    func testChatCommentApplyRequestRoundTrip() throws {
+        try assertRoundTrip(ChatCommentApplyRequest.self, golden: "ChatCommentApplyRequest")
+    }
+
+    func testChatCommentMarkSentRequestRoundTrip() throws {
+        try assertRoundTrip(ChatCommentMarkSentRequest.self, golden: "ChatCommentMarkSentRequest")
+    }
+
+    func testChatCommentRequestRoundTrip() throws {
+        try assertRoundTrip(ChatCommentRequest.self, golden: "ChatCommentRequest")
+    }
+
+    func testChatContextRequestRoundTrip() throws {
+        try assertRoundTrip(ChatContextRequest.self, golden: "ChatContextRequest")
+    }
+
+    func testChatConversationRequestRoundTrip() throws {
+        try assertRoundTrip(ChatConversationRequest.self, golden: "ChatConversationRequest")
+    }
+
+    func testChatCountRoundTrip() throws {
+        try assertRoundTrip(ChatCount.self, golden: "ChatCount")
+    }
+
+    func testChatDeleteEmptyCodeQuestionsRequestRoundTrip() throws {
+        try assertRoundTrip(ChatDeleteEmptyCodeQuestionsRequest.self, golden: "ChatDeleteEmptyCodeQuestionsRequest")
+    }
+
+    func testChatDeleteRequestRoundTrip() throws {
+        try assertRoundTrip(ChatDeleteRequest.self, golden: "ChatDeleteRequest")
+    }
+
+    func testChatDeleteUntouchedRequestRoundTrip() throws {
+        try assertRoundTrip(ChatDeleteUntouchedRequest.self, golden: "ChatDeleteUntouchedRequest")
+    }
+
+    func testChatDraftClearRequestRoundTrip() throws {
+        try assertRoundTrip(ChatDraftClearRequest.self, golden: "ChatDraftClearRequest")
+    }
+
+    func testChatDraftSaveRequestRoundTrip() throws {
+        try assertRoundTrip(ChatDraftSaveRequest.self, golden: "ChatDraftSaveRequest")
+    }
+
+    func testChatNewRequestRoundTrip() throws {
+        try assertRoundTrip(ChatNewRequest.self, golden: "ChatNewRequest")
+    }
+
+    func testChatNewResponseRoundTrip() throws {
+        try assertRoundTrip(ChatNewResponse.self, golden: "ChatNewResponse")
+    }
+
+    func testChatPinRequestRoundTrip() throws {
+        try assertRoundTrip(ChatPinRequest.self, golden: "ChatPinRequest")
+    }
+
+    func testChatProjectAddSourceRequestRoundTrip() throws {
+        try assertRoundTrip(ChatProjectAddSourceRequest.self, golden: "ChatProjectAddSourceRequest")
+    }
+
+    func testChatProjectCreateRequestRoundTrip() throws {
+        try assertRoundTrip(ChatProjectCreateRequest.self, golden: "ChatProjectCreateRequest")
+    }
+
+    func testChatProjectCreateResponseRoundTrip() throws {
+        try assertRoundTrip(ChatProjectCreateResponse.self, golden: "ChatProjectCreateResponse")
+    }
+
+    func testChatProjectInstructionsRequestRoundTrip() throws {
+        try assertRoundTrip(ChatProjectInstructionsRequest.self, golden: "ChatProjectInstructionsRequest")
+    }
+
+    func testChatProjectRenameRequestRoundTrip() throws {
+        try assertRoundTrip(ChatProjectRenameRequest.self, golden: "ChatProjectRenameRequest")
+    }
+
+    func testChatProjectRequestRoundTrip() throws {
+        try assertRoundTrip(ChatProjectRequest.self, golden: "ChatProjectRequest")
+    }
+
+    func testChatProjectSourceRequestRoundTrip() throws {
+        try assertRoundTrip(ChatProjectSourceRequest.self, golden: "ChatProjectSourceRequest")
+    }
+
+    func testChatReadRequestRoundTrip() throws {
+        try assertRoundTrip(ChatReadRequest.self, golden: "ChatReadRequest")
+    }
+
+    func testChatRecoverResponseRoundTrip() throws {
+        try assertRoundTrip(ChatRecoverResponse.self, golden: "ChatRecoverResponse")
+    }
+
+    func testChatReleaseLaunchesRequestRoundTrip() throws {
+        try assertRoundTrip(ChatReleaseLaunchesRequest.self, golden: "ChatReleaseLaunchesRequest")
+    }
+
+    func testChatReleaseLaunchesResponseRoundTrip() throws {
+        try assertRoundTrip(ChatReleaseLaunchesResponse.self, golden: "ChatReleaseLaunchesResponse")
+    }
+
+    func testChatRenameRequestRoundTrip() throws {
+        try assertRoundTrip(ChatRenameRequest.self, golden: "ChatRenameRequest")
+    }
+
+    func testChatReviewerThreadRequestRoundTrip() throws {
+        try assertRoundTrip(ChatReviewerThreadRequest.self, golden: "ChatReviewerThreadRequest")
+    }
+
+    func testChatSetModelRequestRoundTrip() throws {
+        try assertRoundTrip(ChatSetModelRequest.self, golden: "ChatSetModelRequest")
+    }
+
+    func testChatSetProjectRequestRoundTrip() throws {
+        try assertRoundTrip(ChatSetProjectRequest.self, golden: "ChatSetProjectRequest")
+    }
+
+    func testChatSetRoutingRequestRoundTrip() throws {
+        try assertRoundTrip(ChatSetRoutingRequest.self, golden: "ChatSetRoutingRequest")
+    }
+
+    func testChatSetTitleRequestRoundTrip() throws {
+        try assertRoundTrip(ChatSetTitleRequest.self, golden: "ChatSetTitleRequest")
+    }
+
+    func testChatTurnRequestRoundTrip() throws {
+        try assertRoundTrip(ChatTurnRequest.self, golden: "ChatTurnRequest")
+    }
+
     func testHelloResponseRoundTrip() throws {
         try assertRoundTrip(HelloResponse.self, golden: "HelloResponse")
+    }
+
+    func testMeetingsDeleteRequestRoundTrip() throws {
+        try assertRoundTrip(MeetingsDeleteRequest.self, golden: "MeetingsDeleteRequest")
+    }
+
+    func testMeetingsDeleteResponseRoundTrip() throws {
+        try assertRoundTrip(MeetingsDeleteResponse.self, golden: "MeetingsDeleteResponse")
     }
 
     func testPingResponseRoundTrip() throws {
