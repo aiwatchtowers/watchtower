@@ -26,7 +26,7 @@ This design moves the line:
   - the generated types;
   - `TowerClient`, with one state machine for loading, stale, refused, unknown outcome and offline;
   - the screen models, with every user-facing string and their tests.
-- **An always-on daemon.** While the app runs, the daemon serves the tower socket. Stopping sync from the tray pauses sync and leaves the daemon running. The few restarts that remain (a new binary, an exclusive database step) show "Reconnecting…", not an error.
+- **An always-on daemon.** While the app runs, the daemon serves the tower socket. The tray gains **Pause Sync** / **Resume Sync**, which pause sync and leave the daemon running. The few restarts that remain (a new binary, an exclusive database step, a config change) show "Reconnecting…", not an error, and only after 1 s.
 - **The Inbox core in Go** (`internal/inboxfeed`). It builds the root, the folders, their order and counts, Needs approval, Waiting for me, card texts, ref facts and the legacy root entries. It also applies every Inbox action.
 - **The Desktop on the interface.** The Inbox looks the same, except for the states in mockup §7. Every other Mac screen that writes the same rows also writes through the interface: Home, Ideas, Digests, Tracks, CatchUp, Day plan, Quick capture and Decisions (ask #1362). The Swift builders and writers these replace are deleted.
 - **An Inbox tab on the iPhone**, placed second (ask #1349). It shows the same feed through the hub:
@@ -132,9 +132,11 @@ Stages 1 and 3 depend on stage 0, and stage 2 depends on stage 1. Stage 3 may ru
   - A repeat of a `begun` id answers `unknown` for a non-idempotent command and re-runs a guarded one.
   - The hub's `relay_processed` still guards envelopes. This ledger guards the command below them.
 - **Long work leaves the call.**
-  - Approve and retry mark the row and return. The tool runs in the daemon, as the hub's background apply does today, and its outcome shows in the next feed as the card's status.
+  - Approve and retry commit the decision in one short transaction, then run the tool outside any transaction. Over the socket, the call answers when the tool finishes, so the Mac shows the result as it does today (`actions approve` is synchronous now). The wait is capped at 120 s; after that the call answers `ok` with `status: "applying"` and the card's status line follows the feed.
+  - Over the hub, the handler answers after the decision, and the tool runs in a hub goroutine, as the hub's background apply does today.
+  - An apply cut by a daemon restart leaves the row `approved`, and the card offers the existing apply button, as a cut `actions approve` does today.
   - The `reply` press stores the reply proposal and returns.
-  - No command holds a socket call or a write transaction across network or LLM work.
+  - No write transaction is held across network or LLM work.
 
 #### 2.2 The generator
 
@@ -161,24 +163,23 @@ Stages 1 and 3 depend on stage 0, and stage 2 depends on stage 1. Stage 3 may ru
 
 ### 3. The always-on daemon and the socket
 
-- **The socket.** The daemon (`watchtower sync --daemon`) serves `<workspace>/tower.sock`. The socket has mode 0600 inside a 0700 directory, and the daemon checks the peer's uid, as the hub's control socket does. Frames are newline-delimited JSON (§2.1). The same process runs the hub, so the Mac and the phone reach one `tower.Call`.
+- **The socket.** The daemon (`watchtower sync --daemon`) serves `<workspace>/tower.sock`. The socket has mode 0600 inside a 0700 directory, and the daemon checks the peer's uid, as the hub's control socket does. Frames are newline-delimited JSON (§2.1). When the hub runs, it is in the same process and calls the same `tower.Call`. The socket does not depend on the hub.
 - **The handshake.** The client sends `tower.hello`. When the interface version differs:
-  - A Desktop that started the daemon from its own CLI (`DaemonManager`, the CLI store) restarts it from that CLI. A dev build therefore always gets a daemon of its own version, the way `ensureDaemonRunning` already replaces a stale daemon.
+  - A Desktop that started the daemon from its own CLI (`DaemonManager`, the CLI store) restarts it from that CLI. `ensureDaemonRunning` already stops whatever daemon runs at launch and starts the app's own, so a dev build gets a daemon of its own version from the start. The handshake covers a daemon that was replaced afterwards.
   - When the client cannot restart the daemon, it shows "Watchtower's background service is a different version" with **Restart**.
-- **Pause, not stop.** The tray's stop, and every in-app stop whose purpose is "no sync running", become `sync.pause` and `sync.resume` over the socket. The process, the socket, the hub and the Inbox keep running.
-  - These stops become pauses:
-    - Slack disconnect (`SlackConnectionDetail`);
-    - the onboarding finish (`OnboardingFinishPlan`);
-    - the data reset (`stopWipeRestart`), which pauses, wipes and resumes. Its wipe waits for the running cycle to end, as today it waits for the process.
-  - The daemon still stops or restarts in these cases:
-    - a new binary (`CLIBinaryStore`, an app update);
-    - the launch compaction (`db compact`, which needs the file alone; the app's window is not up yet);
-    - quit;
-    - a crash, after which the app's existing start queue restarts it.
-- **Reconnecting.** While the socket is down, `TowerClient` is `reconnecting`. It retries after 0.2 s, doubling the wait up to 2 s.
-  - After 15 s it moves to `failed` with "Watchtower's background service isn't running" and **Retry**. Retry also asks the start queue to start the daemon.
-  - A pressed action waits in `busy` during reconnecting and is sent with its `request_id` when the socket is back. After 15 s it fails with **Retry**.
-- **Change events.** `inbox.watch` pushes `changed` when a table in the Inbox's `ChangeTables` changes. It uses the daemon's existing `data_version` watch, the one the hub's publisher uses. The Desktop Inbox stops observing the database itself.
+- **Always on from launch.** The app starts the daemon at launch, after the compaction step, also before onboarding is finished. Until onboarding finishes the daemon runs **paused**: socket, Inbox and writes work, and no sync cycle runs. Onboarding's finish restarts it unpaused, as today, so it picks up the feature set and accounts. Screens that write today without a daemon (Quick capture, Home, Day plan) therefore always have one.
+- **Pause.** `sync.pause` and `sync.resume` are tower commands. A pause stops starting new sync cycles, scheduled automation runs and the plan-usage poll, and lets a running cycle finish. The socket, the hub, approval apply, living rewrites and the Inbox keep running. The pause is kept in the config (`sync.paused`), so it survives a restart. The tray gets **Pause Sync** / **Resume Sync** (the owner's "only sync stops", ask #1362); there is no other new control.
+- **Restarts that stay.** Every place that restarts the daemon today keeps doing it: config changes (account view models' `restartLoggingQueued`, `restartOnChain` for Turn on, the feature offer, Settings and the action strip; Slack disconnect; onboarding finish), the data resets (`stopWipeRestart`, `stopDaemonAndRemoveEverything`), a new binary (`CLIBinaryStore`, an app update), quit, and a crash (the start queue restarts it). The daemon wires its syncers once at start, so a restart is still how config takes effect; a live reload is not part of this work. The launch compaction runs before the daemon starts.
+- **Reconnecting.** While the socket is down, `TowerClient` is `reconnecting`. It retries at 0.2 s, doubling to 2 s.
+  - The line "Reconnecting to Watchtower…" shows only after 1 s down, so an ordinary restart (about a second) shows nothing.
+  - After 15 s it becomes `failed` with "Watchtower's background service isn't running" and **Retry**, which also asks the start queue to start the daemon.
+  - A pressed action waits in `busy` and is sent with its `request_id` when the socket returns; after 15 s it fails with **Retry**.
+  - A watch is re-opened on reconnect, and the client reads the feed once.
+- **Change events.** The daemon owns a change watch of its own, independent of the hub (on a desktop host the hub may be off).
+  - A write made through `tower.Call` emits `changed` for its command's `ChangeTables` at commit, so the Mac's own action redraws as fast as a GRDB write does today.
+  - Writes by other processes (an `ai session`, a CLI verb) are seen by a `PRAGMA data_version` poll every 250 ms while a watch is open. It cannot tell tables apart, so it emits `changed` with no table list, and the client re-reads.
+  - `inbox.watch` delivers only events whose table list meets the Inbox's `ChangeTables`, or that have no list.
+  - Budget: a foreign write shows on the Mac within 0.5 s at the 95th percentile, measured by a daemon test.
 
 ### 4. The Inbox core: `internal/inboxfeed`
 
@@ -231,7 +232,7 @@ These stay as Mac views over the screen models: `InboxFolderMenuModel`, `InboxFo
 | `run_now` | `o…` | none | The function behind the `automation_run` action kind, where `Entry.RunNow`. Non-idempotent |
 | `ref` | any card | `ref_kind`, `ref_id`, `ref_verb`, `until` | See the list below |
 | `reply_propose` | any card | `ref_id`, `text` | `InsertInboxReplyProposal` (`ErrReplyAlreadyWaiting` → `reply_waiting`) |
-| `approval` | `a…` | `approval_verb` (`approve`/`reject`/`retry`/`dismiss`), `args_sha256` | `Registry`, pinned to the SHA (a mismatch → `args_changed`). Approve and retry are non-idempotent and run the tool afterwards in the daemon (§2.1) |
+| `approval` | `a…` | `approval_verb` (`approve`/`reject`/`retry`/`dismiss`), `args_sha256`, `patch` (the Mac's Edit…, as `actions approve --patch` today; refused from the phone) | `Registry`, pinned to the SHA (a mismatch → `args_changed`). Approve and retry are non-idempotent and run the tool afterwards in the daemon (§2.1) |
 
 The `ref` verb writes by ref kind:
 - `inbox_item`: resolve, dismiss, snooze.
@@ -285,7 +286,7 @@ How each client draws them:
 
 #### 5.2 The other screens' writes
 
-These callers of the moved Swift writers call `TowerClient` write commands instead: `IdeasViewModel`, `DigestViewModel`, `TracksViewModel`, `DayPlanViewModel`, `HomeFeedActions`, `CatchUpViewModel`, `QuickCaptureView`, `IdeaDetailPane`, `DecisionsListView`, `ActionStripViewModel`, `Reminder` and `HomeLinksQueries`.
+These callers of the moved Swift writers call `TowerClient` write commands instead: `IdeasViewModel`, `DigestViewModel`, `TracksViewModel`, `DayPlanViewModel`, the Home actions in `AppState+Home`, `CatchUpViewModel`, `QuickCaptureView`, `IdeaDetailPane`, `DecisionsListView`, `ActionStripViewModel` and `Reminder`.
 - The plan lists every call site from a grep of the moved writers' names. The guard test in §4.3 proves none is left.
 - Their reads stay on GRDB, as today.
 - Each screen shows busy, refused and reconnecting through `TowerClient`'s action states, with sentences from `TowerText`.
@@ -345,7 +346,7 @@ Contracts in `docs/inventory/` that name a moved Swift type are re-pointed to th
 - the turn's progress and end (`ChatTurnDriver` through `ChatTurnStore`);
 - conversations, branches, read marks, projects and their sources, artifact comments, queued drafts and knowledge artifacts.
 
-`internal/chatstore` already has the Go twin of the turn and conversation writes.
+`internal/chatstore` already has the Go twin of most turn and conversation writes. Two parts of `persistTurnStart` are missing and are ported in stage 3 with fixture cases: the quote batch, and the reuse of an existing owner message (and its placeholder) on regenerate and edit.
 
 **After stage 3.**
 - **`ai session --persist`.** The warm process saves its own turn through `chatstore`: `Start`, `Turn.Apply/Flush/Finalize`, and the lease heartbeat and release.
@@ -353,6 +354,7 @@ Contracts in `docs/inventory/` that name a moved Swift type are re-pointed to th
   - Before its first delta, the process answers `started {conversation_id, owner_message_id, assistant_message_id, turn_id}`.
   - While the hub holds the lease, the process answers `refused {reason: "conversation_busy", holder}`, and the draft comes back with the holder's line, as today.
   - The process reads remote Stop (`cancel_requested_at_ms`) itself.
+  - **Lease owner.** The Desktop passes `--lease-owner desktop --lease-owner-id <app launch id>`, so leases are claimed exactly as today (`owner = desktop`, the launch id). At launch, the Desktop calls `chat.release_launches {keep: <launch id>}`, the Go port of `releaseEarlierLaunchesChatLeases`. The daemon never releases a `desktop` lease: warm sessions are children of the app, not of the daemon, and a daemon restart does not touch them. The hub's `Sweep` keeps releasing only `hub` leases.
 - **The live view does not change.**
   - The Desktop draws the answer from the stdout events, as today, and reloads the rows at `started` and at the end.
   - The owner's bubble shows at once from the draft.
@@ -362,7 +364,7 @@ Contracts in `docs/inventory/` that name a moved Swift type are re-pointed to th
 - **Deleted in Swift:**
   - `ChatTurnStore` and the write half of `ChatTurnDriver`;
   - `persistTurnStart`;
-  - `releaseEarlierLaunchesChatLeases` (the daemon's start-up sweep takes over);
+  - `releaseEarlierLaunchesChatLeases` (replaced by `chat.release_launches`);
   - every `chat_*` write. A Core guard test fails if one is left.
 - **Contracts.** CHAT-01/02/03/05 and LIVE-01 (`docs/inventory/chat.md`) keep their meaning. Their guards move with their names and are not weakened.
 
@@ -387,7 +389,9 @@ A path that fails its check does not switch. Speed is a gate.
 - **A failure partway through a Go write.** Each write is one transaction, so a failure rolls it back. Test: a fault seam in every writer test, plus a kill-between-statements case for each writer with a cascade (track done, the reminder approval hook, the plan-item cascade).
 - **Interface version mismatch** (a dev build against an old daemon). The handshake restarts the daemon from the client's CLI, or shows the different-version state. Test: `TowerClientTests` with a mismatched `hello`.
 - **Another user reaches the socket.** The peer-uid check refuses the connection. Test: the same shape as the hub's control-socket test.
-- **Sync is paused.** The Inbox and the writes keep working, but the feed's sync-driven content stops changing. Test: a daemon test that serves `inbox.feed` while paused.
+- **Sync is paused.** The Inbox and the writes keep working, but the feed's sync-driven content stops changing. The pause survives a restart. Test: a daemon test that serves `inbox.feed` while paused and across a restart.
+- **A config change restarts the daemon.** The Mac keeps the last list, shows nothing for the first second, then "Reconnecting…". Actions wait and are sent after. Test: `TowerClientTests` with a 1 s and a 3 s drop.
+- **No daemon before onboarding.** Cannot happen: the app starts a paused daemon at launch. Test: the launch sequence test starts the daemon paused before onboarding finishes.
 - **The hub stops mid-action.** The ledger answers `unknown` for a non-idempotent call. The phone shows "Didn't confirm — check on the Mac" and never re-sends. Test: hub order tests with the new kind.
 - **The Mac restarts with phone actions queued.** The outbox re-sends, and `relay_processed` plus `tower_requests` keep each action to exactly once. Test: the replay suite with `inbox_act`.
 - **The phone is killed with actions queued.** The outbox is persistent. Test: an outbox wiring test with `inbox_act`.
@@ -402,7 +406,7 @@ A path that fails its check does not switch. Speed is a gate.
   The first commit wins, and a later guarded write is an `already` no-op. A living rewrite with a new hash clears the marks (A), so a Done on the old hash answers `changed`. Test: per verb, two calls from two connections on one file; one answers `ok` and the other `already` or `changed`.
 - **Policy tightens while cards are on the phone.** POLICY-03 deletes the records, and the tab shows "The Inbox stays on your Mac". Test: a policy test in `sources`.
 - **The chat session dies mid-turn (stage 3).**
-  - After `started`, the Desktop calls `chat.recover {conversation, turn}`, which marks the row `session_lost` and releases the lease, as the hub's `Sweep` does. If that call fails, the daemon's start-up sweep does it.
+  - After `started`, the Desktop calls `chat.recover {conversation, turn}`, which marks the row `session_lost` and releases the lease, as the hub's `Sweep` does. If that call fails, the next app launch's `chat.release_launches` frees the lease and marks the row `session_lost`.
   - Before `started`, nothing was written: the draft comes back and the existing "session ended" card shows.
   - With no `started` within 10 s, the Desktop gives up the same way.
   - Tests: a kill before and after `started`, the sweep, and a silent process.
@@ -435,7 +439,8 @@ A path that fails its check does not switch. Speed is a gate.
 | One contract for Go and Swift | 0 / generator | `make gen-interface-check` in CI; generated golden decode tests |
 | Exactly once on both transports | 0 / ledger | ledger kill tests (§9); hub replay suite |
 | The Mac reaches the tower over the socket | 0 / socket | `tower.ping` end to end; peer-uid test; `hello` mismatch test |
-| Stopping sync keeps the tower up | 0 / pause | daemon pause test; the tray and the three in-app stop sites call pause |
+| Stopping sync keeps the tower up | 0 / pause | daemon pause test across a restart; tray Pause/Resume test; paused daemon before onboarding |
+| Changes reach the Mac fast | 0 / change watch | own-write event at commit; foreign write ≤ 0.5 s p95 |
 | Reconnecting is honest | 0 / `TowerClient` | `TowerClientTests` (drop, return, never returns) |
 | Go builds the Mac's Inbox list exactly | 1 / core + parity | `inbox_feed_cases.json` |
 | Needs approval picks the Mac's card | 1 / core | APPROVAL-01 guards moved to Go |
@@ -479,7 +484,11 @@ A path that fails its check does not switch. Speed is a gate.
 - The Inbox moves, and so does every screen that writes the same rows; those screens move their writes only — ask #1362.
 
 **Decided by the agent:**
-- In-app stops whose purpose is "no sync" become a pause. A new binary, compaction, quit and a crash still restart the daemon. This applies ask #1362.
+- The tray gets Pause Sync / Resume Sync; every existing restart stays (config changes, resets, a new binary, quit, a crash), with the "Reconnecting…" line delayed by 1 s. A live config reload is not part of this work. This applies ask #1362.
+- The app starts the daemon at launch, paused until onboarding finishes.
+- The daemon owns its own change watch (own writes at commit, foreign writes by a 250 ms `data_version` poll), independent of the hub.
+- Over the socket, approve and retry wait for the tool (capped at 120 s), as on the Mac today; over the hub they return after the decision. Edit… sends a `patch`.
+- A warm `ai session` claims leases as `desktop` with the app launch id; the daemon never releases a `desktop` lease.
 - On a version mismatch, the Desktop restarts a daemon it started from its own CLI.
 - One ledger, `tower_requests`, gives exactly-once delivery for both transports.
 - Approve, retry and the `reply` press return at once, and the long work runs in the daemon.
