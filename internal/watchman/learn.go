@@ -47,7 +47,8 @@ type LearnStats struct {
 // the precedents with no category are labelled first; each batch, its
 // skipped keys, the unlabelled counter and the new cursor are written in one
 // transaction, so an interrupted pass resumes without duplicates. It stops
-// when the budget is spent (Incomplete). A source that fails is reported and
+// when the budget is spent (Incomplete); the budget is checked before each
+// Next, so a pass can overrun it by one batch (its Next and label calls). A source that fails is reported and
 // the others still run. When every source reports done (and none failed)
 // the workbench is marked learned.
 func Learn(ctx context.Context, d *db.DB, workbenchID int64, o LearnOptions) (LearnStats, error) {

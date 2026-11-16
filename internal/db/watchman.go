@@ -350,7 +350,7 @@ type WatchmanMark struct {
 }
 
 // Each reader's inner select (wm_at, wm_id, wm_sub first); the estimate
-// counts the same rows (WatchmanSourceCounts).
+// counts the same rows (WatchmanCounts).
 const (
 	wmOwnedComment = `c.carried_from IS NULL AND c.status IN ('sent','resolved')`
 	wmAsksSQL      = `SELECT COALESCE(strftime(` + wmAtFormat + `, a.answered_at), '') AS wm_at, a.id AS wm_id, '' AS wm_sub,

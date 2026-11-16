@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -18,11 +19,18 @@ import (
 	"watchtower/internal/sessionfeed"
 )
 
-// watchmanLabelGen answers every label call with one category per item.
-type watchmanLabelGen struct{ calls int }
+// watchmanLabelGen answers every label call with one category per item, or
+// fails with err.
+type watchmanLabelGen struct {
+	calls int
+	err   error
+}
 
 func (g *watchmanLabelGen) Generate(_ context.Context, _, user, _ string) (string, *digest.Usage, string, error) {
 	g.calls++
+	if g.err != nil {
+		return "", nil, "", g.err
+	}
 	return `["scope"]`, &digest.Usage{}, "", nil
 }
 
@@ -149,4 +157,25 @@ func TestWatchmanLearn_RefusedUnderAgent(t *testing.T) {
 	// The estimate only reads: it stays open.
 	_, err = runWatchman(t, "learn", "--workbench", strconv.FormatInt(wb, 10))
 	require.NoError(t, err)
+}
+
+// A failed first pass still tells the owner Watchman and analytics are on.
+func TestWatchmanLearn_FailureSaysWatchmanIsOn(t *testing.T) {
+	wb, gen := watchmanFixture(t)
+	gen.err = errors.New("provider unavailable")
+	out, err := runWatchman(t, "learn", "--workbench", strconv.FormatInt(wb, 10), "--start")
+	require.Error(t, err)
+	assert.Contains(t, out, "Watchman and Agent analytics are on for workbench")
+
+	out, err = runWatchman(t, "learn", "--workbench", strconv.FormatInt(wb, 10), "--start", "--json")
+	require.Error(t, err)
+	assert.Equal(t, []string{"analytics_on", "analytics_turned_on", "error", "ok", "watchman_on", "workbench"}, jsonKeys(t, out))
+	var r watchmanLearnFailureJSON
+	require.NoError(t, json.Unmarshal([]byte(out), &r))
+	assert.False(t, r.OK)
+	assert.True(t, r.WatchmanOn)
+	assert.True(t, r.AnalyticsOn)
+	enabled, _, analytics := watchmanState(t, wb)
+	assert.True(t, enabled)
+	assert.True(t, analytics)
 }

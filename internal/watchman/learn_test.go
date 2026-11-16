@@ -3,6 +3,7 @@ package watchman
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -248,8 +249,49 @@ func TestLLMLabeler_WrongLengthLeavesTheBatchUnlabelled(t *testing.T) {
 	assert.Equal(t, []string{"", ""}, got)
 
 	g.reply = func(int) string { return "not json" }
-	_, err = NewLLMLabeler(g, nil).Label(context.Background(), []LabelItem{{Situation: "a"}})
+	got, err = NewLLMLabeler(g, nil).Label(context.Background(), []LabelItem{{Situation: "a"}})
+	require.NoError(t, err)
+	assert.Equal(t, []string{""}, got)
+}
+
+// A generator failure is an outage, not an answer: an error, retried later.
+func TestLLMLabeler_GeneratorErrorIsAnError(t *testing.T) {
+	_, err := NewLLMLabeler(failingGen{}, nil).Label(context.Background(), []LabelItem{{Situation: "a"}})
 	require.Error(t, err)
+}
+
+type failingGen struct{}
+
+func (failingGen) Generate(context.Context, string, string, string) (string, *digest.Usage, string, error) {
+	return "", nil, "", errors.New("provider unavailable")
+}
+
+// A model that answers in prose never stalls a source: the batch is dropped,
+// counted and marked, the cursor moves and the next pass sends nothing new.
+func TestLearn_NonJSONLabelReplyDoesNotStall(t *testing.T) {
+	d, wb := learnDB(t)
+	g := &labelGen{reply: func(int) string { return "Sure! Here are the categories you asked for." }}
+	src := &listSource{name: "turn", rows: listRows(wb, "turn", 3, "")}
+	opts := LearnOptions{Now: fixedNow, Sources: []Source{src}, Labeler: NewLLMLabeler(g, nil)}
+
+	st, err := Learn(context.Background(), d, wb, opts)
+	require.NoError(t, err)
+	assert.Equal(t, 3, st.Unlabelled)
+	assert.Zero(t, st.Written)
+	cur, err := d.WatchmanCursor(wb, "turn")
+	require.NoError(t, err)
+	assert.Equal(t, "3", cur, "the cursor moved past the batch")
+	known, err := d.WatchmanKnownKeys("turn", []string{"turn-0", "turn-1", "turn-2"})
+	require.NoError(t, err)
+	assert.Len(t, known, 3, "every key is marked skipped")
+	at, unlabelled := learnedThrough(t, d, wb)
+	assert.NotEmpty(t, at, "the source is done: the workbench is learned")
+	assert.Equal(t, 3, unlabelled)
+
+	st, err = Learn(context.Background(), d, wb, opts)
+	require.NoError(t, err)
+	assert.Equal(t, []int{3}, g.calls, "nothing new reaches the model")
+	assert.Zero(t, st.Unlabelled)
 }
 
 func TestLearn_UnknownLabelSkippedAndCounted(t *testing.T) {

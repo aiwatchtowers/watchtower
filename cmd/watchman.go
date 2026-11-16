@@ -84,6 +84,17 @@ type watchmanLearnJSON struct {
 	AnalyticsTurnedOn bool           `json:"analytics_turned_on"`
 }
 
+// watchmanLearnFailureJSON is `watchman learn --start --json` when the
+// learning pass failed after Watchman was turned on.
+type watchmanLearnFailureJSON struct {
+	OK                bool   `json:"ok"`
+	Workbench         int64  `json:"workbench"`
+	Error             string `json:"error"`
+	WatchmanOn        bool   `json:"watchman_on"`
+	AnalyticsOn       bool   `json:"analytics_on"`
+	AnalyticsTurnedOn bool   `json:"analytics_turned_on"`
+}
+
 func runWatchmanLearn(cmd *cobra.Command, _ []string) error {
 	// Starting is the owner's verb (spec §8.2: he sees count and cost first);
 	// the estimate only reads.
@@ -159,6 +170,15 @@ func watchmanStart(cmd *cobra.Command, cfg *config.Config) error {
 	})
 	nudgeDaemon(cmd, cfg)
 	if err != nil {
+		// Watchman and analytics stay on: the owner learns that, and the
+		// daemon's cycles continue the learning from the cursors.
+		if watchmanFlagJSON {
+			_ = writeJSON(cmd.OutOrStdout(), watchmanLearnFailureJSON{Workbench: wb, Error: err.Error(), WatchmanOn: true,
+				AnalyticsOn: true, AnalyticsTurnedOn: turnedOn})
+		} else {
+			fmt.Fprintf(cmd.OutOrStdout(), "Watchman and Agent analytics are on for workbench %d; the first learning pass failed "+
+				"and the daemon continues it in its next cycles.\n", wb)
+		}
 		return err
 	}
 	if watchmanFlagJSON {
@@ -176,7 +196,7 @@ func watchmanStart(cmd *cobra.Command, cfg *config.Config) error {
 	return nil
 }
 
-// bySourceText is " (ask 3, git 2)" in source order, "" when nothing was written.
+// bySourceText is " (ask 3, git 2)" sorted by source name, "" when nothing was written.
 func bySourceText(m map[string]int) string {
 	var parts []string
 	for k, n := range m {

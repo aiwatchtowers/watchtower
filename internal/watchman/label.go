@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"watchtower/internal/digest"
@@ -54,9 +55,11 @@ type labelInputItem struct {
 	Choice    string `json:"choice"`
 }
 
-// labelBatch asks the model once. A reply whose array has the wrong length
-// cannot be lined up with the items: every item of the batch comes back
-// unlabelled ("") rather than risk a shifted label inflating a category.
+// labelBatch asks the model once. A reply that is not a JSON array, or whose
+// array has the wrong length, cannot be lined up with the items: every item
+// of the batch comes back unlabelled ("") rather than risk a shifted label
+// inflating a category or stalling the source. Only a generator error is an
+// error (retried next cycle).
 func (l llmLabeler) labelBatch(ctx context.Context, items []LabelItem) ([]string, error) {
 	in := struct {
 		Items []labelInputItem `json:"items"`
@@ -77,12 +80,17 @@ func (l llmLabeler) labelBatch(ctx context.Context, items []LabelItem) ([]string
 	if err != nil {
 		return nil, fmt.Errorf("watchman label: generating: %w", err)
 	}
+	out := make([]string, len(items))
 	var labels []string
 	if err := json.Unmarshal([]byte(trimJSONFence(strings.TrimSpace(raw))), &labels); err != nil {
-		// The reply is model text that may quote an item: fingerprint only.
-		return nil, logredact.Errorf("watchman label: the reply is not a JSON array of strings: %s", logredact.Text(err.Error()))
+		// A reply that is not a JSON array is the model's answer, not an
+		// outage: like a wrong length, the batch comes back unlabelled so
+		// the source moves on instead of re-paying it every cycle. The
+		// reply may quote an item: only its fingerprint is logged.
+		log.Printf("watchman label: %v", logredact.Errorf("the reply is not a JSON array of strings, %d items left unlabelled: %s",
+			len(items), logredact.Text(err.Error())))
+		return out, nil //nolint:nilerr // an unparseable reply is an answer: the batch is unlabelled, not retried
 	}
-	out := make([]string, len(items))
 	if len(labels) == len(items) {
 		for i, c := range labels {
 			out[i] = strings.TrimSpace(c)
