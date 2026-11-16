@@ -10,7 +10,7 @@ You step away while a Workbench session waits on a question. The phone shows an 
 
 The Mac is the **hub**. With **Mobile sync** on, it puts asks, Workbench boards and sessions, calendar and recaps into your iCloud. The phone reads them and sends requests back; the Mac applies them when awake. Hubs with ordered delivery apply changes in order; see [not delivered](iphone-not-delivered.md).
 
-Everything is sealed with keys exchanged at linking; iCloud holds only ciphertext. The phone never gets terminal output or a raw transcript, only a session's chat (below).
+Everything is sealed with keys exchanged at linking; iCloud holds only ciphertext. The phone never gets terminal output or a raw transcript; a session's chat is the exception (below).
 
 An ask answered on the phone waits as **Waiting for your tower** while it sleeps. A Mac checks for requests every 30 seconds (every 3 for ten minutes after one) and writes a heartbeat every 15 minutes.
 
@@ -78,7 +78,7 @@ since: 0.24.0
 
 - **Now** shows your tower's status, then **Waiting for you**, **Working**, **Ended** and the next meeting (see [Now and sessions](iphone-workbench.md#now-and-sessions)). The gear opens Settings.
 - **Workbench** lists your workbenches as cards. Open one for **Sessions** (split like Now) or **Board** (targets with status, priority and comments). A group's done sub-targets stay hidden until you tap **Show done (N)** (remembered).
-- **Chats** holds your AI chats; it needs Relay, so for now it shows **Chat works over Relay** ([iPhone: AI chat](iphone-chat.md)).
+- **Chats** holds your AI chats; it needs Relay, so for now it says why it can't chat ([iPhone: AI chat](iphone-chat.md)).
 - **Calendar** shows your tower's events with prep and **Record**, kept 30 minutes past an unrecorded event's end. **Recordings** has **Record a voice note**.
 
 Asks come in three kinds: a question, a review (hold a paragraph to comment; **Request changes** needs a comment or a note) and a check (**Works**, **Doesn't work** or **Didn't check** per step).

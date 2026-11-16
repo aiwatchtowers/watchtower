@@ -4,7 +4,7 @@ The **Chats** tab is the assistant you talk to about your work: it searches what
 
 ## Why use it
 
-You ask "what did we decide about the payments rollout?" and get an answer drawn from Slack, mail, Jira, meetings and digests, with the sources one click away. Nothing is pre-loaded: the assistant looks things up when you ask.
+You ask "what did we decide about the payments rollout?" and get an answer drawn from Slack, mail, Jira, meetings and digests, with the sources one click away. Nothing is pre-loaded; the assistant looks it up.
 
 ## How it works
 <!-- learn
@@ -71,9 +71,9 @@ action: chat:How do I make an automation that runs every Monday?
 
 **Providers.** Choose **Preferred + reserve · Auto** or **Only** a provider. See [limits, pins and recovery](../concepts/ai-providers-and-cost.md#a-reserve-provider-for-quota-limits).
 
-**Warm sessions.** Up to three conversations keep a live assistant for ten idle minutes, so replies start fast; a fourth waits its turn.
+**Warm sessions.** Up to three conversations keep a live assistant for ten idle minutes, so replies start fast; a fourth waits, no running reply cut off.
 
-**Long chats.** The assistant sees only a long chat's newest part; in the main chat, the target chat and the automation editor it rereads that chat's earlier messages and artifacts when you ask.
+**Long chats.** The assistant sees only a long chat's newest part; in the main chat, the target chat and the automation editor it rereads its earlier messages and artifacts when you ask.
 
 **Memory.** When the Memory feature's **Chat surface** switch is on, the assistant starts each chat with a short map of what it remembers and can look things up. See [Memory](memory.md).
 

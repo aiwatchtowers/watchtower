@@ -69,7 +69,7 @@ since: 0.24.0
 - **Mac name** is the name phones show. **Transcribe phone recordings on this Mac** turns phone recordings on or off; a Mac with no transcriber says **This host has no transcriber.** **Transport** says whether phones sync over iCloud or Relay, and who switched it last.
 - **Keep this Mac awake for the iPhone** (on by default; shown while Mobile sync is on) stops the Mac from sleeping on its own while a session runs and a linked phone has been in touch in the last 24 hours. A closed lid on battery still sleeps the Mac.
 - Each linked phone shows its link date and transport (**iCloud**, **Relay** or **Waiting for Relay**) and one line per permission, each with **Allow…** or **Revoke**: typing into your sessions, starting sessions (allowed only once typing is: **Starting sessions needs typing**) and answering permission prompts. **Remove…** (on hover) unlinks it.
-- A phone's **Chat** switch (on by default) lets that phone read and ask your AI chats; turn it off and its Chats tab says **Chat is off for this phone**. Approving an action from the phone still needs the permission-prompt permission. See [iPhone: AI chat](../features/iphone-chat.md).
+- A phone's **Chat** switch (on by default) lets that phone read and ask your AI chats once it works over Relay; turned off, its Chats tab says **Chat is off for this phone**. Approving an action from the phone still needs the permission-prompt permission. See [iPhone: AI chat](../features/iphone-chat.md).
 - **Recordings** lists phone recordings the Mac could not transcribe, with **Retry** and **Discard…**, and those the update left untranscribed, with **Show in Finder**.
 
 ## Profile

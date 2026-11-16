@@ -10,13 +10,15 @@ Slack and mail make promises easy and tracking them hard. A target keeps the pro
 
 ## How it works
 <!-- learn
-id: targets-from-anything
+id: targets-make-a-task
 title: Turn anything into a target
-text: Press **Create Target** on a track, digest, briefing item or meeting note; it keeps a link to its source.
+text: Press **Make a Task** on a track, briefing item, idea or Inbox card; the target keeps a link to its source.
+replaces: [targets-from-anything]
+changed: The button is now called **Make a Task**.
 area: tasks
 level: next
 kind: tip
-since: 0.24.0
+since: next
 action: nav:targets
 -->
 <!-- learn
