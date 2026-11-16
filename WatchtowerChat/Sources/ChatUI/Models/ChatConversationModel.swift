@@ -12,6 +12,10 @@ public final class ChatConversationModel {
     public static let staleLine = "Catching up…"
     public static let busyLine = "An answer is already running in this chat. Your text is kept."
     public static let couldNotSend = "Couldn't send that. Try again."
+    public static let reconnectingLine = "Reconnecting…"
+    public static let unreachableSendLine = "Couldn't reach Watchtower to send that. Your text is kept."
+    /// How long a send whose answer was lost waits for the chat to come back before it gives up (D11's window).
+    public static let reconnectPatience: Duration = .seconds(10)
 
     public let client: any ChatClient
     public private(set) var conversationID: Int64?
@@ -19,7 +23,7 @@ public final class ChatConversationModel {
     /// Set by the client's reachability stream; tests and the shell may set it too. Back to `.connected`, a send
     /// whose answer was lost goes again with the same key.
     public var reachability: ChatReachability = .connected {
-        didSet { if reachability == .connected { resumeWaiters() } }
+        didSet { if reachability == .connected { resumeWaiters(.reconnected) } }
     }
     public var isGone: Bool { store.isGone }
     /// Starts Watchtower's background service (the Mac's `ensureDaemonRunning` chain); called only when the owner
@@ -37,11 +41,16 @@ public final class ChatConversationModel {
 
     @ObservationIgnored private var feedTask: Task<Void, Never>?
     @ObservationIgnored private var reachabilityTask: Task<Void, Never>?
-    @ObservationIgnored private var connectedWaiters: [CheckedContinuation<Bool, Never>] = []
+    /// A send waiting for a lost answer: it is shown as "Reconnecting…".
+    public private(set) var isReconnecting = false
+    @ObservationIgnored private var reconnectWaiters: [UUID: CheckedContinuation<ReconnectOutcome, Never>] = [:]
+    @ObservationIgnored private let clock: any ChatUIClock
     @ObservationIgnored private var running = false
 
-    public init(client: any ChatClient, conversationID: Int64?) {
+    /// `clock` times how long a send waits for a lost connection to come back (tests inject one).
+    public init(client: any ChatClient, conversationID: Int64?, clock: any ChatUIClock = ContinuousChatUIClock()) {
         self.client = client
+        self.clock = clock
         self.conversationID = conversationID
         store = ChatFeedStore()
     }
@@ -78,7 +87,9 @@ public final class ChatConversationModel {
 
     /// The line above the composer: why the chat cannot be reached, else that the conversation is gone.
     public var stateLine: ChatStateLine.Content? {
-        ChatStateLine.content(for: reachability) ?? (isGone ? ChatStateLine.Content(text: Self.goneLine) : nil)
+        if let line = ChatStateLine.content(for: reachability) { return line }
+        if isReconnecting { return ChatStateLine.Content(text: Self.reconnectingLine) }
+        return isGone ? ChatStateLine.Content(text: Self.goneLine) : nil
     }
 
     /// The reply whose question card can be answered: the latest reply, unanswered, while no turn runs.
@@ -118,9 +129,7 @@ public final class ChatConversationModel {
         reachabilityTask?.cancel()
         feedTask = nil
         reachabilityTask = nil
-        let waiters = connectedWaiters
-        connectedWaiters = []
-        waiters.forEach { $0.resume(returning: false) }
+        resumeWaiters(.stopped)
     }
 
     private func subscribeFeed() {
@@ -208,17 +217,30 @@ public final class ChatConversationModel {
         report(await sendTurn(request))
     }
 
-    /// Sends a turn. A send whose answer is lost to a dropped connection waits until the chat is reachable again and
-    /// goes again with the same `clientKey`, which the engine answers with the first result (never a second turn).
-    /// Nil when the screen stopped before an answer came.
+    /// Sends a turn. A send whose answer is lost to a dropped connection (`ChatConnectionError`) goes again at once
+    /// with the same `clientKey` — the engine answers a repeated key with its first result, never a second turn. Lost
+    /// again, it waits for the client's next `.connected` (shown as "Reconnecting…") up to `reconnectPatience`, then
+    /// gives up with the text kept. Any other error is the operation's own failure and is reported, not retried. Nil
+    /// only when the screen stopped before an answer came.
     func sendTurn(_ request: ChatTurnRequest) async -> ChatEcho? {
+        var resendNow = true
         while true {
             do {
                 let echo = try await client.send(.turn(request))
                 if case .applied(.turn(let started)) = echo { ownTurnID = started.turnID }
                 return echo
+            } catch is ChatConnectionError {
+                if resendNow {
+                    resendNow = false
+                    continue
+                }
+                switch await waitForReconnect() {
+                case .reconnected: continue
+                case .timedOut: return .refused(code: "unreachable", message: Self.unreachableSendLine)
+                case .stopped: return nil
+                }
             } catch {
-                guard await waitUntilConnected() else { return nil }
+                return .refused(code: "internal", message: Self.couldNotSend)
             }
         }
     }
@@ -237,19 +259,35 @@ public final class ChatConversationModel {
         return message.isEmpty ? couldNotSend : message
     }
 
-    /// Suspends until the chat is reachable (true) or the screen stops (false). The first wait happens even when the
-    /// state still reads connected: the send just failed, so the client's next state is what counts.
-    private func waitUntilConnected() async -> Bool {
-        guard running else { return false }
-        return await withCheckedContinuation { connectedWaiters.append($0) }
+    enum ReconnectOutcome {
+        case reconnected, timedOut, stopped
+    }
+
+    /// Suspends until the client reports `.connected` again, the patience runs out, or the screen stops.
+    private func waitForReconnect() async -> ReconnectOutcome {
+        guard running else { return .stopped }
+        let id = UUID()
+        isReconnecting = true
+        let timer = Task { [clock] in
+            do { try await clock.sleep(for: Self.reconnectPatience) } catch { return }
+            self.resume(id, .timedOut)
+        }
+        let outcome = await withCheckedContinuation { reconnectWaiters[id] = $0 }
+        timer.cancel()
+        isReconnecting = !reconnectWaiters.isEmpty
+        return outcome
     }
 
     /// A send is waiting for the chat to be reachable again (tests).
-    var isWaitingToResend: Bool { !connectedWaiters.isEmpty }
+    var isWaitingToResend: Bool { !reconnectWaiters.isEmpty }
 
-    private func resumeWaiters() {
-        let waiters = connectedWaiters
-        connectedWaiters = []
-        waiters.forEach { $0.resume(returning: true) }
+    private func resume(_ id: UUID, _ outcome: ReconnectOutcome) {
+        reconnectWaiters.removeValue(forKey: id)?.resume(returning: outcome)
+    }
+
+    private func resumeWaiters(_ outcome: ReconnectOutcome) {
+        let waiters = reconnectWaiters
+        reconnectWaiters = [:]
+        waiters.values.forEach { $0.resume(returning: outcome) }
     }
 }

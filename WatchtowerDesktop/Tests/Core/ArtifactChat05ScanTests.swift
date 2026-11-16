@@ -15,7 +15,9 @@ final class ArtifactChat05ScanTests: XCTestCase {
             "../../WatchtowerChatText/Sources/WatchtowerChatText/ArtifactParser.swift",
             // The artifact links both apps resolve in a reply (iPhone chat).
             "../../WatchtowerChatText/Sources/WatchtowerChatText/ArtifactLinks.swift",
-            "WatchtowerCore/Services/Chat/ArtifactActions.swift",
+            "../../WatchtowerChatText/Sources/WatchtowerChatText/ArtifactActions.swift",
+            "../../WatchtowerChatText/Sources/WatchtowerChatText/ChatArtifactActions.swift",
+            "WatchtowerCore/Services/Chat/ArtifactActions+Slack.swift",
             "WatchtowerCore/Services/Chat/ArtifactPanelModel.swift",
             "Views/Chat/ArtifactPanelView.swift",
             "Views/Chat/ArtifactCardView.swift",

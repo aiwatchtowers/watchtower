@@ -7,7 +7,10 @@ import Foundation
 final class FakeChatClient: ChatClient, @unchecked Sendable {
     typealias Responder = @Sendable (ChatOperation) async throws -> ChatEcho
 
-    struct Dropped: Error {}
+    /// The connection dropped before the answer (`ChatConnectionError`).
+    struct Dropped: ChatConnectionError {}
+    /// An operation that failed for its own reason (not the transport).
+    struct Broken: Error {}
 
     private let lock = NSLock()
     private var recorded: [ChatOperation] = []
@@ -82,24 +85,35 @@ actor Gate {
     }
 }
 
-/// A clock whose sleeps end only when the test fires them.
+/// A clock whose sleeps end only when the test fires them; a cancelled sleep ends at once (`CancellationError`).
 final class ManualClock: ChatUIClock, @unchecked Sendable {
     private let lock = NSLock()
-    private var sleepers: [CheckedContinuation<Void, Error>] = []
+    private var sleepers: [UUID: CheckedContinuation<Void, Error>] = [:]
 
     var pendingSleeps: Int { lock.withLock { sleepers.count } }
 
     func sleep(for duration: Duration) async throws {
-        try await withCheckedThrowingContinuation { continuation in
-            lock.withLock { sleepers.append(continuation) }
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let cancelled: Bool = lock.withLock {
+                    if Task.isCancelled { return true }
+                    sleepers[id] = continuation
+                    return false
+                }
+                if cancelled { continuation.resume(throwing: CancellationError()) }
+            }
+        } onCancel: {
+            let sleeper = lock.withLock { sleepers.removeValue(forKey: id) }
+            sleeper?.resume(throwing: CancellationError())
         }
     }
 
     /// Ends every pending sleep.
     func fire() {
         let due = lock.withLock {
-            let due = sleepers
-            sleepers = []
+            let due = Array(sleepers.values)
+            sleepers = [:]
             return due
         }
         due.forEach { $0.resume() }

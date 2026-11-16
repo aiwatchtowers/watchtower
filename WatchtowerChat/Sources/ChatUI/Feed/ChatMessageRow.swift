@@ -68,6 +68,9 @@ public struct ChatMessageRow: View {
                     branchSwitcher
                 }
                 style.secondaryButton(Self.copyLabel) { rowActions.copy(message.text) }
+                if !isOwner, let quote = rowActions.quote {
+                    ChatQuoteRowAction(text: message.text, onQuote: quote)
+                }
                 if !isTurnRunning {
                     if isOwner {
                         style.secondaryButton(Self.editLabel) { rowActions.edit(message) }

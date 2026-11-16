@@ -43,6 +43,8 @@ public final class ChatComposerModel {
     /// Editing this owner message instead of sending a new one.
     public var editing: Int64?
     public private(set) var isSending = false
+    /// The `/` picker's catalog, read once.
+    private var skillCatalog: [ChatSkill]?
     public private(set) var notice: String?
 
     public init(conversation: ChatConversationModel) {
@@ -172,6 +174,39 @@ public final class ChatComposerModel {
     public func skills() async -> [ChatSkill] {
         guard case .applied(.skills(let skills))? = try? await client.send(.skillsList) else { return [] }
         return skills
+    }
+
+    /// The skills the `/` picker offers for the `/query` at `cursor` (a `/` at the start of the message, spec §6.4):
+    /// the catalog is read once per composer (`skills_list`), then filtered by the typed prefix. Empty when no `/`
+    /// trigger is active.
+    public func skillHits(cursor: Int) async -> [ChatSkill] {
+        guard let trigger = MentionTokenizer.activeSkill(text: draft, cursor: cursor) else { return [] }
+        if skillCatalog == nil {
+            let loaded = await skills()
+            if !loaded.isEmpty { skillCatalog = loaded }
+        }
+        return (skillCatalog ?? []).filter { trigger.query.isEmpty || $0.name.hasPrefix(trigger.query) }
+    }
+
+    /// Picks a skill: it rides with the next message, and the `/query` leaves the text (the Mac's picker rule).
+    /// Returns the caret after the edit.
+    public func pick(skill picked: ChatSkill, cursor: Int) -> Int {
+        guard let trigger = MentionTokenizer.activeSkill(text: draft, cursor: cursor) else { return cursor }
+        skill = picked.name
+        let edit = MentionTokenizer.replace(trigger, in: draft, cursor: cursor, with: "")
+        draft = edit.text
+        return edit.cursor
+    }
+
+    public func clearSkill() {
+        skill = nil
+    }
+
+    /// Adds a quoted passage of an answer ("Ask about this"): it goes with the next message (`ChatQuoteReply`).
+    public func addQuote(_ passage: String) {
+        let trimmed = passage.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        quotes.append(ChatQuoteDraft(quote: trimmed, comment: ""))
     }
 
     /// Picks a mention: the `@query` at `cursor` becomes `@Label`.

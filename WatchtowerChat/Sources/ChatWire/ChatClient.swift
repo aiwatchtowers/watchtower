@@ -9,8 +9,18 @@ public protocol ChatClient: Sendable {
     func feed(_ conversation: Int64) -> AsyncStream<ChatFeedUpdate>
     /// The conversation list: a snapshot whenever it changes.
     func list() -> AsyncStream<ChatListUpdate>
+    /// Whether the chat can be reached. Contract every client keeps (the models rely on it):
+    /// - each access returns a fresh stream for one consumer (a screen and the ⌘/ panel each take their own; ending
+    ///   one never ends another), and it starts with the current state;
+    /// - after every reconnect the client yields `.connected` again, even when the drop was too short to report any
+    ///   other state, so a send waiting on a lost answer goes again.
     var reachability: AsyncStream<ChatReachability> { get }
 }
+
+/// What `ChatClient.send` throws when the connection dropped before the engine's answer arrived: the operation may
+/// or may not have been applied, so a turn goes again with the same `clientKey`. Any other thrown error is a failure
+/// of the operation itself and is shown, never retried.
+public protocol ChatConnectionError: Error {}
 
 /// The engine's answer to an operation.
 public enum ChatEcho: Sendable, Equatable {

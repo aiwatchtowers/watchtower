@@ -11,6 +11,7 @@ public struct ChatComposerView: View {
     var onAttach: (() -> Void)?
     @State private var cursor = 0
     @State private var hits: [ChatEntityHit] = []
+    @State private var skillHits: [ChatSkill] = []
     @Environment(\.chatUIStyle) private var style
 
     public init(model: ChatComposerModel, onAttach: (() -> Void)? = nil) {
@@ -25,7 +26,12 @@ public struct ChatComposerView: View {
             if let content = model.stateLine {
                 ChatStateLineView(content: content) { conversation.performStateAction() }
             }
-            if !hits.isEmpty {
+            if !skillHits.isEmpty {
+                SkillPicker(skills: skillHits) { skill in
+                    cursor = model.pick(skill: skill, cursor: cursor)
+                    skillHits = []
+                }
+            } else if !hits.isEmpty {
                 MentionPicker(hits: hits) { hit in
                     cursor = model.pick(hit, cursor: cursor)
                     hits = []
@@ -57,6 +63,13 @@ public struct ChatComposerView: View {
             )
         }
         .task(id: MentionQuery(text: model.draft, cursor: cursor)) {
+            // A `/` at the start opens the skill picker, an `@` the mention picker.
+            if MentionTokenizer.activeSkill(text: model.draft, cursor: cursor) != nil {
+                hits = []
+                skillHits = await model.skillHits(cursor: cursor)
+                return
+            }
+            skillHits = []
             guard let query = MentionTokenizer.activeQuery(text: model.draft, cursor: cursor) else {
                 hits = []
                 return
@@ -67,8 +80,18 @@ public struct ChatComposerView: View {
     }
 
     @ViewBuilder private var chips: some View {
-        if !model.quotes.isEmpty || !model.attachments.isEmpty {
+        if !model.quotes.isEmpty || !model.attachments.isEmpty || model.skill != nil {
             HStack(spacing: Spacing.compact) {
+                if let skill = model.skill {
+                    HStack(spacing: Spacing.tight) {
+                        style.chip("/\(skill)")
+                        Button { model.clearSkill() } label: {
+                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Remove skill \(skill)")
+                    }
+                }
                 ForEach(model.quotes) { quote in
                     style.chip("“\(quote.quote.prefix(40))”")
                 }

@@ -9,10 +9,12 @@ final class ChatConversationModelTests: XCTestCase {
     private var client: FakeChatClient!
     private var conversation: ChatConversationModel!
     private var composer: ChatComposerModel!
+    private var clock: ManualClock!
 
     override func setUp() async throws {
         client = FakeChatClient()
-        conversation = ChatConversationModel(client: client, conversationID: 7)
+        clock = ManualClock()
+        conversation = ChatConversationModel(client: client, conversationID: 7, clock: clock)
         composer = ChatComposerModel(conversation: conversation)
         conversation.store.apply(.snapshot(ChatUIFixtures.feed(messages: [ChatUIFixtures.message(2, text: "Hi.")])))
     }
@@ -106,19 +108,93 @@ final class ChatConversationModelTests: XCTestCase {
         client.respond { _ in throw FakeChatClient.Dropped() }
         client.respond { _ in Self.started }
         composer.draft = "Ship it"
+        await composer.send()
+        let keys = client.ops.compactMap { turnRequest($0)?.clientKey }
+        XCTAssertEqual(keys.count, 2, "a lost answer goes again at once")
+        XCTAssertEqual(Set(keys).count, 1, "the resend carries the same client key")
+        XCTAssertEqual(composer.draft, "")
+    }
+
+    /// Lost twice: the send waits for the client's next `.connected`, shown as Reconnecting…, then goes again with
+    /// the same key (the `ChatClient.reachability` contract: `.connected` again after every reconnect).
+    func testDroppedTwiceWaitsForReconnectThenResendsSameKey() async {
+        conversation.start()
+        client.respond { _ in throw FakeChatClient.Dropped() }
+        client.respond { _ in throw FakeChatClient.Dropped() }
+        client.respond { _ in Self.started }
+        composer.draft = "Ship it"
         let send = Task { await composer.send() }
-        let first = await client.nextOp()
         while !conversation.isWaitingToResend { await Task.yield() }
         XCTAssertEqual(composer.draft, "Ship it", "a lost answer keeps the text")
-        conversation.reachability = .unavailable
+        XCTAssertEqual(composer.stateLine?.text, ChatConversationModel.reconnectingLine)
         conversation.reachability = .connected
-        let second = await client.nextOp()
         await send.value
-        let keys = [first, second].compactMap { turnRequest($0)?.clientKey }
-        XCTAssertEqual(keys.count, 2)
-        XCTAssertEqual(Set(keys).count, 1, "the resend carries the same client key")
-        XCTAssertEqual(client.ops.count, 2, "one resend, no duplicate turn")
+        let keys = client.ops.compactMap { turnRequest($0)?.clientKey }
+        XCTAssertEqual(keys.count, 3)
+        XCTAssertEqual(Set(keys).count, 1, "every resend carries the same client key")
         XCTAssertEqual(composer.draft, "")
+        XCTAssertNil(composer.stateLine)
+    }
+
+    /// Reachability never changes after the drop: the send gives up when its patience runs out (the injected
+    /// clock), keeps the text, says why, and Send is back.
+    func testLostSendWithNoReconnectGivesUpAndKeepsDraft() async {
+        conversation.start()
+        client.respond { _ in throw FakeChatClient.Dropped() }
+        client.respond { _ in throw FakeChatClient.Dropped() }
+        composer.draft = "Ship it"
+        let send = Task { await composer.send() }
+        while clock.pendingSleeps == 0 { await Task.yield() }
+        clock.fire()
+        await send.value
+        XCTAssertEqual(client.ops.count, 2)
+        XCTAssertEqual(composer.draft, "Ship it")
+        XCTAssertEqual(composer.line, ChatConversationModel.unreachableSendLine)
+        XCTAssertFalse(conversation.isReconnecting)
+        XCTAssertTrue(composer.canSend, "the composer is not left parked")
+    }
+
+    /// A failure that is not the transport is reported at once, never retried or parked.
+    func testNonTransportErrorIsReportedNotRetried() async {
+        conversation.start()
+        client.respond { _ in throw FakeChatClient.Broken() }
+        composer.draft = "Ship it"
+        await composer.send()
+        XCTAssertEqual(client.ops.count, 1)
+        XCTAssertEqual(composer.draft, "Ship it")
+        XCTAssertEqual(composer.line, ChatConversationModel.couldNotSend)
+        XCTAssertFalse(conversation.isWaitingToResend)
+    }
+
+    func testSkillPickerSetsSkillAndRemovesTheTrigger() async {
+        let catalog = [ChatSkill(name: "review", description: "Review a PR"), ChatSkill(name: "plan", description: "Plan")]
+        client.respond { _ in .applied(.skills(catalog)) }
+        composer.draft = "/rev"
+        let hits = await composer.skillHits(cursor: 4)
+        XCTAssertEqual(hits.map(\.name), ["review"])
+        XCTAssertEqual(composer.pick(skill: hits[0], cursor: 4), 0)
+        XCTAssertEqual(composer.skill, "review")
+        XCTAssertEqual(composer.draft, "")
+        composer.draft = "/"
+        let all = await composer.skillHits(cursor: 1)
+        XCTAssertEqual(all.count, 2)
+        XCTAssertEqual(client.ops, [.skillsList], "the catalog is read once")
+        composer.draft = "summarise the thread"
+        let none = await composer.skillHits(cursor: 5)
+        XCTAssertTrue(none.isEmpty, "no `/` trigger, no picker")
+        await composer.send()
+        XCTAssertEqual(turnRequest(client.ops.last)?.compose?.skill, "review")
+        XCTAssertNil(composer.skill, "a sent skill is cleared")
+    }
+
+    func testQuotedPassageGoesWithTheNextMessage() async {
+        composer.addQuote("  keep the retry budget small ")
+        composer.draft = "Why?"
+        await composer.send()
+        let text = turnRequest(client.ops.last)?.text ?? ""
+        XCTAssertTrue(text.contains("keep the retry budget small"))
+        XCTAssertTrue(text.contains("Why?"))
+        XCTAssertTrue(composer.quotes.isEmpty)
     }
 
     func testReconnectAfterDropShowsSessionLost() throws {

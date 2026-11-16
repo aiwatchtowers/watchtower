@@ -42,6 +42,7 @@ public struct ChatConversationView: View {
         rowActions.edit = composer.beginEditing
         rowActions.selectBranch = { id in Task { await conversation.selectBranch(id) } }
         rowActions.loadEarlier = { Task { await conversation.loadEarlier() } }
+        rowActions.quote = composer.addQuote
         return ChatFeedContext(
             provider: conversation.feed?.conversation.actualProvider,
             artifacts: conversation.feed?.artifacts ?? [],

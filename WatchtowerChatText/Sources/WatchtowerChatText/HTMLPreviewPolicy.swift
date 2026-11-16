@@ -33,6 +33,14 @@ public enum HTMLPreviewPolicy {
     /// page's script cannot read its siblings as text (the CSP says the same).
     public static let fileResourceTypes = ["document", "image", "style-sheet", "script", "font", "media", "svg-document"]
 
+    /// Runs before any page script, in every frame of every sandboxed page (the Mac's and the phone's): no peer
+    /// connections, which are not content-blocked loads.
+    public static let removeWebRTC = """
+    (() => { for (const name of ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel"]) {
+      try { Object.defineProperty(window, name, { value: undefined, writable: false, configurable: false }); } catch (e) {}
+    } })();
+    """
+
     /// WebKit content rules: block every load, then let back in only what
     /// stays on the machine — `about:`/`data:`/`blob:` always. A chat
     /// artifact gets nothing else: no network of any scheme. A workbench file

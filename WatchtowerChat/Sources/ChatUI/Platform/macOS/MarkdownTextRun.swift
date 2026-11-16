@@ -584,16 +584,21 @@ struct MarkdownTextRun: NSViewRepresentable {
 
 /// The Mac's answer text (unified chat spec D10): a finished answer in native TextKit 2 runs (`NativeMarkdownView`),
 /// one still streaming in the SwiftUI Markdown (`MarkdownView`), the owner's own text with its line breaks.
+/// A finished answer marks its body as quotable when the feed quotes (`chatAnswerRegions`, "Ask about this").
 struct ChatAnswerText: View {
     let text: String
     let isFinal: Bool
     let isOwner: Bool
+    @Environment(\.chatAnswerRegions) private var answerRegions
 
     var body: some View {
         if isOwner {
             MarkdownView(text: text, lineBreaks: true)
         } else if isFinal {
             NativeMarkdownView(text: text)
+                .background {
+                    if let answerRegions { ChatAnswerRegionMarker(tracker: answerRegions) }
+                }
         } else {
             MarkdownView(text: text)
         }

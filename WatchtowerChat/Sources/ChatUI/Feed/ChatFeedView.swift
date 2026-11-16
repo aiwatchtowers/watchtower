@@ -12,19 +12,24 @@ public struct ChatRowActions {
     public var selectBranch: (Int64) -> Void
     public var copy: (String) -> Void
     public var loadEarlier: () -> Void
+    /// "Ask about this": a passage of an answer to quote in the next message (the Mac selects it in the feed, the
+    /// phone picks it in a sheet); nil turns quoting off (embedded chats).
+    public var quote: ((String) -> Void)?
 
     public init(
         regenerate: @escaping (Int64) -> Void = { _ in },
         edit: @escaping (ChatFeed.Message) -> Void = { _ in },
         selectBranch: @escaping (Int64) -> Void = { _ in },
         copy: @escaping (String) -> Void = { _ in },
-        loadEarlier: @escaping () -> Void = {}
+        loadEarlier: @escaping () -> Void = {},
+        quote: ((String) -> Void)? = nil
     ) {
         self.regenerate = regenerate
         self.edit = edit
         self.selectBranch = selectBranch
         self.copy = copy
         self.loadEarlier = loadEarlier
+        self.quote = quote
     }
 }
 
@@ -104,6 +109,7 @@ public struct ChatFeedView: View {
                 proxy.scrollTo(last, anchor: .bottom)
             }
         }
+        .modifier(ChatFeedQuoteSupport(onQuote: context.rowActions.quote))
         .accessibilityIdentifier("chat.feed")
     }
 

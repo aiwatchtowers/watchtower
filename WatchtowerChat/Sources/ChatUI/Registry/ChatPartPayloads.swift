@@ -153,6 +153,11 @@ public struct ChatArtifactContent: Equatable, Sendable, Identifiable {
 
     public var id: String { key }
 
+    /// The artifact as the shared text helpers read it (the action table, the viewer's fields).
+    public var draft: ArtifactDraft {
+        ArtifactDraft(key: key, kind: kind, title: title, meta: meta, content: content, isComplete: isComplete)
+    }
+
     public init(
         key: String,
         kind: String,

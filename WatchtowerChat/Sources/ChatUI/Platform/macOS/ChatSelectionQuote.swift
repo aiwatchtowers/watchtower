@@ -127,6 +127,9 @@ public final class ChatSelectionQuoteTracker {
     /// A finished answer's body on screen (`ChatAnswerRegionMarker`).
     func addRegion(_ view: NSView) { regions.add(view) }
 
+    /// The answer regions marked now (tests).
+    var regionCount: Int { regions.allObjects.count }
+
     func removeRegion(_ view: NSView) {
         regions.remove(view)
         if view === region { clear() }
