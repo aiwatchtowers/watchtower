@@ -1067,7 +1067,7 @@ package enum TestDatabase {
 /// queue behind the test's instead of failing on SQLite's lock.
 package enum TestDatabasePools {
     private static let lock = NSLock()
-    private nonisolated(unsafe) static let pools = NSMapTable<NSString, DatabasePool>.strongToWeakObjects()
+    nonisolated(unsafe) private static let pools = NSMapTable<NSString, DatabasePool>.strongToWeakObjects()
 
     static func register(_ pool: DatabasePool, path: String) {
         lock.withLock { pools.setObject(pool, forKey: path as NSString) }

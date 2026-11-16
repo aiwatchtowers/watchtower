@@ -83,8 +83,7 @@ private final class FolderReadingAIService: AIServiceProtocol, @unchecked Sendab
 
     /// A database chat's turn (`ai query --persist`): the scripted events
     /// with the run's writes (`FakeEmbeddedPersist.wrap`).
-    // swiftlint:disable:next function_parameter_count
-    func stream(
+    func stream( // swiftlint:disable:this function_parameter_count
         prompt: String,
         systemPrompt: String?,
         dbPath: String?,
