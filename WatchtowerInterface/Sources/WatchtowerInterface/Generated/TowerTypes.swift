@@ -110,6 +110,7 @@ public struct Card: Codable, Hashable, Sendable {
     public var blocks: String
     public var body: String
     public var bodyClipped: Bool
+    public var link: String
     public var contentHash: String
     public var actions: [CardAction]
     public var refFacts: [RefFacts]
@@ -132,6 +133,7 @@ public struct Card: Codable, Hashable, Sendable {
         blocks: String,
         body: String,
         bodyClipped: Bool,
+        link: String,
         contentHash: String,
         actions: [CardAction],
         refFacts: [RefFacts],
@@ -153,6 +155,7 @@ public struct Card: Codable, Hashable, Sendable {
         self.blocks = blocks
         self.body = body
         self.bodyClipped = bodyClipped
+        self.link = link
         self.contentHash = contentHash
         self.actions = actions
         self.refFacts = refFacts
@@ -176,6 +179,7 @@ public struct Card: Codable, Hashable, Sendable {
         case blocks
         case body
         case bodyClipped = "body_clipped"
+        case link
         case contentHash = "content_hash"
         case actions
         case refFacts = "ref_facts"
@@ -200,6 +204,7 @@ public struct Card: Codable, Hashable, Sendable {
         self.blocks = try container.decode(String.self, forKey: .blocks)
         self.body = try container.decode(String.self, forKey: .body)
         self.bodyClipped = try container.decode(Bool.self, forKey: .bodyClipped)
+        self.link = try container.decode(String.self, forKey: .link)
         self.contentHash = try container.decode(String.self, forKey: .contentHash)
         self.actions = try container.decodeIfPresent([CardAction].self, forKey: .actions) ?? []
         self.refFacts = try container.decodeIfPresent([RefFacts].self, forKey: .refFacts) ?? []
@@ -215,6 +220,7 @@ public struct CardAction: Codable, Hashable, Sendable {
     public var state: ActionState
     public var detail: String
     public var note: String
+    public var until: String
 
     public init(
         index: Int,
@@ -222,7 +228,8 @@ public struct CardAction: Codable, Hashable, Sendable {
         label: String,
         state: ActionState,
         detail: String,
-        note: String
+        note: String,
+        until: String
     ) {
         self.index = index
         self.kind = kind
@@ -230,6 +237,7 @@ public struct CardAction: Codable, Hashable, Sendable {
         self.state = state
         self.detail = detail
         self.note = note
+        self.until = until
     }
 
     enum CodingKeys: String, CodingKey {
@@ -239,6 +247,7 @@ public struct CardAction: Codable, Hashable, Sendable {
         case state
         case detail
         case note
+        case until
     }
 }
 
@@ -578,6 +587,7 @@ public struct LegacyItem: Codable, Hashable, Sendable {
     public var subtitle: String
     public var preview: String
     public var stamp: String
+    public var end: String
     public var unread: Bool
     public var high: Bool
     public var stopped: Bool
@@ -591,6 +601,7 @@ public struct LegacyItem: Codable, Hashable, Sendable {
         subtitle: String,
         preview: String,
         stamp: String,
+        end: String,
         unread: Bool,
         high: Bool,
         stopped: Bool,
@@ -603,6 +614,7 @@ public struct LegacyItem: Codable, Hashable, Sendable {
         self.subtitle = subtitle
         self.preview = preview
         self.stamp = stamp
+        self.end = end
         self.unread = unread
         self.high = high
         self.stopped = stopped
@@ -617,6 +629,7 @@ public struct LegacyItem: Codable, Hashable, Sendable {
         case subtitle
         case preview
         case stamp
+        case end
         case unread
         case high
         case stopped

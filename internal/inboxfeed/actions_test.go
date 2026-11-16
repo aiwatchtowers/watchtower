@@ -118,6 +118,13 @@ func TestActions_TargetStates(t *testing.T) {
 		if len(got) != 1 || got[0].Detail != c.detail || got[0].Note != c.note || got[0].State != c.state {
 			t.Errorf("%s: %+v", c.name, got)
 		}
+		wantUntil := ""
+		if c.detail == targetCreating {
+			wantUntil = testNow.Add(-time.Minute + targetStuckAfter).Format(time.RFC3339)
+		}
+		if len(got) == 1 && got[0].Until != wantUntil {
+			t.Errorf("%s: until %q, want %q", c.name, got[0].Until, wantUntil)
+		}
 	}
 }
 

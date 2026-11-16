@@ -14,10 +14,12 @@ const approvalTextPath = "testdata/approval_text_cases.json"
 // (AgentActionCardView, SaveAutomationProposalPane). The app target's
 // ApprovalTextParityTests runs the Swift card code over the same cases.
 type approvalTextCase struct {
-	Name           string            `json:"name"`
-	Tool           string            `json:"tool"`
-	Args           string            `json:"args"`
-	Result         string            `json:"result"`
+	Name   string `json:"name"`
+	Tool   string `json:"tool"`
+	Args   string `json:"args"`
+	Result string `json:"result"`
+	// Status is the row's status ("" reads as pending).
+	Status         string            `json:"status,omitempty"`
 	WorkbenchNames map[string]string `json:"workbench_names"`
 	Expect         struct {
 		Title     string   `json:"title"`
@@ -41,7 +43,11 @@ func TestApprovalText_SharedCases(t *testing.T) {
 		t.Fatalf("the fixture has %d cases", len(cases))
 	}
 	for i, c := range cases {
-		got := ApprovalTextOf(c.Tool, c.Args, c.Result, func(id int64) string {
+		status := c.Status
+		if status == "" {
+			status = "pending"
+		}
+		got := ApprovalTextOf(c.Tool, c.Args, c.Result, status, func(id int64) string {
 			return c.WorkbenchNames[strconv.FormatInt(id, 10)]
 		})
 		if *update {

@@ -172,19 +172,23 @@ func readDays(ctx context.Context, tx *sql.Tx) ([]day, error) {
 		planID := out[i].PlanItems[0].ID
 		out[i].PlanItems = []api.LegacyItem{}
 		// DayPlanQueries.fetchItems' order: the time blocks, then the backlog.
-		err := eachRow(ctx, tx, `SELECT id, title, COALESCE(start_time, ''), status = 'done', COALESCE(priority, '')
+		err := eachRow(ctx, tx, `SELECT id, title, COALESCE(start_time, ''), COALESCE(end_time, ''), status = 'done',
+				COALESCE(priority, '')
 			FROM day_plan_items WHERE day_plan_id = ?
 			ORDER BY CASE kind WHEN 'timeblock' THEN 0 ELSE 1 END, order_index, id`, []any{planID},
 			func(rows *sql.Rows) error {
 				it := api.LegacyItem{RefKind: api.RefPlanItem, Date: out[i].Date}
-				var priority, start string
-				if err := rows.Scan(&it.ID, &it.Title, &start, &it.Done, &priority); err != nil {
+				var priority, start, end string
+				if err := rows.Scan(&it.ID, &it.Title, &start, &end, &it.Done, &priority); err != nil {
 					return err
 				}
-				// A time block's start; the screen models draw it in the
-				// client's zone.
+				// A time block's start and end; the screen models draw the
+				// range in the client's zone.
 				if at := parseStamp(start); !at.IsZero() {
 					it.Stamp = formatStamp(at)
+				}
+				if at := parseStamp(end); !at.IsZero() {
+					it.End = formatStamp(at)
 				}
 				it.High = priority == "high"
 				out[i].PlanTotal++

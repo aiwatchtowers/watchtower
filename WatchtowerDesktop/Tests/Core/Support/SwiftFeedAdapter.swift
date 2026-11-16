@@ -37,9 +37,13 @@ enum SwiftFeedAdapter {
             + "plus each artifact's rows that wait (refState.waits)",
         "cards[].pinned": "InboxFolderEntries.build's pin: Waiting for me's card with rows that wait",
         "cards[].stamp": "InboxFolderEntries.row's detail time: written_at on a living card, else created_at; "
-            + "an approval's created_at, a reminder's remind_at, a legacy entry's own time",
+            + "a legacy entry's own time",
         "cards[].source_line": "InboxCardTexts.sourceLine without its last ' · <time>' part (the models add it); "
-            + "a proposal's actionLabels label or \"Assistant proposal\", a legacy row's detail",
+            + "a legacy row's detail",
+        "native approvals' and reminders' source_line and stamp": "Go-only mappings the Mac's Needs approval "
+            + "row does not show (it draws the title alone): a proposal's actionLabels label or "
+            + "\"Assistant proposal\" and its created_at, a reminder's \"Reminder\" and its remind_at; "
+            + "restated here so both sides agree",
         "cards[].preview": "a legacy row's summary (InboxFolderEntries.row)",
         "cards[].ref_facts": "InboxRef.refs once each, InboxRefState shown/waits, InboxReplyPolicy.tool(for:) "
             + "and isOpenReply, an item's permalink, a reminder's SlackMessageRef.url",
@@ -47,7 +51,9 @@ enum SwiftFeedAdapter {
             + "InboxCardButtons.label/caption and InboxCardLinkPolicy (a screen link is the Mac's); "
             + "target buttons decode only through the Kit (app target), so no parity case has one",
         "cards[].legacy": "InboxListBuilder.sections' rows with InboxListRow.content's words, "
-            + "a day's DayPlanQueries.fetchItems and Briefing.parsedAttention",
+            + "a day's DayPlanQueries.fetchItems (start and end) and Briefing.parsedAttention",
+        "cards[].link": "AutomationOutputCard.link, the common row's Open (InboxCardButtons.commonRow); "
+            + "\"\" on every other card",
         "native approvals' content_hash": "SHA-256 of the args the card shows (ApproveSeen)",
         "thread-briefs": "the Mac lists each brief as its own root entry; the feed carries them as one card "
             + "at the newest one's place",
@@ -193,7 +199,7 @@ enum SwiftFeedAdapter {
             // InboxFolderEntries.build's pin: Waiting for me with rows that wait.
             pinned: snapshot.waitingForMe.automationID == card.automationID && waitingRows(card, snapshot) > 0,
             automation: CardAutomation(id: card.automationID, name: card.automationName, builtinID: "", runID: card.runID),
-            blocks: card.blocksJSON, body: card.body, bodyClipped: false, contentHash: card.contentHash,
+            blocks: card.blocksJSON, body: card.body, bodyClipped: false, link: card.link, contentHash: card.contentHash,
             actions: actions(card), refFacts: try refFacts(InboxRef.refs(blocksJSON: card.blocksJSON), context))
     }
 
@@ -237,11 +243,11 @@ enum SwiftFeedAdapter {
                 case "watchtower-nav": .macOnly
                 default: .disabled
                 }
-                return CardAction(index: action.index, kind: "link", label: action.label, state: state, detail: "", note: "")
+                return CardAction(index: action.index, kind: "link", label: action.label, state: state, detail: "", note: "", until: "")
             case .chat:
-                return CardAction(index: action.index, kind: "chat", label: action.label, state: .macOnly, detail: "", note: "")
+                return CardAction(index: action.index, kind: "chat", label: action.label, state: .macOnly, detail: "", note: "", until: "")
             case .agent:
-                return CardAction(index: action.index, kind: "agent", label: action.label, state: .macOnly, detail: "", note: "")
+                return CardAction(index: action.index, kind: "agent", label: action.label, state: .macOnly, detail: "", note: "", until: "")
             case .reply:
                 return replyAction(action, reply: reply, card: card)
             case .target:
@@ -263,7 +269,7 @@ enum SwiftFeedAdapter {
         case .unreadable: (.enabled, "unreadable", "Recipe can't be read")
         case .removed: (.disabled, "removed", "Recipe removed")
         }
-        return CardAction(index: action.index, kind: "reply", label: label, state: state, detail: detail, note: note)
+        return CardAction(index: action.index, kind: "reply", label: label, state: state, detail: detail, note: note, until: "")
     }
 
     // MARK: - Needs approval
@@ -287,13 +293,13 @@ enum SwiftFeedAdapter {
                 sourceLine: context.labels[action.id] ?? "Assistant proposal", preview: "",
                 stamp: AutomationDates.parse(action.createdAt).map(AutomationDates.format) ?? "",
                 living: false, unread: row.unread, priority: "medium", pinned: false, blocks: "", body: "",
-                bodyClipped: false, contentHash: digest, actions: [], refFacts: [])
+                bodyClipped: false, link: "", contentHash: digest, actions: [], refFacts: [])
         case let .reminder(reminder):
             return Card(
                 id: "r\(reminder.id)", folderID: folder, cardKind: .reminder, title: row.title, sourceLine: "Reminder",
                 preview: "", stamp: AutomationDates.parse(reminder.remindAt).map(AutomationDates.format) ?? "",
                 living: false, unread: row.unread, priority: "medium", pinned: false, blocks: "", body: "",
-                bodyClipped: false, contentHash: "", actions: [],
+                bodyClipped: false, link: "", contentHash: "", actions: [],
                 refFacts: [RefFacts(kind: .reminder, id: reminder.id, open: true, waits: true, reply: false,
                                     replyWaiting: false, link: SlackMessageRef.url(reminder.messageRef)?.absoluteString ?? "")])
         }
@@ -312,7 +318,7 @@ enum SwiftFeedAdapter {
         return Card(
             id: "n\(rowid)", folderID: folder, cardKind: .notice, title: row.title, sourceLine: "", preview: "",
             stamp: AutomationDates.format(notice.updatedAt), living: false, unread: row.unread, priority: "medium",
-            pinned: false, blocks: "", body: notice.error, bodyClipped: false, contentHash: "", actions: [],
+            pinned: false, blocks: "", body: notice.error, bodyClipped: false, link: "", contentHash: "", actions: [],
             refFacts: [])
     }
 
@@ -324,7 +330,7 @@ enum SwiftFeedAdapter {
         Card(
             id: id, folderID: folder, cardKind: .legacy, title: row.title, sourceLine: sourceLine, preview: row.summary,
             stamp: AutomationDates.format(stamp), living: false, unread: row.unread, priority: "medium", pinned: false,
-            blocks: "", body: "", bodyClipped: false, contentHash: "", actions: [], refFacts: [], legacy: section)
+            blocks: "", body: "", bodyClipped: false, link: "", contentHash: "", actions: [], refFacts: [], legacy: section)
     }
 
     /// A Morning brief day: its plan's items and its briefing's attention.
@@ -335,7 +341,8 @@ enum SwiftFeedAdapter {
             items: items.map { item in
                 LegacyItem(
                     refKind: .planItem, id: item.id, title: item.title, subtitle: "", preview: "",
-                    stamp: item.startTime.map(AutomationDates.format) ?? "", unread: false,
+                    stamp: item.startTime.map(AutomationDates.format) ?? "",
+                    end: item.endTime.map(AutomationDates.format) ?? "", unread: false,
                     high: item.priority == "high", stopped: false, done: item.isDone, date: day.date)
             },
             attention: (day.briefing?.parsedAttention ?? []).map { item in
@@ -384,7 +391,7 @@ enum SwiftFeedAdapter {
             return LegacyItem(
                 refKind: .track, id: Int64(card.track.id), title: card.track.text, subtitle: "Track",
                 preview: card.newEventCount > 0 ? "\(card.newEventCount) new" : "",
-                stamp: AutomationDates.format(card.lastEventAt), unread: card.isUnread,
+                stamp: AutomationDates.format(card.lastEventAt), end: "", unread: card.isUnread,
                 high: card.track.priority == "high", stopped: stopped, done: false, date: "")
         case let .idea(idea):
             // InboxListRow.ideaSource.
@@ -393,13 +400,13 @@ enum SwiftFeedAdapter {
             return LegacyItem(
                 refKind: .idea, id: Int64(idea.id), title: idea.title, subtitle: source, preview: idea.essence,
                 stamp: AutomationDates.parse(idea.updatedAt).map(AutomationDates.format) ?? "0001-01-01T00:00:00Z",
-                unread: idea.awaitsVerdict, high: false, stopped: false, done: false, date: "")
+                end: "", unread: idea.awaitsVerdict, high: false, stopped: false, done: false, date: "")
         case let .message(row):
             let prefix = [row.who, row.whereText ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
             return LegacyItem(
                 refKind: .inboxItem, id: Int64(row.item.id), title: messageTitle(row),
                 subtitle: prefix.isEmpty ? "Message" : prefix, preview: row.item.whyMatters,
-                stamp: AutomationDates.format(row.stamp), unread: row.item.isUnread,
+                stamp: AutomationDates.format(row.stamp), end: "", unread: row.item.isUnread,
                 high: row.item.priority == "high", stopped: false, done: false, date: "")
         case .proposal, .reminder, .output, .day, .builtinNotice:
             return nil
@@ -426,12 +433,12 @@ enum SwiftFeedAdapter {
                 subtitle: "Thread brief",
                 preview: action.resultString("summary") ?? action.argString("summary") ?? action.argsJSON,
                 stamp: AutomationDates.parse(action.appliedAt).map(AutomationDates.format) ?? "",
-                unread: false, high: false, stopped: false, done: false, date: "")
+                end: "", unread: false, high: false, stopped: false, done: false, date: "")
         }
         return Card(
             id: "thread-briefs", folderID: folder, cardKind: .legacy, title: "Thread briefs", sourceLine: "Thread brief",
             preview: "", stamp: items.first?.stamp ?? "", living: false, unread: false, priority: "medium",
-            pinned: false, blocks: "", body: "", bodyClipped: false, contentHash: "", actions: [], refFacts: [],
+            pinned: false, blocks: "", body: "", bodyClipped: false, link: "", contentHash: "", actions: [], refFacts: [],
             legacy: LegacySection(kind: .threadBriefs, items: items, attention: []))
     }
 

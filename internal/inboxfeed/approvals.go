@@ -158,7 +158,7 @@ func (s *snapshot) actionCard(a actionRow, folder int64) api.Card {
 // approvalOf is a proposal's approval block: the native card's text
 // (ApprovalTextOf), its state and where it came from.
 func (s *snapshot) approvalOf(a actionRow) *api.Approval {
-	t := ApprovalTextOf(a.Tool, a.ArgsJSON, a.ResultJSON, func(id int64) string { return s.workbenches[id] })
+	t := ApprovalTextOf(a.Tool, a.ArgsJSON, a.ResultJSON, a.Status, func(id int64) string { return s.workbenches[id] })
 	return &api.Approval{
 		Tool: a.Tool, Title: t.Title, Summary: strings.Join(t.Summary, "\n"),
 		ArgsSHA256: tools.ArgsSHA256(a.ArgsJSON), Status: a.Status, Error: a.Error,

@@ -62,17 +62,23 @@ type ApprovalText struct {
 	EditOnMac bool
 }
 
-// ApprovalTextOf is a proposal's card text, as the Mac draws it
-// (InboxReadingPane's proposal branch, AgentActionCardView.body): a
-// save_automation as its summary (the For / When / It may lines under
-// "Save automation <name>"), a claude.ai connector call as its connector,
-// tool and indented input, a Slack send as its recipient and text, any
-// other tool as AgentActionCardView.summaryLines. workbenchName names a
-// workbench ("" when not known).
-func ApprovalTextOf(tool, argsJSON, resultJSON string, workbenchName func(int64) string) ApprovalText {
+// ApprovalTextOf is a proposal in status's card text, as the Mac draws it
+// (InboxReadingPane's proposal branch, AgentActionCardView.body): a pending
+// save_automation as SaveAutomationProposalPane (the For / When / It may
+// lines under "Save automation <name>", Open Draft), any other
+// save_automation as SaveAutomationCardDetails (its scope line, the
+// model's lines and its dry-run summary), a claude.ai connector call as its
+// connector, tool and indented input, a Slack send as its recipient and
+// text, any other tool as AgentActionCardView.summaryLines. workbenchName
+// names a workbench ("" when not known): the Mac's workbench list is the
+// projects table (WorkbenchQueries.summaries).
+func ApprovalTextOf(tool, argsJSON, resultJSON, status string, workbenchName func(int64) string) ApprovalText {
 	args := jsonObject(argsJSON)
 	switch tool {
 	case toolSaveAutomation:
+		if status != "pending" {
+			return saveAutomationCard(argsJSON, workbenchName)
+		}
 		s := SummarizeSaveAutomation(argsJSON, workbenchName)
 		return ApprovalText{Title: s.Name, Summary: []string{"For: " + s.Scope, "When: " + s.When, "It may: " + s.May},
 			EditOnMac: true}
@@ -618,4 +624,126 @@ func valueEnd(chars []rune, from int) int {
 		i++
 	}
 	return i
+}
+
+// saveCardArgs are the save_automation args SaveAutomationCardModel reads.
+type saveCardArgs struct {
+	Name          string          `json:"name"`
+	Slug          string          `json:"slug"`
+	TriggerKind   string          `json:"trigger_kind"`
+	TriggerSpec   json.RawMessage `json:"trigger_spec"`
+	Permissions   []string        `json:"permissions"`
+	Outputs       []string        `json:"outputs"`
+	Widening      []string        `json:"widening"`
+	BudgetTokens  int64           `json:"budget_tokens"`
+	BudgetMinutes int64           `json:"budget_minutes"`
+	Missed        string          `json:"missed"`
+	Concurrency   int64           `json:"concurrency"`
+	Path          string          `json:"path"`
+	IsNew         bool            `json:"is_new"`
+	DryRunSummary string          `json:"dry_run_summary"`
+	WorkbenchID   *int64          `json:"workbench_id"`
+}
+
+// saveAutomationCard is a save_automation past pending as the Mac's card
+// draws it (SaveAutomationCardModel, SaveAutomationCardDetails): "Save
+// automation <name>", then its scope line, the file, when, each permission
+// (a widening one marked "+ "), each output, the budget, the missed-run and
+// concurrency lines, and the dry-run summary. Args that do not decode read
+// as empty ones, as on the Mac. The recipe text and its diff stay behind
+// the Mac's disclosures and are not sent.
+func saveAutomationCard(argsJSON string, workbenchName func(int64) string) ApprovalText {
+	var a saveCardArgs
+	if json.Unmarshal([]byte(argsJSON), &a) != nil {
+		a = saveCardArgs{}
+	}
+	name := a.Name
+	if name == "" {
+		name = a.Slug
+	}
+	scope := "For: Personal"
+	if a.WorkbenchID != nil {
+		wb := workbenchName(*a.WorkbenchID)
+		if wb == "" {
+			wb = "#" + strconv.FormatInt(*a.WorkbenchID, 10)
+		}
+		scope = "For: workbench " + wb
+	}
+	file := a.Slug + ".md"
+	if a.Path != "" {
+		file = a.Path[strings.LastIndex(a.Path, "/")+1:]
+	}
+	if a.IsNew {
+		file += " (new)"
+	} else {
+		file += " (replaces the saved one)"
+	}
+	lines := []string{scope, "File: " + file, "When: " + triggerSentence(a.TriggerKind, a.TriggerSpec)}
+	widening := map[string]bool{}
+	for _, w := range a.Widening {
+		widening[w] = true
+	}
+	for _, p := range a.Permissions {
+		line := p + " — " + PermissionLine(p)
+		if widening[p] {
+			line = "+ " + line
+		}
+		lines = append(lines, line)
+	}
+	for _, o := range a.Outputs {
+		lines = append(lines, "output: "+o+" — "+outputLine(o))
+	}
+	lines = append(lines, "Budget: "+groupThousands(a.BudgetTokens)+" tokens · "+strconv.FormatInt(a.BudgetMinutes, 10)+" min")
+	if a.Missed != "" {
+		if a.Missed == "skip" {
+			lines = append(lines, "Missed: skip a time the Mac was asleep")
+		} else {
+			lines = append(lines, "Missed: run once when the Mac wakes")
+		}
+	}
+	switch {
+	case a.Concurrency == 1:
+		lines = append(lines, "Concurrency: one run at a time")
+	case a.Concurrency > 1:
+		lines = append(lines, fmt.Sprintf("Concurrency: up to %d runs at a time", a.Concurrency))
+	}
+	if summary := strings.TrimSpace(a.DryRunSummary); summary != "" {
+		lines = append(lines, "Assistant's dry-run summary: "+summary)
+	}
+	return ApprovalText{Title: "Save automation " + name, Summary: lines}
+}
+
+// outputLine is AutomationCardPresentation.outputLine.
+func outputLine(output string) string {
+	switch output {
+	case "inbox":
+		return "Put cards in your Inbox"
+	case "report":
+		return "Add reports to this automation"
+	case "briefing":
+		return "Add items to your briefing"
+	case "target":
+		return "Create targets"
+	case "slack":
+		return "Send Slack messages"
+	}
+	return "Write " + output
+}
+
+// groupThousands is AutomationCardPresentation.number: en_US grouping.
+func groupThousands(n int64) string {
+	s := strconv.FormatInt(n, 10)
+	neg := strings.HasPrefix(s, "-")
+	s = strings.TrimPrefix(s, "-")
+	var b strings.Builder
+	for i, r := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(r)
+	}
+	if neg {
+		return "-" + b.String()
+	}
+	return b.String()
 }

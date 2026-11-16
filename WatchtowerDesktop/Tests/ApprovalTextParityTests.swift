@@ -37,11 +37,13 @@ final class ApprovalTextParityTests: XCTestCase {
         let tool: String
         let args: String
         let result: String
+        /// The row's status; nil reads as pending.
+        let status: String?
         let workbenchNames: [String: String]
         let expect: Expect
 
         enum CodingKeys: String, CodingKey {
-            case name, tool, args, result, expect
+            case name, tool, args, result, status, expect
             case workbenchNames = "workbench_names"
         }
     }
@@ -52,7 +54,7 @@ final class ApprovalTextParityTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(cases.count, 20)
         for item in cases {
             let action = AgentAction(row: Row([
-                "id": 1, "tool": item.tool, "args_json": item.args, "result_json": item.result, "status": "pending"
+                "id": 1, "tool": item.tool, "args_json": item.args, "result_json": item.result, "status": item.status ?? "pending"
             ]))
             let text = Self.cardText(action) { item.workbenchNames[String($0)] }
             XCTAssertEqual(text.title, item.expect.title, "\(item.name): title")
@@ -61,15 +63,23 @@ final class ApprovalTextParityTests: XCTestCase {
         }
     }
 
-    /// A pending proposal's card as the Inbox reading pane draws it: a
+    /// A proposal's card as the Inbox reading pane draws it: a pending
     /// save_automation as `SaveAutomationProposalPane` (its name, then For /
-    /// When / It may, Open Draft), else `AgentActionCardView` (its title;
-    /// a connector call's connector, tool and input with Edit Input; a Slack
-    /// send's recipient and text with its editor; any other tool's summary
-    /// lines).
+    /// When / It may, Open Draft), else `AgentActionCardView` (its title; a
+    /// save_automation's `SaveAutomationCardDetails` text: the scope line,
+    /// the model's lines, the dry-run summary; a connector call's connector,
+    /// tool and input with Edit Input; a Slack send's recipient and text
+    /// with its editor; any other tool's summary lines). The workbench name
+    /// comes from the app's workbench list, `WorkbenchQueries.summaries`
+    /// (the `projects` rows), as the fixture's names stand for.
     private static func cardText(
         _ action: AgentAction, workbenchName: @escaping (Int64) -> String?
     ) -> (title: String, summary: [String], editOnMac: Bool) {
+        if action.tool == SaveAutomationCardModel.tool, !action.isPending {
+            let model = SaveAutomationCardModel(action: action)
+            return (model.title, [model.scopeLine(workbenchName: workbenchName)] + model.lines
+                + (model.dryRunSummary.map { [$0] } ?? []), false)
+        }
         if action.tool == SaveAutomationCardModel.tool {
             let summary = SaveAutomationProposalSummary(model: SaveAutomationCardModel(action: action),
                                                         workbenchName: workbenchName)

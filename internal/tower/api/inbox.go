@@ -122,6 +122,10 @@ type Card struct {
 	Body   string `json:"body"`
 	// BodyClipped is set when FeedRequest.Clip cut Body.
 	BodyClipped bool `json:"body_clipped"`
+	// Link is the card's own link (automation_outputs.link), the Mac's
+	// common-row Open; "" for none and for every card that is not an
+	// artifact.
+	Link string `json:"link"`
 	// ContentHash is the version drawn (an output's content hash, a native
 	// approval's args SHA-256): every guarded write carries it back.
 	ContentHash string       `json:"content_hash"`
@@ -174,6 +178,10 @@ type CardAction struct {
 	// Note is the line the Mac draws with it: a Reply's caption ("Needs
 	// confirmation", "Off", …) or a failed target's message; "" for none.
 	Note string `json:"note"`
+	// Until is when Detail stops holding by time alone (RFC 3339 UTC): a
+	// creating target reads as stuck from then on, with no write to wake a
+	// watch, so a client compares it with its own clock; "" otherwise.
+	Until string `json:"until"`
 }
 
 // RefKind is the kind of record a list row's ref points at.
@@ -271,7 +279,10 @@ type LegacyItem struct {
 	// message's why-it-matters).
 	Preview string `json:"preview"`
 	// Stamp is the row's time (a plan item's start; "" for a backlog item).
-	Stamp  string `json:"stamp"`
+	Stamp string `json:"stamp"`
+	// End is a plan item's end (RFC 3339 UTC; "" when it has none): the Mac
+	// draws a time block as its start–end range.
+	End    string `json:"end"`
 	Unread bool   `json:"unread"`
 	// High: the row is high priority.
 	High    bool `json:"high"`

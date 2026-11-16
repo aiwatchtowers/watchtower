@@ -192,6 +192,9 @@ func (s *snapshot) cardAction(o output, index int, a db.InboxAction, reply strin
 		}
 		ctxID := fmt.Sprintf("%d:%d:%s", o.ID, index, blocks.ActionHash(a))
 		c.Detail, c.Note = targetState(s.targets[ctxID], now)
+		if c.Detail == targetCreating {
+			c.Until = creatingUntil(s.targets[ctxID].proposal)
+		}
 		c.State = api.ActionEnabled
 		switch c.Detail {
 		case targetWaiting, targetCreating, targetCreated:
@@ -236,6 +239,16 @@ func targetState(f targetFacts, now time.Time) (state, note string) {
 		return targetFailed, p.Error
 	}
 	return targetIdle, ""
+}
+
+// creatingUntil is when a creating proposal turns stuck: its decision plus
+// targetStuckAfter.
+func creatingUntil(p *db.AgentAction) string {
+	decided, err := time.Parse(time.RFC3339Nano, p.DecidedAt)
+	if err != nil {
+		return ""
+	}
+	return formatStamp(decided.Add(targetStuckAfter))
 }
 
 // readTargetFacts reads the newest proposal of every target button of the

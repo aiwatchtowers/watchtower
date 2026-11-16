@@ -95,7 +95,7 @@ type output struct {
 	FolderID sql.NullInt64
 	// ActionsJSON is its own buttons; PressedAction and PressedRunID its
 	// Reply press (the flattened index, the run it queued).
-	ActionsJSON                 string
+	ActionsJSON, Link           string
 	PressedAction, PressedRunID sql.NullInt64
 	// Recipe is its automation as the Reply buttons read it.
 	Recipe recipeState
@@ -108,7 +108,7 @@ func readOutputs(ctx context.Context, tx *sql.Tx) ([]output, error) {
 			o.created_at, o.read_at IS NULL, o.blocks_json, o.output_key IS NOT NULL, o.content_hash,
 			COALESCE(o.written_at, ''), COALESCE(o.changed_at, ''),
 			COALESCE(NULLIF(a.name, ''), a.slug), COALESCE(a.builtin_id, ''), f.folder_id,
-			o.actions_json, o.pressed_action, o.pressed_run_id,
+			o.actions_json, o.link, o.pressed_action, o.pressed_run_id,
 			a.parse_error != '', a.removed_at IS NOT NULL,
 			a.parse_error = '' AND a.removed_at IS NULL AND a.confirmed_hash != a.approval_hash,
 			a.parse_error = '' AND a.enabled AND a.removed_at IS NULL AND a.confirmed_hash != ''
@@ -127,7 +127,7 @@ func readOutputs(ctx context.Context, tx *sql.Tx) ([]output, error) {
 		var created, written, changed string
 		if err := rows.Scan(&o.ID, &o.AutomationID, &o.RunID, &o.Title, &o.Body, &o.Priority,
 			&created, &o.Unread, &o.BlocksJSON, &o.Living, &o.ContentHash, &written, &changed,
-			&o.Name, &o.BuiltinID, &o.FolderID, &o.ActionsJSON, &o.PressedAction, &o.PressedRunID,
+			&o.Name, &o.BuiltinID, &o.FolderID, &o.ActionsJSON, &o.Link, &o.PressedAction, &o.PressedRunID,
 			&o.Recipe.parseError, &o.Recipe.removed, &o.Recipe.needsConfirmation, &o.Recipe.runnable); err != nil {
 			return nil, fmt.Errorf("inboxfeed: reading an artifact: %w", err)
 		}
@@ -245,7 +245,7 @@ func (s *snapshot) artifactCard(o output, folder int64) api.Card {
 		Stamp: formatStamp(stamp), Living: o.Living, Unread: unread, Priority: priority(o.Priority),
 		Pinned:     s.waitingForMe.automationID != 0 && o.AutomationID == s.waitingForMe.automationID && waiting > 0,
 		Automation: &api.CardAutomation{ID: o.AutomationID, Name: o.Name, BuiltinID: o.BuiltinID, RunID: o.RunID},
-		Blocks:     o.BlocksJSON, Body: o.Body, ContentHash: o.ContentHash,
+		Blocks:     o.BlocksJSON, Body: o.Body, Link: o.Link, ContentHash: o.ContentHash,
 		Actions: s.cardActions(o, s.now), RefFacts: s.refState.refFacts(refs),
 	}
 	if len(c.Blocks) > MaxBlocksBytes {

@@ -68,7 +68,8 @@
           "label": "Reply",
           "state": "enabled",
           "detail": "ready",
-          "note": ""
+          "note": "",
+          "until": ""
         }
       ],
       "ref_facts": [
@@ -81,7 +82,8 @@
           "reply_waiting": false,
           "link": ""
         }
-      ]
+      ],
+      "link": "https://example.com/thread"
     },
     {
       "id": "a5",
@@ -111,7 +113,8 @@
         "proposer": "Reactions",
         "reason": "Follow up",
         "edit_on_mac": true
-      }
+      },
+      "link": ""
     },
     {
       "id": "tracks",
@@ -145,11 +148,13 @@
             "date": "",
             "preview": "1 new",
             "high": false,
-            "done": false
+            "done": false,
+            "end": ""
           }
         ],
         "attention": []
-      }
+      },
+      "link": ""
     }
   ],
   "more": [

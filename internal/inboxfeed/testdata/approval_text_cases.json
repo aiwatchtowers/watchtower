@@ -537,5 +537,94 @@
       ],
       "edit_on_mac": false
     }
+  },
+  {
+    "name": "save_automation_failed_card",
+    "tool": "save_automation",
+    "args": "{\"name\": \"Morning digest\", \"slug\": \"morning-digest\", \"trigger_kind\": \"schedule\", \"trigger_spec\": {\"schedule\": \"0 9 * * 1-5\"}, \"permissions\": [\"slack:read@*\", \"llm:light\", \"targets:write\"], \"widening\": [\"targets:write\"], \"outputs\": [\"inbox\", \"report\", \"acme\"], \"budget_tokens\": 50000, \"budget_minutes\": 5, \"missed\": \"skip\", \"concurrency\": 2, \"path\": \"/recipes/acme/morning-digest.md\", \"is_new\": false, \"dry_run_summary\": \"  Posted one card.  \", \"workbench_id\": 3, \"recipe_text\": \"---\\nname: x\\n---\\n\", \"previous_recipe_text\": \"\"}",
+    "result": "",
+    "status": "failed",
+    "workbench_names": {
+      "3": "Acme app"
+    },
+    "expect": {
+      "title": "Save automation Morning digest",
+      "summary": [
+        "For: workbench Acme app",
+        "File: morning-digest.md (replaces the saved one)",
+        "When: Every weekday at 09:00",
+        "slack:read@* — Read messages in all workspaces (Slack)",
+        "llm:light — Use the light model",
+        "+ targets:write — Change your targets",
+        "output: inbox — Put cards in your Inbox",
+        "output: report — Add reports to this automation",
+        "output: acme — Write acme",
+        "Budget: 50,000 tokens · 5 min",
+        "Missed: skip a time the Mac was asleep",
+        "Concurrency: up to 2 runs at a time",
+        "Assistant's dry-run summary: Posted one card."
+      ],
+      "edit_on_mac": false
+    }
+  },
+  {
+    "name": "save_automation_approved_unknown_workbench",
+    "tool": "save_automation",
+    "args": "{\"name\": \"Morning digest\", \"slug\": \"morning-digest\", \"trigger_kind\": \"schedule\", \"trigger_spec\": {\"schedule\": \"0 9 * * 1-5\"}, \"permissions\": [\"slack:read@*\", \"llm:light\", \"targets:write\"], \"widening\": [\"targets:write\"], \"outputs\": [\"inbox\", \"report\", \"acme\"], \"budget_tokens\": 1234567, \"budget_minutes\": 5, \"missed\": \"run_once\", \"concurrency\": 1, \"path\": \"\", \"is_new\": true, \"dry_run_summary\": \"\", \"workbench_id\": 3, \"recipe_text\": \"---\\nname: x\\n---\\n\", \"previous_recipe_text\": \"\"}",
+    "result": "",
+    "status": "approved",
+    "workbench_names": {},
+    "expect": {
+      "title": "Save automation Morning digest",
+      "summary": [
+        "For: workbench #3",
+        "File: morning-digest.md (new)",
+        "When: Every weekday at 09:00",
+        "slack:read@* — Read messages in all workspaces (Slack)",
+        "llm:light — Use the light model",
+        "+ targets:write — Change your targets",
+        "output: inbox — Put cards in your Inbox",
+        "output: report — Add reports to this automation",
+        "output: acme — Write acme",
+        "Budget: 1,234,567 tokens · 5 min",
+        "Missed: run once when the Mac wakes",
+        "Concurrency: one run at a time"
+      ],
+      "edit_on_mac": false
+    }
+  },
+  {
+    "name": "save_automation_executing_bad_args",
+    "tool": "save_automation",
+    "args": "{\"name\": \"X\", \"budget_tokens\": \"lots\"}",
+    "result": "",
+    "status": "executing",
+    "workbench_names": {},
+    "expect": {
+      "title": "Save automation ",
+      "summary": [
+        "For: Personal",
+        "File: .md (replaces the saved one)",
+        "When: —",
+        "Budget: 0 tokens · 0 min"
+      ],
+      "edit_on_mac": false
+    }
+  },
+  {
+    "name": "slack_failed",
+    "tool": "send_slack_message",
+    "args": "{\"text\": \"hi\", \"target\": {\"label\": \"#eng\", \"workspace\": \"acme\"}}",
+    "result": "",
+    "status": "failed",
+    "workbench_names": {},
+    "expect": {
+      "title": "Send to Slack",
+      "summary": [
+        "To: #eng in acme",
+        "hi"
+      ],
+      "edit_on_mac": true
+    }
   }
 ]
