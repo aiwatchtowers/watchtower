@@ -136,6 +136,7 @@ struct ChatConversationView: View {
             }
         }
         .onChange(of: hold, initial: true) { composer.hold = hold }
+        .onChange(of: hasFiles, initial: true) { composer.hasShellAttachments = hasFiles }
         .safeAreaInset(edge: .top, spacing: 0) {
             if let line = topLine {
                 Text(line)
@@ -188,6 +189,9 @@ struct ChatConversationView: View {
         .multilineTextAlignment(.center)
         .padding(.horizontal, Spacing.large)
     }
+
+    /// Files wait in the draft: a saved chat may send them with no text.
+    private var hasFiles: Bool { !center.drafts.draft(conversation.conversationID ?? 0).attachments.isEmpty }
 
     /// The files waiting to go with the next send (mockup 2b's pills): their upload state, Retry on a refused one.
     private var pills: AnyView? {

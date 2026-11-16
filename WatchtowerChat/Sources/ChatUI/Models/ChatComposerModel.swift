@@ -49,6 +49,9 @@ public final class ChatComposerModel {
     /// Why the shell holds sending (for example a send that waits for the hub after a relaunch): Send is off and the
     /// line says so. Nil lets the composer send.
     public var hold: String?
+    /// The shell holds files of its own that go with the next send (the phone's staged pills, uploaded by its client):
+    /// a saved chat may then send them with no text, as it may its own `attachments`.
+    public var hasShellAttachments = false
     /// The `/` picker's catalog, read once.
     private var skillCatalog: [ChatSkill]?
     public private(set) var notice: String?
@@ -69,7 +72,7 @@ public final class ChatComposerModel {
     public var canSend: Bool {
         guard conversation.reachability == .connected, !conversation.isGone, !isSending, hold == nil,
               !conversation.isTurnRunning, fits else { return false }
-        return sendText != nil || (!attachments.isEmpty && conversation.conversationID != nil)
+        return sendText != nil || ((!attachments.isEmpty || hasShellAttachments) && conversation.conversationID != nil)
     }
 
     /// The text is within the hub's cap (32 000 Unicode scalars, `ChatLimits`).

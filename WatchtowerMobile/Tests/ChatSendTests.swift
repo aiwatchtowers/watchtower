@@ -146,6 +146,35 @@ final class ChatSendTests: XCTestCase {
 
     private func copy(_ center: ChatsCenter) -> ChatOfflineCopy { center.copy }
 
+    /// A saved chat sends its staged files with no text (uploads, then the turn); a new chat with files only cannot send.
+    func testFilesOnlySendOnASavedChatButNotANewOne() async throws {
+        var uploaded: [ChatAttachmentUploadPayload] = []
+        let center = ChatFixture.center(recorder, sleeper: sleeper, uploads: ChatUploads { payload, _ in uploaded.append(payload) })
+        let (_, fresh) = screen(center, .new)
+        XCTAssertNil(center.attach(data: Data("notes".utf8), fileName: "notes.md", conversation: 0))
+        fresh.hasShellAttachments = !center.drafts.draft(0).attachments.isEmpty
+        XCTAssertFalse(fresh.canSend, "a new chat needs text")
+
+        let (_, composer) = screen(center, ChatRoute(id: 7))
+        XCTAssertNil(center.attach(data: Data("notes".utf8), fileName: "notes.md", conversation: 7))
+        composer.hasShellAttachments = !center.drafts.draft(7).attachments.isEmpty
+        XCTAssertTrue(composer.canSend)
+        let send = Task { await composer.send() }
+        try await poll({ uploaded.count == 1 }, "upload sent")
+        var echo = try XCTUnwrap(uploaded.first)
+        echo.status = .applied
+        echo.attachmentID = 77
+        center.sending.receiveUpload(echo)
+        try await poll({ (try? self.recorder.params(ChatTurnParams.self).count) == 1 }, "turn sent")
+        let turn = try XCTUnwrap(try recorder.params(ChatTurnParams.self).first)
+        XCTAssertEqual(turn.conversationID, 7)
+        XCTAssertEqual(turn.text, "")
+        XCTAssertEqual(turn.attachmentIDs, [77])
+        center.receiveApplied(applied(1, kind: .chatTurn, result: ["user_message_id": .integer(5)]))
+        await send.value
+        XCTAssertTrue(center.drafts.draft(7).attachments.isEmpty, "sent: the pills go")
+    }
+
     func testARefusedUploadBringsTheDraftBackWithRetry() async throws {
         var uploaded: [ChatAttachmentUploadPayload] = []
         let center = ChatFixture.center(recorder, sleeper: sleeper, uploads: ChatUploads { payload, _ in uploaded.append(payload) })

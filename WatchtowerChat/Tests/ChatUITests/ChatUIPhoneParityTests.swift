@@ -54,6 +54,22 @@ final class ChatUIPhoneParityTests: XCTestCase {
         XCTAssertTrue(model.canSend)
     }
 
+    /// A saved chat sends the shell's files with no text; a new chat needs text (the phone as it was).
+    func testFilesOnlySendOnASavedChatButNotANewOne() async {
+        let client = FakeChatClient()
+        let saved = composer(client, conversationID: 7)
+        XCTAssertFalse(saved.canSend)
+        saved.hasShellAttachments = true
+        XCTAssertTrue(saved.canSend)
+        await saved.send()
+        guard case .turn(let request)? = client.ops.first else { return XCTFail("turn") }
+        XCTAssertEqual(request.conversationID, 7)
+        XCTAssertEqual(request.text, "")
+        let fresh = composer(client)
+        fresh.hasShellAttachments = true
+        XCTAssertFalse(fresh.canSend, "a new chat needs text")
+    }
+
     func testAHeldComposerSendsNothingAndSaysWhy() async {
         let client = FakeChatClient()
         let model = composer(client, conversationID: 7)
