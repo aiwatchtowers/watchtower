@@ -380,4 +380,31 @@ final class TowerClientTests: XCTestCase {
         XCTAssertEqual(failure.actionTitle, TowerText.restart)
         XCTAssertEqual(fake.calls(.towerPing).count, 0, "nothing is sent to a daemon of another version")
     }
+
+    // MARK: - Hello answer
+
+    func testHelloAnswerCarriesThePauseAndLeavesTheStateAlone() async {
+        fake.respond(.towerHello) {
+            FakeTransport.ok($0, HelloResponse(
+                interfaceVersion: InterfaceVersion.current, build: "test", syncPaused: true, noSync: false
+            ))
+        }
+        let client = makeClient()
+
+        let hello = await client.helloAnswer()
+
+        XCTAssertEqual(hello?.syncPaused, true)
+        let state = await client.screenState
+        XCTAssertEqual(state, .idle, "a hello beside the cycle is no screen read")
+    }
+
+    func testHelloAnswerIsNilFromAnotherVersionOrADownTower() async {
+        fake.helloVersion("0000000000000000")
+        let other = await makeClient().helloAnswer()
+        XCTAssertNil(other)
+
+        fake.setDown(true)
+        let down = await makeClient().helloAnswer()
+        XCTAssertNil(down)
+    }
 }

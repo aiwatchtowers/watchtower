@@ -14,6 +14,7 @@ The first line of the menu reports the daemon's real state:
 
 - **Syncing: Messages · 34/105 channels** while a sync runs. The phase and counter refresh every few seconds.
 - **Daemon running · idle** between syncs.
+- **Sync paused** while you have paused sync.
 - **Sync daemon not running** when there is no daemon.
 
 Other lines appear only when they apply:
@@ -57,6 +58,7 @@ action: nav:automations
 -->
 
 - **Sync Now** asks the running daemon to sync immediately. It is greyed out when no daemon runs, and a sync already in progress finishes first.
+- **Pause Sync** stops syncing but keeps the daemon running: the Inbox, the iPhone and every write keep working, and the pause survives a restart. **Resume Sync** takes its place and syncs at once.
 - **Run automation** lists your recipes with their last result; clicking one runs it without opening the window. **Open Automations…** opens the tab.
 - **New Voice Idea** opens Quick Capture and starts dictating. The shortcut is **⌃⌥D** from anywhere.
 - **Voices to label (N)** shows while the queue is not empty. **Review voices** and **Train voices** open the Voices window.

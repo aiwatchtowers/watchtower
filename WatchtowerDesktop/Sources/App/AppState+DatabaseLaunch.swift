@@ -48,6 +48,10 @@ extension AppState {
                 return error.localizedDescription
             case .success(let manager):
                 await wireOnboardingDatabase(manager)
+                // A fresh install now has the workspace its launch lacked:
+                // the daemon starts, without sync until onboarding finishes.
+                // An open inside the finish leaves it to the finish's start.
+                if !isFinishingOnboarding { startDaemonIfDown(caller: "openDatabaseForOnboarding") }
                 return nil
             }
         }

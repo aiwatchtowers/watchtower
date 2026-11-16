@@ -130,6 +130,15 @@ final class FakeDaemon: DaemonControl {
     var stopTimesOut = false
     private(set) var waits = 0
     private(set) var starts = 0
+    /// Each start's `noSync`, in order.
+    private(set) var startNoSync: [Bool] = []
+    /// Each restart's `noSync`, in order.
+    private(set) var restartNoSync: [Bool] = []
+    /// Told at each start, before it returns (what the launch did before it).
+    var onStart: (() -> Void)?
+    /// A start parks until `releaseStart()`.
+    var holdStart = false
+    private var parkedStart: CheckedContinuation<Void, Never>?
     private(set) var restarts = 0
     private(set) var stops = 0
     /// The most restarts ever running at once (a start queue runs one).
@@ -147,16 +156,24 @@ final class FakeDaemon: DaemonControl {
         return running
     }
 
-    func startDetached() async -> Bool {
+    var isStartParked: Bool { parkedStart != nil }
+
+    func startDetached(noSync: Bool) async -> Bool {
         starts += 1
+        startNoSync.append(noSync)
+        onStart?()
+        if holdStart {
+            await withCheckedContinuation { parkedStart = $0 }
+        }
         // A failed start leaves whatever ran before as it was.
         if startSucceeds { running = !diesAfterStart }
         if startSucceeds { pendingChecks = runningAfterChecks }
         return startSucceeds
     }
 
-    func restartWaiting() async throws {
+    func restartWaiting(noSync: Bool) async throws {
         restarts += 1
+        restartNoSync.append(noSync)
         restartsNow += 1
         mostRestartsAtOnce = max(mostRestartsAtOnce, restartsNow)
         defer { restartsNow -= 1 }
@@ -176,6 +193,11 @@ final class FakeDaemon: DaemonControl {
     func waitUntilStopped() async throws {
         waits += 1
         if stopTimesOut { throw DaemonRestartError.stopTimedOut(pid: 4242) }
+    }
+
+    func releaseStart() {
+        parkedStart?.resume()
+        parkedStart = nil
     }
 
     func releaseRestart() {

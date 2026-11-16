@@ -29,13 +29,20 @@ package final class SocketTransport: TowerTransport {
 
     private static let log = Logger(subsystem: "com.watchtower.desktop", category: "tower-socket")
 
-    package let workspace: String
+    /// The workspace directory, asked again for every new connection: nil
+    /// (no workspace yet, a fresh install before onboarding creates one)
+    /// is down.
+    private let resolveWorkspace: @Sendable () -> String?
     /// Opens connections and writes call frames, one at a time.
     private let queue = DispatchQueue(label: "tower.socket.calls")
     private let current = OSAllocatedUnfairLock<CallConnection?>(initialState: nil)
 
-    package init(workspace: String) {
-        self.workspace = workspace
+    package convenience init(workspace: String) {
+        self.init { workspace }
+    }
+
+    package init(resolveWorkspace: @escaping @Sendable () -> String?) {
+        self.resolveWorkspace = resolveWorkspace
     }
 
     /// The socket the daemon of `workspace` serves: the path written in
@@ -76,7 +83,7 @@ package final class SocketTransport: TowerTransport {
     }
 
     package func watch(_ request: Request) -> AsyncThrowingStream<ChangedEvent, Error> {
-        let workspace = workspace
+        let workspace = resolveWorkspace()
         let socket = UnixSocket.WatchSocket()
         return AsyncThrowingStream { continuation in
             continuation.onTermination = { _ in socket.stop() }
@@ -118,7 +125,9 @@ package final class SocketTransport: TowerTransport {
 
     private func openConnection() throws -> CallConnection {
         if let open = current.withLock({ $0 }), open.isOpen { return open }
-        guard let path = Self.socketPath(workspace: workspace) else { throw TowerTransportError.down }
+        guard let workspace = resolveWorkspace(), let path = Self.socketPath(workspace: workspace) else {
+            throw TowerTransportError.down
+        }
         let connection = CallConnection(fd: try Self.connect(path))
         current.withLock { $0 = connection }
         connection.startReading()
@@ -221,11 +230,11 @@ package final class SocketTransport: TowerTransport {
     /// connection ends (`.down`) or the consumer stops it.
     private static func runWatch(
         _ request: Request,
-        workspace: String,
+        workspace: String?,
         socket: UnixSocket.WatchSocket,
         yield: (ChangedEvent) -> Void
     ) throws {
-        guard let path = socketPath(workspace: workspace) else { throw TowerTransportError.down }
+        guard let workspace, let path = socketPath(workspace: workspace) else { throw TowerTransportError.down }
         let fd = try connect(path)
         guard socket.adopt(fd) else {
             Darwin.close(fd)
