@@ -425,6 +425,17 @@ final class InboxRowActionsTests: XCTestCase {
         XCTAssertEqual(InboxRefHooks.nativeKinds(.idea), [.target])
         XCTAssertEqual(InboxRefHooks.nativeKinds(.reminder), [.open])
         XCTAssertEqual(InboxRefHooks.nativeKinds(.action), [])
+        XCTAssertEqual(InboxRefHooks.nativeKinds(.planItem), [])
+    }
+
+    /// A `plan_item` ref is the phone projection's only: on the Mac it has no
+    /// Core twin, so its row stays shown and gets no native actions.
+    func testPlanItemRefIsAPlainRowOnTheMac() {
+        let ref = ArtifactRef(kind: .planItem, id: 21)
+        XCTAssertNil(InboxRefHooks.inboxRef(ref))
+        let hooks = InboxRefHooks.make(isShown: { _ in false }, content: { _, _ in nil })
+        XCTAssertTrue(hooks.isOpen(ref))
+        XCTAssertEqual(hooks.nativeKinds(ref), [])
     }
 
     func testPreviewDrawsDisabled() async throws {
