@@ -115,6 +115,14 @@ enum ChannelStatsQueries {
             if s.isSyncExcluded { continue }
             let vs = signals[s.id]
 
+            // Stop syncing comes first: a >= 90% bot channel with no value
+            // signals is offered it directly, never Mute first (Stop syncing
+            // mutes it too; owner, ask #1359).
+            if let reason = excludeReason(s, signals: vs, now: now) {
+                recs.append(ChannelRecommendation(channelID: s.id, channelName: s.name, action: .exclude, reason: reason))
+                continue
+            }
+
             // Mute: total>=50 AND userMsgs==0 AND mentions==0; OR botRatio>=0.70
             // Skip if already favorite or already muted
             // Blocked by pending inbox or active tasks
@@ -139,13 +147,6 @@ enum ChannelStatsQueries {
                         continue
                     }
                 }
-            }
-
-            // Stop syncing, after mute: an unmuted channel is offered the
-            // mute first, and Stop syncing mutes it too.
-            if let reason = excludeReason(s, signals: vs, now: now) {
-                recs.append(ChannelRecommendation(channelID: s.id, channelName: s.name, action: .exclude, reason: reason))
-                continue
             }
 
             // Leave: userMsgs==0 OR lastUserActivity 30+ days ago

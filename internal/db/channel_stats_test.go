@@ -237,9 +237,11 @@ func TestGetChannelStats_MutedAndFavorite(t *testing.T) {
 	}
 }
 
+// A >= 90% bot channel is offered Stop syncing instead (ask #1359), so the
+// mute candidate here is 80% bots.
 func TestComputeRecommendations_MuteCandidate(t *testing.T) {
 	stats := []ChannelStatRow{
-		{ChannelID: "C1", ChannelName: "bot-alerts", TotalMsgs: 60, UserMsgs: 0, Mentions: 0, BotRatio: 1.0},
+		{ChannelID: "C1", ChannelName: "bot-alerts", TotalMsgs: 60, UserMsgs: 0, Mentions: 0, BotRatio: 0.8},
 	}
 	recs := ComputeRecommendations(stats, "U1", nil)
 	require.Len(t, recs, 1)
@@ -601,7 +603,10 @@ func TestRecommendations_NilSignals(t *testing.T) {
 	}
 	recs := ComputeRecommendations(stats, "U1", nil)
 	require.Len(t, recs, 1)
-	assert.Equal(t, "mute", recs[0].Action)
+	// No signals at all count as none: a 100% bot channel is offered Stop
+	// syncing directly, not Mute (ask #1359).
+	assert.Equal(t, "exclude", recs[0].Action)
+	assert.Equal(t, "100% bot messages, no value signals", recs[0].Reason)
 }
 
 // recommendationCaseStat is one stats row of channel_recommendation_cases.json,

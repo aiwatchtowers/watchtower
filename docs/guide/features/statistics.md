@@ -27,7 +27,7 @@ Most of the AI bill and most of the noise come from a few channels: bot feeds, h
 | **Suggest Favorite** | You posted 10+ times and were mentioned 3+ times; the channel is on your watch list; or it holds 5+ decisions or 2+ active tracks |
 | **Suggest Stop syncing** | Muted for AI 30+ days, with no message from you and no mention of you since the mute; or 90% or more bot messages and no decisions, active tracks, open targets or pending inbox items. Never a favorite, a watched channel, a DM or a channel still catching up |
 
-Pending inbox items or open targets block both muting and leaving suggestions; active tracks or three or more decisions also block leaving. A bot channel you have not muted is offered **Mute** first, and **Stop syncing** once it is muted. A channel you stopped syncing gets no suggestions.
+Pending inbox items or open targets block both muting and leaving suggestions; active tracks or three or more decisions also block leaving. A channel with 90% or more bot messages and none of those signals is offered **Stop syncing** straight away, not **Mute**. A channel you stopped syncing gets no suggestions.
 
 **"Leave" only mutes.** Watchtower cannot remove you from a Slack channel, so the **Mute** button on a **Suggest Leave** row does exactly what the other **Mute** does.
 

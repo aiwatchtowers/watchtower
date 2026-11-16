@@ -288,7 +288,7 @@ final class SidebarCountsViewModelTests: XCTestCase {
     }
 
     /// The recommendations badge uses the value signals the Statistics
-    /// screen uses: a pending Inbox item blocks the mute suggestion in both.
+    /// screen uses: a pending Inbox item blocks the bot channel's suggestion in both.
     func testRecommendationBadgeHonoursValueSignals() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
@@ -303,7 +303,7 @@ final class SidebarCountsViewModelTests: XCTestCase {
         }
         let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
         await vm.loadInitial()
-        XCTAssertEqual(vm.recommendationCount, 1, "a bot channel is suggested for mute")
+        XCTAssertEqual(vm.recommendationCount, 1, "a bot channel is suggested for Stop syncing")
 
         try await manager.dbPool.write { db in
             _ = try TestDatabase.insertInboxItem(db, channelID: "C001", messageTS: "1700000001.000000")
