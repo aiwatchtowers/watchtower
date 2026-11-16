@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import ChatUI
 
 /// The Inbox's reading pane (spec B1, C1 §6.2): the selected row read in
 /// full. An automation card shows where it came from (a link to its run, or

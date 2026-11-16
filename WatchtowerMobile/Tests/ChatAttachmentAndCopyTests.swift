@@ -2,6 +2,7 @@ import ChatWire
 import ImageIO
 import UIKit
 import UniformTypeIdentifiers
+import WatchtowerChatText
 import WatchtowerKit
 import WatchtowerSync
 import XCTest
@@ -263,16 +264,18 @@ final class PhoneArtifactChat05ScanTests: XCTestCase {
     }
 
     func testTheHTMLPolicyBlocksEveryRemoteLoad() throws {
-        let rules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(ArtifactHTMLPolicy.contentRules.utf8)) as? [[String: Any]])
+        // The phone's page gets the Mac's chat-artifact rules (one policy, `HTMLPreviewPolicy`, unified chat F20).
+        let contentRules = HTMLPreviewPolicy.contentRules(allowFiles: false)
+        let rules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentRules.utf8)) as? [[String: Any]])
         let first = try XCTUnwrap(rules.first)
         XCTAssertEqual((first["action"] as? [String: String])?["type"], "block")
         XCTAssertEqual((first["trigger"] as? [String: String])?["url-filter"], ".*")
         let allowed = rules.dropFirst().compactMap { ($0["trigger"] as? [String: String])?["url-filter"] }
         XCTAssertEqual(allowed, ["^about:", "^data:", "^blob:"])
-        XCTAssertTrue(ArtifactHTMLPolicy.allowsNavigation(to: URL(string: "about:blank")))
-        XCTAssertFalse(ArtifactHTMLPolicy.allowsNavigation(to: URL(string: "https://example.com")))
-        XCTAssertFalse(ArtifactHTMLPolicy.allowsNavigation(to: URL(string: "file:///etc/hosts")))
-        XCTAssertFalse(ArtifactHTMLPolicy.allowsNavigation(to: nil))
+        XCTAssertTrue(HTMLPreviewPolicy.allowsNavigation(to: URL(string: "about:blank"), isMainFrame: true, page: nil))
+        XCTAssertFalse(HTMLPreviewPolicy.allowsNavigation(to: URL(string: "https://example.com"), isMainFrame: true, page: nil))
+        XCTAssertFalse(HTMLPreviewPolicy.allowsNavigation(to: URL(string: "file:///etc/hosts"), isMainFrame: true, page: nil))
+        XCTAssertFalse(HTMLPreviewPolicy.allowsNavigation(to: nil, isMainFrame: true, page: nil))
     }
 }
 

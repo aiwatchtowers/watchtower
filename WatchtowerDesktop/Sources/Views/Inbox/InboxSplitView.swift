@@ -1,6 +1,7 @@
 import GRDB
 import SwiftUI
 import WatchtowerCore
+import ChatUI
 
 /// The Inbox read like mail (spec B1, C1 §6.1): the list on the left —
 /// Needs your decision, Today, Earlier, for the legacy entry the root opened

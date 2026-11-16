@@ -6,7 +6,8 @@ import XCTest
 /// 2026-10-24 §5b (ask #539) the one text view is a finished answer's run
 /// of prose (`MarkdownTextRun.swift`), never the streaming reply's — and
 /// neither the selection overlay nor the batch view can send: the batch
-/// goes out only through the chat's own send.
+/// goes out only through the chat's own send. The markdown view and the
+/// selection overlay live in ChatUI's macOS part since unified chat T7.
 final class ChatSelectionQuoteScanTests: XCTestCase {
     private func source(_ path: String) throws -> String {
         let sources = URL(fileURLWithPath: #filePath)
@@ -18,7 +19,8 @@ final class ChatSelectionQuoteScanTests: XCTestCase {
     }
 
     func testThreadRowsNeverHostATextView() throws {
-        for file in ["Views/Chat/ChatMessageRow.swift", "Views/Chat/ChatThreadView.swift", "Views/Chat/MarkdownView.swift",
+        for file in ["Views/Chat/ChatMessageRow.swift", "Views/Chat/ChatThreadView.swift",
+                     "../../WatchtowerChat/Sources/ChatUI/Platform/macOS/MarkdownView.swift",
                      "Views/Chat/ChatFeedView.swift"] {
             let text = try source(file)
             for token in ["NSTextView", "DocumentTextView", "NSViewRepresentable"] {
@@ -31,7 +33,7 @@ final class ChatSelectionQuoteScanTests: XCTestCase {
     }
 
     func testTheSelectionOverlayAndTheBatchViewNeverSend() throws {
-        for file in ["Views/Chat/ChatSelectionQuote.swift", "Views/Chat/QuoteBatchView.swift"] {
+        for file in ["../../WatchtowerChat/Sources/ChatUI/Platform/macOS/ChatSelectionQuote.swift", "Views/Chat/QuoteBatchView.swift"] {
             let text = try source(file)
             for token in [".send(", "sendDraft", "startTurn", "ChatSessionPool", "Process(", "URLSession"] {
                 XCTAssertFalse(text.contains(token), "\(file) must not reference \(token)")

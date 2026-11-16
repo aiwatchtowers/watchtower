@@ -1,6 +1,7 @@
 import SwiftUI
 import WatchtowerCore
 import WatchtowerChatText
+import ChatUI
 
 /// One message of the session chat, shared by the pane and the subagent
 /// view. `Equatable` on its data only + `.equatable()` at the call site (the

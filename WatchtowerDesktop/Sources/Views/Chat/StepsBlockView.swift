@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
 
 /// "Worked for 12s · 4 steps" (spec §3.2.1): expanded with the live step on
 /// top while running, collapsed when done. Every tool call is visible

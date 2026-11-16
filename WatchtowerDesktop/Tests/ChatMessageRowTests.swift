@@ -5,6 +5,11 @@ import ViewInspector
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerTestSupport
+@testable import ChatUI
+
+// ChatUI has its own row types (unified chat T7); these tests are the app's until T8 switches the chat.
+private typealias ChatMessageRow = WatchtowerDesktop.ChatMessageRow
+private typealias ChatRowActions = WatchtowerDesktop.ChatRowActions
 
 @MainActor
 final class ChatMessageRowTests: XCTestCase {

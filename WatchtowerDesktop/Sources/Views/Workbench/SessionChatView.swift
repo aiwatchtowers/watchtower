@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
 
 /// The dialog of an agent session as a chat (`.sessionChat`): the owner
 /// right in a tinted bubble, the agent left without one, Watchtower's own

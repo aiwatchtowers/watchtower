@@ -282,13 +282,17 @@ child is never started without it.
 `testChat05PublishedLinkCardOnlyOpensOrCopies`
 (`WatchtowerDesktop/Tests/Core/ArtifactChat05ScanTests.swift`);
 `TestChat05_FallbackActionsOnlyOpenCopyOrFixedTurn`
-(`internal/chatengine/parts_test.go`)
+(`internal/chatengine/parts_test.go`);
+`testChat05FallbackAndArtifactActionsOnlyOpenOrCopy`
+(`WatchtowerChat/Tests/ChatUITests/ChatUISourceScanTests.swift`, the source scan of
+`ChatUI`'s fallback, artifact, published-link and html surfaces and the fallback
+action shapes)
 
 ## CHAT-06 — every message part has a fallback
 
 **Locked since:** 2026-11-16 (unified chat, board #1822, owner approval ask #1371)
 
-**Status:** Enforced (Go guard; the Swift guard lands with `ChatUI`, T7)
+**Status:** Enforced (Go and Swift guards)
 
 **Observable:** A chat message reaches every client as typed parts
 (`text`, `steps`, `sources`, `artifact`, `approval`, `question`, `error`,
@@ -306,8 +310,9 @@ text: the engine never emits them (D14), every client splits them out of the
 pinned to its Go twin `chat.ParseQuestionCard` by `question_parse_cases.json`),
 and the `text` part's fallback stands in for them. Every kind in
 `testdata/parts.json`, the client-derived `artifact` and `question` included,
-has a registered `ChatUI` view (the Swift half of the guard lands with `ChatUI`,
-T7). The remember and knowledge marks are not built for a message at or after
+has a registered `ChatUI` view (`ChatPartRegistry`; a kind it does not know, or
+a payload it cannot read, renders `FallbackPartView`: the fallback text and one
+button per action). The remember and knowledge marks are not built for a message at or after
 the conversation's first Live Slack message (LIVE-01), and a hub record cut that
 drops an action drops its approval part with it. The flat message fields
 (`text`, `steps`, `attachments`) stay beside `parts` for one release.
@@ -318,7 +323,12 @@ drops an action drops its approval part with it. The flat message fields
 `TestChat05_FallbackActionsOnlyOpenCopyOrFixedTurn`;
 `TestChatengine_UnlistedKindSendsFallbackOnly`;
 `TestQuestionParse_SharedCases` (`internal/chat/questions_test.go`) with
-`QuestionParseFixtureTests` (`WatchtowerChatText`)
+`QuestionParseFixtureTests` (`WatchtowerChatText`);
+`testChat06EveryFixtureKindIsRegistered`
+(`WatchtowerChat/Tests/ChatUITests/ChatPartRegistryTests.swift`, over the same
+`parts.json`: every kind, the client-derived ones included, has a registered view
+that draws its sample; every emitted kind's fallback is non-empty and
+`FallbackPartView` draws one button per action)
 
 ## LIVE-01 — Live Slack answers stay out of lasting stores
 
@@ -363,6 +373,7 @@ reason, and `testReaderList` over the Swift sources, which is file-level: a Swif
 
 ## Changelog
 
+- 2026-11-16 (unified chat T7, board #1822, owner approval ask #1371; spec `docs/superpowers/specs/2026-11-16-unified-chat-design.md` §6.1, §9.2, §14): **CHAT-06** gains its Swift guard `testChat06EveryFixtureKindIsRegistered` (`ChatUITests`) and is now Enforced on both sides. **CHAT-05** strengthened, not changed: the shared `ChatUI` package's fallback, artifact, published-link and html surfaces are scanned by `testChat05FallbackAndArtifactActionsOnlyOpenOrCopy` (the same forbidden list as `ArtifactChat05ScanTests`, plus `client.` and `ChatClient`), which also pins the fallback action shapes (only an http(s) `open_url`, a non-empty `chat_turn`, else nothing). `ArtifactChat05ScanTests` and `ChatSelectionQuoteScanTests` read `HTMLPreviewPolicy.swift`, `PublishedLink.swift` (now `WatchtowerChatText`), `MarkdownView.swift` and `ChatSelectionQuote.swift` (now `ChatUI/Platform/macOS`) at their new paths, assertions unchanged. CHAT-01 is held by the new `ChatUI` model tests too (`testChat01DraftStaysUntilApplied`, `testBusyEchoReturnsTextToComposer`, `testRefusedSendRestoresDraft`, `testDroppedEchoResendsWithSameKeyNoDuplicate`), CHAT-02 by `testChat02WaitingStepVisibleUntilEnd`; the Mac's Swift CHAT guards stay until T8 maps them. No guard relaxed. Fix round 1: the artifact action table and the html sandbox rules collapse into one copy each in `WatchtowerChatText` (ruling F20): `ArtifactActions` (moved from Core; the Mac's Gmail button and Slack resolver are parameters, its Core `slackTarget(meta:links:)` an extension) under the new viewer table `ChatArtifactActions` that ChatUI's viewer and the phone's sheet both draw, and the phone's `ArtifactHTMLPolicy` is gone — its page uses `HTMLPreviewPolicy.contentRules(allowFiles: false)`, `allowsNavigation(to:isMainFrame:page:)` and `removeWebRTC`, the rules the Mac's chat artifacts already had (same JSON, same navigation). `ArtifactChat05ScanTests` scans the moved files; `PhoneArtifactChat05ScanTests.testTheHTMLPolicyBlocksEveryRemoteLoad` and `ChatArtifactActionsTests` call the shared types with their assertions unchanged.
 - 2026-11-16 (unified chat T10a, board #1822, owner approval ask #1371; spec `docs/superpowers/specs/2026-11-16-unified-chat-design.md` §7, §9.2): **CHAT-03** amended (detached sessions, see its amendment), no guard relaxed. **CHAT-04**: note only, its Observable unchanged — "nothing on argv" holds for the detached session (`ai session --listen`): its argv carries the flags and the socket path only, and the turn's text and attachment paths travel in the `turn` command over the session socket (0600 in a 0700 folder, the peer checked as this team's watchtower CLI by its audit token read at accept, server-greets-first) instead of stdin; protocol v2 is unchanged. New Go guard `TestChat04_ListenTurnContentOnlyOnSocket` (the Go home of `testChat04TurnContentTravelsOnlyOnStdin` for the engine's sessions; the Swift guard stays until T8). The LIVE-01 reader list gains `chatengine/reattach.go:heldTurnOf` (ids only) and LLMUSAGE-01's exec list `chatengine.(*Engine).listenStart`; the LIVE-01 list also gains `chatstore/resend.go:Resend` (the owner's own turn text resent to its session). Off macOS the session socket accepts only this user's process running the session's own executable (`/proc/<pid>/exe`).
 - 2026-11-16 (unified chat T3, board #1822, owner approval ask #1371; spec `docs/superpowers/specs/2026-11-16-unified-chat-design.md` §5.3, §9.2): new contract **CHAT-06** (every part kind has a fallback, Go guard `TestCHAT06_EveryPartKindHasFallback`) and a **CHAT-05** amendment (fallback actions only open, copy or send a fixed owner text). The question parser moved from WatchtowerCore to `WatchtowerChatText` with a Go twin and one shared fixture; no guard relaxed.
 - 2026-11-16 (unified chat T1, board #1822, owner approval ask #1371; spec `docs/superpowers/specs/2026-11-16-unified-chat-design.md` §9.2): **CHAT-01** and **CHAT-03** amended, no guard relaxed. The hub's chat runner becomes the Go chat engine (`internal/chatengine`): it writes the owner row before the turn (CHAT-01), answers a repeated `client_key` with its first turn (migration 00192), and runs one pool of 3 (`MaxLive`, was 2; CHAT-03). The `TestChatrun_*` guards move to `internal/chatengine` as `TestChatengine_*` with their assertions (the pool bound now 3), `TestFILES01_Chatrun` becomes `TestFILES01_Chatengine`, and the LIVE-01 reader list names the engine's feed and list builders (`chatengine/feed.go`, `chatengine/list.go`) in place of the hub sources'.

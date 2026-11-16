@@ -1,6 +1,8 @@
 import AppKit
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
+import ChatUI
 
 /// The popover's root, hosted in an `NSPopover` by the Files pane's editor:
 /// the code-answer environment, set once here and never re-applied while an

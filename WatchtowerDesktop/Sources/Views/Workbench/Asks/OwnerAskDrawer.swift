@@ -2,6 +2,7 @@ import AppKit
 import WatchtowerChatText
 import SwiftUI
 import WatchtowerCore
+import ChatUI
 
 /// Where the drawer host puts its content and its drawer. Expanding never
 /// resizes the content: it keeps the width it had beside the drawer and the

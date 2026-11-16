@@ -4,6 +4,7 @@ import Observation
 import os
 import WatchtowerCore
 import WatchtowerSync
+import ChatUI
 
 @MainActor
 @Observable

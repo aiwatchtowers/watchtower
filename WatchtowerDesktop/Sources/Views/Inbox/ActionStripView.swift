@@ -1,6 +1,7 @@
 import GRDB
 import SwiftUI
 import WatchtowerCore
+import ChatUI
 
 /// The Inbox tab's content: the folder menu and the selected folder
 /// (`ActionStripActionsView`) over every kind that needs the owner — the

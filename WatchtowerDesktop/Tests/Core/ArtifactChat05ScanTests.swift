@@ -15,7 +15,9 @@ final class ArtifactChat05ScanTests: XCTestCase {
             "../../WatchtowerChatText/Sources/WatchtowerChatText/ArtifactParser.swift",
             // The artifact links both apps resolve in a reply (iPhone chat).
             "../../WatchtowerChatText/Sources/WatchtowerChatText/ArtifactLinks.swift",
-            "WatchtowerCore/Services/Chat/ArtifactActions.swift",
+            "../../WatchtowerChatText/Sources/WatchtowerChatText/ArtifactActions.swift",
+            "../../WatchtowerChatText/Sources/WatchtowerChatText/ChatArtifactActions.swift",
+            "WatchtowerCore/Services/Chat/ArtifactActions+Slack.swift",
             "WatchtowerCore/Services/Chat/ArtifactPanelModel.swift",
             "Views/Chat/ArtifactPanelView.swift",
             "Views/Chat/ArtifactCardView.swift",
@@ -45,7 +47,7 @@ final class ArtifactChat05ScanTests: XCTestCase {
             // controls are view-only, and it never reaches the loopback
             // server (workbench files only) or any socket.
             "Views/Common/SandboxedHTMLView.swift",
-            "WatchtowerCore/Services/LocalPreview/HTMLPreviewPolicy.swift",
+            "../../WatchtowerChatText/Sources/WatchtowerChatText/HTMLPreviewPolicy.swift",
             // The in-app preview's file scheme handler (#563): read-only
             // from disk, no socket or URL loading of its own.
             "Views/Common/SandboxedHTMLSchemeHandler.swift"
@@ -60,7 +62,7 @@ final class ArtifactChat05ScanTests: XCTestCase {
     /// BEHAVIOR CHAT-05 — see docs/inventory/chat.md
     func testChat05PublishedLinkCardOnlyOpensOrCopies() throws {
         try assertNeverWrites([
-            "WatchtowerCore/Services/Chat/PublishedLink.swift",
+            "../../WatchtowerChatText/Sources/WatchtowerChatText/PublishedLink.swift",
             "Views/Chat/PublishedLinkCardView.swift"
         ])
     }

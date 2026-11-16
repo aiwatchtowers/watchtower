@@ -161,7 +161,8 @@ chattext-test:
 	cd WatchtowerChatText && swift test $(if $(FILTER),--filter '$(FILTER)',)
 
 # Inner-loop tests for WatchtowerChat (ChatWire: the chat wire models, operations
-# and stores shared by the Mac and the phone; no ML stack): make chat-test FILTER=SomeTestClass.
+# and stores; ChatUI: the chat views and models; both shared by the Mac and the
+# phone, no ML stack): make chat-test FILTER=SomeTestClass.
 chat-test:
 	cd WatchtowerChat && swift test $(if $(FILTER),--filter '$(FILTER)',)
 
@@ -461,6 +462,9 @@ lint: golangci-version-check
 lint-diff: golangci-version-check
 	golangci-lint run --new-from-rev origin/main ./...
 
+# kit-lint-guard covers the Desktop's Views/App, the phone's Features and the
+# shared chat views (WatchtowerChat/Sources/ChatUI); each package's own
+# .swiftlint.yml carries the kit_* rules for its views.
 lint-swift:
 	bash scripts/kit-lint-guard.sh
 	cd WatchtowerDesktop && swiftlint lint --strict --baseline .swiftlint-baseline.json

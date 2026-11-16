@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
 
 /// A sources-panel group header: kind icon, name, count.
 struct SourceGroupHeader: View {

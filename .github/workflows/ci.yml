@@ -383,7 +383,9 @@ jobs:
         run: brew install swiftlint
 
       # The design kit's rules have no inline swiftlint:disable (the
-      # baseline only absorbs legacy code); same check as `make lint-swift`.
+      # baseline only absorbs legacy code) under the Desktop's views, the
+      # phone's features and the shared chat views (WatchtowerChat ChatUI);
+      # same check as `make lint-swift`.
       - name: Kit lint guard
         run: bash ../scripts/kit-lint-guard.sh
 
@@ -398,6 +400,7 @@ jobs:
         working-directory: WatchtowerChatText
         run: swiftlint lint --strict
 
+      # ChatUI's views are held to the kit_* rules by the package's config.
       - name: SwiftLint (chat package)
         working-directory: WatchtowerChat
         run: swiftlint lint --strict
@@ -419,7 +422,8 @@ jobs:
         working-directory: WatchtowerChatText
         run: swift test
 
-      # ChatWire: the chat wire models, operations and stores (unified chat).
+      # ChatWire (the chat wire models, operations and stores) and ChatUI (the
+      # shared chat views and models, CHAT-06's Swift guard) — unified chat.
       - name: Test (chat package)
         timeout-minutes: 15
         working-directory: WatchtowerChat

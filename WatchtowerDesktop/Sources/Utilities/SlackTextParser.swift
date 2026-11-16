@@ -2,6 +2,7 @@ import Foundation
 import WatchtowerCore
 #if canImport(AppKit)
 import AppKit
+import ChatUI
 #endif
 
 /// Parses Slack mrkdwn into plain text or AttributedString.

@@ -3,6 +3,7 @@ import SwiftUI
 import ViewInspector
 @testable import WatchtowerDesktop
 @testable import WatchtowerCore // memberwise init of the package struct ChatAttachment (TrayMenuViewTests precedent)
+@testable import ChatUI
 
 @MainActor
 final class ChatComposerFieldAttachmentTests: XCTestCase {

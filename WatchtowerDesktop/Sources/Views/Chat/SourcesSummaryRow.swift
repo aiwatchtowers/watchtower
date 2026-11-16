@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
 
 /// The one-line sources row under a finished answer: a small stack of kind
 /// icons, "N sources", the most frequent groups, a chevron. Clicking it opens

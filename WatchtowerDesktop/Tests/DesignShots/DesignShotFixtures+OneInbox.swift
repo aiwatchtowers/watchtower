@@ -4,6 +4,7 @@ import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerTestSupport
+@testable import ChatUI
 
 /// The one Inbox (C1) since its filters went (inbox builder B): today's day
 /// card in the root, and the root's legacy lists — a custom track and an

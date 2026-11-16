@@ -6,6 +6,7 @@ import ViewInspector
 import WatchtowerCore
 import WatchtowerTestSupport
 import WatchtowerChatText
+@testable import ChatUI
 
 /// An ask's text and fields (#394): the agent's text renders as markdown
 /// with links that open (http(s) in the browser, a workbench path in

@@ -1,6 +1,7 @@
 import SwiftUI
 @testable import WatchtowerDesktop
 import WatchtowerCore
+@testable import ChatUI
 
 /// A long markdown answer in the chat (spec 2026-10-24 §5b): a finished
 /// row draws its prose with native text runs, a streaming one with SwiftUI

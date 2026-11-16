@@ -5,6 +5,7 @@ import ViewInspector
 @testable import WatchtowerDesktop
 @testable import WatchtowerCore
 import WatchtowerTestSupport
+@testable import ChatUI
 
 /// The pane with the day, track and idea placeholders (before Tasks 8–10).
 private typealias PlaceholderPane = InboxReadingPane<

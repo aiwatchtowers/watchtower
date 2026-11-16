@@ -3,6 +3,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import WatchtowerCore
 import WebKit
+import WatchtowerChatText
 
 /// The Files pane — the workbench's open file tabs over one Monaco editor.
 /// A single click in the FILES tree opens a preview tab (italic, replaced by

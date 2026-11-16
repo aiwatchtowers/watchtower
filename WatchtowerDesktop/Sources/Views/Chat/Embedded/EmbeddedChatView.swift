@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import WatchtowerCore
+import WatchtowerChatText
 
 /// An embedded assistant chat (target, track, idea, meeting, onboarding,
 /// setup) on the main chat's pieces: `ChatFeedView` with `ChatMessageRow` /

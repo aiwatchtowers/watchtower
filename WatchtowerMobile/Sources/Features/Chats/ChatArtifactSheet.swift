@@ -2,101 +2,25 @@ import SwiftUI
 import UIKit
 import WatchtowerChatText
 
-/// What an artifact's buttons do (mockup 3b, CHAT-05): only open or copy. Email opens Mail (`mailto:`), an event
-/// opens the Google Calendar template, Slack copies the text and opens the Slack app; Copy and Share are on every
-/// kind. No case writes anywhere. Pure.
-struct ChatArtifactActions: Equatable {
-    enum Effect: Equatable {
-        case open(URL)
-        case copyThenOpen(text: String, url: URL?)
-        case copy(String)
-        case share(String)
+/// The sheet's buttons come from the one table both apps' viewers draw (`WatchtowerChatText.ChatArtifactActions`,
+/// unified chat ruling F20); the phone's artifact is read through these adapters. CHAT-05: only open or copy.
+extension ChatArtifactContent {
+    var draft: ArtifactDraft {
+        ArtifactDraft(key: key, kind: kind, title: title, meta: meta, content: content, isComplete: true)
     }
+}
 
-    struct Button: Equatable, Identifiable {
-        let title: String
-        let symbol: String
-        let effect: Effect
-        /// The kind's own button (blue in 3b); Copy and Share are plain.
-        let isPrimary: Bool
-
-        var id: String { title }
-    }
-
-    static let openInMail = "Open in Mail"
-    static let openInCalendar = "Open in Google Calendar"
-    static let openInSlack = "Copy & open Slack"
-    static let copy = "Copy"
-    static let share = "Share"
-
-    let buttons: [Button]
-
+extension ChatArtifactActions {
     init(_ artifact: ChatArtifactContent, timeZone: TimeZone = .current) {
-        var buttons: [Button] = []
-        switch artifact.kind {
-        case "email":
-            buttons.append(Button(title: Self.openInMail, symbol: "envelope", effect: Self.effect(
-                ArtifactLinks.mailto(meta: artifact.meta, body: artifact.content)), isPrimary: true))
-        case "event":
-            var meta = artifact.meta
-            meta["title"] = artifact.title
-            buttons.append(Button(title: Self.openInCalendar, symbol: "calendar.badge.plus", effect: Self.effect(
-                ArtifactLinks.calendarTemplate(meta: meta, body: artifact.content, timeZone: timeZone)), isPrimary: true))
-        case "slack":
-            buttons.append(Button(title: Self.openInSlack, symbol: "number", effect: .copyThenOpen(
-                text: artifact.content, url: ArtifactLinks.slack(meta: artifact.meta)), isPrimary: true))
-        default:
-            break
-        }
-        let text = Self.text(artifact)
-        buttons.append(Button(title: Self.copy, symbol: "doc.on.doc", effect: .copy(text), isPrimary: false))
-        buttons.append(Button(title: Self.share, symbol: "square.and.arrow.up", effect: .share(text), isPrimary: false))
-        self.buttons = buttons
+        self.init(artifact.draft, timeZone: timeZone)
     }
 
-    private static func effect(_ link: ArtifactLink) -> Effect {
-        switch link {
-        case let .open(url): .open(url)
-        case let .copyThenOpen(text, url): .copyThenOpen(text: text, url: url)
-        }
-    }
-
-    /// What Copy and Share carry: the fields that make the artifact, then its text (the Mac's export).
-    static func text(_ artifact: ChatArtifactContent) -> String {
-        let fields: [(String, String?)] = switch artifact.kind {
-        case "email": [("To", artifact.meta["to"]), ("Cc", artifact.meta["cc"]), ("Subject", artifact.meta["subject"])]
-        case "event":
-            [("Title", artifact.title), ("Start", artifact.meta["start"]), ("End", artifact.meta["end"]),
-             ("Attendees", artifact.meta["attendees"]), ("Location", artifact.meta["location"])]
-        default: []
-        }
-        let lines = fields.compactMap { name, value -> String? in
-            guard let value, !value.isEmpty else { return nil }
-            return "\(name): \(value)"
-        }
-        return lines.isEmpty ? artifact.content : lines.joined(separator: "\n") + "\n\n" + artifact.content
-    }
-
-    /// The labelled fields the sheet shows above the text (mockup 3b).
     static func fields(_ artifact: ChatArtifactContent) -> [(label: String, value: String)] {
-        let pairs: [(String, String?)] = switch artifact.kind {
-        case "email": [("To", artifact.meta["to"]), ("Cc", artifact.meta["cc"]), ("Subject", artifact.meta["subject"])]
-        case "event":
-            [("Start", artifact.meta["start"]), ("End", artifact.meta["end"]), ("Location", artifact.meta["location"]),
-             ("Attendees", artifact.meta["attendees"])]
-        case "slack": [("Channel", artifact.meta["channel"])]
-        default: []
-        }
-        return pairs.compactMap { label, value in
-            guard let value, !value.isEmpty else { return nil }
-            return (label, value)
-        }
+        fields(artifact.draft)
     }
 
-    /// The text a Markdown kind renders: code in a fence of its language.
     static func markdown(_ artifact: ChatArtifactContent) -> String {
-        guard artifact.kind == "code" else { return artifact.content }
-        return "```\(artifact.meta["language"] ?? "")\n\(artifact.content)\n```"
+        markdown(artifact.draft)
     }
 }
 
