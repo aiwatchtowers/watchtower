@@ -1,3 +1,4 @@
+import ChatWire
 import CryptoKit
 import SwiftUI
 import UIKit

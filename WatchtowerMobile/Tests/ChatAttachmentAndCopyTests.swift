@@ -1,3 +1,4 @@
+import ChatWire
 import ImageIO
 import UIKit
 import UniformTypeIdentifiers
@@ -6,69 +7,10 @@ import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
 
-/// The phone's attachment rules (spec §4.5): the Mac's limits through the shared `attachment_limit_cases.json`,
-/// HEIC → JPEG, images over 5 MB downsized, and the 30 MB a message carries.
+/// The phone's attachment rules (spec §4.5): HEIC → JPEG, images over 5 MB downsized, and the 30 MB a message
+/// carries. The Mac's limits through the shared `attachment_limit_cases.json` are ChatWire's
+/// `ChatAttachmentLimitsTests`.
 final class ChatAttachmentPickerTests: XCTestCase {
-    private struct Fixture: Decodable {
-        struct Case: Decodable {
-            struct Expect: Decodable {
-                let ok: Bool
-                let mime: String?
-                let ext: String?
-                let reason: String?
-                let limit: Int64?
-                let message: String?
-            }
-
-            let name: String
-            let fileName: String
-            let headHex: String
-            let fill: String
-            let size: Int
-            let expect: Expect
-        }
-
-        let cases: [Case]
-    }
-
-    private static let fixture = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .appendingPathComponent("internal/chatstore/testdata/attachment_limit_cases.json")
-
-    private func bytes(_ item: Fixture.Case) -> Data {
-        var data = Data()
-        var hex = Substring(item.headHex)
-        while hex.count >= 2 {
-            data.append(UInt8(hex.prefix(2), radix: 16) ?? 0)
-            hex = hex.dropFirst(2)
-        }
-        let fill = UInt8(item.fill.utf8.first ?? 0x61)
-        if data.count < item.size { data.append(Data(repeating: fill, count: item.size - data.count)) }
-        return data
-    }
-
-    func testTheSharedLimitCases() throws {
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let fixture = try decoder.decode(Fixture.self, from: Data(contentsOf: Self.fixture))
-        XCTAssertGreaterThan(fixture.cases.count, 20)
-        for item in fixture.cases {
-            switch ChatAttachmentLimits.validate(data: bytes(item), fileName: item.fileName) {
-            case let .success(kind):
-                XCTAssertTrue(item.expect.ok, item.name)
-                XCTAssertEqual(kind.mime, item.expect.mime, item.name)
-                XCTAssertEqual(kind.fileExtension(fallbackName: item.fileName), item.expect.ext, item.name)
-            case let .failure(rejection):
-                XCTAssertFalse(item.expect.ok, item.name)
-                XCTAssertEqual(rejection.reason, item.expect.reason, item.name)
-                let limit = item.expect.limit.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? ""
-                XCTAssertEqual(rejection.message, item.expect.message?.replacingOccurrences(of: "{limit}", with: limit), item.name)
-            }
-        }
-    }
-
     /// A square image of random pixels (nothing for a codec to squeeze), encoded as `type`.
     private func image(side: Int, type: UTType) throws -> Data {
         var pixels = [UInt8](repeating: 0, count: side * side * 4)

@@ -38,7 +38,7 @@ PURGE_DEFAULT ?= $(WATCHTOWER_PURGE_DEFAULT)
 LINK_FETCH_DENY_HOSTS ?= $(WATCHTOWER_LINK_FETCH_DENY_HOSTS)
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET) -X watchtower/internal/linear.DefaultLinearClientID=$(LINEAR_ID) -X watchtower/internal/purge.BuildDefault=$(PURGE_DEFAULT) -X watchtower/internal/media.BuildDenyHosts=$(LINK_FETCH_DENY_HOSTS) -X watchtower/internal/hub/identity.KeychainBuildFlag=false"
 
-.PHONY: golangci-version-check build bridge-build test test-verbose test-cover test-race race-packages test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test chattext-test e2e-vectors test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check cloudkit-subscriptions-deployed relay-go relay-proto relay-interop relay-interop-kit relay-interop-kit-hub hub-smoke hub-staging
+.PHONY: golangci-version-check build bridge-build test test-verbose test-cover test-race race-packages test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test chattext-test chat-test e2e-vectors test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check cloudkit-subscriptions-deployed relay-go relay-proto relay-interop relay-interop-kit relay-interop-kit-hub hub-smoke hub-staging
 
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
@@ -139,12 +139,14 @@ test-race:
 # Inner-loop Swift tests: make test-swift FILTER=SomeTestClass runs only that
 # class (a regex alternation works too: FILTER='ClassA|ClassB' — the recipe
 # single-quotes it so the | never reaches the shell); without FILTER the full
-# suite runs as before, followed by the mobile Kit suite (kit-test), so the
-# gate covers both packages.
+# suite runs as before, followed by the mobile Kit suite (kit-test), the chat
+# text package (chattext-test) and the chat package (chat-test), so the
+# gate covers every package.
 test-swift:
 	cd WatchtowerDesktop && caffeinate -i swift test $(if $(FILTER),--filter '$(FILTER)',)
 	$(if $(FILTER),,caffeinate -i $(MAKE) kit-test)
 	$(if $(FILTER),,caffeinate -i $(MAKE) chattext-test)
+	$(if $(FILTER),,caffeinate -i $(MAKE) chat-test)
 
 # Inner-loop tests for the shared mobile Kit package (WatchtowerSync +
 # WatchtowerKit): make kit-test FILTER=SomeTestClass (a regex alternation
@@ -157,6 +159,11 @@ kit-test:
 # Mac and the phone, no GRDB, no ML stack): make chattext-test FILTER=SomeTestClass.
 chattext-test:
 	cd WatchtowerChatText && swift test $(if $(FILTER),--filter '$(FILTER)',)
+
+# Inner-loop tests for WatchtowerChat (ChatWire: the chat wire models, operations
+# and stores shared by the Mac and the phone; no ML stack): make chat-test FILTER=SomeTestClass.
+chat-test:
+	cd WatchtowerChat && swift test $(if $(FILTER),--filter '$(FILTER)',)
 
 # The Kit E2E vectors the Go hub's golden tests read: padding, envelope, kdf,
 # hpke-envelope and asset .json in WatchtowerKit/Tests/Fixtures/e2e
@@ -459,6 +466,7 @@ lint-swift:
 	cd WatchtowerDesktop && swiftlint lint --strict --baseline .swiftlint-baseline.json
 	cd WatchtowerKit && swiftlint lint --strict
 	cd WatchtowerChatText && swiftlint lint --strict
+	cd WatchtowerChat && swiftlint lint --strict
 	cd WatchtowerMobile && swiftlint lint --strict
 
 lint-all: lint lint-swift

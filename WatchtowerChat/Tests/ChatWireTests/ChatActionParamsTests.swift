@@ -1,18 +1,14 @@
-import WatchtowerSync
+import ChatWire
 import XCTest
-@testable import WatchtowerKit
 
-/// The chat action params against the Go-written fixture `Tests/Fixtures/chat/actions.json`, which the hub's
-/// `TestChatActionsFixture` runs through its handlers (iPhone chat spec §4.5): the Kit encodes each case's params to
-/// the bytes the hub accepts. A nil optional is an absent key, so a fixture `null` compares as absent.
+/// The chat action params against the Go-written fixture `WatchtowerKit/Tests/Fixtures/chat/actions.json`, which the
+/// hub's `TestChatActionsFixture` runs through its handlers (iPhone chat spec §4.5): ChatWire encodes each case's
+/// params to the bytes the hub accepts. A nil optional is an absent key, so a fixture `null` compares as absent. The
+/// action kinds are the phone's (`ChatWireKitConformancesTests`).
 final class ChatActionParamsTests: XCTestCase {
-    private static let fixtureURL = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent() // WatchtowerKitTests
-        .deletingLastPathComponent() // Tests
-        .appendingPathComponent("Fixtures/chat/actions.json")
-
     private func fixture() throws -> [String: Any] {
-        try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: Self.fixtureURL)) as? [String: Any])
+        let data = try Data(contentsOf: ChatWireFixtures.kitFixture("chat/actions.json"))
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
     private func cases() throws -> [[String: Any]] {
@@ -31,33 +27,18 @@ final class ChatActionParamsTests: XCTestCase {
         return out as NSDictionary
     }
 
-    private func wire<P: ActionParams>(_ params: P) throws -> NSDictionary {
-        let data = try JSONEncoder().encode(try params.wireParams())
+    private func wire<P: Encodable>(_ params: P) throws -> NSDictionary {
+        let data = try ChatWireCoder.makeEncoder().encode(params)
         return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? NSDictionary)
     }
 
-    private func check<P: ActionParams>(_ name: String, _ built: P, file: StaticString = #filePath, line: UInt = #line) throws {
+    private func check<P: Codable & Equatable>(_ name: String, _ built: P, file: StaticString = #filePath, line: UInt = #line) throws {
         let expected = stripped(try params(name))
         XCTAssertEqual(try wire(built), expected, name, file: file, line: line)
         // The params read back from the bytes are the same value.
         let data = try JSONSerialization.data(withJSONObject: expected)
-        let back = try P(wireParams: try JSONDecoder().decode([String: JSONValue].self, from: data))
+        let back = try ChatWireCoder.makeDecoder().decode(P.self, from: data)
         XCTAssertEqual(back, built, name, file: file, line: line)
-    }
-
-    func testEveryFixtureCaseNamesAChatKindThatHasParams() throws {
-        let kinds = Set(try cases().compactMap { $0["kind"] as? String })
-        let ours: Set = [
-            ChatNewParams.actionKind, ChatTurnParams.actionKind, ChatCancelParams.actionKind,
-            ChatFeedRequestParams.actionKind, ChatPageParams.actionKind, ChatSearchParams.actionKind,
-            ChatReadParams.actionKind, ChatBranchSelectParams.actionKind, ChatManageParams.actionKind,
-            ChatActionAnswerParams.actionKind, ChatEntitySearchParams.actionKind, ChatSkillsListParams.actionKind
-        ].reduce(into: Set<String>()) { $0.insert($1.rawValue) }
-        XCTAssertEqual(kinds, ours)
-        for fixtureCase in try cases() {
-            let kind = try XCTUnwrap(fixtureCase["kind"] as? String)
-            XCTAssertNotNil(ActionKind(rawValue: kind), kind)
-        }
     }
 
     func testNew() throws {
@@ -115,17 +96,5 @@ final class ChatActionParamsTests: XCTestCase {
         XCTAssertTrue(ChatLimits.textFits(String(repeating: "a", count: 32000)))
         XCTAssertFalse(ChatLimits.textFits(String(repeating: "a", count: 32001)))
         XCTAssertFalse(ChatLimits.textFits(String(repeating: family, count: 4572))) // 4572 × 7 = 32004, 4572 Characters
-    }
-
-    func testChatReasonsMapAndAnOldCodeStaysNil() {
-        XCTAssertEqual(ActionReason(rawValue: "conversation_busy"), .conversationBusy)
-        XCTAssertEqual(ActionReason(rawValue: "attachment_missing"), .attachmentMissing)
-        XCTAssertEqual(ActionReason(rawValue: "changed"), .changed)
-        XCTAssertEqual(ChatActionReason(.conversationBusy), .conversationBusy)
-        XCTAssertEqual(ChatActionReason(.attachmentMissing), .attachmentMissing)
-        XCTAssertEqual(ChatActionReason(.changed), .actionChanged)
-        XCTAssertEqual(ChatActionReason(.notSupported), .notSupported)
-        XCTAssertNil(ChatActionReason(.writeFailed))
-        XCTAssertNil(ChatActionReason(nil))
     }
 }

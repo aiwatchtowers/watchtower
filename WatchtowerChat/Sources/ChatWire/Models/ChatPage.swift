@@ -1,14 +1,11 @@
 import Foundation
-import WatchtowerSync
 
 /// The `chat_page` slice, record `chat_page-<conversation id>-<before
 /// message id>` (iPhone chat spec §4.6): the 60 active-branch messages
 /// before that message, in the feed's shape and caps, asked with
 /// `chat_page` and kept 5 minutes. Empty when the message left the active
 /// branch.
-public struct ChatPage: SliceMirror, Equatable {
-    public static let sliceKind = SliceKind.chatPage
-
+public struct ChatPage: Decodable, Hashable, Sendable {
     /// Oldest first.
     public let messages: [ChatFeed.Message]
     /// Still older messages exist: ask the page before `messages.first`.
@@ -27,10 +24,5 @@ public struct ChatPage: SliceMirror, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case messages, hasMore
-    }
-
-    /// `chat_page-<conversation id>-<before message id>`.
-    public static func recordName(conversationID: Int64, beforeMessageID: Int64) -> String {
-        SliceKind.chatPage.recordName(id: "\(conversationID)-\(beforeMessageID)")
     }
 }

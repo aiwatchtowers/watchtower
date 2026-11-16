@@ -21,6 +21,11 @@ packages:
   # builder, quote reply; iPhone chat spec D8). Dependency-free of the Kit.
   WatchtowerChatText:
     path: ../WatchtowerChatText
+  # The chat shared with the Mac (unified chat spec §6.1): ChatWire carries the
+  # chat wire models, operations and stores; the relay conformances of its
+  # models are the app's (Sources/Features/Chats/ChatWireKitConformances.swift).
+  WatchtowerChat:
+    path: ../WatchtowerChat
   # GRDB is transitive through WatchtowerKit, but the app and its tests use
   # its types directly (`ValueObservation`, `Database`). A testability build
   # dead-strips the autolink hint, so the app would fail with undefined GRDB
@@ -79,6 +84,8 @@ targets:
         product: WatchtowerHostedRelay
       - package: WatchtowerChatText
         product: WatchtowerChatText
+      - package: WatchtowerChat
+        product: ChatWire
       - package: GRDB
         product: GRDB
       - package: SwiftProtobuf
@@ -216,6 +223,8 @@ targets:
       # The relay identity's real-Keychain test. Test target only for now.
       - package: WatchtowerKit
         product: WatchtowerHostedRelay
+      - package: WatchtowerChat
+        product: ChatWire
       - package: GRDB
         product: GRDB
       - package: SwiftProtobuf

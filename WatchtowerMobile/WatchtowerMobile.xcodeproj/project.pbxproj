@@ -99,7 +99,7 @@
 		3940830A98EF03CA72819D0F /* ReplicaWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */; };
 		39AEE33DBF4A276999156B19 /* AskFormModel+Status.swift in Sources */ = {isa = PBXBuildFile; fileRef = 297FDFC3CED17D5BE064E1CC /* AskFormModel+Status.swift */; };
 		3B22414D2DC93304FBB9F14A /* SettingsCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE2448E3D10E3EFE8D35624C /* SettingsCard.swift */; };
-		3D557174679E0AFAA39B9A37 /* SwiftProtobuf in Frameworks */ = {isa = PBXBuildFile; productRef = EB8572B29D41BB288DE5049A /* SwiftProtobuf */; };
+		3D557174679E0AFAA39B9A37 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 5CF9E51BB968298C0AAB2FD5 /* GRDB */; };
 		3DCA97C1B1714F027E9818BA /* BoardFilterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51697B0A1DB4115D387483C5 /* BoardFilterTests.swift */; };
 		3F4CE8C40D6A23A14D2DD4C4 /* ReplicaKindTrackingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49728A0913682F844134761D /* ReplicaKindTrackingTests.swift */; };
 		3F6C3F7E115726353BD8B005 /* AskKindStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 119FD3920ADF7C4F695EF283 /* AskKindStyle.swift */; };
@@ -119,7 +119,7 @@
 		464D3D47D6D5457910F08763 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4EF0E3D3509281E6EB30B918 /* Assets.xcassets */; };
 		46A5780712E8154F7DC024D1 /* RelayAccountCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9A200E0C0E91AC3826112E9 /* RelayAccountCenter.swift */; };
 		46E258EE2C1E84B92A1CB9B5 /* MobileTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B65C9C102B9642AC8CD236F /* MobileTestSupport.swift */; };
-		4775CC25932238F3DE9B47AE /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 5CF9E51BB968298C0AAB2FD5 /* GRDB */; };
+		4775CC25932238F3DE9B47AE /* ChatWire in Frameworks */ = {isa = PBXBuildFile; productRef = CDCED5117AB558FB2DD9D223 /* ChatWire */; };
 		48392D5CA7D3AC046F4512CF /* ChatsCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47501182E29F6E1346D89BB2 /* ChatsCenter.swift */; };
 		49581B2DB8F7B23814B73BBA /* MacsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACB75AFB86CD8FA28BE4C1B3 /* MacsView.swift */; };
 		4AFB097B5F15151D72EE5076 /* HubSwitcherModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CA14AAC38703FAD1DD03DBF /* HubSwitcherModel.swift */; };
@@ -147,6 +147,7 @@
 		5DFE9C537D29C8CE6C61C1DC /* ChatConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B217981668550F76482FCC9E /* ChatConversationView.swift */; };
 		60308F364D1CCC828D53294B /* MacTransportModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEB38A13D1FADDABACF8A959 /* MacTransportModelTests.swift */; };
 		60984876AEF6DC770D244031 /* SharedAlertWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A3DDEA22A6A8A679FAAE964 /* SharedAlertWiringTests.swift */; };
+		60D56777C42C19D03F654E1E /* ChatWireKitConformances.swift in Sources */ = {isa = PBXBuildFile; fileRef = C795BF8B605BF4BA1DBB8E88 /* ChatWireKitConformances.swift */; };
 		61DAF868A96DA3A609732EA7 /* RecorderChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CF8F8EF7B0FD80D2412EE8A /* RecorderChrome.swift */; };
 		62E010AEAA71C7111D15A4FD /* ScanView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0879174780AFEA40D8A455F2 /* ScanView.swift */; };
 		63564EC779302B003A4EDC2D /* BoardCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71E04F6C4A52AE21410A7EE5 /* BoardCard.swift */; };
@@ -184,6 +185,7 @@
 		7A428D20DE2D3DF5A4B19E9A /* FakeHostedRelay+Auth.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEF9BB5AE927193D3E36C67C /* FakeHostedRelay+Auth.swift */; };
 		7C2E2C569B70FD5872BD3473 /* RecorderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EB4E696B701E6C25E4AEFD2 /* RecorderTests.swift */; };
 		7E1CEB00E2AEA4E1FADAFBA0 /* RecorderNotices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67BF6DB29267D73FA3E8AEA6 /* RecorderNotices.swift */; };
+		7E85DCB5A5DBE705F60F7CC0 /* SwiftProtobuf in Frameworks */ = {isa = PBXBuildFile; productRef = EB8572B29D41BB288DE5049A /* SwiftProtobuf */; };
 		7F00F3800B6D983D9681DCA1 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DEBD9ECF17CEA4057EAF471 /* NotificationService.swift */; };
 		80A7148111AB12100396D014 /* ChatApprovalCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E27694DAE59C1BCACCD2D0A /* ChatApprovalCard.swift */; };
 		80B0BD82A7280A1574E94711 /* RelayConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFC2F522FC1F6E775AB62D3A /* RelayConfig.swift */; };
@@ -229,6 +231,7 @@
 		9F28AD417086206121616519 /* NowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27F9F7B9E929C013BC8C456F /* NowView.swift */; };
 		A01ED6EABB46966DF042B60D /* DesignSystemTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8F8031BEE354E1EDC067BB7 /* DesignSystemTests.swift */; };
 		A0BE5F402AC94E7324FC5530 /* RelayPushRegistrar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 898B58250245EB8FEB3A6C40 /* RelayPushRegistrar.swift */; };
+		A1981C8F5747C8D38ED993EA /* SwiftProtobuf in Frameworks */ = {isa = PBXBuildFile; productRef = 2C83956E74692A14A6AC7447 /* SwiftProtobuf */; };
 		A29814987A1F51AE9D324907 /* RelayLinkingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AF913E16211A8522A391194 /* RelayLinkingTests.swift */; };
 		A2CC501514D2966C016D29E5 /* StoreKitTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 251A5D4D6991B8CA24069FFC /* StoreKitTest.framework */; };
 		A40CDAE6323A6FC846928E59 /* DemoSeed+Calendar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2265BBA8FDC88ACD5E793E5E /* DemoSeed+Calendar.swift */; };
@@ -237,6 +240,7 @@
 		AA7B463BE6184B04A23F9DF9 /* BoardTargetDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E008E946FEC72751D61A954 /* BoardTargetDetailView.swift */; };
 		AABE1CB3835D3B2E87CD6EEB /* AskDraft.swift in Sources */ = {isa = PBXBuildFile; fileRef = 359CFF7702DA1B4BDAC6D0D1 /* AskDraft.swift */; };
 		AB2E1BD0456C81BDE3906CD6 /* TransportRequestWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83A0245800A1A535181F35C9 /* TransportRequestWiringTests.swift */; };
+		ACE9AD0800A401716937351D /* ChatWireKitConformancesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92D0ED30A0A8FBADD1FF995D /* ChatWireKitConformancesTests.swift */; };
 		AD204ABB83F330AB42425FE7 /* FakeHostedRelay+Zones.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3423ED435746DC6583E674BC /* FakeHostedRelay+Zones.swift */; };
 		ADD45BD51A2E58C5A75433D2 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 466CC109BCC04BF69B9A8A07 /* PrivacyInfo.xcprivacy */; };
 		ADDE354E5E6C7011DB746B6D /* ChatFeedRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FE9B668FD83B8CF1D390B2C /* ChatFeedRows.swift */; };
@@ -270,7 +274,7 @@
 		C2C5327B9A7FC502C4E2F9D6 /* BackgroundWork.swift in Sources */ = {isa = PBXBuildFile; fileRef = E108465923F8BBC2C4312775 /* BackgroundWork.swift */; };
 		C2D91BEDAB5111552D11E1D7 /* NotificationViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7EAF16DACB4176FE3005721 /* NotificationViewController.swift */; };
 		C341C37F6264E34CCAB8BB5F /* BoardWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC12186E8FC140813F1BFDBF /* BoardWriter.swift */; };
-		C37AF0379C0CA9C8B5E6C82E /* SwiftProtobuf in Frameworks */ = {isa = PBXBuildFile; productRef = 2C83956E74692A14A6AC7447 /* SwiftProtobuf */; };
+		C37AF0379C0CA9C8B5E6C82E /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 73828104AEDF42B7DD8514E7 /* GRDB */; };
 		C38D922B0CFEFFE8F1E41701 /* MacStatusChip.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4848648462D5CFE94D4E58D3 /* MacStatusChip.swift */; };
 		C54517C9A6E1196BFAD5EE21 /* RelayCardModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FC40A2129FAD7E956AE98BE /* RelayCardModelTests.swift */; };
 		C5A4DBFA5BA08D2CEE2ABA22 /* WatchtowerE2ETesting in Frameworks */ = {isa = PBXBuildFile; productRef = 6D38595E8CBDC60347EDAD0B /* WatchtowerE2ETesting */; };
@@ -278,7 +282,7 @@
 		C9291427ACD4ABD9470F8A17 /* SessionActionsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FAEEAE6D35911B35EC2C4BF /* SessionActionsModel.swift */; };
 		CA0CA270D0CC9FF8CE62518A /* DemoSeed+SessionDetail.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEBDA5069E71CF42F0A6AC4D /* DemoSeed+SessionDetail.swift */; };
 		CB102EA39646DE7AE89A3FA4 /* ReplicaDecodeCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = F34E795FC1F8D741120567AA /* ReplicaDecodeCache.swift */; };
-		CB8CDC9A80860923C6BCDD23 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 73828104AEDF42B7DD8514E7 /* GRDB */; };
+		CB8CDC9A80860923C6BCDD23 /* ChatWire in Frameworks */ = {isa = PBXBuildFile; productRef = A31597B9AAE404824EB76D2E /* ChatWire */; };
 		CBAC6DFC16DA706DE9C73921 /* CheckAskView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFCBBC92D3DFC415396C183C /* CheckAskView.swift */; };
 		CC58E9B61684A610576DA392 /* DemoSeed+Workbench.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC1D506E95E1AC75991E81EB /* DemoSeed+Workbench.swift */; };
 		CD1CF9B9ABA758B79FE0F0C6 /* MultiHubEnvironmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AE856C04E56DC5BC73E2622 /* MultiHubEnvironmentTests.swift */; };
@@ -588,6 +592,7 @@
 		8F901DED70633FBEDDF22415 /* ChatBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatBubble.swift; sourceTree = "<group>"; };
 		905A0FD1465978EE86B75D1C /* RecordingHold.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingHold.swift; sourceTree = "<group>"; };
 		9149426C15521F5383D60828 /* AlertRouteMoveWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlertRouteMoveWiringTests.swift; sourceTree = "<group>"; };
+		92D0ED30A0A8FBADD1FF995D /* ChatWireKitConformancesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatWireKitConformancesTests.swift; sourceTree = "<group>"; };
 		93764DAE658A0C920D2178FA /* RelaySlotsModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelaySlotsModelTests.swift; sourceTree = "<group>"; };
 		93AAD7B9BB253AC098F3229D /* RelayFakes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayFakes.swift; sourceTree = "<group>"; };
 		9493F3FE3EDF5AADD9EE4298 /* RecordingsListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingsListView.swift; sourceTree = "<group>"; };
@@ -604,6 +609,7 @@
 		9830582A7A7341EA949DD972 /* NotifyContent.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NotifyContent.entitlements; sourceTree = "<group>"; };
 		995638B2B087C61A81959E08 /* HubBoot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubBoot.swift; sourceTree = "<group>"; };
 		9A806A63CB29EB2AAA0A4132 /* SessionInputSender.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionInputSender.swift; sourceTree = "<group>"; };
+		9B49E88783F01996F1DF4013 /* WatchtowerChat */ = {isa = PBXFileReference; lastKnownFileType = folder; name = WatchtowerChat; path = ../WatchtowerChat; sourceTree = SOURCE_ROOT; };
 		9BA7C71D71B98A098CE0C829 /* RelayUpgradeCopyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayUpgradeCopyTests.swift; sourceTree = "<group>"; };
 		9C13A9C2FF59FED5376EB90C /* SubscriptionFakes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubscriptionFakes.swift; sourceTree = "<group>"; };
 		9C8A95C95B93D99054219A43 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
@@ -665,6 +671,7 @@
 		C1A17B38FC88C637F01D152D /* WorkchatStateCardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkchatStateCardTests.swift; sourceTree = "<group>"; };
 		C3F9240000D56B30D4AB7332 /* NotifyContent.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = NotifyContent.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		C68A6FC9A37EB91641EBFCAB /* DeviceIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceIdentity.swift; sourceTree = "<group>"; };
+		C795BF8B605BF4BA1DBB8E88 /* ChatWireKitConformances.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatWireKitConformances.swift; sourceTree = "<group>"; };
 		C7D008B26401148680559F68 /* AskFormModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskFormModel.swift; sourceTree = "<group>"; };
 		C8F3681AEDF7DA7A4369AB32 /* NotificationRouterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationRouterTests.swift; sourceTree = "<group>"; };
 		C93DE7B335A17B9E0366489C /* RelayLinkingE2ETests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayLinkingE2ETests.swift; sourceTree = "<group>"; };
@@ -761,8 +768,9 @@
 				ECBCFA171FBB2757D78073D8 /* WatchtowerSync in Frameworks */,
 				C5A4DBFA5BA08D2CEE2ABA22 /* WatchtowerE2ETesting in Frameworks */,
 				4CC11EBE1DF90C0C89628B34 /* WatchtowerHostedRelay in Frameworks */,
-				4775CC25932238F3DE9B47AE /* GRDB in Frameworks */,
-				3D557174679E0AFAA39B9A37 /* SwiftProtobuf in Frameworks */,
+				4775CC25932238F3DE9B47AE /* ChatWire in Frameworks */,
+				3D557174679E0AFAA39B9A37 /* GRDB in Frameworks */,
+				7E85DCB5A5DBE705F60F7CC0 /* SwiftProtobuf in Frameworks */,
 				A2CC501514D2966C016D29E5 /* StoreKitTest.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -776,8 +784,9 @@
 				435FFB8059956A11F8DAE21B /* WatchtowerDesign in Frameworks */,
 				2E3168D3BC931B2646C1D085 /* WatchtowerHostedRelay in Frameworks */,
 				090E7518407A25289733C046 /* WatchtowerChatText in Frameworks */,
-				CB8CDC9A80860923C6BCDD23 /* GRDB in Frameworks */,
-				C37AF0379C0CA9C8B5E6C82E /* SwiftProtobuf in Frameworks */,
+				CB8CDC9A80860923C6BCDD23 /* ChatWire in Frameworks */,
+				C37AF0379C0CA9C8B5E6C82E /* GRDB in Frameworks */,
+				A1981C8F5747C8D38ED993EA /* SwiftProtobuf in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -838,6 +847,7 @@
 				8349EEC6E4D08022C76D9B89 /* ChatsGateModel.swift */,
 				2DB60847FE961BBDE58E7C5F /* ChatsGateView.swift */,
 				E602D258F1760AD3C58B08C9 /* ChatSourcesSheet.swift */,
+				C795BF8B605BF4BA1DBB8E88 /* ChatWireKitConformances.swift */,
 				961E8758C0642F4CFBE35CD0 /* SandboxedArtifactWebView.swift */,
 			);
 			path = Chats;
@@ -892,6 +902,7 @@
 				010CB89776EC632BC826B8DE /* ChatSendRecoveryTests.swift */,
 				E9403473D4755D9239D806F3 /* ChatSendTests.swift */,
 				17BEEA948099A76E0DAFF3F6 /* ChatsGateModelTests.swift */,
+				92D0ED30A0A8FBADD1FF995D /* ChatWireKitConformancesTests.swift */,
 				9E536113D190B5A87FCE4F46 /* CloudKitLinkAccessTests.swift */,
 				49E5912AC83B65603D0202E2 /* ContinueWaitsTests.swift */,
 				525B421389B4DBB63C7176F8 /* DemoTourTests.swift */,
@@ -1201,6 +1212,7 @@
 		B20270D5970103A55888D3C5 /* Packages */ = {
 			isa = PBXGroup;
 			children = (
+				9B49E88783F01996F1DF4013 /* WatchtowerChat */,
 				2DF763CE3DDDB69ABC85F607 /* WatchtowerChatText */,
 				DD5811CC2EAE68324393DCDB /* WatchtowerKit */,
 			);
@@ -1369,6 +1381,7 @@
 				FEDE721FD71CDBE4A5991A6F /* WatchtowerDesign */,
 				1C53FC403A2C3717C2D23C92 /* WatchtowerHostedRelay */,
 				D91B0898D10B802C6FB9D60C /* WatchtowerChatText */,
+				A31597B9AAE404824EB76D2E /* ChatWire */,
 				73828104AEDF42B7DD8514E7 /* GRDB */,
 				2C83956E74692A14A6AC7447 /* SwiftProtobuf */,
 			);
@@ -1395,6 +1408,7 @@
 				82E2DC2033E6312FAD9B717C /* WatchtowerSync */,
 				6D38595E8CBDC60347EDAD0B /* WatchtowerE2ETesting */,
 				7FD33DE7CAA4EFCB621F1395 /* WatchtowerHostedRelay */,
+				CDCED5117AB558FB2DD9D223 /* ChatWire */,
 				5CF9E51BB968298C0AAB2FD5 /* GRDB */,
 				EB8572B29D41BB288DE5049A /* SwiftProtobuf */,
 			);
@@ -1463,6 +1477,7 @@
 			packageReferences = (
 				DA3BC80CE33AA1AD726F3AA6 /* XCRemoteSwiftPackageReference "GRDB.swift" */,
 				DF693143197A74268D06C0FB /* XCRemoteSwiftPackageReference "swift-protobuf" */,
+				06DE97D285AC0F133682FB9C /* XCLocalSwiftPackageReference "../WatchtowerChat" */,
 				FF199EEB8A2BDF18E485CA73 /* XCLocalSwiftPackageReference "../WatchtowerChatText" */,
 				163F9FBC8299558C63C82C1B /* XCLocalSwiftPackageReference "../WatchtowerKit" */,
 			);
@@ -1566,6 +1581,7 @@
 				07A9BC2DABBAF97077797851 /* ChatSearchModel.swift in Sources */,
 				9A88BEFCB57E922B98D52ED4 /* ChatSendCoordinator.swift in Sources */,
 				5CEF89ACD9A868EF3EEED9CA /* ChatSourcesSheet.swift in Sources */,
+				60D56777C42C19D03F654E1E /* ChatWireKitConformances.swift in Sources */,
 				48392D5CA7D3AC046F4512CF /* ChatsCenter.swift in Sources */,
 				83E54C7910CD4FD323B27158 /* ChatsGateModel.swift in Sources */,
 				CE9F1C65FF359F9E7FE94A99 /* ChatsGateView.swift in Sources */,
@@ -1742,6 +1758,7 @@
 				3FB06D90286208F7D2BBE051 /* ChatSearchModelTests.swift in Sources */,
 				722E0F50E16316896679688F /* ChatSendRecoveryTests.swift in Sources */,
 				881A82500886AF1637714550 /* ChatSendTests.swift in Sources */,
+				ACE9AD0800A401716937351D /* ChatWireKitConformancesTests.swift in Sources */,
 				E3E06F0B59EC35C22006F82F /* ChatsGateModelTests.swift in Sources */,
 				42B8D1239217EBA40449E711 /* CloudKitLinkAccessTests.swift in Sources */,
 				3303BBD59525B1A47B0450CC /* ContinueWaitsTests.swift in Sources */,
@@ -2237,6 +2254,10 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
+		06DE97D285AC0F133682FB9C /* XCLocalSwiftPackageReference "../WatchtowerChat" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../WatchtowerChat;
+		};
 		163F9FBC8299558C63C82C1B /* XCLocalSwiftPackageReference "../WatchtowerKit" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../WatchtowerKit;
@@ -2309,6 +2330,14 @@
 		82E2DC2033E6312FAD9B717C /* WatchtowerSync */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = WatchtowerSync;
+		};
+		A31597B9AAE404824EB76D2E /* ChatWire */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ChatWire;
+		};
+		CDCED5117AB558FB2DD9D223 /* ChatWire */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ChatWire;
 		};
 		D91B0898D10B802C6FB9D60C /* WatchtowerChatText */ = {
 			isa = XCSwiftPackageProductDependency;
