@@ -82,7 +82,7 @@ final class HubContractFixtureTests: XCTestCase {
     func testHeartbeatChatCapabilityIsAnExplicitOn() throws {
         let cases = try XCTUnwrap(load()["heartbeat"])
         let names = cases.compactMap { $0["name"] as? String }
-        XCTAssertTrue(names.contains("chat_on") && names.contains("chat_off_desktop_too_old"))
+        XCTAssertTrue(names.contains("chat_on") && names.contains("chat_off_runner_down"))
         let older = HeartbeatPayload(
             updatedAt: Date(), appVersion: "1", hubID: "h", macName: "m", flavor: .default, lastPublishAt: nil,
             lastRelayAt: nil, relayBacklog: 0, accounts: [], enabledAt: Date(), ownerUser: "", sharing: .none)
