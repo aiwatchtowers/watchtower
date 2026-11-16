@@ -12,6 +12,7 @@ struct WatchmanSettingsSection: View {
             state: center.state,
             phase: { center.phase(of: $0) },
             notices: center.notices,
+            readError: center.readError,
             onStartLearning: { id in Task { await center.startLearning(workbench: id) } },
             onRunBacktest: { id in Task { await center.runBacktest(workbench: id) } },
             onRetry: { Task { await center.load() } }
@@ -27,6 +28,7 @@ struct WatchmanSettingsContent: View {
     let state: WatchmanSettingsState
     var phase: (WatchmanWorkbenchStatus) -> WatchmanWorkbenchPhase = { WatchmanWorkbenchPhase.of($0) }
     var notices: [Int64: String] = [:]
+    var readError: String?
     var onStartLearning: (Int64) -> Void = { _ in }
     var onRunBacktest: (Int64) -> Void = { _ in }
     var onRetry: () -> Void = {}
@@ -50,6 +52,12 @@ struct WatchmanSettingsContent: View {
                     Button(Copy.retry, action: onRetry).buttonStyle(.kitSecondary)
                 }
             default:
+                if let readError {
+                    Text(Copy.refreshFailed(readError))
+                        .font(.caption)
+                        .foregroundStyle(Tone.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if let status = state.status { sections(status) }
             }
         }

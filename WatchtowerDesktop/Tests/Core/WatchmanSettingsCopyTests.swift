@@ -39,8 +39,12 @@ final class WatchmanSettingsCopyTests: XCTestCase {
         XCTAssertEqual(Copy.estimateLine(WatchmanEstimate(decisions: 1850, needLabels: 1, tokens: 1_600_000)),
                        "~1 850 decisions · est. 1.6 M tokens")
         XCTAssertEqual(Copy.estimateLine(WatchmanEstimate(decisions: 620, needLabels: 1, tokens: 500_000)),
-                       "~620 decisions · est. 0.5 M tokens")
+                       "~620 decisions · est. 500 k tokens")
         XCTAssertEqual(Copy.tokens(12_400), "12 k")
+        XCTAssertEqual(Copy.tokens(50_000), "50 k")
+        XCTAssertEqual(Copy.tokens(1_750), "2 k")
+        XCTAssertEqual(Copy.tokens(999_700), "1.0 M")
+        XCTAssertEqual(Copy.tokens(2_340_000), "2.3 M")
         XCTAssertEqual(Copy.tokens(900), "900")
         XCTAssertEqual(Copy.count(1_234_567), "1 234 567")
 
@@ -101,6 +105,8 @@ final class WatchmanSettingsCopyTests: XCTestCase {
         XCTAssertEqual(Copy.backtestTitle(name: "acme-api", several: true), "Backtest · acme-api")
         XCTAssertEqual(Copy.backtestTitle(name: "acme-api", several: false), "Backtest")
         XCTAssertEqual(Copy.readFailed("exit code 1"), "Couldn't read Watchman's status: exit code 1")
+        XCTAssertEqual(Copy.refreshFailed("exit code 1"),
+                       "Couldn't refresh Watchman's status: exit code 1. Showing the last one read.")
         XCTAssertEqual(Copy.learnFailed("x"),
                        "Learning stopped: x. Watchman stays on; the daemon continues in its next cycles.")
     }

@@ -111,6 +111,35 @@ final class WatchmanCenterTests: XCTestCase {
         XCTAssertEqual(center.state, .neverRun(Fixtures.status(Fixtures.neverRun)))
     }
 
+    /// A run that started and failed is the status's `failed` row with its
+    /// error: no second line under it.
+    func testStartedBacktestFailureShowsOnlyTheFailedRow() async {
+        let runner = ScriptedWatchmanRunner(status: Fixtures.results)
+        runner.gate.release()
+        runner.setVerbResult(CLICapturedResult(
+            stdout: Data(#"{"ok":false,"workbench":1,"backtest_id":8,"status":"failed","verdict":"","cost_usd":0,"categories":[]}"#.utf8),
+            exitCode: 1, stderr: "the AI provider hit your plan limit"))
+        let center = WatchmanCenter(runner: runner)
+        await center.load()
+        runner.setStatus(Fixtures.failed)
+        await center.runBacktest(workbench: 1)
+        XCTAssertNil(center.notices[1])
+        XCTAssertEqual(center.state, .failed(Fixtures.status(Fixtures.failed),
+                                             message: "the AI provider hit your plan limit"))
+    }
+
+    /// A call that never got to a row (refused, binary missing) keeps its line.
+    func testBacktestThatNeverStartedKeepsItsNotice() async {
+        let runner = ScriptedWatchmanRunner(status: Fixtures.neverRun)
+        runner.gate.release()
+        runner.setVerbResult(CLICapturedResult(stdout: Data(), exitCode: 1, stderr: "refused under an agent\nmore"))
+        let center = WatchmanCenter(runner: runner)
+        await center.load()
+        await center.runBacktest(workbench: 1)
+        XCTAssertEqual(center.notices[1], "refused under an agent")
+        XCTAssertEqual(center.state, .neverRun(Fixtures.status(Fixtures.neverRun)))
+    }
+
     func testLearnFailureKeepsTheRowLearningWithItsLine() async {
         let runner = ScriptedWatchmanRunner(status: Fixtures.notLearned)
         runner.gate.release()
@@ -135,6 +164,22 @@ final class WatchmanCenterTests: XCTestCase {
         runner.setStatus(Fixtures.results)
         await center.load()
         XCTAssertEqual(center.state, .results(Fixtures.status(Fixtures.results)))
+        XCTAssertNil(center.readError)
+    }
+
+    /// A reread that fails while polling keeps the status on screen.
+    func testFailedRereadKeepsTheLastStatus() async {
+        let runner = ScriptedWatchmanRunner(status: Fixtures.running)
+        let center = WatchmanCenter(runner: runner)
+        await center.load()
+        runner.failStatus(CLIRunnerError.nonZeroExit(code: 1, stderr: "database is locked"))
+        await center.load()
+        XCTAssertEqual(center.state, .running(Fixtures.status(Fixtures.running),
+                                              progress: "ux_text, 18 of 30 · 3 of 8 categories done"))
+        XCTAssertEqual(center.readError, "database is locked")
+        runner.setStatus(Fixtures.running)
+        await center.load()
+        XCTAssertNil(center.readError)
     }
 
     func testStatusPollsWhileABacktestRunsElsewhere() async {

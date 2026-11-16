@@ -28,6 +28,9 @@ final class WatchmanCenter {
     private(set) var backtestHere: Set<Int64> = []
     /// One line per workbench under its controls: busy, refused, failed.
     private(set) var notices: [Int64: String] = [:]
+    /// A reread that failed while a status is on screen: the screen keeps
+    /// the last status and shows this line.
+    private(set) var readError: String?
 
     @ObservationIgnored private let runner: any CLIRunnerProtocol
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
@@ -69,15 +72,22 @@ final class WatchmanCenter {
             let data = try await runner.run(args: ["watchman", "status", "--json"])
             let status = try JSONDecoder().decode(WatchmanStatus.self, from: data)
             guard token == readToken else { return }
-            guard status.ok else {
-                state = .readFailed(Self.replyError(data) ?? "the status reply was not ok")
-                return
-            }
+            guard status.ok else { return readFailed(Self.replyError(data) ?? "the status reply was not ok") }
             lastStatus = status
+            readError = nil
             apply()
         } catch {
             guard token == readToken, !(error is CancellationError) else { return }
-            state = .readFailed(Self.message(error))
+            readFailed(Self.message(error))
+        }
+    }
+
+    /// Replaces the section only when no status was read yet.
+    private func readFailed(_ message: String) {
+        if lastStatus == nil {
+            state = .readFailed(message)
+        } else {
+            readError = message
         }
     }
 
@@ -99,7 +109,7 @@ final class WatchmanCenter {
         notices[workbench] = nil
         apply()
         let args = ["watchman", "learn", "--workbench", String(workbench), "--start", "--json"]
-        let failure = await call(args, timeout: Self.learnTimeout)
+        let failure = await call(args, timeout: Self.learnTimeout).failure
         learningHere.remove(workbench)
         if let failure { notices[workbench] = WatchmanSettingsCopy.learnFailed(failure) }
         await load()
@@ -110,11 +120,13 @@ final class WatchmanCenter {
         notices[workbench] = nil
         apply()
         let args = ["watchman", "backtest", "--workbench", String(workbench), "--json"]
-        let failure = await call(args, timeout: Self.backtestTimeout)
+        let outcome = await call(args, timeout: Self.backtestTimeout)
         backtestHere.remove(workbench)
-        // A run that started and failed is a `failed` row the status shows;
-        // the notice is for a call that never got that far.
-        if let failure { notices[workbench] = failure == "busy" ? WatchmanSettingsCopy.busy : failure }
+        // A run that started and failed is a `failed` row the status shows
+        // with its error; the notice is only for a call that never got that far.
+        if let failure = outcome.failure, !Self.hasBacktestRow(outcome.stdout) {
+            notices[workbench] = failure == "busy" ? WatchmanSettingsCopy.busy : failure
+        }
         await load()
     }
 
@@ -125,18 +137,34 @@ final class WatchmanCenter {
         state = .of(status, learningHere: learningHere, backtestHere: backtestHere)
     }
 
-    /// Runs an owner verb; nil on success, else its error line (`"busy"` when
-    /// the Watchman lock is held).
-    private func call(_ args: [String], timeout: TimeInterval) async -> String? {
+    /// Runs an owner verb: its stdout and, unless it succeeded, its error
+    /// line (`"busy"` when the Watchman lock is held).
+    private func call(_ args: [String], timeout: TimeInterval) async -> (failure: String?, stdout: Data) {
         do {
             let result = try await runner.capture(args: args, timeout: timeout)
-            if let error = Self.replyError(result.stdout) { return error }
-            guard result.exitCode != 0 else { return nil }
+            if let error = Self.replyError(result.stdout) { return (error, result.stdout) }
+            guard result.exitCode != 0 else { return (nil, result.stdout) }
             let line = result.stderr.split(whereSeparator: \.isNewline).first.map(String.init)
-            return line ?? (result.exitCode == -1 ? "timed out" : "exit code \(result.exitCode)")
+            return (line ?? (result.exitCode == -1 ? "timed out" : "exit code \(result.exitCode)"), result.stdout)
         } catch {
-            return Self.message(error)
+            return (Self.message(error), Data())
         }
+    }
+
+    /// The backtest reply names its row (`backtest_id`/`status`): the run
+    /// started, so its outcome is the row's.
+    private static func hasBacktestRow(_ data: Data) -> Bool {
+        struct Reply: Decodable {
+            let backtestID: Int64?
+            let status: String?
+
+            enum CodingKeys: String, CodingKey {
+                case status
+                case backtestID = "backtest_id"
+            }
+        }
+        guard let reply = try? JSONDecoder().decode(Reply.self, from: data) else { return false }
+        return (reply.backtestID ?? 0) > 0 || !(reply.status ?? "").isEmpty
     }
 
     /// The `error` of a `{"ok":false,"error":…}` reply; nil for any other.

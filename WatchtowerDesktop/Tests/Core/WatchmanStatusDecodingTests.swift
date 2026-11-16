@@ -16,15 +16,53 @@ final class WatchmanStatusDecodingTests: XCTestCase {
             .appendingPathComponent("internal/watchman/testdata/status.json")
         let status = try JSONDecoder().decode(WatchmanStatus.self, from: Data(contentsOf: url))
         XCTAssertTrue(status.ok)
-        XCTAssertFalse(status.workbenches.isEmpty)
-        for row in status.workbenches {
-            XCTAssertFalse(row.name.isEmpty)
-            for backtest in [row.backtest, row.lastDone].compactMap({ $0 }) {
-                for category in backtest.categories {
-                    XCTAssertTrue(["strong", "weak", "not_measured"].contains(category.status), category.status)
-                }
-            }
+        XCTAssertEqual(status.workbenches.count, 2)
+
+        // Enabled, still learning, a backtest running under the lock.
+        let first = status.workbenches[0]
+        XCTAssertEqual(first.workbench, 1)
+        XCTAssertEqual(first.name, "acme")
+        XCTAssertEqual(first.enabledAt, "2026-11-02T09:00:00Z")
+        XCTAssertFalse(first.analyticsOn)
+        XCTAssertEqual(first.precedents.count, 8)
+        XCTAssertEqual(first.precedents["scope"], 3)
+        XCTAssertEqual(first.sources.count, 6)
+        XCTAssertEqual(first.sources["ask"], WatchmanSourceProgress(written: 3, done: false))
+        XCTAssertEqual(first.sleepWindow, "23:00-07:00")
+        XCTAssertTrue(first.sleepWindowPinned)
+        XCTAssertNil(first.estimate)
+        XCTAssertEqual(first.learning, WatchmanLearning(written: 6, estimated: 120, done: false))
+        XCTAssertTrue(first.running)
+        let running = try XCTUnwrap(first.backtest)
+        XCTAssertEqual(running.id, 2)
+        XCTAssertEqual(running.status, "running")
+        XCTAssertNil(running.finishedAt)
+        XCTAssertEqual(running.categories, [])
+        let done = try XCTUnwrap(first.lastDone)
+        XCTAssertEqual(done.id, 1)
+        XCTAssertEqual(done.status, "done")
+        XCTAssertEqual(done.verdict, "go")
+        XCTAssertEqual(done.costUSD, 1.25)
+        XCTAssertEqual(done.categories, [WatchmanBacktestCategory(
+            category: "permission", total: 30, agree: 26, wrongHigh: 1, costUSD: 0.75, status: "strong")])
+        guard case let .running(progress) = WatchmanWorkbenchPhase.of(first) else {
+            return XCTFail("row 1 must be running")
         }
+        XCTAssertEqual(try XCTUnwrap(WatchmanSettingsCopy.progressFraction(progress)),
+                       (3 + 12.0 / 30) / 8, accuracy: 0.0001)
+
+        // Not on yet: the estimate only.
+        let second = status.workbenches[1]
+        XCTAssertEqual(second.workbench, 2)
+        XCTAssertNil(second.enabledAt)
+        XCTAssertEqual(second.estimate, WatchmanEstimate(decisions: 5, needLabels: 5, tokens: 1750))
+        XCTAssertNil(second.learning)
+        XCTAssertNil(second.backtest)
+        XCTAssertNil(second.lastDone)
+        XCTAssertEqual(second.sleepWindow, "")
+        // `running` is the workspace-wide lock, the same on every row.
+        XCTAssertTrue(second.running)
+        XCTAssertEqual(WatchmanWorkbenchPhase.of(second), .notLearned)
     }
 
     func testEveryPinnedKeyDecodes() throws {

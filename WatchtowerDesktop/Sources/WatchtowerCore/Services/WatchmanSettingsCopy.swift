@@ -41,6 +41,10 @@ package enum WatchmanSettingsCopy {
         "Couldn't read Watchman's status: \(message)"
     }
 
+    package static func refreshFailed(_ message: String) -> String {
+        "Couldn't refresh Watchman's status: \(message). Showing the last one read."
+    }
+
     package static func learnFailed(_ message: String) -> String {
         "Learning stopped: \(message). Watchman stays on; the daemon continues in its next cycles."
     }
@@ -174,10 +178,12 @@ package enum WatchmanSettingsCopy {
         return (value < 0 ? "-" : "") + groups.joined(separator: " ")
     }
 
-    /// 1 600 000 → "1.6 M", 500 000 → "0.5 M", 12 000 → "12 k".
+    /// Whole thousands below a million, one decimal above:
+    /// 1 600 000 → "1.6 M", 500 000 → "500 k", 1 750 → "2 k", 900 → "900".
     package static func tokens(_ value: Int) -> String {
-        if value >= 50_000 { return String(format: "%.1f M", Double(value) / 1_000_000) }
-        if value >= 1_000 { return "\(value / 1_000) k" }
+        let thousands = Int((Double(value) / 1_000).rounded())
+        if thousands >= 1_000 { return String(format: "%.1f M", Double(value) / 1_000_000) }
+        if value >= 1_000 { return "\(thousands) k" }
         return "\(value)"
     }
 
