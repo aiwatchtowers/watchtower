@@ -1,6 +1,6 @@
 # Unified chat — one Go engine, one protocol, one chat UI for the Mac and the iPhone — design
 
-Date: 2026-11-16. Board: #1822. Status: draft for the owner's review; decisions in asks #1363 and #1371.
+Date: 2026-11-16. Board: #1822. Status: approved (ask #1378); decisions in asks #1363 and #1371.
 Builds on: `docs/superpowers/specs/2026-11-15-iphone-chat-design.md` (#1791, merged in PR #885) and `docs/features/iphone-chat.md`.
 
 ## 1. Why
