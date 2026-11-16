@@ -4,10 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"time"
 
 	"watchtower/internal/chatengine"
-	"watchtower/internal/db"
 	hubslices "watchtower/internal/hub/slices"
 	"watchtower/internal/hub/wire"
 )
@@ -41,37 +39,35 @@ func RegistryChatModels() []ChatModel { return chatengine.RegistryChatModels() }
 type ChatGrant func() (bool, error)
 
 // ChatListOptions wires the chat_list source. Grant is required; Models nil
-// is RegistryChatModels; Now nil is time.Now.
+// is RegistryChatModels.
 type ChatListOptions struct {
 	Grant  ChatGrant
 	Models func() []ChatModel
-	Now    func() time.Time
 }
 
 // ChatListSource is the `chat_list` slice, one record `chat_list-main`: the
 // main chat's conversations (up to 200, not archived; titles and project
 // names clipped at 200 characters, within MaxChatFeedBytes), its projects
-// and the composer's models (iPhone chat spec §4.6). It is rebuilt on every
-// data_version change, not urgent, and published only while a phone holds
+// and the composer's models (iPhone chat spec §4.6), read from the daemon's
+// chat engine. It is rebuilt on every change the engine reports (OnChange)
+// or the agent_actions table sees, not urgent, and published only while a phone holds
 // the chat grant. A failed read publishes the list with `error` and nothing
 // else, so the phone shows "Couldn't load chats" and Retry.
 type ChatListSource struct {
-	d *db.DB
+	e ChatReader
 	o ChatListOptions
 }
 
 // ChatListID is the chat_list record's id.
 const ChatListID = "main"
 
-// ChatList builds the chat_list source.
-func ChatList(d *db.DB, o ChatListOptions) *ChatListSource {
+// ChatList builds the chat_list source over the engine e (nil = chat off:
+// nothing is published).
+func ChatList(e ChatReader, o ChatListOptions) *ChatListSource {
 	if o.Models == nil {
 		o.Models = RegistryChatModels
 	}
-	if o.Now == nil {
-		o.Now = time.Now
-	}
-	return &ChatListSource{d: d, o: o}
+	return &ChatListSource{e: e, o: o}
 }
 
 // Kind is "chat_list".
@@ -79,10 +75,13 @@ func (s *ChatListSource) Kind() hubslices.Kind { return hubslices.KindChatList }
 
 // Items is the one chat_list record, or none without a chat phone.
 func (s *ChatListSource) Items(ctx context.Context) ([]hubslices.Item, error) {
+	if s.e == nil {
+		return nil, nil
+	}
 	if ok, err := s.o.Grant(); err != nil || !ok {
 		return nil, err
 	}
-	payload, err := chatengine.ReadList(ctx, s.d, s.o.Now())
+	payload, err := s.e.List(ctx)
 	payload.Models = s.o.Models()
 	if payload.Models == nil {
 		payload.Models = []ChatModel{}

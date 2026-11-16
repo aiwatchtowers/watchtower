@@ -161,10 +161,8 @@ var displayOnlyReadersAt = map[string]string{
 	"tools/chat_history.go:boundConversation":  "reads the bound conversation's context_type to refuse isolated threads; no text. The chat-history tools hand a chat its own rows for its next answer, like ActiveChatPath",
 	"db/chat_lease.go:MarkChatTurnSessionLost": "writes the error code of a dead hub turn's reply; reads no text",
 	// internal/hub chat_answer push: ids, status and the conversation title only.
-	"hub/chat_turn_watch.go:send":            "the chat_answer push reads a conversation title, never message text into a store",
-	"hub/chat_turn_watch.go:assistantStatus": "the chat_answer push reads one turn row's status, no text",
-	"hub/chat_turn_watch.go:desktopLeases":   "the chat_answer push: lease ids of main chats, no text",
-	"hub/chat_turn_watch.go:pendingActions":  "the chat_answer push: pending action ids of main chats, no text",
+	"hub/chat_turn_watch.go:send":           "the chat_answer push reads a conversation title, never message text into a store",
+	"hub/chat_turn_watch.go:pendingActions": "the chat_answer push: pending action ids of main chats, no text",
 	// internal/chatstore: the hub's chat turn store, the Swift write path's
 	// twin. It writes the chat rows and reads its own tree for the next turn;
 	// stepStarted and markIfUsedTx write the mark itself (LIVE-01 mechanism).
@@ -200,14 +198,13 @@ var displayOnlyReadersAt = map[string]string{
 	"db/chat_search.go:chatMessageMatches": "the ⌘K search port: message hits shown on the phone",
 	// The chat engine's reads (unified chat #1822): the feed, list and page
 	// every client shows, built in memory and never stored.
-	"chatengine/list.go:chatListRows":             "the chat list (titles, states, last lines)",
-	"chatengine/feed.go:chatFeedConversationTx":   "the chat feed: the conversation's meta",
-	"chatengine/feed.go:chatBranchTx":             "the chat feed: the active branch's ids",
-	"chatengine/feed.go:chatFeedMessageRowsTx":    "the chat feed: the messages shown",
-	"chatengine/feed.go:chatFeedActionsTx":        "the chat feed: the actions of the turns shown",
-	"chatengine/engine.go:clientKeyEcho":          "ids and the turn id of the row a client key started, no text",
-	"chatengine/engine.go:SelectBranch":           "the selected message's conversation id, no text",
-	"hub/slices/sources/registry.go:ChangeTables": "table names of the hub's data_version watch, no read",
+	"chatengine/list.go:chatListRows":           "the chat list (titles, states, last lines)",
+	"chatengine/feed.go:chatFeedConversationTx": "the chat feed: the conversation's meta",
+	"chatengine/feed.go:chatBranchTx":           "the chat feed: the active branch's ids",
+	"chatengine/feed.go:chatFeedMessageRowsTx":  "the chat feed: the messages shown",
+	"chatengine/feed.go:chatFeedActionsTx":      "the chat feed: the actions of the turns shown",
+	"chatengine/engine.go:clientKeyEcho":        "ids and the turn id of the row a client key started, no text",
+	"chatengine/engine.go:SelectBranch":         "the selected message's conversation id, no text",
 	// The engine's Mac operations (unified chat #1822 T2): project and
 	// artifact panel writes.
 	"chatengine/artifacts.go:artifactWriteTx":        "keep reads the conversation's LIVE-01 mark to refuse a marked chat; no text",

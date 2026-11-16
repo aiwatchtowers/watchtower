@@ -9,7 +9,6 @@ import (
 	"watchtower/internal/chatengine"
 	"watchtower/internal/chatstore"
 	"watchtower/internal/hub/actions"
-	"watchtower/internal/hub/wire"
 )
 
 // chatNew is `chat_new` (params {client_key, project_id?, routing?}): a new
@@ -34,7 +33,7 @@ func (h *Handlers) chatNew(ctx context.Context, r actions.Request) actions.Outco
 		if !ok {
 			return failed(reasonInvalidParams, "routing must be {mode: auto} or {mode: pinned, provider, model?}")
 		}
-		id, err := c.Store.NewConversation(ctx, project, routing)
+		id, err := c.Engine.NewConversation(ctx, project, routing)
 		switch {
 		case errors.Is(err, chatstore.ErrProjectGone):
 			return failed(reasonNotFound, "This chat project no longer exists on your Mac")
@@ -49,8 +48,8 @@ func (h *Handlers) chatNew(ctx context.Context, r actions.Request) actions.Outco
 }
 
 // chatTurn is `chat_turn` (params {conversation_id, mode send|regenerate|
-// edit, message_id?, text, attachment_ids, routing?}): a turn the hub runs
-// (chatengine.Engine). Non-idempotent with a received echo: the answer waits
+// edit, message_id?, text, attachment_ids, routing?}): a turn the daemon's
+// engine runs (chatengine.Engine). Non-idempotent with a received echo: the answer waits
 // only for the start transaction (the owner's row, the lease); the turn then
 // runs in the background and reaches the phone through chat_feed. Result
 // {user_message_id, assistant_message_id, turn_id}; refusals
@@ -62,10 +61,7 @@ func (h *Handlers) chatTurn(ctx context.Context, r actions.Request) actions.Outc
 		if refused != nil {
 			return *refused
 		}
-		if c.Runner == nil {
-			return failed(reasonNotSupported, chatOffMessages[wire.ChatOffRunnerDown])
-		}
-		st, err := c.Runner.Turn(ctx, chatengine.TurnRequest{StartRequest: req})
+		st, err := c.Engine.Turn(ctx, chatengine.TurnRequest{StartRequest: req})
 		switch {
 		case errors.Is(err, chatstore.ErrBusy):
 			return failed(reasonConversationBusy, chatBusyMessage)
@@ -131,9 +127,8 @@ func chatTurnRequest(r actions.Request) (chatstore.StartRequest, *actions.Outcom
 }
 
 // chatCancel is `chat_cancel` (params {conversation_id, turn_id}): a Stop
-// of the turn, whoever runs it (the lease's cancel request: this hub's
-// runner or the Mac honours it). {} once asked; not_found when no such turn
-// runs.
+// of the turn (the engine's cancel request). {} once asked; not_found when
+// no such turn runs.
 func (h *Handlers) chatCancel(ctx context.Context, r actions.Request) actions.Outcome {
 	return h.chatAction(ctx, "chat_cancel", r, false, func(ctx context.Context, c *ChatDeps) actions.Outcome {
 		conv, okConv := intParam(r, "conversation_id")
@@ -141,10 +136,7 @@ func (h *Handlers) chatCancel(ctx context.Context, r actions.Request) actions.Ou
 		if !okConv || !okTurn || turn == "" {
 			return failed(reasonInvalidParams, "chat_cancel needs a conversation_id and a turn_id")
 		}
-		if c.Runner == nil {
-			return failed(reasonNotSupported, chatOffMessages[wire.ChatOffRunnerDown])
-		}
-		ok, err := c.Runner.Cancel(conv, turn)
+		ok, err := c.Engine.Cancel(conv, turn)
 		if err != nil {
 			log.Printf("hub chat: stopping a turn of chat %d failed (%s)", conv, errClass(err))
 			return failed(reasonWriteFailed, chatWriteFailedMessage)
