@@ -637,3 +637,22 @@ func TestNon200WithoutAnErrorIsNoAnswer(t *testing.T) {
 		t.Errorf("HTTP 200 with an empty body: %v", err)
 	}
 }
+
+// TestErrorStatusWithAnErrorKeepsIt: the relay's 500 carrying UNSPECIFIED
+// "internal error" (its catch around the device object) comes back as the
+// protocol error, not as no answer, so the transport can name it (#1872).
+func TestErrorStatusWithAnErrorKeepsIt(t *testing.T) {
+	s := newFakeServer(t)
+	s.op = func(w http.ResponseWriter, _ *relayv1.Request) bool {
+		b, _ := proto.Marshal(&relayv1.Response{Result: &relayv1.Response_Error{Error: &relayv1.Error{
+			Code: relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED, Message: "internal error"}}})
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write(b)
+		return true
+	}
+	_, err := newClient(t, s).Do(t.Context(), &relayv1.Request{Op: &relayv1.Request_RemoveSlot{RemoveSlot: &relayv1.RemoveMacSlot{}}})
+	var pe *client.Error
+	if !errors.As(err, &pe) || pe.E.GetMessage() != "internal error" {
+		t.Fatalf("Do: %v", err)
+	}
+}

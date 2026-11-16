@@ -27,15 +27,18 @@ var (
 	// ErrSlotLimit: the account's slots (or its replacements) are used up.
 	ErrSlotLimit = errors.New("relay: slot limit reached")
 	// ErrRelayInternal: the relay failed the op itself (UNSPECIFIED
-	// "internal error": its device object threw, #1872). It is
-	// transport.ErrUnavailable, a retry later; logs name it apart from an
-	// unreachable relay.
+	// "internal error", #1872). It is transport.ErrUnavailable, a retry
+	// later; logs name it apart from an unreachable relay. It may come
+	// after the op ran in part, and for one op that throws as well as for a
+	// device object that fails every op, so the publisher does not take it
+	// as cycle-wide and the alert pusher settles it in flight.
 	ErrRelayInternal = fmt.Errorf("relay: internal error: %w", transport.ErrUnavailable)
 )
 
-// internalErrorMessage is the relay's message for an op its device object
-// failed (http/op.ts, both catches: a 500 on an authenticated op, a 200 on a
-// public one such as login), the only signal it gives of its own failure.
+// internalErrorMessage is the relay's message for an op it failed: in a 200
+// from the device object's own catch around one op (do/device/ops.ts), in a
+// 500 when the call to the device object threw (http/op.ts), in a 200 when a
+// public op such as login threw. It is the only signal of its own failure.
 const internalErrorMessage = "internal error"
 
 // MapError maps an error of the relay client to the transport errors (RC §7),

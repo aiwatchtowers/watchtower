@@ -411,6 +411,10 @@ func TestRelayTransport_InternalErrorIsUnavailable(t *testing.T) {
 	if err := h.tr.SetHubReaders(t.Context(), []string{"p"}); !errors.Is(err, transport.ErrUnavailable) {
 		t.Errorf("set_hub_readers: %v", err)
 	}
+	h.relay.FailNextWith("get_account_state", internal)
+	if _, err := h.tr.AccountState(t.Context()); !errors.Is(err, ErrRelayInternal) {
+		t.Errorf("get_account_state: %v", err)
+	}
 	h.relay.FailNextWith("save", internal)
 	if _, err := h.tr.Save(t.Context(), h.items(t, 0, 1)); !errors.Is(err, transport.ErrUnavailable) {
 		t.Errorf("save: %v", err)

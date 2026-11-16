@@ -91,24 +91,39 @@ func TestCycleFinishingNothingKeepsLastPublish(t *testing.T) {
 }
 
 // The relay closing mid-way (unavailable) still ends the cycle: the kinds
-// after the failure would fail the same way and wait for the retry. So does
-// the relay failing the op itself (UNSPECIFIED "internal error", #1872):
-// every op of the hub goes through its one device object on the relay.
+// after the failure would fail the same way and wait for the retry.
 func TestCycleUnavailableTransportStopsTheCycle(t *testing.T) {
+	r := newRig(t, transport.KindRelay)
+	ask, target := &fakeSource{kind: "owner_ask"}, &fakeSource{kind: "target"}
+	ask.set(item("1", `{"id":1}`))
+	target.set(item("1", `{"id":1}`))
+	r.tr.FailNext("save", transport.ErrUnavailable)
+	rep, err := r.publisher(target, ask).Cycle(context.Background(), nil)
+	if !errors.Is(err, transport.ErrUnavailable) || !slices.Equal(rep.Unfinished, []Kind{"owner_ask", "target"}) {
+		t.Fatalf("Cycle = %+v %v", rep, err)
+	}
+	if len(target.readTimes()) != 0 {
+		t.Fatal("target read after the transport went down")
+	}
+}
+
+// The relay failing one op itself (UNSPECIFIED "internal error", #1872) is
+// unavailable for its retry but not cycle-wide: the relay also answers it
+// for one op that throws (a record its zone cannot store), so the other kinds
+// still go (#1761).
+func TestCycleRelayInternalErrorDoesNotStopTheCycle(t *testing.T) {
+	r := newRig(t, transport.KindRelay)
+	ask, target := &fakeSource{kind: "owner_ask"}, &fakeSource{kind: "target"}
+	ask.set(item("1", `{"id":1}`))
+	target.set(item("1", `{"id":1}`))
 	internal := relay.MapError(&client.Error{E: &relayv1.Error{Code: relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED, Message: "internal error"}})
-	for _, fail := range []error{transport.ErrUnavailable, internal} {
-		r := newRig(t, transport.KindRelay)
-		ask, target := &fakeSource{kind: "owner_ask"}, &fakeSource{kind: "target"}
-		ask.set(item("1", `{"id":1}`))
-		target.set(item("1", `{"id":1}`))
-		r.tr.FailNext("save", fail)
-		rep, err := r.publisher(target, ask).Cycle(context.Background(), nil)
-		if !errors.Is(err, transport.ErrUnavailable) || !slices.Equal(rep.Unfinished, []Kind{"owner_ask", "target"}) {
-			t.Fatalf("%v: Cycle = %+v %v", fail, rep, err)
-		}
-		if len(target.readTimes()) != 0 {
-			t.Fatalf("%v: target read after the transport went down", fail)
-		}
+	r.tr.FailNext("save", internal)
+	rep, err := r.publisher(target, ask).Cycle(context.Background(), nil)
+	if !errors.Is(err, relay.ErrRelayInternal) || !slices.Equal(rep.Unfinished, []Kind{"owner_ask"}) || rep.Stop != nil {
+		t.Fatalf("Cycle = %+v %v", rep, err)
+	}
+	if len(target.readTimes()) != 1 || rep.Saved != 1 {
+		t.Fatalf("target read %d times, %d saved; want it published after the failure", len(target.readTimes()), rep.Saved)
 	}
 }
 
