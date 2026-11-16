@@ -25,7 +25,7 @@ Today (after #1791) the chat is written twice on both layers:
 - G6. Turns stream live (≤ 150 ms coalescing) to every client, whichever device started them.
 
 **Non-goals (v1)**
-- Embedded chats (Target, Track, Ideas, Meeting, setup assistants, automation editor, Reviewer, spec review thread, tuning chat) keep their own engine (`EmbeddedChatEngine`, `ai query`) and Workchat keeps its own reader. Their **rendering** moves to `ChatUI` in this project (T12): a Swift adapter maps their rows and `LiveTurn` to `ChatFeed` messages, so the Mac has one set of chat views and the old `Views/Chat` row, feed and composer views are deleted. Only their engines stay separate.
+- Embedded chats (Target, Track, Ideas, Meeting, setup assistants, automation editor, Reviewer, spec review thread, tuning chat) keep their own engine (`EmbeddedChatEngine`, `ai query`) and Workchat keeps its own reader. Their **rendering** moves to `ChatUI` in this project (T12): a Swift adapter maps their rows and `LiveTurn` field by field to `ChatFeed` messages (text, status, steps, sources, error) and builds no parts itself — artifacts and questions come out of the text through the same `WatchtowerChatText` parser as everywhere (D14). The owner-ask drawer (`OwnerAskDrawer`, which shows `ChatQuestionCardView`) uses `ChatUI`'s question card. The Mac then has one set of chat views and the old `Views/Chat` row, feed, card and composer views are deleted. Only the engines stay separate.
 - Phase-2 phone items that need pickers over the Mac's data (`@` mentions, `/` skills, project editing) become *possible* on the phone through the protocol but get no phone UI in v1 unless the shared composer gives it for free (§6.4).
 - No new chat features. This is a move, not a redesign: the Mac chat looks and behaves as today.
 
@@ -48,10 +48,10 @@ Today (after #1791) the chat is written twice on both layers:
 | D8 | New local package `WatchtowerChat/` with two targets: `ChatWire` (Foundation only: models, operations, `ChatClient` protocol, feed store) and `ChatUI` (SwiftUI views, depends on `ChatWire`, `WatchtowerChatText` and the Kit's `WatchtowerDesign`). macOS 14 / iOS 17. | decided by the agent |
 | D9 | Platform differences live inside `ChatUI` behind `#if os(macOS)` / `#if os(iOS)` in `Platform/` files, not in the apps: a feature author writes one view and the package picks the platform part. | decided by the agent |
 | D10 | The Mac keeps its polish through platform parts: TextKit 2 answer text, the NSTextView composer, selection quote, print, Present, Open in Window. | anti-goal |
-| D11 | No offline read path on the Mac. When `chat.sock` is unreachable the client starts the daemon itself once through the existing start chain (`ensureDaemonRunning`); the screen shows "Chat is starting…", and only if the daemon is still unreachable 10 s later "Chat is unavailable" with Retry. The composer keeps its draft throughout. | decided by the agent (simplicity; one read path) |
+| D11 | No offline read path on the Mac. When `chat.sock` is unreachable and the app did not stop the daemon on purpose, the client starts the daemon once through the existing start chain (`ensureDaemonRunning`) and shows "Chat is starting…"; still unreachable 10 s later: "Chat is unavailable" with Retry. When the owner stopped the daemon on purpose (`sync stop`, the tray's stop, the app's own stopped state), chat never restarts it silently: it shows "Chat needs Watchtower's background service, which is stopped" with **Start**. The composer keeps its draft throughout. | decided by the agent (spec review round 2) |
 | D12 | `chat.sock` carries no approval verb. The Mac approves and rejects chat actions as today (`actions approve|reject` CLI with owner-confirm, AGENT-07). The phone approves through the hub as today (`chat_action_answer`). | decided by the agent (AGENT-07 unchanged) |
 | D13 | The app's start chain is unchanged: the daemon is still restarted at every app launch. | ask #1371 ("как сейчас — всегда") |
-| D14 | Question cards are parsed in Go (`internal/chat/questions_contract.go` already owns the block) and sent as a `question` part; Swift `ChatQuestionCard` parsing is removed. | decided by the agent (one parser, the phone gets the card for free) |
+| D14 | Parts that live **inside the answer text** (`artifact` fences, the `watchtower-question` block) are derived on the client by one Swift parser in `WatchtowerChatText` (`ArtifactParser` already lives there; the question parser moves there from WatchtowerCore's `ChatQuestionCard`), used by every chat surface — main, embedded, Workchat, owner asks — on both devices. Go keeps its twins only to build fallbacks and the artifact rows, pinned by the existing `artifact_parse_cases.json` and a new `question_parse_cases.json`. Every other part kind is built by the engine only. | decided by the agent (spec review round 2: one Swift parser instead of a second part builder) |
 | D15 | Every client sends `hello{protocol, client, part_kinds}`. The engine always sends a part's fallback; for a kind the client did not list it sends only the fallback (no payload). | conversation ("клиенты сообщают, что умеют рисовать") |
 | D16 | Contract changes (§9) went to the owner in a separate ask before the review — done, ask #1371 (D24). | workbench rule |
 | D17 | `chat.sock` serves only the signed Watchtower app (the `ownerconfirm` peer check, reversed); any other same-user process is refused. | decided by the agent (builder check: an open socket would hand agents owner-attributed turns and prefixes) |
@@ -125,7 +125,7 @@ The phone's `ChatFeed.Message` gains `parts[]`; the old flat fields (`text`, `st
 ```
 
 Part kinds in v1: `text`, `steps`, `sources`, `artifact`, `approval`, `question`, `error`, `remember_mark`, `knowledge_mark`, `published_link`, `attachment`, `routing_note`.
-- The engine builds parts (one Go builder, `chatengine/parts.go`); clients never re-derive them from raw rows.
+- The engine builds every part that does not live in the answer text (one Go builder, `chatengine/parts.go`); clients never re-derive those. Text-derived parts (`artifact`, `question`) are split out of the `text` part on the client by `WatchtowerChatText` only (D14), so the text itself is their fallback.
 - A fallback's `actions` may only use generic, already-supported operations (`chat_turn` with a fixed text, `open_url` limited to the CHAT-05 open/copy rules, `none`). A fallback can never send or write anything an artifact could not (CHAT-05).
 - The shared fixture `internal/chatengine/testdata/parts.json` lists every kind with one sample; Go and `ChatWire` both decode it.
 
@@ -161,7 +161,7 @@ Part kinds in v1: `text`, `steps`, `sources`, `artifact`, `approval`, `question`
 - `ChatViewModel` (1 524 lines) is split: UI state moves to `ChatUI`'s models; DB writes, pool and client are deleted; what stays in the app is `SocketChatClient` and the window shell (`ChatView` split, sidebar layout, inspector, ⌘K/⌘N, ⌘/ help panel).
 - Deleted from the main chat: `ChatSessionPool`, `ChatSessionClient`, `ChatTurnDriver`, `ChatTurnStore`, `ChatLeaseQueries`, `ChatForeignTurnModel`, the write half of the chat queries, `releaseEarlierLaunchesChatLeases`, the `chat_lease` heartbeat flag. The read queries behind the feed, the list and search go too (the engine serves them); read-only queries of other screens stay (D19).
 - The ⌘/ help popup uses the same `SocketChatClient` with `screen_context`.
-- New state: **daemon unreachable** — the client starts the daemon once by itself (D11) and shows "Chat is starting…"; after 10 s still unreachable: "Chat is unavailable — Watchtower's background service is not running" with **Retry** (the same start chain). The draft stays; Send is off.
+- New states: **daemon unreachable** — the client starts the daemon once by itself (D11) and shows "Chat is starting…"; after 10 s still unreachable: "Chat is unavailable — Watchtower's background service is not running" with **Retry** (the same start chain). **Daemon stopped on purpose** — "Chat needs Watchtower's background service, which is stopped" with **Start**; nothing starts it silently. The draft stays; Send is off.
 - Live: a turn started on the phone streams on the Mac at ≤ 150 ms with the normal Stop (no "answering from your iPhone, read-only" mode; Send is off only while that conversation's turn runs, as for a Mac turn).
 
 ### 6.3 The phone
@@ -212,6 +212,11 @@ Because the composer and the parts are shared: question cards, remember / knowle
 | A same-user process that is not the signed app dials `chat.sock` | `forbidden`, connection closed, nothing written | `TestChatengine_UnsignedPeerRefused` |
 | A sync cycle holds the daemon's main DB handle | Chat reads/writes go on the engine's own handle | `TestChatengine_OwnHandleNotBlockedBySyncConn` |
 | New phone, Mac one version behind (no `parts`) | `ChatWire` builds parts from flat fields | `testFeedWithoutPartsBuildsPartsFromFlatFields` |
+| Daemon stopped on purpose, chat opened | No silent start; Start button | `testStoppedOnPurposeShowsStartAndDoesNotStartDaemon` |
+| Embedded chat rendered through `ChatUI` | Same text, steps, sources, error, artifacts and question cards as before; the adapter builds no parts | `testEmbeddedAdapterMapsRowsFieldByField`, `testEmbeddedArtifactsAndQuestionsComeFromSharedParser`, design shots of each embedded surface unchanged |
+| Workchat rendered through `ChatUI` | Same rows and subagent markers as before | `testWorkchatAdapterMapsFeedRows`, `workchat-*` shots unchanged |
+| Owner-ask drawer question card | `ChatUI` question card, same answers sent | `testOwnerAskDrawerQuestionCardAnswers`, `owner-ask-*` shots unchanged |
+| Question block parsed the same on both sides | Swift and Go agree on every case | `question_parse_cases.json` in `WatchtowerChatText` and Go |
 | Attachment path the Mac passes is gone or too big | `attach` refused with the validator's reason; nothing stored | `TestChatengine_AttachRefusesMissingAndOversize` |
 
 ## 9. Writers, contracts and what is retired
@@ -244,7 +249,8 @@ There is no race left between two chat writers: the engine serialises a conversa
 ## 10. Mockups
 
 New or changed states, each a `DesignShotCatalog` entry made in Task T0 before the screens change, compared with the snapshots after implementation:
-- `chat-daemon-starting`, `chat-daemon-unavailable` (Mac; Retry).
+- `chat-daemon-starting`, `chat-daemon-unavailable` (Mac; Retry), `chat-daemon-stopped` (Mac; Start).
+- Embedded chat surfaces, Workchat and the owner-ask drawer: existing shots, compared for no visual change after T12.
 - `chat-part-fallback` (Mac and phone: an unknown kind's fallback text and buttons).
 - `chat-remote-turn-live` (Mac: a phone-started turn streaming with Stop).
 - Phone: `iphone-chat-question-card`, `iphone-chat-approval-slack` (new on the phone, shared views).
@@ -284,7 +290,7 @@ All interface texts (state lines, busy, unreachable, fallbacks built by the engi
 | T8 | Mac: `SocketChatClient`, split `ChatViewModel`, switch the chat screen and ⌘/ to `ChatUI`, delete the Swift writer and pool | T4, T7 |
 | T9 | Phone: `RelayChatClient`, switch to `ChatUI`, delete the duplicated views | T5, T7 |
 | T10 | `ai session --listen`, turn event buffer, idle exit; engine detach/reattach and replay; `chat_shutdown` from `QuitCoordinator`, wipe, purge, `sync stop`; `watchtower chat shutdown` CLI fallback; compaction step runs it first | T1 |
-| T12 | Embedded chats and Workchat render through `ChatUI` (adapter to `ChatFeed`); delete the old Mac chat views | T7, T8 |
+| T12 | Embedded chats, Workchat and the owner-ask drawer render through `ChatUI` (field-by-field adapters, no part building); move the question parser to `WatchtowerChatText` with `question_parse_cases.json`; delete the old Mac chat views; shots of every affected surface compared | T7, T8 |
 | T11 | Inventory, feature notes (`chat-redesign.md`, `iphone-chat.md`, new `unified-chat.md`), guide | all |
 
 Every promise above maps to a task and a test in §8 or §9.2.
