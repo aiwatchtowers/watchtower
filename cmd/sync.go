@@ -22,6 +22,8 @@ import (
 	"watchtower/internal/caldav"
 	"watchtower/internal/calendar"
 	"watchtower/internal/chat"
+	"watchtower/internal/chatengine"
+	"watchtower/internal/chatstore"
 	"watchtower/internal/coach"
 	"watchtower/internal/config"
 	"watchtower/internal/customtracks"
@@ -42,8 +44,10 @@ import (
 	"watchtower/internal/llmusage"
 	"watchtower/internal/logredact"
 	"watchtower/internal/media"
+	"watchtower/internal/platform"
 	"watchtower/internal/powerstate"
 	"watchtower/internal/prompts"
+	"watchtower/internal/skills"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/sync"
 	"watchtower/internal/targets"
@@ -1024,15 +1028,112 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	// Refresh the shipped assistant skills in the workspace. Log-only: a skills
 	// directory we cannot write is not a reason to refuse to run the daemon.
 	deployShippedSkills(cfg, logger)
-	// Go hub, phase 1: only behind WATCHTOWER_HUB_DIR in a hubtest-* workspace.
-	defer startGoHub(ctx, cfg, database, logger)()
-	return d.Run(ctx)
+	// The chat engine before the Go hub, stopped after it (unified chat §7):
+	// chat.sock is served whatever the hub does.
+	return withChatAndHub(ctx, cfg, database, logger, func() error { return d.Run(ctx) })
+}
+
+// The daemon's chat engine and Go hub starters (test seams).
+var (
+	startChatEngineFn = startChatEngine
+	startGoHubFn      = startGoHub
+)
+
+// withChatAndHub starts the chat engine, then the Go hub with it, runs run,
+// then stops the hub and after it the engine (unified chat spec §7).
+func withChatAndHub(ctx context.Context, cfg *config.Config, database *db.DB, logger *log.Logger, run func() error) error {
+	eng, stopChat := startChatEngineFn(ctx, cfg, logger)
+	defer stopChat()
+	defer startGoHubFn(ctx, cfg, database, eng, logger)()
+	return run()
+}
+
+// chatEngineCloseBudget bounds the engine's close at the daemon's stop (its
+// sessions' own sequence is close, 2 s, SIGTERM, 3 s, SIGKILL).
+const chatEngineCloseBudget = 10 * time.Second
+
+// startChatEngine starts the main chat's engine on its own database handles
+// (chatengine.OpenHandles) and serves it on chat.sock for the signed app;
+// the returned stop closes chat.sock, then the engine, then its handles. A
+// database that cannot be opened leaves the chat off (nil engine: the hub
+// then says runner_down); a socket another process serves leaves the engine
+// to the hub alone.
+func startChatEngine(ctx context.Context, cfg *config.Config, logger *log.Logger) (*chatengine.Engine, func()) {
+	ws, dbPath := cfg.WorkspaceDir(), cfg.DBPath()
+	write, read, err := chatengine.OpenHandles(dbPath)
+	if err != nil {
+		logger.Printf("chat: off (%s)", chatStartClass(err))
+		return nil, func() {}
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		logger.Printf("chat: off (%s)", chatStartClass(err))
+		_ = write.Close()
+		_ = read.Close()
+		return nil, func() {}
+	}
+	eng := chatengine.New(chatengine.Config{Exe: exe, DBPath: dbPath, Dir: filepath.Join(ws, "chatengine"),
+		DB: write, Read: read, FilesDir: filepath.Join(ws, chatstore.FilesDirName), SkillsDir: skills.Dir(ws),
+		// The AI title after a chat's first complete answer, `watchtower chat
+		// title`'s code; the automatic routing's preferred provider is the
+		// config the Mac's automatic routing reads.
+		Title: func(ctx context.Context, conv int64) error {
+			_, err := chat.GenerateTitle(ctx, write, cfg, chatTitleGeneratorFactory(cfg), conv)
+			return err
+		},
+		PreferredProvider: cfg.AI.ConfiguredProviderID()})
+	if err := eng.Start(ctx); err != nil {
+		logger.Printf("chat: the startup sweep failed (%s)", chatStartClass(err))
+	}
+	// chat.sock lives until stop, not until ctx: the hub stops first.
+	srvCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	served := make(chan struct{})
+	if l, err := chatengine.Listen(chatengine.SocketPath(ws, os.TempDir())); err != nil {
+		logger.Printf("chat: chat.sock not served (%s)", chatStartClass(err))
+		close(served)
+	} else {
+		go func() {
+			defer close(served)
+			if err := chatengine.NewServer(eng, chatengine.ServerOptions{}).Serve(srvCtx, l); err != nil {
+				logger.Printf("chat: chat.sock stopped (%s)", chatStartClass(err))
+			}
+		}()
+		logger.Printf("chat: serving chat.sock")
+	}
+	return eng, func() {
+		cancel()
+		<-served
+		closeCtx, done := context.WithTimeout(context.Background(), chatEngineCloseBudget)
+		if err := eng.Close(closeCtx); err != nil {
+			logger.Printf("chat: closing the engine failed (%s)", chatStartClass(err))
+		}
+		done()
+		_ = write.Close()
+		_ = read.Close()
+	}
+}
+
+// chatStartClass is a chat start or stop failure's class for the log (no
+// paths or text, FILES-01).
+func chatStartClass(err error) string {
+	switch {
+	case errors.Is(err, platform.ErrSocketBusy):
+		return "socket_busy"
+	case errors.Is(err, os.ErrNotExist):
+		return "no_database"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, os.ErrPermission):
+		return "permission"
+	}
+	return "error"
 }
 
 // startGoHub starts the Go hub beside the daemon when hub.Resolve says so
 // and logs whether it did; the returned func stops it and waits. Its cycle
-// tick is the daemon's poll interval.
-func startGoHub(ctx context.Context, cfg *config.Config, database *db.DB, logger *log.Logger) (stop func()) {
+// tick is the daemon's poll interval; eng is the daemon's chat engine (nil =
+// chat off on the phone).
+func startGoHub(ctx context.Context, cfg *config.Config, database *db.DB, eng *chatengine.Engine, logger *log.Logger) (stop func()) {
 	o, err := hub.Resolve(cfg, database, hostProbe())
 	if err != nil {
 		logger.Printf("hub: off (%s)", hub.Refusal(err))
@@ -1043,15 +1144,10 @@ func startGoHub(ctx context.Context, cfg *config.Config, database *db.DB, logger
 	sd := sessionStartDeps(cfg, database)
 	sd.Socket = o.SessionStart.Socket
 	o.SessionStart = sd
-	// The AI chat from the phone: approvals through the same registry as
-	// `watchtower actions approve`, titles through `watchtower chat title`'s
-	// code, automatic routing's preferred provider from the config.
+	// The AI chat from the phone: the daemon's chat engine (nil = chat off),
+	// approvals through the same registry as `watchtower actions approve`.
 	o.ChatTools = buildToolRegistry(cfg, database)
-	o.ChatTitle = func(ctx context.Context, conv int64) error {
-		_, err := chat.GenerateTitle(ctx, database, cfg, chatTitleGeneratorFactory(cfg), conv)
-		return err
-	}
-	o.ChatPreferredProvider = cfg.AI.ConfiguredProviderID()
+	o.ChatEngine = eng
 	ctx, cancel := context.WithCancel(ctx)
 	interval := cfg.Sync.PollInterval
 	if interval < time.Minute {
