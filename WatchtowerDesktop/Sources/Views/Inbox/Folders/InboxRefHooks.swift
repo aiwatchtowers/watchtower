@@ -37,10 +37,9 @@ struct InboxRefHooks {
         onPress: @escaping (InboxRef, InboxRowPress) -> Void = { _, _ in }
     ) -> ArtifactRefHooks {
         ArtifactRefHooks(
-            isOpen: { isShown(inboxRef($0)) },
+            isOpen: { inboxRef($0).map(isShown) ?? true },
             nativeActions: { ref, mode in
-                let inbox = inboxRef(ref)
-                guard let content = content(inbox, mode) else { return nil }
+                guard let inbox = inboxRef(ref), let content = content(inbox, mode) else { return nil }
                 return AnyView(InboxRefRowActions(
                     content: content, subject: subject(inbox), workbenches: workbenches, onCommand: onCommand
                 ) { onPress(inbox, $0) })
@@ -49,33 +48,34 @@ struct InboxRefHooks {
             // shown row the read does not list (past a cap, a kind its list
             // leaves out) keeps them, never ending with no buttons.
             nativeKinds: { ref in
-                guard let content = content(inboxRef(ref), .inbox) else { return [] }
+                guard let inbox = inboxRef(ref), let content = content(inbox, .inbox) else { return [] }
                 return nativeKinds(ref.kind, hasReply: content.hasReply)
             },
             nativeFooter: { ref, mode in
-                let inbox = inboxRef(ref)
-                guard let content = content(inbox, mode), content.hasFooter else { return nil }
+                guard let inbox = inboxRef(ref), let content = content(inbox, mode), content.hasFooter else { return nil }
                 return AnyView(InboxRowActionsFooter(content: content) { onPress(inbox, $0) })
             },
             open: { ref in
                 // An idea row opens its full card (Merge…, Make a Task, Delete…).
-                guard ref.kind == .idea else { return nil }
-                let inbox = inboxRef(ref)
+                guard ref.kind == .idea, let inbox = inboxRef(ref) else { return nil }
                 return { onPress(inbox, .open) }
             }
         )
     }
 
-    /// The Core mirror of a Kit ref (the same raw values).
-    static func inboxRef(_ ref: ArtifactRef) -> InboxRef {
-        let kind: InboxRef.Kind = switch ref.kind {
+    /// The Core mirror of a Kit ref (the same raw values); nil for a
+    /// `plan_item`, which only the hub's phone projection writes, so a Mac
+    /// row never carries one (it draws as a plain row, no native actions).
+    static func inboxRef(_ ref: ArtifactRef) -> InboxRef? {
+        let kind: InboxRef.Kind? = switch ref.kind {
         case .inboxItem: .inboxItem
         case .track: .track
         case .idea: .idea
         case .reminder: .reminder
         case .action: .action
+        case .planItem: nil
         }
-        return InboxRef(kind: kind, id: ref.id)
+        return kind.map { InboxRef(kind: $0, id: ref.id) }
     }
 
     /// The recipe's row actions a native one replaces ("Duplicates"): a
@@ -88,7 +88,7 @@ struct InboxRefHooks {
         case .inboxItem: hasReply ? [.open, .chat, .agent, .reply] : [.open, .chat, .agent]
         case .track, .idea: [.target]
         case .reminder: [.open]
-        case .action: []
+        case .action, .planItem: []
         }
     }
 
