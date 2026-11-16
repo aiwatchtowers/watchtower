@@ -154,7 +154,7 @@ Stages 1 and 3 depend on stage 0, and stage 2 depends on stage 1. Stage 3 may ru
 - **Generated types.**
 - **`TowerClient`.** An actor over a `TowerTransport` protocol (`call`, `watch`), with one state machine for every screen: `idle`, `loading`, `ready(stale: Date?)`, `reconnecting`, `failed(sentence)`.
   - Each action has the states `busy`, `refused(sentence)` and `unknown`.
-  - In the `unknown` state the client shows "Didn't confirm — check again" (mockup §6 on the phone, §8 on the Mac). It refreshes and never re-sends a non-idempotent call.
+  - In the `unknown` state the client shows "Didn't confirm — checking again…" on the Mac and "Didn't confirm — check on the Mac." on the phone (mockup §6 on the phone, §8 on the Mac). It refreshes and never re-sends a non-idempotent call.
   - The client makes the `request_id` for each press and keeps it until a final answer arrives.
 - **Screen models.** `InboxRootModel`, `InboxFolderModel`, `InboxCardModel`, `InboxRefRowModel`, `InboxApprovalModel`, `InboxTabState` and `TowerText` (every string), each with tests.
   - The Mac and the phone both bind to them.
@@ -163,7 +163,7 @@ Stages 1 and 3 depend on stage 0, and stage 2 depends on stage 1. Stage 3 may ru
 
 ### 3. The always-on daemon and the socket
 
-- **The socket.** The daemon (`watchtower sync --daemon`) serves `<workspace>/tower.sock`. The socket has mode 0600 inside a 0700 directory, and the daemon checks the peer's uid, as the hub's control socket does. Frames are newline-delimited JSON (§2.1). When the hub runs, it is in the same process and calls the same `tower.Call`. The socket does not depend on the hub.
+- **The socket.** The daemon (`watchtower sync --daemon`) serves `<workspace>/tower.sock`. When that path exceeds the 103 usable bytes of `sun_path`, it binds at `<TMPDIR>/wt-<uid>/<first 12 hex of sha256(workspace path)>.sock` (dir 0700) and writes that path to `<workspace>/tower.sock.path`, which the client reads. The socket has mode 0600 inside a 0700 directory, and the daemon checks the peer's uid, as the hub's control socket does. Frames are newline-delimited JSON (§2.1). When the hub runs, it is in the same process and calls the same `tower.Call`. The socket does not depend on the hub.
 - **The handshake.** The client sends `tower.hello`. When the interface version differs:
   - A Desktop that started the daemon from its own CLI (`DaemonManager`, the CLI store) restarts it from that CLI. `ensureDaemonRunning` already stops whatever daemon runs at launch and starts the app's own, so a dev build gets a daemon of its own version from the start. The handshake covers a daemon that was replaced afterwards.
   - When the client cannot restart the daemon, it shows "Watchtower's background service is a different version" with **Restart** (mockup §7).
@@ -216,6 +216,7 @@ These stay as Mac views over the screen models: `InboxFolderMenuModel`, `InboxFo
   - `ref_facts {open, waits, reply, reply_waiting, link}` for each ref;
   - `approval {tool, title, summary, args_sha256, status, error, proposer, reason, edit_on_mac}`, on approvals only;
   - `legacy`, on legacy cards only.
+- **Time.** Stamps are UTC. Grouping such as Today/Earlier happens in the shared screen models with the client's own time zone, so the phone groups by the phone's zone while travelling.
 - **Closed refs.** Rows whose ref is closed stay in the document, and the screen models hide them by `ref_facts.open`.
 - **Options.**
   - `opts.Folder` narrows the feed to one folder.
@@ -288,7 +289,7 @@ How each client draws them:
 
 #### 5.2 The other screens' writes
 
-These callers of the moved Swift writers call `TowerClient` write commands instead: `IdeasViewModel`, `DigestViewModel`, `TracksViewModel`, `DayPlanViewModel`, the Home actions in `AppState+Home`, `CatchUpViewModel`, `QuickCaptureView`, `IdeaDetailPane`, `DecisionsListView`, `ActionStripViewModel` and `Reminder`.
+`CatchUpQueries.acknowledge` writes moved tables in one transaction with `digests`, `stream_digests` and `catchup_recaps`, so `catchup.acknowledge` and `digests.*` move too; `ChatKnowledgeCenter` writes `ideas`, so `ideas.create_from_chat` and `ideas.undo_chat` move in stage 1; the plan-item cascade writes `targets.status`, so `TargetQueries.updateStatus` and its Targets callers move to `targets.set_status` (all by ask #1362: everyone who writes the same rows). These callers of the moved Swift writers call `TowerClient` write commands instead: `IdeasViewModel`, `DigestViewModel`, `TracksViewModel`, `DayPlanViewModel`, the Home actions in `AppState+Home`, `CatchUpViewModel`, `QuickCaptureView`, `IdeaDetailPane`, `DecisionsListView`, `ActionStripViewModel` and `Reminder`.
 - The plan lists every call site from a grep of the moved writers' names. The guard test in §4.3 proves none is left.
 - Their reads stay on GRDB, as today.
 - Each screen shows busy, refused and reconnecting through `TowerClient`'s action states, with sentences from `TowerText`, in one shared row treatment (mockup §8, shown on Ideas).
@@ -503,6 +504,7 @@ A path that fails its check does not switch. Speed is a gate.
 - Speed is a gate: the socket feed takes at most 100 ms median, a write at most 15 ms, and the chat start is no slower.
 - Reply needs `typing`, and other Inbox actions need no grant, as for board writes.
 - Legacy entries are typed sections for the Mac and block projections for the phone.
+- CatchUp, digests, chat-made ideas and `targets.status` writes move with the rest, because they write the same rows — ask #1362 ("everyone who writes the same rows").
 - The phone gets at most 300 cards, with Needs approval and Waiting for me first.
 
 ## Left to the builder
