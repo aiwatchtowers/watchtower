@@ -3,6 +3,7 @@ import GRDB
 import Observation
 import os
 import WatchtowerCore
+import WatchtowerInterface
 
 /// Branch review's reviewer (board #1025, phase 3): each branch's thread,
 /// the engine of the shown one, and **Send to author**. Lives on
@@ -45,16 +46,16 @@ final class ReviewerCenter {
     private(set) var sendErrors: [Int64: String] = [:]
 
     @ObservationIgnored let embeddedChats: EmbeddedChatCenter
-    @ObservationIgnored private let dbPool: DatabasePool
+    @ObservationIgnored private let writes: ChatWrites
     @ObservationIgnored private let reader: @MainActor () -> ReviewerSurface.Reader
 
     init(
         embeddedChats: EmbeddedChatCenter,
-        dbPool: DatabasePool,
+        writes: ChatWrites,
         reader: @escaping @MainActor () -> ReviewerSurface.Reader = ReviewerCenter.configuredReader
     ) {
         self.embeddedChats = embeddedChats
-        self.dbPool = dbPool
+        self.writes = writes
         self.reader = reader
     }
 
@@ -69,8 +70,8 @@ final class ReviewerCenter {
         return ReviewerSurface.Reader(AIModelCatalog.shared.capabilities(for: id))
     }
 
-    /// The branch's thread, made on first use (the Desktop's write, migration
-    /// 00180). Asked again after a failure only (Retry).
+    /// The branch's thread, made on first use (`chat.reviewer_thread`, Go's
+    /// write, migration 00180). Asked again after a failure only (Retry).
     func open(_ id: ThreadID) async {
         switch threads[id] {
         case .loading, .ready: return
@@ -78,10 +79,10 @@ final class ReviewerCenter {
         }
         threads[id] = .loading
         do {
-            let conversationID = try await dbPool.write { db in
-                try ReviewerThreadQueries.ensure(db, projectID: id.projectID, branch: id.branch)
+            let thread: ChatNewResponse = try await writes.send(.chatReviewerThread) {
+                ChatReviewerThreadRequest(requestID: $0, projectID: id.projectID, branch: id.branch)
             }
-            threads[id] = .ready(conversationID: conversationID)
+            threads[id] = .ready(conversationID: thread.conversationID)
         } catch {
             Self.log.error(
                 "reviewer thread open failed (project \(id.projectID, privacy: .public)): \(error.localizedDescription, privacy: .private)"

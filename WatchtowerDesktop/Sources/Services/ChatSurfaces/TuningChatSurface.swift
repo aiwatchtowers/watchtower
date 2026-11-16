@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import WatchtowerCore
+import WatchtowerInterface
 
 /// Analytics' tuning chat (spec 2026-11-03 §4.1): an assistant bound to one
 /// workbench that reads the owner's LLM setup and files coach proposals
@@ -41,17 +42,17 @@ enum TuningChatSurface {
     // MARK: - Conversations
 
     /// The workbench's newest tuning conversation, created on first use.
-    static func latestOrNewConversation(dbPool: DatabasePool, workbenchID: Int64) async throws -> Int64 {
+    static func latestOrNewConversation(dbPool: DatabasePool, writes: ChatWrites, workbenchID: Int64) async throws -> Int64 {
         try await DatabaseEmbeddedChatStore.conversationID(
-            dbPool: dbPool, contextType: contextType, contextID: String(workbenchID), title: "")
+            dbPool: dbPool, writes: writes, contextType: contextType, contextID: String(workbenchID), title: "")
     }
 
     /// Another conversation for the workbench (**New**): always a new row.
-    static func newConversation(dbPool: DatabasePool, workbenchID: Int64) async throws -> Int64 {
-        try await dbPool.write { db in
-            try ChatConversationQueries.create(db, title: "", contextType: contextType,
-                                               contextID: String(workbenchID)).id
+    static func newConversation(writes: ChatWrites, workbenchID: Int64) async throws -> Int64 {
+        let created: ChatNewResponse = try await writes.send(.chatNew) {
+            ChatNewRequest(requestID: $0, context: ChatContext(type: contextType, id: String(workbenchID)))
         }
+        return created.conversationID
     }
 
     /// The workbench's newest conversations, `recentLimit` at most.
@@ -65,17 +66,21 @@ enum TuningChatSurface {
     }
 
     /// The conversation's automatic title, once: the first owner message's
-    /// first `titleLimit` characters, written only while the title is empty.
-    static func setTitleIfEmpty(_ db: Database, conversationID: Int64) throws {
-        guard let text = try String.fetchOne(db, sql: """
-            SELECT text FROM chat_messages WHERE conversation_id = ? AND role = 'user' ORDER BY id LIMIT 1
-            """, arguments: [conversationID]) else { return }
+    /// first `titleLimit` characters, written only while the title is empty
+    /// (`chat.set_title` with `if_empty`).
+    static func setTitleIfEmpty(dbPool: DatabasePool, writes: ChatWrites, conversationID: Int64) async throws {
+        guard let text = try await dbPool.read({ db in
+            try String.fetchOne(db, sql: """
+                SELECT text FROM chat_messages WHERE conversation_id = ? AND role = 'user' ORDER BY id LIMIT 1
+                """, arguments: [conversationID])
+        }) else { return }
         let joined = text.split(whereSeparator: \.isNewline).joined(separator: " ")
         let line = joined.trimmingCharacters(in: .whitespaces)
         let title = String(line.prefix(titleLimit)).trimmingCharacters(in: .whitespaces)
         guard !title.isEmpty else { return }
-        try db.execute(sql: "UPDATE chat_conversations SET title = ? WHERE id = ? AND title = ''",
-                       arguments: [title, conversationID])
+        let _: ChatDone = try await writes.send(.chatSetTitle) {
+            ChatSetTitleRequest(requestID: $0, conversationID: conversationID, title: title, ifEmpty: true)
+        }
     }
 
     /// The conversation's tuning proposals (`origin = 'chat'`), oldest first.

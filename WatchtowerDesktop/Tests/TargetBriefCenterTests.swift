@@ -749,4 +749,28 @@ private final class FailsFirstService: AIServiceProtocol, @unchecked Sendable {
             model: model, provider: provider, toolMode: toolMode
         )
     }
+
+    /// A database chat's turn (`ai query --persist`): the scripted events
+    /// with the run's writes (`FakeEmbeddedPersist.wrap`).
+    // swiftlint:disable:next function_parameter_count
+    func stream(
+        prompt: String,
+        systemPrompt: String?,
+        dbPath: String?,
+        model: String?,
+        provider: String?,
+        toolMode: ChatToolMode?,
+        readFolder: String?,
+        ownerInstructions: Bool,
+        purpose: String?,
+        readFolderAskID: Int64?,
+        readFolderRoundID: Int64?,
+        persist: ChatQueryPersist
+    ) -> AsyncThrowingStream<StreamEvent, Error> {
+        FakeEmbeddedPersist.wrap(
+            stream(prompt: prompt, systemPrompt: systemPrompt, sessionID: nil, dbPath: dbPath, model: model,
+                   provider: provider, toolMode: toolMode, readFolder: readFolder, ownerInstructions: ownerInstructions,
+                   purpose: purpose, readFolderAskID: readFolderAskID, readFolderRoundID: readFolderRoundID),
+            dbPath: dbPath, persist: persist, provider: provider)
+    }
 }

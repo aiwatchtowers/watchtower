@@ -66,6 +66,41 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         }
     }
 
+    // swiftlint:disable:next function_parameter_count
+    package func stream(
+        prompt: String,
+        systemPrompt: String?,
+        dbPath: String?,
+        model: String?,
+        provider: String?,
+        toolMode: ChatToolMode?,
+        readFolder: String?,
+        ownerInstructions: Bool,
+        purpose: String?,
+        readFolderAskID: Int64?,
+        readFolderRoundID: Int64?,
+        persist: ChatQueryPersist
+    ) -> AsyncThrowingStream<StreamEvent, Error> {
+        let processHandle = WatchtowerProcessHandle()
+        return AsyncThrowingStream { continuation in
+            continuation.onTermination = { @Sendable _ in
+                processHandle.terminate()
+            }
+            Task {
+                do {
+                    try await self.run(
+                        prompt: prompt, systemPrompt: systemPrompt, dbPath: dbPath, model: model, provider: provider,
+                        toolMode: toolMode, readFolder: readFolder, ownerInstructions: ownerInstructions,
+                        purpose: purpose, readFolderAskID: readFolderAskID, readFolderRoundID: readFolderRoundID,
+                        persist: persist, processHandle: processHandle, continuation: continuation
+                    )
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
     /// Run a quick connectivity check via `watchtower ai test`.
     /// Returns (ok, provider, model, error).
     /// `provider` (nil: the configured one) is passed as `--provider`.
@@ -246,26 +281,34 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         return args
     }
 
+    /// `--persist`: the process saves the turn under its conversation and
+    /// turn id (the owner text travels on stdin, never argv — CHAT-04).
+    package static func persistArgs(_ persist: ChatQueryPersist) -> [String] {
+        ["--persist", "--conversation", String(persist.conversationID), "--turn", persist.turnID]
+    }
+
     /// The `--prompt-stdin` query object (`cmd/ai.go` `stdinQuery`).
     private struct StdinQuery: Encodable {
         let prompt: String
         let systemPrompt: String?
+        let ownerText: String?
 
         enum CodingKeys: String, CodingKey {
             case prompt
             case systemPrompt = "system_prompt"
+            case ownerText = "owner_text"
         }
     }
 
     /// The bytes `run` writes to the CLI's stdin for `--prompt-stdin`: one
     /// JSON object `{"prompt": …, "system_prompt": …}`, the system prompt
     /// left out when there is none.
-    package static func stdinPayload(prompt: String, systemPrompt: String?) -> Data {
+    package static func stdinPayload(prompt: String, systemPrompt: String?, ownerText: String? = nil) -> Data {
         let system = systemPrompt.flatMap { $0.isEmpty ? nil : $0 }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        // Two strings never fail to encode.
-        return (try? encoder.encode(StdinQuery(prompt: prompt, systemPrompt: system))) ?? Data()
+        // Strings never fail to encode.
+        return (try? encoder.encode(StdinQuery(prompt: prompt, systemPrompt: system, ownerText: ownerText))) ?? Data()
     }
 
     /// Writes `payload` to the CLI's stdin pipe and closes it. The write end
@@ -295,12 +338,13 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         purpose: String?,
         readFolderAskID: Int64?,
         readFolderRoundID: Int64?,
+        persist: ChatQueryPersist? = nil,
         processHandle: WatchtowerProcessHandle,
         continuation: AsyncThrowingStream<StreamEvent, Error>.Continuation
     ) async throws {
         let cliPath = try Self.findCLI()
 
-        let args = Self.buildArgs(
+        var args = Self.buildArgs(
             dbPath: dbPath,
             model: model,
             provider: provider,
@@ -311,6 +355,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
             readFolderAskID: readFolderAskID,
             readFolderRoundID: readFolderRoundID
         )
+        if let persist { args += Self.persistArgs(persist) }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
@@ -321,7 +366,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         let stderr = Pipe()
         process.standardOutput = stdout
         process.standardError = stderr
-        let stdinPrompt = Self.stdinPayload(prompt: prompt, systemPrompt: systemPrompt)
+        let stdinPrompt = Self.stdinPayload(prompt: prompt, systemPrompt: systemPrompt, ownerText: persist?.ownerText)
         let stdin = Pipe()
         process.standardInput = stdin
 
@@ -382,7 +427,10 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
             return .usage(usage)
         case let .error(error):
             return .failure(error)
-        case .turnStart, .turnDone, .toolWait, .exited:
+        case let .started(started):
+            return .started(ownerID: started.ownerMessageID > 0 ? started.ownerMessageID : nil,
+                            assistantID: started.assistantMessageID)
+        case .turnStart, .turnDone, .toolWait, .exited, .refused, .turnSaved:
             return nil
         }
     }

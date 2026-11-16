@@ -19,8 +19,8 @@ import (
 	"watchtower/internal/tower/api"
 )
 
-// chatWritesFile is testdata/chat_writes.json, read by the Swift
-// ChatWritesFixtureTests too.
+// chatWritesFile is testdata/chat_writes.json, the golden the Swift chat
+// writers were checked against until Task 18 deleted them.
 type chatWritesFile struct {
 	Cases []chatWriteCase `json:"cases"`
 }

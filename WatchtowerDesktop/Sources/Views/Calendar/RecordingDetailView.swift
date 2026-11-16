@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import WatchtowerInterface
 
 enum RecordingDetailTab: String, CaseIterable {
     case recap, notes, transcript, chat
@@ -494,7 +495,7 @@ struct RecordingDetailView: View {
             defer { chatCreates.end(key) }
             do {
                 let created = try await MeetingChatSurface.conversationID(
-                    transcriptID: id, title: transcript.title, dbPool: db.dbPool)
+                    transcriptID: id, title: transcript.title, dbPool: db.dbPool, writes: appState.chatWrites)
                 if isShowing(id) { chatConversationID = created }
             } catch {
                 if isShowing(id) { chatOpenFailed(error, transcriptID: id) }
@@ -689,22 +690,19 @@ struct RecordingDetailView: View {
     }
 
     private func deleteRecording() {
-        guard let db = appState.databaseManager else { return }
         let transcriptID = transcriptID
         if appState.audioPlaybackCenter.activeTranscriptID == transcriptID {
             appState.audioPlaybackCenter.pause()
         }
+        let writes = appState.chatWrites
         Task {
             do {
-                let audioPath = try await db.dbPool.write { conn in
-                    try MeetingTranscriptQueries.delete(conn, id: transcriptID)
+                // Go deletes the recording with its meeting chat, then its
+                // audio file after the commit (`meetings.delete`).
+                let _: MeetingsDeleteResponse = try await writes.send(.meetingsDelete) {
+                    MeetingsDeleteRequest(requestID: $0, transcriptID: transcriptID)
                 }
                 appState.embeddedChatCenter.dropContext(type: MeetingChatSurface.contextType, id: String(transcriptID))
-                // Post-commit, best-effort: the daemon retention phase may have
-                // already removed the file — a missing file is success.
-                if let audioPath {
-                    try? FileManager.default.removeItem(atPath: audioPath)
-                }
                 // The pane moved to another of the event's recordings
                 // meanwhile: keep it open, only refresh the list.
                 if isShowing(transcriptID) { onDeleted() } else { onChanged() }

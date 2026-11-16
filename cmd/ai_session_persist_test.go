@@ -31,6 +31,7 @@ type persistBackend struct {
 	hangTurn     string             // when set, only this turn id hangs
 	ignoreCancel bool               // a hanging turn never answers Cancel (it waits for the session's end)
 	onTurn       func(chat.Command) // runs when the provider gets the turn
+	failTurn     string             // when set, this turn ends with a provider error after its delta
 
 	mu        sync.Mutex
 	turns     []chat.Command
@@ -57,6 +58,10 @@ func (b *persistBackend) Turn(ctx context.Context, c chat.Command, emit func(cha
 	}
 	emit(chat.Event{Type: chat.EventTextDelta, Text: "partial "})
 	b.deltaOnce.Do(func() { close(b.delta) })
+	if b.failTurn == c.TurnID {
+		emit(chat.Event{Type: chat.EventError, TurnID: c.TurnID, Code: chat.CodeProviderUnavailable, Message: "down", Retryable: true})
+		return nil
+	}
 	if b.hang && (b.hangTurn == "" || b.hangTurn == c.TurnID) {
 		cancelled := b.cancelled
 		if b.ignoreCancel {
@@ -628,4 +633,22 @@ func TestStubSessionBackend_AnswersAtOnce(t *testing.T) {
 	require.Len(t, evs, 3)
 	assert.Equal(t, chat.Event{Type: chat.EventTextDelta, TurnID: "t1", Text: "ok"}, evs[1])
 	assert.Equal(t, chat.StatusComplete, evs[2].Status)
+}
+
+// TestPersist_TurnSavedFollowsTheFinalWrite: turn_done reaches stdout
+// before the turn's end is written; turn_saved comes once it is, so the
+// client's reload then reads the finished row.
+func TestPersist_TurnSavedFollowsTheFinalWrite(t *testing.T) {
+	backend := newPersistBackend()
+	r, _ := startPersistSession(t, backend)
+	d := openRunDB(t, r)
+	r.next(chat.EventSessionReady)
+	r.send(chat.Command{Type: chat.CommandTurn, TurnID: "t1", Text: "Hello"})
+	r.untilTurnEnd()
+	saved := r.next(chat.EventTurnSaved)
+	assert.Equal(t, "t1", saved.TurnID)
+	rows := persistedRows(t, d, r.convID)
+	require.Len(t, rows, 2)
+	assert.Equal(t, []string{"partial answer", "complete"}, []string{rows[1].Text, rows[1].Status})
+	r.close()
 }

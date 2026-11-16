@@ -120,7 +120,7 @@ final class ChatPersistTimingTests: XCTestCase {
         let sorted = values.sorted()
         guard !sorted.isEmpty else { return 0 }
         let mid = sorted.count / 2
-        return sorted.count % 2 == 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid]
+        return sorted.count.isMultiple(of: 2) ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid]
     }
 
     private static func seconds(_ duration: Duration) -> Double {

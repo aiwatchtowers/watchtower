@@ -20,8 +20,9 @@ import (
 
 // The chat.* tower commands (spec 2026-11-15-mobile-inbox-design §8): every
 // conversation-level chat write the Desktop made through GRDB, ported to Go
-// and pinned with its Swift writer by testdata/chat_writes.json until Task
-// 18 deletes the Swift writers. A turn's own rows are not here: `ai session
+// and pinned by testdata/chat_writes.json (the golden the deleted Swift
+// writers were checked against); since Task 18 the Desktop writes no chat
+// row itself. A turn's own rows are not here: `ai session
 // --persist` writes them. Each command is a guarded write: its rows and its
 // ledger row commit in one transaction (tower.Ctx.Write); files are written
 // before it and removed after it, never inside it.

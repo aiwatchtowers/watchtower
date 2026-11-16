@@ -317,23 +317,4 @@ enum MeetingTranscriptQueries {
             arguments: [updatedJSON, transcriptID])
         return targetID
     }
-
-    /// Deletes a recording with all its content: the transcript row and its
-    /// "meeting" chat conversation (+ messages). This code leaves
-    /// `meeting_recaps` alone — a public recording's recap outlives it (the
-    /// foreign key only clears `transcript_id`) — but migration 00164's
-    /// `BEFORE DELETE` trigger deletes the recaps a PRIVATE recording owns
-    /// (MEETPRIV-02: no readable recap without its recording). Returns the audio_path (if any) so
-    /// the caller can remove the file AFTER the transaction commits;
-    /// callers must treat a missing file as success (daemon retention may
-    /// have swept it already).
-    static func delete(_ db: Database, id: Int64) throws -> String? {
-        guard let transcript = try fetch(db, id: id) else { return nil }
-        if let conv = try ChatConversationQueries.fetchByContext(db, type: "meeting", id: String(id)) {
-            try ChatMessageQueries.deleteByConversation(db, conversationID: conv.id)
-            try ChatConversationQueries.delete(db, id: conv.id)
-        }
-        try db.execute(sql: "DELETE FROM meeting_transcripts WHERE id = ?", arguments: [id])
-        return transcript.audioPath
-    }
 }

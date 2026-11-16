@@ -3,6 +3,7 @@ import Foundation
 import GRDB
 import Observation
 import WatchtowerCore
+import WatchtowerInterface
 
 /// Code questions (spec §9.2–§9.4), per workbench, on `AppState`: the ✦
 /// button's timing (`AskAIButtonSchedule`), the popover's question
@@ -73,6 +74,8 @@ final class CodeQuestionCenter {
     @ObservationIgnored weak var codeIndex: CodeIndexCenter?
     @ObservationIgnored var embeddedChats: EmbeddedChatCenter?
     @ObservationIgnored var dbPool: DatabasePool?
+    /// The chat writes (the tower); set by the app with `dbPool`.
+    @ObservationIgnored var chatWrites: ChatWrites = .notReady
     @ObservationIgnored var modelSuggestions: (AIProvider) -> [String] = { _ in [] }
     @ObservationIgnored weak var dictation: DictationCenter?
     /// The Files pane inspector, which Pin to inspector opens on Questions.
@@ -269,7 +272,7 @@ final class CodeQuestionCenter {
         let created: Int64
         do {
             created = try await CodeQuestionSurface.createConversation(
-                workbenchID: workbenchID, origin: session.anchor.origin, choice: session.choice, dbPool: dbPool)
+                workbenchID: workbenchID, origin: session.anchor.origin, choice: session.choice, writes: chatWrites)
         } catch {
             NSLog("CodeQuestionCenter: creating a code question: %@", error.localizedDescription)
             guard sessions[workbenchID]?.id == session.id else { return false }
@@ -278,7 +281,7 @@ final class CodeQuestionCenter {
             return false
         }
         guard var current = sessions[workbenchID], current.id == session.id else {
-            removeConversation(created, dbPool: dbPool, logAs: "removing a closed popover's question")
+            removeConversation(created, logAs: "removing a closed popover's question")
             return false
         }
         current.isStarting = false
@@ -287,6 +290,8 @@ final class CodeQuestionCenter {
         if current.draft == session.draft { current.draft = "" }
         current.notice = nil
         sessions[workbenchID] = current
+        // Written by the daemon: the list's observation does not see it.
+        if questionLists[workbenchID] != nil { reloadQuestionList(workbenchID: workbenchID) }
         questionRefs[created] = CodeQuestionRef(
             project: current.project, root: current.root, conversationID: created, origin: current.anchor.origin
         )
@@ -446,11 +451,10 @@ final class CodeQuestionCenter {
     /// conversation at a time (`storingChoices`): the callers drop a pick
     /// made while another is written, so an older pick never lands last.
     private func storeModelChoice(_ choice: CodeQuestionSurface.ModelChoice, conversationID: Int64) async -> String? {
-        guard let dbPool else { return "Couldn't change the model: the database is not open." }
         storingChoices.insert(conversationID)
         defer { storingChoices.remove(conversationID) }
         do {
-            try await CodeQuestionSurface.setModelChoice(choice, conversationID: conversationID, dbPool: dbPool)
+            try await CodeQuestionSurface.setModelChoice(choice, conversationID: conversationID, writes: chatWrites)
         } catch {
             NSLog("CodeQuestionCenter: storing the model: %@", error.localizedDescription)
             return "Couldn't change the model: \(error.localizedDescription)"
@@ -470,6 +474,9 @@ final class CodeQuestionCenter {
     /// the popover's question was about.
     private func turnFinished(_ outcome: EmbeddedChatEngine.TurnOutcome, conversationID: Int64) {
         guard let workbenchID = questionRefs[conversationID]?.project.id else { return }
+        // The turn's rows were written by its own process, which the list's
+        // observation does not see.
+        if questionLists[workbenchID] != nil { reloadQuestionList(workbenchID: workbenchID) }
         guard case let .completed(_, result) = outcome else { return }
         guard let session = sessions[workbenchID], session.conversationID == conversationID,
               let replacement = WtEditBlock.replacement(in: result.displayText) else { return }
@@ -591,17 +598,18 @@ final class CodeQuestionCenter {
         let conversationID: Int64
         do {
             conversationID = try await CodeQuestionSurface.createConversation(
-                workbenchID: project.id, origin: origin, choice: choice, dbPool: dbPool)
+                workbenchID: project.id, origin: origin, choice: choice, writes: chatWrites)
         } catch {
             NSLog("CodeQuestionCenter: creating a code question: %@", error.localizedDescription)
             return .failed("Couldn't start the question: \(error.localizedDescription)")
         }
         guard stillAsking() else {
-            removeConversation(conversationID, dbPool: dbPool, logAs: "removing a closed panel's question")
+            removeConversation(conversationID, logAs: "removing a closed panel's question")
             return nil
         }
         questionContexts[conversationID] = context
         modelChoices[conversationID] = choice
+        if questionLists[project.id] != nil { reloadQuestionList(workbenchID: project.id) }
         let conversation = CodeQuestionRef(project: project, root: root, conversationID: conversationID, origin: origin)
         guard let engine = engine(for: conversation), engine.send(question) else {
             // Nothing was sent: no empty conversation stays behind.
@@ -656,7 +664,7 @@ final class CodeQuestionCenter {
     /// error; an action's error stays until the next action.
     func observeQuestionList(workbenchID: Int64) async {
         guard let dbPool else { return }
-        pruneEmptyQuestions(workbenchID: workbenchID, dbPool: dbPool)
+        pruneEmptyQuestions(workbenchID: workbenchID)
         let observation = ValueObservation.tracking { try CodeQuestionList.fetch($0, workbenchID: workbenchID) }
             .removeDuplicates()
         do {
@@ -675,7 +683,7 @@ final class CodeQuestionCenter {
     /// Reads the workbench's questions, newest first, once.
     func reloadQuestionList(workbenchID: Int64) {
         guard let dbPool else { return }
-        pruneEmptyQuestions(workbenchID: workbenchID, dbPool: dbPool)
+        pruneEmptyQuestions(workbenchID: workbenchID)
         do {
             questionLists[workbenchID] = try dbPool.read { try CodeQuestionList.fetch($0, workbenchID: workbenchID) }
             if questionListReadFailed.remove(workbenchID) != nil { questionListErrors[workbenchID] = nil }
@@ -746,10 +754,10 @@ final class CodeQuestionCenter {
     func deleteQuestion(_ question: CodeQuestionRef) async {
         let workbenchID = question.project.id
         let conversationID = question.conversationID
-        guard let dbPool, deletingQuestions.insert(conversationID).inserted else { return }
+        guard deletingQuestions.insert(conversationID).inserted else { return }
         defer { deletingQuestions.remove(conversationID) }
         do {
-            _ = try await dbPool.write { db in try CodeQuestionList.delete(db, conversationID: conversationID) }
+            try await Self.delete(conversationID, writes: chatWrites)
         } catch {
             NSLog("CodeQuestionCenter: deleting a code question: %@", error.localizedDescription)
             showActionError("Couldn't delete the question: \(error.localizedDescription)", workbenchID: workbenchID)
@@ -765,8 +773,7 @@ final class CodeQuestionCenter {
     /// An Open Quickly question that could not be sent: its empty row goes.
     private func discardConversation(_ question: CodeQuestionRef) {
         forget(question)
-        guard let dbPool else { return }
-        removeConversation(question.conversationID, dbPool: dbPool, logAs: "removing an unsent code question")
+        removeConversation(question.conversationID, logAs: "removing an unsent code question")
     }
 
     /// Whether the conversation's Delete is waiting for the writer; its
@@ -780,7 +787,7 @@ final class CodeQuestionCenter {
     /// `CodeQuestionList.emptyQuestionAge` (a cleanup that failed, a crash
     /// between the row and its first message), off the main thread. A failed
     /// cleanup is tried again on the next load.
-    private func pruneEmptyQuestions(workbenchID: Int64, dbPool: DatabasePool) {
+    private func pruneEmptyQuestions(workbenchID: Int64) {
         guard prunedWorkbenches.insert(workbenchID).inserted else { return }
         let cutoff = clock().addingTimeInterval(-CodeQuestionList.emptyQuestionAge).timeIntervalSince1970
         // A conversation a surface still holds (a popover's, a reopened
@@ -788,10 +795,12 @@ final class CodeQuestionCenter {
         // taken, however old.
         let keeping = Set(questionRefs.keys).union(ownedEngines.keys)
             .union(sessions.values.compactMap(\.conversationID))
+        let writes = chatWrites
         Task {
             do {
-                _ = try await dbPool.write { db in
-                    try CodeQuestionList.deleteEmpty(db, workbenchID: workbenchID, createdBefore: cutoff, keeping: keeping)
+                let _: ChatCount = try await writes.send(.chatCodeQuestionDeleteEmpty) {
+                    ChatDeleteEmptyCodeQuestionsRequest(
+                        requestID: $0, workbenchID: workbenchID, createdBefore: cutoff, keeping: keeping.sorted())
                 }
             } catch {
                 NSLog("CodeQuestionCenter: removing empty code questions: %@", error.localizedDescription)
@@ -803,13 +812,26 @@ final class CodeQuestionCenter {
     /// Deletes a conversation no surface shows, off the main thread; a
     /// failure is logged (the list hides a question with no message, and the
     /// next run's first list load deletes it).
-    private func removeConversation(_ conversationID: Int64, dbPool: DatabasePool, logAs what: String) {
+    private func removeConversation(_ conversationID: Int64, logAs what: String) {
+        let writes = chatWrites
         Task {
             do {
-                _ = try await dbPool.write { db in try CodeQuestionList.delete(db, conversationID: conversationID) }
+                try await Self.delete(conversationID, writes: writes)
             } catch {
                 NSLog("CodeQuestionCenter: %@: %@", what, error.localizedDescription)
             }
+        }
+    }
+
+    /// Deletes a code question with its messages (`chat.delete` scoped to
+    /// code questions); one already gone counts as deleted.
+    private static func delete(_ conversationID: Int64, writes: ChatWrites) async throws {
+        do {
+            let _: ChatDone = try await writes.send(.chatDelete) {
+                ChatDeleteRequest(requestID: $0, conversationID: conversationID, contextType: CodeQuestionList.contextType)
+            }
+        } catch let error as ChatWriteError where error.isGone {
+            return
         }
     }
 

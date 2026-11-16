@@ -67,9 +67,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
     ) -> EmbeddedChatEngine {
         let spec = spec ?? self.spec()
         let clock = self.clock
-        let store = store ?? DatabaseEmbeddedChatStore(dbPool: pool, conversationID: spec.key.conversationID ?? 0) {
-            clock.now
-        }
+        let store = store ?? DatabaseEmbeddedChatStore(dbPool: pool, conversationID: spec.key.conversationID ?? 0)
         return EmbeddedChatEngine(spec: spec, store: store, aiService: ai, gate: gate, draftMirror: mirror) { clock.now }
     }
 

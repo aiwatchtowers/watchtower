@@ -42,8 +42,10 @@ accepted — both close the same failure mode: Go's `HistoryBefore` strips
 only a *trailing* owner row with no reply, so an owner message can never be
 silently dropped from replay.
 
-**Amendment (2026-11-15, #1791, owner decision ask #1340):** the turn's rows are written by the turn's **lease holder's** store, Swift (the Desktop's `ChatTurnStore`) or Go (`internal/chatstore`, run by the hub's `chatrun` runner); "the Swift turn store is the writer" no longer holds. One `chat_turn_leases` row per conversation (migration 00189) is claimed inside the owner-row transaction, so the first commit wins and the loser writes nothing (the phone gets `conversation_busy` and its text back; the Mac keeps its draft). The same order and `partial` rules bind the Go store, and no Swift guard changed. The phone never writes chat rows; its typed text survives a kill of the app because each send is kept in `chat_outgoing` (the hub's offline-copy file) until the hub applies or refuses it, and a send the hub never saw comes back as a draft.
-Added guards: `TestChat01Go_OwnerRowBeforeTurn`, `TestChatstore_StopKeepsPartial`, `TestChatstore_ProcessDeathFinalizesPartial`, `TestFinalize_RetriesAfterWriteFailure`, `TestChatstore_ConversationDeletedMidTurnStopsCleanly`, `TestChatstore_MatchesSwiftFixture` (`internal/chatstore/store_test.go`, `fixture_test.go`: the Go store's rows equal the Swift store's over `internal/chatstore/testdata/chat_turn_cases.json`, read by `WatchtowerDesktop/Tests/Core/ChatTurnStoreFixtureTests.swift`); the lease: `TestChatLeaseCases`, `TestLease_ConcurrentClaimOneWins` (`internal/db/chat_lease_test.go`), `ChatLeaseQueriesTests` and `ChatTurnLeaseTests` (`testConcurrentClaimOneWins`, `testSendRefusedWhileHubHoldsLeaseKeepsDraft`, `testDriverStopsWhenConversationDeleted`; Swift, same `chat_lease_cases.json`); the phone: `ChatSendTests`, `ChatSendRecoveryTests` (`WatchtowerMobile/Tests/`).
+**Amendment (2026-11-15, #1791, owner decision ask #1340):** the turn's rows are written by the turn's **lease holder's** store, Go (`internal/chatstore`: run by the Desktop's `ai session --persist` process since the 2026-11-16 amendment below, or by the hub's `chatrun` runner; the Desktop's Swift `ChatTurnStore` was the Mac's writer until then); "the Swift turn store is the writer" no longer holds. One `chat_turn_leases` row per conversation (migration 00189) is claimed inside the owner-row transaction, so the first commit wins and the loser writes nothing (the phone gets `conversation_busy` and its text back; the Mac keeps its draft). The same order and `partial` rules bind the Go store, and no Swift guard changed. The phone never writes chat rows; its typed text survives a kill of the app because each send is kept in `chat_outgoing` (the hub's offline-copy file) until the hub applies or refuses it, and a send the hub never saw comes back as a draft.
+Added guards: `TestChat01Go_OwnerRowBeforeTurn`, `TestChatstore_StopKeepsPartial`, `TestChatstore_ProcessDeathFinalizesPartial`, `TestFinalize_RetriesAfterWriteFailure`, `TestChatstore_ConversationDeletedMidTurnStopsCleanly`, `TestChatstore_MatchesSwiftFixture` (`internal/chatstore/store_test.go`, `fixture_test.go`: the Go store's rows equal the Swift store's over `internal/chatstore/testdata/chat_turn_cases.json`, read by `WatchtowerDesktop/Tests/Core/ChatTurnStoreFixtureTests.swift`); the lease: `TestChatLeaseCases`, `TestLease_ConcurrentClaimOneWins` (`internal/db/chat_lease_test.go`), `ChatLeaseQueriesTests` and `ChatTurnLeaseTests` (`testConcurrentClaimOneWins`, `testSendRefusedWhileHubHoldsLeaseKeepsDraft`; Swift, same `chat_lease_cases.json`; `testDriverStopsWhenConversationDeleted` moved to Go on 2026-11-16, see the changelog); the phone: `ChatSendTests`, `ChatSendRecoveryTests` (`WatchtowerMobile/Tests/`).
+
+**Amendment (2026-11-16, #1170 Task 18, mobile Inbox spec §8, owner condition ask #1361):** the Mac's turn rows are written by its own session process, `ai session --persist --lease-owner desktop --lease-owner-id <launch id>` (`chatstore.Start` before the provider gets the turn, then `Turn.Apply/Flush/Finalize`), and an embedded chat's by `ai query --events v2 --persist`; Swift writes no chat row (`ChatTablesWriteGuardTests`). The Mac sends the turn, shows the owner's bubble from the draft at once and keeps the draft until the session's `started`: a `refused`, a start error, a session that dies before `started` or one silent for 10 s gives the text back and writes nothing; a session that dies after `started` gets `chat.recover` (its `partial` reply marked `session_lost`, its lease freed), and the next launch's `chat.release_launches` covers a failed call. The eight row guards moved to Go with their names (`TestChat01UserMessageIsPersistedBeforeTheTurnIsSent` … `TestChat01LegacyUnansweredQuestionIsKeptBeforeTheNextTurn`, `cmd/ai_session_chat01_test.go`, over the real persister), assertions unchanged; the eight Swift guards keep their names and assertions against the new path, the session played by `FakeChatSessionProcess` in persist mode (`FakePersistSession`, the Go writes); `testChat01FailedSendKeepsTheOwnerMessageAnswered`'s failure is now the provider's error event — a pipe that fails before `started` writes nothing and gives the draft back (`ChatSessionClientTests.testSendFailureFailsTheStart`). New: `ChatViewModelTests` `testBubbleShowsBeforeStarted`, `testKillBeforeStartedReturnsTheDraft`, `testKillAfterStartedCallsRecover`, `testSilentProcessGivesUpAfterTenSeconds`, `testRefusedConversationBusyRestoresTheDraftWithTheHolderLine`; `TestPersist_TurnSavedFollowsTheFinalWrite`.
 
 **Guard:** `testChat01UserMessageIsPersistedBeforeTheTurnIsSent`,
 `testChat01NothingIsSentWhenTheMessageCannotBeSaved`,
@@ -53,7 +55,8 @@ Added guards: `TestChat01Go_OwnerRowBeforeTurn`, `TestChatstore_StopKeepsPartial
 `testChat01EditRowsExistUnderTheNewTurnIDWhenSent`,
 `testChat01FailedSendKeepsTheOwnerMessageAnswered`,
 `testChat01LegacyUnansweredQuestionIsKeptBeforeTheNextTurn`
-(`WatchtowerDesktop/Tests/ChatViewModelTests.swift`)
+(`WatchtowerDesktop/Tests/ChatViewModelTests.swift`); the same eight names in Go
+(`cmd/ai_session_chat01_test.go`)
 
 ## CHAT-02 — no silent tool activity
 
@@ -74,11 +77,12 @@ waiting step until it is approved, rejected or times out.
 
 **Guard:** `TestChat02_ToolCallNeverWipesText`
 (`internal/chat/claude_translate_test.go`);
-`testChat02ToolStepsArePersistedImmediately`
-(`WatchtowerDesktop/Tests/Core/ChatTurnDriverTests.swift`);
+`TestChat02ToolStepsArePersistedImmediately`
+(`internal/chatstore/moved_guards_test.go`, moved from `ChatTurnDriverTests` on 2026-11-16);
 `TestChat02_GateDecisionsAreSteps` (`internal/chat/gate_test.go`);
 `testChat02WaitingStepIsVisibleUntilItEnds`
-(`WatchtowerDesktop/Tests/Core/ChatTurnDriverTests.swift`);
+(`WatchtowerDesktop/Tests/Core/ChatTurnDriverTests.swift`: the live steps) and
+`TestChat02WaitingStepIsVisibleUntilItEnds` (`internal/chatstore/moved_guards_test.go`: the rows);
 `TestTurnBackend_CodexToolCallsBecomeSteps`
 (`internal/chat/turn_backend_codex_test.go`);
 the transport contract suite's `two-messages`, `tool-ok` and
@@ -290,12 +294,12 @@ refused with "Built on Live Slack answers, which are not kept"). Turns before th
 readable. In a marked conversation `instructions remember` stores a line only when it
 appears verbatim in the owner's own message.
 
-**Mechanism:** the turn's lease holder's store — the Swift turn store on the Mac, or since 2026-11-15 (#1791, ask #1340) the Go turn store `internal/chatstore`, at the same mark points (`markIfSlackStep` when a Slack step starts, `markIfUsed` in finalize) — marks the conversation
-when a Slack step starts (`ChatTurnStore.stepStarted`, `LiveSlackMark.markIfSlackStep`: a Live
+**Mechanism:** the turn's lease holder's store — the Go turn store `internal/chatstore` (the Mac's `ai session --persist` since 2026-11-16, #1170 Task 18; the Swift `ChatTurnStore` before; the hub's `chatrun` since 2026-11-15) — marks the conversation
+when a Slack step starts (`Turn.stepStarted`: a Live
 turn's partial text is saved while it runs and a crash never finalizes) and again in
-`finalizeTurn`'s transaction as a backstop (`markIfUsed`); whichever comes first wins. Embedded
+the finalize transaction as a backstop (`markIfUsedTx`); whichever comes first wins. Embedded
 chats never carry Slack connectors (main surface only). Go readers apply `db.ChatNotLiveSlack` (`c.live_slack_since IS NULL OR m.id <
-c.live_slack_since`); `ChatArtifactQueries.keep` throws `ChatArtifactKeepError.liveSlack`. The iPhone's offline copy of a chat (`chat-copy.sqlite`, the hub's own file) and the hub's feed builder (`chat_list`/`chat_feed`/`chat_page`/`chat_search`) are display copies, like `chat_messages` itself: the feed builder's functions join `displayOnlyReaders`, and the Go store's own new functions are listed there with reasons (`TestLIVE01_ReaderList` unchanged).
+c.live_slack_since`); `chat.artifact.keep` is refused `not_permitted` (the panel shows its reason; the Swift `ChatArtifactQueries.keep` is gone). The iPhone's offline copy of a chat (`chat-copy.sqlite`, the hub's own file) and the hub's feed builder (`chat_list`/`chat_feed`/`chat_page`/`chat_search`) are display copies, like `chat_messages` itself: the feed builder's functions join `displayOnlyReaders`, and the Go store's own new functions are listed there with reasons (`TestLIVE01_ReaderList` unchanged).
 
 **Why locked:** A Live answer is the owner's live Slack data fetched through a third-party
 connector; Watchtower's compliance position is that it is shown and never stored or mined.
@@ -305,15 +309,17 @@ connector; Watchtower's compliance position is that it is shown and never stored
 new non-test function in `internal/` that mentions the chat tables must join
 `liveCheckedReaders` or `displayOnlyReaders`); `TestLIVE01_KeptArtifactSkipped`
 (`internal/kb/source_chat_artifact_test.go`); `LiveSlack01GuardTests`
-(`WatchtowerDesktop/Tests/Core/LiveSlack01GuardTests.swift`: the finalize mark for both
-providers, `testEveryGoSlackStepNameMarks` over every step name in
+(`WatchtowerDesktop/Tests/Core/LiveSlack01GuardTests.swift`: the panel's
+reason, and `testReaderList` over the Swift sources, which is file-level: a Swift file that mentions a chat table must be listed as checked or display-only); moved to Go with their names on 2026-11-16 (`internal/chatstore/moved_guards_test.go`): the finalize mark for both
+providers (`TestFinalizeMarksConversationOnSlackStep`, `TestFinalizeMarksConversationOnCodexSlackStep`), `TestEveryGoSlackStepNameMarks` over every step name in
 `internal/slacklive/testdata/slack_step_names.json` — the names Go's real Claude and Codex
-translators give each connector tool, pinned by `TestLIVE01_StepNamesFixture` —, no mark without a Slack step, the first mark kept, keep refused, the panel's
-reason, and `testReaderList` over the Swift sources, which is file-level: a Swift file that mentions a chat table must be listed as checked or display-only), `testStepStartMarksWithoutFinalize`; `TestInstructionsRemember_LiveSlackRefusesText` (`cmd/instructions_test.go`, the `not_owner_text` refusal).
+translators give each connector tool, pinned by `TestLIVE01_StepNamesFixture` —, no mark without a Slack step (`TestFinalizeLeavesUnmarkedWithoutSlackStep`), the first mark kept (`TestFirstMarkIsKept`), keep refused (`TestKeepRefusedForLiveConversation`), `TestStepStartMarksWithoutFinalize`; `TestInstructionsRemember_LiveSlackRefusesText` (`cmd/instructions_test.go`, the `not_owner_text` refusal).
 
 **Locked since:** 2026-11-14
 
 ## Changelog
+
+- 2026-11-16 (#1170 Task 18, mobile Inbox spec §8, owner condition ask #1361): the Desktop's chat writes move to Go. **CHAT-01**, **CHAT-02**, **LIVE-01** amended as above: the Mac's turn rows are written by `ai session --persist` / `ai query --persist`, every other chat write by the `chat.*` tower commands, and Swift writes no `chat_*` table (`ChatTablesWriteGuardTests`; one exception until Task 12: `IdeaQueries.delete`'s Discuss chat). Guards that read a deleted Swift writer moved to Go with their names (listed under each contract), assertions unchanged; the Swift guards that stay keep their names and assertions, against fake sessions and a fake tower that apply the Go writes (`FakePersistSession`, `FakeEmbeddedPersist`, `FakeChatTower`). `testReaderList`'s `checked` list loses the deleted `ChatTurnStore.swift`; `ChatArtifactQueries.swift` (reads only now) joins the display-only list; the entries for files that no longer name a chat table go. **CHAT-03** and **CHAT-05** unchanged (`ChatSessionPoolTests`, `ArtifactActionsTests`, `ArtifactChat05ScanTests`): the pool still bounds the same processes, now spawned with `--persist`. `ChatTurnLeaseTests.testDriverStopsWhenConversationDeleted` moved to Go's `TestPersist_LostLeaseStopsWritingAndCancels` / `TestChatstore_ConversationDeletedMidTurnStopsCleanly` (the session stops itself).
 
 - 2026-11-11 (tests without wall clock, board #1730): no Observable changed. The `internal/chat` warm-claude tests run an in-process twin of `testdata/fake_claude.sh` (`fakeCLI`, `fake_claude_test.go`) behind the `ClaudeOptions.start` seam, inside `testing/synctest`: every grace, poll and "nothing happened" check is virtual time, and each test fails if a fake child is still running after its teardown. The process wiring keeps real-process tests that wait on process events only and fail if any stub process outlives the test (one `pgrep` look after teardown): `TestChat03_CloseReapsStubbornChild` (the leader is reaped by `Close`; the grandchild sleeps a day, reports its pid over a FIFO and its exit is awaited by pid (kqueue `NOTE_EXIT`; a pidfd on Linux) — only the group kill can end it; no pid polling), `TestChat03_CloseUnblocksAStuckWrite` (a real full pipe), `TestChat04_ClaudeArgvCarriesNoContent` and `TestClaudeBackend_RespawnReadsPromptPipesAgain` (the prompt and the config read from the inherited pipes, first spawn and respawn) and `TestClaudeBackend_StdinEOFEndsSessionAndSweepsGroup` (the group sweep); the real-sandbox halves of `TestChat05_ClaudeAIChildNeverTouchesTCCGuardedFolders` stay real. Moved to the in-process model: `TestChat03_CloseWhileWaitingForApprovalRejectsAndReaps` now checks that `Close` ended the fake child (the real reaping of a child and its group is `TestChat03_CloseReapsStubbornChild`'s), and `TestChat05_DeadSessionNeverRunsAnApprovedCall` kills the fake child instead of signalling a pid. The stdin write lock is a one-slot channel instead of a `sync.Mutex` (mutual exclusion and lock order unchanged; a zero `claudeProc` needs it made), so a writer queued behind a stuck write is durably blocked.
 

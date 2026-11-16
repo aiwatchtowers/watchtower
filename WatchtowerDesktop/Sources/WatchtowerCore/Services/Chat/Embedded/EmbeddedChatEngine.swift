@@ -412,14 +412,24 @@ package final class EmbeddedChatEngine {
         }
     }
 
-    /// Writes the turn's rows, then starts its process.
+    /// Writes the turn's rows, then starts its process. A database chat's
+    /// process writes them itself (`ai query --persist`): it starts first,
+    /// and the turn begins at its `started`.
     private func writeRowsAndStart(_ request: TurnRequest, turnID: String, options: ChatRunOptions) async {
         let store = self.store
         let provider = options.provider ?? self.provider
         let ids: (ownerID: Int64?, assistantID: Int64)
+        var cursor: StreamCursor?
         do {
-            ids = try await writes.runThrowing {
-                try await store.beginTurn(ownerText: request.ownerText, turnID: turnID, provider: provider)
+            if let conversationID = store.persistedConversationID {
+                let persist = ChatQueryPersist(conversationID: conversationID, turnID: turnID, ownerText: request.ownerText)
+                let opened = StreamCursor(makeStream(request, turnID: turnID, options: options, persist: persist))
+                ids = try await opened.started()
+                cursor = opened
+            } else {
+                ids = try await writes.runThrowing {
+                    try await store.beginTurn(ownerText: request.ownerText, turnID: turnID, provider: provider)
+                }
             }
         } catch {
             isStarting = false
@@ -452,47 +462,63 @@ package final class EmbeddedChatEngine {
                               lastEvent: now, bannerAtBegin: bannerError)
         refreshRows()
         if stopBeforeStart {
-            // A quit or a shutdown came first: nothing is sent, and the
-            // follow-ups it carried never reached the provider.
+            // A quit or a shutdown came first: nothing more is sent, and the
+            // follow-ups it carried are kept (its process is stopped now).
             queuedFollowUps.insert(contentsOf: request.carriedFollowUps, at: 0)
             running?.stopRequested = true
             endRunningTurn()
             return
         }
-        startStream(request, turn: turn, options: options)
+        startStream(request, turn: turn, options: options, cursor: cursor)
     }
 
-    private func startStream(_ request: TurnRequest, turn: LiveTurn, options: ChatRunOptions) {
-        // Every turn is a fresh provider run (no session is resumed, #604
-        // G11): the system prompt goes again and the earlier turns are
-        // replayed from the stored rows, as the main chat's Go replay does.
+    /// The turn's `ai query` run. Every turn is a fresh provider run (no
+    /// session is resumed, #604 G11): the system prompt goes again and the
+    /// earlier turns are replayed from the stored rows, as the main chat's
+    /// Go replay does.
+    private func makeStream(
+        _ request: TurnRequest, turnID: String, options: ChatRunOptions, persist: ChatQueryPersist?
+    ) -> AsyncThrowingStream<StreamEvent, Error> {
         let input = ChatTurnInput(text: request.promptText,
-                                  previousOwnerMessageAt: request.previousOwnerMessageAt, turnID: turn.turnID,
+                                  previousOwnerMessageAt: request.previousOwnerMessageAt, turnID: turnID,
                                   alreadyApplied: request.alreadyApplied)
-        let stream = aiService.stream(
-            prompt: (replayBlock(before: turn.turnID, prompt: request.promptText) ?? "") + spec.turnPrompt(input),
+        let prompt = (replayBlock(before: turnID, prompt: request.promptText) ?? "") + spec.turnPrompt(input)
+        let toolMode = spec.toolAccess.toolMode(key: spec.key, turnID: turnID)
+        if let persist {
+            return aiService.stream(prompt: prompt, systemPrompt: spec.systemPrompt(), dbPath: store.dbPath,
+                                    model: options.model, provider: options.provider, toolMode: toolMode,
+                                    readFolder: options.readFolder, ownerInstructions: spec.ownerInstructions,
+                                    purpose: options.purpose, readFolderAskID: options.readFolderAskID,
+                                    readFolderRoundID: options.readFolderRoundID, persist: persist)
+        }
+        return aiService.stream(
+            prompt: prompt,
             systemPrompt: spec.systemPrompt(),
             sessionID: nil,
             dbPath: store.dbPath,
             model: options.model,  // nil = the provider's resolved strong-tier model
             provider: options.provider,
-            toolMode: spec.toolAccess.toolMode(key: spec.key, turnID: turn.turnID),
+            toolMode: toolMode,
             readFolder: options.readFolder,
             ownerInstructions: spec.ownerInstructions,
             purpose: options.purpose,
             readFolderAskID: options.readFolderAskID,
             readFolderRoundID: options.readFolderRoundID
         )
+    }
+
+    private func startStream(_ request: TurnRequest, turn: LiveTurn, options: ChatRunOptions, cursor: StreamCursor?) {
+        let cursor = cursor ?? StreamCursor(makeStream(request, turnID: turn.turnID, options: options, persist: nil))
         streamTask = Task { [weak self] in
-            await self?.consume(stream, turn: turn)
+            await self?.consume(cursor, turn: turn)
         }
         startWatchdog(for: turn)
     }
 
-    private func consume(_ stream: AsyncThrowingStream<StreamEvent, Error>, turn: LiveTurn) async {
+    private func consume(_ cursor: StreamCursor, turn: LiveTurn) async {
         var reducer = EmbeddedStreamReducer()
         do {
-            for try await event in stream {
+            while let event = try await cursor.next() {
                 guard isCurrent(turn) else { return }
                 running?.lastEvent = clock()
                 if case .failure(let failure) = event {
@@ -916,4 +942,45 @@ package final class EmbeddedChatEngine {
     private func log(_ message: String) {
         NSLog("EmbeddedChatEngine[%@]: %@", spec.key.description, message)
     }
+}
+
+/// One turn's stream, read in two parts: a persisted turn's `started` first
+/// (before the turn begins), then the rest. Like the stream, it stops its
+/// process when the task reading it is cancelled or it is let go.
+@MainActor
+private final class StreamCursor {
+    private var iterator: AsyncThrowingStream<StreamEvent, Error>.AsyncIterator
+
+    init(_ stream: AsyncThrowingStream<StreamEvent, Error>) {
+        iterator = stream.makeAsyncIterator()
+    }
+
+    func next() async throws -> StreamEvent? {
+        // A copy shares the stream's storage; one reader at a time.
+        var reading = iterator
+        defer { iterator = reading }
+        return try await reading.next()
+    }
+
+    /// Reads up to the process's `started`: the turn's rows are on disk.
+    /// Anything else first — a failure, the end, or a run that saves nothing
+    /// — means nothing was written.
+    func started() async throws -> (ownerID: Int64?, assistantID: Int64) {
+        while let event = try await next() {
+            switch event {
+            case let .started(ownerID, assistantID):
+                return (ownerID, assistantID)
+            case .routing:
+                continue
+            case let .failure(failure):
+                throw ChatWriteError(sentence: failure.message)
+            case let .error(message):
+                throw ChatWriteError(sentence: message)
+            default:
+                throw ChatWriteError(sentence: "The chat's process did not save the message.")
+            }
+        }
+        throw ChatWriteError(sentence: "The chat's process ended before it saved the message.")
+    }
+
 }

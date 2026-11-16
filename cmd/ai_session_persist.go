@@ -359,7 +359,19 @@ func (p *sessionPersister) checkDone() {
 		id := cur.st.AssistantMessageID
 		p.leaf = &id
 	}
+	p.letGo()
+}
+
+// letGo drops the running turn: nothing more is written for it, and the
+// client hears `turn_saved` — what a reload reads now is the turn's last
+// state (its turn_done reached stdout before its end was written).
+func (p *sessionPersister) letGo() {
+	if p.cur == nil {
+		return
+	}
+	turnID := p.cur.st.TurnID
 	p.cur = nil
+	p.emit(chat.Event{Type: chat.EventTurnSaved, TurnID: turnID})
 }
 
 // onTick: a failed end retried once, trailing text flushed, the lease kept
@@ -377,7 +389,7 @@ func (p *sessionPersister) onTick() {
 			return
 		} else if err != nil {
 			stderrLogf("ai session: conversation %d: the final write failed again (%s); the lease goes stale", p.conv, logredact.Full(err))
-			p.cur = nil
+			p.letGo()
 			return
 		}
 		p.checkDone()
@@ -439,7 +451,7 @@ func (p *sessionPersister) lost() {
 		return
 	}
 	stderrLogf("ai session: conversation %d: turn %s lost its conversation or lease; stopping it", p.conv, p.cur.st.TurnID)
-	p.cur = nil
+	p.letGo()
 	p.forward([]byte(`{"type":"cancel"}`))
 }
 
@@ -456,7 +468,7 @@ func (p *sessionPersister) finalize(status string, f *chatstore.Failure) {
 	if err != nil && !errors.Is(err, chatstore.ErrConversationGone) {
 		stderrLogf("ai session: conversation %d: finalizing turn %s failed: %s", p.conv, cur.st.TurnID, logredact.Full(err))
 	}
-	p.cur = nil
+	p.letGo()
 }
 
 // endOnExit: the session ended (stdin closed, close, a signal) with a turn

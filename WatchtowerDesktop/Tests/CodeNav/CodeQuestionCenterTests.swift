@@ -123,6 +123,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         workbenchesVM = vm
         center.workbenches = vm
         center.dbPool = pool
+        center.chatWrites = .fake(pool)
         let dbPool: DatabasePool = pool
         let ai: ScriptedAIService = ai
         center.embeddedChats = EmbeddedChatCenter { spec, gate in makeSurfaceEngine(spec, dbPool: dbPool, ai: ai, gate: gate) }

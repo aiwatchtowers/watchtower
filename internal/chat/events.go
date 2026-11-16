@@ -39,6 +39,10 @@ const (
 	// sent; Reason "conversation_busy" while another owner (Holder: "hub" or
 	// "desktop") holds the conversation's lease.
 	EventRefused = "refused"
+	// EventTurnSaved (`ai session --persist`): the turn's last write is
+	// done (or given up), after its turn_done or error — a reload now reads
+	// what the turn left.
+	EventTurnSaved = "turn_saved"
 )
 
 // turn_done statuses.

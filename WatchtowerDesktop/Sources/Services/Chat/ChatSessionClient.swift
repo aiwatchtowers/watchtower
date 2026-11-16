@@ -39,9 +39,48 @@ struct ChatSessionConfig: Equatable, Sendable {
     }
 }
 
-/// One warm `watchtower ai session` process for one conversation. Owns the
-/// turn driver, so a running turn keeps streaming into the database no
-/// matter which view (if any) is showing it.
+/// How a turn sent to a persisting session started.
+enum ChatStartOutcome: Equatable, Sendable {
+    /// Its rows are on disk; the driver streams it.
+    case started(ChatStarted)
+    /// Another owner holds the conversation: nothing was written or sent.
+    case refused(ChatRefusal)
+    /// Nothing was written: the session could not take it (dead, silent
+    /// for `startedTimeout`, or the start write failed — Go's sentence).
+    case failed(ChatSessionError)
+}
+
+/// A turn waiting for its `started`: the one awaiter of `startTurn`. It moves
+/// with a held turn to a replacement session (`surrenderHeldTurn`).
+@MainActor
+final class PendingChatStart {
+    let command: ChatTurnCommand
+    private var continuation: CheckedContinuation<ChatStartOutcome, Never>?
+    private var outcome: ChatStartOutcome?
+
+    init(command: ChatTurnCommand) {
+        self.command = command
+    }
+
+    var isResolved: Bool { outcome != nil }
+
+    func wait() async -> ChatStartOutcome {
+        if let outcome { return outcome }
+        return await withCheckedContinuation { continuation = $0 }
+    }
+
+    func resolve(_ value: ChatStartOutcome) {
+        guard outcome == nil else { return }
+        outcome = value
+        continuation?.resume(returning: value)
+        continuation = nil
+    }
+}
+
+/// One warm `watchtower ai session --persist` process for one conversation.
+/// The process saves the turn's rows itself (mobile Inbox spec §8); this
+/// client sends the turn, waits for its `started`, and owns the turn driver,
+/// so a running turn keeps streaming no matter which view (if any) shows it.
 ///
 /// A client may be created *pending* (`launchImmediately: false`): the pool
 /// launches it once a slot is free and any process it replaces has exited.
@@ -55,6 +94,9 @@ struct ChatSessionConfig: Equatable, Sendable {
 final class ChatSessionClient {
     /// How long a SIGTERMed process gets before SIGKILL.
     nonisolated static let defaultKillAfter: Duration = .seconds(3)
+    /// A turn written to the process with no `started` by then gives up:
+    /// the process is retired and the draft comes back (spec §9).
+    nonisolated static let defaultStartedTimeout: Duration = .seconds(10)
 
     let conversationID: Int64
     let config: ChatSessionConfig
@@ -69,63 +111,65 @@ final class ChatSessionClient {
     /// and the stderr tail, as a `session_lost` error.
     private(set) var exitError: ChatSessionError?
     private(set) var lastActivity: Date
-    /// The last message this provider session has seen (see `ChatContinuity`).
-    var continuousLeafID: Int64?
 
     @ObservationIgnored var onTurnFinished: ((Int64) -> Void)?
     /// A running turn's step started waiting on an approval card (`tool_wait`).
     @ObservationIgnored var onActionAwaited: (() -> Void)?
     /// The process ended (or could not be spawned) — the pool re-admits.
     @ObservationIgnored var onEnded: (() -> Void)?
+    /// The process ended with a started turn it never let go of (no
+    /// `turn_saved`): its rows need `chat.recover` (spec §9).
+    @ObservationIgnored var onTurnLost: ((_ conversationID: Int64, _ turnID: String) -> Void)?
     @ObservationIgnored private var process: (any ChatSessionProcess)?
     @ObservationIgnored private let spawn: () throws -> any ChatSessionProcess
     @ObservationIgnored private let clock: () -> Date
+    @ObservationIgnored private let startedTimeout: Duration
+    @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
     @ObservationIgnored private var readTask: Task<Void, Never>?
-    @ObservationIgnored private var pendingTurn: ChatTurnCommand?
+    /// The turn held while pending, or written and waiting for `started`.
+    @ObservationIgnored private var pendingStart: PendingChatStart?
+    @ObservationIgnored private var startTimer: Task<Void, Never>?
+    /// The started turn the session has not let go of yet (`turn_saved`).
+    @ObservationIgnored private var unsavedTurnID: String?
     @ObservationIgnored private var exited = false
     @ObservationIgnored private var shutdownRequested = false
     @ObservationIgnored private var sigtermSent = false
     /// Set by `retireAfterTurn`: the running turn is this session's last.
     @ObservationIgnored private var retiresAfterTurn = false
-    /// The turn whose `turn` command was actually written to the process.
-    @ObservationIgnored private var sentTurnID: String?
 
     init(
         config: ChatSessionConfig,
         spawn: @escaping () throws -> any ChatSessionProcess,
-        store: ChatTurnStore,
         clock: @escaping () -> Date,
-        launchImmediately: Bool = true
+        launchImmediately: Bool = true,
+        startedTimeout: Duration = ChatSessionClient.defaultStartedTimeout,
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         self.conversationID = config.conversationID
         self.config = config
         self.spawn = spawn
         self.clock = clock
+        self.startedTimeout = startedTimeout
+        self.sleep = sleep
         self.lastActivity = clock()
-        self.driver = ChatTurnDriver(conversationID: config.conversationID, projectID: config.projectID,
-                                     store: store, clock: clock)
+        self.driver = ChatTurnDriver(conversationID: config.conversationID, clock: clock)
         driver.onTurnFinished = { [weak self] turn in self?.turnFinished(turn) }
         driver.onActionAwaited = { [weak self] _ in self?.onActionAwaited?() }
-        // Spec 2026-11-15 §5: the phone's Stop runs this Stop; a conversation
-        // deleted under the turn cancels it, and the session is not reused.
-        driver.onRemoteCancel = { [weak self] in self?.cancel() }
-        driver.onConversationGone = { [weak self] in
-            self?.retireAfterTurn()
-            self?.cancel()
-        }
         if launchImmediately { launch() }
     }
 
     var liveTurn: LiveTurn? { driver.liveTurn }
-    /// A turn is running, or its terminal write is under way (board #670):
-    /// no next turn starts and nothing evicts the session until it landed.
-    var isBusy: Bool { driver.isBusy }
+    /// A turn is waiting for its `started`, running, or its last write is
+    /// under way: no next turn starts and nothing evicts the session.
+    var isBusy: Bool { driver.isBusy || pendingStart != nil }
     /// A process was launched and has not exited yet.
     var hasLiveProcess: Bool { process != nil && !exited }
 
     /// The argv — flags only, never content (CHAT-04). `--provider` is the
-    /// root persistent flag; the rest are `ai session`'s own.
-    static func arguments(for config: ChatSessionConfig, dbPath: String?) -> [String] {
+    /// root persistent flag; the rest are `ai session`'s own. `--persist`:
+    /// the session saves its turns, claiming their lease as this app launch
+    /// (`desktop`, `leaseOwnerID`), exactly as the Swift claim did.
+    static func arguments(for config: ChatSessionConfig, dbPath: String?, leaseOwnerID: String) -> [String] {
         var args = ["ai", "session", "--conversation", String(config.conversationID)]
         if !config.automatic {
             args += ["--provider", config.provider]
@@ -134,6 +178,7 @@ final class ChatSessionClient {
         if !config.automatic, let model = config.model, !model.isEmpty { args += ["--model", model] }
         if let projectID = config.projectID { args += ["--project-id", String(projectID)] }
         if let dbPath, !dbPath.isEmpty { args += ["--db-path", dbPath] }
+        args += ["--persist", "--lease-owner", ChatLease.Owner.desktop.rawValue, "--lease-owner-id", leaseOwnerID]
         return args
     }
 
@@ -149,6 +194,12 @@ final class ChatSessionClient {
         if detail.count > 500 { detail = "…" + detail.suffix(500) }
         return base + " " + detail
     }
+
+    /// A held turn stopped (or its session closed) before it was sent.
+    static let notSentMessage = "Stopped before your message was sent."
+
+    /// The message a turn gets when the session stays silent past `startedTimeout`.
+    static let silentMessage = "The chat session didn't answer, so your message wasn't sent."
 
     func touch() {
         lastActivity = clock()
@@ -167,54 +218,55 @@ final class ChatSessionClient {
             let failure = ChatSessionError(turnID: nil, code: .providerUnavailable,
                                            message: error.localizedDescription, retryable: true)
             startupError = failure
-            if let held = pendingTurn {
-                pendingTurn = nil
-                failTurn(held.turnID, message: failure.message)
-            }
+            failStart(failure)
             onEnded?()
             return
         }
         startReading()
-        if let held = pendingTurn {
-            pendingTurn = nil
-            send(held)
-        }
+        if let held = pendingStart { send(held) }
     }
 
-    /// Runs one turn. The assistant row (`request.assistantMessageID`) must
-    /// already exist; a dead session or a failed write fails the turn
-    /// visibly with `provider_unavailable` rather than throwing. On a
-    /// pending session the turn is held until launch.
-    func startTurn(_ request: ChatTurnRequest) {
-        guard !isBusy else { return }
-        touch()
-        let command = request.command
-        driver.begin(messageID: request.assistantMessageID, turnID: command.turnID)
-        if isPending, !shutdownRequested {
-            pendingTurn = command
-            return
+    /// Runs one turn: the session writes its rows, then answers `started`
+    /// (or `refused`); this returns that answer. On a pending session the
+    /// turn is held until launch. A dead session, a failed pipe write or a
+    /// silent process answer `failed` — nothing was written then.
+    func startTurn(_ command: ChatTurnCommand) async -> ChatStartOutcome {
+        guard !isBusy else {
+            return .failed(ChatSessionError(turnID: command.turnID, code: .internalError,
+                                            message: "A turn is already running in this chat.", retryable: false))
         }
+        let pending = PendingChatStart(command: command)
+        begin(pending)
+        return await pending.wait()
+    }
+
+    /// Takes over a turn another (never launched) session held.
+    func begin(_ pending: PendingChatStart) {
+        touch()
+        pendingStart = pending
+        if isPending, !shutdownRequested { return }
         guard hasLiveProcess, isAlive else {
             let reason = exitError?.message ?? startupError?.message ?? "The chat session is not running."
-            failTurn(command.turnID, message: reason)
+            failStart(ChatSessionError(turnID: pending.command.turnID, code: .sessionLost, message: reason,
+                                       retryable: true))
             return
         }
-        send(command)
+        send(pending)
     }
 
     /// Stop: ask the provider to interrupt; if no `turn_done` arrives within
     /// `grace`, keep the partial text and kill the process (Go already kills
     /// its child after 5 s, so 7 s covers a Go side that hung too).
     func cancel(grace: Duration = .seconds(7), killAfter: Duration = ChatSessionClient.defaultKillAfter) {
-        guard let turn = driver.liveTurn, turn.isRunning else { return }
-        if pendingTurn != nil {
-            // Never sent: nothing to interrupt, and nothing left to launch
-            // for — the pool drops the queued client instead of spawning a
-            // process that would idle until the TTL.
+        if isPending, pendingStart != nil {
+            // Held, never sent: nothing to interrupt and nothing was written —
+            // the text goes back, and the pool drops the queued client instead
+            // of spawning a process that would idle until the TTL.
             abandon()
             onEnded?()
             return
         }
+        guard let turn = driver.liveTurn, turn.isRunning else { return }
         do {
             guard let process, !exited else { throw CancellationError() }
             try process.send(.cancel)
@@ -227,59 +279,51 @@ final class ChatSessionClient {
         Task { [weak self] in
             try? await Task.sleep(for: grace)
             // Still running: a turn that ended and only waits for its final
-            // write (board #670) answered the cancel; its session is healthy.
+            // write answered the cancel; its session is healthy.
             guard let self, let live = self.driver.liveTurn, live.turnID == turnID, live.isRunning else { return }
-            self.driver.finishRunningAsPartial()
             // A session that ignored `cancel` is never reused.
             self.shutdownRequested = true
             self.isAlive = false
             await self.terminateAndReap(killAfter: killAfter)
+            self.driver.finishRunningAsPartial()
         }
     }
 
     /// The prompt this session was spawned with is stale (its chat project
-    /// changed) but a turn is running: let it finish, record no session id,
-    /// then stop counting as alive so the pool replaces it (CHAT-03 — a
-    /// running turn is never cut). `keepingSessionID`: the prompt is fine,
-    /// only the process must be replaced (the claude.ai switches changed),
-    /// so the turn's session id is still recorded. No session resumes it
-    /// (#604 G11): the stored id is no longer read.
-    func retireAfterTurn(keepingSessionID: Bool = false) {
+    /// changed, or the claude.ai switches did) but a turn is running: let it
+    /// finish, then stop counting as alive so the pool replaces it (CHAT-03 —
+    /// a running turn is never cut).
+    func retireAfterTurn() {
         retiresAfterTurn = true
-        if !keepingSessionID { driver.stopRecordingSession() }
     }
 
     /// Hands back the turn this not-yet-launched session holds, so it can be
-    /// sent on a replacement session instead (its row stays as it is — the
-    /// turn neither failed nor stopped). Nil when nothing is held.
-    func surrenderHeldTurn() -> ChatTurnRequest? {
-        guard let held = pendingTurn else { return nil }
-        guard let turn = driver.liveTurn, turn.turnID == held.turnID else {
-            // startTurn always begins the driver's turn before holding it.
-            NSLog("ChatSessionClient: held turn %@ of conversation %lld has no live turn; it is dropped",
-                  held.turnID, conversationID)
-            return nil
-        }
-        pendingTurn = nil
-        driver.releaseUnsentTurn()
-        return ChatTurnRequest(command: held, assistantMessageID: turn.messageID)
+    /// sent on a replacement session instead (nothing of it was written).
+    /// Nil when nothing is held.
+    func surrenderHeldTurn() -> PendingChatStart? {
+        guard isPending, let held = pendingStart else { return nil }
+        pendingStart = nil
+        return held
     }
 
     /// Ends the client without a process to shut down (never launched, or
-    /// already exited): a held or running turn keeps its text as `partial`.
+    /// already exited): a held turn comes back unsent, a running one keeps
+    /// what streamed.
     func abandon() {
         shutdownRequested = true
-        pendingTurn = nil
         isPending = false
+        failStart(ChatSessionError(turnID: pendingStart?.command.turnID, code: .interrupted,
+                                   message: Self.notSentMessage, retryable: true))
         driver.finishRunningAsPartial()
         isAlive = false
     }
 
-    /// Quit / eviction: keep what streamed, ask politely (`close`), wait up
-    /// to `grace`, then one SIGTERM, then SIGKILL after `killAfter`. Returns
-    /// once the turn's writes landed too, so a quit never loses its text.
+    /// Quit / eviction: ask politely (`close` — the session saves what
+    /// streamed as `partial`), wait up to `grace`, then one SIGTERM, then
+    /// SIGKILL after `killAfter`. Returns once the process is gone.
     func close(grace: Duration, killAfter: Duration = ChatSessionClient.defaultKillAfter) async {
-        abandon()
+        shutdownRequested = true
+        isPending = false
         if let process, !exited {
             // A failed write means the pipe is already closed — the process is
             // gone or going; the wait below and the signals still apply.
@@ -287,19 +331,44 @@ final class ChatSessionClient {
             await waitForExit(upTo: grace)
             await terminateAndReap(killAfter: killAfter)
         }
-        await driver.writesSettled()
+        abandon()
     }
 
     // MARK: - Private
 
-    private func send(_ command: ChatTurnCommand) {
+    private func send(_ pending: PendingChatStart) {
         guard let process else { return }
         do {
-            try process.send(.turn(command))
-            sentTurnID = command.turnID
+            try process.send(.turn(pending.command))
         } catch {
-            failTurn(command.turnID, message: error.localizedDescription)
+            failStart(ChatSessionError(turnID: pending.command.turnID, code: .sessionLost,
+                                       message: error.localizedDescription, retryable: true))
+            return
         }
+        let (sleep, timeout, turnID) = (sleep, startedTimeout, pending.command.turnID)
+        startTimer?.cancel()
+        startTimer = Task { [weak self] in
+            do { try await sleep(timeout) } catch { return }
+            self?.startTimedOut(turnID)
+        }
+    }
+
+    /// No `started` in time: the process is silent — it may never start
+    /// the turn, or start it late; it is retired so nothing of it runs
+    /// after the draft came back.
+    private func startTimedOut(_ turnID: String) {
+        guard pendingStart?.command.turnID == turnID, !exited else { return }
+        failStart(ChatSessionError(turnID: turnID, code: .sessionLost, message: Self.silentMessage, retryable: true))
+        shutdownRequested = true
+        isAlive = false
+        Task { await terminateAndReap(killAfter: Self.defaultKillAfter) }
+    }
+
+    private func failStart(_ failure: ChatSessionError) {
+        guard let pending = pendingStart else { return }
+        pendingStart = nil
+        startTimer?.cancel()
+        pending.resolve(.failed(failure))
     }
 
     private func startReading() {
@@ -315,12 +384,11 @@ final class ChatSessionClient {
 
     private func handle(_ event: ChatEvent) {
         touch()
-        if case let .exited(status, stderrTail) = event {
+        switch event {
+        case let .exited(status, stderrTail):
             // Only an exit nobody asked for is an error: a non-zero status, or
             // any exit that leaves a turn without its terminal event.
-            // A turn only finishing (its final write under way) has its
-            // terminal event: a clean exit then is not an error.
-            if !shutdownRequested, status != 0 || driver.liveTurn?.isRunning == true {
+            if !shutdownRequested, status != 0 || driver.liveTurn?.isRunning == true || pendingStart != nil {
                 let failure = ChatSessionError(turnID: nil, code: .sessionLost,
                                                message: Self.exitMessage(status: status, stderrTail: stderrTail),
                                                retryable: true)
@@ -329,6 +397,32 @@ final class ChatSessionClient {
             }
             processEnded()
             return
+        case let .started(started):
+            guard let pending = pendingStart, pending.command.turnID == started.turnID else { return }
+            pendingStart = nil
+            startTimer?.cancel()
+            unsavedTurnID = started.turnID
+            driver.begin(messageID: started.assistantMessageID, turnID: started.turnID)
+            pending.resolve(.started(started))
+            return
+        case let .refused(refusal):
+            guard let pending = pendingStart, refusal.turnID == nil || refusal.turnID == pending.command.turnID else { return }
+            pendingStart = nil
+            startTimer?.cancel()
+            pending.resolve(.refused(refusal))
+            return
+        case let .error(error):
+            // The start write failed: nothing was written or sent.
+            if let pending = pendingStart, error.turnID == pending.command.turnID {
+                pendingStart = nil
+                startTimer?.cancel()
+                pending.resolve(.failed(error))
+                return
+            }
+        case let .turnSaved(turnID):
+            if unsavedTurnID == turnID { unsavedTurnID = nil }
+        default:
+            break
         }
         driver.apply(event)
     }
@@ -337,6 +431,13 @@ final class ChatSessionClient {
         guard !exited else { return }
         exited = true
         isAlive = false
+        failStart(exitError ?? ChatSessionError(turnID: nil, code: .sessionLost,
+                                                message: "The chat session ended before your message was sent.",
+                                                retryable: true))
+        if let lost = unsavedTurnID {
+            unsavedTurnID = nil
+            onTurnLost?(conversationID, lost)
+        }
         driver.finishRunningAsPartial()
         onEnded?()
     }
@@ -360,19 +461,7 @@ final class ChatSessionClient {
         if !exited { process.kill() }
     }
 
-    private func failTurn(_ turnID: String, message: String) {
-        driver.apply(.error(ChatSessionError(turnID: turnID, code: .providerUnavailable, message: message,
-                                             retryable: true)))
-    }
-
     private func turnFinished(_ turn: LiveTurn) {
-        // A failed turn may or may not have reached the provider, and a held
-        // turn stopped before launch never did: force a replay next time.
-        if case .failed = turn.phase {
-            continuousLeafID = nil
-        } else {
-            continuousLeafID = turn.turnID == sentTurnID ? turn.messageID : nil
-        }
         if retiresAfterTurn { isAlive = false }
         touch()
         onTurnFinished?(conversationID)

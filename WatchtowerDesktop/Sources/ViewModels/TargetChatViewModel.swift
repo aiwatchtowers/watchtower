@@ -181,6 +181,7 @@ final class TargetChatViewModel {
         target: Target,
         viewModel: TargetsViewModel,
         dbManager: DatabaseManager,
+        writes: ChatWrites = .notReady,
         conversationID: Int64,
         aiService: (any AIServiceProtocol)? = nil,
         cliRunner: CLIRunnerProtocol? = nil,
@@ -199,7 +200,7 @@ final class TargetChatViewModel {
         let spec = Self.placeholderSpec(targetID: target.id, conversationID: conversationID)
         self.engine = center?.engine(for: spec) ?? EmbeddedChatEngine(
             spec: spec,
-            store: DatabaseEmbeddedChatStore(dbPool: dbManager.dbPool, conversationID: conversationID),
+            store: DatabaseEmbeddedChatStore(dbPool: dbManager.dbPool, writes: writes, conversationID: conversationID),
             aiService: aiService ?? WatchtowerAIService(),
             gate: EmbeddedStreamGate(),
             provider: Constants.aiProviderID()

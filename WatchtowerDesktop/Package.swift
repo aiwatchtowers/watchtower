@@ -149,6 +149,9 @@ let package = Package(
             dependencies: [
                 "WatchtowerCore",
                 .product(name: "GRDB", package: "GRDB.swift"),
+                // The chat writers' fakes (FakeChatTower) speak the generated commands.
+                .product(name: "WatchtowerInterface", package: "WatchtowerInterface"),
+                .product(name: "WatchtowerChatText", package: "WatchtowerChatText"),
             ],
             path: "Tests/Support"
         ),

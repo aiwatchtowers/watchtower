@@ -51,8 +51,9 @@ struct ProjectDetailView: View {
         _vm = State(initialValue: ProjectDetailViewModel(
             projectID: projectID,
             dbPool: dbPool,
-            attachmentsRoot: attachmentsRoot,
-            importFile: ProjectDetailViewModel.storeImporter(dbPool: dbPool, rootDir: attachmentsRoot),
+            writes: chatVM.chatWrites,
+            importFile: ProjectDetailViewModel.storeImporter(dbPool: dbPool, rootDir: attachmentsRoot,
+                                                             writes: chatVM.chatWrites),
             onPromptChanged: onPromptChanged
         ))
         self.chatVM = chatVM
