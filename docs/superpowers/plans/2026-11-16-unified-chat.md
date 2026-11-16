@@ -79,22 +79,23 @@
 ## Review Focus
 
 1. **Long workspace paths.** `<workspace>/chatengine/sessions/<conv>.sock` or `<workspace>/chat.sock` can exceed darwin's 103-byte `sun_path`. Expected: the engine and every client (Go CLI, Swift app) compute the same shorter path, and chat still works. Owned by T4 (`TestSocketPath_TooLongFallsBackToTempDir` + the Swift twin over `socket_paths.json`).
-2. **An echo lost to a dropped socket.** A send whose echo is lost when the socket drops must come back neither as a lost text nor as a duplicate turn. Expected: the client resends with the same `client_key`, and the engine answers the first result again. Owned by T1 (`TestChatengine_RepeatedClientKeyAppliesOnce`) and T7 (`testDroppedEchoResendsWithSameKeyNoDuplicate`).
+2. **An echo lost to a dropped socket.** A send whose echo is lost when the socket drops must come back neither as a lost text nor as a duplicate turn. Expected: the client resends with the same `client_key`, and the engine answers the first result again, also across a daemon restart (the key is stored on the owner row). Owned by T1 (`TestChatengine_RepeatedClientKeyAppliesOnce`, `TestChatengine_ClientKeySurvivesRestart`) and T7 (`testDroppedEchoResendsWithSameKeyNoDuplicate`).
 3. **A conversation deleted on the other device** while it is open here, with a typed draft. Expected: a "gone" state, the draft kept, Send off, and no crash on a late `message_upsert`. Owned by T7 (`testConversationDeletedElsewhereShowsGoneAndKeepsDraft`).
 4. **Replay past the 600 KB buffer cap** after a daemon restart. Expected: the final stored text equals the whole answer and every step is present once. Owned by T10a (`TestTurnBuffer_PastCapReplaysLatestTextAndEveryStep`, `TestChatengine_ReplayPastCapStoresWholeText`).
 5. **A half-open socket after Mac sleep/wake.** Expected: the next send or subscription write fails fast, and the client reconnects and resubscribes; no conversation stays "answering". Owned by T8 (`testWriteFailureTriggersReconnectAndResubscribe`).
 
 ## Spec gaps and code facts decided here
 
-- **The package cycle.** `ChatUI` needs the Kit's `WatchtowerDesign`, so the `WatchtowerChat` package depends on the `WatchtowerKit` package. If the Kit also depended on `ChatWire` (§6.1), the two packages would form a cycle, which tools-version 5.10 rejects. **Decision:** the Kit does **not** depend on `ChatWire`.
+- **The package cycle.** `ChatUI` needs the Kit's `WatchtowerDesign`, so the `WatchtowerChat` package depends on the `WatchtowerKit` package. If the Kit also depended on `ChatWire` (§6.1), the two packages would form a cycle, which tools-version 5.10 rejects. **Decision (owner sign-off requested in the plan review ask):** the Kit does **not** depend on `ChatWire`.
   - The chat models move out of the Kit; no Kit source uses them.
   - The Kit-only conformances (`SliceMirror.sliceKind`, `ActionParams.actionKind`) move to the phone app as `@retroactive` extensions.
   - `WatchtowerCore` may import `ChatWire`.
 - **The design kit.** `DesignKit` lives in the Desktop package, which `ChatUI` cannot import. **Decision:** `ChatUI` draws controls through an injected `ChatUIStyle` (environment, §13 "protocol witnesses"). The Mac app supplies `DesignKitChatStyle`; the phone supplies its DesignSystem style. Tokens still come from `WatchtowerDesign`.
 - **The question parser.** D14 needs it in `WatchtowerChatText` before `ChatUI` (T7) can render question parts, but §11 placed it in T12. **Decision:** it moves in **T3**. T12 only repoints the remaining callers. Go has no question parser today (`internal/chat/questions_contract.go` is prompt text); T3 adds the Go twin (fallback text only).
 - **Wire time.** `wire.Time` lives in `internal/hub/wire`, and `chatengine` must not import the hub. **Decision:** it moves to a neutral `internal/wiretime`; `wire.Time` becomes an alias.
+- **Routing written by `ai session`.** `ai session` writes the routing columns of `chat_conversations` itself (`SetChatRouting`/`SetChatActual`, `cmd/ai_session_routing.go`); they stay its columns (writers list in `unified-chat.md` and the inventory). Since T5 drops the hub's `chat_*` table watch, the engine publishes routing from the session's own events (`session_ready`, the actual-model event), not from the database (T1, `routing_note` in T3).
 - **The steps table** is named `chat_turn_steps` (the spec says `chat_steps`). The engine also writes `chat_knowledge_artifacts` and `chat_project_sources` (Add to Knowledge, project sources). `chat_queued_drafts` is embedded-only and stays a Desktop writer.
-- **The CLI on `chat.sock`.** `watchtower sync stop` must end chat (§7), but D17 refuses CLI peers. **Decision:** a peer verified as the same-team watchtower CLI may send exactly `hello` and `chat_shutdown`; every other op is `forbidden`. This lets nothing write rows. When the socket is unreachable, the CLI falls back to the session sockets directly.
+- **The CLI on `chat.sock`.** `watchtower sync stop` must end chat (§7), but D17 refuses CLI peers. **Decision (owner sign-off requested in the plan review ask):** a peer verified as the same-team watchtower CLI may send exactly `hello` and `chat_shutdown`; every other op is `forbidden`. This lets nothing write rows. When the socket is unreachable, the CLI falls back to the session sockets directly.
 - **There is no `ChatSender`** on the phone; the send path is `ChatSendCoordinator`. `RelayChatClient` wraps it.
 - **The phone's `@` and `/` pickers (§6.4)** need relay support. **Decision:** two idempotent hub action kinds, `chat_entity_search` and `chat_skills_list`, return their hits in the `applied` echo result (T5).
 - **Hub-to-engine ownership.** The hub needs the daemon's engine (`hub.Options.ChatEngine`, added in T4), so T5 depends on T4 as well as T1 and T3. T10 is split:
@@ -130,7 +131,7 @@
 - **cmd:** `go test ./cmd/... -run 'Sync|AISession|Chat'` (CI runs `-race` on cmd only with `-run`).
 - **Golden prompts:** `go test ./internal/chat -run 'Golden|Prompt'` for any change in `internal/chat`.
 - **Kit / Core surfaces:** `make test-swift FILTER=PublicAPISurfaceTests` and `make kit-test FILTER=SeamBoundaryTests` for any package-graph change.
-- **Schema:** no migration in this plan. If one becomes needed, run `go test ./internal/db -run 'TestSchemaGolden|TestDesktopTestSchema'`.
+- **Schema:** one migration, `00190_chat_client_key.sql` (T1). T1 runs `go test ./internal/db -run 'TestSchemaGolden|TestDesktopTestSchema'` (regenerated with `-update`) and `go test ./internal/db`; any later task touching `internal/db` runs them too.
 
 ---
 
@@ -145,7 +146,7 @@
 **Interfaces:**
 - Produces: the shot names below. T8, T9 and T12 switch each one from its mock to the real view under the **same name**.
   - Mac mocks: `chat-daemon-starting`, `chat-daemon-unavailable`, `chat-daemon-stopped`, `chat-part-fallback`, `chat-remote-turn-live`.
-  - Mac baselines from today's views: `embedded-chat-target`, `embedded-chat-meeting`, `embedded-chat-setup`, `owner-ask-question-card`.
+  - Mac baselines from today's views: `embedded-chat-target`, `embedded-chat-meeting`, `embedded-chat-setup`, `owner-ask-question-card`; the existing `chat-phone-turn` entry is kept unchanged as the "before" of `chat-remote-turn-live`.
   - Phone frames in `testTheChatShots`: `iphone-chat-question-card`, `iphone-chat-approval-slack`, `chat-part-fallback`.
 
 - [ ] **Step 1: Mac mock shots.** `UnifiedChatShotFixtures.shots: [DesignShot]` renders static mock views built from DesignKit and today's chat views. Each one uses the §10 sketch and the exact Global Constraints copy:
@@ -176,6 +177,7 @@
   - `internal/hub/slices/sources/chat_{feed,list}.go` (call the engine builders);
   - the LIVE-01 keys in `internal/db/live01_test.go` (`displayOnlyReadersAt`) to the new `chatengine/...:<func>` names;
   - `docs/inventory/chat.md` (CHAT-01 and CHAT-03 amendments).
+- Create: `internal/db/migrations/00190_chat_client_key.sql`: `ALTER TABLE chat_messages ADD COLUMN client_key TEXT` (nullable) + `CREATE UNIQUE INDEX idx_chat_messages_client_key ON chat_messages(conversation_id, client_key) WHERE client_key IS NOT NULL`; Down drops the index and the column. Mirror it into `internal/db/schema.sql` and regenerate `internal/db/testdata` goldens and `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift` (`go test ./internal/db -run 'TestSchemaGolden|TestDesktopTestSchema' -update`). Modify `internal/chatstore/store.go` (`StartRequest.ClientKey`, written on the owner row inside the start transaction; `newMessage.ClientKey`).
 
 **Interfaces:**
 - Consumes: `chatstore.Store`/`StartRequest`/`Started`/`Routing`/`Step`, `chat.Event`, `db.ChatLeaseHub`.
@@ -202,7 +204,7 @@
 
   type TurnRequest struct {
       chatstore.StartRequest
-      ClientKey string // T2 adds Compose, ScreenContext, ArtifactCommentIDs
+      ClientKey string // stored in chat_messages.client_key; T2 adds Compose, ScreenContext, ArtifactCommentIDs
   }
   func (e *Engine) Turn(ctx context.Context, r TurnRequest) (chatstore.Started, error)
   func (e *Engine) Cancel(conv int64, turnID string) (bool, error)
@@ -259,7 +261,9 @@
 - [ ] **Step 2: Failing tests** in `internal/chatengine/engine_test.go`. Each runs inside `synctest.Test` over a fake `StartFunc`.
   - `TestChatengine_SecondTurnBusy`: two `Turn`s on one conversation → the second returns `chatstore.ErrBusy`; `ErrorCode(err) == "busy"`; only one owner row exists.
   - `TestChat01_RefusedTurnWritesNothing`: a refused `Turn` (busy, invalid, conversation gone) leaves `chat_messages` unchanged.
-  - `TestChatengine_RepeatedClientKeyAppliesOnce`: two `Turn`s with the same `ClientKey` within one engine life → the same `Started`, one owner row (Review Focus 2).
+  - `TestChatengine_RepeatedClientKeyAppliesOnce`: two `Turn`s with the same `ClientKey` → the same `Started` (owner, assistant and turn ids), one owner row (Review Focus 2).
+  - `TestChatengine_ClientKeySurvivesRestart`: engine A applies a key and is closed; engine B over the same database gets the same key → the existing turn's echo (ids read back by `(conversation_id, client_key)`), and no new row; a concurrent duplicate insert hits the unique index and is answered the same way.
+  - `TestMigration00190_ClientKeyUniquePerConversation` (`internal/db`): two NULL keys pass; the same key twice in one conversation fails; the same key in two conversations passes.
   - `TestChatengine_SubscriberSeesForeignTurnLive`: a subscriber with `Client{Kind:"mac"}` receives `message_upsert` for a turn started by a `Client{Kind:"phone"}` `Do("chat_turn")`, carrying the live text (G6).
   - `TestChatengine_FeedCoalescedAt150ms`: 20 text deltas in 100 ms → at most one `message_upsert` per 150 ms window, and the last event carries the full text.
   - `TestChatengine_ListCoalescedAt500ms`: the same check for `list_update` at 500 ms.
@@ -267,8 +271,9 @@
   - `TestChatengine_DeleteDuringTurnCancels`: `Manage{Op:"delete"}` mid-turn → the turn is cancelled, and no `chat_messages` or `chat_turn_steps` row is written after the delete commits.
   - `TestChatengine_ClaimsLegacyLeaseForOneRelease`: during a turn, `db.GetChatLease(conv)` has owner `hub`, id `chatengine`, and its heartbeat advances every 15 s of fake time; after the turn it is released.
   - `TestChatengine_StartupSweepMarksSessionLost` (moved from `TestChatrun_StartupSweepMarksSessionLost`).
+  - `TestChatengine_SessionReadyPublishesRoutingLive`: the fake session emits `session_ready` and then the actual provider/model (the events `ai session` emits beside its own `SetChatRouting`/`SetChatActual` writes) → a subscriber gets `conversation_update` with the new routing and actual model, and a `list_update`, with no DB watch involved; T3 extends it to assert the `routing_note` part in the next `message_upsert`.
 - [ ] **Step 3: Run them.** `go test ./internal/chatengine -run 'Chatengine|Chat01'`. Expected: FAIL (undefined `Engine`).
-- [ ] **Step 4: Implement** the `Engine` above.
+- [ ] **Step 4: Implement** the `Engine` above and the migration. A repeated key is looked up by `(conversation_id, client_key)` before the start transaction and, on a unique-index conflict inside it, answered from the existing owner row and its assistant reply (no second turn).
   - The per-conversation lock is a `map[int64]*turnState` under one mutex.
   - Live state replaces the runner's `Live`.
   - Each subscription has a 256-slot channel and a coalescing goroutine driven by `Config.Clock` timers (synctest drives them).
@@ -430,6 +435,7 @@
   func QuestionReadableText(text string) string
   ```
   - Swift (`WatchtowerChatText`, public): `ChatQuestionOption`, `ChatQuestion`, `ChatQuestionCard` and `enum ChatQuestionParser` with `parse(_:final:)`, `readableText(_:)`, `decodeCard(_:)` and `decodeOwnerAskQuestions(_:)`. These are moved from `WatchtowerCore`; signatures are unchanged apart from becoming `public`.
+  - The `routing_note` part is rebuilt when the session's routing events arrive (T1's live routing state), so it appears without a DB re-read; extend `TestChatengine_SessionReadyPublishesRoutingLive` to assert it.
   - The engine builds the payloads of `approval`, `remember_mark`, `knowledge_mark`, `published_link` and `routing_note` from the same inputs today's Swift uses: `AgentActionCardView` + `ChatToolCatalog+Actions`, `RememberCommand`, `KnowledgePrefix`, `PublishedLink`, `ChatRoutingStatus`. The payload field names are the snake_case inputs of those Swift presenters.
   - The `text` part's fallback text is `QuestionReadableText(text)`.
 
@@ -491,6 +497,7 @@
   const ProtocolVersion = 1
   func SocketPath(workspaceDir, tempDir string) string                   // tempDir fallback when > MaxSocketPath
   func SessionSocketPath(workspaceDir, tempDir string, conv int64) string // same rule
+  // ops served by the server itself: hello, subscribe, unsubscribe; the rest go to Engine.Do
   type ServerOptions struct {
       VerifyApp func(ctx context.Context, pid int) error // default ownerconfirm.VerifyDesktop
       VerifyCLI func(ctx context.Context, pid int) error // default ownerconfirm.VerifySameTeamCLI
@@ -504,6 +511,7 @@
   - answer `{"id":"<s>","ok":true,"result":{…}}` or `{"id":"<s>","ok":false,"error":{"code":"busy|not_found|invalid|forbidden|closed|internal","message":"…"}}`;
   - pushed `{"event":"snapshot|message_upsert|conversation_update|list_update|resync",…}` (T1's `Event`).
   - `hello` params `{"protocol":1,"client":"mac","part_kinds":[…]}` → result `{"protocol":1,"ops":[…]}`.
+  - `subscribe` params `{"list":true}` or `{"conversation_id":N,"before_message_id":M?}` → result `{"subscription":"<s>"}`, then a `snapshot` event (the list, the latest page, or the 60-message page before `M`) and live events tagged with `"subscription":"<s>"`; `unsubscribe {"subscription":"<s>"}` → `ok`, no further events for it. Both are served by the server over T1's `Engine.Subscribe`/`Subscription.Close` (§5.2, §5.4); a connection may hold several.
   - The first line must be `hello`; anything else closes with `invalid`. A CLI peer may only send `hello` and `chat_shutdown` (the latter is registered by T10a).
   - Payloads are the feed/list JSON as the relay carries it (snake_case keys, `wiretime.Time` seconds).
 
@@ -517,6 +525,7 @@
   - `TestServer_SecondListenerRefused`: `ErrSocketBusy`.
   - `TestServer_SocketModes`: 0600 socket, 0700 folder.
   - `TestServer_AnswerEchoesID`.
+  - Over a real socket (temp dir, in-process engine on a fake session): `TestServer_SubscribeConversationSnapshotThenEvents` (snapshot first, then `message_upsert` of a running turn), `TestServer_SubscribeListSnapshotThenUpdates`, `TestServer_UnsubscribeStopsEvents` (after the `ok`, a new turn produces no event for that subscription), `TestServer_SubscribeBeforeMessageIDReturnsThatPage` (60 messages ending just before `M`).
   - `TestChatengine_OwnHandleNotBlockedBySyncConn`: hold a write transaction on the daemon's `*db.DB` (single connection) → `engine.Feed` and `Turn` still complete on `OpenHandles`' handles.
   - `TestSocketPath_TooLongFallsBackToTempDir` + `socket_paths.json` cases (workspace, tempDir → path), also run by `ChatSocketPathsTests` (Swift, Core) — Review Focus 1.
   - `cmd`: `TestSyncDaemon_StartsChatEngineBeforeHub`: the engine starts before `startGoHub` and is stopped after the hub's stop; with the hub off (`hub.Resolve` refuses), `chat.sock` is still served.
@@ -786,7 +795,7 @@
   - `Sources/App/{AppState.swift,AppState+Chat.swift}` (no `releaseEarlierLaunchesChatLeases`, no pool);
   - `ProjectDetailViewModel.swift` and `ArtifactPanelModel.swift` (writes go through `project_manage`/`artifact_manage`);
   - `WatchtowerCore/Services/HubControlClient.swift` (no `chat_lease`);
-  - `Tests/DesignShots/*` (the T0 Mac mocks become real views; `chat-phone-turn` is replaced by `chat-remote-turn-live`);
+  - `Tests/DesignShots/*` (the T0 Mac mocks become real views; `chat-phone-turn` is removed only in Step 5, after the comparison);
   - `Package.swift` (the app depends on `ChatUI`).
 - Delete:
   - `Sources/Services/Chat/{ChatSessionPool,ChatSessionClient}.swift`;
@@ -842,7 +851,12 @@
   | `testSendRefusedWhileHubHoldsLeaseKeepsDraft`, `testConcurrentClaimOneWins` | `TestChatengine_SecondTurnBusy` + `testBusyEchoReturnsTextToComposer` |
   | `testDriverStopsWhenConversationDeleted` | `TestChatengine_DeleteDuringTurnCancels` |
 
-- [ ] **Step 5: Shots.** The T0 mac names (`chat-daemon-*`, `chat-part-fallback`, `chat-remote-turn-live`) now render the real ChatUI views. Run `make desktop-shots DESKTOP_SHOTS=build/t8` and compare every `chat-*` entry with `build/unified-chat-before`. Expected: no visual change on unchanged screens.
+- [ ] **Step 5: Shots.** The T0 mac names (`chat-daemon-*`, `chat-part-fallback`, `chat-remote-turn-live`) now render the real ChatUI views. Run `make desktop-shots DESKTOP_SHOTS=build/t8` and compare every `chat-*` entry with `build/unified-chat-before`. Expected: no visual change on unchanged screens, and `chat-remote-turn-live` matches the `chat-phone-turn` baseline except the retired "Answering from your iPhone" line (now the normal Stop). Only then delete the `chat-phone-turn` entry and its `IPhoneChatShotFixtures` pool setup.
+- [ ] **Step 5b: Latency (anti-goal "not slower").**
+  - Go: `BenchmarkChatengine_SendToFirstDelta` and `BenchmarkChatengine_PerDelta` in `internal/chatengine`, each with two sub-benchmarks in one run, `InProcess` (direct `Engine.Turn` + `Subscribe`) and `OverSocket` (a real `chat.sock` client on a temp path); fake session emitting deltas as fast as read.
+  - `TestChatengine_SocketLatencyWithinTwiceInProcess`: runs both paths N=200 times in the same process via `testing.Benchmark` and asserts `overSocket ≤ 2 × inProcess + 2 ms` per op (a ratio of measured numbers, no wall-clock wait or timeout).
+  - Swift: `SocketChatClientTests.testDecodePathWithinTwiceOfDirectStore` measures (with `ContinuousClock` around a fixed batch, no sleeps) 1 000 `message_upsert` lines decoded through `SocketChatClient` into `ChatFeedStore` vs the same messages applied directly, and asserts the same `≤ 2× + constant` ratio.
+  - Controller manual check (after T8 merges, release build): type a long message and stream a long answer in the Mac chat on a loaded workspace; no visible typing lag and first text appears as quickly as on `main`; note the result in the phase report.
 - [ ] **Step 6: Run the tests and the guards.** Run `make test-swift FILTER='Chat|Artifact|Project|HelpChat|PublicAPISurface|LIVE01'`, `make chat-test` and `make lint-swift`. Also run the Go guard (`go test ./internal/chatengine -run 'Chat04|SendAfterStop'`) and `make lint-diff`.
 - [ ] **Step 7: Commit.** `feat(desktop): the Mac chat on the engine over chat.sock; Swift writer and pool deleted (#1822 T8)`
 
@@ -854,7 +868,7 @@
 
 **Files:**
 - Create: `WatchtowerMobile/Sources/Features/Chats/{RelayChatClient.swift,PhoneChatStyle.swift}`, `WatchtowerMobile/Tests/RelayChatClientTests.swift`
-- Keep (shell): `ChatsCenter`, `ChatsGateModel`/`ChatsGateView`, `ChatOfflineCopy`, `ChatSendCoordinator` (wrapped), `ChatAttachmentPicker`, push routing.
+- Keep (shell): `ChatsCenter`, `ChatsGateModel`/`ChatsGateView`, `ChatOfflineCopy` and `ChatPrefetcher` (both in `ChatOfflineCopy.swift`), `ChatSendCoordinator` (wrapped), `ChatAttachmentPicker`, push routing.
 - Delete:
   - `ChatApprovalCard`, `ChatArtifactSheet`, `ChatComposerModel`, `ChatConversationModel`, `ChatFeedItems`, `ChatFeedRows`, `ChatListModel`, `ChatMarkdownView`, `ChatSourcesSheet`, `ChatSearchModel`, `ChatRowActions`;
   - `SandboxedArtifactWebView` (now `ChatUI/Platform/iOS`);
@@ -876,6 +890,7 @@
 - [ ] **Step 1: Failing tests** (`RelayChatClientTests`).
   - `testRelayClientMapsGateToReachability`: `notAllowed`/`needsRelay`/`offline` → `.offline(reason)`, with the gate's copy unchanged.
   - `testRelayClientSnapshotsFeedIntoStore`.
+  - `testOfflineCopyPagesFeedStoreAsSnapshot`: offline, with a stored `ChatOfflineCopy` page (also one written by `ChatPrefetcher`) → `feed(_)` yields it as `.snapshot` and `ChatFeedStore.feed` equals the stored page; a later relay record replaces it.
   - `testRelaySendKeepsOutgoingUntilEcho`: CHAT-01, through `ChatSendCoordinator`.
   - `testEntitySearchOverRelayEcho`.
   - `testProjectEditUnsupportedOnPhone`.
@@ -941,6 +956,8 @@
 - [ ] **Step 1: Failing tests.**
   - `TestSyncStop_WritesStoppedMarker`: after a stopped daemon (fake pid), the marker exists with `by == "cli"` and mode 0600.
   - `TestSyncStop_InternalWritesNoMarker`.
+  - `TestSyncStop_InternalLeavesSessionsRunning`: with a re-exec'd fake session listening (group reaped in `t.Cleanup`) and a recording fake `chat.sock`, `sync stop --internal` sends no `chat_shutdown`, writes no marker, and the session process is still alive; a new engine then `Start`s and reattaches to it.
+  - `TestSyncStop_OwnerPathOrder`: the owner `sync stop` against a recording fake `chat.sock` and a fake daemon pid records `chat_shutdown`, then SIGTERM (through the `signalStop` seam), then the marker write, in that order; with `chat.sock` unreachable it runs `ShutdownSessions` before SIGTERM.
   - `TestSyncStop_InternalFlagRegistered`: cobra knows `--internal`.
   - `TestSyncDaemon_StartRemovesStoppedMarker`: removed before the daemon serves `chat.sock`.
   - `TestTurnBuffer_PastCapReplaysLatestTextAndEveryStep` (Review Focus 4).
@@ -1059,7 +1076,7 @@
   - the part kinds and fallback rules;
   - the lifecycle (detach/reattach, the marker, the shutdown paths);
   - the Go↔Swift fixtures (`parts.json`, `question_parse_cases.json`, `compose_cases.json`, `entity_search_cases.json`, `socket_paths.json`, `artifact_parse_cases.json`);
-  - the §12 v1 limits plus this plan's: `client_key` memory does not survive a daemon restart; there are no phone project editor and no `chat_turn_leases` drop yet.
+  - the §12 v1 limits plus this plan's: no phone project editor and no `chat_turn_leases` drop yet; the `chat_messages.client_key` column (migration 00190).
 - [ ] **Step 2: Update the notes, the inventory, CLAUDE.md and the guide.**
 - [ ] **Step 3: Verify.** Run `go test ./docs/guide` (8 KB cap) and `bash scripts/leak-check.sh` over the diff, if run locally. Expected: PASS.
 - [ ] **Step 4: Commit.** `docs: unified chat — inventory, feature notes, guide (#1822 T11)`
