@@ -11,7 +11,7 @@
 - The new local package `WatchtowerChat/` has two targets: `ChatWire` (Foundation: models, operations, `ChatClient`, stores) and `ChatUI` (SwiftUI: one view per part kind, fallbacks, models, `Platform/macOS` + `Platform/iOS`). The Mac (`SocketChatClient`) and the phone (`RelayChatClient`) keep only their shells.
 
 **Tech Stack:**
-- Go 1.26: `testing/synctest`, goose (no migration in this plan), the `internal/sqlcipher` driver.
+- Go 1.26: `testing/synctest`, goose (one migration, 00190 `chat_client_key`, in T1), the `internal/sqlcipher` driver.
 - SwiftUI on macOS 14 / iOS 17 in the Swift 5.10 language mode, SwiftPM local packages, xcodegen for the phone.
 
 **Spec:** `docs/superpowers/specs/2026-11-16-unified-chat-design.md` (approved, ask #1378; decisions in asks #1363 and #1371). Builds on `docs/features/iphone-chat.md` and `docs/inventory/chat.md`.
@@ -277,7 +277,7 @@
   - The per-conversation lock is a `map[int64]*turnState` under one mutex.
   - Live state replaces the runner's `Live`.
   - Each subscription has a 256-slot channel and a coalescing goroutine driven by `Config.Clock` timers (synctest drives them).
-  - The `ClientKey` memory holds the last 64 keys per conversation for the engine's life.
+  - A repeated `client_key` is found by the unique index on `chat_messages (conversation_id, client_key)` (migration 00190); there is no in-memory key store.
 - [ ] **Step 5: Rewire the hub minimally.**
   - `newChatRunner` returns `chatengine.New(...)` with `Exe`, `DBPath`, `Dir: <hub dir>` (until T4), the hub's store options and the title hook.
   - `OnChange` → `publishSoon(KindChatFeed, KindChatList)`, `OnTurnEnd` → `chatTurnEnded`.

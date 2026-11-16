@@ -324,7 +324,7 @@ Found against the code while writing `docs/superpowers/plans/2026-11-16-unified-
 - **D18:** tokens come from `WatchtowerDesign` as decided; `DesignKit`'s controls (buttons, fields) live in the Desktop package, which `ChatUI` cannot import, so `ChatUI` draws controls through an injected `ChatUIStyle` (the Mac passes a DesignKit-backed one, the phone its DesignSystem one). No new tokens.
 - **D14:** the question parser moves to `WatchtowerChatText` in T3 (not T12), because `ChatUI` (T7) needs it; Go gains a twin for fallback text only.
 - **D17:** a peer verified as the same-team `watchtower` CLI may send exactly `hello` and `chat_shutdown` (for `sync stop`); every other op stays app-only.
-- **§5.2:** `chat_turn` carries a `client_key`; the engine answers a repeated key with the first result (in memory; a daemon restart forgets it — v1 limit), so a send whose echo was lost to a dropped socket is neither lost nor duplicated.
+- **§5.2:** `chat_turn` carries a `client_key`; the engine answers a repeated key with the first result (the key is stored on the owner row, `chat_messages.client_key` with a unique index per conversation, migration 00190 — so it also holds across a daemon restart), so a send whose echo was lost to a dropped socket is neither lost nor duplicated.
 - **§5.1:** socket paths longer than darwin's `sun_path` fall back to one shorter rule shared by Go and Swift (`socket_paths.json`).
 - **§9.1:** the steps table is `chat_turn_steps`; the engine also writes `chat_knowledge_artifacts` and `chat_project_sources`.
 - **§6.4:** the phone's `@` and `/` pickers go over two hub action kinds, `chat_entity_search` and `chat_skills_list`.
