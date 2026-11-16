@@ -413,6 +413,7 @@ var cliNoContentCommands = map[string]bool{
 	"watch add":                        true,
 	"watch list":                       true,
 	"watch remove":                     true,
+	"watchman learn":                   true,
 	"workbench ask-guard":              true,
 	"workbench asks":                   true,
 	"workbench board":                  true,

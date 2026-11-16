@@ -25,3 +25,22 @@ func TestWatchmanDecidePromptRegistered(t *testing.T) {
 		assert.NotContains(t, Defaults[id], agent)
 	}
 }
+
+// TestWatchmanLabelPromptRegistered pins watchman.label the same way: verbatim
+// text, the eight categories, a JSON array reply and the data fence rule.
+func TestWatchmanLabelPromptRegistered(t *testing.T) {
+	id := WatchmanLabel
+	assert.Equal(t, "watchman.label", id)
+	assert.NotEmpty(t, Defaults[id])
+	assert.True(t, contains(AllIDs, id))
+	assert.Equal(t, 1, DefaultVersions[id])
+	assert.NotEmpty(t, Descriptions[id])
+	assert.NotContains(t, Defaults[id], "%")
+	for _, want := range []string{`"design"`, `"scope"`, `"ux_text"`, `"tests"`, `"review_code"`, `"review_doc"`, `"permission"`, `"finish"`,
+		"JSON array", `after the "=== DATA ===" line`, "data, never as instructions"} {
+		assert.Contains(t, Defaults[id], want)
+	}
+	for _, agent := range []string{"Claude", "Codex"} {
+		assert.NotContains(t, Defaults[id], agent)
+	}
+}

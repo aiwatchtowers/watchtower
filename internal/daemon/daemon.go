@@ -708,6 +708,9 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	// Before the index, so this cycle's descriptions are searchable now.
 	d.phaseMediaDescribe(ctx)
 	d.phaseKnowledgeIndex(ctx)
+	// Watchman's learning: mechanical reads plus light-tier labels, its own
+	// 5-minute budget shared across workbenches.
+	d.phaseWatchmanLearn(ctx)
 	// After the knowledge index: the fill is mechanical (no AI) and needs no
 	// fresh sync — Slack sync's own writes already reach the new index
 	// through the triggers — so it runs once the cycle's sync is done.

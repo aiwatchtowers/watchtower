@@ -349,6 +349,50 @@ type WatchmanMark struct {
 	Sub string
 }
 
+// Each reader's inner select (wm_at, wm_id, wm_sub first); the estimate
+// counts the same rows (WatchmanSourceCounts).
+const (
+	wmOwnedComment = `c.carried_from IS NULL AND c.status IN ('sent','resolved')`
+	wmAsksSQL      = `SELECT COALESCE(strftime(` + wmAtFormat + `, a.answered_at), '') AS wm_at, a.id AS wm_id, '' AS wm_sub,
+			a.kind, a.title, a.summary, a.changes, a.payload, a.answer, a.doc_path, a.doc_type, a.doc_snapshot, a.origin
+		FROM owner_asks a LEFT JOIN terminal_sessions s ON s.id = a.session_id
+		WHERE a.project_id = ? AND a.status IN ('answered','delivered')
+			AND a.automation_run_id IS NULL AND s.automation_run_id IS NULL`
+	wmReviewSQL = `
+		SELECT COALESCE(strftime(` + wmAtFormat + `, r.sent_at), '') AS wm_at, c.id*4 AS wm_id, '' AS wm_sub, 'comment' AS kind, c.id AS rid,
+			COALESCE(c.path, '') AS path, c.quote, c.lens, c.body, r.outcome, '' AS header, '' AS patch, '' AS lstatus,
+			'' AS ref, 0 AS n
+		FROM review_comments c JOIN review_rounds r ON r.id = c.round_id
+		WHERE r.project_id = ? AND r.status IN ('sent','delivered') AND ` + wmOwnedComment + `
+		UNION ALL
+		SELECT COALESCE(strftime(` + wmAtFormat + `, r.sent_at), ''), r.id*4+1, '', 'round', r.id,
+			COALESCE((SELECT group_concat(DISTINCT c.path) FROM review_comments c WHERE c.round_id = r.id AND ` + wmOwnedComment + `), ''),
+			'', '', COALESCE((SELECT group_concat(c.body, char(10)) FROM review_comments c WHERE c.round_id = r.id AND ` + wmOwnedComment + `), ''),
+			r.outcome, '', '', '', COALESCE(NULLIF(r.branch, ''), r.base_label),
+			(SELECT COUNT(*) FROM review_comments c WHERE c.round_id = r.id AND ` + wmOwnedComment + `)
+		FROM review_rounds r
+		WHERE r.project_id = ? AND r.status IN ('sent','delivered') AND r.outcome != ''
+		UNION ALL
+		SELECT COALESCE(strftime(` + wmAtFormat + `, v.at), ''), v.id*4+2, '', 'revert', v.id, v.path, '', '', '', '', v.header, v.patch, '', '', 0
+		FROM review_reverts v JOIN review_rounds r ON r.id = v.round_id
+		WHERE r.project_id = ?
+		UNION ALL
+		SELECT COALESCE(strftime(` + wmAtFormat + `, l.decided_at), ''), l.id*4+3, '', 'lesson', l.id, '', '', l.lens, l.text, '', '', '', l.status, '', 0
+		FROM review_lessons l
+		WHERE l.project_id = ? AND l.status IN ('accepted','dismissed')`
+	wmSpecMarksSQL = `SELECT COALESCE(strftime(` + wmAtFormat + `, a.answered_at), '') AS wm_at, a.id AS wm_id, m.item_key AS wm_sub,
+			a.title, a.doc_path, a.doc_type, a.answer, m.state, m.body, m.about, COALESCE(sr.result, '') AS result
+		FROM spec_review_marks m JOIN owner_asks a ON a.id = m.ask_id
+		LEFT JOIN spec_reviews sr ON sr.ask_id = a.id
+		LEFT JOIN terminal_sessions s ON s.id = a.session_id
+		WHERE a.project_id = ? AND a.status IN ('answered','delivered')
+			AND a.automation_run_id IS NULL AND s.automation_run_id IS NULL
+			AND m.state IN ('ok','comment','not_useful')`
+	wmPermissionSQL = `SELECT COALESCE(strftime(` + wmAtFormat + `, decided_at), '') AS wm_at, id AS wm_id, '' AS wm_sub, tool_name, summary, status
+		FROM permission_requests
+		WHERE workbench_id = ? AND status IN ('allowed','denied')`
+)
+
 // wmPage wraps inner, which selects wm_at, wm_id and wm_sub first, in the
 // page's filter, order and limit.
 func wmPage(inner string, args []any, from *WatchmanMark, older bool, limit int) (string, []any) {
@@ -378,11 +422,7 @@ type WatchmanAskRow struct {
 // origin, decided_at = answered_at. Asks of an automation run, or filed by a
 // session an automation started, are left out: the owner did not ask for them.
 func (db *DB) AnsweredOwnerAsks(workbenchID int64, from *WatchmanMark, older bool, limit int) ([]WatchmanAskRow, error) {
-	q, args := wmPage(`SELECT COALESCE(strftime(`+wmAtFormat+`, a.answered_at), '') AS wm_at, a.id AS wm_id, '' AS wm_sub,
-			a.kind, a.title, a.summary, a.changes, a.payload, a.answer, a.doc_path, a.doc_type, a.doc_snapshot, a.origin
-		FROM owner_asks a LEFT JOIN terminal_sessions s ON s.id = a.session_id
-		WHERE a.project_id = ? AND a.status IN ('answered','delivered')
-			AND a.automation_run_id IS NULL AND s.automation_run_id IS NULL`,
+	q, args := wmPage(wmAsksSQL,
 		[]any{workbenchID}, from, older, limit)
 	rows, err := db.Query(q, args...)
 	if err != nil {
@@ -432,29 +472,7 @@ type WatchmanReviewRow struct {
 // sent rounds (carried copies left out, the original counts), each sent
 // round's outcome, review_reverts and accepted or dismissed review_lessons.
 func (db *DB) WatchmanReviewComments(workbenchID int64, from *WatchmanMark, older bool, limit int) ([]WatchmanReviewRow, error) {
-	const owned = `c.carried_from IS NULL AND c.status IN ('sent','resolved')`
-	q, args := wmPage(`
-		SELECT COALESCE(strftime(`+wmAtFormat+`, r.sent_at), '') AS wm_at, c.id*4 AS wm_id, '' AS wm_sub, 'comment' AS kind, c.id AS rid,
-			COALESCE(c.path, '') AS path, c.quote, c.lens, c.body, r.outcome, '' AS header, '' AS patch, '' AS lstatus,
-			'' AS ref, 0 AS n
-		FROM review_comments c JOIN review_rounds r ON r.id = c.round_id
-		WHERE r.project_id = ? AND r.status IN ('sent','delivered') AND `+owned+`
-		UNION ALL
-		SELECT COALESCE(strftime(`+wmAtFormat+`, r.sent_at), ''), r.id*4+1, '', 'round', r.id,
-			COALESCE((SELECT group_concat(DISTINCT c.path) FROM review_comments c WHERE c.round_id = r.id AND `+owned+`), ''),
-			'', '', COALESCE((SELECT group_concat(c.body, char(10)) FROM review_comments c WHERE c.round_id = r.id AND `+owned+`), ''),
-			r.outcome, '', '', '', COALESCE(NULLIF(r.branch, ''), r.base_label),
-			(SELECT COUNT(*) FROM review_comments c WHERE c.round_id = r.id AND `+owned+`)
-		FROM review_rounds r
-		WHERE r.project_id = ? AND r.status IN ('sent','delivered') AND r.outcome != ''
-		UNION ALL
-		SELECT COALESCE(strftime(`+wmAtFormat+`, v.at), ''), v.id*4+2, '', 'revert', v.id, v.path, '', '', '', '', v.header, v.patch, '', '', 0
-		FROM review_reverts v JOIN review_rounds r ON r.id = v.round_id
-		WHERE r.project_id = ?
-		UNION ALL
-		SELECT COALESCE(strftime(`+wmAtFormat+`, l.decided_at), ''), l.id*4+3, '', 'lesson', l.id, '', '', l.lens, l.text, '', '', '', l.status, '', 0
-		FROM review_lessons l
-		WHERE l.project_id = ? AND l.status IN ('accepted','dismissed')`,
+	q, args := wmPage(wmReviewSQL,
 		[]any{workbenchID, workbenchID, workbenchID, workbenchID}, from, older, limit)
 	rows, err := db.Query(q, args...)
 	if err != nil {
@@ -490,14 +508,7 @@ type WatchmanSpecMarkRow struct {
 // decision) of the workbench's answered asks. decided_at = the ask's
 // answered_at: a mark edited after the answer keeps that time (known limit).
 func (db *DB) WatchmanSpecMarks(workbenchID int64, from *WatchmanMark, older bool, limit int) ([]WatchmanSpecMarkRow, error) {
-	q, args := wmPage(`SELECT COALESCE(strftime(`+wmAtFormat+`, a.answered_at), '') AS wm_at, a.id AS wm_id, m.item_key AS wm_sub,
-			a.title, a.doc_path, a.doc_type, a.answer, m.state, m.body, m.about, COALESCE(sr.result, '') AS result
-		FROM spec_review_marks m JOIN owner_asks a ON a.id = m.ask_id
-		LEFT JOIN spec_reviews sr ON sr.ask_id = a.id
-		LEFT JOIN terminal_sessions s ON s.id = a.session_id
-		WHERE a.project_id = ? AND a.status IN ('answered','delivered')
-			AND a.automation_run_id IS NULL AND s.automation_run_id IS NULL
-			AND m.state IN ('ok','comment','not_useful')`,
+	q, args := wmPage(wmSpecMarksSQL,
 		[]any{workbenchID}, from, older, limit)
 	rows, err := db.Query(q, args...)
 	if err != nil {
@@ -529,9 +540,7 @@ type WatchmanPermissionRow struct {
 // answered_on_mac carries no allow or deny (a newer prompt closed it) and
 // expired is nobody's decision: all three are left out.
 func (db *DB) WatchmanPermissionDecisions(workbenchID int64, from *WatchmanMark, older bool, limit int) ([]WatchmanPermissionRow, error) {
-	q, args := wmPage(`SELECT COALESCE(strftime(`+wmAtFormat+`, decided_at), '') AS wm_at, id AS wm_id, '' AS wm_sub, tool_name, summary, status
-		FROM permission_requests
-		WHERE workbench_id = ? AND status IN ('allowed','denied')`,
+	q, args := wmPage(wmPermissionSQL,
 		[]any{workbenchID}, from, older, limit)
 	rows, err := db.Query(q, args...)
 	if err != nil {
