@@ -48,25 +48,30 @@ struct SessionCleanupNoticeBar: View {
     let notice: SessionCleanupNotice
 
     var body: some View {
-        Text(attributed)
-            .font(.callout)
-            .lineLimit(5)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .deleteBarChrome()
-            .accessibilityElement(children: .combine)
-            .onChange(of: notice.text, initial: true) { _, text in
-                AccessibilityNotification.Announcement(text).post()
+        VStack(alignment: .leading, spacing: Spacing.tight) {
+            Text(sentence)
+            if let note = notice.note {
+                Text(note)
             }
+        }
+        .font(.callout)
+        // The sentence and the note wrap in a narrow panel; together they
+        // fit five lines at the panel's narrowest.
+        .lineLimit(5)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .deleteBarChrome()
+        .accessibilityElement(children: .combine)
+        .onChange(of: notice.text, initial: true) { _, text in
+            AccessibilityNotification.Announcement(text).post()
+        }
     }
 
-    private var attributed: AttributedString {
+    private var sentence: AttributedString {
         var lead = AttributedString(notice.lead)
         lead.font = .callout.weight(.semibold)
         lead.foregroundColor = Tone.success
-        let text = lead + AttributedString(notice.rest)
-        guard let note = notice.note else { return text }
-        return text + AttributedString("\n" + note)
+        return lead + AttributedString(notice.rest)
     }
 }
 
