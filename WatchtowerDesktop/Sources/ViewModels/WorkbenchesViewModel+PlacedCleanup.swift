@@ -96,8 +96,18 @@ extension WorkbenchesViewModel {
             center.forgetCleanup(scope)
             return .blockedByApply
         }
-        cleaningUpSessions.insert(row.id)
-        let ok = await center.applyCleanup(sessionID: row.id, workbenchID: workbenchID, items: items.map(\.key))
+        // The row is busy only once the workbench's slot is this apply's: a
+        // wait behind a background cleanup (board #1716) leaves it free, so
+        // a delete then still works — and the guards are checked again
+        // there, so a row deleted or reopened meanwhile is left alone.
+        var began = false
+        let ok = await center.applyCleanup(sessionID: row.id, workbenchID: workbenchID, items: items.map(\.key)) {
+            guard mayCleanUpPlaced(row, center: center, phase: .applying) else { return false }
+            cleaningUpSessions.insert(row.id)
+            began = true
+            return true
+        }
+        guard began else { return .ended }
         // Nobody else marks a row busy while it is (the Clean Up screen's
         // apply refuses a busy row), so this flag is this run's.
         cleaningUpSessions.remove(row.id)

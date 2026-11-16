@@ -382,9 +382,17 @@ final class SessionCleanupCenter {
     /// as success. True when the CLI ran and no item reported an error
     /// (`failureText(for:)` says what failed otherwise); a kept item is not
     /// a failure.
-    func applyCleanup(sessionID: Int64, workbenchID: Int64, items: [String]) async -> Bool {
+    ///
+    /// `onSlot` is called once the workbench's slot is this apply's, right
+    /// before the CLI starts, with no suspension between: false gives the
+    /// slot back and runs nothing (false returned, the scope's phase
+    /// cleared). The placed cleanup marks its row busy there, not while it
+    /// waits behind a background cleanup (board #1716).
+    func applyCleanup(
+        sessionID: Int64, workbenchID: Int64, items: [String], onSlot: () -> Bool = { true }
+    ) async -> Bool {
         guard !items.isEmpty else { return true }
-        return await runApply(.session(sessionID), workbenchID: workbenchID) { [self] in
+        return await runApply(.session(sessionID), workbenchID: workbenchID, onSlot: onSlot) { [self] in
             Self.cleanupArguments(sessionID: sessionID, workbenchID: workbenchID, live: liveSessionIDs(), applying: items)
         }
     }
@@ -396,12 +404,18 @@ final class SessionCleanupCenter {
     /// arguments are built once the slot is this apply's, so its live
     /// sessions are current.
     private func runApply(
-        _ scope: SessionCleanupScope, workbenchID: Int64, args: () -> [String]
+        _ scope: SessionCleanupScope, workbenchID: Int64, onSlot: () -> Bool, args: () -> [String]
     ) async -> Bool {
         guard !isApplying(workbenchID: workbenchID) else { return false }
         let serial = beginRun(scope, phase: .applying)
         applyRuns[scope] = (serial, workbenchID)
         await acquireSlot(workbenchID: workbenchID)
+        guard onSlot() else {
+            releaseSlot(workbenchID: workbenchID)
+            if applyRuns[scope]?.serial == serial { applyRuns[scope] = nil }
+            if runSerials[scope] == serial { phases[scope] = nil }
+            return false
+        }
         let outcome = await runCleanup(args())
         releaseSlot(workbenchID: workbenchID)
         if applyRuns[scope]?.serial == serial { applyRuns[scope] = nil }
@@ -730,8 +744,8 @@ final class SessionCleanupCenter {
         // A child that said `done` but does not exit is stopped after
         // `exitAfterDoneLimit`; either way its exit is awaited until it was
         // reaped, so the slot is freed only then.
-        let lingering = done == nil ? nil : Task { [limit = exitAfterDoneLimit] in
-            try? await Task.sleep(for: limit)
+        let lingering = done == nil ? nil : Task { [sleep = backgroundSleep, limit = exitAfterDoneLimit] in
+            await sleep(limit)
             guard !Task.isCancelled else { return }
             Self.stop(child, within: grace)
         }

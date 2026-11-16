@@ -25,11 +25,14 @@ package enum SessionAutoCleanupOutcome: Equatable, Sendable {
     /// The run error of a cleanup stopped at the 10-minute limit.
     package static let timeoutRunError = "the cleanup took longer than 10 minutes"
 
-    /// An item's group: removed, an error or a removal left pending is
-    /// could not, a kept item goes by its reason.
+    /// An item's group: an error is could not — a done one too (Go's
+    /// `dropBranchConfig` sets one on a deleted branch whose config section
+    /// stayed) —, then removed, a removal left pending is could not, a kept
+    /// item goes by its reason.
     package static func group(_ item: SessionCleanupItem) -> CleanupItemGroup {
+        guard item.error.isEmpty else { return .couldNot }
         if item.done { return .removed }
-        guard item.error.isEmpty, item.action == .keep, let reason = item.reason else { return .couldNot }
+        guard item.action == .keep, let reason = item.reason else { return .couldNot }
         return group(reason: reason)
     }
 
