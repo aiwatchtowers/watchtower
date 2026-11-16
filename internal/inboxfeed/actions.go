@@ -154,17 +154,7 @@ func (s *snapshot) cardAction(o output, index int, a db.InboxAction, reply strin
 		if err != nil || u.Scheme == "" {
 			return c, false
 		}
-		switch strings.ToLower(u.Scheme) {
-		case "http", "https":
-			c.State = api.ActionDisabled
-			if u.Host != "" {
-				c.State = api.ActionEnabled
-			}
-		case "watchtower-nav":
-			c.State = api.ActionMacOnly
-		default:
-			c.State = api.ActionDisabled
-		}
+		c.State = linkState(u)
 	case "chat":
 		if a.Chat == "" {
 			return c, false
@@ -209,6 +199,28 @@ func (s *snapshot) cardAction(o output, index int, a db.InboxAction, reply strin
 		return c, false
 	}
 	return c, true
+}
+
+// webLinkSchemes are the URL schemes of a web link (InboxCardLinkPolicy):
+// the browser opens them, on the Mac or the phone.
+var webLinkSchemes = map[string]bool{"http": true, "https": true}
+
+// navLinkScheme is a Watchtower screen link's scheme (NavLink.scheme):
+// only the Mac opens it.
+const navLinkScheme = "watchtower-nav"
+
+// linkState is a link button's state (InboxCardLinkPolicy.permits): a web
+// link with a host enabled, a screen link the Mac's alone, anything else
+// disabled.
+func linkState(u *url.URL) api.ActionState {
+	scheme := strings.ToLower(u.Scheme)
+	switch {
+	case webLinkSchemes[scheme] && u.Host != "":
+		return api.ActionEnabled
+	case scheme == navLinkScheme:
+		return api.ActionMacOnly
+	}
+	return api.ActionDisabled
 }
 
 // targetState is TargetButtonStateResolver.state over what the database
