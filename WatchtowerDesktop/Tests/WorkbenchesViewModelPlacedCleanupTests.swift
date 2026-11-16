@@ -410,6 +410,64 @@ final class WorkbenchesViewModelPlacedCleanupTests: XCTestCase {
         XCTAssertEqual(applyCalls(runner).count, 1, "applied once the slot was free")
     }
 
+    /// While the placed cleanup waits behind a background cleanup's slot
+    /// the row is not busy; it is busy once the slot is the apply's, until
+    /// the apply ends (board #1716).
+    func testRowIsBusyOnlyOnceTheSlotIsHeld() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [
+            .success(fullPlan),
+            .success(plan([item("worktree:\(worktree)", "worktree", done: true),
+                           item("branch:wt/x", "branch", done: true)], mode: "apply"))
+        ])
+        let vm = makeVM(runner)
+        let row = try await runningRow(finished: true)
+        let center = try XCTUnwrap(vm.sessionCleanup)
+        let workbenchID = try XCTUnwrap(row.projectID)
+        await center.acquireSlot(workbenchID: workbenchID)
+        let waits = CallSignal()
+        center.onSlotWait = { _ in waits.hit() }
+
+        try XCTUnwrap(processes[row.id]).exit(0)
+        await waits.until(1)
+        XCTAssertFalse(vm.cleaningUpSessions.contains(row.id), "not busy while it waits for the slot")
+
+        runner.holdsCalls = true
+        center.releaseSlot(workbenchID: workbenchID)
+        try await waitForHeld(runner, 1)
+        XCTAssertTrue(vm.cleaningUpSessions.contains(row.id), "busy once the slot is the apply's")
+
+        runner.release()
+        await untilPlacedRunEnds(vm, row.id)
+        XCTAssertFalse(vm.cleaningUpSessions.contains(row.id))
+        XCTAssertEqual(applyCalls(runner).count, 1)
+    }
+
+    /// A delete while the placed cleanup waits for the slot works: the row
+    /// joins the Undo batch, and the placed cleanup, once the slot is
+    /// free, leaves it to its background cleanup.
+    func testDeleteWhileThePlacedCleanupWaitsForTheSlot() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [.success(fullPlan)])
+        let vm = makeVM(runner)
+        let row = try await runningRow(finished: true)
+        let center = try XCTUnwrap(vm.sessionCleanup)
+        let workbenchID = try XCTUnwrap(row.projectID)
+        await center.acquireSlot(workbenchID: workbenchID)
+        let waits = CallSignal()
+        center.onSlotWait = { _ in waits.hit() }
+
+        try XCTUnwrap(processes[row.id]).exit(0)
+        await waits.until(1)
+        await vm.delete(row)
+        XCTAssertTrue(vm.pendingDeletes.ids.contains(row.id), "the delete went through")
+
+        center.releaseSlot(workbenchID: workbenchID)
+        await untilPlacedRunEnds(vm, row.id)
+        XCTAssertTrue(applyCalls(runner).isEmpty, "a deleted row is its background cleanup's")
+        XCTAssertFalse(vm.cleaningUpSessions.contains(row.id))
+        XCTAssertEqual(center.cleanupPhase(for: .session(row.id)), .idle)
+        XCTAssertFalse(center.isApplying(workbenchID: workbenchID))
+    }
+
     /// Waits until `runner` holds `count` calls.
     private func waitForHeld(_ runner: FakeSessionCleanupRunner, _ count: Int) async throws {
         await waitUntil { runner.heldCount >= count }

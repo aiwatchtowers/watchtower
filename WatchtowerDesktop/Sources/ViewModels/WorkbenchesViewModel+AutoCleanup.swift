@@ -166,6 +166,17 @@ extension WorkbenchesViewModel {
         return openCleanupScreen(projectID: workbenchID, sessionID: id)
     }
 
+    /// Throws `.cleaningUp` when row `id` may not be resumed now: its
+    /// background cleanup is queued or runs. A resume joining one that is
+    /// clearing the row's delete request is let through while the row is
+    /// not queued again. Writes nothing: a resume checks it first, before
+    /// its other refusals, and clears the request only after them.
+    func refuseResumeWhileCleaningUp(_ id: Int64) throws {
+        let joinsAResume = resumesClearing[id, default: 0] > 0
+        let allowed = joinsAResume ? !closedForCleanup.contains(id) : canResume(id)
+        guard allowed else { throw TargetStartError.cleaningUp }
+    }
+
     /// Resume of a Not fully cleaned row (spec §4): its `delete_requested_at`
     /// is cleared in a write of its own before the session starts, so it is
     /// an ordinary finished session again. The row is marked busy before
@@ -185,9 +196,7 @@ extension WorkbenchesViewModel {
     /// the last joined Resume is past its write.
     func clearDeleteRequestForResume(_ session: TerminalSession) async throws {
         let id = session.id
-        let joinsAResume = resumesClearing[id, default: 0] > 0
-        let allowed = joinsAResume ? !closedForCleanup.contains(id) : canResume(id)
-        guard allowed else { throw TargetStartError.cleaningUp }
+        try refuseResumeWhileCleaningUp(id)
         autoCleanupBusy.insert(id)
         resumesClearing[id, default: 0] += 1
         defer {

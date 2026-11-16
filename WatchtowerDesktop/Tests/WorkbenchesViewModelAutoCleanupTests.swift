@@ -435,6 +435,43 @@ final class WorkbenchesViewModelAutoCleanupTests: XCTestCase {
         XCTAssertTrue(vm.sessions.contains { $0.id == row.id }, "listed again")
     }
 
+    /// A Resume the organization's policy refuses leaves a Not fully
+    /// cleaned row deleted: its delete request and mark stay.
+    func testPolicyRefusedResumeKeepsTheDeleteRequest() async throws {
+        let (vm, _, _) = makeVM([.success(AutoCleanupFixture.processRunning)])
+        let p = try await workbench()
+        let row = try await markedRow(vm, p)
+        vm.managedPolicy = { ManagedPolicy.normalize(["AllowedAIProviders": ["codex"]]) }
+
+        do {
+            try await vm.resume(row)
+            XCTFail("the policy refuses the resume")
+        } catch {}
+
+        let requested = try await deleteRequestedAt(row.id)
+        XCTAssertNotNil(requested, "a refused resume does not un-delete the row")
+        XCTAssertNotNil(vm.notFullyCleaned[row.id])
+        XCTAssertFalse(terminals.liveIDs.contains(row.id))
+    }
+
+    /// A Resume of a kind this build has no adapter for is refused and
+    /// leaves a Not fully cleaned row deleted.
+    func testUnsupportedKindResumeKeepsTheDeleteRequest() async throws {
+        let (vm, _, _) = makeVM([.success(AutoCleanupFixture.processRunning)])
+        let p = try await workbench()
+        var row = try await markedRow(vm, p)
+        row.kind = .unsupported("gemini")
+
+        do {
+            try await vm.resume(row)
+            XCTFail("an unsupported kind is refused")
+        } catch {}
+
+        let requested = try await deleteRequestedAt(row.id)
+        XCTAssertNotNil(requested, "a refused resume does not un-delete the row")
+        XCTAssertNotNil(vm.notFullyCleaned[row.id])
+    }
+
     func testResumeDisabledWhileCleaning() async throws {
         let (vm, _, streamer) = makeVM([.success(AutoCleanupFixture.processRunning)])
         let p = try await workbench()

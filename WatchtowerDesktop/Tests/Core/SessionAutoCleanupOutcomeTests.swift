@@ -107,6 +107,21 @@ final class SessionAutoCleanupOutcomeTests: XCTestCase {
             Outcome.group(SessionCleanupItem(key: "branch:x", kind: .branch, action: .unknown("later"))), .couldNot)
     }
 
+    /// Go's `dropBranchConfig` sets an error on a done item (the branch
+    /// went, its config section stayed): spec §3 reads an item with `error`
+    /// as could not, so the row stays, Not fully cleaned.
+    func testDoneItemWithErrorIsCouldNot() {
+        let half = SessionCleanupItem(
+            key: "branch:feat/x", kind: .branch, name: "feat/x", action: .remove, done: true,
+            error: "branch deleted; its config section stays: exit status 5"
+        )
+        XCTAssertEqual(Outcome.group(half), .couldNot)
+        XCTAssertEqual(
+            Outcome.evaluate(result: result([worktree("a", done: true), half]), title: "T", runError: nil),
+            .notFullyCleaned(mark: "Not fully cleaned: 1 branch — could not be removed.")
+        )
+    }
+
     // MARK: Clean notice
 
     func testCleanNoticeCopy() {

@@ -135,9 +135,10 @@ final class WorkbenchSessionDeleteTests: XCTestCase {
         await vm.autoCleanupIdle()
     }
 
+    /// Returns once `count` background applies are held: an event, not a
+    /// wait on the clock.
     private func waitUntilHeld(_ streamer: RepliedCleanupStreamer, _ count: Int) async {
-        let deadline = Date().addingTimeInterval(5)
-        while streamer.heldCount < count, Date() < deadline { try? await Task.sleep(for: .milliseconds(5)) }
+        await streamer.untilHeld(count)
         XCTAssertGreaterThanOrEqual(streamer.heldCount, count, "the background apply never started")
     }
 

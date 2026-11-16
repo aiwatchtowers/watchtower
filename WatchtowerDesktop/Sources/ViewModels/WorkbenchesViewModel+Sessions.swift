@@ -573,9 +573,7 @@ extension WorkbenchesViewModel {
         // It, the phone's open_existing): a deleted row whose background
         // cleanup is queued or runs is refused (board #1716). A Clean Up…
         // apply does not stop a resume.
-        // A Not fully cleaned row is an ordinary finished session again:
-        // its delete request is cleared in a write of its own first.
-        try await clearDeleteRequestForResume(session)
+        try refuseResumeWhileCleaningUp(session.id)
         // A kind this build has no adapter for is refused before anything
         // runs (A7b): never a shell, never Claude Code in its place. Its pane
         // opens on the not-supported line. A run the session host holds for
@@ -595,6 +593,10 @@ extension WorkbenchesViewModel {
                              background: ticket == nil)
             )
         }
+        // A Not fully cleaned row is an ordinary finished session again: its
+        // delete request is cleared in a write of its own — only once the
+        // refusals above passed, so a refused resume leaves it deleted.
+        try await clearDeleteRequestForResume(session)
         // A new row whose start is still placing it launches from that start,
         // in its own place, never from here in the folder.
         if preparingSessions.contains(session.id) {

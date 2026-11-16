@@ -48,12 +48,21 @@ final class SessionCleanupCenterBackgroundTests: XCTestCase {
     }
 
     func testChildThatDoesNotExitAfterDoneIsStoppedAndIsCouldNot() async throws {
-        center.exitAfterDoneLimit = .milliseconds(20)
+        // The wait after `done` goes through the `backgroundSleep` seam: no
+        // real clock (an hour-long limit would hang a real sleep).
+        let clock = DurationGateClock()
+        center.backgroundSleep = { await clock.sleep($0) }
+        center.exitAfterDoneLimit = .seconds(3600)
         let apply = Task { await center.applyInBackground(sessionID: 9, workbenchID: 2) }
         let run = try await XCTUnwrapAsync(await started())
         run.send(Self.cleanDone)
 
+        await clock.untilWaiting(.seconds(3600))
+        XCTAssertTrue(run.groupStopGraces.isEmpty, "not stopped before the limit passed")
+        clock.pass(.seconds(3600))
         let result = await apply.value
+        await clock.untilWaiting(.seconds(600))
+        clock.passAll() // the cancelled watchdog's sleep
 
         XCTAssertEqual(run.groupStopGraces, [.seconds(5)], "its group is stopped")
         XCTAssertNotNil(result.runError, "a stopped child is never a clean outcome")
@@ -160,5 +169,43 @@ private final class EnvironmentGate {
         let resumed = waiting
         waiting = []
         resumed.forEach { $0.resume() }
+    }
+}
+
+/// A fake clock for `backgroundSleep`: each sleep waits until the test
+/// passes its duration — the watchdog's and the wait after `done` apart.
+@MainActor
+private final class DurationGateClock {
+    private var sleepers: [(Duration, CheckedContinuation<Void, Never>)] = []
+    private var watchers: [(Duration, CheckedContinuation<Void, Never>)] = []
+
+    nonisolated func sleep(_ duration: Duration) async {
+        await enqueue(duration)
+    }
+
+    private func enqueue(_ duration: Duration) async {
+        await withCheckedContinuation { continuation in
+            sleepers.append((duration, continuation))
+            let ready = watchers.filter { $0.0 == duration }
+            watchers.removeAll { $0.0 == duration }
+            ready.forEach { $0.1.resume() }
+        }
+    }
+
+    func untilWaiting(_ duration: Duration) async {
+        guard !sleepers.contains(where: { $0.0 == duration }) else { return }
+        await withCheckedContinuation { watchers.append((duration, $0)) }
+    }
+
+    func pass(_ duration: Duration) {
+        let resumed = sleepers.filter { $0.0 == duration }
+        sleepers.removeAll { $0.0 == duration }
+        resumed.forEach { $0.1.resume() }
+    }
+
+    func passAll() {
+        let resumed = sleepers
+        sleepers = []
+        resumed.forEach { $0.1.resume() }
     }
 }

@@ -269,8 +269,15 @@ func TestListTerminalSessionActivity_EverySessionWithItsCwd(t *testing.T) {
 	if got[0] != want {
 		t.Fatalf("row = %+v, want %+v", got[0], want)
 	}
-	if got[1].ID != standalone || got[1].WorkbenchID != 0 || got[1].AgentCwd != "" || got[1].AgentStateAt != "" || got[1].Finished {
+	if got[1].ID != standalone || got[1].WorkbenchID != 0 || got[1].AgentCwd != "" || got[1].AgentStateAt != "" ||
+		got[1].Finished || got[1].DeleteRequested {
 		t.Fatalf("standalone row = %+v", got[1])
+	}
+	// A row being deleted is still listed, with the flag (ask #1389).
+	setDeleteRequestedForTest(t, d, inWB, ledgerAt)
+	got, err = d.ListTerminalSessionActivity(ctx)
+	if err != nil || len(got) != 2 || !got[0].DeleteRequested || got[1].DeleteRequested {
+		t.Fatalf("after the delete request = %+v, %v; want row %d flagged", got, err, inWB)
 	}
 }
 
