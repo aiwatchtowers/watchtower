@@ -93,6 +93,12 @@ type output struct {
 	// FolderID is its effective folder (inbox_artifact_folders); 0 when
 	// none.
 	FolderID sql.NullInt64
+	// ActionsJSON is its own buttons; PressedAction and PressedRunID its
+	// Reply press (the flattened index, the run it queued).
+	ActionsJSON                 string
+	PressedAction, PressedRunID sql.NullInt64
+	// Recipe is its automation as the Reply buttons read it.
+	Recipe recipeState
 }
 
 // readOutputs reads the open inbox outputs (neither done nor dismissed,
@@ -101,7 +107,12 @@ func readOutputs(ctx context.Context, tx *sql.Tx) ([]output, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT o.id, o.automation_id, o.run_id, o.title, o.body, o.priority,
 			o.created_at, o.read_at IS NULL, o.blocks_json, o.output_key IS NOT NULL, o.content_hash,
 			COALESCE(o.written_at, ''), COALESCE(o.changed_at, ''),
-			COALESCE(NULLIF(a.name, ''), a.slug), COALESCE(a.builtin_id, ''), f.folder_id
+			COALESCE(NULLIF(a.name, ''), a.slug), COALESCE(a.builtin_id, ''), f.folder_id,
+			o.actions_json, o.pressed_action, o.pressed_run_id,
+			a.parse_error != '', a.removed_at IS NOT NULL,
+			a.parse_error = '' AND a.removed_at IS NULL AND a.confirmed_hash != a.approval_hash,
+			a.parse_error = '' AND a.enabled AND a.removed_at IS NULL AND a.confirmed_hash != ''
+				AND a.confirmed_hash = a.approval_hash
 		FROM automation_outputs o JOIN automations a ON a.id = o.automation_id
 		LEFT JOIN inbox_artifact_folders f ON f.output_id = o.id
 		WHERE o.kind = 'inbox' AND o.done_at IS NULL AND o.dismissed_at IS NULL
@@ -116,7 +127,8 @@ func readOutputs(ctx context.Context, tx *sql.Tx) ([]output, error) {
 		var created, written, changed string
 		if err := rows.Scan(&o.ID, &o.AutomationID, &o.RunID, &o.Title, &o.Body, &o.Priority,
 			&created, &o.Unread, &o.BlocksJSON, &o.Living, &o.ContentHash, &written, &changed,
-			&o.Name, &o.BuiltinID, &o.FolderID); err != nil {
+			&o.Name, &o.BuiltinID, &o.FolderID, &o.ActionsJSON, &o.PressedAction, &o.PressedRunID,
+			&o.Recipe.parseError, &o.Recipe.removed, &o.Recipe.needsConfirmation, &o.Recipe.runnable); err != nil {
 			return nil, fmt.Errorf("inboxfeed: reading an artifact: %w", err)
 		}
 		o.CreatedAt = parseStamp(created)
@@ -169,30 +181,34 @@ func place(t tree, outputs []output, keep func(output) bool) map[int64][]output 
 }
 
 // cards are folder f's entries in list order (InboxFolderEntries.build):
-//   - Needs approval: the built-in upgrade notices (the approvals follow,
-//     Task 7);
+//   - Needs approval: the built-in upgrade notices, then every open
+//     approval (native cards above the recipe's), then the settled rows;
 //   - the root: Waiting for me first while it has rows that wait on the
-//     owner, then its artifacts newest change first; on a tree without
-//     Needs approval, the approvals' entries last;
+//     owner; then, newest first, its artifacts and the legacy entries by
+//     their own time; on a tree without Needs approval, the approvals'
+//     entries last;
 //   - an owner folder: its artifacts, newest change first.
 func (s *snapshot) cards(f folderRow) []api.Card {
 	switch f.Kind {
 	case api.FolderApprovals:
 		return s.approvalCards(f.ID)
 	case api.FolderRoot:
-		var pinned, timed []api.Card
-		var at []time.Time
+		var pinned []api.Card
+		var timed []timedCard
 		for _, o := range s.artifacts[f.ID] {
 			c := s.artifactCard(o, f.ID)
 			if c.Pinned {
 				pinned = append(pinned, c)
 				continue
 			}
-			timed = append(timed, c)
-			at = append(at, o.ChangedAt)
+			timed = append(timed, timedCard{o.ChangedAt, c})
 		}
-		sortNewestFirst(timed, at)
-		out := append(pinned, timed...)
+		timed = append(timed, s.legacyCards(f.ID)...)
+		sort.SliceStable(timed, func(i, j int) bool { return timed[i].at.After(timed[j].at) })
+		out := pinned
+		for _, t := range timed {
+			out = append(out, t.card)
+		}
 		if !s.tree.hasApprovals() {
 			out = append(out, s.approvalCards(f.ID)...)
 		}
@@ -206,31 +222,6 @@ func (s *snapshot) cards(f folderRow) []api.Card {
 	}
 }
 
-// sortNewestFirst orders cards by at, newest first, keeping the read's
-// order between equal times.
-func sortNewestFirst(cards []api.Card, at []time.Time) {
-	idx := make([]int, len(cards))
-	for i := range idx {
-		idx[i] = i
-	}
-	sort.SliceStable(idx, func(i, j int) bool { return at[idx[i]].After(at[idx[j]]) })
-	sorted := make([]api.Card, len(cards))
-	for i, k := range idx {
-		sorted[i] = cards[k]
-	}
-	copy(cards, sorted)
-}
-
-// approvalCards are Needs approval's entries, shown in folder: the
-// built-in upgrade notices first.
-func (s *snapshot) approvalCards(folder int64) []api.Card {
-	out := make([]api.Card, 0, len(s.notices))
-	for _, n := range s.notices {
-		out = append(out, noticeCard(n, folder))
-	}
-	return out
-}
-
 // artifactCard is an artifact's card (InboxFolderEntries.row, InboxCardTexts,
 // InboxCardSubject): its title (the automation's name when it has none),
 // its source, a markdown preview of its body, its stamp (a living card's
@@ -239,7 +230,7 @@ func (s *snapshot) approvalCards(folder int64) []api.Card {
 // wait). A block document past MaxBlocksBytes is sent as a notice card.
 func (s *snapshot) artifactCard(o output, folder int64) api.Card {
 	refs := s.refs[o.ID]
-	waiting := waitingRows(refs, s.waits)
+	waiting := waitingRows(refs, s.refState.waits)
 	unread := o.Unread
 	if len(refs) > 0 {
 		unread = waiting > 0
@@ -255,10 +246,10 @@ func (s *snapshot) artifactCard(o output, folder int64) api.Card {
 		Pinned:     s.waitingForMe.automationID != 0 && o.AutomationID == s.waitingForMe.automationID && waiting > 0,
 		Automation: &api.CardAutomation{ID: o.AutomationID, Name: o.Name, BuiltinID: o.BuiltinID, RunID: o.RunID},
 		Blocks:     o.BlocksJSON, Body: o.Body, ContentHash: o.ContentHash,
-		Actions: []api.CardAction{}, RefFacts: []api.RefFacts{},
+		Actions: s.cardActions(o, s.now), RefFacts: s.refState.refFacts(refs),
 	}
 	if len(c.Blocks) > MaxBlocksBytes {
-		c.CardKind, c.Blocks = api.CardNotice, ""
+		c.CardKind, c.Blocks, c.Actions = api.CardNotice, "", []api.CardAction{}
 		c.Body, c.Preview = TooLargeSentence, TooLargeSentence
 	}
 	return c

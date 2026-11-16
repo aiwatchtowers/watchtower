@@ -16,11 +16,16 @@ import (
 // view's tables and db.OpenInboxClause's) is in ChangeTables, so a write to
 // it re-reads inbox.feed and wakes inbox.watch. The static list pins the
 // set; the scan catches a new query that reads a table the list misses.
+// The db readers Build calls (ReadNeedsApprovalTx, OpenInboxItemsTx,
+// OwnerKnownTx) are listed by hand: users and channels name a message's
+// sender and channel, the account tables find the owner.
 func TestChangeTables_CoverEveryTableBuildReads(t *testing.T) {
 	read := []string{
 		"automation_outputs", "automation_runs", "automations", "agent_actions", "briefings",
 		"builtin_migrations", "ideas", "inbox_folders", "inbox_folder_routes", "inbox_items",
-		"jira_issues", "reminders", "tracks",
+		"jira_issues", "reminders", "tracks", "track_events", "day_plans", "day_plan_items",
+		"targets", "projects", "users", "channels",
+		"slack_accounts", "google_accounts", "jira_accounts", "linear_accounts", "email_accounts",
 	}
 	views := map[string][]string{"inbox_artifact_folders": {"automation_outputs", "inbox_folder_routes", "inbox_folders"}}
 	ref := regexp.MustCompile(`(?:FROM|JOIN)\s+([a-z_]+)`)

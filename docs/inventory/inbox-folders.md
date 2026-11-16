@@ -37,13 +37,18 @@
 - Guard: `WatchtowerDesktop/Tests/Core/Approval01Tests.swift::test_APPROVAL_01_native_card_when_recipe_off`
 - Guard: `WatchtowerDesktop/Tests/Core/Approval01Tests.swift::test_APPROVAL_01_native_card_when_behind`
 - Guard: `WatchtowerDesktop/Tests/Core/Approval01Tests.swift::test_APPROVAL_01_closed_never_drawn`
-- Supporting: `WatchtowerDesktop/Tests/Core/NeedsApprovalSelectionTests.swift` (the four conditions, more than 50, mixed order, a closed approval's live artifact), `InboxFolderEntriesTests`, `ActionStripAutomationOutputTests::testRefreshIsAPureRead` (STRIP-02)
+- Guard: `internal/inboxfeed/approval01_test.go::TestApproval01_NativeCardWhenRecipeOff`
+- Guard: `internal/inboxfeed/approval01_test.go::TestApproval01_NativeCardWhenBehind`
+- Guard: `internal/inboxfeed/approval01_test.go::TestApproval01_ClosedNeverDrawn`
+- Supporting: `internal/inboxfeed/approvals_test.go` (more than 50, mixed order, settled rows uncounted), `internal/db/approvals_all_test.go`, `WatchtowerDesktop/Tests/Core/NeedsApprovalSelectionTests.swift` (the four conditions, more than 50, mixed order, a closed approval's live artifact), `InboxFolderEntriesTests`, `ActionStripAutomationOutputTests::testRefreshIsAPureRead` (STRIP-02)
 
 **Why locked:** Approvals are the one place the assistant waits on the owner before it acts. If the recipe-drawn view could hide an open approval (off, failed, behind) the action would wait unseen; if it could show a closed one, the owner would approve or dismiss something already decided. Reading the records at render time, in the same read as the folder, and falling back to the native card keeps Needs approval exactly the set of open approvals whatever the built-in did.
 
 **Locked since:** 2026-11-08
 
 ## Changelog
+
+- 2026-11-16 (#1170, the Inbox core in Go, Task 7): Go guards added beside the Swift ones; same meaning; no guard relaxed. `inboxfeed` ports `NeedsApprovalSelection` over `db.ReadNeedsApprovalTx`, which reads the open approvals with `db.AwaitingOwnerClause` (the Swift `awaitingOwnerClause`, moved into `db` as the one "waits on the owner" rule). The Swift guards stay listed until the Swift builder is deleted.
 
 - 2026-11-10 (Inbox builder final review, board #919; owner approval in ask #610): APPROVAL-01 amended — below the open approvals, Needs approval also draws the actions the owner already approved that are still `approved` or `executing` (applied in the background, stuck or still running), natively and uncounted: they are not open approvals, so neither the folder count nor the Inbox badge includes them, and they leave the folder once applied, failed or dismissed. Supporting: `InboxFolderEntriesTests::testNeedsApprovalKeepsApprovedAndExecutingRowsUncounted`.
 

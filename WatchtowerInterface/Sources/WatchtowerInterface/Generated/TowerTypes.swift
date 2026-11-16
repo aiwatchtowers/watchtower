@@ -213,17 +213,23 @@ public struct CardAction: Codable, Hashable, Sendable {
     public var kind: String
     public var label: String
     public var state: ActionState
+    public var detail: String
+    public var note: String
 
     public init(
         index: Int,
         kind: String,
         label: String,
-        state: ActionState
+        state: ActionState,
+        detail: String,
+        note: String
     ) {
         self.index = index
         self.kind = kind
         self.label = label
         self.state = state
+        self.detail = detail
+        self.note = note
     }
 
     enum CodingKeys: String, CodingKey {
@@ -231,6 +237,8 @@ public struct CardAction: Codable, Hashable, Sendable {
         case kind
         case label
         case state
+        case detail
+        case note
     }
 }
 
@@ -533,14 +541,47 @@ public struct HelloResponse: Codable, Hashable, Sendable {
     }
 }
 
+public struct LegacyAttention: Codable, Hashable, Sendable {
+    public var text: String
+    public var reason: String
+    public var priority: String
+    public var sourceType: String
+    public var sourceID: String
+
+    public init(
+        text: String,
+        reason: String,
+        priority: String,
+        sourceType: String,
+        sourceID: String
+    ) {
+        self.text = text
+        self.reason = reason
+        self.priority = priority
+        self.sourceType = sourceType
+        self.sourceID = sourceID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case text
+        case reason
+        case priority
+        case sourceType = "source_type"
+        case sourceID = "source_id"
+    }
+}
+
 public struct LegacyItem: Codable, Hashable, Sendable {
     public var refKind: RefKind
     public var id: Int64
     public var title: String
     public var subtitle: String
+    public var preview: String
     public var stamp: String
     public var unread: Bool
+    public var high: Bool
     public var stopped: Bool
+    public var done: Bool
     public var date: String
 
     public init(
@@ -548,18 +589,24 @@ public struct LegacyItem: Codable, Hashable, Sendable {
         id: Int64,
         title: String,
         subtitle: String,
+        preview: String,
         stamp: String,
         unread: Bool,
+        high: Bool,
         stopped: Bool,
+        done: Bool,
         date: String
     ) {
         self.refKind = refKind
         self.id = id
         self.title = title
         self.subtitle = subtitle
+        self.preview = preview
         self.stamp = stamp
         self.unread = unread
+        self.high = high
         self.stopped = stopped
+        self.done = done
         self.date = date
     }
 
@@ -568,9 +615,12 @@ public struct LegacyItem: Codable, Hashable, Sendable {
         case id
         case title
         case subtitle
+        case preview
         case stamp
         case unread
+        case high
         case stopped
+        case done
         case date
     }
 }
@@ -627,24 +677,29 @@ public enum LegacyKind: Codable, Hashable, Sendable {
 public struct LegacySection: Codable, Hashable, Sendable {
     public var kind: LegacyKind
     public var items: [LegacyItem]
+    public var attention: [LegacyAttention]
 
     public init(
         kind: LegacyKind,
-        items: [LegacyItem]
+        items: [LegacyItem],
+        attention: [LegacyAttention]
     ) {
         self.kind = kind
         self.items = items
+        self.attention = attention
     }
 
     enum CodingKeys: String, CodingKey {
         case kind
         case items
+        case attention
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.kind = try container.decode(LegacyKind.self, forKey: .kind)
         self.items = try container.decodeIfPresent([LegacyItem].self, forKey: .items) ?? []
+        self.attention = try container.decodeIfPresent([LegacyAttention].self, forKey: .attention) ?? []
     }
 }
 

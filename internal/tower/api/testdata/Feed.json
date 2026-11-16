@@ -66,7 +66,9 @@
           "index": 0,
           "kind": "reply",
           "label": "Reply",
-          "state": "enabled"
+          "state": "enabled",
+          "detail": "ready",
+          "note": ""
         }
       ],
       "ref_facts": [
@@ -140,9 +142,13 @@
             "stamp": "2026-11-16T09:00:00Z",
             "unread": true,
             "stopped": false,
-            "date": ""
+            "date": "",
+            "preview": "1 new",
+            "high": false,
+            "done": false
           }
-        ]
+        ],
+        "attention": []
       }
     }
   ],

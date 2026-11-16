@@ -159,10 +159,21 @@ func (ActionState) EnumValues() []string {
 
 // CardAction is one button of a card.
 type CardAction struct {
-	Index int         `json:"index"`
-	Kind  string      `json:"kind"`
+	// Index is the press address: the position in the card's flattened
+	// action list (its own actions, then its blocks' in document order).
+	Index int    `json:"index"`
+	Kind  string `json:"kind"`
+	// Label is the label the Mac draws ("Sent — run #N" on a pressed Reply).
 	Label string      `json:"label"`
 	State ActionState `json:"state"`
+	// Detail is the button's own state where State is coarser: a Reply's
+	// (ready, sent, needs_confirmation, off, unreadable, removed) or a
+	// target's (idle, waiting, creating, stuck, failed, created); "" for
+	// the other kinds.
+	Detail string `json:"detail"`
+	// Note is the line the Mac draws with it: a Reply's caption ("Needs
+	// confirmation", "Off", …) or a failed target's message; "" for none.
+	Note string `json:"note"`
 }
 
 // RefKind is the kind of record a list row's ref points at.
@@ -232,17 +243,41 @@ func (LegacyKind) EnumValues() []string {
 type LegacySection struct {
 	Kind  LegacyKind   `json:"kind"`
 	Items []LegacyItem `json:"items"`
+	// Attention is a Morning brief day's attention list (the briefing's
+	// attention items, in order); empty for the other kinds.
+	Attention []LegacyAttention `json:"attention"`
 }
 
-// LegacyItem is one row of a legacy entry.
+// LegacyAttention is one attention item of a Morning brief (the briefing's
+// AttentionItem).
+type LegacyAttention struct {
+	Text       string `json:"text"`
+	Reason     string `json:"reason"`
+	Priority   string `json:"priority"`
+	SourceType string `json:"source_type"`
+	SourceID   string `json:"source_id"`
+}
+
+// LegacyItem is one row of a legacy entry, with the words the Mac's list
+// row draws (InboxListRow.content).
 type LegacyItem struct {
-	RefKind  RefKind `json:"ref_kind"`
-	ID       int64   `json:"id"`
-	Title    string  `json:"title"`
-	Subtitle string  `json:"subtitle"`
-	Stamp    string  `json:"stamp"`
-	Unread   bool    `json:"unread"`
-	Stopped  bool    `json:"stopped"`
+	RefKind RefKind `json:"ref_kind"`
+	ID      int64   `json:"id"`
+	Title   string  `json:"title"`
+	// Subtitle is the row's source line without its time (the screen
+	// models add it from Stamp).
+	Subtitle string `json:"subtitle"`
+	// Preview is the row's second line ("2 new", an idea's essence, a
+	// message's why-it-matters).
+	Preview string `json:"preview"`
+	// Stamp is the row's time (a plan item's start; "" for a backlog item).
+	Stamp  string `json:"stamp"`
+	Unread bool   `json:"unread"`
+	// High: the row is high priority.
+	High    bool `json:"high"`
+	Stopped bool `json:"stopped"`
+	// Done: a plan item is done.
+	Done bool `json:"done"`
 	// Date is a Morning brief's day (yyyy-MM-dd); "" otherwise.
 	Date string `json:"date"`
 }

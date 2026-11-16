@@ -139,7 +139,7 @@ func (s *snapshot) apiFolders() []api.Folder {
 		out = append(out, api.Folder{
 			ID: f.ID, Kind: f.Kind, Slug: f.Slug, Title: f.Title, Icon: f.Icon,
 			ParentID: f.ParentID, Position: f.Position, Hidden: !s.tree.isVisible(f.ID),
-			Count: s.counts[f.ID],
+			Count: s.counts[f.ID], Waiting: s.waiting[f.ID],
 		})
 	}
 	return out

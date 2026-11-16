@@ -59,7 +59,7 @@ func Build(ctx context.Context, d *db.DB, o Options) (api.Feed, error) {
 		return api.Feed{}, fmt.Errorf("inboxfeed: opening the read: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	s, err := read(ctx, tx, o.Now, !slices.Contains(o.DisabledFeatures, waitingForMeFeatureID))
+	s, err := read(ctx, tx, o.Now, o.DisabledFeatures)
 	if err != nil {
 		return api.Feed{}, err
 	}
@@ -101,64 +101,89 @@ func compose(s *snapshot, o Options) api.Feed {
 // what the feed carries.
 type snapshot struct {
 	tree tree
+	// outputs are every open inbox output by id (Needs approval's recipe
+	// cards included).
+	outputs map[int64]output
 	// artifacts are each folder's open artifacts in the Inbox order, without
 	// Needs approval's own cards and without Waiting for me's while the
 	// Messages entry stands in for it.
 	artifacts map[int64][]output
-	// refs are each artifact's row refs (output id → refs).
+	// refs are each output's row refs (output id → refs).
 	refs map[int64][]ref
-	// waits are the refs whose record waits on the owner.
-	waits        map[ref]bool
+	// refState is what the read found about their records.
+	refState     refState
 	waitingForMe waitingForMe
 	notices      []notice
-	// counts are each folder's own count.
-	counts map[int64]int
+	// needs is Needs approval's read: the open approvals, their artifacts,
+	// the built-in's state and the settled rows.
+	needs db.NeedsApprovalView
+	// targets are the target buttons' facts by context id.
+	targets map[string]targetFacts
+	// runLabels name the runs that proposed an approval; workbenches the
+	// workbenches a save_automation names.
+	runLabels, workbenches map[int64]string
+	legacy                 legacy
+	// counts and waiting are each folder's own count and the part of it
+	// that waits on the owner.
+	counts, waiting map[int64]int
+	now             time.Time
 }
 
-// read reads the snapshot at now; attentionOn is attention detection's
-// switch (Waiting for me's feature).
-func read(ctx context.Context, tx *sql.Tx, now time.Time, attentionOn bool) (*snapshot, error) {
+// read reads the snapshot at now with the features off in disabled.
+func read(ctx context.Context, tx *sql.Tx, now time.Time, disabled []string) (*snapshot, error) {
+	off := func(id string) bool { return slices.Contains(disabled, id) }
 	t, err := readTree(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
-	s := &snapshot{tree: t}
-	if s.waitingForMe, err = readWaitingForMe(ctx, tx, attentionOn); err != nil {
+	s := &snapshot{tree: t, now: now}
+	if s.waitingForMe, err = readWaitingForMe(ctx, tx, !off(waitingForMeFeatureID)); err != nil {
 		return nil, err
 	}
-	approvalsAutomation, err := builtinAutomationID(ctx, tx, needsApprovalBuiltinID)
+	if s.needs, err = db.ReadNeedsApprovalTx(ctx, tx, now); err != nil {
+		return nil, fmt.Errorf("inboxfeed: %w", err)
+	}
+	s.needs.Builtin.FeatureOn = !off(approvalsFeatureID)
+	approvalsAutomation := s.needs.Builtin.AutomationID
+	all, err := readOutputs(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
-	outputs, err := readOutputs(ctx, tx)
-	if err != nil {
-		return nil, err
+	s.outputs = make(map[int64]output, len(all))
+	s.refs = map[int64][]ref{}
+	var refs []ref
+	for _, o := range all {
+		s.outputs[o.ID] = o
+		r := refsOf(o.BlocksJSON)
+		s.refs[o.ID] = r
+		refs = append(refs, r...)
 	}
-	s.artifacts = place(t, outputs, func(o output) bool {
+	s.artifacts = place(t, all, func(o output) bool {
 		if approvalsAutomation != 0 && o.AutomationID == approvalsAutomation {
-			return false // Needs approval's own cards (Task 7's approvals)
+			return false // drawn only through the approvals they show (APPROVAL-01)
 		}
 		return !s.waitingForMe.hides(o.AutomationID)
 	})
-	s.refs = map[int64][]ref{}
-	var all []ref
-	for _, list := range s.artifacts {
-		for _, o := range list {
-			r := refsOf(o.BlocksJSON)
-			s.refs[o.ID] = r
-			all = append(all, r...)
-		}
-	}
-	if s.waits, err = readWaits(ctx, tx, all, now); err != nil {
+	if s.refState, err = readRefState(ctx, tx, refs, now); err != nil {
 		return nil, err
 	}
 	if s.notices, err = readNotices(ctx, tx); err != nil {
+		return nil, err
+	}
+	if s.targets, err = readTargetFacts(ctx, tx); err != nil {
+		return nil, err
+	}
+	if err := readApprovalExtras(ctx, tx, s); err != nil {
+		return nil, err
+	}
+	if s.legacy, err = readLegacy(ctx, tx, now, off, s.waitingForMe.standIn); err != nil {
 		return nil, err
 	}
 	legacy, err := legacyCounts(ctx, tx, t, now, s.waitingForMe.standIn, len(s.notices))
 	if err != nil {
 		return nil, err
 	}
-	s.counts = counts(t, s.artifacts, s.refs, s.waits, legacy)
+	s.counts = counts(t, s.artifacts, s.refs, s.refState.waits, legacy)
+	s.waiting = waitingCounts(t, s.artifacts, s.refs, s.refState.waits, len(s.needs.Open))
 	return s, nil
 }
