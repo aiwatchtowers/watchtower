@@ -19,7 +19,8 @@ final class ChatSelectionQuoteScanTests: XCTestCase {
     }
 
     func testThreadRowsNeverHostATextView() throws {
-        for file in ["Views/Chat/ChatMessageRow.swift", "Views/Chat/ChatThreadView.swift", "../../WatchtowerChat/Sources/ChatUI/Platform/macOS/MarkdownView.swift",
+        for file in ["Views/Chat/ChatMessageRow.swift", "Views/Chat/ChatThreadView.swift",
+                     "../../WatchtowerChat/Sources/ChatUI/Platform/macOS/MarkdownView.swift",
                      "Views/Chat/ChatFeedView.swift"] {
             let text = try source(file)
             for token in ["NSTextView", "DocumentTextView", "NSViewRepresentable"] {

@@ -181,8 +181,10 @@ public final class ChatConversationModel {
         guard let conversationID, reachability == .connected,
               let newest = messages.last(where: { $0.role == "assistant" && $0.status == ChatMessageStatus.complete })?.id,
               newest > lastRead else { return }
-        lastRead = newest
-        _ = try? await client.send(.read(conversationID: conversationID, messageID: newest))
+        // Marked only once the engine applied it, so a lost read is sent again on the next look.
+        if case .applied? = try? await client.send(.read(conversationID: conversationID, messageID: newest)) {
+            lastRead = max(lastRead, newest)
+        }
     }
 
     /// Loads the page before the oldest loaded message.
@@ -190,8 +192,11 @@ public final class ChatConversationModel {
         guard let conversationID, !isLoadingEarlier, let oldest = messages.first?.id else { return }
         isLoadingEarlier = true
         defer { isLoadingEarlier = false }
-        guard case .applied(.page(let page))? = try? await client.send(.page(conversationID: conversationID, beforeMessageID: oldest))
-        else { return }
+        let echo = try? await client.send(.page(conversationID: conversationID, beforeMessageID: oldest))
+        guard case .applied(.page(let page))? = echo else {
+            report(echo)
+            return
+        }
         let known = Set(messages.map(\.id))
         earlier = page.messages.filter { !known.contains($0.id) } + earlier
     }

@@ -160,4 +160,3 @@ struct CommentableDocumentText: View {
         }
     }
 }
-

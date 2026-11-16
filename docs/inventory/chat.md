@@ -278,13 +278,17 @@ child is never started without it.
 `testChat05PublishedLinkCardOnlyOpensOrCopies`
 (`WatchtowerDesktop/Tests/Core/ArtifactChat05ScanTests.swift`);
 `TestChat05_FallbackActionsOnlyOpenCopyOrFixedTurn`
-(`internal/chatengine/parts_test.go`)
+(`internal/chatengine/parts_test.go`);
+`testChat05FallbackAndArtifactActionsOnlyOpenOrCopy`
+(`WatchtowerChat/Tests/ChatUITests/ChatUISourceScanTests.swift`, the source scan of
+`ChatUI`'s fallback, artifact, published-link and html surfaces and the fallback
+action shapes)
 
 ## CHAT-06 — every message part has a fallback
 
 **Locked since:** 2026-11-16 (unified chat, board #1822, owner approval ask #1371)
 
-**Status:** Enforced (Go guard; the Swift guard lands with `ChatUI`, T7)
+**Status:** Enforced (Go and Swift guards)
 
 **Observable:** A chat message reaches every client as typed parts
 (`text`, `steps`, `sources`, `artifact`, `approval`, `question`, `error`,
@@ -302,8 +306,9 @@ text: the engine never emits them (D14), every client splits them out of the
 pinned to its Go twin `chat.ParseQuestionCard` by `question_parse_cases.json`),
 and the `text` part's fallback stands in for them. Every kind in
 `testdata/parts.json`, the client-derived `artifact` and `question` included,
-has a registered `ChatUI` view (the Swift half of the guard lands with `ChatUI`,
-T7). The remember and knowledge marks are not built for a message at or after
+has a registered `ChatUI` view (`ChatPartRegistry`; a kind it does not know, or
+a payload it cannot read, renders `FallbackPartView`: the fallback text and one
+button per action). The remember and knowledge marks are not built for a message at or after
 the conversation's first Live Slack message (LIVE-01), and a hub record cut that
 drops an action drops its approval part with it. The flat message fields
 (`text`, `steps`, `attachments`) stay beside `parts` for one release.
@@ -314,7 +319,12 @@ drops an action drops its approval part with it. The flat message fields
 `TestChat05_FallbackActionsOnlyOpenCopyOrFixedTurn`;
 `TestChatengine_UnlistedKindSendsFallbackOnly`;
 `TestQuestionParse_SharedCases` (`internal/chat/questions_test.go`) with
-`QuestionParseFixtureTests` (`WatchtowerChatText`)
+`QuestionParseFixtureTests` (`WatchtowerChatText`);
+`testChat06EveryFixtureKindIsRegistered`
+(`WatchtowerChat/Tests/ChatUITests/ChatPartRegistryTests.swift`, over the same
+`parts.json`: every kind, the client-derived ones included, has a registered view
+that draws its sample; every emitted kind's fallback is non-empty and
+`FallbackPartView` draws one button per action)
 
 ## LIVE-01 — Live Slack answers stay out of lasting stores
 
@@ -359,6 +369,7 @@ reason, and `testReaderList` over the Swift sources, which is file-level: a Swif
 
 ## Changelog
 
+- 2026-11-16 (unified chat T7, board #1822, owner approval ask #1371; spec `docs/superpowers/specs/2026-11-16-unified-chat-design.md` §6.1, §9.2, §14): **CHAT-06** gains its Swift guard `testChat06EveryFixtureKindIsRegistered` (`ChatUITests`) and is now Enforced on both sides. **CHAT-05** strengthened, not changed: the shared `ChatUI` package's fallback, artifact, published-link and html surfaces are scanned by `testChat05FallbackAndArtifactActionsOnlyOpenOrCopy` (the same forbidden list as `ArtifactChat05ScanTests`, plus `client.` and `ChatClient`), which also pins the fallback action shapes (only an http(s) `open_url`, a non-empty `chat_turn`, else nothing). `ArtifactChat05ScanTests` and `ChatSelectionQuoteScanTests` read `HTMLPreviewPolicy.swift`, `PublishedLink.swift` (now `WatchtowerChatText`), `MarkdownView.swift` and `ChatSelectionQuote.swift` (now `ChatUI/Platform/macOS`) at their new paths, assertions unchanged. CHAT-01 is held by the new `ChatUI` model tests too (`testChat01DraftStaysUntilApplied`, `testBusyEchoReturnsTextToComposer`, `testRefusedSendRestoresDraft`, `testDroppedEchoResendsWithSameKeyNoDuplicate`), CHAT-02 by `testChat02WaitingStepVisibleUntilEnd`; the Mac's Swift CHAT guards stay until T8 maps them. No guard relaxed.
 - 2026-11-16 (unified chat T3, board #1822, owner approval ask #1371; spec `docs/superpowers/specs/2026-11-16-unified-chat-design.md` §5.3, §9.2): new contract **CHAT-06** (every part kind has a fallback, Go guard `TestCHAT06_EveryPartKindHasFallback`) and a **CHAT-05** amendment (fallback actions only open, copy or send a fixed owner text). The question parser moved from WatchtowerCore to `WatchtowerChatText` with a Go twin and one shared fixture; no guard relaxed.
 - 2026-11-16 (unified chat T1, board #1822, owner approval ask #1371; spec `docs/superpowers/specs/2026-11-16-unified-chat-design.md` §9.2): **CHAT-01** and **CHAT-03** amended, no guard relaxed. The hub's chat runner becomes the Go chat engine (`internal/chatengine`): it writes the owner row before the turn (CHAT-01), answers a repeated `client_key` with its first turn (migration 00192), and runs one pool of 3 (`MaxLive`, was 2; CHAT-03). The `TestChatrun_*` guards move to `internal/chatengine` as `TestChatengine_*` with their assertions (the pool bound now 3), `TestFILES01_Chatrun` becomes `TestFILES01_Chatengine`, and the LIVE-01 reader list names the engine's feed and list builders (`chatengine/feed.go`, `chatengine/list.go`) in place of the hub sources'.
 - 2026-11-11 (tests without wall clock, board #1730): no Observable changed. The `internal/chat` warm-claude tests run an in-process twin of `testdata/fake_claude.sh` (`fakeCLI`, `fake_claude_test.go`) behind the `ClaudeOptions.start` seam, inside `testing/synctest`: every grace, poll and "nothing happened" check is virtual time, and each test fails if a fake child is still running after its teardown. The process wiring keeps real-process tests that wait on process events only and fail if any stub process outlives the test (one `pgrep` look after teardown): `TestChat03_CloseReapsStubbornChild` (the leader is reaped by `Close`; the grandchild sleeps a day, reports its pid over a FIFO and its exit is awaited by pid (kqueue `NOTE_EXIT`; a pidfd on Linux) — only the group kill can end it; no pid polling), `TestChat03_CloseUnblocksAStuckWrite` (a real full pipe), `TestChat04_ClaudeArgvCarriesNoContent` and `TestClaudeBackend_RespawnReadsPromptPipesAgain` (the prompt and the config read from the inherited pipes, first spawn and respawn) and `TestClaudeBackend_StdinEOFEndsSessionAndSweepsGroup` (the group sweep); the real-sandbox halves of `TestChat05_ClaudeAIChildNeverTouchesTCCGuardedFolders` stay real. Moved to the in-process model: `TestChat03_CloseWhileWaitingForApprovalRejectsAndReaps` now checks that `Close` ended the fake child (the real reaping of a child and its group is `TestChat03_CloseReapsStubbornChild`'s), and `TestChat05_DeadSessionNeverRunsAnApprovedCall` kills the fake child instead of signalling a pid. The stdin write lock is a one-slot channel instead of a `sync.Mutex` (mutual exclusion and lock order unchanged; a zero `claudeProc` needs it made), so a writer queued behind a stuck write is durably blocked.
