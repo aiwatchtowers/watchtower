@@ -30,6 +30,7 @@ var knownNonLLMExec = map[string]string{
 	"chat.NewChildSandboxAt":             "probes sandbox-exec with /usr/bin/true",
 	"chatengine.execStart":               "re-execs this binary as the chat engine's `ai session` child, which records its own calls",
 	"chatengine.psArgs":                  "ps -o args (the orphan sweep's command-line check)",
+	"chatengine.(*Engine).listenStart":   "re-execs this binary as a detached `ai session --listen`, which records its own calls",
 	"claude.loginShellPATH":              "login shell `echo $PATH`",
 	"claude.loginShellWhich":             "login shell `which claude`",
 	"claude.readLoginShellEnvUntil":      "login shell `env -0`",

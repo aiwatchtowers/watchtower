@@ -89,6 +89,8 @@ type session struct {
 	dropped      bool        // a pending session given up (cancelled, gone, failed spawn)
 	cancelPoke   bool        // Cancel asked for an immediate lease read
 	gone         bool        // Manage deleted the conversation: drop the turn now
+	detaching    bool        // Detach: leave the process running, write no end
+	shutdown     bool        // Shutdown: end the turn `partial`, then close
 	readyLive    *chat.Event // the last session_ready, for the live routing overlay
 
 	// Owned by loop.
@@ -109,6 +111,10 @@ type session struct {
 	stageAt    *time.Timer
 	drainAt    *time.Timer
 	pgidPath   string
+	done       chan struct{} // closed when loop returned (nil for a test's bare session)
+	adopted    bool          // reattached by Start: its turn (if any) is replayed, never reused
+	adoptCheck bool          // until the replay's attached line: does the process hold our turn?
+	shutDone   bool          // the Shutdown step ran
 }
 
 func (s *session) poke() {
@@ -127,8 +133,18 @@ func timerC(t *time.Timer) <-chan time.Time {
 
 func (s *session) loop() {
 	defer s.r.wg.Done()
+	if s.done != nil {
+		defer close(s.done)
+	}
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
+	if s.adopted {
+		s.wire(s.proc)
+		s.r.mu.Lock()
+		s.cur = s.turn // already sent by the engine before the restart
+		s.r.mu.Unlock()
+		s.adoptCheck = true
+	}
 	for {
 		select {
 		case <-s.kick:
@@ -177,9 +193,22 @@ func (s *session) finished() bool {
 func (s *session) onKick() {
 	s.r.mu.Lock()
 	ph, held, closing, retire, cancelPoke, gone := s.phase, s.turn, s.closing, s.retire, s.cancelPoke, s.gone
+	detaching, shutdown := s.detaching, s.shutdown
 	s.cancelPoke, s.gone = false, false
 	s.r.mu.Unlock()
 
+	if detaching {
+		s.detach()
+		return
+	}
+	if shutdown && !s.shutDone {
+		s.shutDone = true
+		s.endForShutdown(held)
+		if s.proc != nil {
+			s.beginShutdown(false)
+		}
+		return
+	}
 	if closing && s.proc == nil {
 		return // finished() ends it; a held turn keeps its lease for the sweep
 	}
@@ -204,10 +233,15 @@ func (s *session) onKick() {
 // spawn starts the process; a failure ends the held turn as an error, as
 // the Mac's failTurn does.
 func (s *session) spawn(held *heldTurn) bool {
-	p, err := s.r.c.Start(s.cfg.argv(s.conv, s.r.c.DBPath))
+	argv := s.cfg.argv(s.conv, s.r.c.DBPath)
+	if s.r.listening() {
+		argv = append(argv, "--listen", s.r.sessionSocket(s.conv))
+	}
+	p, err := s.r.c.Start(argv)
 	if err != nil {
 		log.Printf("chatengine: conversation %d: starting the session failed (%s)", s.conv, errClass(err))
-		if held != nil {
+		// A stopping engine leaves the turn's lease to the next start's sweep.
+		if held != nil && !errors.Is(err, ErrClosed) {
 			s.r.finalizeUnsent(held.st, held.t, chatstore.StatusError,
 				&chatstore.Failure{Code: chat.CodeProviderUnavailable, Message: "The chat session could not start."})
 		}
@@ -216,16 +250,26 @@ func (s *session) spawn(held *heldTurn) bool {
 		s.r.mu.Unlock()
 		return false
 	}
+	s.wire(p)
+	s.r.mu.Lock()
+	s.phase = phaseLive
+	s.r.mu.Unlock()
+	return true
+}
+
+// wire starts talking to p: the stdin writer, the event reader and the
+// group file; a session socket's process is attached first (it replays its
+// current turn).
+func (s *session) wire(p Process) {
 	s.proc, s.exited = p, p.Exited()
 	s.stdin = make(chan []byte, stdinBacklog)
 	s.r.wg.Add(1)
 	go s.writeStdin(p.Stdin(), s.stdin)
 	s.events = readEvents(s.conv, p.Stdout())
 	s.writePGID(p.PGID())
-	s.r.mu.Lock()
-	s.phase = phaseLive
-	s.r.mu.Unlock()
-	return true
+	if s.r.listening() {
+		_ = s.send(chat.Command{Type: chat.CommandAttach})
+	}
 }
 
 // startTurn sends held to the process. A warm session's session_ready is
@@ -296,6 +340,10 @@ func (s *session) closeStdin() {
 }
 
 func (s *session) onEvent(ev chat.Event) {
+	if ev.Type == chat.EventAttached {
+		s.onAttached(ev)
+		return
+	}
 	if ev.Type == chat.EventSessionReady {
 		e := ev
 		s.ready = &e
@@ -515,30 +563,162 @@ func (s *session) end() {
 	}
 	if s.proc != nil {
 		s.r.mu.Lock()
-		held, closing := s.turn, s.closing
+		held, closing, detaching := s.turn, s.closing, s.detaching
 		s.dropped = true // no Run hands it a turn any more
 		s.r.mu.Unlock()
+		if detaching {
+			// The process runs on; the next engine reattaches to it.
+			s.cur = nil
+			s.closeLines()
+			s.r.ended(s)
+			return
+		}
 		if s.cur == nil && held != nil {
 			s.cur = held // assigned, never sent
 		}
 		if cur := s.cur; cur != nil {
 			if done, _ := cur.t.Done(); !done {
-				if closing {
+				switch {
+				case closing:
 					if err := cur.t.Flush(); err != nil {
 						log.Printf("chatengine: conversation %d: the last flush failed (%s)", s.conv, errClass(err))
 					}
-				} else {
+				case s.adoptCheck:
+					// The replay never finished: its text may be shorter
+					// than the row's, so the row keeps its own text.
+					if err := s.r.loseLease(s.conv); err != nil {
+						log.Printf("chatengine: conversation %d: ending a lost turn failed (%s)", s.conv, errClass(err))
+					} else {
+						s.r.turnEnded(s.conv, cur.st.TurnID, chatstore.StatusPartial)
+					}
+				default:
 					s.retry = nil
 					s.r.finalizeUnsent(cur.st, cur.t, chatstore.StatusPartial, lostFailure())
 				}
 			}
 		}
 		s.cur = nil
-		close(s.stdin)
+		s.closeLines()
 		s.closeStdin()
 		s.removePGID()
 	}
 	s.r.ended(s)
+}
+
+// detach (Engine.Detach, a daemon restart): the turn's text so far is
+// flushed, the connection dropped and the process left running with its
+// group file and the turn's lease; nothing ends the turn — the next engine
+// reattaches and replays it (unified chat spec §7, D23). A pending session
+// just ends (its lease is left for the next start's sweep).
+func (s *session) detach() {
+	if s.proc == nil || s.events == nil && s.exited == nil {
+		return
+	}
+	if cur := s.cur; cur != nil {
+		if done, _ := cur.t.Done(); !done {
+			if err := cur.t.Flush(); err != nil {
+				log.Printf("chatengine: conversation %d: the flush before detaching failed (%s)", s.conv, errClass(err))
+			}
+		}
+	}
+	s.stopStage()
+	s.stopCancelWatch()
+	if s.drainAt != nil {
+		s.drainAt.Stop()
+		s.drainAt = nil
+	}
+	s.closeLines()
+	if d, ok := s.proc.(interface{ Detach() }); ok {
+		d.Detach()
+	} else {
+		s.closeStdin()
+	}
+	if ch := s.events; ch != nil {
+		go drainEvents(ch) // the reader may be mid-send
+	}
+	s.events, s.exited = nil, nil
+}
+
+// closeLines ends the stdin writer (once).
+func (s *session) closeLines() {
+	if s.stdin != nil {
+		close(s.stdin)
+		s.stdin = nil
+	}
+}
+
+// drainEvents reads a detached connection's events until its reader ends.
+func drainEvents(ch <-chan chat.Event) {
+	for ev := range ch {
+		_ = ev
+	}
+}
+
+// endForShutdown (Engine.Shutdown): the running turn is cancelled and ends
+// `partial` with its text now; a turn never sent ends `partial` too. The
+// caller then closes the session (close, 2 s, SIGTERM, 3 s, SIGKILL).
+func (s *session) endForShutdown(held *heldTurn) {
+	if cur := s.cur; cur != nil {
+		_ = s.send(chat.Command{Type: chat.CommandCancel})
+		if err := cur.t.Finalize(chatstore.StatusPartial, nil); err != nil {
+			if err = cur.t.Finalize(chatstore.StatusPartial, nil); err != nil {
+				log.Printf("chatengine: conversation %d: finalizing at shutdown failed (%s)", s.conv, errClass(err))
+			}
+		}
+		s.checkDone()
+		return
+	}
+	if held == nil {
+		return
+	}
+	s.r.mu.Lock()
+	s.turn = nil
+	if s.proc == nil {
+		s.dropped = true
+	}
+	s.r.mu.Unlock()
+	s.r.finalizeUnsent(held.st, held.t, chatstore.StatusPartial, nil)
+	s.r.changed(s.conv)
+}
+
+// onAttached is the attached line that ends a reattached session's replay:
+// the held turn's text is whole again, so its flushes resume. A held turn
+// the process never got (the old engine went away while the session was
+// still binding its socket) is sent now, rebuilt from its stored rows; one
+// that cannot be rebuilt ends `partial` with session_lost.
+func (s *session) onAttached(ev chat.Event) {
+	if !s.adoptCheck {
+		return
+	}
+	s.adoptCheck = false
+	cur := s.cur
+	if cur == nil {
+		return
+	}
+	if err := cur.t.ReleaseFlushes(); err != nil {
+		log.Printf("chatengine: conversation %d: flushing a reattached turn failed (%s)", s.conv, errClass(err))
+	}
+	if done, _ := cur.t.Done(); done || ev.TurnID == cur.st.TurnID {
+		return // replayed to its end, or running on live
+	}
+	st, err := s.r.store.Resend(s.r.stopCtx, cur.st)
+	if err == nil {
+		cur.st = st
+		err = s.send(chat.Command{Type: chat.CommandTurn, TurnID: st.TurnID, Text: st.SendText,
+			Attachments: st.Attachments, Replay: st.Replay})
+	}
+	if err == nil {
+		log.Printf("chatengine: conversation %d: turn %s sent to its reattached session", s.conv, st.TurnID)
+		return
+	}
+	log.Printf("chatengine: conversation %d: resending turn %s failed (%s)", s.conv, cur.st.TurnID, errClass(err))
+	s.cur = nil
+	s.r.mu.Lock()
+	s.turn = nil
+	s.r.mu.Unlock()
+	s.r.finalizeUnsent(cur.st, cur.t, chatstore.StatusPartial, lostFailure())
+	s.r.changed(s.conv)
+	s.beginShutdown(false)
 }
 
 // readEvents decodes the session's NDJSON stdout; a line that is not an
@@ -582,20 +762,26 @@ func (e *Engine) pgidDir() string {
 // writePGID records the child's group for a sweep after a kill -9 of the
 // daemon: <dir>/<conversation>.pgid, 0600, ids only.
 func (s *session) writePGID(pgid int) {
-	dir := s.r.pgidDir()
+	s.pgidPath = s.r.writeGroupFile(s.conv, pgid)
+}
+
+// writeGroupFile writes conv's group file and returns its path ("" = not
+// written).
+func (e *Engine) writeGroupFile(conv int64, pgid int) string {
+	dir := e.pgidDir()
 	if dir == "" || pgid <= 0 {
-		return
+		return ""
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		log.Printf("chatengine: conversation %d: creating the group dir failed (%s)", s.conv, errClass(err))
-		return
+		log.Printf("chatengine: conversation %d: creating the group dir failed (%s)", conv, errClass(err))
+		return ""
 	}
-	path := filepath.Join(dir, strconv.FormatInt(s.conv, 10)+".pgid")
+	path := filepath.Join(dir, strconv.FormatInt(conv, 10)+".pgid")
 	if err := os.WriteFile(path, []byte(strconv.Itoa(pgid)), 0o600); err != nil {
-		log.Printf("chatengine: conversation %d: writing the group file failed (%s)", s.conv, errClass(err))
-		return
+		log.Printf("chatengine: conversation %d: writing the group file failed (%s)", conv, errClass(err))
+		return ""
 	}
-	s.pgidPath = path
+	return path
 }
 
 // removePGID removes the group file once the child is reaped — only when it
