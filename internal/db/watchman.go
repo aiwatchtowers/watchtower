@@ -328,3 +328,220 @@ func (db *DB) FailRunningWatchmanBacktests(workbenchID int64, reason string, at 
 	n, err := res.RowsAffected()
 	return int(n), err
 }
+
+// Watchman source readers (Task 3). Each reads one kind of owner decision of
+// a workbench in (decided_at, id, sub) order, one page at a time: rows strictly
+// after from, oldest first (older false), or strictly before from, newest
+// first (older true; a nil from starts at the newest row). decided_at is
+// normalised to wmAtFormat so stamps written in different layouts compare.
+
+// wmAtFormat is the strftime layout every reader's decided_at is put in.
+const wmAtFormat = `'%Y-%m-%dT%H:%M:%fZ'`
+
+// WatchmanMark is a position in a reader's order: decided_at (wmAtFormat), a
+// stable integer id and a string tie-break (spec marks only, "" otherwise).
+type WatchmanMark struct {
+	At  string
+	ID  int64
+	Sub string
+}
+
+// wmPage wraps inner, which selects wm_at, wm_id and wm_sub first, in the
+// page's filter, order and limit.
+func wmPage(inner string, args []any, from *WatchmanMark, older bool, limit int) (string, []any) {
+	q := `SELECT * FROM (` + inner + `) WHERE wm_at IS NOT NULL`
+	op, dir := ">", "ASC"
+	if older {
+		op, dir = "<", "DESC"
+	}
+	if from != nil {
+		q += ` AND (wm_at ` + op + ` ? OR (wm_at = ? AND (wm_id ` + op + ` ? OR (wm_id = ? AND wm_sub ` + op + ` ?))))`
+		args = append(args, from.At, from.At, from.ID, from.ID, from.Sub)
+	}
+	q += ` ORDER BY wm_at ` + dir + `, wm_id ` + dir + `, wm_sub ` + dir + ` LIMIT ?`
+	return q, append(args, limit)
+}
+
+// WatchmanAskRow is an answered owner ask.
+type WatchmanAskRow struct {
+	Mark                                  WatchmanMark
+	ID                                    int64
+	Kind, Title, Summary, Changes         string
+	Payload, Answer                       string // JSON
+	DocPath, DocType, DocSnapshot, Origin string
+}
+
+// AnsweredOwnerAsks pages the workbench's answered or delivered asks of either
+// origin, decided_at = answered_at. Asks of an automation run, or filed by a
+// session an automation started, are left out: the owner did not ask for them.
+func (db *DB) AnsweredOwnerAsks(workbenchID int64, from *WatchmanMark, older bool, limit int) ([]WatchmanAskRow, error) {
+	q, args := wmPage(`SELECT strftime(`+wmAtFormat+`, a.answered_at) AS wm_at, a.id AS wm_id, '' AS wm_sub,
+			a.kind, a.title, a.summary, a.changes, a.payload, a.answer, a.doc_path, a.doc_type, a.doc_snapshot, a.origin
+		FROM owner_asks a LEFT JOIN terminal_sessions s ON s.id = a.session_id
+		WHERE a.project_id = ? AND a.status IN ('answered','delivered') AND a.answered_at != ''
+			AND a.automation_run_id IS NULL AND s.automation_run_id IS NULL`,
+		[]any{workbenchID}, from, older, limit)
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("reading answered asks of workbench %d: %w", workbenchID, err)
+	}
+	defer rows.Close()
+	var out []WatchmanAskRow
+	for rows.Next() {
+		var r WatchmanAskRow
+		if err := rows.Scan(&r.Mark.At, &r.Mark.ID, &r.Mark.Sub, &r.Kind, &r.Title, &r.Summary, &r.Changes,
+			&r.Payload, &r.Answer, &r.DocPath, &r.DocType, &r.DocSnapshot, &r.Origin); err != nil {
+			return nil, fmt.Errorf("scanning answered ask: %w", err)
+		}
+		r.ID = r.Mark.ID
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// Watchman review row kinds.
+const (
+	WatchmanReviewComment = "comment"
+	WatchmanReviewRound   = "round"
+	WatchmanReviewRevert  = "revert"
+	WatchmanReviewLesson  = "lesson"
+)
+
+// WatchmanReviewRow is one owner decision of the diff review: a comment of a
+// sent round (decided at the round's send), a sent round's outcome, an undone
+// hunk, or a decided lesson. Mark.ID is id*4 + the kind's index so the four
+// tables share one order; ID is the row's own id.
+type WatchmanReviewRow struct {
+	Mark WatchmanMark
+	Kind string
+	ID   int64
+	// Path: the comment's or revert's file; for a round, its commented files
+	// (comma-separated). Body: comment body, lesson text, or a round's
+	// comment bodies (newline-separated). Ref: the round's branch or base.
+	Path, Quote, Lens, Body, Outcome string
+	Header, Patch                    string // revert only
+	Status                           string // lesson only: accepted or dismissed
+	Ref                              string
+	Comments                         int // round only
+}
+
+// WatchmanReviewComments pages the workbench's review decisions: comments of
+// sent rounds (carried copies left out, the original counts), each sent
+// round's outcome, review_reverts and accepted or dismissed review_lessons.
+func (db *DB) WatchmanReviewComments(workbenchID int64, from *WatchmanMark, older bool, limit int) ([]WatchmanReviewRow, error) {
+	const owned = `c.carried_from IS NULL AND c.status IN ('sent','resolved')`
+	q, args := wmPage(`
+		SELECT strftime(`+wmAtFormat+`, r.sent_at) AS wm_at, c.id*4 AS wm_id, '' AS wm_sub, 'comment' AS kind, c.id AS rid,
+			COALESCE(c.path, '') AS path, c.quote, c.lens, c.body, r.outcome, '' AS header, '' AS patch, '' AS lstatus,
+			'' AS ref, 0 AS n
+		FROM review_comments c JOIN review_rounds r ON r.id = c.round_id
+		WHERE r.project_id = ? AND r.status IN ('sent','delivered') AND r.sent_at IS NOT NULL AND `+owned+`
+		UNION ALL
+		SELECT strftime(`+wmAtFormat+`, r.sent_at), r.id*4+1, '', 'round', r.id,
+			COALESCE((SELECT group_concat(DISTINCT c.path) FROM review_comments c WHERE c.round_id = r.id AND `+owned+`), ''),
+			'', '', COALESCE((SELECT group_concat(c.body, char(10)) FROM review_comments c WHERE c.round_id = r.id AND `+owned+`), ''),
+			r.outcome, '', '', '', COALESCE(NULLIF(r.branch, ''), r.base_label),
+			(SELECT COUNT(*) FROM review_comments c WHERE c.round_id = r.id AND `+owned+`)
+		FROM review_rounds r
+		WHERE r.project_id = ? AND r.status IN ('sent','delivered') AND r.sent_at IS NOT NULL AND r.outcome != ''
+		UNION ALL
+		SELECT strftime(`+wmAtFormat+`, v.at), v.id*4+2, '', 'revert', v.id, v.path, '', '', '', '', v.header, v.patch, '', '', 0
+		FROM review_reverts v JOIN review_rounds r ON r.id = v.round_id
+		WHERE r.project_id = ?
+		UNION ALL
+		SELECT strftime(`+wmAtFormat+`, l.decided_at), l.id*4+3, '', 'lesson', l.id, '', '', l.lens, l.text, '', '', '', l.status, '', 0
+		FROM review_lessons l
+		WHERE l.project_id = ? AND l.status IN ('accepted','dismissed') AND l.decided_at IS NOT NULL`,
+		[]any{workbenchID, workbenchID, workbenchID, workbenchID}, from, older, limit)
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("reading review decisions of workbench %d: %w", workbenchID, err)
+	}
+	defer rows.Close()
+	var out []WatchmanReviewRow
+	for rows.Next() {
+		var r WatchmanReviewRow
+		if err := rows.Scan(&r.Mark.At, &r.Mark.ID, &r.Mark.Sub, &r.Kind, &r.ID, &r.Path, &r.Quote, &r.Lens, &r.Body,
+			&r.Outcome, &r.Header, &r.Patch, &r.Status, &r.Ref, &r.Comments); err != nil {
+			return nil, fmt.Errorf("scanning review decision: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// WatchmanSpecMarkRow is one owner mark on a spec review finding of an
+// answered ask. Mark is (answered_at, ask id, item key): the marks table has
+// no stable integer id (a VACUUM may renumber its rowids).
+type WatchmanSpecMarkRow struct {
+	Mark                    WatchmanMark
+	AskID                   int64
+	Title, DocPath, DocType string
+	Answer                  string // the ask's answer JSON (its verdict)
+	ItemKey, State          string // State: ok, comment or not_useful
+	Body, About             string
+	Result                  string // the spec review's result JSON; "" when none
+}
+
+// WatchmanSpecMarks pages the marks (ok, comment, not_useful; viewed is not a
+// decision) of the workbench's answered asks, decided at the answer.
+func (db *DB) WatchmanSpecMarks(workbenchID int64, from *WatchmanMark, older bool, limit int) ([]WatchmanSpecMarkRow, error) {
+	q, args := wmPage(`SELECT strftime(`+wmAtFormat+`, a.answered_at) AS wm_at, a.id AS wm_id, m.item_key AS wm_sub,
+			a.title, a.doc_path, a.doc_type, a.answer, m.state, m.body, m.about, COALESCE(sr.result, '') AS result
+		FROM spec_review_marks m JOIN owner_asks a ON a.id = m.ask_id
+		LEFT JOIN spec_reviews sr ON sr.ask_id = a.id
+		LEFT JOIN terminal_sessions s ON s.id = a.session_id
+		WHERE a.project_id = ? AND a.status IN ('answered','delivered') AND a.answered_at != ''
+			AND a.automation_run_id IS NULL AND s.automation_run_id IS NULL
+			AND m.state IN ('ok','comment','not_useful')`,
+		[]any{workbenchID}, from, older, limit)
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("reading spec review marks of workbench %d: %w", workbenchID, err)
+	}
+	defer rows.Close()
+	var out []WatchmanSpecMarkRow
+	for rows.Next() {
+		var r WatchmanSpecMarkRow
+		if err := rows.Scan(&r.Mark.At, &r.Mark.ID, &r.Mark.Sub, &r.Title, &r.DocPath, &r.DocType, &r.Answer,
+			&r.State, &r.Body, &r.About, &r.Result); err != nil {
+			return nil, fmt.Errorf("scanning spec review mark: %w", err)
+		}
+		r.AskID, r.ItemKey = r.Mark.ID, r.Mark.Sub
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// WatchmanPermissionRow is one permission prompt the owner allowed or denied.
+type WatchmanPermissionRow struct {
+	Mark                      WatchmanMark
+	ID                        int64
+	ToolName, Summary, Status string
+}
+
+// WatchmanPermissionDecisions pages the workbench's allowed and denied
+// permission requests, decided_at = their decided_at. pending is undecided,
+// answered_on_mac carries no allow or deny (a newer prompt closed it) and
+// expired is nobody's decision: all three are left out.
+func (db *DB) WatchmanPermissionDecisions(workbenchID int64, from *WatchmanMark, older bool, limit int) ([]WatchmanPermissionRow, error) {
+	q, args := wmPage(`SELECT strftime(`+wmAtFormat+`, decided_at) AS wm_at, id AS wm_id, '' AS wm_sub, tool_name, summary, status
+		FROM permission_requests
+		WHERE workbench_id = ? AND status IN ('allowed','denied') AND decided_at IS NOT NULL`,
+		[]any{workbenchID}, from, older, limit)
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("reading permission decisions of workbench %d: %w", workbenchID, err)
+	}
+	defer rows.Close()
+	var out []WatchmanPermissionRow
+	for rows.Next() {
+		var r WatchmanPermissionRow
+		if err := rows.Scan(&r.Mark.At, &r.Mark.ID, &r.Mark.Sub, &r.ToolName, &r.Summary, &r.Status); err != nil {
+			return nil, fmt.Errorf("scanning permission decision: %w", err)
+		}
+		r.ID = r.Mark.ID
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

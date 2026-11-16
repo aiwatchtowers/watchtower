@@ -194,3 +194,31 @@ func TestWatchmanTables_CascadeOnWorkbenchDelete(t *testing.T) {
 	require.NoError(t, d.QueryRow(`SELECT count(*) FROM watchman_fts WHERE watchman_fts MATCH 'cascade'`).Scan(&n))
 	require.Zero(t, n)
 }
+
+// Stamps in second and millisecond layouts compare by time, not as text
+// ("…:56Z" sorts after "…:56.500Z" as text).
+func TestWatchmanReaders_PageMixedStampLayouts(t *testing.T) {
+	d := openTestDB(t)
+	wmTestWorkbench(t, d, 1)
+	res, err := d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path) VALUES (1, 'shell', 's', '/tmp/acme')`)
+	require.NoError(t, err)
+	s, _ := res.LastInsertId()
+	for _, at := range []string{"2026-11-01T10:00:56Z", "2026-11-01T10:00:56.500Z", "2026-11-01T10:00:57.000Z"} {
+		_, err := d.Exec(`INSERT INTO permission_requests (terminal_session_id, workbench_id, tool_name, status, created_at, decided_at)
+			VALUES (?, 1, 'Bash', 'allowed', ?, ?)`, s, at, at)
+		require.NoError(t, err)
+	}
+	newest, err := d.WatchmanPermissionDecisions(1, nil, true, 10)
+	require.NoError(t, err)
+	require.Len(t, newest, 3)
+	require.Equal(t, []string{"2026-11-01T10:00:57.000Z", "2026-11-01T10:00:56.500Z", "2026-11-01T10:00:56.000Z"},
+		[]string{newest[0].Mark.At, newest[1].Mark.At, newest[2].Mark.At})
+
+	after, err := d.WatchmanPermissionDecisions(1, &newest[2].Mark, false, 10)
+	require.NoError(t, err)
+	require.Len(t, after, 2)
+	require.Equal(t, newest[1].ID, after[0].ID, "after-pages run oldest first")
+	before, err := d.WatchmanPermissionDecisions(1, &newest[0].Mark, true, 1)
+	require.NoError(t, err)
+	require.Equal(t, []int64{newest[1].ID}, []int64{before[0].ID})
+}
