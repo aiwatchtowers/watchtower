@@ -3,7 +3,7 @@ import Foundation
 extension ChatFeed.Message {
     /// The message's parts: the ones the engine sent, else (a Mac one version behind sends none, D22; kept one
     /// release) the parts its flat fields carry, built the way Go `chatengine.BuildParts` builds them — the text,
-    /// the attachments, and for an answer its steps, sources and error. The approvals stay in the feed's `actions`.
+    /// the attachments, and for an answer its steps, sources, published links and error. The approvals stay in the feed's `actions`.
     public var resolvedParts: [ChatPart] {
         parts ?? flatFieldParts
     }
@@ -22,6 +22,7 @@ extension ChatFeed.Message {
             out.append(stepsPart)
             if let sources = sourcesPart { out.append(sources) }
         }
+        out += publishedLinkParts
         if status == "error" || errorCode != nil {
             out.append(errorPart)
         }
@@ -57,6 +58,35 @@ extension ChatFeed.Message {
         return .flat(ChatPartKind.sources, ["sources": list.map(SourcePayload.init)], "Sources:\n" + lines.joined(separator: "\n"))
     }
 
+    /// One card per claude.ai page the turn published (Go `publishedLinkParts`): each URL once, only a page
+    /// `publishedURLPermitted` passes.
+    private var publishedLinkParts: [ChatPart] {
+        var seen = Set<String>()
+        var out: [ChatPart] = []
+        for source in steps.flatMap(\.sources) where source.kind == Self.publishedKind {
+            guard let url = source.url, Self.publishedURLPermitted(url), seen.insert(url).inserted else { continue }
+            let trimmed = source.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let title = trimmed.isEmpty ? url : trimmed
+            out.append(.flat(ChatPartKind.publishedLink, PublishedLinkPayload(title: title, url: url),
+                             "Published on claude.ai: " + title,
+                             actions: [ChatPartFallback.Action(label: "Open", action: "open_url", url: url)]))
+        }
+        return out
+    }
+
+    /// Go `chat.SourceKindPublished`.
+    static let publishedKind = "claude_ai_published"
+
+    /// Go `publishedURLPermitted` (and `PublishedLink.permits`): https, host exactly claude.ai, no user, password or
+    /// port, a path past "/". Fail closed.
+    static func publishedURLPermitted(_ raw: String) -> Bool {
+        guard let parts = URLComponents(string: raw), parts.scheme?.lowercased() == "https",
+              parts.percentEncodedHost?.lowercased() == "claude.ai",
+              parts.user == nil, parts.password == nil, parts.port == nil
+        else { return false }
+        return parts.percentEncodedPath.count > 1
+    }
+
     /// The error's code and message; the words for a code are ChatUI's (WatchtowerChatText), so the fallback is
     /// generic.
     private var errorPart: ChatPart {
@@ -77,11 +107,13 @@ extension ChatFeed.Message {
 
 extension ChatPart {
     /// A part built on the client, its payload passed through the wire's coders so it reads like a decoded one.
-    fileprivate static func flat(_ kind: String, _ payload: some Encodable, _ fallback: String) -> ChatPart {
+    fileprivate static func flat(
+        _ kind: String, _ payload: some Encodable, _ fallback: String, actions: [ChatPartFallback.Action] = []
+    ) -> ChatPart {
         let value = try? ChatWireCoder.makeDecoder().decode(
             ChatJSONValue.self, from: ChatWireCoder.makeEncoder().encode(payload)
         )
-        return ChatPart(kind: kind, payload: value, fallback: ChatPartFallback(text: fallback))
+        return ChatPart(kind: kind, payload: value, fallback: ChatPartFallback(text: fallback, actions: actions))
     }
 }
 
@@ -91,6 +123,11 @@ private struct TextPayload: Encodable {
 }
 
 /// A step as Go writes it: `ok` absent while the call runs.
+private struct PublishedLinkPayload: Encodable {
+    let title: String
+    let url: String
+}
+
 private struct StepPayload: Encodable {
     let name: String
     let outcome: ChatFeed.Step.Outcome

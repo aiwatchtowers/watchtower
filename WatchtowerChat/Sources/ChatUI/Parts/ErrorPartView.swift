@@ -28,11 +28,12 @@ struct ErrorPartView: View {
                         .textSelection(.enabled)
                 }
                 HStack(spacing: Spacing.regular) {
-                    if ChatErrorText.isRetryable(payload.code) {
+                    if ChatErrorText.isRetryable(payload.code), context.actions.canRetry?(context.message.id) ?? true {
                         style.secondaryButton(Self.retryLabel) { context.actions.retry(context.message.id) }
                             .accessibilityIdentifier("chat.error.retry")
                     }
-                    if context.message.status == ChatMessageStatus.partial, payload.code != "quota_exhausted" {
+                    if context.message.status == ChatMessageStatus.partial, payload.code != "quota_exhausted",
+                       context.actions.offersContinue {
                         style.secondaryButton(Self.continueLabel) { context.actions.continueStopped(context.message.id) }
                     }
                     if payload.code == "quota_exhausted", let review = context.actions.reviewActions {

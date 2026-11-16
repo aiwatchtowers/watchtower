@@ -9,12 +9,16 @@ public struct ChatMessageRow: View {
     static let copyLabel = "Copy"
     static let regenerateLabel = "Regenerate"
     static let editLabel = "Edit"
+    /// The role of a line that is neither the owner's nor an answer (Workchat's notices, subagent markers and
+    /// Watchtower's own lines): `ChatFeedContext.systemRow` draws it.
+    public static let systemRole = "system"
 
     let message: ChatFeed.Message
     let parts: [ChatPart]
     let context: ChatPartContext
     let rowActions: ChatRowActions
     let isTurnRunning: Bool
+    let caption: String?
     @Environment(\.chatUIStyle) private var style
 
     public init(
@@ -22,13 +26,15 @@ public struct ChatMessageRow: View {
         parts: [ChatPart],
         context: ChatPartContext,
         rowActions: ChatRowActions,
-        isTurnRunning: Bool
+        isTurnRunning: Bool,
+        caption: String? = nil
     ) {
         self.message = message
         self.parts = parts
         self.context = context
         self.rowActions = rowActions
         self.isTurnRunning = isTurnRunning
+        self.caption = caption
     }
 
     private var isOwner: Bool { message.role == "user" }
@@ -80,16 +86,19 @@ public struct ChatMessageRow: View {
                 if message.siblings.count > 1 {
                     branchSwitcher
                 }
-                style.secondaryButton(Self.copyLabel) { rowActions.copy(isOwner ? owner.body : message.text) }
+                style.secondaryButton(Self.copyLabel) { rowActions.copy(isOwner ? owner.body : ChatQuestionParser.readableText(message.text)) }
                 if !isOwner, let quote = rowActions.quote {
                     ChatQuoteRowAction(text: message.text, onQuote: quote)
                 }
                 if !isTurnRunning {
-                    if isOwner {
+                    if isOwner, rowActions.allowsEdit {
                         style.secondaryButton(Self.editLabel) { rowActions.edit(message) }
-                    } else {
+                    } else if !isOwner, rowActions.allowsRegenerate {
                         style.secondaryButton(Self.regenerateLabel) { rowActions.regenerate(message.id) }
                     }
+                }
+                if let caption {
+                    Text(caption).font(.caption2).foregroundStyle(.tertiary)
                 }
             }
             .font(.caption)

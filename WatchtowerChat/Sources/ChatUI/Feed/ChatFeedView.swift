@@ -15,6 +15,10 @@ public struct ChatRowActions {
     /// "Ask about this": a passage of an answer to quote in the next message (the Mac selects it in the feed, the
     /// phone picks it in a sheet); nil turns quoting off (embedded chats).
     public var quote: ((String) -> Void)?
+    /// Whether an owner message offers Edit and a reply Regenerate; a chat whose engine has neither (embedded chats,
+    /// Workchat) turns them off.
+    public var allowsEdit = true
+    public var allowsRegenerate = true
 
     public init(
         regenerate: @escaping (Int64) -> Void = { _ in },
@@ -53,6 +57,19 @@ public struct ChatFeedContext {
     public var footer: AnyView?
     /// A message to scroll to once it is loaded (a search hit); nil follows the newest message.
     public var focusMessageID: Int64?
+    /// The line under a message, after its actions (the Mac's embedded chats: "model · time"; Workchat: the time and
+    /// "via Watchtower"); nil draws none.
+    public var caption: ((ChatFeed.Message) -> String?)?
+    /// How a `system` message is drawn (Workchat's notices, subagent cards and Watchtower's own lines); nil draws its
+    /// text as one centred caption line.
+    public var systemRow: ((ChatFeed.Message) -> AnyView)?
+    /// Tighter rows and margins for a narrow chat (a dock, a popover, a side panel).
+    public var compact = false
+    /// The widest the message column grows (centred); nil fills the width.
+    public var columnMaxWidth: CGFloat?
+    /// Follows the newest content only while the reader is at the bottom, stops when they scroll up and offers "Jump
+    /// to latest" (`ChatFollowTracker`); nil keeps the plain behaviour (every new message scrolls into view).
+    public var follow: ChatFeedFollow?
 
     public init(
         provider: String? = nil,
@@ -83,6 +100,18 @@ public struct ChatFeedContext {
     }
 }
 
+/// What the feed follows (`ChatFeedContext.follow`): the conversation (a switch lands at the bottom) and the message a
+/// running turn streams into (its start pins the feed to the bottom again).
+public struct ChatFeedFollow: Equatable {
+    public var conversationID: Int64?
+    public var liveMessageID: Int64?
+
+    public init(conversationID: Int64?, liveMessageID: Int64? = nil) {
+        self.conversationID = conversationID
+        self.liveMessageID = liveMessageID
+    }
+}
+
 /// The scrolling feed, driven by messages alone (ruling F19): the main chat passes its conversation model's messages,
 /// embedded chats and Workchat pass theirs. It follows the newest message while the reader is at the bottom.
 public struct ChatFeedView: View {
@@ -96,30 +125,23 @@ public struct ChatFeedView: View {
 
     public var body: some View {
         let rows = ChatFeedLayout.rows(messages: messages, actions: context.actions)
+        Group {
+            if let follow = context.follow {
+                ChatFollowingScroll(rows: rows, messages: messages, context: context, follow: follow)
+            } else {
+                plainScroll(rows)
+            }
+        }
+        .modifier(ChatFeedQuoteSupport(onQuote: context.rowActions.quote))
+        .accessibilityIdentifier("chat.feed")
+    }
+
+    private func plainScroll(_ rows: [ChatFeedLayout.Row]) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: Spacing.large) {
-                    if context.hasEarlier {
-                        SystemRow(kind: .earlier(onLoad: context.rowActions.loadEarlier))
-                    }
-                    ForEach(rows) { row in
-                        rowView(row).id(row.id)
-                        if case let .message(message, _) = row, let accessory = context.messageAccessory?(message) {
-                            accessory
-                        }
-                    }
-                    if let footer = context.footer {
-                        footer
-                    }
-                    if let staleLine = context.staleLine {
-                        SystemRow(kind: .line(staleLine))
-                    }
-                    if let notice = context.notice {
-                        SystemRow(kind: .notice(notice))
-                    }
+                ChatFeedColumn(context: context) {
+                    ChatFeedRows(rows: rows, messages: messages, context: context)
                 }
-                .padding(.horizontal, Spacing.large)
-                .padding(.vertical, Spacing.medium)
             }
             .defaultScrollAnchor(.bottom)
             .onChange(of: rows.last?.id) { _, last in
@@ -131,16 +153,83 @@ public struct ChatFeedView: View {
                 proxy.scrollTo(focus, anchor: .center)
             }
         }
-        .modifier(ChatFeedQuoteSupport(onQuote: context.rowActions.quote))
-        .accessibilityIdentifier("chat.feed")
+    }
+
+    /// The focused message's row id, once that message is loaded.
+    private func focusRow(in rows: [ChatFeedLayout.Row]) -> String? {
+        guard let focusMessageID = context.focusMessageID else { return nil }
+        let id = ChatFeedLayout.rowID(focusMessageID)
+        return rows.contains { $0.id == id } ? id : nil
+    }
+}
+
+/// The feed's column: the rows' spacing and margins, at most `columnMaxWidth` wide and centred.
+struct ChatFeedColumn<Content: View>: View {
+    let context: ChatFeedContext
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        LazyVStack(alignment: .leading, spacing: context.compact ? Spacing.cozy : Spacing.large) {
+            content()
+        }
+        .padding(.horizontal, context.compact ? Spacing.cozy : Spacing.large)
+        .padding(.vertical, context.compact ? Spacing.regular : Spacing.medium)
+        .frame(maxWidth: context.columnMaxWidth ?? .infinity)
+        .frame(maxWidth: .infinity)
+    }
+}
+
+/// The feed's rows with no scroll of their own: for a chat that sits inside its pane's own scroll view (an idea's
+/// Discuss section, the tuning panel). `ChatFeedView` draws the same rows in its scroll view.
+public struct ChatFeedRows: View {
+    let rows: [ChatFeedLayout.Row]
+    let messages: [ChatFeed.Message]
+    let context: ChatFeedContext
+
+    public init(messages: [ChatFeed.Message], context: ChatFeedContext) {
+        self.init(rows: ChatFeedLayout.rows(messages: messages, actions: context.actions), messages: messages,
+                  context: context)
+    }
+
+    init(rows: [ChatFeedLayout.Row], messages: [ChatFeed.Message], context: ChatFeedContext) {
+        self.rows = rows
+        self.messages = messages
+        self.context = context
+    }
+
+    public var body: some View {
+        if context.hasEarlier {
+            SystemRow(kind: .earlier(onLoad: context.rowActions.loadEarlier))
+        }
+        ForEach(rows) { row in
+            rowView(row).id(row.id)
+            if case let .message(message, _) = row, let accessory = context.messageAccessory?(message) {
+                accessory
+            }
+        }
+        if let footer = context.footer {
+            footer
+        }
+        if let staleLine = context.staleLine {
+            SystemRow(kind: .line(staleLine))
+        }
+        if let notice = context.notice {
+            SystemRow(kind: .notice(notice))
+        }
     }
 
     @ViewBuilder
     private func rowView(_ row: ChatFeedLayout.Row) -> some View {
         switch row {
+        case let .message(message, _) where message.role == ChatMessageRow.systemRole:
+            if let systemRow = context.systemRow {
+                systemRow(message)
+            } else {
+                SystemRow(kind: .line(message.text))
+            }
         case let .message(message, parts):
             ChatMessageRow(message: message, parts: parts, context: partContext(message), rowActions: context.rowActions,
-                           isTurnRunning: context.isTurnRunning)
+                           isTurnRunning: context.isTurnRunning, caption: context.caption?(message))
         case .approvals(let actions):
             VStack(alignment: .leading, spacing: Spacing.regular) {
                 ForEach(actions) { action in
@@ -170,13 +259,6 @@ public struct ChatFeedView: View {
     private func ownerReply(after id: Int64) -> String? {
         guard let index = messages.firstIndex(where: { $0.id == id }) else { return nil }
         return messages[(index + 1)...].first { $0.role == "user" }?.text
-    }
-
-    /// The focused message's row id, once that message is loaded.
-    private func focusRow(in rows: [ChatFeedLayout.Row]) -> String? {
-        guard let focusMessageID = context.focusMessageID else { return nil }
-        let id = "m\(focusMessageID)"
-        return rows.contains { $0.id == id } ? id : nil
     }
 
     private static let placeholder = ChatFeed.Message(id: 0, role: "assistant", text: "", createdAt: .distantPast)

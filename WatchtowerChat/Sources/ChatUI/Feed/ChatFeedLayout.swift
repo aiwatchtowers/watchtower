@@ -10,11 +10,14 @@ public enum ChatFeedLayout {
 
         public var id: String {
             switch self {
-            case .message(let message, _): "m\(message.id)"
+            case .message(let message, _): ChatFeedLayout.rowID(message.id)
             case .approvals: "approvals"
             }
         }
     }
+
+    /// The row id of the message with this id (what a scroll targets).
+    public static func rowID(_ messageID: Int64) -> String { "m\(messageID)" }
 
     public static func rows(messages: [ChatFeed.Message], actions: [ChatFeed.Action]) -> [Row] {
         var shown = Set<Int64>()

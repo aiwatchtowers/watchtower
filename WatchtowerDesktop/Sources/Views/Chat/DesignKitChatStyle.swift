@@ -21,6 +21,11 @@ struct DesignKitChatStyle: ChatUIStyle {
     func chip(_ title: String) -> AnyView {
         AnyView(Chip(text: title, color: .secondary))
     }
+
+    /// The Mac's multi-line comment editor: Return is a new line, ⌘↩ sends a complete card.
+    func questionOtherField(text: Binding<String>, placeholder: String, onSubmit: (() -> Void)?) -> AnyView {
+        AnyView(CommentTextEditor(text: text, placeholder: placeholder, onSubmit: onSubmit))
+    }
 }
 
 extension View {

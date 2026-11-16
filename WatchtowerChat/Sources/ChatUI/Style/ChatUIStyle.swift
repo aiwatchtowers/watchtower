@@ -10,6 +10,19 @@ public protocol ChatUIStyle {
     func secondaryButton(_ title: String, action: @escaping () -> Void) -> AnyView
     func card<C: View>(@ViewBuilder _ content: () -> C) -> AnyView
     func chip(_ title: String) -> AnyView
+    /// A question card's "Other…" field: `onSubmit` (⌘↩) sends the card, nil while it is incomplete. The default is a
+    /// growing text field; the Mac draws its multi-line comment editor.
+    func questionOtherField(text: Binding<String>, placeholder: String, onSubmit: (() -> Void)?) -> AnyView
+}
+
+extension ChatUIStyle {
+    public func questionOtherField(text: Binding<String>, placeholder: String, onSubmit: (() -> Void)?) -> AnyView {
+        AnyView(
+            TextField(placeholder, text: text, axis: .vertical)
+                .lineLimit(1...4)
+                .font(.callout)
+        )
+    }
 }
 
 /// The default style: borderless controls on the shared tokens, no app look.

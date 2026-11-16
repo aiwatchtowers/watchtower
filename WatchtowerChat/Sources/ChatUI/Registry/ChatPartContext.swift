@@ -52,6 +52,13 @@ public struct ChatPartActions {
     /// The decision row's state for a pending action (the phone: its `permissions` grant, an answer in flight, a
     /// refusal). Nil keeps Approve and Reject live.
     public var approvalState: ((ChatApprovalPayload) -> ChatApprovalState?)?
+    /// Whether an error card of the reply with this id offers Retry; nil offers it wherever the error is retryable.
+    /// An embedded chat retries only its last failed reply while nothing runs.
+    public var canRetry: ((Int64) -> Bool)?
+    /// Whether a cut reply offers Continue; off for a chat whose engine cannot continue one (embedded chats).
+    public var offersContinue = true
+    /// Whether a reply shows its sources pill; off for a chat with no sources list to open (embedded chats).
+    public var showsSources = true
 
     public init(
         sendFixedText: @escaping (String) -> Void = { _ in },
