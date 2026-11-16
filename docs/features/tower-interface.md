@@ -67,6 +67,8 @@ The daemon (`runSyncDaemon` → `serveTower`) serves the tower on a unix socket,
     - Reply and target buttons are `press` with `action_kind`; Reply… is `reply_propose`;
     - approvals go through `AgentActionFeed.towerDecide` (`approval` on `a<id>`, `args_sha256`, Edit… as `patch`).
 
+    Owner gestures (Approve, Retry, Dismiss, a Reply or target press, Reply…) are accepted on the socket only from the signed Desktop (AGENT-07, `ownerconfirm.VerifyDesktop` per peer pid). A daemon built without a team signature refuses them with `not_permitted` unless it runs with `WATCHTOWER_DEV_TRUST_UNSIGNED_DESKTOP=1`, and even then the Desktop must carry its identifier (an ad-hoc signature, not a bare `swift build` binary).
+
     A failure stays on its row with Go's sentence and **Retry**. A record gone meanwhile leaves quietly. Idea verdicts, a track's Make a Task (`createTask`) and Retry on a built-in move keep their own paths (Task 12 and the CLI).
 
 ## Change watch
