@@ -5,6 +5,7 @@ import GRDB
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerTestSupport
+@testable import ChatUI
 
 // MARK: - The Chat tab's landing
 

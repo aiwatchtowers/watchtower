@@ -1,5 +1,6 @@
+#if os(macOS)
 import AppKit
-import WatchtowerCore
+import ChatWire
 import WatchtowerChatText
 
 /// Reads the pasteboard for a ⌘V in a composer that accepts attachments
@@ -31,11 +32,11 @@ enum PastedContent {
     /// (TIFF from a screenshot, HEIC, BMP, an oversized image) becomes a PNG,
     /// downscaled when over the limit. nil when no image can be read.
     static func imageAttachment(from pasteboard: NSPasteboard,
-                                limit: Int = Int(AttachmentValidator.imageLimit)) -> (data: Data, name: String)? {
+                                limit: Int = Int(ChatAttachmentLimits.imageLimit)) -> (data: Data, name: String)? {
         for (type, ext) in nativeTypes {
             guard let data = pasteboard.data(forType: type), data.count <= limit else { continue }
             let name = "Pasted image.\(ext)"
-            if case .success(.image) = AttachmentValidator.validate(data: data, fileName: name) { return (data, name) }
+            if case .success(.image) = ChatAttachmentLimits.validate(data: data, fileName: name) { return (data, name) }
         }
         guard let png = pngData(from: pasteboard) else { return nil }
         return (downscaled(png, toFit: limit), imageName)
@@ -81,3 +82,4 @@ enum PastedContent {
         return data
     }
 }
+#endif

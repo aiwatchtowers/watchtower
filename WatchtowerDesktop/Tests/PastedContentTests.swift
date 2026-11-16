@@ -2,6 +2,7 @@ import XCTest
 import AppKit
 @testable import WatchtowerDesktop
 @testable import WatchtowerCore
+@testable import ChatUI
 
 final class PastedContentTests: XCTestCase {
     private func privatePasteboard() -> NSPasteboard {

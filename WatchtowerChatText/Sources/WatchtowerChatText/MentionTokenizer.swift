@@ -98,3 +98,19 @@ public enum ChatSkillName {
         }
     }
 }
+
+public enum ComposerPickerKey: Sendable {
+    case up, down, accept, dismiss
+}
+
+/// What a key did: `consumed == false` lets the text view handle it (Enter
+/// sends, Esc stops); `edit` is a text change to apply with its caret.
+public struct ComposerKeyResult: Equatable, Sendable {
+    public let consumed: Bool
+    public let edit: ComposerEdit?
+
+    public init(consumed: Bool, edit: ComposerEdit?) {
+        self.consumed = consumed
+        self.edit = edit
+    }
+}

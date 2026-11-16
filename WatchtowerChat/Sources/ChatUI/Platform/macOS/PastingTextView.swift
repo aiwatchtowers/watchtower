@@ -1,19 +1,20 @@
+#if os(macOS)
 import AppKit
 import SwiftUI
-import WatchtowerCore
+import WatchtowerDesign
 import WatchtowerChatText
 
 /// Routes a user-initiated ⌘V (board #534): Finder files, images and PDF
 /// data become attachments; text inserts as always, and a long one is
 /// reported so the composer can offer to attach it instead.
-final class PastingTextView: NSTextView {
+public final class PastingTextView: NSTextView {
     var onPasteData: ((Data, String) async -> Bool)?
     var onAttachFiles: (([URL]) -> Void)?
     var onLongTextPaste: ((LongPaste) -> Void)?
     /// Always `.general` in the app; tests pass a private named pasteboard.
     var pasteboard: NSPasteboard = .general
 
-    override func paste(_ sender: Any?) {
+    override public func paste(_ sender: Any?) {
         guard let onPasteData else {
             insertFromPasteboard(sender)
             return
@@ -82,30 +83,36 @@ final class PastingTextView: NSTextView {
 
 /// A long text paste the composer offers to attach as a file: the exact
 /// inserted text and range, checked and removed through the text view.
-struct LongPaste {
-    let text: String
+public struct LongPaste {
+    public let text: String
     /// The field still holds the pasted text at the pasted range.
-    let isIntact: () -> Bool
-    let remove: () -> Void
+    public let isIntact: () -> Bool
+    public let remove: () -> Void
 
     /// "Attach as File": attached only while the paste is intact, and taken
     /// out of the field only once attached (the chat's landing may first
     /// write its conversation) — a refusal keeps it and the composer shows
     /// the reason; a field edited meanwhile keeps its text too.
-    func attach(using onPasteData: (Data, String) async -> Bool) async {
+    public func attach(using onPasteData: (Data, String) async -> Bool) async {
         guard isIntact() else { return }
         if await onPasteData(Data(text.utf8), PasteClassifier.pastedTextName), isIntact() { remove() }
     }
 }
 
 /// The non-modal offer under a long text paste.
-struct LongPasteOffer: View {
+public struct LongPasteOffer: View {
     let characterCount: Int
     let onAttach: () -> Void
     let onKeep: () -> Void
 
-    var body: some View {
-        HStack(spacing: 8) {
+    public init(characterCount: Int, onAttach: @escaping () -> Void, onKeep: @escaping () -> Void) {
+        self.characterCount = characterCount
+        self.onAttach = onAttach
+        self.onKeep = onKeep
+    }
+
+    public var body: some View {
+        HStack(spacing: Spacing.regular) {
             Text("Long paste: \(characterCount.formatted()) characters")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -118,3 +125,4 @@ struct LongPasteOffer: View {
         }
     }
 }
+#endif

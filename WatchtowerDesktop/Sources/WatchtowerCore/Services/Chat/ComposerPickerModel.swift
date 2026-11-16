@@ -2,22 +2,6 @@ import Foundation
 import Observation
 import WatchtowerChatText
 
-package enum ComposerPickerKey: Sendable {
-    case up, down, accept, dismiss
-}
-
-/// What a key did: `consumed == false` lets the text view handle it (Enter
-/// sends, Esc stops); `edit` is a text change to apply with its caret.
-package struct ComposerKeyResult: Equatable, Sendable {
-    package let consumed: Bool
-    package let edit: ComposerEdit?
-
-    package init(consumed: Bool, edit: ComposerEdit?) {
-        self.consumed = consumed
-        self.edit = edit
-    }
-}
-
 package struct ComposerPickerItem: Equatable, Identifiable, Sendable {
     package let id: String
     package let icon: String
