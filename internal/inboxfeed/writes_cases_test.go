@@ -3,6 +3,7 @@ package inboxfeed
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -69,7 +70,15 @@ func callAct(t testing.TB, tw *tower.Tower, params json.RawMessage, o tower.Orig
 	return tw.Call(context.Background(), api.Request{V: api.EnvelopeVersion, ID: "1", Command: "inbox.act", Params: params}, o)
 }
 
-var socket = tower.Origin{Transport: "socket"}
+// socket is a call from the signed Watchtower Desktop over the socket;
+// unsigned is a call from any other process of the owner's.
+var (
+	socket   = tower.Origin{Transport: "socket", Desktop: func(context.Context) error { return nil }}
+	unsigned = tower.Origin{Transport: "socket", Desktop: func(context.Context) error {
+		return errors.New("not the signed Desktop")
+	}}
+	hub = tower.Origin{Transport: "hub"}
+)
 
 // fixtureDeps are the fixture's dependencies: a tools registry over d with
 // apply_track_action (a track's make_task).

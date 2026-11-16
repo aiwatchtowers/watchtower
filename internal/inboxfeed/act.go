@@ -132,6 +132,23 @@ func (a actor) refuse(code api.RefusalCode, reason string) error { return refuse
 
 func (a actor) unsupported() error { return a.refuse(api.CodeUnsupported, "") }
 
+// ownerGesture admits an AGENT-07 owner gesture (the twin of a CLI verb
+// refused under agent markers and run only on the Desktop's confirmation):
+// over the socket only from the signed Watchtower Desktop (Origin.Desktop,
+// ownerconfirm's code-signature check of the peer), so another process of
+// the owner's — an agent in a terminal, an automation's child — cannot
+// approve its own proposal through the tower. The hub's caller is the
+// owner's linked phone, admitted by its grants (ActGrant).
+func (a actor) ownerGesture(ctx context.Context) error {
+	if a.c.Origin.Transport == "hub" {
+		return nil
+	}
+	if d := a.c.Origin.Desktop; d != nil && d(ctx) == nil {
+		return nil
+	}
+	return a.refuse(api.CodeNotPermitted, reasonOwnerDesktop)
+}
+
 func (a actor) now() time.Time {
 	if a.deps.Clock != nil {
 		return a.deps.Clock()
@@ -289,6 +306,10 @@ func (a actor) stampOutput(ctx context.Context, id int64, stamp outputStamp) (ap
 // press is a card button's press: a Reply queues the automation's reply run
 // (PressInboxOutputAction), a target proposes its create_target row.
 func (a actor) press(ctx context.Context, outputID int64, index int) (api.ActResult, error) {
+	// `automations reply` and `actions propose` are AGENT-07 gestures.
+	if err := a.ownerGesture(ctx); err != nil {
+		return api.ActResult{}, err
+	}
 	o, err := a.c.DB.GetAutomationOutput(outputID)
 	if errors.Is(err, db.ErrOutputNotFound) || (err == nil && o.Kind != "inbox") {
 		return api.ActResult{}, a.refuse(api.CodeNotFound, "")
@@ -508,6 +529,10 @@ func (a actor) refTrack(ctx context.Context, id64 int64) (api.ActResult, error) 
 	if verb != api.RefDone && verb != api.RefStop && verb != api.RefRestore {
 		return api.ActResult{}, a.unsupported()
 	}
+	bound, err := a.boundRecipeGate(ctx, id, verb)
+	if err != nil {
+		return api.ActResult{}, err
+	}
 	return a.write(ctx, func(tx *sql.Tx) (api.ActResult, error) {
 		var dismissedAt, origin string
 		var read, hasUpdates, unreadEvents, enabled bool
@@ -523,6 +548,10 @@ func (a actor) refTrack(ctx context.Context, id64 int64) (api.ActResult, error) 
 			return api.ActResult{}, err
 		}
 		custom := origin == "custom"
+		if (verb == api.RefStop || verb == api.RefRestore) && custom && automationID.Valid != bound {
+			// Bound or unbound since the gate read it: look again.
+			return api.ActResult{}, a.refuse(api.CodeChanged, "")
+		}
 		switch verb {
 		case api.RefDone:
 			if read && !hasUpdates && !unreadEvents {
@@ -562,6 +591,35 @@ func (a actor) refTrack(ctx context.Context, id64 int64) (api.ActResult, error) 
 	})
 }
 
+// boundRecipeGate is the gate of Stop and Restore on a custom track bound
+// to a watch recipe, which turn the recipe off and on: from the hub they are
+// not permitted (ask #1349: turning automations on or off stays on the Mac);
+// Restore turns it on, `automations enable`'s AGENT-07 gesture, so over the
+// socket it is the signed Desktop's only. It reports whether the track is
+// bound; the write checks that again in its transaction. Read before the
+// transaction: the Desktop check runs codesign.
+func (a actor) boundRecipeGate(ctx context.Context, id int, verb api.RefVerb) (bool, error) {
+	if verb != api.RefStop && verb != api.RefRestore {
+		return false, nil
+	}
+	var bound bool
+	err := a.c.DB.QueryRowContext(ctx, `SELECT origin = 'custom' AND automation_id IS NOT NULL FROM tracks WHERE id = ?`,
+		id).Scan(&bound)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && !bound) {
+		return false, nil // the write answers not_found, or acts unbound
+	}
+	if err != nil {
+		return false, err
+	}
+	if a.c.Origin.Transport == "hub" {
+		return true, a.refuse(api.CodeNotPermitted, reasonOnTheMac)
+	}
+	if verb == api.RefRestore {
+		return true, a.ownerGesture(ctx)
+	}
+	return true, nil
+}
+
 // setCollecting turns a custom track's collection on or off: through its
 // watch recipe when one is bound (RecipeCustomTrackControls: `automations
 // enable|disable`, mirrored into tracks.enabled by its trigger), else the
@@ -574,13 +632,31 @@ func (a actor) setCollecting(tx *sql.Tx, id int, automationID sql.NullInt64, on 
 }
 
 // makeTask is TrackActionPress: apply_track_action proposed on the inbox
-// surface and approved and applied in the same press. ref_id is the track
-// event id, as TrackActionPress sends it (the event names its own change).
+// surface and approved and applied in the same press. ref_id is the track,
+// as for every track verb, and event_id the event whose change it applies
+// (TrackActionPress's id); an event of another track is not_found.
 // A change already applied, by an earlier press or a racing one, is already.
-func (a actor) makeTask(ctx context.Context, eventID int64) (api.ActResult, error) {
+func (a actor) makeTask(ctx context.Context, trackID int64) (api.ActResult, error) {
+	eventID := a.req.Params.EventID
+	if eventID <= 0 {
+		return api.ActResult{}, a.unsupported()
+	}
+	// `actions propose --approve`: an AGENT-07 gesture.
+	if err := a.ownerGesture(ctx); err != nil {
+		return api.ActResult{}, err
+	}
 	reg := a.deps.Registry
 	if reg == nil {
 		return api.ActResult{}, a.refuse(api.CodeUnsupported, reasonNoService)
+	}
+	var owner int64
+	err := a.c.DB.QueryRowContext(ctx, `SELECT track_id FROM track_events WHERE id = ?`, eventID).Scan(&owner)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && owner != trackID) {
+		// Not this track's event: never another track's change.
+		return api.ActResult{}, a.refuse(api.CodeNotFound, "")
+	}
+	if err != nil {
+		return api.ActResult{}, err
 	}
 	ev := strconv.FormatInt(eventID, 10)
 	rc, err := reg.Propose(ctx, "apply_track_action", json.RawMessage(`{"event_id":`+ev+`}`), tools.Binding{
@@ -738,6 +814,10 @@ func (a actor) replyPropose(ctx context.Context, kind string, num int64) (api.Ac
 	text := strings.TrimSpace(p.Text)
 	if p.RefKind != api.RefInboxItem || p.RefID <= 0 || text == "" {
 		return api.ActResult{}, a.unsupported()
+	}
+	// A row's Reply is `actions propose`, an AGENT-07 gesture.
+	if err := a.ownerGesture(ctx); err != nil {
+		return api.ActResult{}, err
 	}
 	if a.deps.Registry == nil {
 		return api.ActResult{}, a.refuse(api.CodeUnsupported, reasonNoService)

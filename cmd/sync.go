@@ -44,6 +44,7 @@ import (
 	"watchtower/internal/llmusage"
 	"watchtower/internal/logredact"
 	"watchtower/internal/media"
+	"watchtower/internal/ownerconfirm"
 	"watchtower/internal/powerstate"
 	"watchtower/internal/prompts"
 	watchtowerslack "watchtower/internal/slack"
@@ -1074,6 +1075,9 @@ func serveTower(ctx context.Context, ws string, database *db.DB, noSync bool,
 		Workspace: ws,
 		NoSync:    noSync,
 		Changes:   tower.NewChanges(database, tower.PollInterval),
+		// AGENT-07 over the socket: an owner gesture is the signed
+		// Desktop's only, checked as owner-confirm.sock's peer is.
+		VerifyDesktop: ownerconfirm.VerifyDesktop,
 		// A fault's own text goes to the log; the owner reads a sentence.
 		Sentence: func(command string, err error) string {
 			logger.Printf("tower: %s: %v", command, err)

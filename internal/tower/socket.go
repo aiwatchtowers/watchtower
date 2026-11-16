@@ -19,6 +19,7 @@ import (
 
 	"watchtower/internal/fsutil"
 	"watchtower/internal/hub/platform"
+	"watchtower/internal/ownerconfirm"
 	"watchtower/internal/tower/api"
 )
 
@@ -51,6 +52,10 @@ var peerUID = func(c net.Conn) (int, error) {
 	}
 	return platform.PeerUID(uc)
 }
+
+// peerPID is the pid at the other end of a connection (LOCAL_PEERPID,
+// ownerconfirm's own read); a test replaces it.
+var peerPID = ownerconfirm.PeerPID
 
 // SocketPath is where the daemon of workspace serves the tower:
 // <workspace>/tower.sock when that fits sun_path (SunPathMax), else
@@ -271,6 +276,7 @@ func readFrame(r *bufio.Reader) ([]byte, error) {
 func (s *server) serveConn(c net.Conn) {
 	defer func() { _ = c.Close() }()
 	w := &frameWriter{c: c}
+	origin := Origin{Transport: "socket", Desktop: s.desktopCheck(c)}
 	var (
 		calls   sync.WaitGroup
 		watches []func()
@@ -317,8 +323,37 @@ func (s *server) serveConn(c net.Conn) {
 		go func() {
 			defer calls.Done()
 			defer func() { <-slots }()
-			w.write(s.t.Call(s.ctx, req, Origin{Transport: "socket"}))
+			w.write(s.t.Call(s.ctx, req, origin))
 		}()
+	}
+}
+
+// errNoDesktopCheck: the tower has no VerifyDesktop, so no peer is the
+// Desktop.
+var errNoDesktopCheck = errors.New("tower: this tower checks no Desktop signature")
+
+// desktopCheck is the connection's Origin.Desktop: its peer pid
+// (peerPID) checked once, on the first owner gesture, against
+// Options.VerifyDesktop, and the answer kept for the connection.
+func (s *server) desktopCheck(c net.Conn) func(context.Context) error {
+	var (
+		once sync.Once
+		err  error
+	)
+	return func(ctx context.Context) error {
+		once.Do(func() {
+			verify := s.t.opts.VerifyDesktop
+			if verify == nil {
+				err = errNoDesktopCheck
+				return
+			}
+			var pid int
+			if pid, err = peerPID(c); err != nil {
+				return
+			}
+			err = verify(ctx, pid)
+		})
+		return err
 	}
 }
 

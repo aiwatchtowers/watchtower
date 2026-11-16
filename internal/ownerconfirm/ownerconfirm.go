@@ -114,7 +114,7 @@ func Ask(ctx context.Context, socketPath string, req Request) (Reply, error) {
 		return Reply{}, fmt.Errorf("%w: %v", ErrNoDesktop, err)
 	}
 	defer func() { _ = conn.Close() }()
-	pid, err := peerPID(conn)
+	pid, err := PeerPID(conn)
 	if err != nil {
 		return Reply{}, fmt.Errorf("%w: %v", ErrUntrustedPeer, err)
 	}

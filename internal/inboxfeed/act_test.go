@@ -464,7 +464,7 @@ func TestInboxAct_MakeTaskAppliesTheEventChange(t *testing.T) {
 			VALUES (2, 1, 'Done', '2026-11-16T09:00:00Z', '{"type":"update_status","status":"done"}', 'pending')`,
 	})
 	tw := actTower(d, actNow, fixtureDeps(t, d))
-	p := api.ActParams{RefKind: api.RefTrack, RefID: 2, RefVerb: api.RefMakeTask}
+	p := api.ActParams{RefKind: api.RefTrack, RefID: 1, RefVerb: api.RefMakeTask, EventID: 2}
 	if res := actResult(t, callAct(t, tw, actParams(t, "tracks", api.ActRef, p), socket)); res.Already || res.Status != "applied" {
 		t.Fatalf("first press %+v, want applied", res)
 	}

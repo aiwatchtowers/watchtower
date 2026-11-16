@@ -48,9 +48,18 @@ const (
 	reasonReplyWaiting = "a reply already waits in Needs approval."
 	reasonNotPermitted = "edit this proposal on the Mac."
 	reasonUnsupported  = "this card doesn't offer that here."
-	reasonNoService    = "Watchtower can't do that here — update the app."
-	reasonBusy         = "the database is busy."
-	reasonFault        = "something went wrong on the Mac — try again."
+	reasonNoService    = "this Watchtower can't do that here — update the app."
+	// reasonOwnerDesktop refuses an AGENT-07 gesture over the socket from
+	// any peer but the signed Watchtower Desktop.
+	reasonOwnerDesktop = "the owner decides in Watchtower Desktop."
+	// reasonOnTheMac refuses, from the phone, what stays on the Mac (ask
+	// #1349: turning automations on or off).
+	reasonOnTheMac = "this is done on the Mac."
+	// noteWatchOnMac is the note of a create_track approved from the phone:
+	// its watch is started from the Mac.
+	noteWatchOnMac = "Start watching it from your Mac."
+	reasonBusy     = "the database is busy."
+	reasonFault    = "something went wrong on the Mac — try again."
 	// sentenceArgsChanged is the whole args_changed sentence (mockup §6).
 	sentenceArgsChanged = "This proposal changed on the Mac — look again before approving."
 )

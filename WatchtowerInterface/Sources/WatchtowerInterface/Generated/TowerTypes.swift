@@ -9,6 +9,7 @@ public struct ActParams: Codable, Hashable, Sendable {
     public var refKind: RefKind?
     public var refID: Int64?
     public var refVerb: RefVerb?
+    public var eventID: Int64?
     public var until: String?
     public var approvalVerb: ApprovalVerb?
     public var argsSHA256: String?
@@ -21,6 +22,7 @@ public struct ActParams: Codable, Hashable, Sendable {
         refKind: RefKind? = nil,
         refID: Int64? = nil,
         refVerb: RefVerb? = nil,
+        eventID: Int64? = nil,
         until: String? = nil,
         approvalVerb: ApprovalVerb? = nil,
         argsSHA256: String? = nil,
@@ -32,6 +34,7 @@ public struct ActParams: Codable, Hashable, Sendable {
         self.refKind = refKind
         self.refID = refID
         self.refVerb = refVerb
+        self.eventID = eventID
         self.until = until
         self.approvalVerb = approvalVerb
         self.argsSHA256 = argsSHA256
@@ -45,6 +48,7 @@ public struct ActParams: Codable, Hashable, Sendable {
         case refKind = "ref_kind"
         case refID = "ref_id"
         case refVerb = "ref_verb"
+        case eventID = "event_id"
         case until
         case approvalVerb = "approval_verb"
         case argsSHA256 = "args_sha256"
@@ -83,17 +87,20 @@ public struct ActResult: Codable, Hashable, Sendable {
     public var status: String?
     public var error: String?
     public var runID: Int64?
+    public var note: String?
 
     public init(
         already: Bool? = nil,
         status: String? = nil,
         error: String? = nil,
-        runID: Int64? = nil
+        runID: Int64? = nil,
+        note: String? = nil
     ) {
         self.already = already
         self.status = status
         self.error = error
         self.runID = runID
+        self.note = note
     }
 
     enum CodingKeys: String, CodingKey {
@@ -101,6 +108,7 @@ public struct ActResult: Codable, Hashable, Sendable {
         case status
         case error
         case runID = "run_id"
+        case note
     }
 }
 

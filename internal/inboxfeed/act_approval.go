@@ -39,6 +39,14 @@ func (a actor) approval(ctx context.Context, id int64) (api.ActResult, error) {
 	}
 	hub := a.c.Origin.Transport == "hub"
 	switch v := a.req.Params.ApprovalVerb; v {
+	case api.ApprovalApprove, api.ApprovalRetry, api.ApprovalDismiss:
+		// `actions approve|apply|dismiss` are AGENT-07 gestures.
+		if err := a.ownerGesture(ctx); err != nil {
+			return api.ActResult{}, err
+		}
+	default:
+	}
+	switch v := a.req.Params.ApprovalVerb; v {
 	case api.ApprovalApprove, api.ApprovalRetry:
 		if hub && len(a.req.Params.Patch) > 0 {
 			// The Mac's Edit… only: the phone approves what it drew.
@@ -101,7 +109,7 @@ func (a actor) approve(ctx context.Context, reg *tools.Registry, id int64, hub b
 		// Its chat session claims it (mayApplyHere): approved, run there.
 		return api.ActResult{Status: statusApplying}, nil
 	}
-	return a.runTool(ctx, reg, id, hub), nil
+	return a.runTool(ctx, reg, row, hub), nil
 }
 
 // decided answers a decision on a row that is no longer pending: approved
@@ -152,7 +160,7 @@ func (a actor) retry(ctx context.Context, reg *tools.Registry, id int64, hub boo
 	default:
 		return api.ActResult{}, a.refuse(api.CodeChanged, "")
 	}
-	return a.runTool(ctx, reg, id, hub), nil
+	return a.runTool(ctx, reg, row, hub), nil
 }
 
 // stuck is an Inbox target button's row executing past targetStuckAfter
@@ -170,7 +178,13 @@ func (a actor) stuck(row *db.AgentAction) bool {
 // call answers applying; over the socket the call waits up to
 // ApproveWaitCap and answers the row's state, or applying when the tool
 // is still running.
-func (a actor) runTool(ctx context.Context, reg *tools.Registry, id int64, hub bool) api.ActResult {
+//
+// An applied create_track's watch starts here only over the socket (the
+// signed Desktop's press): from the hub the tool applies, and the answer's
+// note says the watch starts from the Mac (ask #1349: turning automations on
+// stays on the Mac).
+func (a actor) runTool(ctx context.Context, reg *tools.Registry, row *db.AgentAction, hub bool) api.ActResult {
+	id := row.ID
 	// The tool outlives the call: its context is not the call's.
 	runCtx := context.WithoutCancel(ctx)
 	apply := func() api.ActResult {
@@ -182,18 +196,21 @@ func (a actor) runTool(ctx context.Context, reg *tools.Registry, id int64, hub b
 			}
 		}
 		res := api.ActResult{Status: actionStatus(row), Error: row.Error}
+		if hub {
+			return res
+		}
 		if err := a.startWatchingIfTrack(runCtx, row); err != nil {
 			res.Error = notWatchedPrefix + err.Error()
 		}
 		return res
 	}
 	if hub {
-		a.deps.Background(func() {
-			if res := apply(); res.Error != "" {
-				log.Printf("inbox.act: action %d: %s", id, res.Error)
-			}
-		})
-		return api.ActResult{Status: statusApplying}
+		a.deps.Background(func() { logOutcome(id, apply(), "") })
+		res := api.ActResult{Status: statusApplying}
+		if row.Tool == "create_track" {
+			res.Note = noteWatchOnMac
+		}
+		return res
 	}
 	done := make(chan api.ActResult, 1)
 	go func() { done <- apply() }()
@@ -203,7 +220,20 @@ func (a actor) runTool(ctx context.Context, reg *tools.Registry, id int64, hub b
 	case res := <-done:
 		return res
 	case <-timer.C:
+		// The answer has gone: the outcome is logged when it comes. The row
+		// itself carries applied or failed with its error to the next feed;
+		// a watch that did not start leaves its track unwatched, which the
+		// Mac's track card shows with Start Watching.
+		go func() { logOutcome(id, <-done, " after the 120 s wait") }()
 		return api.ActResult{Status: statusApplying}
+	}
+}
+
+// logOutcome logs an approve's outcome that no answer carries: a failure or
+// a watch that did not start (its class, not its args).
+func logOutcome(id int64, res api.ActResult, when string) {
+	if res.Error != "" || res.Status == statusFailed {
+		log.Printf("inbox.act: action %d finished%s: %s: %s", id, when, res.Status, res.Error)
 	}
 }
 
