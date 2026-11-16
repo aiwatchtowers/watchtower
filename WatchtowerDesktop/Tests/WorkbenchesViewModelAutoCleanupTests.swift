@@ -1028,8 +1028,6 @@ private struct WriteRefusedError: LocalizedError {
     var errorDescription: String? { "database is locked" }
 }
 
-/// A write held until `open()`.
-@MainActor
 /// Counts a seam's calls; `next` returns the call's number from 1.
 private final class WriteCounter: @unchecked Sendable {
     private let lock = NSLock()
@@ -1045,6 +1043,8 @@ private final class WriteCounter: @unchecked Sendable {
     }
 }
 
+/// A write held until `open()`.
+@MainActor
 private final class WriteGate: @unchecked Sendable {
     private var waiting: [CheckedContinuation<Void, Never>] = []
     private var isOpen = false
