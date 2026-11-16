@@ -78,22 +78,74 @@ func desktopRequirement(team string) string {
 // teamOf is the Team ID in pid's code signature, "" when it has none
 // (unsigned or ad-hoc).
 func teamOf(ctx context.Context, pid int) (string, error) {
+	sig, err := signatureOf(ctx, pid)
+	return sig.team, err
+}
+
+// signature is what codesign -d reports of a running process: its Team ID
+// ("" when unsigned or ad-hoc) and its executable's path.
+type signature struct {
+	team, executable string
+}
+
+// signatureOf reads pid's code signature (codesign's view of the running
+// process).
+func signatureOf(ctx context.Context, pid int) (signature, error) {
 	out, err := codesign(ctx, "-d", "--verbose=2", strconv.Itoa(pid))
 	if err != nil {
 		if strings.Contains(out, "not signed") {
-			return "", nil
+			return signature{}, nil
 		}
-		return "", fmt.Errorf("reading this binary's signature: %w", err)
+		return signature{}, fmt.Errorf("reading process %d's signature: %w", pid, err)
 	}
+	var sig signature
 	for _, line := range strings.Split(out, "\n") {
-		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "TeamIdentifier="); ok {
-			if teamIDPattern.MatchString(v) {
-				return v, nil
-			}
-			return "", nil // "not set"
+		line = strings.TrimSpace(line)
+		if v, ok := strings.CutPrefix(line, "TeamIdentifier="); ok && teamIDPattern.MatchString(v) {
+			sig.team = v // "not set" stays ""
+		}
+		if v, ok := strings.CutPrefix(line, "Executable="); ok {
+			sig.executable = v
 		}
 	}
-	return "", nil
+	return sig, nil
+}
+
+// ErrNotSameCLI is VerifySameTeamCLI's error for a peer that is not this
+// CLI's build.
+var ErrNotSameCLI = errors.New("the process is not a watchtower binary of this build's team")
+
+// VerifySameTeamCLI checks that pid runs a binary signed by this CLI's own
+// Team ID (the chat socket lets such a peer — `watchtower sync stop` — ask
+// for the chat's shutdown, D17). A development CLI (no Team ID) accepts only
+// a process running its own executable file, by the path codesign reports
+// for both. Like VerifyDesktop the peer is named by pid, with the same known
+// gap.
+func VerifySameTeamCLI(ctx context.Context, pid int) error {
+	own, err := signatureOf(ctx, os.Getpid())
+	if err != nil {
+		return err
+	}
+	if own.team == "" {
+		peer, err := signatureOf(ctx, pid)
+		if err != nil {
+			return err
+		}
+		if own.executable == "" || peer.executable != own.executable {
+			return fmt.Errorf("%w: process %d runs another executable than this development build", ErrNotSameCLI, pid)
+		}
+		return nil
+	}
+	req := teamRequirement(own.team)
+	if _, err := codesign(ctx, "-v", "-R", req, strconv.Itoa(pid)); err != nil {
+		return fmt.Errorf("%w: process %d does not satisfy %s: %v", ErrNotSameCLI, pid, req, err)
+	}
+	return nil
+}
+
+// teamRequirement is the code requirement of any binary of team.
+func teamRequirement(team string) string {
+	return fmt.Sprintf(`=anchor apple generic and certificate leaf[subject.OU] = "%s"`, team)
 }
 
 // codesign runs the tool and returns its combined output (it reports on
