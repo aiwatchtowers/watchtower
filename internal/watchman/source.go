@@ -55,7 +55,8 @@ type SkipCounter interface {
 	Skipped() int
 }
 
-// skips is the SkipCounter the database sources embed.
+// skips is the SkipCounter the database sources embed. The count is per
+// source instance and not synchronised: one goroutine drives an instance.
 type skips struct{ n int }
 
 func (s *skips) Skipped() int { return s.n }
@@ -112,7 +113,9 @@ func decodeMark(s string) (*db.WatchmanMark, error) {
 		return nil, nil
 	}
 	parts := strings.SplitN(s, ",", 3)
-	if len(parts) < 2 || parts[0] == "" {
+	// An empty decided_at is a valid mark: an unstamped row (At "") sorts
+	// before every stamp and may become hi or lo.
+	if len(parts) < 2 {
 		return nil, fmt.Errorf("watchman cursor mark %q: want decided_at,id", s)
 	}
 	id, err := strconv.ParseInt(parts[1], 10, 64)
