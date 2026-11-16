@@ -69,10 +69,30 @@ func (c *Compose) empty() bool {
 // ComposeOwnerText is the stored (and sent) owner text of a send: the quote
 // batch with the typed text as its note (ChatQuoteReply.compose ?? typed),
 // then the skill line and the REFERENCED line around it
-// (ChatTurnComposer.compose). The shared fixture
+// (ChatTurnComposer.compose) with only the mentions still in the text
+// (liveMentions). The shared fixture
 // internal/chatengine/testdata/compose_cases.json pins it to the Swift twin.
 func ComposeOwnerText(text string, c Compose) string {
-	return composeTurn(quotedText(text, c.Quotes), c.Skill, c.Mentions)
+	quoted := quotedText(text, c.Quotes)
+	return composeTurn(quoted, c.Skill, liveMentions(quoted, c.Mentions))
+}
+
+// liveMentions is MentionTokenizer.liveMentions: the picked mentions whose
+// `@Label` is still in the text, in pick order, one per `<kind>:<id>`. The
+// client sends every mention it picked; one the owner deleted from the text
+// is never composed.
+func liveMentions(text string, mentions []Mention) []Mention {
+	var out []Mention
+	seen := map[string]bool{}
+	for _, m := range mentions {
+		token := m.Kind + ":" + m.ID
+		if !strings.Contains(text, "@"+sanitizeLabel(m.Label)) || seen[token] {
+			continue
+		}
+		seen[token] = true
+		out = append(out, m)
+	}
+	return out
 }
 
 // QuoteBatchHeader is ChatQuoteReply.batchHeader.

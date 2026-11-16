@@ -311,7 +311,21 @@ func TestChatengine_ProjectWrites(t *testing.T) {
 
 	file := filepath.Join(t.TempDir(), "brief.md")
 	require.NoError(t, os.WriteFile(file, []byte("# Brief"), 0o600))
-	fid, err := g.r.ManageProject(ctx, ProjectRequest{Op: ProjectFileAdd, ID: &pid, Path: file})
+	for _, kind := range []string{"phone", ""} {
+		_, err = g.r.Do(ctx, "project_manage", json.RawMessage(`{"op":"file_add","project_id":`+itoa(p)+`,"path":`+mustJSON(file)+`}`),
+			Client{Kind: kind})
+		assert.Equal(t, "forbidden", ErrorCode(err), "only the Mac names a path (%q)", kind)
+	}
+	require.NoError(t, g.d.QueryRow(`SELECT COUNT(*) FROM chat_attachments WHERE project_id = ?`, p).Scan(&n))
+	assert.Equal(t, 0, n)
+	out, err := g.r.Do(ctx, "project_manage", json.RawMessage(`{"op":"file_add","project_id":`+itoa(p)+`,"path":`+mustJSON(file)+`}`),
+		Client{Kind: "mac"})
+	require.NoError(t, err)
+	var res struct {
+		ID int64 `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal(out, &res))
+	fid := res.ID
 	require.NoError(t, err)
 	var stored string
 	require.NoError(t, g.d.QueryRow(`SELECT path FROM chat_attachments WHERE id = ? AND project_id = ?`, fid, p).Scan(&stored))
@@ -491,8 +505,11 @@ func TestChatengine_AttachRefusesMissingAndOversize(t *testing.T) {
 
 	good := filepath.Join(dir, "notes.md")
 	require.NoError(t, os.WriteFile(good, []byte("# notes"), 0o644))
-	_, err = g.r.Do(ctx, "attach", json.RawMessage(`{"conversation_id":`+itoa(c)+`,"path":`+mustJSON(good)+`}`), Client{Kind: "phone"})
-	assert.Equal(t, "forbidden", ErrorCode(err), "the phone never names a path")
+	for _, kind := range []string{"phone", ""} {
+		_, err = g.r.Do(ctx, "attach", json.RawMessage(`{"conversation_id":`+itoa(c)+`,"path":`+mustJSON(good)+`}`), Client{Kind: kind})
+		assert.Equal(t, "forbidden", ErrorCode(err), "only the Mac names a path (%q)", kind)
+	}
+	assert.Equal(t, 0, attachRows(t, g.d))
 	id, err := g.r.AttachPath(ctx, c, good)
 	require.NoError(t, err)
 	var path, name string

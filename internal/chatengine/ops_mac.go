@@ -42,7 +42,7 @@ func (e *Engine) opSkillsList(ctx context.Context, _ json.RawMessage, _ Client) 
 	return map[string]any{"skills": list}, nil
 }
 
-func (e *Engine) opProjectManage(ctx context.Context, params json.RawMessage, _ Client) (any, error) {
+func (e *Engine) opProjectManage(ctx context.Context, params json.RawMessage, c Client) (any, error) {
 	var p struct {
 		Op           string          `json:"op"`
 		ProjectID    *int64          `json:"project_id"`
@@ -55,6 +55,9 @@ func (e *Engine) opProjectManage(ctx context.Context, params json.RawMessage, _ 
 	}
 	if err := decode(params, &p); err != nil {
 		return nil, err
+	}
+	if p.Op == ProjectFileAdd && !readsPaths(c) {
+		return nil, ErrForbidden
 	}
 	id, err := e.ManageProject(ctx, ProjectRequest{Op: p.Op, ID: p.ProjectID, Name: p.Name, Instructions: p.Instructions,
 		Sources: p.Sources, SourceID: p.SourceID, FileID: p.FileID, Path: p.Path})
@@ -87,10 +90,15 @@ func (e *Engine) opArtifactManage(ctx context.Context, params json.RawMessage, _
 	return map[string]int64{"id": id}, nil
 }
 
-// opAttach is the Mac's form: a path the app holds. The phone's sealed
-// upload reaches AttachBytes through the hub, never a path.
+// readsPaths: c may name a file on this Mac for the engine to read — only
+// the Mac app, which holds the file the owner picked. Every other client
+// (the phone's sealed upload goes through the hub to AttachBytes) is
+// refused, so no op reads an arbitrary path for it.
+func readsPaths(c Client) bool { return c.Kind == "mac" }
+
+// opAttach is the Mac's form: a path the app holds (readsPaths).
 func (e *Engine) opAttach(ctx context.Context, params json.RawMessage, c Client) (any, error) {
-	if c.Kind == "phone" {
+	if !readsPaths(c) {
 		return nil, ErrForbidden
 	}
 	var p struct {

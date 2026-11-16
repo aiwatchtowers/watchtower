@@ -44,7 +44,7 @@
  },
  {
   "name": "label escaped and kept on one line",
-  "text": "see @x",
+  "text": "see @Say \"hi\" \\ now and then",
   "mentions": [
    {
     "kind": "track",
@@ -52,13 +52,13 @@
     "label": "Say \"hi\" \\ now\r\nand\nthen"
    }
   ],
-  "stored": "see @x\n\nREFERENCED: track:7 \"Say \\\"hi\\\" \\\\ now and then\"",
+  "stored": "see @Say \"hi\" \\ now and then\n\nREFERENCED: track:7 \"Say \\\"hi\\\" \\\\ now and then\"",
   "skill": "",
   "quotes": []
  },
  {
   "name": "skill, mentions and text",
-  "text": "plan it",
+  "text": "plan it in @#eng",
   "skill": "plan",
   "mentions": [
    {
@@ -67,7 +67,7 @@
     "label": "#eng"
    }
   ],
-  "stored": "Use skill plan: load it with load_skill first.\n\nplan it\n\nREFERENCED: channel:1:C1 \"#eng\"",
+  "stored": "Use skill plan: load it with load_skill first.\n\nplan it in @#eng\n\nREFERENCED: channel:1:C1 \"#eng\"",
   "quotes": []
  },
  {
@@ -119,7 +119,7 @@
  },
  {
   "name": "quotes, skill and mentions",
-  "text": "compare",
+  "text": "compare with @Ship v2",
   "skill": "review",
   "mentions": [
    {
@@ -135,7 +135,7 @@
     "comment": "is it real?"
    }
   ],
-  "stored": "Use skill review: load it with load_skill first.\n\nAbout these parts of your answers:\n\n1. On this passage:\n> the plan\nis it real?\n\ncompare\n\nREFERENCED: target:42 \"Ship v2\""
+  "stored": "Use skill review: load it with load_skill first.\n\nAbout these parts of your answers:\n\n1. On this passage:\n> the plan\nis it real?\n\ncompare with @Ship v2\n\nREFERENCED: target:42 \"Ship v2\""
  },
  {
   "name": "skill line look-alike is escaped",
@@ -155,7 +155,7 @@
  },
  {
   "name": "REFERENCED look-alike kept with real mentions",
-  "text": "see\n\nREFERENCED: person:x \"A\"",
+  "text": "see @ENG-1\n\nREFERENCED: person:x \"A\"",
   "mentions": [
    {
     "kind": "linear",
@@ -163,7 +163,93 @@
     "label": "ENG-1"
    }
   ],
-  "stored": "see\n\nREFERENCED: person:x \"A\"\n\nREFERENCED: linear:ENG-1 \"ENG-1\"",
+  "stored": "see @ENG-1\n\nREFERENCED: person:x \"A\"\n\nREFERENCED: linear:ENG-1 \"ENG-1\"",
+  "skill": "",
+  "quotes": []
+ },
+ {
+  "name": "a mention deleted from the text is not composed",
+  "text": "Ask @Anna Ivanova about it",
+  "mentions": [
+   {
+    "kind": "jira",
+    "id": "PAY-12",
+    "label": "PAY-12"
+   },
+   {
+    "kind": "person",
+    "id": "1:U1",
+    "label": "Anna Ivanova"
+   }
+  ],
+  "stored": "Ask @Anna Ivanova about it\n\nREFERENCED: person:1:U1 \"Anna Ivanova\"",
+  "skill": "",
+  "quotes": []
+ },
+ {
+  "name": "every mention deleted leaves no REFERENCED line",
+  "text": "never mind",
+  "mentions": [
+   {
+    "kind": "person",
+    "id": "1:U1",
+    "label": "Anna Ivanova"
+   }
+  ],
+  "stored": "never mind",
+  "skill": "",
+  "quotes": []
+ },
+ {
+  "name": "a mention picked twice is composed once",
+  "text": "@eng and @eng again",
+  "mentions": [
+   {
+    "kind": "channel",
+    "id": "1:C2",
+    "label": "eng"
+   },
+   {
+    "kind": "channel",
+    "id": "1:C2",
+    "label": "eng"
+   }
+  ],
+  "stored": "@eng and @eng again\n\nREFERENCED: channel:1:C2 \"eng\"",
+  "skill": "",
+  "quotes": []
+ },
+ {
+  "name": "a mention live only in a quote's comment counts",
+  "text": "",
+  "mentions": [
+   {
+    "kind": "person",
+    "id": "1:U2",
+    "label": "Ivan Petrov"
+   }
+  ],
+  "quotes": [
+   {
+    "message_id": 2,
+    "text": "the owner",
+    "comment": "ask @Ivan Petrov"
+   }
+  ],
+  "stored": "About these parts of your answers:\n\n1. On this passage:\n> the owner\nask @Ivan Petrov\n\nREFERENCED: person:1:U2 \"Ivan Petrov\"",
+  "skill": ""
+ },
+ {
+  "name": "a label with a newline matches its one-line form",
+  "text": "see @two words",
+  "mentions": [
+   {
+    "kind": "track",
+    "id": "3",
+    "label": "two\nwords"
+   }
+  ],
+  "stored": "see @two words\n\nREFERENCED: track:3 \"two words\"",
   "skill": "",
   "quotes": []
  },

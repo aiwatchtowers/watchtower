@@ -4,9 +4,9 @@ import WatchtowerChatText
 
 /// `internal/chatengine/testdata/compose_cases.json` pins Go's
 /// `chatengine.ComposeOwnerText` (and the artifact comment message) to the
-/// Swift composer the Mac sends with today: `ChatQuoteReply.compose` then
-/// `ChatTurnComposer.compose`, or `ArtifactCommentMessage.compose` (dual
-/// path, pinned from both sides).
+/// Swift composer the Mac sends with today: `ChatQuoteReply.compose`,
+/// `MentionTokenizer.liveMentions`, then `ChatTurnComposer.compose`, or
+/// `ArtifactCommentMessage.compose` (dual path, pinned from both sides).
 final class ComposeFixtureTests: XCTestCase {
     private struct Mention: Decodable {
         let kind: String
@@ -81,7 +81,9 @@ final class ComposeFixtureTests: XCTestCase {
                     MentionCandidate(kind: try XCTUnwrap(MentionCandidate.Kind(rawValue: $0.kind)),
                                      ref: $0.id, label: $0.label, detail: "")
                 }
-                got = ChatTurnComposer.compose(text: text, skill: c.skill.isEmpty ? nil : c.skill, mentions: mentions)
+                // `ChatViewModel.send`: only the mentions still in the text.
+                let live = MentionTokenizer.liveMentions(text: text, mentions: mentions)
+                got = ChatTurnComposer.compose(text: text, skill: c.skill.isEmpty ? nil : c.skill, mentions: live)
             }
             XCTAssertEqual(got, c.stored, c.name)
         }

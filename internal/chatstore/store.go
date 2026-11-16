@@ -201,7 +201,7 @@ func (s *Store) Start(ctx context.Context, r StartRequest) (Started, error) {
 	// A send's owner text: the quote batch, then the skill and REFERENCED
 	// lines (ComposeOwnerText); the prefix title takes the quoted text.
 	quoted := quotedText(r.Text, compose.Quotes)
-	composed := composeTurn(quoted, compose.Skill, compose.Mentions)
+	composed := composeTurn(quoted, compose.Skill, liveMentions(quoted, compose.Mentions))
 	if err := validateStart(r, text, composed); err != nil {
 		return Started{}, err
 	}
