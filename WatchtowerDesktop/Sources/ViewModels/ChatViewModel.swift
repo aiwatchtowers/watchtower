@@ -270,14 +270,29 @@ final class ChatViewModel {
     /// Cleared at the start of every new turn.
     @ObservationIgnored private var dismissedArtifactKeys: Set<String> = []
 
-    /// An owner turn is waiting for its `started` (its rows are being
-    /// written by the session): the composer's send is refused meanwhile, so
-    /// one Enter never sends twice.
-    private(set) var isStartingTurn = false
-    /// The owner's message shown at once from the draft while its turn waits
+    /// A send is being handed to its session (its chat made first on the
+    /// landing): milliseconds, never the wait for `started`.
+    private var isHandingTurn = false
+    /// Turns handed to their session and waiting for its `started` (the
+    /// session writes their rows, or the turn is held for a free slot), by
+    /// conversation, with the owner's message shown meanwhile (nil: none, a
+    /// regenerate). Only the shown chat's entry blocks its composer; every
+    /// other chat stays usable (ask #1361).
+    private var awaitingStart: [Int64: AwaitingStart] = [:]
+    private struct AwaitingStart {
+        let bubble: String?
+    }
+    /// The shown chat's turn is being handed over or waits for `started`:
+    /// its send is refused meanwhile, so one Enter never sends twice.
+    var isStartingTurn: Bool {
+        isHandingTurn || conversationID.map { awaitingStart[$0] != nil } == true
+    }
+    /// The owner's message shown at once while the shown chat's turn waits
     /// for `started` (mobile Inbox spec §8: the bubble never waits for the
     /// write); the stored row replaces it at `started`.
-    private(set) var pendingOwnerText: String?
+    var pendingOwnerText: String? {
+        conversationID.flatMap { awaitingStart[$0]?.bubble }
+    }
     /// A sent turn with no `started` by then gives up: the draft comes back
     /// and "session ended" shows (spec §9).
     nonisolated static let startedTimeout: Duration = ChatSessionClient.defaultStartedTimeout
@@ -376,9 +391,14 @@ final class ChatViewModel {
     /// The shown chat's turn ended and its final state is being written
     /// (board #670): nothing can stop it, and the next send waits for it.
     var isFinishingTurn: Bool { pool.client(for: conversationID)?.driver.isFinishing == true }
-    /// Whether the composer offers Stop: never while the turn's rows or its
-    /// end are being written — nothing could stop it then.
-    var canStop: Bool { !isStartingTurn && !isFinishingTurn }
+    /// The shown chat's session could not save its latest reply: the thread
+    /// says so (the reply on disk may be stale or empty).
+    var sessionPersistenceError: String? { pool.client(for: conversationID)?.saveError }
+    /// Whether the composer offers Stop: never while the turn's end is
+    /// being written — nothing could stop it then. A turn waiting for its
+    /// `started` (held, or being written) can be stopped: it is stopped at
+    /// its start (`ChatSessionClient.cancel`).
+    var canStop: Bool { !isHandingTurn && !isFinishingTurn }
     /// Every live session is busy with another conversation's turn: this
     /// turn is held (not lost) until one finishes. The UI says so.
     var isWaitingForSession: Bool {
@@ -1043,27 +1063,27 @@ final class ChatViewModel {
         let turnText = ChatTurnComposer.compose(text: text, skill: skill, mentions: live)
         // A message may carry only attachments (no text) — the ChatComposerField canSend twin.
         guard !turnText.isEmpty || !attachments.isEmpty, !isBusy else { return false }
-        isStartingTurn = true
-        defer { isStartingTurn = false }
+        isHandingTurn = true
+        defer { isHandingTurn = false }
         let fromLanding = isOnLanding
         guard let id = await conversationIDCreatingIfNeeded() else { return false }
         if !keepsComposer { composer.reset() }
         // The actions-outcome block is Go's (its start reads it, floored at
         // the previous owner message); the screen block goes as is.
-        let started = await startTurn(conversationID: id, text: turnText, start: ChatTurnStart(
+        return await startTurn(conversationID: id, text: turnText, start: ChatTurnStart(
             mode: .send, attachmentIDs: attachments.map(\.id), quotes: quotes, titleText: trimmed,
-            screen: screen?.block), bubble: turnText)
-        // The landing's own turn only: a landing left meanwhile is not.
-        if started, fromLanding, isOnLanding, conversationID == id {
-            // The landing's first turn: its draft is a real chat now, shown
-            // in place of the landing or the project page.
+            screen: screen?.block), bubble: turnText) { [self] in
+            isHandingTurn = false
+            // The landing's own turn only: a landing left meanwhile is not.
+            // It leaves at Send, so the chat shows the owner's message, the
+            // waiting line and Stop while the session writes the turn.
+            guard fromLanding, isOnLanding, conversationID == id else { return }
             landingDraft = nil
             isOnLanding = false
             openProjectID = nil
             landingProjectID = nil
             onLandingTurnStarted?(id)
         }
-        return started
     }
 
     /// The conversation a turn/attachment writes into, creating one on first
@@ -1278,9 +1298,11 @@ final class ChatViewModel {
     /// guards like a send.
     @discardableResult
     private func startTurnBusy(conversationID: Int64, text: String, start: ChatTurnStart, bubble: String?) async -> Bool {
-        isStartingTurn = true
-        defer { isStartingTurn = false }
-        return await startTurn(conversationID: conversationID, text: text, start: start, bubble: bubble)
+        isHandingTurn = true
+        defer { isHandingTurn = false }
+        return await startTurn(conversationID: conversationID, text: text, start: start, bubble: bubble) { [self] in
+            isHandingTurn = false
+        }
     }
 
     /// Sends the turn to the chat's session, which writes its rows and
@@ -1292,19 +1314,26 @@ final class ChatViewModel {
     /// The turn goes out whichever chat is on screen by then; only the
     /// screen's own state follows the shown conversation.
     @discardableResult
-    private func startTurn(conversationID id: Int64, text: String, start: ChatTurnStart, bubble: String?) async -> Bool {
+    private func startTurn(
+        conversationID id: Int64,
+        text: String,
+        start: ChatTurnStart,
+        bubble: String?,
+        handed: () -> Void = {}
+    ) async -> Bool {
         let config = sessionConfig(conversationID: id)
         let command = ChatTurnCommand(turnID: makeTurnID(), text: text, attachments: [], replay: false, start: start)
+        awaitingStart[id] = AwaitingStart(bubble: bubble)
+        defer { awaitingStart[id] = nil }
+        handed()
         if let recovery = recovering[id] { await recovery.value }
-        if conversationID == id { pendingOwnerText = bubble }
-        defer { if conversationID == id { pendingOwnerText = nil } }
         let client = pool.session(for: id, config: config)
         switch await client.startTurn(command) {
         case .started(let started):
+            awaitingStart[id] = nil
             if conversationID == id {
                 errorMessage = nil
                 dismissedArtifactKeys = []
-                pendingOwnerText = nil
                 reload()
             }
             if started.ownerMessageID > 0, start.mode != .regenerate {

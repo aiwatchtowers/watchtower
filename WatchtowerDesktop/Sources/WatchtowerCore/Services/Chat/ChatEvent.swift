@@ -230,6 +230,9 @@ package enum ChatEvent: Equatable, Sendable {
     case refused(ChatRefusal)
     /// `--persist` only: the turn's last write is done (after its end event).
     case turnSaved(turnID: String)
+    /// `--persist` only: a write of the turn's reply failed ("Couldn't save
+    /// the reply: …"); shown under the thread.
+    case saveError(turnID: String, message: String)
     /// Synthesized by the process wrapper when the session process exits.
     case exited(status: Int32, stderrTail: String)
 
@@ -287,6 +290,14 @@ package enum ChatEvent: Equatable, Sendable {
                                            code: ChatErrorCode(rawValue: fields.string("code")) ?? .internalError,
                                            message: fields.string("message"), retryable: fields.bool("retryable"),
                                            reason: fields.optional("reason")))
+        default:
+            return persistEvent(type, fields)
+        }
+    }
+
+    /// The events only a persisting process (`--persist`) sends.
+    private static func persistEvent(_ type: String, _ fields: Fields) -> Self? {
+        switch type {
         case "started":
             return .started(ChatStarted(
                 conversationID: fields.int64("conversation_id"), ownerMessageID: fields.int64("owner_message_id"),
@@ -299,6 +310,8 @@ package enum ChatEvent: Equatable, Sendable {
                                         holder: fields.string("holder")))
         case "turn_saved":
             return .turnSaved(turnID: fields.string("turn_id"))
+        case "save_error":
+            return .saveError(turnID: fields.string("turn_id"), message: fields.string("message"))
         default:
             return nil
         }

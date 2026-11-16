@@ -88,6 +88,8 @@ package final class ChatTurnDriver {
             handle(error)
         case let .turnSaved(turnID):
             saved(turnID)
+        case .saveError:
+            break  // the client keeps it for the thread (`ChatSessionClient.saveError`)
         case .exited:
             finishRunningAsPartial()
         }

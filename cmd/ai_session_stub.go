@@ -3,19 +3,45 @@ package cmd
 import (
 	"context"
 
+	"watchtower/internal/ai"
 	"watchtower/internal/chat"
 )
 
 // aiSessionFlagStubReply (hidden, tests only): the session answers every
 // turn with this text at once instead of calling a provider. The Desktop's
 // chat timing test (ChatPersistTimingTests) measures the start path with it;
-// nothing else passes it.
-var aiSessionFlagStubReply string
+// nothing else passes it. aiQueryFlagStubReply is the same for `ai query`
+// (the embedded chats' path, measured by the same test).
+var (
+	aiSessionFlagStubReply string
+	aiQueryFlagStubReply   string
+)
 
 func init() {
 	f := aiSessionCmd.Flags()
 	f.StringVar(&aiSessionFlagStubReply, "test-stub-reply", "", "tests only: answer every turn with this text, no provider")
 	_ = f.MarkHidden("test-stub-reply")
+	q := aiQueryCmd.Flags()
+	q.StringVar(&aiQueryFlagStubReply, "test-stub-reply", "", "tests only: answer with this text, no provider")
+	_ = q.MarkHidden("test-stub-reply")
+}
+
+type queryClient interface {
+	Query(ctx context.Context, systemPrompt, userMessage, sessionID string) (<-chan ai.StreamChunk, <-chan error, <-chan string)
+}
+
+// queryStream is the query's provider stream, or the stub's one chunk.
+func queryStream(ctx context.Context, c queryClient, systemPrompt, prompt, sessionID string) (<-chan ai.StreamChunk, <-chan error, <-chan string) {
+	if aiQueryFlagStubReply == "" {
+		return c.Query(ctx, systemPrompt, prompt, sessionID)
+	}
+	text := make(chan ai.StreamChunk, 1)
+	text <- ai.StreamChunk{Text: aiQueryFlagStubReply}
+	close(text)
+	errs, sid := make(chan error), make(chan string)
+	close(errs)
+	close(sid)
+	return text, errs, sid
 }
 
 // stubSessionBackend answers each turn with one text delta and turn_done.

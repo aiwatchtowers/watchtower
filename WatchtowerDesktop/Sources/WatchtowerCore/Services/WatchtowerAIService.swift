@@ -430,7 +430,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         case let .started(started):
             return .started(ownerID: started.ownerMessageID > 0 ? started.ownerMessageID : nil,
                             assistantID: started.assistantMessageID)
-        case .turnStart, .turnDone, .toolWait, .exited, .refused, .turnSaved:
+        case .turnStart, .turnDone, .toolWait, .exited, .refused, .turnSaved, .saveError:
             return nil
         }
     }

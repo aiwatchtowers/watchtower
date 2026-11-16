@@ -430,6 +430,27 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertEqual(mode?.contextType, "idea")
     }
 
+    /// A database chat's run writes the owner's row (review I3): the
+    /// message shows at once while it does, and Stop is offered — the turn
+    /// ends as stopped once the rows landed (the owner's message stays with
+    /// a `partial` reply), as for a Stop after the start.
+    func testTheOwnersMessageShowsWhileItsRunWritesItAndStopsThere() async throws {
+        let engine = makeEngine()
+        engine.draft = "my words"
+        XCTAssertTrue(engine.sendDraft())
+        XCTAssertTrue(engine.isStarting)
+        XCTAssertEqual(engine.pendingOwnerText, "my words", "shown before the run wrote it")
+        engine.stop()
+        await engine.finished()
+        expectTrue(await waitIdle(engine))
+        XCTAssertNil(engine.pendingOwnerText)
+        let stored = try rows()
+        XCTAssertEqual(stored.map(\.role), ["user", "assistant"])
+        XCTAssertEqual(stored.first?.text, "my words")
+        expectTrue(await waitForCondition { (try? self.rows().last?.status) == "partial" })
+        XCTAssertEqual(engine.draft, "", "the message was sent, not given back")
+    }
+
     // MARK: - Failures writing
 
     func testASendThatCannotBeSavedSendsNothingAndKeepsTheText() async throws {

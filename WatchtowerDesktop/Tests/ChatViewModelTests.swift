@@ -1920,6 +1920,81 @@ extension ChatViewModelTests {
         XCTAssertEqual(vm.draft, "")
     }
 
+    /// A reply the session could not save is said under the thread, as the
+    /// Mac's own writer said it (review I5): the reply on disk may be stale.
+    /// The next turn starts clean.
+    func testAFailedReplySaveIsShownUnderTheThread() async throws {
+        let vm = try makeViewModel()
+        _ = await vm.newConversation()
+        await vm.send(text: "q")
+        let fake = try lastFake()
+        fake.emit(.textDelta(turnID: "turn-1", text: "a"))
+        fake.emit(.turnDone(turnID: "turn-1", status: .complete, sessionID: nil))
+        fake.emit(.saveError(turnID: "turn-1", message: "Couldn't finalize the reply: disk full"))
+        await waitForCondition { vm.sessionPersistenceError != nil }
+        XCTAssertEqual(vm.sessionPersistenceError, "Couldn't finalize the reply: disk full")
+        await waitForCondition { !vm.isBusy }
+        await vm.send(text: "again")
+        XCTAssertNil(vm.sessionPersistenceError, "the next turn starts clean")
+    }
+
+    /// A turn held for a free session (review I1, ask #1361): Stop is
+    /// offered on it, and every other chat stays usable — only the held
+    /// chat's composer waits.
+    func testAHeldTurnOffersStopAndLeavesOtherChatsUsable() async throws {
+        let vm = try makeViewModel()
+        for index in 1...3 {
+            _ = await vm.newConversation()
+            await vm.send(text: "q\(index)")
+        }
+        let created = await vm.newConversation()
+        let held = try XCTUnwrap(created)
+        let sending = Task { await vm.send(text: "q4") }
+        await waitForCondition { vm.isWaitingForSession }
+        XCTAssertTrue(vm.isBusy, "the held chat's composer waits")
+        XCTAssertTrue(vm.canStop, "Stop is offered on a held turn")
+        XCTAssertEqual(vm.pendingOwnerText, "q4")
+
+        let other = await vm.newConversation()
+        XCTAssertNotNil(other)
+        XCTAssertFalse(vm.isBusy, "another chat is not blocked by the held turn")
+        XCTAssertTrue(vm.canStop)
+
+        vm.select(conversationID: held)
+        fakes[0].emit(.turnDone(turnID: "turn-1", status: .complete, sessionID: nil))
+        let sent = await sending.value
+        XCTAssertTrue(sent)
+    }
+
+    /// The owner's pending message belongs to its chat (review I2): another
+    /// chat shown meanwhile has no bubble, its own chat shows it again, and
+    /// once it started no chat keeps a ghost bubble.
+    func testThePendingMessageStaysWithItsChat() async throws {
+        let vm = try makeViewModel()
+        let first = await vm.newConversation()
+        let chatA = try XCTUnwrap(first)
+        let fake = try lastFake()
+        fake.holdsStarts = true
+        let sending = Task { await vm.send(text: "for A") }
+        await untilTurn { !fake.sent.isEmpty }
+        XCTAssertEqual(vm.pendingOwnerText, "for A")
+
+        let second = await vm.newConversation()
+        let chatB = try XCTUnwrap(second)
+        XCTAssertNil(vm.pendingOwnerText, "chat B shows no bubble of chat A")
+        vm.select(conversationID: chatA)
+        XCTAssertEqual(vm.pendingOwnerText, "for A")
+        vm.select(conversationID: chatB)
+
+        fake.releaseStarts()
+        let sent = await sending.value
+        XCTAssertTrue(sent)
+        XCTAssertNil(vm.pendingOwnerText)
+        vm.select(conversationID: chatA)
+        XCTAssertNil(vm.pendingOwnerText, "the stored row replaced it")
+        XCTAssertEqual(activePath(chatA).filter(\.isUser).map(\.text), ["for A"])
+    }
+
     /// The session dies before `started`: nothing was written, the draft
     /// comes back and the session-ended message shows.
     func testKillBeforeStartedReturnsTheDraft() async throws {

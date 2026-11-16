@@ -402,7 +402,7 @@ func runAIQuery(cmd *cobra.Command, args []string) error {
 		defer persisted.close()
 	}
 
-	textCh, errCh, sidCh := aiClient.Query(ctx, systemPrompt, prompt, aiFlagSessionID)
+	textCh, errCh, sidCh := queryStream(ctx, aiClient, systemPrompt, prompt, aiFlagSessionID)
 
 	if aiFlagEvents == "v2" {
 		streamQueryV2Observed(os.Stdout, v2TurnID(), textCh, errCh, sidCh, persisted.observer(ctx))

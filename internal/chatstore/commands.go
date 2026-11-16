@@ -52,7 +52,38 @@ const (
 	sentenceEmptyComment = "Write a comment first."
 	sentenceEmptyQuote   = "Select the text to comment on."
 	sentenceLiveSlack    = "This chat used Live Slack, so its artifacts can't be kept in Knowledge."
+	sentenceEmbeddedOnly = "This chat's replies are written by its own session."
 )
+
+// errNotEmbedded: a chat.reply.finish / chat.message.append for a chat that
+// is not an embedded (context) chat — the main chat's rows are its
+// session's alone.
+var errNotEmbedded = errors.New("not an embedded chat")
+
+// embeddedOnly is what chat.reply.finish and chat.message.append accept: the
+// Mac (over its socket) writing an embedded chat's notice or reply end —
+// never the hub's `chat` grant, and never a main chat's reply (review M3).
+func embeddedOnly(c *tower.Ctx) error {
+	if c.Origin.Transport != "socket" {
+		return tower.Refuse(api.CodeNotPermitted, sentenceMacOnly)
+	}
+	return nil
+}
+
+// requireEmbeddedTx: the conversation exists and is an embedded chat.
+func requireEmbeddedTx(tx *sql.Tx, conv int64) error {
+	var contextType sql.NullString
+	err := tx.QueryRow(`SELECT context_type FROM chat_conversations WHERE id = ?`, conv).Scan(&contextType)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return ErrConversationGone
+	case err != nil:
+		return fmt.Errorf("reading chat conversation %d: %w", conv, err)
+	case !contextType.Valid:
+		return errNotEmbedded
+	}
+	return nil
+}
 
 func sentenceUnknownProvider(p string) string {
 	return fmt.Sprintf("Watchtower doesn't know the AI provider %q.", p)
@@ -335,6 +366,8 @@ func refusal(err error, gone string) error {
 		return tower.Refuse(api.CodeUnsupported, sentenceEmptyQuote)
 	case errors.Is(err, db.ErrChatLiveSlack):
 		return tower.Refuse(api.CodeNotPermitted, sentenceLiveSlack)
+	case errors.Is(err, errNotEmbedded):
+		return tower.Refuse(api.CodeNotPermitted, sentenceEmbeddedOnly)
 	case gone != "" && isForeignKeyFailure(err):
 		return tower.Refuse(api.CodeNotFound, gone)
 	}
@@ -759,12 +792,12 @@ func chatMessageAppend(ctx context.Context, c *tower.Ctx, q api.ChatMessageAppen
 	if q.ConversationID <= 0 || !slices.Contains([]string{"user", "assistant", "system"}, q.Role) {
 		return api.ChatMessageAppendResponse{}, tower.Refuse(api.CodeUnsupported, sentenceBadRequest)
 	}
+	if err := embeddedOnly(c); err != nil {
+		return api.ChatMessageAppendResponse{}, err
+	}
 	return write(ctx, c, sentenceChatGone, func(tx *sql.Tx) (api.ChatMessageAppendResponse, error) {
-		var one int
-		if err := tx.QueryRow(`SELECT 1 FROM chat_conversations WHERE id = ?`, q.ConversationID).Scan(&one); errors.Is(err, sql.ErrNoRows) {
-			return api.ChatMessageAppendResponse{}, ErrConversationGone
-		} else if err != nil {
-			return api.ChatMessageAppendResponse{}, fmt.Errorf("reading chat conversation %d: %w", q.ConversationID, err)
+		if err := requireEmbeddedTx(tx, q.ConversationID); err != nil {
+			return api.ChatMessageAppendResponse{}, err
 		}
 		res, err := tx.Exec(`INSERT INTO chat_messages (conversation_id, role, text, created_at, turn_id) VALUES (?, ?, ?, ?, '')`,
 			q.ConversationID, q.Role, q.Text, seconds(c.Now()))
@@ -784,9 +817,17 @@ func chatReplyFinish(ctx context.Context, c *tower.Ctx, q api.ChatReplyFinishReq
 		!slices.Contains([]string{StatusComplete, StatusPartial, StatusError}, q.Status) {
 		return api.ChatDone{}, tower.Refuse(api.CodeUnsupported, sentenceBadRequest)
 	}
+	if err := embeddedOnly(c); err != nil {
+		return api.ChatDone{}, err
+	}
 	code := sql.NullString{String: q.ErrorCode, Valid: q.ErrorCode != ""}
 	msg := sql.NullString{String: q.ErrorMessage, Valid: q.ErrorMessage != "" || q.ErrorCode != ""}
 	return write(ctx, c, sentenceMessageGone, func(tx *sql.Tx) (api.ChatDone, error) {
+		if err := requireEmbeddedTx(tx, q.ConversationID); errors.Is(err, ErrConversationGone) {
+			return api.ChatDone{}, ErrNotFound
+		} else if err != nil {
+			return api.ChatDone{}, err
+		}
 		res, err := tx.Exec(`UPDATE chat_messages SET text = ?, status = ?, error_code = ?, error_message = ?
 			WHERE id = ? AND conversation_id = ? AND role = 'assistant'`,
 			q.Text, q.Status, code, msg, q.MessageID, q.ConversationID)

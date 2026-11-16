@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -234,6 +235,13 @@ func (p *sessionPersister) forward(line []byte) bool {
 
 func (p *sessionPersister) emit(e chat.Event) { _ = p.out.Emit(e) }
 
+// saveError tells the Mac a write of the turn failed, as the Desktop's own
+// writer showed it ("Couldn't save the reply: …"); the stderr log keeps the
+// redacted detail.
+func (p *sessionPersister) saveError(turnID, what string, err error) {
+	p.emit(chat.Event{Type: chat.EventSaveError, TurnID: turnID, Message: what + ": " + err.Error()})
+}
+
 // startTurn writes the turn's starting rows, then hands it to the session.
 func (p *sessionPersister) startTurn(c chat.Command) {
 	req, err := p.startRequest(c)
@@ -323,10 +331,12 @@ func (p *sessionPersister) apply(ev chat.Event) {
 		return
 	case err != nil:
 		stderrLogf("ai session: conversation %d: writing turn %s failed: %s", p.conv, cur.st.TurnID, logredact.Full(err))
-		if endsTurn(ev, cur.st.TurnID) {
-			if done, _ := cur.t.Done(); !done {
-				cur.retry = func() error { return cur.t.Apply(ev) }
-			}
+		if done, _ := cur.t.Done(); endsTurn(ev, cur.st.TurnID) && !done {
+			// The end is retried on the next tick; only a second failure is
+			// the owner's to see.
+			cur.retry = func() error { return cur.t.Apply(ev) }
+		} else {
+			p.saveError(cur.st.TurnID, "Couldn't save the reply", err)
 		}
 	}
 	p.checkDone()
@@ -389,6 +399,7 @@ func (p *sessionPersister) onTick() {
 			return
 		} else if err != nil {
 			stderrLogf("ai session: conversation %d: the final write failed again (%s); the lease goes stale", p.conv, logredact.Full(err))
+			p.saveError(cur.st.TurnID, "Couldn't finalize the reply", err)
 			p.letGo()
 			return
 		}
@@ -405,6 +416,7 @@ func (p *sessionPersister) onTick() {
 			return
 		} else if err != nil {
 			stderrLogf("ai session: conversation %d: flushing failed: %s", p.conv, logredact.Full(err))
+			p.saveError(cur.st.TurnID, "Couldn't save the reply", err)
 		}
 	}
 	p.watchLease(cur)
@@ -453,6 +465,20 @@ func (p *sessionPersister) lost() {
 	stderrLogf("ai session: conversation %d: turn %s lost its conversation or lease; stopping it", p.conv, p.cur.st.TurnID)
 	p.letGo()
 	p.forward([]byte(`{"type":"cancel"}`))
+	if p.conversationGone() {
+		// Deleted (from the phone, say): the session has no chat to serve,
+		// so it ends once the cancelled turn is out and is never reused
+		// (CHAT-01, TestDriverStopsWhenConversationDeleted).
+		p.forward([]byte(`{"type":"close"}`))
+	}
+}
+
+// conversationGone reports whether the session's conversation row is gone.
+// A read error is not "gone": the session stays.
+func (p *sessionPersister) conversationGone() bool {
+	var one int
+	err := p.database.QueryRow(`SELECT 1 FROM chat_conversations WHERE id = ?`, p.conv).Scan(&one)
+	return errors.Is(err, sql.ErrNoRows)
 }
 
 // finalize ends the running turn here (one retry; then the lease goes stale).
@@ -467,6 +493,7 @@ func (p *sessionPersister) finalize(status string, f *chatstore.Failure) {
 	}
 	if err != nil && !errors.Is(err, chatstore.ErrConversationGone) {
 		stderrLogf("ai session: conversation %d: finalizing turn %s failed: %s", p.conv, cur.st.TurnID, logredact.Full(err))
+		p.saveError(cur.st.TurnID, "Couldn't finalize the reply", err)
 	}
 	p.letGo()
 }

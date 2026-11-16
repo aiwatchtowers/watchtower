@@ -107,6 +107,10 @@ package final class EmbeddedChatEngine {
     private var finishing: Task<Void, Never>?
     /// A turn's rows are being written; its process starts once they landed.
     package private(set) var isStarting = false
+    /// The owner's message shown at once while its turn starts (a database
+    /// chat's run writes the row; mobile Inbox spec §8: the bubble never
+    /// waits for the write). Nil once the row is on disk or the start failed.
+    package private(set) var pendingOwnerText: String?
     package var isBusy: Bool { isStreaming || isQueued || isStarting }
     /// Busy, or holding follow-ups for a later turn — the center keeps such
     /// an engine even when no view has shown it for a while.
@@ -270,6 +274,12 @@ package final class EmbeddedChatEngine {
             cancelQueued()
             return
         }
+        if isStarting {
+            // Its rows are being written: the turn ends as stopped once they
+            // landed (the owner's message stays with a `partial` reply).
+            stopBeforeStart = true
+            return
+        }
         guard running != nil else { return }
         running?.stopRequested = true
         endRunningTurn()
@@ -405,6 +415,7 @@ package final class EmbeddedChatEngine {
         let turnID = UUID().uuidString
         let options = spec.runOptions()
         isStarting = true
+        pendingOwnerText = request.ownerText
         stopBeforeStart = false
         startTask = Task { [self] in
             await writeRowsAndStart(request, turnID: turnID, options: options)
@@ -433,6 +444,7 @@ package final class EmbeddedChatEngine {
             }
         } catch {
             isStarting = false
+            pendingOwnerText = nil
             // Nothing was sent: the owner's text goes back to the composer
             // (ahead of anything typed meanwhile), its follow-ups back to the queue.
             gate.release(request.slot)
@@ -446,6 +458,7 @@ package final class EmbeddedChatEngine {
             return
         }
         isStarting = false
+        pendingOwnerText = nil  // the stored row replaces it in this same pass
         if request.ownerText != nil { draftMirror?.clear(for: spec.key) }
         if let text = request.ownerText, let ownerID = ids.ownerID, spec.showsRememberMarks,
            case .database(let conversationID) = spec.persistence {

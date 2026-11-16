@@ -159,6 +159,26 @@ final class ChatLandingViewModelTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(fakes.last).turns.count, 1)
     }
 
+    /// The landing leaves at Send, not at `started`: while the session
+    /// writes the turn the chat shows the owner's message and offers Stop
+    /// (review I1 — before, the landing sat blank with an empty composer).
+    func testTheLandingLeavesAtSendAndShowsTheMessageWhileItIsWritten() async throws {
+        let vm = makeViewModel()
+        await vm.draftStarted()
+        let fake = try XCTUnwrap(fakes.last)
+        fake.holdsStarts = true
+        vm.draft = "hello"
+        let sending = Task { await vm.sendDraft() }
+        await untilTurn { !fake.sent.isEmpty }
+        XCTAssertFalse(vm.isOnLanding, "the chat is on screen at once")
+        XCTAssertEqual(vm.pendingOwnerText, "hello")
+        XCTAssertTrue(vm.canStop)
+        fake.releaseStarts()
+        await sending.value
+        XCTAssertNil(vm.pendingOwnerText)
+        XCTAssertEqual(vm.thread.first?.message.text, "hello")
+    }
+
     func testSendingFromTheLandingWithoutAKeystrokeStillStartsAChat() async throws {
         let vm = makeViewModel()
         let sent = await vm.send(text: "What mattered yesterday?")

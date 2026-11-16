@@ -652,3 +652,34 @@ func TestPersist_TurnSavedFollowsTheFinalWrite(t *testing.T) {
 	assert.Equal(t, []string{"partial answer", "complete"}, []string{rows[1].Text, rows[1].Status})
 	r.close()
 }
+
+// TestPersist_FailedReplySaveIsReportedToTheMac: a reply write that fails
+// for good is a `save_error` the Mac shows under the thread ("Couldn't
+// finalize the reply: …"), as the Desktop's own writer did — never only a
+// stderr line (review I5).
+func TestPersist_FailedReplySaveIsReportedToTheMac(t *testing.T) {
+	backend := newPersistBackend()
+	r, tick, clock := startPersistSessionClock(t, backend)
+	d := openRunDB(t, r)
+	backend.onTurn = func(chat.Command) {
+		_, err := d.Exec(`CREATE TRIGGER fail_reply BEFORE UPDATE ON chat_messages BEGIN SELECT RAISE(ABORT, 'disk full'); END`)
+		require.NoError(t, err)
+	}
+	r.next(chat.EventSessionReady)
+	r.send(chat.Command{Type: chat.CommandTurn, TurnID: "t1", Text: "Hello"})
+	r.next(chat.EventTurnDone)
+	settle(tick, clock) // the end's one retry fails too
+	flush := r.next(chat.EventSaveError)
+	assert.Equal(t, "t1", flush.TurnID)
+	assert.Equal(t, "Couldn't save the reply: disk full", flush.Message, "the streamed text could not be written")
+	// A tick may also retry the text's flush first; the end's failure comes.
+	final := r.next(chat.EventSaveError)
+	for i := 0; i < 3 && !strings.HasPrefix(final.Message, "Couldn't finalize"); i++ {
+		assert.Equal(t, "Couldn't save the reply: disk full", final.Message)
+		final = r.next(chat.EventSaveError)
+	}
+	assert.Contains(t, final.Message, "Couldn't finalize the reply: ")
+	assert.Contains(t, final.Message, "disk full")
+	assert.Equal(t, "t1", r.next(chat.EventTurnSaved).TurnID, "the Mac still lets the turn go")
+	r.close()
+}

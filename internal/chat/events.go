@@ -43,6 +43,10 @@ const (
 	// done (or given up), after its turn_done or error — a reload now reads
 	// what the turn left.
 	EventTurnSaved = "turn_saved"
+	// EventSaveError (`ai session --persist`): a write of the turn's reply
+	// failed (a flush, its end, a retry); Message says which and why, for
+	// the Mac to show under the thread (the reply on disk may be stale).
+	EventSaveError = "save_error"
 )
 
 // turn_done statuses.

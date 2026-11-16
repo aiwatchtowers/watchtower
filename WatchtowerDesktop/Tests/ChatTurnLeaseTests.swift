@@ -203,6 +203,40 @@ final class ChatTurnLeaseTests: XCTestCase {
         XCTAssertTrue(again)
     }
 
+    /// Spec §7 "Conversation deleted during a Mac-run turn" (CHAT-01): the
+    /// session finds its chat gone, cancels the turn, lets it go
+    /// (`turn_saved`) and ends; the Mac shows no error, recovers nothing and
+    /// never reuses that session, and no orphan rows, steps or lease remain.
+    /// The session's half (one cancel, no writes) is Go's guard of the same
+    /// name (`cmd/ai_session_conv_deleted_test.go`); the fake plays it here.
+    /// BEHAVIOR CHAT-01 — see docs/inventory/chat.md
+    func testDriverStopsWhenConversationDeleted() async throws {
+        let conv = try conversation()
+        let vm = makeViewModel()
+        vm.select(conversationID: conv)
+        _ = await vm.send(text: "q")
+        let client = try XCTUnwrap(pool.client(for: conv))
+        let fake = try XCTUnwrap(fakes.last)
+        var lost = 0
+        client.onTurnLost = { _, _ in lost += 1 }
+        fake.emit(.textDelta(turnID: "turn-1", text: "Hel"))
+        await waitForCondition { vm.liveTurn?.fullText == "Hel" }
+
+        // Deleted from the phone: the cascade takes the rows and the lease.
+        try await dbManager.dbPool.write { try $0.execute(sql: "DELETE FROM chat_conversations WHERE id = ?", arguments: [conv]) }
+        fake.emit(.turnDone(turnID: "turn-1", status: .interrupted, sessionID: nil))
+        await waitForCondition { !client.isBusy }
+        fake.exit(status: 0)
+        await waitForCondition { !client.isAlive }
+        XCTAssertFalse(client.isAlive, "the session is not reused")
+        XCTAssertEqual(lost, 0, "a turn it let go is not recovered")
+        XCTAssertNil(vm.errorMessage, "an ended session of a deleted chat is not an error")
+        XCTAssertEqual(try count("SELECT COUNT(*) FROM chat_messages WHERE conversation_id = ?", conv), 0)
+        let steps = try await dbManager.dbPool.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM chat_turn_steps") }
+        XCTAssertEqual(steps, 0, "no orphan step")
+        XCTAssertNil(try lease(conv))
+    }
+
     func testFinalizeReleasesLease() async throws {
         let conv = try conversation()
         let vm = makeViewModel()

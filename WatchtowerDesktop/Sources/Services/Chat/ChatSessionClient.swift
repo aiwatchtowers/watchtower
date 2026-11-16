@@ -115,6 +115,10 @@ final class ChatSessionClient {
     /// and the stderr tail, as a `session_lost` error.
     private(set) var exitError: ChatSessionError?
     private(set) var lastActivity: Date
+    /// The session could not save the latest turn's reply (`save_error`):
+    /// what the thread shows under it, as the Mac's own writer did. Cleared
+    /// when the next turn is handed over.
+    private(set) var saveError: String?
 
     @ObservationIgnored var onTurnFinished: ((Int64) -> Void)?
     /// A running turn's step started waiting on an approval card (`tool_wait`).
@@ -250,6 +254,7 @@ final class ChatSessionClient {
     /// Takes over a turn another (never launched) session held.
     func begin(_ pending: PendingChatStart) {
         touch()
+        saveError = nil
         pendingStart = pending
         if isPending, !shutdownRequested {
             if pending.stopAtStart != nil { launchForHeldStop() }
@@ -440,6 +445,9 @@ final class ChatSessionClient {
                 pending.resolve(.failed(error))
                 return
             }
+        case let .saveError(_, message):
+            saveError = message
+            return
         case let .turnSaved(turnID):
             if unsavedTurnID == turnID { unsavedTurnID = nil }
         default:
