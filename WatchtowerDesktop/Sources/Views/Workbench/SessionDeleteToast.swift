@@ -41,15 +41,16 @@ struct SessionDeleteToast: View {
 /// "Cleaned up “T”: removed 3 worktrees and 12 branches (~2.1 GB)." on the
 /// Undo bar's place (spec 2026-11-10-auto-cleanup-on-session-delete §3):
 /// the lead in the success tone, the rest plain; several deletes in a row
-/// read as one joined notice. The view model hides it after
-/// `cleanupNoticeDuration`.
+/// read as one joined notice. The subagent records note, when there is one,
+/// is a second plain line (spec §2a, mockup state 6b). The view model hides
+/// it after `cleanupNoticeDuration`.
 struct SessionCleanupNoticeBar: View {
     let notice: SessionCleanupNotice
 
     var body: some View {
         Text(attributed)
             .font(.callout)
-            .lineLimit(3)
+            .lineLimit(5)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
             .deleteBarChrome()
@@ -63,7 +64,9 @@ struct SessionCleanupNoticeBar: View {
         var lead = AttributedString(notice.lead)
         lead.font = .callout.weight(.semibold)
         lead.foregroundColor = Tone.success
-        return lead + AttributedString(notice.rest)
+        let text = lead + AttributedString(notice.rest)
+        guard let note = notice.note else { return text }
+        return text + AttributedString("\n" + note)
     }
 }
 

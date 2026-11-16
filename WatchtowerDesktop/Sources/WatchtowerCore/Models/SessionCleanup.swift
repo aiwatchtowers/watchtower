@@ -26,6 +26,16 @@ package struct SessionCleanupPlan: Decodable, Equatable, Sendable {
     package var summary: String
     package var resultSaved: Bool
     package var resultError: String
+    /// What the plan could not read but did not fail on (Go's
+    /// `Plan.Notes`, auto cleanup spec 2026-11-10 §2a); absent = none.
+    package var notes: [String]
+
+    /// Go's `sessioncleanup.NoteSubagentRecordsUnreadable`.
+    package static let subagentRecordsUnreadableNote = "subagent_records_unreadable"
+
+    /// Claude Code's subagent records no longer said what the session's
+    /// subagents made: nothing was adopted from them.
+    package var subagentRecordsUnreadable: Bool { notes.contains(Self.subagentRecordsUnreadableNote) }
 
     package init(
         sessionID: Int64 = 0,
@@ -38,7 +48,8 @@ package struct SessionCleanupPlan: Decodable, Equatable, Sendable {
         removedBytesKnown: Bool = false,
         summary: String = "",
         resultSaved: Bool = false,
-        resultError: String = ""
+        resultError: String = "",
+        notes: [String] = []
     ) {
         self.sessionID = sessionID
         self.workbenchID = workbenchID
@@ -51,10 +62,11 @@ package struct SessionCleanupPlan: Decodable, Equatable, Sendable {
         self.summary = summary
         self.resultSaved = resultSaved
         self.resultError = resultError
+        self.notes = notes
     }
 
     package enum CodingKeys: String, CodingKey {
-        case mode, sweep, items, summary
+        case mode, sweep, items, summary, notes
         case sessionID = "session_id"
         case workbenchID = "workbench_id"
         case defaultBranch = "default_branch"
@@ -77,6 +89,7 @@ package struct SessionCleanupPlan: Decodable, Equatable, Sendable {
         summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
         resultSaved = try c.decodeIfPresent(Bool.self, forKey: .resultSaved) ?? false
         resultError = try c.decodeIfPresent(String.self, forKey: .resultError) ?? ""
+        notes = try c.decodeIfPresent([String].self, forKey: .notes) ?? []
     }
 
     /// The keys of the items the plan would remove — what an apply of this
