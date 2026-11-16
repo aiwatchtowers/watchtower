@@ -229,6 +229,7 @@
 		9F28AD417086206121616519 /* NowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27F9F7B9E929C013BC8C456F /* NowView.swift */; };
 		A01ED6EABB46966DF042B60D /* DesignSystemTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8F8031BEE354E1EDC067BB7 /* DesignSystemTests.swift */; };
 		A0BE5F402AC94E7324FC5530 /* RelayPushRegistrar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 898B58250245EB8FEB3A6C40 /* RelayPushRegistrar.swift */; };
+		A1981C8F5747C8D38ED993EA /* SwiftProtobuf in Frameworks */ = {isa = PBXBuildFile; productRef = 2C83956E74692A14A6AC7447 /* SwiftProtobuf */; };
 		A29814987A1F51AE9D324907 /* RelayLinkingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AF913E16211A8522A391194 /* RelayLinkingTests.swift */; };
 		A2CC501514D2966C016D29E5 /* StoreKitTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 251A5D4D6991B8CA24069FFC /* StoreKitTest.framework */; };
 		A40CDAE6323A6FC846928E59 /* DemoSeed+Calendar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2265BBA8FDC88ACD5E793E5E /* DemoSeed+Calendar.swift */; };
@@ -270,7 +271,7 @@
 		C2C5327B9A7FC502C4E2F9D6 /* BackgroundWork.swift in Sources */ = {isa = PBXBuildFile; fileRef = E108465923F8BBC2C4312775 /* BackgroundWork.swift */; };
 		C2D91BEDAB5111552D11E1D7 /* NotificationViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7EAF16DACB4176FE3005721 /* NotificationViewController.swift */; };
 		C341C37F6264E34CCAB8BB5F /* BoardWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC12186E8FC140813F1BFDBF /* BoardWriter.swift */; };
-		C37AF0379C0CA9C8B5E6C82E /* SwiftProtobuf in Frameworks */ = {isa = PBXBuildFile; productRef = 2C83956E74692A14A6AC7447 /* SwiftProtobuf */; };
+		C37AF0379C0CA9C8B5E6C82E /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 73828104AEDF42B7DD8514E7 /* GRDB */; };
 		C38D922B0CFEFFE8F1E41701 /* MacStatusChip.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4848648462D5CFE94D4E58D3 /* MacStatusChip.swift */; };
 		C54517C9A6E1196BFAD5EE21 /* RelayCardModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FC40A2129FAD7E956AE98BE /* RelayCardModelTests.swift */; };
 		C5A4DBFA5BA08D2CEE2ABA22 /* WatchtowerE2ETesting in Frameworks */ = {isa = PBXBuildFile; productRef = 6D38595E8CBDC60347EDAD0B /* WatchtowerE2ETesting */; };
@@ -278,7 +279,7 @@
 		C9291427ACD4ABD9470F8A17 /* SessionActionsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FAEEAE6D35911B35EC2C4BF /* SessionActionsModel.swift */; };
 		CA0CA270D0CC9FF8CE62518A /* DemoSeed+SessionDetail.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEBDA5069E71CF42F0A6AC4D /* DemoSeed+SessionDetail.swift */; };
 		CB102EA39646DE7AE89A3FA4 /* ReplicaDecodeCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = F34E795FC1F8D741120567AA /* ReplicaDecodeCache.swift */; };
-		CB8CDC9A80860923C6BCDD23 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 73828104AEDF42B7DD8514E7 /* GRDB */; };
+		CB8CDC9A80860923C6BCDD23 /* WatchtowerInterface in Frameworks */ = {isa = PBXBuildFile; productRef = C09B3EE8FA11F059AC084A3A /* WatchtowerInterface */; };
 		CBAC6DFC16DA706DE9C73921 /* CheckAskView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFCBBC92D3DFC415396C183C /* CheckAskView.swift */; };
 		CC58E9B61684A610576DA392 /* DemoSeed+Workbench.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC1D506E95E1AC75991E81EB /* DemoSeed+Workbench.swift */; };
 		CD1CF9B9ABA758B79FE0F0C6 /* MultiHubEnvironmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AE856C04E56DC5BC73E2622 /* MultiHubEnvironmentTests.swift */; };
@@ -571,6 +572,7 @@
 		85CF6FB6B18EC8CAC1C2671C /* StartSheetWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartSheetWiringTests.swift; sourceTree = "<group>"; };
 		85FC342668572B15131C541C /* HubDisplayName.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubDisplayName.swift; sourceTree = "<group>"; };
 		86DE68E84DD6BBD3754E6B69 /* RecordingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingView.swift; sourceTree = "<group>"; };
+		87F65875669DE315A7E277E1 /* WatchtowerInterface */ = {isa = PBXFileReference; lastKnownFileType = folder; name = WatchtowerInterface; path = ../WatchtowerInterface; sourceTree = SOURCE_ROOT; };
 		880E28A7D4DBC6FF27B43A0E /* ReviewParagraphTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewParagraphTests.swift; sourceTree = "<group>"; };
 		898B58250245EB8FEB3A6C40 /* RelayPushRegistrar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayPushRegistrar.swift; sourceTree = "<group>"; };
 		89B26ECAC390C8F9F65FD0E6 /* RecordingsWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingsWiringTests.swift; sourceTree = "<group>"; };
@@ -776,8 +778,9 @@
 				435FFB8059956A11F8DAE21B /* WatchtowerDesign in Frameworks */,
 				2E3168D3BC931B2646C1D085 /* WatchtowerHostedRelay in Frameworks */,
 				090E7518407A25289733C046 /* WatchtowerChatText in Frameworks */,
-				CB8CDC9A80860923C6BCDD23 /* GRDB in Frameworks */,
-				C37AF0379C0CA9C8B5E6C82E /* SwiftProtobuf in Frameworks */,
+				CB8CDC9A80860923C6BCDD23 /* WatchtowerInterface in Frameworks */,
+				C37AF0379C0CA9C8B5E6C82E /* GRDB in Frameworks */,
+				A1981C8F5747C8D38ED993EA /* SwiftProtobuf in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1202,6 +1205,7 @@
 			isa = PBXGroup;
 			children = (
 				2DF763CE3DDDB69ABC85F607 /* WatchtowerChatText */,
+				87F65875669DE315A7E277E1 /* WatchtowerInterface */,
 				DD5811CC2EAE68324393DCDB /* WatchtowerKit */,
 			);
 			name = Packages;
@@ -1369,6 +1373,7 @@
 				FEDE721FD71CDBE4A5991A6F /* WatchtowerDesign */,
 				1C53FC403A2C3717C2D23C92 /* WatchtowerHostedRelay */,
 				D91B0898D10B802C6FB9D60C /* WatchtowerChatText */,
+				C09B3EE8FA11F059AC084A3A /* WatchtowerInterface */,
 				73828104AEDF42B7DD8514E7 /* GRDB */,
 				2C83956E74692A14A6AC7447 /* SwiftProtobuf */,
 			);
@@ -1464,6 +1469,7 @@
 				DA3BC80CE33AA1AD726F3AA6 /* XCRemoteSwiftPackageReference "GRDB.swift" */,
 				DF693143197A74268D06C0FB /* XCRemoteSwiftPackageReference "swift-protobuf" */,
 				FF199EEB8A2BDF18E485CA73 /* XCLocalSwiftPackageReference "../WatchtowerChatText" */,
+				3C4D556447F761E3EEF66542 /* XCLocalSwiftPackageReference "../WatchtowerInterface" */,
 				163F9FBC8299558C63C82C1B /* XCLocalSwiftPackageReference "../WatchtowerKit" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -2241,6 +2247,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../WatchtowerKit;
 		};
+		3C4D556447F761E3EEF66542 /* XCLocalSwiftPackageReference "../WatchtowerInterface" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../WatchtowerInterface;
+		};
 		FF199EEB8A2BDF18E485CA73 /* XCLocalSwiftPackageReference "../WatchtowerChatText" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../WatchtowerChatText;
@@ -2309,6 +2319,10 @@
 		82E2DC2033E6312FAD9B717C /* WatchtowerSync */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = WatchtowerSync;
+		};
+		C09B3EE8FA11F059AC084A3A /* WatchtowerInterface */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WatchtowerInterface;
 		};
 		D91B0898D10B802C6FB9D60C /* WatchtowerChatText */ = {
 			isa = XCSwiftPackageProductDependency;
