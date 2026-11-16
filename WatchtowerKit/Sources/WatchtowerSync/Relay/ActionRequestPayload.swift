@@ -78,6 +78,10 @@ public enum ActionKind: String, Codable, CaseIterable {
     case chatManage = "chat_manage"
     /// No entity; params `action_id`, `decision`, `args_sha256`; needs the permissions grant too.
     case chatActionAnswer = "chat_action_answer"
+    /// The phone Inbox (mobile Inbox spec §6). No entity; params are the generated `inbox.act` request
+    /// (`request_id`, `target`, `verb`, `params`). Idempotent or not by verb (`inbox_act_idempotency` in the hub
+    /// contract fixture); approve, retry and the target press need the permissions grant, a Reply needs typing.
+    case inboxAct = "inbox_act"
 }
 
 /// Wire status of one action record (spec §5.2). Only the Mac moves a record

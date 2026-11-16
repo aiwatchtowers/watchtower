@@ -72,8 +72,12 @@ final class HubContractFixtureTests: XCTestCase {
             XCTAssertEqual(heartbeat.chatOffered, (kit["chat"] as? String) == "on", name)
             XCTAssertEqual(heartbeat.capabilities?.chat, kit["chat"] as? String, name)
             XCTAssertEqual(heartbeat.capabilities?.chatReason, kit["chat_reason"] as? String, name)
+            // The phone Inbox: "on" or "policy_off" with its reason; absent on an older hub.
+            XCTAssertEqual(heartbeat.capabilities?.inbox, kit["inbox"] as? String, name)
+            XCTAssertEqual(heartbeat.capabilities?.inboxReason, kit["inbox_reason"] as? String, name)
             // Re-encoded, the capabilities this build knows are what the hub wrote (an unknown key is dropped).
-            let known = (json["capabilities"] as? [String: Any])?.filter { ["recordings", "chat", "chat_reason"].contains($0.key) }
+            let knownKeys = ["recordings", "chat", "chat_reason", "inbox", "inbox_reason"]
+            let known = (json["capabilities"] as? [String: Any])?.filter { knownKeys.contains($0.key) }
             XCTAssertEqual(encoded["capabilities"] as? NSDictionary, known as NSDictionary?, name)
         }
     }
@@ -91,6 +95,29 @@ final class HubContractFixtureTests: XCTestCase {
         let reason = HeartbeatCapabilities(chat: "off", chatReason: "desktop_too_old")
         XCTAssertEqual(reason.chatOffReason, .desktopTooOld)
         XCTAssertEqual(HeartbeatCapabilities(chat: "off", chatReason: "from_the_future").chatOffReason?.isKnown, false)
+    }
+
+    /// `inbox_act`'s idempotency and grant per verb, pinned for the Go hub's dispatcher and the phone alike: the
+    /// rows are well formed, every verb is listed, and exactly approve, retry, every press and Run Now are not
+    /// idempotent (the hub answers outcome_unknown for those after a stop; the phone never re-sends them).
+    func testInboxActIdempotency() throws {
+        XCTAssertEqual(ActionKind.inboxAct.rawValue, "inbox_act")
+        let rows = try XCTUnwrap(load()["inbox_act_idempotency"])
+        var verbs = Set<String>()
+        for row in rows {
+            let verb = try XCTUnwrap(row["verb"] as? String)
+            let idempotent = try XCTUnwrap(row["idempotent"] as? Bool, verb)
+            let grant = try XCTUnwrap(row["grant"] as? String, verb)
+            XCTAssertTrue(["", "permissions", "typing"].contains(grant), verb)
+            let approval = row["approval_verb"] as? String
+            let nonIdempotent = verb == "press" || verb == "run_now" || approval == "approve" || approval == "retry"
+            XCTAssertEqual(idempotent, !nonIdempotent, "\(verb) \(approval ?? "")")
+            if verb == "reply_propose" || (verb == "press" && row["action_kind"] as? String == "reply") {
+                XCTAssertEqual(grant, "typing", verb)
+            }
+            verbs.insert(verb)
+        }
+        XCTAssertEqual(verbs, ["read", "done", "dismiss", "press", "run_now", "ref", "reply_propose", "approval"])
     }
 
     /// Equal as JSON objects (key order and number spelling aside).

@@ -112,14 +112,27 @@ public struct HeartbeatCapabilities: Codable, Equatable, Sendable {
     public let chat: String?
     /// Why `chat` is off (`ChatOffReason`); absent while on.
     public let chatReason: String?
+    /// The phone Inbox (mobile Inbox spec §6): "on", or "policy_off" under the organization's workbench_only
+    /// policy; absent from an older hub, which publishes no Inbox.
+    public let inbox: String?
+    /// Why `inbox` is off ("policy"); absent while on.
+    public let inboxReason: String?
 
     /// `chatReason` as a typed value; nil while absent.
     public var chatOffReason: ChatOffReason? { chatReason.map(ChatOffReason.init(rawValue:)) }
 
-    public init(recordings: String? = nil, chat: String? = nil, chatReason: String? = nil) {
+    public init(
+        recordings: String? = nil,
+        chat: String? = nil,
+        chatReason: String? = nil,
+        inbox: String? = nil,
+        inboxReason: String? = nil
+    ) {
         self.recordings = recordings
         self.chat = chat
         self.chatReason = chatReason
+        self.inbox = inbox
+        self.inboxReason = inboxReason
     }
 }
 

@@ -1345,6 +1345,100 @@
         "chat": "off",
         "chat_reason": "desktop_too_old"
       }
+    },
+    {
+      "name": "inbox_on",
+      "json": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "capabilities": {
+          "chat": "on",
+          "inbox": "on",
+          "recordings": "on"
+        },
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "expect": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "capabilities": {
+          "chat": "on",
+          "inbox": "on",
+          "recordings": "on"
+        },
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "kit": {
+        "recordings_offered": true,
+        "is_mac": true,
+        "chat": "on",
+        "chat_reason": null,
+        "inbox": "on",
+        "inbox_reason": null
+      }
+    },
+    {
+      "name": "inbox_policy_off",
+      "json": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "capabilities": {
+          "chat": "off",
+          "chat_reason": "policy",
+          "inbox": "policy_off",
+          "inbox_reason": "policy",
+          "recordings": "on"
+        },
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "expect": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "capabilities": {
+          "chat": "off",
+          "chat_reason": "policy",
+          "inbox": "policy_off",
+          "inbox_reason": "policy",
+          "recordings": "on"
+        },
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "kit": {
+        "recordings_offered": true,
+        "is_mac": true,
+        "chat": "off",
+        "chat_reason": "policy",
+        "inbox": "policy_off",
+        "inbox_reason": "policy"
+      }
     }
   ],
   "upload_echo": [
@@ -1840,6 +1934,13 @@
         "chat_feed",
         "chat_list"
       ]
+    },
+    {
+      "action_kind": "inbox_act",
+      "slice_kinds": [
+        "inbox_card",
+        "inbox_folder"
+      ]
     }
   ],
   "epoch_ack": [
@@ -1998,6 +2099,85 @@
         "relay_kx": null,
         "previous_relay_kx": null
       }
+    }
+  ],
+  "inbox_act_idempotency": [
+    {
+      "verb": "read",
+      "idempotent": true,
+      "grant": ""
+    },
+    {
+      "verb": "done",
+      "idempotent": true,
+      "grant": ""
+    },
+    {
+      "verb": "dismiss",
+      "idempotent": true,
+      "grant": ""
+    },
+    {
+      "verb": "press",
+      "action_kind": "reply",
+      "idempotent": false,
+      "grant": "typing"
+    },
+    {
+      "verb": "press",
+      "action_kind": "target",
+      "idempotent": false,
+      "grant": "permissions"
+    },
+    {
+      "verb": "press",
+      "idempotent": false,
+      "grant": "permissions"
+    },
+    {
+      "verb": "run_now",
+      "idempotent": false,
+      "grant": ""
+    },
+    {
+      "verb": "ref",
+      "idempotent": true,
+      "grant": ""
+    },
+    {
+      "verb": "ref",
+      "ref_verb": "make_task",
+      "idempotent": true,
+      "grant": "permissions"
+    },
+    {
+      "verb": "reply_propose",
+      "idempotent": true,
+      "grant": "typing"
+    },
+    {
+      "verb": "approval",
+      "approval_verb": "approve",
+      "idempotent": false,
+      "grant": "permissions"
+    },
+    {
+      "verb": "approval",
+      "approval_verb": "retry",
+      "idempotent": false,
+      "grant": "permissions"
+    },
+    {
+      "verb": "approval",
+      "approval_verb": "dismiss",
+      "idempotent": true,
+      "grant": "permissions"
+    },
+    {
+      "verb": "approval",
+      "approval_verb": "reject",
+      "idempotent": true,
+      "grant": ""
     }
   ]
 }
