@@ -331,6 +331,1050 @@ public struct ChangedEvent: Codable, Hashable, Sendable {
     }
 }
 
+public struct ChatArtifactKeepRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var conversationID: Int64
+    public var artifactKey: String
+    public var version: Int64
+
+    public init(
+        requestID: String,
+        conversationID: Int64,
+        artifactKey: String,
+        version: Int64
+    ) {
+        self.requestID = requestID
+        self.conversationID = conversationID
+        self.artifactKey = artifactKey
+        self.version = version
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case conversationID = "conversation_id"
+        case artifactKey = "artifact_key"
+        case version
+    }
+}
+
+public struct ChatArtifactSaveEditRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var conversationID: Int64
+    public var messageID: Int64
+    public var artifactKey: String
+    public var kind: String
+    public var title: String
+    public var content: String
+    public var meta: [String: String]?
+
+    public init(
+        requestID: String,
+        conversationID: Int64,
+        messageID: Int64,
+        artifactKey: String,
+        kind: String,
+        title: String,
+        content: String,
+        meta: [String: String]? = nil
+    ) {
+        self.requestID = requestID
+        self.conversationID = conversationID
+        self.messageID = messageID
+        self.artifactKey = artifactKey
+        self.kind = kind
+        self.title = title
+        self.content = content
+        self.meta = meta
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case conversationID = "conversation_id"
+        case messageID = "message_id"
+        case artifactKey = "artifact_key"
+        case kind
+        case title
+        case content
+        case meta
+    }
+}
+
+public struct ChatArtifactSaveEditResponse: Codable, Hashable, Sendable {
+    public var version: Int64
+
+    public init(version: Int64) {
+        self.version = version
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case version
+    }
+}
+
+public struct ChatArtifactUnkeepRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var conversationID: Int64
+    public var artifactKey: String
+
+    public init(
+        requestID: String,
+        conversationID: Int64,
+        artifactKey: String
+    ) {
+        self.requestID = requestID
+        self.conversationID = conversationID
+        self.artifactKey = artifactKey
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case conversationID = "conversation_id"
+        case artifactKey = "artifact_key"
+    }
+}
+
+public struct ChatAttachLinkRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var attachmentIDs: [Int64]
+    public var messageID: Int64
+
+    public init(
+        requestID: String,
+        attachmentIDs: [Int64],
+        messageID: Int64
+    ) {
+        self.requestID = requestID
+        self.attachmentIDs = attachmentIDs
+        self.messageID = messageID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case attachmentIDs = "attachment_ids"
+        case messageID = "message_id"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.requestID = try container.decode(String.self, forKey: .requestID)
+        self.attachmentIDs = try container.decodeIfPresent([Int64].self, forKey: .attachmentIDs) ?? []
+        self.messageID = try container.decode(Int64.self, forKey: .messageID)
+    }
+}
+
+public struct ChatAttachRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var conversationID: Int64?
+    public var projectID: Int64?
+    public var name: String
+    public var dataBase64: String?
+    public var path: String?
+
+    public init(
+        requestID: String,
+        conversationID: Int64? = nil,
+        projectID: Int64? = nil,
+        name: String,
+        dataBase64: String? = nil,
+        path: String? = nil
+    ) {
+        self.requestID = requestID
+        self.conversationID = conversationID
+        self.projectID = projectID
+        self.name = name
+        self.dataBase64 = dataBase64
+        self.path = path
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case conversationID = "conversation_id"
+        case projectID = "project_id"
+        case name
+        case dataBase64 = "data_base64"
+        case path
+    }
+}
+
+public struct ChatAttachResponse: Codable, Hashable, Sendable {
+    public var attachmentID: Int64
+    public var mime: String
+    public var size: Int64
+    public var path: String
+
+    public init(
+        attachmentID: Int64,
+        mime: String,
+        size: Int64,
+        path: String
+    ) {
+        self.attachmentID = attachmentID
+        self.mime = mime
+        self.size = size
+        self.path = path
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case attachmentID = "attachment_id"
+        case mime
+        case size
+        case path
+    }
+}
+
+public struct ChatAttachmentRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var attachmentID: Int64
+
+    public init(
+        requestID: String,
+        attachmentID: Int64
+    ) {
+        self.requestID = requestID
+        self.attachmentID = attachmentID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case attachmentID = "attachment_id"
+    }
+}
+
+public struct ChatBranchRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var messageID: Int64
+
+    public init(
+        requestID: String,
+        messageID: Int64
+    ) {
+        self.requestID = requestID
+        self.messageID = messageID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case messageID = "message_id"
+    }
+}
+
+public struct ChatChanged: Codable, Hashable, Sendable {
+    public var changed: Bool
+
+    public init(changed: Bool) {
+        self.changed = changed
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case changed
+    }
+}
+
+public struct ChatCommentAddRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var conversationID: Int64
+    public var artifactKey: String
+    public var version: Int64
+    public var anchor: ChatCommentAnchor
+    public var body: String
+
+    public init(
+        requestID: String,
+        conversationID: Int64,
+        artifactKey: String,
+        version: Int64,
+        anchor: ChatCommentAnchor,
+        body: String
+    ) {
+        self.requestID = requestID
+        self.conversationID = conversationID
+        self.artifactKey = artifactKey
+        self.version = version
+        self.anchor = anchor
+        self.body = body
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case conversationID = "conversation_id"
+        case artifactKey = "artifact_key"
+        case version
+        case anchor
+        case body
+    }
+}
+
+public struct ChatCommentAddResponse: Codable, Hashable, Sendable {
+    public var commentID: Int64
+
+    public init(commentID: Int64) {
+        self.commentID = commentID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case commentID = "comment_id"
+    }
+}
+
+public struct ChatCommentAnchor: Codable, Hashable, Sendable {
+    public var quote: String
+    public var prefix: String
+    public var suffix: String
+    public var heading: String
+
+    public init(
+        quote: String,
+        prefix: String,
+        suffix: String,
+        heading: String
+    ) {
+        self.quote = quote
+        self.prefix = prefix
+        self.suffix = suffix
+        self.heading = heading
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case quote
+        case prefix
+        case suffix
+        case heading
+    }
+}
+
+public struct ChatCommentApplyRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var moved: [Int64]?
+    public var lost: [Int64]?
+    public var version: Int64
+
+    public init(
+        requestID: String,
+        moved: [Int64]? = nil,
+        lost: [Int64]? = nil,
+        version: Int64
+    ) {
+        self.requestID = requestID
+        self.moved = moved
+        self.lost = lost
+        self.version = version
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case moved
+        case lost
+        case version
+    }
+}
+
+public struct ChatCommentMarkSentRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var commentIDs: [Int64]
+    public var sentAt: Double
+
+    public init(
+        requestID: String,
+        commentIDs: [Int64],
+        sentAt: Double
+    ) {
+        self.requestID = requestID
+        self.commentIDs = commentIDs
+        self.sentAt = sentAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case commentIDs = "comment_ids"
+        case sentAt = "sent_at"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.requestID = try container.decode(String.self, forKey: .requestID)
+        self.commentIDs = try container.decodeIfPresent([Int64].self, forKey: .commentIDs) ?? []
+        self.sentAt = try container.decode(Double.self, forKey: .sentAt)
+    }
+}
+
+public struct ChatCommentRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var commentID: Int64
+
+    public init(
+        requestID: String,
+        commentID: Int64
+    ) {
+        self.requestID = requestID
+        self.commentID = commentID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case commentID = "comment_id"
+    }
+}
+
+public struct ChatContext: Codable, Hashable, Sendable {
+    public var type: String
+    public var id: String
+    public var title: String?
+    public var reuse: Bool?
+
+    public init(
+        type: String,
+        id: String,
+        title: String? = nil,
+        reuse: Bool? = nil
+    ) {
+        self.type = type
+        self.id = id
+        self.title = title
+        self.reuse = reuse
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case id
+        case title
+        case reuse
+    }
+}
+
+public struct ChatContextRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var conversationID: Int64
+    public var contextType: String
+    public var contextID: String
+
+    public init(
+        requestID: String,
+        conversationID: Int64,
+        contextType: String,
+        contextID: String
+    ) {
+        self.requestID = requestID
+        self.conversationID = conversationID
+        self.contextType = contextType
+        self.contextID = contextID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case conversationID = "conversation_id"
+        case contextType = "context_type"
+        case contextID = "context_id"
+    }
+}
+
+public struct ChatConversationRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var conversationID: Int64
+
+    public init(
+        requestID: String,
+        conversationID: Int64
+    ) {
+        self.requestID = requestID
+        self.conversationID = conversationID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case conversationID = "conversation_id"
+    }
+}
+
+public struct ChatCount: Codable, Hashable, Sendable {
+    public var count: Int64
+
+    public init(count: Int64) {
+        self.count = count
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case count
+    }
+}
+
+public struct ChatDeleteEmptyCodeQuestionsRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var workbenchID: Int64
+    public var createdBefore: Double
+    public var keeping: [Int64]?
+
+    public init(
+        requestID: String,
+        workbenchID: Int64,
+        createdBefore: Double,
+        keeping: [Int64]? = nil
+    ) {
+        self.requestID = requestID
+        self.workbenchID = workbenchID
+        self.createdBefore = createdBefore
+        self.keeping = keeping
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case workbenchID = "workbench_id"
+        case createdBefore = "created_before"
+        case keeping
+    }
+}
+
+public struct ChatDeleteRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var conversationID: Int64
+    public var contextType: String?
+
+    public init(
+        requestID: String,
+        conversationID: Int64,
+        contextType: String? = nil
+    ) {
+        self.requestID = requestID
+        self.conversationID = conversationID
+        self.contextType = contextType
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case conversationID = "conversation_id"
+        case contextType = "context_type"
+    }
+}
+
+public struct ChatDeleteUntouchedRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var conversationID: Int64
+    public var createdAt: Double
+    public var projectID: Int64?
+
+    public init(
+        requestID: String,
+        conversationID: Int64,
+        createdAt: Double,
+        projectID: Int64? = nil
+    ) {
+        self.requestID = requestID
+        self.conversationID = conversationID
+        self.createdAt = createdAt
+        self.projectID = projectID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case conversationID = "conversation_id"
+        case createdAt = "created_at"
+        case projectID = "project_id"
+    }
+}
+
+public struct ChatDone: Codable, Hashable, Sendable {
+    public init() {}
+}
+
+public struct ChatDraftClearRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var surfaceKey: String
+
+    public init(
+        requestID: String,
+        surfaceKey: String
+    ) {
+        self.requestID = requestID
+        self.surfaceKey = surfaceKey
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case surfaceKey = "surface_key"
+    }
+}
+
+public struct ChatDraftSaveRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var surfaceKey: String
+    public var text: String
+
+    public init(
+        requestID: String,
+        surfaceKey: String,
+        text: String
+    ) {
+        self.requestID = requestID
+        self.surfaceKey = surfaceKey
+        self.text = text
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case surfaceKey = "surface_key"
+        case text
+    }
+}
+
+public struct ChatNewRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var projectID: Int64?
+    public var routing: ChatRouting?
+    public var context: ChatContext?
+
+    public init(
+        requestID: String,
+        projectID: Int64? = nil,
+        routing: ChatRouting? = nil,
+        context: ChatContext? = nil
+    ) {
+        self.requestID = requestID
+        self.projectID = projectID
+        self.routing = routing
+        self.context = context
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case projectID = "project_id"
+        case routing
+        case context
+    }
+}
+
+public struct ChatNewResponse: Codable, Hashable, Sendable {
+    public var conversationID: Int64
+
+    public init(conversationID: Int64) {
+        self.conversationID = conversationID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case conversationID = "conversation_id"
+    }
+}
+
+public struct ChatPinRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var conversationID: Int64
+    public var pinned: Bool
+
+    public init(
+        requestID: String,
+        conversationID: Int64,
+        pinned: Bool
+    ) {
+        self.requestID = requestID
+        self.conversationID = conversationID
+        self.pinned = pinned
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case conversationID = "conversation_id"
+        case pinned
+    }
+}
+
+public struct ChatProjectAddSourceRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var projectID: Int64
+    public var kind: String
+    public var ref: String
+    public var label: String
+
+    public init(
+        requestID: String,
+        projectID: Int64,
+        kind: String,
+        ref: String,
+        label: String
+    ) {
+        self.requestID = requestID
+        self.projectID = projectID
+        self.kind = kind
+        self.ref = ref
+        self.label = label
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case projectID = "project_id"
+        case kind
+        case ref
+        case label
+    }
+}
+
+public struct ChatProjectCreateRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var name: String
+
+    public init(
+        requestID: String,
+        name: String
+    ) {
+        self.requestID = requestID
+        self.name = name
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case name
+    }
+}
+
+public struct ChatProjectCreateResponse: Codable, Hashable, Sendable {
+    public var projectID: Int64
+    public var name: String
+
+    public init(
+        projectID: Int64,
+        name: String
+    ) {
+        self.projectID = projectID
+        self.name = name
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case projectID = "project_id"
+        case name
+    }
+}
+
+public struct ChatProjectInstructionsRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var projectID: Int64
+    public var instructions: String
+
+    public init(
+        requestID: String,
+        projectID: Int64,
+        instructions: String
+    ) {
+        self.requestID = requestID
+        self.projectID = projectID
+        self.instructions = instructions
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case projectID = "project_id"
+        case instructions
+    }
+}
+
+public struct ChatProjectRenameRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var projectID: Int64
+    public var name: String
+
+    public init(
+        requestID: String,
+        projectID: Int64,
+        name: String
+    ) {
+        self.requestID = requestID
+        self.projectID = projectID
+        self.name = name
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case projectID = "project_id"
+        case name
+    }
+}
+
+public struct ChatProjectRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var projectID: Int64
+
+    public init(
+        requestID: String,
+        projectID: Int64
+    ) {
+        self.requestID = requestID
+        self.projectID = projectID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case projectID = "project_id"
+    }
+}
+
+public struct ChatProjectSourceRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var sourceID: Int64
+
+    public init(
+        requestID: String,
+        sourceID: Int64
+    ) {
+        self.requestID = requestID
+        self.sourceID = sourceID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case sourceID = "source_id"
+    }
+}
+
+public struct ChatReadRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var conversationID: Int64
+    public var messageID: Int64?
+
+    public init(
+        requestID: String,
+        conversationID: Int64,
+        messageID: Int64? = nil
+    ) {
+        self.requestID = requestID
+        self.conversationID = conversationID
+        self.messageID = messageID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case conversationID = "conversation_id"
+        case messageID = "message_id"
+    }
+}
+
+public struct ChatRecoverResponse: Codable, Hashable, Sendable {
+    public var marked: Int64
+    public var released: Bool
+
+    public init(
+        marked: Int64,
+        released: Bool
+    ) {
+        self.marked = marked
+        self.released = released
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case marked
+        case released
+    }
+}
+
+public struct ChatReleaseLaunchesRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var keep: String
+
+    public init(
+        requestID: String,
+        keep: String
+    ) {
+        self.requestID = requestID
+        self.keep = keep
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case keep
+    }
+}
+
+public struct ChatReleaseLaunchesResponse: Codable, Hashable, Sendable {
+    public var released: Int64
+
+    public init(released: Int64) {
+        self.released = released
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case released
+    }
+}
+
+public struct ChatRenameRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var conversationID: Int64
+    public var title: String
+
+    public init(
+        requestID: String,
+        conversationID: Int64,
+        title: String
+    ) {
+        self.requestID = requestID
+        self.conversationID = conversationID
+        self.title = title
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case conversationID = "conversation_id"
+        case title
+    }
+}
+
+public struct ChatReviewerThreadRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var projectID: Int64
+    public var branch: String
+
+    public init(
+        requestID: String,
+        projectID: Int64,
+        branch: String
+    ) {
+        self.requestID = requestID
+        self.projectID = projectID
+        self.branch = branch
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case projectID = "project_id"
+        case branch
+    }
+}
+
+public struct ChatRouting: Codable, Hashable, Sendable {
+    public var automatic: Bool
+    public var provider: String?
+    public var model: String?
+
+    public init(
+        automatic: Bool,
+        provider: String? = nil,
+        model: String? = nil
+    ) {
+        self.automatic = automatic
+        self.provider = provider
+        self.model = model
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case automatic
+        case provider
+        case model
+    }
+}
+
+public struct ChatSetModelRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var conversationID: Int64
+    public var provider: String
+    public var model: String?
+
+    public init(
+        requestID: String,
+        conversationID: Int64,
+        provider: String,
+        model: String? = nil
+    ) {
+        self.requestID = requestID
+        self.conversationID = conversationID
+        self.provider = provider
+        self.model = model
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case conversationID = "conversation_id"
+        case provider
+        case model
+    }
+}
+
+public struct ChatSetProjectRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var conversationID: Int64
+    public var projectID: Int64?
+
+    public init(
+        requestID: String,
+        conversationID: Int64,
+        projectID: Int64? = nil
+    ) {
+        self.requestID = requestID
+        self.conversationID = conversationID
+        self.projectID = projectID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case conversationID = "conversation_id"
+        case projectID = "project_id"
+    }
+}
+
+public struct ChatSetRoutingRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var conversationID: Int64
+    public var routing: ChatRouting
+
+    public init(
+        requestID: String,
+        conversationID: Int64,
+        routing: ChatRouting
+    ) {
+        self.requestID = requestID
+        self.conversationID = conversationID
+        self.routing = routing
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case conversationID = "conversation_id"
+        case routing
+    }
+}
+
+public struct ChatSetTitleRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var conversationID: Int64
+    public var title: String
+    public var ifEmpty: Bool?
+
+    public init(
+        requestID: String,
+        conversationID: Int64,
+        title: String,
+        ifEmpty: Bool? = nil
+    ) {
+        self.requestID = requestID
+        self.conversationID = conversationID
+        self.title = title
+        self.ifEmpty = ifEmpty
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case conversationID = "conversation_id"
+        case title
+        case ifEmpty = "if_empty"
+    }
+}
+
+public struct ChatTurnRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var conversationID: Int64
+    public var turnID: String
+
+    public init(
+        requestID: String,
+        conversationID: Int64,
+        turnID: String
+    ) {
+        self.requestID = requestID
+        self.conversationID = conversationID
+        self.turnID = turnID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case conversationID = "conversation_id"
+        case turnID = "turn_id"
+    }
+}
+
 public struct Feed: Codable, Hashable, Sendable {
     public var v: Int
     public var builtAt: String
@@ -645,6 +1689,36 @@ public struct LegacySection: Codable, Hashable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.kind = try container.decode(LegacyKind.self, forKey: .kind)
         self.items = try container.decodeIfPresent([LegacyItem].self, forKey: .items) ?? []
+    }
+}
+
+public struct MeetingsDeleteRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var transcriptID: Int64
+
+    public init(
+        requestID: String,
+        transcriptID: Int64
+    ) {
+        self.requestID = requestID
+        self.transcriptID = transcriptID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case transcriptID = "transcript_id"
+    }
+}
+
+public struct MeetingsDeleteResponse: Codable, Hashable, Sendable {
+    public var deleted: Bool
+
+    public init(deleted: Bool) {
+        self.deleted = deleted
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case deleted
     }
 }
 

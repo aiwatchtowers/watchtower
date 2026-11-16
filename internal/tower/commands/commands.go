@@ -3,6 +3,7 @@
 package commands
 
 import (
+	"watchtower/internal/chatstore"
 	"watchtower/internal/inboxfeed"
 	"watchtower/internal/tower"
 )
@@ -22,4 +23,6 @@ func RegisterAll(r *tower.Registry, d Deps) {
 	tower.RegisterBuiltins(r)
 	tower.RegisterPause(r)
 	inboxfeed.Register(r, d.DisabledFeatures)
+	// Stage 3: the conversation-level chat writes (chat.*).
+	chatstore.RegisterCommands(r)
 }
