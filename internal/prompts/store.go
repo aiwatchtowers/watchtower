@@ -68,6 +68,7 @@ const (
 	MediaSummarizeLink         = "media.summarize_link"
 	WatchmanDecide             = "watchman.decide"
 	WatchmanLabel              = "watchman.label"
+	WatchmanProfile            = "watchman.profile"
 )
 
 // Store loads, caches, and persists prompt templates.

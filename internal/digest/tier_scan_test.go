@@ -68,6 +68,7 @@ var allowedStrongSources = []allowedStrongSource{
 	{"workbench.spec_review", "spec reviewer: judges a spec or plan against what the owner agreed (agreements, decided alone, blind spots); spec 2026-10-25-spec-review-design §3 names the strong tier"},
 	{"coach.propose", "agent coach: turns weeks of signals into exact edits of the owner's instructions, prompt additions and allow rules, preferring cuts and merges; a weekly call whose output the owner applies to every later session (spec 2026-10-26-agent-coach-design §6)"},
 	{"watchman.decide", "Watchman twin: predicts the owner's decision on a workbench item from his precedents, profile and instructions; a judgment call the backtest measures against him (spec 2026-11-16-watchman-design §4: strong tier)"},
+	{"watchman.profile", "Watchman profile: distils a category's past owner decisions into the rules the twin decides by; a weekly judgment call over free text (spec 2026-11-16-watchman-design §8.3: strong tier)"},
 
 	// Newly tagged by fix-wave-4 task 6 (previously untagged, logged
 	// source:"unknown"): tag-only per decision 9 — attribution fixed, tier

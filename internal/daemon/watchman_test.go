@@ -72,3 +72,68 @@ func TestPhaseWatchmanLearn_LearnsEnabledWorkbench(t *testing.T) {
 	require.NoError(t, database.QueryRow(`SELECT learned_through FROM watchman_workbenches WHERE workbench_id = ?`, wb).Scan(&learned))
 	assert.NotNil(t, learned, "every source is done")
 }
+
+type watchmanProfileGen struct{ calls int }
+
+func (g *watchmanProfileGen) Generate(context.Context, string, string, string) (string, *digest.Usage, string, error) {
+	g.calls++
+	return `{"rules": ["Prefers small steps"]}`, &digest.Usage{}, "", nil
+}
+
+func TestPhaseWatchmanProfile_WeeklyStamp(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	stubWatchman(t)
+	gen := &watchmanProfileGen{}
+	prev := watchmanGeneratorFactory
+	watchmanGeneratorFactory = func(*config.Config) digest.Generator { return gen }
+	t.Cleanup(func() { watchmanGeneratorFactory = prev })
+
+	wb, err := database.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, database.EnableWatchmanWorkbench(wb, time.Now(), 5))
+	seedDesignPrecedents(t, database, wb)
+
+	d.phaseWatchmanProfile(context.Background())
+	assert.Equal(t, 1, gen.calls)
+	assert.Equal(t, []string{"watchman-profile"}, pipelineRunNames(t, database))
+	assert.False(t, readUnixStamp(d.lastWatchmanProfilePath()).IsZero(), "the weekly stamp is written")
+	profiles, err := database.WatchmanProfiles(wb)
+	require.NoError(t, err)
+	keys := map[string]string{}
+	for _, p := range profiles {
+		keys[p.Key] = p.Text
+	}
+	assert.Equal(t, map[string]string{"design": "Prefers small steps", "sleep_window": ""}, keys)
+
+	d.phaseWatchmanProfile(context.Background())
+	assert.Equal(t, 1, gen.calls, "within the week: no second run")
+}
+
+func TestPhaseWatchmanProfile_FailureRetriedNextDay(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	stubWatchman(t) // its generator's reply is not a profile: the category fails
+	wb, err := database.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, database.EnableWatchmanWorkbench(wb, time.Now(), 5))
+	seedDesignPrecedents(t, database, wb)
+
+	d.phaseWatchmanProfile(context.Background())
+	assert.True(t, readUnixStamp(d.lastWatchmanProfilePath()).IsZero())
+	assert.False(t, readUnixStamp(d.lastWatchmanProfileFailedPath()).IsZero())
+	d.phaseWatchmanProfile(context.Background())
+	assert.Len(t, pipelineRunNames(t, database), 1, "a failed run waits a day")
+}
+
+// seedDesignPrecedents stores five design precedents: enough for a profile.
+func seedDesignPrecedents(t *testing.T, database *db.DB, wb int64) {
+	t.Helper()
+	tx, err := database.Begin()
+	require.NoError(t, err)
+	var ps []db.WatchmanPrecedent
+	for i := 0; i < 5; i++ {
+		ps = append(ps, db.WatchmanPrecedent{WorkbenchID: wb, Source: "ask", SourceKey: string(rune('a' + i)), Category: "design",
+			Situation: "s", Choice: "c", DecidedAt: time.Date(2026, 11, 1, i, 0, 0, 0, time.UTC), Weight: 1})
+	}
+	require.NoError(t, database.UpsertWatchmanPrecedents(tx, ps))
+	require.NoError(t, tx.Commit())
+}

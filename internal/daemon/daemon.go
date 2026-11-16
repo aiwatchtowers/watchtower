@@ -711,6 +711,8 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	// Watchman's learning: mechanical reads plus light-tier labels, its own
 	// 5-minute budget shared across workbenches.
 	d.phaseWatchmanLearn(ctx)
+	// Weekly: category profiles (strong tier) and the learned sleep window.
+	d.phaseWatchmanProfile(ctx)
 	// After the knowledge index: the fill is mechanical (no AI) and needs no
 	// fresh sync — Slack sync's own writes already reach the new index
 	// through the triggers — so it runs once the cycle's sync is done.
