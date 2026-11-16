@@ -31,7 +31,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Calendar events are missing](troubleshooting/calendar-events-missing.md) — a hidden Calendar tab, sync banners and unselected calendars
 - [Recording or transcript problems](troubleshooting/recording-or-transcript-problems.md) — macOS permissions, no call audio, failed transcription and missing recaps
 - [A Workbench session or ask is stuck](troubleshooting/workbench-session-or-ask-stuck.md) — an answer that did not reach the agent, a session with no state
-- [The iPhone is not syncing](troubleshooting/iphone-not-syncing.md) — "Mac offline", pairing across builds, codes and iCloud
+- [The iPhone is not syncing](troubleshooting/iphone-not-syncing.md) — "<tower> · offline", pairing across builds, codes and iCloud
 - [Plan limits and high cost](troubleshooting/plan-limits-or-high-cost.md) — subscription warnings, rate limits and how to spend fewer tokens
 - [An automation run stopped at a limit](troubleshooting/automation-run-limits.md) — what the per-run call, output and session limits mean and what to do when a run cannot finish
 - [Known issues](troubleshooting/known-issues.md) — where the app does something other than its screen says, with workarounds
