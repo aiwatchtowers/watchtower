@@ -63,3 +63,23 @@ public enum ChatQuestionAnswer {
         return result
     }
 }
+
+extension ChatQuestionAnswer.Entry {
+    /// `label` clicked or picked by its digit: a multi-choice question's
+    /// labels toggle it; a single-choice question's become it alone, its
+    /// Other cleared (one answer per single-choice question).
+    public func toggling(_ label: String, multi: Bool) -> Self {
+        var entry = self
+        if multi {
+            if let index = entry.labels.firstIndex(of: label) {
+                entry.labels.remove(at: index)
+            } else {
+                entry.labels.append(label)
+            }
+        } else {
+            entry.labels = [label]
+            entry.other = nil
+        }
+        return entry
+    }
+}
