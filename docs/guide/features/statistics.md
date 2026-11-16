@@ -40,7 +40,7 @@ text: In **Statistics** → **Channels**, press **Stop syncing** on a row or a s
 area: communication
 level: next
 kind: feature
-since: next
+since: 0.28.4
 action: nav:statistics
 -->
 

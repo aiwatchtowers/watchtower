@@ -50,7 +50,7 @@ text: In a long chat, ask about something said or made early on; the assistant r
 area: assistant
 level: next
 kind: tip
-since: next
+since: 0.28.4
 action: nav:chat
 -->
 

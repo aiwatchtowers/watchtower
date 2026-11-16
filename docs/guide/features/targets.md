@@ -18,7 +18,7 @@ changed: The button is now called **Make a Task**.
 area: tasks
 level: next
 kind: tip
-since: next
+since: 0.28.4
 action: nav:targets
 -->
 <!-- learn
