@@ -34,6 +34,21 @@ enum PhoneTone: Equatable, Sendable {
         }
     }
 
+    /// An Inbox card block's tone (`ArtifactTone`), the colour the Mac's
+    /// `Tone.artifact(_:)` gives it: the only way a card's script picks a
+    /// colour on the phone. `warning` is the card's own word (mockup §4's
+    /// tone pill), named here so screens never name orange.
+    static func artifact(_ tone: ArtifactTone) -> Self {
+        switch tone {
+        case .neutral: .secondary
+        case .info: .blue
+        case .success: .green
+        case .warning: .orange
+        case .danger: .red
+        case .accent: .accent
+        }
+    }
+
     /// The status colours come from the Desktop's `Tone.status(_:)` table
     /// (one copy in WatchtowerDesign); orange stays named here only.
     var color: Color {
