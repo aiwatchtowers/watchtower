@@ -89,6 +89,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(SlackFullLiveShotFixtures.shots)
     }
 
+    /// The unified chat's new states and baselines (#1822 T0).
+    func testUnifiedChatShotsRender() throws {
+        try renderShots(UnifiedChatShotFixtures.shots)
+    }
+
     /// The adaptive Slack sync plan's Statistics mockups (#1709).
     func testSlackAdaptiveSyncShotsRender() throws {
         try renderShots(SlackAdaptiveSyncShotFixtures.shots)
