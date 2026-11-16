@@ -183,6 +183,30 @@ final class InboxTabWiringTests: XCTestCase {
         XCTAssertFalse(InboxCardButtons.state(1, roundup, center: center).enabled)
     }
 
+    /// Mockup §3 "Approve — sending": while Approve is on its way only "Approving…" shows; Reject comes back after.
+    func testApprovingShowsOnlyTheBusyButton() async throws {
+        let hub = FakeInboxHub(feed: feed)
+        let center = try await startedInboxCenter(hub)
+        let proposal = try XCTUnwrap(center.feed?.cards.first { $0.id == DemoSeed.Inbox.slackProposal })
+        let model = InboxApprovalModel(card: proposal, platform: .phone, grants: .all, now: now)
+        let state = { (key: String) in center.state(key) }
+        XCTAssertNil(InboxApprovalCard.busyVerb(proposal, state: state))
+        XCTAssertEqual(InboxApprovalCard.shownVerbs(model, busy: nil), [.approve, .reject])
+
+        let key = InboxPressKey.approval(proposal, .approve)
+        let press = Task { await center.press(key, on: proposal.id, hides: true) { model.approve(requestID: $0) } }
+        try await poll({ hub.requests.count == 1 }, "Approve queued")
+        let busy = InboxApprovalCard.busyVerb(proposal, state: state)
+        XCTAssertEqual(busy, .approve)
+        XCTAssertEqual(InboxApprovalCard.shownVerbs(model, busy: busy), [.approve], "Reject hides while approving")
+        XCTAssertEqual(InboxApprovalCard.busyTitle(.approve), InboxText.approving)
+
+        hub.transport.settle(actionID: "act-1", .refused(code: .argsChanged, sentence: "This proposal changed — look again."))
+        await press.value
+        XCTAssertNil(InboxApprovalCard.busyVerb(proposal, state: state))
+        XCTAssertEqual(InboxApprovalCard.shownVerbs(model, busy: nil), [.approve, .reject], "the decision row is back")
+    }
+
     func testDidntConfirmShowsRefresh() async throws {
         let hub = FakeInboxHub(feed: feed)
         let center = try await startedInboxCenter(hub)

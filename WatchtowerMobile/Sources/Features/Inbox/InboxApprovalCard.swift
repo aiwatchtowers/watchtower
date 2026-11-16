@@ -86,21 +86,48 @@ struct InboxApprovalCard: View {
                 Text(InboxText.didntFinish).font(TypeScale.meta).foregroundStyle(.secondary)
                 verb(.retry, InboxText.tryAgain, primary: true, busy: InboxText.approving)
             case .decision:
-                if model.canApprove {
-                    verb(.approve, InboxText.approve, primary: true, busy: InboxText.approving)
-                } else if let note = model.approveNote {
+                let busy = Self.busyVerb(card.card) { center.state($0) }
+                if busy == nil, !model.canApprove, let note = model.approveNote {
                     Button(note) {}.buttonStyle(PhoneArtifactButtonStyle(primary: false)).disabled(true).opacity(PhoneOpacity.disabled)
                 }
-                if model.canRetry {
-                    verb(.retry, InboxText.retry, primary: true, busy: InboxText.approving)
-                }
-                if model.canReject {
-                    verb(.reject, InboxText.reject, primary: false, busy: InboxText.rejecting)
-                }
-                if model.canDismiss {
-                    verb(.dismiss, InboxText.dismiss, primary: false, busy: nil)
+                ForEach(Self.shownVerbs(model, busy: busy), id: \.rawValue) { item in
+                    verb(item, Self.title(item), primary: item == .approve || item == .retry, busy: Self.busyTitle(item))
                 }
             }
+        }
+    }
+
+    /// The decision row's verbs (mockup §3): Approve, Retry, Reject, Dismiss as the model offers them; while one is
+    /// on its way only that one shows ("Approving…").
+    static func shownVerbs(_ model: InboxApprovalModel, busy: ApprovalVerb?) -> [ApprovalVerb] {
+        if let busy { return [busy] }
+        return [
+            model.canApprove ? ApprovalVerb.approve : nil,
+            model.canRetry ? .retry : nil,
+            model.canReject ? .reject : nil,
+            model.canDismiss ? .dismiss : nil
+        ].compactMap { $0 }
+    }
+
+    /// The approval verb of `card` whose press is on its way, if any.
+    static func busyVerb(_ card: InboxCard, state: (String) -> TowerActionState?) -> ApprovalVerb? {
+        [ApprovalVerb.approve, .retry, .reject, .dismiss].first { state(InboxPressKey.approval(card, $0)) == .busy }
+    }
+
+    static func title(_ verb: ApprovalVerb) -> String {
+        switch verb {
+        case .approve: InboxText.approve
+        case .retry: InboxText.retry
+        case .reject: InboxText.reject
+        default: InboxText.dismiss
+        }
+    }
+
+    static func busyTitle(_ verb: ApprovalVerb) -> String? {
+        switch verb {
+        case .approve, .retry: InboxText.approving
+        case .reject: InboxText.rejecting
+        default: nil
         }
     }
 

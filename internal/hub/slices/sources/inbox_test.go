@@ -112,7 +112,7 @@ func TestInboxSource_RecordsMatchTheGoGolden(t *testing.T) {
 					t.Errorf("folder %d:\n got %s\nwant %s", f.ID, got, want)
 				}
 			}
-			for _, card := range c.Expect.Cards {
+			for i, card := range c.Expect.Cards {
 				if card.Legacy != nil {
 					doc, err := inboxlegacy.Project(*card.Legacy)
 					if err != nil {
@@ -120,7 +120,8 @@ func TestInboxSource_RecordsMatchTheGoGolden(t *testing.T) {
 					}
 					card.Blocks = doc
 				}
-				if got, want := cards[card.ID], marshalWire(t, card); string(got) != string(want) {
+				// Each card carries its place in the feed's order.
+				if got, want := cards[card.ID], marshalWire(t, inboxCardRecord{Card: card, Position: i}); string(got) != string(want) {
 					t.Errorf("card %s:\n got %s\nwant %s", card.ID, got, want)
 				}
 			}
@@ -332,5 +333,27 @@ func TestInboxSource_AnOldBuildIsNotShared(t *testing.T) {
 	}
 	if builds != 2 {
 		t.Fatalf("%d builds, want 2: a minute-old feed was shared", builds)
+	}
+}
+
+// TestInboxSource_CardsCarryTheirFeedPosition: the replica keeps no publish
+// order, so each inbox_card record carries its card's place in the feed (a
+// fallback card too), from which the phone lists cards as the Mac does.
+func TestInboxSource_CardsCarryTheirFeedPosition(t *testing.T) {
+	huge := strings.Repeat("x", inboxRecordBudget+1)
+	build := func(context.Context, inboxfeed.Options) (api.Feed, error) {
+		return api.Feed{V: 1, Folders: []api.Folder{{ID: 1, Kind: api.FolderRoot}}, Cards: []api.Card{
+			{ID: "a2", FolderID: 1}, {ID: "o9", FolderID: 1, Body: huge}, {ID: "o1", FolderID: 1},
+		}}, nil
+	}
+	_, cards := inboxItems(t, InboxSource(build, nil))
+	for id, want := range map[string]int{"a2": 0, "o9": 1, "o1": 2} {
+		var rec struct {
+			Position *int   `json:"position"`
+			CardKind string `json:"card_kind"`
+		}
+		if err := json.Unmarshal(cards[id], &rec); err != nil || rec.Position == nil || *rec.Position != want {
+			t.Fatalf("card %s record %.120s (%v), want position %d", id, cards[id], err, want)
+		}
 	}
 }

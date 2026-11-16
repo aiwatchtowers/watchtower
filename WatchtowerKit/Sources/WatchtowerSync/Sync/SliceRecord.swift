@@ -71,7 +71,8 @@ public enum SliceKind: String, Codable, CaseIterable, Sendable {
     // organization's MobileSync policy allows company data.
     /// One Inbox folder, `inbox_folder-<folder id>` (the generated `Folder`).
     case inboxFolder = "inbox_folder"
-    /// One Inbox card, `inbox_card-<card id>` (the generated `Card`; a legacy card's `blocks` from the hub).
+    /// One Inbox card, `inbox_card-<card id>` (the generated `Card` plus `position`, its place in the feed's order;
+    /// a legacy card's `blocks` from the hub).
     case inboxCard = "inbox_card"
 
     public func recordName(id: String) -> String {

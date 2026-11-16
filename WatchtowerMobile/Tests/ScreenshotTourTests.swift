@@ -91,9 +91,11 @@ final class ScreenshotTourTests: XCTestCase {
         }
         let dir = URL(fileURLWithPath: path, isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let (root, _) = try makeDemoRoot()
+        let (root, demo) = try makeDemoRoot()
         try await poll({ Self.isHydrated(root.env) }, "the demo seed hydrated")
-        let rows = try await captureInbox(host: ScreenshotHost(directory: dir, env: root.env, linking: root.linking))
+        let rows = try await captureInbox(host: ScreenshotHost(directory: dir, env: root.env, linking: root.linking)) {
+            try await self.putDemoMacToSleep(demo, env: root.env)
+        }
         XCTAssertEqual(rows.map(\.number), InboxTourFrames.all.map(\.slug))
         let written = try FileManager.default.contentsOfDirectory(atPath: path)
             .filter { name in rows.contains { name.hasPrefix($0.number + "-") } && name.hasSuffix(".png") }
@@ -117,8 +119,10 @@ final class ScreenshotTourTests: XCTestCase {
         }
         let meetingRows = try await captureMeetingSoon(host: host)
         // Before the Mac falls asleep for good: the chat frames' chip is online but in 1d.
+        // Before the chats: their last frame, like the Inbox's, puts the demo Mac to sleep.
+        let inboxRows = try await captureInbox(host: host) { try await self.putDemoMacToSleep(demo, env: root.env) }
+        try await wakeDemoMac(demo, env: root.env)
         let chatRows = try await captureChats(demo: demo, host: host)
-        let inboxRows = try await captureInbox(host: host)
         let asleepRows = try await captureMacAsleep(root.env, demo: demo, host: host)
             + (try await captureSessionStates(root.env, demo: demo, host: host))
             + (try await captureAskSources(root.env, demo: demo, host: host))
@@ -259,11 +263,7 @@ final class ScreenshotTourTests: XCTestCase {
 
         // 1d: the Mac asleep (its heartbeat 40 min old), the last list the phone holds.
         let stale = now.addingTimeInterval(-2_400)
-        let beat = try XCTUnwrap(DemoSeed.records(now: stale).first { $0.recordName == HeartbeatPayload.recordName })
-        let sealing = DemoSeed.hubTransport(inner: demo.transport, seq: DemoSeed.hubSeq(defaults: demo.defaults, now: Date()))
-        try await sealing.save([beat])
-        _ = await env.refresh(.pull)
-        try await poll({ env.macReachability(now: Date()) != .online }, "the demo Mac fell asleep")
+        try await putDemoMacToSleep(demo, env: env, at: stale)
         try await shot(
             "C1d", "chats-mac-asleep", "Mac asleep, the held list",
             ChatsShot(
@@ -272,6 +272,24 @@ final class ScreenshotTourTests: XCTestCase {
             )
         )
         return rows
+    }
+
+    /// The demo Mac asleep: its heartbeat `at` (40 min ago by default), published and fetched, so every chip reads it.
+    private func putDemoMacToSleep(_ demo: DemoHub, env: AppEnvironment, at stale: Date = Date().addingTimeInterval(-2_400)) async throws {
+        let beat = try XCTUnwrap(DemoSeed.records(now: stale).first { $0.recordName == HeartbeatPayload.recordName })
+        let sealing = DemoSeed.hubTransport(inner: demo.transport, seq: DemoSeed.hubSeq(defaults: demo.defaults, now: Date()))
+        try await sealing.save([beat])
+        _ = await env.refresh(.pull)
+        try await poll({ env.macReachability(now: Date()) != .online }, "the demo Mac fell asleep")
+    }
+
+    /// The demo Mac awake again: a fresh heartbeat, published and fetched.
+    private func wakeDemoMac(_ demo: DemoHub, env: AppEnvironment) async throws {
+        let beat = try XCTUnwrap(DemoSeed.records(now: Date()).first { $0.recordName == HeartbeatPayload.recordName })
+        let sealing = DemoSeed.hubTransport(inner: demo.transport, seq: DemoSeed.hubSeq(defaults: demo.defaults, now: Date()))
+        try await sealing.save([beat])
+        _ = await env.refresh(.pull)
+        try await poll({ env.macReachability(now: Date()) == .online }, "the demo Mac woke")
     }
 
     /// C2a–C2i, C3a–C3c (iPhone chat mockups 2a–2i, 3a–3c): each conversation in the full app over its own center;

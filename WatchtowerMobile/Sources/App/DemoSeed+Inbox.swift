@@ -45,8 +45,12 @@ extension DemoSeed {
                 CloudRecordFactory.record(for: SliceRecord(
                     kind: .inboxFolder, id: String(folder.id), modifiedAt: now, payload: try encoder.encode(folder)))
             }
-            let cards = try cards(now: now).map { card in
-                CloudRecordFactory.record(for: SliceRecord(kind: .inboxCard, id: card.id, modifiedAt: now, payload: try encoder.encode(card)))
+            // Each card with its place in the feed, as the hub publishes it.
+            let cards = try cards(now: now).enumerated().map { position, card in
+                var object = try JSONSerialization.jsonObject(with: try encoder.encode(card)) as? [String: Any] ?? [:]
+                object["position"] = position
+                let payload = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+                return CloudRecordFactory.record(for: SliceRecord(kind: .inboxCard, id: card.id, modifiedAt: now, payload: payload))
             }
             return folders + cards
         }

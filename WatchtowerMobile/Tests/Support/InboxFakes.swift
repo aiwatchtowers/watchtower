@@ -33,7 +33,7 @@ final class FakeInboxHub: @unchecked Sendable {
         }
     )
 
-    /// The hub's records of `feed`, as `InboxSource` writes them.
+    /// The hub's records of `feed`, as `InboxSource` writes them (each card with its feed position).
     static func records(_ feed: Feed) throws -> InboxRecords {
         let encoder = JSONEncoder()
         let more = Dictionary((feed.more ?? []).map { ($0.folderID, $0.count) }) { first, _ in first }
@@ -42,7 +42,12 @@ final class FakeInboxHub: @unchecked Sendable {
             if let count = more[folder.id] { object["more"] = count }
             return try JSONSerialization.data(withJSONObject: object)
         }
-        return InboxRecords(folders: folders, cards: try feed.cards.map { try encoder.encode($0) })
+        let cards = try feed.cards.enumerated().map { position, card -> Data in
+            var object = try XCTUnwrap(JSONSerialization.jsonObject(with: try encoder.encode(card)) as? [String: Any])
+            object["position"] = position
+            return try JSONSerialization.data(withJSONObject: object)
+        }
+        return InboxRecords(folders: folders, cards: cards)
     }
 }
 

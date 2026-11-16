@@ -43,12 +43,19 @@ extension ScreenshotTourTests {
     }
 
     /// Every Inbox frame in the full app (the tab bar with its badge), light and dark; the Reply… sheet on its own.
-    func captureInbox(host: ScreenshotHost) async throws -> [ScreenshotHost.IndexRow] {
+    /// The Mac-away frame goes last, after `fallAsleep` made the demo Mac asleep, so its chip reads it.
+    func captureInbox(host: ScreenshotHost, fallAsleep: () async throws -> Void) async throws -> [ScreenshotHost.IndexRow] {
         let env = host.env
         let now = Date()
-        var rows: [ScreenshotHost.IndexRow] = []
-        for (frame, slug) in InboxTourFrames.all {
-            let made = Self.inboxFrame(slug, now: now)
+        let away = "inbox-mac-away"
+        var rows: [String: ScreenshotHost.IndexRow] = [:]
+        for (frame, slug) in InboxTourFrames.all.sorted(by: { ($0.slug == away ? 1 : 0) < ($1.slug == away ? 1 : 0) }) {
+            if slug == away { try await fallAsleep() }
+            var made = Self.inboxFrame(slug, now: now)
+            if slug == away, let asOf = env.macReachability(now: now).asOf {
+                // "as of" agrees with the chip's last seen.
+                made.shot.inputs.macAway = asOf
+            }
             if let alone = made.alone {
                 try await host.capture(slug, alone)
             } else {
@@ -56,12 +63,12 @@ extension ScreenshotTourTests {
                 env.navigation.inboxPath = made.path
                 try await host.capture(slug, RootTabView(inboxShot: made.shot), settle: .milliseconds(1_500))
             }
-            rows.append(ScreenshotHost.IndexRow(
+            rows[slug] = ScreenshotHost.IndexRow(
                 number: slug, view: "InboxTabView", source: "Features/Inbox/", reached: "mockup §\(frame), light/dark"
-            ))
+            )
         }
         env.navigation.inboxPath = []
-        return rows
+        return InboxTourFrames.all.compactMap { rows[$0.slug] }
     }
 
     // swiftlint:disable:next cyclomatic_complexity function_body_length

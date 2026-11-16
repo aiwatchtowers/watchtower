@@ -188,8 +188,9 @@ final class HubTransport: TowerTransport, @unchecked Sendable {
     // MARK: - The feed
 
     /// The records back into the generated `Feed`: folders as published (`more` read off each folder record), cards
-    /// in the feed's order — Needs approval's first, then the pinned ones, then newest first by stamp (`inboxfeed.
-    /// Limit`'s order; a folder's list keeps it). Records that do not decode are left out.
+    /// in the feed's own order by each record's `position` (the replica keeps no publish order). A record without
+    /// one (an older hub) sorts after them in `inboxfeed.Limit`'s order — Needs approval's open entries, the pinned
+    /// cards, then newest first. Records that do not decode are left out.
     static func assemble(_ records: InboxRecords) throws -> Feed {
         let decoder = JSONDecoder()
         var folders: [Folder] = []
@@ -200,31 +201,38 @@ final class HubTransport: TowerTransport, @unchecked Sendable {
                 continue
             }
             folders.append(folder)
-            if let extra = try? decoder.decode(FolderExtra.self, from: payload), let count = extra.more, count > 0 {
+            if let extra = try? decoder.decode(RecordExtra.self, from: payload), let count = extra.more, count > 0 {
                 more.append(FolderMore(folderID: folder.id, count: count))
             }
         }
         folders.sort { ($0.position, $0.id) < ($1.position, $1.id) }
         let approvals = folders.first { $0.kind == .approvals }?.id
-        let cards = records.cards.compactMap { payload -> InboxCard? in
+        let cards = records.cards.compactMap { payload -> (card: InboxCard, position: Int?)? in
             guard let card = try? decoder.decode(InboxCard.self, from: payload) else {
                 logger.warning("an inbox card record does not decode")
                 return nil
             }
-            return card
+            return (card, (try? decoder.decode(RecordExtra.self, from: payload))?.position)
         }
         .sorted { lhs, rhs in
-            let (a, b) = (tier(lhs, approvals), tier(rhs, approvals))
+            switch (lhs.position, rhs.position) {
+            case let (a?, b?) where a != b: return a < b
+            case (.some, nil): return true
+            case (nil, .some): return false
+            default: break
+            }
+            let (a, b) = (tier(lhs.card, approvals), tier(rhs.card, approvals))
             if a != b { return a < b }
-            if lhs.stamp != rhs.stamp { return lhs.stamp > rhs.stamp }
-            return lhs.id < rhs.id
+            if lhs.card.stamp != rhs.card.stamp { return lhs.card.stamp > rhs.card.stamp }
+            return lhs.card.id < rhs.card.id
         }
+        .map(\.card)
         more.sort { $0.folderID < $1.folderID }
         return Feed(v: 1, builtAt: "", folders: folders, cards: cards, more: more.isEmpty ? nil : more)
     }
 
     /// Needs approval (0), the pinned cards (1), the rest (2); inside Needs approval, an open proposal before a
-    /// settled one.
+    /// settled one. Only for records from a hub that sends no position.
     private static func tier(_ card: InboxCard, _ approvals: Int64?) -> Int {
         if card.folderID == approvals {
             let open = card.approval.map { $0.status == "pending" || $0.status == "failed" } ?? true
@@ -233,8 +241,10 @@ final class HubTransport: TowerTransport, @unchecked Sendable {
         return card.pinned ? 2 : 3
     }
 
-    private struct FolderExtra: Decodable {
+    /// What a record carries beside the generated type: a folder's `more`, a card's `position`.
+    private struct RecordExtra: Decodable {
         let more: Int?
+        let position: Int?
     }
 
     /// Every Inbox record of `store`.

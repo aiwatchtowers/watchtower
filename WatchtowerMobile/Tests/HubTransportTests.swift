@@ -23,14 +23,22 @@ final class HubTransportTests: XCTestCase {
         let assembled = try HubTransport.assemble(records)
 
         XCTAssertEqual(assembled.folders.map(\.id), feed.folders.sorted { ($0.position, $0.id) < ($1.position, $1.id) }.map(\.id))
-        XCTAssertEqual(Set(assembled.cards.map(\.id)), Set(feed.cards.map(\.id)))
+        XCTAssertEqual(assembled.cards.map(\.id), feed.cards.map(\.id), "each record's position: the feed's own order")
         XCTAssertEqual(assembled.more, [FolderMore(folderID: DemoSeed.Inbox.releaseID, count: 42)])
-        // inboxfeed.Limit's order: Needs approval's open proposals, then the pinned card, then newest first.
-        let approvals = assembled.cards.prefix { $0.folderID == DemoSeed.Inbox.approvalsID }
-        XCTAssertEqual(approvals.count, 4, "the open proposals and the reminder lead")
-        let rest = assembled.cards.dropFirst(4)
-        XCTAssertEqual(rest.first?.id, DemoSeed.Inbox.waitingForMe, "then the pinned card")
-        XCTAssertEqual(Array(rest.dropFirst().map(\.stamp)), rest.dropFirst().map(\.stamp).sorted(by: >), "then newest first")
+        let approvals = { (cards: [InboxCard]) in cards.filter { $0.folderID == DemoSeed.Inbox.approvalsID }.map(\.id) }
+        XCTAssertEqual(approvals(assembled.cards), approvals(feed.cards), "Needs approval lists as the feed does")
+
+        // An older hub sends no position: inboxfeed.Limit's order — Needs approval's open entries, the pinned card,
+        // then newest first.
+        let unpositioned = InboxRecords(folders: records.folders, cards: try records.cards.dropLast().map { payload in
+            var object = try XCTUnwrap(JSONSerialization.jsonObject(with: payload) as? [String: Any])
+            object["position"] = nil
+            return try JSONSerialization.data(withJSONObject: object)
+        })
+        let fallback = try HubTransport.assemble(unpositioned).cards
+        XCTAssertEqual(fallback.prefix { $0.folderID == DemoSeed.Inbox.approvalsID }.count, 4)
+        XCTAssertEqual(fallback.dropFirst(4).first?.id, DemoSeed.Inbox.waitingForMe)
+        XCTAssertEqual(Array(fallback.dropFirst(5).map(\.stamp)), fallback.dropFirst(5).map(\.stamp).sorted(by: >))
 
         let root = InboxRootModel(feed: assembled, platform: .phone)
         XCTAssertEqual(root.badge, 5, "Needs approval's 2 and Waiting for me's 3")
