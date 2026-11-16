@@ -397,9 +397,11 @@ final class WorkbenchesViewModelPlacedCleanupTests: XCTestCase {
         let center = try XCTUnwrap(vm.sessionCleanup)
         let workbenchID = try XCTUnwrap(row.projectID)
         await center.acquireSlot(workbenchID: workbenchID)
+        let waits = CallSignal()
+        center.onSlotWait = { _ in waits.hit() }
 
         try XCTUnwrap(processes[row.id]).exit(0)
-        await waitUntil(timeout: 0.3) { !self.applyCalls(runner).isEmpty }
+        await waits.until(1) // the placed cleanup waits for the slot: an event, not a clock
         XCTAssertTrue(applyCalls(runner).isEmpty, "waits for the slot")
         XCTAssertNotNil(vm.placedCleanupRuns[row.id])
 
