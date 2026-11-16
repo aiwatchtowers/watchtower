@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"sync"
 
-	"golang.org/x/sys/unix"
-
 	"watchtower/internal/ownerconfirm"
 	"watchtower/internal/platform"
 )
@@ -110,7 +108,7 @@ func NewServer(e *Engine, o ServerOptions) *Server {
 	if o.VerifyCLI == nil {
 		o.VerifyCLI = ownerconfirm.VerifySameTeamCLI
 	}
-	return &Server{e: e, o: o, peer: unixPeer, pending: unixPending, conns: map[*conn]struct{}{}}
+	return &Server{e: e, o: o, peer: unixPeer, pending: platform.Pending, conns: map[*conn]struct{}{}}
 }
 
 // unixPeer is the uid and the audit token of the process at the other end
@@ -129,31 +127,6 @@ func unixPeer(c net.Conn) peerCreds {
 		return peerCreds{err: err}
 	}
 	return peerCreds{uid: uid, token: t}
-}
-
-// unixPending is whether bytes wait to be read on a unix connection (a
-// non-blocking peek: 1 when any do, 0 when none; a closed peer is 0 too, its
-// hello then never comes).
-func unixPending(c net.Conn) (int, error) {
-	uc, ok := c.(*net.UnixConn)
-	if !ok {
-		return 0, errors.New("chatengine: not a unix connection")
-	}
-	raw, err := uc.SyscallConn()
-	if err != nil {
-		return 0, err //nolint:wrapcheck // the caller refuses the peer either way
-	}
-	var n int
-	var perr error
-	if err := raw.Control(func(fd uintptr) {
-		n, _, perr = unix.Recvfrom(int(fd), make([]byte, 1), unix.MSG_PEEK|unix.MSG_DONTWAIT)
-	}); err != nil {
-		return 0, err //nolint:wrapcheck // as above
-	}
-	if errors.Is(perr, unix.EAGAIN) {
-		return 0, nil // nothing sent yet
-	}
-	return n, perr //nolint:wrapcheck // as above
 }
 
 // Listen binds chat.sock at socketPath: its folder made 0700 (created when

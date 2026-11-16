@@ -1,6 +1,7 @@
 package chatengine
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -18,24 +19,32 @@ import (
 // orphanWait bounds the wait for a killed orphan group to disappear.
 const orphanWait = 5 * time.Second
 
-// sweep is the startup sweep (Start runs it before the first claim): the
-// `ai session` groups a killed daemon left are killed, then every lease
-// the engine holds is released, its turns' `partial` replies marked
-// session_lost for the error card.
-func (e *Engine) sweep() error {
-	e.sweepOrphans()
+// sweep is the startup sweep (Start runs it after the reattach, before the
+// first claim): the `ai session` groups an earlier daemon left that were
+// not reattached are killed, then every other lease the engine holds is
+// released, its turns' `partial` replies marked session_lost for the error
+// card. adopted are the reattached conversations: their groups and leases
+// are their sessions'.
+func (e *Engine) sweep(adopted map[int64]bool) error {
+	e.sweepOrphans(adopted)
 	leases, err := e.c.DB.OwnedChatLeases(db.ChatLeaseHub, LeaseOwnerID)
 	if err != nil {
 		return err
 	}
+	n := 0
 	for _, l := range leases {
+		if adopted[l.ConversationID] {
+			continue
+		}
 		if _, err := e.c.DB.MarkChatTurnSessionLost(l.ConversationID, l.TurnID); err != nil {
 			return err
 		}
-	}
-	n, err := e.c.DB.ReleaseOwnedChatLeases(db.ChatLeaseHub, LeaseOwnerID)
-	if err != nil {
-		return err
+		if err := e.c.DB.WithTx(func(tx *sql.Tx) error {
+			return db.ReleaseChatLeaseTx(tx, l.ConversationID, l.TurnID)
+		}); err != nil {
+			return err
+		}
+		n++
 	}
 	if n > 0 {
 		log.Printf("chatengine: %d chat turns of an earlier run released as session_lost", n)
@@ -47,7 +56,7 @@ func (e *Engine) sweep() error {
 // leader still runs this conversation's `ai session` (its command line, so a
 // reused id is never killed) is killed with SIGKILL and waited for; every
 // file is removed.
-func (e *Engine) sweepOrphans() {
+func (e *Engine) sweepOrphans(adopted map[int64]bool) {
 	dir := e.pgidDir()
 	if dir == "" {
 		return
@@ -67,6 +76,9 @@ func (e *Engine) sweepOrphans() {
 		}
 		path := filepath.Join(dir, name)
 		conv, err1 := strconv.ParseInt(strings.TrimSuffix(name, ".pgid"), 10, 64)
+		if err1 == nil && adopted[conv] {
+			continue // a reattached session's
+		}
 		b, err2 := os.ReadFile(path)
 		pgid, err3 := strconv.Atoi(strings.TrimSpace(string(b)))
 		if err1 == nil && err2 == nil && err3 == nil && pgid > 1 && e.isChatSession(pgid, conv) {
@@ -86,7 +98,11 @@ func (e *Engine) sweepOrphans() {
 
 // isChatSession: pgid's leader runs `ai session --conversation conv`.
 func (e *Engine) isChatSession(pgid int, conv int64) bool {
-	args, err := e.c.procArgs(pgid)
+	return isChatSessionArgs(e.c.procArgs, pgid, conv)
+}
+
+func isChatSessionArgs(procArgs func(int) (string, error), pgid int, conv int64) bool {
+	args, err := procArgs(pgid)
 	if err != nil {
 		return false
 	}

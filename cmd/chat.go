@@ -42,9 +42,24 @@ then prints it with "written": false and makes no AI call.`,
 	RunE: runChatTitle,
 }
 
+var chatShutdownCmd = &cobra.Command{
+	Use:   "shutdown",
+	Short: "End every chat turn and close the chat sessions (used by the desktop app)",
+	Long: `Ends the main chat: every running turn stops (its text so far kept) and every
+chat session process is closed. Asks the daemon's chat engine on chat.sock;
+when no daemon answers, sends each session socket cancel and close and reaps
+the sessions' process groups directly (close, then SIGTERM after 2 s, then
+SIGKILL after 3 s more); the replies are then marked by the next daemon
+start. The app runs it when it quits with the daemon already down and
+before it compacts the database.`,
+	Args: cobra.NoArgs,
+	RunE: runChatShutdown,
+}
+
 func init() {
 	rootCmd.AddCommand(chatCmd)
 	chatCmd.AddCommand(chatTitleCmd)
+	chatCmd.AddCommand(chatShutdownCmd)
 	chatTitleCmd.Flags().StringVar(&chatTitleFlagDBPath, "db-path", "", "SQLite database path (overrides the workspace default)")
 }
 
@@ -101,4 +116,22 @@ func runChatTitle(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	return json.NewEncoder(cmd.OutOrStdout()).Encode(chatTitleResult{Title: res.Title, Written: res.Written})
+}
+
+func runChatShutdown(cmd *cobra.Command, _ []string) error {
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
+	if err := shutdownChat(cfg); err != nil {
+		return fmt.Errorf("chat shutdown: %w", err)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "Chat sessions closed.")
+	return nil
 }

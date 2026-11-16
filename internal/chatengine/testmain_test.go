@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"watchtower/internal/chat/listenstub"
 	"watchtower/internal/db"
 )
 
@@ -21,6 +22,10 @@ const stubEnv = "WATCHTOWER_CHATRUN_STUB"
 func TestMain(m *testing.M) {
 	if os.Getenv(stubEnv) == "1" {
 		runStub()
+		return
+	}
+	if os.Getenv(listenstub.Env) == "1" {
+		listenstub.Main()
 		return
 	}
 	if err := db.InitTestFileTemplate(); err != nil {

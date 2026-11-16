@@ -205,6 +205,8 @@ var displayOnlyReadersAt = map[string]string{
 	"chatengine/feed.go:chatFeedActionsTx":      "the chat feed: the actions of the turns shown",
 	"chatengine/engine.go:clientKeyEcho":        "ids and the turn id of the row a client key started, no text",
 	"chatengine/engine.go:SelectBranch":         "the selected message's conversation id, no text",
+	"chatengine/reattach.go:heldTurnOf":         "a reattached turn's reply id, parent id and project id, no text",
+	"chatstore/resend.go:Resend":                "the owner's own turn text, resent to that turn's own session (no lasting store)",
 	// The engine's Mac operations (unified chat #1822 T2): project and
 	// artifact panel writes.
 	"chatengine/artifacts.go:artifactWriteTx":        "keep reads the conversation's LIVE-01 mark to refuse a marked chat; no text",
