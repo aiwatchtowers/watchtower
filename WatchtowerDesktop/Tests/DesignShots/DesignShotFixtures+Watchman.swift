@@ -31,6 +31,7 @@ enum WatchmanShotFixtures {
         case targetPanelArmed = "target-panel-armed"
         case targetPanelUnarmed = "target-panel-unarmed"
         case inboxEntry = "inbox-entry"
+        case settingsNotLearned = "settings-not-learned"
 
         /// A zero height means "as tall as the content".
         var size: NSSize {
@@ -46,6 +47,7 @@ enum WatchmanShotFixtures {
             case .trayMenu: NSSize(width: 340, height: 0)
             case .targetPanelArmed, .targetPanelUnarmed: NSSize(width: 380, height: 0)
             case .inboxEntry: NSSize(width: 420, height: 300)
+            case .settingsNotLearned: NSSize(width: 640, height: 0)
             }
         }
 
@@ -70,6 +72,7 @@ enum WatchmanShotFixtures {
             case .targetPanelArmed: TargetPanelMock(armed: true)
             case .targetPanelUnarmed: TargetPanelMock(armed: false)
             case .inboxEntry: InboxEntryMock()
+            case .settingsNotLearned: NotLearnedSettingsMock()
             }
         }
     }
@@ -865,6 +868,38 @@ private struct InboxEntryMock: View {
         return InboxFolderContentList(content: InboxFolderListContent(
             folderKind: .root, folderTitle: Copy.inboxRoot, rows: [watchman] + others, selection: "watchman"
         ))
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .detailBackground()
+    }
+}
+
+/// Settings → Watchman before any workbench is learned: one row per
+/// workbench with its estimate and Start Learning; acme-api is learning.
+private struct NotLearnedSettingsMock: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.large) {
+            SettingsSection(title: Copy.notLearnedTitle, caption: Copy.notLearnedIntro) {
+                ForEach(Array(Copy.notLearnedRows.enumerated()), id: \.offset) { index, row in
+                    HStack(spacing: Spacing.regular) {
+                        Image(systemName: "square.stack").foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: Spacing.tight) {
+                            Text(row.name).font(.callout.weight(.semibold))
+                            Text(row.estimate).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: Spacing.regular)
+                        if index == 0 {
+                            ProgressView().controlSize(.small)
+                            Text(Copy.learningProgress).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        } else {
+                            Button(Copy.startLearning) {}.buttonStyle(.kitSecondary)
+                        }
+                    }
+                    .frame(minHeight: ListLayout.rowMinHeight)
+                }
+            }
+        }
+        .controlSize(.small)
+        .padding(Spacing.page)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .detailBackground()
     }

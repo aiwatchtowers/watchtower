@@ -178,6 +178,16 @@ enum WatchmanMockCopy {
 
     // MARK: Settings → Watchman
 
+    static let notLearnedTitle = "Workbenches"
+    static let notLearnedIntro = "Watchman hasn't learned any workbench yet. It reads your past decisions on a "
+        + "workbench before it can answer for you there; nothing acts until you hand it a session."
+    static let notLearnedRows: [(name: String, estimate: String)] = [
+        ("acme-api", "~1 850 decisions · est. 1.6 M tokens"),
+        ("acme-web", "~620 decisions · est. 0.5 M tokens")
+    ]
+    static let startLearning = "Start Learning"
+    static let learningProgress = "Learning… 340 of 1 850"
+
     static let sleepTitle = "Sleep window"
     static let sleepCaption = "Learned from when you stop and start working on workbenches. Recomputed weekly."
     static let sleepValue = "00:30–07:45"

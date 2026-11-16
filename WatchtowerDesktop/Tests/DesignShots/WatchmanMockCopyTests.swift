@@ -47,6 +47,12 @@ final class WatchmanMockCopyTests: XCTestCase {
         XCTAssertEqual(Copy.inboxWatchmanSummary, "1 waiting")
     }
 
+    func testNotLearnedCopy() {
+        XCTAssertEqual(Copy.notLearnedRows.first?.estimate, "~1 850 decisions · est. 1.6 M tokens")
+        XCTAssertEqual(Copy.startLearning, "Start Learning")
+        XCTAssertEqual(Copy.learningProgress, "Learning… 340 of 1 850")
+    }
+
     func testSettingsCopyMatchesTheBars() {
         XCTAssertEqual(Copy.sleepValue, "00:30–07:45")
         XCTAssertTrue(Copy.barNote.contains("80 %"))
@@ -70,7 +76,7 @@ final class WatchmanMockCopyTests: XCTestCase {
                      "journal-narrow", "journal-correct-sheet", "home-row", "strip-armed", "strip-unarmed",
                      "arm-first-time", "settings-results", "settings-never-run", "settings-running",
                      "settings-failed", "tray-menu", "target-panel-armed", "target-panel-unarmed",
-                     "inbox-entry"] {
+                     "inbox-entry", "settings-not-learned"] {
             XCTAssertTrue(names.contains("watchman-\(name)"), name)
         }
     }
