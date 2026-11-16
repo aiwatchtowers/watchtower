@@ -478,11 +478,11 @@ final class IdeasViewModelTests: XCTestCase {
         let vm = IdeasViewModel(dbManager: dbManager, cliRunner: blocking)
 
         vm.startBackfillTask(from: Date(timeIntervalSince1970: 0), to: Date())
-        for _ in 0..<1000 where !vm.isBackfilling { await Task.yield() }
+        await untilObserved { vm.isBackfilling }
         XCTAssertTrue(vm.isBackfilling)
 
         vm.cancelBackfill()
-        for _ in 0..<1000 where vm.isBackfilling { await Task.yield() }
+        await untilObserved { !vm.isBackfilling }
 
         XCTAssertFalse(vm.isBackfilling)
         XCTAssertEqual(vm.backfillError, "Cancelled")
@@ -503,11 +503,11 @@ final class IdeasViewModelTests: XCTestCase {
         let vm = IdeasViewModel(dbManager: dbManager, cliRunner: runner)
 
         vm.startBackfillTask(from: Date(timeIntervalSince1970: 0), to: Date())
-        for _ in 0..<1000 where !vm.isBackfilling { await Task.yield() }
+        await untilObserved { vm.isBackfilling }
         XCTAssertTrue(vm.isBackfilling)
 
         vm.cancelBackfill()
-        for _ in 0..<1000 where vm.isBackfilling { await Task.yield() }
+        await untilObserved { !vm.isBackfilling }
 
         XCTAssertFalse(vm.isBackfilling)
         XCTAssertEqual(vm.backfillError, "Cancelled")
@@ -520,15 +520,18 @@ final class IdeasViewModelTests: XCTestCase {
     func testStartBackfillTaskWhileRunningDoesNotReplaceTheInFlightTask() async {
         let blocking = FakeCLIRunner()
         blocking.blockUntilCancelled = true
+        let (calls, call) = AsyncStream<Void>.makeStream()
+        blocking.onRun = { _ in call.yield() }
         let vm = IdeasViewModel(dbManager: dbManager, cliRunner: blocking)
 
         vm.startBackfillTask(from: Date(timeIntervalSince1970: 0), to: Date())
-        await waitUntil("the first run to reach the CLI") { blocking.invocations.count == 1 }
+        var started = calls.makeAsyncIterator()
+        _ = await started.next() // the first run reached the CLI
         vm.startBackfillTask(from: Date(timeIntervalSince1970: 0), to: Date())
         XCTAssertEqual(blocking.invocations.count, 1, "the second call must not invoke the CLI again")
 
         vm.cancelBackfill()
-        for _ in 0..<1000 where vm.isBackfilling { await Task.yield() }
+        await untilObserved { !vm.isBackfilling }
         XCTAssertFalse(vm.isBackfilling, "cancelBackfill must still reach the original in-flight task")
     }
 
@@ -543,7 +546,7 @@ final class IdeasViewModelTests: XCTestCase {
         XCTAssertNil(vm.backfillStartedAt)
 
         let task = Task { await vm.startBackfill(from: Date(timeIntervalSince1970: 0), to: Date()) }
-        for _ in 0..<1000 where vm.backfillStartedAt == nil { await Task.yield() }
+        await untilObserved { vm.backfillStartedAt != nil }
         XCTAssertNotNil(vm.backfillStartedAt, "must be set while a run is in flight")
 
         task.cancel()
@@ -561,9 +564,7 @@ final class IdeasViewModelTests: XCTestCase {
 
         Task { await vm.startBackfill(from: Date(timeIntervalSince1970: 0), to: Date()) }
 
-        for _ in 0..<1000 where vm.isBackfilling || vm.backfillSummary == nil {
-            await Task.yield()
-        }
+        await untilObserved { !vm.isBackfilling && vm.backfillSummary != nil }
 
         XCTAssertFalse(vm.isBackfilling)
         XCTAssertEqual(vm.backfillSummary, "Proposed 4 ideas (3 cycles, 2 duplicates skipped)")
@@ -616,16 +617,5 @@ final class IdeasViewModelTests: XCTestCase {
 
     func testParseBackfillEnvelopeReturnsNilOnMalformedOutput() {
         XCTAssertNil(IdeasViewModel.parseBackfillEnvelope(Data("not json at all".utf8)))
-    }
-
-    /// Yields until `condition` holds or a wall-clock deadline passes. A
-    /// yield-count spin is load-sensitive: under a full parallel suite the
-    /// first run can flip isBackfilling before its CLI call lands.
-    private func waitUntil(_ what: String, timeout: TimeInterval = 5, _ condition: () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline { XCTFail("timed out waiting for \(what)"); return }
-            await Task.yield()
-        }
     }
 }

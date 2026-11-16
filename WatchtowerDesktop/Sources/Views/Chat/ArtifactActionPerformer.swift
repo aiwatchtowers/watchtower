@@ -2,6 +2,7 @@ import AppKit
 import os
 import UniformTypeIdentifiers
 import WatchtowerCore
+import WatchtowerChatText
 
 /// Print… and the exports' failures (the panel shows a notice too).
 let artifactExportLog = Logger(subsystem: Constants.bundleID, category: "artifact-export")

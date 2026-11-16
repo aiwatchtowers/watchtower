@@ -11,6 +11,8 @@ struct SideMailboxTiming {
     /// How long `stop()` waits for the running look (a hung engine fetch or relay call) before it cancels it and
     /// closes the transport anyway, as `HubSession.outboxDrainCap` bounds the outbox.
     var stopLookCap: Duration = .seconds(10)
+    /// Waits out `stopLookCap` (cancelled once the look ended); tests replace it.
+    var stopLookSleep: @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
 
     static let live = Self()
 }
@@ -156,7 +158,7 @@ final class SideMailboxReader {
         loopTask?.cancel()
         loopTask = nil
         wake?.cancel()
-        if let running, !(await Self.wait(for: running, cap: timing.stopLookCap)) {
+        if let running, !(await Self.wait(for: running, cap: timing.stopLookCap, sleep: timing.stopLookSleep)) {
             Self.logger.notice("side mailbox look cut off at stop")
             running.cancel()
         }
@@ -164,7 +166,9 @@ final class SideMailboxReader {
     }
 
     /// Waits for `task` up to `cap`; false when the cap passed first.
-    private static func wait(for task: Task<Void, Never>, cap: Duration) async -> Bool {
+    private static func wait(
+        for task: Task<Void, Never>, cap: Duration, sleep: @escaping @Sendable (Duration) async -> Void
+    ) async -> Bool {
         // `decided`: the first watcher has answered; `ended`: it was the task, not the cap.
         let outcome = OSAllocatedUnfairLock(initialState: (decided: false, ended: false))
         var watchers: [Task<Void, Never>] = []
@@ -179,7 +183,7 @@ final class SideMailboxReader {
             }
             watchers.append(Task { await task.value; finish(true) })
             watchers.append(Task {
-                try? await Task.sleep(for: cap)
+                await sleep(cap)
                 finish(false)
             })
         }

@@ -46,11 +46,23 @@ const (
 
 func newRig(t *testing.T) *rig {
 	t.Helper()
+	return newRigWithHubID(t, "")
+}
+
+// newRigWithHubID is newRig over a sidecar that already stores hubID as its
+// hub_id ("" = none: the keyring makes one), the way an adopted hub does.
+func newRigWithHubID(t *testing.T, hubID string) *rig {
+	t.Helper()
 	st, err := state.Open(filepath.Join(t.TempDir(), "hub"))
 	if err != nil {
 		t.Fatalf("state.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
+	if hubID != "" {
+		if err := st.SetMeta(state.MetaHubID, hubID); err != nil {
+			t.Fatal(err)
+		}
+	}
 	id, err := identity.New()
 	if err != nil {
 		t.Fatal(err)
@@ -907,6 +919,33 @@ func TestEveryGrantAnnouncesOrderedActionsAndTransports(t *testing.T) {
 	}
 	if !grants[0].Linked {
 		t.Errorf("linked phones first: %+v", grants[0])
+	}
+}
+
+// TestCodesAndGrantsSpellTheHubIDAsStored (#1746): an adopted hub's phones
+// stored the Swift hub's lowercase hub_id and compare a grant's hub_id with
+// it as text, and a phone linking later names the CloudKit zones after its
+// code's: both carry hub_id as stored, never re-spelled uppercase.
+func TestCodesAndGrantsSpellTheHubIDAsStored(t *testing.T) {
+	const stored = "0a1b2c3d-4e5f-4a6b-8c7d-8e9fa0b1c2d3"
+	r := newRigWithHubID(t, stored)
+	if r.kr.HubIDText() != stored || r.kr.HubID().String() != strings.ToUpper(stored) {
+		t.Fatalf("keyring hub id %q / %s", r.kr.HubIDText(), r.kr.HubID())
+	}
+	p, _, err := r.c.Issue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.HubID != stored {
+		t.Errorf("the code carries hub_id %q, want %q", p.HubID, stored)
+	}
+	r.confirmLinked(newPhone(t))
+	grants, err := r.c.Grants()
+	if err != nil || len(grants) != 1 {
+		t.Fatalf("grants %+v %v", grants, err)
+	}
+	if grants[0].HubID != stored {
+		t.Errorf("the grant carries hub_id %q, want %q", grants[0].HubID, stored)
 	}
 }
 

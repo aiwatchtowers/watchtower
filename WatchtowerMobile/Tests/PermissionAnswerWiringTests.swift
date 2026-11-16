@@ -101,25 +101,25 @@ final class PermissionAnswerWiringTests: XCTestCase {
         XCTAssertEqual(try fixture.store.pendingActions().first?.action.params["behavior"], .string("deny"))
 
         try await echo(fixture, .received)
-        XCTAssertEqual(try detail(fixture).answerRows.map(\.state), [.waiting("Deny · Mac picked it up")])
+        XCTAssertEqual(try detail(fixture).answerRows.map(\.state), [.waiting("Deny · Tower picked it up")])
 
         try await echo(fixture, .applied)
         try await waitFor { fixture.inputs.answered[12] == 7 }
 
         let detail = try detail(fixture)
         XCTAssertTrue(detail.answerRows.isEmpty)
-        XCTAssertEqual(detail.answerNotice, "Sent to the session", "never \"Denied\": the Mac may have answered first")
+        XCTAssertEqual(detail.answerNotice, "Sent to the session", "never \"Denied\": the tower may have answered first")
     }
 
     func testANotPendingEchoShowsAnsweredOnTheMac() async throws {
         let fixture = try await makeFixture()
         try await fixture.inputs.answer(sessionID: 12, requestID: 7, behavior: .allow)
 
-        try await echo(fixture, .failed, reason: .notPending, message: "Answered on the Mac")
+        try await echo(fixture, .failed, reason: .notPending, message: "Answered on the tower")
 
         let detail = try detail(fixture)
         let row = try XCTUnwrap(detail.answerRows.first)
-        XCTAssertEqual(row.state, .failed("Answered on the Mac"))
+        XCTAssertEqual(row.state, .failed("Answered on the tower"))
         XCTAssertNil(detail.answerNotice)
         try fixture.inputs.dismiss(row.pending)
         XCTAssertTrue(try fixture.store.pendingActions().isEmpty)
@@ -131,10 +131,10 @@ final class PermissionAnswerWiringTests: XCTestCase {
         let fixture = try await makeFixture()
         try await fixture.inputs.answer(sessionID: 12, requestID: 7, behavior: .allow)
 
-        try await echo(fixture, .failed, reason: .answerOnMac, message: "Shortened — answer on the Mac to allow")
+        try await echo(fixture, .failed, reason: .answerOnMac, message: "Shortened — answer on the tower to allow")
 
         let detail = try detail(fixture)
-        XCTAssertEqual(detail.answerRows.first?.state, .failed("Shortened — answer on the Mac to allow"))
+        XCTAssertEqual(detail.answerRows.first?.state, .failed("Shortened — answer on the tower to allow"))
         XCTAssertTrue(try XCTUnwrap(detail.permission).canAnswer, "the request is still pending: Deny works")
     }
 
@@ -143,7 +143,7 @@ final class PermissionAnswerWiringTests: XCTestCase {
     func testARefusalOutlivesItsRequest() async throws {
         let fixture = try await makeFixture()
         try await fixture.inputs.answer(sessionID: 12, requestID: 7, behavior: .allow)
-        try await echo(fixture, .failed, reason: .notPending, message: "Answered on the Mac")
+        try await echo(fixture, .failed, reason: .notPending, message: "Answered on the tower")
 
         var replica = try snapshot(fixture.store)
         replica.permissionRequests = []
@@ -155,7 +155,7 @@ final class PermissionAnswerWiringTests: XCTestCase {
         XCTAssertNil(card)
         XCTAssertEqual(
             PermissionAnswerRow.rows(sessionID: 12, snapshot: replica, now: now).map(\.state),
-            [.failed("Answered on the Mac")]
+            [.failed("Answered on the tower")]
         )
     }
 
@@ -170,21 +170,20 @@ final class PermissionAnswerWiringTests: XCTestCase {
         XCTAssertEqual(row.entityRecordName, "terminal_session-10")
         XCTAssertEqual(row.action.params, [:])
 
-        try await echo(fixture, .failed, reason: .notWorking, message: "A permission prompt may be open — answer it on the Mac or with Deny")
+        try await echo(fixture, .failed, reason: .notWorking, message: "A permission prompt may be open — answer it on your tower or with Deny")
         let replica = try snapshot(fixture.store)
         let actions = SessionActionsModel(
             session: try XCTUnwrap(replica.session(10)), snapshot: replica, inFlight: [], now: now,
             grant: grant(), typingRequested: true
         )
-        XCTAssertEqual(actions.interruptRows.map(\.state), [.failed("A permission prompt may be open — answer it on the Mac or with Deny")])
+        XCTAssertEqual(actions.interruptRows.map(\.state), [.failed("A permission prompt may be open — answer it on your tower or with Deny")])
         XCTAssertTrue(actions.canInterrupt, "a refused interrupt does not hold the next")
     }
 
+    /// Yields until `condition` holds; no wall-clock cap (a hang runs until the CI step's timeout).
     private func waitFor(_ condition: @escaping @MainActor () -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(5)
         while !condition() {
-            guard Date() < deadline else { return XCTFail("condition not met in 5 s") }
-            try await Task.sleep(for: .milliseconds(10))
+            await Task.yield()
         }
     }
 }

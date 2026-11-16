@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -52,9 +53,9 @@ func TestPublishDir_Check(t *testing.T) {
 		{"existing file inside", filepath.Join(dir, "sub", "page.html"), nil, ""},
 		{"the dir itself", dir, nil, ""},
 		{"trailing slash and dot", dir + "/./sub/", nil, ""},
-		{"relative under the work dir", filepath.Join("publish", "42", "a.html"), nil, ""},
+		{"relative under the work dir", filepath.Join("publish", PublishDirName(42), "a.html"), nil, ""},
 		{"relative bare name resolves to the work dir", "a.html", ErrOutsidePublishDir, ""},
-		{"relative dot-slash", "./publish/42/a.html", nil, ""},
+		{"relative dot-slash", "./publish/" + PublishDirName(42) + "/a.html", nil, ""},
 		{"dot-dot out", dir + "/../43/x.html", ErrOutsidePublishDir, ""},
 		{"dot-dot that cleans back inside", dir + "/sub/../x.html", ErrOutsidePublishDir, ""},
 		{"relative dot-dot", "../x", ErrOutsidePublishDir, ""},
@@ -155,7 +156,7 @@ func TestPublishDir_NeverTouchesOutsidePaths(t *testing.T) {
 // refused before anything is created through it.
 func TestPublishDir_CreatedPrivate(t *testing.T) {
 	workDir, d := newTestPublishDir(t)
-	assert.Equal(t, filepath.Join(workDir, "publish", "42"), d.Path())
+	assert.Equal(t, filepath.Join(workDir, "publish", PublishDirName(42)), d.Path())
 	for _, p := range []string{workDir, filepath.Join(workDir, "publish"), d.Path()} {
 		info, err := os.Lstat(p)
 		require.NoError(t, err)
@@ -167,7 +168,7 @@ func TestPublishDir_CreatedPrivate(t *testing.T) {
 		target := t.TempDir()
 		workDir := filepath.Join(t.TempDir(), "cwd")
 		require.NoError(t, os.MkdirAll(filepath.Join(workDir, "publish"), 0o700))
-		require.NoError(t, os.Symlink(target, filepath.Join(workDir, "publish", "42")))
+		require.NoError(t, os.Symlink(target, filepath.Join(workDir, "publish", PublishDirName(42))))
 		_, err := NewPublishDir(workDir, 42)
 		var we *WorkDirError
 		require.ErrorAs(t, err, &we)
@@ -187,7 +188,7 @@ func TestPublishDir_CreatedPrivate(t *testing.T) {
 	t.Run("a file at the conversation level", func(t *testing.T) {
 		workDir := filepath.Join(t.TempDir(), "cwd")
 		require.NoError(t, os.MkdirAll(filepath.Join(workDir, "publish"), 0o700))
-		require.NoError(t, os.WriteFile(filepath.Join(workDir, "publish", "42"), nil, 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(workDir, "publish", PublishDirName(42)), nil, 0o600))
 		_, err := NewPublishDir(workDir, 42)
 		var we *WorkDirError
 		require.ErrorAs(t, err, &we)
@@ -244,7 +245,7 @@ func TestPublishDir_CheckRefusesOnLookupErrors(t *testing.T) {
 func TestPublishDir_AncestorSwappedForASymlink(t *testing.T) {
 	workDir, d := newTestPublishDir(t)
 	target := t.TempDir()
-	victim := filepath.Join(target, "42")
+	victim := filepath.Join(target, PublishDirName(42))
 	require.NoError(t, os.Mkdir(victim, 0o700))
 	require.NoError(t, os.WriteFile(filepath.Join(victim, "keep.txt"), nil, 0o600))
 	parent := filepath.Join(workDir, "publish")
@@ -274,9 +275,17 @@ func TestPublishDir_RemoveOnlyOwnConversation(t *testing.T) {
 	require.NoError(t, os.Symlink(outside, filepath.Join(d.Path(), "link")))
 	require.NoError(t, os.WriteFile(filepath.Join(d.Path(), "deck.html"), nil, 0o600))
 
+	// The same conversation's folder of another process (the Desktop's and
+	// the hub's `ai session` share the work dir) is not this one's.
+	assert.Equal(t, fmt.Sprintf("42-%d", os.Getpid()), filepath.Base(d.Path()))
+	sibling := filepath.Join(workDir, "publish", fmt.Sprintf("42-%d", os.Getpid()+1))
+	require.NoError(t, os.Mkdir(sibling, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(sibling, "deck.html"), nil, 0o600))
+
 	require.NoError(t, d.Remove())
 	assert.NoDirExists(t, d.Path())
 	assert.FileExists(t, filepath.Join(other.Path(), "keep.html"))
+	assert.FileExists(t, filepath.Join(sibling, "deck.html"), "another process's folder of the same chat stays")
 	assert.FileExists(t, filepath.Join(outside, "keep.txt"))
 	require.NoError(t, d.Remove(), "idempotent")
 }

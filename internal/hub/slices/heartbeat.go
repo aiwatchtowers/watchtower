@@ -32,17 +32,22 @@ const (
 // switch (protocol §9); nil carries no capabilities. Clock defaults to
 // time.Now.
 type HeartbeatFacts struct {
-	HubID         string
-	MacName       string
-	AppVersion    string
-	Flavor        string
+	HubID      string
+	MacName    string
+	AppVersion string
+	Flavor     string
+	// HubKind is wire.HubKindMac or wire.HubKindServer ("" = absent).
+	HubKind       string
 	EnabledAt     time.Time
 	Accounts      func(ctx context.Context) ([]wire.HeartbeatAccount, error)
 	LastPublishAt func() (time.Time, bool)
 	LastRelayAt   func() (time.Time, bool)
 	RelayBacklog  func() int
 	Recordings    func() bool
-	Clock         func() time.Time
+	// Chat says whether the AI chat is on and, when off, why (wire.ChatOff*);
+	// nil carries no chat capability.
+	Chat  func() (on bool, reason string)
+	Clock func() time.Time
 }
 
 // HeartbeatSource is the hub's liveness record, record "heartbeat". It is
@@ -95,6 +100,13 @@ func (h *heartbeatSource) Items(ctx context.Context) ([]Item, error) {
 	if h.f.Recordings != nil {
 		caps = *wire.RecordingsCapability(h.f.Recordings())
 	}
+	if h.f.Chat != nil {
+		if on, reason := h.f.Chat(); on {
+			caps.Chat = "on"
+		} else {
+			caps.Chat, caps.ChatReason = "off", reason
+		}
+	}
 	changed = changed || caps != h.caps
 	if h.payload == nil || changed || now.Sub(h.stamped) >= HeartbeatInterval {
 		payload, err := wire.Marshal(h.build(now, accounts, caps))
@@ -130,6 +142,7 @@ func (h *heartbeatSource) build(now time.Time, accounts []wire.HeartbeatAccount,
 		UpdatedAt: wire.Time{Time: now}, AppVersion: h.f.AppVersion, HubID: h.f.HubID,
 		MacName: wire.ClipMacName(h.f.MacName), Flavor: h.f.Flavor, Accounts: accounts,
 		EnabledAt: wire.Time{Time: h.f.EnabledAt}, OwnerUser: "", Sharing: wire.SharingNone,
+		HubKind: h.f.HubKind,
 	}
 	if caps != (wire.HeartbeatCapabilities{}) {
 		hb.Capabilities = &caps

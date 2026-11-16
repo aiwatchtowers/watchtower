@@ -196,6 +196,8 @@ var cliNoContentCommands = map[string]bool{
 	"catchup ack":                      true,
 	"catchup feedback":                 true,
 	"channels":                         true,
+	"channels exclude":                 true,
+	"channels include":                 true,
 	"chat title":                       true,
 	"code index":                       true,
 	"coach accept":                     true,
@@ -365,6 +367,7 @@ var cliNoContentCommands = map[string]bool{
 	"slack disable":                    true,
 	"slack enable":                     true,
 	"slack login":                      true,
+	"slack live probe":                 true, // one connector read; prints the verdict, workspace ids and the connector id only
 	"slack remove":                     true,
 	"slack rename":                     true,
 	"status":                           true,

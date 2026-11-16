@@ -30,6 +30,7 @@ const sessionCallOrphanAge = 20 * time.Minute
 var (
 	aiSessionApprovalTimeout time.Duration
 	aiSessionGatePoll        time.Duration
+	aiSessionGateNow         func() time.Time // the approval deadline's clock
 )
 
 // aiSessionSandbox builds the claude.ai-mode child's file sandbox; tests
@@ -131,7 +132,7 @@ func withClaudeAI(opts chat.ClaudeOptions, w sessionWiring, ext []ai.ExternalMCP
 	opts.Gate = &chat.GateOptions{
 		Sink: sink, Publish: c.publish,
 		Policy:          connectorpolicy.Policy{Disabled: chat.DisabledConnectorTokens(disabled)},
-		ApprovalTimeout: aiSessionApprovalTimeout, PollInterval: aiSessionGatePoll,
+		ApprovalTimeout: aiSessionApprovalTimeout, PollInterval: aiSessionGatePoll, Now: aiSessionGateNow,
 	}
 	return opts
 }

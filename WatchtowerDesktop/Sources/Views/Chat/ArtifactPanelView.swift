@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
 
 struct ArtifactPanelView: View {
     @Bindable var model: ArtifactPanelModel
@@ -177,9 +178,10 @@ struct ArtifactPanelView: View {
                 }
                 .disabled(!draft.isComplete)
                 if let state = model.knowledgeState {
-                    knowledgeControl(state)
-                        .disabled(!draft.isComplete)
-                        .help(knowledgeHelp(state))
+                    let blocked = model.knowledgeKeepBlocked
+                    knowledgeControl(state, blocked: blocked != nil)
+                        .disabled(!draft.isComplete || (state == .add && blocked != nil))
+                        .help(blocked ?? knowledgeHelp(state))
                 }
                 if draft.kind == "html" {
                     htmlActions(draft)
@@ -190,9 +192,16 @@ struct ArtifactPanelView: View {
         .padding(10)
     }
 
+    /// The knowledge control. `blocked` (LIVE-01): Add is disabled by the
+    /// caller; Update offers only Remove, so an earlier pin can still go.
     @ViewBuilder
-    private func knowledgeControl(_ state: ArtifactKnowledgeState) -> some View {
-        if state == .update {
+    private func knowledgeControl(_ state: ArtifactKnowledgeState, blocked: Bool) -> some View {
+        if state == .update, blocked {
+            let remove = ArtifactKnowledgeState.remove
+            Button { Task { await model.removeKnowledge() } } label: {
+                Label(remove.title, systemImage: remove.systemImage)
+            }
+        } else if state == .update {
             Menu {
                 Button(ArtifactKnowledgeState.remove.title, systemImage: ArtifactKnowledgeState.remove.systemImage) {
                     Task { await model.removeKnowledge() }

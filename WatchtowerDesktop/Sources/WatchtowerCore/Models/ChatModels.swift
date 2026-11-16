@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerChatText
 
 /// One `chat_messages` row (goose migration 00076 owns the table). New
 /// columns decode with `decodeIfPresent` so a Discuss chat reading an old

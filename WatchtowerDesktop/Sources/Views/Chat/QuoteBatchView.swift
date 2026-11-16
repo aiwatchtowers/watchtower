@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
 
 /// The pending quote batch above the composer: each quote with its editable
 /// comment and a remove button. It never sends — the composer's send takes

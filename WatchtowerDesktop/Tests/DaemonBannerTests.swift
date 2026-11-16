@@ -59,21 +59,10 @@ final class DaemonBannerTests: XCTestCase {
         return appState
     }
 
-    /// Waits (bounded) until `condition` holds, re-checking on every change
-    /// of what it reads — no sleeping.
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping () -> Bool) async {
-        let met = expectation(description: "condition")
-        func check() {
-            if condition() {
-                met.fulfill()
-                return
-            }
-            withObservationTracking { _ = condition() } onChange: {
-                Task { @MainActor in check() }
-            }
-        }
-        check()
-        await fulfillment(of: [met], timeout: timeout)
+    /// Waits until `condition` holds, re-checking on every change of what it
+    /// reads — no deadline.
+    private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
+        await untilObserved(condition)
     }
 
     // MARK: - Start
@@ -181,8 +170,7 @@ final class DaemonBannerTests: XCTestCase {
         let appState = makeAppState(daemon)
         let restart = appState.enqueueDaemonStart { try? await daemon.restartWaiting() }
         appState.startDaemonFromBanner()
-        // FakeDaemon is not observable: yield (bounded) until the restart parks.
-        for _ in 0..<10_000 where !daemon.isRestartParked { await Task.yield() }
+        await untilObserved { daemon.isRestartParked }
         XCTAssertTrue(daemon.isRestartParked)
         XCTAssertEqual(daemon.starts, 0, "the banner's start waits for the restart")
         daemon.releaseRestart()
@@ -206,7 +194,7 @@ final class DaemonBannerTests: XCTestCase {
 
         appState.startDaemonFromBanner()
         let turnOn = Task { await appState.turnOnFeatureFromEmptyState("memory") }
-        for _ in 0..<200 where !daemon.isRestartParked { try? await Task.sleep(for: .milliseconds(10)) }
+        await untilObserved { daemon.isRestartParked }
         XCTAssertTrue(daemon.isRestartParked)
         XCTAssertEqual(daemon.starts, 1, "the banner's start ran first")
         XCTAssertNil(appState.daemonStartFailure, "its alive check ran before the restart")
@@ -266,9 +254,13 @@ final class DaemonBannerTests: XCTestCase {
         let appState = makeAppState(daemon)
         var log: [String] = []
         let gate = HeldGate()
+        let (stopped, stop) = AsyncStream<Void>.makeStream()
         let disconnect = Task {
             await appState.disconnectSlackOnQueue(
-                stop: { log.append("stop") },
+                stop: {
+                    log.append("stop")
+                    stop.yield()
+                },
                 disconnect: {
                     await gate.wait()
                     log.append("disconnect")
@@ -279,9 +271,9 @@ final class DaemonBannerTests: XCTestCase {
                     daemon.running = true
                 })
         }
-        for _ in 0..<200 where log.isEmpty { await Task.yield() }
+        var stops = stopped.makeAsyncIterator()
+        _ = await stops.next() // the item is between its stop and its start
         appState.startDaemonFromBanner()
-        for _ in 0..<50 { await Task.yield() }
         XCTAssertEqual(daemon.starts, 0, "the banner waits for the whole item")
         gate.open()
         let disconnected = await disconnect.value

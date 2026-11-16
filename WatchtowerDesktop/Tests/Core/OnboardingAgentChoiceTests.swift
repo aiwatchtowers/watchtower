@@ -148,7 +148,7 @@ final class OnboardingAgentChoiceTests: XCTestCase {
         XCTAssertNil(signedOut.docsURL)
 
         let failed = try XCTUnwrap(choice(.failed("timed out"), .notInstalled).setup)
-        XCTAssertEqual(failed.title, "Claude Code didn’t answer")
+        XCTAssertEqual(failed.title, "Couldn’t check Claude Code")
         XCTAssertEqual(failed.detail, "timed out")
         XCTAssertTrue(failed.steps.isEmpty)
     }

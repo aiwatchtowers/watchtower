@@ -71,6 +71,7 @@ package enum ChatToolCatalog {
 
     /// `args` is the step's raw `args` JSON; unparseable args just lose the subject.
     package static func label(name: String, args: String) -> String {
+        if let label = TuningChatTexts.toolLine(name: name, args: args) { return label }
         if let label = actionLabel(name: name, args: args) { return label }
         if let (server, tool) = external(name) {
             return "Used \(server): \(tool.replacingOccurrences(of: "_", with: " "))"

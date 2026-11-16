@@ -22,7 +22,7 @@ The `watchtower` binary does everything the app does and a bit more. Add `--help
 
 | Command | What it does |
 |---|---|
-| `watchtower slack`, `auth` | Slack workspaces (`slack add` connects another; `auth login` connects the first; `slack backfill --account N --from D --to D` fetches up to 31 past days of one account again, with digests for channel days that had none; on a day that already has a digest for a channel, the fetched messages are saved and searchable but not digested) |
+| `watchtower slack`, `auth` | Slack workspaces (`slack add` connects another; `auth login` connects the first; `slack backfill --account N --from D --to D` fetches up to 31 past days of one account again, with digests for channel days that had none; on a day that already has a digest for a channel, the fetched messages are saved and searchable but not digested; `slack live probe [--provider claude\|codex] [--json]` checks that your Claude or ChatGPT Slack connector can read, for [Live Slack](../concepts/sources-and-accounts.md#live-slack-through-your-claude-or-chatgpt-account)) |
 | `watchtower google`, `gmail` | Google accounts and Gmail |
 | `watchtower imap`, `outlook` | Other mailboxes |
 | `watchtower calendar`, `caldav` | Calendar events and CalDAV/ICS feeds |
@@ -83,7 +83,7 @@ This keeps an agent that was talked into running such a command from going ahead
 | `watchtower integrate claude-code\|codex\|status\|remove` | Wire Watchtower into [Claude Code or Codex](../features/claude-code-integration.md) |
 | `watchtower mcp` | Run the MCP server over stdio |
 | `watchtower tools` | Call the read-only data tools from the console |
-| `watchtower agents enable\|disable\|scan\|stats` | [Agent analytics](../features/agent-analytics.md) |
+| `watchtower agents enable\|disable\|scan\|stats\|report` | [Agent analytics](../features/agent-analytics.md) |
 | `watchtower coach status\|proposals\|accept\|decline\|rollback\|run` | [Agent coach](../features/agent-coach.md) |
 | `watchtower code index\|search` | Symbol index and text search for a workbench folder |
 

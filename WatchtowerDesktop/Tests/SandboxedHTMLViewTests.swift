@@ -5,6 +5,7 @@ import WebKit
 import XCTest
 @testable import WatchtowerCore
 @testable import WatchtowerDesktop
+import WatchtowerTestSupport
 
 /// The in-app view really keeps a page off the network (#535): every
 /// attempt — fetch, `<img>`, WebSocket, `location =`, a form — is aimed at a
@@ -12,6 +13,13 @@ import XCTest
 /// none. A plain `WKWebView` given the same page is the control that the
 /// listener does see those attempts. Views are hosted off screen (never
 /// ordered in).
+///
+/// No wait here runs on a clock: a page reports when its attempts have
+/// settled (its title), and a connection is counted when the listener
+/// accepts it — before it answers, so before the page can see the attempt
+/// settle. A cancelled navigation is awaited at its policy decision; a
+/// script call made after it is answered by the page only after WebKit
+/// handled the cancel (one ordered channel between the two processes).
 @MainActor
 final class SandboxedHTMLViewTests: XCTestCase {
     private var counter: HitCounter!
@@ -31,16 +39,20 @@ final class SandboxedHTMLViewTests: XCTestCase {
         let page = """
         <html><body><img src="\(base)/img.png"><iframe id="srcdoc" srcdoc="<p>frame</p>"></iframe><script>
         try { new WebSocket("ws://\(counter.hostPort)/ws"); } catch (e) {}
-        fetch("\(base)/fetch", { mode: "no-cors" }).then(r => { document.title = "leak:" + r.type })
-          .catch(() => { document.title = "blocked" });
+        const loaded = new Promise(done => window.addEventListener("load", done));
+        const fetched = fetch("\(base)/fetch", { mode: "no-cors" }).then(r => "leak:" + r.type, () => "blocked");
+        Promise.all([fetched, loaded]).then(([title]) => { document.title = title });
         </script></body></html>
         """
         let webView = try host(.page(page))
         let title = try await settledTitle(webView)
         XCTAssertEqual(title, "blocked", "the script ran and its fetch was refused")
-        // A grace for a late image/socket attempt; a slow runner can only
-        // make this pass vacuously, never fail it.
-        try await Task.sleep(for: .milliseconds(500))
+        // The title is set once the fetch settled and the page loaded (its
+        // image settled): a connection either made is counted before its
+        // answer. The socket the sandbox blocks never settles (no close
+        // event), so it has no such barrier: the block happens as the
+        // script opens it, and the control below shows it reaching the
+        // listener when nothing blocks it.
         XCTAssertEqual(counter.hits, 0, "no fetch, image or WebSocket reached the listener")
         XCTAssertFalse(webView.configuration.websiteDataStore.isPersistent)
         let webRTC = try await webView.evaluateJavaScript(
@@ -75,18 +87,30 @@ final class SandboxedHTMLViewTests: XCTestCase {
         </body></html>
         """
         let webView = try host(.page(page))
+        let tap = try NavigationTap(webView)
         // The page is loaded before anything is attempted.
         let loaded = try await waitForTitle(webView) { $0 == "page" }
         XCTAssertEqual(loaded, "page")
+        let before = tap.decisions.count
         // One attempt at a time, each in its own turn: a later navigation
         // would otherwise replace an earlier one before its policy check.
-        for attempt in ["location = \"\(base)/nav?d=secret\"", "document.getElementById(\"f\").submit()",
-                        "location = \"file:///etc/hosts\""] {
+        // The file URL is refused by WebKit itself as the script assigns it
+        // (a web page may not open a local file): no navigation starts, so
+        // no policy question follows it.
+        let attempts = [("location = \"\(base)/nav?d=secret\"", true), ("document.getElementById(\"f\").submit()", true),
+                        ("location = \"file:///etc/hosts\"", false)]
+        var asked = before
+        for (attempt, asksPolicy) in attempts {
             let marker = try await webView.evaluateJavaScript("\(attempt); \"attempted\"") as? String
             XCTAssertEqual(marker, "attempted", attempt)
-            // The policy decision runs after the script; give it a turn.
-            // A navigation that went through would replace the document.
-            try await Task.sleep(for: .milliseconds(300))
+            // The policy decision runs after the script; the title read
+            // after it sees the page as the decision left it. A navigation
+            // that went through would replace the document.
+            if asksPolicy {
+                asked += 1
+                await untilObserved { tap.decisions.count >= asked }
+                XCTAssertEqual(tap.decisions.last?.allowed, false, attempt)
+            }
             let title = try? await webView.evaluateJavaScript("document.title") as? String
             XCTAssertEqual(title, "page", "still on the page after: \(attempt)")
             XCTAssertEqual(webView.url?.absoluteString, "about:blank", attempt)
@@ -100,13 +124,14 @@ final class SandboxedHTMLViewTests: XCTestCase {
     func testASelfNavigatingPageLoadsWithoutAFailure() async throws {
         let probe = CoordinatorProbe()
         let webView = probe.makeWebView()
+        let tap = try NavigationTap(webView)
         probe.coordinator.show(.page("<html><head><title>page</title></head><body><script>location='https://example.com'</script></body></html>"),
                                token: 0)
-        try await waitUntil { probe.loaded > 0 }
+        await untilObserved { probe.loaded > 0 && tap.decisions.contains { $0.url == "https://example.com/" } }
         XCTAssertEqual(probe.loaded, 1, "the content load finished")
-        // A grace for a late failure callback of the cancelled navigation; a
-        // slow runner can only make this pass vacuously, never fail it.
-        try await Task.sleep(for: .milliseconds(500))
+        // A failure callback of the cancelled navigation comes before the
+        // answer to a script call made after the cancel.
+        _ = try await webView.evaluateJavaScript("0")
         XCTAssertEqual(probe.failures, [], "the cancelled self-navigation is no failure")
         XCTAssertEqual(webView.url?.absoluteString, "about:blank")
     }
@@ -123,21 +148,23 @@ final class SandboxedHTMLViewTests: XCTestCase {
         <html><head><link rel="stylesheet" href="style.css"></head><body>
         <img id="dot" src="dot.png"><img src="\(base)/net.png">
         <script>
-        fetch("\(base)/fetch", { mode: "no-cors" }).catch(() => {});
-        window.onload = () => {
+        const fetched = fetch("\(base)/fetch", { mode: "no-cors" }).then(() => {}, () => {});
+        window.onload = () => fetched.then(() => {
           document.title = getComputedStyle(document.body).color + "|" + document.getElementById("dot").naturalWidth;
-          setTimeout(() => { location = "other.html" }, 50);
-        };
+          location = "other.html";
+        });
         </script></body></html>
         """
         let file = folder.appendingPathComponent("index.html")
         try index.write(to: file, atomically: true, encoding: .utf8)
         let webView = try host(.file(file, folder: folder))
+        let tap = try NavigationTap(webView)
         let title = try await waitForTitle(webView) { $0.contains("|") }
         XCTAssertEqual(title, "rgb(1, 2, 3)|1", "the sibling css and image load")
-        // The page tries `location = "other.html"` 50 ms after load; this
-        // grace can only make the checks below pass vacuously, never fail.
-        try await Task.sleep(for: .milliseconds(500))
+        // The title is set once the images and the fetch settled; then the
+        // page tries `location = "other.html"`.
+        await untilObserved { tap.decisions.contains { $0.url.hasSuffix("/other.html") } }
+        _ = try await webView.evaluateJavaScript("0")
         XCTAssertEqual(counter.hits, 0, "no http image or fetch reached the listener")
         XCTAssertEqual(webView.url?.lastPathComponent, "index.html", "a link to another file opens nothing")
     }
@@ -213,8 +240,8 @@ final class SandboxedHTMLViewTests: XCTestCase {
         probe.coordinator.show(.page("<html><head><title>secret page</title></head><body></body></html>"), token: 0)
         let text = try await waitForText(webView) { $0.contains("could not be prepared") }
         XCTAssertEqual(text, "The preview could not be prepared: rules broke")
-        // A grace for a late didFinish of the message page.
-        try await Task.sleep(for: .milliseconds(300))
+        // The message page has finished: its text is read once loading ended.
+        XCTAssertFalse(webView.isLoading)
         XCTAssertEqual(probe.failures, ["The preview could not be prepared: rules broke"])
         XCTAssertEqual(probe.loaded, 0, "the message page is not the content")
     }
@@ -225,9 +252,8 @@ final class SandboxedHTMLViewTests: XCTestCase {
         let probe = CoordinatorProbe()
         _ = probe.makeWebView()
         probe.coordinator.show(.page("<html><body><img src=\"\(counter.base)/x.png\"><p>doc</p></body></html>"), token: 0)
-        try await waitUntil { probe.loaded > 0 }
-        // A grace for a late image attempt; it can only pass vacuously.
-        try await Task.sleep(for: .milliseconds(500))
+        await untilObserved { probe.loaded > 0 }
+        // The load finishes after the image settled.
         XCTAssertEqual(counter.hits, 0, "the image never reached the listener")
         XCTAssertEqual(probe.failures, [])
     }
@@ -241,9 +267,11 @@ final class SandboxedHTMLViewTests: XCTestCase {
         let probe = CoordinatorProbe()
         _ = probe.makeWebView()
         probe.coordinator.show(.file(page, folder: folder), token: 0)
-        try await waitUntil { !probe.failures.isEmpty }
-        // A grace for a late second report; it can only pass vacuously.
-        try await Task.sleep(for: .milliseconds(300))
+        await untilObserved { !probe.failures.isEmpty }
+        // The message page shown for the failure finishes loading; a second
+        // report of the content navigation would come before that.
+        let webView = try XCTUnwrap(probe.coordinator.webView)
+        _ = try await waitForText(webView) { $0.hasPrefix("The page could not be loaded:") }
         XCTAssertEqual(probe.failures.count, 1, "\(probe.failures)")
         XCTAssertTrue(probe.failures.first?.hasPrefix("The page could not be loaded:") == true, "\(probe.failures)")
         XCTAssertEqual(probe.loaded, 0)
@@ -270,11 +298,17 @@ final class SandboxedHTMLViewTests: XCTestCase {
         let coordinator = SandboxedHTMLView.Coordinator()
         coordinator.rules = Self.neverReadyRules
         let errors = ErrorLog()
-        let job = ArtifactPrinter(title: "t", coordinator: coordinator, loadTimeout: .milliseconds(100)) { errors.list.append($0) }
+        let timeout = OpenOnceGate()
+        let job = ArtifactPrinter(
+            title: "t", coordinator: coordinator, sleep: { _ in await timeout.wait() },
+            onError: { errors.list.append($0) }
+        )
         let window = Self.offscreenWindow()
         ArtifactPrinter.start(job, .page("<p>doc</p>"), window: window)
         XCTAssertTrue(ArtifactPrinter.isRunning(job))
-        try await waitUntil { !errors.list.isEmpty }
+        XCTAssertEqual(errors.list, [], "nothing before the timeout passes")
+        timeout.open()
+        await job.loadTimeoutTask?.value
         XCTAssertEqual(errors.list, ["Print failed: the page did not finish loading."])
         XCTAssertFalse(ArtifactPrinter.isRunning(job), "the timed-out job is dropped")
     }
@@ -285,7 +319,11 @@ final class SandboxedHTMLViewTests: XCTestCase {
         let coordinator = SandboxedHTMLView.Coordinator()
         coordinator.rules = Self.neverReadyRules
         let errors = ErrorLog()
-        let job = ArtifactPrinter(title: "t", coordinator: coordinator, loadTimeout: .milliseconds(200)) { errors.list.append($0) }
+        let timeout = OpenOnceGate()
+        let job = ArtifactPrinter(
+            title: "t", coordinator: coordinator, sleep: { _ in await timeout.wait() },
+            onError: { errors.list.append($0) }
+        )
         let window = Self.offscreenWindow()
         ArtifactPrinter.start(job, .page("<p>doc</p>"), window: window)
         let webView = try XCTUnwrap(coordinator.webView)
@@ -294,7 +332,8 @@ final class SandboxedHTMLViewTests: XCTestCase {
         XCTAssertEqual(errors.list, ["Print failed: The page stopped: its web content process ended."])
         XCTAssertFalse(ArtifactPrinter.isRunning(job), "the failed job is dropped")
         // Past the timeout: it was cancelled with the job.
-        try await Task.sleep(for: .milliseconds(500))
+        timeout.open()
+        await job.loadTimeoutTask?.value
         XCTAssertEqual(errors.list.count, 1, "\(errors.list)")
     }
 
@@ -306,7 +345,7 @@ final class SandboxedHTMLViewTests: XCTestCase {
         let job = ArtifactPrinter(title: "t") { errors.list.append($0) }
         let window = Self.offscreenWindow()
         ArtifactPrinter.start(job, .file(page, folder: folder), window: window)
-        try await waitUntil { !errors.list.isEmpty }
+        await untilObserved { !errors.list.isEmpty }
         XCTAssertEqual(errors.list.count, 1, "\(errors.list)")
         XCTAssertTrue(errors.list.first?.hasPrefix("Print failed: The page could not be loaded:") == true, "\(errors.list)")
         XCTAssertFalse(ArtifactPrinter.isRunning(job), "the failed job is dropped")
@@ -326,7 +365,9 @@ final class SandboxedHTMLViewTests: XCTestCase {
     /// Rules that are never ready: the content never starts loading, until
     /// the load is cancelled.
     private static let neverReadyRules: @MainActor (Bool) async throws -> WKContentRuleList = { _ in
-        try await Task.sleep(for: .seconds(60))
+        let (stream, continuation) = AsyncStream<Never>.makeStream()
+        for await _ in stream {} // ends only when the load task is cancelled
+        continuation.finish()
         throw CancellationError()
     }
 
@@ -371,9 +412,9 @@ final class SandboxedHTMLViewTests: XCTestCase {
         <script type="importmap">{"imports":{"cfg":"./config.json"}}</script>
         <script type="module">import j from "./config.json" with { type: "json" }; window.jsonStatic = j.key;</script>
         <script type="module">
-        import("./config.json", { with: { type: "json" } }).then(m => { window.jsonDynamic = m.default.key })
+        window.dynamicSettled = import("./config.json", { with: { type: "json" } }).then(m => { window.jsonDynamic = m.default.key })
           .catch(() => { window.jsonDynamic = "blocked" });
-        import("cfg", { with: { type: "json" } }).then(m => { window.jsonMapped = m.default.key })
+        window.mappedSettled = import("cfg", { with: { type: "json" } }).then(m => { window.jsonMapped = m.default.key })
           .catch(() => { window.jsonMapped = "blocked" });
         </script>
         """
@@ -391,13 +432,23 @@ final class SandboxedHTMLViewTests: XCTestCase {
         let fetched = "pending";
         let evaluated = "off";
         try { evaluated = String(new Function("return 6 * 7")()) } catch (e) {}
-        window.addEventListener("message", (e) => { framed.push(e.data) });
-        fetch("style.css").then(r => r.text()).then(() => { fetched = "read" }).catch(() => { fetched = "blocked" });
-        window.onload = () => setTimeout(() => {
+        const okFramed = new Promise(done => window.addEventListener("message", (e) => {
+          framed.push(e.data);
+          if (String(e.data).startsWith("ok:")) { done(); }
+        }));
+        const fetchSettled = fetch("style.css").then(r => r.text()).then(() => { fetched = "read" }).catch(() => { fetched = "blocked" });
+        const loaded = new Promise(done => { window.onload = done; });
+        const settled = (p) => p.then(() => {}, () => {});
+        // Every attempt settled: the window load (images, frames, scripts —
+        // the module scripts, which start the imports, run before it), the
+        // own frame's message, the fetch and the module imports; then one
+        // more task, so a message queued by any frame before that is in.
+        loaded.then(() => Promise.all([okFramed, fetchSettled, settled(window.dynamicSettled), settled(window.mappedSettled)]))
+          .then(() => new Promise(done => setTimeout(done, 0))).then(() => {
           document.title = [getComputedStyle(document.body).color, window.leaked || 0, window.gitLeaked || 0,
                             framed.sort().join("+"), fetched, evaluated, readable("secret"), readable("ok"),
                             window.jsonStatic || "blocked", window.jsonDynamic || "pending", window.jsonMapped || "pending"].join("|");
-        }, 500);
+        });
         </script></body></html>
         """
         let file = folder.appendingPathComponent("index.html")
@@ -407,33 +458,26 @@ final class SandboxedHTMLViewTests: XCTestCase {
         XCTAssertEqual(title, "rgb(1, 2, 3)|0|0|ok:rgb(1, 2, 3)|blocked|42|opaque|opaque|blocked|blocked|blocked",
                        "visible siblings load and frame (with their own style sheet); no dotfile does, directly or by a link; "
                            + "no script reads a file as text, by fetch or through a frame; new Function runs")
-        try await Task.sleep(for: .milliseconds(300))
+        // The title is set once the image (in the window load) settled.
         XCTAssertEqual(counter.hits, 0, "an https image off the allowlist never connects")
     }
 
     // MARK: helpers
 
-    /// Polls `done` until it holds or `timeout` passes (then fails).
-    private func waitUntil(timeout: Duration = .seconds(10), _ done: () -> Bool) async throws {
-        let clock = ContinuousClock()
-        let deadline = clock.now + timeout
-        while clock.now < deadline {
-            if done() { return }
-            try await Task.sleep(for: .milliseconds(50))
-        }
-        XCTFail("timed out")
-    }
-
+    /// The body text once `done` accepts it, read again whenever a load
+    /// starts or ends or the title changes.
     private func waitForText(_ webView: WKWebView, until done: (String) -> Bool) async throws -> String {
-        let clock = ContinuousClock()
-        let deadline = clock.now + .seconds(10)
-        var text = ""
-        while clock.now < deadline {
-            text = (try? await webView.evaluateJavaScript("document.body ? document.body.innerText : ''") as? String) ?? ""
-            if done(text) { break }
-            try await Task.sleep(for: .milliseconds(50))
+        let (changes, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let observers = [
+            webView.observe(\.isLoading, options: [.initial, .new]) { _, _ in continuation.yield() },
+            webView.observe(\.title, options: [.new]) { _, _ in continuation.yield() }
+        ]
+        defer { observers.forEach { $0.invalidate() } }
+        for await _ in changes {
+            let text = (try? await webView.evaluateJavaScript("document.body ? document.body.innerText : ''") as? String) ?? ""
+            if done(text), !webView.isLoading { return text }
         }
-        return text
+        return ""
     }
 
     private func host(_ content: SandboxedHTMLContent) throws -> WKWebView {
@@ -444,20 +488,15 @@ final class SandboxedHTMLViewTests: XCTestCase {
         return try XCTUnwrap(Self.findWebView(in: host))
     }
 
-    /// The page's title once `done` accepts it, or the last one read after
-    /// `timeout` (generous: CI runners are slow to start a web process).
-    private func waitForTitle(
-        _ webView: WKWebView, timeout: Duration = .seconds(10), until done: (String) -> Bool
-    ) async throws -> String {
-        let clock = ContinuousClock()
-        let deadline = clock.now + timeout
-        var title = ""
-        while clock.now < deadline {
-            title = (try? await webView.evaluateJavaScript("document.title") as? String) ?? ""
-            if done(title) { break }
-            try await Task.sleep(for: .milliseconds(50))
+    /// The page's title once `done` accepts it, read on every title change.
+    private func waitForTitle(_ webView: WKWebView, until done: (String) -> Bool) async throws -> String {
+        let (changes, continuation) = AsyncStream<String>.makeStream()
+        let observer = webView.observe(\.title, options: [.initial, .new]) { view, _ in continuation.yield(view.title ?? "") }
+        defer { observer.invalidate() }
+        for await title in changes where done(title) {
+            return title
         }
-        return title
+        return ""
     }
 
     private func settledTitle(_ webView: WKWebView) async throws -> String {
@@ -484,11 +523,12 @@ final class SandboxedHTMLViewTests: XCTestCase {
 /// A coordinator with an offscreen web view made the printer's way
 /// (`SandboxedHTMLView.makeWebView`), recording its callbacks.
 @MainActor
+@Observable
 private final class CoordinatorProbe {
-    let coordinator = SandboxedHTMLView.Coordinator()
+    @ObservationIgnored let coordinator = SandboxedHTMLView.Coordinator()
     private(set) var loaded = 0
     private(set) var failures: [String] = []
-    private var webView: WKWebView?
+    @ObservationIgnored private var webView: WKWebView?
 
     init() {
         coordinator.onLoaded = { [weak self] _ in self?.loaded += 1 }
@@ -505,8 +545,75 @@ private final class CoordinatorProbe {
 
 /// What a printer job reported through `onError`.
 @MainActor
+@Observable
 private final class ErrorLog {
     var list: [String] = []
+}
+
+/// Sits between a web view and its coordinator, forwarding every navigation
+/// callback and recording each navigation-policy answer after it is given.
+@MainActor
+@Observable
+private final class NavigationTap: NSObject, WKNavigationDelegate {
+    struct Decision {
+        let url: String
+        let allowed: Bool
+    }
+
+    private(set) var decisions: [Decision] = []
+    @ObservationIgnored private let coordinator: SandboxedHTMLView.Coordinator
+
+    init(_ webView: WKWebView) throws {
+        coordinator = try XCTUnwrap(webView.navigationDelegate as? SandboxedHTMLView.Coordinator)
+        super.init()
+        webView.navigationDelegate = self
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
+    ) {
+        let url = navigationAction.request.url?.absoluteString ?? ""
+        coordinator.webView(webView, decidePolicyFor: navigationAction) { [weak self] policy in
+            decisionHandler(policy)
+            self?.decisions.append(Decision(url: url, allowed: policy == .allow))
+        }
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        coordinator.webView(webView, didFinish: navigation)
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        coordinator.webView(webView, didFail: navigation, withError: error)
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        coordinator.webView(webView, didFailProvisionalNavigation: navigation, withError: error)
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        coordinator.webViewWebContentProcessDidTerminate(webView)
+    }
+}
+
+/// A wait the test ends by hand (`open`), however often it is awaited.
+@MainActor
+private final class OpenOnceGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters = []
+    }
 }
 
 /// A loopback listener that counts every connection made to it and answers

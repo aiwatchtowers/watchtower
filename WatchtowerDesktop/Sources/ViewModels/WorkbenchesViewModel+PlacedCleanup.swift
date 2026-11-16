@@ -49,6 +49,7 @@ extension WorkbenchesViewModel {
     /// afresh.
     func cleanUpPlacedWorktree(_ row: TerminalSession) async {
         guard await cleanUpPlacedWorktreeOnce(row) == .blockedByApply, let workbenchID = row.projectID else { return }
+        placedCleanupWaitsForApply(row.id)
         guard await awaitCleanupApplies(projectID: workbenchID, except: row.id) else {
             NSLog("WorkbenchesViewModel: session %lld's worktree cleanup waits for a later cleanup: "
                 + "another cleanup of its workbench still runs", row.id)

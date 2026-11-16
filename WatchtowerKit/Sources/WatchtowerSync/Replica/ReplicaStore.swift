@@ -955,6 +955,13 @@ public final class ReplicaStore: Sendable {
         return try openedPayload(wireName: row["record_name"], payload: row["payload"])
     }
 
+    /// When the hub wrote `recordName` (its `CloudRecord.modifiedAt`, the writer's own clock), from an
+    /// ALREADY-OPEN database; nil when the record is absent. A screen uses it as the record's "as of".
+    public func modifiedAt(forRecordName recordName: String, from db: Database) throws -> Date? {
+        let seconds = try Double.fetchOne(db, sql: "SELECT modified_at FROM slice_records WHERE plain_name = ?", arguments: [recordName])
+        return seconds.map(Date.init(timeIntervalSince1970:))
+    }
+
     /// This phone's whole keybox (`device_grant-<device_id>`, the epoch keys included), from an ALREADY-OPEN
     /// database; nil when the record is absent. A locked keychain throws `KeyStoreError.locked`, and an envelope
     /// that does not open throws its `EnvelopeError` (counted): absent, locked and unreadable stay apart.
@@ -989,6 +996,20 @@ public final class ReplicaStore: Sendable {
             arguments: [kind.rawValue]
         )
         return rows.compactMap { row in openRow(wireName: row["record_name"], payload: row["payload"])?.payload }
+    }
+
+    /// Each stored record of one kind by its PLAIN name, with the seq of the envelope stored under it, from an
+    /// ALREADY-OPEN database; nothing is opened. A screen that holds many records of a kind (the chat feeds) re-opens
+    /// only the names whose seq moved since its last read (`payload(forRecordName:from:)`).
+    public func recordSeqs(of kind: SliceKind, from db: Database) throws -> [String: Int64] {
+        let rows = try Row.fetchAll(
+            db, sql: "SELECT plain_name, seq FROM slice_records WHERE kind = ? AND plain_name IS NOT NULL", arguments: [kind.rawValue]
+        )
+        var seqs: [String: Int64] = [:]
+        for row in rows {
+            seqs[row["plain_name"]] = row["seq"]
+        }
+        return seqs
     }
 
     /// Undecodable-heartbeat warnings emitted so far (for tests).

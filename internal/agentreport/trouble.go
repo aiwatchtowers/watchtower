@@ -31,7 +31,8 @@ const (
 // subagents that never finished and rate limits. Only the sessions with the
 // v2 facts (FactsSessions) are measured.
 type TroubleReport struct {
-	Lead                string          `json:"lead"` // one plain sentence; "" without failures or denials
+	Lead                string          `json:"lead"`   // one plain sentence; "" without failures or denials
+	Agents              []string        `json:"agents"` // every agent of the period's sessions, sorted
 	Classes             []ErrorClassRow `json:"classes"`
 	Denials             []DenialRow     `json:"denials"`
 	Interrupts          int             `json:"interrupts"`
@@ -107,7 +108,7 @@ type classAgg struct {
 // to its end, and the lane's turn goes on from there.
 func Trouble(sessions []agentlogdb.AgentReportSession, events map[string][]agentlogdb.AgentReportEvent,
 	subagents []agentlogdb.AgentSubagent, now time.Time) TroubleReport {
-	r := TroubleReport{Classes: []ErrorClassRow{}, Denials: []DenialRow{}, InterruptSessions: []SessionCount{}}
+	r := TroubleReport{Agents: agentsOf(sessions, nil), Classes: []ErrorClassRow{}, Denials: []DenialRow{}, InterruptSessions: []SessionCount{}}
 	classes := map[string]*classAgg{}
 	denials := map[DenialRow]*denialAgg{}
 	ended := map[string]string{}

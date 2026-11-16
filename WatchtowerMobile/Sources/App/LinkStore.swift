@@ -346,13 +346,13 @@ struct PromotedLink: Codable, Equatable, Sendable {
         func message(macName: String) -> String {
             switch self {
             case .slotExpired: "The link timed out on Relay. Try again, or cancel it."
-            case .slotsFull: "Relay already has \(HostedRelayLimits.maxMacSlots) Macs. Remove one, then try again, or cancel this link."
-            case .replacementLimit: "Too many Mac changes on Relay. Try again later, or cancel this link."
+            case .slotsFull: "Relay already has \(HostedRelayLimits.maxMacSlots) towers. Remove one, then try again, or cancel this link."
+            case .replacementLimit: "Too many tower changes on Relay. Try again later, or cancel this link."
             case .notPaying: "Relay isn't active on this iPhone. Try again when it is, or cancel this link."
             case .hubNotOnRelay: "\(macName) isn't on Relay yet. Keep Watchtower open on it and try again, or cancel this link."
             case .notConfirmed: "Relay didn't confirm the link. Try again, or cancel it."
             case .updateApp: "Update Watchtower to finish this link, or cancel it."
-            case .tooManyMacs: "You can link up to \(HubRegistry.limit) Macs. Unlink one, then try again, or cancel this link."
+            case .tooManyMacs: "You can link up to \(HubRegistry.limit) towers. Unlink one, then try again, or cancel this link."
             }
         }
 

@@ -40,7 +40,7 @@ func TestWorkbenchMatchesKitFixtureKeys(t *testing.T) {
 
 	assertWireShape(t, p, kitFixture(t, "workbench/workbench.json"),
 		"name_clipped", "description_clipped", "folder_display_clipped", "branch_clipped",
-		"last_session_activity", "targets_more", "automations")
+		"last_session_activity", "targets_more", "automations", "board_columns")
 	if p["description_clipped"] != true || runes(p["description"]) != 1000 {
 		t.Errorf("description = %d runes, clipped %v", runes(p["description"]), p["description_clipped"])
 	}
@@ -106,6 +106,32 @@ VALUES (?, 'button', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z'
 	}
 	if _, ok := second["last_run_status"]; ok {
 		t.Error("no run yet: no key")
+	}
+}
+
+// #1781: the phone lays its lanes out in the Mac's Kanban order — the
+// defined column titles of shown statuses, status order then position; a
+// workbench without columns carries no key (an old Mac neither).
+func TestWorkbenchBoardColumnsFollowTheKanbanOrder(t *testing.T) {
+	d := db.OpenTestDB(t)
+	id := insertWorkbench(t, d, "Acme", home+"/Projects/acme")
+	if _, ok := only(t, payloads(t, workbenchSrc(d, nil)))["board_columns"]; ok {
+		t.Error("no columns defined: no key")
+	}
+	for _, c := range []struct {
+		status, title string
+		pos           int
+	}{{"in_progress", "Coding", 0}, {"todo", "Todo", 1}, {"todo", "Backlog", 0}, {"blocked", "Waiting", 0}, {"done", "Shipped", 0}} {
+		exec(t, d, `INSERT INTO workbench_board_columns (project_id, status, title, position, created_at)
+VALUES (?, ?, ?, ?, '2026-10-16T00:00:00Z')`, id, c.status, c.title, c.pos)
+	}
+	exec(t, d, `UPDATE projects SET board_hidden_statuses = '["blocked"]' WHERE id = ?`, id)
+	p := only(t, payloads(t, workbenchSrc(d, nil)))
+	assertWireShape(t, p, kitFixture(t, "workbench/workbench.json"),
+		"name_clipped", "description_clipped", "folder_display_clipped", "branch_clipped",
+		"last_session_activity", "targets_more", "automations")
+	if got := fmt.Sprint(p["board_columns"]); got != "[Backlog Todo Coding Shipped]" {
+		t.Errorf("board_columns = %s, want the Kanban order without the hidden status", got)
 	}
 }
 

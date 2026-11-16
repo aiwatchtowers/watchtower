@@ -42,9 +42,9 @@ type AgentReportSession struct {
 	Facts                                             bool   // every source file has parser_version >= 3, so the v2 facts were measured
 }
 
-// AgentReportSessions lists a workbench's sessions that started or ended at or
-// after since, oldest first.
-func (d *DB) AgentReportSessions(projectID int64, since string) ([]AgentReportSession, error) {
+// AgentReportSessions lists a workbench's sessions of agent ("" = every agent)
+// that started or ended at or after since, oldest first.
+func (d *DB) AgentReportSessions(projectID int64, since, agent string) ([]AgentReportSession, error) {
 	out := []AgentReportSession{}
 	err := d.agentLogRows(`WITH files AS (
 			SELECT s.session_uuid, f.parser_version
@@ -62,9 +62,9 @@ func (d *DB) AgentReportSessions(projectID int64, since string) ([]AgentReportSe
 				AND NOT EXISTS (SELECT 1 FROM files WHERE files.session_uuid = s.session_uuid
 				AND files.parser_version < ?)
 		FROM agent_log_sessions s
-		WHERE s.project_id = ? AND (s.started_at >= ? OR s.ended_at >= ?)
+		WHERE s.project_id = ? AND (s.started_at >= ? OR s.ended_at >= ?) AND (? = '' OR s.agent = ?)
 		ORDER BY s.started_at, s.session_uuid`,
-		[]any{projectID, projectID, agentReportMinParserVersion, agentReportFactsParserVersion, projectID, since, since},
+		[]any{projectID, projectID, agentReportMinParserVersion, agentReportFactsParserVersion, projectID, since, since, agent, agent},
 		func(r *sql.Rows) error {
 			var s AgentReportSession
 			if err := r.Scan(&s.SessionUUID, &s.StartedAt, &s.EndedAt, &s.Model, &s.GitBranch, &s.Agent, &s.OldFormat, &s.Facts); err != nil {

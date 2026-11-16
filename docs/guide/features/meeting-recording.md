@@ -66,7 +66,7 @@ Pick the **Engine** in **Settings → Meetings**. Only engines available on your
 - **WhisperKit (Whisper)**, the default, with the **Large v3 Turbo (recommended)** model, and **Qwen3-ASR** transcribe while you record, as long as **Live transcription** (on by default) is on.
 - **Parakeet v3 (NVIDIA)** and **Apple Speech (macOS 26+)** transcribe after **Stop** and show no live text meanwhile.
 
-The model downloads once. With the **Meetings** goal chosen at setup, it downloads in the background after the first sync, or after 10 minutes, whichever comes first. Otherwise it downloads at your first recording or dictation, and a pill shows progress with **Retry** if the connection drops.
+The model downloads once. With the **Meetings** goal chosen at setup, it downloads in the background after the first sync, or after 10 minutes, whichever comes first. Otherwise it downloads at your first recording or dictation, and a pill shows progress with **Retry** if the connection drops. Once it is on your Mac, it loads from there, so transcription keeps working when the model's download site is blocked (a VPN, a firewall) or down.
 
 **Preload model before meetings** (on by default) loads the model about 5 minutes before a calendar meeting starts, so **Record** starts at once.
 

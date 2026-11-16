@@ -152,6 +152,12 @@ final class SessionPlaceCenter {
         return Task { for read in reads { await read.value } }
     }
 
+    /// Returns once no cwd or place read is in flight, the reruns they queued
+    /// included — "nothing more was read" is checked on settled reads.
+    func readsSettled() async {
+        while let read = cwdReads.values.first ?? statusReads.values.first { await read.value }
+    }
+
     /// The session states were read: the cwds are read again only when a
     /// hook stored a new one (a cwd stamp changed) — no extra read per poll.
     @discardableResult

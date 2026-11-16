@@ -71,3 +71,18 @@ var MovedToBuiltin = map[string]string{
 	IdeasConsolidate:   "idea-finder",
 	ReactionCommand:    "reactions",
 }
+
+// TakesAdditions reports whether the owner's approved additions can reach the
+// prompt id: false for every MovedToBuiltin key (a built-in automation owns the
+// text) and for the three custom-track prompts, whose pipeline reads the stored
+// template directly and never goes through Resolve.
+func TakesAdditions(id string) bool {
+	if _, moved := MovedToBuiltin[id]; moved {
+		return false
+	}
+	switch id {
+	case TrackRun, TrackShortlist, TrackCompose:
+		return false
+	}
+	return true
+}

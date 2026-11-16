@@ -20,6 +20,10 @@ import (
 var errDaemonCannotWake = errors.New("the running daemon is older, or could not start automations (see its log), and can't be woken; " +
 	"restart it (`watchtower sync stop`, then `watchtower sync --daemon --detach`) — the run starts on its next poll")
 
+// automationWakeKill sends the wake signal; tests count the signals sent
+// instead of waiting to see none arrive.
+var automationWakeKill = syscall.Kill
+
 // wakeAutomations sends the daemon its automation wake signal (SIGUSR2,
 // spec §7.4), so the scheduler rescans and the executor polls now. No
 // daemon → (false, nil): a queued run simply starts when one does. A daemon
@@ -46,7 +50,7 @@ func wakeAutomations(cfg *config.Config) (running bool, err error) {
 	if !capable {
 		return false, errDaemonCannotWake
 	}
-	if err := syscall.Kill(pid, daemon.AutomationWakeSignal); err != nil {
+	if err := automationWakeKill(pid, daemon.AutomationWakeSignal); err != nil {
 		return false, fmt.Errorf("waking the daemon (PID %d): %w", pid, err)
 	}
 	return true, nil

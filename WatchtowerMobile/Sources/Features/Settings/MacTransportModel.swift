@@ -24,21 +24,21 @@ struct MacTransportModel: Equatable {
     static let sectionTitle = "Connection"
     static let relayTitle = "Relay"
     static let iCloudTitle = "iCloud"
-    static let forgetTitle = "Forget This Mac"
+    static let forgetTitle = "Forget This Tower"
     static let relayLine = "Instant, encrypted end to end"
     static let iCloudLine = "Free, slower"
     static let relayOnly = "This hub works over Relay only"
     static let needsRelay = "This hub needs Relay"
     static let checking = "Checking…"
-    static let needsUpdate = "Update Watchtower on this Mac to use Relay"
+    static let needsUpdate = "Update Watchtower on this tower to use Relay"
     static let notConfirmed = "Your purchase isn't confirmed yet."
     static let subscribe = "Subscribe to use Relay"
     static let unreachable = "Couldn't reach Relay."
     static let switchingToRelay = "Switching to Relay…"
     static let switchingToICloud = "Switching to iCloud…"
-    static let appliesToEveryPhone = "Applies to every phone of this Mac."
+    static let appliesToEveryPhone = "Applies to every phone of this tower."
 
-    static func slotsFull(_ limit: Int) -> String { "Your subscription already has \(limit) Macs." }
+    static func slotsFull(_ limit: Int) -> String { "Your subscription already has \(limit) towers." }
     static func gettingReady(_ macName: String) -> String { "Getting \(macName) ready…" }
     static func waitingFor(_ macName: String) -> String { "Waiting for \(macName). It switches when it's back." }
 
@@ -46,7 +46,7 @@ struct MacTransportModel: Equatable {
     static func title(for action: Action) -> String? {
         switch action {
         case .tryAgain: "Try Again"
-        case .manageMacs: "Manage Macs"
+        case .manageMacs: "Manage towers"
         case .chooseRelay, .chooseICloud, .openSubscription: nil
         }
     }

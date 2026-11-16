@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 	"watchtower/internal/config"
 
 	"github.com/stretchr/testify/require"
@@ -124,7 +123,7 @@ func TestRoutingStatusFreshCommandMatchesDesktopContract(t *testing.T) {
 			data := []byte("claude_path: '" + bin + "'\ncodex_path: '" + bin + "'\nai: {provider: " + preferred + ", fallback: {enabled: true, provider: " + reserve + "}}\n")
 			require.NoError(t, os.WriteFile(cfg, data, 0600))
 			p := startCLI(t, "--config", cfg, "ai", "routing-status")
-			line, ok := p.next(t, 10*time.Second)
+			line, ok := p.next()
 			require.True(t, ok)
 			require.NoError(t, p.wait())
 			var dto map[string]any

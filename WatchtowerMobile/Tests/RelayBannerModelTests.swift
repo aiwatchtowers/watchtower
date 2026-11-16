@@ -50,9 +50,9 @@ final class RelayBannerModelTests: XCTestCase {
 
     private let outage = "Relay unavailable for 12 min. Your changes wait on this iPhone."
     private let s30 = "Work Mac runs over Relay. This iPhone doesn't get updates from it. "
-        + "Subscribe or switch the Mac to iCloud from a subscribed phone."
+        + "Subscribe or switch the tower to iCloud from a subscribed phone."
     private let s51 = "Work Mac runs over Relay. This iPhone doesn't get updates from it. "
-        + "Switch the Mac to iCloud from a subscribed phone."
+        + "Switch the tower to iCloud from a subscribed phone."
 
     // MARK: - The table
 
@@ -459,7 +459,7 @@ final class RelayBannerModelTests: XCTestCase {
 
         let keptCopy = request(refusal: .lapseNoAnswer, reason: TransportFollowerPolicy.lapseReason)
         let afterADay = try XCTUnwrap(try banner(phase: .free(ended: true), wasPaying: true, route: relayRoute, request: keptCopy))
-        XCTAssertEqual(afterADay.text, s34b.text, "the copy stays: the Mac still moves when it's back")
+        XCTAssertEqual(afterADay.text, s34b.text, "the copy stays: the tower still moves when it's back")
         XCTAssertNil(afterADay.secondLine)
     }
 
@@ -492,7 +492,7 @@ final class RelayBannerModelTests: XCTestCase {
         )
         XCTAssertEqual(
             try banner(phase: .free(ended: true), wasPaying: true, route: relayRoute, unansweredFor: 12 * 60, request: lapse)?.text,
-            outage, "an outage is what stops the Mac hearing now"
+            outage, "an outage is what stops the tower hearing now"
         )
         XCTAssertEqual(
             try banner(phase: .free(ended: true), wasPaying: true, route: iCloudRoute, request: lapse)?.text,
@@ -673,7 +673,7 @@ final class RelayBannerModelTests: XCTestCase {
         withObservationTracking { _ = session.relayUnansweredSince } onChange: { changed.fulfill() }
         bed.fake.crash()
         try await bed.fetch(session)
-        await fulfillment(of: [changed], timeout: 5)
+        await fulfillment(of: [changed])
     }
 }
 

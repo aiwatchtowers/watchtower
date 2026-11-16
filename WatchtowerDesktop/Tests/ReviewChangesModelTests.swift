@@ -47,11 +47,12 @@ final class ReviewScriptedRunner: CLIRunnerProtocol, CLIStreamingRunner, @unchec
         waiting.forEach { $0.resume() }
     }
 
-    /// Waits (bounded) until `count` calls of `sub` are held.
+    /// Signals each held call and each started overview process.
+    private let signal = StateSignal()
+
+    /// Waits until `count` calls of `sub` are held — no deadline (a hang is the watchdog's).
     func waitPending(_ sub: String, count: Int = 1) async {
-        for _ in 0..<2000 where pending(sub) < count {
-            try? await Task.sleep(nanoseconds: 1_000_000)
-        }
+        await signal.until { [self] in pending(sub) >= count }
     }
 
     /// The timeouts `run(args:timeout:)` was given, per subcommand.
@@ -67,11 +68,9 @@ final class ReviewScriptedRunner: CLIRunnerProtocol, CLIStreamingRunner, @unchec
     private var live: [FakeOverviewProcess] = []
     var processes: [FakeOverviewProcess] { lock.withLock { live } }
 
-    /// Waits (bounded) until `count` live overview processes were started.
+    /// Waits until `count` live overview processes were started — no deadline.
     func waitProcesses(_ count: Int) async {
-        for _ in 0..<2000 where processes.count < count {
-            try? await Task.sleep(nanoseconds: 1_000_000)
-        }
+        await signal.until { [self] in processes.count >= count }
     }
 
     func run(args: [String], timeout: TimeInterval) async throws -> Data {
@@ -90,6 +89,7 @@ final class ReviewScriptedRunner: CLIRunnerProtocol, CLIStreamingRunner, @unchec
                 seen.append(args)
                 live.append(process)
             }
+            signal.changed()
             return process.run
         }
         let answer = try await serve(args)
@@ -126,7 +126,7 @@ final class ReviewScriptedRunner: CLIRunnerProtocol, CLIStreamingRunner, @unchec
                 held[sub, default: []].append(c)
                 return true
             }
-            if !wait { c.resume() }
+            if wait { signal.changed() } else { c.resume() }
         }
         if sub == "start" { try seedRound(answer) }
         if sub == "send", let i = args.firstIndex(of: "--round"), let id = Int64(args[i + 1]) {
@@ -1208,7 +1208,7 @@ final class ReviewChangesModelTests: XCTestCase {
         let first = Task { _ = try? await h.model.setPhase(.chapters) }
         let mode = Task { _ = try? await h.model.setMode(.deep) }
         let last = Task { _ = try? await h.model.setPhase(.wrapup) }
-        let waiting = await boundedValue(Task { (h.model.mode, h.model.phase) }, timeout: .seconds(1))
+        let waiting = await boundedValue(Task { (h.model.mode, h.model.phase) })
         XCTAssertEqual(waiting?.0, .quick, "the main actor runs, and the mode waits for its save")
         XCTAssertEqual(waiting?.1, before)
         held.release()

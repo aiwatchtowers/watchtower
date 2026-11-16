@@ -68,20 +68,59 @@ func adoptShippedSingleFile(skillsDir string) error {
 }
 
 // installSkillPair installs the core skill into skillsDir (adopting a
-// sidecar-less shipped single file first), then syncs the preset beside it. A core
-// that could not be installed leaves the preset alone; core is then zero.
-func installSkillPair(skillsDir string, presetNone bool) (core, flow SkillStatus, singleFile bool, errs []error) {
+// sidecar-less shipped single file first), then syncs the preset beside it
+// per o.PresetNone, both rendered with o.Overlays. A core that could not be
+// installed leaves the preset alone; core is then zero. With
+// o.OverlaysUnread an existing copy is not written (keepSkillPair), so it
+// never loses the owner's lines over a database error.
+func installSkillPair(skillsDir string, o WorkbenchInstallOptions) (core, flow SkillStatus, singleFile bool, errs []error) {
+	if o.OverlaysUnread {
+		return keepSkillPair(skillsDir, o)
+	}
 	if err := adoptShippedSingleFile(skillsDir); err != nil {
 		errs = append(errs, err)
 	}
+	for _, base := range []Skill{workbenchSkill(), flowSkill()} {
+		if err := adoptPlainCopy(skillsDir, base); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	var err error
-	if core, err = installSkill(skillsDir, workbenchSkill()); err != nil {
+	if core, err = installSkill(skillsDir, o.coreSkill()); err != nil {
 		return SkillStatus{}, SkillStatus{}, false, append(errs, err)
 	}
-	if flow, singleFile, err = syncFlowSkill(skillsDir, core, presetNone); err != nil {
+	if flow, singleFile, err = syncFlowSkill(skillsDir, core, o); err != nil {
 		errs = append(errs, err)
 	}
 	return core, flow, singleFile, errs
+}
+
+// keepSkillPair is installSkillPair when the overlays could not be read: a
+// copy that exists is only reported (statusSkill), so it never loses the
+// owner's lines; a missing one is installed plain — it has no lines to lose,
+// and the next install with the overlays read renders them.
+func keepSkillPair(skillsDir string, o WorkbenchInstallOptions) (core, flow SkillStatus, singleFile bool, errs []error) {
+	var err error
+	if core, err = statusSkill(skillsDir, workbenchSkill()); err == nil && core.State == StateMissing {
+		core, err = installSkill(skillsDir, workbenchSkill())
+	}
+	if err != nil {
+		return SkillStatus{}, SkillStatus{}, false, []error{err}
+	}
+	// A kept copy (not written now) may still be a pre-v10 single file of
+	// ours that carries the methodology: no preset goes beside it.
+	if core.State != StateInstalled && core.State != StateForeign {
+		if singleFile, err = carriesMethodology(core.Path); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if flow, err = statusSkill(skillsDir, flowSkill()); err == nil && flow.State == StateMissing && !o.PresetNone && !singleFile {
+		flow, err = installSkill(skillsDir, flowSkill())
+	}
+	if err != nil {
+		errs = append(errs, err)
+	}
+	return keptState(core), keptState(flow), singleFile, errs
 }
 
 // syncFlowSkill applies spec §4.3 to the preset beside core: preset none
@@ -89,9 +128,9 @@ func installSkillPair(skillsDir string, presetNone bool) (core, flow SkillStatus
 // reported); otherwise it is installed under the DEV-04 rules — unless core
 // is an owner-edited single file from before v10 (singleFile), which carries
 // its own methodology: then nothing is written and its status is reported.
-func syncFlowSkill(skillsDir string, core SkillStatus, presetNone bool) (flow SkillStatus, singleFile bool, err error) {
-	if presetNone {
-		flow, err = removeSkill(skillsDir, flowSkill())
+func syncFlowSkill(skillsDir string, core SkillStatus, o WorkbenchInstallOptions) (flow SkillStatus, singleFile bool, err error) {
+	if o.PresetNone {
+		flow, err = removeSkill(skillsDir, o.flowSkill())
 		return flow, false, err
 	}
 	if core.State == StateDrifted {
@@ -99,11 +138,11 @@ func syncFlowSkill(skillsDir string, core SkillStatus, presetNone bool) (flow Sk
 			return SkillStatus{}, false, err
 		}
 		if singleFile {
-			flow, err = statusSkill(skillsDir, flowSkill())
+			flow, err = statusSkill(skillsDir, o.flowSkill())
 			return flow, true, err
 		}
 	}
-	flow, err = installSkill(skillsDir, flowSkill())
+	flow, err = installSkill(skillsDir, o.flowSkill())
 	return flow, false, err
 }
 
@@ -165,11 +204,11 @@ func SyncMethodology(o WorkbenchInstallOptions) (MethodologyReport, error) {
 		{o.skillsDir(), flowExcludeLine, &rep.Claude},
 		{o.codexSkillsDir(), codexFlowExcludeLine, &rep.Codex},
 	} {
-		if err := skillDirsInside(o.Folder, d.dir, workbenchSkill(), flowSkill()); err != nil {
+		if err := skillDirsInside(o.Folder, d.dir, o.coreSkill(), o.flowSkill()); err != nil {
 			errs = append(errs, err)
 			continue
 		}
-		core, err := statusSkill(d.dir, workbenchSkill())
+		core, err := statusSkill(d.dir, o.coreSkill())
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -182,7 +221,7 @@ func SyncMethodology(o WorkbenchInstallOptions) (MethodologyReport, error) {
 				errs = append(errs, err)
 			}
 		}
-		_, flow, single, pairErrs := installSkillPair(d.dir, o.PresetNone)
+		_, flow, single, pairErrs := installSkillPair(d.dir, o)
 		errs = append(errs, pairErrs...)
 		*d.out = flow
 		rep.SingleFileLayout = rep.SingleFileLayout || single

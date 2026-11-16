@@ -19,8 +19,9 @@
 // the pending vouch lives 10 minutes; promote_pairing and add_slot of a hub
 // not yet in the phone's slots consume it or answer HUB_NOT_VOUCHED. A hub
 // newly put into a slot gets Control{SLOT_ADDED, detail: the phone's device
-// id}, best effort: only on an open socket, dropped otherwise. No quotas and
-// no zone access rules beyond that: every device that may write a zone
+// id}, best effort: only on an open socket, dropped otherwise. No quotas (only
+// the relay's size limits, MaxRecordBytes and MaxBodyBytes) and no zone
+// access rules beyond that: every device that may write a zone
 // reads and writes every zone.
 //
 // Pushes (relay push.ts/ops.ts at the pinned commit): register_push keeps a
@@ -79,6 +80,14 @@ const (
 	maxPushPayload    = 4096
 	alertBodyOverhead = 67
 	maxPushTokenChars = 200
+)
+
+// The relay's size limits (relay design §8, relay v1 plan Tasks 6 and 9):
+// a record's envelope over MaxRecordBytes, or an op body over MaxBodyBytes,
+// is refused RECORD_TOO_LARGE as a whole, before anything is written.
+const (
+	MaxRecordBytes = 1 << 20
+	MaxBodyBytes   = MaxRecordBytes + 64<<10
 )
 
 // writeTimeout bounds one pushed WebSocket frame.
@@ -567,6 +576,8 @@ func (s *Server) serveOp(w http.ResponseWriter, r *http.Request) {
 		resp = &relayv1.Response{Result: &relayv1.Response_Error{Error: q[0]}}
 	} else if code, found := s.failSaveInLocked(caller, &req); found {
 		resp = errResp(code)
+	} else if len(body) > MaxBodyBytes || recordTooLarge(&req) {
+		resp = errResp(relayv1.ErrorCode_ERROR_CODE_RECORD_TOO_LARGE)
 	} else {
 		resp = s.handle(caller, &req)
 	}
@@ -872,6 +883,16 @@ func unvouchedAllowed(req *relayv1.Request) bool {
 	default:
 		return false
 	}
+}
+
+// recordTooLarge reports a save with an envelope over MaxRecordBytes.
+func recordTooLarge(req *relayv1.Request) bool {
+	for _, it := range req.GetSave().GetItems() {
+		if len(it.GetRecord().GetEnvelope()) > MaxRecordBytes {
+			return true
+		}
+	}
+	return false
 }
 
 func live(r *relayv1.Record) bool { return r != nil && !r.GetDeleted() }

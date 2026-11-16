@@ -109,6 +109,10 @@ final class SessionLineDelivery {
     /// made is not a read that tries the held lines again (PROJ-16: retried
     /// on each successful state read — not on its own).
     private var ownReads = 0
+    /// Every later try of the held lines not yet ended (a test seam:
+    /// `settled`).
+    private var retries: [Int: Task<Void, Never>] = [:]
+    private var retriesStarted = 0
     /// When a line was last submitted into each session.
     private var lastSubmit: [Int64: Date] = [:]
     /// The spec review lines' own order per session: a round's findings
@@ -179,7 +183,23 @@ final class SessionLineDelivery {
         // Each read tells the hosts whether a dialog is up (Go `PromptHint`).
         terminalCenter?.syncPromptHints()
         guard ownReads == 0 else { return }
-        Task { [weak self] in await self?.deliverHeld() }
+        deliverHeldLater()
+    }
+
+    /// `deliverHeld` in a task of its own.
+    private func deliverHeldLater() {
+        retriesStarted += 1
+        let id = retriesStarted
+        retries[id] = Task { [weak self] in
+            await self?.deliverHeld()
+            self?.retries[id] = nil
+        }
+    }
+
+    /// Returns once no later try of the held lines is left, one such a try
+    /// starts included (a test seam).
+    func settled() async {
+        while let retry = retries.values.first { await retry.value }
     }
 
     /// The launch's reattach of the session host's runs is done
@@ -256,7 +276,7 @@ final class SessionLineDelivery {
             // reason of their own wait for the next state read: retrying
             // them here would only hold them again, and again after that.
             if queues[sessionID]?.contains(where: \.behindAnother) == true {
-                Task { [weak self] in await self?.deliverHeld() }
+                deliverHeldLater()
             }
         }
         // A failed read leaves the last good state, which may miss a

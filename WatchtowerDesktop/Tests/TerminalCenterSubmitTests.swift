@@ -284,6 +284,26 @@ final class TerminalCenterSubmitTests: XCTestCase {
         XCTAssertFalse(center.promptHoldsText(s.id))
     }
 
+    /// #1748 (asks #1256, #1261): in Codex too Shift+Tab puts no text into
+    /// the composer, so it leaves the draft state as it was; Esc and Ctrl+C
+    /// stay drafts (a cancel may move a queued message back into it).
+    func testProj12_CodexShiftTabKeepsTheDraftState() async throws {
+        let (_, s, _) = try await runningCodexSession()
+        let shiftTab: [UInt8] = [0x1B, 0x5B, 0x5A]
+        processes[0].onOwnerInput?(shiftTab)
+        XCTAssertFalse(center.promptHoldsText(s.id), "Shift+Tab alone left a draft")
+        processes[0].onOwnerInput?(Array("half".utf8) + [0x0A])
+        processes[0].onOwnerInput?(shiftTab)
+        XCTAssertTrue(center.promptHoldsText(s.id), "Shift+Tab cleared the owner's draft")
+        processes[0].onOwnerInput?([0x0D])
+        for key: [UInt8] in [[0x1B], [0x03]] {
+            XCTAssertFalse(center.promptHoldsText(s.id))
+            processes[0].onOwnerInput?(key)
+            XCTAssertTrue(center.promptHoldsText(s.id), "\(key) left no draft")
+            processes[0].onOwnerInput?([0x0D])
+        }
+    }
+
     // MARK: - Strings
 
     /// The notes name the agent the line went to: Codex by its name; Claude

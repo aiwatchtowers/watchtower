@@ -121,7 +121,7 @@ final class MacTransportModelTests: XCTestCase {
             Case(
                 name: "S49 not supported", model: try model(link: relayRoute, facts: facts(request: request(.notSupported))),
                 relay: Expected(line: relayLine, chosen: true, enabled: false),
-                iCloud: Expected(line: "Work Mac can't switch from here. Update Watchtower on the Mac.", enabled: true, action: .tryAgain)
+                iCloud: Expected(line: "Work Mac can't switch from here. Update Watchtower on it.", enabled: true, action: .tryAgain)
             ),
             Case(
                 name: "S49 not ordered", model: try model(link: relayRoute, facts: facts(request: request(.notOrdered))),
@@ -181,7 +181,7 @@ final class MacTransportModelTests: XCTestCase {
                 model: try model(link: relayRoute, grant: .some(nil)),
                 relay: Expected(line: relayLine, chosen: true, enabled: true),
                 iCloud: Expected(line: free2, enabled: true, action: .chooseICloud),
-                footnote: "Applies to every phone of this Mac."
+                footnote: "Applies to every phone of this tower."
             ),
             Case(
                 name: "S10 free, an old refusal kept", model: try model(phase: free, facts: facts(refusal: .unavailable)),
@@ -206,30 +206,30 @@ final class MacTransportModelTests: XCTestCase {
             Case(
                 name: "S18 reader not confirmed", model: try model(facts: facts(refusal: .readerNotConfirmed)),
                 relay: Expected(
-                    line: "Work Mac didn't confirm Relay. Update Watchtower on the Mac and try again.", enabled: true, action: .tryAgain
+                    line: "Work Mac didn't confirm Relay. Update Watchtower on it and try again.", enabled: true, action: .tryAgain
                 ),
                 iCloud: chosenICloud
             ),
             Case(
                 name: "S11 too soon", model: try model(facts: facts(refusal: .tooSoon(retryAt: tooSoonAt))),
                 relay: Expected(line: "Switching to Relay is possible again in 4 min"), iCloud: chosenICloud,
-                footnote: "The Mac was switched less than 5 minutes ago."
+                footnote: "The tower was switched less than 5 minutes ago."
             ),
             Case(
                 name: "S14 slots full, kept",
                 model: try model(phase: .paying(grace: false, macs: ["a", "b", "c"]), facts: facts(refusal: .vouch(.slotsFull))),
-                relay: Expected(line: "Your subscription already has 3 Macs.", enabled: true, action: .manageMacs), iCloud: chosenICloud
+                relay: Expected(line: "Your subscription already has 3 towers.", enabled: true, action: .manageMacs), iCloud: chosenICloud
             ),
             Case(
                 name: "S12 no ordered actions", model: try model(grant: .some(grant(ordered: false))),
-                relay: Expected(line: "Update Watchtower on this Mac to use Relay"), iCloud: chosenICloud
+                relay: Expected(line: "Update Watchtower on this tower to use Relay"), iCloud: chosenICloud
             ),
             Case(
                 name: "S12 no coherent identity", model: try model(grant: .some(grant(coherent: false))),
-                relay: Expected(line: "Update Watchtower on this Mac to use Relay"), iCloud: chosenICloud
+                relay: Expected(line: "Update Watchtower on this tower to use Relay"), iCloud: chosenICloud
             ),
             Case(
-                name: "no grant read yet: nothing proves the Mac old", model: try model(grant: .some(nil)),
+                name: "no grant read yet: nothing proves the tower old", model: try model(grant: .some(nil)),
                 relay: Expected(line: "Checking…"), iCloud: chosenICloud
             ),
             Case(
@@ -260,32 +260,32 @@ final class MacTransportModelTests: XCTestCase {
                 relay: Expected(line: "Couldn't reach Relay."), iCloud: chosenICloud
             ),
             Case(
-                name: "S14 three other Macs", model: try model(phase: .paying(grace: false, macs: ["a", "b", "c"])),
-                relay: Expected(line: "Your subscription already has 3 Macs.", enabled: true, action: .manageMacs), iCloud: chosenICloud
+                name: "S14 three other towers", model: try model(phase: .paying(grace: false, macs: ["a", "b", "c"])),
+                relay: Expected(line: "Your subscription already has 3 towers.", enabled: true, action: .manageMacs), iCloud: chosenICloud
             ),
             Case(
-                name: "S09 paying, this Mac among the three", model: try model(phase: .paying(grace: false, macs: ["a", "b", macID])),
+                name: "S09 paying, this tower among the three", model: try model(phase: .paying(grace: false, macs: ["a", "b", macID])),
                 relay: Expected(line: relayLine, enabled: true, action: .chooseRelay),
                 iCloud: Expected(line: free2, chosen: true, enabled: true),
-                footnote: "Applies to every phone of this Mac."
+                footnote: "Applies to every phone of this tower."
             ),
             Case(
                 name: "S09 paying", model: try model(),
                 relay: Expected(line: relayLine, enabled: true, action: .chooseRelay),
                 iCloud: Expected(line: free2, chosen: true, enabled: true),
-                footnote: "Applies to every phone of this Mac."
+                footnote: "Applies to every phone of this tower."
             ),
             Case(
                 name: "S08 route relay", model: try model(link: relayRoute),
                 relay: Expected(line: relayLine, chosen: true, enabled: true),
                 iCloud: Expected(line: free2, enabled: true, action: .chooseICloud),
-                footnote: "Applies to every phone of this Mac."
+                footnote: "Applies to every phone of this tower."
             ),
             Case(
                 name: "S08 route relay, not paying: the way out stays", model: try model(link: relayRoute, phase: free),
                 relay: Expected(line: relayLine, chosen: true, enabled: true),
                 iCloud: Expected(line: free2, enabled: true, action: .chooseICloud),
-                footnote: "Applies to every phone of this Mac."
+                footnote: "Applies to every phone of this tower."
             )
         ]
         for entry in table {
@@ -369,7 +369,7 @@ final class MacTransportModelTests: XCTestCase {
         XCTAssertEqual(early.rows.first?.line, "Switching to Relay is possible again in 4 min")
         XCTAssertNil(early.rows.first?.action)
         XCTAssertEqual(early.rows.first?.enabled, false)
-        XCTAssertEqual(early.footnote, "The Mac was switched less than 5 minutes ago.")
+        XCTAssertEqual(early.footnote, "The tower was switched less than 5 minutes ago.")
 
         let later = try model(facts: session, at: now.addingTimeInterval(90))
         XCTAssertEqual(later.rows.first?.line, "Switching to Relay is possible again in 3 min")
@@ -384,7 +384,7 @@ final class MacTransportModelTests: XCTestCase {
     func testFootnoteNamesWhoChanged() throws {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: now).addingTimeInterval(10 * 3_600 + 42 * 60)
-        let applies = "Applies to every phone of this Mac."
+        let applies = "Applies to every phone of this tower."
         let cases: [(String?, Date?, String)] = [
             (nil, nil, applies),
             ("", nil, applies),
@@ -430,9 +430,9 @@ final class MacTransportModelTests: XCTestCase {
 
     func testSectionAndButtonTexts() {
         XCTAssertEqual(Model.sectionTitle, "Connection")
-        XCTAssertEqual(Model.forgetTitle, "Forget This Mac")
+        XCTAssertEqual(Model.forgetTitle, "Forget This Tower")
         XCTAssertEqual(Model.title(for: .tryAgain), "Try Again")
-        XCTAssertEqual(Model.title(for: .manageMacs), "Manage Macs")
+        XCTAssertEqual(Model.title(for: .manageMacs), "Manage towers")
         for action: Model.Action in [.chooseRelay, .chooseICloud, .openSubscription] {
             XCTAssertNil(Model.title(for: action), "\(action): the row itself is the press")
         }

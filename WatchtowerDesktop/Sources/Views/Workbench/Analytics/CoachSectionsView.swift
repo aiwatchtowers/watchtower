@@ -11,6 +11,9 @@ struct CoachRollbackPrompt: Identifiable {
 /// The coach's three sections on the Analytics pane: How it's going,
 /// Proposed edits (with the run line) and Accepted edits.
 struct CoachSectionsView: View {
+    /// The scroll id of Accepted edits (the tuning panel's Show in Accepted edits).
+    static let acceptedID = "coach.accepted"
+
     let coach: CoachCenter
     let workbench: Int64
     let actions: CoachActions
@@ -31,6 +34,7 @@ struct CoachSectionsView: View {
                         }
                     }
                 }
+                .id(Self.acceptedID)
             }
         }
         .sheet(item: $editing) { CoachEditSheet(proposal: $0, coach: coach) }

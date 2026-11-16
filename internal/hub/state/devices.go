@@ -62,6 +62,10 @@ type Device struct {
 	// ClearDeviceKX clear them, and LinkDevice clears them on a re-link.
 	KXOffer      []byte
 	KXOfferEpoch uint32
+	// ChatAllowed is the owner's `chat` grant (00017): the phone may use the
+	// main AI chat. On by default (ask #1340). Read only here; the grant's
+	// writers come with the link paths.
+	ChatAllowed bool
 }
 
 // MarkRelayAdmitted stamps at on the linked phones among relayIDs (their
@@ -99,7 +103,7 @@ const deviceColumns = `device_id, name, scope, linked_at, signing_key, agreement
 // stamp, which only MarkRelayAdmitted writes (a re-link clears it), the
 // switch only a device record's rewrite writes (a re-link clears it too), and
 // the relay key offer only SetKXOffer writes (a re-link clears it).
-const deviceRead = deviceColumns + `, relay_admitted_at, relay_lapsed_at, relay_skip_before, relay_skip_seq, work_alerts_off, resend_requested_at, kx_offer, kx_offer_epoch`
+const deviceRead = deviceColumns + `, relay_admitted_at, relay_lapsed_at, relay_skip_before, relay_skip_seq, work_alerts_off, resend_requested_at, kx_offer, kx_offer_epoch, chat_allowed`
 
 type rowScanner interface{ Scan(dest ...any) error }
 
@@ -119,7 +123,7 @@ func scanDevice(r rowScanner) (Device, error) {
 	err := r.Scan(&d.ID, &d.Name, &d.Scope, &linked, &d.SigningKey, &d.AgreementKey, &nonce,
 		&d.TypingAllowed, &d.TypingRequested, &d.PermissionsAllowed, &d.PermissionsRequested,
 		&d.StartSessionsAllowed, &d.StartSessionsGranted,
-		&lastApplied, &d.Ordered, &relayID, &resnd, &acked, &admitted, &lapsed, &skip, &skipSeq, &d.WorkAlertsOff, &resendAt, &d.KXOffer, &offerEpoch)
+		&lastApplied, &d.Ordered, &relayID, &resnd, &acked, &admitted, &lapsed, &skip, &skipSeq, &d.WorkAlertsOff, &resendAt, &d.KXOffer, &offerEpoch, &d.ChatAllowed)
 	if err != nil {
 		return Device{}, err
 	}
@@ -338,6 +342,16 @@ func LinkNonceTx(tx *sql.Tx, id string) (nonce string, ok bool, err error) {
 		return "", false, fmt.Errorf("reading a device: %w", err)
 	}
 	return n.String, true, nil
+}
+
+// AnyChatPhone says whether a linked phone holds the `chat` grant: the chat
+// slices publish only then.
+func (s *Store) AnyChatPhone() (bool, error) {
+	var ok bool
+	if err := s.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM devices WHERE chat_allowed = 1)`).Scan(&ok); err != nil {
+		return false, fmt.Errorf("reading the chat grants: %w", err)
+	}
+	return ok, nil
 }
 
 // CloudKitLinks counts the phones linked over CloudKit: they carry the

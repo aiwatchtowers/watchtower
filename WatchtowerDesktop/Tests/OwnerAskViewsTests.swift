@@ -69,15 +69,10 @@ final class OwnerAskViewsTests: XCTestCase {
         vm.layout(projectID: project).visiblePanes.contains(.session(session))
     }
 
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("condition not met in \(timeout)s")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
+    /// Waits until `condition` holds, re-checking on every change of the
+    /// observable state it reads — no deadline.
+    private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
+        await untilObserved(condition)
     }
 
     // MARK: - Stack and "k of N ›"

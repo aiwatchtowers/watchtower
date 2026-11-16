@@ -1,7 +1,41 @@
 import XCTest
 import GRDB
+import Observation
 @testable import WatchtowerCore
 import WatchtowerTestSupport
+
+/// The feed's poll wait: records each interval and returns only when the test
+/// wakes it or the poll task is cancelled. Observable, so a test waits for a
+/// call with `untilObserved`. No clock.
+@MainActor
+@Observable
+private final class PollSleeper {
+    private(set) var intervals: [Duration] = []
+    private(set) var cancelled = 0
+    var calls: Int { intervals.count }
+    @ObservationIgnored private var waiter: CheckedContinuation<Void, Never>?
+
+    func sleep(_ interval: Duration) async {
+        intervals.append(interval)
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled { continuation.resume() } else { waiter = continuation }
+            }
+        } onCancel: {
+            Task { @MainActor in self.cancel() }
+        }
+    }
+
+    func wake() {
+        waiter?.resume()
+        waiter = nil
+    }
+
+    private func cancel() {
+        cancelled += 1
+        wake()
+    }
+}
 
 @MainActor
 final class AgentActionFeedTests: XCTestCase {
@@ -11,11 +45,9 @@ final class AgentActionFeedTests: XCTestCase {
     private static let emptyDigest = "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
 
     /// Wait for the observation to deliver `count` rows (ValueObservation is
-    /// asynchronous; poll on the main actor with a bounded budget).
+    /// asynchronous): re-checked on each change of the feed's rows, no clock.
     private func waitForRows(_ feed: AgentActionFeed, count: Int) async {
-        for _ in 0..<50 where feed.rows.count != count {
-            try? await Task.sleep(for: .milliseconds(20))
-        }
+        await untilObserved { feed.rows.count == count }
     }
 
     func testStartObservesConversationRows() async throws {
@@ -193,7 +225,10 @@ final class AgentActionFeedTests: XCTestCase {
 
         let otherPool = try DatabasePool(path: path)
         _ = try await otherPool.write { db in try TestDatabase.insertAgentAction(db, conversationID: 1, turnID: "cli") }
-        try await Task.sleep(for: .milliseconds(100))
+        // Nothing is scheduled by another connection's commit: let whatever
+        // the main actor and the app's pool already hold run, then look.
+        _ = try await pool.read { _ in }
+        await Task { @MainActor in }.value
         XCTAssertEqual(feed.rows.map(\.turnID), ["seed"], "ValueObservation cannot see another connection's write")
 
         feed.refresh()
@@ -232,22 +267,29 @@ final class AgentActionFeedTests: XCTestCase {
         let (pool, path) = try makePool()
         defer { TestDatabase.cleanup(path: path) }
         _ = try await pool.write { db in try TestDatabase.insertAgentAction(db, conversationID: 1, turnID: "seed") }
-        let feed = AgentActionFeed(dbPool: pool, cliRunner: FakeCLIRunner(), pollInterval: .milliseconds(50))
+        let sleeper = PollSleeper()
+        let feed = AgentActionFeed(dbPool: pool, cliRunner: FakeCLIRunner(), pollInterval: .milliseconds(50)) {
+            await sleeper.sleep($0)
+        }
         feed.start(conversationID: 1)
         await waitForRows(feed, count: 1)
+        await untilObserved { sleeper.calls == 1 }
+        XCTAssertEqual(sleeper.intervals, [.milliseconds(50)])
 
         let otherPool = try DatabasePool(path: path)
         _ = try await otherPool.write { db in try TestDatabase.insertAgentAction(db, conversationID: 1, turnID: "mcp") }
-        for _ in 0..<60 where feed.rows.count < 2 {
-            try await Task.sleep(for: .milliseconds(50))
-        }
+        sleeper.wake() // the poll's interval is up
+        await untilObserved { feed.rows.count >= 2 }
         XCTAssertEqual(feed.rows.map(\.turnID), ["seed", "mcp"], "the poll must surface the subprocess's insert")
+        await untilObserved { sleeper.calls == 2 } // the next interval started
 
         feed.stop()
         XCTAssertTrue(feed.rows.isEmpty)
+        await untilObserved { sleeper.cancelled == 1 } // stop() cancelled the waiting poll
         _ = try await otherPool.write { db in try TestDatabase.insertAgentAction(db, conversationID: 1, turnID: "after-stop") }
-        try await Task.sleep(for: .milliseconds(250))
+        await Task { @MainActor in }.value
         XCTAssertTrue(feed.rows.isEmpty, "stop() must cancel the poll")
+        XCTAssertEqual(sleeper.calls, 2, "no poll interval after stop()")
     }
 
     /// Minor 22: a per-row failure inside `approveAllPending` must survive the

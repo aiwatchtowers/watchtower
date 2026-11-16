@@ -56,6 +56,17 @@ public enum SliceKind: String, Codable, CaseIterable, Sendable {
     /// A session's chat (session-chat-iphone spec), record name
     /// `session_chat-<session id>[-<agent id>]`. Written only while the phone watches it.
     case sessionChat = "session_chat"
+    // The main AI chat over the relay (iPhone chat spec §4.6), published
+    // only while the phone holds the `chat` grant.
+    /// The chat list, one record `chat_list-main`.
+    case chatList = "chat_list"
+    /// One watched conversation, `chat_feed-<conversation id>`; written only
+    /// while the phone watches or prefetches it.
+    case chatFeed = "chat_feed"
+    /// One page of older messages, `chat_page-<conversation id>-<before message id>`.
+    case chatPage = "chat_page"
+    /// One search's hits, `chat_search-<query hash>`.
+    case chatSearch = "chat_search"
 
     public func recordName(id: String) -> String {
         "\(rawValue)-\(id)"

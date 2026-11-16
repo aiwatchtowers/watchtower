@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -185,12 +184,7 @@ func TestWorkspaceInit_UnblocksCommandsWithoutSlack(t *testing.T) {
 	cancel()
 	done := make(chan error, 1)
 	go func() { done <- runSyncDaemon(ctx, cfg, database, logger, orchestrators) }()
-	select {
-	case err := <-done:
-		require.NoError(t, err)
-	case <-time.After(60 * time.Second):
-		t.Fatal("a daemon with no sources did not stop on a cancelled context")
-	}
+	require.NoError(t, <-done, "a daemon with no sources stops on a cancelled context")
 }
 
 func TestSaveAuthResult_AfterWorkspaceInitReusesTheWorkspace(t *testing.T) {

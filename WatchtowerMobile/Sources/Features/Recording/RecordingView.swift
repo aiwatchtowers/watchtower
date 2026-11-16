@@ -235,13 +235,13 @@ private struct RecordingSavedView: View {
                         uploadStep(upload)
                         transcriptStep(PhoneTranscriptStage(job: snapshot.jobs[saved.id]))
                     } else {
-                        StepRow(state: .current, text: "Sending to your Mac")
+                        StepRow(state: .current, text: "Sending to your tower")
                         StepRow(state: .todo, text: "Transcript and recap")
                     }
                 }
                 .card()
 
-                Text("Mac asleep? The file waits in iCloud; the Mac transcribes it when it wakes.")
+                Text("Tower asleep? The file waits in iCloud; the tower transcribes it when it wakes.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 

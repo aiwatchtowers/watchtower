@@ -14,8 +14,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/ai"
@@ -380,24 +382,39 @@ func TestLoadExternalMCPServers_OAuth_ParallelLaunchesRefreshOnce(t *testing.T) 
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = database.Close() })
 
+	// The race, made exact: the first launch's refresh is held at the token
+	// endpoint until the second launch has made its own first read and
+	// reached the lock — or, with the lock gone, sent its own refresh.
 	var hits atomic.Int64
+	var lockCalls atomic.Int32
+	secondAtLock, secondRequest := make(chan struct{}), make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if hits.Add(1) > 1 {
+			close(secondRequest)
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_grant"})
 			return
 		}
-		time.Sleep(100 * time.Millisecond) // widen the race window
+		select {
+		case <-secondAtLock:
+		case <-secondRequest:
+		}
 		_ = json.NewEncoder(w).Encode(tokenResponse{AccessToken: "access-token-2", RefreshToken: "refresh-token-2", ExpiresIn: 3600})
 	}))
 	t.Cleanup(server.Close)
 	now := time.Now()
 	id, store := setupOAuthConnection(t, database, cfg, server.URL, now.Add(30*time.Second))
 
-	originalNow := externalMCPNow
+	originalNow, originalLock := externalMCPNow, lockOAuthSecret
 	externalMCPNow = func() time.Time { return now }
-	t.Cleanup(func() { externalMCPNow = originalNow })
+	lockOAuthSecret = func(ctx context.Context, s *externalmcp.SecretStore) (func(), error) {
+		if lockCalls.Add(1) == 2 {
+			close(secondAtLock)
+		}
+		return originalLock(ctx, s)
+	}
+	t.Cleanup(func() { externalMCPNow, lockOAuthSecret = originalNow, originalLock })
 
 	results := make([][]ai.ExternalMCPServer, 2)
 	var wg sync.WaitGroup
@@ -479,16 +496,21 @@ func TestLoadExternalMCPServers_OAuth_LockTimeoutMarksError(t *testing.T) {
 	now := time.Now()
 	id, store := setupOAuthConnection(t, database, cfg, server.URL, now.Add(30*time.Second))
 
-	originalNow, originalWait := externalMCPNow, oauthLockWait
+	originalNow := externalMCPNow
 	externalMCPNow = func() time.Time { return now }
-	oauthLockWait = 100 * time.Millisecond
-	t.Cleanup(func() { externalMCPNow, oauthLockWait = originalNow, originalWait })
+	t.Cleanup(func() { externalMCPNow = originalNow })
 
 	unlock, err := store.Lock(context.Background())
 	require.NoError(t, err)
 	t.Cleanup(unlock)
 
-	require.Empty(t, loadExternalMCPServers(cfg, cfg.DBPath()))
+	// The launch waits out the whole oauthLockWait on the bubble's clock:
+	// the lock's polls are its only waits.
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		require.Empty(t, loadExternalMCPServers(cfg, cfg.DBPath()))
+		assert.Equal(t, oauthLockWait, time.Since(start), "the launch gives up at the lock wait's end, not before")
+	})
 	require.Equal(t, int64(0), hits.Load(), "no refresh while another process holds the lock")
 	conn, err := database.GetExternalConnection(id)
 	require.NoError(t, err)

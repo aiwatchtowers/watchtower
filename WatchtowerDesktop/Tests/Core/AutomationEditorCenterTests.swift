@@ -1,4 +1,5 @@
 import GRDB
+import Observation
 import XCTest
 @testable import WatchtowerCore
 import WatchtowerTestSupport
@@ -19,11 +20,18 @@ private final class EditorRunner: CLIRunnerProtocol, @unchecked Sendable {
     private var cancelHeldSubcommand: String?
     private var cancelWaiter: CheckedContinuation<Void, Never>?
     private var cancelSeen = false
+    private let signal = StateSignal()
 
     var invocations: [[String]] { lock.withLock { recorded } }
     /// Subcommand → the recipe text it was sent on stdin.
     var fileTexts: [String: String] { lock.withLock { files } }
     var isHolding: Bool { lock.withLock { gate != nil } }
+
+    /// Returns once `condition` holds over this runner's state — its own
+    /// signal (every change below calls `signal.changed()`), no clock.
+    func until(_ condition: @escaping @Sendable (EditorRunner) -> Bool) async {
+        await signal.until { [self] in condition(self) }
+    }
 
     func on(_ subcommand: String, _ handler: @escaping Handler) {
         lock.withLock { handlers[subcommand] = handler }
@@ -50,6 +58,7 @@ private final class EditorRunner: CLIRunnerProtocol, @unchecked Sendable {
                     cancelWaiter = continuation
                     return false
                 }
+                signal.changed()
                 if resumeNow { continuation.resume() }
             }
         } onCancel: {
@@ -58,6 +67,7 @@ private final class EditorRunner: CLIRunnerProtocol, @unchecked Sendable {
                 defer { cancelWaiter = nil }
                 return cancelWaiter
             }
+            signal.changed()
             waiting?.resume()
         }
         throw CancellationError()
@@ -69,6 +79,7 @@ private final class EditorRunner: CLIRunnerProtocol, @unchecked Sendable {
             defer { gate = nil }
             return gate
         }
+        signal.changed()
         waiting?.resume()
     }
 
@@ -88,6 +99,7 @@ private final class EditorRunner: CLIRunnerProtocol, @unchecked Sendable {
             if let text { files[sub] = text }
             return (handlers[sub], heldSubcommand == sub, cancelHeldSubcommand == sub)
         }
+        signal.changed()
         if cancelHeld { try await waitForCancel() }
         if held {
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -96,6 +108,7 @@ private final class EditorRunner: CLIRunnerProtocol, @unchecked Sendable {
                     gate = continuation
                     return false
                 }
+                signal.changed()
                 if resumeNow { continuation.resume() }
             }
         }
@@ -104,9 +117,11 @@ private final class EditorRunner: CLIRunnerProtocol, @unchecked Sendable {
 }
 
 /// The debounce's wait: suspends until the test fires it (or tears down).
+/// Observable, so a test waits for a call with `untilObserved`.
 @MainActor
+@Observable
 private final class TestSleeper {
-    private var waiting: [CheckedContinuation<Void, Never>] = []
+    @ObservationIgnored private var waiting: [CheckedContinuation<Void, Never>] = []
     private(set) var calls = 0
 
     func sleep(_: Duration) async {
@@ -179,18 +194,6 @@ final class AutomationEditorCenterTests: XCTestCase {
 
     nonisolated private static func saveJSON(approval: String) -> Data {
         Data(#"{"automation_id":7,"path":"/acme/automations/digest.md","approval_hash":"\#(approval)","confirmed":true}"#.utf8)
-    }
-
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("timed out")
-                return
-            }
-            await Task.yield()
-            try? await Task.sleep(for: .milliseconds(5))
-        }
     }
 
     /// The `watchtower-automation-*` entries the editor wrote to the system
@@ -363,7 +366,7 @@ final class AutomationEditorCenterTests: XCTestCase {
         let plan = try await checkedPlan(center, 7)
 
         let task = Task { await center.commit(7, plan: plan, turnOn: true) }
-        await waitUntil { self.runner.isHolding }
+        await runner.until { $0.isHolding }
         XCTAssertEqual(center.saving[7], .saving)
         // The form view is gone: nothing holds the draft but the center.
         // Closing it (Discard on the way out) and reopening it mid-flight
@@ -622,14 +625,14 @@ final class AutomationEditorCenterTests: XCTestCase {
         await center.beginEdit(7, chatNewestText: nil)
         center.drafts[7]?.fields.name = "Weekly digest"
         center.textChanged(7)
-        await waitUntil { self.sleeper.calls >= 2 }
+        await untilObserved { self.sleeper.calls >= 2 }
         sleeper.fire()
-        await waitUntil { self.runner.isHolding }
+        await runner.until { $0.isHolding }
         XCTAssertEqual(center.saving[7], .validating)
         XCTAssertFalse(center.canSave(7))
 
         runner.release()
-        await waitUntil {
+        await untilObserved {
             if case .review = center.saving[7] { return true }
             return false
         }
@@ -646,13 +649,15 @@ final class AutomationEditorCenterTests: XCTestCase {
         center.textChanged(7)
         center.textChanged(7)
         center.textChanged(7)
-        await waitUntil { self.sleeper.calls >= 4 }
+        await untilObserved { self.sleeper.calls >= 4 }
         sleeper.fire()
-        await waitUntil {
+        await untilObserved {
             if case .review = center.saving[7] { return true }
             return false
         }
-        for _ in 0..<20 { await Task.yield() }
+        // The superseded checks were queued on the main actor before the
+        // one that ran: drain them, then nothing else can start a validate.
+        await Task { @MainActor in }.value
         XCTAssertEqual(runner.invocations.filter { $0[1] == "validate" }.count, 1)
     }
 
@@ -748,7 +753,7 @@ final class AutomationEditorCenterTests: XCTestCase {
         runner.on("enable") { _ in throw CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: daemon busy\n") }
         runner.hold("enable")
         let commit = Task { await center.commit(key, plan: plan, turnOn: true) }
-        await waitUntil { self.runner.isHolding }
+        await runner.until { $0.isHolding }
         seen.append(center.saving[key])
         runner.release()
         await commit.value
@@ -815,18 +820,18 @@ final class AutomationEditorCenterTests: XCTestCase {
         runner.on("validate") { _ in try Fixtures.validateJSON(approval: "h1") }
         let center = makeCenter()
         await center.beginEdit(7, chatNewestText: nil)
-        await waitUntil { self.sleeper.calls >= 1 }
+        await untilObserved { self.sleeper.calls >= 1 }
         sleeper.fire()
-        await waitUntil {
+        await untilObserved {
             if case .review = center.saving[7] { return true }
             return false
         }
         await center.reloadFromDisk(7)
         XCTAssertNil(center.saving[7])
         // The reloaded text equals the old one: no edit would check it.
-        await waitUntil { self.sleeper.calls >= 2 }
+        await untilObserved { self.sleeper.calls >= 2 }
         sleeper.fire()
-        await waitUntil {
+        await untilObserved {
             if case .review = center.saving[7] { return true }
             return false
         }
@@ -1118,7 +1123,7 @@ final class AutomationEditorCenterTests: XCTestCase {
 
         center.runPreview(7)
         XCTAssertTrue(center.isPreviewRunning(7))
-        await waitUntil { !center.isPreviewRunning(7) }
+        await untilObserved { !center.isPreviewRunning(7) }
 
         XCTAssertEqual(runner.invocations.last, ["automations", "preview", "--stdin", "--json", "--slug", "digest"])
         XCTAssertEqual(runner.fileTexts["preview"], text, "the bytes on screen go on stdin")
@@ -1137,14 +1142,14 @@ final class AutomationEditorCenterTests: XCTestCase {
         let center = makeCenter()
         await center.beginEdit(7, chatNewestText: nil)
         center.runPreview(7)
-        await waitUntil { !center.isPreviewRunning(7) }
+        await untilObserved { !center.isPreviewRunning(7) }
         XCTAssertEqual(runner.invocations.last?.suffix(4), ["--slug", "digest", "--workbench", "3"])
 
         let key = AutomationEditorCenter.newDraftKey(conversationID: 40)
         center.beginNew(key: key, scope: .workbench(id: 5, name: "Acme", folder: "/acme"),
                         recipeDir: "/acme/.watchtower/automations", startText: nil)
         center.runPreview(key)
-        await waitUntil { !center.isPreviewRunning(key) }
+        await untilObserved { !center.isPreviewRunning(key) }
         XCTAssertEqual(runner.invocations.last, ["automations", "preview", "--stdin", "--json", "--workbench", "5"])
     }
 
@@ -1160,14 +1165,14 @@ final class AutomationEditorCenterTests: XCTestCase {
         await center.beginEdit(7, chatNewestText: nil)
         var panel: LookPanelStandIn? = LookPanelStandIn(center: center)
         panel?.pressDryRun(7)
-        await waitUntil { self.runner.isHolding }
+        await runner.until { $0.isHolding }
         panel = nil // the panel is gone while the CLI works
 
         guard case .running = lookState(center, 7) else {
             return XCTFail("a reopened panel sees the run, got \(lookState(center, 7))")
         }
         runner.release()
-        await waitUntil { !center.isPreviewRunning(7) }
+        await untilObserved { !center.isPreviewRunning(7) }
         guard case let .preview(shown, _, _) = lookState(center, 7) else {
             return XCTFail("a reopened panel sees the result, got \(lookState(center, 7))")
         }
@@ -1179,19 +1184,19 @@ final class AutomationEditorCenterTests: XCTestCase {
         let center = makeCenter()
         await center.beginEdit(7, chatNewestText: nil)
         center.runPreview(7)
-        await waitUntil { !center.isPreviewRunning(7) }
+        await untilObserved { !center.isPreviewRunning(7) }
         let before = lookState(center, 7)
         let firstResult = center.previewResults[7]
 
         runner.holdUntilCancelled("preview")
         center.runPreview(7)
-        await waitUntil { self.runner.isWaitingForCancel }
+        await runner.until { $0.isWaitingForCancel }
         guard case let .running(previous) = lookState(center, 7) else { return XCTFail("running") }
         XCTAssertEqual(previous?.cards.map(\.title), ["First"], "the last preview, dimmed")
 
         center.cancelPreview(7)
         XCTAssertFalse(center.isPreviewRunning(7))
-        await waitUntil { self.runner.sawCancel }
+        await runner.until { $0.sawCancel }
         XCTAssertEqual(lookState(center, 7), before)
         XCTAssertEqual(center.previewResults[7], firstResult, "a cancelled run records nothing")
     }
@@ -1201,12 +1206,12 @@ final class AutomationEditorCenterTests: XCTestCase {
         let center = makeCenter()
         await center.beginEdit(7, chatNewestText: nil)
         center.runPreview(7)
-        await waitUntil { !center.isPreviewRunning(7) }
+        await untilObserved { !center.isPreviewRunning(7) }
         XCTAssertEqual(lookState(center, 7), .failed(message: "refusing to dry-run a recipe preview", steps: []))
 
         runner.on("preview") { _ in Data("not json".utf8) }
         center.runPreview(7)
-        await waitUntil { !center.isPreviewRunning(7) }
+        await untilObserved { !center.isPreviewRunning(7) }
         guard case let .failed(message, _) = lookState(center, 7) else {
             return XCTFail("undecodable output is a failure, got \(lookState(center, 7))")
         }
@@ -1220,9 +1225,9 @@ final class AutomationEditorCenterTests: XCTestCase {
         await center.beginEdit(7, chatNewestText: nil)
         center.runPreview(7)
         center.runPreview(7)
-        await waitUntil { self.runner.isHolding }
+        await runner.until { $0.isHolding }
         runner.release()
-        await waitUntil { !center.isPreviewRunning(7) }
+        await untilObserved { !center.isPreviewRunning(7) }
         XCTAssertEqual(runner.invocations.filter { $0[1] == "preview" }.count, 1)
     }
 

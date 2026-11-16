@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 
 package enum DocumentStyle: Equatable, Sendable {
     case heading(Int)

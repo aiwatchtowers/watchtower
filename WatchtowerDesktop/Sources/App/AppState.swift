@@ -372,6 +372,8 @@ final class AppState {
     private(set) var planUsageCenter: PlanUsageCenter?
     /// The account purge ledger (board #601): red lines, Home banner, notices.
     var accountPurgeCenter: AccountPurgeCenter?
+    /// The Slack Live probe's verdicts (Connections → Slack).
+    var slackLiveStatusCenter: SlackLiveStatusCenter?
     /// The live workbench sessions' agent states (board #312), polled while
     /// a `claude` session runs, whatever tab is shown.
     private(set) var sessionAgentStateCenter: SessionAgentStateCenter?
@@ -583,10 +585,26 @@ final class AppState {
     func ensureChatSessionPool(_ db: DatabaseManager) -> ChatSessionPool {
         if let chatSessionPool { return chatSessionPool }
         let pool = ChatSessionPool(dbPool: db.dbPool)
+        Task { await Self.releaseEarlierLaunchesChatLeases(db.dbPool) }
         pool.holdAdmissionUntil { _ = await Constants.resolvedEnvironmentAsync() }
         pool.startPolicy() // CHAT-03: an idle session dies within TTL + one 30 s poll.
         chatSessionPool = pool
         return pool
+    }
+
+    /// At launch (the pool's first creation): the chat leases an earlier
+    /// launch of this app left behind when it crashed (spec 2026-11-15 §5).
+    /// A failure is logged; such a lease is free for anyone after 60 s anyway.
+    nonisolated static func releaseEarlierLaunchesChatLeases(
+        _ dbPool: DatabasePool, launchID: String = ChatLease.desktopLaunchID
+    ) async {
+        do {
+            _ = try await dbPool.write { db in
+                try ChatLeaseQueries.releaseEarlierDesktopLaunches(db, currentLaunchID: launchID)
+            }
+        } catch {
+            NSLog("AppState: releasing an earlier launch's chat leases failed: %@", error.localizedDescription)
+        }
     }
 
     /// The editor panel's chat for one automation: its engine comes from
@@ -1049,6 +1067,10 @@ final class AppState {
     /// often it looks (a first start after an update runs migrations first).
     @ObservationIgnored var daemonStartWaitBound: Duration = .seconds(60)
     @ObservationIgnored var daemonStartPollInterval: Duration = .seconds(1)
+    /// The banner Start's wait clock: its `now` and its sleep between polls;
+    /// tests replace both with a clock that moves only when slept on.
+    @ObservationIgnored var daemonStartWaitNow: () -> ContinuousClock.Instant = { ContinuousClock.now }
+    @ObservationIgnored var daemonStartWaitSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     /// The banner's Start is waiting for the daemon (no second Start).
     var isStartingDaemon = false
     /// The down stretch (`DaemonManager.notRunningSince`) whose "isn't
@@ -1558,6 +1580,7 @@ final class AppState {
         applyUIVisibility(uiVisibility.isOnScreen)
         initPlanUsage(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         initAccountPurges(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
+        initSlackLive(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         startDigestWatcher(dbPool: manager.dbPool)
         startMeetingReminders(dbPool: manager.dbPool)
         startWarmEnginePolicy(dbPool: manager.dbPool)
@@ -1798,11 +1821,7 @@ final class AppState {
         vm.managedPolicy = { [managedPolicy] in managedPolicy.policy }
         vm.automationsReady = { [weak self] in self?.automationsReady ?? false }
         wireCodeViewer(vm, dbPool: dbPool)
-        vm.onWorkbenchRemoved = { [weak codeQuestionCenter, weak codeUsagesCenter, weak vm] in
-            codeQuestionCenter?.workbenchRemoved($0)
-            codeUsagesCenter?.workbenchRemoved($0)
-            vm?.reviewer?.workbenchRemoved($0)
-        }
+        wireWorkbenchRemoved(vm)
         vm.closeTerminal = { [weak self] projectID in
             guard let center = self?.terminalCenter else { return }
             let ids = center.sessionIDs(ofWorkbench: projectID)
@@ -1893,10 +1912,11 @@ final class AppState {
     }
 
     /// Agent analytics (#298): the previous center stopped, a new one built.
-    private func replaceAgentAnalytics(cliRunner: (any CLIRunnerProtocol)?, workbenches vm: WorkbenchesViewModel) {
+    func replaceAgentAnalytics(cliRunner: (any CLIRunnerProtocol)?, workbenches vm: WorkbenchesViewModel) {
         let analytics = AgentAnalyticsCenter(runner: cliRunner ?? UnresolvedCLIRunner())
         let coach = CoachCenter(runner: cliRunner ?? UnresolvedCLIRunner())
         analytics.isTabOnScreen = { [weak vm] in vm?.isTabOnScreen() ?? false }; coach.isTabOnScreen = analytics.isTabOnScreen
+        analytics.onAgentRefused = { [weak vm] in vm?.analyticsAgent[$0] = nil }
         agentAnalyticsCenter?.stop(); coachCenter?.stop()
         (agentAnalyticsCenter, vm.agentAnalytics, coachCenter, vm.coach) = (analytics, analytics, coach, coach)
     }

@@ -23,6 +23,7 @@ import (
 	"watchtower/internal/dayplan"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/gittest"
 	"watchtower/internal/guide"
 	"watchtower/internal/inbox"
 	watchtowerslack "watchtower/internal/slack"
@@ -32,6 +33,7 @@ import (
 
 func TestMain(m *testing.M) {
 	runFakeCLIIfAsked()
+	gittest.DisableBackgroundGit() // the coach's commit-check tests create repositories
 	// Allow sub-second poll intervals in tests for fast execution.
 	minPollInterval = 1 * time.Millisecond
 	// Fresh database files under t.TempDir() start from the template too:
@@ -1304,6 +1306,40 @@ func TestSyncHeartbeat_StampsFetchProgressOnlyWhenItMoves(t *testing.T) {
 	assert.Zero(t, d.fetchStalledFor(), "a beat stamping the moved progress")
 }
 
+// A Retry-After hold the run waits on counts as progress on every beat (the
+// run is waiting, not stuck); once the hold has ended it no longer does, so
+// a run stuck after it reads as stalled again.
+func TestSyncHeartbeat_ExpiredHoldIsNoProgress(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	prev := syncHeartbeatInterval
+	syncHeartbeatInterval = 2 * time.Millisecond
+	t.Cleanup(func() { syncHeartbeatInterval = prev })
+
+	orch, _ := newTestOrchestrator(t, new(atomic.Int32))
+	var hold atomic.Pointer[time.Time]
+	live := time.Now().Add(time.Hour)
+	hold.Store(&live)
+	orch.Progress().SetRateLimitHold(func() time.Time { return *hold.Load() })
+	d := newDaemon(orch, &config.Config{Sync: config.SyncConfig{PollInterval: time.Second}})
+	d.SetLogger(log.New(io.Discard, "", 0))
+	mono := &fakeMono{}
+	d.loopMono = mono.now
+
+	nextBeat, _ := startGatedHeartbeat(t, d, orch)
+	mono.advance(time.Minute)
+	nextBeat()
+	assert.Zero(t, d.fetchStalledFor(), "a beat inside a live hold stamps the progress")
+
+	ended := time.Now().Add(-time.Second)
+	hold.Store(&ended)
+	nextBeat() // the hold's end changed the snapshot once
+	mono.advance(time.Minute)
+	for range 3 {
+		nextBeat()
+	}
+	assert.Equal(t, time.Minute, d.fetchStalledFor(), "an ended hold is no progress")
+}
+
 // The Slack passes that move no Progress counter — the read-state refresh
 // (one conversations.info per channel, minutes at the rate limit), the
 // deletion sweep, the inbox reactions — still make progress: every call
@@ -1556,4 +1592,48 @@ func TestDaemon_StartReapsAbandonedPipelineRuns(t *testing.T) {
 	assert.Equal(t, "error", status(daemonRecent), "a previous daemon's run is an orphan however young")
 	assert.Equal(t, "error", status(cliOld), "an abandoned CLI run is failed once past the window")
 	assert.Equal(t, "running", status(cliRecent), "a recent CLI run is left to the process that may own it")
+}
+
+// Sync Now while the Slack sync waits out a long Retry-After hold — no call
+// answered, no counter moving for minutes — is queued: the heartbeat counts
+// a run held by the rate limit as progressing, so the restart never kills a
+// fetch that is only waiting for its turn.
+func TestManualTrigger_DoesNotRestartWhileRateLimited(t *testing.T) {
+	prev := syncHeartbeatInterval
+	syncHeartbeatInterval = 2 * time.Millisecond
+	t.Cleanup(func() { syncHeartbeatInterval = prev })
+	h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "600")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(srv.Close)
+	client := watchtowerslack.NewClientWithAPIURLUnlimited("xoxp-test-token", srv.URL+"/")
+	orch := sync.NewOrchestrator(db.OpenTestDB(t), client, &config.Config{}, 1)
+
+	recv(t, h.probe.started, "the initial cycle")
+	h.probe.block.Store(false)
+	h.inSlackSync()
+	// The 429 sets a 10-minute hold; a deadline already reached returns at
+	// once instead of waiting it out.
+	client.SetDeadline(time.Now())
+	_, err := client.GetChannelReadCursor(context.Background(), "C001")
+	require.ErrorIs(t, err, watchtowerslack.ErrFetchDeadline)
+	require.False(t, client.HoldUntil().IsZero())
+
+	nextBeat, stopBeat := startGatedHeartbeat(t, h.d, orch)
+	for range 3 {
+		h.mono.advance(manualRestartAfter)
+		nextBeat()
+		require.Zero(t, h.d.fetchStalledFor(), "a beat stamping the held run")
+		h.pressSyncNow(t, logQueuedFetching)
+	}
+	stopBeat()
+	assert.Zero(t, h.logs.count("afresh"), "a run held by the rate limit is not restarted")
+
+	h.releaseProbe(t)
+	recv(t, h.probe.started, "the queued cycle")
+	h.stop(t)
+	assert.Empty(t, h.probe.cancelled, "no cycle was cancelled before shutdown")
 }

@@ -686,6 +686,23 @@ extension ActionOutbox {
         }.value
     }
 
+    /// Takes back one ordered action that has no answer yet, on the chain after any flush in flight: a row never
+    /// written goes at once; a written one only when its own record can still be deleted under the version this
+    /// phone wrote (the 24 h sweep's rule, so a late apply is impossible). A chat send that waited too long uses it
+    /// before it gives the owner's text back (iPhone chat spec §6.3, CHAT-01).
+    public func withdraw(actionID: String) async throws -> OutboxWithdrawal {
+        try await onChain {
+            guard let row = try self.store.outboxRows([.queued, .sent]).first(where: { $0.actionID == actionID }) else {
+                return .notWaiting
+            }
+            guard self.transport.isConditional || (row.delivery == .queued && row.recordSeq == nil) else { return .onItsWay }
+            guard try await self.withdraw(row) else { return .onItsWay }
+            try self.store.markUndelivered(actionIDs: [actionID], reason: .refused, message: Self.message(for: .refused))
+            _ = try self.store.dismissAction(id: actionID)
+            return .withdrawn
+        }.value
+    }
+
     /// true once the row's record is gone (or was never written).
     private func withdraw(_ row: OutboxRow) async throws -> Bool {
         if row.delivery == .queued && row.recordSeq == nil { return true }
@@ -715,6 +732,17 @@ extension ActionOutbox {
         }
         return false
     }
+}
+
+/// What withdrawing one action came to (`ActionOutbox.withdraw(actionID:)`).
+public enum OutboxWithdrawal: Equatable, Sendable {
+    /// Its record is gone (or was never written): the hub can never apply it. Its overlay row is removed.
+    case withdrawn
+    /// The hub may have it (an echo moved its record, the delete was refused, or the route cannot delete under a
+    /// version): it stays, and its echo settles it.
+    case onItsWay
+    /// No ordered row of that id is waiting (settled already, or a legacy row).
+    case notWaiting
 }
 
 extension ActionStatus {

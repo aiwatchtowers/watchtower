@@ -140,7 +140,8 @@ final class CodeQuestionCenterTests: XCTestCase {
 
     /// Completes the latest turn with `reply`.
     private func reply(_ reply: String, after calls: Int, engine: EmbeddedChatEngine?) async {
-        let started = await eventually { ai.calls.count == calls }
+        await ai.untilCalls(calls)
+        let started = ai.calls.count == calls
         XCTAssertTrue(started, "turn \(calls) started")
         guard started else { return }
         ai.emit(.text(reply), .turnComplete(reply), .done)
@@ -500,7 +501,8 @@ final class CodeQuestionCenterTests: XCTestCase {
         await center.askAI(bufferID: buffer.id, project: project, root: root)
         await center.quickAction(.explain, workbenchID: project.id)
         let engine = try XCTUnwrap(center.engine(workbenchID: project.id))
-        let started = await eventually { ai.calls.count == 1 }
+        await ai.untilCalls(1)
+        let started = ai.calls.count == 1
         XCTAssertTrue(started)
         center.closeQuestion(workbenchID: project.id)
         center.unregisterPage(page, for: project.id)
@@ -543,7 +545,8 @@ final class CodeQuestionCenterTests: XCTestCase {
         await center.askAI(bufferID: buffer.id, project: project, root: root)
         await center.quickAction(.whereUsed, workbenchID: project.id)
         XCTAssertEqual(center.sessions[project.id]?.isSearchingUsages, true, "the question waits for the search")
-        let started = await eventually { ai.calls.count == 1 }
+        await ai.untilCalls(1)
+        let started = ai.calls.count == 1
         XCTAssertTrue(started)
         XCTAssertEqual(searched, [CodeSearchOptions(query: "load", word: true, caseSensitive: true, max: 30, context: 0)])
         let system = try XCTUnwrap(ai.calls.first?.systemPrompt)
@@ -566,7 +569,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         await center.askAI(bufferID: buffer.id, project: project, root: root)
         await center.quickAction(.explain, workbenchID: project.id)
         let engine = center.engine(workbenchID: project.id)
-        _ = await eventually { ai.calls.count == 1 }
+        await ai.untilCalls(1)
         ai.emit(.sessionID("s1"), .text("It loads."), .turnComplete("It loads."), .done)
         ai.finish()
         _ = await eventually { engine?.isStreaming == false }
@@ -591,7 +594,8 @@ final class CodeQuestionCenterTests: XCTestCase {
         }
         await center.askAI(bufferID: buffer.id, project: project, root: root)
         await center.quickAction(.whereUsed, workbenchID: project.id)
-        let started = await eventually { ai.calls.count == 1 }
+        await ai.untilCalls(1)
+        let started = ai.calls.count == 1
         XCTAssertTrue(started)
         XCTAssertEqual(searches, 0)
         XCTAssertFalse(try XCTUnwrap(ai.calls.first?.systemPrompt).contains("Usages of"))
@@ -653,7 +657,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         await center.askAI(bufferID: buffer.id, project: project, root: root)
         await center.quickAction(.explain, workbenchID: project.id)
         let engine = try XCTUnwrap(center.engine(workbenchID: project.id))
-        _ = await eventually { ai.calls.count == 1 }
+        await ai.untilCalls(1)
         ai.emit(.sessionID("s1"), .text("It loads."), .turnComplete("It loads."), .done)
         ai.finish()
         _ = await eventually { !engine.isStreaming }
@@ -668,14 +672,15 @@ final class CodeQuestionCenterTests: XCTestCase {
         let search = HeldSearch()
         let (center, engine) = try await explainedThenWhereUsed(search)
         search.finish(with: [("a.swift", 1)])
-        _ = await eventually { ai.calls.count == 2 }
+        await ai.untilCalls(2)
         XCTAssertTrue(try XCTUnwrap(ai.calls[1].systemPrompt).contains("- a.swift:1: hit"))
         ai.emit(.error("overloaded"))
         ai.finish()
         let failed = await eventually { engine.canRetry }
         XCTAssertTrue(failed)
         engine.retry()
-        let retried = await eventually { ai.calls.count == 3 }
+        await ai.untilCalls(3)
+        let retried = ai.calls.count == 3
         XCTAssertTrue(retried)
         XCTAssertNil(ai.calls[2].sessionID)
         let retrySystem = try XCTUnwrap(ai.calls[2].systemPrompt)
@@ -689,7 +694,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         let search = HeldSearch()
         let (center, engine) = try await explainedThenWhereUsed(search)
         XCTAssertTrue(engine.send("Is it thread-safe?"))
-        _ = await eventually { ai.calls.count == 2 }
+        await ai.untilCalls(2)
         search.finish(with: [("a.swift", 1)])
         _ = await eventually { center.sessions[project.id]?.notice != nil }
         XCTAssertEqual(center.sessions[project.id]?.notice, "Wait for the answer to finish, then ask again.")
@@ -751,7 +756,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         await center.quickAction(.explain, workbenchID: project.id)
         let engine = try XCTUnwrap(center.engine(workbenchID: project.id))
         let conversationID = try XCTUnwrap(center.sessions[project.id]?.conversationID)
-        _ = await eventually { ai.calls.count == 1 }
+        await ai.untilCalls(1)
         center.pinToInspector(workbenchID: project.id)
         XCTAssertNil(center.sessions[project.id], "the popover goes")
         XCTAssertEqual(page.closed, 1)
@@ -781,7 +786,8 @@ final class CodeQuestionCenterTests: XCTestCase {
         guard case let .started(conversationID) = await center.askFromOpenQuickly("  Why load here? ", project: project, root: root) else {
             return XCTFail("not started")
         }
-        let started = await eventually { ai.calls.count == 1 }
+        await ai.untilCalls(1)
+        let started = ai.calls.count == 1
         XCTAssertTrue(started)
         XCTAssertEqual(ai.calls[0].prompt, "Why load here?")
         XCTAssertNil(ai.calls[0].toolMode, "draft-only (AGENT-04)")
@@ -800,7 +806,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         await reply("It reads the config.", after: 1, engine: engine)
         engine.draft = "And then?"
         XCTAssertTrue(engine.sendDraft(), "↩ follows up in the card")
-        _ = await eventually { ai.calls.count == 2 }
+        await ai.untilCalls(2)
         XCTAssertTrue(ai.calls[1].prompt.contains("Assistant: It reads the config."), "the same conversation, replayed")
         ai.emit(.text("ok"), .turnComplete("ok"), .done)
         ai.finish()
@@ -812,7 +818,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         guard case let .started(conversationID) = await center.askFromOpenQuickly("What is this repo?", project: project, root: root) else {
             return XCTFail("not started")
         }
-        _ = await eventually { ai.calls.count == 1 }
+        await ai.untilCalls(1)
         let system = try XCTUnwrap(ai.calls.first?.systemPrompt)
         XCTAssertTrue(system.contains("No file was open"), system)
         let contextID = try await pool.read { db in
@@ -922,7 +928,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         XCTAssertTrue(rebuilt)
         let engine = try XCTUnwrap(center.engine(for: ref))
         XCTAssertTrue(engine.send("Again?"))
-        _ = await eventually { ai.calls.count == 1 }
+        await ai.untilCalls(1)
         let system = try XCTUnwrap(ai.calls.first?.systemPrompt)
         XCTAssertTrue(system.contains("Cursor line: 3"), system)
         XCTAssertTrue(system.contains("print(value)"), system)
@@ -975,7 +981,7 @@ final class CodeQuestionCenterTests: XCTestCase {
 
         await center.quickAction(.explain, workbenchID: project.id)
         let engine = center.engine(workbenchID: project.id)
-        _ = await eventually { ai.calls.count == 1 }
+        await ai.untilCalls(1)
         center.handToClaude(workbenchID: project.id)
         XCTAssertEqual(beeps, 2, "the answer is still coming")
         XCTAssertEqual(page.closed, 0)
@@ -1029,12 +1035,12 @@ final class CodeQuestionCenterTests: XCTestCase {
         try await pool.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM chat_conversations") ?? 0 }
     }
 
-    /// Polls the database until `count` conversations are left (5 s).
+    /// Reads the database until `count` conversations are left: each pass
+    /// awaits a read, no clock and no deadline.
     private func waitForConversations(_ count: Int) async throws -> Int {
         var left = try await conversationCount()
-        let start = ContinuousClock.now
-        while left != count, ContinuousClock.now - start < .seconds(5) {
-            try await Task.sleep(for: .milliseconds(10))
+        while left != count {
+            await Task.yield()
             left = try await conversationCount()
         }
         return left

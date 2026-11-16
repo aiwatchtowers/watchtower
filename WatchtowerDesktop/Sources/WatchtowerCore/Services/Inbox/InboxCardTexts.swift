@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 
 /// The words of an automation's Inbox card: the list row's preview and
 /// source line, the reading pane's source line, and the default texts of the

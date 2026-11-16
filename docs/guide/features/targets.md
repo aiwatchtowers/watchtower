@@ -41,7 +41,7 @@ action: nav:targets
 requires: feature:next-step
 -->
 
-**Every target starts from something you did.** That is the **New Target** composer, a **Create Target** / **Create task** / **Create target** button on a track, a digest, a briefing or a meeting note, **Convert to Target** on an idea, a request to the chat, `watchtower remind`, or a ✅ reaction on a Slack message (Reaction Commands, on by default; depending on trust it may arrive as a proposal to approve). Each keeps a link back to its source.
+**Every target starts from something you did.** That is the **New Target** composer, **Make a Task** on a track, an idea or a briefing item, **Create task** on a digest, **Target** on a recording's action item, a request to the chat, `watchtower remind`, or a ✅ reaction on a Slack message (Reaction Commands, on by default; depending on trust it may arrive as a proposal to approve). Each keeps a link back to its source.
 
 **Creation never needs the AI.** The composer saves the row first, titled with the first line of your text. If you chose to brief the assistant, your whole text then goes to the target's chat as its first message. If the AI is down, the target still exists and the error shows in the chat.
 

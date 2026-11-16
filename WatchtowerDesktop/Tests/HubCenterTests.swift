@@ -155,7 +155,7 @@ final class HubCenterTests: XCTestCase {
         sleeper.release(HubCenter.heartbeatInterval)
         await waitUntil("the second beat") { client.heartbeats == 2 && sleeper.parkedCount(HubCenter.heartbeatInterval) == 1 }
         sleeper.release(HubCenter.heartbeatInterval)
-        await waitUntil("the third beat") { client.heartbeats == 3 }
+        await waitUntil("the third beat") { client.heartbeats == 3 && sleeper.parkedCount(HubCenter.heartbeatInterval) == 1 }
         XCTAssertEqual(sleeper.waits.filter { $0 == HubCenter.heartbeatInterval }.count, 3)
     }
 
@@ -327,7 +327,7 @@ final class HubCenterTests: XCTestCase {
         let center = makeCenter()
         center.publishView(hidden: [7], displayOver: [:])
         center.start()
-        await waitUntil("the view") { client.views.count == 1 }
+        await waitUntil("the view") { client.views.count == 1 && sleeper.parkedCount(HubCenter.heartbeatInterval) == 1 }
         XCTAssertEqual(client.sent.first?.op, HubControlRequest.desktopHeartbeat, "the beat goes first")
         XCTAssertEqual(client.views.first?.hidden, [7])
         // An unchanged view is not sent again on the next beat.
@@ -462,7 +462,7 @@ final class HubCenterTests: XCTestCase {
 
     /// F1: a view changed while no hub answered goes with the first beat
     /// answered again.
-    func testViewMadeWhileNoHubAnswersGoesWhenItAnswersAgain() async {
+    func testViewMadeWhileNoHubAnswersGoesWhenItAnswersAgain() async throws {
         let center = makeCenter()
         center.start()
         await waitUntil("the start view") { client.views.count == 1 && sleeper.parkedCount(HubCenter.heartbeatInterval) == 1 }
@@ -471,8 +471,9 @@ final class HubCenterTests: XCTestCase {
         await waitUntil("a failed beat") { sleeper.parkedCount(HubCenter.heartbeatInterval) == 1 }
         center.publishView(hidden: [4], displayOver: [:])
         await waitUntil("the coalesce wait") { sleeper.parkedCount(HubCenter.viewCoalesce) == 1 }
+        let coalesced = try XCTUnwrap(center.viewTask)
         sleeper.release(HubCenter.viewCoalesce)
-        try? await Task.sleep(for: .milliseconds(50))
+        await coalesced.value
         XCTAssertEqual(client.views.count, 1, "nothing sent while no hub answers")
 
         client.reachable = true
@@ -489,7 +490,9 @@ final class HubCenterTests: XCTestCase {
         let center = makeCenter(cli: cli)
         center.start()
         await waitUntil("the start view") { client.views.count == 1 }
-        await waitUntil("the stream is open") { client.watches == 1 }
+        // The read the first answered beat asked for has started: the
+        // snapshot's read comes after it, not folded into it.
+        await waitUntil("the stream is open, the first read") { client.watches == 1 && cli.invocations.count == 1 }
         client.emit(.snapshot(HubCenter.Status(state: "running")))
         // One read when the beat first answered, one after the snapshot.
         await waitUntil("the full status") { center.status?.hubID == "hub-acme" && cli.invocations.count == 2 }
@@ -537,7 +540,9 @@ final class HubCenterTests: XCTestCase {
             """.utf8))
         let center = makeCenter(cli: cli)
         center.start()
-        await waitUntil("the stream is open") { client.watches == 1 }
+        // The read the first answered beat asked for has started: the
+        // snapshot's read comes after it, not folded into it.
+        await waitUntil("the stream is open, the first read") { client.watches == 1 && cli.invocations.count == 1 }
         client.emit(.snapshot(HubCenter.Status(state: "running")))
         await waitUntil("the full status") { center.status?.state == "running" && cli.invocations.count == 2 }
         XCTAssertEqual(center.status, HubCenter.Status(
@@ -552,22 +557,23 @@ final class HubCenterTests: XCTestCase {
         XCTAssertEqual(center.status?.recordings, "on")
     }
 
-    func testStopEndsHeartbeatAndWatch() async {
+    func testStopEndsHeartbeatAndWatch() async throws {
         let center = makeCenter()
         center.start()
         await waitUntil("the first beat") { client.heartbeats == 1 && sleeper.parkedCount(HubCenter.heartbeatInterval) == 1 }
+        let beats = try XCTUnwrap(center.heartbeatTask)
         center.stop()
         XCTAssertFalse(center.isRunning)
         sleeper.releaseAll()
-        try? await Task.sleep(for: .milliseconds(50))
+        await beats.value // the loop wakes cancelled and ends: no second beat
         XCTAssertEqual(client.heartbeats, 1)
     }
 }
 
+/// Yields the main actor until `condition` holds. No deadline: the wait ends
+/// on the fakes' and the center's state, never on a clock — a wait that never
+/// ends is a hang the lane watchdog reports. `what` names it in a backtrace.
 @MainActor
 private func waitUntil(_ what: String, _ condition: () -> Bool) async {
-    for _ in 0..<500 where !condition() {
-        try? await Task.sleep(for: .milliseconds(10))
-    }
-    XCTAssertTrue(condition(), what)
+    while !condition() { await Task.yield() }
 }

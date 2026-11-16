@@ -34,6 +34,23 @@ public struct HeartbeatPayload: Codable, Equatable, Sendable {
     /// The Mac's `CKContainer.userRecordID().recordName` (spec §2.3).
     public let ownerUser: String
     public let sharing: HubSharing
+    /// What runs the hub (#1783); nil from an older hub, which is a Mac.
+    public let hubKind: HubKind?
+    /// The host's switches (protocol §9); nil from an older hub.
+    public let capabilities: HeartbeatCapabilities?
+
+    /// Whether the phone offers recording: on unless the hub says `off` (an older hub, an absent key and an
+    /// unknown value read as on).
+    public var recordingsOffered: Bool { capabilities?.recordings != "off" }
+
+    /// Whether the phone shows AI chat: only on an explicit `"on"` (iPhone chat spec D4). An absent key is an older
+    /// hub, which is not a chat host, unlike `recordings`.
+    public var chatOffered: Bool { capabilities?.chat == "on" }
+
+    /// Whether the hub runs beside the Watchtower app on a Mac, so the app's
+    /// menus exist there: true for `mac` and for an older hub that sends no
+    /// kind; false for `server` and a kind this build does not know.
+    public var isMac: Bool { hubKind == nil || hubKind == .mac }
 
     // convertFromSnakeCase maps "hub_id" -> "hubId" (lowercase d), so the
     // CodingKey stringValue must be "hubId" to round-trip.
@@ -50,6 +67,8 @@ public struct HeartbeatPayload: Codable, Equatable, Sendable {
         case enabledAt
         case ownerUser
         case sharing
+        case hubKind
+        case capabilities
     }
 
     public init(
@@ -64,7 +83,9 @@ public struct HeartbeatPayload: Codable, Equatable, Sendable {
         accounts: [HeartbeatAccount],
         enabledAt: Date,
         ownerUser: String,
-        sharing: HubSharing
+        sharing: HubSharing,
+        hubKind: HubKind? = nil,
+        capabilities: HeartbeatCapabilities? = nil
     ) {
         self.updatedAt = updatedAt
         self.appVersion = appVersion
@@ -78,7 +99,45 @@ public struct HeartbeatPayload: Codable, Equatable, Sendable {
         self.enabledAt = enabledAt
         self.ownerUser = ownerUser
         self.sharing = sharing
+        self.hubKind = hubKind
+        self.capabilities = capabilities
     }
+}
+
+/// The heartbeat's `capabilities` object. Values are strings so one a newer hub adds never fails the heartbeat.
+public struct HeartbeatCapabilities: Codable, Equatable, Sendable {
+    /// "on" or "off"; absent reads as on.
+    public let recordings: String?
+    /// "on" or "off"; only an explicit "on" offers chat.
+    public let chat: String?
+    /// Why `chat` is off (`ChatOffReason`); absent while on.
+    public let chatReason: String?
+
+    /// `chatReason` as a typed value; nil while absent.
+    public var chatOffReason: ChatOffReason? { chatReason.map(ChatOffReason.init(rawValue:)) }
+
+    public init(recordings: String? = nil, chat: String? = nil, chatReason: String? = nil) {
+        self.recordings = recordings
+        self.chat = chat
+        self.chatReason = chatReason
+    }
+}
+
+/// Why the hub's chat capability is off (iPhone chat spec §4.8). rawValues are wire format; a reason added by a
+/// newer hub decodes as an unknown value (`OpenWireValue`) and the phone shows the generic "unavailable" line.
+public struct ChatOffReason: OpenWireValue {
+    public let rawValue: String
+    public init(rawValue: String) { self.rawValue = rawValue }
+
+    /// The hub's transport is not the relay (CloudKit).
+    public static let notRelay = Self(rawValue: "not_relay")
+    /// The hub's chat runner did not start.
+    public static let runnerDown = Self(rawValue: "runner_down")
+    /// A running Desktop app does not honour the chat lease: "Update Watchtower on your Mac".
+    public static let desktopTooOld = Self(rawValue: "desktop_too_old")
+    /// The organization's policy forbids it.
+    public static let policy = Self(rawValue: "policy")
+    public static let knownValues: [Self] = [.notRelay, .runnerDown, .desktopTooOld, .policy]
 }
 
 /// The Desktop build flavor that runs the hub. rawValues are wire format;
@@ -90,6 +149,19 @@ public struct HubFlavor: OpenWireValue {
     public static let `default` = Self(rawValue: "default")
     public static let corp = Self(rawValue: "corp")
     public static let knownValues: [Self] = [.default, .corp]
+}
+
+/// What runs the hub (#1783). rawValues are wire format; a kind added by a
+/// newer hub decodes as an unknown value (`OpenWireValue`).
+public struct HubKind: OpenWireValue {
+    public let rawValue: String
+    public init(rawValue: String) { self.rawValue = rawValue }
+
+    /// A hub beside the Watchtower app on a Mac.
+    public static let mac = Self(rawValue: "mac")
+    /// A headless hub (a server).
+    public static let server = Self(rawValue: "server")
+    public static let knownValues: [Self] = [.mac, .server]
 }
 
 /// Whether the hub's zone shares exist (spec §4.1). rawValues are wire

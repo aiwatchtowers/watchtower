@@ -1,0 +1,260 @@
+{
+  "_comment": "The Mac's chat search (WatchtowerCore ChatSearchQueries.search) and its Go port (db.SearchChats) over one seeded database: Go TestChatSearch_SharedCases and Swift ChatSearchQueriesFixtureTests insert these rows with their ids and expect these hits in this order. message_id null = a title hit; \\u0002 and \\u0003 wrap a matched term. Swift is the reference.",
+  "conversations": [
+    {
+      "id": 1,
+      "title": "Payments rollout",
+      "updated_at": 1700000300
+    },
+    {
+      "id": 2,
+      "title": "Weekly notes",
+      "updated_at": 1700000200
+    },
+    {
+      "id": 3,
+      "title": "Payments on a target",
+      "context_type": "target",
+      "updated_at": 1700000400
+    },
+    {
+      "id": 4,
+      "title": "Payments archive",
+      "archived_at": 1700000600,
+      "updated_at": 1700000500
+    },
+    {
+      "id": 5,
+      "title": "Платёжный релиз",
+      "updated_at": 1700000100
+    },
+    {
+      "id": 6,
+      "title": "100% done_ok",
+      "updated_at": 1700000050
+    },
+    {
+      "id": 7,
+      "title": "1000 done ok",
+      "updated_at": 1700000040
+    }
+  ],
+  "messages": [
+    {
+      "id": 10,
+      "conversation_id": 1,
+      "role": "user",
+      "text": "When does the payments rollout start?",
+      "created_at": 1700000010
+    },
+    {
+      "id": 11,
+      "conversation_id": 1,
+      "role": "assistant",
+      "text": "The payments rollout slipped to Friday. The payments team confirmed the new payments date with the bank.",
+      "created_at": 1700000020
+    },
+    {
+      "id": 12,
+      "conversation_id": 2,
+      "role": "assistant",
+      "text": "The notes mention a payment once, among many other words about the weekly planning meeting, the hiring pipeline, the office move and the quarterly review that follows next month.",
+      "created_at": 1700000030
+    },
+    {
+      "id": 13,
+      "conversation_id": 2,
+      "role": "tool",
+      "text": "payments tool output",
+      "created_at": 1700000031
+    },
+    {
+      "id": 14,
+      "conversation_id": 3,
+      "role": "user",
+      "text": "payments in a target discussion",
+      "created_at": 1700000040
+    },
+    {
+      "id": 15,
+      "conversation_id": 4,
+      "role": "user",
+      "text": "payments archived",
+      "created_at": 1700000050
+    },
+    {
+      "id": 16,
+      "conversation_id": 5,
+      "role": "user",
+      "text": "платёжный шлюз упал",
+      "created_at": 1700000060
+    },
+    {
+      "id": 17,
+      "conversation_id": 6,
+      "role": "assistant",
+      "text": "Rollout OR NOT \"quoted\" near(x y) done",
+      "created_at": 1700000070
+    }
+  ],
+  "cases": [
+    {
+      "name": "titles first, then messages by bm25; discuss, archived and tool rows left out",
+      "query": "payment",
+      "limit": 30,
+      "hits": [
+        {
+          "conversation_id": 1,
+          "message_id": null,
+          "title": "Payments rollout",
+          "snippet": "Payments rollout"
+        },
+        {
+          "conversation_id": 1,
+          "message_id": 11,
+          "title": "Payments rollout",
+          "snippet": "The \u0002payments\u0003 rollout slipped to Friday. The \u0002payments\u0003 team confirmed the new…"
+        },
+        {
+          "conversation_id": 1,
+          "message_id": 10,
+          "title": "Payments rollout",
+          "snippet": "When does the \u0002payments\u0003 rollout start?"
+        },
+        {
+          "conversation_id": 2,
+          "message_id": 12,
+          "title": "Weekly notes",
+          "snippet": "The notes mention a \u0002payment\u0003 once, among many other words about the…"
+        }
+      ]
+    },
+    {
+      "name": "every token must match, by prefix",
+      "query": "payments roll",
+      "limit": 30,
+      "hits": [
+        {
+          "conversation_id": 1,
+          "message_id": null,
+          "title": "Payments rollout",
+          "snippet": "Payments rollout"
+        },
+        {
+          "conversation_id": 1,
+          "message_id": 10,
+          "title": "Payments rollout",
+          "snippet": "When does the \u0002payments\u0003 \u0002rollout\u0003 start?"
+        },
+        {
+          "conversation_id": 1,
+          "message_id": 11,
+          "title": "Payments rollout",
+          "snippet": "The \u0002payments\u0003 \u0002rollout\u0003 slipped to Friday. The \u0002payments\u0003 team confirmed the new…"
+        }
+      ]
+    },
+    {
+      "name": "the limit cuts titles and messages together",
+      "query": "payments",
+      "limit": 2,
+      "hits": [
+        {
+          "conversation_id": 1,
+          "message_id": null,
+          "title": "Payments rollout",
+          "snippet": "Payments rollout"
+        },
+        {
+          "conversation_id": 1,
+          "message_id": 11,
+          "title": "Payments rollout",
+          "snippet": "The \u0002payments\u0003 rollout slipped to Friday. The \u0002payments\u0003 team confirmed the new…"
+        }
+      ]
+    },
+    {
+      "name": "FTS syntax in the query is inert",
+      "query": "rollout OR \"quoted\"",
+      "limit": 30,
+      "hits": [
+        {
+          "conversation_id": 6,
+          "message_id": 17,
+          "title": "100% done_ok",
+          "snippet": "\u0002Rollout\u0003 \u0002OR\u0003 NOT \"\u0002quoted\u0003\" near(x y) done"
+        }
+      ]
+    },
+    {
+      "name": "Cyrillic: title LIKE keeps case, FTS folds it",
+      "query": "Платёж",
+      "limit": 30,
+      "hits": [
+        {
+          "conversation_id": 5,
+          "message_id": null,
+          "title": "Платёжный релиз",
+          "snippet": "Платёжный релиз"
+        },
+        {
+          "conversation_id": 5,
+          "message_id": 16,
+          "title": "Платёжный релиз",
+          "snippet": "\u0002платёжный\u0003 шлюз упал"
+        }
+      ]
+    },
+    {
+      "name": "LIKE wildcards are escaped",
+      "query": "100%",
+      "limit": 30,
+      "hits": [
+        {
+          "conversation_id": 6,
+          "message_id": null,
+          "title": "100% done_ok",
+          "snippet": "100% done_ok"
+        }
+      ]
+    },
+    {
+      "name": "an underscore matches itself only",
+      "query": "done_ok",
+      "limit": 30,
+      "hits": [
+        {
+          "conversation_id": 6,
+          "message_id": null,
+          "title": "100% done_ok",
+          "snippet": "100% done_ok"
+        }
+      ]
+    },
+    {
+      "name": "surrounding spaces are trimmed for the title",
+      "query": "  weekly  ",
+      "limit": 30,
+      "hits": [
+        {
+          "conversation_id": 2,
+          "message_id": null,
+          "title": "Weekly notes",
+          "snippet": "Weekly notes"
+        },
+        {
+          "conversation_id": 2,
+          "message_id": 12,
+          "title": "Weekly notes",
+          "snippet": "…many other words about the \u0002weekly\u0003 planning meeting, the hiring pipeline, the…"
+        }
+      ]
+    },
+    {
+      "name": "no letter or number finds nothing",
+      "query": "  -- ",
+      "limit": 30,
+      "hits": []
+    }
+  ]
+}

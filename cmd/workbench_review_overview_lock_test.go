@@ -106,18 +106,8 @@ func holdOverviewLock(t *testing.T, wb int64, repo string) (path string, kill fu
 	t.Helper()
 	path = overviewLockPath(t, wb, repo)
 	_, out, kill := startLockChild(t, lockChildEnv+"=hold", lockChildPathEnv+"="+path)
-	ready := make(chan string, 1)
-	go func() {
-		line, _ := bufio.NewReader(out).ReadString('\n')
-		ready <- line
-	}()
-	select {
-	case line := <-ready:
-		require.Equal(t, "locked\n", line)
-	case <-time.After(60 * time.Second):
-		kill()
-		t.Fatal("the holder never took the lock")
-	}
+	line, _ := bufio.NewReader(out).ReadString('\n')
+	require.Equal(t, "locked\n", line, "the holder took the lock")
 	return path, kill
 }
 
@@ -166,26 +156,14 @@ func streamOverviewAsync(t *testing.T, wb int64, args ...string) <-chan string {
 		resetSetFlags(append(workbenchCmd.Commands(), workbenchCmd, rootCmd)...)
 		resetSetFlags(workbenchReviewCmd.Commands()...)
 	}()
-	t.Cleanup(func() {
-		select {
-		case <-done:
-		case <-time.After(60 * time.Second):
-			t.Error("the streamed command never returned")
-		}
-	})
+	t.Cleanup(func() { <-done })
 	return w.lines
 }
 
-// nextLine is the stream's next line within a minute.
-func nextLine(t *testing.T, lines <-chan string) (string, bool) {
-	t.Helper()
-	select {
-	case l, ok := <-lines:
-		return l, ok
-	case <-time.After(60 * time.Second):
-		t.Fatal("no stream line in a minute")
-	}
-	return "", false
+// nextLine is the stream's next line; ok is false once the stream ended.
+func nextLine(lines <-chan string) (string, bool) {
+	l, ok := <-lines
+	return l, ok
 }
 
 func decodeLine(t *testing.T, l string) map[string]any {
@@ -209,13 +187,15 @@ func TestReviewOverviewLock_NonStreamedIsBusyAtOnce(t *testing.T) {
 	holdOverviewLock(t, wb, repo)
 	g := &keyReviewGen{}
 	useReviewGenerator(t, g)
-	start := time.Now()
 	out, _, err := runWorkbench(t, "review", "overview", "--workbench", itoa(wb), "--json", "--round", round)
 	resetSetFlags(workbenchReviewCmd.Commands()...)
-	assert.Less(t, time.Since(start), time.Second)
+	// Exit 1 is the busy answer of a run that did not wait (a run that
+	// waited answers busy as an ordinary envelope, exit 0), and no waiting
+	// line was printed: "at once" without a clock.
 	var ec *exitCodeError
 	require.ErrorAs(t, err, &ec)
 	assert.Equal(t, 1, ec.code)
+	assert.NotContains(t, out, `"waiting"`)
 	env := decodeLine(t, strings.TrimSpace(out))
 	assert.Equal(t, "busy", env["error_class"])
 	assert.Equal(t, "Another run is describing this branch now; run this again when it finishes — what it describes is kept.", env["error"])
@@ -250,9 +230,9 @@ func TestReviewOverviewLock_StreamedWaiterShowsTheHoldersPartsThenCallsTheRest(t
 	useReviewGenerator(t, g)
 	lines := streamOverviewAsync(t, wb, "--round", round)
 
-	l, _ := nextLine(t, lines)
+	l, _ := nextLine(lines)
 	assert.Equal(t, "map", decodeLine(t, l)["event"])
-	l, _ = nextLine(t, lines)
+	l, _ = nextLine(lines)
 	assert.Equal(t, map[string]any{"event": "waiting", "by": "agent"}, decodeLine(t, l))
 
 	// The holder finishes its first batch.
@@ -261,7 +241,7 @@ func TestReviewOverviewLock_StreamedWaiterShowsTheHoldersPartsThenCallsTheRest(t
 	}
 	var cached []string
 	for len(cached) < len(holderBatch) {
-		l, ok := nextLine(t, lines)
+		l, ok := nextLine(lines)
 		require.True(t, ok, "the stream ended while waiting")
 		e := decodeLine(t, l)
 		if e["event"] == "chapter" {
@@ -270,7 +250,8 @@ func TestReviewOverviewLock_StreamedWaiterShowsTheHoldersPartsThenCallsTheRest(t
 		}
 	}
 	assert.ElementsMatch(t, holderBatch, cached)
-	assert.Zero(t, g.calls, "no call while waiting")
+	waitingCalls, _, _ := g.count() // under the generator's lock: its run is another goroutine
+	assert.Zero(t, waitingCalls, "no call while waiting")
 
 	kill()
 	var events []map[string]any
@@ -317,7 +298,9 @@ func savedParts(t *testing.T, database *db.DB, keys []string) []db.ReviewOvervie
 func TestReviewOverviewLock_WaitCapIsBusy(t *testing.T) {
 	_, wb, _, round, repo := bigOverviewRound(t)
 	holdOverviewLock(t, wb, repo)
-	shortLockWait(t, reviewai.LockWait{Cap: 300 * time.Millisecond, Every: 50 * time.Millisecond}, time.Minute)
+	// A cap already over when the wait starts: the holder never releases, so
+	// only the cap can end the wait, and nothing waits for it to arrive.
+	shortLockWait(t, reviewai.LockWait{Cap: time.Nanosecond, Every: time.Hour}, time.Hour)
 	g := &keyReviewGen{}
 	useReviewGenerator(t, g)
 	var events []map[string]any
@@ -344,9 +327,9 @@ func TestReviewOverviewLock_KilledAgentRunKeepsItsParts(t *testing.T) {
 	path := overviewLockPath(t, wb, repo)
 	_, _, kill := startLockChild(t, lockChildEnv+"=run", lockChildConfigEnv+"="+flagConfig, "CLAUDECODE=1",
 		lockChildArgsEnv+"="+strings.Join([]string{"review", "overview", "--workbench", itoa(wb), "--json", "--round", round}, "\x1f"))
-	require.Eventually(t, func() bool {
+	waitFor(t, "two batches of eight chapters described", func() bool {
 		return countRows(t, database, "SELECT COUNT(*) FROM review_overview_parts") == 16
-	}, 2*time.Minute, 50*time.Millisecond, "two batches of eight chapters described")
+	})
 	assert.Equal(t, "agent", reviewai.ReadHolder(path).By, "the agent marker names the holder")
 	kill()
 
@@ -388,13 +371,18 @@ func (g *deadlineGen) Generate(ctx context.Context, system, user, model string) 
 func TestReviewOverviewLock_WaitDoesNotCountIntoTheCeiling(t *testing.T) {
 	_, wb, _, round, repo := overviewRoundIn(t)
 	_, kill := holdOverviewLock(t, wb, repo)
-	shortLockWait(t, reviewai.LockWait{Cap: 3 * time.Second, Every: 20 * time.Millisecond}, time.Minute)
+	// The cap stays under the minute the assertion below allows, so a call
+	// cut to the wait's cap fails it; the holder is killed once the stream
+	// says it waits, long before that cap.
+	shortLockWait(t, reviewai.LockWait{Cap: 50 * time.Second, Every: 20 * time.Millisecond}, time.Minute)
 	g := &deadlineGen{}
 	useReviewGenerator(t, g)
-	time.AfterFunc(time.Second, kill)
 	var last map[string]any
 	for l := range streamOverviewAsync(t, wb, "--round", round) {
 		last = decodeLine(t, l)
+		if last["event"] == "waiting" {
+			kill()
+		}
 	}
 	require.Equal(t, true, last["ok"], last)
 	require.Len(t, g.deadlines, 1)

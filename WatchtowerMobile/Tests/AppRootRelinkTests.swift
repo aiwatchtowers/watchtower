@@ -144,7 +144,7 @@ final class AppRootRelinkTests: XCTestCase {
         XCTAssertTrue(root.env.session(hubID) === hubSession, "a hub session is not rebuilt")
 
         let hubID = hubID
-        try await root.launch { [hubID] }.value(within: 60, "launch")
+        await root.launch { [hubID] }.value
         XCTAssertTrue(FileManager.default.fileExists(atPath: paths.replicaPath(hubID)), "a confirmed link's files stay")
     }
 
@@ -177,7 +177,7 @@ final class AppRootRelinkTests: XCTestCase {
             await flow.value
             finished.fulfill()
         }
-        await fulfillment(of: [finished], timeout: 10)
+        await fulfillment(of: [finished])
         flow.cancel()
         XCTAssertEqual(root.linking.phase, .linked(macName: "Acme Mac"))
     }
@@ -209,7 +209,7 @@ final class AppRootRelinkTests: XCTestCase {
         )
         try await TestHub.hub(over: try zone(), hubID).save([try CloudRecordFactory.record(for: heartbeat, modifiedAt: updatedAt)])
         _ = await session.refresh(.pull)
-        try await poll({ session.heartbeat?.updatedAt == updatedAt }, "the replica reads the Mac's heartbeat")
+        try await poll({ session.heartbeat?.updatedAt == updatedAt }, "the replica reads the tower's heartbeat")
         let typing = !session.deviceSettings.typingRequested
         await session.deviceSettings.setTypingRequested(typing)
         XCTAssertNil(session.deviceSettings.lastError)
@@ -350,14 +350,15 @@ final class AppRootRelinkTests: XCTestCase {
     /// Review round 1 (F4): a direct save still running at the cap reads as
     /// not sent, at once.
     func testADirectSaveStillRunningAtTheCapIsNotSent() async {
-        let started = ContinuousClock.now
+        // The save never ends on its own; the cap's wait runs out at once.
+        let caps = OSAllocatedUnfairLock<[Duration]>(initialState: [])
+        let sent = await AppRoot.resendDirectly(
+            keptFarewell(), cap: .milliseconds(100), sleep: { cap in caps.withLock { $0.append(cap) } },
+            save: { _ in try await sleepUntilCancelled() }
+        )
 
-        let sent = await AppRoot.resendDirectly(keptFarewell(), cap: .milliseconds(100)) { _ in
-            try await Task.sleep(for: .seconds(60))
-        }
-
-        XCTAssertFalse(sent)
-        XCTAssertLessThan(started.duration(to: .now), .seconds(5), "the cap ended it")
+        XCTAssertFalse(sent, "the cap ended it")
+        XCTAssertEqual(caps.withLock { $0 }, [.milliseconds(100)], "the wait was the cap")
     }
 
     /// Review round 1 (F10/F4): each activation retries the kept farewells

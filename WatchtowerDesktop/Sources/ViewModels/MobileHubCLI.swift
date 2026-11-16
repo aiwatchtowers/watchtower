@@ -204,9 +204,13 @@ struct MobileHubCLI {
         let undelivered: Int?
         let mailboxFull: Bool? // swiftlint:disable:this discouraged_optional_boolean
         let alerts: String?
+        /// The `chat` grant (spec 2026-11-15, ask #1340: on by default); nil
+        /// from a hub that does not report it yet.
+        let chatAllowed: Bool? // swiftlint:disable:this discouraged_optional_boolean
 
         enum CodingKeys: String, CodingKey {
             case name, scope, transport, paying, undelivered, alerts
+            case chatAllowed = "chat_allowed"
             case mailboxFull = "mailbox_full"
             case deviceID = "device_id"
             case linkedAt = "linked_at"
@@ -233,7 +237,8 @@ struct MobileHubCLI {
             paying: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
             undelivered: Int? = nil,
             mailboxFull: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
-            alerts: String? = nil
+            alerts: String? = nil,
+            chatAllowed: Bool? = nil // swiftlint:disable:this discouraged_optional_boolean
         ) {
             self.deviceID = deviceID
             self.name = name
@@ -250,6 +255,7 @@ struct MobileHubCLI {
             self.undelivered = undelivered
             self.mailboxFull = mailboxFull
             self.alerts = alerts
+            self.chatAllowed = chatAllowed
         }
     }
 

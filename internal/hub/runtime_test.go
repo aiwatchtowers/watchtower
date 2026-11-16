@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/link"
 	hubslices "watchtower/internal/hub/slices"
+	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/memfake"
@@ -416,10 +417,8 @@ func TestCloudKitConfirmCloseKeepsTheParticipantsForTheGrace(t *testing.T) {
 		zones = h.zones()
 		h.ck.join("_stranger-acme", zones...)
 		h.waitFailedRestartClose()
-		if err := h.c.Send(ControlRequest{Op: OpPair}); err != nil {
-			t.Fatal(err)
-		}
-		lp, err := wire.ParseLinkURL(h.next(link.EventQR).URL)
+		qr := pairStep(t, h.c, ControlRequest{Op: OpPair}, link.EventQR, link.EventWaiting)[link.EventQR]
+		lp, err := wire.ParseLinkURL(qr.URL)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -435,10 +434,7 @@ func TestCloudKitConfirmCloseKeepsTheParticipantsForTheGrace(t *testing.T) {
 			t.Fatal("no idle pass")
 		}
 		h.next(link.EventSAS)
-		if err := h.c.Send(ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true}); err != nil {
-			t.Fatal(err)
-		}
-		h.next(link.EventLinked)
+		pairStep(t, h.c, ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true}, link.EventLinked)
 		eventually(t, "the close after the confirm", func() bool { return h.ck.count("set_public_link:close") == 2 })
 		h.settle()
 		reads := h.ck.count("participants")
@@ -474,10 +470,7 @@ func TestIssuingACodeRunsAPassAtOnce(t *testing.T) {
 			ck.quiet.Store(true) // no zone events: passes come from the ticks only
 		}, f.configure)
 		settled := h.settle()
-		if err := h.c.Send(ControlRequest{Op: OpPair}); err != nil {
-			t.Fatal(err)
-		}
-		h.next(link.EventQR)
+		pairStep(t, h.c, ControlRequest{Op: OpPair}, link.EventQR, link.EventWaiting)
 		synctest.Wait() // at once: no time passes on the bubble's clock
 		if h.passes.Load() <= settled {
 			t.Fatal("no pass at once after the code")
@@ -587,10 +580,8 @@ func TestCloudKitHelloInTheRelayZoneLinksAndTheConfirmClosesTheLink(t *testing.T
 	bubble(t, func(t *testing.T) {
 		h := startCloudKitHub(t, leftOpenFailingOnce(t), nil)
 		h.waitFailedRestartClose()
-		if err := h.c.Send(ControlRequest{Op: OpPair}); err != nil {
-			t.Fatal(err)
-		}
-		lp, err := wire.ParseLinkURL(h.next(link.EventQR).URL)
+		qr := pairStep(t, h.c, ControlRequest{Op: OpPair}, link.EventQR, link.EventWaiting)[link.EventQR]
+		lp, err := wire.ParseLinkURL(qr.URL)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -605,10 +596,7 @@ func TestCloudKitHelloInTheRelayZoneLinksAndTheConfirmClosesTheLink(t *testing.T
 		if sas.DeviceID != phone.ID().String() {
 			t.Fatalf("sas for %s, want %s", sas.DeviceID, phone.ID())
 		}
-		if err := h.c.Send(ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true}); err != nil {
-			t.Fatal(err)
-		}
-		h.next(link.EventLinked)
+		pairStep(t, h.c, ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true}, link.EventLinked)
 		eventually(t, "the close after the confirm", func() bool { return h.ck.count("set_public_link:close") == 2 })
 		if n := h.ck.count("remove_participants"); n != 0 {
 			t.Fatalf("participants swept before the answer grace (%d calls)", n)
@@ -630,10 +618,8 @@ func TestCloudKitConfirmAndRemoveNeverWaitOnTheBridge(t *testing.T) {
 		release := h.ck.hold("set_public_link:close")
 		defer release()
 		defer h.ck.hold("remove_participants:" + h.zones()[0] + ":_colleague-a")()
-		if err := h.c.Send(ControlRequest{Op: OpPair}); err != nil {
-			t.Fatal(err)
-		}
-		lp, err := wire.ParseLinkURL(h.next(link.EventQR).URL)
+		qr := pairStep(t, h.c, ControlRequest{Op: OpPair}, link.EventQR, link.EventWaiting)[link.EventQR]
+		lp, err := wire.ParseLinkURL(qr.URL)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -658,6 +644,9 @@ func TestCloudKitConfirmAndRemoveNeverWaitOnTheBridge(t *testing.T) {
 		}
 		c2 := h.rig.dial()
 		defer func() { _ = c2.Close() }()
+		// Up to the answer only: its latency is what is timed. At most the
+		// linked event is left, one writer alone on the pipe (durably
+		// blocked), and h.c is not read again.
 		answered("confirm", func() ControlAnswer {
 			if err := h.c.Send(ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true}); err != nil {
 				t.Fatal(err)
@@ -776,5 +765,28 @@ func linkSharedPhone(t *testing.T, dir, id, user string) {
 	}
 	if devices, err := st.Devices(); err != nil || !slices.ContainsFunc(devices, func(d state.Device) bool { return d.ID == id }) {
 		t.Fatalf("devices: %v, %v", devices, err)
+	}
+}
+
+// TestHubKindOf: a desktop host's live mode is a Mac, every other hub a
+// server (#1783).
+func TestHubKindOf(t *testing.T) {
+	if got := hubKindOf(&Desktop{}); got != wire.HubKindMac {
+		t.Fatalf("desktop: %q", got)
+	}
+	if got := hubKindOf(nil); got != wire.HubKindServer {
+		t.Fatalf("headless: %q", got)
+	}
+}
+
+// TestHandlerDepsServerHostFollowsTheHubKind: the handlers word a
+// device_not_allowed refusal for a server hub only when no desktop host runs
+// it (#1783, ask #1322).
+func TestHandlerDepsServerHostFollowsTheHubKind(t *testing.T) {
+	if d := handlerDeps(Options{Desktop: &Desktop{}}, nil, &sources.Set{}, nil, nil, nil, nil); d.ServerHost {
+		t.Fatal("a desktop host's hub reads as a server")
+	}
+	if d := handlerDeps(Options{}, nil, &sources.Set{}, nil, nil, nil, nil); !d.ServerHost {
+		t.Fatal("a headless hub reads as a Mac")
 	}
 }

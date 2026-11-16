@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/agentkind"
+	"watchtower/internal/chat"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
@@ -183,11 +184,11 @@ func generateTerminalTitle(cmd *cobra.Command, cfg *config.Config, database *db.
 	if err != nil {
 		return "", fmt.Errorf("generating the title: %w", err)
 	}
-	title := cleanChatTitle(reply)
+	title := chat.CleanTitle(reply)
 	if title == "" {
 		return "", fmt.Errorf("the model returned an empty title")
 	}
-	if n := len(strings.Fields(titleLine(reply))); n > terminalTitleMaxWords {
+	if n := len(strings.Fields(chat.TitleLine(reply))); n > terminalTitleMaxWords {
 		return "", fmt.Errorf("the model answered instead of naming the session (%d words)", n)
 	}
 	return title, nil

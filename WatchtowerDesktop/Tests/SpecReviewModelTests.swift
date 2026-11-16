@@ -1,5 +1,6 @@
 import XCTest
 import GRDB
+import Observation
 import ViewInspector
 @testable import WatchtowerDesktop
 import WatchtowerCore
@@ -14,6 +15,8 @@ final class SpecReviewModelTests: XCTestCase {
     private var askID: Int64 = 0
     private var asks: OwnerAsksViewModel!
     private var projectID: Int64 = 0
+    /// The AI services' call counts on Observation, for `waitUntil`.
+    private var aiCounters: [CallCountingAI] = []
 
     private let snapshot = "# Title\nIntro text\n## Behaviour\nMuting lasts twenty-four hours\n"
 
@@ -148,7 +151,7 @@ final class SpecReviewModelTests: XCTestCase {
 
     func testStopPollingCancelsTheTask() async throws {
         try setRow(status: "running")
-        let model = try await makeModel { _ in try await Task.sleep(for: .seconds(3600)) }
+        let model = try await makeModel { _ in try await parkUntilTaskCancelled() }
         await model.load()
         model.startPolling()
         XCTAssertTrue(model.isPolling)
@@ -178,7 +181,7 @@ final class SpecReviewModelTests: XCTestCase {
     func testRunReviewerExit3SaysAlreadyRunning() async throws {
         try setRow(status: "running")
         runner.shouldThrow = CLIRunnerError.nonZeroExit(code: 3, stderr: "busy")
-        let model = try await makeModel { _ in try await Task.sleep(for: .seconds(3600)) }
+        let model = try await makeModel { _ in try await parkUntilTaskCancelled() }
         await model.runReviewer()
         XCTAssertEqual(model.lastError, "The reviewer is already running")
         model.stopPolling()
@@ -248,7 +251,7 @@ final class SpecReviewModelTests: XCTestCase {
 
     func testRestartedPollingSurvivesTheOldTaskEnding() async throws {
         try setRow(status: "running")
-        let model = try await makeModel { _ in try await Task.sleep(for: .seconds(3600)) }
+        let model = try await makeModel { _ in try await parkUntilTaskCancelled() }
         await model.load()
         model.startPolling()
         model.stopPolling()
@@ -431,7 +434,7 @@ final class SpecReviewModelTests: XCTestCase {
                         """, arguments: [id])
                 }
             }
-            if ticks > 2 { try await Task.sleep(for: .seconds(3600)) }
+            if ticks > 2 { try await parkUntilTaskCancelled() }
         }
         await model.load()
         XCTAssertNil(model.row)
@@ -659,15 +662,30 @@ final class SpecReviewModelTests: XCTestCase {
 
     // MARK: - Discuss: card kinds, thread findings, owner items (spec 2026-11-08)
 
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("condition not met in \(timeout)s")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(5))
+    /// Waits until `condition` holds, re-checking on every change of the
+    /// observable state it reads and on every AI call — no deadline.
+    private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
+        let counters = aiCounters
+        await untilObserved {
+            counters.forEach { _ = $0.count }
+            return condition()
         }
+    }
+
+    /// Starts `SpecReviewModel.nextOutcome(of:)` and returns once its hooks
+    /// are on the engine (it installs them before its first suspension).
+    private func waitingForOutcome(
+        _ engine: EmbeddedChatEngine
+    ) async -> Task<EmbeddedChatEngine.TurnOutcome, Never> {
+        var task: Task<EmbeddedChatEngine.TurnOutcome, Never>?
+        await withCheckedContinuation { (started: CheckedContinuation<Void, Never>) in
+            task = Task { @MainActor in
+                started.resume()
+                return await SpecReviewModel.nextOutcome(of: engine)
+            }
+        }
+        // swiftlint:disable:next force_unwrapping
+        return task!
     }
 
     /// Every kind of card one review can hold.
@@ -703,15 +721,17 @@ final class SpecReviewModelTests: XCTestCase {
     private func makeThreadModel(
         _ ai: ScriptedAIService,
         threads: SpecReviewThreadCenter? = nil,
-        sleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        sleep: @escaping (Duration) async throws -> Void = { _ in try await parkUntilTaskCancelled() },
         now: @escaping () -> Date = Date.init
     ) async throws -> SpecReviewModel {
         let base = try await makeModel()
         let pool = try XCTUnwrap(pool)
+        let counter = CallCountingAI(ai)
+        aiCounters.append(counter)
         let center = threadCenter ?? EmbeddedChatCenter { spec, gate in
             guard case .database(let conversationID) = spec.persistence else { preconditionFailure("database chat") }
             return EmbeddedChatEngine(spec: spec, store: DatabaseEmbeddedChatStore(dbPool: pool, conversationID: conversationID),
-                                      aiService: ai, gate: gate)
+                                      aiService: counter, gate: gate)
         }
         threadCenter = center
         let model = SpecReviewModel(ask: base.ask, dbPool: pool, cli: WorkbenchCLI(runner: runner), asks: asks, chats: center,
@@ -726,7 +746,7 @@ final class SpecReviewModelTests: XCTestCase {
         _ ai: ScriptedAIService,
         reply: String = "It holds.",
         threads: SpecReviewThreadCenter? = nil,
-        sleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        sleep: @escaping (Duration) async throws -> Void = { _ in try await parkUntilTaskCancelled() },
         now: @escaping () -> Date = Date.init
     ) async throws -> SpecReviewModel {
         runner = FakeCLIRunner(stdout: Data("data".utf8))
@@ -974,20 +994,18 @@ final class SpecReviewModelTests: XCTestCase {
             aiService: ScriptedAIService(), gate: gate)
         engine.sendHidden("conclude")
         XCTAssertTrue(engine.isQueued)
-        var outcome: EmbeddedChatEngine.TurnOutcome?
-        Task { outcome = await SpecReviewModel.nextOutcome(of: engine) }
-        await waitUntil { engine.onTurnDropped != nil }
+        let afterShutdown = await waitingForOutcome(engine)
+        XCTAssertNotNil(engine.onTurnDropped)
         engine.shutdown(quietly: true)
-        await waitUntil { outcome != nil }
+        var outcome = await afterShutdown.value
         XCTAssertEqual(outcome, .notStarted(message: SpecReviewOutcomeWaiter.goneMessage))
         XCTAssertNil(engine.onTurnDropped, "the waiter's hooks are gone")
 
         engine.sendHidden("conclude")
-        outcome = nil
-        Task { outcome = await SpecReviewModel.nextOutcome(of: engine) }
-        await waitUntil { engine.onTurnDropped != nil }
+        let afterStop = await waitingForOutcome(engine)
+        XCTAssertNotNil(engine.onTurnDropped)
         engine.stop()
-        await waitUntil { outcome != nil }
+        outcome = await afterStop.value
         XCTAssertEqual(outcome, .notStarted(message: SpecReviewOutcomeWaiter.goneMessage), "Stop withdrew it")
         let none = await SpecReviewModel.nextOutcome(of: nil)
         XCTAssertEqual(none, .notStarted(message: SpecReviewOutcomeWaiter.goneMessage))
@@ -1000,7 +1018,7 @@ final class SpecReviewModelTests: XCTestCase {
         var waited: [Duration] = []
         let model = try await discussedModel(ai) { duration in
             waited.append(duration)
-            if duration != .seconds(30) { try await Task.sleep(for: duration) }
+            if duration != .seconds(30) { try await parkUntilTaskCancelled() }
         }
         await model.fix(key: "ag:2")
         XCTAssertEqual(waited, [.seconds(30)])

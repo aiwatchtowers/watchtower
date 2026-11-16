@@ -123,7 +123,15 @@ final class RedirectStubProtocol: URLProtocol {
 
     override static func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
+    /// The stub resolves a redirect itself, asking the task's delegate as the loading system would, and answers
+    /// once with the final response. Handing the redirect to the system instead (`wasRedirectedTo`, then the 302 as
+    /// the answer should the delegate refuse) races: now and then the system took the 302 before it asked the
+    /// delegate, so a redirect the rule allows was not followed (#1793).
     override func startLoading() {
+        load(request)
+    }
+
+    private func load(_ request: URLRequest) {
         guard let url = request.url else { return }
         let route = Self.state.withLock { state -> Route? in
             state.seen.append(url.absoluteString)
@@ -136,9 +144,12 @@ final class RedirectStubProtocol: URLProtocol {
             else { return }
             var redirected = URLRequest(url: next)
             redirected.httpMethod = request.httpMethod
-            client?.urlProtocol(self, wasRedirectedTo: redirected, redirectResponse: response)
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            client?.urlProtocolDidFinishLoading(self)
+            guard let task, let decide = task.delegate?.urlSession(_:task:willPerformHTTPRedirection:newRequest:completionHandler:)
+            else { return load(redirected) }
+            // The delegates under test ignore the session argument; a protocol has no handle on the task's own.
+            decide(URLSession.shared, task, response, redirected) { decision in
+                if let decision { self.load(decision) } else { self.answer(response, body: Data()) }
+            }
         case .ok(let body)?:
             answer(url, status: 200, body: body)
         case nil:
@@ -150,6 +161,10 @@ final class RedirectStubProtocol: URLProtocol {
 
     private func answer(_ url: URL, status: Int, body: Data) {
         guard let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: nil) else { return }
+        answer(response, body: body)
+    }
+
+    private func answer(_ response: HTTPURLResponse, body: Data) {
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: body)
         client?.urlProtocolDidFinishLoading(self)

@@ -23,6 +23,128 @@ private final class ReadLog: @unchecked Sendable {
     }
 }
 
+/// The center's loop sleep, ended by hand: `tick` wakes the parked loop and
+/// returns once it parked again (its read is done). A cancelled sleep
+/// returns at once.
+@MainActor
+private final class LoopTicker {
+    private var parked: CheckedContinuation<Void, Never>?
+    private var arrivals: [CheckedContinuation<Void, Never>] = []
+    private var cancelled = 0
+    private var cancelWaiters: [CheckedContinuation<Void, Never>] = []
+    private var generation = 0
+
+    nonisolated var sleep: @Sendable (Duration) async -> Void {
+        { [self] _ in await self.park() }
+    }
+
+    private func park() async {
+        generation += 1
+        let mine = generation
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                if Task.isCancelled {
+                    // Cancelled before it parked: still a sleep its cancel ended.
+                    sleepCancelled()
+                    return continuation.resume()
+                }
+                parked = continuation
+                arrivals.forEach { $0.resume() }
+                arrivals = []
+            }
+        } onCancel: {
+            Task { @MainActor in self.cancel(mine) }
+        }
+    }
+
+    private func cancel(_ sleep: Int) {
+        guard sleep == generation, let continuation = parked else { return }
+        parked = nil
+        continuation.resume()
+        sleepCancelled()
+    }
+
+    private func sleepCancelled() {
+        cancelled += 1
+        cancelWaiters.forEach { $0.resume() }
+        cancelWaiters = []
+    }
+
+    /// Returns once the loop sleeps (it has read once more).
+    func untilParked() async {
+        if parked != nil { return }
+        await withCheckedContinuation { arrivals.append($0) }
+    }
+
+    func tick() async {
+        await untilParked()
+        parked?.resume()
+        parked = nil
+        await untilParked()
+    }
+
+    /// Returns once the loop's sleep was ended by its task's cancel.
+    func untilCancelled() async {
+        if cancelled > 0 { return }
+        await withCheckedContinuation { cancelWaiters.append($0) }
+    }
+}
+
+/// Passes every call to `base` and lets a test await the calls it expects.
+private final class SignallingRunner: CLIRunnerProtocol, @unchecked Sendable {
+    private let base: any CLIRunnerProtocol
+    private let lock = NSLock()
+    private var recorded: [[String]] = []
+    private var waiters: [(met: @Sendable ([[String]]) -> Bool, continuation: CheckedContinuation<Void, Never>)] = []
+
+    init(_ base: any CLIRunnerProtocol) { self.base = base }
+
+    var calls: [[String]] { lock.withLock { recorded } }
+
+    func run(args: [String]) async throws -> Data {
+        let ready = lock.withLock {
+            recorded.append(args)
+            let calls = recorded
+            let ready = waiters.filter { $0.met(calls) }.map(\.continuation)
+            waiters.removeAll { $0.met(calls) }
+            return ready
+        }
+        ready.forEach { $0.resume() }
+        return try await base.run(args: args)
+    }
+
+    /// Returns once the calls so far satisfy `met`.
+    func until(_ met: @escaping @Sendable ([[String]]) -> Bool) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let now = lock.withLock {
+                if met(recorded) { return true }
+                waiters.append((met, continuation))
+                return false
+            }
+            if now { continuation.resume() }
+        }
+    }
+}
+
+/// Counts a callback, with a wait for a count.
+@MainActor
+private final class CallCount {
+    private(set) var value = 0
+    private var waiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    func bump() {
+        value += 1
+        let ready = waiters.filter { value >= $0.count }
+        waiters.removeAll { value >= $0.count }
+        ready.forEach { $0.continuation.resume() }
+    }
+
+    func until(_ count: Int) async {
+        if value >= count { return }
+        await withCheckedContinuation { waiters.append((count, $0)) }
+    }
+}
+
 /// A clock a test moves by hand.
 private final class ManualClock: @unchecked Sendable {
     private let lock = NSLock()
@@ -93,21 +215,24 @@ final class SessionAgentStateCenterTests: XCTestCase {
         super.tearDown()
     }
 
+    /// The loop sleeps on `ticks`: it reads again only when a test ticks it.
     private func makeCenter(
-        interval: Duration = .milliseconds(20),
+        ticks: LoopTicker? = nil,
         read: SessionAgentStateCenter.Reader? = nil,
         clock: @escaping @Sendable () -> Date = { Date() },
         probeRunner: (any CLIRunnerProtocol)? = nil
     ) -> SessionAgentStateCenter {
+        let ticks = ticks ?? LoopTicker()
         let reader: SessionAgentStateCenter.Reader = read ?? { [pool, log] ids in
             try log?.record(ids)
             guard let pool else { return [] }
             return try await pool.read { try TerminalSessionQueries.fetchAgentStates($0, liveIDs: ids) }
         }
         let center = SessionAgentStateCenter(
-            dbPool: pool, terminalCenter: terminals, interval: interval, notifier: notifier, defaults: defaults,
+            dbPool: pool, terminalCenter: terminals, notifier: notifier, defaults: defaults,
             notificationCenter: activations, read: reader, clock: clock, probeRunner: probeRunner
         )
+        center.sleep = ticks.sleep
         center.isAppActive = { [weak self] in self?.appActive ?? true }
         centers.append(center)
         return center
@@ -170,16 +295,6 @@ final class SessionAgentStateCenterTests: XCTestCase {
         }
     }
 
-    private func eventually(
-        _ what: String, within timeout: Duration = .seconds(3), _ condition: () -> Bool
-    ) async {
-        let deadline = ContinuousClock.now + timeout
-        while !condition() {
-            if ContinuousClock.now > deadline { return XCTFail("timed out: \(what)") }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-    }
-
     /// Banners a previous process left name dead runs: removed on start
     /// (once) and on quit.
     func testStartAndQuitRemoveLeftoverBanners() {
@@ -197,7 +312,9 @@ final class SessionAgentStateCenterTests: XCTestCase {
         center.start()
         let shell = try await session(.shell)
         terminals.start(shell, fresh: true)
-        try await Task.sleep(for: .milliseconds(100))
+        // The loop follows the live agent ids, which a shell never joins.
+        XCTAssertEqual(terminals.liveAgentIDs, [])
+        await center.settled()
         XCTAssertEqual(log.reads, [], "nothing is read without a trigger")
         XCTAssertFalse(center.isPolling)
         XCTAssertEqual(center.statuses, [:])
@@ -216,10 +333,8 @@ final class SessionAgentStateCenterTests: XCTestCase {
         }
         activations.post(name: NSApplication.didBecomeActiveNotification, object: nil)
         // The log records when a read STARTS; the statuses land when it ends.
-        await eventually("app activation reads") {
-            log.reads == [[]]
-                && center.statuses[row.id]?.state == SessionSwitcherPresentation.State(kind: .finished, live: false)
-        }
+        await center.settled()
+        XCTAssertEqual(log.reads, [[]], "app activation reads")
         XCTAssertEqual(center.statuses[row.id]?.state, SessionSwitcherPresentation.State(kind: .finished, live: false),
                        "a closed finished session: a blue ring")
         XCTAssertFalse(center.isPolling, "a refresh starts no loop")
@@ -227,10 +342,11 @@ final class SessionAgentStateCenterTests: XCTestCase {
         let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults, terminalCenter: terminals,
                                       agentStates: center)
         await vm.tabAppeared()
-        await eventually("the Workbench tab appearing reads") { log.reads.count == 2 }
+        await center.settled()
+        XCTAssertEqual(log.reads.count, 2, "the Workbench tab appearing reads")
         center.stop()
         activations.post(name: NSApplication.didBecomeActiveNotification, object: nil)
-        try await Task.sleep(for: .milliseconds(50))
+        await center.settled()
         XCTAssertEqual(log.reads.count, 2, "a stopped center no longer follows activation")
     }
 
@@ -273,7 +389,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
     /// and goes — pasted, then Return — on the read that shows the prompt
     /// answered.
     func testAnAnswerHeldAtAPermissionPromptGoesOnTheReadThatShowsItAnswered() async throws {
-        let center = makeCenter(interval: .seconds(60))
+        let center = makeCenter()
         center.start()
         let row = try await session()
         let projectID = try XCTUnwrap(row.projectID)
@@ -299,15 +415,16 @@ final class SessionAgentStateCenterTests: XCTestCase {
         try hookWrites(row.id, "working", at: 2)
         await center.poll()
 
-        await eventually("the held line goes") { process.inputs.count == 2 }
+        // The held line goes: pasted, then Return, then the sent note.
+        await untilObserved { vm.asks.answerNotices[askID]?.text == OwnerAsksViewModel.answerSentNote }
+        XCTAssertEqual(process.inputs.count, 2)
         XCTAssertEqual(process.inputs.last, [0x0D])
-        XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.answerSentNote)
     }
 
     /// `onRead` fires on every read that succeeded, changed or not, and on
     /// no failed one.
     func testOnReadFiresOnEverySuccessfulReadOnly() async throws {
-        let center = makeCenter(interval: .seconds(60))
+        let center = makeCenter()
         var reads = 0
         center.onRead = { reads += 1 }
         _ = try await session()
@@ -325,24 +442,24 @@ final class SessionAgentStateCenterTests: XCTestCase {
     /// failed (the last good rows, resolved again) and a change of the live
     /// sessions with no read.
     func testOnResolvedFiresOnEveryReadAndLivenessChange() async throws {
-        let center = makeCenter(interval: .seconds(60))
-        var resolves = 0
-        center.onResolved = { resolves += 1 }
+        let center = makeCenter()
+        let resolves = CallCount()
+        center.onResolved = { resolves.bump() }
         let row = try await session()
         await center.poll()
-        XCTAssertEqual(resolves, 1, "a read")
+        XCTAssertEqual(resolves.value, 1, "a read")
         log.fail = true
         await center.poll()
-        XCTAssertEqual(resolves, 2, "a failed read")
+        XCTAssertEqual(resolves.value, 2, "a failed read")
         center.start()
-        XCTAssertEqual(resolves, 3, "following the live sessions resolves at once")
+        XCTAssertEqual(resolves.value, 3, "following the live sessions resolves at once")
         terminals.start(row, fresh: true)
-        await eventually("a liveness change resolves") { resolves >= 4 }
+        await resolves.until(4) // a liveness change resolves
     }
 
     /// `onChange` fires on a change of the statuses only.
     func testOnChangeFiresOnlyWhenTheStatusesChange() async throws {
-        let center = makeCenter(interval: .seconds(60))
+        let center = makeCenter()
         var changes = 0
         center.onChange = { changes += 1 }
         let row = try await session()
@@ -357,34 +474,42 @@ final class SessionAgentStateCenterTests: XCTestCase {
     }
 
     func testPollStartsAndStopsWithLiveness() async throws {
-        let center = makeCenter()
+        let ticks = LoopTicker()
+        let center = makeCenter(ticks: ticks)
         center.start()
         XCTAssertFalse(center.isPolling)
         let row = try await session()
         terminals.start(row, fresh: true)
-        await eventually("the loop starts with a live claude session") { center.isPolling }
-        await eventually("it reads the live session") { log.reads.contains([row.id]) }
+        // The loop starts with a live claude session and reads it.
+        await ticks.untilParked()
+        XCTAssertTrue(center.isPolling)
+        XCTAssertEqual(log.reads, [[row.id]])
+        await ticks.tick()
+        XCTAssertEqual(log.reads, [[row.id], [row.id]], "a tick reads once more")
         processes.last?.exit(0)
-        await eventually("the loop stops with the last session") { !center.isPolling }
-        let count = log.reads.count
-        try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(log.reads.count, count, "no reads once nothing is live")
+        // The loop stops with the last session: its sleep ends by the cancel.
+        await ticks.untilCancelled()
+        XCTAssertFalse(center.isPolling)
+        await center.settled()
+        XCTAssertEqual(log.reads.count, 2, "no reads once nothing is live")
     }
 
     func testAHookWriteIsPublishedWithinATick() async throws {
-        let center = makeCenter()
+        let ticks = LoopTicker()
+        let center = makeCenter(ticks: ticks)
         center.start()
         let row = try await session()
         terminals.start(row, fresh: true)
-        await eventually("the first poll ran") { center.statuses[row.id]?.state == .live(.running) }
+        await ticks.untilParked()
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.running), "the first poll ran")
         try hookWrites(row.id, "waiting", at: 1)
-        await eventually("the turn end shows", within: .seconds(1)) {
-            center.statuses[row.id]?.state == .live(.stopped)
-        }
+        await ticks.tick()
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.stopped), "the turn end shows at the next tick")
         XCTAssertEqual(center.statuses[row.id]?.title, "Release work")
         XCTAssertEqual(center.statuses[row.id]?.at, stamp(1))
         try hookWrites(row.id, "approval", at: 2)
-        await eventually("approval shows") { center.statuses[row.id]?.state == .live(.needsApproval) }
+        await ticks.tick()
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.needsApproval), "approval shows")
     }
 
     func testAnUnchangedReadDoesNotReassignStatuses() async throws {
@@ -452,7 +577,8 @@ final class SessionAgentStateCenterTests: XCTestCase {
     /// A Restart between two polls, while another session keeps the loop
     /// going: the previous run's state goes at once, not on the next tick.
     func testARestartBetweenPollsDropsThePreviousRunsState() async throws {
-        let center = makeCenter(interval: .seconds(3600))
+        let ticks = LoopTicker()
+        let center = makeCenter(ticks: ticks)
         let first = try await session(title: "One")
         let second = try await session(title: "Two")
         terminals.start(first, fresh: true)
@@ -461,16 +587,16 @@ final class SessionAgentStateCenterTests: XCTestCase {
         try hookWrites(second.id, "working", at: 1)
         // The loop's first poll is the only one within the test.
         center.start()
-        await eventually("the first poll") { center.statuses[first.id]?.state == .live(.stopped) }
+        await ticks.untilParked()
+        XCTAssertEqual(center.statuses[first.id]?.state, .live(.stopped), "the first poll")
         XCTAssertEqual(log.reads.count, 1)
 
         processes.first?.exit(0)
         terminals.now = { [started] in started.addingTimeInterval(10) }
         terminals.start(first, fresh: false)
 
-        await eventually("the previous run's waiting is dropped without a poll") {
-            center.statuses[first.id]?.state == .live(.running)
-        }
+        // The previous run's waiting is dropped without a poll.
+        await untilObserved { center.statuses[first.id]?.state == .live(.running) }
         XCTAssertEqual(center.statuses[second.id]?.state, .live(.working), "the other session keeps its state")
         XCTAssertEqual(log.reads.count, 1, "no poll ran")
     }
@@ -478,7 +604,8 @@ final class SessionAgentStateCenterTests: XCTestCase {
     /// An exit draws the finished session's blue ring at once, from the
     /// last read: a closed session changes in no other way.
     func testAnExitTurnsAFinishedDotIntoARingWithoutARead() async throws {
-        let center = makeCenter(interval: .seconds(3600))
+        let ticks = LoopTicker()
+        let center = makeCenter(ticks: ticks)
         let row = try await session()
         terminals.start(row, fresh: true)
         try hookWrites(row.id, "waiting", at: 1)
@@ -488,9 +615,11 @@ final class SessionAgentStateCenterTests: XCTestCase {
                            arguments: [finishedAt, row.id])
         }
         center.start()
-        await eventually("the first poll") { center.statuses[row.id]?.state == .live(.finished) }
+        await ticks.untilParked()
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.finished), "the first poll")
         processes.last?.exit(0)
-        await eventually("a blue ring without a read") {
+        // A blue ring without a read.
+        await untilObserved {
             center.statuses[row.id]?.state == SessionSwitcherPresentation.State(kind: .finished, live: false)
         }
         XCTAssertEqual(log.reads.count, 1)
@@ -561,17 +690,23 @@ final class SessionAgentStateCenterTests: XCTestCase {
         }
         let center = try XCTUnwrap(appState.sessionAgentStateCenter)
         center.isAppActive = { false }
+        let ticker = LoopTicker()
+        center.sleep = ticker.sleep
         let vm = try XCTUnwrap(appState.workbenchesViewModel)
         XCTAssertTrue(vm.agentStates === center, "the VM reads the AppState-owned center")
 
         appState.selectedDestination = .workbench
         let row = try await session()
-        appState.terminalCenter.start(row, fresh: true)
         appState.selectedDestination = .inbox
+        appState.terminalCenter.start(row, fresh: true)
+        // The loop's first read has run and found nothing yet; the state is
+        // written after it, so a later tick of the poll is what reads it.
+        await ticker.untilParked()
+        XCTAssertNotEqual(center.statuses[row.id]?.state, .live(.stopped))
         try hookWrites(row.id, "waiting", at: 1)
-        await eventually("published with the Workbench tab not shown") {
-            center.statuses[row.id]?.state == .live(.stopped)
-        }
+        await ticker.tick()
+        // Published with the Workbench tab not shown.
+        await untilObserved { center.statuses[row.id]?.state == .live(.stopped) }
         XCTAssertEqual(sessionNotifier.posted.map(\.sessionID), [row.id], "announced with the tab not shown")
         appState.selectedDestination = .workbench
         XCTAssertEqual(vm.sessionState(row), .live(.stopped))
@@ -613,7 +748,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
 
         await center.poll()
 
-        await eventually("the stale count is probed") { !runner.invocations.isEmpty }
+        await center.settled() // the stale count is probed
         XCTAssertEqual(runner.invocations, [[
             "workbench", "session-probe", "--workbench", String(try XCTUnwrap(row.projectID)), "--session", String(row.id)
         ]])
@@ -630,7 +765,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
         appState.terminalCenter.transcriptExists = { _ in true }
         appState.terminalCenter.now = { [started] in started }
         appState.mainWindowIsKey = { false }
-        let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"outcome":"gone"}"#.utf8))
+        let runner = SignallingRunner(FakeCLIRunner(stdout: Data(#"{"ok":true,"outcome":"gone"}"#.utf8)))
         appState.initWorkbenches(
             dbPool: pool, cliRunner: runner, notifier: RecordingWorkbenchNotifier(),
             sessionNotifier: RecordingSessionNotifier()
@@ -661,9 +796,10 @@ final class SessionAgentStateCenterTests: XCTestCase {
 
         await center.poll()
 
-        let escalations = { runner.invocations.filter { $0.starts(with: ["workbench", "escalate-question"]) } }
-        await eventually("the read escalates") { !escalations().isEmpty }
-        XCTAssertEqual(escalations(), [[
+        let isEscalation: @Sendable ([String]) -> Bool = { $0.starts(with: ["workbench", "escalate-question"]) }
+        await runner.until { $0.contains(where: isEscalation) } // the read escalates
+        await center.settled()
+        XCTAssertEqual(runner.calls.filter(isEscalation), [[
             "workbench", "escalate-question", "--workbench", String(try XCTUnwrap(row.projectID)),
             "--session", String(row.id), "--at", asked, "--reason", "away"
         ]])
@@ -746,7 +882,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
             agentStateAt: stamp(1), workbenchName: "acme", agentBackground: 0, agentBackgroundAt: stamp(2)
         )
         let clock = ManualClock(reported.addingTimeInterval(60))
-        let center = makeCenter(interval: .seconds(60), read: { _ in [stored] }, clock: { clock.now })
+        let center = makeCenter(read: { _ in [stored] }, clock: { clock.now })
         var changes = 0
         center.onChange = { changes += 1 }
         await center.poll()
@@ -778,7 +914,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
             agentBackgroundShells: 1
         )
         let clock = ManualClock(started.addingTimeInterval(60))
-        let center = makeCenter(interval: .seconds(60), read: { _ in [stored] }, clock: { clock.now })
+        let center = makeCenter(read: { _ in [stored] }, clock: { clock.now })
         await center.poll()
         XCTAssertEqual(center.statuses[row.id]?.state, .live(.background, backgroundShells: 1))
         XCTAssertEqual(notifier.posted, [.init(sessionID: row.id, workbenchID: try XCTUnwrap(row.projectID),
@@ -824,12 +960,11 @@ final class SessionAgentStateCenterTests: XCTestCase {
             return Data(ProbeAnswer.ran("idle", ended: true).utf8)
         }
         let clock = ManualClock(started.addingTimeInterval(2 + 31 * 60))
-        let center = makeCenter(interval: .seconds(60), read: { _ in [stored.row] }, clock: { clock.now },
+        let center = makeCenter(read: { _ in [stored.row] }, clock: { clock.now },
                                 probeRunner: runner)
         await center.poll()
-        await eventually("the probe ends the count and the center reads it") {
-            center.statuses[row.id]?.state == .live(.stopped)
-        }
+        await center.settled()
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.stopped), "the probe ends the count and the center reads it")
         XCTAssertEqual(runner.invocations, [[
             "workbench", "session-probe", "--workbench", String(try XCTUnwrap(row.projectID)), "--session", String(row.id)
         ]])
@@ -851,30 +986,30 @@ final class SessionAgentStateCenterTests: XCTestCase {
         let stored = StoredRow(backgroundRow(row))
         let runner = ScriptedProbeRunner(json: ProbeAnswer.failed)
         let clock = ManualClock(started.addingTimeInterval(2 + 31 * 60))
-        let center = makeCenter(interval: .seconds(60), read: { _ in [stored.row] }, clock: { clock.now },
+        let center = makeCenter(read: { _ in [stored.row] }, clock: { clock.now },
                                 probeRunner: runner)
         await center.poll()
-        await eventually("the first probe runs") { runner.invocations.count == 1 }
-        try await Task.sleep(for: .milliseconds(30))
+        await center.settled()
+        XCTAssertEqual(runner.invocations.count, 1, "the first probe runs")
         XCTAssertEqual(center.statuses[row.id]?.state, .live(.background, backgroundAgents: 2),
                        "one failed probe changes nothing")
         XCTAssertEqual(notifier.posted, [])
 
         clock.now = clock.now.addingTimeInterval(SessionBackgroundProber.retryAfter)
         await center.poll()
-        await eventually("two failed probes show the count over") {
-            center.statuses[row.id]?.state == .live(.stopped)
-        }
+        await center.settled()
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.stopped), "two failed probes show the count over")
         XCTAssertEqual(stored.row, backgroundRow(row), "nothing written")
         XCTAssertEqual(notifier.posted, [.init(sessionID: row.id, workbenchID: try XCTUnwrap(row.projectID),
                                                title: "Release work is idle", body: "acme")])
         clock.now = clock.now.addingTimeInterval(SessionBackgroundProber.retryAfter)
         await center.poll()
-        try await Task.sleep(for: .milliseconds(30))
+        await center.settled()
         XCTAssertEqual(runner.invocations.count, 2, "shown over: no 60 s retry")
         clock.now = clock.now.addingTimeInterval(SessionBackgroundPolicy.staleAfter - SessionBackgroundProber.retryAfter)
         await center.poll()
-        await eventually("the probe is tried again at the 30-minute cadence") { runner.invocations.count == 3 }
+        await center.settled()
+        XCTAssertEqual(runner.invocations.count, 3, "the probe is tried again at the 30-minute cadence")
         await center.poll()
         XCTAssertEqual(center.statuses[row.id]?.state, .live(.stopped))
         XCTAssertEqual(notifier.posted.count, 1, "announced once")

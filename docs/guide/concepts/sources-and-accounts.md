@@ -22,6 +22,25 @@ A service that needs you gets a banner on top with **Reconnect**, which opens th
 
 Slack is read-only. The assistant sends a Slack message only after you approve it, and Slack may ask you to reconnect once to grant that permission.
 
+## Live Slack through your Claude or ChatGPT account
+<!-- learn
+id: sources-live-slack
+title: Ask about Slack beyond the synced copy
+text: With the Slack connector on in your Claude or ChatGPT account, **Chats** can read what Watchtower has not synced.
+area: assistant
+level: next
+kind: feature
+since: 0.28.3
+-->
+
+If your Claude or ChatGPT account has its Slack connector turned on, the assistant in **Chats** can use it for what Watchtower has not synced: a channel outside your synced scope, a channel you set to **Stop syncing** in [Statistics](../features/statistics.md), a date older than the history, a first sync that is still running. The assistant looks in Watchtower's own data first and says which part of an answer came from Live. Watchtower checks the connector with one real read when you open **Connections → Slack** (unless it checked in the last 10 minutes) and at a chat's first Slack lookup once the last check is a day old; `watchtower slack live probe` runs the check now. Live is not on the iPhone.
+
+**What is not kept.** A Live answer stays in that chat and nowhere else. A conversation that used Live feeds no ideas, memory, coach, target next steps or Knowledge, and **Add to Knowledge** is disabled on its artifacts. A `remember:` line is saved only when it is your own words.
+
+**Automations.** An automation can read through the connector when its recipe asks for **Live Slack** (`slack:live`), but at most once an hour: a tighter schedule is refused, and a run that comes sooner ends cancelled with "Live Slack: at most once an hour". Its Slack writes are still proposals you approve, and its outputs stay in the Inbox but do not appear in the briefing.
+
+**Codex.** A Codex chat reads through the connector only with a ChatGPT login, and read-only. With Live alone and no connected Slack account, it cannot send a Slack message; connect Slack to send.
+
 ## Several accounts of one kind
 <!-- learn
 id: sources-second-account

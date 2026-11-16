@@ -913,8 +913,8 @@ var sessionScenarios = []*Scenario{
 				want["permission_answer"], want["session_interrupt"] = "", ""
 			} else {
 				name := agent.DisplayName()
-				want["permission_answer"] = name + " sessions can't answer this permission from the phone yet. Answer it on the Mac."
-				want["session_interrupt"] = name + " sessions can't be interrupted from the phone yet. Stop it on the Mac."
+				want["permission_answer"] = name + " sessions can't answer this permission from the phone yet. Answer it on your tower."
+				want["session_interrupt"] = name + " sessions can't be interrupted from the phone yet. Stop it on your tower."
 			}
 			for kind, msg := range want {
 				got, refused := handlers.PhoneRefusal(kind, agent)

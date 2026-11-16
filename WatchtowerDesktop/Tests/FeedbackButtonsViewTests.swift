@@ -21,20 +21,14 @@ final class FeedbackButtonsViewTests: XCTestCase {
         return (view, db, path)
     }
 
-    /// Опрашиваем БД до timeout — Task внутри submitFeedback пишет асинхронно.
-    private func waitForFeedback(
-        _ db: DatabaseManager,
-        entityID: String,
-        timeout: TimeInterval = 1.0
-    ) async throws -> Feedback? {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            // В async-контексте Swift выбирает async-overload `read`, которому нужен await.
-            let fb = try await db.dbPool.read { db in
-                try FeedbackQueries.getFeedback(db, entityType: "digest", entityID: entityID)
-            }
-            if fb != nil { return fb }
-            try await Task.sleep(nanoseconds: 20_000_000)  // 20ms
+    /// Waits for the feedback row that the Task inside submitFeedback writes,
+    /// on the database's own change signal (a ValueObservation) — no deadline.
+    private func waitForFeedback(_ db: DatabaseManager, entityID: String) async throws -> Feedback? {
+        let observation = ValueObservation.tracking { db in
+            try FeedbackQueries.getFeedback(db, entityType: "digest", entityID: entityID)
+        }
+        for try await fb in observation.values(in: db.dbPool) where fb != nil {
+            return fb
         }
         return nil
     }

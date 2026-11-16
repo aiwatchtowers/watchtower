@@ -1,0 +1,63 @@
+{
+  "comment": "The Mac's chat attachment checks (Swift AttachmentValidator.validate(data:fileName:), AttachmentKind.fileExtension and AttachmentRejection.message, ChatAttachmentOwner.directoryName) and the Go port in internal/chatstore/attachments.go, which the hub's chat_attachment intake runs. Swift is the reference: ChatAttachmentLimitFixtureTests and TestChatAttachment_LimitsSharedCases run this file. A case's bytes are head_hex followed by fill (one ASCII character) up to size. A message's {limit} is the limit as the Mac's ByteCountFormatter (.file) spells it in the owner's locale; limit_text is the Go port's spelling (the en_US one).",
+  "limit_text": {
+    "5242880": "5.2 MB",
+    "33554432": "33.6 MB",
+    "262144": "262 KB"
+  },
+  "cases": [
+    {"name": "png", "file_name": "shot.PNG", "head_hex": "89504e470d0a1a0a", "fill": "x", "size": 100, "expect": {"ok": true, "mime": "image/png", "ext": "png"}},
+    {"name": "png_at_limit", "file_name": "shot.png", "head_hex": "89504e470d0a1a0a", "fill": "x", "size": 5242880, "expect": {"ok": true, "mime": "image/png", "ext": "png"}},
+    {"name": "png_over_limit", "file_name": "shot.png", "head_hex": "89504e470d0a1a0a", "fill": "x", "size": 5242881, "expect": {"ok": false, "reason": "too_large", "limit": 5242880, "message": "shot.png is larger than {limit}"}},
+    {"name": "png_short_signature", "file_name": "shot.png", "head_hex": "89504e47", "fill": "x", "size": 4, "expect": {"ok": false, "reason": "unsupported_type", "message": "shot.png: only images, PDFs and text files can be attached"}},
+    {"name": "jpeg", "file_name": "photo.jpeg", "head_hex": "ffd8ffe0", "fill": "x", "size": 64, "expect": {"ok": true, "mime": "image/jpeg", "ext": "jpg"}},
+    {"name": "gif87", "file_name": "anim.gif", "head_hex": "474946383761", "fill": "x", "size": 32, "expect": {"ok": true, "mime": "image/gif", "ext": "gif"}},
+    {"name": "gif89", "file_name": "anim", "head_hex": "474946383961", "fill": "x", "size": 32, "expect": {"ok": true, "mime": "image/gif", "ext": "gif"}},
+    {"name": "gif_prefix_only", "file_name": "anim.gif", "head_hex": "47494638", "fill": "x", "size": 32, "expect": {"ok": false, "reason": "unsupported_type", "message": "anim.gif: only images, PDFs and text files can be attached"}},
+    {"name": "webp", "file_name": "pic.webp", "head_hex": "52494646000000005745425056503820", "fill": "x", "size": 64, "expect": {"ok": true, "mime": "image/webp", "ext": "webp"}},
+    {"name": "webp_without_vp", "file_name": "pic.webp", "head_hex": "524946460000000057454250", "fill": "x", "size": 64, "expect": {"ok": false, "reason": "unsupported_type", "message": "pic.webp: only images, PDFs and text files can be attached"}},
+    {"name": "pdf", "file_name": "doc.pdf", "head_hex": "255044462d312e37", "fill": "x", "size": 2048, "expect": {"ok": true, "mime": "application/pdf", "ext": "pdf"}},
+    {"name": "pdf_over_limit", "file_name": "big.pdf", "head_hex": "255044462d", "fill": "x", "size": 33554433, "expect": {"ok": false, "reason": "too_large", "limit": 33554432, "message": "big.pdf is larger than {limit}"}},
+    {"name": "magic_wins_over_name", "file_name": "notes.txt", "head_hex": "89504e470d0a1a0a", "fill": "x", "size": 20, "expect": {"ok": true, "mime": "image/png", "ext": "png"}},
+    {"name": "markdown", "file_name": "notes.md", "head_hex": "", "fill": "a", "size": 12, "expect": {"ok": true, "mime": "text/markdown", "ext": "md"}},
+    {"name": "json_upper_ext", "file_name": "data.JSON", "head_hex": "7b7d", "fill": " ", "size": 4, "expect": {"ok": true, "mime": "application/json", "ext": "json"}},
+    {"name": "yaml", "file_name": "ci.yml", "head_hex": "", "fill": "a", "size": 3, "expect": {"ok": true, "mime": "application/yaml", "ext": "yml"}},
+    {"name": "go_source", "file_name": "main.go", "head_hex": "", "fill": "a", "size": 10, "expect": {"ok": true, "mime": "text/plain", "ext": "go"}},
+    {"name": "shell_upper", "file_name": "Run.SH", "head_hex": "", "fill": "a", "size": 10, "expect": {"ok": true, "mime": "text/plain", "ext": "sh"}},
+    {"name": "html", "file_name": "page.html", "head_hex": "", "fill": "a", "size": 10, "expect": {"ok": true, "mime": "text/html", "ext": "html"}},
+    {"name": "tsv", "file_name": "t.tsv", "head_hex": "", "fill": "a", "size": 10, "expect": {"ok": true, "mime": "text/tab-separated-values", "ext": "tsv"}},
+    {"name": "empty_text", "file_name": "empty.txt", "head_hex": "", "fill": "a", "size": 0, "expect": {"ok": true, "mime": "text/plain", "ext": "txt"}},
+    {"name": "utf8_text", "file_name": "ru.txt", "head_hex": "d0bfd180d0b8d0b2d0b5d182", "fill": "a", "size": 12, "expect": {"ok": true, "mime": "text/plain", "ext": "txt"}},
+    {"name": "text_at_limit", "file_name": "log.txt", "head_hex": "", "fill": "a", "size": 262144, "expect": {"ok": true, "mime": "text/plain", "ext": "txt"}},
+    {"name": "text_over_limit", "file_name": "log.txt", "head_hex": "", "fill": "a", "size": 262145, "expect": {"ok": false, "reason": "too_large", "limit": 262144, "message": "log.txt is larger than {limit}"}},
+    {"name": "text_not_utf8", "file_name": "bad.txt", "head_hex": "61ff62", "fill": "a", "size": 3, "expect": {"ok": false, "reason": "not_utf8", "message": "bad.txt is not a UTF-8 text file"}},
+    {"name": "text_cut_utf8", "file_name": "cut.md", "head_hex": "61d0", "fill": "a", "size": 2, "expect": {"ok": false, "reason": "not_utf8", "message": "cut.md is not a UTF-8 text file"}},
+    {"name": "zip", "file_name": "archive.zip", "head_hex": "504b0304", "fill": "x", "size": 30, "expect": {"ok": false, "reason": "unsupported_type", "message": "archive.zip: only images, PDFs and text files can be attached"}},
+    {"name": "no_extension", "file_name": "README", "head_hex": "", "fill": "a", "size": 10, "expect": {"ok": false, "reason": "unsupported_type", "message": "README: only images, PDFs and text files can be attached"}},
+    {"name": "hidden_name_no_extension", "file_name": ".md", "head_hex": "", "fill": "a", "size": 10, "expect": {"ok": false, "reason": "unsupported_type", "message": ".md: only images, PDFs and text files can be attached"}},
+    {"name": "hidden_name_with_extension", "file_name": ".notes.md", "head_hex": "", "fill": "a", "size": 10, "expect": {"ok": true, "mime": "text/markdown", "ext": "md"}},
+    {"name": "trailing_dot", "file_name": "notes.", "head_hex": "", "fill": "a", "size": 10, "expect": {"ok": false, "reason": "unsupported_type", "message": "notes.: only images, PDFs and text files can be attached"}},
+    {"name": "space_in_extension", "file_name": "notes.m d", "head_hex": "", "fill": "a", "size": 10, "expect": {"ok": false, "reason": "unsupported_type", "message": "notes.m d: only images, PDFs and text files can be attached"}},
+    {"name": "double_extension", "file_name": "a.MD.txt", "head_hex": "", "fill": "a", "size": 10, "expect": {"ok": true, "mime": "text/plain", "ext": "txt"}}
+  ],
+  "path_extensions": [
+    {"name": ".md", "ext": ""},
+    {"name": "a.", "ext": ""},
+    {"name": "a.b.MD", "ext": "MD"},
+    {"name": "x.tar.gz", "ext": "gz"},
+    {"name": "..md", "ext": ""},
+    {"name": "a b.md", "ext": "md"},
+    {"name": "файл.md", "ext": "md"},
+    {"name": "a.b c", "ext": ""},
+    {"name": ".a.md", "ext": "md"},
+    {"name": "...", "ext": ""},
+    {"name": "a..md", "ext": "md"},
+    {"name": "a.md ", "ext": ""},
+    {"name": ".", "ext": ""},
+    {"name": "", "ext": ""}
+  ],
+  "directories": [
+    {"conversation_id": 7, "dir": "conversations/7"},
+    {"conversation_id": 12345678901, "dir": "conversations/12345678901"}
+  ]
+}

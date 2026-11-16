@@ -85,8 +85,12 @@ struct CalendarRowModel: Equatable {
 
 ///     CalendarRow(model: CalendarRowModel(start: event.start, end: event.end, title: event.title,
 ///                                         location: event.location, isNext: isNext, now: context.date))
-struct CalendarRow: View {
+///
+/// `footer` goes inside the plate under the title (the agenda's recording
+/// pills), so it reads as this event's and not the next one's.
+struct CalendarRow<Footer: View>: View {
     let model: CalendarRowModel
+    @ViewBuilder var footer: Footer
 
     var body: some View {
         HStack(alignment: .top, spacing: Spacing.medium) {
@@ -103,6 +107,7 @@ struct CalendarRow: View {
                 if let detail = model.detail {
                     Text(detail).font(TypeScale.meta).foregroundStyle(.secondary).lineLimit(1)
                 }
+                footer
             }
             Spacer(minLength: Spacing.small)
             if let attendees = model.attendeesText {
@@ -117,5 +122,11 @@ struct CalendarRow: View {
         .frame(minHeight: PhoneMetrics.minTouch)
         .background(CalendarRowModel.plate(model.state), in: RoundedRectangle(cornerRadius: Radius.container, style: .continuous))
         .accessibilityElement(children: .combine)
+    }
+}
+
+extension CalendarRow where Footer == EmptyView {
+    init(model: CalendarRowModel) {
+        self.init(model: model) { EmptyView() }
     }
 }

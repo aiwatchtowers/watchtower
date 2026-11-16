@@ -62,6 +62,9 @@ type Fake struct {
 	fail         map[string][]string
 	gates        map[string]*gate
 	accepted     int
+	// retired: the CloudKit zones and database subscriptions RetireZones
+	// deleted, in order (names as asked, never re-cased).
+	retired []string
 }
 
 // gate holds an op's requests until released.
@@ -527,8 +530,35 @@ func (f *Fake) handle(c *fakeConn, req *bridgepb.Request) *bridgepb.Response {
 		f.participants[r.GetZone()] = keep
 		f.mu.Unlock()
 		return done()
+	case req.GetRetireZones() != nil:
+		return f.retireZones(req.GetRetireZones().GetHubId())
 	}
 	return failure("bad_request")
+}
+
+// retireZones is the real bridge's RetireZones: another spelling of the
+// helloed hub_id only (bad_request otherwise, nothing deleted), the two
+// zones and the database subscription named with it exactly as given; a
+// zone already gone is done.
+func (f *Fake) retireZones(hub string) *bridgepb.Response {
+	if !cloudkit.OtherSpelling(hub, f.HubID()) {
+		return failure("bad_request")
+	}
+	data, relay := cloudkit.DataZoneName(hub), cloudkit.RelayZoneName(hub)
+	f.Store().DropZone(data)
+	f.Store().DropZone(relay)
+	f.mu.Lock()
+	f.retired = append(f.retired, data, relay, "watchtower-bridge-db-"+hub)
+	f.mu.Unlock()
+	return done()
+}
+
+// Retired is what RetireZones deleted, in order: each call's data zone,
+// relay zone and database subscription id, spelled as asked.
+func (f *Fake) Retired() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.retired...)
 }
 
 func opName(req *bridgepb.Request) string {
@@ -553,6 +583,8 @@ func opName(req *bridgepb.Request) string {
 		return "remove_participants"
 	case req.GetOwnerUser() != nil:
 		return "owner_user"
+	case req.GetRetireZones() != nil:
+		return "retire_zones"
 	}
 	return ""
 }

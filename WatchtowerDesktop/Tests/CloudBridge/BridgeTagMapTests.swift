@@ -59,4 +59,20 @@ final class BridgeTagMapTests: XCTestCase {
         }
         XCTAssertThrowsError(try map.token(zone: "RelayZone-hub-acme", cursor: 999))
     }
+
+    /// A retired zone's tags and cursors go; the zone of the same name in another case keeps its own (#1750).
+    func testForgettingAZoneMatchesItsNameExactly() throws {
+        let map = try BridgeTagMap(directory: dir)
+        let upper = "DataZone-HUB-ACME", lower = "DataZone-hub-acme"
+        for zone in [upper, lower] {
+            _ = try map.record(zone: zone, name: "k1", changeTag: "tag-1", systemFields: Data([1]))
+        }
+        let kept = try map.cursor(zone: lower, token: Data([7]))
+        let gone = try map.cursor(zone: upper, token: Data([8]))
+        try map.forget(zone: upper)
+        XCTAssertNil(try map.entry(zone: upper, name: "k1"))
+        XCTAssertThrowsError(try map.token(zone: upper, cursor: gone))
+        XCTAssertNotNil(try map.entry(zone: lower, name: "k1"))
+        XCTAssertEqual(try map.token(zone: lower, cursor: kept), Data([7]))
+    }
 }

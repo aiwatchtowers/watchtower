@@ -44,6 +44,7 @@ message Request {
     Participants participants = 10;
     RemoveParticipants remove_participants = 11;
     OwnerUser owner_user = 12;
+    RetireZones retire_zones = 13;
   }
 }
 
@@ -129,6 +130,21 @@ message Participants {
 // OwnerUser answers OwnerUserInfo: the Mac's iCloud user record name
 // (CKContainer.userRecordID().recordName).
 message OwnerUser {}
+
+// RetireZones deletes the CloudKit zones DataZone-<hub_id> and
+// RelayZone-<hub_id> and the bridge's database subscription
+// watchtower-bridge-db-<hub_id> that another spelling of the helloed hub_id
+// names: hub_id must equal the helloed one ignoring ASCII case and differ
+// from it byte for byte (an adopted hub's uppercase spelling, which builds
+// up to v0.28.0 named its zones with, #1750); anything else is refused
+// (bad_request) before CloudKit is called, so the helloed hub's own zones
+// can never be deleted. Zone names are used exactly as given, never
+// re-cased. A zone or the subscription already gone counts as deleted. The
+// bridge also forgets its tags and cursors of the two zones. It answers
+// Done.
+message RetireZones {
+  string hub_id = 1;
+}
 
 // RemoveParticipants answers Done.
 message RemoveParticipants {

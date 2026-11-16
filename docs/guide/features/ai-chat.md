@@ -60,7 +60,7 @@ action: chat:How do I make an automation that runs every Monday?
 
 **Providers.** Choose **Preferred + reserve · Auto** or **Only** a provider. See [limits, pins and recovery](../concepts/ai-providers-and-cost.md#a-reserve-provider-for-quota-limits).
 
-**Warm sessions.** Up to three conversations keep a live assistant for ten idle minutes, so replies start fast; a fourth waits, and no running reply is cut off.
+**Warm sessions.** Up to three conversations keep a live assistant for ten idle minutes, so replies start fast; a fourth waits, no running reply cut off.
 
 **Memory.** When the Memory feature's **Chat surface** switch is on, the assistant starts each chat with a short map of what it remembers and can look things up. See [Memory](memory.md).
 
@@ -115,7 +115,7 @@ since: 0.27.0
 action: nav:chat
 -->
 
-1. Open **Chats**. A start page offers a composer, starter prompts, and your pinned and recent chats; the list on the left is [the Chats panel](#the-chats-panel). If you left a chat less than two hours ago, the tab reopens it instead. A chat with a reply running, or an unsent draft or file, always reopens.
+1. Open **Chats**. A start page offers a composer, starter prompts, and your pinned and recent chats beside [the Chats panel](#the-chats-panel). If you left a chat less than two hours ago, the tab reopens it instead. A chat with a reply running, or an unsent draft or file, always reopens.
 2. Type and press Enter (Shift+Enter adds a line). **Stop** (Esc) keeps what was written and offers **Continue**. **Edit** your message or **Regenerate** a reply on hover; every version is kept.
 3. Type `@` to point at a person, Slack channel, Jira issue, target or track. Type `/` at the start to load one of your enabled skills.
 4. Attach files with the paperclip, drag and drop, or ⌘V: images (PNG, JPEG, GIF, WebP) up to 5 MB, PDFs up to 32 MB, text-like files up to 256 KB, 30 MB per message. Anything else is refused with the reason. Files are stored privately and deleted with their chat.
@@ -185,9 +185,9 @@ since: 0.25.0
 action: nav:chat
 -->
 
-Select a passage of a finished answer right in the chat, then click **Ask about this** next to it. The passage joins the quotes above the message box and the cursor moves there, so you type your follow-up. Quotes go out together with your next message, each with an optional comment.
+Select a passage of a finished answer and click **Ask about this** next to it. The passage joins the quotes above the message box, with the cursor there for your follow-up. Quotes go out together with your next message, each with an optional comment.
 
-A selection can run across the paragraphs, headings and lists of an answer, up to the next code block or table. A table is selected whole, with tabs between cells, and ⌘C copies it as plain text. Your own messages can be copied, not quoted.
+A selection can run across the paragraphs, headings and lists of an answer, up to the next code block or table. A table is selected whole, with tabs between cells, and ⌘C copies it as plain text. A wide table wraps its cells to fit the chat. Your own messages can be copied, not quoted.
 
 ### Question cards
 

@@ -25,6 +25,9 @@ let package = Package(
         // WatchtowerDesign; WatchtowerCore stays Kit-free (pinned by
         // PublicAPISurfaceTests).
         .package(path: "../WatchtowerKit"),
+        // The chat text helpers shared with the phone (artifact parser, Markdown
+        // document and run builder, quote reply). Neither the Kit nor Core.
+        .package(path: "../WatchtowerChatText"),
         // Pinned to 0.18.x: WhisperKitEngine uses 0.18.0-specific API surface
         // (including the misspelled `detectLangauge(audioArray:)`).
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", .upToNextMinor(from: "0.18.0")),
@@ -49,6 +52,7 @@ let package = Package(
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "Yams", package: "Yams"),
                 .product(name: "Markdown", package: "swift-markdown"),
+                .product(name: "WatchtowerChatText", package: "WatchtowerChatText"),
             ],
             path: "Sources/WatchtowerCore"
         ),

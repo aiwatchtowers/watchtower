@@ -7,7 +7,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,14 +31,14 @@ func TestLaunchSpecReview_Detached(t *testing.T) {
 	require.NoError(t, LaunchSpecReview(script, 7, filepath.Join(dir, "logs")))
 
 	var pid int
-	require.Eventually(t, func() bool {
+	waitFor(t, "the detached child's pid", func() bool {
 		b, err := os.ReadFile(pidFile)
 		if err != nil || !strings.HasSuffix(string(b), "\n") {
 			return false
 		}
 		pid, err = strconv.Atoi(strings.TrimSpace(string(b)))
 		return err == nil
-	}, 5*time.Second, 20*time.Millisecond)
+	})
 	// Setsid makes the child a session and group leader: -pid reaps its group.
 	t.Cleanup(func() {
 		_ = syscall.Kill(-pid, syscall.SIGKILL)

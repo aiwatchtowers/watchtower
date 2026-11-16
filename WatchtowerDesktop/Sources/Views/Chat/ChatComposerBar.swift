@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// A line above a composer about the turn it sends.
 enum ChatComposerStatus: Equatable {
@@ -9,6 +10,9 @@ enum ChatComposerStatus: Equatable {
     /// The reply is in and its changes are being written; it cannot be
     /// stopped any more.
     case finishing
+    /// A turn of this chat runs on another device (the phone, spec
+    /// 2026-11-15 §5, mockup 4a): the field shows Stop, Send waits.
+    case elsewhere(String)
 }
 
 /// The composer every chat shares: an optional status line, the input field
@@ -32,7 +36,7 @@ struct ChatComposerBar<Accessory: View>: View {
     private var statusLine: some View {
         switch status {
         case .queued:
-            HStack(spacing: 6) {
+            HStack(spacing: Spacing.compact) {
                 ProgressView().controlSize(.mini)
                 Text("Queued — waiting for a free assistant slot")
                     .font(.caption)
@@ -42,23 +46,32 @@ struct ChatComposerBar<Accessory: View>: View {
                     .buttonStyle(.borderless)
                     .font(.caption)
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, Spacing.large)
         case .finishing:
-            HStack(spacing: 6) {
+            HStack(spacing: Spacing.compact) {
                 ProgressView().controlSize(.mini)
                 Text("Applying the reply’s changes…")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, Spacing.large)
+        case .elsewhere(let line):
+            HStack(spacing: Spacing.compact) {
+                ProgressView().controlSize(.mini)
+                Text(line)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, Spacing.large)
         case .error(let message):
             Label(message, systemImage: "exclamationmark.triangle.fill")
                 .font(.caption)
                 .foregroundStyle(.red)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 16)
-                .padding(.top, 4)
+                .padding(.horizontal, Spacing.large)
+                .padding(.top, Spacing.small)
         case nil:
             EmptyView()
         }

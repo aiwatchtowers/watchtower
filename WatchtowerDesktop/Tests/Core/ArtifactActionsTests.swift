@@ -1,5 +1,6 @@
 import XCTest
 @testable import WatchtowerCore
+import WatchtowerChatText
 
 final class ArtifactActionsTests: XCTestCase {
     private func query(_ url: URL?) -> [String: String] {

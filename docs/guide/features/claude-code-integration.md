@@ -28,7 +28,7 @@ The three skills tell the agent when to use which tool:
 | `watchtower-who-to-ask` | are blocked or don't know who owns something |
 | `watchtower-why-decision` | ask why code is the way it is |
 
-Skills are plain files in your skills folder, marked as Watchtower's. Running the install again upgrades them. If you edited one, your copy is left alone and `integrate status` reports it as drifted.
+Skills are plain files in your skills folder, marked as Watchtower's. Running the install again upgrades them. If you edited one, your copy is left alone and `integrate status` reports it as drifted. Lines you accepted from a [tuning chat](tuning-chat.md) proposal sit under **Owner additions (approved by the owner)** and come back with every upgrade; they do not count as an edit.
 
 ## Using it
 

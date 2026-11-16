@@ -59,6 +59,14 @@ type Config struct {
 	RunnerGap time.Duration
 	Now       func() time.Time
 	Location  *time.Location
+
+	// ChatWatches (nil = a new registry, returned in Set.ChatWatches) is
+	// what the chat handlers write and the chat sources publish; ChatLive
+	// (nil = none) is the hub runner's live turn text; ChatModels (nil =
+	// RegistryChatModels) is the composer's model list.
+	ChatWatches *ChatWatches
+	ChatLive    LiveText
+	ChatModels  func() []ChatModel
 }
 
 // Set is the hub's sources and what the runtime must start and tell.
@@ -83,6 +91,9 @@ type Set struct {
 	// Staged is the meeting_transcript source's staged-asset reset (nil
 	// unless the mode publishes transcripts).
 	Staged StagedAssets
+	// ChatWatches is the AI chat's request registry the handlers write
+	// (nil unless the mode publishes the chat).
+	ChatWatches *ChatWatches
 }
 
 // StagedAssets forgets what a source staged after the runtime removed its
@@ -99,8 +110,9 @@ var WorkbenchOnlyKinds = []slices.Kind{
 
 // ChangeTables maps each watchtower.db table a database-backed source reads
 // to the kinds it feeds (the hub's data_version watch, spec §9). The
-// runner-fed kinds (session_chat, session_report) and the sidecar-backed
-// recording_job are not here: their own loops and nudges publish them.
+// runner-fed kinds (session_chat, session_report), the sidecar-backed
+// recording_job and the request-fed chat_page and chat_search (built once
+// per request) are not here: their own loops and nudges publish them.
 var ChangeTables = map[string][]slices.Kind{
 	"projects":                 {"workbench"},
 	"automations":              {"workbench"},
@@ -118,14 +130,23 @@ var ChangeTables = map[string][]slices.Kind{
 	"meeting_prep_cache":       {"calendar_event"},
 	"meeting_transcripts":      {"calendar_event", "meeting_transcript"},
 	"meeting_recaps":           {"meeting_transcript"},
+	"chat_conversations":       {slices.KindChatList, slices.KindChatFeed},
+	"chat_messages":            {slices.KindChatList, slices.KindChatFeed},
+	"chat_turn_steps":          {slices.KindChatFeed},
+	"chat_attachments":         {slices.KindChatFeed},
+	"chat_artifacts":           {slices.KindChatFeed},
+	"chat_turn_leases":         {slices.KindChatList, slices.KindChatFeed},
+	"chat_projects":            {slices.KindChatList, slices.KindChatFeed},
+	"agent_actions":            {slices.KindChatList, slices.KindChatFeed},
 }
 
 // All assembles the sources of a MobileSync scope (MDM POLICY-03, spec §9):
 //   - workbench_only: the workbench family (workbench, workbench_target,
 //     workbench_comment), terminal sessions, the timeline, asks, permission
 //     requests, alerts, the session chat and the report;
-//   - allowed: those plus calendar events, meeting transcripts and recording
-//     jobs;
+//   - allowed: those plus calendar events, meeting transcripts, recording
+//     jobs and the AI chat (chat_list, chat_feed, chat_page, chat_search:
+//     company data, so never under workbench_only);
 //   - any other mode (off, unknown): nothing; unknown modes fail closed on
 //     purpose, so a mistyped policy never widens what the phone sees.
 //
@@ -207,6 +228,15 @@ func All(c Config) (*Set, error) {
 		if st, ok := transcripts.(StagedAssets); ok {
 			set.Staged = st
 		}
+		watches := c.ChatWatches
+		if watches == nil {
+			watches = NewChatWatches()
+		}
+		feed := ChatFeedOptions{Watches: watches, Grant: c.Store.AnyChatPhone, Live: c.ChatLive, Now: now}
+		set.ChatWatches = watches
+		set.Sources = append(set.Sources,
+			ChatList(c.DB, ChatListOptions{Grant: c.Store.AnyChatPhone, Models: c.ChatModels, Now: now}),
+			ChatFeed(c.DB, feed), ChatPage(c.DB, feed), ChatSearch(c.DB, feed))
 	}
 	return set, nil
 }

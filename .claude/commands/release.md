@@ -142,7 +142,10 @@ make testflight VERSION=<version>
 ```
 
 It first runs `cloudkit-check` (CloudKit Production must carry every record
-type and field Development has — a TestFlight phone talks to Production), then
+type and field Development has — a TestFlight phone talks to Production — and
+the owner must have recorded the query subscription types as deployed, which
+cktool cannot read: `make cloudkit-subscriptions-deployed` after deploying
+them, #1749), then
 archives a Release build, stamps `MARKETING_VERSION=<version>` and a fresh
 build number (Unix time), and uploads it to App Store Connect.
 
@@ -153,6 +156,10 @@ the repo — never commit them):
 - `~/.appstoreconnect/private_keys/AuthKey_<KEY_ID>.p8` and
   `~/.appstoreconnect/watchtower.mk` with `ASC_KEY_ID` / `ASC_ISSUER_ID`
 - a CloudKit management token (`xcrun cktool save-token --type management`)
+- the subscription-types stamp
+  `~/.config/watchtower/cloudkit-subscription-types.<container>`, written by
+  `make cloudkit-subscriptions-deployed` once the owner has deployed the
+  listed query subscription types (the check prints the steps)
 - the staging relay's origin in `~/.config/watchtower/relay-testflight-origin`
   (one `https://host[:port]` line; `RELAY_TESTFLIGHT_ORIGIN_FILE=<path>`
   points elsewhere). Every TestFlight build talks to the staging relay
@@ -164,7 +171,9 @@ relay origin, so never promote it to App Store review: a submission for review
 gets its own, dark `make mobile-archive` build.
 
 If a prerequisite is missing, or `cloudkit-check` reports a schema gap
-(deploy it to Production by hand in the CloudKit Console), stop this step and
+(deploy it to Production by hand in the CloudKit Console) or a missing
+subscription-types stamp (only the user can confirm the deploy; never write
+the stamp yourself), stop this step and
 tell the user exactly what is missing — the Mac release is already published
 and stays as is. Never pass `SKIP_CLOUDKIT_CHECK=1` without the user's go-ahead.
 

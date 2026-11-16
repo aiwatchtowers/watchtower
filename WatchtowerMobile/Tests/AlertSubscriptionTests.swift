@@ -59,12 +59,51 @@ final class AlertSubscriptionTests: XCTestCase {
     private final class FlakySaver: SubscriptionSaving, @unchecked Sendable {
         private let lock = NSLock()
         private var count = 0
+        private let error: CKError
+        private let deleteError: CKError?
         var attempts: Int { lock.withLock { count } }
+        init(error: CKError = CKError(.networkUnavailable), deleteError: CKError? = nil) {
+            self.error = error
+            self.deleteError = deleteError
+        }
         func save(_ subscription: CKSubscription) async throws {
             let n = lock.withLock { count += 1; return count }
-            if n == 1 { throw CKError(.networkUnavailable) }
+            if n == 1 { throw error }
         }
-        func delete(id: CKSubscription.ID) async throws {}
+        func delete(id: CKSubscription.ID) async throws {
+            if let deleteError { throw deleteError }
+        }
+    }
+
+    /// #1749: Production refused the save with invalidArguments on every foreground (170 tries in two hours).
+    private static let productionRefusal = CKError(.invalidArguments, userInfo: [
+        "ServerErrorDescription": "attempting to create a subscription in a production container"
+    ])
+
+    func testAPermanentRefusalIsNotResentByTheNextCall() async {
+        let refusing = FlakySaver(error: Self.productionRefusal)
+        let registrar = AlertSubscriptionRegistrar(hubID: hubID, route: .cloudKit(.private), wake: CloudKitPushWake(saver: refusing))
+        await registrar.apply(enabled: true)
+        await registrar.apply(enabled: true)
+        XCTAssertEqual(refusing.attempts, 1, "a foreground return does not resend a refused save")
+    }
+
+    func testAToggleRetriesAfterAPermanentRefusal() async {
+        let refusing = FlakySaver(error: Self.productionRefusal)
+        let registrar = AlertSubscriptionRegistrar(hubID: hubID, route: .cloudKit(.private), wake: CloudKitPushWake(saver: refusing))
+        await registrar.apply(enabled: true)
+        await registrar.apply(enabled: false)
+        await registrar.apply(enabled: true)
+        XCTAssertEqual(refusing.attempts, 2, "switching off and on again tries once more")
+    }
+
+    func testAToggleRetriesAfterAPermanentRefusalEvenWhenTheDeleteFailed() async {
+        let refusing = FlakySaver(error: Self.productionRefusal, deleteError: CKError(.networkUnavailable))
+        let registrar = AlertSubscriptionRegistrar(hubID: hubID, route: .cloudKit(.private), wake: CloudKitPushWake(saver: refusing))
+        await registrar.apply(enabled: true)
+        await registrar.apply(enabled: false)
+        await registrar.apply(enabled: true)
+        XCTAssertEqual(refusing.attempts, 2, "a failed delete in between does not keep the old refusal")
     }
 
     func testOldNewAsksValueCarriesOver() throws {
@@ -201,7 +240,7 @@ final class AlertSubscriptionTests: XCTestCase {
             keys: try TestHub.keys(TestHub.home),
             defaults: try makeDefaults(),
             recordingsDirectory: try makeRecordingsDirectory(),
-            sleep: { _ in try await Task.sleep(for: .seconds(86_400)) } // swiftlint:disable:this trailing_closure
+            sleep: { _ in try await sleepUntilCancelled() } // swiftlint:disable:this trailing_closure
         )
         addTeardownBlock { @MainActor in session.stop() }
         bed.root.env.add(session)
@@ -293,30 +332,21 @@ final class AlertSubscriptionTests: XCTestCase {
         let device = try XCTUnwrap(session.linkedDevice)
         let record = try XCTUnwrap(bed.root.linkedHubs().first { $0.hubID == bed.hubID }?.link)
         session.deviceSettings.workAlerts = false
-        var sendStarted = false
-        var released = false
+        let started = AsyncStream.makeStream(of: Void.self)
+        let release = AsyncStream.makeStream(of: Void.self)
         bed.root.sendLinkedQueue = { _ in
-            sendStarted = true
-            while !released {
-                try? await Task.sleep(for: .milliseconds(5))
-            }
+            started.continuation.yield()
+            // Blocked until the test lets it go, after `linked` returned (a `linked` that waited on it hangs here).
+            for await _ in release.stream { break }
         }
+        addTeardownBlock { release.continuation.finish() }
 
-        var returned = false
-        let link = Task {
-            try await bed.root.linked(record, device: device)
-            returned = true
-        }
-        for _ in 0..<600 where !returned || !sendStarted {
-            try await Task.sleep(for: .milliseconds(5))
-        }
-        XCTAssertTrue(sendStarted, "the send still runs")
-        XCTAssertTrue(returned, "linked waited on the blocked send")
+        try await bed.root.linked(record, device: device)
         let written = try await deviceRecords(bed)
         XCTAssertEqual(written.last?.workAlertsOff, true, "saved before it returned")
+        for await _ in started.stream { break } // the send still runs
 
-        released = true
-        try await link.value
+        release.continuation.yield()
     }
 
     func testALinkWithTheSwitchOnWritesNoRecord() async throws {

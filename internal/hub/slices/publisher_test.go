@@ -615,7 +615,8 @@ func TestFailedSourceIsRetried(t *testing.T) {
 	}
 }
 
-// A failed save leaves its kind and every kind after it unfinished.
+// An unavailable transport leaves the failing kind and every kind after it
+// unfinished (a refused record leaves only its kind: partial_cycle_test.go).
 func TestCycleReportsUnfinishedKinds(t *testing.T) {
 	r := newRig(t, transport.KindRelay)
 	ask, target := &fakeSource{kind: "owner_ask"}, &fakeSource{kind: "target"}

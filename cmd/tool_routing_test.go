@@ -14,6 +14,7 @@ import (
 	"watchtower/internal/providerhealth"
 	"watchtower/internal/providerrouting"
 	"watchtower/internal/providers"
+	"watchtower/internal/tools"
 )
 
 type toolRouteTestLeaf struct {
@@ -173,4 +174,19 @@ func TestRouting_CheckCapabilityReadsCaps(t *testing.T) {
 	got, err := p.request("").CheckCapability("codex", providers.ToolPreflight)
 	require.NoError(t, err)
 	assert.False(t, got)
+}
+
+// A surface that mounts no Quick Connection never checks them on the reserve
+// (no database is opened: the path is a folder), while the main chat does.
+func TestQueryReserveCapable_SurfacesWithoutQuickConnections(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.AI.Provider = "claude"
+	missing := t.TempDir() // a folder: opening it as a database fails
+	for _, surface := range []string{tools.SurfaceTuning, tools.AutomationEditorSurface} {
+		ok, err := queryReserveCapable(cfg, missing, "chat", surface)("codex")
+		require.NoError(t, err, surface)
+		assert.True(t, ok, surface)
+	}
+	_, err := queryReserveCapable(cfg, missing, "chat", "main")("codex")
+	require.Error(t, err, "the main chat reads its Quick Connections")
 }

@@ -90,6 +90,40 @@ func eventually(t *testing.T, what string, cond func() bool) {
 	}
 }
 
+// pairStep sends r (pair or confirm) on c and reads until r's answer and
+// each of events came, in whatever order, returning the events by kind. The
+// hub writes the answer from serveConn and the pairing events from the
+// stream's own goroutine, so the answer may come before, between or after
+// the events. Reading only up to an event can leave the answer unwritten on
+// the pipe once the test stops reading: queued on the connection's write
+// lock it is not durably blocked, so synctest.Wait never returns; on the
+// pipe it times out when the bubble's clock passes the write deadline, and
+// the hub drops the client (#1751).
+func pairStep(t *testing.T, c *ControlClient, r ControlRequest, events ...string) map[string]ControlAnswer {
+	t.Helper()
+	if err := c.Send(r); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]ControlAnswer{}
+	answered := false
+	for !answered || len(got) < len(events) {
+		a, err := c.Next()
+		if err != nil {
+			t.Fatalf("%s: waiting for its answer and %v: %v", r.Op, events, err)
+		}
+		if a.Error != "" {
+			t.Fatalf("%s: %+v", r.Op, a)
+		}
+		switch {
+		case a.Event == "" && a.Op == r.Op:
+			answered = true
+		case slices.Contains(events, a.Event):
+			got[a.Event] = a
+		}
+	}
+	return got
+}
+
 // bubble runs f in a synctest bubble: every timer, ticker and sleep in it
 // is on the bubble's clock, which moves only once every goroutine in it
 // waits, so no wait depends on the machine's load.
@@ -1046,9 +1080,6 @@ func runEndToEnd(t *testing.T, name string, configure func(*Options)) endToEnd {
 // pair zone.
 func pairOverMemfake(t *testing.T, r *rig, c *ControlClient, relayDeviceID string) (wire.LinkPayload, ControlAnswer, ControlAnswer, *hubtest.Phone) {
 	t.Helper()
-	if err := c.Send(ControlRequest{Op: OpPair}); err != nil {
-		t.Fatal(err)
-	}
 	next := func(event string) ControlAnswer {
 		t.Helper()
 		for {
@@ -1064,7 +1095,7 @@ func pairOverMemfake(t *testing.T, r *rig, c *ControlClient, relayDeviceID strin
 			}
 		}
 	}
-	qr := next(link.EventQR)
+	qr := pairStep(t, c, ControlRequest{Op: OpPair}, link.EventQR, link.EventWaiting)[link.EventQR]
 	lp, err := wire.ParseLinkURL(qr.URL)
 	if err != nil {
 		t.Fatal(err)
@@ -1101,10 +1132,8 @@ func pairOverMemfake(t *testing.T, r *rig, c *ControlClient, relayDeviceID strin
 	if code != sas.Code {
 		t.Fatal("the phone's code differs from the hub's")
 	}
-	if err := c.Send(ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true}); err != nil {
-		t.Fatal(err)
-	}
-	if linked := next(link.EventLinked); linked.DeviceID != phone.ID().String() {
+	confirm := ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true}
+	if linked := pairStep(t, c, confirm, link.EventLinked)[link.EventLinked]; linked.DeviceID != phone.ID().String() {
 		t.Fatalf("linked: %+v", linked)
 	}
 	eventually(t, "the keys in the pair zone", func() bool {

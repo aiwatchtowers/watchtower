@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 
 /// The owner message "Send N comments" composes — the only way the assistant
 /// ever learns about artifact comments. Pure: the chat sends the text as an

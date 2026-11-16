@@ -1,6 +1,7 @@
 import XCTest
 import AppKit
 import GRDB
+import Observation
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerTestSupport
@@ -9,6 +10,7 @@ import WatchtowerTestSupport
 /// DB held at the moment the line was typed — by the stand-in session host
 /// (`FakeHostDelivery`), the only way a line reaches it.
 @MainActor
+@Observable
 private final class ProbedInputSession: TerminalSessionProcess {
     let view = NSView()
     let pid: pid_t = 0
@@ -102,7 +104,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults, terminalCenter: center)
         vm.asks.hasHookState = { _ in true }
         vm.asks.refreshStates = { true }
-        vm.asks.holdSleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
+        vm.asks.holdSleep = { _ in try? await parkUntilTaskCancelled() }
         return vm
     }
 
@@ -693,11 +695,8 @@ final class OwnerAsksViewModelTests: XCTestCase {
         let otherID = try await fileAnotherAsk(project: p, sessionID: s.id)
         center.start(s, fresh: true)
         let vm = makeVM()
-        var waits = 0
-        vm.asks.holdSleep = { _ in
-            waits += 1
-            try? await Task.sleep(for: .seconds(3600))
-        }
+        let holds = HandOpenedSleeps()
+        vm.asks.holdSleep = { _ in await holds.sleep() }
         await vm.asks.load(projectID: p)
         let asks = try XCTUnwrap(vm.asks.openAsks[p])
         pick(vm, askID)
@@ -719,7 +718,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         await waitUntil { vm.asks.answerNotices[otherID] == .delivered(.held) }
         XCTAssertEqual(vm.asks.answerNotices[otherID]?.text, OwnerAsksViewModel.answerHeldNote)
         XCTAssertEqual(center.answerHints[s.id], .held)
-        await waitUntil { waits == 1 }
+        await holds.untilCalled(1)
         XCTAssertEqual(typed.count, 1, "only the first line, no Return")
     }
 
@@ -797,15 +796,15 @@ final class OwnerAsksViewModelTests: XCTestCase {
         let (p, s, askID) = try await seed()
         center.start(s, fresh: true)
         let vm = makeVM()
-        var wakes: [CheckedContinuation<Void, Never>] = []
-        vm.asks.holdSleep = { _ in await withCheckedContinuation { wakes.append($0) } }
+        let holds = HandOpenedSleeps()
+        vm.asks.holdSleep = { _ in await holds.sleep() }
         var approval = true
         vm.asks.needsApproval = { _ in approval }
         let ask = try await openAsk(vm, project: p, id: askID)
         pick(vm, askID)
         let delivery = await vm.asks.answer(ask)
         XCTAssertEqual(delivery, .held)
-        await waitUntil { wakes.count == 1 }
+        await holds.untilCalled(1)
 
         approval = false
         vm.asks.refreshStates = {
@@ -814,14 +813,16 @@ final class OwnerAsksViewModelTests: XCTestCase {
         }
         await vm.asks.deliverHeldAnswers()
         XCTAssertTrue(typed.isEmpty, "held again")
-        await waitUntil { wakes.count == 2 }
-        guard wakes.count == 2 else { return }
-        wakes[0].resume()
-        for _ in 0..<50 { await Task.yield() }
+        await holds.untilCalled(2)
+        let watches = vm.asks.holdWatches.sorted { $0.key < $1.key }.map(\.value)
+        guard watches.count == 2 else { return XCTFail("two hold watches, got \(watches.count)") }
+        holds.open()
+        await watches[0].value
 
         XCTAssertEqual(center.answerHints[s.id], .held)
-        wakes[1].resume()
-        await waitUntil { self.center.answerHints[s.id] == .stillHeld }
+        holds.open()
+        await watches[1].value
+        XCTAssertEqual(center.answerHints[s.id], .stillHeld)
     }
 
     /// A hold that ended before the wait is over never turns into "still
@@ -830,15 +831,15 @@ final class OwnerAsksViewModelTests: XCTestCase {
         let (p, s, askID) = try await seed()
         center.start(s, fresh: true)
         let vm = makeVM()
-        var wakes: [CheckedContinuation<Void, Never>] = []
-        vm.asks.holdSleep = { _ in await withCheckedContinuation { wakes.append($0) } }
+        let holds = HandOpenedSleeps()
+        vm.asks.holdSleep = { _ in await holds.sleep() }
         var approval = true
         vm.asks.needsApproval = { _ in approval }
         let ask = try await openAsk(vm, project: p, id: askID)
         pick(vm, askID)
         let delivery = await vm.asks.answer(ask)
         XCTAssertEqual(delivery, .held)
-        await waitUntil { wakes.count == 1 }
+        await holds.untilCalled(1)
 
         approval = false
         await vm.asks.deliverHeldAnswers()
@@ -849,14 +850,16 @@ final class OwnerAsksViewModelTests: XCTestCase {
         pick(vm, other)
         let held = await vm.asks.answer(try XCTUnwrap(vm.asks.openAsks[p]?.first { $0.id == other }))
         XCTAssertEqual(held, .held)
-        await waitUntil { wakes.count == 2 }
-        guard wakes.count == 2 else { return }
-        wakes[0].resume()
-        for _ in 0..<50 { await Task.yield() }
+        await holds.untilCalled(2)
+        let watches = vm.asks.holdWatches.sorted { $0.key < $1.key }.map(\.value)
+        guard watches.count == 2 else { return XCTFail("two hold watches, got \(watches.count)") }
+        holds.open()
+        await watches[0].value
 
         XCTAssertEqual(center.answerHints[s.id], .held, "the first hold's wait does not mark the second")
-        wakes[1].resume()
-        await waitUntil { self.center.answerHints[s.id] == .stillHeld }
+        holds.open()
+        await watches[1].value
+        XCTAssertEqual(center.answerHints[s.id], .stillHeld)
     }
 
     func testCopiedShowsTheCopiedAnswerHint() async throws {
@@ -1303,7 +1306,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         )
         let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults,
                                       terminalCenter: center, agentStates: states)
-        vm.asks.holdSleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
+        vm.asks.holdSleep = { _ in try? await parkUntilTaskCancelled() }
         await states.poll()
         let ask = try await openAsk(vm, project: p, id: askID)
         if askKind == "check" {
@@ -1449,7 +1452,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         vm.selectedWorkbenchID = p
         let notifications = NotificationCenter()
         vm.asks.notificationCenter = notifications
-        vm.asks.pollSleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
+        vm.asks.pollSleep = { _ in try? await parkUntilTaskCancelled() }
         vm.asks.start()
         defer { vm.asks.stop() }
 
@@ -1541,7 +1544,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         }
         if route {
             vm.reveal(.forAsk(projectID: p, sessionID: s.id, askID: askID))
-            for _ in 0 ..< 200 where vm.asks.drawerAskIDs[p] == nil { await Task.yield(); try? await Task.sleep(for: .milliseconds(10)) }
+            await untilObserved { vm.asks.drawerAskIDs[p] != nil }
         } else {
             await vm.showAsk(askID, projectID: p)
         }
@@ -1995,14 +1998,9 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertNil(vm.asks.drawerAskIDs[p])
     }
 
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("condition not met in \(timeout)s")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
+    /// Waits until `condition` holds, re-checking on every change of the
+    /// observable state it reads — no deadline.
+    private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
+        await untilObserved(condition)
     }
 }

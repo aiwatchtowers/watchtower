@@ -111,21 +111,23 @@ final class HomeFeedActionTests: XCTestCase {
                           performer: performer)
     }
 
-    private func waitUntil(
-        _ center: HomeCenter, timeout: TimeInterval = 5, _ condition: @escaping (HomeSnapshot?) -> Bool
-    ) async {
-        let met = expectation(description: "snapshot condition")
-        func check() {
-            if condition(center.snapshot) {
-                met.fulfill()
-                return
-            }
-            withObservationTracking { _ = center.snapshot } onChange: {
-                Task { @MainActor in check() }
-            }
+    /// Waits until `condition` holds for the center's snapshot, re-checking
+    /// on every change of it — no deadline.
+    private func waitUntil(_ center: HomeCenter, _ condition: @escaping (HomeSnapshot?) -> Bool) async {
+        await untilObserved { condition(center.snapshot) }
+    }
+
+    /// The runner's calls as they start (through its `onRun`); each call
+    /// then waits on `hold` when one is given, until it finishes.
+    private func startedCalls(
+        _ runner: FakeCLIRunner, hold: AsyncStream<Void>? = nil
+    ) -> AsyncStream<[String]>.Iterator {
+        let (calls, sink) = AsyncStream<[String]>.makeStream()
+        runner.onRun = { args in
+            sink.yield(args)
+            if let hold { for await _ in hold { return } }
         }
-        check()
-        await fulfillment(of: [met], timeout: timeout)
+        return calls.makeAsyncIterator()
     }
 
     private func shows(_ ref: FeedRef) -> (HomeSnapshot?) -> Bool {
@@ -589,14 +591,13 @@ final class HomeFeedActionTests: XCTestCase {
         let pool = try makePool()
         let id = try insertReminder(pool)
         let runner = FakeCLIRunner()
+        var calls = startedCalls(runner)
         let performer = LiveHomeFeedPerformer(runner: runner, pool: pool)
         try await performer.perform(.hide, on: .reminder(id), contentHash: "", now: Date(), calendar: .current)
         try await performer.perform(.done, on: .reminder(id), contentHash: "", now: Date(), calendar: .current)
         let expected = ReminderApprovalHook.arguments(id)
-        let deadline = ContinuousClock.now + .seconds(3)
-        while runner.invocations.count < 2, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        _ = await calls.next()
+        _ = await calls.next()
         XCTAssertEqual(runner.invocations, [expected, expected])
     }
 
@@ -608,28 +609,19 @@ final class HomeFeedActionTests: XCTestCase {
         let id = try insertReminder(pool)
         let runner = FakeCLIRunner()
         let (gate, open) = AsyncStream<Void>.makeStream()
-        runner.onRun = { _ in for await _ in gate { return } }
+        var calls = startedCalls(runner, hold: gate)
         defer { open.finish() }
         let performer = LiveHomeFeedPerformer(runner: runner, pool: pool)
-        let returned = OSAllocatedUnfairLock(initialState: false)
-        Task { @MainActor in
-            _ = try? await performer.perform(
-                .done, on: .reminder(id), contentHash: "", now: Date(), calendar: .current)
-            returned.withLock { $0 = true }
-        }
-        let deadline = ContinuousClock.now + .seconds(3)
-        while !returned.withLock({ $0 }), ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTAssertTrue(returned.withLock { $0 }, "Done returned while the hook still runs")
+        // The hook is held until the end: Done returning at all proves it
+        // never waits on the hook (a wait would hang here).
+        try await performer.perform(.done, on: .reminder(id), contentHash: "", now: Date(), calendar: .current)
         let status = try await pool.read { db in
             try String.fetchOne(db, sql: "SELECT status FROM reminders WHERE id = ?", arguments: [id])
         }
         XCTAssertEqual(status, "done")
-        while runner.invocations.isEmpty, ContinuousClock.now < deadline + .seconds(3) {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTAssertEqual(runner.invocations, [ReminderApprovalHook.arguments(id)], "the hook still runs")
+        let hook = await calls.next()
+        XCTAssertEqual(hook, ReminderApprovalHook.arguments(id), "the hook still runs")
+        XCTAssertEqual(runner.invocations, [ReminderApprovalHook.arguments(id)])
         open.yield()
     }
 

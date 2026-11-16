@@ -38,28 +38,30 @@ struct TerminalSessionRow: View {
 
     private var session: TerminalSession { row.session }
 
+    /// The state dot's column; the details line starts under the title.
+    private static let dotColumn: CGFloat = 16
+    private static let dotGap = Spacing.compact
+
+    /// The details line has text to show. A running standalone terminal has
+    /// none: its row stays one line, the controls beside the title. Lists
+    /// the fields `opener` draws; a new one there is added here too.
+    private var hasDetailText: Bool {
+        row.caption != nil || row.place != nil || row.badge != nil || row.agentTag != nil || opensIn != nil
+    }
+
     var body: some View {
-        HStack(spacing: 4) {
-            opener
-            if openAsks > 0 {
-                Text("\(openAsks)")
-                    .font(.caption2.weight(.semibold))
-                    .padding(.horizontal, 5)
-                    .background(Color.accentColor.opacity(0.2), in: Capsule())
-                    .help("\(openAsks) open ask\(openAsks == 1 ? "" : "s")")
-                    .accessibilityLabel("\(openAsks) open ask\(openAsks == 1 ? "" : "s")")
+        VStack(alignment: .leading, spacing: Spacing.tight) {
+            HStack(spacing: Spacing.small) {
+                titleLine
+                if !hasDetailText { trailingControls }
             }
-            closedAsks
-            if showsDelete, row.state.kind == .readyToCheck, session.projectID != nil,
-               let reviewChanges = actions.reviewChanges {
-                Button("Review Branch") { reviewChanges(session) }
-                    .buttonStyle(.kitQuiet)
-                    .help("Review this session's branch")
-            }
-            if showsDelete, let quickDelete {
-                SessionRowDeleteButton {
-                    deleteButtonTakesKeyboard?()
-                    quickDelete()
+            if hasDetailText {
+                HStack(spacing: Spacing.small) {
+                    opener
+                        .padding(.leading, Self.dotColumn + Self.dotGap)
+                        .opensSession(session, row: row, actions: actions)
+                        .accessibilityHidden(true)
+                    trailingControls
                 }
             }
         }
@@ -72,45 +74,101 @@ struct TerminalSessionRow: View {
             }
         }
         .listRowSeparator(.hidden)
-        .contextMenu {
-            Button("Rename…") { actions.rename(session) }
-            if let projectID = session.projectID, session.kind.isAgent, let setTarget = actions.setTarget {
-                Menu(SessionTargetMenu.title) {
-                    SessionTargetMenuItems(
-                        items: SessionTargetMenu.items(roots: actions.targetRoots(projectID), current: session.targetID)
-                    ) { setTarget(session, $0) }
-                }
-            }
-            if session.projectID != nil, let cleanUp = actions.cleanUp {
-                Button("Clean Up…") { cleanUp(session) }
-            }
-            // A placed session's folder is its worktree (spec 2026-10-14
-            // §7, D9); shown only while the directory exists.
-            if session.worktreeBranch != nil, FileManager.default.fileExists(atPath: session.folderPath) {
-                Button("Show Worktree in Finder") {
-                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: session.folderPath)])
-                }
-            }
-            if session.projectID != nil, let reviewChanges = actions.reviewChanges {
-                Button("Review Branch") { reviewChanges(session) }
-            }
-            if session.projectID != nil, session.kind.isAgent, let openIn = actions.openIn {
-                Button("Open in Terminal") { openIn(session, false) }
-                Button("Open in Workchat") { openIn(session, true) }
-            }
-            Divider()
-            Button("Delete…", role: .destructive) { actions.delete(session) }
+        .contextMenu { contextMenu }
+    }
+
+    /// The dot and the title across the row's whole width; VoiceOver reads
+    /// it as the row's one named open control (`accessibleOpener`).
+    private var titleLine: some View {
+        HStack(spacing: Self.dotGap) {
+            SessionLiveDot(state: row.state)
+                .frame(width: Self.dotColumn)
+                // The state label reads the state out.
+                .accessibilityHidden(row.showsStateLabel)
+            Text(session.title)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .opensSession(session, row: row, actions: actions)
+        .accessibilityRepresentation { accessibleOpener }
+    }
+
+    /// The ask counts, Review Branch and the ✕: buttons of their own, outside
+    /// the open click.
+    @ViewBuilder private var trailingControls: some View {
+        if openAsks > 0 {
+            Text("\(openAsks)")
+                .font(.caption2.weight(.semibold))
+                .padding(.horizontal, Spacing.small)
+                .background(Fill.on, in: Capsule())
+                .help("\(openAsks) open ask\(openAsks == 1 ? "" : "s")")
+                .accessibilityLabel("\(openAsks) open ask\(openAsks == 1 ? "" : "s")")
+        }
+        closedAsks
+        if showsDelete {
+            hoverButtons
+        } else {
+            // Laid out unseen with no width: the line keeps the buttons'
+            // height, so hovering never grows the row under the pointer.
+            HStack(spacing: Spacing.small) { hoverButtons }
+                .fixedSize()
+                .hidden()
+                .frame(width: 0)
         }
     }
 
+    /// Review Branch on a Ready-to-check row and the ✕, shown on hover.
+    @ViewBuilder private var hoverButtons: some View {
+        if row.state.kind == .readyToCheck, session.projectID != nil, let reviewChanges = actions.reviewChanges {
+            Button("Review Branch") { reviewChanges(session) }
+                .buttonStyle(.kitQuiet)
+                .help("Review this session's branch")
+        }
+        if let quickDelete {
+            SessionRowDeleteButton {
+                deleteButtonTakesKeyboard?()
+                quickDelete()
+            }
+        }
+    }
+
+    @ViewBuilder private var contextMenu: some View {
+        Button("Rename…") { actions.rename(session) }
+        if let projectID = session.projectID, session.kind.isAgent, let setTarget = actions.setTarget {
+            Menu(SessionTargetMenu.title) {
+                SessionTargetMenuItems(
+                    items: SessionTargetMenu.items(roots: actions.targetRoots(projectID), current: session.targetID)
+                ) { setTarget(session, $0) }
+            }
+        }
+        if session.projectID != nil, let cleanUp = actions.cleanUp {
+            Button("Clean Up…") { cleanUp(session) }
+        }
+        // A placed session's folder is its worktree (spec 2026-10-14
+        // §7, D9); shown only while the directory exists.
+        if session.worktreeBranch != nil, FileManager.default.fileExists(atPath: session.folderPath) {
+            Button("Show Worktree in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: session.folderPath)])
+            }
+        }
+        if session.projectID != nil, let reviewChanges = actions.reviewChanges {
+            Button("Review Branch") { reviewChanges(session) }
+        }
+        if session.projectID != nil, session.kind.isAgent, let openIn = actions.openIn {
+            Button("Open in Terminal") { openIn(session, false) }
+            Button("Open in Workchat") { openIn(session, true) }
+        }
+        Divider()
+        Button("Delete…", role: .destructive) { actions.delete(session) }
+    }
+
+    /// The details under the title: the state label and report line (or a
+    /// standalone terminal's caption), place, badge, agent tag and the mode
+    /// glyph.
     private var opener: some View {
         HStack(spacing: 6) {
-            SessionLiveDot(state: row.state)
-                .frame(width: 16)
-                // The label below reads the state out.
-                .accessibilityHidden(row.showsStateLabel)
             VStack(alignment: .leading, spacing: 1) {
-                Text(session.title).lineLimit(1).truncationMode(.tail)
                 if row.showsStateLabel, let caption = row.caption {
                     SessionStateLabel(state: row.state, caption: caption)
                     if let reportLine {
@@ -157,15 +215,39 @@ struct TerminalSessionRow: View {
                     .accessibilityLabel("Opens in \(opensIn.title)")
             }
         }
-        .contentShape(Rectangle())
-        .simultaneousGesture(TapGesture().onEnded { actions.open(session) })
+    }
+
+    /// VoiceOver gets one named session control while the visible title
+    /// and details open independently of the closed-asks button. The control
+    /// sits on the title line; the details line is hidden from VoiceOver.
+    private var accessibleOpener: some View {
+        VStack(alignment: .leading) {
+            SessionLiveDot(state: row.state)
+                // The state label reads the state out.
+                .accessibilityHidden(row.showsStateLabel)
+            Text(session.title)
+            if hasDetailText { opener }
+        }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(hasCursor ? [.isButton, .isSelected] : .isButton)
         .accessibilityAction { actions.open(session) }
         .accessibilityActions {
             if let quickDelete { Button("Delete session", action: quickDelete) }
         }
-        .help(row.state.live ? session.title : "Not running — click to start")
+    }
+}
+
+private extension View {
+    /// A click opens the session (a not running one starts); both lines of
+    /// the row carry it, its buttons do not.
+    func opensSession(
+        _ session: TerminalSession,
+        row: SessionSwitcherPresentation.Row,
+        actions: SessionRowActions
+    ) -> some View {
+        contentShape(Rectangle())
+            .simultaneousGesture(TapGesture().onEnded { actions.open(session) })
+            .help(row.state.live ? session.title : "Not running — click to start")
     }
 }
 

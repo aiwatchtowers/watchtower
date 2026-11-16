@@ -64,7 +64,8 @@
         "hub_transports": [
           "cloudkit",
           "relay"
-        ]
+        ],
+        "chat_allowed": true
       }
     },
     {
@@ -129,7 +130,8 @@
         "relay_auth_pub": "ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ",
         "hub_transports": [
           "relay"
-        ]
+        ],
+        "chat_allowed": true
       }
     },
     {
@@ -169,7 +171,8 @@
         "typing_allowed": false,
         "linked_at": null,
         "decided_at": 1730000100,
-        "ordered_actions": null
+        "ordered_actions": null,
+        "chat_allowed": true
       }
     },
     {
@@ -207,7 +210,8 @@
         "typing_allowed": true,
         "linked_at": 1730000000,
         "decided_at": null,
-        "ordered_actions": null
+        "ordered_actions": null,
+        "chat_allowed": true
       }
     },
     {
@@ -244,7 +248,92 @@
         "typing_allowed": false,
         "linked_at": null,
         "decided_at": null,
-        "ordered_actions": null
+        "ordered_actions": null,
+        "chat_allowed": true
+      }
+    },
+    {
+      "name": "chat_off",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "name": "Test Phone",
+        "scope": "private",
+        "linked": true,
+        "typing_allowed": true,
+        "start_sessions_allowed": true,
+        "linked_at": 1730000000,
+        "chat": false,
+        "decided_at": 1730000200
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "name": "Test Phone",
+        "scope": "private",
+        "linked": true,
+        "typing_allowed": true,
+        "start_sessions_allowed": true,
+        "linked_at": 1730000000,
+        "chat": false,
+        "decided_at": 1730000200
+      },
+      "kit": {
+        "linked": true,
+        "awaiting_confirmation": null,
+        "confirm_nonce": null,
+        "link_code_tag": null,
+        "revoked": null,
+        "may_start_sessions": true,
+        "permissions_allowed": false,
+        "name": "Test Phone",
+        "scope": "private",
+        "typing_allowed": true,
+        "linked_at": 1730000000,
+        "decided_at": 1730000200,
+        "ordered_actions": null,
+        "chat_allowed": false
+      }
+    },
+    {
+      "name": "chat_on",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "name": "Test Phone",
+        "scope": "private",
+        "linked": true,
+        "typing_allowed": true,
+        "start_sessions_allowed": true,
+        "linked_at": 1730000000,
+        "chat": true
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "name": "Test Phone",
+        "scope": "private",
+        "linked": true,
+        "typing_allowed": true,
+        "start_sessions_allowed": true,
+        "linked_at": 1730000000,
+        "chat": true
+      },
+      "kit": {
+        "linked": true,
+        "awaiting_confirmation": null,
+        "confirm_nonce": null,
+        "link_code_tag": null,
+        "revoked": null,
+        "may_start_sessions": true,
+        "permissions_allowed": false,
+        "name": "Test Phone",
+        "scope": "private",
+        "typing_allowed": true,
+        "linked_at": 1730000000,
+        "decided_at": null,
+        "ordered_actions": null,
+        "chat_allowed": true
       }
     }
   ],
@@ -927,7 +1016,8 @@
         "updated_at": 1730000100
       },
       "kit": {
-        "recordings_offered": true
+        "recordings_offered": true,
+        "is_mac": true
       }
     },
     {
@@ -963,7 +1053,8 @@
         "updated_at": 1730000100
       },
       "kit": {
-        "recordings_offered": false
+        "recordings_offered": false,
+        "is_mac": true
       }
     },
     {
@@ -993,7 +1084,8 @@
         "updated_at": 1730000100
       },
       "kit": {
-        "recordings_offered": true
+        "recordings_offered": true,
+        "is_mac": true
       }
     },
     {
@@ -1029,7 +1121,8 @@
         "updated_at": 1730000100
       },
       "kit": {
-        "recordings_offered": true
+        "recordings_offered": true,
+        "is_mac": true
       }
     },
     {
@@ -1066,7 +1159,191 @@
         "updated_at": 1730000100
       },
       "kit": {
-        "recordings_offered": false
+        "recordings_offered": false,
+        "is_mac": true
+      }
+    },
+    {
+      "name": "hub_kind_mac",
+      "json": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "hub_kind": "mac",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "expect": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "hub_kind": "mac",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "kit": {
+        "recordings_offered": true,
+        "is_mac": true
+      }
+    },
+    {
+      "name": "hub_kind_server",
+      "json": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "hub_kind": "server",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "expect": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "hub_kind": "server",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "kit": {
+        "recordings_offered": true,
+        "is_mac": false
+      }
+    },
+    {
+      "name": "hub_kind_unknown_value",
+      "json": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "hub_kind": "appliance",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "expect": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "hub_kind": "appliance",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "kit": {
+        "recordings_offered": true,
+        "is_mac": false
+      }
+    },
+    {
+      "name": "chat_on",
+      "json": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "capabilities": {
+          "chat": "on",
+          "recordings": "on"
+        },
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "expect": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "capabilities": {
+          "chat": "on",
+          "recordings": "on"
+        },
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "kit": {
+        "recordings_offered": true,
+        "is_mac": true,
+        "chat": "on",
+        "chat_reason": null
+      }
+    },
+    {
+      "name": "chat_off_desktop_too_old",
+      "json": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "capabilities": {
+          "chat": "off",
+          "chat_reason": "desktop_too_old",
+          "recordings": "on"
+        },
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "expect": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "capabilities": {
+          "chat": "off",
+          "chat_reason": "desktop_too_old",
+          "recordings": "on"
+        },
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "kit": {
+        "recordings_offered": true,
+        "is_mac": true,
+        "chat": "off",
+        "chat_reason": "desktop_too_old"
       }
     }
   ],
@@ -1496,6 +1773,72 @@
       "slice_kinds": [
         "terminal_session",
         "session_timeline"
+      ]
+    },
+    {
+      "action_kind": "chat_new",
+      "slice_kinds": [
+        "chat_list"
+      ]
+    },
+    {
+      "action_kind": "chat_turn",
+      "slice_kinds": [
+        "chat_feed",
+        "chat_list"
+      ]
+    },
+    {
+      "action_kind": "chat_cancel",
+      "slice_kinds": [
+        "chat_feed",
+        "chat_list"
+      ]
+    },
+    {
+      "action_kind": "chat_feed_request",
+      "slice_kinds": [
+        "chat_feed",
+        "chat_list"
+      ]
+    },
+    {
+      "action_kind": "chat_page",
+      "slice_kinds": [
+        "chat_page"
+      ]
+    },
+    {
+      "action_kind": "chat_search",
+      "slice_kinds": [
+        "chat_search"
+      ]
+    },
+    {
+      "action_kind": "chat_read",
+      "slice_kinds": [
+        "chat_list"
+      ]
+    },
+    {
+      "action_kind": "chat_branch_select",
+      "slice_kinds": [
+        "chat_feed",
+        "chat_list"
+      ]
+    },
+    {
+      "action_kind": "chat_manage",
+      "slice_kinds": [
+        "chat_feed",
+        "chat_list"
+      ]
+    },
+    {
+      "action_kind": "chat_action_answer",
+      "slice_kinds": [
+        "chat_feed",
+        "chat_list"
       ]
     }
   ],

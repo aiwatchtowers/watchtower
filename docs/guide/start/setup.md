@@ -41,6 +41,8 @@ If the tool is not installed, the panel shows an install command with a copy but
 
 If it is installed but signed out, the browser opens to sign in and a small terminal shows its progress. When sign-in finishes, the terminal closes and the tile turns ready. A tool too old to sign in from here updates first. If sign-in stops, press **Sign in again**.
 
+A **Check failed** tile says why under it. "Watchtower couldn’t run the check (…)" means Watchtower itself failed, not the tool: update or reinstall Watchtower, then press **Check again**.
+
 **Choose the executable…** also appears when the tool is **Not installed** or the check failed: pick the copy you use. If updating does not help, you may have two copies installed; use it there too. More on providers is in [AI providers, models and cost](../concepts/ai-providers-and-cost.md); if it still fails, see [The Claude or Codex tool is not found or not signed in](../troubleshooting/ai-tool-not-found-or-not-signed-in.md).
 
 ## What the Connect step shows

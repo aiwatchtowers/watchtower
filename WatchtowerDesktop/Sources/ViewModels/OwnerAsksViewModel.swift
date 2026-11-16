@@ -279,6 +279,8 @@ final class OwnerAsksViewModel {
     /// watch never marks a newer hold.
     @ObservationIgnored private var heldSerials: [Int64: Int] = [:]
     @ObservationIgnored private var holdSerial = 0
+    /// Each running hold watch by its serial, until it ends; tests await one.
+    @ObservationIgnored private(set) var holdWatches: [Int: Task<Void, Never>] = [:]
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private var activationObserver: NSObjectProtocol?
 
@@ -963,9 +965,11 @@ final class OwnerAsksViewModel {
         let serial = holdSerial
         heldSerials[sessionID] = serial
         let snapshot = heldAskIDs(sessionID: sessionID)
-        Task { [weak self] in
+        holdWatches[serial] = Task { [weak self] in
             await self?.holdSleep(Self.stillHeldAfter)
-            guard let self, heldSerials[sessionID] == serial,
+            guard let self else { return }
+            holdWatches[serial] = nil
+            guard heldSerials[sessionID] == serial,
                   terminalCenter?.answerHints[sessionID] == .held,
                   heldAskIDs(sessionID: sessionID) == snapshot else { return }
             terminalCenter?.showAnswerHint(.stillHeld, sessionID: sessionID)

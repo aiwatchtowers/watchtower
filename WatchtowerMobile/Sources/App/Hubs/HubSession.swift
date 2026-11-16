@@ -104,7 +104,7 @@ enum HubSessionError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
-        case .keysOfAnotherHub: "This Mac's keys do not belong to it. Scan its code again."
+        case .keysOfAnotherHub: "This tower's keys do not belong to it. Scan its code again."
         }
     }
 }
@@ -194,6 +194,11 @@ final class HubSession {
     /// The Workbench slices as the Now and Workbench tabs and the tab badge
     /// draw them: one observation for the app's lifetime.
     let workbenchReplica = WorkbenchReplicaModel()
+    /// This hub's AI chats (iPhone chat spec §6): the chat records, the chat sender, the list's search and row
+    /// actions.
+    let chats: ChatsCenter
+    /// The chat uploads waiting for their echo (the Kit's uploader keeps no ledger).
+    @ObservationIgnored let chatUploads: ChatUploadLedger
     /// Takes settled work alerts out of Notification Center after each successful fetch or engine apply.
     private let alertCleaner: DeliveredAlertCleaner
     /// The sweep's own decode cache: its reads never race the screens' observation over one cache.
@@ -208,8 +213,10 @@ final class HubSession {
     @ObservationIgnored private(set) var outboxWork: Task<Void, Never>?
     /// The last `epoch_ack` the session queued after a raised epoch (`keysMerged`), not awaited (tests wait on it).
     @ObservationIgnored private(set) var epochAckWork: Task<Void, Never>?
-    /// How long `shutDown()` waits for the outbox's chain before it goes on; tests shorten it.
+    /// How long `shutDown()` waits for the outbox's chain before it goes on.
     @ObservationIgnored var outboxDrainCap: Duration = .seconds(10)
+    /// Waits out `outboxDrainCap` in `shutDown()`, cancelled once the chain drained; tests replace it.
+    @ObservationIgnored var outboxDrainSleep: @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     /// The phone recorder (record a meeting or a voice note), owned for the
     /// app's lifetime so a capture survives any navigation.
     let recorder: PhoneRecorderController
@@ -251,6 +258,12 @@ final class HubSession {
     /// removed, frozen: multi-hub spec §6.1): the outbox and the uploader
     /// refuse as if unlinked.
     private(set) var writesAllowed = true
+
+    /// What the replica's badge needs of the phone's typing (#1785 follow-up), all observable: the device that may
+    /// write to this hub (none while unlinked or frozen) and the owner's typing toggle.
+    private var typingState: (deviceID: String?, requested: Bool) {
+        (writesAllowed ? linkedDevice?.deviceID : nil, deviceSettings.typingRequested)
+    }
 
     /// The link flow's hooks (`AppRoot`): the transport's link signals, and
     /// a call after every successful fetch (the heartbeat checks).
@@ -421,6 +434,8 @@ final class HubSession {
     @ObservationIgnored private var lastAnswerClears = false
     /// The uploader's pass after a raise (`keysMerged`): stale recordings re-armed and sent. Not awaited (tests wait).
     @ObservationIgnored private(set) var uploadKick: Task<Void, Never>?
+    /// The upload pass the app's return to the foreground started (tests await it).
+    @ObservationIgnored private(set) var uploadRetryPass: Task<Void, Never>?
     /// The unlock signal's registration (`protectedDataDidBecomeAvailable`), removed by `stop()`.
     @ObservationIgnored private var unlockObserver: NotificationToken?
 
@@ -468,6 +483,7 @@ final class HubSession {
         seqFloor: UInt64 = 0,
         defaults: UserDefaults = .standard,
         recordingsDirectory: URL? = nil,
+        chatCopyPath: String? = nil,
         hold: RecordingHold? = nil,
         route: HubRoute? = nil,
         link: LinkRecord? = nil,
@@ -501,9 +517,7 @@ final class HubSession {
         self.transportStore = transportStore
         self.backend = backend
         self.hubID = hubID
-        self.hold = hold
-        self.route = route
-        self.defaults = defaults
+        (self.hold, self.route, self.defaults) = (hold, route, defaults)
         let device = backend == .inMemoryDemo ? DemoSeed.device : linkedDevice
         self.linkedDevice = device
         // The demo pairing only on the demo path: the demo kind over the in-memory transport.
@@ -542,12 +556,13 @@ final class HubSession {
         askAnswerer = AskAnswerer.sending(through: outbox, store: store, drafts: askDrafts)
         sessionStarts = SessionStarter.sending(through: outbox, store: store)
         sessionInputs = SessionInputSender.sending(through: outbox, store: store)
+        (chats, chatUploads) = Self.makeChats(outbox: outbox, secure: secure, hubID: hubID, copyPath: chatCopyPath)
         // An `applied` echo clears the queued row; hydrating right behind it
         // (from what the same fetch buffered) lands the Mac's authoritative
         // change at the same moment.
         let hydrateAfterEcho: @Sendable () async -> Void = { [hydrator] in
             do {
-                _ = try await hydrator.hydrateOnce()
+                _ = try await hydrator.hydrateFresh()
             } catch {
                 Self.logger.warning("post-echo hydrate failed: \(error.localizedDescription, privacy: .public)")
             }
@@ -566,7 +581,7 @@ final class HubSession {
         if !startsActive {
             recorder.setForeground(false)
         }
-        feed = Self.makeFeed(secure, store, outbox, uploader, hydrateAfterEcho, hubOnRelay)
+        feed = Self.makeFeed(secure, store, outbox, uploader, chatUploads, hydrateAfterEcho, hubOnRelay)
         // Sealed like every other write: the hub drops a plaintext `device` record.
         (deviceSettings, alertRegistrar) = Self.makeDeviceSettings(
             secure: secure, defaults: defaults, kind: backend, hubID: hubID, device: device,
@@ -574,8 +589,9 @@ final class HubSession {
         sharedAlerts = Self.makeSharedAlerts(
             hubID: hubID, route: route, link: link, keys: sealed.hasDeviceKeys ? keys : nil, store: store, defaults: defaults,
             posting: alertPosting)
-        workbenchReplica.start(store: store)
+        workbenchReplica.start(store: store) { [weak self] in self?.typingState ?? (nil, false) }
         calendarReplica.start(store: store)
+        chats.start(store: store)
         phoneRecordings.start(store: store)
         observeOutboxBacklog()
 
@@ -588,6 +604,8 @@ final class HubSession {
     /// still working under this fetch's time. Only while the app is active (so unlocked, every stored row open);
     /// the return to the foreground fetches or applies, and sweeps then.
     private func sweepDeliveredAlerts(fetchedAt: Date) {
+        // A fetch ended: the chats' prefetch looks again (the hub may have woken or gone to sleep).
+        chats.stepPrefetch()
         guard isActive else { return }
         let snapshot: WorkbenchReplicaSnapshot
         do {
@@ -627,11 +645,12 @@ final class HubSession {
         _ store: ReplicaStore,
         _ outbox: ActionOutbox,
         _ uploader: RecordingUploader,
+        _ chatUploads: ChatUploadLedger,
         _ hydrate: @escaping @Sendable () async -> Void,
         _ sighting: HubOnRelaySighting
     ) -> RelayFeed {
         RelayFeed(
-            transport: secure, store: store, outbox: outbox, uploads: uploader, onActionApplied: hydrate,
+            transport: secure, store: store, outbox: outbox, uploads: uploader, chatUploads: chatUploads, onActionApplied: hydrate,
             onHubOnRelay: sighting.note
         )
     }
@@ -843,9 +862,16 @@ final class HubSession {
         // delivery, a start's session id.
         await outbox.setAppliedObserver(
             Self.appliedObserver(
-                askAnswerer: askAnswerer, sessionStarts: sessionStarts, sessionInputs: sessionInputs, boardWriter: boardWriter
+                askAnswerer: askAnswerer, sessionStarts: sessionStarts, sessionInputs: sessionInputs, boardWriter: boardWriter,
+                chats: chats
             )
         )
+        // The chats' prefetch asks this session whether the hub answers, never a screen.
+        chats.setReachability { [weak self] in self?.chatsReachable(now: Date()) ?? false }
+        // A chat upload's echo reaches the send waiting for it.
+        await chatUploads.setEchoHandler { [weak chats] upload in
+            await MainActor.run { chats?.sending.receiveUpload(upload) }
+        }
         // A raise this phone has not acknowledged yet (no session was up, or the Keychain was locked).
         acknowledgeNewestEpoch()
         switch backend {
@@ -948,14 +974,16 @@ final class HubSession {
         askAnswerer: AskAnswerer,
         sessionStarts: SessionStarter,
         sessionInputs: SessionInputSender? = nil,
-        boardWriter: BoardWriter? = nil
+        boardWriter: BoardWriter? = nil,
+        chats: ChatsCenter? = nil
     ) -> @Sendable (ActionRequestPayload) -> Void {
-        { [weak askAnswerer, weak sessionStarts, weak sessionInputs, weak boardWriter] action in
+        { [weak askAnswerer, weak sessionStarts, weak sessionInputs, weak boardWriter, weak chats] action in
             Task { @MainActor in
                 askAnswerer?.receiveApplied(action)
                 sessionStarts?.receiveApplied(action)
                 sessionInputs?.receiveApplied(action)
                 boardWriter?.receiveApplied(action)
+                chats?.receiveApplied(action)
             }
         }
     }
@@ -1134,7 +1162,8 @@ final class HubSession {
             return .failed
         }
         do {
-            hydrated = try await hydrator.hydrateOnce()
+            // A cycle begun after this fetch's pull, as the feed's below (#1795).
+            hydrated = try await hydrator.hydrateFresh()
         } catch {
             lastFetchError = error.localizedDescription
             let what = "\(trigger), \(Self.describe(depth))"
@@ -1153,7 +1182,8 @@ final class HubSession {
             await feed.resumeIfParked()
         }
         do {
-            routed = try await feed.pollOnce()
+            // A cycle begun after this fetch's pull: one already running may have read before the pull buffered (#1795).
+            routed = try await feed.pollFresh()
         } catch {
             Self.logger.error("relay fetch failed: \(error.localizedDescription, privacy: .public)")
         }
@@ -1189,7 +1219,7 @@ final class HubSession {
             return
         }
         do {
-            _ = try await hydrator.hydrateOnce()
+            _ = try await hydrator.hydrateFresh()
         } catch {
             Self.logger.error("engine fetch apply failed: \(error.localizedDescription, privacy: .public)")
             return
@@ -1200,7 +1230,7 @@ final class HubSession {
         await postSharedAlerts()
         await adoptOrderedActions()
         do {
-            _ = try await feed.pollOnce()
+            _ = try await feed.pollFresh()
         } catch {
             Self.logger.error("relay apply failed: \(error.localizedDescription, privacy: .public)")
         }
@@ -1217,7 +1247,7 @@ final class HubSession {
                 try SettingsSnapshot.decode(HeartbeatPayload.self, recordName: HeartbeatPayload.recordName, store: store, from: db)
             }
         } catch {
-            Self.logger.error("heartbeat read failed: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("heartbeat read failed: \(String(describing: error), privacy: .public)")
         }
     }
 
@@ -1234,6 +1264,8 @@ final class HubSession {
         sideReader?.activeChanged(active)
         // A capture keeps going in the background, but its timer slows.
         recorder.setForeground(active)
+        // The chats' prefetch runs in the foreground only.
+        chats.setForeground(active)
         guard active else {
             restartLoop(firstCycle: nil)
             return
@@ -1271,7 +1303,7 @@ final class HubSession {
     /// open when it reaches it, so a cold launch runs one pass, not two.
     private func setUploadRetries(_ open: Bool) {
         guard uploadRetries.set(open), open, isBootstrapped, !stopped else { return }
-        Task { [weak self] in
+        uploadRetryPass = Task { [weak self] in
             guard let self, !self.stopped else { return }
             await self.recorder.uploadPending()
         }
@@ -1498,7 +1530,7 @@ final class HubSession {
             // The hub takes an ack at or below its epoch as a no-op: from here on its acked epoch matches this phone's.
             acknowledgeNewestEpoch()
         } catch {
-            Self.logger.notice("ordered-actions grant check skipped: \(error.localizedDescription, privacy: .public)")
+            Self.logger.notice("ordered-actions grant check skipped: \(String(describing: error), privacy: .public)")
         }
     }
 
@@ -1926,7 +1958,7 @@ final class HubSession {
         // A raise's upload pass must not go on over the transport about to stop (a switch's merge starts one).
         uploadKick?.cancel()
         await uploadKick?.value
-        await Self.drain(outbox, cap: outboxDrainCap)
+        await Self.drain(outbox, cap: outboxDrainCap, sleep: outboxDrainSleep)
         // A start not yet run must not want its socket after the stop.
         await relayStart?.value
         await liveTransport?.stop()
@@ -1935,7 +1967,7 @@ final class HubSession {
     /// `outbox.drain()`, raced against `cap`: a hung save never holds a shutdown. A write cut off this way is
     /// left `queued` or `sent` in the replica and heals at the next launch (its flush, `resend_from` or the 24 h
     /// rule).
-    private static func drain(_ outbox: ActionOutbox, cap: Duration) async {
+    private static func drain(_ outbox: ActionOutbox, cap: Duration, sleep: @escaping @Sendable (Duration) async -> Void) async {
         let finished = OSAllocatedUnfairLock(initialState: false)
         var timer: Task<Void, Never>?
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -1944,7 +1976,7 @@ final class HubSession {
             }
             Task { await outbox.drain(); finish() }
             timer = Task {
-                try? await Task.sleep(for: cap)
+                await sleep(cap)
                 if !Task.isCancelled {
                     logger.notice("outbox drain cut off at shutdown")
                 }

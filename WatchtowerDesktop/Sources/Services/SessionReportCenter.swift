@@ -88,17 +88,30 @@ final class SessionReportCenter {
     /// A decode error is logged once per streak of failures (the runner logs
     /// a failed exit itself).
     @ObservationIgnored private var failing: Set<RunKey> = []
+    /// Every run task started and not yet ended, those `stop` cancelled
+    /// included (a test seam: `runsSettled`).
+    @ObservationIgnored private var liveRuns: [Int: Task<Void, Never>] = [:]
+    /// How the loops wait between ticks (tests: a clock they tick by hand).
+    @ObservationIgnored private let sleep: @Sendable (Duration) async -> Void
 
     init(
         runner: any CLIRunnerProtocol,
         summaryInterval: Duration = SessionReportCenter.summaryInterval,
         reportInterval: Duration = SessionReportCenter.reportInterval,
-        notificationCenter: NotificationCenter = .default
+        notificationCenter: NotificationCenter = .default,
+        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) {
         self.runner = runner
         self.summaryInterval = summaryInterval
         self.reportInterval = reportInterval
         self.notificationCenter = notificationCenter
+        self.sleep = sleep
+    }
+
+    /// Returns once no run task is left, a rerun queued behind one included
+    /// (a test seam).
+    func runsSettled() async {
+        while let task = liveRuns.values.first { await task.value }
     }
 
     /// Whether the 15 s loop is running (a test seam).
@@ -109,9 +122,9 @@ final class SessionReportCenter {
     /// Starts the 15 s poll, the activation refresh and the screen watch.
     func start() {
         guard summaryLoop == nil else { return }
-        summaryLoop = Task { [weak self, summaryInterval] in
+        summaryLoop = Task { [weak self, summaryInterval, sleep] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: summaryInterval)
+                await sleep(summaryInterval)
                 guard !Task.isCancelled, let self else { return }
                 self.pollSummaries()
             }
@@ -175,9 +188,9 @@ final class SessionReportCenter {
         reportWasOnScreen = true
         request(.report(workbench: workbench))
         reportLoop?.cancel()
-        reportLoop = Task { [weak self, reportInterval] in
+        reportLoop = Task { [weak self, reportInterval, sleep] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: reportInterval)
+                await sleep(reportInterval)
                 guard !Task.isCancelled, let self else { return }
                 // A Session view left open in a hidden, covered or
                 // backgrounded window never disappears: its ticks run nothing.
@@ -240,8 +253,10 @@ final class SessionReportCenter {
         let task = Task { [weak self] in
             await self?.perform(key)
             self?.finished(key, token: token)
+            self?.liveRuns[token] = nil
         }
         inFlight[key] = (token, task)
+        liveRuns[token] = task
     }
 
     private func finished(_ key: RunKey, token: Int) {

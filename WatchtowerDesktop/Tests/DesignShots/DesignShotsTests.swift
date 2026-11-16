@@ -58,8 +58,16 @@ final class DesignShotsTests: XCTestCase {
         })
     }
 
+    func testTuningChatShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("tuning-chat-") })
+    }
+
     func testWorkchatActivityShotsRender() throws {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("workchat-activity-") })
+    }
+
+    func testChatMarkdownShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("chat-markdown-") })
     }
 
     func testClosedAsksShotsRender() throws {
@@ -74,6 +82,16 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(DesignShotCatalog.all.filter {
             $0.name.hasPrefix("onboarding-agent-") || $0.name.hasPrefix("onboarding-step-live-")
         })
+    }
+
+    /// The Slack Full / Live screens spec's mockups (#1779).
+    func testSlackFullLiveShotsRender() throws {
+        try renderShots(SlackFullLiveShotFixtures.shots)
+    }
+
+    /// The adaptive Slack sync plan's Statistics mockups (#1709).
+    func testSlackAdaptiveSyncShotsRender() throws {
+        try renderShots(SlackAdaptiveSyncShotFixtures.shots)
     }
 
     private func renderShots(_ shots: [DesignShot]) throws {

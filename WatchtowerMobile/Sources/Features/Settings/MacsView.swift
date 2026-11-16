@@ -44,7 +44,7 @@ struct MacsView: View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
             list(env.hubListItems(linking.links, unreadable: linking.unreadableHubIDs, now: context.date))
         }
-        .navigationTitle("Macs")
+        .navigationTitle("Towers")
         .navigationDestination(isPresented: $showsSubscription) { RelaySubscriptionView() }
         .toolbar {
             if linking.links.count > 1 {
@@ -118,13 +118,13 @@ struct MacsView: View {
                     Button {
                         linking.startScan()
                     } label: {
-                        Label("Add Mac", systemImage: "qrcode.viewfinder")
+                        Label("Add tower", systemImage: "qrcode.viewfinder")
                     }
                     .buttonStyle(SecondaryActionStyle())
                     .disabled(!canAdd || linking.isBusy)
                     .macsListRow()
                     if !canAdd {
-                        Text("You can link up to \(HubRegistry.limit) Macs")
+                        Text("You can link up to \(HubRegistry.limit) towers")
                             .font(TypeScale.meta)
                             .foregroundStyle(.secondary)
                             .macsListRow()
@@ -257,7 +257,7 @@ struct UnopenedMacsView: View {
                             .contextMenu { forget(item) }
                     }
                 } header: {
-                    Text("Watchtower couldn't open the data of these Macs on this iPhone. Try again, or forget a Mac and link it again.")
+                    Text("Watchtower couldn't open the data of these towers on this iPhone. Try again, or forget a tower and link it again.")
                         .font(TypeScale.meta)
                         .foregroundStyle(.secondary)
                         .textCase(nil)
@@ -278,7 +278,7 @@ struct UnopenedMacsView: View {
                     Button {
                         linking.startScan()
                     } label: {
-                        Label("Add Mac", systemImage: "qrcode.viewfinder")
+                        Label("Add tower", systemImage: "qrcode.viewfinder")
                     }
                     .buttonStyle(SecondaryActionStyle())
                     .disabled(!canAdd || linking.isBusy)
@@ -286,7 +286,7 @@ struct UnopenedMacsView: View {
                 }
             }
             .macsList()
-            .navigationTitle("Macs")
+            .navigationTitle("Towers")
         }
         .confirmationDialog(
             asking?.title ?? "", isPresented: Binding(get: { asking != nil }, set: { if !$0 { asking = nil } }),

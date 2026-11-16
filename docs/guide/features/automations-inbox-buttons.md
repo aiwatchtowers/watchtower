@@ -49,7 +49,7 @@ text: Add `folder: "release"` to `output.inbox` to file that one card in a folde
 area: automations
 level: power
 kind: tip
-since: next
+since: 0.28.0
 action: nav:automations
 -->
 
@@ -79,7 +79,7 @@ text: A Task button on an automation's card proposes a task; approve it in the I
 area: automations
 level: next
 kind: feature
-since: next
+since: 0.28.0
 action: nav:inbox
 -->
 

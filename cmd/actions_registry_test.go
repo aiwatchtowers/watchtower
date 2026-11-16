@@ -397,3 +397,31 @@ func TestRead01_BuildRegistryReadToolsDecided(t *testing.T) {
 	all := append(reg.All(), buildAutomationRegistry(cfg, database).All()...)
 	assert.Empty(t, tools.UndecidedReadTools(all))
 }
+
+// The tuning chat's surface (spec 2026-11-03-tuning-chat-design §4.2) mounts
+// exactly its ten reads and propose_tuning_edit: no surface-less source read
+// (D62) and none of them on main.
+func TestBuildToolRegistry_TuningSurfaceTools(t *testing.T) {
+	database, err := db.Open(":memory:")
+	require.NoError(t, err)
+	database.SetMaxOpenConns(1)
+	defer database.Close()
+	reg := buildToolRegistry(&config.Config{ActiveWorkspace: "test-ws"}, database)
+	for _, dt := range tools.DependentReadTools(tools.ReadDeps{}) {
+		require.NoError(t, reg.Register(dt))
+	}
+
+	want := []string{"get_agent_report", "list_agent_sessions", "get_agent_session", "get_llm_usage",
+		"list_prompts", "get_prompt", "list_skills", "get_skill", "get_agent_instructions",
+		"list_coach_proposals", "propose_tuning_edit"}
+	var got []string
+	for name := range surfaceToolNames(reg, tools.SurfaceTuning) {
+		got = append(got, name)
+	}
+	assert.ElementsMatch(t, want, got)
+	main := surfaceToolNames(reg, "main")
+	for _, name := range want {
+		assert.False(t, main[name], "%s leaked onto main", name)
+	}
+	assert.Empty(t, tools.UndecidedReadTools(reg.All()))
+}

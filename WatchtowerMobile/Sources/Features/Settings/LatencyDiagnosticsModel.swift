@@ -19,7 +19,7 @@ struct LatencyDiagnosticsModel: Equatable {
     static let footer = "Measured on this iPhone only. Nothing is sent anywhere."
     static let emptyText = "No timings yet. They appear after your first action."
     /// No sample and no hub on the ordered path: legacy actions are not timed.
-    static let needsMacUpdateText = "Timings need an updated Watchtower on your Mac."
+    static let needsMacUpdateText = "Timings need an updated Watchtower on your tower."
     static let failedText = "Couldn't read the timings."
     static let loadingText = "Reading timings…"
     static let retryTitle = "Retry"
@@ -37,7 +37,7 @@ struct LatencyDiagnosticsModel: Equatable {
                 title: title,
                 count: own.count == 1 ? "1 action" : "\(own.count) actions",
                 result: line(result),
-                answer: "Mac's answer: " + line(answer)
+                answer: "Tower's answer: " + line(answer)
             )
         }
     }
