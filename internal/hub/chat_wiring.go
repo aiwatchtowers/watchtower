@@ -32,9 +32,6 @@ var chatKinds = []hubslices.Kind{hubslices.KindChatList, hubslices.KindChatFeed,
 // republished within this.
 const chatTickEvery = 5 * time.Second
 
-// chatTitleBudget bounds one AI title (the light-tier call).
-const chatTitleBudget = 2 * time.Minute
-
 // chatRequests is the handlers' ChatRequests over the sources' register:
 // each request counts from when the phone asked (sources' lengths).
 type chatRequests struct{ w *sources.ChatWatches }

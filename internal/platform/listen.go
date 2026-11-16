@@ -33,7 +33,7 @@ func ListenLocked(socketPath string) (net.Listener, error) {
 		}
 		return nil, fmt.Errorf("platform: lock socket: %w", err)
 	}
-	if c, err := net.DialTimeout("unix", socketPath, time.Second); err == nil { //nolint:gosec // G704: a local unix socket path, not a network URL
+	if c, err := net.DialTimeout("unix", socketPath, time.Second); err == nil {
 		_ = c.Close()
 		_ = lock.Close()
 		return nil, ErrSocketBusy

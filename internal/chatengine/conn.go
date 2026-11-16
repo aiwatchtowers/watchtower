@@ -84,7 +84,7 @@ type connSub struct {
 }
 
 func newConn(s *Server, nc net.Conn) *conn {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // G118: kept in the conn, called by kill
 	return &conn{s: s, nc: nc, ctx: ctx, cancel: cancel, subs: map[string]*connSub{},
 		inFlight: make(chan struct{}, maxInFlight)}
 }
@@ -183,7 +183,7 @@ func (c *conn) hello(req request) bool {
 	var p struct {
 		Protocol  int       `json:"protocol"`
 		Client    string    `json:"client"`
-		PartKinds *[]string `json:"part_kinds"`
+		PartKinds *[]string `json:"part_kinds"` // nil = none named
 	}
 	if len(req.Params) > 0 {
 		if err := json.Unmarshal(req.Params, &p); err != nil {
@@ -213,9 +213,11 @@ func (c *conn) hello(req request) bool {
 		c.fail(req.ID, "forbidden", "only the Watchtower app may use the chat socket")
 		return false
 	}
-	c.client = Client{Kind: p.Client}
+	// A socket client's part kinds are always a set: none named (or no
+	// part_kinds at all) is the empty set, so it gets every part's fallback
+	// only (D15); nil = all kinds is the in-process relay's alone (D21).
+	c.client = Client{Kind: p.Client, PartKinds: map[string]bool{}}
 	if p.PartKinds != nil {
-		c.client.PartKinds = make(map[string]bool, len(*p.PartKinds))
 		for _, k := range *p.PartKinds {
 			c.client.PartKinds[k] = true
 		}

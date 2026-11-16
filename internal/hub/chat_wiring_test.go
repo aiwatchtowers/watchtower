@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"watchtower/internal/chatstore"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/identity"
@@ -60,7 +59,7 @@ func newChatRigWith(t *testing.T, mode string, kind transport.Kind, edit func(*O
 		t.Fatal(err)
 	}
 	clock := func() time.Time { return r.now }
-	o := Options{DB: r.d, Clock: clock, Dir: t.TempDir(), RecordingsDir: t.TempDir(),
+	o := Options{DB: r.d, Clock: clock, Dir: t.TempDir(), RecordingsDir: t.TempDir(), ChatEngine: testChatEngine(t, r.d),
 		published: func(k []hubslices.Kind) { r.published = append(r.published, k) }}
 	edit(&o)
 	r.h = &hubRuntime{sup: &supervisor{o: o}, st: st, kr: kr, mode: mode, tr: memfake.New(kind, clock)}
@@ -269,89 +268,22 @@ func TestControlHeartbeatKeepsTheChatLeaseFlag(t *testing.T) {
 	}
 }
 
-// TestChatWiring_TitleHookAndPreferredProvider: the hub's chat store names
-// a phone-started chat after its first complete answer (off the turn's
-// goroutine, `chat title`'s code) and routes an automatic chat to the
-// preferred provider the Mac's automatic routing reads (handoff item 11).
-func TestChatWiring_TitleHookAndPreferredProvider(t *testing.T) {
-	titled := make(chan int64, 1)
-	r := newChatRigWith(t, policy.MobileAllowed, transport.KindRelay, func(o *Options) {
-		o.ChatPreferredProvider = "codex"
-		o.ChatTitle = func(_ context.Context, conv int64) error { titled <- conv; return nil }
-	})
-	conv, err := r.w.chatStore.NewConversation(context.Background(), nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	st, err := r.w.chatStore.Start(context.Background(), chatstore.StartRequest{ConversationID: conv, Mode: chatstore.ModeSend, Text: "hi"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !st.Routing.Automatic || st.Routing.Provider != "codex" {
-		t.Fatalf("routing %+v", st.Routing)
-	}
-	if err := r.w.chatStore.Turn(st).Finalize(chatstore.StatusComplete, nil); err != nil {
-		t.Fatal(err)
-	}
-	r.w.bg.Wait()
-	select {
-	case got := <-titled:
-		if got != conv {
-			t.Fatalf("titled chat %d", got)
-		}
-	default:
-		t.Fatal("no AI title after the first complete answer")
-	}
-}
-
-// TestChatWiring_CloseRacesFinishingTurns: turns finish (and fire the title
-// hook) while the hub closes; no WaitGroup misuse (run under -race), and
-// once close returned no title starts.
-func TestChatWiring_CloseRacesFinishingTurns(t *testing.T) {
-	var mu sync.Mutex
-	started, closed := 0, false
-	lateTitle := false
-	r := newChatRigWith(t, policy.MobileAllowed, transport.KindRelay, func(o *Options) {
-		o.ChatTitle = func(ctx context.Context, _ int64) error {
-			mu.Lock()
-			started++
-			lateTitle = lateTitle || closed
-			mu.Unlock()
-			<-ctx.Done() // a title runs until the close cancels it
-			return ctx.Err()
-		}
-	})
-	const n = 8
-	sts := make([]chatstore.Started, n)
-	for i := range sts {
-		conv, err := r.w.chatStore.NewConversation(context.Background(), nil, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if sts[i], err = r.w.chatStore.Start(context.Background(),
-			chatstore.StartRequest{ConversationID: conv, Mode: chatstore.ModeSend, Text: "hi"}); err != nil {
-			t.Fatal(err)
-		}
-	}
+// TestChatWiring_CloseRacesSpawns: background work (a turn end's push, an
+// apply) spawned while the hub closes never misuses the WaitGroup (run
+// under -race), and once close returned nothing starts.
+func TestChatWiring_CloseRacesSpawns(t *testing.T) {
+	r := newChatRig(t, policy.MobileAllowed, transport.KindRelay)
 	var wg sync.WaitGroup
-	for _, st := range sts {
+	for range 8 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = r.w.chatStore.Turn(st).Finalize(chatstore.StatusComplete, nil)
+			r.w.spawn(func() {})
 		}()
 	}
 	r.w.close()
-	mu.Lock()
-	closed = true
-	mu.Unlock()
 	wg.Wait()
 	r.w.bg.Wait()
-	mu.Lock()
-	defer mu.Unlock()
-	if lateTitle {
-		t.Fatal("a title started after the close returned")
-	}
 	if r.w.spawn(func() {}) {
 		t.Fatal("background work starts after the close")
 	}

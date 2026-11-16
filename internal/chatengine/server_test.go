@@ -626,3 +626,38 @@ func TestServer_HelloListsOps(t *testing.T) {
 	assert.Contains(t, ops, "chat_turn")
 	assert.True(t, strings.Join(ops, ",") != "")
 }
+
+// TestServer_HelloPartKindsAreAlwaysASet: a socket client's part kinds reach
+// the engine as a set — the ones it named, or an empty, non-nil set when it
+// named none or sent no part_kinds (fallbacks only, D15); only the
+// in-process relay passes nil (all kinds, D21).
+func TestServer_HelloPartKindsAreAlwaysASet(t *testing.T) {
+	g := newRig(t, fakeOpts{})
+	g.r.Register("test_client", func(_ context.Context, _ json.RawMessage, c Client) (any, error) {
+		return map[string]any{"nil": c.PartKinds == nil, "kinds": c.PartKinds}, nil
+	})
+	path := serveSocket(t, g.r, appOnly)
+	for name, params := range map[string]map[string]any{
+		"absent": {"protocol": 1, "client": "mac"},
+		"empty":  {"protocol": 1, "client": "mac", "part_kinds": []string{}},
+		"named":  {"protocol": 1, "client": "mac", "part_kinds": []string{"text", "steps"}},
+	} {
+		c := dialSocket(t, path)
+		c.send("h", "hello", params)
+		require.True(t, c.mustNext().OK, name)
+		c.send("1", "test_client", nil)
+		f := c.mustNext()
+		require.True(t, f.OK, name)
+		var res struct {
+			Nil   bool            `json:"nil"`
+			Kinds map[string]bool `json:"kinds"`
+		}
+		require.NoError(t, json.Unmarshal(f.Result, &res))
+		assert.False(t, res.Nil, "%s: nil part kinds (all) on chat.sock", name)
+		if name == "named" {
+			assert.Equal(t, map[string]bool{"text": true, "steps": true}, res.Kinds)
+		} else {
+			assert.Empty(t, res.Kinds, name)
+		}
+	}
+}
