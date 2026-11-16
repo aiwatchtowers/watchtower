@@ -62,9 +62,10 @@ var backtestClock = time.Now
 // after), and only owner_instructions rows updated before it are passed
 // (the workbench's own texts carry no edit time, so they are left out).
 // Only decisions whose situation does not give the answer away are hidden:
-// a review round's outcome (its situation counts the round's comments) and
-// an undone hunk (only ever "undid hunk") are not measured in phase 1; they
-// stay retrievable for the other items. Items with fixed options (asks with
+// a review round's outcome (its situation counts the round's comments), an
+// undone hunk (only ever "undid hunk") and the git items (a merge is only
+// ever "merged", a rewrite only ever "rewrote") are not measured in phase 1;
+// they stay retrievable for the other items. Items with fixed options (asks with
 // options, permissions, review lessons) agree on an exact match; the rest go
 // to the judge with the situation. A reply the twin cannot get right
 // (ErrBadReply) is a disagreement; a failed call, or a judge reply that
@@ -265,8 +266,8 @@ func (bt backtestRun) item(c string, p db.WatchmanPrecedent, exclude []int64, pr
 
 // backtestOptions returns the options the owner chose among, when the
 // precedent's source had fixed ones: a permission (allow/deny), a review
-// lesson (accepted/dismissed), a review
-// ask's verdict, or an ask with one single-choice question with options.
+// lesson (accepted/dismissed), a review ask's verdict, or an ask with one
+// single-choice question with options.
 // nil means a free answer (the judge scores it). The option texts go through
 // the same clean as the stored choice, so an exact match is meaningful.
 func backtestOptions(d *db.DB, p db.WatchmanPrecedent) ([]string, error) {

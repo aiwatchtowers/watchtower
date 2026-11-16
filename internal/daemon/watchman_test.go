@@ -2,9 +2,11 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -209,4 +211,16 @@ func TestPhaseWatchmanBacktest_PerWorkbenchStamp(t *testing.T) {
 	d.phaseWatchmanBacktest(context.Background())
 	assert.Equal(t, []int64{b}, *launched)
 	assert.NotEqual(t, filepath.Base(watchman.BacktestStampPath(dir, a)), filepath.Base(watchman.BacktestStampPath(dir, b)))
+}
+
+func TestPhaseWatchmanBacktest_FailedLaunchTriedOnceADay(t *testing.T) {
+	d, database, logs := newBackfillDaemon(t)
+	stubWatchman(t)
+	tries := 0
+	d.SetWatchmanBacktestLaunch(func(int64) error { tries++; return errors.New("no binary") })
+	enabledWatchmanWorkbench(t, database, "acme")
+	d.phaseWatchmanBacktest(context.Background())
+	d.phaseWatchmanBacktest(context.Background())
+	assert.Equal(t, 1, tries)
+	assert.Equal(t, 1, strings.Count(logs.String(), "launching: no binary"))
 }

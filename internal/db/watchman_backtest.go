@@ -13,10 +13,13 @@ import (
 // WatchmanBacktestCandidates returns the newest limit precedents of a
 // category the backtest may hide, newest first: every precedent except a
 // review round's outcome (its situation names the round's comments, which
-// gives the answer away) and an undone hunk (only ever "undid hunk").
+// gives the answer away) and the one-answer items — an undone hunk (only
+// ever "undid hunk") and every git item (a merge is only ever "merged", a
+// rewrite of the agent's commit only ever "rewrote").
 func (db *DB) WatchmanBacktestCandidates(workbenchID int64, category string, limit int) ([]WatchmanPrecedent, error) {
 	rows, err := db.Query(`SELECT id, workbench_id, source, source_key, category, situation, choice, owner_words, decided_at, weight
 		FROM watchman_precedents WHERE workbench_id = ? AND category = ?
+			AND source <> 'git'
 			AND NOT (source = 'review' AND (source_key LIKE ? OR source_key LIKE ?))
 		ORDER BY decided_at DESC, id DESC LIMIT ?`,
 		workbenchID, category, WatchmanReviewRound+":%", WatchmanReviewRevert+":%", limit)

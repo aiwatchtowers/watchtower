@@ -80,3 +80,24 @@ func TestWatchmanBacktestCandidates_SkipRoundsAndReverts(t *testing.T) {
 	}
 	require.Equal(t, []string{"review/comment:5", "review/lesson:4", "ask/round:9", "review/comment:1"}, keys)
 }
+
+func TestWatchmanBacktestCandidates_SkipGit(t *testing.T) {
+	d := openTestDB(t)
+	wmTestWorkbench(t, d, 1)
+	t0 := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	wmUpsert(t, d,
+		WatchmanPrecedent{WorkbenchID: 1, Source: "git", SourceKey: "merge:abc", Category: "finish",
+			Situation: "PR #4: importer cache", Choice: "merged", DecidedAt: t0.Add(2 * time.Hour), Weight: 1},
+		WatchmanPrecedent{WorkbenchID: 1, Source: "git", SourceKey: "commit:def", Category: "finish",
+			Situation: "rewrote the agent's commit", Choice: "rewrote", DecidedAt: t0.Add(time.Hour), Weight: 1},
+		WatchmanPrecedent{WorkbenchID: 1, Source: "ask", SourceKey: "7", Category: "finish",
+			Situation: "ship it?", Choice: "yes", DecidedAt: t0, Weight: 1})
+	got, err := d.WatchmanBacktestCandidates(1, "finish", 10)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, "ask", got[0].Source)
+	// Still retrievable as earlier precedents.
+	before, err := d.WatchmanPrecedentsBefore(1, "finish", t0.Add(3*time.Hour), 10)
+	require.NoError(t, err)
+	require.Len(t, before, 3)
+}

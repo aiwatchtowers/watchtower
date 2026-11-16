@@ -25,11 +25,13 @@ var (
 // runs; tests replace it.
 var watchmanBacktestExe = os.Executable
 
-// LaunchWatchmanBacktest starts `<exe> watchman backtest --workbench N` as a
-// detached child in its own session (the specreview launcher's pattern: no
-// agent markers, output appended to <logDir>/watchman-backtest.log) and does
-// not wait for it; it is reaped in the background.
-func LaunchWatchmanBacktest(exe string, workbenchID int64, logDir string) error {
+// LaunchWatchmanBacktest starts `<exe> watchman backtest --workbench N` on
+// the given workspace and config file (the daemon's, so the child opens the
+// same database) as a detached child in its own session (the specreview
+// launcher's pattern: no agent markers, output appended to
+// <logDir>/watchman-backtest.log) and does not wait for it; it is reaped in
+// the background. Empty workspace or configPath leave the flag out.
+func LaunchWatchmanBacktest(exe string, workbenchID int64, workspace, configPath, logDir string) error {
 	if err := os.MkdirAll(logDir, 0o700); err != nil {
 		return fmt.Errorf("creating log dir: %w", err)
 	}
@@ -38,7 +40,7 @@ func LaunchWatchmanBacktest(exe string, workbenchID int64, logDir string) error 
 		return fmt.Errorf("opening watchman-backtest log: %w", err)
 	}
 	defer logFile.Close()
-	c := exec.Command(exe, "watchman", "backtest", "--workbench", strconv.FormatInt(workbenchID, 10))
+	c := exec.Command(exe, watchmanBacktestArgs(workbenchID, workspace, configPath)...)
 	c.Stdout, c.Stderr = logFile, logFile
 	c.Env = envWithoutAgentMarkers(os.Environ())
 	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -56,7 +58,8 @@ func init() {
 		Long: "For each category Watchman hides your newest 30 decisions and decides them again from what came before. " +
 			"A category is strong at 80 % agreement or more with at most 5 % wrong answers it was sure of; " +
 			"fewer than 30 decisions is not measured (no AI call). The verdict is go when 3 categories are strong, " +
-			"permission or review_code among them. Review approvals and hunk undos are not measured in phase 1. " +
+			"permission or review_code among them. Review approvals, hunk undos, merges and your own rewrites are not " +
+			"measured in phase 1; review_code is measured on your review comments only. " +
 			"Each decision is one strong-model call (plus a light-model judge for free answers), so a full run costs " +
 			"real money (the cost shown is an estimate); the daemon reruns it weekly in the background.",
 		Args: cobra.NoArgs,
@@ -94,7 +97,8 @@ type watchmanBacktestRowJSON struct {
 
 // watchmanBacktestNotMeasuredNote names what the phase-1 backtest leaves out
 // (their situations give the answer away, or they are never anything else).
-const watchmanBacktestNotMeasuredNote = "Review approvals and hunk undos are not measured in phase 1."
+const watchmanBacktestNotMeasuredNote = "Review approvals, hunk undos, merges and your own rewrites are not measured in phase 1; " +
+	"review_code is measured on your review comments only."
 
 func runWatchmanBacktest(cmd *cobra.Command, _ []string) error {
 	// Spending on strong-model calls is the owner's verb.
@@ -167,4 +171,16 @@ func runWatchmanBacktest(cmd *cobra.Command, _ []string) error {
 	}
 	fmt.Fprintf(out, "Verdict: %s (cost ~$%.2f, an estimate from the token counts where the provider reports none)\n", b.Verdict, b.CostUSD)
 	return nil
+}
+
+// watchmanBacktestArgs is the detached child's argv after the binary.
+func watchmanBacktestArgs(workbenchID int64, workspace, configPath string) []string {
+	args := []string{"watchman", "backtest", "--workbench", strconv.FormatInt(workbenchID, 10)}
+	if workspace != "" {
+		args = append(args, "--workspace", workspace)
+	}
+	if configPath != "" {
+		args = append(args, "--config", configPath)
+	}
+	return args
 }

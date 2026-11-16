@@ -113,7 +113,8 @@ func TestWatchmanBacktest_JSONKeysPinned(t *testing.T) {
 	out, err = runWatchmanBacktestCmd(t, wb)
 	require.NoError(t, err)
 	assert.Contains(t, out, "permission   strong: 30 of 30 agree, 0 wrong while sure (~$0.00)")
-	assert.Contains(t, out, "Review approvals and hunk undos are not measured in phase 1.")
+	assert.Contains(t, out, "Review approvals, hunk undos, merges and your own rewrites are not measured in phase 1")
+	assert.Contains(t, out, "review_code is measured on your review comments only")
 	assert.Contains(t, out, "Verdict: stop (cost ~$0.00, an estimate")
 }
 
@@ -130,7 +131,7 @@ func readStampFile(t *testing.T, path string) time.Time {
 
 func TestLaunchWatchmanBacktest_MissingBinary(t *testing.T) {
 	logs := filepath.Join(t.TempDir(), "logs")
-	err := LaunchWatchmanBacktest(filepath.Join(t.TempDir(), "no-such-binary"), 7, logs)
+	err := LaunchWatchmanBacktest(filepath.Join(t.TempDir(), "no-such-binary"), 7, "acme", "", logs)
 	require.ErrorContains(t, err, "starting the backtest")
 	_, statErr := os.Stat(filepath.Join(logs, "watchman-backtest.log"))
 	require.NoError(t, statErr)
@@ -156,4 +157,10 @@ func TestWatchmanBacktest_RefusedUnderAgent(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), agentEnvMarkers[0])
 	assert.Zero(t, gen.calls)
+}
+
+func TestWatchmanBacktestArgs_PassWorkspaceAndConfig(t *testing.T) {
+	assert.Equal(t, []string{"watchman", "backtest", "--workbench", "7", "--workspace", "acme", "--config", "/etc/wt.yaml"},
+		watchmanBacktestArgs(7, "acme", "/etc/wt.yaml"))
+	assert.Equal(t, []string{"watchman", "backtest", "--workbench", "7"}, watchmanBacktestArgs(7, "", ""))
 }

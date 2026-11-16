@@ -946,7 +946,7 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 		if err != nil {
 			return fmt.Errorf("locating the watchtower binary: %w", err)
 		}
-		return LaunchWatchmanBacktest(exe, workbenchID, filepath.Join(cfg.WorkspaceDir(), "logs"))
+		return LaunchWatchmanBacktest(exe, workbenchID, cfg.ActiveWorkspace, flagConfig, filepath.Join(cfg.WorkspaceDir(), "logs"))
 	})
 	// Every pipeline is constructed unconditionally now (Task 3 demoted
 	// digest.enabled from a master switch to a per-phase gate) — each is a
