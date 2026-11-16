@@ -272,6 +272,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
                     sessions: { await Self.finishPendingDeletes(app.workbenchesViewModel) }
                 )
             },
+            stopBackgroundCleanups: { await Self.stopBackgroundCleanups(app.workbenchesViewModel) },
             reply: { ok in sender.reply(toApplicationShouldTerminate: ok) }
         )
     }
@@ -316,6 +317,14 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// The quit's board #1716 step: deleted sessions' background cleanups
+    /// stop (their process groups SIGTERM, SIGKILL after 5 s) and no other
+    /// starts; their rows keep `delete_requested_at` for the next launch.
+    @MainActor
+    static func stopBackgroundCleanups(_ workbenches: WorkbenchesViewModel?) async {
+        await workbenches?.stopAutoCleanupForQuit()
+    }
+
     /// The terminate decision, extracted from `applicationShouldTerminate` so
     /// the `managesLifecycle` gate is pinned by tests without a live
     /// NSApplication: a duplicate instance must quit immediately and must
@@ -331,6 +340,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         detachTerminals: @escaping () async -> Void = {},
         stopDaemon: @escaping () async -> Void,
         finishPendingDeletes: @escaping () async -> Void = {},
+        stopBackgroundCleanups: @escaping () async -> Void = {},
         reply: @escaping (Bool) -> Void
     ) -> NSApplication.TerminateReply {
         guard managesLifecycle else { return .terminateNow }
@@ -343,6 +353,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
             detachTerminals: detachTerminals,
             stopDaemon: stopDaemon,
             finishPendingDeletes: finishPendingDeletes,
+            stopBackgroundCleanups: stopBackgroundCleanups,
             reply: reply
         )
     }

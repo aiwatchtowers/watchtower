@@ -269,8 +269,15 @@ func TestListTerminalSessionActivity_EverySessionWithItsCwd(t *testing.T) {
 	if got[0] != want {
 		t.Fatalf("row = %+v, want %+v", got[0], want)
 	}
-	if got[1].ID != standalone || got[1].WorkbenchID != 0 || got[1].AgentCwd != "" || got[1].AgentStateAt != "" || got[1].Finished {
+	if got[1].ID != standalone || got[1].WorkbenchID != 0 || got[1].AgentCwd != "" || got[1].AgentStateAt != "" ||
+		got[1].Finished || got[1].DeleteRequested {
 		t.Fatalf("standalone row = %+v", got[1])
+	}
+	// A row being deleted is still listed, with the flag (ask #1389).
+	setDeleteRequestedForTest(t, d, inWB, ledgerAt)
+	got, err = d.ListTerminalSessionActivity(ctx)
+	if err != nil || len(got) != 2 || !got[0].DeleteRequested || got[1].DeleteRequested {
+		t.Fatalf("after the delete request = %+v, %v; want row %d flagged", got, err, inWB)
 	}
 }
 
@@ -386,5 +393,73 @@ func TestSessionWorktree_UpgradedRowWithNoLastAt(t *testing.T) {
 	}
 	if stale() {
 		t.Fatal("touched in this run: not stale")
+	}
+}
+
+// setDeleteRequestedForTest marks session id as deleting the way the Desktop,
+// the column's only writer, does (spec §4): Go has no writer of it.
+func setDeleteRequestedForTest(t *testing.T, d *DB, id int64, at string) {
+	t.Helper()
+	if _, err := d.Exec(`UPDATE terminal_sessions SET delete_requested_at = ? WHERE id = ?`, at, id); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSessionAutoCleanupColumns(t *testing.T) {
+	d := openTestDB(t)
+	id := newAgentStateRow(t, d, newTestWorkbench(t, d), "claude", agentStateUUID)
+	var got sql.NullString
+	if err := d.QueryRow(`SELECT delete_requested_at FROM terminal_sessions WHERE id = ?`, id).Scan(&got); err != nil || got.Valid {
+		t.Fatalf("a new row's delete_requested_at = %v, %v; want NULL", got, err)
+	}
+	if at, err := d.TerminalDeleteRequestedAt(context.Background(), id); err != nil || at != "" {
+		t.Fatalf("TerminalDeleteRequestedAt of a new row = %q, %v; want \"\"", at, err)
+	}
+	setDeleteRequestedForTest(t, d, id, ledgerAt)
+	if err := d.QueryRow(`SELECT delete_requested_at FROM terminal_sessions WHERE id = ?`, id).Scan(&got); err != nil || got.String != ledgerAt {
+		t.Fatalf("delete_requested_at = %v, %v; want %s", got, err, ledgerAt)
+	}
+	if at, err := d.TerminalDeleteRequestedAt(context.Background(), id); err != nil || at != ledgerAt {
+		t.Fatalf("TerminalDeleteRequestedAt = %q, %v; want %s", at, err, ledgerAt)
+	}
+	if _, err := d.TerminalDeleteRequestedAt(context.Background(), id+100); !errors.Is(err, ErrTerminalSessionNotFound) {
+		t.Fatalf("TerminalDeleteRequestedAt of a missing row = %v; want ErrTerminalSessionNotFound", err)
+	}
+}
+
+// The ledger stays as it is on main (auto cleanup spec 2026-11-10 §6): cwd
+// sightings only, no source/kind columns. Every cwd-hook writer and reader
+// works on a freshly migrated database and sees the row — a leftover
+// source/kind reference would fail only at run time ("no such column"),
+// where the hook logs it and carries on.
+func TestSessionLedgerCwdWritersOnMigratedSchema(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, wb, "claude", agentStateUUID)
+
+	var extra int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('terminal_session_worktrees')
+		WHERE name IN ('source', 'kind')`).Scan(&extra); err != nil || extra != 0 {
+		t.Fatalf("terminal_session_worktrees source/kind columns = %d, %v; the ledger keeps main's columns", extra, err)
+	}
+
+	const root, branch = "/tmp/example/wt", "feat/x"
+	if got, err := d.RecordSessionWorktree(ctx, nil, id, root, branch, ledgerAt); err != nil || !got {
+		t.Fatalf("RecordSessionWorktree = %v, %v; want recorded", got, err)
+	}
+	if has, _, full, err := d.HasSessionWorktree(ctx, id, root, branch); err != nil || !has || full {
+		t.Fatalf("HasSessionWorktree = has %v, full %v, %v; want has, not full", has, full, err)
+	}
+	if touched, err := d.TouchSessionWorktree(ctx, id, root, branch, "2026-10-12T13:00:00.000Z"); err != nil || !touched {
+		t.Fatalf("TouchSessionWorktree = %v, %v; want touched", touched, err)
+	}
+	ws, err := d.SessionWorktrees(ctx, id)
+	if err != nil || len(ws) != 1 || ws[0].Root != root || ws[0].Branch != branch {
+		t.Fatalf("SessionWorktrees = %+v, %v; want the one row", ws, err)
+	}
+	m, err := d.WorkbenchSessionWorktrees(ctx, wb)
+	if err != nil || len(m[root]) != 1 || m[root][0] != id {
+		t.Fatalf("WorkbenchSessionWorktrees = %v, %v; want %s → [%d]", m, err, root, id)
 	}
 }

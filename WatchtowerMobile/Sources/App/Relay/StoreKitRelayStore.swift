@@ -55,9 +55,13 @@ final class StoreKitRelayStore: RelaySubscriptionStore, @unchecked Sendable {
 
     func updates() -> AsyncStream<RelayTransaction> {
         AsyncStream { continuation in
-            // The StoreKit stream starts here, on first use, and stops with the consumer.
+            // StoreKit's iterator is made here, before `updates()` returns: it buffers from its making, so an event
+            // the caller causes after this call is delivered. Made inside the task, it missed events whenever the
+            // task started late. It stops with the consumer.
+            let source = UpdatesSource(iterator: Transaction.updates.makeAsyncIterator())
             let task = Task { [self] in
-                for await verification in Transaction.updates {
+                var iterator = source.iterator
+                while let verification = await iterator.next() {
                     guard let transaction = take(verification) else { continue }
                     continuation.yield(transaction)
                 }
@@ -65,6 +69,11 @@ final class StoreKitRelayStore: RelaySubscriptionStore, @unchecked Sendable {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    /// Carries StoreKit's iterator, which is not `Sendable`, into the one task that reads it.
+    private struct UpdatesSource: @unchecked Sendable {
+        let iterator: Transaction.Transactions.AsyncIterator
     }
 
     func finish(_ transaction: RelayTransaction) async {

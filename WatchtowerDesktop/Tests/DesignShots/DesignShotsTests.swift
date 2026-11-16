@@ -94,6 +94,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(WatchmanShotFixtures.shots)
     }
 
+    /// The adaptive Slack sync plan's Statistics mockups (#1709).
+    func testSlackAdaptiveSyncShotsRender() throws {
+        try renderShots(SlackAdaptiveSyncShotFixtures.shots)
+    }
+
     private func renderShots(_ shots: [DesignShot]) throws {
         guard let outputDir = ProcessInfo.processInfo.environment["DESKTOP_SHOTS_DIR"]
             .flatMap({ $0.isEmpty ? nil : URL(fileURLWithPath: $0, isDirectory: true) })
@@ -216,5 +221,12 @@ extension DesignShotsTests {
     /// The big-branch review frames only (board #1025), for iterating on them.
     func testBigBranchReviewShotsRender() throws {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("big-branch-") })
+    }
+}
+
+extension DesignShotsTests {
+    /// The auto-cleanup states only (board #1716), for iterating on them.
+    func testAutoCleanupShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("auto-cleanup-") })
     }
 }

@@ -584,7 +584,7 @@ re-checked in its Task 0; the plan's Global Constraints, Decisions and Known lim
   body fixed (`Answer ready`, `The answer stopped`, `Waiting for your approval`), never answer text. Sources:
   the runner's `OnTurnEnd` for the hub's own turns (`complete` = answer, `partial`/`error` = stopped), and a
   check on every `data_version` change (plus the chat timer's 5 s backstop) for the Mac's: a `chat_turn_leases`
-  row with `owner='desktop'` that disappeared with the turn's assistant row present, and a newly pending
+  row with `owner='desktop'` (main chats only, `context_type IS NULL`, as for every chat push) that disappeared with the turn's assistant row present, and a newly pending
   `agent_actions` row (`trust_at_create='ask'`, chat turn) as the approval case. The first look only records
   (nothing pushes for what happened before the hub started). No push when an `open` `chat_feed_request` for the
   conversation arrived in the last 90 s (`ChatWatches.Open`; a prefetch never counts). The pusher's owner-away and

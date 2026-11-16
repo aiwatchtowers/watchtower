@@ -21,8 +21,10 @@ Out of scope here: the screens — a separate spec with DesignShotCatalog mockup
 |---|---|---|
 | D1 | The modes are called **Full / Live** (Полный / Живой) in the UI and in code (`full`, `live`) | ask #1294 |
 | D2 | Live is always on where the connector works, also next to Full: local first, the connector for gaps | ask #1294, comment #866 |
-| D3 | Full syncs only the user's own scope (DMs, group DMs, mentions of the user, channels the user is a member of); other public channels are reached through Live | ask #1294 |
-| D12 | Two speeds: DMs and mentions every 15 minutes, member channels every 60 minutes | ask #1294 (the chosen option: "ЛС/упоминания каждые 15 мин, свои каналы реже (30–60 мин)") |
+| D3 | *Superseded by D16.* Full syncs only the user's own scope (DMs, group DMs, mentions of the user, channels the user is a member of); other public channels are reached through Live | ask #1294 |
+| D12 | *Superseded by D16.* Two speeds: DMs and mentions every 15 minutes, member channels every 60 minutes | ask #1294 (the chosen option: "ЛС/упоминания каждые 15 мин, свои каналы реже (30–60 мин)") |
+| D16 | Full keeps the blanket sync of everything the user can see, for every account, with a retry chain through rate limits, self-balancing request packing, a cadence that adapts to data volume and 429s, and a per-channel **Stop syncing** plus suggestions of channels not to sync | ask #1337 |
+| D17 | D16's details as the adaptive sync plan states them: ingestion-ordered Slack inbox detection (`synced_at`); resume position and learned rate kept in memory; mentions in an excluded channel still stored; stored data of an excluded channel kept (and muted); the Stop syncing suggestion rule (muted 30+ days with no message or mention from the user, or ≥ 90% bot messages with no value signals); a 10-minute fetch deadline and a 60-minute cadence cap; `channel_in_scope: false` for an excluded channel; per-tier AIMD (start at the documented tier rate, up to twice, down to a quarter); volume thresholds (5 pages, 5 messages over 3 runs); Sync again catches up the excluded period and lifts only a mute Stop syncing set. Contract SYNCEX-01 (Stop syncing honoured on every save path) approved | ask #1350 |
 | D13 | No client secret is stored anywhere; everybody, the admin included, logs in with PKCE | conversation 2026-11-14 (the owner rejected any dependence on the admin's Mac, ask #1301) |
 | D4 | Entry into Full: the app in Slack hands out the connect link, plus an MDM key | ask #1294, refined by D7 |
 | D5 | No company hub, nothing hosted that carries Slack data | comment #868 |
@@ -56,25 +58,20 @@ Listing the connector's tools is not enough (Codex lists the 38 Slack tools befo
 - Freshness: every chat turn and automation run that calls a Slack connector tool also writes the status (`ok` on a successful read, the failure class otherwise), so the status is as fresh as the last real use. The screen shows the time ("Live checked 5 h ago") next to the mode, never a bare "on".
 - Team mapping: Codex returns team ids. Claude's connector covers one workspace; the probe reads the team from the first result's permalink domain and matches it to `slack_accounts.domain`, else stores it as `unknown` (the chat still uses it, the Connections screen says "workspace not identified").
 
-## 2. Full: syncing only the user's own scope
+## 2. Full: adaptive sync of everything the user can see (D16)
 
-Measured cost model (Slack quotas are per method × workspace × app, so every person in a company shares one budget; `search.messages` ≈ 20/min ≈ 1,200/h per workspace):
+*Amended 2026-11-15 (ask #1337). This section replaced "syncing only the user's own scope" (D3, D12). Own-scope-only sync is dropped.*
 
-```
-calls per person per hour ≈ cycles per hour + messages seen per hour / 100   (+ one-time backfill)
-```
+Full keeps today's sync for every account: one blanket `search.messages after:D` a cycle (sorted by timestamp, ascending) saves what the user can see — DMs, group DMs, private channels the user is in, and public channels. On top of it come four things:
 
-Today's blanket search sees every public message. In a 1,000-person workspace with 20k public messages a day that is ≈ 12 calls/h per person — about 100 people before the whole company runs into 429s; a 60-minute cycle only reaches ≈ 130. Restricting to the user's own scope cuts the volume term roughly tenfold (an estimate; the spike measures it).
+1. **A retry chain that pushes through rate limits.** A 429 waits its `Retry-After` (the account-wide hold of the existing limiter) and the call is retried, with no fixed retry count, until the cycle's fetch deadline. Work fetched before a 429 is never thrown away: the search's page position is kept, and the next attempt (later in the same cycle, or in the next cycle) continues from it instead of starting the window again. The watermark still moves only when a window has been read to its end.
+2. **Self-balancing packing.** Each account's limiter keeps one bucket per Slack tier instead of today's single 40/min bucket for every method. Each bucket starts at the documented tier rate (20, 50 or 100 per minute) and probes up to twice that after runs of successes; a 429 halves it, down to a quarter of the documented rate (AIMD). Every call uses Slack's largest allowed page size. A small mention query (`<@user> after:D`) runs before the blanket search, so mentions and the Inbox stay fresh even when the blanket search is cut short.
+3. **Adaptive cadence.** How often the Slack sync runs follows the account's 429s and data volume. A run that hit 429s doubles the interval to the next Slack sync, up to 60 minutes, and its unfinished pages wait for that interval too. A clean, busy run (many pages) goes straight back to `sync.poll_interval`. Runs that bring almost nothing lengthen the interval step by step, up to 60 minutes. Other clean runs halve it toward the base. A clean run that stopped at its deadline with pages left is due again next cycle. The other sources keep the daemon's own interval.
+4. **"What I don't need".** The user can mark channels **Stop syncing**. The sync then stores no new messages from them, except messages that mention the user. **Sync again** fetches what was missed in a one-off, paced history fetch of that channel, and lifts the AI mute only if Stop syncing had set it. Statistics suggests channels to stop syncing, built on its existing recommendations (mute/leave/favorite). An excluded channel counts as out of the synced copy for the chat's `coverage`, so the chat asks Live for it.
 
-`search.messages` has no "only my channels" modifier (checked against Slack's search help). The spike (Task 1) settles which of these narrows the scope:
+Cost model (unchanged): calls per person per hour ≈ cycles per hour + public messages seen per hour / 100. With a shared per-workspace quota (`search.messages` ≈ 1,200/h), the volume term sets a ceiling of about 1,200 / (workspace messages per hour / 100) people, whatever the cadence: ≈ 145 people at 20k public messages a day. Adaptation keeps a growing workspace under the quota by spreading the shortfall across everyone's cadence instead of failing hard, and mentions stay first. Excluding a channel saves storage and AI work but not search calls, because the blanket search still returns its messages. The spike checks whether a short `-in:#channel` list can also take excluded channels out of the query.
 
-1. `search.messages` with `in:` for several member channels in one query — usable only if Slack ORs repeated `in:` and the query length allows useful groups.
-2. `conversations.history` with `oldest=` for member channels that changed, Tier 3 (≈ 50/min per workspace, internal apps keep it), with `users.conversations` refreshed once a cycle.
-3. Blanket search with `-in:` for non-member channels — rejected up front (unbounded query).
-
-Two speeds (D12): DMs, group DMs and mentions of the user (a `search.messages` query for the user's mention, so a mention in a channel the user is not in still arrives) every 15 minutes; member channels every 60 minutes; the history backfill covers the own scope only and keeps its one-chunk-per-cycle pacing. A `Retry-After` from Slack holds every Slack call of that account for its duration (existing limiter); a second 429 inside a cycle ends the cycle early.
-
-What leaves the local copy: public channels the user is not a member of. Channel digests, Catch-Up, people cards and the knowledge index lose them; the chat reaches them through Live. The guide says so.
+Inbox detection follows when a Slack message was stored (`messages.synced_at`), not its timestamp. Adaptive cadence and resumed pages store messages after the Inbox watermark has moved past their timestamps, and they must still be detected. The INBOX-09 extension is approved in ask #1337.
 
 ## 3. Live in the chat
 
@@ -142,8 +139,10 @@ PKCE refresh tokens expire after 30 days. The daemon refreshes a token when less
 | Probe | `Unknown tool` / admin not approved / 429 / 60 s connector timeout | `not_connected` / `needs_admin` / `unavailable` with `checked_at` | same |
 | Probe | the Mac sleeps or the app quits mid-probe | the child is reaped with its process group; no row written; next trigger probes again | `TestLiveProbe_KilledLeavesNoRow` |
 | Chat | the connector fails mid-turn | the answer uses the local data and says Live was unavailable; nothing retried silently (CHAT-02) | `TestChatLive_ConnectorErrorShown` |
-| Sync | membership changes | `users.conversations` each cycle; a left channel stops syncing, its data stays | `TestOwnScope_MembershipChange` |
-| Sync | shared quota 429 | `Retry-After` honoured account-wide; second 429 ends the cycle | `TestOwnScope_SecondRetryAfterEndsCycle` |
+| Sync | shared quota 429 | `Retry-After` honoured account-wide; retried until the cycle's fetch deadline; the rate halves (AIMD) and the cadence backs off | `TestAdaptive_RetryChainPushesThrough`, `TestAIMD_*`, `TestCadence_*` |
+| Sync | the deadline, a sleep or a quit mid-pagination | the page position is kept in memory and the next attempt resumes there; the watermark does not move; a restart re-reads the window (upserts) | `TestSearchResume_*` |
+| Sync | a message stored after the Inbox watermark passed its timestamp | detected, because detection follows `synced_at` | `TestInbox_HourlyLateMessageDetected` |
+| Sync | a channel marked **Stop syncing** | no new messages stored except mentions of the user; the data already stored stays | `TestSyncExcluded_*` |
 | Setup | config token expired or wrong | stop before any call; ask for a new one | `TestAppSetup_BadConfigToken` |
 | Setup | the app is created but `apps.manifest.update` fails | the app works; its description has no link; **Add the link to the app** retries with a fresh token | `TestAppSetup_LinkUpdateFails` |
 | Setup | the secret in the create response | dropped, never written anywhere | `TestAppSetup_SecretNeverStored` |
@@ -163,6 +162,8 @@ PKCE refresh tokens expire after 30 days. The daemon refreshes a token when less
 - `slack_live_status`: the probe, and any chat turn or automation run that called a Slack connector tool; an upsert keeps the row with the newest `checked_at`; the Desktop reads.
 - The app's description (`long_description`): only the setup (`apps.manifest.update`), once, or again from **Add the link to the app**; the last update wins.
 - `chat_conversations.live_slack_since`: the Desktop's turn store (Swift is the only writer of chat rows): `ChatTurnStore.stepStarted` when the first Slack connector step starts, and `finalizeTurn` as a backstop, whichever comes first; the value is the Live turn's assistant message id; set once, never moved or cleared. It is the only place the mark lives (no per-message column).
+- `channel_settings.sync_excluded` (D16): only `watchtower channels exclude|include`; the Desktop's Statistics runs that CLI; the last write wins; the sync reads it once per cycle. `catchup_from`/`catchup_to` (the Sync again catch-up, walked newest to oldest with a persisted upper bound): set by Sync again (from the search overlap before `excluded_at`), moved down and cleared by the sync, never moved while the channel is excluded; Stop syncing clears them too.
+- `messages.synced_at` (D16): the first insert of a row only (the sync's clock for new arrivals, the message's own time for history); any other insert leaves 0, which reads as the post time (no trigger); never updated.
 - `automation_runs.live_slack`: the executor of that run, set when the run's `agent()` step calls a Slack connector tool.
 
 ## 9. Promises → tasks → tests
@@ -171,13 +172,13 @@ PKCE refresh tokens expire after 30 days. The daemon refreshes a token when less
 |---|---|---|
 | Full/Live/Off derived the same in Go and Swift | T2 | `slack_mode_cases.json` in both suites |
 | A Live probe is a real read call | T3 | `TestLiveProbe_Classifies` |
-| Full syncs only the own scope, two speeds | T1 spike → T4 | `TestOwnScope_*` |
+| Full syncs everything visible, adaptively: retry chain, packing, cadence, Stop syncing (D16) | T4 (plan `2026-11-15-slack-adaptive-sync.md`) | `TestAdaptive_*`, `TestAIMD_*`, `TestCadence_*`, `TestSearchResume_*`, `TestSyncExcluded_*` |
 | Live answers never reach lasting stores, later turns included | T5 | `TestLIVE01_MarkedTurnsStayOutOfStores`, `TestLIVE01_LaterTurnsMarked`, Swift `LiveSlack01GuardTests` |
 | Slack connector writes need Approve | T5 | `connectorpolicy` table test |
 | Automations get Live only through `slack:live`, at most hourly | T6 | `TestManifest_SlackLive*` |
 | One-paste admin setup that resumes | T7 | `TestAppSetup_*` |
 | The connect listener never collides and needs the owner's press | T8 | `TestOAuthPortRanges_Disjoint`, `TestSlackConnectListener_*` |
-| Mentions of the user arrive even from channels they are not in | T4 | `TestOwnScope_MentionOutsideMembership` |
+| Mentions of the user arrive first, even when the blanket search is cut short | T4 | `TestAdaptive_MentionQueryFirst` |
 | The Live status is as fresh as its last real use | T3, T5 | `TestLiveStatus_UpdatedByChatUse` |
 | The connect link lives in the app's About page, nobody's Mac needed after setup | T7 | `TestAppSetup_WritesLinkToDescription` |
 | Link and MDM connect with PKCE, no secret | T8 | `TestSlackLinkConnect_*`, `policy_cases.json` |
@@ -185,7 +186,7 @@ PKCE refresh tokens expire after 30 days. The daemon refreshes a token when less
 | The shared app is retired, old accounts move | T9 | `TestSlack01_*` unchanged + `TestSharedAppBanner` |
 | Screens show the mode and honest empty states | screens spec | that spec's tests |
 
-Tasks: T1 spike (narrowing method, PKCE + rotation via manifest, OR of repeated `in:`, whether Slack renders a link in the app's `long_description` as clickable) — the plan depends on its result; T2 model + migration; T3 probe; T4 own-scope sync; T5 chat; T6 automations; T7 admin setup and the description link; T8 link, MDM, tokens; T9 retirement, guide and feature notes.
+Tasks: T1 spike (`-in:` for a short list of excluded channels, PKCE + rotation via manifest, whether Slack renders a link in the app's `long_description` as clickable) — the plan depends on its result; T2 model + migration; T3 probe; T4 adaptive sync (D16); T5 chat; T6 automations; T7 admin setup and the description link; T8 link, MDM, tokens; T9 retirement, guide and feature notes.
 
 ## 10. Inventory touched
 
@@ -197,5 +198,5 @@ Tasks: T1 spike (narrowing method, PKCE + rotation via manifest, OR of repeated 
 
 ## 11. Open
 
-- The spike's answer on narrowing (T1).
+- The spike's answer on `-in:` for excluded channels (T1); narrowing to the own scope is no longer needed (D16).
 - Anthropic's and OpenAI's view on background use of the connector (#1770).

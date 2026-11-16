@@ -5,6 +5,9 @@ package struct ChannelRecommendation: Identifiable {
         case mute
         case leave
         case favorite
+        /// Stop syncing (adaptive Slack sync, #1709): applied through
+        /// `watchtower channels exclude`.
+        case exclude
     }
 
     package var id: String { "\(action.rawValue)-\(channelID)" }

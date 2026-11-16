@@ -1,6 +1,11 @@
 package sessioncleanup
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 
 	"watchtower/internal/db"
@@ -15,17 +20,51 @@ import (
 // folder_path (symlink-resolved); placedRoot and placedBranch are its
 // worktree and worktree_branch owned by record (born no later than the row,
 // observePlacement); all "" for every other row.
+//
+// The facts Claude Code and git write themselves add to it (auto cleanup
+// spec 2026-11-10 §2): the session's subagent worktrees and their branches
+// (§2a, loadAgentFiles), its Claude scratchpad lanes (§2b, loadAgentFiles)
+// and the branches created in its own worktrees (§2c, loadHeadLogs).
+// ownRoots are the roots the cwd ledger, a subagent record or the
+// scratchpad gave (never a declared one): the worktrees §2c reads.
+// ledgerBranches are the ledger's branches with the roots they were seen
+// at; loadHeadLogs decides them. switchedTo are §2c candidates only
+// checked out in a session's worktree, listed so the plan shows them kept
+// as not_this_session; unknown are §2c candidates left undecided
+// (created_unknown).
 type observed struct {
-	roots, branches, named              map[string]bool
+	roots, ownRoots, branches, named map[string]bool
+	switchedTo, unknown              map[string]bool
+	ledgerBranches                   map[string][]string
+	// checkedOutOnly are the switchedTo a HEAD log itself showed (a
+	// candidate only checked out in a session's worktree), not a ledger
+	// branch left unproven: an apply's re-check lets them win over the
+	// plan's evidence.
+	checkedOutOnly map[string]bool
+	// evidence maps a branch §2a, §2b or §2c made the session's to the
+	// worktrees that showed it: an apply that removes such a worktree
+	// still knows whose the branch was (applier.ownedByRemoved).
+	evidence                            map[string][]string
 	placedCwd, placedRoot, placedBranch string
 }
 
+// own makes branch the session's on the evidence of the worktree at root.
+func (o observed) own(branch, root string) {
+	o.branches[branch] = true
+	if !slices.Contains(o.evidence[branch], root) {
+		o.evidence[branch] = append(o.evidence[branch], root)
+	}
+}
+
 func observe(rows []db.SessionWorktree, targetBranches, declaredWorktrees, declaredBranches []string) observed {
-	o := observed{roots: map[string]bool{}, branches: map[string]bool{}, named: map[string]bool{}}
+	o := observed{roots: map[string]bool{}, ownRoots: map[string]bool{}, branches: map[string]bool{},
+		named: map[string]bool{}, switchedTo: map[string]bool{}, unknown: map[string]bool{},
+		checkedOutOnly: map[string]bool{}, ledgerBranches: map[string][]string{}, evidence: map[string][]string{}}
 	for _, r := range rows {
-		o.roots[resolvePath(r.Root)] = true
+		root := resolvePath(r.Root)
+		o.roots[root], o.ownRoots[root] = true, true
 		if r.Branch != "" {
-			o.branches[r.Branch] = true
+			o.ledgerBranches[r.Branch] = append(o.ledgerBranches[r.Branch], root)
 		}
 	}
 	for _, p := range declaredWorktrees {
@@ -39,10 +78,63 @@ func observe(rows []db.SessionWorktree, targetBranches, declaredWorktrees, decla
 	return o
 }
 
-// sawWorktree: the session recorded or declared the root, or a branch a
-// target or the agent named is checked out there.
+// sawWorktree: the session recorded or declared the root (a subagent
+// worktree or a scratchpad lane included), or a branch a target, the agent
+// or an adopted lane named is checked out there.
 func (o observed) sawWorktree(w worktree) bool {
 	return o.roots[w.Root] || (w.Branch != "" && o.named[w.Branch])
+}
+
+// scratchLane reports whether root lies strictly inside
+// `<dir>/<any one segment>/<uuid>/` for one of dirs and one of ids' uuids
+// (an exact segment match), and that uuid's acquisition time.
+func scratchLane(dirs []string, ids map[string]time.Time, root string) (time.Time, bool) {
+	for _, dir := range dirs {
+		rest, ok := strings.CutPrefix(root, dir+"/")
+		if !ok {
+			continue
+		}
+		segs := strings.Split(rest, "/")
+		if len(segs) < 3 || segs[0] == "" || segs[2] == "" {
+			continue
+		}
+		if since, ok := ids[segs[1]]; ok {
+			return since, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// scratchBases is the set of temp roots Claude Code may write its
+// scratchpads under, symlink-resolved and deduplicated: /tmp (where the
+// CLI writes whatever this process's TMPDIR is), os.TempDir() and
+// $CLAUDE_CODE_TMPDIR when set. A base that does not resolve is left out.
+// A package variable so tests point it at a temp dir.
+var scratchBases = func() []string {
+	cands := []string{"/tmp", os.TempDir()}
+	if d := os.Getenv("CLAUDE_CODE_TMPDIR"); d != "" {
+		cands = append(cands, d)
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, c := range cands {
+		r, err := filepath.EvalSymlinks(c)
+		if err != nil || !filepath.IsAbs(r) || seen[r] {
+			continue
+		}
+		seen[r] = true
+		out = append(out, r)
+	}
+	return out
+}
+
+// scratchDirs is `<base>/claude-<uid>` under every scratch base.
+func scratchDirs() []string {
+	var out []string
+	for _, b := range scratchBases() {
+		out = append(out, filepath.Join(b, fmt.Sprintf("claude-%d", os.Getuid())))
+	}
+	return out
 }
 
 // placedWorktree reports whether w is the row's own placed worktree: a

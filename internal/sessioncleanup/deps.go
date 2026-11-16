@@ -96,11 +96,16 @@ func ownerWrite(args []string) bool {
 // SessionInfo is the slice of a terminal_sessions row a session-mode plan
 // needs. PlacedCwd and PlacedBranch are the row's folder_path and
 // worktree_branch when Watchtower placed it in a worktree it created (board
-// #229), both "" otherwise.
+// #229), both "" otherwise. Kind is the row's kind (claude, codex, shell).
+// Ended is the row's delete_requested_at (board #1716): its terminal had
+// ended by then; zero when the row is not being deleted (or the stamp does
+// not parse), which bounds nothing.
 type SessionInfo struct {
 	ID, WorkbenchID         int64
 	CreatedAt               time.Time
 	PlacedCwd, PlacedBranch string
+	Kind                    string
+	Ended                   time.Time
 }
 
 // SessionActivity is one terminal session, of any workbench, as the in-use
@@ -114,6 +119,8 @@ type SessionActivity struct {
 	ReportedAt  time.Time // agent_state_at; zero = never reported
 	LastActive  time.Time // last_active_at
 	Finished    bool
+	// DeleteRequested: the row has delete_requested_at (board #1716).
+	DeleteRequested bool
 }
 
 // Store is what a plan reads from the database. It has no write method: a
@@ -124,6 +131,12 @@ type Store interface {
 	// SessionTargetBranches is the non-empty `branch` of every target the
 	// session linked (terminal_session_targets, PROJ-14).
 	SessionTargetBranches(ctx context.Context, sessionID int64) ([]string, error)
+	// AgentSessionIDs is every agent session id the row has had (history
+	// plus the current claude_session_id), each with when the row acquired it.
+	AgentSessionIDs(ctx context.Context, sessionID int64) ([]db.AgentSessionID, error)
+	// AgentSessionIDOwners maps each uuid to every terminal session row
+	// whose history or current id holds it.
+	AgentSessionIDOwners(ctx context.Context, uuids []string) (map[string][]int64, error)
 	WorkbenchFolder(ctx context.Context, workbenchID int64) (string, error)
 	// WorkbenchFolders is every workbench's folder_path.
 	WorkbenchFolders(ctx context.Context) ([]string, error)
@@ -183,6 +196,10 @@ type Deps struct {
 	// Results stores a session-mode apply's result (cleanup_result); nil
 	// leaves it unsaved and says so in Result.ResultError.
 	Results ResultStore
+	// ClaudeProjects is Claude Code's projects directory, where the
+	// subagent records are read (auto cleanup spec 2026-11-10 §2a): the one
+	// the session feed reads; nil = ~/.claude/projects. "" = unknown.
+	ClaudeProjects func() string
 	// OrphanGrace is how long an apply waits for SIGTERMed orphans to exit
 	// before it keeps the worktree; 0 = 5 s (spec §7).
 	OrphanGrace time.Duration
