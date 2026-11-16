@@ -175,6 +175,11 @@ final class WorkbenchesViewModel {
     /// delete request, a Delete Anyway's DELETE: the other actions refuse
     /// the row meanwhile.
     var autoCleanupBusy: Set<Int64> = []
+    /// Per row, the Resumes whose delete-request write is in flight: a
+    /// further Resume of the same row joins them (every click resumes
+    /// through that write, a fast A → B → A included), it is not refused
+    /// as a transition. The row leaves `autoCleanupBusy` with the last.
+    @ObservationIgnored var resumesClearing: [Int64: Int] = [:]
     /// Rows still marked deleted whose terminal was live at launch: queued
     /// for their cleanup once that terminal ends.
     @ObservationIgnored var deletingLiveAtLaunch: [Int64: PendingSessionDeletes.Entry] = [:]
