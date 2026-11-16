@@ -37,6 +37,8 @@ final class ScreenshotTourTests: XCTestCase {
     private static let onlyRelayPhase4 = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_ONLY"] == "relay-phase4"
     /// `SHOTS_ONLY=relay-phase5` runs `testTheRelayPhase5Shots` alone, the same way.
     private static let onlyRelayPhase5 = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_ONLY"] == "relay-phase5"
+    /// `SHOTS_ONLY=chat` runs `testTheChatShots` alone: the Chats tab's states (iPhone chat mockups 1a–1j).
+    private static let onlyChat = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_ONLY"] == "chat"
 
     func testTheRelayPhase4Shots() async throws {
         guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"], Self.onlyRelayPhase4 else {
@@ -66,8 +68,23 @@ final class ScreenshotTourTests: XCTestCase {
         XCTAssertEqual(written.count, 3 * rows.count)
     }
 
+    func testTheChatShots() async throws {
+        guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"], Self.onlyChat else {
+            throw XCTSkip("Only with make mobile-shots SHOTS_ONLY=chat")
+        }
+        let dir = URL(fileURLWithPath: path, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let (root, demo) = try makeDemoRoot()
+        try await poll({ Self.isHydrated(root.env) }, "the demo seed hydrated")
+        let rows = try await captureChats(demo: demo, host: ScreenshotHost(directory: dir, env: root.env, linking: root.linking))
+        let written = try FileManager.default.contentsOfDirectory(atPath: path)
+            .filter { name in rows.contains { name.hasPrefix($0.number + "-") } && name.hasSuffix(".png") }
+        XCTAssertEqual(written.count, 3 * rows.count)
+    }
+
     func testTheTour() async throws {
-        guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"], !Self.onlyRelayPhase4, !Self.onlyRelayPhase5 else {
+        guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"], !Self.onlyRelayPhase4, !Self.onlyRelayPhase5,
+              !Self.onlyChat else {
             throw XCTSkip("Screenshot tour: run make mobile-shots")
         }
         let dir = URL(fileURLWithPath: path, isDirectory: true)
@@ -81,6 +98,8 @@ final class ScreenshotTourTests: XCTestCase {
             try await host.capture("\(shot.number)-\(shot.slug)", shot.make(root.env), endName: end)
         }
         let meetingRows = try await captureMeetingSoon(host: host)
+        // Before the Mac falls asleep for good: the chat frames' chip is online but in 1d.
+        let chatRows = try await captureChats(demo: demo, host: host)
         let asleepRows = try await captureMacAsleep(root.env, demo: demo, host: host)
             + (try await captureSessionStates(root.env, demo: demo, host: host))
             + (try await captureAskSources(root.env, demo: demo, host: host))
@@ -91,7 +110,8 @@ final class ScreenshotTourTests: XCTestCase {
         let phase4Rows = try await captureRelayPhase4(host: host)
         let phase5Rows = try await captureParkedFeed(into: dir, linking: root.linking)
         try ScreenshotHost.writeIndex(
-            Self.indexRows(shots) + meetingRows + asleepRows + recorderRows + outboxRows + relayRows + onRelayRows + phase4Rows + phase5Rows,
+            Self.indexRows(shots) + meetingRows + asleepRows + recorderRows + outboxRows + relayRows + onRelayRows + phase4Rows + phase5Rows
+                + chatRows,
             to: dir)
 
         let pngs = try FileManager.default
@@ -100,7 +120,7 @@ final class ScreenshotTourTests: XCTestCase {
         XCTAssertEqual(
             pngs.count,
             2 * (shots.count + shots.filter(\.hasEnd).count + meetingRows.count + asleepRows.count + recorderRows.count + outboxRows.count)
-                + 3 * (relayRows.count + onRelayRows.count + phase4Rows.count + phase5Rows.count)
+                + 3 * (relayRows.count + onRelayRows.count + phase4Rows.count + phase5Rows.count + chatRows.count)
         )
         for png in pngs {
             XCTAssertGreaterThan(try png.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0, 0, png.lastPathComponent)
@@ -142,6 +162,176 @@ final class ScreenshotTourTests: XCTestCase {
         env.activate(DemoSeed.primary.hubID)
         let demo = DemoHub(transport: try XCTUnwrap(primary), defaults: defaults)
         return (try AppRoot.demo(env, defaults: defaults), demo)
+    }
+
+    /// C1a–C1k (iPhone chat mockups 1a–1j, spec §6.1–6.2): the Chats tab in the full app, light/dark/narrow. 1a is the
+    /// demo hub's own chat_list through the replica; every other state feeds the tab its own center and gate inputs.
+    /// 1d goes last: it makes the demo Mac asleep, so the chip agrees with the line.
+    private func captureChats(demo: DemoHub, host: ScreenshotHost) async throws -> [ScreenshotHost.IndexRow] {
+        let env = host.env
+        let now = Date()
+        var rows: [ScreenshotHost.IndexRow] = []
+        func shot(_ number: String, _ slug: String, _ reached: String, _ chatsShot: ChatsShot?) async throws {
+            env.navigation.tab = .chats
+            env.navigation.chatsPath = []
+            // 1.5 s for the tab bar's selection. In the dark frames that show the list, iOS 26 still draws the bar's lens
+            // over Now (the same at 0.6, 1.5 and 3 s): a capture artifact of the glass tab bar, not a transition.
+            try await host.captureThree("\(number)-\(slug)", RootTabView(chatsShot: chatsShot), settle: .milliseconds(1_500))
+            rows.append(ScreenshotHost.IndexRow(
+                number: number, view: "ChatsTabView", source: "Features/Chats/ChatListView.swift", reached: "full app, \(reached), light/dark/narrow"
+            ))
+        }
+        // The undo bar stays up for the frame: its timer never ends here.
+        let holds: @Sendable (Duration) async throws -> Void = { _ in try await Task.sleep(for: .seconds(86_400)) }
+        func center(_ list: ChatList?, searches: [String: ChatSearch] = [:]) -> ChatsCenter {
+            Self.chatCenter(list, searches: searches)
+        }
+        func heartbeat(chat: String?, reason: ChatOffReason? = nil, kind: HubKind? = nil, at: Date = now) -> HeartbeatPayload {
+            Self.chatHeartbeat(chat: chat, reason: reason, kind: kind, at: at)
+        }
+        let relay = HubRoute.hostedRelay(macDeviceID: DemoSeed.Relay.workMac)
+        let on = heartbeat(chat: "on")
+        let list = try DemoSeed.Chat.list(now: now)
+        func grant(chat: Bool) -> DeviceGrant {
+            DeviceGrant(
+                deviceID: DemoSeed.device.deviceID, hubID: DemoSeed.hubID, name: DemoSeed.device.name, scope: .private, linked: true,
+                typingAllowed: true, startSessionsAllowed: true, chatAllowed: chat
+            )
+        }
+
+        try await shot("C1a", "chats-list", "the demo hub's chat_list", nil)
+        try await shot("C1b", "chats-empty", "no chats", ChatsShot(center: center(ChatList(conversations: [])), heartbeat: on, route: relay))
+        try await shot("C1c", "chats-loading", "no chat_list yet", ChatsShot(center: center(nil), heartbeat: on, route: relay))
+        try await shot(
+            "C1e", "chats-needs-relay", "hub on iCloud",
+            ChatsShot(center: center(nil), heartbeat: heartbeat(chat: "off", reason: .notRelay), route: .cloudKit(.private))
+        )
+        try await shot(
+            "C1f", "chats-needs-update", "no chat capability", ChatsShot(center: center(nil), heartbeat: heartbeat(chat: nil), route: relay)
+        )
+        try await shot(
+            "C1g", "chats-not-allowed", "no chat grant", ChatsShot(center: center(nil), heartbeat: on, route: relay, grant: grant(chat: false))
+        )
+        try await shot(
+            "C1g2", "chats-not-allowed-server", "no chat grant on a server hub",
+            ChatsShot(center: center(nil), heartbeat: heartbeat(chat: "on", kind: .server), route: relay, grant: grant(chat: false))
+        )
+        try await shot(
+            "C1h", "chats-error", "chat_list error, no rows",
+            ChatsShot(center: center(ChatList(conversations: [], error: "read_failed")), heartbeat: on, route: relay)
+        )
+        let searching = center(list, searches: [DemoSeed.Chat.searchQuery: DemoSeed.Chat.search(now: now)])
+        searching.search.setQuery(DemoSeed.Chat.searchQuery)
+        try await shot("C1i", "chats-search", "search \"billing\" with the Mac's hits", ChatsShot(center: searching, heartbeat: on, route: relay))
+        let deleting = Self.chatCenter(list, sleep: holds)
+        deleting.rowActions.delete(5)
+        try await shot("C1j", "chats-undo-delete", "a chat deleted, the Undo bar up", ChatsShot(center: deleting, heartbeat: on, route: relay))
+        try await shot(
+            "C1k", "chats-turned-off", "the organization's policy",
+            ChatsShot(center: center(nil), heartbeat: heartbeat(chat: "off", reason: .policy), route: relay)
+        )
+
+        let approving = DeviceGrant(
+            deviceID: DemoSeed.device.deviceID, hubID: DemoSeed.hubID, name: DemoSeed.device.name, scope: .private, linked: true,
+            typingAllowed: true, startSessionsAllowed: true, permissionsAllowed: true, chatAllowed: true
+        )
+        rows += try await captureConversations(host: host, list: list, heartbeat: on, relay: relay, grant: approving, now: now)
+
+        // 1d: the Mac asleep (its heartbeat 40 min old), the last list the phone holds.
+        let stale = now.addingTimeInterval(-2_400)
+        let beat = try XCTUnwrap(DemoSeed.records(now: stale).first { $0.recordName == HeartbeatPayload.recordName })
+        let sealing = DemoSeed.hubTransport(inner: demo.transport, seq: DemoSeed.hubSeq(defaults: demo.defaults, now: Date()))
+        try await sealing.save([beat])
+        _ = await env.refresh(.pull)
+        try await poll({ env.macReachability(now: Date()) != .online }, "the demo Mac fell asleep")
+        try await shot(
+            "C1d", "chats-mac-asleep", "Mac asleep, the held list",
+            ChatsShot(
+                center: center(DemoSeed.Chat.asleepList(now: now)), heartbeat: heartbeat(chat: "on", at: stale), route: relay,
+                mac: .asleep(lastSeen: stale)
+            )
+        )
+        return rows
+    }
+
+    /// C2a–C2i, C3a–C3c (iPhone chat mockups 2a–2i, 3a–3c): each conversation in the full app over its own center;
+    /// the sheets on their own.
+    private func captureConversations(
+        host: ScreenshotHost, list: ChatList, heartbeat: HeartbeatPayload, relay: HubRoute, grant: DeviceGrant, now: Date
+    ) async throws -> [ScreenshotHost.IndexRow] {
+        typealias Feeds = DemoSeed.Chat.Feeds
+        let env = host.env
+        var rows: [ScreenshotHost.IndexRow] = []
+        let holds: @Sendable (Duration) async throws -> Void = { _ in try await Task.sleep(for: .seconds(86_400)) }
+        func center(_ feed: ChatFeed?) -> ChatsCenter {
+            let center = ChatsCenter(sender: ChatSender { _, _ in "" }, sleep: holds)
+            var snapshot = ChatsSnapshot(list: list)
+            if let feed { snapshot.feeds[feed.conversation.id] = ChatFeedEntry(feed: feed, payload: Data()) }
+            center.apply(snapshot)
+            return center
+        }
+        func shot(
+            _ number: String, _ slug: String, _ reached: String, _ route: ChatRoute, _ center: ChatsCenter, mac: MacReachability = .online
+        ) async throws {
+            env.navigation.tab = .chats
+            env.navigation.chatsPath = [route]
+            let chats = ChatsShot(center: center, heartbeat: heartbeat, route: relay, grant: grant, mac: mac)
+            try await host.captureThree("\(number)-\(slug)", RootTabView(chatsShot: chats))
+            rows.append(ScreenshotHost.IndexRow(
+                number: number, view: "ChatConversationView", source: "Features/Chats/ChatConversationView.swift",
+                reached: "full app, \(reached), light/dark/narrow"
+            ))
+        }
+        func sheet(_ number: String, _ slug: String, _ view: some View, _ source: String) async throws {
+            try await host.captureThree("\(number)-\(slug)", view)
+            rows.append(ScreenshotHost.IndexRow(number: number, view: source, source: "Features/Chats/\(source).swift", reached: "sheet alone"))
+        }
+        try await shot("C2a", "chat-done", "a finished turn", ChatRoute(id: Feeds.roadmap), center(Feeds.done(now: now)))
+        try await shot("C2b", "chat-answering", "the hub answers", ChatRoute(id: Feeds.roadmap), center(Feeds.busy(now: now)))
+        try await shot("C2c", "chat-approvals", "two actions wait", ChatRoute(id: Feeds.release), center(Feeds.waiting(now: now)))
+        try await shot("C2d", "chat-artifact-error", "an artifact and a stopped answer", ChatRoute(id: Feeds.vendor),
+                       center(Feeds.artifactAndError(now: now)))
+        try await shot("C2e", "chat-mac-asleep", "the held copy, the Mac asleep", ChatRoute(id: Feeds.billing), center(Feeds.held(now: now)),
+                       mac: .asleep(lastSeen: now.addingTimeInterval(-2_400)))
+        try await shot("C2f", "chat-answering-on-mac", "the Mac runs the turn", ChatRoute(id: Feeds.roadmap), center(Feeds.elsewhere(now: now)))
+        try await shot("C2g", "chat-loading", "no feed yet", ChatRoute(id: Feeds.meeting), center(nil))
+        try await shot("C2h", "chat-new", "a new chat", .new, center(nil))
+        let quoting = center(Feeds.quoting(now: now))
+        quoting.drafts.update(Feeds.roadmap) { $0.quotes = [Feeds.quote] }
+        try await shot("C2i", "chat-quote", "a quote waits, older history above", ChatRoute(id: Feeds.roadmap), quoting)
+
+        let menu = NavigationStack {
+            Color.clear
+                .navigationTitle(ChatConversationModel.newChatTitle)
+                .navigationBarTitleDisplayMode(.inline)
+                .safeAreaInset(edge: .bottom) { ChatAttachmentMenu { _ in }.padding(.bottom, Spacing.wide).background(.regularMaterial) }
+        }
+        try await sheet("C3a", "chat-attach-menu", menu, "ChatAttachmentPicker")
+        let vendor = center(Feeds.artifactAndError(now: now)).conversation(ChatRoute(id: Feeds.vendor))
+        let email = try XCTUnwrap(vendor.artifact("reply-to-vendor"))
+        try await sheet("C3b", "chat-artifact-email", ChatArtifactSheet(artifact: email, host: .mac), "ChatArtifactSheet")
+        try await sheet("C3c", "chat-sources", ChatSourcesSheet(sources: Feeds.roadmapSources), "ChatSourcesSheet")
+        env.navigation.chatsPath = []
+        return rows
+    }
+
+    /// A chat center showing `list` and `searches`, its sends going nowhere.
+    private static func chatCenter(
+        _ list: ChatList?, searches: [String: ChatSearch] = [:], sleep: @escaping @Sendable (Duration) async throws -> Void = { _ in }
+    ) -> ChatsCenter {
+        let center = ChatsCenter(sender: ChatSender { _, _ in "" }, sleep: sleep)
+        center.apply(ChatsSnapshot(list: list, searches: searches))
+        return center
+    }
+
+    /// The demo Mac's heartbeat at `at` with the chat capability `chat` (nil: an older hub) and its off reason.
+    private static func chatHeartbeat(chat: String?, reason: ChatOffReason?, kind: HubKind?, at: Date) -> HeartbeatPayload {
+        HeartbeatPayload(
+            updatedAt: at, appVersion: "demo", hubID: DemoSeed.hubID, macName: DemoSeed.macName, flavor: .default,
+            lastPublishAt: at, lastRelayAt: at, relayBacklog: 0, accounts: [], enabledAt: at, ownerUser: DemoSeed.ownerUser,
+            sharing: .none, hubKind: kind,
+            capabilities: chat == nil && reason == nil ? nil : HeartbeatCapabilities(chat: chat, chatReason: reason?.rawValue)
+        )
     }
 
     /// 01m, 01me (#1785): Now with its clock 20 min ahead, so the demo's next meeting starts in about 4 min and its

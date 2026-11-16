@@ -106,6 +106,13 @@ final class ChatSessionClient {
                                      store: store, clock: clock)
         driver.onTurnFinished = { [weak self] turn in self?.turnFinished(turn) }
         driver.onActionAwaited = { [weak self] _ in self?.onActionAwaited?() }
+        // Spec 2026-11-15 §5: the phone's Stop runs this Stop; a conversation
+        // deleted under the turn cancels it, and the session is not reused.
+        driver.onRemoteCancel = { [weak self] in self?.cancel() }
+        driver.onConversationGone = { [weak self] in
+            self?.retireAfterTurn()
+            self?.cancel()
+        }
         if launchImmediately { launch() }
     }
 

@@ -577,6 +577,18 @@ re-checked in its Task 0; the plan's Global Constraints, Decisions and Known lim
   cluster at a time with "…", `ErrAlertTooLarge` only when all three are empty and it still does not fit. The final
   bound is `AlertPushMaxEnvelope` = 3021 bytes (relay `MAX_PAYLOAD_BYTES` 4096 − the 67-byte APNs body, base64). The data-zone record keeps the full text (ask #864).
   `secure.WorkAlertFields` is the one JSON shape of the record and the push (the Kit's `WorkAlertPayload` keys).
+- **The `chat_answer` push** (iPhone chat, #1791 T7; `internal/hub/chat_turn_watch.go`). Event `chat_answer`
+  with the optional `conversation_id` field of `WorkAlertFields`; no ask_alert zone record, the push goes straight
+  to `alerts.Pusher.Enqueue` (relay only). Ledger key `chat:<turn_id>:<answer|stopped|approval>`, so each
+  (turn, event) is pushed at most once per phone, across restarts. Title = the conversation title clipped at 60;
+  body fixed (`Answer ready`, `The answer stopped`, `Waiting for your approval`), never answer text. Sources:
+  the runner's `OnTurnEnd` for the hub's own turns (`complete` = answer, `partial`/`error` = stopped), and a
+  check on every `data_version` change (plus the chat timer's 5 s backstop) for the Mac's: a `chat_turn_leases`
+  row with `owner='desktop'` that disappeared with the turn's assistant row present, and a newly pending
+  `agent_actions` row (`trust_at_create='ask'`, chat turn) as the approval case. The first look only records
+  (nothing pushes for what happened before the hub started). No push when an `open` `chat_feed_request` for the
+  conversation arrived in the last 90 s (`ChatWatches.Open`; a prefetch never counts). The pusher's owner-away and
+  paying-slot rules apply as to every work alert.
   `secure.Push` has no exported constructor: only `AlertPush` makes one. Pinned by `go-sealed.json` case `alertPush`
   and the Kit's `GoSealedEnvelopeTests.testGoSealedAlertPushOpensWithAlertOpener`.
 - **`send_alert`** (`transport.Alerts`, implemented by the relay transport only; `memfake` and `cloudkit` have none).
@@ -699,3 +711,7 @@ On a relay route the keyring rotates every 7 days (`relayRotationAge`; 90 days o
   "your tower" ("Answered on your tower", "Too late — answer on your tower"; PROJ-21 amended, ask #1322).
 - The workbench record carries an optional `board_columns` (the workbench's Kanban column titles in order, from
   `workbench_board_columns`) for the phone's board lanes; an older phone ignores it.
+
+## iPhone chat (2026-11-15, board #1791)
+
+The hub runs phone-started chat turns: `internal/chatstore` (the Go turn store) and `internal/hub/chatrun` (a pool of 2 `ai session` processes, started at hub start with a sweep of orphan groups and dead leases, closed first at hub stop). A turn's rows are written by the lease holder's store, Swift or Go (`chat_turn_leases`, migration 00189). The ten `chat_*` kinds and the `chat_attachment` frame are registered in `handlers.Register`; the `chat` grant (`hub allow <device> chat [--revoke]`, sidecar migration 00017) is on by default; the heartbeat carries `capabilities.chat` and `chat_reason`; `hub desktop heartbeat --chat-lease 0|1` and the control socket's `chat_lease` tell the hub the Desktop honours the lease. Full note: [iphone-chat.md](iphone-chat.md); push: the `chat_answer` paragraph in Phase 4 above.

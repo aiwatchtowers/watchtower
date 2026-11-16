@@ -38,7 +38,7 @@ PURGE_DEFAULT ?= $(WATCHTOWER_PURGE_DEFAULT)
 LINK_FETCH_DENY_HOSTS ?= $(WATCHTOWER_LINK_FETCH_DENY_HOSTS)
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET) -X watchtower/internal/linear.DefaultLinearClientID=$(LINEAR_ID) -X watchtower/internal/purge.BuildDefault=$(PURGE_DEFAULT) -X watchtower/internal/media.BuildDenyHosts=$(LINK_FETCH_DENY_HOSTS) -X watchtower/internal/hub/identity.KeychainBuildFlag=false"
 
-.PHONY: golangci-version-check build bridge-build test test-verbose test-cover test-race race-packages test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test e2e-vectors test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check cloudkit-subscriptions-deployed relay-go relay-proto relay-interop relay-interop-kit relay-interop-kit-hub hub-smoke hub-staging
+.PHONY: golangci-version-check build bridge-build test test-verbose test-cover test-race race-packages test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test chattext-test e2e-vectors test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check cloudkit-subscriptions-deployed relay-go relay-proto relay-interop relay-interop-kit relay-interop-kit-hub hub-smoke hub-staging
 
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
@@ -144,6 +144,7 @@ test-race:
 test-swift:
 	cd WatchtowerDesktop && caffeinate -i swift test $(if $(FILTER),--filter '$(FILTER)',)
 	$(if $(FILTER),,caffeinate -i $(MAKE) kit-test)
+	$(if $(FILTER),,caffeinate -i $(MAKE) chattext-test)
 
 # Inner-loop tests for the shared mobile Kit package (WatchtowerSync +
 # WatchtowerKit): make kit-test FILTER=SomeTestClass (a regex alternation
@@ -151,6 +152,11 @@ test-swift:
 # no ML stack.
 kit-test:
 	cd WatchtowerKit && swift test $(if $(FILTER),--filter '$(FILTER)',)
+
+# Inner-loop tests for WatchtowerChatText (the chat text helpers shared by the
+# Mac and the phone, no GRDB, no ML stack): make chattext-test FILTER=SomeTestClass.
+chattext-test:
+	cd WatchtowerChatText && swift test $(if $(FILTER),--filter '$(FILTER)',)
 
 # The Kit E2E vectors the Go hub's golden tests read: padding, envelope, kdf,
 # hpke-envelope and asset .json in WatchtowerKit/Tests/Fixtures/e2e
@@ -208,6 +214,7 @@ mobile-run: mobile-build
 SHOTS_DIR ?= build/mobile-shots
 # SHOTS_ONLY=relay-phase4 runs only the relay client Phase 4 frames (S01 upward), into the same folder;
 # SHOTS_ONLY=relay-phase5 only the Phase 5 frames (S58 upward).
+# SHOTS_ONLY=chat only the Chats tab's frames (C1a upward, iPhone chat mockups 1a–1j).
 SHOTS_ONLY ?=
 mobile-shots:
 	xcrun simctl boot "$(SIM)" 2>/dev/null || true
@@ -215,7 +222,7 @@ mobile-shots:
 	mkdir -p "$(SHOTS_DIR)"
 	TEST_RUNNER_WATCHTOWER_SHOTS_ONLY="$(SHOTS_ONLY)" TEST_RUNNER_WATCHTOWER_SHOTS_DIR="$(abspath $(SHOTS_DIR))" xcodebuild test -project $(MOBILE_PROJ) \
 		-scheme WatchtowerMobile -destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=NO \
-		-only-testing:WatchtowerMobileTests/ScreenshotTourTests$(if $(filter relay-phase5,$(SHOTS_ONLY)),/testTheRelayPhase5Shots,$(if $(SHOTS_ONLY),/testTheRelayPhase4Shots))
+		-only-testing:WatchtowerMobileTests/ScreenshotTourTests$(if $(filter relay-phase5,$(SHOTS_ONLY)),/testTheRelayPhase5Shots,$(if $(filter chat,$(SHOTS_ONLY)),/testTheChatShots,$(if $(SHOTS_ONLY),/testTheRelayPhase4Shots)))
 
 # The Desktop style guide's shots (WatchtowerDesktop/Tests/DesignShots, #719):
 # every DesignShotCatalog entry in light and dark mode as PNGs, written to
@@ -451,6 +458,7 @@ lint-swift:
 	bash scripts/kit-lint-guard.sh
 	cd WatchtowerDesktop && swiftlint lint --strict --baseline .swiftlint-baseline.json
 	cd WatchtowerKit && swiftlint lint --strict
+	cd WatchtowerChatText && swiftlint lint --strict
 	cd WatchtowerMobile && swiftlint lint --strict
 
 lint-all: lint lint-swift

@@ -44,7 +44,10 @@ type HeartbeatFacts struct {
 	LastRelayAt   func() (time.Time, bool)
 	RelayBacklog  func() int
 	Recordings    func() bool
-	Clock         func() time.Time
+	// Chat says whether the AI chat is on and, when off, why (wire.ChatOff*);
+	// nil carries no chat capability.
+	Chat  func() (on bool, reason string)
+	Clock func() time.Time
 }
 
 // HeartbeatSource is the hub's liveness record, record "heartbeat". It is
@@ -96,6 +99,13 @@ func (h *heartbeatSource) Items(ctx context.Context) ([]Item, error) {
 	var caps wire.HeartbeatCapabilities
 	if h.f.Recordings != nil {
 		caps = *wire.RecordingsCapability(h.f.Recordings())
+	}
+	if h.f.Chat != nil {
+		if on, reason := h.f.Chat(); on {
+			caps.Chat = "on"
+		} else {
+			caps.Chat, caps.ChatReason = "off", reason
+		}
 	}
 	changed = changed || caps != h.caps
 	if h.payload == nil || changed || now.Sub(h.stamped) >= HeartbeatInterval {

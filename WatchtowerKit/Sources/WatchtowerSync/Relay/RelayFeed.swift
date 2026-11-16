@@ -17,7 +17,7 @@ public enum DesktopReachability: Equatable, Sendable {
 /// fans records out in-process —
 /// - `action` echoes → `ActionOutbox.applyEcho` (own still-`pending`
 ///   enqueues reflecting back are skipped),
-/// - `recording_upload` echoes → the `RecordingUploadAcking` seam,
+/// - `recording_upload` echoes → the `RecordingUploadAcking` seam, `chat_attachment` echoes → `ChatAttachmentAcking`,
 /// - hub `control` records (relay client Phase 1) → `resend_from` to
 ///   `ActionOutbox.resendFrom`, `transport_switch_rejected` to the rejection
 ///   handler (relay client Phase 3b: the session's upgrade to the relay; with
@@ -100,6 +100,8 @@ public actor RelayFeed {
     /// (hub echoes are re-read from scratch only via token reset) — so the
     /// uploader must ship wired wherever the Record UI ships.
     private let uploads: (any RecordingUploadAcking)?
+    /// Receives `chat_attachment` echoes (`applied` / `failed`); nil drops them with a log line.
+    private let chatUploads: (any ChatAttachmentAcking)?
     /// Wraps CloudKitTransport.pull() at composition time; nil in tests
     /// (InMemoryCloudTransport has no engine to nudge).
     private let pull: (@Sendable () async throws -> Void)?
@@ -151,6 +153,7 @@ public actor RelayFeed {
         store: ReplicaStore,
         outbox: ActionOutbox,
         uploads: (any RecordingUploadAcking)? = nil,
+        chatUploads: (any ChatAttachmentAcking)? = nil,
         pull: (@Sendable () async throws -> Void)? = nil,
         onActionApplied: (@Sendable () async -> Void)? = nil,
         onHubOnRelay: (@Sendable () async -> Void)? = nil,
@@ -160,6 +163,7 @@ public actor RelayFeed {
         self.store = store
         self.outbox = outbox
         self.uploads = uploads
+        self.chatUploads = chatUploads
         self.pull = pull
         self.onActionApplied = onActionApplied
         self.onHubOnRelay = onHubOnRelay
@@ -374,12 +378,28 @@ public actor RelayFeed {
             }
             try await uploads.applyEcho(upload)
             return Routed(echoes: 1)
+        case .chatAttachment:
+            return try await routeChatAttachment(record)
         case nil:
             if loggedUnknownKinds.insert(record.kind).inserted {
                 logger.warning("unknown relay record kind ignored: \(record.kind, privacy: .public)")
             }
         }
         return Routed()
+    }
+
+    /// A `chat_attachment` record: the hub's verdict goes to `chatUploads`; a pending one is our own upload
+    /// reflecting back.
+    private func routeChatAttachment(_ record: CloudRecord) async throws -> Routed {
+        guard let upload = decode(ChatAttachmentUploadPayload.self, from: record), upload.status != .pending else {
+            return Routed()
+        }
+        guard let chatUploads else {
+            logger.warning("chat attachment echo skipped, no consumer wired: \(record.recordName, privacy: .public)")
+            return Routed()
+        }
+        try await chatUploads.applyEcho(upload)
+        return Routed(echoes: 1)
     }
 
     /// Hands every undecided transport control to the handler again; returns the deletes of the ones it decided.

@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerChatText
 
 package enum ChatArtifactQueries {
     /// Stores one version. Non-edit save from the message that produced the

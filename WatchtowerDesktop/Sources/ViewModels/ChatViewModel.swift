@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import WatchtowerCore
+import WatchtowerChatText
 
 struct ChatMessage: Identifiable, Equatable {
     let id: UUID
@@ -286,7 +287,12 @@ final class ChatViewModel {
     }
     /// A turn is running or about to: what the composer and the actions
     /// that start a turn wait for.
-    var isBusy: Bool { isStreaming || isStartingTurn || isFinishingTurn || isChangingRouting }
+    /// A turn the hub runs for the phone holds the open chat (spec 2026-11-15
+    /// §5) counts too: Send is off until its release.
+    var isBusy: Bool { isStreaming || isStartingTurn || isFinishingTurn || isChangingRouting || foreignTurn.blocksSend }
+    /// The open chat's turn run on the phone, read from its lease
+    /// (`refreshForeignTurn`); its `line` stands over the composer.
+    private(set) var foreignTurn = ChatForeignTurnModel()
     /// Every write of this view model, one after another (board #670).
     @ObservationIgnored private let writes = SerialWrites()
     /// The composer's conversation being created: one at a time, so a
@@ -300,6 +306,9 @@ final class ChatViewModel {
     @ObservationIgnored private let dbManager: DatabaseManager
     @ObservationIgnored private let cliRunner: CLIRunnerProtocol?
     @ObservationIgnored private let makeTurnID: () -> String
+    /// This launch's `owner_id` on the leases it claims.
+    @ObservationIgnored private let leaseOwnerID: String
+    @ObservationIgnored private let leaseClock: () -> Date
     @ObservationIgnored private var titleRequests: Set<Int64> = []
     /// The last `chat title` request started (a test seam).
     @ObservationIgnored private(set) var titleTask: Task<Void, Never>?
@@ -313,9 +322,13 @@ final class ChatViewModel {
         preferredProviderSource: (() -> AIProvider)? = nil,
         defaults: UserDefaults = .standard,
         attachmentsRoot: URL? = ChatAttachmentStore.defaultRootDir(),
-        makeTurnID: @escaping () -> String = { UUID().uuidString }
+        makeTurnID: @escaping () -> String = { UUID().uuidString },
+        leaseOwnerID: String = ChatLease.desktopLaunchID,
+        leaseClock: @escaping () -> Date = Date.init
     ) {
         self.defaults = defaults
+        self.leaseOwnerID = leaseOwnerID
+        self.leaseClock = leaseClock
         self.dbManager = dbManager
         self.pool = pool
         self.selectedProvider = provider
@@ -376,6 +389,7 @@ final class ChatViewModel {
         reload()
         guard switching else { return }
         errorMessage = nil
+        foreignTurn.reset()
         restorePendingAttachments(conversationID: id)
         artifactPanel = nil
         sourcesPanel = nil
@@ -1107,8 +1121,54 @@ final class ChatViewModel {
         return id
     }
 
+    /// Stops the open chat's turn: the Mac's own through its session, the
+    /// phone's by setting its lease's cancel (the hub stops it within 1 s).
     func stop() {
-        pool.client(for: conversationID)?.cancel()
+        guard let turnID = foreignTurn.turnID, let id = conversationID else {
+            pool.client(for: conversationID)?.cancel()
+            return
+        }
+        let nowMS = ChatLease.milliseconds(leaseClock())
+        Task {
+            do {
+                _ = try await write { db in
+                    try ChatLeaseQueries.requestCancel(db, conversationID: id, turnID: turnID, nowMS: nowMS)
+                }
+            } catch {
+                errorMessage = "Couldn't stop the answer: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// One read of the open chat's lease (spec 2026-11-15 §5): while the hub
+    /// holds it the thread is re-read, and once more at its release; the
+    /// Chats panel follows when it starts or ends.
+    func refreshForeignTurn() async {
+        guard let id = conversationID else {
+            foreignTurn.reset()
+            return
+        }
+        let lease: ChatLease?
+        do {
+            lease = try await dbManager.dbPool.read { db in try ChatLeaseQueries.fetch(db, conversationID: id) }
+        } catch {
+            NSLog("ChatViewModel: reading the chat lease failed: %@", error.localizedDescription)
+            return
+        }
+        // Another chat was opened while it was read.
+        guard conversationID == id else { return }
+        let tick = foreignTurn.observe(lease, nowMS: ChatLease.milliseconds(leaseClock()))
+        if tick.reloadThread { reload() }
+        if tick.reloadPanel { reloadConversations() }
+    }
+
+    /// The chat view's task: reads the open chat's lease every
+    /// `ChatForeignTurnModel.pollInterval` until the task ends.
+    func watchForeignTurns() async {
+        while !Task.isCancelled {
+            await refreshForeignTurn()
+            do { try await Task.sleep(for: ChatForeignTurnModel.pollInterval) } catch { return }
+        }
     }
 
     func retry(messageID: Int64) async {
@@ -1266,6 +1326,15 @@ final class ChatViewModel {
         do {
             // CHAT-01: the owner's text is on disk before anything is sent.
             persisted = try await persistTurnStart(plan, turnID: turnID, config: config)
+        } catch is ChatBusyError {
+            // The phone's turn holds the chat: nothing was written or sent;
+            // the composer shows its line and keeps the text.
+            guard conversationID == plan.conversationID else { return false }
+            await refreshForeignTurn()
+            if conversationID == plan.conversationID, foreignTurn.line == nil {
+                errorMessage = ChatBusyError().localizedDescription
+            }
+            return false
         } catch {
             if conversationID == plan.conversationID {
                 errorMessage = "Your message wasn't sent because it couldn't be saved: \(error.localizedDescription)"
@@ -1297,7 +1366,13 @@ final class ChatViewModel {
     private func persistTurnStart(
         _ plan: TurnPlan, turnID: String, config: ChatSessionConfig
     ) async throws -> PersistedTurn {
-        try await write { db in
+        let nowMS = ChatLease.milliseconds(leaseClock())
+        let lease = ChatLease(conversationID: plan.conversationID, owner: .desktop, ownerID: leaseOwnerID,
+                              turnID: turnID, startedAtMS: nowMS, heartbeatAtMS: nowMS)
+        return try await write { db in
+            // The lease first, in the owner row's transaction (spec 2026-11-15
+            // §4.4): refused, nothing of the turn is written and nothing sent.
+            guard try ChatLeaseQueries.claim(db, lease, nowMS: nowMS) else { throw ChatBusyError() }
             var historyTip = plan.historyTipID
             let userID: Int64
             if let reuse = plan.reuseUserMessageID {

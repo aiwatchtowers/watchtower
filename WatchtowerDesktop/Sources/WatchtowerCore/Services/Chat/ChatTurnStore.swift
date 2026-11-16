@@ -1,10 +1,26 @@
 import Foundation
 import GRDB
 
-/// The writes a running turn makes. Swift is the only writer of these rows
-/// (spec §2.2); every write is small and awaits GRDB's writer queue, so a
-/// write lock held by another process never blocks the main thread (board
-/// #670). `ChatTurnDriver` queues them in order.
+/// The conversation of a running turn is gone (deleted on the Mac, from the
+/// phone, or with its project): an update by message id changed no row, or
+/// a child row failed its foreign key. The write rolled back; the turn
+/// writes nothing more (spec 2026-11-15 §4.4).
+package struct ChatConversationGoneError: Error, Equatable {
+    package init() {}
+
+    /// `error` says the conversation went away under the write.
+    package static func matches(_ error: Error) -> Bool {
+        if error is Self { return true }
+        guard let db = error as? DatabaseError else { return false }
+        return db.extendedResultCode == .SQLITE_CONSTRAINT_FOREIGNKEY
+    }
+}
+
+/// The writes a running turn makes. Only the lease holder writes these rows
+/// (spec 2026-11-15 §8: this store, or the hub's Go twin); every write is
+/// small and awaits GRDB's writer queue, so a write lock held by another
+/// process never blocks the main thread (board #670). `ChatTurnDriver`
+/// queues them in order.
 package struct ChatTurnStore: Sendable {
     package let dbPool: DatabasePool
 
@@ -17,6 +33,7 @@ package struct ChatTurnStore: Sendable {
             try ChatTreeQueries.updateAssistant(db, id: messageID, text: text, status: status,
                                                 tokensIn: usage?.tokensIn, tokensOut: usage?.tokensOut,
                                                 errorCode: errorCode, errorMessage: nil)
+            guard db.changesCount > 0 else { throw ChatConversationGoneError() }
             if let model = usage?.model, !model.isEmpty {
                 try ChatTreeQueries.setModel(db, messageID: messageID, model: model)
             }
@@ -77,10 +94,14 @@ package struct ChatTurnStore: Sendable {
     /// once per finished turn; `status == "error"` skips the artifact parse
     /// (an errored turn produces no artifacts). `error` is the failed turn's
     /// session error: its code and its own message are both kept.
+    /// `turnID`'s lease is released in the same transaction (nil: a turn
+    /// that holds none); a message gone with its conversation throws
+    /// `ChatConversationGoneError` and nothing is written.
     @discardableResult
     package func finalizeTurn(
         conversationID: Int64,
         messageID: Int64,
+        turnID: String? = nil,
         text: String,
         status: String,
         usage: ChatUsage?,
@@ -90,6 +111,8 @@ package struct ChatTurnStore: Sendable {
             try ChatTreeQueries.updateAssistant(db, id: messageID, text: text, status: status,
                                                 tokensIn: usage?.tokensIn, tokensOut: usage?.tokensOut,
                                                 errorCode: error?.persistenceCode, errorMessage: error?.message)
+            guard db.changesCount > 0 else { throw ChatConversationGoneError() }
+            if let turnID { try ChatLeaseQueries.release(db, conversationID: conversationID, turnID: turnID) }
             if let model = usage?.model, !model.isEmpty {
                 try ChatTreeQueries.setModel(db, messageID: messageID, model: model)
             }
@@ -97,5 +120,28 @@ package struct ChatTurnStore: Sendable {
             guard status != "error" else { return [] }
             return try ChatArtifactQueries.persistArtifacts(db, conversationID: conversationID, messageID: messageID, text: text)
         }
+    }
+
+    /// Frees `turnID`'s lease on its own (a no-op when another turn holds
+    /// it): after a failed finalize, whose transaction rolled its release
+    /// back, so the next send is not refused as answering elsewhere until
+    /// the lease goes stale.
+    package func releaseLease(conversationID: Int64, turnID: String) async throws {
+        try await dbPool.write { db in
+            try ChatLeaseQueries.release(db, conversationID: conversationID, turnID: turnID)
+        }
+    }
+
+    /// The lease watch's heartbeat (spec §4.4); false: the lease is gone or
+    /// another turn's — the conversation was deleted or the lease taken.
+    package func heartbeat(conversationID: Int64, turnID: String, nowMS: Int64) async throws -> Bool {
+        try await dbPool.write { db in
+            try ChatLeaseQueries.heartbeat(db, conversationID: conversationID, turnID: turnID, nowMS: nowMS)
+        }
+    }
+
+    /// The conversation's lease as it stands (the cancel poll).
+    package func lease(conversationID: Int64) async throws -> ChatLease? {
+        try await dbPool.read { db in try ChatLeaseQueries.fetch(db, conversationID: conversationID) }
     }
 }

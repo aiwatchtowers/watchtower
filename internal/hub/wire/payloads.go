@@ -165,10 +165,25 @@ type Heartbeat struct {
 }
 
 // HeartbeatCapabilities is the heartbeat's capabilities object. Recordings
-// is "on" or "off"; an unknown value reads as not off.
+// is "on" or "off"; an unknown value reads as not off. Chat is the AI chat
+// from the phone (iPhone chat §4.8): "on" only while the hub runs on the
+// relay with its chat runner and no Desktop app that ignores the chat lease
+// runs; the phone shows chat only on an explicit "on" (an absent key is an
+// older hub). ChatReason says why it is "off": not_relay, runner_down,
+// desktop_too_old or policy.
 type HeartbeatCapabilities struct {
 	Recordings string `json:"recordings,omitempty"`
+	Chat       string `json:"chat,omitempty"`
+	ChatReason string `json:"chat_reason,omitempty"`
 }
+
+// The chat capability's off reasons.
+const (
+	ChatOffNotRelay      = "not_relay"
+	ChatOffRunnerDown    = "runner_down"
+	ChatOffDesktopTooOld = "desktop_too_old"
+	ChatOffPolicy        = "policy"
+)
 
 // RecordingsCapability is the capabilities object for the switch: "on" or
 // "off". The phone offers recording unless it reads "off".

@@ -93,7 +93,9 @@ enum DemoSeed {
             enabledAt: now.addingTimeInterval(-86_400),
             ownerUser: ownerUser,
             sharing: .none,
-            hubKind: hub.kind
+            hubKind: hub.kind,
+            // The primary Mac hosts chat (iPhone chat spec D4); the second is an older hub that does not.
+            capabilities: hub.hubID == primary.hubID ? Chat.capabilities : nil
         )
         // Linked, typing allowed: with the phone's toggle on, the workchat
         // shows its composer.
@@ -119,6 +121,7 @@ enum DemoSeed {
             + (try sessionDetailRecords(now: now))
             + (try sessionChatRecords(now: now))
             + (try calendarRecords(now: now))
+            + (try Chat.records(now: now))
     }
 }
 

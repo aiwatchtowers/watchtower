@@ -43,11 +43,14 @@ import (
 type Grant string
 
 // The owner's grants. Start sessions counts only with typing allowed and the
-// phone's own toggle on.
+// phone's own toggle on. Chat (the main AI chat from the phone, iPhone chat
+// D9) is on by default; approving the chat's actions also needs
+// permissions.
 const (
 	GrantTyping        Grant = "typing"
 	GrantPermissions   Grant = "permissions"
 	GrantStartSessions Grant = "start_sessions"
+	GrantChat          Grant = "chat"
 )
 
 // Linking bounds, the Swift hub's values (spec §12a).
@@ -369,6 +372,7 @@ var grantColumns = map[Grant]string{
 	GrantTyping:        "typing_allowed",
 	GrantPermissions:   "permissions_allowed",
 	GrantStartSessions: "start_sessions_granted",
+	GrantChat:          "chat_allowed",
 }
 
 // Allow sets or revokes one of a linked phone's grants and stamps decided_at.

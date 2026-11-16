@@ -151,12 +151,67 @@ var displayOnlyReaders = map[string]string{
 	"keptJoin":                         "the knowledge source's join: it skips a marked conversation (internal/kb TestLIVE01_KeptArtifactSkipped)",
 }
 
+// displayOnlyReadersAt is displayOnlyReaders for functions added since the
+// iPhone chat (#1791): each key names one function in one file
+// ("<path under internal/>:<name>"), so a generic name such as Delete or
+// send never covers a same-named function elsewhere. New entries go here,
+// never into the bare-name list above; a key whose function the scan no
+// longer sees fails the test.
+var displayOnlyReadersAt = map[string]string{
+	"db/chat_lease.go:MarkChatTurnSessionLost": "writes the error code of a dead hub turn's reply; reads no text",
+	// internal/hub chat_answer push: ids, status and the conversation title only.
+	"hub/chat_turn_watch.go:send":            "the chat_answer push reads a conversation title, never message text into a store",
+	"hub/chat_turn_watch.go:assistantStatus": "the chat_answer push reads one turn row's status, no text",
+	"hub/chat_turn_watch.go:desktopLeases":   "the chat_answer push: lease ids of main chats, no text",
+	"hub/chat_turn_watch.go:pendingActions":  "the chat_answer push: pending action ids of main chats, no text",
+	// internal/chatstore: the hub's chat turn store, the Swift write path's
+	// twin. It writes the chat rows and reads its own tree for the next turn;
+	// stepStarted and markIfUsedTx write the mark itself (LIVE-01 mechanism).
+	"chatstore/store.go:readConversationTx": "the turn store reads its own conversation row (routing, leaf, title)",
+	"chatstore/store.go:loadMessagesTx":     "the turn store's own branch walk for the next turn",
+	"chatstore/store.go:insertMessageTx":    "writes a turn's message rows",
+	"chatstore/store.go:setPrefixTitleTx":   "writes the prefix title",
+	"chatstore/store.go:writeRoutingTx":     "routing columns only",
+	"chatstore/store.go:SelectBranch":       "moves the active leaf",
+	"chatstore/store.go:MarkRead":           "read_at from a created_at, no text",
+	"chatstore/turn.go:recordActual":        "routing columns of the turn's own rows",
+	"chatstore/turn.go:recordSession":       "session id only",
+	"chatstore/turn.go:requireMessageTx":    "existence probe of the turn's own row",
+	"chatstore/turn.go:updateAssistantTx":   "writes the turn's assistant row",
+	"chatstore/turn.go:setModelTx":          "writes the turn's model",
+	"chatstore/turn.go:stepStarted":         "writes a step and the LIVE-01 mark",
+	"chatstore/turn.go:markIfUsedTx":        "writes the LIVE-01 mark",
+	"chatstore/turn.go:titleIfNeeded":       "a count of complete answers, no text",
+	// The phone's chat actions (iPhone chat §4.5): conversation rows the
+	// Mac's Chats panel writes too, and the attachment intake's row.
+	"chatstore/conversations.go:NewConversation":    "inserts an empty conversation row",
+	"chatstore/conversations.go:ConversationExists": "an existence count, no text",
+	"chatstore/conversations.go:Pin":                "the pinned flag",
+	"chatstore/conversations.go:Rename":             "writes the owner's title",
+	"chatstore/conversations.go:Delete":             "delete only",
+	"chatstore/attachments.go:SaveAttachment":       "inserts an attachment row of an existing conversation, no text read",
+	// The phone's chat (iPhone chat spec §4.6): the hub's chat slices and the
+	// Go port of the Mac's ⌘K search show chat text on the phone and store
+	// nothing (the slices live in memory and the sealed relay records only).
+	"db/chat_search.go:chatTitleMatches":                     "the ⌘K search port: title hits shown on the phone",
+	"db/chat_search.go:chatMessageMatches":                   "the ⌘K search port: message hits shown on the phone",
+	"hub/slices/sources/chat_list.go:chatListRows":           "the phone's chat list (titles, states, last lines)",
+	"hub/slices/sources/chat_feed.go:chatFeedConversationTx": "the phone's chat feed: the conversation's meta",
+	"hub/slices/sources/chat_feed.go:chatBranchTx":           "the phone's chat feed: the active branch's ids",
+	"hub/slices/sources/chat_feed.go:chatFeedMessageRowsTx":  "the phone's chat feed: the messages shown",
+	"hub/slices/sources/chat_feed.go:chatFeedActionsTx":      "the phone's chat feed: the actions of the turns shown",
+	"hub/slices/sources/chat_feed.go:buildChatPage":          "the phone's chat page: older messages shown",
+	"hub/slices/sources/registry.go:ChangeTables":            "table names of the hub's data_version watch, no read",
+}
+
 // TestLIVE01_ReaderList fails when a non-test function in internal/ mentions
-// chat_messages or chat_conversations without being on one of the two lists.
+// chat_messages or chat_conversations without being on one of the lists, or
+// when a displayOnlyReadersAt key names no such function.
 func TestLIVE01_ReaderList(t *testing.T) {
 	root := filepath.Join("..", "..", "internal")
 	re := regexp.MustCompile(`chat_messages|chat_conversations`)
 	var unknown []string
+	seenAt := map[string]bool{}
 	fset := token.NewFileSet()
 	require.NoError(t, filepath.WalkDir(root, func(p string, de fs.DirEntry, err error) error {
 		if err != nil || de.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
@@ -172,10 +227,18 @@ func TestLIVE01_ReaderList(t *testing.T) {
 		}
 		check := func(name string, from, to token.Pos) {
 			body := string(src[fset.Position(from).Offset:fset.Position(to).Offset])
-			if re.MatchString(body) && !liveCheckedReaders[name] {
-				if _, ok := displayOnlyReaders[name]; !ok {
-					unknown = append(unknown, filepath.Base(p)+":"+name)
-				}
+			if !re.MatchString(body) || liveCheckedReaders[name] {
+				return
+			}
+			rel, err := filepath.Rel(root, p)
+			require.NoError(t, err)
+			key := filepath.ToSlash(rel) + ":" + name
+			if _, ok := displayOnlyReadersAt[key]; ok {
+				seenAt[key] = true
+				return
+			}
+			if _, ok := displayOnlyReaders[name]; !ok {
+				unknown = append(unknown, key)
 			}
 		}
 		for _, decl := range f.Decls {
@@ -197,5 +260,8 @@ func TestLIVE01_ReaderList(t *testing.T) {
 	assert.Empty(t, unknown, "a function reads the chat tables: apply db.ChatNotLiveSlack and list it in liveCheckedReaders, or list it in displayOnlyReaders with its reason (LIVE-01)")
 	for name := range liveCheckedReaders {
 		assert.NotContains(t, displayOnlyReaders, name)
+	}
+	for key := range displayOnlyReadersAt {
+		assert.True(t, seenAt[key], "%s: no such function reads the chat tables any more; remove the stale key (LIVE-01)", key)
 	}
 }

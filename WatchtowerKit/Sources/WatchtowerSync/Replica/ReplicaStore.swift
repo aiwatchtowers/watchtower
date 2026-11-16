@@ -998,6 +998,20 @@ public final class ReplicaStore: Sendable {
         return rows.compactMap { row in openRow(wireName: row["record_name"], payload: row["payload"])?.payload }
     }
 
+    /// Each stored record of one kind by its PLAIN name, with the seq of the envelope stored under it, from an
+    /// ALREADY-OPEN database; nothing is opened. A screen that holds many records of a kind (the chat feeds) re-opens
+    /// only the names whose seq moved since its last read (`payload(forRecordName:from:)`).
+    public func recordSeqs(of kind: SliceKind, from db: Database) throws -> [String: Int64] {
+        let rows = try Row.fetchAll(
+            db, sql: "SELECT plain_name, seq FROM slice_records WHERE kind = ? AND plain_name IS NOT NULL", arguments: [kind.rawValue]
+        )
+        var seqs: [String: Int64] = [:]
+        for row in rows {
+            seqs[row["plain_name"]] = row["seq"]
+        }
+        return seqs
+    }
+
     /// Undecodable-heartbeat warnings emitted so far (for tests).
     func undecodableHeartbeatLogCount() -> Int {
         undecodableHeartbeatLogs.withLock { $0 }

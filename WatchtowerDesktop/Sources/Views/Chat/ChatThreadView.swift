@@ -59,7 +59,8 @@ struct ChatThreadView: View {
                            isEditing: chatVM.editingMessageID == item.id, actions: actions(for: item, thread),
                            artifactVersions: chatVM.artifactVersionsByMessage[item.id] ?? [:],
                            keptArtifactKeys: chatVM.keptArtifactKeys,
-                           questionAnswer: ownerReply(after: item, thread), showsRememberMark: true)
+                           questionAnswer: ownerReply(after: item, thread), showsRememberMark: true,
+                           answeringElsewhere: chatVM.foreignTurn.turnID.map { $0 == item.message.turnID } ?? false)
                 .equatable()
         }
     }

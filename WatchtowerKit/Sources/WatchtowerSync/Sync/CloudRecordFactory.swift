@@ -78,6 +78,22 @@ public enum CloudRecordFactory {
         )
     }
 
+    /// `assetFileURL` carries the file as a `CKAsset` on the phone's upload; the hub's write-back passes nil.
+    public static func record(
+        for upload: ChatAttachmentUploadPayload,
+        modifiedAt: Date,
+        assetFileURL: URL?
+    ) throws -> CloudRecord {
+        CloudRecord(
+            recordName: upload.recordName,
+            zone: .relay,
+            kind: RelayRecordKind.chatAttachment.rawValue,
+            modifiedAt: modifiedAt,
+            payload: try RelayCoder.makeEncoder().encode(upload),
+            assetFileURL: assetFileURL
+        )
+    }
+
     public static func record(for slice: SliceRecord) -> CloudRecord {
         CloudRecord(
             recordName: slice.recordName,

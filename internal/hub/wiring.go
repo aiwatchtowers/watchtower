@@ -7,11 +7,14 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
+	"watchtower/internal/chatstore"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/actions/handlers"
+	"watchtower/internal/hub/chatrun"
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
@@ -32,6 +35,10 @@ const hostWarmBudget = 10 * time.Second
 // reportKinds is what a stored report or summary changes: the report, its
 // timeline milestones and the terminal_session record's report_* fields.
 var reportKinds = []slices.Kind{"session_report", "session_timeline", "terminal_session"}
+
+// chatCloseBudget bounds the chat runner's close at the hub's stop (its own
+// sequence is close, 2 s, SIGTERM, 3 s, SIGKILL).
+const chatCloseBudget = 10 * time.Second
 
 // watchBusy is the dedicated read handle's busy timeout: one data_version
 // read never waits longer for a lock.
@@ -86,6 +93,67 @@ type wiring struct {
 	live *liveness
 	// away nudges the work alerts when the owner leaves the Mac.
 	away *awayWatch
+	// chat runs the hub's AI chat turns (nil = no database file or no
+	// executable: chat is off). Nothing runs until a turn starts.
+	chat *chatrun.Runner
+	// chatStore writes the hub's chat rows (the runner's and the
+	// handlers'); chatTimer republishes what only time changes (nil under
+	// workbench_only); titles are the AI titles running, cancelled and
+	// waited for at close.
+	chatStore *chatstore.Store
+	chatTimer *chatTimer
+	chatPush  *chatPushWatch
+	// bg is the chat's background work (AI titles, approved actions'
+	// applies), started only through spawn: bgClosed, set under bgMu at
+	// close, refuses new work so no Add ever races the close's Wait.
+	// titlesCtx is cancelled at close (a title is optional); an apply runs
+	// to its end within chatBackgroundBudget.
+	bgMu         sync.Mutex
+	bgClosed     bool
+	bg           sync.WaitGroup
+	titlesCtx    context.Context
+	titlesCancel context.CancelFunc
+}
+
+// chatBackgroundBudget bounds the hub stop's wait for the chat's background
+// work (an approved action's apply, a cancelled title): as the runner's
+// close, the stop never waits longer.
+const chatBackgroundBudget = 30 * time.Second
+
+// spawn runs work on its own goroutine, tracked for the close; false once
+// the wiring is closing (work does not run).
+func (w *wiring) spawn(work func()) bool {
+	w.bgMu.Lock()
+	defer w.bgMu.Unlock()
+	if w.bgClosed {
+		return false
+	}
+	w.bg.Add(1)
+	go func() {
+		defer w.bg.Done()
+		work()
+	}()
+	return true
+}
+
+// stopBackground refuses new background work and waits for what runs, at
+// most budget (close cancels the titles first).
+func (w *wiring) stopBackground(budget time.Duration) {
+	w.bgMu.Lock()
+	w.bgClosed = true
+	w.bgMu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		w.bg.Wait()
+		close(done)
+	}()
+	t := time.NewTimer(budget)
+	defer t.Stop()
+	select {
+	case <-done:
+	case <-t.C:
+		log.Printf("hub: the chat's background work did not end within %s: stopping without it", budget)
+	}
 }
 
 // Seed retry at start: 1 s doubling to 10 s.
@@ -162,6 +230,17 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 	w.away = &awayWatch{away: away, active: h.phoneLinked, nudge: func() { h.publishSoon(slices.KindAskAlert) }}
 	home, _ := os.UserHomeDir()
 	watches := handlers.NewChatWatchRegistry()
+	// The chat runner first: the chat sources read its live turns. Its sweep
+	// runs before the handlers register, so nothing claims a chat turn
+	// before this hub's leases of an earlier run are released.
+	dbPath, _ := mainFile(context.Background(), o.DB)
+	w.titlesCtx, w.titlesCancel = context.WithCancel(context.Background())
+	w.chatStore = h.newChatStore(o, w)
+	w.chat = h.newChatRunner(o, w.chatStore, w.spawn)
+	var chatLive sources.LiveText
+	if w.chat != nil {
+		chatLive = w.chat
+	}
 	set, err := sources.All(sources.Config{
 		DB: o.DB, Store: st, Watches: watches, Sealer: h.kr, Mode: mode, Live: live,
 		AssetDir: filepath.Join(o.Dir, assetDirName, transcriptAssetDir),
@@ -173,6 +252,7 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 		GitFetch:       o.gitFetch,
 		RunnerGap:      o.runnerGap,
 		Now:            o.Clock,
+		ChatLive:       chatLive,
 	})
 	if err != nil {
 		w.close()
@@ -180,6 +260,19 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 	}
 	w.set = set
 	deps := handlerDeps(o, st, set, watches, h.kr, port, lateEcho)
+	deps.Chat = h.chatDeps(o, w, dbPath)
+	if set.ChatWatches != nil {
+		clock := o.Clock
+		if clock == nil {
+			clock = time.Now
+		}
+		w.chatTimer = &chatTimer{
+			watches: set.ChatWatches, fresh: o.DB.FreshChatLeases, grant: st.AnyChatPhone,
+			available: h.chatAvailable, now: clock, publish: h.publishSoon,
+		}
+		w.chatPush = newChatPushWatch(o.DB.DB, set.ChatWatches, h.onRelay, clock, h.chatPushEnqueue)
+		h.chatPush.Store(w.chatPush)
+	}
 	deps.RecordingQueued = func(uploadID string) {
 		h.sup.notifyDesktop(ControlAnswer{Event: EventRecordingQueued, OK: true, UploadID: uploadID})
 	}
@@ -332,6 +425,20 @@ func mainFile(ctx context.Context, d *db.DB) (string, error) {
 // publisher retries it, and the lane does not observe). Nothing else waits:
 // the device_grant and the other kinds keep publishing.
 func (h *hubRuntime) startWiring(ctx context.Context, w *wiring) {
+	if w.chatPush != nil {
+		h.wg.Add(1)
+		go func() {
+			defer h.wg.Done()
+			w.chatPush.run(ctx)
+		}()
+	}
+	if w.chatTimer != nil {
+		h.wg.Add(1)
+		go func() {
+			defer h.wg.Done()
+			w.chatTimer.run(ctx)
+		}()
+	}
 	if w.port != nil {
 		// Ensure the host on start when none answers (a later call dials
 		// again if this fails).
@@ -393,6 +500,9 @@ func (h *hubRuntime) startWiring(ctx context.Context, w *wiring) {
 		_ = w.watch.Run(ctx, func(kinds ...slices.Kind) {
 			h.publishSoon(kinds...)
 			w.lane.kick()
+			if w.chatPush != nil {
+				w.chatPush.kick()
+			}
 			if w.live != nil {
 				w.live.kick() // a start or an exit wrote its row
 			}
@@ -418,11 +528,100 @@ func (w *wiring) retrySeed(ctx context.Context) {
 	}
 }
 
-// close releases the watch's handle once the goroutines are done.
+// newChatRunner builds the hub's chat runner over o.DB and runs its startup
+// sweep (spec §4.3). A database with no file, or no path to this binary,
+// leaves the hub without one. spawn runs a turn end's push off the runner's
+// goroutine as tracked background work (wiring.spawn: close waits for it);
+// it refuses once the hub stops.
+func (h *hubRuntime) newChatRunner(o Options, store *chatstore.Store, spawn func(func()) bool) *chatrun.Runner {
+	path, err := mainFile(context.Background(), o.DB)
+	if err != nil {
+		log.Printf("hub: no chat runner: the database has no file")
+		return nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		log.Printf("hub: no chat runner: the executable is unknown (%s)", errClass(err))
+		return nil
+	}
+	clock := o.Clock
+	if clock == nil {
+		clock = time.Now
+	}
+	if store == nil {
+		store = chatstore.New(o.DB, db.ChatLeaseHub, h.kr.HubIDText(), chatstore.WithClock(clock))
+	}
+	r := chatrun.New(chatrun.Config{Exe: exe, DBPath: path, HubID: h.kr.HubIDText(), Dir: o.Dir, DB: o.DB, Clock: clock,
+		Store: store,
+		// A turn's text, steps and end reach the phone's feed and list (the
+		// publisher coalesces the per-event calls).
+		OnChange:  func(int64) { h.publishSoon(slices.KindChatFeed, slices.KindChatList) },
+		OnTurnEnd: h.chatTurnEnded(spawn),
+	})
+	if err := r.Sweep(); err != nil {
+		log.Printf("hub: the chat sweep failed (%s)", errClass(err))
+	}
+	return r
+}
+
+// chatTurnEnded is the runner's OnTurnEnd: the chat_answer push (spec
+// §4.7) is a database read and the pusher's enqueue, so it runs off the
+// runner's goroutine (OnTurnEnd must not block) through spawn.
+func (h *hubRuntime) chatTurnEnded(spawn func(func()) bool) func(conv int64, turnID, status string) {
+	return func(conv int64, turnID, status string) {
+		p := h.chatPush.Load()
+		if p == nil {
+			return
+		}
+		if !spawn(func() { p.turnEnded(conv, turnID, status) }) {
+			log.Printf("hub: chat %d turn %s ended while the hub stops: no push", conv, turnID)
+		}
+	}
+}
+
+// newChatStore is the hub's chat turn store: lease owner this hub, the
+// automatic routing's preferred provider, and the AI title after a
+// conversation's first complete answer (off the turn's goroutine, cancelled
+// at close).
+func (h *hubRuntime) newChatStore(o Options, w *wiring) *chatstore.Store {
+	clock := o.Clock
+	if clock == nil {
+		clock = time.Now
+	}
+	opts := []chatstore.Option{chatstore.WithClock(clock), chatstore.WithPreferredProvider(o.ChatPreferredProvider)}
+	if title := o.ChatTitle; title != nil {
+		opts = append(opts, chatstore.WithTitleHook(func(conv int64) {
+			w.spawn(func() {
+				ctx, cancel := context.WithTimeout(w.titlesCtx, chatTitleBudget)
+				defer cancel()
+				if err := title(ctx, conv); err != nil {
+					log.Printf("hub: chat %d got no AI title (%s)", conv, errClass(err))
+				}
+			})
+		}))
+	}
+	return chatstore.New(o.DB, db.ChatLeaseHub, h.kr.HubIDText(), opts...)
+}
+
+// close stops the chat sessions (before the daemon closes the database) and
+// releases the watch's handle once the goroutines are done.
 func (w *wiring) close() {
 	if w == nil {
 		return
 	}
+	// The runner first: once it closed no turn finalizes, so no title hook
+	// fires; then the background work (spawn refuses anything later).
+	if w.chat != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), chatCloseBudget)
+		if err := w.chat.Close(ctx); err != nil {
+			log.Printf("hub: closing the chat sessions failed (%s)", errClass(err))
+		}
+		cancel()
+	}
+	if w.titlesCancel != nil {
+		w.titlesCancel()
+	}
+	w.stopBackground(chatBackgroundBudget)
 	if w.port != nil {
 		_ = w.port.Close()
 	}
@@ -437,7 +636,14 @@ func (w *wiring) close() {
 // sweepTemps removes what a crash left in the recordings and asset dirs,
 // and the recording jobs (with their audio) finished more than 31 days ago.
 func sweepTemps(o Options, st *state.Store) {
-	n, err := handlers.SweepRecordingTemps(o.RecordingsDir, filepath.Join(o.Dir, assetDirName))
+	dirs := []string{o.RecordingsDir, filepath.Join(o.Dir, assetDirName)}
+	if o.DB != nil {
+		// A chat attachment's sealed download a crash left (.<id>.sealed).
+		if path, err := mainFile(context.Background(), o.DB); err == nil {
+			dirs = append(dirs, chatFilesDir(path))
+		}
+	}
+	n, err := handlers.SweepRecordingTemps(dirs...)
 	if err != nil {
 		log.Printf("hub: sweeping temp files failed (%s)", errClass(err))
 	}

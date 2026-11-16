@@ -103,6 +103,21 @@ func TestDesktopHeartbeatJSONKeys(t *testing.T) {
 	fresh, seen, err := st.DesktopHost(time.Now())
 	require.NoError(t, err)
 	assert.True(t, fresh && seen)
+	// A heartbeat without --chat-lease is an app that ignores the chat lease.
+	old, err := st.OldDesktopRuns(time.Now())
+	require.NoError(t, err)
+	assert.True(t, old)
+	require.NoError(t, st.Close())
+
+	_, err = runHub(t, "desktop", "heartbeat", "--chat-lease", "1", "--json")
+	require.NoError(t, err)
+	st, err = state.Open(dir)
+	require.NoError(t, err)
+	old, err = st.OldDesktopRuns(time.Now())
+	require.NoError(t, err)
+	assert.False(t, old, "--chat-lease 1: the app honours the lease")
+	_, err = runHub(t, "desktop", "heartbeat", "--chat-lease", "2")
+	assert.ErrorContains(t, err, "--chat-lease")
 }
 
 func TestHubRecordingClaimFinishJSONKeys(t *testing.T) {

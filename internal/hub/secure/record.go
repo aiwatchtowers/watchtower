@@ -136,9 +136,10 @@ var (
 		"situation", "meeting_transcript", "day_plan", "day_plan_item", "feature_state", "stream_digest",
 		"slack_account", "google_account", "jira_account", heartbeatName, "recording_job", "workbench",
 		"workbench_target", "workbench_comment", "terminal_session", "owner_ask", "session_report",
-		"session_timeline", "permission_request", "session_chat", "transport",
+		"session_timeline", "permission_request", "session_chat", "chat_list", "chat_feed", "chat_page", "chat_search",
+		"transport",
 	}
-	relayKinds = []string{"action", "recording_upload", "device", "control"}
+	relayKinds = []string{"action", "recording_upload", "chat_attachment", "device", "control"}
 )
 
 // Sealer is the single sealing choke point: every Record comes from here.
@@ -328,6 +329,9 @@ type WorkAlertFields struct {
 	Title         string `json:"title"`
 	Body          string `json:"body"`
 	Quick         bool   `json:"quick"`
+	// ConversationID is the AI chat a chat_answer alert is about (the
+	// iPhone chat spec §4.7); absent on every other alert.
+	ConversationID int64 `json:"conversation_id,omitempty"`
 }
 
 // Push is a sealed alert for send_alert. Its fields are unexported, so only

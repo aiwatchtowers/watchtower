@@ -3,6 +3,7 @@ import SwiftUI
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerChatText
 
 /// Reproducible numbers for the large-text hot paths (#167): a streamed
 /// answer's per-delta re-render and the parses that feed it. The timed

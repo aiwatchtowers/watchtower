@@ -4,14 +4,15 @@ import Foundation
 /// waiting for approval > answering > unread > read. A live turn blocked
 /// on an Approve card waits for the owner, so it reads as waiting, not
 /// answering (controller ruling over §5.2's table order). "Answering" is
-/// the session pool's, so the caller passes it in.
+/// the session pool's, so the caller passes it in, or the hub's: a turn it
+/// runs for the phone (`ChatPanelRow.answeringElsewhere`).
 package enum ChatPanelRowState: Equatable, Sendable, CaseIterable {
     case waitingForApproval, answering, unread, read
 
     package init(row: ChatPanelRow, isAnswering: Bool) {
         if row.pendingApprovals > 0 {
             self = .waitingForApproval
-        } else if isAnswering {
+        } else if isAnswering || row.answeringElsewhere {
             self = .answering
         } else if row.isUnread {
             self = .unread
