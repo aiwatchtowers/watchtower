@@ -643,6 +643,36 @@ final class WorkbenchesViewModelAutoCleanupTests: XCTestCase {
         XCTAssertEqual(applies(streamer).count, 1, "no second cleanup")
     }
 
+    /// A second Resume of the row while the first one's write is in flight
+    /// (a fast A → B → A switch) joins it: it is not refused, and the row
+    /// stays busy until the last of them is past the write.
+    func testASecondResumeJoinsTheFirstInsteadOfBeingRefused() async throws {
+        let (vm, _, streamer) = makeVM([.success(AutoCleanupFixture.processRunning)])
+        let p = try await workbench()
+        let row = try await markedRow(vm, p)
+        let gate = WriteGate()
+        let store = try XCTUnwrap(pool)
+        vm.clearDeleteRequestWrite = { id in
+            await gate.wait()
+            try await store.write { try TerminalSessionQueries.clearDeleteRequested($0, id: id) }
+        }
+
+        let first = Task { try await vm.resume(row) }
+        await waitUntil("the first resume holds the row") { vm.autoCleanupBusy.contains(row.id) }
+        let second = Task { try await vm.resume(row) }
+        await waitUntil("the second resume joined") { vm.resumesClearing[row.id] == 2 }
+        vm.cleanUpAgain(row.id)
+        XCTAssertNil(vm.autoCleanupQueue[p], "Clean Up Again still refused")
+
+        gate.open()
+        _ = try await first.value
+        _ = try await second.value
+        XCTAssertTrue(terminals.liveIDs.contains(row.id), "resumed")
+        XCTAssertFalse(vm.autoCleanupBusy.contains(row.id))
+        XCTAssertNil(vm.resumesClearing[row.id])
+        XCTAssertEqual(applies(streamer).count, 1, "no second cleanup")
+    }
+
     /// Delete Anyway first: while its DELETE runs, Resume (`.cleaningUp`)
     /// and Clean Up Again refuse the row.
     func testDeleteAnywayRefusesResumeAndCleanUpAgainMeanwhile() async throws {

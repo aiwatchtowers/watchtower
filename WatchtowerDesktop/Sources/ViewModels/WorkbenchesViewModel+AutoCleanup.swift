@@ -174,10 +174,20 @@ extension WorkbenchesViewModel {
     /// in memory too (a deleting row this launch did not mark, such as one
     /// whose launch re-queue read failed); on an ordinary row it changes
     /// nothing.
+    /// A Resume of a row another Resume is clearing joins it (both writes
+    /// are the same idempotent UPDATE); only a Delete Anyway or a queued
+    /// cleanup refuses it.
     func clearDeleteRequestForResume(_ session: TerminalSession) async throws {
-        guard canResume(session.id) else { throw TargetStartError.cleaningUp }
-        autoCleanupBusy.insert(session.id)
-        defer { autoCleanupBusy.remove(session.id) }
+        let id = session.id
+        let joinsAResume = resumesClearing[id, default: 0] > 0
+        guard joinsAResume || canResume(id) else { throw TargetStartError.cleaningUp }
+        autoCleanupBusy.insert(id)
+        resumesClearing[id, default: 0] += 1
+        defer {
+            let left = resumesClearing[id, default: 1] - 1
+            resumesClearing[id] = left > 0 ? left : nil
+            if left <= 0 { autoCleanupBusy.remove(id) }
+        }
         do {
             try await clearDeleteRequestWrite(session.id)
         } catch {
