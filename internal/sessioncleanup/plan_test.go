@@ -214,14 +214,17 @@ func TestProj18_SessionInTheWorktreeKeepsIt(t *testing.T) {
 		live       bool
 		caller     int64
 		wantReason string
+		deleting   bool // the planned row has delete_requested_at
 	}{
-		{"another live session", SessionActivity{ID: 9, AgentCwd: "sub"}, true, 0, ReasonSessionInIt},
-		{"another reported an hour ago", SessionActivity{ID: 9, AgentCwd: "sub", ReportedAt: time.Now().Add(-time.Hour)}, false, 0, ReasonSessionInIt},
-		{"another reported 25 h ago, not live", SessionActivity{ID: 9, AgentCwd: "sub", ReportedAt: time.Now().Add(-25 * time.Hour)}, false, 0, ""},
-		{"another finished, not live", SessionActivity{ID: 9, AgentCwd: "sub", ReportedAt: time.Now(), Finished: true}, false, 0, ""},
-		{"the caller itself", SessionActivity{ID: testSession, AgentCwd: "", ReportedAt: time.Now().Add(-48 * time.Hour)}, false, testSession, ReasonYouAreInIt},
-		{"the planned session itself, reported now, not live (a delete's background cleanup)", SessionActivity{ID: testSession, AgentCwd: "sub", ReportedAt: time.Now()}, false, 0, ""},
-		{"the planned session itself, live", SessionActivity{ID: testSession, AgentCwd: "sub", ReportedAt: time.Now()}, true, 0, ReasonSessionInIt},
+		{"another live session", SessionActivity{ID: 9, AgentCwd: "sub"}, true, 0, ReasonSessionInIt, false},
+		{"another reported an hour ago", SessionActivity{ID: 9, AgentCwd: "sub", ReportedAt: time.Now().Add(-time.Hour)}, false, 0, ReasonSessionInIt, false},
+		{"another reported 25 h ago, not live", SessionActivity{ID: 9, AgentCwd: "sub", ReportedAt: time.Now().Add(-25 * time.Hour)}, false, 0, "", false},
+		{"another finished, not live", SessionActivity{ID: 9, AgentCwd: "sub", ReportedAt: time.Now(), Finished: true}, false, 0, "", false},
+		{"the caller itself", SessionActivity{ID: testSession, AgentCwd: "", ReportedAt: time.Now().Add(-48 * time.Hour)}, false, testSession, ReasonYouAreInIt, false},
+		{"the planned session itself, reported now, not live (a delete's background cleanup)", SessionActivity{ID: testSession, AgentCwd: "sub", ReportedAt: time.Now()}, false, 0, "", true},
+		{"the planned session itself, reported now, not live, not being deleted (Clean Up screen, headless --session)", SessionActivity{ID: testSession, AgentCwd: "sub", ReportedAt: time.Now()}, false, 0, ReasonSessionInIt, false},
+		{"the planned session itself, live", SessionActivity{ID: testSession, AgentCwd: "sub", ReportedAt: time.Now()}, true, 0, ReasonSessionInIt, false},
+		{"the planned session itself, live, being deleted", SessionActivity{ID: testSession, AgentCwd: "sub", ReportedAt: time.Now()}, true, 0, ReasonSessionInIt, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -232,6 +235,9 @@ func TestProj18_SessionInTheWorktreeKeepsIt(t *testing.T) {
 			a := tc.activity
 			a.AgentCwd = filepath.Join(root, a.AgentCwd)
 			f.store.activity = []SessionActivity{a}
+			if tc.deleting {
+				f.store.session.Ended = time.Now().Add(-time.Minute)
+			}
 			r := Request{CallerSessionID: tc.caller}
 			if tc.live {
 				r.LiveSessions = []int64{a.ID}

@@ -191,10 +191,13 @@ func procLabel(p Proc) string {
 
 // catchSessionInIt is W6: the caller works inside, or another session whose
 // agent works inside is live or reported within inUseWindow and is not
-// finished. In session mode the planned session's own row is not "another
-// session" unless its terminal is live: a delete's background cleanup plans
-// a session whose last report is fresh and whose finished_at a delete never
-// sets, and its own worktree is what that cleanup removes.
+// finished. The planned session's own row is not "another session" only
+// while it is being deleted (delete_requested_at set, read as
+// SessionInfo.Ended) and its terminal is not live: that row's background
+// cleanup plans a session whose last report is fresh and whose finished_at
+// a delete never sets, and its own worktree is what that cleanup removes
+// (spec 2026-11-10 §3). Any other plan of the row — the Clean Up screen's,
+// a headless --session N — keeps W6 for it.
 func catchSessionInIt(_ context.Context, b *builder, w worktree) (string, string, error) {
 	reason, detail := "", ""
 	for _, a := range b.activity {
@@ -204,7 +207,7 @@ func catchSessionInIt(_ context.Context, b *builder, w worktree) (string, string
 		if b.req.CallerSessionID != 0 && a.ID == b.req.CallerSessionID {
 			return ReasonYouAreInIt, "", nil
 		}
-		if !b.req.Sweep && a.ID == b.req.SessionID && !b.live[a.ID] {
+		if !b.req.Sweep && a.ID == b.req.SessionID && !b.session.Ended.IsZero() && !b.live[a.ID] {
 			continue
 		}
 		if b.live[a.ID] || (!a.Finished && !a.ReportedAt.IsZero() && b.now.Sub(a.ReportedAt) <= inUseWindow) {
