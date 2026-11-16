@@ -45,6 +45,10 @@ func TestOf(t *testing.T) {
 	if got := With("other", conflict); got != "other: relay code CONFLICT" {
 		t.Fatalf("With = %q", got)
 	}
+	// #1872's classes already name the code: no repeat.
+	if got := With("relay_conflict", conflict); got != "relay_conflict" {
+		t.Fatalf("With = %q", got)
+	}
 }
 
 func newTestLimiter(every time.Duration) (*Limiter, *time.Time, *[]string) {

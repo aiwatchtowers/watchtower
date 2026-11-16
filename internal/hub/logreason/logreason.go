@@ -34,8 +34,12 @@ func Of(err error) string {
 }
 
 // With is a log line's class followed by err's reason: "unavailable: relay
-// code UNAVAILABLE", "other: *net.OpError".
+// code UNAVAILABLE", "other: *net.OpError". A class that already names the
+// relay's code (relay_internal, relay_<code>, #1872) stands alone.
 func With(class string, err error) string {
+	if strings.HasPrefix(class, "relay_") {
+		return class
+	}
 	return class + ": " + Of(err)
 }
 
