@@ -1,9 +1,11 @@
+import ChatUI
 import ChatWire
 import Foundation
 import GRDB
 import Observation
 import os
 import UIKit
+import WatchtowerChatText
 import WatchtowerKit
 import WatchtowerSync
 
@@ -72,8 +74,6 @@ struct ChatsSnapshot: Equatable {
     var failures: [String: ChatActionFailure] = [:]
     /// The chat actions still waiting in the outbox (no final echo yet), by action id.
     var queued: [String: QueuedChatAction] = [:]
-    /// The chats whose `chat_manage delete` the hub refused, by when the newest refused one was queued.
-    var refusedDeletes: [Int64: Date] = [:]
 
     nonisolated static func read(
         from db: Database, store: ReplicaStore, cache: ReplicaDecodeCache, records: ChatRecordCache
@@ -97,18 +97,7 @@ struct ChatsSnapshot: Equatable {
         for row in pending where row.state == .pending && ChatsCenter.chatKinds.contains(row.action.kind) {
             snapshot.queued[row.id] = QueuedChatAction(kind: row.action.kind, params: row.action.params)
         }
-        snapshot.refusedDeletes = Self.refusedDeletes(in: pending)
         return snapshot
-    }
-
-    /// Every failed `chat_manage delete` by its chat, the newest queue time kept.
-    nonisolated static func refusedDeletes(in pending: [PendingAction]) -> [Int64: Date] {
-        var refused: [Int64: Date] = [:]
-        for row in pending where row.state == .failed && row.action.kind == .chatManage {
-            guard let params = try? ChatManageParams(wireParams: row.action.params), params.op == .delete else { continue }
-            refused[params.conversationID] = max(refused[params.conversationID] ?? .distantPast, row.createdAt)
-        }
-        return refused
     }
 
     /// The newest chat action's refusal for the grant; nil when that action went or waits.
@@ -204,22 +193,20 @@ final class ChatRecordCache: @unchecked Sendable {
     }
 }
 
-/// One hub's chats on the phone (iPhone chat spec §6): the replica's chat records under one observation, the
-/// sender every chat screen sends through, the list's search and its row actions, the drafts, the sends with their
-/// uploads, and the offline copy with its prefetch. Owned by the `HubSession`, so a pending delete, a running
-/// search or a send waiting for its echo survive the tab switch.
+/// One hub's chats on the phone (iPhone chat spec §6, unified chat spec §6.3): the replica's chat records under one
+/// observation, the sender every chat action goes through, the drafts, the sends with their uploads, the offline copy
+/// with its prefetch, and the `ChatClient` the `ChatUI` screens run on (`RelayChatClient`) with the list's model.
+/// Owned by the `HubSession`, so a pending delete or a send waiting for its echo survive the tab switch.
 @MainActor
 @Observable
 final class ChatsCenter {
     nonisolated static let chatKinds: Set<ActionKind> = [
         .chatNew, .chatTurn, .chatCancel, .chatFeedRequest, .chatPage, .chatSearch, .chatRead, .chatBranchSelect,
-        .chatManage, .chatActionAnswer
+        .chatManage, .chatActionAnswer, .chatEntitySearch, .chatSkillsList
     ]
 
     private(set) var snapshot = ChatsSnapshot()
     @ObservationIgnored let sender: ChatSender
-    let search: ChatSearchModel
-    let rowActions: ChatRowActions
     let drafts = ChatDraftStore()
     let sending: ChatSendCoordinator
     let copy: ChatOfflineCopy
@@ -228,19 +215,24 @@ final class ChatsCenter {
     let prefetch: ChatPrefetcher
     /// Where picked files wait in plaintext until their upload is applied.
     @ObservationIgnored let staging: URL
-    /// The hub answers now (the Chats tab's gate); nothing that needs it is sent otherwise.
-    private(set) var online = false
+    /// The Chats list's search field, kept with the hub like the list's model.
+    var listQuery = ""
     @ObservationIgnored let decodeCache = ReplicaDecodeCache()
     @ObservationIgnored let recordCache = ChatRecordCache()
     @ObservationIgnored private var cancellable: ResilientObservation?
+    /// The replica the observation reads (`start`); the client reads a record from it before the first snapshot.
+    @ObservationIgnored private var replica: ReplicaStore?
+    @ObservationIgnored private var relayClient: RelayChatClient?
+    @ObservationIgnored private var chatList: ChatListModel?
     @ObservationIgnored private var reachability: (@MainActor () -> Bool)?
     /// The copy's writes, one after another: an older snapshot never overwrites a newer one.
     @ObservationIgnored private var copyWrites: Task<Void, Never>?
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "ChatsCenter")
 
-    /// `sleep` times the search's debounce and patience, the delete's Undo window and the conversation screens'
-    /// patience; tests step it by hand. `copy` is the hub's offline copy (in memory when nil).
+    /// `sleep` times the sends' and the requests' patience, the feed's repeat, the prefetch and the list's Undo window;
+    /// tests step it by hand.
+    /// `copy` is the hub's offline copy (in memory when nil).
     init(
         sender: ChatSender,
         uploads: ChatUploads = .none,
@@ -256,8 +248,6 @@ final class ChatsCenter {
         let copy = copy ?? ChatOfflineCopy.inMemory()
         self.copy = copy
         self.copyUnavailable = copyUnavailable
-        search = ChatSearchModel(sender: sender, sleep: sleep)
-        rowActions = ChatRowActions(sender: sender, sleep: sleep)
         sending = ChatSendCoordinator(sender: sender, uploads: uploads, drafts: drafts, copy: copy, withdraw: withdraw, sleep: sleep)
         self.staging = staging
         prefetch = ChatPrefetcher(sender: sender, copy: copy, now: now, sleep: sleep)
@@ -267,9 +257,58 @@ final class ChatsCenter {
     /// The Chats tab's line while the copy is off (nil otherwise).
     var copyNotice: String? { copyUnavailable ? ChatText.copyUnavailableLine : nil }
 
+    /// The chat screens' client: the relay through this hub, built once.
+    var client: RelayChatClient {
+        if let relayClient { return relayClient }
+        let client = RelayChatClient(center: self, sender: sending, replica: replica, offline: copy, sleep: sleep)
+        relayClient = client
+        return client
+    }
+
+    /// The Chats list's model, kept with the hub so a delete waiting for its Undo survives the tab switch.
+    var listModel: ChatListModel {
+        if let chatList { return chatList }
+        let model = ChatListModel(client: client, clock: SleepClock(sleep: sleep))
+        // The list the center holds now, so the first frame has its rows; the client's stream follows.
+        if let list = snapshot.list { model.store.apply(.snapshot(list)) }
+        chatList = model
+        return model
+    }
+
+    /// The models of one conversation screen: a saved chat, or a new one (`ChatRoute.new`). The composer starts from
+    /// the conversation's kept draft (what was typed before, or a send a relaunch gave back).
+    func conversation(_ route: ChatRoute) -> (ChatConversationModel, ChatComposerModel) {
+        let conversation = ChatConversationModel(client: client, conversationID: route.isNew ? nil : route.id)
+        let composer = ChatComposerModel(conversation: conversation)
+        let draft = drafts.draft(route.id)
+        composer.draft = draft.text
+        composer.quotes = draft.quotes
+        composer.editing = draft.editing
+        composer.routing = draft.routing
+        composer.projectID = draft.projectID
+        return (conversation, composer)
+    }
+
+    /// The composer's text and quotes, kept per conversation while the screen is away; the notice a relaunch left goes
+    /// with the next edit.
+    func keepDraft(_ conversation: Int64, text: String, quotes: [ChatQuoteDraft]) {
+        drafts.update(conversation) { draft in
+            if draft.text != text || draft.quotes != quotes { draft.notice = nil }
+            draft.text = text
+            draft.quotes = quotes
+        }
+    }
+
+    /// The Chats tab's gate as the screen on top computes it: whether the hub answers, and the copy the chat shows
+    /// when it does not.
+    func setGate(_ gate: ChatsGateModel) {
+        client.setGate(gate)
+    }
+
     /// Observes the replica's chat records for the session's lifetime.
     func start(store: ReplicaStore, gate: ReplicaObservationGate? = nil) {
         guard cancellable == nil else { return }
+        replica = store
         let (cache, records) = (decodeCache, recordCache)
         cancellable = ResilientObservation(
             name: "chats",
@@ -293,30 +332,19 @@ final class ChatsCenter {
         sending.recover(failures: value.failures, queued: value.queued)
         guard value != snapshot else { return }
         let previous = snapshot
-        if let list = value.list, list != previous.list {
-            rowActions.prune(keeping: Set(list.conversations.map(\.id)))
-        }
-        if value.refusedDeletes != previous.refusedDeletes {
-            rowActions.restoreRefused(value.refusedDeletes)
-        }
         snapshot = value
         saveToCopy(value, previous: previous)
         sending.receive(failures: value.failures)
         sending.settle(feeds: value.feeds)
         prefetch.feedsArrived(Set(value.feeds.filter { previous.feeds[$0.key] != $0.value }.keys))
         stepPrefetch()
+        relayClient?.snapshotChanged()
     }
 
     /// An applied echo of any chat action (the session's one applied observer).
     func receiveApplied(_ action: ActionRequestPayload) {
         guard Self.chatKinds.contains(action.kind) else { return }
         sending.receiveApplied(action)
-    }
-
-    /// The Chats tab's gate: the hub answers now. Search asks the hub only then.
-    func setOnline(_ online: Bool) {
-        search.setOnline(online)
-        self.online = online
     }
 
     /// Whether the hub answers now, as the hub session sees it (its heartbeat and the relay), read fresh at every
@@ -336,11 +364,6 @@ final class ChatsCenter {
     /// of the one in flight ran out).
     func stepPrefetch() {
         prefetch.step(list: snapshot.list, online: reachability?() ?? false)
-    }
-
-    /// A conversation screen's model.
-    func conversation(_ route: ChatRoute, ticks: @escaping () -> AsyncStream<Void> = ChatConversationModel.clockTicks) -> ChatConversationModel {
-        ChatConversationModel(route: route, center: self, sleep: sleep, ticks: ticks)
     }
 
     /// The error state's Retry (mockup 1h): asks the hub to publish `chat_list` again, `chat_feed_request` with
@@ -386,5 +409,14 @@ final class ChatsCenter {
                 Self.logger.error("chat copy not saved: \(String(describing: type(of: error)), privacy: .public)")
             }
         }
+    }
+}
+
+/// The center's `sleep` as `ChatUI`'s clock (the list's Undo window).
+private struct SleepClock: ChatUIClock {
+    let sleep: @Sendable (Duration) async throws -> Void
+
+    func sleep(for duration: Duration) async throws {
+        try await sleep(duration)
     }
 }

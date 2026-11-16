@@ -1,3 +1,4 @@
+import ChatUI
 import ChatWire
 import GRDB
 import WatchtowerChatText
@@ -52,53 +53,60 @@ final class ChatSendRecoveryTests: XCTestCase {
         return echo
     }
 
-    func testARelaunchBetweenChatNewAndChatTurnGivesTheDraftBack() async throws {
-        let first = center(uploads: ChatUploads { _, _ in })
-        let model = first.conversation(.new, ticks: ChatTicks().stream)
-        model.appear(online: true)
-        model.attach(data: Data("notes".utf8), fileName: "notes.md")
-        model.setText("Read this")
-        model.send(list: nil)
-        try await poll({ !((try? self.recorder.params(ChatNewParams.self)) ?? []).isEmpty }, "chat_new")
-        first.receiveApplied(applied(1, .chatNew, ["conversation_id": .integer(88)]))
-        try await poll({ model.conversationID == 88 }, "created")
-        XCTAssertEqual(try copy.outgoing().sends.first?.conversationID, 88, "the send is kept with its new chat")
+    /// A conversation screen's composer over the center's client, the hub answering, with `text` (and `quote`) typed.
+    private func composer(_ center: ChatsCenter, _ route: ChatRoute, text: String, quote: String? = nil) -> ChatComposerModel {
+        center.setGate(ChatsGateModel(ChatFixture.inputs()))
+        let (_, composer) = center.conversation(route)
+        if let quote { composer.addQuote(quote) }
+        composer.draft = text
+        return composer
+    }
 
-        // The app is killed during the upload; the next launch reads the kept send.
+    func testARelaunchBeforeTheOutboxTookTheTurnGivesTheDraftBack() async throws {
+        // The turn is kept before the outbox takes it; the app is killed right then.
+        let sleeper: TickSleeper = sleeper
+        let held = ChatSender { _, _ in
+            try await sleeper.sleep(.seconds(1))
+            return "never"
+        }
+        let first = ChatsCenter(sender: held, copy: copy, now: { ChatFixture.now }, sleep: { try await sleeper.sleep($0) })
+        let composer = composer(first, ChatRoute(id: 88), text: "Read this")
+        _ = Task { await composer.send() }
+        try await poll({ (try? self.copy.outgoing().sends.first?.conversationID) == 88 }, "the send is kept with its chat")
+        XCTAssertNil(try copy.outgoing().sends.first?.turnActionID, "the outbox never took the turn")
+
+        // The next launch reads the kept send.
         let second = center()
         second.apply(ChatsSnapshot())
         XCTAssertEqual(second.drafts.draft(88).text, "Read this")
         XCTAssertEqual(second.drafts.draft(88).notice, ChatSendCoordinator.couldNotSend)
-        XCTAssertEqual(second.drafts.draft(88).attachments.map(\.name), ["notes.md"])
         XCTAssertTrue(try copy.outgoing().sends.isEmpty)
+        // The conversation screen opens on it.
+        let (_, reopened) = second.conversation(ChatRoute(id: 88))
+        XCTAssertEqual(reopened.draft, "Read this")
     }
 
     func testARefusalAfterARelaunchGivesTheTextBackWithTheReason() async throws {
         let first = center()
-        let model = first.conversation(ChatRoute(id: 7), ticks: ChatTicks().stream)
-        model.appear(online: true)
-        model.addQuote("the SSO deadline")
-        model.setText("When?")
-        model.send(list: nil)
+        let composer = composer(first, ChatRoute(id: 7), text: "When?", quote: "the SSO deadline")
+        _ = Task { await composer.send() }
         try await poll({ (try? self.recorder.params(ChatTurnParams.self).count) == 1 }, "turn sent")
-        let turn = RecordingChatSender.actionID(2)
+        let turn = RecordingChatSender.actionID(1)
         try await poll({ (try? self.copy.outgoing().sends.first?.turnActionID) == turn }, "turn kept")
 
         let second = center()
+        let composed = ChatQuoteReply.compose(quotes: [ChatQuoteDraft(quote: "the SSO deadline", comment: "")], typed: "When?") ?? ""
         var queued = ChatsSnapshot()
-        queued.queued = try queuedTurn(turn, conversation: 7, text: ChatQuoteReply.compose(
-            quotes: [ChatQuoteDraft(quote: "the SSO deadline", comment: "")], typed: "When?"
-        ) ?? "")
+        queued.queued = try queuedTurn(turn, conversation: 7, text: composed)
         second.apply(queued)
-        let composed = ChatQuoteReply.compose(quotes: [ChatQuoteDraft(quote: "the SSO deadline", comment: "")], typed: "When?")
         XCTAssertEqual(second.sending.pending[7]?.text, composed)
         XCTAssertEqual(second.drafts.draft(7).text, "", "still on its way: nothing back yet")
 
         var refused = ChatsSnapshot()
         refused.failures = [turn: ChatActionFailure(reason: .conversationBusy, message: "This chat is busy.")]
         second.apply(refused)
-        XCTAssertEqual(second.drafts.draft(7).text, "When?")
-        XCTAssertEqual(second.drafts.draft(7).quotes.map(\.quote), ["the SSO deadline"])
+        // The shared composer sends the quote inside the text: the whole sent text comes back.
+        XCTAssertEqual(second.drafts.draft(7).text, composed)
         XCTAssertEqual(second.drafts.draft(7).notice, "This chat is busy.")
         XCTAssertNil(second.sending.pending[7])
         XCTAssertTrue(try copy.outgoing().sends.isEmpty)
@@ -106,10 +114,8 @@ final class ChatSendRecoveryTests: XCTestCase {
 
     func testATurnAppliedWhileTheAppWasDeadLeavesNothingBehind() async throws {
         let first = center()
-        let model = first.conversation(ChatRoute(id: 7), ticks: ChatTicks().stream)
-        model.appear(online: true)
-        model.setText("Hi")
-        model.send(list: nil)
+        let composer = composer(first, ChatRoute(id: 7), text: "Hi")
+        _ = Task { await composer.send() }
         try await poll({ (try? self.copy.outgoing().sends.first?.turnActionID) != nil }, "turn kept")
         let second = center()
         second.apply(ChatsSnapshot())
@@ -119,17 +125,16 @@ final class ChatSendRecoveryTests: XCTestCase {
 
     func testALostEchoGivesTheTextBackAfterThePatience() async throws {
         let center = center()
-        let model = center.conversation(ChatRoute(id: 7), ticks: ChatTicks().stream)
-        model.appear(online: true)
-        model.setText("Hello")
-        model.send(list: nil)
+        let composer = composer(center, ChatRoute(id: 7), text: "Hello")
+        let send = Task { await composer.send() }
         try await poll({ (try? self.recorder.params(ChatTurnParams.self).count) == 1 }, "turn sent")
         try await poll({ self.sleeper.requested.contains(ChatSendCoordinator.echoPatience) }, "patience")
-        XCTAssertEqual(model.composer(list: nil).canSend, false, "pending")
+        XCTAssertFalse(composer.canSend, "pending")
         sleeper.tick()
-        try await poll({ model.draft.text == "Hello" }, "text back")
-        XCTAssertEqual(withdrawals, [RecordingChatSender.actionID(2)], "the turn is taken back first")
-        XCTAssertEqual(model.draft.notice, ChatSendCoordinator.couldNotSend)
+        await send.value
+        XCTAssertEqual(composer.draft, "Hello", "the text never left the composer")
+        XCTAssertEqual(withdrawals, [RecordingChatSender.actionID(1)], "the turn is taken back first")
+        XCTAssertEqual(composer.line, ChatSendCoordinator.couldNotSend)
         XCTAssertNil(center.sending.pending[7])
         XCTAssertTrue(try copy.outgoing().sends.isEmpty)
     }
@@ -137,24 +142,22 @@ final class ChatSendRecoveryTests: XCTestCase {
     func testALateEchoTheOutboxCannotTakeBackIsHonoured() async throws {
         withdrawal = .onItsWay
         let center = center()
-        let model = center.conversation(ChatRoute(id: 7), ticks: ChatTicks().stream)
-        model.appear(online: true)
-        model.setText("Hello")
-        model.send(list: nil)
+        let composer = composer(center, ChatRoute(id: 7), text: "Hello")
+        let send = Task { await composer.send() }
         try await poll({ (try? self.recorder.params(ChatTurnParams.self).count) == 1 }, "turn sent")
         try await poll({ self.sleeper.requested.contains(ChatSendCoordinator.echoPatience) }, "patience")
         sleeper.tick()
         try await poll({ center.sending.pending[7]?.isStalled == true }, "stalled")
-        XCTAssertEqual(model.draft.text, "", "the hub may have it: the text is not given back")
-        guard case let .owner(owner)? = model.items(permissions: true, host: .mac).last else { return XCTFail("owner bubble") }
-        XCTAssertEqual(owner.caption, "Waiting for your Mac…")
+        XCTAssertEqual(composer.draft, "Hello", "the hub may have it: the send waits, the text stays")
+        XCTAssertFalse(composer.canSend, "never sent twice")
 
-        var echo = ActionRequestPayload(id: RecordingChatSender.actionID(2), kind: .chatTurn, entityID: nil, createdAt: ChatFixture.now)
+        var echo = ActionRequestPayload(id: RecordingChatSender.actionID(1), kind: .chatTurn, entityID: nil, createdAt: ChatFixture.now)
         echo.status = .applied
         echo.result = ["user_message_id": .integer(41)]
         center.receiveApplied(echo)
-        try await poll({ center.sending.pending[7]?.isApplied == true }, "marked sent")
-        XCTAssertEqual(model.draft.text, "")
+        await send.value
+        XCTAssertEqual(center.sending.pending[7]?.isApplied, true, "marked sent")
+        XCTAssertEqual(composer.draft, "")
         XCTAssertTrue(try copy.outgoing().sends.isEmpty)
     }
 
@@ -230,33 +233,33 @@ final class ChatSendRecoveryTests: XCTestCase {
         let center = center()
         center.receiveApplied(applied(99, .chatTurn, [:]))
         XCTAssertEqual(center.sending.earlyEchoCount, 1)
-        let model = center.conversation(ChatRoute(id: 7), ticks: ChatTicks().stream)
-        model.appear(online: true)
-        model.setText("Hello")
-        model.send(list: nil)
+        let composer = composer(center, ChatRoute(id: 7), text: "Hello")
+        let send = Task { await composer.send() }
         try await poll({ (try? self.recorder.params(ChatTurnParams.self).count) == 1 }, "turn sent")
         let turn = try XCTUnwrap(recorder.sent.firstIndex { $0.kind == .chatTurn }) + 1
         center.receiveApplied(applied(turn, .chatTurn, ["user_message_id": .integer(5)]))
+        await send.value
         try await poll({ center.sending.earlyEchoCount == 0 }, "pruned when the send ended")
     }
 
     func testAnAppliedUploadDropsItsPlaintext() async throws {
         var uploaded: [ChatAttachmentUploadPayload] = []
         let center = center(uploads: ChatUploads { payload, _ in uploaded.append(payload) })
-        let model = center.conversation(ChatRoute(id: 7), ticks: ChatTicks().stream)
-        model.appear(online: true)
-        model.attach(data: Data("notes".utf8), fileName: "notes.md")
-        let file = try XCTUnwrap(model.draft.attachments.first?.file)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
-        model.setText("Read")
-        model.send(list: nil)
+        let composer = composer(center, ChatRoute(id: 7), text: "Read")
+        let staging = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: staging) }
+        let staged = try ChatAttachmentPrep.stage(try ChatAttachmentPrep.prepare(data: Data("notes".utf8), fileName: "notes.md").get(), in: staging)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: staged.file.path))
+        let upload = ChatSealedUpload(uploadID: staged.id, name: staged.name, mime: staged.mime, size: staged.size, file: staged.file)
+        let attach = Task { await composer.attach(.sealedUpload(upload)) }
         try await poll({ uploaded.count == 1 }, "uploaded")
         var echo = try XCTUnwrap(uploaded.first)
         echo.status = .applied
         echo.attachmentID = 5
         center.sending.receiveUpload(echo)
-        try await poll({ (try? self.recorder.params(ChatTurnParams.self).count) == 1 }, "turn")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "the plaintext goes once the hub holds the file")
+        await attach.value
+        XCTAssertEqual(composer.attachments.map(\.id), [5])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staged.file.path), "the plaintext goes once the hub holds the file")
     }
 }
 
@@ -318,28 +321,5 @@ final class ChatPrefetchReachabilityTests: XCTestCase {
         }
         await center.copyWritesDone()
         XCTAssertEqual(try copy.held(conversationID: 1)?.feed?.messages.count, 5, "the newest snapshot is the one kept")
-    }
-}
-
-/// Fix round 1's small screen rules.
-final class ChatScreenTextTests: XCTestCase {
-    func testThePickerShowsTheAnswerAsRead() {
-        let text = """
-            #### Q3 roadmap
-            - Billing **v2** is on track.
-
-            :::artifact key="r" kind="email" title="Reply"
-            Hello
-            :::
-            Two items: the `export` API.
-            """
-        XCTAssertEqual(ChatFeedItems.displayText(text), "Q3 roadmap\n\n• Billing v2 is on track.\n\nTwo items: the export API.")
-    }
-
-    func testTheNavChipWhileTheHubIsAway() {
-        XCTAssertNil(ChatNavChip(mac: .online, relayUnreachable: false))
-        XCTAssertEqual(ChatNavChip(mac: .asleep(lastSeen: ChatFixture.now), relayUnreachable: false)?.word, "asleep")
-        XCTAssertEqual(ChatNavChip(mac: .offline, relayUnreachable: false)?.word, "offline")
-        XCTAssertEqual(ChatNavChip(mac: .online, relayUnreachable: true)?.word, "offline")
     }
 }
