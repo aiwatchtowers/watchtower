@@ -24,7 +24,10 @@ package enum EmbeddedChatReplay {
     /// again, so it is left out too (as Go's `HistoryBefore` drops it); an
     /// unanswered question the owner moved on from stays.
     package static func block(
-        messages: [ChatMessageRecord], before turnID: String, prompt: String, capCharacters: Int = capCharacters,
+        messages: [ChatMessageRecord],
+        before turnID: String,
+        prompt: String,
+        capCharacters: Int = capCharacters,
         historyTools: Bool = false
     ) -> String? {
         precondition(capCharacters > 0)
