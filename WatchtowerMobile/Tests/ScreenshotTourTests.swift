@@ -236,6 +236,7 @@ final class ScreenshotTourTests: XCTestCase {
             typingAllowed: true, startSessionsAllowed: true, permissionsAllowed: true, chatAllowed: true
         )
         rows += try await captureConversations(host: host, list: list, heartbeat: on, relay: relay, grant: approving, now: now)
+        rows += try await captureUnifiedChatMocks(host: host)
 
         // 1d: the Mac asleep (its heartbeat 40 min old), the last list the phone holds.
         let stale = now.addingTimeInterval(-2_400)
@@ -251,6 +252,24 @@ final class ScreenshotTourTests: XCTestCase {
                 mac: .asleep(lastSeen: stale)
             )
         )
+        return rows
+    }
+
+    /// The unified chat's new parts (spec 2026-11-16 §10, #1822 T0) as static mocks: a question card, a Slack approval card and
+    /// the fallback card. T9 switches each to the real view under the same name. Named by shot, not by frame number.
+    private func captureUnifiedChatMocks(host: ScreenshotHost) async throws -> [ScreenshotHost.IndexRow] {
+        let frames: [(String, AnyView)] = [
+            ("iphone-chat-question-card", AnyView(UnifiedChatMock.questionCard)),
+            ("iphone-chat-approval-slack", AnyView(UnifiedChatMock.slackApproval)),
+            ("chat-part-fallback", AnyView(UnifiedChatMock.fallback))
+        ]
+        var rows: [ScreenshotHost.IndexRow] = []
+        for (name, view) in frames {
+            try await host.captureThree(name, view)
+            rows.append(ScreenshotHost.IndexRow(
+                number: name, view: "UnifiedChatMock", source: "Tests/ScreenshotTourTests.swift", reached: "static mock, light/dark/narrow"
+            ))
+        }
         return rows
     }
 
@@ -1663,5 +1682,81 @@ private actor RefusingTransport: ConditionalTransport {
 
     func delete(_ items: [ConditionalDelete]) async throws -> [DeleteOutcome] {
         try await inner.delete(items)
+    }
+}
+
+/// Static mocks of the unified chat's new phone parts (#1822 T0), from the tokens the chat cards use. The exact copy is
+/// the plan's Global Constraints.
+private enum UnifiedChatMock {
+    static let fallbackText = "Send a Slack message to #general — waiting for your approval"
+    static let openOnMac = "Open on the Mac"
+
+    private static func card<Content: View>(waiting: Bool = false, @ViewBuilder _ content: () -> Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: Radius.container, style: .continuous)
+        return VStack(alignment: .leading, spacing: Spacing.small, content: content)
+            .padding(Spacing.cozy)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Fill.card, in: shape)
+            .overlay(shape.strokeBorder(waiting ? PhoneTone.waitingForYou.color : Stroke.hairlineColor, lineWidth: Stroke.hairline * 2))
+    }
+
+    private static func page<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.medium) {
+            content()
+            Spacer(minLength: 0)
+        }
+        .padding(Spacing.large)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(uiColor: .systemBackground))
+    }
+
+    static var questionCard: some View {
+        page {
+            card(waiting: true) {
+                Text("Which session store should the redirect fix use?").font(TypeScale.rowEmphasis)
+                option("Server table", detail: "One row per session", selected: true)
+                option("Cookie", detail: "No extra table", selected: false)
+                option("Other…", detail: nil, selected: false)
+                Button("Send") {}
+                    .buttonStyle(ChatCardButtonStyle(fill: PhoneTone.waitingForYou.color, label: .black))
+                    .padding(.top, Spacing.small)
+            }
+        }
+    }
+
+    private static func option(_ title: String, detail: String?, selected: Bool) -> some View {
+        HStack(alignment: .top, spacing: Spacing.regular) {
+            Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                Text(title).font(TypeScale.rowEmphasis)
+                if let detail { Text(detail).font(TypeScale.meta).foregroundStyle(.secondary) }
+            }
+        }
+    }
+
+    static var slackApproval: some View {
+        page {
+            card(waiting: true) {
+                Text("Send a Slack message to #general").font(TypeScale.rowEmphasis)
+                Text("send_slack_message").font(TypeScale.meta).foregroundStyle(.secondary)
+                Text("channel: #general\ntext: The release is out.").font(TypeScale.code).padding(.top, Spacing.tight)
+                HStack(spacing: Spacing.regular) {
+                    Button("Approve") {}.buttonStyle(ChatCardButtonStyle(fill: PhoneTone.waitingForYou.color, label: .black))
+                    Button("Reject") {}.buttonStyle(ChatCardButtonStyle(fill: Fill.card, label: .primary))
+                }
+                .padding(.top, Spacing.small)
+            }
+        }
+    }
+
+    static var fallback: some View {
+        page {
+            card {
+                Text(fallbackText)
+                Button(openOnMac) {}
+                    .buttonStyle(ChatCardButtonStyle(fill: Fill.card, label: .primary))
+                    .padding(.top, Spacing.small)
+            }
+        }
     }
 }

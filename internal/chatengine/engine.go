@@ -72,6 +72,8 @@ type Config struct {
 	// FilesDir is <workspace>/chat_files: a deleted conversation's folder
 	// is removed after the delete ("" = left).
 	FilesDir string
+	// SkillsDir is <workspace>/skills, the `/` picker's catalog ("" = none).
+	SkillsDir string
 	// procArgs reads a process's command line (nil = ps); a test seam.
 	procArgs func(pid int) (string, error)
 }
@@ -167,6 +169,10 @@ type TurnRequest struct {
 	// ClientKey ("" = none) is stored in chat_messages.client_key: a repeated
 	// key is answered with the turn it started, never applied twice.
 	ClientKey string
+	// ScreenContext ("" = none, at most MaxScreenContextBytes) is the
+	// client-rendered current-screen block (Swift ScreenContext.block): put
+	// before the provider text only, never stored.
+	ScreenContext string
 }
 
 // Turn starts a turn (chatstore.Store.Start under the engine's lease) and
@@ -177,6 +183,10 @@ type TurnRequest struct {
 func (e *Engine) Turn(ctx context.Context, r TurnRequest) (chatstore.Started, error) {
 	req := r.StartRequest
 	req.ClientKey = r.ClientKey
+	if len(r.ScreenContext) > MaxScreenContextBytes {
+		return chatstore.Started{}, chatstore.ErrInvalid
+	}
+	req.ProviderPrefix = r.ScreenContext
 	conv := req.ConversationID
 	ts := &turnState{clientKey: req.ClientKey, done: make(chan struct{})}
 	for {

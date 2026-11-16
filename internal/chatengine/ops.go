@@ -127,6 +127,7 @@ func (e *Engine) registerOps() {
 	e.Register("chat_read", e.opRead)
 	e.Register("chat_branch_select", e.opBranchSelect)
 	e.Register("chat_manage", e.opManage)
+	e.registerMacOps()
 }
 
 func (e *Engine) opNew(ctx context.Context, params json.RawMessage, _ Client) (any, error) {
@@ -157,6 +158,9 @@ func (e *Engine) opTurn(ctx context.Context, params json.RawMessage, _ Client) (
 		AttachmentIDs  []int64        `json:"attachment_ids"`
 		Routing        *routingParams `json:"routing"`
 		ClientKey      string         `json:"client_key"`
+		Compose        *Compose       `json:"compose"`
+		ScreenContext  string         `json:"screen_context"`
+		CommentIDs     []int64        `json:"artifact_comment_ids"`
 	}
 	if err := decode(params, &p); err != nil {
 		return nil, err
@@ -166,7 +170,8 @@ func (e *Engine) opTurn(ctx context.Context, params json.RawMessage, _ Client) (
 		return nil, errBadParams
 	}
 	st, err := e.Turn(ctx, TurnRequest{StartRequest: chatstore.StartRequest{ConversationID: p.ConversationID, Mode: p.Mode,
-		MessageID: p.MessageID, Text: p.Text, AttachmentIDs: p.AttachmentIDs, Routing: routing}, ClientKey: p.ClientKey})
+		MessageID: p.MessageID, Text: p.Text, AttachmentIDs: p.AttachmentIDs, Routing: routing, Compose: p.Compose,
+		ArtifactCommentIDs: p.CommentIDs}, ClientKey: p.ClientKey, ScreenContext: p.ScreenContext})
 	if err != nil {
 		return nil, err
 	}

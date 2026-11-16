@@ -47,6 +47,7 @@ import (
 	"watchtower/internal/platform"
 	"watchtower/internal/powerstate"
 	"watchtower/internal/prompts"
+	"watchtower/internal/skills"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/sync"
 	"watchtower/internal/targets"
@@ -1072,7 +1073,7 @@ func startChatEngine(ctx context.Context, cfg *config.Config, logger *log.Logger
 		return nil, func() {}
 	}
 	eng := chatengine.New(chatengine.Config{Exe: exe, DBPath: dbPath, Dir: filepath.Join(ws, "chatengine"),
-		DB: write, Read: read, FilesDir: filepath.Join(ws, chatstore.FilesDirName),
+		DB: write, Read: read, FilesDir: filepath.Join(ws, chatstore.FilesDirName), SkillsDir: skills.Dir(ws),
 		// The AI title after a chat's first complete answer, `watchtower chat
 		// title`'s code; the automatic routing's preferred provider is the
 		// config the Mac's automatic routing reads.

@@ -208,6 +208,12 @@ var displayOnlyReadersAt = map[string]string{
 	"chatengine/engine.go:clientKeyEcho":          "ids and the turn id of the row a client key started, no text",
 	"chatengine/engine.go:SelectBranch":           "the selected message's conversation id, no text",
 	"hub/slices/sources/registry.go:ChangeTables": "table names of the hub's data_version watch, no read",
+	// The engine's Mac operations (unified chat #1822 T2): project and
+	// artifact panel writes.
+	"chatengine/artifacts.go:artifactWriteTx":        "keep reads the conversation's LIVE-01 mark to refuse a marked chat; no text",
+	"chatengine/projects.go:deleteProject":           "the deleted project's conversation ids, no text",
+	"chatengine/projects.go:dropSessionsTx":          "clears the session id of a project's chats",
+	"chatstore/attachments.go:SaveProjectAttachment": "inserts a project file row and clears the project chats' session ids, no text read",
 }
 
 // TestLIVE01_ReaderList fails when a non-test function in internal/ mentions
