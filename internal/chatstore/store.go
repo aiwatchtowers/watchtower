@@ -100,14 +100,34 @@ type StartRequest struct {
 	ConversationID int64
 	Mode           string // send | regenerate | edit
 	// MessageID: the assistant message to regenerate, or the owner message to edit.
-	MessageID     int64
-	Text          string
+	MessageID int64
+	// ReuseOwnerMessageID names a regenerate by its owner message instead
+	// (the Mac's reuseUserMessageID): that row is reused, and nothing else
+	// of the owner side is written. Exactly one of the two names a regenerate.
+	ReuseOwnerMessageID int64
+	Text                string
+	// TitleText (send only), when set, says Text is the owner text as the
+	// client's composer stores it (the Mac's ChatTurnComposer, with its
+	// skill line and mentions): Text is stored unchanged and TitleText — the
+	// owner's own words — is the prefix title's source. nil: Text is the
+	// owner's words and is composed here (the phone's path).
+	TitleText *string
+	// Quotes (send only) is the "Send N comments" batch: its open artifact
+	// comments turn `sent` in the owner row's transaction (the Mac's
+	// alsoWrite → ArtifactCommentQueries.markSent), so a sent message never
+	// leaves them open and a refused one never marks them.
+	Quotes        []Quote
 	AttachmentIDs []int64  // send only: the conversation's pending files
 	TurnID        string   // "" = a new UUID
 	Routing       *Routing // nil = keep the conversation's
 	// ContinuousLeafID is the last message the live session answered (nil
 	// for a new session): ChatContinuity decides Replay from it.
 	ContinuousLeafID *int64
+}
+
+// Quote is one artifact comment of a quote batch.
+type Quote struct {
+	CommentID int64
 }
 
 // Started is a turn whose rows are on disk.
@@ -125,10 +145,13 @@ type Started struct {
 	Routing     Routing // the session config the turn runs with
 	ProjectID   *int64  // the conversation's chat project at start
 	// The prefix commands' results (send and edit only): the remember
-	// outcome ("" = not a remember message), the chat-born idea written by a
-	// knowledge prefix (0 = none) and the first failure of either.
+	// outcome ("" = not a remember message) and the line it added (0 =
+	// none), the chat-born idea written by a knowledge prefix (0 = none) and
+	// its kind, and the first failure of either.
 	RememberOutcome string
+	RememberLineID  int64
 	IdeaID          int64
+	IdeaKind        string
 	PrefixErr       error
 }
 
@@ -152,7 +175,8 @@ type msgRow struct {
 // (ChatViewModel.persistTurnStart): the lease claim first — refused, nothing
 // is written —, then the owner row (regenerate reuses it), its attachments,
 // the prefix title, the routing and the empty `partial` assistant row
-// (CHAT-01). Every insert moves the active leaf and updated_at. The prefix
+// (CHAT-01), with the quote batch marked sent in the same transaction.
+// Every insert moves the active leaf and updated_at. The prefix
 // commands run after the commit, for a new owner row only.
 func (s *Store) Start(ctx context.Context, r StartRequest) (Started, error) {
 	text := strings.TrimSpace(r.Text)
@@ -225,15 +249,13 @@ func (s *Store) Start(ctx context.Context, r StartRequest) (Started, error) {
 		}
 		st.Attachments = atts
 		userText, titleText = composeOwnerText(r.Text), text
-	case ModeRegenerate:
-		m, ok := byID[r.MessageID]
-		if !ok {
-			return Started{}, ErrNotFound
+		if r.TitleText != nil {
+			userText, titleText = r.Text, *r.TitleText
 		}
-		owner, hasOwner := byID[m.parent.Int64]
-		if m.role != "assistant" || !m.parent.Valid || !hasOwner || owner.role != "user" ||
-			m.errorCode.String == codeQuotaExhausted {
-			return Started{}, ErrInvalid
+	case ModeRegenerate:
+		owner, err := regenerateOwner(byID, r)
+		if err != nil {
+			return Started{}, err
 		}
 		st.UserMessageID = owner.id
 		historyTip = nullable(owner.parent)
@@ -287,6 +309,9 @@ func (s *Store) Start(ctx context.Context, r StartRequest) (Started, error) {
 		if err := setPrefixTitleTx(tx, r.ConversationID, titleText); err != nil {
 			return Started{}, err
 		}
+		if err := markQuotesSentTx(tx, r.ConversationID, r.Quotes, createdAt); err != nil {
+			return Started{}, err
+		}
 	}
 	if err := writeRoutingTx(tx, r.ConversationID, conv, r.Routing, routing); err != nil {
 		return Started{}, err
@@ -324,17 +349,20 @@ func validateStart(r StartRequest, text string) error {
 	if r.ConversationID <= 0 {
 		return ErrInvalid
 	}
+	// Quotes and a client-composed text belong to a new message only, and a
+	// reused owner message to a regenerate only.
+	newMessageOnly := len(r.AttachmentIDs) > 0 || len(r.Quotes) > 0 || r.TitleText != nil
 	switch r.Mode {
 	case ModeSend:
-		if text == "" && len(r.AttachmentIDs) == 0 {
+		if text == "" && len(r.AttachmentIDs) == 0 || r.ReuseOwnerMessageID != 0 {
 			return ErrInvalid
 		}
 	case ModeRegenerate:
-		if r.MessageID <= 0 || len(r.AttachmentIDs) > 0 {
+		if (r.MessageID > 0) == (r.ReuseOwnerMessageID > 0) || newMessageOnly {
 			return ErrInvalid
 		}
 	case ModeEdit:
-		if r.MessageID <= 0 || text == "" || len(r.AttachmentIDs) > 0 {
+		if r.MessageID <= 0 || text == "" || newMessageOnly || r.ReuseOwnerMessageID != 0 {
 			return ErrInvalid
 		}
 	default:
@@ -342,6 +370,44 @@ func validateStart(r StartRequest, text string) error {
 	}
 	if r.Routing != nil && !r.Routing.Automatic && !knownProvider(r.Routing.Provider) {
 		return ErrInvalid
+	}
+	return nil
+}
+
+// regenerateOwner is the owner message a regenerate answers again: the one
+// it names (ReuseOwnerMessageID), or the parent of the assistant message it
+// names — never under a quota-exhausted reply (the Mac's menu rule).
+func regenerateOwner(byID map[int64]msgRow, r StartRequest) (msgRow, error) {
+	if r.ReuseOwnerMessageID > 0 {
+		owner, ok := byID[r.ReuseOwnerMessageID]
+		if !ok {
+			return msgRow{}, ErrNotFound
+		}
+		if owner.role != "user" {
+			return msgRow{}, ErrInvalid
+		}
+		return owner, nil
+	}
+	m, ok := byID[r.MessageID]
+	if !ok {
+		return msgRow{}, ErrNotFound
+	}
+	owner, hasOwner := byID[m.parent.Int64]
+	if m.role != "assistant" || !m.parent.Valid || !hasOwner || owner.role != "user" ||
+		m.errorCode.String == codeQuotaExhausted {
+		return msgRow{}, ErrInvalid
+	}
+	return owner, nil
+}
+
+// markQuotesSentTx is ArtifactCommentQueries.markSent for a quote batch:
+// only open comments, and only this conversation's.
+func markQuotesSentTx(tx *sql.Tx, conv int64, quotes []Quote, sentAt float64) error {
+	for _, q := range quotes {
+		if _, err := tx.Exec(`UPDATE chat_artifact_comments SET status = 'sent', sent_at = ?
+			WHERE id = ? AND conversation_id = ? AND status = 'open'`, sentAt, q.CommentID, conv); err != nil {
+			return fmt.Errorf("marking artifact comment %d sent: %w", q.CommentID, err)
+		}
 	}
 	return nil
 }
