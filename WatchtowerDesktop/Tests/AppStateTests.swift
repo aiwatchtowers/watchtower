@@ -727,9 +727,10 @@ final class AppStateTests: XCTestCase {
         XCTAssertNil(appState.databaseManager)
     }
 
-    /// Fresh install: Goals opened the DB for Connect; leaving the last
-    /// step runs the whole completion sequence — onboarding_done written
-    /// first, then the daemon started exactly once — and wires the rest of
+    /// Fresh install: Goals opened the DB for Connect, which starts the
+    /// daemon without sync (mobile Inbox spec §3); leaving the last step runs
+    /// the whole completion sequence — onboarding_done written first, then
+    /// the daemon restarted with sync exactly once — and wires the rest of
     /// the app once.
     func testFinishAfterTheOnboardingOpenStartsTheDaemonOnce() async throws {
         let manager = try XCTUnwrap(dbManager)
@@ -742,11 +743,13 @@ final class AppStateTests: XCTestCase {
         appState.wireAppDatabaseOverride = { _ in appWirings += 1 }
         appState.needsOnboarding = true
 
-        // Goals → Connect: no daemon.
+        // Goals → Connect: the open starts the daemon without sync.
         let route = OnboardingRoute(goals: [.tasksAndJira])
         await appState.leaveOnboardingStep(.purpose, route: route) {}
+        await appState.daemonStartChain?.value
         XCTAssertEqual(appState.onboarding.currentStep, .connect)
-        XCTAssertEqual(daemon.starts + daemon.restarts, 0, "no step before finish touches the daemon")
+        XCTAssertEqual(daemon.startNoSync, [true], "the open starts the daemon without sync")
+        XCTAssertEqual(daemon.restarts, 0, "no step before finish restarts it")
 
         await appState.leaveOnboardingStep(.connect, route: route) { retries += 1 }
         // A stray second click after finish starts nothing more.
@@ -754,7 +757,7 @@ final class AppStateTests: XCTestCase {
         await appState.daemonStartChain?.value
 
         XCTAssertEqual(daemon.starts, 1)
-        XCTAssertEqual(daemon.restarts, 0)
+        XCTAssertEqual(daemon.restartNoSync, [false], "the finish restarts it once, with sync")
         XCTAssertEqual(appWirings, 1)
         XCTAssertEqual(retries, 1)
         XCTAssertFalse(appState.needsOnboarding)

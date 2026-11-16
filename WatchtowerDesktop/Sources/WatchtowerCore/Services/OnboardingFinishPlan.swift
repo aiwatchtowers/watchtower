@@ -5,15 +5,29 @@ import Foundation
 @MainActor
 package protocol DaemonControl: AnyObject {
     func daemonIsRunning() -> Bool
-    /// `sync --daemon --detach`; false (and the reason logged/surfaced by
+    /// `sync --daemon --detach`, with `--no-sync` when `noSync` (the start
+    /// before onboarding finishes); false (and the reason logged/surfaced by
     /// the implementation) on failure.
-    func startDetached() async -> Bool
-    /// Stops the daemon, waits for it to die, starts it again.
-    func restartWaiting() async throws
+    func startDetached(noSync: Bool) async -> Bool
+    /// Stops the daemon, waits for it to die, starts it again (with
+    /// `--no-sync` when `noSync`).
+    func restartWaiting(noSync: Bool) async throws
     func stopDaemonNow() async
     /// Waits (bounded) for a stopped daemon's process to be gone; throws
     /// when it outlives the wait.
     func waitUntilStopped() async throws
+}
+
+extension DaemonControl {
+    /// A start with sync (every start once onboarding has finished).
+    package func startDetached() async -> Bool {
+        await startDetached(noSync: false)
+    }
+
+    /// A restart with sync (onboarding's finish among them).
+    package func restartWaiting() async throws {
+        try await restartWaiting(noSync: false)
+    }
 }
 
 /// How the daemon is brought up once onboarding is done, and Catch-Up's
@@ -80,14 +94,14 @@ extension DaemonManager: DaemonControl {
         Self.checkDaemonRunning()
     }
 
-    package func startDetached() async -> Bool {
-        await startDaemon()
+    package func startDetached(noSync: Bool) async -> Bool {
+        await startDaemon(noSync: noSync)
         return errorMessage == nil
     }
 
-    package func restartWaiting() async throws {
+    package func restartWaiting(noSync: Bool) async throws {
         do {
-            try await Self.restart()
+            try await Self.restart(noSync: noSync)
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription

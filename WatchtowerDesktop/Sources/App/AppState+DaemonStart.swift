@@ -84,14 +84,14 @@ extension AppState {
                 do {
                     // Inside this item: never `restartOnChain`, which would
                     // enqueue behind it.
-                    try await daemon.restartWaiting()
+                    try await daemon.restartWaiting(noSync: self?.daemonRunsWithoutSync ?? false)
                     self?.daemonStartQueue.succeeded()
                 } catch {
                     self?.daemonStartFailure = Self.daemonRestartFailureText(error)
                 }
                 return
             }
-            guard await daemon.startDetached() else {
+            guard await daemon.startDetached(noSync: self?.daemonRunsWithoutSync ?? false) else {
                 guard let self else { return }
                 daemonStartFailure = Self.daemonStartFailureText(daemonManager.errorMessage)
                 return

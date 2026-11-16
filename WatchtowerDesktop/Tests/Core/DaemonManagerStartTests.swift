@@ -118,4 +118,44 @@ final class DaemonManagerStartTests: XCTestCase {
             "Failed to start daemon (exit code 1)"
         )
     }
+
+    // MARK: - --no-sync
+
+    /// A process factory that records the arguments and runs `true`.
+    private static func recording(_ seen: SeenArguments) -> (String, [String]) -> Process {
+        { _, arguments in
+            seen.value = arguments
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+            process.standardOutput = FileHandle.nullDevice
+            return process
+        }
+    }
+
+    /// The app's start before onboarding finishes (mobile Inbox spec §3).
+    func testNoSyncStartPassesTheFlag() async throws {
+        let seen = SeenArguments()
+        let result = try await DaemonManager.launchDetachedDaemon(
+            path: "/usr/bin/true", noSync: true, loginEnvironment: { nil }, processFactory: Self.recording(seen)
+        )
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(seen.value, ["sync", "--daemon", "--detach", "--no-sync"])
+    }
+
+    func testDefaultStartHasNoFlag() async throws {
+        let defaulted = SeenArguments()
+        _ = try await DaemonManager.launchDetachedDaemon(
+            path: "/usr/bin/true", loginEnvironment: { nil }, processFactory: Self.recording(defaulted)
+        )
+        XCTAssertEqual(defaulted.value, ["sync", "--daemon", "--detach"])
+        let explicit = SeenArguments()
+        _ = try await DaemonManager.launchDetachedDaemon(
+            path: "/usr/bin/true", noSync: false, loginEnvironment: { nil }, processFactory: Self.recording(explicit)
+        )
+        XCTAssertEqual(explicit.value, ["sync", "--daemon", "--detach"])
+    }
+}
+
+private final class SeenArguments: @unchecked Sendable {
+    var value: [String] = []
 }

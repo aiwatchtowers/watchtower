@@ -12,12 +12,14 @@ final class OnboardingFinishPlanTests: XCTestCase {
         var calls: [String] = []
         init(running: Bool) { self.running = running }
         func daemonIsRunning() -> Bool { running }
-        func startDetached() async -> Bool {
-            calls.append("start")
+        /// A start or restart with `--no-sync` is logged with it: the
+        /// finish always brings the daemon up with sync.
+        func startDetached(noSync: Bool) async -> Bool {
+            calls.append(noSync ? "start --no-sync" : "start")
             return startOK
         }
-        func restartWaiting() async throws {
-            calls.append("restart")
+        func restartWaiting(noSync: Bool) async throws {
+            calls.append(noSync ? "restart --no-sync" : "restart")
             if restartFails { throw Boom() }
         }
         func stopDaemonNow() async { calls.append("stop") }

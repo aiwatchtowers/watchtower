@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import WatchtowerCore
+import WatchtowerInterface
 
 /// Menu-bar tray content: status line + the only actions the tray offers
 /// (open the desktop window, open Settings, quit Watchtower completely —
@@ -22,12 +23,14 @@ struct TrayMenuView: View {
         .onAppear {
             appState.daemonManager.checkStatus()
             appState.quickRunCenter?.reload()
+            Task { await appState.refreshSyncPaused() }
         }
     }
 
     private var applicationActions: some View {
         TrayMenuContent(
             isRunning: appState.daemonManager.isRunning,
+            syncPaused: appState.syncPaused,
             syncProgress: appState.daemonManager.syncProgress,
             daemonError: appState.daemonManager.errorMessage,
             cliStoreError: appState.cliStoreError,
@@ -47,6 +50,13 @@ struct TrayMenuView: View {
             },
             syncNowAction: {
                 Task { await appState.daemonManager.syncNow() }
+            },
+            syncPauseError: appState.syncPauseError,
+            pauseAction: {
+                Task { await appState.pauseSync() }
+            },
+            resumeAction: {
+                Task { await appState.resumeSync() }
             },
             compactionInProgress: appState.databaseCompactionInProgress,
             runAutomationSections: appState.trayRunAutomationSections(),
@@ -114,6 +124,9 @@ struct TrayMenuView: View {
 /// testable view.
 struct TrayMenuContent: View {
     let isRunning: Bool
+    /// The owner's pause (`sync.paused`): the status line reads "Sync
+    /// paused" and Pause Sync becomes Resume Sync.
+    var syncPaused = false
     let syncProgress: SyncProgress?
     let daemonError: String?
     let cliStoreError: String?
@@ -132,6 +145,10 @@ struct TrayMenuContent: View {
     let updateVersion: String?
     let updateAction: () -> Void
     let syncNowAction: () -> Void
+    /// Why the last Pause/Resume did not go through; nil hides the line.
+    var syncPauseError: String?
+    var pauseAction: () -> Void = {}
+    var resumeAction: () -> Void = {}
     /// The launch's database compaction runs (#850): the daemon is stopped
     /// for it, so Sync Now is off.
     var compactionInProgress = false
@@ -149,13 +166,22 @@ struct TrayMenuContent: View {
 
     /// What the daemon is doing, not merely whether its process exists — the
     /// old line said "Syncing in background" whenever the process was alive,
-    /// including the hours it spent between syncs or stuck inside one.
-    static func statusText(isRunning: Bool, syncProgress: SyncProgress?, now: Date = Date()) -> String {
+    /// including the hours it spent between syncs or stuck inside one. The
+    /// owner's pause wins over a cycle still finishing.
+    static func statusText(
+        isRunning: Bool, syncPaused: Bool = false, syncProgress: SyncProgress?, now: Date = Date()
+    ) -> String {
         guard isRunning else { return "Sync daemon not running" }
+        if syncPaused { return TowerText.syncPaused }
         guard let syncProgress, syncProgress.isSyncing(now: now) else {
             return "Daemon running · idle"
         }
         return "Syncing: \(syncProgress.summary)"
+    }
+
+    /// Pause Sync, or Resume Sync while the owner's pause holds.
+    static func pauseTitle(syncPaused: Bool) -> String {
+        syncPaused ? TowerText.resumeSync : TowerText.pauseSync
     }
 
     /// The tray's line for a model download: its progress, or why it failed.
@@ -170,7 +196,7 @@ struct TrayMenuContent: View {
 
     var body: some View {
         Group {
-            Text(Self.statusText(isRunning: isRunning, syncProgress: syncProgress))
+            Text(Self.statusText(isRunning: isRunning, syncPaused: syncPaused, syncProgress: syncProgress))
             if let backfillLine {
                 Text(backfillLine)
             }
@@ -195,8 +221,16 @@ struct TrayMenuContent: View {
                 Button("Update to \(updateVersion) available…", action: updateAction)
             }
             Divider()
+            // Off while paused too: the paused daemon ignores a trigger.
             Button("Sync Now", action: syncNowAction)
+                .disabled(!isRunning || compactionInProgress || syncPaused)
+            // Pausing stops sync only; the daemon, the Inbox and every write
+            // keep running (mobile Inbox spec §3, mockup §8).
+            Button(Self.pauseTitle(syncPaused: syncPaused), action: syncPaused ? resumeAction : pauseAction)
                 .disabled(!isRunning || compactionInProgress)
+            if let syncPauseError {
+                Text(syncPauseError)
+            }
             if let runAutomationSections {
                 runAutomationMenu(runAutomationSections)
             }

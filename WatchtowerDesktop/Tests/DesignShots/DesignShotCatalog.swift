@@ -540,6 +540,13 @@ enum DesignShotCatalog {
             DesignShot(name: "usage-progress-run", size: NSSize(width: 860, height: 420)) {
                 LLMUsageShotFixtures.progress()
             },
+            // The tray's Pause Sync / Resume Sync (mobile Inbox spec §3, mockup §8).
+            DesignShot(name: "tray-menu-running", size: NSSize(width: 300, height: 280)) {
+                TrayPauseShotFixtures.menu(paused: false)
+            },
+            DesignShot(name: "tray-menu-paused", size: NSSize(width: 300, height: 280)) {
+                TrayPauseShotFixtures.menu(paused: true)
+            },
             // The one-time v1-host restart (go hub phase 3 Task 19): the notice waiting, busy,
             // failed with Retry and narrow; the other workspaces' wait lines, wide and narrow.
             DesignShot(name: "hostRestartNotice", size: NSSize(width: 760, height: 64)) {
