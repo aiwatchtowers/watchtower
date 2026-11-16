@@ -353,8 +353,8 @@ final class ChatsCenter {
 
     /// The Chats tab's gate as the screen on top computes it: whether the hub answers, and the copy the chat shows
     /// when it does not.
-    func setGate(_ gate: ChatsGateModel) {
-        client.setGate(gate)
+    func setGate(_ gate: ChatsGateModel, host: TowerHost = .mac) {
+        client.setGate(gate, host: host)
     }
 
     /// Observes the replica's chat records for the session's lifetime.

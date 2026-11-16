@@ -101,7 +101,7 @@ struct ChatsTabView: View {
                 }
             }
         }
-        .onChange(of: gate, initial: true) { center.setGate(gate) }
+        .onChange(of: gate, initial: true) { center.setGate(gate, host: inputs(now: now).host) }
     }
 
     private func listScreen(gate: ChatsGateModel, now: Date) -> some View {

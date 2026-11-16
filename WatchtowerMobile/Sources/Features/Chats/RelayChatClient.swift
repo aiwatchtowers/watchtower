@@ -22,8 +22,6 @@ import WatchtowerSync
 @MainActor
 @Observable
 final class RelayChatClient: ChatClient {
-    static let unsupportedLine = "This works in Watchtower on your Mac."
-    static let noAnswerLine = "No answer came from your Mac. Try again."
     static let answeringLine = "Sending your answer…"
     static let changedLine = "The action changed — look again"
     /// The relay's cap on a search query (Go `MaxChatSearchQuery`, runes).
@@ -49,6 +47,8 @@ final class RelayChatClient: ChatClient {
     @ObservationIgnored private let offline: ChatOfflineCopy
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
     @ObservationIgnored private var current: ChatReachability = .offline(reason: "")
+    /// The hub on screen (a Mac or a server tower): the lines that name it say so (`ChatText`).
+    @ObservationIgnored private var host = TowerHost.mac
     @ObservationIgnored private var reachabilityWatches: [UUID: AsyncStream<ChatReachability>.Continuation] = [:]
     @ObservationIgnored private var feedWatches: [UUID: FeedWatch] = [:]
     @ObservationIgnored private var listWatches: [UUID: ListWatch] = [:]
@@ -130,7 +130,8 @@ final class RelayChatClient: ChatClient {
         return .offline(reason: reason ?? "")
     }
 
-    func setGate(_ gate: ChatsGateModel) {
+    func setGate(_ gate: ChatsGateModel, host: TowerHost = .mac) {
+        self.host = host
         let next = Self.reachability(for: gate)
         guard next != current else { return }
         current = next
@@ -341,7 +342,7 @@ final class RelayChatClient: ChatClient {
             return await request(op, ChatSkillsListParams())
         case .project, .artifact, .attach(_, .path), .attachDiscard, .shutdown:
             // Answered by localAnswer; listed so a new operation is a compile error here.
-            return Self.unsupported
+            return unsupported
         }
     }
 
@@ -358,9 +359,9 @@ final class RelayChatClient: ChatClient {
             // The hub drops an attachment no turn took; the phone's plaintext went when it was uploaded.
             return .applied(.none)
         case let .turn(request) where request.mode == .continue:
-            return Self.unsupported
+            return unsupported
         case .manage(_, .move, _, _), .project, .artifact, .attach(_, .path), .shutdown:
-            return Self.unsupported
+            return unsupported
         default:
             return nil
         }
@@ -372,7 +373,7 @@ final class RelayChatClient: ChatClient {
         return String(String.UnicodeScalarView(trimmed.unicodeScalars.prefix(maxSearchQuery)))
     }
 
-    private static var unsupported: ChatEcho { .refused(code: "unsupported", message: unsupportedLine) }
+    private var unsupported: ChatEcho { .refused(code: "unsupported", message: ChatText.onlyOnTower(host)) }
 
     /// A turn through the coordinator: kept in the hub's copy until its echo is applied; a refusal leaves the text in
     /// the `ChatUI` composer (the draft store is left alone). Retry is the relay's regenerate of that answer.
@@ -436,7 +437,8 @@ final class RelayChatClient: ChatClient {
         let id = UUID()
         let timer = Task { [weak self, sleep] in
             do { try await sleep(Self.recordPatience) } catch { return }
-            self?.resolve(id, .refused(code: "unreachable", message: Self.noAnswerLine))
+            guard let self else { return }
+            self.resolve(id, .refused(code: "unreachable", message: ChatText.noAnswerRetry(self.host)))
         }
         let echo = await withCheckedContinuation { continuation in
             recordWaiters[id] = RecordWaiter(actionID: actionID, read: read, continuation: continuation)

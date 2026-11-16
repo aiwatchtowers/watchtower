@@ -150,7 +150,7 @@ struct ChatConversationView: View {
                     .accessibilityIdentifier("chat.phoneLine")
             }
         }
-        .onChange(of: gate, initial: true) { center.setGate(gate) }
+        .onChange(of: gate, initial: true) { center.setGate(gate, host: inputs.host) }
     }
 
     /// The phone's line over the feed, newest concern first.

@@ -209,9 +209,13 @@ final class RelayChatClientTests: XCTestCase {
         ]
         for op in macOnly {
             let echo = try await client.send(op)
-            XCTAssertEqual(echo, .refused(code: "unsupported", message: RelayChatClient.unsupportedLine), op.wireOp)
+            XCTAssertEqual(echo, .refused(code: "unsupported", message: "This works in Watchtower on your Mac."), op.wireOp)
         }
         XCTAssertTrue(recorder.sent.isEmpty, "nothing reaches the hub")
+        // A server hub is a tower, never "your Mac".
+        client.setGate(Self.ready, host: .server(device: nil))
+        let onTower = try await client.send(.shutdown)
+        XCTAssertEqual(onTower, .refused(code: "unsupported", message: "This works in Watchtower on your tower."))
     }
 
     /// The relay refuses a watched chat's feed request `not_found` once it is deleted elsewhere: the feed is gone.
