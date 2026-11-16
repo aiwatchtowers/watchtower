@@ -112,3 +112,59 @@ func TestChatengine_ArchiveHidesFromList(t *testing.T) {
 		require.ErrorIs(t, err, chatstore.ErrConversationGone)
 	})
 }
+
+// TestChat01_RegenerateAndEditRowsBeforeTheTurnIsSent: a regenerate's reply
+// row and an edit's owner and reply rows exist under the new turn id once
+// Turn returns — before the session is handed the turn, which carries that
+// id — so the replay never drops the owner's question (the Swift twins were
+// testChat01RegenerateRowExistsUnderTheNewTurnIDWhenSent and
+// testChat01EditRowsExistUnderTheNewTurnIDWhenSent) (BEHAVIOR CHAT-01 — see
+// docs/inventory/chat.md).
+func TestChat01_RegenerateAndEditRowsBeforeTheTurnIsSent(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		g := newRig(t, fakeOpts{})
+		c := newConversation(t, g.d)
+		first := g.send(t, c, "q", nil)
+		synctest.Wait()
+
+		regen, err := g.r.Turn(context.Background(), TurnRequest{StartRequest: chatstore.StartRequest{ConversationID: c,
+			Mode: chatstore.ModeRegenerate, MessageID: first.AssistantMessageID}})
+		require.NoError(t, err)
+		reply, _ := readRow(t, g.d, regen.AssistantMessageID)
+		assert.Equal(t, chatstore.StatusPartial, reply.status)
+		assert.Equal(t, regen.TurnID, turnIDOf(t, g, regen.AssistantMessageID))
+		assert.Equal(t, first.UserMessageID, regen.UserMessageID, "a regenerate reuses the owner row")
+		synctest.Wait()
+		assert.Equal(t, regen.TurnID, lastTurnID(t, g))
+
+		edit, err := g.r.Turn(context.Background(), TurnRequest{StartRequest: chatstore.StartRequest{ConversationID: c,
+			Mode: chatstore.ModeEdit, MessageID: first.UserMessageID, Text: "q2"}})
+		require.NoError(t, err)
+		owner, _ := readRow(t, g.d, edit.UserMessageID)
+		assert.Equal(t, "q2", owner.text)
+		assert.Equal(t, edit.TurnID, turnIDOf(t, g, edit.UserMessageID))
+		assert.Equal(t, edit.TurnID, turnIDOf(t, g, edit.AssistantMessageID))
+		synctest.Wait()
+		assert.Equal(t, edit.TurnID, lastTurnID(t, g))
+	})
+}
+
+func turnIDOf(t *testing.T, g *rig, messageID int64) string {
+	t.Helper()
+	var id string
+	require.NoError(t, g.d.QueryRow(`SELECT turn_id FROM chat_messages WHERE id = ?`, messageID).Scan(&id))
+	return id
+}
+
+// lastTurnID is the turn id of the last turn command any session got.
+func lastTurnID(t *testing.T, g *rig) string {
+	t.Helper()
+	var id string
+	for _, p := range g.f.all() {
+		if turns := p.turnCommands(); len(turns) > 0 {
+			id = turns[len(turns)-1].TurnID
+		}
+	}
+	require.NotEmpty(t, id)
+	return id
+}
