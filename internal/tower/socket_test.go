@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"watchtower/internal/tower/api"
@@ -376,5 +378,63 @@ func TestSocket_DesktopIsTheSignedPeerCheckedOncePerConnection(t *testing.T) {
 				t.Errorf("%d signature checks for one connection, want 1", calls)
 			}
 		})
+	}
+}
+
+// TestSocket_DesktopRechecksANewPeerPidAndNeverKeepsACancelledCheck: the
+// peer pid is read on every gesture, so a verified connection handed to
+// another process (an inherited descriptor) is checked again and refused
+// for an unsigned pid; a check cut short by its context is not kept.
+func TestSocket_DesktopRechecksANewPeerPidAndNeverKeepsACancelledCheck(t *testing.T) {
+	var pid atomic.Int64
+	pid.Store(4242)
+	oldPID := peerPID
+	peerPID = func(net.Conn) (int, error) { return int(pid.Load()), nil }
+	t.Cleanup(func() { peerPID = oldPID })
+	var checks atomic.Int64
+	cancelFirst := atomic.Bool{}
+	cancelFirst.Store(true)
+	f := newFixtureWith(t, func(r *Registry, o *Options) {
+		Register(r, "test.desktop", func(ctx context.Context, c *Ctx, _ struct{}) (desktopResult, error) {
+			return desktopResult{Desktop: c.Origin.Desktop(ctx) == nil}, nil
+		}, Spec{Read: true})
+		o.VerifyDesktop = func(_ context.Context, p int) error {
+			checks.Add(1)
+			if cancelFirst.Swap(false) {
+				return fmt.Errorf("codesign: %w", context.Canceled)
+			}
+			if p != 4242 {
+				return errors.New("not the Desktop")
+			}
+			return nil
+		}
+	})
+	path := filepath.Join(shortDir(t), "t.sock")
+	serve(t, path, f)
+	c := dialTower(t, path)
+	desktop := func(id string) bool {
+		c.send(id, "test.desktop", nil)
+		var got desktopResult
+		if err := json.Unmarshal(c.response().Result, &got); err != nil {
+			t.Fatal(err)
+		}
+		return got.Desktop
+	}
+	if desktop("1") {
+		t.Fatal("a cancelled check passed")
+	}
+	if !desktop("2") {
+		t.Fatal("the cancelled check was kept: the signed Desktop is refused")
+	}
+	pid.Store(99)
+	if desktop("3") {
+		t.Error("the connection's new, unsigned peer pid passed on the old verdict")
+	}
+	pid.Store(4242)
+	if !desktop("4") {
+		t.Error("the signed Desktop is refused after its pid came back")
+	}
+	if n := checks.Load(); n != 3 {
+		t.Errorf("%d signature checks, want 3 (cancelled, 4242, 99)", n)
 	}
 }

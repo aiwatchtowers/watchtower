@@ -332,27 +332,36 @@ func (s *server) serveConn(c net.Conn) {
 // Desktop.
 var errNoDesktopCheck = errors.New("tower: this tower checks no Desktop signature")
 
-// desktopCheck is the connection's Origin.Desktop: its peer pid
-// (peerPID) checked once, on the first owner gesture, against
-// Options.VerifyDesktop, and the answer kept for the connection.
+// desktopCheck is the connection's Origin.Desktop. Each owner gesture
+// reads the peer pid again (peerPID): on macOS LOCAL_PEERPID names the last
+// process that used the socket, so a connection handed to another process
+// (an inherited descriptor) is seen. The verdict is kept per pid, so the
+// signed Desktop is checked once and a new pid is checked again; a check
+// cut short by its context (cancelled, timed out) is not kept.
 func (s *server) desktopCheck(c net.Conn) func(context.Context) error {
 	var (
-		once sync.Once
-		err  error
+		mu       sync.Mutex
+		verdicts = map[int]error{}
 	)
 	return func(ctx context.Context) error {
-		once.Do(func() {
-			verify := s.t.opts.VerifyDesktop
-			if verify == nil {
-				err = errNoDesktopCheck
-				return
-			}
-			var pid int
-			if pid, err = peerPID(c); err != nil {
-				return
-			}
-			err = verify(ctx, pid)
-		})
+		verify := s.t.opts.VerifyDesktop
+		if verify == nil {
+			return errNoDesktopCheck
+		}
+		pid, err := peerPID(c)
+		if err != nil {
+			return err
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if v, ok := verdicts[pid]; ok {
+			return v
+		}
+		err = verify(ctx, pid)
+		if err != nil && (ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+			return err
+		}
+		verdicts[pid] = err
 		return err
 	}
 }

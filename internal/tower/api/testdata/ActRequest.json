@@ -5,6 +5,7 @@
   "params": {
     "content_hash": "c0ffee",
     "index": 1,
+    "action_kind": "reply",
     "text": "Sounds good",
     "ref_kind": "inbox_item",
     "ref_id": 41,

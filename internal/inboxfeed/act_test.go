@@ -278,7 +278,7 @@ func TestInboxAct_ReplyPressQueuesTheRun(t *testing.T) {
 	wakes := 0
 	tw := actTower(d, actNow, ActDeps{Wake: func() { wakes++ }})
 	index := 0
-	p := actParams(t, "o1", api.ActPress, api.ActParams{ContentHash: "h1", Index: &index})
+	p := actParams(t, "o1", api.ActPress, api.ActParams{ContentHash: "h1", Index: &index, ActionKind: "reply"})
 	res := actResult(t, callAct(t, tw, p, socket))
 	if res.RunID == 0 || res.Already {
 		t.Fatalf("result %+v, want a queued run", res)
@@ -297,12 +297,18 @@ func TestInboxAct_ReplyPressQueuesTheRun(t *testing.T) {
 	if again := actResult(t, callAct(t, tw, p, socket)); again != res {
 		t.Errorf("resend %+v, want the stored %+v", again, res)
 	}
-	second := actResult(t, callAct(t, tw, actParams(t, "o1", api.ActPress, api.ActParams{ContentHash: "h1", Index: &index}), socket))
+	second := actResult(t, callAct(t, tw, actParams(t, "o1", api.ActPress, api.ActParams{ContentHash: "h1", Index: &index, ActionKind: "reply"}), socket))
 	if !second.Already || second.RunID != res.RunID {
 		t.Errorf("second press %+v, want already with run %d", second, res.RunID)
 	}
+	// A press naming another kind than the button's is not the button drawn
+	// (its hub grant was decided for that kind).
+	wrong := callAct(t, tw, actParams(t, "o1", api.ActPress, api.ActParams{ContentHash: "h1", Index: &index, ActionKind: "target"}), socket)
+	if wrong.Status != api.StatusRefused || wrong.Refusal.Code != api.CodeChanged {
+		t.Errorf("a press naming target on a Reply: %s %+v, want changed", wrong.Status, wrong.Refusal)
+	}
 	// A typed text is refused, never dropped.
-	resp := callAct(t, tw, actParams(t, "o1", api.ActPress, api.ActParams{ContentHash: "h1", Index: &index, Text: "hi"}), socket)
+	resp := callAct(t, tw, actParams(t, "o1", api.ActPress, api.ActParams{ContentHash: "h1", Index: &index, Text: "hi", ActionKind: "reply"}), socket)
 	if resp.Status != api.StatusRefused {
 		t.Errorf("a press with text answered %s, want refused", resp.Status)
 	}
@@ -422,16 +428,40 @@ func TestActIdempotentAndGrantTables(t *testing.T) {
 		{api.ActRead, api.ActParams{}, true, ""},
 		{api.ActDone, api.ActParams{}, true, ""},
 		{api.ActDismiss, api.ActParams{}, true, ""},
-		{api.ActPress, api.ActParams{Index: &index}, false, ""},
-		{api.ActPress, api.ActParams{Index: &index, Text: "hi"}, false, "typing"},
+		{api.ActPress, api.ActParams{Index: &index, ActionKind: "reply"}, false, "typing"},
+		{api.ActPress, api.ActParams{Index: &index, ActionKind: "target"}, false, "permissions"},
+		{api.ActPress, api.ActParams{Index: &index}, false, "permissions"},
 		{api.ActRunNow, api.ActParams{}, false, ""},
-		{api.ActRef, api.ActParams{RefVerb: api.RefSnooze}, true, ""},
-		{api.ActRef, api.ActParams{RefVerb: api.RefMakeTask}, true, ""},
 		{api.ActReplyPropose, api.ActParams{Text: "hi"}, true, "typing"},
 		{api.ActApproval, api.ActParams{ApprovalVerb: api.ApprovalApprove}, false, "permissions"},
 		{api.ActApproval, api.ActParams{ApprovalVerb: api.ApprovalRetry}, false, "permissions"},
+		{api.ActApproval, api.ActParams{ApprovalVerb: api.ApprovalDismiss}, true, "permissions"},
 		{api.ActApproval, api.ActParams{ApprovalVerb: api.ApprovalReject}, true, ""},
-		{api.ActApproval, api.ActParams{ApprovalVerb: api.ApprovalDismiss}, true, ""},
+	}
+	// Every ref verb: guarded; only make_task (actions propose --approve)
+	// needs a grant.
+	for _, v := range api.RefVerb("").EnumValues() {
+		grant := ""
+		if api.RefVerb(v) == api.RefMakeTask {
+			grant = "permissions"
+		}
+		cases = append(cases, struct {
+			verb       api.ActVerb
+			p          api.ActParams
+			idempotent bool
+			grant      string
+		}{api.ActRef, api.ActParams{RefVerb: api.RefVerb(v)}, true, grant})
+	}
+	approvals := map[string]bool{}
+	for _, c := range cases {
+		if c.verb == api.ActApproval {
+			approvals[string(c.p.ApprovalVerb)] = true
+		}
+	}
+	for _, v := range api.ApprovalVerb("").EnumValues() {
+		if !approvals[v] {
+			t.Errorf("approval verb %s has no row", v)
+		}
 	}
 	seen := map[api.ActVerb]bool{}
 	for _, c := range cases {

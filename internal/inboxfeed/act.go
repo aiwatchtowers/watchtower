@@ -88,8 +88,18 @@ func ActIdempotent(params json.RawMessage) (bool, error) {
 	}
 }
 
-// ActGrant is inbox.act's Spec.GrantFor (ask #1349): permissions for approve
-// and retry, typing for reply_propose and a press with text, none otherwise.
+// The hub grants an owner gesture needs (ask #1349).
+const (
+	grantPermissions = "permissions"
+	grantTyping      = "typing"
+)
+
+// ActGrant is inbox.act's Spec.GrantFor (ask #1349): every owner gesture
+// from the hub needs a grant — permissions for approve, retry and dismiss of
+// an approval, make_task and a target press; typing for a Reply press and
+// reply_propose (a Reply needs typing). A press names its button's kind
+// (action_kind); one that does not takes permissions, the stricter. The
+// other verbs need none.
 func ActGrant(params json.RawMessage) (string, error) {
 	req, err := decodeAct(params)
 	if err != nil {
@@ -97,15 +107,22 @@ func ActGrant(params json.RawMessage) (string, error) {
 	}
 	switch req.Verb {
 	case api.ActApproval:
-		if v := req.Params.ApprovalVerb; v == api.ApprovalApprove || v == api.ApprovalRetry {
-			return "permissions", nil
+		switch req.Params.ApprovalVerb {
+		case api.ApprovalApprove, api.ApprovalRetry, api.ApprovalDismiss:
+			return grantPermissions, nil
+		default:
+		}
+	case api.ActRef:
+		if req.Params.RefVerb == api.RefMakeTask {
+			return grantPermissions, nil
 		}
 	case api.ActReplyPropose:
-		return "typing", nil
+		return grantTyping, nil
 	case api.ActPress:
-		if strings.TrimSpace(req.Params.Text) != "" {
-			return "typing", nil
+		if req.Params.ActionKind == db.InboxActionReply {
+			return grantTyping, nil
 		}
+		return grantPermissions, nil
 	default:
 	}
 	return "", nil
@@ -327,7 +344,13 @@ func (a actor) press(ctx context.Context, outputID int64, index int) (api.ActRes
 	if index < 0 || index >= len(actions) {
 		return api.ActResult{}, a.refuse(api.CodeChanged, "")
 	}
-	switch act := actions[index]; act.Kind {
+	act := actions[index]
+	if a.req.Params.ActionKind != act.Kind {
+		// The grant was decided for the kind the client named: a button
+		// that is not that kind is not the one drawn.
+		return api.ActResult{}, a.refuse(api.CodeChanged, "")
+	}
+	switch act.Kind {
 	case db.InboxActionReply:
 		return a.pressReply(ctx, o, index)
 	case "target":

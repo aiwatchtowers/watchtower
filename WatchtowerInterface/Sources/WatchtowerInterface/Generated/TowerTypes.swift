@@ -5,6 +5,7 @@ import Foundation
 public struct ActParams: Codable, Hashable, Sendable {
     public var contentHash: String?
     public var index: Int?
+    public var actionKind: String?
     public var text: String?
     public var refKind: RefKind?
     public var refID: Int64?
@@ -18,6 +19,7 @@ public struct ActParams: Codable, Hashable, Sendable {
     public init(
         contentHash: String? = nil,
         index: Int? = nil,
+        actionKind: String? = nil,
         text: String? = nil,
         refKind: RefKind? = nil,
         refID: Int64? = nil,
@@ -30,6 +32,7 @@ public struct ActParams: Codable, Hashable, Sendable {
     ) {
         self.contentHash = contentHash
         self.index = index
+        self.actionKind = actionKind
         self.text = text
         self.refKind = refKind
         self.refID = refID
@@ -44,6 +47,7 @@ public struct ActParams: Codable, Hashable, Sendable {
     enum CodingKeys: String, CodingKey {
         case contentHash = "content_hash"
         case index
+        case actionKind = "action_kind"
         case text
         case refKind = "ref_kind"
         case refID = "ref_id"

@@ -427,7 +427,8 @@
       "verb": "press",
       "params": {
         "content_hash": "h0",
-        "index": 0
+        "index": 0,
+        "action_kind": "reply"
       }
     },
     "swift": null,
@@ -459,7 +460,8 @@
       "verb": "press",
       "params": {
         "content_hash": "h1",
-        "index": 0
+        "index": 0,
+        "action_kind": "reply"
       }
     },
     "swift": null,
