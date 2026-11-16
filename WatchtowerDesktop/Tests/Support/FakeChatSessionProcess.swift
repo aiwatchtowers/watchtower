@@ -49,6 +49,7 @@ package final class FakeChatSessionProcess: ChatSessionProcess, @unchecked Senda
         guard arguments.contains("--persist"), let index = arguments.firstIndex(of: "--db-path"),
               index + 1 < arguments.count,
               FileManager.default.fileExists(atPath: arguments[index + 1]) else { return nil }
+        if let shared = TestDatabasePools.pool(at: arguments[index + 1]) { return shared }
         var config = Configuration()
         config.busyMode = .timeout(30)
         config.prepareDatabase { try $0.execute(sql: "PRAGMA foreign_keys = ON") }

@@ -23,7 +23,8 @@ package final class FakeEmbeddedPersist: @unchecked Sendable {
         var config = Configuration()
         config.busyMode = .timeout(30)
         config.prepareDatabase { try $0.execute(sql: "PRAGMA foreign_keys = ON") }
-        guard let db = try? DatabasePool(path: dbPath, configuration: config) else { return nil }
+        guard let db = TestDatabasePools.pool(at: dbPath) ?? (try? DatabasePool(path: dbPath, configuration: config))
+        else { return nil }
         self.db = db
         self.persist = persist
         self.provider = provider
@@ -116,7 +117,8 @@ extension FakeEmbeddedPersist {
                         emulator.apply(event)
                         continuation.yield(event)
                     }
-                    emulator.finish(failed: false)
+                    // A run stopped (its consumer went away) ends `partial`.
+                    emulator.finish(failed: Task.isCancelled)
                     continuation.finish()
                 } catch {
                     emulator.finish(failed: true)

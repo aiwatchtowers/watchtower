@@ -205,10 +205,15 @@ package final class FakeChatTower: ChatTowerSending, @unchecked Sendable {
             return try await attach(try request(ChatAttachRequest.self))
         case .chatAttachDelete:
             let q = try request(ChatAttachmentRequest.self)
-            let changed = try await db.write { db -> Bool in
+            let (changed, orphan) = try await db.write { db -> (Bool, String?) in
+                let path = try String.fetchOne(db, sql: "SELECT path FROM chat_attachments WHERE id = ?",
+                                               arguments: [q.attachmentID])
                 try ChatAttachmentQueries.delete(db, id: q.attachmentID)
-                return db.changesCount > 0
+                let changed = db.changesCount > 0
+                guard let path, try ChatAttachmentQueries.referenceCount(db, path: path) == 0 else { return (changed, nil) }
+                return (changed, path)
             }
+            if let orphan { try? FileManager.default.removeItem(atPath: orphan) }
             return try encode(ChatChanged(changed: changed))
         case .chatStop:
             let q = try request(ChatTurnRequest.self)
@@ -268,6 +273,8 @@ package final class FakeChatTower: ChatTowerSending, @unchecked Sendable {
         case .chatProjectRemoveFile:
             let q = try request(ChatAttachmentRequest.self)
             let result = try await db.write { try ChatProjectQueries.removeFile($0, id: q.attachmentID) }
+            // Go removes an orphaned file after the commit.
+            if let orphan = result.orphanPath { try? FileManager.default.removeItem(atPath: orphan) }
             return try encode(ChatChanged(changed: result.removed))
         case .chatCommentAdd:
             let q = try request(ChatCommentAddRequest.self)

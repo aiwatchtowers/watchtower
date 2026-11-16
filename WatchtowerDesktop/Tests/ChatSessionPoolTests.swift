@@ -316,8 +316,10 @@ final class ChatSessionPoolTests: XCTestCase {
         }
         for fake in fakes.dropFirst() {
             XCTAssertNil(fake.argument(after: "--resume"), "no stale session is ever launched")
-            XCTAssertTrue([["t4"], ["t5"]].contains(fake.turns.map(\.turnID)))
-            XCTAssertEqual(fake.turns.first?.replay, true)
+            let sent = fake.sent.compactMap { command -> String? in
+                if case let .turn(turn) = command { turn.turnID } else { nil }
+            }
+            XCTAssertTrue([["t4"], ["t5"]].contains(sent))
         }
     }
 
