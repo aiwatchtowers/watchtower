@@ -30,6 +30,22 @@ final class GoldenRoundTripTests: XCTestCase {
         try assertRoundTrip(ChangedEvent.self, golden: "ChangedEvent")
     }
 
+    func testCreatedResultRoundTrip() throws {
+        try assertRoundTrip(CreatedResult.self, golden: "CreatedResult")
+    }
+
+    func testDecisionsSeenAllRequestRoundTrip() throws {
+        try assertRoundTrip(DecisionsSeenAllRequest.self, golden: "DecisionsSeenAllRequest")
+    }
+
+    func testDigestDecisionReadRequestRoundTrip() throws {
+        try assertRoundTrip(DigestDecisionReadRequest.self, golden: "DigestDecisionReadRequest")
+    }
+
+    func testDigestRequestRoundTrip() throws {
+        try assertRoundTrip(DigestRequest.self, golden: "DigestRequest")
+    }
+
     func testFeedRoundTrip() throws {
         try assertRoundTrip(Feed.self, golden: "Feed")
     }
@@ -40,6 +56,46 @@ final class GoldenRoundTripTests: XCTestCase {
 
     func testHelloResponseRoundTrip() throws {
         try assertRoundTrip(HelloResponse.self, golden: "HelloResponse")
+    }
+
+    func testIdeaConvertedRequestRoundTrip() throws {
+        try assertRoundTrip(IdeaConvertedRequest.self, golden: "IdeaConvertedRequest")
+    }
+
+    func testIdeaCreateRequestRoundTrip() throws {
+        try assertRoundTrip(IdeaCreateRequest.self, golden: "IdeaCreateRequest")
+    }
+
+    func testIdeaFromChatRequestRoundTrip() throws {
+        try assertRoundTrip(IdeaFromChatRequest.self, golden: "IdeaFromChatRequest")
+    }
+
+    func testIdeaMergeRequestRoundTrip() throws {
+        try assertRoundTrip(IdeaMergeRequest.self, golden: "IdeaMergeRequest")
+    }
+
+    func testIdeaRatingRequestRoundTrip() throws {
+        try assertRoundTrip(IdeaRatingRequest.self, golden: "IdeaRatingRequest")
+    }
+
+    func testIdeaSnoozeRequestRoundTrip() throws {
+        try assertRoundTrip(IdeaSnoozeRequest.self, golden: "IdeaSnoozeRequest")
+    }
+
+    func testIdeaStatusRequestRoundTrip() throws {
+        try assertRoundTrip(IdeaStatusRequest.self, golden: "IdeaStatusRequest")
+    }
+
+    func testIdeaSupersedeRequestRoundTrip() throws {
+        try assertRoundTrip(IdeaSupersedeRequest.self, golden: "IdeaSupersedeRequest")
+    }
+
+    func testIdeaUndoChatRequestRoundTrip() throws {
+        try assertRoundTrip(IdeaUndoChatRequest.self, golden: "IdeaUndoChatRequest")
+    }
+
+    func testOutputMarkRequestRoundTrip() throws {
+        try assertRoundTrip(OutputMarkRequest.self, golden: "OutputMarkRequest")
     }
 
     func testPauseRequestRoundTrip() throws {
@@ -54,12 +110,92 @@ final class GoldenRoundTripTests: XCTestCase {
         try assertRoundTrip(PingResponse.self, golden: "PingResponse")
     }
 
+    func testPlanAddRequestRoundTrip() throws {
+        try assertRoundTrip(PlanAddRequest.self, golden: "PlanAddRequest")
+    }
+
+    func testPlanItemRequestRoundTrip() throws {
+        try assertRoundTrip(PlanItemRequest.self, golden: "PlanItemRequest")
+    }
+
+    func testPlanItemStatusRequestRoundTrip() throws {
+        try assertRoundTrip(PlanItemStatusRequest.self, golden: "PlanItemStatusRequest")
+    }
+
+    func testPlanReorderRequestRoundTrip() throws {
+        try assertRoundTrip(PlanReorderRequest.self, golden: "PlanReorderRequest")
+    }
+
+    func testReminderWriteRequestRoundTrip() throws {
+        try assertRoundTrip(ReminderWriteRequest.self, golden: "ReminderWriteRequest")
+    }
+
     func testRequestRoundTrip() throws {
         try assertRoundTrip(Request.self, golden: "Request")
     }
 
     func testResponseRoundTrip() throws {
         try assertRoundTrip(Response.self, golden: "Response")
+    }
+
+    func testScreenIDRequestRoundTrip() throws {
+        try assertRoundTrip(ScreenIDRequest.self, golden: "ScreenIDRequest")
+    }
+
+    func testScreenIDsRequestRoundTrip() throws {
+        try assertRoundTrip(ScreenIDsRequest.self, golden: "ScreenIDsRequest")
+    }
+
+    func testTargetColumnRequestRoundTrip() throws {
+        try assertRoundTrip(TargetColumnRequest.self, golden: "TargetColumnRequest")
+    }
+
+    func testTargetSnoozeRequestRoundTrip() throws {
+        try assertRoundTrip(TargetSnoozeRequest.self, golden: "TargetSnoozeRequest")
+    }
+
+    func testTargetStatusRequestRoundTrip() throws {
+        try assertRoundTrip(TargetStatusRequest.self, golden: "TargetStatusRequest")
+    }
+
+    func testTargetStatusResultRoundTrip() throws {
+        try assertRoundTrip(TargetStatusResult.self, golden: "TargetStatusResult")
+    }
+
+    func testTrackEnabledRequestRoundTrip() throws {
+        try assertRoundTrip(TrackEnabledRequest.self, golden: "TrackEnabledRequest")
+    }
+
+    func testTrackEventStatusRequestRoundTrip() throws {
+        try assertRoundTrip(TrackEventStatusRequest.self, golden: "TrackEventStatusRequest")
+    }
+
+    func testTrackEventsReadRequestRoundTrip() throws {
+        try assertRoundTrip(TrackEventsReadRequest.self, golden: "TrackEventsReadRequest")
+    }
+
+    func testTrackInstructionRequestRoundTrip() throws {
+        try assertRoundTrip(TrackInstructionRequest.self, golden: "TrackInstructionRequest")
+    }
+
+    func testTrackOwnershipRequestRoundTrip() throws {
+        try assertRoundTrip(TrackOwnershipRequest.self, golden: "TrackOwnershipRequest")
+    }
+
+    func testTrackPriorityRequestRoundTrip() throws {
+        try assertRoundTrip(TrackPriorityRequest.self, golden: "TrackPriorityRequest")
+    }
+
+    func testTrackSubItemRequestRoundTrip() throws {
+        try assertRoundTrip(TrackSubItemRequest.self, golden: "TrackSubItemRequest")
+    }
+
+    func testUndoChatResultRoundTrip() throws {
+        try assertRoundTrip(UndoChatResult.self, golden: "UndoChatResult")
+    }
+
+    func testWorkOnResultRoundTrip() throws {
+        try assertRoundTrip(WorkOnResult.self, golden: "WorkOnResult")
     }
 
     func testUnknownEnumValueSurvives() throws {
