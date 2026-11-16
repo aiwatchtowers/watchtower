@@ -251,6 +251,20 @@ func StopTrackTx(tx *sql.Tx, ids []int) error {
 	return nil
 }
 
+// SetTrackEnabledTx turns an unbound custom track's collection on or off
+// (TrackQueries.setEnabled).
+func SetTrackEnabledTx(tx *sql.Tx, id int, enabled bool) error {
+	res, err := tx.Exec(`UPDATE tracks SET enabled = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`,
+		enabled, id)
+	if err != nil {
+		return fmt.Errorf("setting track %d enabled=%v: %w", id, enabled, err)
+	}
+	if err := requireRow(res, "track", id); err != nil {
+		return err
+	}
+	return fault("track.enabled")
+}
+
 // RestoreTrackTx undoes Stop watching (TrackQueries.restore).
 func RestoreTrackTx(tx *sql.Tx, id int) error {
 	res, err := tx.Exec(`UPDATE tracks SET dismissed_at = '' WHERE id = ?`, id)

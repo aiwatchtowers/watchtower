@@ -1058,10 +1058,9 @@
     }
   },
   {
-    "name": "ref_track_stop_custom_is_the_macs",
+    "name": "ref_track_stop_custom",
     "seed": [
-      "INSERT INTO tracks (id, text, updated_at) VALUES (1, 'Review the plan', '2026-11-15T09:00:00Z')",
-      "UPDATE tracks SET origin = 'custom'"
+      "INSERT INTO tracks (id, text, updated_at, origin, enabled) VALUES (1, 'Billing migration', '2026-11-15T09:00:00Z', 'custom', 1)"
     ],
     "now": "2026-11-16T10:00:00Z",
     "call": {
@@ -1074,15 +1073,166 @@
         "ref_verb": "stop"
       }
     },
-    "swift": null,
+    "swift": {
+      "writer": "CustomStop",
+      "args": {
+        "id": 1
+      }
+    },
     "expect": {
-      "status": "refused",
-      "code": "unsupported",
+      "status": "ok",
       "rows": {
         "tracks": [
           {
             "id": 1,
-            "dismissed_at": ""
+            "dismissed_at": "*",
+            "enabled": 0
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ref_track_stop_custom_already",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at, origin, enabled) VALUES (1, 'Billing migration', '2026-11-15T09:00:00Z', 'custom', 1)",
+      "UPDATE tracks SET dismissed_at = '2026-11-16T08:00:00Z', enabled = 0"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000032",
+      "target": "tracks",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "track",
+        "ref_id": 1,
+        "ref_verb": "stop"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "tracks": [
+          {
+            "id": 1,
+            "dismissed_at": "2026-11-16T08:00:00Z",
+            "enabled": 0
+          }
+        ]
+      },
+      "already": true
+    }
+  },
+  {
+    "name": "ref_track_restore_custom",
+    "seed": [
+      "INSERT INTO tracks (id, text, updated_at, origin, enabled) VALUES (1, 'Billing migration', '2026-11-15T09:00:00Z', 'custom', 1)",
+      "UPDATE tracks SET dismissed_at = '2026-11-16T08:00:00Z', enabled = 0"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000033",
+      "target": "tracks",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "track",
+        "ref_id": 1,
+        "ref_verb": "restore"
+      }
+    },
+    "swift": {
+      "writer": "CustomResume",
+      "args": {
+        "id": 1
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "tracks": [
+          {
+            "id": 1,
+            "dismissed_at": "",
+            "enabled": 1
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ref_track_stop_bound_turns_its_recipe_off",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, origin) VALUES (4, 'watch-billing', 'personal', '/recipes/watch-billing.md', 'Watch billing', 1, 'owner')",
+      "INSERT INTO tracks (id, text, updated_at, origin, enabled) VALUES (1, 'Billing migration', '2026-11-15T09:00:00Z', 'custom', 1)",
+      "UPDATE tracks SET automation_id = 4"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000034",
+      "target": "tracks",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "track",
+        "ref_id": 1,
+        "ref_verb": "stop"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "tracks": [
+          {
+            "id": 1,
+            "dismissed_at": "*",
+            "enabled": 0
+          }
+        ],
+        "automations": [
+          {
+            "id": 4,
+            "enabled": 0
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ref_track_restore_bound_turns_its_recipe_on",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, enabled, origin) VALUES (4, 'watch-billing', 'personal', '/recipes/watch-billing.md', 'Watch billing', 1, 'owner')",
+      "INSERT INTO tracks (id, text, updated_at, origin, enabled) VALUES (1, 'Billing migration', '2026-11-15T09:00:00Z', 'custom', 1)",
+      "UPDATE tracks SET automation_id = 4",
+      "UPDATE automations SET enabled = 0",
+      "UPDATE tracks SET dismissed_at = '2026-11-16T08:00:00Z'"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000035",
+      "target": "tracks",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "track",
+        "ref_id": 1,
+        "ref_verb": "restore"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "tracks": [
+          {
+            "id": 1,
+            "dismissed_at": "",
+            "enabled": 1
+          }
+        ],
+        "automations": [
+          {
+            "id": 4,
+            "enabled": 1
           }
         ]
       }
@@ -1096,7 +1246,7 @@
     ],
     "now": "2026-11-16T10:00:00Z",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000032",
+      "request_id": "00000000-0000-4000-8000-000000000036",
       "target": "tracks",
       "verb": "ref",
       "params": {
@@ -1130,7 +1280,7 @@
     ],
     "now": "2026-11-16T10:00:00Z",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000033",
+      "request_id": "00000000-0000-4000-8000-000000000037",
       "target": "tracks",
       "verb": "ref",
       "params": {
@@ -1154,11 +1304,90 @@
     }
   },
   {
+    "name": "ref_track_make_task_applies_the_event",
+    "seed": [
+      "INSERT INTO targets (id, text, level, status, period_start, period_end) VALUES (3, 'Ship the billing migration', 'day', 'todo', '2026-11-16', '2026-11-16')",
+      "INSERT INTO tracks (id, text, updated_at, origin, linked_target_id) VALUES (1, 'Billing migration', '2026-11-15T09:00:00Z', 'custom', 3)",
+      "INSERT INTO track_events (id, track_id, summary, created_at, proposed_action, action_status) VALUES (2, 1, 'Rollout finished', '2026-11-16T09:00:00Z', '{\"type\":\"update_status\",\"status\":\"done\"}', 'pending')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000038",
+      "target": "tracks",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "track",
+        "ref_id": 2,
+        "ref_verb": "make_task"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "targets": [
+          {
+            "id": 3,
+            "status": "done"
+          }
+        ],
+        "track_events": [
+          {
+            "id": 2,
+            "action_status": "applied"
+          }
+        ],
+        "agent_actions": [
+          {
+            "tool": "apply_track_action",
+            "context_type": "track_event",
+            "context_id": "2",
+            "status": "applied"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ref_track_make_task_already",
+    "seed": [
+      "INSERT INTO targets (id, text, level, status, period_start, period_end) VALUES (3, 'Ship the billing migration', 'day', 'todo', '2026-11-16', '2026-11-16')",
+      "INSERT INTO tracks (id, text, updated_at, origin, linked_target_id) VALUES (1, 'Billing migration', '2026-11-15T09:00:00Z', 'custom', 3)",
+      "INSERT INTO track_events (id, track_id, summary, created_at, proposed_action, action_status) VALUES (2, 1, 'Rollout finished', '2026-11-16T09:00:00Z', '{\"type\":\"update_status\",\"status\":\"done\"}', 'pending')",
+      "UPDATE track_events SET action_status = 'applied'"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000039",
+      "target": "tracks",
+      "verb": "ref",
+      "params": {
+        "ref_kind": "track",
+        "ref_id": 2,
+        "ref_verb": "make_task"
+      }
+    },
+    "swift": null,
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "targets": [
+          {
+            "id": 3,
+            "status": "todo"
+          }
+        ],
+        "agent_actions": []
+      },
+      "already": true
+    }
+  },
+  {
     "name": "ref_track_not_found",
     "seed": [],
     "now": "2026-11-16T10:00:00Z",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000034",
+      "request_id": "00000000-0000-4000-8000-000000000040",
       "target": "tracks",
       "verb": "ref",
       "params": {
@@ -1183,7 +1412,7 @@
     ],
     "now": "2026-11-16T10:00:00Z",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000035",
+      "request_id": "00000000-0000-4000-8000-000000000041",
       "target": "ideas",
       "verb": "ref",
       "params": {
@@ -1221,7 +1450,7 @@
     ],
     "now": "2026-11-16T10:00:00Z",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000036",
+      "request_id": "00000000-0000-4000-8000-000000000042",
       "target": "ideas",
       "verb": "ref",
       "params": {
@@ -1259,7 +1488,7 @@
     ],
     "now": "2026-11-16T10:00:00Z",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000037",
+      "request_id": "00000000-0000-4000-8000-000000000043",
       "target": "ideas",
       "verb": "ref",
       "params": {
@@ -1299,7 +1528,7 @@
     ],
     "now": "2026-11-16T10:00:00Z",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000038",
+      "request_id": "00000000-0000-4000-8000-000000000044",
       "target": "ideas",
       "verb": "ref",
       "params": {
@@ -1334,7 +1563,7 @@
     ],
     "now": "2026-11-16T10:00:00Z",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000039",
+      "request_id": "00000000-0000-4000-8000-000000000045",
       "target": "ideas",
       "verb": "ref",
       "params": {
@@ -1375,7 +1604,7 @@
     ],
     "now": "2026-11-16T10:00:00Z",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000040",
+      "request_id": "00000000-0000-4000-8000-000000000046",
       "target": "r1",
       "verb": "ref",
       "params": {
@@ -1412,7 +1641,7 @@
     ],
     "now": "2026-11-16T10:00:00Z",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000041",
+      "request_id": "00000000-0000-4000-8000-000000000047",
       "target": "r1",
       "verb": "ref",
       "params": {
@@ -1444,7 +1673,7 @@
     ],
     "now": "2026-11-16T10:00:00Z",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000042",
+      "request_id": "00000000-0000-4000-8000-000000000048",
       "target": "r1",
       "verb": "ref",
       "params": {
@@ -1482,7 +1711,7 @@
     ],
     "now": "2026-11-16T10:00:00Z",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000043",
+      "request_id": "00000000-0000-4000-8000-000000000049",
       "target": "r1",
       "verb": "ref",
       "params": {
@@ -1517,7 +1746,7 @@
     ],
     "now": "2026-11-16T10:00:00Z",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000044",
+      "request_id": "00000000-0000-4000-8000-000000000050",
       "target": "brief-2026-11-16",
       "verb": "ref",
       "params": {
@@ -1562,7 +1791,7 @@
     ],
     "now": "2026-11-16T10:00:00Z",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000045",
+      "request_id": "00000000-0000-4000-8000-000000000051",
       "target": "brief-2026-11-16",
       "verb": "ref",
       "params": {
@@ -1604,7 +1833,7 @@
     ],
     "now": "2026-11-16T10:00:00Z",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000046",
+      "request_id": "00000000-0000-4000-8000-000000000052",
       "target": "brief-2026-11-16",
       "verb": "ref",
       "params": {
@@ -1642,7 +1871,7 @@
     ],
     "now": "2026-11-16T10:00:00Z",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000047",
+      "request_id": "00000000-0000-4000-8000-000000000053",
       "target": "brief-2026-11-16",
       "verb": "ref",
       "params": {
@@ -1672,7 +1901,7 @@
     ],
     "now": "2026-11-16T10:00:00Z",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000048",
+      "request_id": "00000000-0000-4000-8000-000000000054",
       "target": "brief-2026-11-16",
       "verb": "done",
       "params": {}
@@ -1696,7 +1925,7 @@
     "seed": [],
     "now": "2026-11-16T10:00:00Z",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000049",
+      "request_id": "00000000-0000-4000-8000-000000000055",
       "target": "messages",
       "verb": "ref",
       "params": {
@@ -1717,7 +1946,7 @@
     "seed": [],
     "now": "2026-11-16T10:00:00Z",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000050",
+      "request_id": "00000000-0000-4000-8000-000000000056",
       "target": "o01",
       "verb": "read",
       "params": {
@@ -1732,11 +1961,11 @@
     }
   },
   {
-    "name": "approval_without_a_registry_is_unsupported",
+    "name": "approval_not_found",
     "seed": [],
     "now": "2026-11-16T10:00:00Z",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000051",
+      "request_id": "00000000-0000-4000-8000-000000000057",
       "target": "a1",
       "verb": "approval",
       "params": {
@@ -1746,8 +1975,10 @@
     "swift": null,
     "expect": {
       "status": "refused",
-      "code": "unsupported",
-      "rows": {}
+      "code": "not_found",
+      "rows": {
+        "agent_actions": []
+      }
     }
   }
 ]

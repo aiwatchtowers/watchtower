@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/tools"
 	"watchtower/internal/tower"
 	"watchtower/internal/tower/api"
 )
@@ -70,6 +71,17 @@ func callAct(t testing.TB, tw *tower.Tower, params json.RawMessage, o tower.Orig
 
 var socket = tower.Origin{Transport: "socket"}
 
+// fixtureDeps are the fixture's dependencies: a tools registry over d with
+// apply_track_action (a track's make_task).
+func fixtureDeps(t testing.TB, d *db.DB) ActDeps {
+	t.Helper()
+	reg := tools.New(d)
+	if err := reg.Register(tools.NewApplyTrackAction()); err != nil {
+		t.Fatal(err)
+	}
+	return ActDeps{Registry: reg}
+}
+
 func TestInboxWritesCases(t *testing.T) {
 	cases := loadWriteCases(t)
 	if len(cases) < 40 {
@@ -82,7 +94,7 @@ func TestInboxWritesCases(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			resp := callAct(t, actTower(d, now, ActDeps{}), c.Call, socket)
+			resp := callAct(t, actTower(d, now, fixtureDeps(t, d)), c.Call, socket)
 			if string(resp.Status) != c.Expect.Status {
 				t.Fatalf("status %s (%+v), want %s", resp.Status, resp.Refusal, c.Expect.Status)
 			}

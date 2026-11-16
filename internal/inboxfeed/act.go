@@ -42,6 +42,10 @@ type ActDeps struct {
 	Background func(fn func())
 	// Clock is the time the stuck rule reads; nil means the call's Now.
 	Clock func() time.Time
+	// StartWatch starts watching track id (`tracks start`): an approved
+	// create_track that applied is watched at once, as the Mac's
+	// startWatchingIfTrack does; nil skips it.
+	StartWatch func(ctx context.Context, trackID int64) error
 }
 
 // CannotRunError is RunNow's refusal of an automation that cannot run now
@@ -506,16 +510,19 @@ func (a actor) refTrack(ctx context.Context, id64 int64) (api.ActResult, error) 
 	}
 	return a.write(ctx, func(tx *sql.Tx) (api.ActResult, error) {
 		var dismissedAt, origin string
-		var read, hasUpdates, unreadEvents bool
+		var read, hasUpdates, unreadEvents, enabled bool
+		var automationID sql.NullInt64
 		err := tx.QueryRow(`SELECT dismissed_at, origin, COALESCE(read_at, '') != '', has_updates != 0,
-			EXISTS(SELECT 1 FROM track_events e WHERE e.track_id = tracks.id AND (e.read_at IS NULL OR e.read_at = ''))
-			FROM tracks WHERE id = ?`, id).Scan(&dismissedAt, &origin, &read, &hasUpdates, &unreadEvents)
+			EXISTS(SELECT 1 FROM track_events e WHERE e.track_id = tracks.id AND (e.read_at IS NULL OR e.read_at = '')),
+			enabled != 0, automation_id
+			FROM tracks WHERE id = ?`, id).Scan(&dismissedAt, &origin, &read, &hasUpdates, &unreadEvents, &enabled, &automationID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return api.ActResult{}, a.refuse(api.CodeNotFound, "")
 		}
 		if err != nil {
 			return api.ActResult{}, err
 		}
+		custom := origin == "custom"
 		switch verb {
 		case api.RefDone:
 			if read && !hasUpdates && !unreadEvents {
@@ -523,30 +530,53 @@ func (a actor) refTrack(ctx context.Context, id64 int64) (api.ActResult, error) 
 			}
 			return api.ActResult{}, db.MarkTrackDoneTx(tx, id)
 		case api.RefStop:
-			if origin == "custom" {
-				// A custom track's Stop also turns its collection off
-				// (CustomTrackControlling): on the Mac.
-				return api.ActResult{}, a.refuse(api.CodeUnsupported, "a custom track is stopped on the Mac.")
+			if dismissedAt != "" && (!custom || !enabled) {
+				return already, nil
+			}
+			if custom {
+				// CustomTrackControlling.stopWatching: collection off first,
+				// so a stopped track never keeps spending tokens.
+				if err := a.setCollecting(tx, id, automationID, false); err != nil {
+					return api.ActResult{}, err
+				}
 			}
 			if dismissedAt != "" {
-				return already, nil
+				return api.ActResult{}, nil
 			}
 			return api.ActResult{}, db.StopTrackTx(tx, []int{id})
 		default: // restore
-			if origin == "custom" {
-				return api.ActResult{}, a.refuse(api.CodeUnsupported, "a custom track is restored on the Mac.")
-			}
-			if dismissedAt == "" {
+			if dismissedAt == "" && (!custom || enabled) {
 				return already, nil
 			}
-			return api.ActResult{}, db.RestoreTrackTx(tx, id)
+			if dismissedAt != "" {
+				if err := db.RestoreTrackTx(tx, id); err != nil {
+					return api.ActResult{}, err
+				}
+			}
+			if custom {
+				// resumeWatching: the track restored, then its collection on.
+				return api.ActResult{}, a.setCollecting(tx, id, automationID, true)
+			}
+			return api.ActResult{}, nil
 		}
 	})
 }
 
+// setCollecting turns a custom track's collection on or off: through its
+// watch recipe when one is bound (RecipeCustomTrackControls: `automations
+// enable|disable`, mirrored into tracks.enabled by its trigger), else the
+// track's own enabled (DirectCustomTrackControls).
+func (a actor) setCollecting(tx *sql.Tx, id int, automationID sql.NullInt64, on bool) error {
+	if automationID.Valid {
+		return db.SetAutomationEnabledTx(tx, automationID.Int64, on, a.c.Now())
+	}
+	return db.SetTrackEnabledTx(tx, id, on)
+}
+
 // makeTask is TrackActionPress: apply_track_action proposed on the inbox
-// surface and approved and applied in the same press. ref_id names the track
-// event whose proposed change it applies.
+// surface and approved and applied in the same press. ref_id is the track
+// event id, as TrackActionPress sends it (the event names its own change).
+// A change already applied, by an earlier press or a racing one, is already.
 func (a actor) makeTask(ctx context.Context, eventID int64) (api.ActResult, error) {
 	reg := a.deps.Registry
 	if reg == nil {
@@ -556,6 +586,9 @@ func (a actor) makeTask(ctx context.Context, eventID int64) (api.ActResult, erro
 	rc, err := reg.Propose(ctx, "apply_track_action", json.RawMessage(`{"event_id":`+ev+`}`), tools.Binding{
 		Surface: tools.InboxSurface, ContextType: "track_event", ContextID: ev,
 	})
+	if errors.Is(err, tools.ErrTrackActionAlreadyApplied) {
+		return already, nil
+	}
 	if err != nil {
 		return api.ActResult{}, a.toolRefusal(err)
 	}
@@ -565,6 +598,9 @@ func (a actor) makeTask(ctx context.Context, eventID int64) (api.ActResult, erro
 	row, err := reg.Apply(ctx, rc.ActionID)
 	if err != nil {
 		return api.ActResult{}, a.toolRefusal(err)
+	}
+	if row.Status == "failed" && row.Error == tools.ErrTrackActionAlreadyApplied.Msg {
+		return already, nil
 	}
 	return api.ActResult{Status: actionStatus(row), Error: row.Error}, nil
 }

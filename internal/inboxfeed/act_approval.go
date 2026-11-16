@@ -2,8 +2,11 @@ package inboxfeed
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
+	"strconv"
+	"strings"
 	"time"
 
 	"watchtower/internal/db"
@@ -178,10 +181,18 @@ func (a actor) runTool(ctx context.Context, reg *tools.Registry, id int64, hub b
 				return api.ActResult{Status: statusApplying}
 			}
 		}
-		return api.ActResult{Status: actionStatus(row), Error: row.Error}
+		res := api.ActResult{Status: actionStatus(row), Error: row.Error}
+		if err := a.startWatchingIfTrack(runCtx, row); err != nil {
+			res.Error = notWatchedPrefix + err.Error()
+		}
+		return res
 	}
 	if hub {
-		a.deps.Background(func() { apply() })
+		a.deps.Background(func() {
+			if res := apply(); res.Error != "" {
+				log.Printf("inbox.act: action %d: %s", id, res.Error)
+			}
+		})
 		return api.ActResult{Status: statusApplying}
 	}
 	done := make(chan api.ActResult, 1)
@@ -194,6 +205,36 @@ func (a actor) runTool(ctx context.Context, reg *tools.Registry, id int64, hub b
 	case <-timer.C:
 		return api.ActResult{Status: statusApplying}
 	}
+}
+
+// notWatchedPrefix leads the error of an approved create_track whose watch
+// did not start (AgentActionFeed.notWatchedPrefix).
+const notWatchedPrefix = "Approved, but the track is not watched yet: "
+
+// startWatchingIfTrack is AgentActionFeed.startWatchingIfTrack: an applied
+// create_track's track is watched now (`tracks start`, the C3 ruling: the
+// tool only creates the row), after the row's own commit and outside any
+// transaction. Any other row, or one that did not apply, starts nothing.
+func (a actor) startWatchingIfTrack(ctx context.Context, row *db.AgentAction) error {
+	if a.deps.StartWatch == nil || row.Tool != "create_track" || row.Status != "applied" {
+		return nil
+	}
+	trackID := resultTrackID(row.ResultJSON)
+	if trackID <= 0 {
+		return nil // no track id in the result: the Mac starts nothing either
+	}
+	return a.deps.StartWatch(ctx, trackID)
+}
+
+// resultTrackID is a create_track result's track_id (a number or a numeric
+// string, as AgentActionDestination reads it); 0 when there is none.
+func resultTrackID(resultJSON string) int64 {
+	var result map[string]json.RawMessage
+	if json.Unmarshal([]byte(resultJSON), &result) != nil {
+		return 0
+	}
+	id, _ := strconv.ParseInt(strings.Trim(string(result["track_id"]), `"`), 10, 64)
+	return id
 }
 
 // actionStatus is a row's ActResult.Status: applied, failed, else applying.

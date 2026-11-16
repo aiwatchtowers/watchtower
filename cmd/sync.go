@@ -1091,8 +1091,8 @@ func serveTower(ctx context.Context, ws string, database *db.DB, noSync bool,
 // towerActDeps are inbox.act's dependencies in the daemon: the tools
 // registry `watchtower actions` uses, Run Now as `automations run` queues it
 // (a slot run asks for a sync now, as the CLI does; any other wakes the
-// executor), and the in-process executor wake. The hub's Background is set
-// with the hub (Task 13).
+// executor), the in-process executor wake, and `tracks start` for an
+// approved create_track. The hub's Background is set with the hub (Task 13).
 func towerActDeps(cfg *config.Config, database *db.DB, wake func()) inboxfeed.ActDeps {
 	return inboxfeed.ActDeps{
 		Registry: buildToolRegistry(cfg, database),
@@ -1116,6 +1116,9 @@ func towerActDeps(cfg *config.Config, database *db.DB, wake func()) inboxfeed.Ac
 			return q.runID, nil
 		},
 		Wake: wake,
+		// An approved create_track is watched at once, as `tracks start`
+		// (the Mac's startWatchingIfTrack) starts it.
+		StartWatch: towerStartWatch(cfg, database),
 	}
 }
 

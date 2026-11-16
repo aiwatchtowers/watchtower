@@ -120,13 +120,8 @@ final class InboxWritesFixtureTests: XCTestCase {
         let a = w.args
         let id = a.id ?? 0
         let date = AutomationDates.parse(a.now ?? now) ?? Date()
+        if try runOutputWriter(w.writer, db: db, id: id, hash: a.contentHash ?? "", now: date) { return }
         switch w.writer {
-        case "AutomationQueries.markOutputOpened":
-            _ = try AutomationQueries.markOutputOpened(db, id: id, contentHash: a.contentHash ?? "", now: date)
-        case "AutomationQueries.markOutputDone":
-            _ = try AutomationQueries.markOutputDone(db, id: id, contentHash: a.contentHash ?? "", now: date)
-        case "AutomationQueries.dismissOutput":
-            _ = try AutomationQueries.dismissOutput(db, id: id, contentHash: a.contentHash ?? "", now: date)
         case "BriefingQueries.markRead":
             try BriefingQueries.markRead(db, ids: a.ids ?? [])
         case "InboxQueries.markRead":
@@ -139,6 +134,14 @@ final class InboxWritesFixtureTests: XCTestCase {
             try TrackQueries.dismiss(db, id: Int(id))
         case "TrackQueries.restore":
             try TrackQueries.restore(db, id: Int(id))
+        case "CustomStop":
+            // DirectCustomTrackControls.stopWatching's one write.
+            try TrackQueries.setEnabled(db, id: Int(id), enabled: false)
+            try TrackQueries.dismiss(db, id: Int(id))
+        case "CustomResume":
+            // DirectCustomTrackControls.resumeWatching's one write.
+            try TrackQueries.restore(db, id: Int(id))
+            try TrackQueries.setEnabled(db, id: Int(id), enabled: true)
         case "IdeaQueries.setStatus":
             try IdeaQueries.setStatus(db, id: Int(id), status: a.status ?? "")
         case "IdeaQueries.snooze":
@@ -154,6 +157,21 @@ final class InboxWritesFixtureTests: XCTestCase {
         default:
             XCTFail("\(name): unknown Swift writer \(w.writer)")
         }
+    }
+
+    /// The output writers (hash-guarded); false for any other writer.
+    private static func runOutputWriter(_ writer: String, db: Database, id: Int64, hash: String, now: Date) throws -> Bool {
+        switch writer {
+        case "AutomationQueries.markOutputOpened":
+            _ = try AutomationQueries.markOutputOpened(db, id: id, contentHash: hash, now: now)
+        case "AutomationQueries.markOutputDone":
+            _ = try AutomationQueries.markOutputDone(db, id: id, contentHash: hash, now: now)
+        case "AutomationQueries.dismissOutput":
+            _ = try AutomationQueries.dismissOutput(db, id: id, contentHash: hash, now: now)
+        default:
+            return false
+        }
+        return true
     }
 
     private static func assertRows(_ db: Database, table: String, want: [[String: Cell]], name: String) throws {

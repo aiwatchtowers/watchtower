@@ -452,3 +452,69 @@ func TestActIdempotentAndGrantTables(t *testing.T) {
 		}
 	}
 }
+
+// TestInboxAct_MakeTaskAppliesTheEventChange: ref make_task with ref_id =
+// the track event (TrackActionPress's id) proposes, approves and applies
+// apply_track_action in one press; a second press is already.
+func TestInboxAct_MakeTaskAppliesTheEventChange(t *testing.T) {
+	d := seeded(t, []string{
+		`INSERT INTO targets (id, text, level, status, period_start, period_end) VALUES (3, 'Ship', 'day', 'todo', '2026-11-16', '2026-11-16')`,
+		`INSERT INTO tracks (id, text, origin, linked_target_id) VALUES (1, 'Billing', 'custom', 3)`,
+		`INSERT INTO track_events (id, track_id, summary, created_at, proposed_action, action_status)
+			VALUES (2, 1, 'Done', '2026-11-16T09:00:00Z', '{"type":"update_status","status":"done"}', 'pending')`,
+	})
+	tw := actTower(d, actNow, fixtureDeps(t, d))
+	p := api.ActParams{RefKind: api.RefTrack, RefID: 2, RefVerb: api.RefMakeTask}
+	if res := actResult(t, callAct(t, tw, actParams(t, "tracks", api.ActRef, p), socket)); res.Already || res.Status != "applied" {
+		t.Fatalf("first press %+v, want applied", res)
+	}
+	var status, actionStatus string
+	if err := d.QueryRow(`SELECT status FROM targets WHERE id = 3`).Scan(&status); err != nil || status != "done" {
+		t.Errorf("task %q %v, want done", status, err)
+	}
+	if err := d.QueryRow(`SELECT action_status FROM track_events WHERE id = 2`).Scan(&actionStatus); err != nil || actionStatus != "applied" {
+		t.Errorf("event %q %v, want applied", actionStatus, err)
+	}
+	if res := actResult(t, callAct(t, tw, actParams(t, "tracks", api.ActRef, p), socket)); !res.Already {
+		t.Errorf("second press %+v, want already", res)
+	}
+	resp := callAct(t, actTower(d, actNow, ActDeps{}), actParams(t, "tracks", api.ActRef, p), socket)
+	if resp.Status != api.StatusRefused || resp.Refusal.Code != api.CodeUnsupported {
+		t.Errorf("no registry: %s %+v, want unsupported", resp.Status, resp.Refusal)
+	}
+}
+
+// TestInboxAct_ApprovedCreateTrackStartsWatching: an approve (or retry) of
+// create_track that applied starts its track's watch after the apply, as the
+// Mac's startWatchingIfTrack; a watch that does not start is the result's
+// error, and the approve stands.
+func TestInboxAct_ApprovedCreateTrackStartsWatching(t *testing.T) {
+	d := seeded(t, []string{`INSERT INTO agent_actions (id, tool, args_json, reason, status, created_at)
+		VALUES (1, 'create_track', '` + pendingArgs + `', 'r', 'pending', '2026-11-16T09:00:00Z'),
+		       (2, 'create_track', '` + pendingArgs + `', 'r', 'failed', '2026-11-16T09:00:00Z')`})
+	reg := tools.New(d)
+	tool := fakeTool(t, "create_track", nil, nil)
+	tool.Execute = func(context.Context, *db.DB, tools.Call) (any, error) { return map[string]any{"track_id": 7}, nil }
+	if err := reg.Register(tool); err != nil {
+		t.Fatal(err)
+	}
+	var started []int64
+	var startErr error
+	tw := actTower(d, actNow, ActDeps{Registry: reg, StartWatch: func(_ context.Context, id int64) error {
+		started = append(started, id)
+		return startErr
+	}})
+	res := actResult(t, callAct(t, tw, actParams(t, "a1", api.ActApproval,
+		api.ActParams{ApprovalVerb: api.ApprovalApprove, ArgsSHA256: tools.ArgsSHA256(pendingArgs)}), socket))
+	if res.Status != "applied" || res.Error != "" || len(started) != 1 || started[0] != 7 {
+		t.Fatalf("approve %+v, started %v; want applied and track 7 watched", res, started)
+	}
+	startErr = fmt.Errorf("the watch recipe could not be written")
+	res = actResult(t, callAct(t, tw, actParams(t, "a2", api.ActApproval, api.ActParams{ApprovalVerb: api.ApprovalRetry}), socket))
+	if res.Status != "applied" || res.Error != "Approved, but the track is not watched yet: the watch recipe could not be written" {
+		t.Errorf("retry %+v, want applied with the watch error", res)
+	}
+	if len(started) != 2 {
+		t.Errorf("%d starts, want one per applied create_track", len(started))
+	}
+}

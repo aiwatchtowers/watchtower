@@ -905,6 +905,19 @@ func startTrackWatch(ctx context.Context, cfg *config.Config, database *db.DB, i
 	return watch.Start(ctx, database, ix, cfg.WorkspaceDir(), *t, watch.StartOptions{Confirm: confirm})
 }
 
+// towerStartWatch is inbox.act's StartWatch: startTrackWatch with the
+// owner's press as the confirmation, as `tracks start` after the Mac's
+// approve of a create_track.
+func towerStartWatch(cfg *config.Config, database *db.DB) func(context.Context, int64) error {
+	return func(ctx context.Context, trackID int64) error {
+		_, err := startTrackWatch(ctx, cfg, database, int(trackID), true)
+		if errors.Is(err, watch.ErrEditedSinceRendered) {
+			return errors.New(msgWatchNotConfirmed)
+		}
+		return err
+	}
+}
+
 func runTracksWatch(cmd *cobra.Command, args []string) error {
 	id, err := strconv.Atoi(args[0])
 	if err != nil {
