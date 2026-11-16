@@ -795,3 +795,71 @@ func TestChatFeed_OversizedLabelsClipped(t *testing.T) {
 		t.Fatalf("page: %d items, %v", len(items), err)
 	}
 }
+
+func approvalIDs(msgs []any) map[int64]bool {
+	out := map[int64]bool{}
+	for _, m := range msgs {
+		for _, p := range m.(map[string]any)["parts"].([]any) {
+			part := p.(map[string]any)
+			if part["kind"] == "approval" {
+				out[num(part["payload"].(map[string]any)["id"])] = true
+			}
+		}
+	}
+	return out
+}
+
+// Many large approvals on one turn: the flat actions are dropped to fit and
+// their copies in the approval parts go with them, so the record stays under
+// the cap and the two agree.
+func TestChatFeed_ManyLargeApprovalsStayUnderCap(t *testing.T) {
+	d := openDB(t)
+	s := chatSeed{t, d}
+	conv := s.conversation("approvals", 1, "")
+	u := s.message(conv, 0, "user", "do it", "complete", "turn-1", 1)
+	s.message(conv, u, "assistant", "proposals", "complete", "turn-1", 2)
+	for range 200 {
+		s.action(conv, "turn-1", "pending", `{"text":"`+strings.Repeat(`\u0003`, 4000)+`"}`, "")
+	}
+	rec := feedRecord(t, d, conv)
+	if len(rec) > MaxChatFeedBytes {
+		t.Fatalf("feed record %d bytes, over %d", len(rec), MaxChatFeedBytes)
+	}
+	feed := decode(t, rec)
+	flat := map[int64]bool{}
+	for _, a := range feed["actions"].([]any) {
+		flat[num(a.(map[string]any)["id"])] = true
+	}
+	parts := approvalIDs(feed["messages"].([]any))
+	for id := range parts {
+		if !flat[id] {
+			t.Errorf("approval part %d outlived its dropped flat action", id)
+		}
+	}
+	if len(flat) == 0 || len(flat) == 200 {
+		t.Fatalf("%d actions kept: the test must exercise the cut", len(flat))
+	}
+}
+
+// A page has no flat actions: its approval parts are cut themselves.
+func TestChatPage_ManyLargeApprovalsStayUnderCap(t *testing.T) {
+	d := openDB(t)
+	s := chatSeed{t, d}
+	conv := s.conversation("approvals page", 1, "")
+	var parent int64
+	var ids []int64
+	for i := range 3 {
+		turn := "turn-" + idStr(int64(i))
+		parent = s.message(conv, parent, "assistant", "x", "complete", turn, float64(i))
+		ids = append(ids, parent)
+		for range 200 {
+			s.action(conv, turn, "pending", `{"text":"`+strings.Repeat(`\u0003`, 4000)+`"}`, "")
+		}
+	}
+	w := NewChatWatches()
+	w.Pages.Request(ChatPageKey{Conversation: conv, Before: ids[2]}, chatNow.Add(ChatRequestHold))
+	items, err := ChatPage(d, chatFeedOpts(w, nil)).Items(context.Background())
+	if err != nil || len(items) != 1 || len(items[0].Payload) > MaxChatFeedBytes {
+		t.Fatalf("%d items, %v", len(items), err)
+	}
+}

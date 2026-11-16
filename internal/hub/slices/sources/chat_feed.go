@@ -372,6 +372,7 @@ func fitFeed(p chatengine.Feed) ([]byte, error) {
 		case shrinkLargestText(p.Messages, over):
 		case clearSteps(p.Messages):
 		case len(p.Actions) > 0:
+			chatengine.DropApprovalPart(p.Messages, p.Actions[0].ID)
 			p.Actions = p.Actions[1:]
 		case uniseg.GraphemeClusterCount(p.Conversation.Title) > maxChatLabel:
 			p.Conversation.Title, _ = clipText(p.Conversation.Title, maxChatLabel)
@@ -407,7 +408,7 @@ func encodeChatPage(p chatPagePayload) ([]byte, error) {
 		if err != nil || len(b) <= MaxChatFeedBytes {
 			return b, err
 		}
-		if !shrinkLargestText(p.Messages, len(b)-MaxChatFeedBytes) && !clearSteps(p.Messages) {
+		if !shrinkLargestText(p.Messages, len(b)-MaxChatFeedBytes) && !clearSteps(p.Messages) && !chatengine.ClearApprovals(p.Messages) {
 			return b, nil
 		}
 	}
@@ -427,7 +428,9 @@ func shrinkLargestText(msgs []chatengine.FeedMessage, over int) bool {
 		return false
 	}
 	m := &msgs[best]
-	target := bestLen - over
+	// The text rides three times (flat, the text part's payload and its
+	// fallback): the loop calling this runs again while the record is over.
+	target := bestLen - (over+2)/3
 	lo, hi := 0, uniseg.GraphemeClusterCount(m.Text)-1 // hi: cut by at least one
 	for lo < hi {
 		mid := (lo + hi + 1) / 2
@@ -439,6 +442,7 @@ func shrinkLargestText(msgs []chatengine.FeedMessage, over int) bool {
 	}
 	m.Text, _ = clipText(m.Text, lo)
 	m.TextCut = true
+	m.RefitParts()
 	return true
 }
 
@@ -459,6 +463,7 @@ func clearSteps(msgs []chatengine.FeedMessage) bool {
 		return false
 	}
 	msgs[best].Steps = []chatengine.FeedStep{}
+	msgs[best].RefitParts()
 	return true
 }
 

@@ -1,4 +1,5 @@
 import GRDB
+import WatchtowerChatText
 import SwiftUI
 @testable import WatchtowerDesktop
 import WatchtowerCore

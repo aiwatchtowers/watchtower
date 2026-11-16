@@ -1,4 +1,5 @@
 import XCTest
+import WatchtowerChatText
 @testable import WatchtowerCore
 
 /// An ask's questions are a chat question card: Go's `asks.Validate` and the

@@ -1,4 +1,5 @@
 import XCTest
+import WatchtowerChatText
 @testable import WatchtowerCore
 
 final class ChatQuestionCardTests: XCTestCase {
