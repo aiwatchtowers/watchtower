@@ -14,6 +14,7 @@ public enum TowerCommand: String, CaseIterable, Sendable {
     case digestsDecisionRead = "digests.decision_read"
     case digestsDecisionsReadAll = "digests.decisions_read_all"
     case digestsRead = "digests.read"
+    case digestsStreamRead = "digests.stream_read"
     case ideasConverted = "ideas.converted"
     case ideasCreate = "ideas.create"
     case ideasCreateFromChat = "ideas.create_from_chat"
@@ -69,6 +70,7 @@ public enum TowerCommand: String, CaseIterable, Sendable {
         case .digestsDecisionRead: false
         case .digestsDecisionsReadAll: false
         case .digestsRead: false
+        case .digestsStreamRead: false
         case .ideasConverted: false
         case .ideasCreate: false
         case .ideasCreateFromChat: false

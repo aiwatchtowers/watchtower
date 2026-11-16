@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"watchtower/internal/db"
 	"watchtower/internal/tower"
@@ -30,7 +31,8 @@ var (
 	tablesIdeas      = []string{"ideas", "idea_mentions", "chat_messages", "chat_conversations"}
 	tablesTargets    = []string{"targets", "inbox_items", "target_status_history"}
 	tablesPlan       = []string{"day_plan_items", "targets", "inbox_items", "target_status_history"}
-	tablesDigests    = []string{"digests", "decision_reads"}
+	tablesDigests    = []string{"digests", "decision_reads", "stream_digests"}
+	tablesConvert    = []string{"ideas", "targets"}
 	tablesCatchUp    = []string{"digests", "stream_digests", "tracks", "inbox_items", "briefings", "catchup_recaps"}
 	tablesOutputs    = []string{"automation_outputs"}
 	tablesBriefings  = []string{"briefings"}
@@ -83,6 +85,7 @@ var screenPhrases = map[string]string{
 	"targets.work_on":            "start it",
 	"catchup.acknowledge":        "mark it caught up",
 	"digests.read":               "mark it read",
+	"digests.stream_read":        "mark it read",
 	"digests.decision_read":      "mark it read",
 	"digests.decisions_read_all": "mark them read",
 }
@@ -123,7 +126,7 @@ func RegisterScreens(r *tower.Registry, deps ActDeps) {
 	screen(r, "ideas.rating", tablesIdeas, ideaRating)
 	screen(r, "ideas.create", tablesIdeas, ideaCreate)
 	screen(r, "ideas.delete", tablesIdeas, ideaDelete)
-	screen(r, "ideas.converted", tablesIdeas, ideaConverted)
+	screen(r, "ideas.converted", tablesConvert, ideaConverted)
 	screen(r, "ideas.decision_seen", tablesIdeas, decisionSeen)
 	screen(r, "ideas.decisions_seen_all", tablesIdeas, decisionsSeenAll)
 	screen(r, "ideas.create_from_chat", tablesIdeas, ideaFromChat)
@@ -142,6 +145,7 @@ func RegisterScreens(r *tower.Registry, deps ActDeps) {
 	// Catch-Up and Digests.
 	screen(r, "catchup.acknowledge", tablesCatchUp, catchUpAcknowledge)
 	screen(r, "digests.read", tablesDigests, digestsRead)
+	screen(r, "digests.stream_read", tablesDigests, streamDigestRead)
 	screen(r, "digests.decision_read", tablesDigests, digestDecisionRead)
 	screen(r, "digests.decisions_read_all", tablesDigests, digestDecisionsReadAll)
 }
@@ -154,9 +158,10 @@ type screenHandler[Req, Resp any] func(ctx context.Context, c *tower.Ctx, req Re
 func screen[Req, Resp any](r *tower.Registry, name string, tables []string, h screenHandler[Req, Resp]) {
 	phrase := screenPhrases[name]
 	tower.Register(r, name, func(ctx context.Context, c *tower.Ctx, req Req) (Resp, error) {
-		if c.Origin.Transport == "hub" {
+		if c.Origin.Transport != "socket" {
 			// The screens' writes are the Mac's own (coordinator ruling):
-			// refused here, whatever the hub routes.
+			// refused from the hub, or any transport but the socket,
+			// whatever the hub routes.
 			var zero Resp
 			return zero, tower.Refuse(api.CodeNotPermitted, "Couldn't "+phrase+": "+reasonOnTheMac)
 		}
@@ -396,6 +401,9 @@ func ideaDelete(ctx context.Context, c *tower.Ctx, req api.ScreenIDRequest) (api
 // made and the idea marked converted in one transaction; an idea already
 // converted to a target that is there answers that target, already.
 func ideaConverted(ctx context.Context, c *tower.Ctx, req api.IdeaConvertedRequest) (api.IdeaConvertResult, error) {
+	if _, err := time.Parse(time.DateOnly, req.Today); err != nil {
+		return api.IdeaConvertResult{}, tower.Refuse(api.CodeUnsupported, "Couldn't convert it: "+reasonUnsupported)
+	}
 	return writeScreen(ctx, c, func(tx *sql.Tx) (api.IdeaConvertResult, error) {
 		id, already, err := db.ConvertIdeaToTargetTx(tx, int(req.ID), req.Today)
 		return api.IdeaConvertResult{TargetID: id, Already: already}, err
@@ -417,7 +425,12 @@ func decisionsSeenAll(ctx context.Context, c *tower.Ctx, _ api.DecisionsSeenAllR
 func ideaFromChat(ctx context.Context, c *tower.Ctx, req api.IdeaFromChatRequest) (api.CreatedResult, error) {
 	return writeScreen(ctx, c, func(tx *sql.Tx) (api.CreatedResult, error) {
 		id, err := db.CreateIdeaFromChatTx(tx, req.Kind, req.Body, req.ConversationID, req.MessageID)
-		return api.CreatedResult{ID: id}, err
+		if err != nil {
+			return api.CreatedResult{}, err
+		}
+		// The Undo stamp, read in the same write (ChatKnowledgeCenter).
+		at, err := db.IdeaUpdatedAtTx(tx, id)
+		return api.CreatedResult{ID: id, UpdatedAt: at}, err
 	})
 }
 
@@ -522,6 +535,12 @@ func catchUpAcknowledge(ctx context.Context, c *tower.Ctx, req api.ScreenIDReque
 func digestsRead(ctx context.Context, c *tower.Ctx, req api.ScreenIDsRequest) (api.ActResult, error) {
 	return writeScreen(ctx, c, func(tx *sql.Tx) (api.ActResult, error) {
 		return api.ActResult{}, db.MarkDigestsReadTx(tx, ints(req.IDs))
+	})
+}
+
+func streamDigestRead(ctx context.Context, c *tower.Ctx, req api.ScreenIDRequest) (api.ActResult, error) {
+	return writeScreen(ctx, c, func(tx *sql.Tx) (api.ActResult, error) {
+		return done(db.MarkStreamDigestReadTx(tx, int(req.ID)))
 	})
 }
 

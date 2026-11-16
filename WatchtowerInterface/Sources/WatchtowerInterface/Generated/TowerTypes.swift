@@ -621,13 +621,19 @@ public struct ChangedEvent: Codable, Hashable, Sendable {
 
 public struct CreatedResult: Codable, Hashable, Sendable {
     public var id: Int64
+    public var updatedAt: String?
 
-    public init(id: Int64) {
+    public init(
+        id: Int64,
+        updatedAt: String? = nil
+    ) {
         self.id = id
+        self.updatedAt = updatedAt
     }
 
     enum CodingKeys: String, CodingKey {
         case id
+        case updatedAt = "updated_at"
     }
 }
 

@@ -458,6 +458,15 @@ func DeleteIdeaTx(tx *sql.Tx, id int) (already bool, err error) {
 	return false, nil
 }
 
+// IdeaUpdatedAtTx is idea id's updated_at.
+func IdeaUpdatedAtTx(tx *sql.Tx, id int64) (string, error) {
+	var at string
+	if err := tx.QueryRow(`SELECT updated_at FROM ideas WHERE id = ?`, id).Scan(&at); err != nil {
+		return "", fmt.Errorf("reading idea %d: %w", id, err)
+	}
+	return at, nil
+}
+
 // intColumnTx reads one integer column.
 func intColumnTx(tx *sql.Tx, query string, args ...any) ([]int, error) {
 	rows, err := tx.Query(query, args...)
@@ -478,18 +487,39 @@ func intColumnTx(tx *sql.Tx, query string, args ...any) ([]int, error) {
 
 // --- digests ---
 
-// MarkDigestsReadTx marks digests ids read, once (DigestQueries.markRead;
-// no decision cascade, as in Swift).
+// MarkDigestsReadTx marks digests ids read, each with all its decisions
+// (the Digests screen's markDigestRead and markDigestsRead: DigestQueries.
+// markDigestRead then markAllDecisionsRead, per digest, in one write).
+// Best-effort, as in Swift: a digest that is not there has nothing to read.
 func MarkDigestsReadTx(tx *sql.Tx, ids []int) error {
-	if len(ids) == 0 {
-		return nil
-	}
-	//nolint:gosec // G202: the concatenation is only "?" placeholders; every value is a bound arg.
-	if _, err := tx.Exec(`UPDATE digests SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-		WHERE id IN (`+placeholders(len(ids))+`) AND read_at IS NULL`, intArgs(ids)...); err != nil {
-		return fmt.Errorf("marking digests read: %w", err)
+	for _, id := range ids {
+		if err := markDigestReadTx(tx, id); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// MarkStreamDigestReadTx marks a Gmail/Jira/mail/Linear stream digest read,
+// once (StreamDigestQueries.markRead). already: it was read; a digest that
+// is not there is ErrRowNotFound.
+func MarkStreamDigestReadTx(tx *sql.Tx, id int) (already bool, err error) {
+	var readAt sql.NullString
+	err = tx.QueryRow(`SELECT read_at FROM stream_digests WHERE id = ?`, id).Scan(&readAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("stream digest %d: %w", id, ErrRowNotFound)
+	}
+	if err != nil {
+		return false, fmt.Errorf("reading stream digest %d: %w", id, err)
+	}
+	if readAt.Valid {
+		return true, nil
+	}
+	if _, err := tx.Exec(`UPDATE stream_digests SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+		WHERE id = ? AND read_at IS NULL`, id); err != nil {
+		return false, fmt.Errorf("marking stream digest %d read: %w", id, err)
+	}
+	return false, nil
 }
 
 // MarkDecisionReadTx marks decision idx of digest digestID read

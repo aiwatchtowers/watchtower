@@ -1749,7 +1749,7 @@
     }
   },
   {
-    "name": "ideas_converted_missing",
+    "name": "ideas_converted_bad_today",
     "seed": [
       "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, updated_at) VALUES (1, 'idea', 'Proposed idea', 'proposed', 1, 'resurfaced', '2026-11-15T09:30:00Z')",
       "INSERT INTO ideas (id, kind, title, status, updated_at) VALUES (2, 'idea', 'Survivor', 'active', '2026-11-15T09:30:00Z')",
@@ -1760,6 +1760,44 @@
     "command": "ideas.converted",
     "call": {
       "request_id": "00000000-0000-4000-8000-000000000050",
+      "id": 1,
+      "today": ""
+    },
+    "expect": {
+      "status": "refused",
+      "code": "unsupported",
+      "sentence": "Couldn't convert it: this card doesn't offer that here.",
+      "rows": {
+        "targets": [
+          {
+            "id": 4
+          }
+        ],
+        "ideas": [
+          {
+            "id": 1,
+            "status": "proposed"
+          },
+          {
+            "id": 2,
+            "status": "active"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "ideas_converted_missing",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, status, needs_review, review_reason, updated_at) VALUES (1, 'idea', 'Proposed idea', 'proposed', 1, 'resurfaced', '2026-11-15T09:30:00Z')",
+      "INSERT INTO ideas (id, kind, title, status, updated_at) VALUES (2, 'idea', 'Survivor', 'active', '2026-11-15T09:30:00Z')",
+      "INSERT INTO idea_mentions (id, idea_id, source, quote, said_at) VALUES (1, 1, 'owner', 'q1', '2026-11-15T09:00:00Z')",
+      "INSERT INTO targets (id, text, level, status, period_start, period_end, source_type) VALUES (4, 'From idea', 'day', 'todo', '2026-11-16', '2026-11-16', 'manual')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "ideas.converted",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000051",
       "id": 9,
       "today": "2026-11-16"
     },
@@ -1796,7 +1834,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "ideas.decision_seen",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000051",
+      "request_id": "00000000-0000-4000-8000-000000000052",
       "id": 2
     },
     "swift": {
@@ -1839,7 +1877,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "ideas.decisions_seen_all",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000052"
+      "request_id": "00000000-0000-4000-8000-000000000053"
     },
     "swift": {
       "writer": "IdeaQueries.markAllDecisionsSeen",
@@ -1875,7 +1913,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "ideas.create_from_chat",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000053",
+      "request_id": "00000000-0000-4000-8000-000000000054",
       "conversation_id": 7,
       "message_id": 9,
       "kind": "decision",
@@ -1928,7 +1966,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "ideas.undo_chat",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000054",
+      "request_id": "00000000-0000-4000-8000-000000000055",
       "id": 1,
       "created_updated_at": "2026-11-16T09:00:00Z"
     },
@@ -1961,7 +1999,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "ideas.undo_chat",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000055",
+      "request_id": "00000000-0000-4000-8000-000000000056",
       "id": 1,
       "created_updated_at": "2026-11-16T09:00:00Z"
     },
@@ -2004,7 +2042,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "dayplan.done",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000056",
+      "request_id": "00000000-0000-4000-8000-000000000057",
       "item_id": 1,
       "cascade": true
     },
@@ -2055,7 +2093,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "dayplan.done",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000057",
+      "request_id": "00000000-0000-4000-8000-000000000058",
       "item_id": 1,
       "cascade": true
     },
@@ -2099,7 +2137,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "dayplan.done",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000058",
+      "request_id": "00000000-0000-4000-8000-000000000059",
       "item_id": 1,
       "cascade": true
     },
@@ -2148,7 +2186,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "dayplan.pending",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000059",
+      "request_id": "00000000-0000-4000-8000-000000000060",
       "item_id": 1,
       "cascade": true
     },
@@ -2197,7 +2235,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "dayplan.delete",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000060",
+      "request_id": "00000000-0000-4000-8000-000000000061",
       "item_id": 2
     },
     "swift": {
@@ -2232,7 +2270,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "dayplan.delete",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000061",
+      "request_id": "00000000-0000-4000-8000-000000000062",
       "item_id": 3
     },
     "swift": {
@@ -2271,7 +2309,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "dayplan.reorder",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000062",
+      "request_id": "00000000-0000-4000-8000-000000000063",
       "plan_id": 1,
       "ordered_ids": [
         2,
@@ -2321,7 +2359,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "dayplan.add",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000063",
+      "request_id": "00000000-0000-4000-8000-000000000064",
       "plan_id": 1,
       "kind": "timeblock",
       "title": "Focus",
@@ -2392,7 +2430,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "dayplan.add",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000064",
+      "request_id": "00000000-0000-4000-8000-000000000065",
       "plan_id": 1,
       "kind": "backlog",
       "title": "Call"
@@ -2450,7 +2488,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "targets.set_status",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000065",
+      "request_id": "00000000-0000-4000-8000-000000000066",
       "id": 3,
       "status": "in_progress"
     },
@@ -2534,7 +2572,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "targets.set_status",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000066",
+      "request_id": "00000000-0000-4000-8000-000000000067",
       "id": 3,
       "status": "done"
     },
@@ -2613,7 +2651,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "targets.set_status",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000067",
+      "request_id": "00000000-0000-4000-8000-000000000068",
       "id": 9,
       "status": "done"
     },
@@ -2639,7 +2677,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "targets.set_column",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000068",
+      "request_id": "00000000-0000-4000-8000-000000000069",
       "id": 3,
       "status": "in_progress",
       "column_id": 2
@@ -2728,7 +2766,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "targets.set_column",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000069",
+      "request_id": "00000000-0000-4000-8000-000000000070",
       "id": 3,
       "status": "in_progress",
       "column_id": 2
@@ -2817,7 +2855,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "targets.set_column",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000070",
+      "request_id": "00000000-0000-4000-8000-000000000071",
       "id": 3,
       "status": "todo",
       "column_id": 2
@@ -2847,7 +2885,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "targets.snooze",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000071",
+      "request_id": "00000000-0000-4000-8000-000000000072",
       "id": 3,
       "until": "2026-11-20T09:00"
     },
@@ -2922,7 +2960,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "targets.set_status",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000072",
+      "request_id": "00000000-0000-4000-8000-000000000073",
       "id": 3,
       "status": "done"
     },
@@ -2978,7 +3016,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "targets.work_on",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000073",
+      "request_id": "00000000-0000-4000-8000-000000000074",
       "id": 3
     },
     "swift": {
@@ -3026,7 +3064,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "targets.work_on",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000074",
+      "request_id": "00000000-0000-4000-8000-000000000075",
       "id": 2
     },
     "swift": {
@@ -3071,7 +3109,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "catchup.acknowledge",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000075",
+      "request_id": "00000000-0000-4000-8000-000000000076",
       "id": 1
     },
     "swift": {
@@ -3130,7 +3168,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "catchup.acknowledge",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000076",
+      "request_id": "00000000-0000-4000-8000-000000000077",
       "id": 1
     },
     "expect": {
@@ -3163,7 +3201,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "catchup.acknowledge",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000077",
+      "request_id": "00000000-0000-4000-8000-000000000078",
       "id": 9
     },
     "expect": {
@@ -3176,7 +3214,7 @@
     }
   },
   {
-    "name": "digests_read",
+    "name": "digests_read_one",
     "seed": [
       "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, decisions, model) VALUES (5, 'C1', 1, 2, 'channel', 's', '[{\"text\":\"a\"},{\"text\":\"b\"}]', 'm')",
       "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, model) VALUES (6, 'C2', 1, 2, 'channel', 's', 'm')"
@@ -3184,14 +3222,63 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "digests.read",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000078",
+      "request_id": "00000000-0000-4000-8000-000000000079",
+      "ids": [
+        5
+      ]
+    },
+    "swift": {
+      "writer": "DigestViewModel.markDigestRead",
+      "args": {
+        "ids": [
+          5
+        ]
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "digests": [
+          {
+            "id": 5,
+            "read_at": "*"
+          },
+          {
+            "id": 6,
+            "read_at": null
+          }
+        ],
+        "decision_reads": [
+          {
+            "digest_id": 5,
+            "decision_idx": 0
+          },
+          {
+            "digest_id": 5,
+            "decision_idx": 1
+          }
+        ]
+      }
+    },
+    "race": "both"
+  },
+  {
+    "name": "digests_read_batch",
+    "seed": [
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, decisions, model) VALUES (5, 'C1', 1, 2, 'channel', 's', '[{\"text\":\"a\"},{\"text\":\"b\"}]', 'm')",
+      "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, model) VALUES (6, 'C2', 1, 2, 'channel', 's', 'm')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "digests.read",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000080",
       "ids": [
         5,
         6
       ]
     },
     "swift": {
-      "writer": "DigestQueries.markRead",
+      "writer": "DigestViewModel.markDigestsRead",
       "args": {
         "ids": [
           5,
@@ -3212,10 +3299,101 @@
             "read_at": "*"
           }
         ],
-        "decision_reads": []
+        "decision_reads": [
+          {
+            "digest_id": 5,
+            "decision_idx": 0
+          },
+          {
+            "digest_id": 5,
+            "decision_idx": 1
+          }
+        ]
       }
     },
     "race": "both"
+  },
+  {
+    "name": "digests_stream_read",
+    "seed": [
+      "INSERT INTO stream_digests (id, source, account_id, period_from, period_to) VALUES (1, 'gmail', 1, '2026-11-16T08:00:00Z', '2026-11-16T09:00:00Z')",
+      "INSERT INTO stream_digests (id, source, account_id, period_from, period_to) VALUES (2, 'jira', 1, '2026-11-16T08:00:00Z', '2026-11-16T09:00:00Z')"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "digests.stream_read",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000081",
+      "id": 1
+    },
+    "swift": {
+      "writer": "StreamDigestQueries.markRead",
+      "args": {
+        "id": 1
+      }
+    },
+    "expect": {
+      "status": "ok",
+      "rows": {
+        "stream_digests": [
+          {
+            "id": 1,
+            "read_at": "*"
+          },
+          {
+            "id": 2,
+            "read_at": null
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "digests_stream_read_already",
+    "seed": [
+      "INSERT INTO stream_digests (id, source, account_id, period_from, period_to) VALUES (1, 'gmail', 1, '2026-11-16T08:00:00Z', '2026-11-16T09:00:00Z')",
+      "INSERT INTO stream_digests (id, source, account_id, period_from, period_to) VALUES (2, 'jira', 1, '2026-11-16T08:00:00Z', '2026-11-16T09:00:00Z')",
+      "UPDATE stream_digests SET read_at = '2026-11-16T09:30:00Z' WHERE id = 1"
+    ],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "digests.stream_read",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000082",
+      "id": 1
+    },
+    "expect": {
+      "status": "ok",
+      "already": true,
+      "rows": {
+        "stream_digests": [
+          {
+            "id": 1,
+            "read_at": "2026-11-16T09:30:00Z"
+          },
+          {
+            "id": 2,
+            "read_at": null
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "digests_stream_read_missing",
+    "seed": [],
+    "now": "2026-11-16T10:00:00Z",
+    "command": "digests.stream_read",
+    "call": {
+      "request_id": "00000000-0000-4000-8000-000000000083",
+      "id": 9
+    },
+    "expect": {
+      "status": "refused",
+      "code": "not_found",
+      "sentence": "Couldn't mark it read: it's no longer on the Mac.",
+      "rows": {
+        "stream_digests": []
+      }
+    }
   },
   {
     "name": "digests_decision_read",
@@ -3226,7 +3404,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "digests.decision_read",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000079",
+      "request_id": "00000000-0000-4000-8000-000000000084",
       "digest_id": 5,
       "idx": 1
     },
@@ -3259,7 +3437,7 @@
     "now": "2026-11-16T10:00:00Z",
     "command": "digests.decisions_read_all",
     "call": {
-      "request_id": "00000000-0000-4000-8000-000000000080",
+      "request_id": "00000000-0000-4000-8000-000000000085",
       "digest_id": 5
     },
     "swift": {

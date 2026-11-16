@@ -6,6 +6,7 @@ package api
 // WriteParams; most answer ActResult.
 
 // ScreenIDRequest names one row (inbox_items.read, tracks.done,
+// digests.stream_read,
 // tracks.restore, tracks.delete, ideas.delete, ideas.decision_seen,
 // catchup.acknowledge, targets.work_on).
 type ScreenIDRequest struct {
@@ -184,9 +185,12 @@ type UndoChatResult struct {
 	Undone bool `json:"undone"`
 }
 
-// CreatedResult answers a command that adds a row with its id.
+// CreatedResult answers a command that adds a row with its id and, for
+// ideas.create_from_chat, the row's updated_at read in the same write (the
+// chat mark's Undo stamp).
 type CreatedResult struct {
-	ID int64 `json:"id"`
+	ID        int64  `json:"id"`
+	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
 // PlanItemStatusRequest checks a day plan item off (dayplan.done) or back

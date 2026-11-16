@@ -25,7 +25,8 @@ const screenWritesPath = "testdata/screen_writes.json"
 // writer ScreenWritesFixtureTests runs over the same seed. Race says how two
 // racing calls answer: "" one writes and the other answers already or
 // changed, "both" both answer ok (an unguarded write, as in Swift), "skip" not
-// raced (a create, or an undo whose loser answers undone false).
+// raced (a create, an undo whose loser answers undone false, or a write
+// each racer adds a row of its own to, as tracks.priority's feedback).
 type screenCase struct {
 	Name    string          `json:"name"`
 	Seed    []string        `json:"seed"`
@@ -80,7 +81,7 @@ var screenCommands = []string{
 	"ideas.create_from_chat", "ideas.undo_chat",
 	"dayplan.done", "dayplan.pending", "dayplan.delete", "dayplan.reorder", "dayplan.add",
 	"targets.set_status", "targets.set_column", "targets.snooze", "targets.work_on",
-	"catchup.acknowledge", "digests.read", "digests.decision_read", "digests.decisions_read_all",
+	"catchup.acknowledge", "digests.read", "digests.stream_read", "digests.decision_read", "digests.decisions_read_all",
 }
 
 // TestScreenCommands_EveryCommandIsRegisteredGuarded: each command of the
@@ -88,6 +89,14 @@ var screenCommands = []string{
 // needs no hub grant (none is an AGENT-07 gesture) and has a verb phrase;
 // a table it writes that the feed reads is in ChangeTables; and the fixture
 // has a case for each.
+// notFeedTables are the tables the screen commands write that inbox.feed
+// does not read: a write to them needs no feed re-read.
+var notFeedTables = map[string]bool{
+	"digests": true, "decision_reads": true, "stream_digests": true, "feedback": true,
+	"idea_mentions": true, "chat_messages": true, "chat_conversations": true,
+	"target_status_history": true, "catchup_recaps": true,
+}
+
 func TestScreenCommands_EveryCommandIsRegisteredGuarded(t *testing.T) {
 	var r tower.Registry
 	RegisterScreens(&r, ActDeps{})
@@ -117,6 +126,11 @@ func TestScreenCommands_EveryCommandIsRegisteredGuarded(t *testing.T) {
 		}
 		if len(c.Spec.ChangeTables) == 0 {
 			t.Errorf("%s names no ChangeTables", name)
+		}
+		for _, table := range c.Spec.ChangeTables {
+			if !feedReads[table] && !notFeedTables[table] {
+				t.Errorf("%s writes %s: add it to inbox.feed's ChangeTables if the feed reads it, else to notFeedTables", name, table)
+			}
 		}
 		if c.Spec.Grant != "" || c.Spec.GrantFor != nil {
 			t.Errorf("%s needs a grant; no screen command is an owner gesture", name)

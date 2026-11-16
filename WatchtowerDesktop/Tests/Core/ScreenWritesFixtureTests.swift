@@ -357,8 +357,14 @@ final class ScreenWritesFixtureTests: XCTestCase {
         case "CatchUpQueries.acknowledge":
             let recap = try XCTUnwrap(CatchUpQueries.fetchRecap(db, id: Int(a.int("id") ?? 0)), name)
             try CatchUpQueries.acknowledge(db, recap: recap)
-        case "DigestQueries.markRead":
-            try DigestQueries.markRead(db, ids: a.ints("ids").map { Int($0) })
+        case "DigestViewModel.markDigestRead", "DigestViewModel.markDigestsRead":
+            // The Digests screen's one write: each digest read with its decisions.
+            for digest in a.ints("ids").map({ Int($0) }) {
+                try DigestQueries.markDigestRead(db, id: digest)
+                try DigestQueries.markAllDecisionsRead(db, digestID: digest)
+            }
+        case "StreamDigestQueries.markRead":
+            try StreamDigestQueries.markRead(db, id: Int(a.int("id") ?? 0))
         case "DigestQueries.markDecisionRead":
             try DigestQueries.markDecisionRead(
                 db, digestID: Int(a.int("digestID") ?? 0), decisionIdx: Int(a.int("idx") ?? 0)
