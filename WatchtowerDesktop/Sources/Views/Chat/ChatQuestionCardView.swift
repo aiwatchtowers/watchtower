@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerChatText
 import WatchtowerCore
 
 /// A question card from an assistant reply (spec 2026-10-02): each question

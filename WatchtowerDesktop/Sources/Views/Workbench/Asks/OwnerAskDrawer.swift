@@ -1,4 +1,5 @@
 import AppKit
+import WatchtowerChatText
 import SwiftUI
 import WatchtowerCore
 
