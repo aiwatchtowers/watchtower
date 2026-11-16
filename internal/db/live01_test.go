@@ -189,6 +189,7 @@ var displayOnlyReadersAt = map[string]string{
 	"chatstore/conversations.go:Pin":                "the pinned flag",
 	"chatstore/conversations.go:Rename":             "writes the owner's title",
 	"chatstore/conversations.go:Delete":             "delete only",
+	"chatstore/conversations.go:Archive":            "the archived_at column, no text",
 	"chatstore/conversations.go:Move":               "the project column, an existence count, no text",
 	"chatstore/attachments.go:SaveAttachment":       "inserts an attachment row of an existing conversation, no text read",
 	// The phone's chat (iPhone chat spec §4.6): the hub's chat slices and the
