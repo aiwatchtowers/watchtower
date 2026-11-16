@@ -214,15 +214,18 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertTrue(call.prompt.hasSuffix(EmbeddedChatReplay.footer + "\n\nagain"), call.prompt)
     }
 
-    func testTextIsFlushedAtMostOncePerInterval() async throws {
+    /// The streamed text shows live and reaches the reply's `partial` row, so
+    /// a crash keeps it. The row is the `--persist` run's: its flush cadence
+    /// (first delta at once, then at most once a second) is pinned in Go by
+    /// `TestEmbeddedTurn_FlushCadence`.
+    func testStreamedTextReachesThePartialRow() async throws {
         let engine = makeEngine()
         engine.send("q")
         await engine.finished()
         ai.emit(.text("a"))
         expectTrue(await waitForCondition { engine.liveTurn?.fullText == "a" })
-        XCTAssertEqual(try rows().last?.text, "", "inside the flush interval")
-        clock.advance(1.1)
         ai.emit(.text("b"))
+        expectTrue(await waitForCondition { engine.liveTurn?.fullText == "ab" })
         expectTrue(await waitForCondition { (try? self.rows().last?.text) == "ab" })
         XCTAssertEqual(try rows().last?.status, "partial", "a crash now keeps the partial text")
     }
@@ -436,7 +439,11 @@ final class EmbeddedChatEngineTests: XCTestCase {
         engine.draft = "my words"
         XCTAssertTrue(engine.sendDraft())
         await engine.finished()
-        XCTAssertEqual(ai.calls.count, 0, "nothing goes out without the owner row")
+        // The send is the `--persist` run alone: it found no chat, wrote no
+        // row and never reached the provider (Go:
+        // TestEmbeddedTurn_GoneConversationWritesNothing).
+        XCTAssertEqual(ai.calls.map { $0.persist?.conversationID }, [conv], "only the --persist run")
+        XCTAssertTrue(try rows().isEmpty, "nothing goes out without the owner row")
         XCTAssertEqual(engine.draft, "my words")
         XCTAssertEqual(engine.bannerError, "This chat no longer exists.")
         XCTAssertFalse(engine.isBusy)
@@ -734,7 +741,8 @@ final class EmbeddedChatEngineTests: XCTestCase {
         ai.finish(call: 0)
         expectTrue(await waitForCondition { self.ai.calls.count == 4 })
         XCTAssertFalse(fourth.isQueued)
-        XCTAssertTrue(fourth.isStreaming)
+        // Streaming from the run's `started`, once its rows are written.
+        expectTrue(await waitForCondition { fourth.isStreaming })
         XCTAssertEqual(try rows(fourth.spec.key.conversationID).map(\.role), ["user", "assistant"])
     }
 
@@ -1211,10 +1219,11 @@ extension EmbeddedChatEngineTests {
             await engine.finished()
             let failure = ChatSessionError(turnID: nil, code: .rateLimit, message: "Quota reached",
                                            retryable: false, reason: "quota_exhausted")
-            ai.emit(.text(text), .failure(failure), .routing(provider: "codex", model: "consumed-after-quota", metadata: nil))
-            // A subsequent ordered metadata write proves the error was consumed,
-            // while the scripted process deliberately keeps stdout/EOF open.
-            let consumed = await waitForCondition { (try? self.rows().last?.model) == "consumed-after-quota" }
+            ai.emit(.text(text), .failure(failure))
+            // The run wrote the typed error (Go ends an embedded turn at its
+            // error event), while the scripted process deliberately keeps
+            // stdout/EOF open.
+            let consumed = await waitForCondition { (try? self.rows().last?.errorCode) == "quota_exhausted" }
             XCTAssertTrue(consumed)
             XCTAssertTrue(engine.isStreaming)
             let beforeStop = try XCTUnwrap(try rows().last)
