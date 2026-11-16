@@ -23,13 +23,22 @@ final class ApprovalTextParityTests: XCTestCase {
 
     private struct TextCase: Decodable {
         struct Expect: Decodable {
+            struct DiffLine: Decodable, Equatable {
+                let kind: String
+                let text: String
+            }
+
             let title: String
             let summary: [String]
             let editOnMac: Bool
+            let disclosure: String
+            let recipeText: String
+            let diff: [DiffLine]
 
             enum CodingKeys: String, CodingKey {
-                case title, summary
+                case title, summary, disclosure, diff
                 case editOnMac = "edit_on_mac"
+                case recipeText = "recipe_text"
             }
         }
 
@@ -60,6 +69,10 @@ final class ApprovalTextParityTests: XCTestCase {
             XCTAssertEqual(text.title, item.expect.title, "\(item.name): title")
             XCTAssertEqual(text.summary, item.expect.summary, "\(item.name): summary")
             XCTAssertEqual(text.editOnMac, item.expect.editOnMac, "\(item.name): edit on Mac")
+            let disclosure = Self.disclosure(action)
+            XCTAssertEqual(disclosure.title, item.expect.disclosure, "\(item.name): disclosure")
+            XCTAssertEqual(disclosure.recipe, item.expect.recipeText, "\(item.name): recipe text")
+            XCTAssertEqual(disclosure.diff, item.expect.diff, "\(item.name): diff")
         }
     }
 
@@ -93,6 +106,28 @@ final class ApprovalTextParityTests: XCTestCase {
             return (title, lines, true)
         }
         return (title, AgentActionCardView.summaryLines(for: action), false)
+    }
+
+    /// SaveAutomationCardDetails' recipe disclosure on a save_automation
+    /// past pending: a new recipe's `RecipeTextDisclosure` (its title and
+    /// text), an edit's "Show changes" with the diff lines, or "No change to
+    /// the recipe text" (disabled, no lines). None anywhere else.
+    private static func disclosure(
+        _ action: AgentAction
+    ) -> (title: String, recipe: String, diff: [TextCase.Expect.DiffLine]) {
+        guard action.tool == SaveAutomationCardModel.tool, !action.isPending else { return ("", "", []) }
+        let model = SaveAutomationCardModel(action: action)
+        if let text = model.newRecipeText { return (SaveAutomationCardModel.recipeDisclosureTitle(text), text, []) }
+        guard let diff = model.diff else { return ("", "", []) }
+        if diff.isIdentical { return ("No change to the recipe text", "", []) }
+        let lines = diff.lines.map { line -> TextCase.Expect.DiffLine in
+            switch line {
+            case let .same(text): .init(kind: "same", text: text)
+            case let .added(text): .init(kind: "added", text: text)
+            case let .removed(text): .init(kind: "removed", text: text)
+            }
+        }
+        return ("Show changes", "", lines)
     }
 
     private struct TargetCase: Decodable {

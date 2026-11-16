@@ -122,7 +122,12 @@ func (s *snapshot) cardActions(o output, now time.Time) []api.CardAction {
 	decoded := make([]db.InboxAction, len(own))
 	valid := make([]bool, len(own))
 	for i, raw := range own {
-		valid[i] = json.Unmarshal(raw, &decoded[i]) == nil
+		var fields map[string]json.RawMessage
+		valid[i] = json.Unmarshal(raw, &decoded[i]) == nil && json.Unmarshal(raw, &fields) == nil
+		// InboxCardAction.decode drops a reply with no "reply" key.
+		if _, ok := fields["reply"]; valid[i] && decoded[i].Kind == "reply" && !ok {
+			valid[i] = false
+		}
 	}
 	flat := blocks.FlattenActions(decoded, doc)
 	reply := replyState(o)
@@ -252,15 +257,19 @@ func creatingUntil(p *db.AgentAction) string {
 }
 
 // readTargetFacts reads the newest proposal of every target button of the
-// open artifacts (AgentActionQueries.newestButtonProposals) and which of
-// those proposals made a task that still exists (actionsWithTask).
+// open artifacts and of every button a Needs approval row proposed for
+// (AgentActionQueries.newestButtonProposals over the outputs and the
+// strip's contexts), and which of those proposals made a task that still
+// exists (actionsWithTask).
 func readTargetFacts(ctx context.Context, tx *sql.Tx) (map[string]targetFacts, error) {
 	out := map[string]targetFacts{}
 	var ids []any
 	err := eachRow(ctx, tx, `SELECT `+db.AgentActionColumns+` FROM agent_actions
-		WHERE context_type = ? AND CAST(substr(context_id, 1, instr(context_id, ':') - 1) AS INTEGER) IN
+		WHERE context_type = ? AND (CAST(substr(context_id, 1, instr(context_id, ':') - 1) AS INTEGER) IN
 			(SELECT id FROM automation_outputs WHERE kind = 'inbox' AND done_at IS NULL AND dismissed_at IS NULL)
-		ORDER BY id DESC`, []any{buttonContextType}, func(rows *sql.Rows) error {
+			OR context_id IN (SELECT context_id FROM agent_actions WHERE context_type = ?
+				AND status IN ('pending','failed','approved','executing')))
+		ORDER BY id DESC`, []any{buttonContextType, buttonContextType}, func(rows *sql.Rows) error {
 		a, err := db.ScanAgentAction(rows)
 		if err != nil {
 			return err

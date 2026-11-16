@@ -5,6 +5,8 @@ import (
 	"os"
 	"strconv"
 	"testing"
+
+	"watchtower/internal/tower/api"
 )
 
 const approvalTextPath = "testdata/approval_text_cases.json"
@@ -22,9 +24,12 @@ type approvalTextCase struct {
 	Status         string            `json:"status,omitempty"`
 	WorkbenchNames map[string]string `json:"workbench_names"`
 	Expect         struct {
-		Title     string   `json:"title"`
-		Summary   []string `json:"summary"`
-		EditOnMac bool     `json:"edit_on_mac"`
+		Title      string         `json:"title"`
+		Summary    []string       `json:"summary"`
+		EditOnMac  bool           `json:"edit_on_mac"`
+		Disclosure string         `json:"disclosure"`
+		RecipeText string         `json:"recipe_text"`
+		Diff       []api.DiffLine `json:"diff"`
 	} `json:"expect"`
 }
 
@@ -51,11 +56,20 @@ func TestApprovalText_SharedCases(t *testing.T) {
 			return c.WorkbenchNames[strconv.FormatInt(id, 10)]
 		})
 		if *update {
-			cases[i].Expect.Title, cases[i].Expect.Summary, cases[i].Expect.EditOnMac = got.Title, got.Summary, got.EditOnMac
+			e := &cases[i].Expect
+			e.Title, e.Summary, e.EditOnMac = got.Title, got.Summary, got.EditOnMac
+			e.Disclosure, e.RecipeText, e.Diff = got.Disclosure, got.RecipeText, got.Diff
+			if e.Diff == nil {
+				e.Diff = []api.DiffLine{}
+			}
 			continue
 		}
+		if got.Diff == nil {
+			got.Diff = []api.DiffLine{}
+		}
 		g, _ := json.Marshal(got)
-		w, _ := json.Marshal(ApprovalText{Title: c.Expect.Title, Summary: c.Expect.Summary, EditOnMac: c.Expect.EditOnMac})
+		w, _ := json.Marshal(ApprovalText{Title: c.Expect.Title, Summary: c.Expect.Summary, EditOnMac: c.Expect.EditOnMac,
+			Disclosure: c.Expect.Disclosure, RecipeText: c.Expect.RecipeText, Diff: c.Expect.Diff})
 		if string(g) != string(w) {
 			t.Errorf("%s:\n got %s\nwant %s", c.Name, g, w)
 		}

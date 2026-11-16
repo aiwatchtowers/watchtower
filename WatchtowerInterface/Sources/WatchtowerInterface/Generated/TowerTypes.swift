@@ -58,6 +58,14 @@ public struct Approval: Codable, Hashable, Sendable {
     public var proposer: String
     public var reason: String
     public var editOnMac: Bool
+    public var target: String
+    public var targetNote: String
+    public var targetUntil: String
+    public var superseded: Bool
+    public var disclosure: String
+    public var recipeText: String
+    public var diff: [DiffLine]
+    public var recipeClipped: Bool
 
     public init(
         tool: String,
@@ -68,7 +76,15 @@ public struct Approval: Codable, Hashable, Sendable {
         error: String,
         proposer: String,
         reason: String,
-        editOnMac: Bool
+        editOnMac: Bool,
+        target: String,
+        targetNote: String,
+        targetUntil: String,
+        superseded: Bool,
+        disclosure: String,
+        recipeText: String,
+        diff: [DiffLine],
+        recipeClipped: Bool
     ) {
         self.tool = tool
         self.title = title
@@ -79,6 +95,14 @@ public struct Approval: Codable, Hashable, Sendable {
         self.proposer = proposer
         self.reason = reason
         self.editOnMac = editOnMac
+        self.target = target
+        self.targetNote = targetNote
+        self.targetUntil = targetUntil
+        self.superseded = superseded
+        self.disclosure = disclosure
+        self.recipeText = recipeText
+        self.diff = diff
+        self.recipeClipped = recipeClipped
     }
 
     enum CodingKeys: String, CodingKey {
@@ -91,6 +115,35 @@ public struct Approval: Codable, Hashable, Sendable {
         case proposer
         case reason
         case editOnMac = "edit_on_mac"
+        case target
+        case targetNote = "target_note"
+        case targetUntil = "target_until"
+        case superseded
+        case disclosure
+        case recipeText = "recipe_text"
+        case diff
+        case recipeClipped = "recipe_clipped"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.tool = try container.decode(String.self, forKey: .tool)
+        self.title = try container.decode(String.self, forKey: .title)
+        self.summary = try container.decode(String.self, forKey: .summary)
+        self.argsSHA256 = try container.decode(String.self, forKey: .argsSHA256)
+        self.status = try container.decode(String.self, forKey: .status)
+        self.error = try container.decode(String.self, forKey: .error)
+        self.proposer = try container.decode(String.self, forKey: .proposer)
+        self.reason = try container.decode(String.self, forKey: .reason)
+        self.editOnMac = try container.decode(Bool.self, forKey: .editOnMac)
+        self.target = try container.decode(String.self, forKey: .target)
+        self.targetNote = try container.decode(String.self, forKey: .targetNote)
+        self.targetUntil = try container.decode(String.self, forKey: .targetUntil)
+        self.superseded = try container.decode(Bool.self, forKey: .superseded)
+        self.disclosure = try container.decode(String.self, forKey: .disclosure)
+        self.recipeText = try container.decode(String.self, forKey: .recipeText)
+        self.diff = try container.decodeIfPresent([DiffLine].self, forKey: .diff) ?? []
+        self.recipeClipped = try container.decode(Bool.self, forKey: .recipeClipped)
     }
 }
 
@@ -345,6 +398,67 @@ public struct ChangedEvent: Codable, Hashable, Sendable {
         case id
         case event
         case tables
+    }
+}
+
+public enum DiffKind: Codable, Hashable, Sendable {
+    case same
+    case added
+    case removed
+    /// A value this build does not know (sent by a newer Watchtower).
+    case unknown(String)
+
+    public init(rawValue: String) {
+        switch rawValue {
+        case "same": self = .same
+        case "added": self = .added
+        case "removed": self = .removed
+        default: self = .unknown(rawValue)
+        }
+    }
+
+    public var rawValue: String {
+        switch self {
+        case .same: "same"
+        case .added: "added"
+        case .removed: "removed"
+        case .unknown(let value): value
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        self.init(rawValue: try decoder.singleValueContainer().decode(String.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.rawValue == rhs.rawValue
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(rawValue)
+    }
+}
+
+public struct DiffLine: Codable, Hashable, Sendable {
+    public var kind: DiffKind
+    public var text: String
+
+    public init(
+        kind: DiffKind,
+        text: String
+    ) {
+        self.kind = kind
+        self.text = text
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case text
     }
 }
 

@@ -228,6 +228,53 @@ type Approval struct {
 	Reason     string `json:"reason"`
 	// EditOnMac is set for a tool whose args the Mac's Edit… changes.
 	EditOnMac bool `json:"edit_on_mac"`
+	// Target is an Inbox target button's state on its newest proposal (a
+	// create_target row of an automation_output context): the
+	// CardAction.Detail values of a target (idle, waiting, creating, stuck,
+	// failed, created); "" on any other row. The Mac draws it in place of
+	// the decision row (AgentActionCardView.targetRow): stuck, or failed on
+	// a row that is not itself failed, offers Try again; creating shows
+	// progress; anything else keeps the decision row.
+	Target     string `json:"target"`
+	TargetNote string `json:"target_note"`
+	// TargetUntil is when a creating Target reads as stuck (RFC 3339 UTC),
+	// as CardAction.Until; "" otherwise.
+	TargetUntil string `json:"target_until"`
+	// Superseded: an older proposal of an Inbox button whose newest row is
+	// another one; it offers no Retry (the CLI refuses it).
+	Superseded bool `json:"superseded"`
+	// Disclosure is the title of the recipe disclosure a save_automation
+	// past pending draws ("Show the whole recipe (N lines)", "Show
+	// changes", "No change to the recipe text"); "" for none.
+	Disclosure string `json:"disclosure"`
+	// RecipeText is a new recipe's whole text behind the disclosure; ""
+	// for an edit.
+	RecipeText string `json:"recipe_text"`
+	// Diff is an edit's line diff against the saved recipe; empty for a
+	// new recipe and for an unchanged one.
+	Diff []DiffLine `json:"diff"`
+	// RecipeClipped is set when FeedRequest.Clip cut RecipeText or Diff to
+	// ClipBytes.
+	RecipeClipped bool `json:"recipe_clipped"`
+}
+
+// DiffKind is one diff line's kind.
+type DiffKind string
+
+// The diff line kinds.
+const (
+	DiffSame    DiffKind = "same"
+	DiffAdded   DiffKind = "added"
+	DiffRemoved DiffKind = "removed"
+)
+
+// EnumValues lists every DiffKind.
+func (DiffKind) EnumValues() []string { return []string{"same", "added", "removed"} }
+
+// DiffLine is one line of a recipe diff (OwnerAskSnapshotDiff.Line).
+type DiffLine struct {
+	Kind DiffKind `json:"kind"`
+	Text string   `json:"text"`
 }
 
 // LegacyKind is a legacy root entry's kind.

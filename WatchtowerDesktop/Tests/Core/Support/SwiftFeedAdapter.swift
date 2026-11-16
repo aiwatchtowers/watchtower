@@ -22,8 +22,11 @@ enum SwiftFeedAdapter {
     static let goOnlyFields: [String: String] = [
         "cards[].automation.builtin_id": "AutomationOutputCard does not carry its automation's built-in id",
         "cards[].body_clipped": "Clip is a Go-only option (the Mac never clips); no parity case sets it",
-        "cards[].approval": "the native card's text lives in the app target (AgentActionCardView); "
-            + "ApprovalTextParityTests compares it over approval_text_cases.json",
+        "cards[].approval (all but target, target_note, target_until, superseded)": "the native card's text "
+            + "lives in the app target (AgentActionCardView, SaveAutomationCardDetails): ApprovalTextParityTests "
+            + "compares title, summary, edit_on_mac and the recipe disclosure over approval_text_cases.json; "
+            + "proposer is checked through the card's source_line; status, error, reason and args_sha256 are "
+            + "copied from the row and have no Swift-side check; recipe_clipped is Go-only (Clip)",
         "notice cards' source_line": "the Mac's notice row has no source line",
         "notice cards' preview": "the Mac's notice row has no summary line",
         "notice cards' priority": "a built-in move has no priority; the feed sends medium",
@@ -52,6 +55,9 @@ enum SwiftFeedAdapter {
             + "target buttons decode only through the Kit (app target), so no parity case has one",
         "cards[].legacy": "InboxListBuilder.sections' rows with InboxListRow.content's words, "
             + "a day's DayPlanQueries.fetchItems (start and end) and Briefing.parsedAttention",
+        "approval.target/target_note/target_until/superseded": "ActionStripViewModel.targetFacts(for:) and "
+            + "isSupersededButtonRow over AgentActionQueries.newestButtonProposals/actionsWithTask; the state is "
+            + "TargetButtonStateResolver's rule restated (app target, pinned by target_button_cases.json)",
         "cards[].link": "AutomationOutputCard.link, the common row's Open (InboxCardButtons.commonRow); "
             + "\"\" on every other card",
         "native approvals' content_hash": "SHA-256 of the args the card shows (ApproveSeen)",
@@ -77,6 +83,10 @@ enum SwiftFeedAdapter {
         let feed: InboxFeedSnapshot
         let inputs: InboxFolderEntries.Inputs
         let labels: [Int64: String]
+        /// The newest proposal of each Inbox target button and the applied
+        /// ones' tasks (ActionStripViewModel's targetProposals/targetTasks).
+        let buttons: [String: AgentAction]
+        let tasks: [Int64: Int64]
         let now: Date
         let calendar: Calendar
     }
@@ -98,10 +108,16 @@ enum SwiftFeedAdapter {
             now: now, calendar: calendar)
         let runLabels = try AutomationQueries.runLabels(
             db, runIDs: feedSnapshot.proposals.compactMap(ActionStripViewModel.automationRunID))
+        let buttons = try AgentActionQueries.newestButtonProposals(
+            db, outputIDs: feedSnapshot.outputs.map(\.id),
+            contextIDs: feedSnapshot.proposals.filter { $0.contextType == AgentActionQueries.buttonContextType }
+                .map(\.contextID))
+        let tasks = try AgentActionQueries.actionsWithTask(
+            db, actionIDs: buttons.values.filter { $0.status == "applied" }.map(\.id))
         let context = Context(
             db: db, snapshot: snapshot, feed: feedSnapshot, inputs: inputs,
             labels: ActionStripViewModel.labels(for: feedSnapshot.proposals, runLabels: runLabels),
-            now: now, calendar: calendar)
+            buttons: buttons, tasks: tasks, now: now, calendar: calendar)
         let tree = snapshot.tree
         let waiting = waitingCounts(context)
         let folders = tree.folders.map { item in
@@ -112,7 +128,7 @@ enum SwiftFeedAdapter {
         }
         var cards: [Card] = []
         for item in tree.folders where folder == nil || folder == item.id {
-            var briefs: [AgentAction] = []
+            var briefs: [(action: AgentAction, row: InboxFolderListRow)] = []
             var briefsAt: Int?
             for entry in InboxFolderEntries.build(folder: item, inputs) {
                 let row = InboxFolderEntries.row(entry, inputs)
@@ -125,7 +141,7 @@ enum SwiftFeedAdapter {
                     cards.append(try self.approval(approval, folder: item.id, row: row, context))
                 case let .brief(action):
                     briefsAt = briefsAt ?? cards.count
-                    briefs.append(action)
+                    briefs.append((action, row))
                 case let .legacyDay(day):
                     cards.append(try self.day(day, folder: item.id, row: row, context))
                 case .legacyTracks, .legacyIdeas, .legacyMessages:
@@ -147,7 +163,13 @@ enum SwiftFeedAdapter {
             var card = card
             card.automation?.builtinID = ""
             card.bodyClipped = false
-            card.approval = nil
+            if let approval = card.approval {
+                card.approval = Approval(
+                    tool: "", title: "", summary: "", argsSHA256: "", status: "", error: "", proposer: "", reason: "",
+                    editOnMac: false, target: approval.target, targetNote: approval.targetNote,
+                    targetUntil: approval.targetUntil, superseded: approval.superseded, disclosure: "",
+                    recipeText: "", diff: [], recipeClipped: false)
+            }
             if card.cardKind == .notice, card.id.hasPrefix("n") {
                 card.sourceLine = ""
                 card.preview = ""
@@ -283,6 +305,7 @@ enum SwiftFeedAdapter {
             var card = try artifact(recipe, folder: folder, row: row, context)
             card.title = row.title
             card.unread = true
+            if case let .action(action) = item.record { card.approval = targetApproval(action, context) }
             return card
         }
         switch item.record {
@@ -293,7 +316,8 @@ enum SwiftFeedAdapter {
                 sourceLine: context.labels[action.id] ?? "Assistant proposal", preview: "",
                 stamp: AutomationDates.parse(action.createdAt).map(AutomationDates.format) ?? "",
                 living: false, unread: row.unread, priority: "medium", pinned: false, blocks: "", body: "",
-                bodyClipped: false, link: "", contentHash: digest, actions: [], refFacts: [])
+                bodyClipped: false, link: "", contentHash: digest, actions: [], refFacts: [],
+                approval: targetApproval(action, context))
         case let .reminder(reminder):
             return Card(
                 id: "r\(reminder.id)", folderID: folder, cardKind: .reminder, title: row.title, sourceLine: "Reminder",
@@ -302,6 +326,45 @@ enum SwiftFeedAdapter {
                 bodyClipped: false, link: "", contentHash: "", actions: [],
                 refFacts: [RefFacts(kind: .reminder, id: reminder.id, open: true, waits: true, reply: false,
                                     replyWaiting: false, link: SlackMessageRef.url(reminder.messageRef)?.absoluteString ?? "")])
+        }
+    }
+
+    /// The approval block's target button part, as the Mac's card gets it:
+    /// the button's state on its newest proposal (`targetFacts(for:)`), the
+    /// superseded flag on an older one (`isSupersededButtonRow`). The other
+    /// fields are blanked by `blankGoOnly`.
+    private static func targetApproval(_ action: AgentAction, _ context: Context) -> Approval {
+        var target = ("", "", "")
+        var superseded = false
+        if action.contextType == AgentActionQueries.buttonContextType, let newest = context.buttons[action.contextID] {
+            if newest.id != action.id {
+                superseded = true
+            } else if action.tool == "create_target" {
+                target = targetState(newest, taskExists: context.tasks[newest.id] != nil, now: context.now)
+            }
+        }
+        return Approval(
+            tool: "", title: "", summary: "", argsSHA256: "", status: "", error: "", proposer: "", reason: "",
+            editOnMac: false, target: target.0, targetNote: target.1, targetUntil: target.2, superseded: superseded,
+            disclosure: "", recipeText: "", diff: [], recipeClipped: false)
+    }
+
+    /// TargetButtonStateResolver.state over the row alone (no press or apply
+    /// of this Mac's own), as the feed's detail, note and until.
+    private static func targetState(_ row: AgentAction, taskExists: Bool, now: Date) -> (String, String, String) {
+        let decided = InboxTargetButtonFacts.Proposal(row).decidedDate
+        switch row.status {
+        case "pending": return ("waiting", "", "")
+        case "approved", "executing":
+            if let decided, now.timeIntervalSince(decided) < 120 {
+                return ("creating", "", AutomationDates.format(decided.addingTimeInterval(120)))
+            }
+            return ("stuck", "", "")
+        case "applied": return (taskExists ? "created" : "idle", "", "")
+        case "failed":
+            guard row.dismissedAt.isEmpty else { return ("idle", "", "") }
+            return ("failed", row.error.isEmpty ? "The task was not created." : row.error, "")
+        default: return ("idle", "", "")
         }
     }
 
@@ -426,10 +489,10 @@ enum SwiftFeedAdapter {
 
     /// The root's thread briefs as the feed's one card: an item per brief,
     /// each the brief's row words and its card summary.
-    private static func threadBriefs(_ briefs: [AgentAction], folder: Int64) -> Card {
-        let items = briefs.map { action in
+    private static func threadBriefs(_ briefs: [(action: AgentAction, row: InboxFolderListRow)], folder: Int64) -> Card {
+        let items = briefs.map { action, row in
             LegacyItem(
-                refKind: .action, id: action.id, title: action.reason.isEmpty ? "Thread brief" : action.reason,
+                refKind: .action, id: action.id, title: row.title,
                 subtitle: "Thread brief",
                 preview: action.resultString("summary") ?? action.argString("summary") ?? action.argsJSON,
                 stamp: AutomationDates.parse(action.appliedAt).map(AutomationDates.format) ?? "",

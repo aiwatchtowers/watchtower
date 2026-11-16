@@ -955,7 +955,15 @@
             "error": "",
             "proposer": "",
             "reason": "Save the digest",
-            "edit_on_mac": true
+            "edit_on_mac": true,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
           }
         }
       ]
@@ -2196,7 +2204,15 @@
             "error": "",
             "proposer": "",
             "reason": "",
-            "edit_on_mac": false
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
           }
         },
         {
@@ -2227,7 +2243,15 @@
             "error": "",
             "proposer": "⚙ Needs approval · run #10",
             "reason": "Tell the team",
-            "edit_on_mac": true
+            "edit_on_mac": true,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
           }
         },
         {
@@ -2274,7 +2298,15 @@
             "error": "",
             "proposer": "",
             "reason": "From a card",
-            "edit_on_mac": false
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
           }
         },
         {
@@ -2341,7 +2373,15 @@
             "error": "",
             "proposer": "",
             "reason": "Being made",
-            "edit_on_mac": false
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
           }
         }
       ]
@@ -2417,7 +2457,15 @@
             "error": "",
             "proposer": "",
             "reason": "Fix it",
-            "edit_on_mac": false
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
           }
         }
       ]
@@ -2492,7 +2540,15 @@
             "error": "",
             "proposer": "",
             "reason": "Fix it",
-            "edit_on_mac": false
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
           }
         },
         {
@@ -2523,7 +2579,15 @@
             "error": "",
             "proposer": "",
             "reason": "Failed late",
-            "edit_on_mac": false
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
           }
         }
       ]
@@ -2781,7 +2845,15 @@
             "error": "",
             "proposer": "",
             "reason": "Fix it",
-            "edit_on_mac": false
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
           }
         },
         {
@@ -2915,7 +2987,15 @@
             "error": "",
             "proposer": "",
             "reason": "Old proposal",
-            "edit_on_mac": false
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
           }
         },
         {
@@ -3229,7 +3309,15 @@
             "error": "",
             "proposer": "",
             "reason": "Reply",
-            "edit_on_mac": false
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
           }
         }
       ]
@@ -3244,7 +3332,7 @@
       "INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (7, 1, 'button', 'succeeded')",
       "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, blocks_json, actions_json, content_hash, changed_at) VALUES (1, 1, 1, 'inbox', 'Buttons', 'Buttons.', 'medium', '2026-11-16T08:00:00Z', '', '[{\"label\":\"Open\",\"kind\":\"link\",\"open\":\"https://example.com/x\"},{\"label\":\"Screen\",\"kind\":\"link\",\"open\":\"watchtower-nav://tracks\"},{\"label\":\"Discuss\",\"kind\":\"chat\",\"chat\":\"Talk\"},{\"label\":\"Agent\",\"kind\":\"agent\",\"agent\":{\"task\":\"Do\"}},{\"label\":\"Yes\",\"kind\":\"reply\",\"reply\":\"y\"},{\"label\":\"No\",\"kind\":\"reply\",\"reply\":\"n\"}]', 'c1', '2026-11-16T08:00:00Z')",
       "UPDATE automation_outputs SET pressed_action = 4, pressed_run_id = 7 WHERE id = 1",
-      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, blocks_json, actions_json, content_hash, changed_at) VALUES (2, 1, 1, 'inbox', 'One reply', 'One reply.', 'medium', '2026-11-16T07:00:00Z', '', '[{\"label\":\"Yes\",\"kind\":\"reply\",\"reply\":\"y\"}]', 'c2', '2026-11-16T07:00:00Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, blocks_json, actions_json, content_hash, changed_at) VALUES (2, 1, 1, 'inbox', 'One reply', 'One reply.', 'medium', '2026-11-16T07:00:00Z', '', '[{\"label\":\"Bare\",\"kind\":\"reply\"},{\"label\":\"Yes\",\"kind\":\"reply\",\"reply\":\"y\"}]', 'c2', '2026-11-16T07:00:00Z')",
       "UPDATE automation_outputs SET link = 'https://example.com/source' WHERE id = 1"
     ],
     "opts": {},
@@ -3383,7 +3471,7 @@
           "content_hash": "c2",
           "actions": [
             {
-              "index": 0,
+              "index": 1,
               "kind": "reply",
               "label": "Yes",
               "state": "enabled",
@@ -3850,6 +3938,244 @@
               }
             ],
             "attention": []
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "approvals_target_button_rows",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO agent_actions (id, tool, args_json, reason, status, error, created_at, decided_at, context_type, context_id) VALUES (1, 'create_target', '{\"text\":\"Task 1\"}', 'Task 1', 'failed', 'boom', '2026-11-16T09:00:00Z', '2026-11-16T09:01:00Z', 'automation_output', '1:0:aaaa')",
+      "INSERT INTO agent_actions (id, tool, args_json, reason, status, error, created_at, decided_at, context_type, context_id) VALUES (2, 'create_target', '{\"text\":\"Task 2\"}', 'Task 2', 'approved', '', '2026-11-16T11:00:00Z', '2026-11-16T11:59:00Z', 'automation_output', '1:0:aaaa')",
+      "INSERT INTO agent_actions (id, tool, args_json, reason, status, error, created_at, decided_at, context_type, context_id) VALUES (3, 'create_target', '{\"text\":\"Task 3\"}', 'Task 3', 'executing', '', '2026-11-16T08:00:00Z', '2026-11-16T08:01:00Z', 'automation_output', '2:0:bbbb')",
+      "INSERT INTO agent_actions (id, tool, args_json, reason, status, error, created_at, decided_at, context_type, context_id) VALUES (4, 'create_target', '{\"text\":\"Task 4\"}', 'Task 4', 'failed', 'the board is archived', '2026-11-16T07:00:00Z', '2026-11-16T07:01:00Z', 'automation_output', '3:1:cccc')",
+      "INSERT INTO agent_actions (id, tool, args_json, reason, status, created_at, decided_at) VALUES (5, 'save_automation', '{\"name\":\"Digest\",\"slug\":\"digest\",\"is_new\":true,\"recipe_text\":\"a\\nb\\n\"}', '', 'failed', '2026-11-16T06:00:00Z', '2026-11-16T06:01:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 3,
+          "waiting": 3
+        }
+      ],
+      "cards": [
+        {
+          "id": "a5",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "save_automation",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-11-16T06:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "a3e54d2056a863a3926935b4761618214590b54a0f8ff9e1912bebfa2ee99071",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "save_automation",
+            "title": "Save automation Digest",
+            "summary": "For: Personal\nFile: digest.md (new)\nWhen: —\nBudget: 0 tokens · 0 min",
+            "args_sha256": "a3e54d2056a863a3926935b4761618214590b54a0f8ff9e1912bebfa2ee99071",
+            "status": "failed",
+            "error": "",
+            "proposer": "",
+            "reason": "",
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "Show the whole recipe (2 lines)",
+            "recipe_text": "a\nb\n",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        },
+        {
+          "id": "a4",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "Task 4",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-11-16T07:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "7584047a3bbb739c76321472d15e32768fd93d5143df9ca26455556960f1ad70",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_target",
+            "title": "Create a target",
+            "summary": "Task 4",
+            "args_sha256": "7584047a3bbb739c76321472d15e32768fd93d5143df9ca26455556960f1ad70",
+            "status": "failed",
+            "error": "the board is archived",
+            "proposer": "",
+            "reason": "Task 4",
+            "edit_on_mac": false,
+            "target": "failed",
+            "target_note": "the board is archived",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        },
+        {
+          "id": "a1",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "Task 1",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-11-16T09:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "f8656d9613d3c2dd4e3c67dd41c1210663ea56deb7dc71bc1bd7258d1549970e",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_target",
+            "title": "Create a target",
+            "summary": "Task 1",
+            "args_sha256": "f8656d9613d3c2dd4e3c67dd41c1210663ea56deb7dc71bc1bd7258d1549970e",
+            "status": "failed",
+            "error": "boom",
+            "proposer": "",
+            "reason": "Task 1",
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": true,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        },
+        {
+          "id": "a2",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "Task 2",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-11-16T11:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "f270f418acbde054bfe5bd19a4f71357de124573aa223ae35533a2df06280b15",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_target",
+            "title": "Create a target",
+            "summary": "Task 2",
+            "args_sha256": "f270f418acbde054bfe5bd19a4f71357de124573aa223ae35533a2df06280b15",
+            "status": "approved",
+            "error": "",
+            "proposer": "",
+            "reason": "Task 2",
+            "edit_on_mac": false,
+            "target": "creating",
+            "target_note": "",
+            "target_until": "2026-11-16T12:01:00Z",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        },
+        {
+          "id": "a3",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "Task 3",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-11-16T08:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "9ef4af081df0ee33fe02e7f1523b6ce36e63b44cc75633141ec16f1e39c17f58",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_target",
+            "title": "Create a target",
+            "summary": "Task 3",
+            "args_sha256": "9ef4af081df0ee33fe02e7f1523b6ce36e63b44cc75633141ec16f1e39c17f58",
+            "status": "executing",
+            "error": "",
+            "proposer": "",
+            "reason": "Task 3",
+            "edit_on_mac": false,
+            "target": "stuck",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
           }
         }
       ]

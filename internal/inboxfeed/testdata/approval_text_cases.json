@@ -12,7 +12,10 @@
         "Due: 2026-11-20 · Priority: high · Under task #12",
         "Why: It blocks the release"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -26,7 +29,10 @@
       "summary": [
         "Fix the build"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -40,7 +46,10 @@
       "summary": [
         ""
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -58,7 +67,10 @@
         "Labels: a, b",
         "Priority: High"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -73,7 +85,10 @@
         "Project: ? · ?",
         "Summary: "
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -88,7 +103,10 @@
         "Issue: ACME-1",
         "Looks good"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -102,7 +120,10 @@
       "summary": [
         "Issue: ACME-1 → Done"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -117,7 +138,10 @@
         "Issue: ACME-1 · Assignee: Ann Example",
         "asked for \"ann\" · Jira account acc-1"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -131,7 +155,10 @@
       "summary": [
         "Issue: ACME-1 · Assignee: Ann"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -145,7 +172,10 @@
       "summary": [
         "Issue: ACME-1 · Assignee: ann"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -162,7 +192,10 @@
         "Add labels: x",
         "Due: 2026-12-01"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -179,7 +212,10 @@
         "State: Todo",
         "Priority: 2"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -194,7 +230,10 @@
         "Issue: CORE-1",
         "Done"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -208,7 +247,10 @@
       "summary": [
         "Issue: CORE-1 → In Progress"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -222,7 +264,10 @@
       "summary": [
         "Issue: CORE-1 · Assignee: ann"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -238,7 +283,10 @@
         "Title: T",
         "Estimate: 3"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -253,7 +301,10 @@
         "Project: ACME",
         "Board: Acme board"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -267,7 +318,10 @@
       "summary": [
         "Watch the release"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -281,7 +335,10 @@
       "summary": [
         "{\"x\": 1}"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -298,7 +355,10 @@
         "• B",
         "…and 1 more"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -312,7 +372,10 @@
       "summary": [
         "Dismiss tracks"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -327,7 +390,10 @@
         "Release notes page",
         "One page per release"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -342,7 +408,10 @@
         "Remind at: 2026-11-17T09:00:00Z",
         "Call back"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -356,7 +425,10 @@
       "summary": [
         "The thread agreed."
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -370,7 +442,10 @@
       "summary": [
         "asked"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -384,7 +459,10 @@
       "summary": [
         "Page: Runbook · edits version 7"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -398,7 +476,10 @@
       "summary": [
         "Unreadable Confluence edit proposal"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -413,7 +494,10 @@
         "To: a thread in #eng in acme",
         "Shipping today"
       ],
-      "edit_on_mac": true
+      "edit_on_mac": true,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -428,7 +512,10 @@
         "To: @ann (Ann Example, @ann · U1) in acme",
         "hi"
       ],
-      "edit_on_mac": true
+      "edit_on_mac": true,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -443,7 +530,10 @@
         "To: #eng — exists in 2 workspaces, choose one",
         "hi"
       ],
-      "edit_on_mac": true
+      "edit_on_mac": true,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -457,7 +547,10 @@
       "summary": [
         "{\"text\": \"hi\"}"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -473,7 +566,10 @@
         "Tool: create_page",
         "{\n  \"title\": \"Notes\",\n  \"tags\": [\n    \"a\",\n    \"b\"\n  ],\n  \"n\": 1.0,\n  \"empty\": {}\n}"
       ],
-      "edit_on_mac": true
+      "edit_on_mac": true,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -487,7 +583,10 @@
       "summary": [
         "{\"server\": \"acme\", \"tool\": \"x\", \"input\": \"text\"}"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -505,7 +604,10 @@
         "When: Every weekday at 09:00",
         "It may: Read messages in all workspaces (Slack), Use the light model and 1 more"
       ],
-      "edit_on_mac": true
+      "edit_on_mac": true,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -521,7 +623,10 @@
         "When: Only when you run it",
         "It may: Nothing"
       ],
-      "edit_on_mac": true
+      "edit_on_mac": true,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -535,7 +640,10 @@
       "summary": [
         "{\"a\":1}"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -564,7 +672,27 @@
         "Concurrency: up to 2 runs at a time",
         "Assistant's dry-run summary: Posted one card."
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "Show changes",
+      "recipe_text": "",
+      "diff": [
+        {
+          "kind": "added",
+          "text": "---"
+        },
+        {
+          "kind": "added",
+          "text": "name: x"
+        },
+        {
+          "kind": "added",
+          "text": "---"
+        },
+        {
+          "kind": "added",
+          "text": ""
+        }
+      ]
     }
   },
   {
@@ -590,7 +718,10 @@
         "Missed: run once when the Mac wakes",
         "Concurrency: one run at a time"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "Show the whole recipe (3 lines)",
+      "recipe_text": "---\nname: x\n---\n",
+      "diff": []
     }
   },
   {
@@ -608,7 +739,10 @@
         "When: —",
         "Budget: 0 tokens · 0 min"
       ],
-      "edit_on_mac": false
+      "edit_on_mac": false,
+      "disclosure": "No change to the recipe text",
+      "recipe_text": "",
+      "diff": []
     }
   },
   {
@@ -624,7 +758,275 @@
         "To: #eng in acme",
         "hi"
       ],
-      "edit_on_mac": true
+      "edit_on_mac": true,
+      "disclosure": "",
+      "recipe_text": "",
+      "diff": []
+    }
+  },
+  {
+    "name": "save_new_recipe_disclosure",
+    "tool": "save_automation",
+    "args": "{\"name\": \"Digest\", \"slug\": \"digest\", \"trigger_kind\": \"manual\", \"budget_tokens\": 1000, \"budget_minutes\": 2, \"is_new\": true, \"recipe_text\": \"---\\nname: Digest\\n---\\n# Steps\\nsay hi\\n\"}",
+    "result": "",
+    "status": "failed",
+    "workbench_names": {},
+    "expect": {
+      "title": "Save automation Digest",
+      "summary": [
+        "For: Personal",
+        "File: digest.md (new)",
+        "When: Only when you run it",
+        "Budget: 1,000 tokens · 2 min"
+      ],
+      "edit_on_mac": false,
+      "disclosure": "Show the whole recipe (5 lines)",
+      "recipe_text": "---\nname: Digest\n---\n# Steps\nsay hi\n",
+      "diff": []
+    }
+  },
+  {
+    "name": "save_new_one_line",
+    "tool": "save_automation",
+    "args": "{\"name\": \"Digest\", \"slug\": \"digest\", \"trigger_kind\": \"manual\", \"budget_tokens\": 1000, \"budget_minutes\": 2, \"is_new\": true, \"recipe_text\": \"one\"}",
+    "result": "",
+    "status": "approved",
+    "workbench_names": {},
+    "expect": {
+      "title": "Save automation Digest",
+      "summary": [
+        "For: Personal",
+        "File: digest.md (new)",
+        "When: Only when you run it",
+        "Budget: 1,000 tokens · 2 min"
+      ],
+      "edit_on_mac": false,
+      "disclosure": "Show the whole recipe (1 line)",
+      "recipe_text": "one",
+      "diff": []
+    }
+  },
+  {
+    "name": "save_edit_changes",
+    "tool": "save_automation",
+    "args": "{\"name\": \"Digest\", \"slug\": \"digest\", \"trigger_kind\": \"manual\", \"budget_tokens\": 1000, \"budget_minutes\": 2, \"previous_recipe_text\": \"a\\nb\\nc\\nd\\ne\\n\", \"recipe_text\": \"a\\nx\\nc\\ne\\nf\\n\"}",
+    "result": "",
+    "status": "failed",
+    "workbench_names": {},
+    "expect": {
+      "title": "Save automation Digest",
+      "summary": [
+        "For: Personal",
+        "File: digest.md (replaces the saved one)",
+        "When: Only when you run it",
+        "Budget: 1,000 tokens · 2 min"
+      ],
+      "edit_on_mac": false,
+      "disclosure": "Show changes",
+      "recipe_text": "",
+      "diff": [
+        {
+          "kind": "same",
+          "text": "a"
+        },
+        {
+          "kind": "removed",
+          "text": "b"
+        },
+        {
+          "kind": "added",
+          "text": "x"
+        },
+        {
+          "kind": "same",
+          "text": "c"
+        },
+        {
+          "kind": "removed",
+          "text": "d"
+        },
+        {
+          "kind": "same",
+          "text": "e"
+        },
+        {
+          "kind": "added",
+          "text": "f"
+        },
+        {
+          "kind": "same",
+          "text": ""
+        }
+      ]
+    }
+  },
+  {
+    "name": "save_edit_reordered",
+    "tool": "save_automation",
+    "args": "{\"name\": \"Digest\", \"slug\": \"digest\", \"trigger_kind\": \"manual\", \"budget_tokens\": 1000, \"budget_minutes\": 2, \"previous_recipe_text\": \"1\\n2\\n3\\n1\\n2\\n3\", \"recipe_text\": \"3\\n2\\n1\\n3\\n2\\n1\"}",
+    "result": "",
+    "status": "executing",
+    "workbench_names": {},
+    "expect": {
+      "title": "Save automation Digest",
+      "summary": [
+        "For: Personal",
+        "File: digest.md (replaces the saved one)",
+        "When: Only when you run it",
+        "Budget: 1,000 tokens · 2 min"
+      ],
+      "edit_on_mac": false,
+      "disclosure": "Show changes",
+      "recipe_text": "",
+      "diff": [
+        {
+          "kind": "removed",
+          "text": "1"
+        },
+        {
+          "kind": "removed",
+          "text": "2"
+        },
+        {
+          "kind": "same",
+          "text": "3"
+        },
+        {
+          "kind": "removed",
+          "text": "1"
+        },
+        {
+          "kind": "same",
+          "text": "2"
+        },
+        {
+          "kind": "added",
+          "text": "1"
+        },
+        {
+          "kind": "same",
+          "text": "3"
+        },
+        {
+          "kind": "added",
+          "text": "2"
+        },
+        {
+          "kind": "added",
+          "text": "1"
+        }
+      ]
+    }
+  },
+  {
+    "name": "save_edit_swap",
+    "tool": "save_automation",
+    "args": "{\"name\": \"Digest\", \"slug\": \"digest\", \"trigger_kind\": \"manual\", \"budget_tokens\": 1000, \"budget_minutes\": 2, \"previous_recipe_text\": \"a\\nb\", \"recipe_text\": \"b\\na\"}",
+    "result": "",
+    "status": "approved",
+    "workbench_names": {},
+    "expect": {
+      "title": "Save automation Digest",
+      "summary": [
+        "For: Personal",
+        "File: digest.md (replaces the saved one)",
+        "When: Only when you run it",
+        "Budget: 1,000 tokens · 2 min"
+      ],
+      "edit_on_mac": false,
+      "disclosure": "Show changes",
+      "recipe_text": "",
+      "diff": [
+        {
+          "kind": "removed",
+          "text": "a"
+        },
+        {
+          "kind": "same",
+          "text": "b"
+        },
+        {
+          "kind": "added",
+          "text": "a"
+        }
+      ]
+    }
+  },
+  {
+    "name": "save_edit_unchanged",
+    "tool": "save_automation",
+    "args": "{\"name\": \"Digest\", \"slug\": \"digest\", \"trigger_kind\": \"manual\", \"budget_tokens\": 1000, \"budget_minutes\": 2, \"previous_recipe_text\": \"same\\ntext\", \"recipe_text\": \"same\\ntext\"}",
+    "result": "",
+    "status": "failed",
+    "workbench_names": {},
+    "expect": {
+      "title": "Save automation Digest",
+      "summary": [
+        "For: Personal",
+        "File: digest.md (replaces the saved one)",
+        "When: Only when you run it",
+        "Budget: 1,000 tokens · 2 min"
+      ],
+      "edit_on_mac": false,
+      "disclosure": "No change to the recipe text",
+      "recipe_text": "",
+      "diff": []
+    }
+  },
+  {
+    "name": "save_edit_from_empty",
+    "tool": "save_automation",
+    "args": "{\"name\": \"Digest\", \"slug\": \"digest\", \"trigger_kind\": \"manual\", \"budget_tokens\": 1000, \"budget_minutes\": 2, \"previous_recipe_text\": \"\", \"recipe_text\": \"new\\nlines\"}",
+    "result": "",
+    "status": "failed",
+    "workbench_names": {},
+    "expect": {
+      "title": "Save automation Digest",
+      "summary": [
+        "For: Personal",
+        "File: digest.md (replaces the saved one)",
+        "When: Only when you run it",
+        "Budget: 1,000 tokens · 2 min"
+      ],
+      "edit_on_mac": false,
+      "disclosure": "Show changes",
+      "recipe_text": "",
+      "diff": [
+        {
+          "kind": "added",
+          "text": "new"
+        },
+        {
+          "kind": "added",
+          "text": "lines"
+        }
+      ]
+    }
+  },
+  {
+    "name": "save_edit_to_empty",
+    "tool": "save_automation",
+    "args": "{\"name\": \"Digest\", \"slug\": \"digest\", \"trigger_kind\": \"manual\", \"budget_tokens\": 1000, \"budget_minutes\": 2, \"previous_recipe_text\": \"gone\", \"recipe_text\": \"\"}",
+    "result": "",
+    "status": "failed",
+    "workbench_names": {},
+    "expect": {
+      "title": "Save automation Digest",
+      "summary": [
+        "For: Personal",
+        "File: digest.md (replaces the saved one)",
+        "When: Only when you run it",
+        "Budget: 1,000 tokens · 2 min"
+      ],
+      "edit_on_mac": false,
+      "disclosure": "Show changes",
+      "recipe_text": "",
+      "diff": [
+        {
+          "kind": "removed",
+          "text": "gone"
+        }
+      ]
     }
   }
 ]

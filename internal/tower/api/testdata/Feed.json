@@ -112,7 +112,15 @@
         "error": "",
         "proposer": "Reactions",
         "reason": "Follow up",
-        "edit_on_mac": true
+        "edit_on_mac": true,
+        "target": "",
+        "target_note": "",
+        "target_until": "",
+        "superseded": false,
+        "disclosure": "",
+        "recipe_text": "",
+        "diff": [],
+        "recipe_clipped": false
       },
       "link": ""
     },

@@ -87,9 +87,10 @@ func TestReadNeedsApprovalTx_BuiltinState(t *testing.T) {
 		"the latest finished non-dry run failed; stopped")
 }
 
-// OwnerKnownTx agrees with ResolveOwner: no rung, then each rung alone.
+// OwnerKnownTx agrees with ResolveOwner: no rung, then each rung alone, set
+// and unset.
 func TestOwnerKnownTx_AgreesWithResolveOwner(t *testing.T) {
-	check := func(d *DB, want bool) {
+	check := func(t *testing.T, d *DB, want bool) {
 		t.Helper()
 		// ResolveOwner first: the test handle has one connection, which
 		// the read-only transaction then holds.
@@ -104,13 +105,25 @@ func TestOwnerKnownTx_AgreesWithResolveOwner(t *testing.T) {
 		assert.Equal(t, want, known)
 		assert.Equal(t, o.Known(), known)
 	}
-	check(openTestDB(t), false)
-	d := openTestDB(t)
-	_, err := d.Exec(`INSERT INTO email_accounts (id, provider, email_address) VALUES (1, 'imap', 'owner@example.com')`)
-	require.NoError(t, err)
-	check(d, true)
-	d = openTestDB(t)
-	_, err = d.Exec(`INSERT INTO email_accounts (id, provider, email_address) VALUES (1, 'imap', 'no-at-sign')`)
-	require.NoError(t, err)
-	check(d, false)
+	check(t, openTestDB(t), false)
+	for _, seed := range []struct {
+		name, sql string
+		want      bool
+	}{
+		{"slack", `INSERT INTO slack_accounts (id, current_user_id) VALUES (1, 'U1')`, true},
+		{"slack removed", `INSERT INTO slack_accounts (id, current_user_id, status) VALUES (1, 'U1', 'removed')`, false},
+		{"google", `INSERT INTO google_accounts (id, email) VALUES (1, 'owner@example.com')`, true},
+		{"jira", `INSERT INTO jira_accounts (id, enabled, owner_account_id) VALUES (1, 1, 'acc-1')`, true},
+		{"jira disabled", `INSERT INTO jira_accounts (id, enabled, owner_account_id) VALUES (1, 0, 'acc-1')`, false},
+		{"linear", `INSERT INTO linear_accounts (id, enabled, owner_user_id) VALUES (1, 1, 'lin-1')`, true},
+		{"mailbox", `INSERT INTO email_accounts (id, provider, email_address) VALUES (1, 'imap', 'owner@example.com')`, true},
+		{"mailbox without @", `INSERT INTO email_accounts (id, provider, email_address) VALUES (1, 'imap', 'no-at-sign')`, false},
+	} {
+		t.Run(seed.name, func(t *testing.T) {
+			d := openTestDB(t)
+			_, err := d.Exec(seed.sql)
+			require.NoError(t, err)
+			check(t, d, seed.want)
+		})
+	}
 }

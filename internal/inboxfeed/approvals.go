@@ -159,11 +159,32 @@ func (s *snapshot) actionCard(a actionRow, folder int64) api.Card {
 // (ApprovalTextOf), its state and where it came from.
 func (s *snapshot) approvalOf(a actionRow) *api.Approval {
 	t := ApprovalTextOf(a.Tool, a.ArgsJSON, a.ResultJSON, a.Status, func(id int64) string { return s.workbenches[id] })
-	return &api.Approval{
+	ap := &api.Approval{
 		Tool: a.Tool, Title: t.Title, Summary: strings.Join(t.Summary, "\n"),
 		ArgsSHA256: tools.ArgsSHA256(a.ArgsJSON), Status: a.Status, Error: a.Error,
 		Proposer: s.proposer(a), Reason: a.Reason, EditOnMac: t.EditOnMac && a.Status == "pending",
+		Disclosure: t.Disclosure, RecipeText: t.RecipeText, Diff: t.Diff,
 	}
+	if ap.Diff == nil {
+		ap.Diff = []api.DiffLine{}
+	}
+	// An Inbox target button's rows (ActionStripViewModel.targetFacts(for:),
+	// isSupersededButtonRow): the newest proposal of its context carries
+	// the button's state, an older one is superseded.
+	if a.ContextType == buttonContextType {
+		if f, ok := s.targets[a.ContextID]; ok {
+			switch {
+			case f.proposal.ID != a.ID:
+				ap.Superseded = true
+			case a.Tool == "create_target":
+				ap.Target, ap.TargetNote = targetState(f, s.now)
+				if ap.Target == targetCreating {
+					ap.TargetUntil = creatingUntil(f.proposal)
+				}
+			}
+		}
+	}
+	return ap
 }
 
 // proposer is the label above a proposal an automation run made

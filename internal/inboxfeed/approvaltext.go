@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"watchtower/internal/tower/api"
 )
 
 // The tools whose approval card the text rules below name.
@@ -60,6 +62,12 @@ type ApprovalText struct {
 	Title     string
 	Summary   []string
 	EditOnMac bool
+	// Disclosure, RecipeText and Diff are a save_automation past pending's
+	// recipe disclosure (SaveAutomationCardDetails): its title, a new
+	// recipe's text, an edit's diff (none when unchanged).
+	Disclosure string
+	RecipeText string
+	Diff       []api.DiffLine
 }
 
 // ApprovalTextOf is a proposal in status's card text, as the Mac draws it
@@ -643,6 +651,8 @@ type saveCardArgs struct {
 	IsNew         bool            `json:"is_new"`
 	DryRunSummary string          `json:"dry_run_summary"`
 	WorkbenchID   *int64          `json:"workbench_id"`
+	RecipeText    string          `json:"recipe_text"`
+	Previous      string          `json:"previous_recipe_text"`
 }
 
 // saveAutomationCard is a save_automation past pending as the Mac's card
@@ -650,8 +660,10 @@ type saveCardArgs struct {
 // automation <name>", then its scope line, the file, when, each permission
 // (a widening one marked "+ "), each output, the budget, the missed-run and
 // concurrency lines, and the dry-run summary. Args that do not decode read
-// as empty ones, as on the Mac. The recipe text and its diff stay behind
-// the Mac's disclosures and are not sent.
+// as empty ones, as on the Mac. Then its disclosure: a new recipe's whole
+// text ("Show the whole recipe (N lines)"), an edit's diff against the
+// saved text ("Show changes", or "No change to the recipe text" with no
+// lines).
 func saveAutomationCard(argsJSON string, workbenchName func(int64) string) ApprovalText {
 	var a saveCardArgs
 	if json.Unmarshal([]byte(argsJSON), &a) != nil {
@@ -710,7 +722,20 @@ func saveAutomationCard(argsJSON string, workbenchName func(int64) string) Appro
 	if summary := strings.TrimSpace(a.DryRunSummary); summary != "" {
 		lines = append(lines, "Assistant's dry-run summary: "+summary)
 	}
-	return ApprovalText{Title: "Save automation " + name, Summary: lines}
+	t := ApprovalText{Title: "Save automation " + name, Summary: lines}
+	if a.IsNew {
+		t.Disclosure, t.RecipeText = recipeDisclosureTitle(a.RecipeText), a.RecipeText
+		return t
+	}
+	diff := recipeDiff(a.Previous, a.RecipeText)
+	t.Disclosure = "No change to the recipe text"
+	for _, l := range diff {
+		if l.Kind != api.DiffSame {
+			t.Disclosure, t.Diff = "Show changes", diff
+			break
+		}
+	}
+	return t
 }
 
 // outputLine is AutomationCardPresentation.outputLine.

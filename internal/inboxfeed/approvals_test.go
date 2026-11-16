@@ -2,7 +2,9 @@ package inboxfeed
 
 import (
 	"fmt"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"watchtower/internal/tools"
 	"watchtower/internal/tower/api"
@@ -134,5 +136,24 @@ func TestNeedsApproval_EditOnMacForEditableTools(t *testing.T) {
 	want := map[string]bool{"a1": true, "a2": true, "a3": true, "a4": false, "a5": false}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("edit_on_mac %v, want %v", got, want)
+	}
+}
+
+// Clip cuts a new recipe's text on a rune boundary and an edit's diff at
+// the lines that no longer fit, and flags it; within ClipBytes nothing moves.
+func TestClip_RecipeDisclosure(t *testing.T) {
+	long := strings.Repeat("é", ClipBytes)
+	text, diff, clipped := clipRecipe(long, nil)
+	if !clipped || len(text) > ClipBytes || !utf8.ValidString(text) || len(diff) != 0 {
+		t.Errorf("text: %d bytes, clipped %v", len(text), clipped)
+	}
+	lines := []api.DiffLine{{Kind: api.DiffSame, Text: strings.Repeat("a", ClipBytes-1)},
+		{Kind: api.DiffAdded, Text: "bb"}, {Kind: api.DiffRemoved, Text: "c"}}
+	_, diff, clipped = clipRecipe("", lines)
+	if !clipped || len(diff) != 1 {
+		t.Errorf("diff: %d lines, clipped %v", len(diff), clipped)
+	}
+	if _, diff, clipped = clipRecipe("short", lines[1:]); clipped || len(diff) != 2 {
+		t.Errorf("small: %d lines, clipped %v", len(diff), clipped)
 	}
 }

@@ -90,6 +90,9 @@ func compose(s *snapshot, o Options) api.Feed {
 	if o.Clip {
 		for i := range cards {
 			cards[i].Body, cards[i].BodyClipped = Clip(cards[i].Body, ClipBytes)
+			if ap := cards[i].Approval; ap != nil {
+				ap.RecipeText, ap.Diff, ap.RecipeClipped = clipRecipe(ap.RecipeText, ap.Diff)
+			}
 		}
 	}
 	feed.Cards = cards
