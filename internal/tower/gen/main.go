@@ -25,6 +25,7 @@ import (
 	"watchtower/internal/tower"
 	"watchtower/internal/tower/api"
 	"watchtower/internal/tower/commands"
+	"watchtower/internal/tower/gen/testdata/sample"
 )
 
 // The generated files, relative to the repository root.
@@ -34,6 +35,7 @@ const (
 	commandsPath     = generatedDir + "TowerCommands.swift"
 	versionSwiftPath = generatedDir + "InterfaceVersion.swift"
 	goldenTestsPath  = "WatchtowerInterface/Tests/WatchtowerInterfaceTests/Generated/GoldenRoundTripTests.swift"
+	sampleTypesPath  = "WatchtowerInterface/Tests/WatchtowerInterfaceTests/Generated/SampleTypes.swift"
 	versionGoPath    = "internal/tower/interface_version.go"
 )
 
@@ -86,6 +88,13 @@ func generate(r *tower.Registry) (map[string][]byte, error) {
 		return nil, err
 	}
 	types := c.render()
+	// The generator's sample types, compiled into the Swift tests so its
+	// output runs, not only typechecks (NilCollectionsTests).
+	sampleTypes, err := swiftTypes([]reflect.Type{reflect.TypeFor[sample.Sample]()})
+	if err != nil {
+		return nil, err
+	}
+	sampleTypes = bytes.Replace(sampleTypes, []byte("import Foundation\n"), []byte("import Foundation\nimport WatchtowerInterface\n"), 1)
 	cmds := commandsSwift(r.Commands())
 	version := interfaceVersion(types, cmds)
 	enum := ""
@@ -101,6 +110,7 @@ func generate(r *tower.Registry) (map[string][]byte, error) {
 		versionSwiftPath: []byte(fmt.Sprintf("%s\n\n/// The generated interface's version: the first 16 hex characters of the\n/// SHA-256 of TowerTypes.swift and TowerCommands.swift; tower.hello answers it.\npublic enum InterfaceVersion {\n    public static let current = %q\n}\n", header, version)),
 		versionGoPath:    []byte(fmt.Sprintf("%s\n\npackage tower\n\n// InterfaceVersion is the generated interface's version (the first 16 hex\n// characters of the SHA-256 of the generated TowerTypes.swift and\n// TowerCommands.swift), answered by tower.hello.\nconst InterfaceVersion = %q\n", header, version)),
 		goldenTestsPath:  goldenTests(goldenTypes(r), enum),
+		sampleTypesPath:  sampleTypes,
 	}, nil
 }
 

@@ -117,4 +117,21 @@ public struct Sample: Codable, Hashable, Sendable {
         case mood
         case extra
     }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.requestID = try container.decode(String.self, forKey: .requestID)
+        self.id = try container.decode(String.self, forKey: .id)
+        self.count = try container.decode(Int.self, forKey: .count)
+        self.big = try container.decode(Int64.self, forKey: .big)
+        self.ratio = try container.decode(Double.self, forKey: .ratio)
+        self.done = try container.decode(Bool.self, forKey: .done)
+        self.parent = try container.decodeIfPresent(Inner.self, forKey: .parent)
+        self.note = try container.decodeIfPresent(String.self, forKey: .note)
+        self.tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
+        self.scores = try container.decodeIfPresent([String: Int].self, forKey: .scores) ?? [:]
+        self.inner = try container.decode(Inner.self, forKey: .inner)
+        self.mood = try container.decode(Mood.self, forKey: .mood)
+        self.extra = try container.decodeIfPresent(RawJSON.self, forKey: .extra)
+    }
 }

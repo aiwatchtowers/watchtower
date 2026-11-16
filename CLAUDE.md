@@ -103,7 +103,7 @@ The user-facing guide lives in `docs/guide/` (start at `docs/guide/README.md`). 
 - iPhone app: `make mobile-build`, `make mobile-test MOBILE_FILTER=<TestClass>` (simulator `SIM`, default `iPhone 18 Pro`; override with one your Xcode has), `make mobile-gen` after editing `WatchtowerMobile/project.yml`. Builds are unsigned; tests are signed to run locally with the test-only `WatchtowerMobile/StoreKitTesting.entitlements`; device and archive signing come from the gitignored `WatchtowerMobile/Signing.xcconfig`.
 - Lint: `make lint-diff` (issues introduced vs origin/main). Full `make lint` is the gate.
 
-**Gate (before a PR):** full `make test`, `make test-swift` (includes the Kit), `make lint-all` (lints the Desktop, Kit and phone trees); with phone changes also `make mobile-test`.
+**Gate (before a PR):** full `make test`, `make test-swift` (includes the Kit), `make lint-all` (lints the Desktop, Kit, chat text, interface and phone trees, and runs `make gen-interface-check`); with phone changes also `make mobile-test`.
 
 **Cache hygiene:** never delete `WatchtowerDesktop/.build`; a cold rebuild of the ML dependencies costs minutes (measured 4:24 cold on a loaded machine) plus ~5 GB of disk per worktree. Don't alternate `-c debug`/`-c release` builds in one worktree without need.
 

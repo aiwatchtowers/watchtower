@@ -25,6 +25,9 @@ type field struct {
 	key      string // JSON key
 	swift    string // Swift type, without the optional mark
 	optional bool
+	// empty is the Swift empty literal ("[]" or "[:]") of a non-optional
+	// slice or map: Go writes a nil one as null, which decodes as empty.
+	empty string
 }
 
 // named is one generated Swift type: a struct (fields) or an enum (values).
@@ -90,10 +93,13 @@ func (c *collector) addStruct(t reflect.Type) error {
 	}
 	seen := map[string]bool{}
 	for _, f := range fields {
-		if seen[f.key] {
+		if seen["key:"+f.key] {
 			return fmt.Errorf("%s: JSON key %q is used twice", t.Name(), f.key)
 		}
-		seen[f.key] = true
+		if seen["name:"+f.name] {
+			return fmt.Errorf("%s: Swift property %s is used twice", t.Name(), f.name)
+		}
+		seen["key:"+f.key], seen["name:"+f.name] = true, true
 	}
 	n.fields = fields
 	return nil
@@ -136,7 +142,14 @@ func (c *collector) fields(t reflect.Type, owner string) ([]field, error) {
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, field{name: swiftIdent(lowerCamel(sf.Name)), key: name, swift: swift, optional: optional})
+		f := field{name: swiftIdent(lowerCamel(sf.Name)), key: name, swift: swift, optional: optional}
+		if !optional && typ != rawMessageType && typ.Kind() == reflect.Slice {
+			f.empty = "[]"
+		}
+		if !optional && typ.Kind() == reflect.Map {
+			f.empty = "[:]"
+		}
+		out = append(out, f)
 	}
 	return out, nil
 }
@@ -197,6 +210,14 @@ func (c *collector) addEnum(t reflect.Type) error {
 	values := reflect.Zero(t).Interface().(interface{ EnumValues() []string }).EnumValues()
 	if len(values) == 0 {
 		return fmt.Errorf("%s: EnumValues is empty", t)
+	}
+	cases := map[string]bool{}
+	for _, v := range values {
+		name := strings.Trim(enumCase(t.Name(), v), "`")
+		if name == "" || !unicode.IsLetter([]rune(name)[0]) || cases[name] {
+			return fmt.Errorf("%s: value %q has no Swift case of its own", t, v)
+		}
+		cases[name] = true
 	}
 	_, err := c.claim(t, &named{goType: t, values: values, enum: true})
 	return err
@@ -267,7 +288,36 @@ func renderStruct(b *strings.Builder, n *named) {
 			fmt.Fprintf(b, "        case %s = %q\n", f.name, f.key)
 		}
 	}
-	b.WriteString("    }\n}\n")
+	b.WriteString("    }\n")
+	renderDecoder(b, n.fields)
+	b.WriteString("}\n")
+}
+
+// renderDecoder writes init(from:) for a struct with a non-optional slice or
+// map: a missing or null one (Go's nil) decodes as empty. Other structs keep
+// the synthesized decoder.
+func renderDecoder(b *strings.Builder, fields []field) {
+	needed := false
+	for _, f := range fields {
+		needed = needed || f.empty != ""
+	}
+	if !needed {
+		return
+	}
+	b.WriteString("\n    public init(from decoder: Decoder) throws {\n")
+	b.WriteString("        let container = try decoder.container(keyedBy: CodingKeys.self)\n")
+	for _, f := range fields {
+		self := "self." + strings.Trim(f.name, "`")
+		switch {
+		case f.empty != "":
+			fmt.Fprintf(b, "        %s = try container.decodeIfPresent(%s.self, forKey: .%s) ?? %s\n", self, f.swift, f.name, f.empty)
+		case f.optional:
+			fmt.Fprintf(b, "        %s = try container.decodeIfPresent(%s.self, forKey: .%s)\n", self, f.swift, f.name)
+		default:
+			fmt.Fprintf(b, "        %s = try container.decode(%s.self, forKey: .%s)\n", self, f.swift, f.name)
+		}
+	}
+	b.WriteString("    }\n")
 }
 
 func (f field) typeText() string {

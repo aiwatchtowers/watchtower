@@ -4,6 +4,7 @@ import Foundation
 /// (a request's params, a response's result). `data` is the value's
 /// canonical JSON (sorted keys), so decoding and re-encoding a value is
 /// byte-stable after that first canonical encode.
+/// An integer outside Int64 is kept as a Double (it loses precision).
 public struct RawJSON: Codable, Hashable, Sendable {
     /// The value's canonical JSON.
     public let data: Data
