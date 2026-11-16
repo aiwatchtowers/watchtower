@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 )
 
 // artifactCommentsTextTx reads ids — open comments of one artifact key of
@@ -54,20 +53,15 @@ func artifactCommentsTextTx(tx *sql.Tx, conv int64, ids []int64) (string, error)
 // row's created_at. A comment that stopped being open meanwhile refuses the
 // start.
 func markCommentsSentTx(tx *sql.Tx, conv int64, ids []int64, at float64) error {
-	if len(ids) == 0 {
-		return nil
-	}
-	args := []any{at, conv}
 	for _, id := range ids {
-		args = append(args, id)
-	}
-	res, err := tx.Exec(`UPDATE chat_artifact_comments SET status = 'sent', sent_at = ?
-		WHERE conversation_id = ? AND status = 'open' AND id IN (?`+strings.Repeat(", ?", len(ids)-1)+`)`, args...)
-	if err != nil {
-		return fmt.Errorf("marking artifact comments sent: %w", err)
-	}
-	if n, err := res.RowsAffected(); err != nil || n != int64(len(ids)) {
-		return ErrInvalid
+		res, err := tx.Exec(`UPDATE chat_artifact_comments SET status = 'sent', sent_at = ?
+			WHERE id = ? AND conversation_id = ? AND status = 'open'`, at, id, conv)
+		if err != nil {
+			return fmt.Errorf("marking artifact comment %d sent: %w", id, err)
+		}
+		if n, err := res.RowsAffected(); err != nil || n != 1 {
+			return ErrInvalid
+		}
 	}
 	return nil
 }
