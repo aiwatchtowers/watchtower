@@ -84,6 +84,7 @@ Per-feature notes — architecture, contracts, dual paths, v1 limits — live in
 - Audit fix wave 5 — `audit-fix-wave-5.md`
 - Owner identity — `owner-identity.md`
 - Tower interface — `tower-interface.md`
+- Inbox core — `inbox-core.md`
 
 ---
 

@@ -386,6 +386,19 @@ func All() []Feature {
 	return out
 }
 
+// DisabledIDs are the ids of the entries cfg has off: every non-core entry
+// whose Enabled is missing or false — the "disabled" state `features list`
+// reports and the Desktop's feature list reads.
+func DisabledIDs(cfg *config.Config) []string {
+	var out []string
+	for _, f := range registry {
+		if !f.Core && (f.Enabled == nil || !f.Enabled(cfg)) {
+			out = append(out, f.ID)
+		}
+	}
+	return out
+}
+
 // ByID looks up a single entry by its stable id.
 func ByID(id string) (Feature, bool) {
 	for _, f := range registry {

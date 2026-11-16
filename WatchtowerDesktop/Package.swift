@@ -156,6 +156,8 @@ let package = Package(
                 "WatchtowerCore",
                 "WatchtowerTestSupport",
                 .product(name: "GRDB", package: "GRDB.swift"),
+                // InboxFeedParityTests maps the Swift builders to the generated Feed.
+                .product(name: "WatchtowerInterface", package: "WatchtowerInterface"),
             ],
             path: "Tests/Core",
             exclude: ["Fixtures"]
