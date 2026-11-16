@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerInterface
 
 /// What one read of the menu sees: the tree, each folder's own count (the
 /// numbers the menu shows, whose visible sum is the sidebar badge), how
@@ -117,6 +118,20 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
 @Observable
 package final class InboxFolderMenuModel {
     package private(set) var snapshot = InboxFolderMenuSnapshot(tree: .rootOnly)
+
+    /// The tower's last feed (mobile Inbox spec §5.1): with one, every
+    /// count, folder list and ref state the menu shows is Go's
+    /// (`InboxTowerEntries.folders`) over the last local read's tree and
+    /// records. Nil (no tower wired, tests) keeps the local read as is.
+    package var towerFeed: Feed? {
+        didSet {
+            guard towerFeed != oldValue, let localRead else { return }
+            snapshot = towerFeed.map { InboxTowerEntries.folders(localRead, feed: $0) } ?? localRead
+        }
+    }
+
+    /// The last local read, before the tower's numbers are laid over it.
+    @ObservationIgnored private var localRead: InboxFolderMenuSnapshot?
     /// The selected folder; nil is the root.
     package private(set) var selection: Int64?
     /// The root's ⋯ Show Hidden Folders.
@@ -229,7 +244,8 @@ package final class InboxFolderMenuModel {
     /// transaction): a selection, field or confirmation whose folder is gone
     /// goes with it.
     package func apply(_ read: InboxFolderMenuSnapshot) {
-        snapshot = read
+        localRead = read
+        snapshot = towerFeed.map { InboxTowerEntries.folders(read, feed: $0) } ?? read
         hasRead = true
         let tree = read.tree
         if let selected = selection, tree.folder(selected) == nil { selection = nil }

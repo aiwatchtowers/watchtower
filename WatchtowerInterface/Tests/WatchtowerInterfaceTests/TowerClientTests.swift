@@ -398,6 +398,20 @@ final class TowerClientTests: XCTestCase {
         XCTAssertEqual(state, .idle, "a hello beside the cycle is no screen read")
     }
 
+    func testReadAsideAnswersWithoutBecomingTheScreensRead() async {
+        let feed = Feed(v: 1, builtAt: "2026-11-16T09:00:00Z", folders: [], cards: [])
+        fake.respond(.inboxFeed) { FakeTransport.ok($0, feed) }
+        let client = makeClient()
+
+        let answer: Feed? = await client.readAside(.inboxFeed, params: FeedRequest(limit: 1))
+
+        XCTAssertEqual(answer, feed)
+        let state = await client.screenState
+        XCTAssertEqual(state, .idle, "a read beside the screen moves no screen state")
+        await client.retry()
+        XCTAssertEqual(fake.calls(.inboxFeed).count, 1, "and is never re-issued as the screen's read")
+    }
+
     func testHelloAnswerIsNilFromAnotherVersionOrADownTower() async {
         fake.helloVersion("0000000000000000")
         let other = await makeClient().helloAnswer()

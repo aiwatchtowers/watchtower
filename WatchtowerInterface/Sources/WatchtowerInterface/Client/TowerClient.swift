@@ -293,6 +293,20 @@ public actor TowerClient {
         return hello
     }
 
+    /// A read beside the screen's (the Mac sidebar's Inbox badge): it
+    /// connects like any call, but never becomes the screen's last read (so
+    /// the client never re-issues it) and never moves the screen's state.
+    /// Nil when the tower is down or does not answer it with a `Resp`.
+    public func readAside<Resp: Decodable & Sendable>(
+        _ command: TowerCommand,
+        params: some Encodable & Sendable
+    ) async -> Resp? {
+        guard let encoded = Self.encode(params),
+              case .answer(let response) = await exchange(command, params: encoded),
+              case .success(let value) = Self.decode(response) as Result<Resp, TowerFailure> else { return nil }
+        return value
+    }
+
     /// The failure's button. After `failed(.down)` it asks `startDaemon`
     /// first, after `failed(.version)` `restartDaemon`; then it reconnects
     /// from the 0.2 s backoff. Otherwise it re-reads the screen.

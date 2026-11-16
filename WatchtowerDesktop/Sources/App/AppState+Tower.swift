@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import os
 import WatchtowerCore
 import WatchtowerInterface
@@ -26,6 +27,34 @@ extension AppState {
             restartDaemon: { [weak self] in await self?.restartDaemonForTower() ?? false },
             startDaemon: { [weak self] in await self?.startDaemonForTower() }
         )
+    }
+
+    /// The Inbox reads its lists, counts and badge from the daemon's
+    /// `inbox.feed`: the whole tree, no limit, no clip. Only the app does
+    /// this; a test run never reaches a daemon (its AppState may still wire
+    /// the database the app's way).
+    func attachTowerInbox(_ strip: ActionStripViewModel) {
+        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
+        strip.attach(InboxFeedLoader(client: towerClient) { FeedRequest() })
+    }
+
+    /// The sidebar's counts, loaded and observed, with the Inbox badge from
+    /// the tower (`towerInboxBadge`).
+    func startedSidebarCounts(_ pool: DatabasePool) async -> SidebarCountsViewModel? {
+        await SidebarCountsViewModel.started(
+            dbPool: pool, disabledFeatures: featureVisibility.disabledFeatureIDs
+        ) { [weak self] in await self?.towerInboxBadge() }
+    }
+
+    /// The sidebar's Inbox badge from the tower: the open Inbox's last feed,
+    /// else one small read beside the screen (`limit: 1`: every folder and
+    /// its count, one card). Nil when the Inbox does not read from the tower
+    /// (tests) or the tower did not answer: the local count stays.
+    func towerInboxBadge() async -> Int? {
+        guard let strip = actionStripViewModel, let loader = strip.feedLoader else { return nil }
+        if loader.isOpen, let badge = strip.towerBadge { return badge }
+        guard let feed: Feed = await towerClient.readAside(.inboxFeed, params: FeedRequest(limit: 1)) else { return nil }
+        return InboxRootModel(feed: feed, platform: .mac).countBadge
     }
 
     /// `TowerClient`'s `startDaemon` (Retry after down): one start on the

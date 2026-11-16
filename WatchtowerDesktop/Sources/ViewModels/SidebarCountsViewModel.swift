@@ -76,10 +76,15 @@ final class SidebarCountsViewModel {
     /// A view model with its counts loaded and its observation started;
     /// nil when the calling task is cancelled meanwhile (a test's database
     /// going away, board #526).
-    static func started(dbPool: DatabasePool, disabledFeatures: Set<String> = []) async -> SidebarCountsViewModel? {
+    static func started(
+        dbPool: DatabasePool,
+        disabledFeatures: Set<String> = [],
+        towerInboxBadge: (@MainActor () async -> Int?)? = nil
+    ) async -> SidebarCountsViewModel? {
         guard !Task.isCancelled else { return nil }
         let countsVM = SidebarCountsViewModel(dbPool: dbPool)
         countsVM.disabledFeatures = disabledFeatures
+        countsVM.towerInboxBadge = towerInboxBadge
         await countsVM.loadInitial()
         guard !Task.isCancelled else { return nil }
         countsVM.startObserving()
@@ -89,9 +94,21 @@ final class SidebarCountsViewModel {
     /// Loads the counts once and updates the published properties.
     /// Awaiting this guarantees the sidebar badges reflect real DB state before the splash screen hides.
     func loadInitial() async {
-        let counts = await fetch()
-        apply(counts)
+        apply(await fetch())
+        // After the other badges: a tower that is down or restarting must
+        // not hold them back.
+        if let towerInboxBadge, let badge = await towerInboxBadge() {
+            towerBadgeKnown = true
+            inboxStripCount = badge
+        }
     }
+
+    /// The Inbox badge from the tower (mobile Inbox spec §5.1: the sum of
+    /// the visible folders' counts, `InboxRootModel.countBadge`); nil keeps
+    /// the last count (no tower wired, or it did not answer).
+    var towerInboxBadge: (@MainActor () async -> Int?)?
+    /// Once the tower has answered, the local count never replaces its badge.
+    private var towerBadgeKnown = false
 
     /// Reloads the counts on demand. The observation below only sees writes made
     /// by THIS process, so a feature that shells out to the CLI (Catch-Up's
@@ -301,7 +318,7 @@ final class SidebarCountsViewModel {
         recommendationCount = c.recommendationCount
         activeTaskCount = c.activeTaskCount
         overdueTaskCount = c.overdueTaskCount
-        inboxStripCount = c.inboxStripCount
+        if !towerBadgeKnown { inboxStripCount = c.inboxStripCount }
         memoryDisputedCount = c.memoryDisputedCount
         unacknowledgedRecapCount = c.unacknowledgedRecapCount
     }

@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerInterface
 
 /// The card the Inbox reading pane shows.
 package enum InboxSelection: Hashable, Sendable {
@@ -327,10 +328,60 @@ package final class ActionStripViewModel {
     /// Try Again in place of its spinner. Cleared by the first read that lands.
     package private(set) var firstReadError: String?
 
-    /// The selected folder's entries (`InboxFolderEntries`), from the last read.
+    /// The selected folder's entries, from the last read: the tower's feed
+    /// decides them when one is wired (`towerFeed`), else the local builder.
     package var folderEntries: [InboxFolderEntry] {
+        if let listed = towerListed { return listed.map(\.entry) }
         guard hasRead, let folder = folderMenu.tree.folder(folderMenu.selectedFolderID) else { return [] }
         return InboxFolderEntries.build(folder: folder, entryInputs)
+    }
+
+    // MARK: - The tower (mobile Inbox spec §5.1)
+
+    /// The tower's last feed: with one, the folders' lists, their order,
+    /// counts, row texts, ref states and the badge are Go's
+    /// (`InboxTowerEntries`); the GRDB read only supplies the records the
+    /// panes draw. Nil until a loader is attached and has answered.
+    package private(set) var towerFeed: Feed?
+
+    /// The loader the Inbox window opens and closes (`InboxFeedLoader`).
+    @ObservationIgnored package private(set) var feedLoader: InboxFeedLoader?
+
+    /// Reads the Inbox from the tower from now on: every feed the loader
+    /// gets is laid over the folders and re-reads the panes' records.
+    package func attach(_ loader: InboxFeedLoader) {
+        feedLoader = loader
+        loader.onFeed = { [weak self] feed in self?.receiveTowerFeed(feed) }
+        if let feed = loader.feed { receiveTowerFeed(feed) }
+        syncFeedWatch()
+    }
+
+    /// Takes a feed: the lists switch to it at once over the records already
+    /// read, and a records read follows so a new card's record arrives.
+    package func receiveTowerFeed(_ feed: Feed) {
+        let before = sections
+        let entriesBefore = folderEntries.map(\.id)
+        towerFeed = feed
+        folderMenu.towerFeed = feed
+        rebuildSections()
+        keepSelectionListed(was: before)
+        keepEntryListed(was: entriesBefore)
+        Task { await refresh() }
+    }
+
+    /// The sidebar's Inbox badge from the tower: the sum of the visible
+    /// folders' counts (`InboxRootModel.countBadge`); nil without a feed.
+    package var towerBadge: Int? {
+        towerFeed.map { InboxRootModel(feed: $0, platform: .mac).countBadge }
+    }
+
+    /// The selected folder's entries and rows from the tower's feed; nil
+    /// without one (or before the first local read, which brings the records).
+    private var towerListed: [InboxTowerEntries.Listed]? {
+        guard let towerFeed, hasRead else { return nil }
+        return InboxTowerEntries.listed(
+            folder: folderMenu.selectedFolderID, feed: towerFeed, records: feed,
+            selectedDay: entrySelection.flatMap(Self.dayOfEntry), now: clock())
     }
 
     /// What the selected folder's entries are composed from.
@@ -350,7 +401,7 @@ package final class ActionStripViewModel {
     package var folderList: InboxFolderListContent {
         let folder = folderMenu.tree.folder(folderMenu.selectedFolderID) ?? folderMenu.tree.root
         let inputs = entryInputs
-        let rows = folderEntries.map { InboxFolderEntries.row($0, inputs) }
+        let rows = towerListed.map { $0.map(\.row) } ?? folderEntries.map { InboxFolderEntries.row($0, inputs) }
         return InboxFolderListContent(
             folderKind: folder.kind, folderTitle: folder.title, rows: rows, selection: entrySelection)
     }
@@ -374,6 +425,7 @@ package final class ActionStripViewModel {
     package func selectFolder(_ id: Int64) {
         folderMenu.select(id)
         defaults.set(folderMenu.selectedFolderID, forKey: Self.folderKey)
+        feedLoader?.navigate(to: folderMenu.selectedFolderID)
         entrySelection = nil
         legacyList = nil
         selection = nil
@@ -489,6 +541,11 @@ package final class ActionStripViewModel {
     private func rebuildSections() {
         guard let legacyList else {
             sections = []
+            return
+        }
+        if let towerFeed {
+            sections = InboxTowerEntries.sections(
+                legacyList, feed: towerFeed, records: feed, now: clock(), calendar: .current, showsStopped: showsStopped)
             return
         }
         sections = InboxListBuilder.sections(
@@ -675,6 +732,24 @@ package final class ActionStripViewModel {
     package func setOnScreen(_ onScreen: Bool) {
         if refreshGate.setOnScreen(onScreen) { onScreenRefresh = Task { await refresh() } }
         if onScreen { startPolling() }
+        inboxShown = onScreen
+        syncFeedWatch()
+    }
+
+    /// The app's windows went on or off screen (`AppState.applyUIVisibility`):
+    /// the tower's change watch stays open only while the Inbox is shown in
+    /// a window on screen, never while the app sits in the tray.
+    package func setWindowOnScreen(_ onScreen: Bool) {
+        windowShown = onScreen
+        syncFeedWatch()
+    }
+
+    @ObservationIgnored private var inboxShown = false
+    @ObservationIgnored private var windowShown = true
+
+    private func syncFeedWatch() {
+        guard let feedLoader else { return }
+        if inboxShown && windowShown { feedLoader.open() } else { feedLoader.close() }
     }
 
     /// The refresh `setOnScreen` started — held so tests can await it.
