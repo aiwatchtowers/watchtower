@@ -62,8 +62,8 @@ Agents work exactly as now. The twin sits where the owner sits — at the points
 
 | Wait point | Today's owner path | Twin's path |
 |---|---|---|
-| `ask_owner` — question | Desktop `OwnerAskQueries.answer` (GRDB) + typed line; phone via the Swift `MobileHub` (`AskAnswerHandler`) | Twin picks options (or "Other" text) and writes the answer; the Desktop delivers the line (below) |
-| `ask_owner` — review of a spec/plan | Spec review loop, then the owner's verdict; the Desktop builds marks through `SpecReviewAnswer` | Waits for the reviewer/author loop to end (it already runs without the owner), then writes a verdict + comments answer in the shape `SpecReviewAnswer` produces; the Desktop, as the only writer of `spec_review_marks`, writes the marks when it delivers |
+| `ask_owner` — question | Desktop `OwnerAskQueries.answer` (GRDB) + typed line; phone via the Swift `MobileHub` (`AskAnswerHandler`) | Twin picks options (or "Other" text); the daemon's `Answerer` writes and delivers it (below) |
+| `ask_owner` — review of a spec/plan | Spec review loop, then the owner's verdict; the Desktop builds marks through `SpecReviewAnswer` | Waits for the reviewer/author loop to end (it already runs without the owner), then writes a verdict + comments answer **and its `spec_review_marks` rows in the same transaction**, through a Go builder `specreview.AnswerMarks` that is the dual path of the Desktop's `SpecReviewAnswer` (shared JSON fixture, both sides' tests read it). `spec_review_marks` gets a second writer: the Desktop for answers given at the Mac, the `Answerer` for the twin's — never both for one ask, because only the winner of the answer CAS writes marks |
 | `ask_owner` — review of another doc, `check` | Owner reads / runs | Review as above. A `check` the twin cannot run (it cannot press buttons on the owner's phone or look at his screen): it answers "the owner is away — verify what you can yourself (tests, screenshots, `make desktop-shots`) and continue"; the item goes to the journal's **Checks nobody ran** list, which stays on top until the owner marks each done or runs it |
 | Handover ask from `finish_session` | Owner decides what is left | Twin decides: continue in a new session, park for the morning, or accept as done |
 | `permission_requests` | Mac `SessionControl.answerPermission` (sets `decided_by`), phone CAS | Twin allows/denies through `db.ClosePermissionRequest`, which gains a `decidedBy` parameter (today it does not write `decided_by`); value `'watchman'` |
@@ -113,7 +113,8 @@ The list is a Go table with tests per row; the owner can only add to it (Setting
 
 **Enforcement in layers (ask #1373).** An agent with allow rules can push, merge or delete without ever raising a permission request, and a script, make target or `sh -c` can hide the command from any pattern. So the limits are enforced where the action lands, not only where it is typed:
 
-1. **Git, at the ref.** While a session is armed, its worktree gets a `pre-push` hook (installed through the worktree's `core.hooksPath` override at arm, removed at disarm) that refuses a push to `main`/`master`, a tag push, and any non-fast-forward push. It runs whatever launched git — a script, make, a subshell — so indirect pushes are caught.
+1. **Git, at the ref.** At the first arm of a session, its worktree gets a **chaining** `pre-push` hook: Watchman enables `extensions.worktreeConfig` (repository-wide, harmless on git ≥ 2.20) and sets `core.hooksPath` with `git config --worktree` only — never the shared config — to `<workspace>/watchman/hooks/`, after recording the worktree's previous effective hooks path (the repository's own `core.hooksPath`, e.g. `scripts/git-hooks`, or `.git/hooks`). The hook first asks whether this session is armed (the sidecar, §5 item 3); armed → it refuses a push to `main`/`master`, a tag push and any non-fast-forward push; then, armed or not, it runs the previous path's `pre-push` with the same arguments and stdin and returns its exit code — so the repository's own checks (the leak check here) still run. Because unarmed is pass-through, the hook can stay until the worktree goes; at disarm Watchman restores the recorded worktree-level value (or unsets it) only if the current value is still its own, so an owner's later change is never overwritten. It runs whatever launched git — a script, make, a subshell — so indirect pushes are caught.
+   Failures: the previous path has no `pre-push` → only the Watchman check runs; the recorded value is unreadable at disarm → leave the hook (pass-through) and log; the main folder (not a worktree) → the same `--worktree` setting applies to the main worktree only.
 2. **GitHub, at the server.** A PR merge does not go through local git. At arm time the twin reads the repository's branch protection for the default branch (`gh api repos/{owner}/{repo}/branches/{branch}/protection`); with no protection requiring a review that only the owner can give, the arm sheet shows a warning line ("main is not protected on GitHub — an agent's `gh pr merge` cannot be stopped here") and the owner arms knowing it. The merge rule the agents follow (§3) names the PR base; the twin's review Approve is written only for a PR whose base is not the default branch.
 3. **The PreToolUse hook** `workbench watchman-guard` (installed with the other workbench hooks): denies, while armed, Bash commands that name `git push … main`, `--force`, `gh pr merge` against the default branch, `gh release`, `rm -rf` of a path outside the worktree, and MCP write tools by name (`send_slack_message`, …). It is the fast, explainable layer: its denial tells the agent the action is parked for the owner and to continue other work, and the twin journals it under **Waiting for you**. Not armed → it allows everything at the cost of one row read. The database unreadable within its budget → it reads the arm sidecar (`<workspace>/watchman.armed`, written by the arm/disarm writers next to the row) and denies only if that says armed.
 4. **Accepted residual risk**, named in the arm sheet and the guide: deleting files outside the worktree through a script, or messaging people from a script with its own token, is not caught. Deletion inside the worktree is recoverable from git.
@@ -126,6 +127,7 @@ Tests: one per table row × armed/not armed; the `pre-push` hook against a push 
 |---|---|---|
 | `owner_asks.answer`/`status` | Desktop (owner, GRDB), phone (Go hub `storeAnswer`), twin (same `Answerer`) | First `UPDATE … WHERE status='open' AND NOT (author loop)` wins. The twin writes only after its model call, with that guard; a lost race is journaled "the owner answered first" and nothing is delivered. |
 | `permission_requests` | Mac (`SessionControl`), phone (hub), twin (`Answerer`), the hook's timeout expiry | `WHERE status='pending'` CAS; same rule; `decided_by` names the winner. |
+| `spec_review_marks` | Desktop (owner's answer at the Mac), `Answerer` (twin's answer) | Written in the answer's own transaction by whoever won the answer CAS; the loser writes nothing. |
 | Review round outcome | Desktop (owner), twin (`ApproveReviewRound`/`SendReviewRound` in-process) | The round's existing open-state guard. |
 | `watchman_arming` | Desktop, CLI (`watchman arm|disarm|sleep`) | Whole-row upsert, last write wins; the sidecar is rewritten after each write. |
 | `watchman_items` (queue + journal) | Writers of wait points (insert `queued` only), twin worker (decision columns under a lease), Desktop (owner feedback columns only) | Lease = `lease_until` set by compare-and-set from `queued`/expired; feedback columns never touched by Go. |
@@ -145,7 +147,7 @@ The owner coming back mid-decision: the mode turns Off for *new* items; an item 
 | Deliver line | Session waiting on a permission prompt / stale | The `Answerer`'s held lines (persisted in `hub_meta`), the hub's existing retry | moved hub tests + a twin-origin held line |
 | Deliver line | Daemon restarts with held lines | Held lines reload from `hub_meta` (existing) | existing restart test, now for both origins |
 | Deliver line | Session gone | Answer stays stored; the next session on the target reads it via `get_ask`; journal says "session ended" | session-gone test |
-| Mode | `platform.Away` read fails | Treated as present → Off for new items (fail safe: never act for an owner who may be there) | away-error test |
+| Mode | The console cannot be read | On darwin `platform.Away` returns no error: an unreadable console reads as "no console session" → away (`awayFrom`). Watchman accepts that (no console user means nobody is at the Mac). The `Away` interface's error return is still honoured: an error → present → Off for new items | `watchman.Mode` table test with a fake `platform.Away` (error, away, present); `awayFrom` itself is covered by `TestAwayFromThePolicy` |
 | Mode | Mac wakes after sleep | Queued items resume; journal records the gap | wake gap test |
 | Guard | Database unreadable | Sidecar decides (§5) | unreadable-database test |
 | Learning phase | Interrupted mid-backfill | Cursor per source, resumable; partial index is usable | resume test |
@@ -241,13 +243,17 @@ Design-only SwiftUI scenes in `DesignShotCatalog` (`WatchmanShotFixtures`, `Watc
 | [`watchman-settings-never-run`](../../design/mockups/watchman/watchman-settings-never-run-light.png) | Settings before any backtest |
 | [`watchman-settings-running`](../../design/mockups/watchman/watchman-settings-running-light.png) | busy: backtest running |
 | [`watchman-settings-failed`](../../design/mockups/watchman/watchman-settings-failed-light.png) | error: backtest stopped (plan limit), **Retry**, last results kept |
+| [`watchman-tray-menu`](../../design/mockups/watchman/watchman-tray-menu-light.png) | menu bar: status line, **Hand all running sessions to Watchman**, **Going to sleep** (on) — a look-alike of the native menu |
+| [`watchman-target-panel-armed`](../../design/mockups/watchman/watchman-target-panel-armed-light.png) | target panel: "Watchman has this target · Sleep since 01:40", **Take back** |
+| [`watchman-target-panel-unarmed`](../../design/mockups/watchman/watchman-target-panel-unarmed-light.png) | target panel: **Hand to Watchman** for the subtree's sessions |
+| [`watchman-inbox-entry`](../../design/mockups/watchman/watchman-inbox-entry-light.png) | the Inbox's list with the Watchman entry ("· 1 waiting" as the row's summary text, the real row has no badge) |
 
 After implementation the real screens are rendered with the same names and compared with these.
 
 ## 12. Phases
 
 1. **Learn + backtest** (no acting): migrations for `watchman_precedents`/`watchman_profile`/`watchman_backtests`, extractors for sources 1–6, the sleep window, `phaseWatchmanLearn`, `watchman learn|backtest|profile` CLI with pinned `--json`, Settings read-only table. Exit: the go/stop rule in §9.
-2. **Sleep mode**: `watchman_arming` + sidecar, `watchman.Mode` over `platform.Away`, keep-awake reason, `internal/askanswer` extraction out of the hub handlers + `ClosePermissionRequest(decidedBy)`, `watchman_items` + the daemon twin worker, hard-limit table + `pre-push` hook + branch-protection check + guard hook, the brief line and pack rule, twin review rounds, Inbox filter + Home row + feedback, Settings editing.
+2. **Sleep mode**: `watchman_arming` + sidecar, `watchman.Mode` over `platform.Away`, keep-awake reason, `internal/askanswer` extraction out of the hub handlers + `ClosePermissionRequest(decidedBy)`, `watchman_items` + the daemon twin worker, hard-limit table + chaining `pre-push` hook + branch-protection check + guard hook, the brief line and pack rule, twin review rounds and `specreview.AnswerMarks`, the Inbox entry + Home row + feedback, Settings editing.
 3. **Away mode over the relay**: depends on the relay reaching production phones (relay-client Phase 3b/4, waiting for the Go hub). Escalation to the phone with the proposed answer, wait timer, phone journal slice, Sleep Focus signal.
 4. **Tuning**: weights from morning feedback, profile refresh cadence, more categories if the backtest asks for them.
 
@@ -280,7 +286,7 @@ After implementation the real screens are rendered with the same names and compa
 | D10 | Hard limits as a Go table; owner can only add | decided by the agent |
 | D11 | Phase 1 is learn + backtest only; bars 80 % / 5 % | decided by the agent |
 | D12 | "Correct" instead of "undo" in the journal | ask #1373 |
-| D13 | Journal in the Inbox (filter) + Home row | decided by the agent |
+| D13 | Journal as an Inbox entry + Home row | decided by the agent |
 | D14 | Keep the Mac awake while armed through the existing hub keep-awake `Hold` (own reason) | decided by the agent (spec review) |
 | D15 | Twin decisions become precedents only after the owner's OK | decided by the agent |
 | D16 | `check` asks: the agent verifies what it can; the item stays in **Checks nobody ran** until the owner clears it | decided by the agent (spec review) |
@@ -296,6 +302,8 @@ After implementation the real screens are rendered with the same names and compa
 | D26 | Correct… on an ended session starts a new, unarmed session with the correction | decided by the agent (spec review) |
 | D27 | Sleep window = medians of the longest nightly activity gap over 28 days; < 7 days → button only | decided by the agent (spec review) |
 | D28 | Mockups in the spec as DesignShots (§11a) | workbench rule |
+| D29 | The twin's spec verdict writes its marks in Go (`specreview.AnswerMarks`, dual path with `SpecReviewAnswer`) | decided by the agent (spec review) |
+| D30 | Chaining `pre-push` via a worktree-only `core.hooksPath`, pass-through when not armed | decided by the agent (spec review) |
 
 ## 15. Left to the builder
 
