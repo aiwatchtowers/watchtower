@@ -32,11 +32,12 @@ type MessageOpts struct {
 	ExcludeDMs bool // exclude dm and group_dm channels
 }
 
-// UpsertMessage inserts or updates a message.
+// UpsertMessage inserts or updates a message. synced_at is written on insert
+// only (msg.SyncedAt; 0 reads as the post time).
 func (db *DB) UpsertMessage(msg Message) error {
 	_, err := db.Exec(`
-		INSERT INTO messages (channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO messages (channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, synced_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(channel_id, ts) DO UPDATE SET
 			user_id = excluded.user_id,
 			text = excluded.text,
@@ -48,7 +49,7 @@ func (db *DB) UpsertMessage(msg Message) error {
 			permalink = excluded.permalink`,
 		msg.ChannelID, msg.TS, msg.UserID, msg.Text, msg.ThreadTS,
 		msg.ReplyCount, msg.IsEdited, msg.IsDeleted, msg.Subtype,
-		msg.Permalink,
+		msg.Permalink, msg.SyncedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("upserting message %s/%s: %w", msg.ChannelID, msg.TS, err)
@@ -57,14 +58,15 @@ func (db *DB) UpsertMessage(msg Message) error {
 }
 
 // UpsertMessageBatch inserts or updates a batch of messages within an existing
-// transaction, using a prepared statement for efficiency.
+// transaction, using a prepared statement for efficiency. synced_at is
+// written on insert only (msg.SyncedAt; 0 reads as the post time).
 func (db *DB) UpsertMessageBatch(tx *sql.Tx, msgs []Message) (int, error) {
 	if tx == nil {
 		return 0, fmt.Errorf("UpsertMessageBatch: nil transaction")
 	}
 	stmt, err := tx.Prepare(`
-		INSERT INTO messages (channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO messages (channel_id, ts, user_id, text, thread_ts, reply_count, is_edited, is_deleted, subtype, permalink, synced_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(channel_id, ts) DO UPDATE SET
 			user_id = excluded.user_id,
 			text = excluded.text,
@@ -84,7 +86,7 @@ func (db *DB) UpsertMessageBatch(tx *sql.Tx, msgs []Message) (int, error) {
 		_, err := stmt.Exec(
 			msg.ChannelID, msg.TS, msg.UserID, msg.Text, msg.ThreadTS,
 			msg.ReplyCount, msg.IsEdited, msg.IsDeleted, msg.Subtype,
-			msg.Permalink,
+			msg.Permalink, msg.SyncedAt,
 		)
 		if err != nil {
 			return 0, fmt.Errorf("upserting message %s/%s: %w", msg.ChannelID, msg.TS, err)

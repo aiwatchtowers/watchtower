@@ -287,6 +287,32 @@ final class SidebarCountsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.recommendationCount, 0, "channel recommendations need a Slack owner")
     }
 
+    /// The recommendations badge uses the value signals the Statistics
+    /// screen uses: a pending Inbox item blocks the bot channel's suggestion in both.
+    func testRecommendationBadgeHonoursValueSignals() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+
+        try await manager.dbPool.write { db in
+            _ = try TestDatabase.insertSlackAccount(db, currentUserID: "U042")
+            try TestDatabase.insertChannel(db, id: "C001", name: "alerts")
+            for i in 0..<60 {
+                try TestDatabase.insertMessage(db, channelID: "C001", ts: String(format: "1700000%03d.000000", i),
+                                               userID: "", text: "alert")
+            }
+        }
+        let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
+        await vm.loadInitial()
+        XCTAssertEqual(vm.recommendationCount, 1, "a bot channel is suggested for Stop syncing")
+
+        try await manager.dbPool.write { db in
+            _ = try TestDatabase.insertInboxItem(db, channelID: "C001", messageTS: "1700000001.000000")
+        }
+        let blocked = SidebarCountsViewModel(dbPool: manager.dbPool)
+        await blocked.loadInitial()
+        XCTAssertEqual(blocked.recommendationCount, 0, "the pending Inbox item blocks it, as on the screen")
+    }
+
     /// BEHAVIOR PROJ-01 — the Targets sidebar badge (activeTaskCount /
     /// overdueTaskCount) never counts a project target.
     func testProj01_TargetsBadgeIgnoresProjectTargets() async throws {
