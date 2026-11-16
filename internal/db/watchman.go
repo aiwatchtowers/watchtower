@@ -357,7 +357,8 @@ const (
 			a.kind, a.title, a.summary, a.changes, a.payload, a.answer, a.doc_path, a.doc_type, a.doc_snapshot, a.origin
 		FROM owner_asks a LEFT JOIN terminal_sessions s ON s.id = a.session_id
 		WHERE a.project_id = ? AND a.status IN ('answered','delivered')
-			AND a.automation_run_id IS NULL AND s.automation_run_id IS NULL`
+			AND a.automation_run_id IS NULL AND s.automation_run_id IS NULL
+			AND (s.id IS NULL OR s.` + NotDeletingSQL + `)`
 	wmReviewSQL = `
 		SELECT COALESCE(strftime(` + wmAtFormat + `, r.sent_at), '') AS wm_at, c.id*4 AS wm_id, '' AS wm_sub, 'comment' AS kind, c.id AS rid,
 			COALESCE(c.path, '') AS path, c.quote, c.lens, c.body, r.outcome, '' AS header, '' AS patch, '' AS lstatus,
@@ -387,6 +388,7 @@ const (
 		LEFT JOIN terminal_sessions s ON s.id = a.session_id
 		WHERE a.project_id = ? AND a.status IN ('answered','delivered')
 			AND a.automation_run_id IS NULL AND s.automation_run_id IS NULL
+			AND (s.id IS NULL OR s.` + NotDeletingSQL + `)
 			AND m.state IN ('ok','comment','not_useful')`
 	wmPermissionSQL = `SELECT COALESCE(strftime(` + wmAtFormat + `, decided_at), '') AS wm_at, id AS wm_id, '' AS wm_sub, tool_name, summary, status
 		FROM permission_requests

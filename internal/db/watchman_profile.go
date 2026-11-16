@@ -94,6 +94,7 @@ func (db *DB) WatchmanOwnerActivity(workbenchID int64, since time.Time) ([]time.
 		FROM owner_asks a LEFT JOIN terminal_sessions s ON s.id = a.session_id
 		WHERE a.project_id = ? AND a.status IN ('answered','delivered') AND a.answered_at != ''
 			AND a.automation_run_id IS NULL AND s.automation_run_id IS NULL
+			AND (s.id IS NULL OR s.`+NotDeletingSQL+`)
 		UNION ALL
 		SELECT strftime(`+wmAtFormat+`, c.created_at)
 		FROM review_comments c JOIN review_rounds r ON r.id = c.round_id
