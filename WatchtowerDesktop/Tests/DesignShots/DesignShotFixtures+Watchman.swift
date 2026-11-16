@@ -215,9 +215,14 @@ private struct JournalNight: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: Spacing.tight) {
-            Text(live ? Copy.nightTonight : Copy.night16).font(.title3.weight(.semibold))
-            Text(live ? Copy.busySpan : Copy.nightSpan).font(.caption).foregroundStyle(.secondary)
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                Text(live ? Copy.nightTonight : Copy.night16).font(.title3.weight(.semibold))
+                Text(live ? Copy.busySpan : Copy.nightSpan).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: Spacing.regular)
+            // D24: no budget stops the night; the header shows what it cost.
+            if !live { Text(Copy.nightCost).font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
         }
     }
 
@@ -538,9 +543,6 @@ private struct WatchmanSettingsMock: View {
             backtestSection
             profileSection
             limitsSection
-            SettingsSection(title: Copy.budgetTitle) {
-                SettingRow(title: Copy.budgetValue) { Button(Copy.edit) {}.buttonStyle(.kitSecondary) }
-            }
         }
         .controlSize(.small)
         .padding(Spacing.page)

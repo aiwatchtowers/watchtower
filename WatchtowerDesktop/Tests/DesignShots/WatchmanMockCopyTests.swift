@@ -47,6 +47,8 @@ final class WatchmanMockCopyTests: XCTestCase {
         XCTAssertEqual(Copy.backtestRows.map(\.category),
                        ["design", "scope", "ux_text", "tests", "review_code", "review_doc", "permission", "finish"])
         XCTAssertEqual(Copy.runBacktest, "Run Backtest Now")
+        // D24: no night budget; the journal header shows the night's cost.
+        XCTAssertEqual(Copy.nightCost, "Cost tonight $3.40")
     }
 
     func testEveryFrameHasAShot() {

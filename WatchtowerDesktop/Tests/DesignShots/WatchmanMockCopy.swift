@@ -33,6 +33,7 @@ enum WatchmanMockCopy {
     // MARK: The night
 
     static let nightSpan = "01:40–07:30 · the Mac stayed awake"
+    static let nightCost = "Cost tonight $3.40"
     static let busySpan = "Since 01:40 · Watchman is on"
     static let busySummary = "1 unsure · 2 sure"
     static let waitingTitle = "Waiting for you"
@@ -143,9 +144,6 @@ enum WatchmanMockCopy {
     static let extraLimits = ["Change files under migrations/", "Bump a dependency version"]
     static let remove = "Remove"
     static let addLimit = "Add a Limit…"
-
-    static let budgetTitle = "Night budget"
-    static let budgetValue = "400 k tokens a night"
 
     static let backtestTitle = "Backtest"
     static let backtestCaption = "Last run 15 Nov, 03:12 · your latest 30 decisions per category, hidden and "
