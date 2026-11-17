@@ -17,9 +17,9 @@ Until then the **Chats** tab explains what is missing, for example **Chat works 
 ## How it works
 <!-- learn: none -->
 
-Your phone never talks to an AI provider. It sends your message to your tower, the tower runs it with your provider (up to two chats at once) and writes the answer into the same chats the Mac shows. The phone shows the answer as it grows and keeps a copy of the chats you opened, so you can read them when the Mac is asleep.
+Your phone never talks to an AI provider. It sends your message to your tower, the tower runs it with your provider (up to three chats at once, shared with the Mac) and writes the answer into the same chats the Mac shows. The phone shows the answer as it grows and keeps a copy of the chats you opened, so you can read them when the Mac is asleep.
 
-Only one device answers a chat at a time. If the Mac is answering a chat, the phone says **Answering on your Mac — you can watch here.**; if the phone started the answer, the Mac shows **Answering from your iPhone — you can watch here** and its Stop button stops it. Pressing Send while the other device is answering gives the text back with **conversation busy**.
+One answer runs per chat at a time, and it streams live on both devices whichever one started it; **Stop** works from either. Pressing Send while the other device's answer is running keeps your text in the field. An answer keeps running when the Mac's background service restarts, and ends when you quit Watchtower on the Mac.
 
 When an answer is ready, a chat you are not looking at sends a notification (**Answer ready**, **The answer stopped**, or **Waiting for your approval**), only while you are away from the Mac. It never shows the answer text. Tap it to open the chat.
 
@@ -52,7 +52,7 @@ An artifact card opens a sheet: documents, tables and code as text, **Open in Ma
 ## When it's empty or wrong
 <!-- learn: none -->
 
-- **The Mac did not answer.** The phone waited 30 seconds; **Retry**, or check the Mac is awake (see [The iPhone is not syncing](../troubleshooting/iphone-not-syncing.md)).
+- **The Mac did not answer.** The phone waited 30 seconds (it also happens when Watchtower's background service on the Mac is stopped); **Retry**, or check the Mac is awake (see [The iPhone is not syncing](../troubleshooting/iphone-not-syncing.md)).
 - **No Chat switch or the tab says it is not allowed.** On the Mac, Settings → **Mobile** → the phone's **Chat** switch.
 - **Older conversations are missing offline.** Only chats you opened or that were fetched in the background, and only the pages you loaded, are kept; search inside messages needs the Mac.
 - **"Saved chats are off on this phone".** The phone could not open its saved copy of your chats. The tab still works while the Mac answers, but nothing is kept for offline reading and a message still on its way is lost if the app restarts. Restarting the app tries again.

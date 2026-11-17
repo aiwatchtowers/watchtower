@@ -10,20 +10,20 @@ Go-built system prompt, branching history in goose-owned chat tables, visible
 tool steps and sources, attachments, artifacts, projects, mentions and
 skills. Design: `docs/superpowers/specs/2026-09-26-chat-redesign-design.md`.
 
-**Module:** `internal/chat/`, `cmd/ai_session.go`, `cmd/chat.go`,
+**Module:** `internal/chat/`, `internal/chatengine/` (the Go chat engine and `chat.sock`, 2026-11-16), `internal/chatstore/`, `cmd/ai_session.go`, `cmd/chat.go`,
 `internal/db/chat.go`, `internal/db/chat_migrate.go`,
 `internal/db/migrations/00076_chat_core.sql`,
 `WatchtowerDesktop/Sources/Services/Chat/`,
 `WatchtowerDesktop/Sources/WatchtowerCore/Services/Chat/`,
 `WatchtowerDesktop/Sources/ViewModels/ChatViewModel.swift`,
-`WatchtowerDesktop/Sources/Views/Chat/`
+`WatchtowerDesktop/Sources/Views/Chat/`, `WatchtowerChat/` (`ChatWire`, `ChatUI`), `WatchtowerChatText/`
 **Last full audit:** 2026-09-26
 
 ## CHAT-01 — owner text is never lost
 
 **Status:** Enforced
 
-**Observable:** The owner's message is written to `chat_messages` before the
+**Observable:** The owner's message is written to `chat_messages` (by the Go chat engine, the only writer of the main chat's rows) before the
 `turn` command is sent to the session process, so a failed spawn, a crashed
 session or an app quit mid-turn never loses what was typed — if the write
 itself fails (e.g. a DB trigger aborts it), nothing is sent and the text
@@ -33,7 +33,7 @@ sends `cancel` and the interrupted turn renders "Stopped" + Continue; a
 crashed process's partial text is flushed and the next send respawns the
 session, which replays the history from the database — no session resumes
 a stored provider session since #604 G11; the replay waits for the
-stopped reply's last save). A queued embedded-chat message waiting for its
+stopped reply's last save). On the Mac and the phone the composer keeps the typed text until the engine's echo is `applied` (a refused or failed send writes nothing and the text stays; a send repeated with the same `client_key` is answered with the first turn, so it is neither lost nor duplicated). A queued embedded-chat message waiting for its
 turn is kept in `chat_queued_drafts` and comes back as a draft after a
 relaunch. Regenerate and Edit insert
 their new assistant/user rows under the NEW turn id **before** the turn goes
@@ -95,12 +95,12 @@ keep their separator
 **Status:** Enforced
 
 **Observable:** At most 3 session processes are alive at once
-(`ChatSessionPolicy.maxLive`); a session's own turn is never cut to make
+(`chatengine.MaxLive`, the one pool of the Mac and the phone together); a session's own turn is never cut to make
 room — a 4th concurrent conversation queues (its turn held) until a slot
 frees, and eviction only ever picks an idle session (LRU among the idle
-ones). A session idle for 10 minutes (`ChatSessionPolicy.idleTTL`) is closed
-within one 30 s poll after crossing the TTL. Quitting the app (Cmd+Q, tray
-Quit — `QuitCoordinator`) closes chat sessions **before** stopping the
+ones). A session idle for 10 minutes (`chatengine.IdleTTL`) is closed
+by the engine once it crosses the TTL. A turn survives a daemon restart (the session is detached, and a detached session exits 10 minutes after its turn with no engine). Quitting the app (Cmd+Q, tray
+Quit — `QuitCoordinator`), the data wipe, a Slack disconnect and the owner's `watchtower sync stop` end the chat (`chat_shutdown`, else `watchtower chat shutdown`) **before** stopping the
 daemon, so no session's process nor its `watchtower mcp` child is left
 running once the daemon (and its exclusive `sync.lock`) is gone: every
 session gets the `close` command, then one SIGTERM after a 2 s grace, then
@@ -263,6 +263,8 @@ child is never started without it.
 
 **Amendment (2026-11-16, unified chat T3, ask #1371):** a message part's fallback (CHAT-06) may only open or copy a link the CHAT-05 rules permit, or send one fixed owner text the owner taps; it never sends or writes anything an artifact could not. `TestChat05_FallbackActionsOnlyOpenCopyOrFixedTurn`.
 
+**Amendment (2026-11-17, #1822 unified chat T11, final text):** every chat surface — the main chat on both devices, the embedded chats, Workchat and the owner-ask drawer — draws artifacts, rows, published-link cards and question cards with `ChatUI`, so one source scan covers them: `ChatUISourceScanTests.testChat05FallbackAndArtifactActionsOnlyOpenOrCopy` scans `Parts/FallbackPartView.swift`, `Parts/ArtifactPartView.swift`, `Parts/PublishedLinkPartView.swift`, `Feed/ChatMessageRow.swift`, `Parts/QuestionPartView.swift`, `Artifacts/ArtifactViewer.swift` and the macOS and iOS web-view and print files for `Process(`, `CLIRunner`, `URLSession`, send entry points and the like, and checks the fallback action shapes. `ArtifactChat05ScanTests` scans what is left on the Mac's artifact path (the artifact panel and comment files, `EmbeddedArtifactSheet.swift`, `DesignKitChatStyle.swift`). A fallback's actions are only `chat_turn` with a fixed text, `open_url` under these rules, or `none`.
+
 **Guard:** `testChat05ArtifactActionsOnlyOpenOrCopy`
 (`WatchtowerDesktop/Tests/Core/ArtifactActionsTests.swift`);
 `testChat05ArtifactSurfacesNeverWrite`
@@ -371,7 +373,9 @@ reason, and `testReaderList` over the Swift sources, which is file-level: a Swif
 
 ## Changelog
 
+- 2026-11-17 (unified chat T11, board #1822, owner approval ask #1371; spec `docs/superpowers/specs/2026-11-16-unified-chat-design.md` §9.2, feature note `docs/features/unified-chat.md`): final text of the unified-chat amendments, **no guard relaxed or renamed**. **CHAT-01** and **CHAT-03** Observables now name the engine (`chatengine.MaxLive`, `chatengine.IdleTTL`, the composer keeps its text until the echo is `applied`, `client_key`, a turn survives a daemon restart, quit/wipe/Slack disconnect/`sync stop` end the chat before the daemon stops); **CHAT-05** gains one amendment naming ChatUI's single source scan (`ChatUISourceScanTests.testChat05FallbackAndArtifactActionsOnlyOpenOrCopy`, which covers `Feed/ChatMessageRow.swift` and `Parts/QuestionPartView.swift` since T12); **CHAT-06** is unchanged. Guard mapping: every Swift CHAT-01..04 guard the Swift turn path carried has a home in the T8 table below, and every guard named in the four Guard blocks was checked to exist. The engine ops added during the build (`chat_manage` `archive` and `discard`, `chat_warm`, `chat_sessions_retire`, `attach_discard`, the relay `chat_turn` `compose` and `client_key`, `watchtower chat shutdown --socket-timeout`) write no row beyond the engine's own writers and are listed in the feature note. Known v1 limits are recorded there: a same-user process that keeps `chat.sock`'s fd across an exec after the greeting (the `ownerconfirm` threat model), a resent turn after a restart lacking the first send's actions-outcome block and `screen_context`, the quit worst-case bounds, a cancelled quit after a successful wipe keeping daemon starts blocked, and the relay's `unsupported` ops. An account removal that purges data runs in the daemon, so the app has no stop to hook there.
 - 2026-11-17 (unified chat T12, board #1822, owner approval ask #1371; spec `docs/superpowers/specs/2026-11-16-unified-chat-design.md` §9.2): the Mac's embedded assistant chats, Workchat and the owner-ask drawer draw through ChatUI (`EmbeddedChatFeedAdapter`, `WorkchatFeedAdapter`, `QuestionPartView`); their engines are unchanged. The app's row, feed, artifact card, steps block, sources row, published-link card and question card are deleted. **CHAT-05**, no guard relaxed (ruling F18): every chat now draws its artifact cards, rows and published-link cards with ChatUI's `ArtifactPartView`, `ChatMessageRow` and `PublishedLinkPartView`, which ChatUI's `testChat05FallbackAndArtifactActionsOnlyOpenOrCopy` scans with the same forbidden list; `ArtifactChat05ScanTests` scans only what is left on the Mac's artifact path — the deleted `ArtifactCardView.swift`, `ChatMessageRow.swift` and `PublishedLinkCardView.swift` left its lists, and it gains the embedded chats' artifact sheet (`EmbeddedArtifactSheet.swift`, ChatUI's viewer) and `DesignKitChatStyle.swift`. A published page's card on a chat whose parts come from flat fields (the embedded chats) is built by ChatWire as Go's `publishedLinkParts` builds it (claude.ai pages only), pinned by `ChatPartsTests.testFlatFieldsBuildPublishedLinksAsGoDoes` and `ChatUIMacRowTests.testPublishedLinkCardOnlyForAClaudeAIPage`. `ChatSelectionQuoteScanTests` reads ChatUI's row, feed and answer text in place of the deleted app files, the same tokens.
+- 2026-11-17 (unified chat T10b, board #1822, owner approval ask #1371; spec §7, §9.2): **CHAT-03** amended (see its amendment), no guard relaxed. The quit guard `testChat03QuitClosesChatSessionsBeforeStoppingTheDaemon` keeps its name and assertion; its closure is renamed `closeChatSessions` to `shutdownChat`. Added: `testQuitFallsBackToCLIShutdown`, `testWipeShutsDownChatFirst`, `testSlackDisconnectShutsDownChatFirst`, `testCompactionStepShutsDownChatSessionsFirst`, `DaemonManagerArgvScanTests.testEveryAppSyncStopIsInternal`.
 - 2026-11-16 (unified chat T8, board #1822, owner approval ask #1371; spec `docs/superpowers/specs/2026-11-16-unified-chat-design.md` §6.2, §9.2): the Mac's main chat moves onto the engine over `chat.sock` (`SocketChatClient`) and ChatUI's models; the Swift turn writer, its lease, the session pool and the history view model are deleted (D3), and the Mac's chat writes (conversations, projects, artifacts, comments, attachments) are engine operations. **No guard relaxed**: every Swift CHAT guard keeps its assertion in Go or ChatUI (ruling F11; 25 Swift guards named above, mapped below). New Go guards (tests only): `TestChat01_UnsavableOwnerRowSendsNothing`, `TestChat01_FailedSpawnLeavesOwnerMessageAnswered`, `TestChat01_RegenerateAndEditRowsBeforeTheTurnIsSent` (`internal/chatengine/mac_guards_test.go`), the LIVE-01 store guards (`internal/chatstore/live01_test.go`) and PROJ-01's `TestProj01_EntitySearchNeverOffersAProjectTarget` (the `@` picker searches through the engine). `chat_manage` gains `archive` (the Mac's Archive had no engine op). Fix round 1 (review I4/I5): the engine gains `chat_warm` (the Mac's landing makes its chat on the first keystroke and warms its session; it only ever takes a free slot, never evicts, idle TTL as any session), `chat_sessions_retire` (a claude.ai connector switch retires every session; a running turn finishes first and its slot is not counted as freeing), and `chat_manage discard` (deletes a chat only while it has no message and no attachment) — CHAT-03 holds over all three (`TestChat03_AdmitNeverExceedsTheBound` covers a warm request); the list row names its running turn (`turn_id`), so the Mac's Inbox strip keeps a live connector call approvable in any chat. CHAT-05: the artifact panel's writes go through `ChatArtifactWriting` (`ChatArtifactWriter`, `artifact_manage` only); `ArtifactChat05ScanTests` is unchanged and passes. LIVE-01's `testReaderList`: `ChatArtifactQueries.swift` is display-only now (its keep went to the engine), the deleted files left its lists. Merge with T9 (phone): `archive`, `discard`, `chat_warm` and `chat_sessions_retire` are `chat.sock` only — the hub's `chat_manage` refuses `archive` and `discard` (`TestChatManage_RenameSetsUserTitle`) and the phone's relay client answers all four `unsupported` without sending (`RelayChatClientTests.testProjectEditUnsupportedOnPhone`); the Mac's search-hit scroll is ChatUI's one `focusMessageID`/`followFocus` (the Mac's own `scrollTarget` is gone). No guard relaxed.
 
   | Deleted Swift guard | New home |
