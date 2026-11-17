@@ -26,6 +26,10 @@ public struct ChatListRowContent: Equatable {
     /// `ChatAge`'s label; an app with its own age words sets it.
     public var age: String
     public let pinned: Bool
+    /// The tool of the oldest pending approval while the chat waits (nil from an older engine).
+    public let pendingTool: String?
+    /// A complete answer the owner has not seen, whatever the dot shows first.
+    public let unread: Bool
 
     public init(_ conversation: ChatList.Conversation, now: Date, calendar: Calendar = .current) {
         id = conversation.id
@@ -33,6 +37,8 @@ public struct ChatListRowContent: Equatable {
         title = hasTitle ? conversation.title : Self.untitled
         lastLine = conversation.lastLine
         pinned = conversation.pinned
+        pendingTool = conversation.pendingTool
+        unread = conversation.unread
         switch conversation.state {
         case .waiting: (detail, dot) = (Self.waitingLine, .waiting)
         case .answering: (detail, dot) = (Self.answeringLine, .answering)

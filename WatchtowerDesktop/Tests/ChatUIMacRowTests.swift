@@ -193,6 +193,24 @@ final class ChatUIMacRowTests: XCTestCase {
         XCTAssertEqual(ChatHostText.mac.chooseSlackWorkspace, "Choose a workspace on the Mac before approving")
     }
 
+    /// The Chats panel's row says what it said before the unified chat (final re-review I5): the waiting tool by its
+    /// card title, the age from the last answer (not a later rename), the title bold while an answer is unread.
+    func testSidebarRowNamesTheToolAndAgesFromTheLastAnswer() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let waiting = ChatList.Conversation(id: 1, title: "Send it", updatedAt: now.addingTimeInterval(-60), state: .waiting,
+                                            lastAnswerAt: now.addingTimeInterval(-120), pendingTool: "send_slack_message",
+                                            unread: true)
+        let title = try XCTUnwrap(ReactionToolCatalog.info(for: "send_slack_message")?.title)
+        let row = ChatSidebarRow(content: ChatSidebarRow.content(waiting, now: now, showsProject: true))
+        XCTAssertNoThrow(try row.inspect().find(text: "Waiting for approval: \(title)"))
+        let renamed = ChatList.Conversation(id: 2, title: "Plan", updatedAt: now.addingTimeInterval(-60), state: .read,
+                                            lastLine: "Done.", lastAnswerAt: now.addingTimeInterval(-3 * 86_400))
+        let content = ChatSidebarRow.content(renamed, now: now, showsProject: true)
+        XCTAssertEqual(content.age, "3d", "the age counts from the last answer")
+        XCTAssertTrue(ChatSidebarRow.content(waiting, now: now, showsProject: true).unread)
+        XCTAssertFalse(content.unread)
+    }
+
     // MARK: - Artifacts, steps, sources, published pages
 
     func testArtifactCardShowsWritingThenOpens() throws {

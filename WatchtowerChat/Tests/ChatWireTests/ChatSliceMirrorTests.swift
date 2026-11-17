@@ -36,6 +36,17 @@ final class ChatSliceMirrorTests: XCTestCase {
         XCTAssertFalse(list.models[1].pdf)
         XCTAssertEqual(list.projects.map(\.name), ["Acme launch"])
         XCTAssertNil(list.error)
+        // The Mac panel's own words (final re-review I5): the last answer's time, the waiting tool, unread.
+        XCTAssertEqual(first.lastAnswerAt, Date(timeIntervalSince1970: 1_700_000_010))
+        XCTAssertTrue(first.unread, "an answering chat with an answer the owner has not seen")
+        XCTAssertEqual(list.conversations[1].pendingTool, "send_slack_message")
+        XCTAssertNil(list.conversations[1].lastAnswerAt)
+        XCTAssertFalse(list.conversations[1].unread)
+        // An older engine sends none of them.
+        let old = try decode(ChatList.Conversation.self, Data(#"{"id": 1, "updated_at": 1, "state": "unread"}"#.utf8))
+        XCTAssertNil(old.lastAnswerAt)
+        XCTAssertNil(old.pendingTool)
+        XCTAssertTrue(old.unread, "unread falls back to the state")
     }
 
     func testChatListErrorAndUnknownState() throws {

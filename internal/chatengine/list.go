@@ -100,6 +100,16 @@ type ListConversation struct {
 	// Inbox strip tells a connector call its chat still holds from one whose
 	// session ended.
 	TurnID string `json:"turn_id,omitempty"`
+	// LastAnswerAt is when the last answer was written (nil before any):
+	// the Mac's panel counts a row's age from it, as it did before the
+	// unified chat (ChatPanelRowState.secondLine).
+	LastAnswerAt *wiretime.Time `json:"last_answer_at,omitempty"`
+	// PendingTool is the tool of the oldest pending approval ("" when none
+	// waits): the panel's "Waiting for approval: <tool's title>".
+	PendingTool string `json:"pending_tool,omitempty"`
+	// Unread: a complete answer the owner has not seen, whatever State
+	// shows first (the panel's title is semibold while unread).
+	Unread bool `json:"unread,omitempty"`
 }
 
 type List struct {
@@ -113,9 +123,9 @@ type List struct {
 // for the phone: the main chat's conversations, not archived, pinned first
 // then newest, at most 200, each with its state and its last answer's first
 // line. The last answer is the newest complete assistant message on the
-// active branch (every message when there is no leaf). waiting = any
-// pending agent_actions row of the conversation (panelRows'
-// pending_approvals > 0); answering = a lease with a heartbeat in the last
+// active branch (every message when there is no leaf). waiting = a
+// pending agent_actions row of the conversation, the oldest one's tool
+// carried as pending_tool (panelRows' pending_tool); answering = a lease with a heartbeat in the last
 // 60 s.
 func chatListRows(ctx context.Context, tx *sql.Tx, now time.Time) ([]ListConversation, error) {
 	rows, err := tx.QueryContext(ctx, `
@@ -148,8 +158,9 @@ last_answer(conversation_id, message_id) AS (
 )
 SELECT c.id, c.title, c.pinned, c.updated_at, c.project_id, p.name, c.read_at,
        answer.created_at, substr(answer.text, 1, 2000),
-       EXISTS (SELECT 1 FROM agent_actions x
-               WHERE x.conversation_id = c.id AND x.status = 'pending'),
+       (SELECT x.tool FROM agent_actions x
+        WHERE x.conversation_id = c.id AND x.status = 'pending'
+        ORDER BY x.created_at, x.id LIMIT 1),
        l.owner, l.heartbeat_at_ms, l.turn_id
 FROM listed c
 LEFT JOIN chat_projects p ON p.id = c.project_id
@@ -171,13 +182,13 @@ ORDER BY c.pinned DESC, c.updated_at DESC, c.id DESC`, MaxListConversations)
 			readAt     sql.NullFloat64
 			answeredAt sql.NullFloat64
 			answer     sql.NullString
-			waiting    bool
+			pending    sql.NullString
 			owner      sql.NullString
 			heartbeat  sql.NullInt64
 			turnID     sql.NullString
 		)
 		if err := rows.Scan(&c.ID, &c.Title, &c.Pinned, &updated, &projectID, &project, &readAt,
-			&answeredAt, &answer, &waiting, &owner, &heartbeat, &turnID); err != nil {
+			&answeredAt, &answer, &pending, &owner, &heartbeat, &turnID); err != nil {
 			return nil, fmt.Errorf("reading the chat list: %w", err)
 		}
 		c.Title, _ = clipText(c.Title, maxLabel)
@@ -193,7 +204,13 @@ ORDER BY c.pinned DESC, c.updated_at DESC, c.id DESC`, MaxListConversations)
 			c.TurnID = turnID.String
 		}
 		unread := answeredAt.Valid && (!readAt.Valid || answeredAt.Float64 > readAt.Float64)
-		c.State = chatRowState(waiting, live, unread)
+		c.State = chatRowState(pending.Valid, live, unread)
+		c.Unread = unread
+		c.PendingTool, _ = clipText(pending.String, maxLabel)
+		if answeredAt.Valid {
+			at := secondsTime(answeredAt.Float64)
+			c.LastAnswerAt = &at
+		}
 		c.LastLine, _ = clipText(chatPreview(answer.String), MaxLastLine)
 		out = append(out, c)
 	}

@@ -5,8 +5,8 @@ import WatchtowerCore
 
 /// One chat in the Chats panel as it looked before the unified chat (spec 2026-10-26 §5.1; unified chat spec §2 "a
 /// move, not a redesign", final review I5), drawn for ChatUI's list row through `DesignKitChatStyle.listRow`: a 16 pt
-/// state dot column, then the title (semibold while unread) and the second line (waiting, answering, or the project,
-/// the last answer and its age). The panel adds the tab, the click, the menu and the hover ✕.
+/// state dot column, then the title (semibold while an answer is unread, whatever the state) and the second line
+/// (waiting with the tool's title, answering, or the project, the last answer and its age). The panel adds the tab, the click, the menu and the hover ✕.
 struct ChatSidebarRow: View {
     static let untitled = "New Chat"
     static let waitingLine = "Waiting for approval"
@@ -14,11 +14,12 @@ struct ChatSidebarRow: View {
 
     let content: ChatListRowContent
 
-    /// The panel's words for a conversation: its age as the panel counts it ("just now", "2h", "4d"), and the
-    /// project only at All chats (one project's chats are all its own).
+    /// The panel's words for a conversation: its age as the panel counts it ("just now", "2h", "4d"), from the last
+    /// answer (the chat's last change before any), and the project only at All chats (one project's chats are all
+    /// its own).
     static func content(_ conversation: ChatList.Conversation, now: Date, showsProject: Bool) -> ChatListRowContent {
         var content = ChatListRowContent(conversation, now: now)
-        content.age = TimeFormatting.shortAge(from: conversation.updatedAt, now: now)
+        content.age = TimeFormatting.shortAge(from: conversation.lastAnswerAt ?? conversation.updatedAt, now: now)
         if !showsProject { content.project = nil }
         return content
     }
@@ -29,7 +30,10 @@ struct ChatSidebarRow: View {
     /// neither), with the age after it.
     private var line: (text: String, age: String?) {
         switch state {
-        case .waitingForApproval: (Self.waitingLine, nil)
+        case .waitingForApproval:
+            // The tool by its approval card's title, never by its raw id.
+            (content.pendingTool.flatMap { ReactionToolCatalog.info(for: $0)?.title }
+                .map { "\(Self.waitingLine): \($0)" } ?? Self.waitingLine, nil)
         case .answering: (Self.answeringLine, nil)
         case .unread, .read:
             ([content.project, content.lastLine].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "),
@@ -46,7 +50,7 @@ struct ChatSidebarRow: View {
                 .accessibilityHidden(state.secondLineNamesState)
             VStack(alignment: .leading, spacing: 0) {
                 Text(content.hasTitle ? content.title : Self.untitled)
-                    .fontWeight(state == .unread ? .semibold : .regular)
+                    .fontWeight(content.unread ? .semibold : .regular)
                     .lineLimit(1)
                     .truncationMode(.tail)
                 // A long preview is cut; its age after it never is.

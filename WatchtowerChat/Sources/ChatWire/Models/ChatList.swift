@@ -57,6 +57,14 @@ public struct ChatList: Decodable, Hashable, Sendable {
         /// The running turn's id while one runs (absent from an older engine): a connector call of that turn is
         /// still held by its session.
         public let turnID: String?
+        /// When the last answer was written; nil before any, or from an older engine (the Mac's panel then counts
+        /// the row's age from `updatedAt`).
+        public let lastAnswerAt: Date?
+        /// The tool of the oldest pending approval while the chat waits (absent from an older engine).
+        public let pendingTool: String?
+        /// A complete answer the owner has not seen, whatever `state` shows first (an `unread` state always is; an
+        /// older engine sends nothing else).
+        public let unread: Bool
 
         public init(
             id: Int64,
@@ -67,7 +75,10 @@ public struct ChatList: Decodable, Hashable, Sendable {
             state: State,
             lastLine: String = "",
             leaseOwner: String? = nil,
-            turnID: String? = nil
+            turnID: String? = nil,
+            lastAnswerAt: Date? = nil,
+            pendingTool: String? = nil,
+            unread: Bool = false
         ) {
             self.id = id
             self.title = title
@@ -78,6 +89,9 @@ public struct ChatList: Decodable, Hashable, Sendable {
             self.lastLine = lastLine
             self.leaseOwner = leaseOwner
             self.turnID = turnID
+            self.lastAnswerAt = lastAnswerAt
+            self.pendingTool = pendingTool
+            self.unread = unread || state == .unread
         }
 
         public init(from decoder: Decoder) throws {
@@ -91,10 +105,13 @@ public struct ChatList: Decodable, Hashable, Sendable {
             lastLine = try c.decodeIfPresent(String.self, forKey: .lastLine) ?? ""
             leaseOwner = try c.decodeIfPresent(String.self, forKey: .leaseOwner)
             turnID = try c.decodeIfPresent(String.self, forKey: .turnID).flatMap { $0.isEmpty ? nil : $0 }
+            lastAnswerAt = try c.decodeIfPresent(Date.self, forKey: .lastAnswerAt)
+            pendingTool = try c.decodeIfPresent(String.self, forKey: .pendingTool).flatMap { $0.isEmpty ? nil : $0 }
+            unread = (try c.decodeIfPresent(Bool.self, forKey: .unread) ?? false) || state == .unread
         }
 
         enum CodingKeys: String, CodingKey {
-            case id, title, pinned, updatedAt, project, state, lastLine, leaseOwner
+            case id, title, pinned, updatedAt, project, state, lastLine, leaseOwner, lastAnswerAt, pendingTool, unread
             case turnID = "turnId"
         }
     }
