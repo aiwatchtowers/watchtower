@@ -618,6 +618,7 @@ enum DesignShotCatalog {
             + SlackAdaptiveSyncShotFixtures.shots // Adaptive Slack sync, Statistics → Channels (#1709).
             + IPhoneChatShotFixtures.shots // The iPhone chat's Mac side (#1791), mockup 4b.
             + UnifiedChatShotFixtures.shots // The unified chat's new states and baselines (#1822 T0).
+            + ApprovalCardShotFixtures.shots // The approval card before and after its move to ChatUI (#1822 T15).
     }
 }
 
@@ -663,6 +664,7 @@ enum DesignShotFixtures {
         ClosedAsksShotFixtures.cleanUp()
         IPhoneChatShotFixtures.cleanUp()
         UnifiedChatShotFixtures.cleanUp()
+        ApprovalCardShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil
         UserDefaults().removePersistentDomain(forName: defaultsSuite)
