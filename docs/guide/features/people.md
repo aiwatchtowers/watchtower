@@ -1,6 +1,6 @@
 # People
 
-People shows a card for each colleague: how they communicate, what role they play in decisions, what they got done, and how best to work with them. The card for you has two tabs and shows how Watchtower reads your own work. A **Team Summary** sits above the list.
+People shows a card for each colleague you work with: what they work on, what role they play in decisions, and how best to work with them. A card never scores, monitors or judges anyone: it holds no activity hours, message volume, red flags or comparison with the team. The card for you has two tabs and shows how Watchtower reads your own work. A **Team Summary** sits above the list.
 
 ## Why use it
 
@@ -10,7 +10,9 @@ Before a 1:1, a hard thread or a first message to someone new, a card gives you 
 
 **Cards are built from digests, once a day.** The daemon generates cards at most every 24 hours. Each run covers the last 7 days of Slack, ending at the start of today. The first run on a fresh install ends now, so cards do not wait for midnight.
 
-**A person needs enough activity.** Anyone with at least 3 messages in the window gets a card. With 3 or more digest observations about them, or 10 or more messages, it is a full card. Otherwise it is a lighter one, and the screen says "Not enough data for full analysis." The run as a whole is skipped only when the digests hold no observations at all.
+**Only people you work with directly.** A colleague gets a card when you shared a DM or group DM, a thread or a mention with them in the window and they wrote at least 3 messages; people you only read in shared channels get none. Without a known owner identity there are no cards at all.
+
+**Full or light.** With 3 or more digest observations about them, or 10 or more messages, it is a full card. Otherwise it is a lighter one, and the screen says "Not enough data for full analysis." The run as a whole is skipped only when the digests hold no observations at all.
 
 **The Team Summary comes with the run.** After the cards, one more AI call writes the team-level summary: what the team worked on, and **Tips**. It never singles anyone out.
 
@@ -55,14 +57,15 @@ action: nav:people
 -->
 
 1. Open **People**. **My Card** is pinned first, then everyone else. Select **Team Summary** for the team view.
-2. A card shows the summary, **Communication Guide**, **Decision Style**, **Tactics**, **Red Flags**, **Highlights**, **Accomplishments**, an activity-hours chart and a week-by-week history. When Jira is connected and the person has work there, a **Delivery** box adds closed issues, cycle time, velocity and open issues, plus **Expertise** tags.
-3. On **My Card**, the **Connections** tab draws your manager, reports and peers around you. Its interaction scores stay empty today (see [Known issues](../troubleshooting/known-issues.md)). **Edit Connections** changes who they are; the briefing and other cards use that.
-4. The box **How the system understands you** appears on your card when you wrote custom profile context.
+2. A card starts with what it is based on ("Based on 42 messages in 5 channels you share"), then the summary, **Decision role**, **Communication Guide**, **Tactics**, **Accomplishments**, **Highlights** and a week-by-week history. When Jira is connected and the person has work there, a **Delivery** box adds closed issues, cycle time, velocity and open issues, plus **Expertise** tags.
+3. A colleague asked you not to keep a card? Press **Stop card for this person**, then **Stop card**. Their card is deleted and no new one is made; messages, digests, search and **Find experts** are not affected. Their view then offers **Make cards again**.
+4. On **My Card**, the **Connections** tab lists **Your org links**: the manager, peers and reports you entered. **Edit Connections** changes them; the briefing and other cards use that.
+5. The box **How the system understands you** appears on your card when you wrote custom profile context.
 
 ## When it's empty or wrong
 
 - **"No people cards yet"**: cards need digests first, then up to a day for the first run. On a new install expect them after the first cycle that produced digests.
-- **A colleague has no card.** They had fewer than 3 messages in the last 7 days in non-DM channels, or they are a bot or a deleted account.
+- **A colleague has no card.** You shared no DM, thread or mention with them in the last 7 days, they wrote fewer than 3 messages, you stopped their card, or they are a bot or a deleted account.
 - **A card says "Not enough data."** It was built from thin signals and improves as messages accumulate.
 - **The card is a day old.** Cards refresh at most daily.
 - **Your reports or manager look wrong.** Fix them under **Edit Connections** on **My Card**.

@@ -3,11 +3,13 @@ import DesignKit
 import SwiftUI
 import WatchtowerCore
 @testable import WatchtowerDesktop
+import WatchtowerTestSupport
 
-/// Design-only scenes for the Slack Developer Policy hygiene spec (#1769,
+/// Scenes of the Slack Developer Policy hygiene spec (#1769,
 /// `docs/superpowers/specs/2026-11-17-slack-policy-hygiene-design.md` §8).
-/// Nothing here is wired into the app; the strings are
-/// `SlackPolicyMockCopy`. Sample data only (`acme`, made-up people).
+/// The People frames render the real views on fixture data; the others are
+/// still design-only. The strings are `SlackPolicyMockCopy`. Sample data
+/// only (`acme`, made-up people).
 @MainActor
 enum SlackPolicyShotFixtures {
     enum Frame: String, CaseIterable {
@@ -53,14 +55,8 @@ enum SlackPolicyShotFixtures {
             SetupDisclosureMock()
         case .connectDisclosure:
             ConnectDisclosureMock()
-        case .personCard, .personStopConfirm, .personStopped:
-            PersonMock(frame: frame)
-        case .peopleList:
-            PeopleListMock()
-        case .teamSummary:
-            TeamSummaryMock()
-        case .orgLinks, .orgLinksEmpty:
-            OrgLinksMock(empty: frame == .orgLinksEmpty)
+        case .personCard, .personStopConfirm, .personStopped, .peopleList, .teamSummary, .orgLinks, .orgLinksEmpty:
+            PeopleShotScenes.scene(frame)
         case .digestHeader:
             DigestHeaderMock()
         }
@@ -253,142 +249,110 @@ private struct ConnectDisclosureMock: View {
     }
 }
 
-// MARK: - People
+// MARK: - People (the real views)
 
-private struct PersonMock: View {
-    let frame: SlackPolicyShotFixtures.Frame
-
-    var body: some View {
-        Page {
-            HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                Text(Copy.personName).font(.title2.weight(.semibold))
-                if frame != .personStopped {
-                    Text(Copy.personPeriod).font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer(minLength: Spacing.medium)
-                if frame == .personCard {
-                    Button(Copy.stopCard) {}.buttonStyle(.kitQuiet)
-                }
+/// People → person card, Stop card, People list rows, Team Summary and the
+/// owner's org links, rendered from the real views on fixture data.
+@MainActor
+private enum PeopleShotScenes {
+    @ViewBuilder static func scene(_ frame: SlackPolicyShotFixtures.Frame) -> some View {
+        switch frame {
+        case .personCard, .personStopConfirm:
+            if let card = dana {
+                PersonDetailView(
+                    card: card,
+                    userName: "dana",
+                    history: [],
+                    userNameResolver: name,
+                    onStopCard: {},
+                    confirmingStop: frame == .personStopConfirm
+                )
             }
-            switch frame {
-            case .personStopped:
-                VStack(alignment: .leading, spacing: Spacing.regular) {
-                    Text(Copy.stoppedLine).font(.callout).foregroundStyle(.secondary)
-                    Button(Copy.makeAgain) {}.buttonStyle(.kitSecondary)
-                }
-            case .personStopConfirm:
-                VStack(alignment: .leading, spacing: Spacing.regular) {
-                    Text(Copy.stopTitle).font(.headline)
-                    Text(Copy.stopBody).font(.callout).fixedSize(horizontal: false, vertical: true)
-                    HStack(spacing: Spacing.regular) {
-                        Spacer()
-                        Button(Copy.cancel) {}.buttonStyle(.kitSecondary)
-                        Button(Copy.stopConfirm) {}.buttonStyle(.kitDestructive)
-                    }
-                }
-                .padding(Spacing.medium)
-                .card()
-            default:
-                Text(Copy.basisLine).font(.caption).foregroundStyle(.secondary)
-                Text(Copy.personSummary).font(.callout).fixedSize(horizontal: false, vertical: true)
-                section(Copy.decisionRoleTitle, "arrow.triangle.branch") {
-                    Chip(text: Copy.decisionRole, color: Tone.status("blue"))
-                }
-                section(Copy.guideTitle, "bubble.left.and.text.bubble.right") {
-                    Text(Copy.guideText).font(.callout).fixedSize(horizontal: false, vertical: true)
-                }
-                section(Copy.tacticsTitle, "lightbulb") {
-                    ForEach(Copy.tactics, id: \.self) { Text("• " + $0).font(.callout) }
-                }
-            }
-        }
-    }
-}
-
-/// A titled card section, as on the person view.
-private func section<Content: View>(
-    _ title: String,
-    _ icon: String,
-    @ViewBuilder _ content: () -> Content
-) -> some View {
-    VStack(alignment: .leading, spacing: Spacing.regular) {
-        Label(title, systemImage: icon).font(.subheadline.weight(.semibold))
-        content()
-    }
-    .padding(Spacing.medium)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .card()
-}
-
-/// People list rows: role and work topics, no red-flag mark, no message
-/// count or volume change.
-private struct PeopleListMock: View {
-    var body: some View {
-        Page {
-            Text(Copy.peopleTitle).font(.title2.weight(.semibold))
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                ForEach(Copy.peopleRows, id: \.name) { row in
-                    HStack(spacing: Spacing.regular) {
-                        Text(row.name).font(.body.weight(.medium))
-                        Chip(text: row.role, color: Tone.status("blue"))
-                        Text(row.line).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        Spacer(minLength: Spacing.regular)
-                    }
-                    .padding(Spacing.regular)
-                    .card()
-                }
-            }
-        }
-    }
-}
-
-/// Team Summary without Needs Attention: the summary and the tips.
-private struct TeamSummaryMock: View {
-    var body: some View {
-        Page {
-            HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                Text(Copy.teamSummaryTitle).font(.title2.weight(.semibold))
-                Text(Copy.personPeriod).font(.caption).foregroundStyle(.secondary)
-            }
-            Text(Copy.teamSummary).font(.callout).fixedSize(horizontal: false, vertical: true)
-            section(Copy.tipsTitle, "lightbulb") {
-                ForEach(Copy.tips, id: \.self) { Text("• " + $0).font(.callout) }
-            }
-        }
-    }
-}
-
-/// People → Connections: only the org links the owner entered.
-private struct OrgLinksMock: View {
-    let empty: Bool
-
-    var body: some View {
-        Page {
-            HStack(spacing: Spacing.regular) {
-                Text(Copy.orgLinksTitle).font(.title3.weight(.semibold))
-                Spacer(minLength: Spacing.medium)
-                Button {} label: { Label(Copy.editConnections, systemImage: "pencil") }.buttonStyle(.kitSecondary)
-            }
-            if empty {
-                Text(Copy.orgLinksEmpty).font(.callout).foregroundStyle(.secondary)
-            } else {
+        case .personStopped:
+            PersonStoppedView(userName: "dana") {}
+        case .peopleList:
+            Page {
+                Text(Copy.peopleTitle).font(.title2.weight(.semibold))
                 VStack(alignment: .leading, spacing: Spacing.small) {
-                    ForEach(Copy.orgLinks, id: \.name) { link in
-                        HStack(spacing: Spacing.regular) {
-                            Text(link.role)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .frame(width: 70, alignment: .leading)
-                            Text(link.name).font(.body.weight(.medium))
-                            Spacer(minLength: Spacing.regular)
-                        }
+                    ForEach(rows, id: \.userID) { card in
+                        PeoplePersonRow(card: card, userName: name(card.userID)) { EmptyView() }
                     }
                 }
-                .padding(Spacing.medium)
-                .card()
             }
+        case .teamSummary:
+            TeamSummaryDetailView(summary: teamSummary)
+        case .orgLinks, .orgLinksEmpty:
+            ConnectionsView(
+                profile: frame == .orgLinks ? orgProfile : nil,
+                allCards: [],
+                userNameResolver: name
+            ) { _, _, _ in }
+            .detailBackground()
+        default:
+            EmptyView()
         }
     }
+
+    private static func name(_ userID: String) -> String {
+        ["1:UDANA": "dana", "1:ULEE": "lee", "1:USAM": "sam"][userID] ?? userID
+    }
+
+    /// Nov 3 – Nov 16, the mockups' window.
+    private static func day(_ day: Int) -> Double {
+        let date = Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: day, hour: 12))
+        return date?.timeIntervalSince1970 ?? 0
+    }
+
+    private static func json(_ items: [String]) -> String {
+        (try? String(data: JSONEncoder().encode(items), encoding: .utf8)) ?? "[]"
+    }
+
+    /// The cards, written to a test database and read back as the view
+    /// model reads them.
+    private static let cards: [PeopleCard] = {
+        do {
+            let (manager, _) = try TestDatabase.createDatabaseManager()
+            return try manager.dbPool.write { db in
+                for (index, row) in Copy.peopleRows.enumerated() {
+                    let userID = ["1:UDANA", "1:ULEE", "1:USAM"][index]
+                    let isDana = index == 0
+                    try TestDatabase.insertPeopleCard(
+                        db, userID: userID, periodFrom: day(3), periodTo: day(16),
+                        messageCount: isDana ? 42 : 30 - index, channelsActive: isDana ? 5 : 3,
+                        summary: isDana ? Copy.personSummary : row.line,
+                        decisionRole: row.role, highlights: "[]",
+                        communicationGuide: isDana ? Copy.guideText : "",
+                        tactics: isDana ? json(Copy.tactics) : "[]"
+                    )
+                }
+                return try PeopleCardQueries.fetchForWindow(db, from: day(3), to: day(16))
+            }
+        } catch {
+            return []
+        }
+    }()
+
+    private static var dana: PeopleCard? { cards.first { $0.userID == "1:UDANA" } }
+
+    /// The list's rows in the mockups' order, the person's summary line
+    /// standing in for the topics.
+    private static var rows: [PeopleCard] {
+        ["1:UDANA", "1:ULEE", "1:USAM"].compactMap { id in
+            guard var card = cards.first(where: { $0.userID == id }) else { return nil }
+            if let row = Copy.peopleRows.first(where: { $0.name == "@" + name(id) }) { card.summary = row.line }
+            return card
+        }
+    }
+
+    private static let teamSummary = PeopleCardSummary(
+        id: 1, periodFrom: day(3), periodTo: day(16), summary: Copy.teamSummary, attention: "[]",
+        tips: json(Copy.tips), model: "", inputTokens: 0, outputTokens: 0, costUSD: 0, promptVersion: 1,
+        createdAt: ""
+    )
+
+    private static let orgProfile = UserProfile(
+        slackUserID: "1:UOWNER", peers: json(["1:USAM", "1:UDANA"]), manager: "1:ULEE"
+    )
 }
 
 // MARK: - Digest detail

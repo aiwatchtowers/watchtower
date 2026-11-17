@@ -23,6 +23,21 @@ struct PeopleListView: View {
                         .id(userID)
                         .frame(minWidth: 400, idealWidth: 500)
                         .transition(.move(edge: .trailing).combined(with: .opacity))
+                    } else if vm.isCardStopped(userID) {
+                        PersonStoppedView(
+                            userName: vm.userName(for: userID),
+                            onClose: { selectedUserID = nil },
+                            onMakeAgain: {
+                                Task {
+                                    await vm.makeCardsAgain(userID: userID)
+                                    // No card until the next people run.
+                                    if !vm.isCardStopped(userID) { selectedUserID = nil }
+                                }
+                            },
+                            isPending: vm.isStopPending(userID)
+                        )
+                        .id(userID)
+                        .frame(minWidth: 400, idealWidth: 500)
                     } else if let card = vm.cards.first(where: { $0.userID == userID }) {
                         PersonDetailView(
                             card: card,
@@ -32,12 +47,15 @@ struct PeopleListView: View {
                             onClose: { selectedUserID = nil },
                             isCurrentUser: userID == vm.currentUserID,
                             profile: userID == vm.currentUserID ? vm.currentProfile : nil,
-                            interactions: userID == vm.currentUserID ? vm.interactions : [],
                             onUpdateConnections: { reports, peers, manager in
                                 Task { await vm.updateConnections(reports: reports, peers: peers, manager: manager) }
                             },
                             allCards: vm.cards,
-                            dbManager: appState.databaseManager
+                            dbManager: appState.databaseManager,
+                            onStopCard: userID == vm.currentUserID
+                                ? nil
+                                : { Task { await vm.stopCard(userID: userID) } },
+                            isStopPending: vm.isStopPending(userID)
                         )
                         .id(userID)
                         .frame(minWidth: 400, idealWidth: 500)
@@ -154,13 +172,10 @@ struct PeopleListView: View {
 
     private func statsAndSearch(_ vm: PeopleViewModel) -> some View {
         VStack(spacing: 0) {
-            HStack(spacing: 16) {
+            HStack(spacing: Spacing.large) {
                 StatBadge(value: "\(vm.cards.count)", label: "users")
-                if vm.redFlagCount > 0 {
-                    StatBadge(value: "\(vm.redFlagCount)", label: "flags", color: .red)
-                }
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, Spacing.medium)
             .padding(.bottom, 6)
 
             HStack {
@@ -208,53 +223,28 @@ struct PeopleListView: View {
     @ViewBuilder
     private func teamSummaryRow(_ vm: PeopleViewModel) -> some View {
         if let cs = vm.cardSummary, searchText.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: Spacing.regular) {
                 HStack {
-                    Image(systemName: "person.3.fill")
-                        .foregroundStyle(.orange)
-                        .font(.caption)
-                    Text("Team Summary")
-                        .font(.caption)
-                        .fontWeight(.bold)
+                    Label(PeopleCardCopy.teamSummaryTitle, systemImage: "person.3")
+                        .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                     Spacer()
                     Image(systemName: "chevron.right")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
-
                 Text(cs.summary)
                     .font(.subheadline)
                     .lineLimit(3)
-
-                let attention = cs.parsedAttention
-                if !attention.isEmpty {
-                    HStack(alignment: .top, spacing: 4) {
-                        Image(systemName: "exclamationmark.circle.fill")
-                            .foregroundStyle(.orange)
-                            .font(.caption)
-                        Text("\(attention.count) item\(attention.count == 1 ? "" : "s") need attention")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
             }
-            .padding(10)
+            .padding(Spacing.cozy)
             .contentShape(Rectangle())
             .onTapGesture {
                 selectedUserID = Self.teamSummaryID
             }
-            .background(
-                selectedUserID == Self.teamSummaryID
-                    ? Color.orange.opacity(0.15)
-                    : Color.orange.opacity(0.05),
-                in: RoundedRectangle(cornerRadius: 8)
-            )
-            .padding(.horizontal, 8)
-            .padding(.bottom, 8)
-
-            Divider()
-                .padding(.horizontal, 8)
+            .card(selected: selectedUserID == Self.teamSummaryID)
+            .padding(.horizontal, Spacing.regular)
+            .padding(.bottom, Spacing.regular)
         }
     }
 
@@ -296,9 +286,6 @@ struct PeopleListView: View {
                 Text("@\(vm.userName(for: card.userID))")
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text("\(card.messageCount) msgs")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             HStack(spacing: 8) {
@@ -323,77 +310,51 @@ struct PeopleListView: View {
                     .padding(.vertical, 2)
                     .background(Color.accentColor.opacity(0.1), in: Capsule())
             }
-
-            if !vm.interactions.isEmpty {
-                let connCount = vm.interactions.count
-                let orgCount = (vm.currentProfile?.decodedReports.count ?? 0)
-                    + (vm.currentProfile?.decodedPeers.count ?? 0)
-                    + (vm.currentProfile?.manager.isEmpty == false ? 1 : 0)
-                Text("\(connCount) connections \u{00B7} \(orgCount) org links")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         }
         .padding(.vertical, 4)
     }
 
     private func personRow(_ card: PeopleCard, vm: PeopleViewModel) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(card.styleEmoji)
-                Text("@\(vm.userName(for: card.userID))")
-                    .fontWeight(.medium)
+        PeoplePersonRow(card: card, userName: vm.userName(for: card.userID)) {
+            StarToggleButton(isStarred: vm.isPersonStarred(card.userID)) {
+                Task { await vm.toggleStarredPerson(card.userID) }
+            }
+            .disabled(vm.isStarPending(card.userID))
+        }
+    }
+}
 
-                StarToggleButton(isStarred: vm.isPersonStarred(card.userID)) {
-                    Task { await vm.toggleStarredPerson(card.userID) }
+/// A People list row: the person, their decision role and work topics. No
+/// red-flag mark, message count or volume change (#1769, A12).
+struct PeoplePersonRow<Accessory: View>: View {
+    let card: PeopleCard
+    let userName: String
+    @ViewBuilder var accessory: Accessory
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.small) {
+            HStack(spacing: Spacing.regular) {
+                Text("@\(userName)").font(.body.weight(.medium))
+                accessory
+                if !card.decisionRole.isEmpty {
+                    Chip(text: card.decisionRole, color: Tone.status("blue"))
                 }
-                .disabled(vm.isStarPending(card.userID))
-
-                Spacer()
-
+                Spacer(minLength: Spacing.regular)
                 if card.isInsufficientData {
                     Image(systemName: "info.circle")
-                        .foregroundStyle(.orange)
                         .font(.caption)
-                } else if card.hasRedFlags {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.red)
-                        .font(.caption)
-                }
-
-                Text("\(card.messageCount) msgs")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack(spacing: 8) {
-                Text(card.communicationStyle)
-                    .font(.caption)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.accentColor.opacity(0.1), in: Capsule())
-
-                Text(card.decisionRole)
-                    .font(.caption)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.secondary.opacity(0.1), in: Capsule())
-
-                if card.volumeChangePct != 0 {
-                    Text(String(format: "%+.0f%%", card.volumeChangePct))
-                        .font(.caption)
-                        .foregroundStyle(card.volumeChangePct < -30 ? .red : .secondary)
+                        .foregroundStyle(.secondary)
+                        .help("Not enough data for full analysis")
                 }
             }
-
             if !card.summary.isEmpty {
                 Text(card.summary)
-                    .font(.subheadline)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, Spacing.small)
         .opacity(card.isInsufficientData ? 0.6 : 1.0)
     }
 }
