@@ -128,12 +128,12 @@ since: 0.27.0
 action: nav:chat
 -->
 
-1. Open **Chats**. A start page offers a composer, starter prompts, and your pinned and recent chats beside [the Chats panel](#the-chats-panel). If you left a chat less than two hours ago, the tab reopens it instead. A chat with a reply running, or an unsent draft or file, always reopens.
+1. Open **Chats**. A start page offers a composer, starter prompts and your recent chats beside [the Chats panel](#the-chats-panel). If you left a chat less than two hours ago, the tab reopens it instead. A chat with a reply running, or an unsent draft or file, always reopens.
 2. Type and press Enter (Shift+Enter adds a line). **Stop** (Esc) keeps what was written and offers **Continue**. **Edit** your message or **Regenerate** a reply on hover; every version is kept.
 3. Type `@` to point at a person, Slack channel, Jira issue, target or track. Type `/` at the start to load one of your enabled skills.
-4. Attach files with the paperclip, drag and drop, or ⌘V: images (PNG, JPEG, GIF, WebP) up to 5 MB, PDFs up to 32 MB, text-like files up to 256 KB, 30 MB per message. Files are stored privately and deleted with their chat.
+4. Attach files with the paperclip, drag and drop, or ⌘V: images (PNG, JPEG, GIF, WebP) up to 5 MB, PDFs up to 32 MB, text-like files up to 256 KB, 30 MB per message. Files are deleted with their chat.
 5. ⌘V attaches copied files, screenshots, images or PDFs; other images become PNGs, shrunk if over 5 MB. A text paste of 10,000 characters or more, up to 256 KB, offers **Attach as File** (⌘Z puts the text back) or **Keep as Text**.
-6. **New chat** is ⌘N (the **+** in the panel header); right-click a chat to rename, pin, move to a project, archive or delete. A title comes after the first reply; one you set is kept.
+6. **New chat** is ⌘N (the **+** in the panel header); ⌘K searches the text of every message. Right-click a chat to rename, pin, move to a project, archive or delete. A title comes after the first reply; one you set is kept.
 
 ### The Chats panel
 <!-- learn

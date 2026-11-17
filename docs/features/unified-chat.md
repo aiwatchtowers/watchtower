@@ -42,7 +42,7 @@ iPhone:  ChatUI -> RelayChatClient --relay--> hub actions/slices -----+--> chate
 
 ### Repeated sends
 
-`chat_turn.client_key` is stored on the owner row (`chat_messages.client_key`, unique per conversation, migration 00192). A repeated key is answered with the turn it already started, also after a daemon restart, so a send whose echo was lost to a dropped socket is neither lost nor duplicated. A regenerate stores the key on the new reply row (the owner row is reused); a regenerate retried after a lost echo is matched by that row's key, with the same effect. Clients keep the text in the composer until the engine's echo is `applied`.
+`chat_turn.client_key` is stored on the owner row (`chat_messages.client_key`, unique per conversation, migration 00194). A repeated key is answered with the turn it already started, also after a daemon restart, so a send whose echo was lost to a dropped socket is neither lost nor duplicated. A regenerate stores the key on the new reply row (the owner row is reused); a regenerate retried after a lost echo is matched by that row's key, with the same effect. Clients keep the text in the composer until the engine's echo is `applied`.
 
 ## Parts and fallbacks
 

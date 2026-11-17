@@ -263,7 +263,7 @@
   - `TestChat01_RefusedTurnWritesNothing`: a refused `Turn` (busy, invalid, conversation gone) leaves `chat_messages` unchanged.
   - `TestChatengine_RepeatedClientKeyAppliesOnce`: two `Turn`s with the same `ClientKey` → the same `Started` (owner, assistant and turn ids), one owner row (Review Focus 2).
   - `TestChatengine_ClientKeySurvivesRestart`: engine A applies a key and is closed; engine B over the same database gets the same key → the existing turn's echo (ids read back by `(conversation_id, client_key)`), and no new row; a concurrent duplicate insert hits the unique index and is answered the same way.
-  - `TestMigration00192_ClientKeyUniquePerConversation` (`internal/db`): two NULL keys pass; the same key twice in one conversation fails; the same key in two conversations passes.
+  - `TestMigration00194_ClientKeyUniquePerConversation` (`internal/db`): two NULL keys pass; the same key twice in one conversation fails; the same key in two conversations passes.
   - `TestChatengine_SubscriberSeesForeignTurnLive`: a subscriber with `Client{Kind:"mac"}` receives `message_upsert` for a turn started by a `Client{Kind:"phone"}` `Do("chat_turn")`, carrying the live text (G6).
   - `TestChatengine_FeedCoalescedAt150ms`: 20 text deltas in 100 ms → at most one `message_upsert` per 150 ms window, and the last event carries the full text.
   - `TestChatengine_ListCoalescedAt500ms`: the same check for `list_update` at 500 ms.
@@ -277,7 +277,7 @@
   - The per-conversation lock is a `map[int64]*turnState` under one mutex.
   - Live state replaces the runner's `Live`.
   - Each subscription has a 256-slot channel and a coalescing goroutine driven by `Config.Clock` timers (synctest drives them).
-  - A repeated `client_key` is found by the unique index on `chat_messages (conversation_id, client_key)` (migration 00192); there is no in-memory key store.
+  - A repeated `client_key` is found by the unique index on `chat_messages (conversation_id, client_key)` (migration 00194); there is no in-memory key store.
 - [ ] **Step 5: Rewire the hub minimally.**
   - `newChatRunner` returns `chatengine.New(...)` with `Exe`, `DBPath`, `Dir: <hub dir>` (until T4), the hub's store options and the title hook.
   - `OnChange` → `publishSoon(KindChatFeed, KindChatList)`, `OnTurnEnd` → `chatTurnEnded`.
@@ -1076,7 +1076,7 @@
   - the part kinds and fallback rules;
   - the lifecycle (detach/reattach, the marker, the shutdown paths);
   - the Go↔Swift fixtures (`parts.json`, `question_parse_cases.json`, `compose_cases.json`, `entity_search_cases.json`, `socket_paths.json`, `artifact_parse_cases.json`);
-  - the §12 v1 limits plus this plan's: no phone project editor and no `chat_turn_leases` drop yet; the `chat_messages.client_key` column (migration 00192).
+  - the §12 v1 limits plus this plan's: no phone project editor and no `chat_turn_leases` drop yet; the `chat_messages.client_key` column (migration 00194).
 - [ ] **Step 2: Update the notes, the inventory, CLAUDE.md and the guide.**
 - [ ] **Step 3: Verify.** Run `go test ./docs/guide` (8 KB cap) and `bash scripts/leak-check.sh` over the diff, if run locally. Expected: PASS.
 - [ ] **Step 4: Commit.** `docs: unified chat — inventory, feature notes, guide (#1822 T11)`

@@ -2475,7 +2475,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     parent_id       INTEGER REFERENCES chat_messages(id) ON DELETE CASCADE,
     error_code      TEXT,
     error_message   TEXT,
-    client_key      TEXT                                 -- the client's id of the chat_turn that inserted this row; NULL = none (00192)
+    client_key      TEXT                                 -- the client's id of the chat_turn that inserted this row; NULL = none (00194)
 );
 CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation ON chat_messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_parent ON chat_messages(parent_id);
