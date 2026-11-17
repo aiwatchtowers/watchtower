@@ -1,7 +1,6 @@
 import AppKit
 import DesignKit
 import SwiftUI
-@testable import WatchtowerDesktop
 import WatchtowerCore
 @testable import WatchtowerDesktop
 
