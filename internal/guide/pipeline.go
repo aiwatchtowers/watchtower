@@ -404,6 +404,9 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 	var skipped int
 	skip := func(userID string) {
 		skipped++
+		// A skip is no step: the previous card's metrics must not be
+		// recorded for it by an OnProgress consumer.
+		p.clearLastStep()
 		p.progress(int(completed.Load())+skipped, totalUsers, fmt.Sprintf("@%s skipped (excluded)", p.userName(userID)))
 	}
 	var materialErr error
@@ -1374,6 +1377,17 @@ func (p *Pipeline) userName(id string) string {
 		}
 	}
 	return id
+}
+
+// clearLastStep zeroes the LastStep* metrics, so a progress event that is no
+// AI step (a skipped person) records none.
+func (p *Pipeline) clearLastStep() {
+	p.LastStepMessageCount = 0
+	p.LastStepPeriodFrom = time.Time{}
+	p.LastStepPeriodTo = time.Time{}
+	p.LastStepDurationSeconds = 0
+	p.LastStepInputTokens = 0
+	p.LastStepOutputTokens = 0
 }
 
 func (p *Pipeline) progress(completed, total int, status string) {

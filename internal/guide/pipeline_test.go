@@ -791,3 +791,41 @@ func TestPrunePreUpgradeCards_Helper(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, card)
 }
+
+// TestPeopleExclude_SkipRecordsNoStep: the progress event of a person
+// excluded mid-run carries no step metrics, so an OnProgress consumer that
+// records pipeline steps (cmd/people.go) records none for it, not the
+// previous card's.
+func TestPeopleExclude_SkipRecordsNoStep(t *testing.T) {
+	database := testDB(t)
+	from, to := seedLowDataUsers(t, database)
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	gen := &excludingGenerator{
+		mockGenerator: mockGenerator{response: batchCardJSON("1:U1", "1:U2")},
+		database:      database, userID: "1:U2",
+	}
+	pipe := New(database, cfg, gen, testLogger())
+	pipe.ForceRegenerate = true
+	var stepped, skippedEvents int
+	pipe.OnProgress = func(_, _ int, status string) {
+		switch {
+		case strings.Contains(status, "skipped"):
+			skippedEvents++
+			assert.Zero(t, pipe.LastStepMessageCount, status)
+			assert.Zero(t, pipe.LastStepDurationSeconds, status)
+			assert.Zero(t, pipe.LastStepInputTokens, status)
+			assert.Zero(t, pipe.LastStepOutputTokens, status)
+			assert.True(t, pipe.LastStepPeriodFrom.IsZero(), status)
+		case strings.Contains(status, "done (batch)"):
+			stepped++
+			assert.Positive(t, pipe.LastStepMessageCount, status)
+		}
+	}
+
+	n, err := pipe.RunForWindow(context.Background(), from, to)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	assert.Equal(t, 1, stepped)
+	assert.Equal(t, 1, skippedEvents)
+}
