@@ -237,6 +237,49 @@ final class ChatTurnLeaseTests: XCTestCase {
         XCTAssertNil(try lease(conv))
     }
 
+    /// A Stop pressed while a send waits for `chat.recover` (fix round 2)
+    /// wins: the turn goes out once the recovery is done and is stopped at
+    /// its `started`, like a held turn's Stop — the message stays with a
+    /// `partial` reply and nothing more is answered.
+    func testAStopWhileTheSendWaitsForRecoveryStopsTheTurnAtItsStart() async throws {
+        let conv = try conversation()
+        let (writes, tower) = FakeChatTower.writes(dbManager.dbPool)
+        let vm = ChatViewModel(dbManager: dbManager, pool: pool, writes: writes, provider: .claude,
+                               defaults: defaults) { [weak self] in
+            guard let self else { return UUID().uuidString }
+            self.turnCounter += 1
+            return "turn-\(self.turnCounter)"
+        }
+        vm.select(conversationID: conv)
+        await vm.send(text: "q1")
+        let first = try XCTUnwrap(fakes.last)
+        first.emit(.textDelta(turnID: "turn-1", text: "half"))
+        await waitForCondition { vm.liveTurn?.fullText == "half" }
+        let hold = TowerHold(tower)
+        first.exit(status: 9)
+        await waitForCondition { !tower.calls(.chatRecover).isEmpty }
+
+        let sending = Task { await vm.send(text: "q2") }
+        await waitForCondition { vm.pendingOwnerText == "q2" }
+        XCTAssertTrue(vm.canStop, "Stop is offered while the send waits")
+        vm.stop()
+        hold.release()
+        let sent = await sending.value
+        XCTAssertTrue(sent, "the message stays in the transcript")
+        let second = try XCTUnwrap(fakes.last)
+        XCTAssertFalse(second === first)
+        await waitForCondition { second.sent.contains(.cancel) }
+        XCTAssertEqual(second.sent.filter { $0 == .cancel }.count, 1, "stopped at its started")
+        second.emit(.turnDone(turnID: "turn-2", status: .interrupted, sessionID: nil))
+        await waitForCondition { !vm.isBusy }
+        XCTAssertEqual(try count("SELECT COUNT(*) FROM chat_messages WHERE conversation_id = ? AND role = 'user'", conv), 2)
+        let last = try await dbManager.dbPool.read {
+            try String.fetchOne($0, sql: "SELECT status FROM chat_messages WHERE conversation_id = ? ORDER BY id DESC LIMIT 1",
+                                arguments: [conv])
+        }
+        XCTAssertEqual(last, "partial")
+    }
+
     func testFinalizeReleasesLease() async throws {
         let conv = try conversation()
         let vm = makeViewModel()

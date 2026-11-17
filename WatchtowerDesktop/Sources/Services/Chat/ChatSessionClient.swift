@@ -241,13 +241,16 @@ final class ChatSessionClient {
     /// (or `refused`); this returns that answer. On a pending session the
     /// turn is held until launch. A dead session, a failed pipe write or a
     /// silent process answer `failed` — nothing was written then.
-    func startTurn(_ command: ChatTurnCommand) async -> ChatStartOutcome {
+    /// `stopped`: the owner pressed Stop before the turn reached this
+    /// client; it is stopped at its `started`, like a held turn's Stop.
+    func startTurn(_ command: ChatTurnCommand, stopped: Bool = false) async -> ChatStartOutcome {
         guard !isBusy else {
             return .failed(ChatSessionError(turnID: command.turnID, code: .internalError,
                                             message: "A turn is already running in this chat.", retryable: false))
         }
         let pending = PendingChatStart(command: command)
         begin(pending)
+        if stopped { cancel() }
         return await pending.wait()
     }
 

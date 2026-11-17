@@ -272,7 +272,8 @@ final class ChatViewModel {
 
     /// A send is being handed to its session (its chat made first on the
     /// landing): milliseconds, never the wait for `started`.
-    private var isHandingTurn = false
+    private var handingTurns = 0
+    private var isHandingTurn: Bool { handingTurns > 0 }
     /// Turns handed to their session and waiting for its `started` (the
     /// session writes their rows, or the turn is held for a free slot), by
     /// conversation, with the owner's message shown meanwhile (nil: none, a
@@ -281,6 +282,10 @@ final class ChatViewModel {
     private var awaitingStart: [Int64: AwaitingStart] = [:]
     private struct AwaitingStart {
         let bubble: String?
+        /// Handed to its session client (after any `chat.recover` wait).
+        var onClient = false
+        /// Stop pressed before that: the turn is stopped at its `started`.
+        var stopRequested = false
     }
     /// The shown chat's turn is being handed over or waits for `started`:
     /// its send is refused meanwhile, so one Enter never sends twice.
@@ -1063,27 +1068,43 @@ final class ChatViewModel {
         let turnText = ChatTurnComposer.compose(text: text, skill: skill, mentions: live)
         // A message may carry only attachments (no text) — the ChatComposerField canSend twin.
         guard !turnText.isEmpty || !attachments.isEmpty, !isBusy else { return false }
-        isHandingTurn = true
-        defer { isHandingTurn = false }
+        let handing = handTurn()
+        defer { handing() }
         let fromLanding = isOnLanding
         guard let id = await conversationIDCreatingIfNeeded() else { return false }
         if !keepsComposer { composer.reset() }
+        var leftLanding: LandingState?
         // The actions-outcome block is Go's (its start reads it, floored at
         // the previous owner message); the screen block goes as is.
-        return await startTurn(conversationID: id, text: turnText, start: ChatTurnStart(
+        let started = await startTurn(conversationID: id, text: turnText, start: ChatTurnStart(
             mode: .send, attachmentIDs: attachments.map(\.id), quotes: quotes, titleText: trimmed,
             screen: screen?.block), bubble: turnText) { [self] in
-            isHandingTurn = false
+            handing()
             // The landing's own turn only: a landing left meanwhile is not.
             // It leaves at Send, so the chat shows the owner's message, the
             // waiting line and Stop while the session writes the turn.
             guard fromLanding, isOnLanding, conversationID == id else { return }
+            leftLanding = LandingState(draft: landingDraft, openProjectID: openProjectID,
+                                       landingProjectID: landingProjectID)
             landingDraft = nil
             isOnLanding = false
             openProjectID = nil
             landingProjectID = nil
-            onLandingTurnStarted?(id)
         }
+        guard let left = leftLanding else { return started }
+        if started {
+            onLandingTurnStarted?(id)
+        } else if conversationID == id, !isOnLanding {
+            // The landing's first send failed: nothing was written, so the
+            // owner is back on the landing with the text (the caller puts it
+            // back), and the empty chat is its untouched draft again —
+            // discarded on leave, never left in the history.
+            landingDraft = left.draft
+            openProjectID = left.openProjectID
+            landingProjectID = left.landingProjectID
+            isOnLanding = true
+        }
+        return started
     }
 
     /// The conversation a turn/attachment writes into, creating one on first
@@ -1157,6 +1178,12 @@ final class ChatViewModel {
     /// Stops the open chat's turn: the Mac's own through its session, the
     /// phone's by setting its lease's cancel (the hub stops it within 1 s).
     func stop() {
+        if let id = conversationID, let waiting = awaitingStart[id], !waiting.onClient {
+            // Not handed to its session yet (it waits for `chat.recover`):
+            // the Stop goes with it, and the turn is stopped at its start.
+            awaitingStart[id]?.stopRequested = true
+            return
+        }
         guard let turnID = foreignTurn.turnID, let id = conversationID else {
             pool.client(for: conversationID)?.cancel()
             return
@@ -1298,11 +1325,31 @@ final class ChatViewModel {
     /// guards like a send.
     @discardableResult
     private func startTurnBusy(conversationID: Int64, text: String, start: ChatTurnStart, bubble: String?) async -> Bool {
-        isHandingTurn = true
-        defer { isHandingTurn = false }
-        return await startTurn(conversationID: conversationID, text: text, start: start, bubble: bubble) { [self] in
-            isHandingTurn = false
+        let handing = handTurn()
+        defer { handing() }
+        return await startTurn(conversationID: conversationID, text: text, start: start, bubble: bubble) {
+            handing()
         }
+    }
+
+    /// One send being handed to its session (`isHandingTurn`); the returned
+    /// release counts once, whichever of its hand-over or its end comes
+    /// first, so another send's late end never clears this one.
+    private func handTurn() -> () -> Void {
+        handingTurns += 1
+        var released = false
+        return { [weak self] in
+            guard !released else { return }
+            released = true
+            self?.handingTurns -= 1
+        }
+    }
+
+    /// What the landing was when its first send left it.
+    private struct LandingState {
+        let draft: LandingDraft?
+        let openProjectID: Int64?
+        let landingProjectID: Int64?
     }
 
     /// Sends the turn to the chat's session, which writes its rows and
@@ -1328,7 +1375,9 @@ final class ChatViewModel {
         handed()
         if let recovery = recovering[id] { await recovery.value }
         let client = pool.session(for: id, config: config)
-        switch await client.startTurn(command) {
+        awaitingStart[id]?.onClient = true
+        let stopRequested = awaitingStart[id]?.stopRequested == true
+        switch await client.startTurn(command, stopped: stopRequested) {
         case .started(let started):
             awaitingStart[id] = nil
             if conversationID == id {
