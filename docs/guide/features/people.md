@@ -12,7 +12,7 @@ Before a 1:1, a hard thread or a first message to someone new, a card gives you 
 
 **A person needs enough activity.** Anyone with at least 3 messages in the window gets a card. With 3 or more digest observations about them, or 10 or more messages, it is a full card. Otherwise it is a lighter one, and the screen says "Not enough data for full analysis." The run as a whole is skipped only when the digests hold no observations at all.
 
-**The Team Summary comes with the run.** After the cards, one more AI call writes the team-level summary: **Needs Attention** and **Tips**.
+**The Team Summary comes with the run.** After the cards, one more AI call writes the team-level summary: what the team worked on, and **Tips**. It never singles anyone out.
 
 **It depends on Digests.** People Cards read what [Digests](digests.md) record, so both **People Cards** and **Slack Digests** must be on. A run with no data (no digests yet, or nobody active) writes no run record and does not use up the day, so cards appear in the first cycle that has material. After 3 failed AI attempts in a day it waits until tomorrow.
 
@@ -23,7 +23,7 @@ Before a 1:1, a hard thread or a first message to someone new, a card gives you 
 <!-- learn
 id: people-cards
 title: Read a colleague's card before a 1:1
-text: Open **People** for each colleague's style, decision role, red flags and how best to work with them.
+text: Open **People** for each colleague's work topics, decision role and how best to work with them.
 area: communication
 level: next
 kind: feature
@@ -35,7 +35,7 @@ requires: feature:people-cards
 <!-- learn
 id: people-team-summary
 title: Check the Team Summary
-text: Select **Team Summary** in **People** for who needs attention across your team, with tips.
+text: Select **Team Summary** in **People** for what your team worked on, with tips.
 area: communication
 level: next
 kind: tip

@@ -148,7 +148,7 @@ enum AutomationShotFixtures {
       "trigger_text":"Weekdays 10:00, 16:00","permissions":["starts agent sessions"],"outputs":["inbox"]},
      {"name":"jira-state-report","title":"Jira state report","description":"Weekly.","scope":"personal",
       "trigger_text":"Mondays 09:00","permissions":["reads Jira"],"outputs":["report"]},
-     {"name":"team-performance-report","title":"Team performance report","description":"Weekly.",
+     {"name":"team-week-summary","title":"Team week summary","description":"Weekly.",
       "scope":"personal","trigger_text":"Fridays 17:00","permissions":["reads Jira and Slack"],"outputs":["report"]},
      {"name":"release-buttons","title":"Release and deploy buttons","description":"Buttons.","scope":"workbench",
       "trigger_text":"Button: Release","permissions":["runs a shell command"],"outputs":["report"]},

@@ -206,16 +206,6 @@ func showPeopleList(_ *cobra.Command, out io.Writer, database *db.DB, _ *config.
 		fmt.Fprintln(&buf)
 		fmt.Fprintf(&buf, "%s\n\n", ps.Summary)
 
-		var attention []string
-		if err := json.Unmarshal([]byte(ps.Attention), &attention); err == nil && len(attention) > 0 {
-			fmt.Fprintln(&buf, "**Needs Attention:**")
-			fmt.Fprintln(&buf)
-			for _, item := range attention {
-				fmt.Fprintf(&buf, "- %s\n", item)
-			}
-			fmt.Fprintln(&buf)
-		}
-
 		var tips []string
 		if err := json.Unmarshal([]byte(ps.Tips), &tips); err == nil && len(tips) > 0 {
 			fmt.Fprintln(&buf, "**Tips:**")
@@ -241,26 +231,11 @@ func showPeopleList(_ *cobra.Command, out io.Writer, database *db.DB, _ *config.
 		}
 
 		fmt.Fprintf(&buf, "### @%s %s\n", userName, badges)
-		fmt.Fprintf(&buf, "%d msgs | %d channels", c.MessageCount, c.ChannelsActive)
-		if c.ThreadsInitiated > 0 || c.ThreadsReplied > 0 {
-			fmt.Fprintf(&buf, " | %d threads started | %d replied", c.ThreadsInitiated, c.ThreadsReplied)
-		}
-		if c.VolumeChangePct != 0 {
-			fmt.Fprintf(&buf, " | volume: %+.0f%%", c.VolumeChangePct)
-		}
-		fmt.Fprintln(&buf)
+		fmt.Fprintln(&buf, peopleBasisLine(c))
 		fmt.Fprintln(&buf)
 
 		if c.Summary != "" {
 			fmt.Fprintf(&buf, "%s\n\n", c.Summary)
-		}
-
-		var redFlags []string
-		if err := json.Unmarshal([]byte(c.RedFlags), &redFlags); err == nil && len(redFlags) > 0 {
-			for _, rf := range redFlags {
-				fmt.Fprintf(&buf, "- **!** %s\n", rf)
-			}
-			fmt.Fprintln(&buf)
 		}
 
 		var highlights []string
@@ -274,6 +249,12 @@ func showPeopleList(_ *cobra.Command, out io.Writer, database *db.DB, _ *config.
 
 	fmt.Fprint(out, ui.RenderMarkdown(buf.String()))
 	return nil
+}
+
+// peopleBasisLine says what a card rests on — counts only as its basis, no
+// activity score (#1769, spec §5.1 rule 2).
+func peopleBasisLine(c db.PeopleCard) string {
+	return fmt.Sprintf("Based on %d messages in %d channels", c.MessageCount, c.ChannelsActive)
 }
 
 func showUserDetail(out io.Writer, database *db.DB, username string, fromUnix, toUnix float64) error {
@@ -311,18 +292,12 @@ func showUserDetail(out io.Writer, database *db.DB, username string, fromUnix, t
 			fmt.Fprintln(&buf, "*Insufficient data for full analysis this period.*")
 		}
 
-		// Stats table
-		fmt.Fprintln(&buf, "| Metric | Value |")
-		fmt.Fprintln(&buf, "|--------|-------|")
-		fmt.Fprintf(&buf, "| Messages | %d |\n", c.MessageCount)
-		fmt.Fprintf(&buf, "| Channels active | %d |\n", c.ChannelsActive)
-		fmt.Fprintf(&buf, "| Threads started | %d |\n", c.ThreadsInitiated)
-		fmt.Fprintf(&buf, "| Threads replied | %d |\n", c.ThreadsReplied)
-		fmt.Fprintf(&buf, "| Avg message length | %.0f chars |\n", c.AvgMessageLength)
-		fmt.Fprintf(&buf, "| Volume change | %+.0f%% |\n", c.VolumeChangePct)
-		fmt.Fprintf(&buf, "| Style | %s |\n", c.CommunicationStyle)
-		fmt.Fprintf(&buf, "| Decision role | %s |\n", c.DecisionRole)
+		// The basis line, no stats grid (#1769, A12).
+		fmt.Fprintln(&buf, peopleBasisLine(c))
 		fmt.Fprintln(&buf)
+		if c.CommunicationStyle != "" || c.DecisionRole != "" {
+			fmt.Fprintf(&buf, "**Style:** %s | **Decision role:** %s\n\n", c.CommunicationStyle, c.DecisionRole)
+		}
 
 		if c.Summary != "" {
 			fmt.Fprintf(&buf, "**Summary:** %s\n\n", c.Summary)
@@ -334,16 +309,6 @@ func showUserDetail(out io.Writer, database *db.DB, username string, fromUnix, t
 
 		if c.DecisionStyle != "" {
 			fmt.Fprintf(&buf, "**Decision Style:** %s\n\n", c.DecisionStyle)
-		}
-
-		var redFlags []string
-		if err := json.Unmarshal([]byte(c.RedFlags), &redFlags); err == nil && len(redFlags) > 0 {
-			fmt.Fprintln(&buf, "**Red Flags:**")
-			fmt.Fprintln(&buf)
-			for _, rf := range redFlags {
-				fmt.Fprintf(&buf, "- %s\n", rf)
-			}
-			fmt.Fprintln(&buf)
 		}
 
 		var highlights []string
