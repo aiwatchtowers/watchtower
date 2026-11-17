@@ -9969,5 +9969,1144 @@
       ]
     },
     "desktop": true
+  },
+  {
+    "name": "desktop_reply_slack_item",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, thread_ts, sender_user_id, trigger_type, snippet, permalink, status, priority, ai_reason, resolved_reason, snooze_until, item_class, card_status, why_matters, thread_digest, draft_reply, created_at, updated_at) VALUES (1, '1:C001', '1700000000.000100', '', 'U002', 'mention', 'Hey, can you review this?', 'https://acme.slack.com/archives/C001/p1700000000000100', 'pending', 'medium', '', '', '', 'actionable', 'none', '', '', '', '2026-10-21T07:00:00Z', '2026-10-21T07:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "messages",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Messages",
+          "source_line": "Mentions, DMs and replies",
+          "preview": "1 waiting",
+          "stamp": "2026-10-21T07:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [
+            {
+              "kind": "inbox_item",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": true,
+              "reply_waiting": false,
+              "link": "https://acme.slack.com/archives/C001/p1700000000000100",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ],
+          "legacy": {
+            "kind": "messages",
+            "items": [
+              {
+                "ref_kind": "inbox_item",
+                "id": 1,
+                "title": "Hey, can you review this?",
+                "subtitle": "Message",
+                "preview": "",
+                "stamp": "2026-10-21T07:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_reply_slack_and_mail",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, thread_ts, sender_user_id, trigger_type, snippet, permalink, status, priority, ai_reason, resolved_reason, snooze_until, item_class, card_status, why_matters, thread_digest, draft_reply, created_at, updated_at) VALUES (1, '1:C001', '1700000000.000100', '', 'U002', 'mention', 'Hey, can you review this?', 'https://acme.slack.com/archives/C001/p1700000000000100', 'pending', 'medium', '', '', '', 'actionable', 'none', '', '', '', '2026-10-21T07:00:00Z', '2026-10-21T07:00:00Z')",
+      "INSERT INTO inbox_items (id, channel_id, message_ts, thread_ts, sender_user_id, trigger_type, snippet, permalink, status, priority, ai_reason, resolved_reason, snooze_until, item_class, card_status, why_matters, thread_digest, draft_reply, created_at, updated_at) VALUES (2, 'mail', '2', '', 'U002', 'email_received', 'Hey, can you review this?', 'https://mail.example.com/m/1', 'pending', 'medium', '', '', '', 'actionable', 'none', '', '', '', '2026-10-21T07:00:00Z', '2026-10-21T07:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 2,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "messages",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Messages",
+          "source_line": "Mentions, DMs and replies",
+          "preview": "2 waiting",
+          "stamp": "2026-10-21T07:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [
+            {
+              "kind": "inbox_item",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": true,
+              "reply_waiting": false,
+              "link": "https://acme.slack.com/archives/C001/p1700000000000100",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            },
+            {
+              "kind": "inbox_item",
+              "id": 2,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "https://mail.example.com/m/1",
+              "trigger_type": "email_received",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ],
+          "legacy": {
+            "kind": "messages",
+            "items": [
+              {
+                "ref_kind": "inbox_item",
+                "id": 1,
+                "title": "Hey, can you review this?",
+                "subtitle": "Message",
+                "preview": "",
+                "stamp": "2026-10-21T07:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              },
+              {
+                "ref_kind": "inbox_item",
+                "id": 2,
+                "title": "Hey, can you review this?",
+                "subtitle": "U002 · Hey, can you review this?",
+                "preview": "",
+                "stamp": "2026-10-21T07:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_reply_pending_reply",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, thread_ts, sender_user_id, trigger_type, snippet, permalink, status, priority, ai_reason, resolved_reason, snooze_until, item_class, card_status, why_matters, thread_digest, draft_reply, created_at, updated_at) VALUES (1, '1:C001', '1700000000.000100', '', 'U002', 'mention', 'Hey, can you review this?', 'https://acme.slack.com/archives/C001/p1700000000000100', 'pending', 'medium', '', '', '', 'actionable', 'none', '', '', '', '2026-10-21T07:00:00Z', '2026-10-21T07:00:00Z')",
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (1, 'send_slack_message', 1, '{\"text\":\"Call Vasya\",\"reason\":\"r\"}', 'r', 'inbox', 1, 'inbox_item', '1', 'turn-1', 'pending', '', '', '2026-09-04T10:00:00Z', '', '', '')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 1
+        }
+      ],
+      "cards": [
+        {
+          "id": "messages",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Messages",
+          "source_line": "Mentions, DMs and replies",
+          "preview": "1 waiting",
+          "stamp": "2026-10-21T07:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [
+            {
+              "kind": "inbox_item",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": true,
+              "reply_waiting": true,
+              "link": "https://acme.slack.com/archives/C001/p1700000000000100",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ],
+          "legacy": {
+            "kind": "messages",
+            "items": [
+              {
+                "ref_kind": "inbox_item",
+                "id": 1,
+                "title": "Hey, can you review this?",
+                "subtitle": "Message",
+                "preview": "",
+                "stamp": "2026-10-21T07:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        },
+        {
+          "id": "a1",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "send_slack_message",
+            "title": "Send to Slack",
+            "summary": "{\"text\":\"Call Vasya\",\"reason\":\"r\"}",
+            "args_sha256": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+            "status": "pending",
+            "error": "",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_reply_draft_row_resolved",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, thread_ts, sender_user_id, trigger_type, snippet, permalink, status, priority, ai_reason, resolved_reason, snooze_until, item_class, card_status, why_matters, thread_digest, draft_reply, created_at, updated_at) VALUES (1, '1:C001', '1700000000.000100', '', 'U002', 'mention', 'Hey, can you review this?', 'https://acme.slack.com/archives/C001/p1700000000000100', 'pending', 'medium', '', '', '', 'actionable', 'none', '', '', '', '2026-10-21T07:00:00Z', '2026-10-21T07:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "messages",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Messages",
+          "source_line": "Mentions, DMs and replies",
+          "preview": "1 waiting",
+          "stamp": "2026-10-21T07:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [
+            {
+              "kind": "inbox_item",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": true,
+              "reply_waiting": false,
+              "link": "https://acme.slack.com/archives/C001/p1700000000000100",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ],
+          "legacy": {
+            "kind": "messages",
+            "items": [
+              {
+                "ref_kind": "inbox_item",
+                "id": 1,
+                "title": "Hey, can you review this?",
+                "subtitle": "Message",
+                "preview": "",
+                "stamp": "2026-10-21T07:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true,
+    "steps": [
+      {
+        "name": "resolved",
+        "sql": [
+          "UPDATE inbox_items SET status = 'resolved' WHERE id = 1"
+        ],
+        "when": "SELECT status = 'resolved' FROM inbox_items WHERE id = 1",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            }
+          ],
+          "cards": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "desktop_reply_lands_then_sent",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, thread_ts, sender_user_id, trigger_type, snippet, permalink, status, priority, ai_reason, resolved_reason, snooze_until, item_class, card_status, why_matters, thread_digest, draft_reply, created_at, updated_at) VALUES (1, '1:C001', '1700000000.000100', '', 'U002', 'mention', 'Hey, can you review this?', 'https://acme.slack.com/archives/C001/p1700000000000100', 'pending', 'medium', '', '', '', 'actionable', 'none', '', '', '', '2026-10-21T07:00:00Z', '2026-10-21T07:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "messages",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Messages",
+          "source_line": "Mentions, DMs and replies",
+          "preview": "1 waiting",
+          "stamp": "2026-10-21T07:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [
+            {
+              "kind": "inbox_item",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": true,
+              "reply_waiting": false,
+              "link": "https://acme.slack.com/archives/C001/p1700000000000100",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ],
+          "legacy": {
+            "kind": "messages",
+            "items": [
+              {
+                "ref_kind": "inbox_item",
+                "id": 1,
+                "title": "Hey, can you review this?",
+                "subtitle": "Message",
+                "preview": "",
+                "stamp": "2026-10-21T07:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true,
+    "steps": [
+      {
+        "name": "reply_waiting",
+        "sql": [
+          "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (1, 'send_slack_message', 1, '{\"text\":\"Call Vasya\",\"reason\":\"r\"}', 'r', 'inbox', 1, 'inbox_item', '1', 'turn-1', 'pending', '', '', '2026-09-04T10:00:00Z', '', '', '')"
+        ],
+        "when": "SELECT COUNT(*) FROM agent_actions WHERE id = 1 AND status = 'pending'",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 1,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 1,
+              "waiting": 1
+            }
+          ],
+          "cards": [
+            {
+              "id": "messages",
+              "folder_id": 1,
+              "card_kind": "legacy",
+              "title": "Messages",
+              "source_line": "Mentions, DMs and replies",
+              "preview": "1 waiting",
+              "stamp": "2026-10-21T07:00:00Z",
+              "living": false,
+              "unread": true,
+              "priority": "medium",
+              "pinned": false,
+              "blocks": "",
+              "body": "",
+              "body_clipped": false,
+              "link": "",
+              "content_hash": "",
+              "actions": [],
+              "ref_facts": [
+                {
+                  "kind": "inbox_item",
+                  "id": 1,
+                  "open": true,
+                  "waits": true,
+                  "reply": true,
+                  "reply_waiting": true,
+                  "link": "https://acme.slack.com/archives/C001/p1700000000000100",
+                  "trigger_type": "mention",
+                  "custom": false,
+                  "linked_target_id": 0,
+                  "idea_kind": "",
+                  "idea_status": ""
+                }
+              ],
+              "legacy": {
+                "kind": "messages",
+                "items": [
+                  {
+                    "ref_kind": "inbox_item",
+                    "id": 1,
+                    "title": "Hey, can you review this?",
+                    "subtitle": "Message",
+                    "preview": "",
+                    "stamp": "2026-10-21T07:00:00Z",
+                    "end": "",
+                    "unread": true,
+                    "high": false,
+                    "stopped": false,
+                    "done": false,
+                    "date": ""
+                  }
+                ],
+                "attention": []
+              }
+            },
+            {
+              "id": "a1",
+              "folder_id": 2,
+              "card_kind": "approval_native",
+              "title": "r",
+              "source_line": "Assistant proposal",
+              "preview": "",
+              "stamp": "2026-09-04T10:00:00Z",
+              "living": false,
+              "unread": true,
+              "priority": "medium",
+              "pinned": false,
+              "blocks": "",
+              "body": "",
+              "body_clipped": false,
+              "link": "",
+              "content_hash": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+              "actions": [],
+              "ref_facts": [],
+              "approval": {
+                "tool": "send_slack_message",
+                "title": "Send to Slack",
+                "summary": "{\"text\":\"Call Vasya\",\"reason\":\"r\"}",
+                "args_sha256": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+                "status": "pending",
+                "error": "",
+                "proposer": "",
+                "reason": "r",
+                "edit_on_mac": false,
+                "target": "",
+                "target_note": "",
+                "target_until": "",
+                "superseded": false,
+                "disclosure": "",
+                "recipe_text": "",
+                "diff": [],
+                "recipe_clipped": false
+              }
+            }
+          ]
+        }
+      },
+      {
+        "name": "reply_sent",
+        "sql": [
+          "UPDATE agent_actions SET status = 'applied' WHERE id = 1"
+        ],
+        "when": "SELECT COUNT(*) FROM agent_actions WHERE id = 1 AND status = 'applied'",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 1,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            }
+          ],
+          "cards": [
+            {
+              "id": "messages",
+              "folder_id": 1,
+              "card_kind": "legacy",
+              "title": "Messages",
+              "source_line": "Mentions, DMs and replies",
+              "preview": "1 waiting",
+              "stamp": "2026-10-21T07:00:00Z",
+              "living": false,
+              "unread": true,
+              "priority": "medium",
+              "pinned": false,
+              "blocks": "",
+              "body": "",
+              "body_clipped": false,
+              "link": "",
+              "content_hash": "",
+              "actions": [],
+              "ref_facts": [
+                {
+                  "kind": "inbox_item",
+                  "id": 1,
+                  "open": true,
+                  "waits": true,
+                  "reply": true,
+                  "reply_waiting": false,
+                  "link": "https://acme.slack.com/archives/C001/p1700000000000100",
+                  "trigger_type": "mention",
+                  "custom": false,
+                  "linked_target_id": 0,
+                  "idea_kind": "",
+                  "idea_status": ""
+                }
+              ],
+              "legacy": {
+                "kind": "messages",
+                "items": [
+                  {
+                    "ref_kind": "inbox_item",
+                    "id": 1,
+                    "title": "Hey, can you review this?",
+                    "subtitle": "Message",
+                    "preview": "",
+                    "stamp": "2026-10-21T07:00:00Z",
+                    "end": "",
+                    "unread": true,
+                    "high": false,
+                    "stopped": false,
+                    "done": false,
+                    "date": ""
+                  }
+                ],
+                "attention": []
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "desktop_reply_standin_before_first_run",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, thread_ts, sender_user_id, trigger_type, snippet, permalink, status, priority, ai_reason, resolved_reason, snooze_until, item_class, card_status, why_matters, thread_digest, draft_reply, created_at, updated_at) VALUES (1, '1:C001', '1700000000.000100', '', 'U002', 'mention', 'Hey, can you review this?', 'https://acme.slack.com/archives/C001/p1700000000000100', 'pending', 'medium', '', '', '', 'actionable', 'none', '', '', '', '2026-10-21T07:00:00Z', '2026-10-21T07:00:00Z')",
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json, origin, builtin_id) VALUES (1, 'waiting-for-me', 'personal', 'builtin:waiting-for-me', 'Digest', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]', 'builtin', 'waiting-for-me')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "messages",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Messages",
+          "source_line": "Mentions, DMs and replies",
+          "preview": "1 waiting",
+          "stamp": "2026-10-21T07:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [
+            {
+              "kind": "inbox_item",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": true,
+              "reply_waiting": false,
+              "link": "https://acme.slack.com/archives/C001/p1700000000000100",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ],
+          "legacy": {
+            "kind": "messages",
+            "items": [
+              {
+                "ref_kind": "inbox_item",
+                "id": 1,
+                "title": "Hey, can you review this?",
+                "subtitle": "Message",
+                "preview": "",
+                "stamp": "2026-10-21T07:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_reply_standin_after_failed_run",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, thread_ts, sender_user_id, trigger_type, snippet, permalink, status, priority, ai_reason, resolved_reason, snooze_until, item_class, card_status, why_matters, thread_digest, draft_reply, created_at, updated_at) VALUES (1, '1:C001', '1700000000.000100', '', 'U002', 'mention', 'Hey, can you review this?', 'https://acme.slack.com/archives/C001/p1700000000000100', 'pending', 'medium', '', '', '', 'actionable', 'none', '', '', '', '2026-10-21T07:00:00Z', '2026-10-21T07:00:00Z')",
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json, origin, builtin_id) VALUES (1, 'waiting-for-me', 'personal', 'builtin:waiting-for-me', 'Digest', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]', 'builtin', 'waiting-for-me')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'failed', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "messages",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Messages",
+          "source_line": "Mentions, DMs and replies",
+          "preview": "1 waiting",
+          "stamp": "2026-10-21T07:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [
+            {
+              "kind": "inbox_item",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": true,
+              "reply_waiting": false,
+              "link": "https://acme.slack.com/archives/C001/p1700000000000100",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ],
+          "legacy": {
+            "kind": "messages",
+            "items": [
+              {
+                "ref_kind": "inbox_item",
+                "id": 1,
+                "title": "Hey, can you review this?",
+                "subtitle": "Message",
+                "preview": "",
+                "stamp": "2026-10-21T07:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_reply_standin_after_succeeded_run",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, thread_ts, sender_user_id, trigger_type, snippet, permalink, status, priority, ai_reason, resolved_reason, snooze_until, item_class, card_status, why_matters, thread_digest, draft_reply, created_at, updated_at) VALUES (1, '1:C001', '1700000000.000100', '', 'U002', 'mention', 'Hey, can you review this?', 'https://acme.slack.com/archives/C001/p1700000000000100', 'pending', 'medium', '', '', '', 'actionable', 'none', '', '', '', '2026-10-21T07:00:00Z', '2026-10-21T07:00:00Z')",
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json, origin, builtin_id) VALUES (1, 'waiting-for-me', 'personal', 'builtin:waiting-for-me', 'Digest', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]', 'builtin', 'waiting-for-me')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": []
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_reply_mail_only",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, thread_ts, sender_user_id, trigger_type, snippet, permalink, status, priority, ai_reason, resolved_reason, snooze_until, item_class, card_status, why_matters, thread_digest, draft_reply, created_at, updated_at) VALUES (1, 'mail', '1700000000.000100', '', 'U002', 'email_received', 'Hey, can you review this?', 'https://mail.example.com/m/1', 'pending', 'medium', '', '', '', 'actionable', 'none', '', '', '', '2026-10-21T07:00:00Z', '2026-10-21T07:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "messages",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Messages",
+          "source_line": "Mentions, DMs and replies",
+          "preview": "1 waiting",
+          "stamp": "2026-10-21T07:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [
+            {
+              "kind": "inbox_item",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "https://mail.example.com/m/1",
+              "trigger_type": "email_received",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ],
+          "legacy": {
+            "kind": "messages",
+            "items": [
+              {
+                "ref_kind": "inbox_item",
+                "id": 1,
+                "title": "Hey, can you review this?",
+                "subtitle": "U002 · Hey, can you review this?",
+                "preview": "",
+                "stamp": "2026-10-21T07:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true
   }
 ]
