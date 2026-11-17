@@ -75,6 +75,9 @@ final class HubContractFixtureTests: XCTestCase {
             // The phone Inbox: "on" or "policy_off" with its reason; absent on an older hub.
             XCTAssertEqual(heartbeat.capabilities?.inbox, kit["inbox"] as? String, name)
             XCTAssertEqual(heartbeat.capabilities?.inboxReason, kit["inbox_reason"] as? String, name)
+            // #1873: stuck_since reads as a date and re-encodes as the hub wrote it; absent unless a kind is stuck.
+            XCTAssertEqual(heartbeat.stuckSince?.timeIntervalSince1970, kit["stuck_since"] as? Double, name)
+            XCTAssertEqual(encoded["stuck_since"] as? Double, json["stuck_since"] as? Double, name)
             // Re-encoded, the capabilities this build knows are what the hub wrote (an unknown key is dropped).
             let knownKeys = ["recordings", "chat", "chat_reason", "inbox", "inbox_reason"]
             let known = (json["capabilities"] as? [String: Any])?.filter { knownKeys.contains($0.key) }

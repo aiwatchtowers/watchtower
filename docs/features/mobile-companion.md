@@ -650,6 +650,18 @@ Until go hub plan 3 Task 24 the hub was Swift code in the Desktop process (`Watc
 
 Relay links rotate their epoch weekly with a fresh ephemeral X25519 pair per phone; iCloud links keep 90-day epochs and static pairwise keys, unchanged. The relay key for an epoch is the `wt/relay/v2/` derivation when the keybox names an ephemeral pair, else `wt/relay/v1/`. See `docs/features/relay-client.md` "Phase 5" for the phone side, the accepted limits and the launch conditions.
 
-## iPhone chat (2026-11-15, board #1791) (2026-11-15, board #1791)
+## iPhone chat (2026-11-15, board #1791)
 
 The phone gets a Chats tab over the Go hub on the relay (`chat_list`/`chat_feed`/`chat_page`/`chat_search` slices, ten `chat_*` actions, the `chat_attachment` upload frame, the `chat` grant on by default, heartbeat `capabilities.chat`/`chat_reason`, the `chat_answer` push). Chat adds a second writer of chat rows. A turn's rows (`chat_messages`, `chat_turn_steps`, `chat_artifacts`, `chat_attachments.message_id`) are written only by the lease holder's store, Swift (the Desktop's `ChatTurnStore`) or Go (`internal/chatstore`, run by the hub's `chatrun` runner), under one `chat_turn_leases` row per conversation; the phone writes nothing in the Mac's database. Feature note: [iphone-chat.md](iphone-chat.md); contracts CHAT-01/02/03/05 and LIVE-01 in `docs/inventory/chat.md`.
+
+## The data's age (2026-11-16, #1873, asks #1396/#1398/#1399)
+
+`ReplicaFreshness` (`Features/Workbench/ReplicaFreshness.swift`) draws one red line (`PhoneTone.red`, role `status`;
+orange stays for waiting-for-you) under the tower chip on Now and the Workbench list, and as the first row of a
+workbench: **stuck** when the heartbeat's `stuck_since` is 10 min old or more ("Updated 8:26 · Acme Mac is not sending
+some updates"), **stale** when the heartbeat is 35 min old or more ("… is not sending updates", time =
+`last_publish_at`, else `updated_at`), **offline** when Relay has not answered this iPhone for 60 s
+(`RelayBannerModel.unavailableAfter`; "… this iPhone can't reach Relay"). Offline wins over stale, stale over stuck;
+Now leaves offline to its Relay banner. Nothing while fresh, unlinked or before the first heartbeat; an older hub
+sends no `stuck_since` and is never stuck. Spec: `docs/superpowers/specs/2026-11-16-phone-stale-data-line-design.md`;
+tests `ReplicaFreshnessTests`; screenshot tour frames 05s, 06s, 06f.

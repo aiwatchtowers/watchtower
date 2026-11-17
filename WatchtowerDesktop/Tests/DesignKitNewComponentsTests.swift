@@ -75,6 +75,11 @@ final class DesignKitNewComponentsTests: XCTestCase {
         XCTAssertEqual(KitRow.fill(isSelected: true, isHovered: true), Fill.selected)
         XCTAssertEqual(KitRow.fill(isSelected: true, isHovered: false), Fill.selected)
         XCTAssertEqual(KitRow.fill(isSelected: false, isHovered: true), Fill.hover)
+        XCTAssertEqual(KitRow.fill(isSelected: false, isHovered: true, tint: Tone.warning),
+                       Tone.warning.opacity(ChipTint.fillOpacity), "a tint holds under the pointer")
+        XCTAssertEqual(KitRow.fill(isSelected: false, isHovered: false, tint: Tone.warning),
+                       Tone.warning.opacity(ChipTint.fillOpacity))
+        XCTAssertEqual(KitRow.fill(isSelected: true, isHovered: false, tint: Tone.warning), Fill.selected)
         XCTAssertEqual(KitRow.fill(isSelected: false, isHovered: false), .clear)
     }
 

@@ -43,7 +43,11 @@ type HeartbeatFacts struct {
 	LastPublishAt func() (time.Time, bool)
 	LastRelayAt   func() (time.Time, bool)
 	RelayBacklog  func() int
-	Recordings    func() bool
+	// StuckSince is Publisher.StuckSince (nil: never stuck); its change
+	// restamps the heartbeat at once, so the phone learns of a stuck kind
+	// with the next full diff, not the next 15 min stamp (#1873).
+	StuckSince func() (time.Time, bool)
+	Recordings func() bool
 	// Chat says whether the AI chat is on and, when off, why (wire.ChatOff*);
 	// nil carries no chat capability.
 	Chat func() (on bool, reason string)
@@ -77,6 +81,7 @@ type heartbeatSource struct {
 	mu       sync.Mutex
 	accounts []wire.HeartbeatAccount    // what the current payload carries
 	caps     wire.HeartbeatCapabilities // what the current payload carries (zero = none)
+	stuck    time.Time                  // the stuck_since the current payload carries (zero = none)
 	payload  []byte
 	stamped  time.Time
 	failing  bool // the accounts read failed last time (logged once per streak)
@@ -118,13 +123,19 @@ func (h *heartbeatSource) Items(ctx context.Context) ([]Item, error) {
 			caps.Inbox, caps.InboxReason = wire.InboxPolicyOff, wire.InboxOffPolicy
 		}
 	}
-	changed = changed || caps != h.caps
+	var stuck time.Time
+	if h.f.StuckSince != nil {
+		if at, ok := h.f.StuckSince(); ok {
+			stuck = at
+		}
+	}
+	changed = changed || caps != h.caps || !stuck.Equal(h.stuck)
 	if h.payload == nil || changed || now.Sub(h.stamped) >= HeartbeatInterval {
-		payload, err := wire.Marshal(h.build(now, accounts, caps))
+		payload, err := wire.Marshal(h.build(now, accounts, caps, stuck))
 		if err != nil {
 			return nil, fmt.Errorf("slices: encoding the heartbeat: %w", err)
 		}
-		h.payload, h.accounts, h.caps, h.stamped = payload, accounts, caps, now
+		h.payload, h.accounts, h.caps, h.stuck, h.stamped = payload, accounts, caps, stuck, now
 	}
 	return []Item{{Payload: h.payload}}, nil
 }
@@ -145,7 +156,7 @@ func (h *heartbeatSource) readAccounts(ctx context.Context) ([]wire.HeartbeatAcc
 	return out, nil
 }
 
-func (h *heartbeatSource) build(now time.Time, accounts []wire.HeartbeatAccount, caps wire.HeartbeatCapabilities) wire.Heartbeat {
+func (h *heartbeatSource) build(now time.Time, accounts []wire.HeartbeatAccount, caps wire.HeartbeatCapabilities, stuck time.Time) wire.Heartbeat {
 	if accounts == nil {
 		accounts = []wire.HeartbeatAccount{} // the Kit's accounts is not optional: [] never null
 	}
@@ -170,6 +181,9 @@ func (h *heartbeatSource) build(now time.Time, accounts []wire.HeartbeatAccount,
 	}
 	if h.f.RelayBacklog != nil {
 		hb.RelayBacklog = h.f.RelayBacklog()
+	}
+	if !stuck.IsZero() {
+		hb.StuckSince = &wire.Time{Time: stuck}
 	}
 	return hb
 }

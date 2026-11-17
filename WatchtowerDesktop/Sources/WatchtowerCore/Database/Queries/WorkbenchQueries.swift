@@ -139,7 +139,7 @@ package enum WorkbenchQueries {
         var lastActivity: [Int64: String] = [:]
         for row in try Row.fetchAll(db, sql: """
             SELECT project_id, MAX(last_active_at) AS last FROM terminal_sessions
-            WHERE project_id IS NOT NULL GROUP BY project_id
+            WHERE project_id IS NOT NULL AND delete_requested_at IS NULL GROUP BY project_id
             """) {
             lastActivity[row["project_id"]] = row["last"] ?? ""
         }
