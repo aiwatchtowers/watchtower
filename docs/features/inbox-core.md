@@ -149,7 +149,17 @@ These stay on the Mac:
 - the handoff texts (`discussMessage`, `handToAgentTask`, `agentActionTask`, `agentActionHelp`, `attachmentMarkdown`, `notice`, `readingSourceLine`);
 - the time part of `sourceLine`, `stamped` and `updated`, which belong to the screen models.
 
-`InboxCardNotice` is not ported: no notice is posted on either side today.
+Since Task 11d-b the Mac draws those facts from the feed's `Card` and no longer decides them:
+
+- a Reply's label, closed state and caption, and whether a press sends or opens the automation, come from `Card.actions` (`InboxFeedButtons`);
+- a target button's state comes from its action's `detail`, `note` and `until`, or from an approval card's `target`, `target_note` and `target_until` (`InboxTargetButton`). `TargetButtonStateResolver` lays only the Mac's own processes over it: a failed propose, an apply of its own that is still running or has failed, and the clock passing `until`;
+- an approval card's `superseded` decides whether a Retry is offered;
+- a pending `save_automation`'s pane draws `Approval.title` and the summary lines (`SaveAutomationProposalSummary`);
+- a ref row's Reply… (`reply`), its open reply (`reply_waiting`) and an idea's verdict buttons (`waits`) come from the facts of the artifact the row is on.
+
+Two things still stay Swift's. The Messages legacy card has no ref facts, so the Messages stand-in still decides its Reply… with `InboxReplyPolicy`; Task 12 deletes the local writers that also use it. The press addresses (a button's newest proposal and its task) are still read by id.
+
+`InboxCardNotice` is not ported, and its Swift copy was deleted in Task 11d-b: neither side posts a notice today.
 
 The switch the Mac reads (its feature list) and the one Go reads (`config.yaml` through `features.DisabledIDs`) are the same config keys. The Mac also folds in a toggle it has staged but not yet written; Go sees the toggle once the CLI writes it.
 

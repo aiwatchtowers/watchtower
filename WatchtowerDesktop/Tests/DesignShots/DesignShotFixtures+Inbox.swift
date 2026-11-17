@@ -126,7 +126,7 @@ enum InboxShotFixtures {
                     AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
                 },
                 saveProposal: { action in
-                    SaveAutomationProposalPane(action: action, workbenchName: { _ in nil },
+                    SaveAutomationProposalPane(action: action, approval: vm.feedApproval(action.id),
                                                onOpenDraft: { _ in }, onReject: {})
                 },
                 onCardAction: { _ in }, onOpenAutomationRun: { _ in }, now: now,

@@ -1,6 +1,7 @@
 import GRDB
 import XCTest
 @testable import WatchtowerCore
+import WatchtowerTestSupport
 
 /// The Inbox reading pane's summary of a `save_automation` proposal: what it
 /// is, where it goes, when it runs and what it may do.
@@ -19,31 +20,35 @@ final class SaveAutomationProposalSummaryTests: XCTestCase {
         ])))
     }
 
-    func testSummaryLines() throws {
-        let personal = SaveAutomationProposalSummary(model: try model()) { _ in nil }
-        XCTAssertEqual(personal.name, "Save automation Mail digest")
-        XCTAssertEqual(personal.scope, "Personal")
-        XCTAssertEqual(personal.when, "Every weekday at 09:00")
-        XCTAssertEqual(try model().whenLine, "Every weekday at 09:00")
-
-        let named = SaveAutomationProposalSummary(model: try model(["workbench_id": 3])) { $0 == 3 ? "acme" : nil }
-        XCTAssertEqual(named.scope, "acme")
-        let unknown = SaveAutomationProposalSummary(model: try model(["workbench_id": 3])) { _ in nil }
-        XCTAssertEqual(unknown.scope, "Workbench #3")
+    /// The pane draws the feed's words (Go `SummarizeSaveAutomation`, its
+    /// cases in `internal/inboxfeed`): the title, then each "<label>:
+    /// <value>" line split at its first ": ".
+    func testSummaryDrawsTheFeedsLines() {
+        let summary = SaveAutomationProposalSummary(approval: TestInboxFeeds.approval(
+            title: "Save automation Mail digest",
+            summary: ["For: Personal", "When: Every weekday at 09:00",
+                      "It may: Read mail in work (Gmail): inbox, Use the light model"]))
+        XCTAssertEqual(summary.name, "Save automation Mail digest")
+        XCTAssertEqual(summary.lines, [
+            .init(label: "For", value: "Personal"),
+            .init(label: "When", value: "Every weekday at 09:00"),
+            .init(label: "It may", value: "Read mail in work (Gmail): inbox, Use the light model")
+        ])
     }
 
-    func testMayLineJoinsTwoAndCountsTheRest() throws {
-        let four = try model(["permissions": ["gmail:read@work", "llm:light", "slack:read@acme", "inbox:reply"]])
-        XCTAssertEqual(four.permissions, ["gmail:read@work", "llm:light", "slack:read@acme", "inbox:reply"])
-        XCTAssertEqual(SaveAutomationProposalSummary(model: four) { _ in nil }.mayLine,
-                       "Read mail in work (Gmail), Use the light model and 2 more")
-        XCTAssertEqual(SaveAutomationProposalSummary(model: try model()) { _ in nil }.mayLine,
-                       "Read mail in work (Gmail), Use the light model")
-        let one = try model(["permissions": ["inbox:reply"]])
-        XCTAssertEqual(SaveAutomationProposalSummary(model: one) { _ in nil }.mayLine,
-                       "Reacts to its own Inbox buttons")
-        let none = try model(["permissions": [String]()])
-        XCTAssertEqual(SaveAutomationProposalSummary(model: none) { _ in nil }.mayLine, "Nothing")
+    func testALineWithoutALabelKeepsItsText() {
+        let summary = SaveAutomationProposalSummary(approval: TestInboxFeeds.approval(title: "x", summary: ["Nothing"]))
+        XCTAssertEqual(summary.lines, [.init(label: "", value: "Nothing")])
+    }
+
+    func testNoFeedDrawsNothing() {
+        let summary = SaveAutomationProposalSummary(approval: nil)
+        XCTAssertEqual(summary.name, "")
+        XCTAssertEqual(summary.lines, [])
+    }
+
+    func testWhenLineOfTheDraftModel() throws {
+        XCTAssertEqual(try model().whenLine, "Every weekday at 09:00")
     }
 
     /// Open Draft: an edit opens over the saved automation, a new recipe (or

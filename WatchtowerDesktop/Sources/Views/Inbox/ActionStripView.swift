@@ -774,7 +774,9 @@ struct ActionStripActionsView: View {
         // An Inbox target button's newest proposal: the button's state, so a
         // stuck row (Needs approval keeps approved and executing rows on their
         // native card) offers Try again (apply, or apply --force on the same row).
-        let targetState = vm.targetFacts(for: action).map { TargetButtonStateResolver.state($0, now: now ?? Date()) }
+        let targetState = vm.targetButton(forApproval: action).map {
+            TargetButtonStateResolver.state($0, now: now ?? Date())
+        }
         return AgentActionCardView(
             action: action,
             inFlight: vm.actionFeed.inFlight.contains(action.id),
@@ -801,7 +803,7 @@ struct ActionStripActionsView: View {
     private func saveProposal(_ action: AgentAction) -> SaveAutomationProposalPane {
         SaveAutomationProposalPane(
             action: action,
-            workbenchName: { id in workbenches.first { $0.id == id }?.name },
+            approval: vm.feedApproval(action.id),
             contextLabel: vm.actionLabels[action.id],
             inFlight: vm.actionFeed.inFlight.contains(action.id),
             gestureError: vm.actionFeed.rowErrors[action.id]?.message,

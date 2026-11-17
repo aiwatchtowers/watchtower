@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerInterface
 import WatchtowerTestSupport
 
 /// Native row actions for a `ref` (inbox builder B Task 13, spec "Native
@@ -80,6 +81,10 @@ final class InboxRowActionsTests: XCTestCase {
                                              permalink: "https://acme.slack.com/archives/C001/p1700000000000100")
         }
         let vm = await strip()
+        // The row is on an artifact, whose ref facts say Reply… (Go's rule).
+        await vm.showFeed(TestInboxFeeds.adding(
+            [TestInboxFeeds.artifact(99, refs: [TestInboxFeeds.facts(.inboxItem, id, reply: true)])],
+            to: try TestInboxFeeds.everything(pool)))
         let content = try XCTUnwrap(hooks(vm).content(InboxRef(kind: .inboxItem, id: id), .inbox))
         // `InboxMessagePane`: Open in Slack (a permalink), Discuss in Chat,
         // Hand to Agent…, Done, Hide, Snooze ▾; Reply… for a Slack item (Task 18).
@@ -115,8 +120,14 @@ final class InboxRowActionsTests: XCTestCase {
         let id = try await pool.write { db in try TestDatabase.insertIdea(db, status: "proposed") }
         let vm = await strip()
         let idea = try XCTUnwrap(vm.feed.ideas.first { Int64($0.id) == id })
-        let content = try XCTUnwrap(hooks(vm).content(InboxRef(kind: .idea, id: id), .inbox))
-        XCTAssertEqual(content.kind, .idea(kind: .idea, status: idea.status, awaitsVerdict: idea.awaitsVerdict))
+        // Whether it awaits a verdict is Go's `waits` of the row.
+        for waits in [true, false] {
+            await vm.showFeed(TestInboxFeeds.adding(
+                [TestInboxFeeds.artifact(99, refs: [TestInboxFeeds.facts(.idea, id, waits: waits)])],
+                to: try TestInboxFeeds.everything(pool)))
+            let content = try XCTUnwrap(hooks(vm).content(InboxRef(kind: .idea, id: id), .inbox))
+            XCTAssertEqual(content.kind, .idea(kind: .idea, status: idea.status, awaitsVerdict: waits))
+        }
     }
 
     func testReminderDrawsDoneAndSnooze() async throws {
@@ -170,6 +181,10 @@ final class InboxRowActionsTests: XCTestCase {
         }
         let runner = FakeCLIRunner(stdout: Self.okEnvelope)
         let vm = await strip(runner)
+        // Go says which row is superseded (`Approval.superseded`).
+        await vm.showFeed(TestInboxFeeds.adding(
+            [TestInboxFeeds.approvalCard(older, TestInboxFeeds.approval(title: "Create task", superseded: true))],
+            to: try TestInboxFeeds.everything(pool)))
         let content = try XCTUnwrap(hooks(vm).content(InboxRef(kind: .action, id: older), .inbox))
         guard case let .action(_, buttons) = content.kind else { return XCTFail("\(content.kind)") }
         XCTAssertEqual(buttons, [], "no Retry on the superseded row")

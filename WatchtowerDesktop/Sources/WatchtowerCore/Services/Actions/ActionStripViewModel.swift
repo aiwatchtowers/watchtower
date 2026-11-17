@@ -328,6 +328,28 @@ package final class ActionStripViewModel {
         Task { await refresh() }
     }
 
+    /// The feed's card `id` ("o12", "a7"); nil without a feed or such a card.
+    package func feedCard(_ id: String) -> Card? {
+        towerFeed?.cards.first { $0.id == id }
+    }
+
+    /// Proposal `id`'s approval card as the feed words it; nil when the
+    /// feed does not list it.
+    package func feedApproval(_ id: Int64) -> Approval? {
+        feedCard("a\(id)")?.approval
+    }
+
+    /// What the feed says about a row's record (`Card.ref_facts`): the facts
+    /// of the artifacts' rows, which are the only rows Go sends them for.
+    package func refFacts(_ ref: InboxRef) -> RefFacts? {
+        guard let towerFeed else { return nil }
+        let kind = RefKind(rawValue: ref.kind.rawValue)
+        for card in towerFeed.cards where card.cardKind == .artifact {
+            if let facts = card.refFacts.first(where: { $0.kind == kind && $0.id == ref.id }) { return facts }
+        }
+        return nil
+    }
+
     /// The sidebar's Inbox badge from the tower: the sum of the visible
     /// folders' counts (`InboxRootModel.countBadge`); nil without a feed.
     package var towerBadge: Int? {
@@ -1048,10 +1070,20 @@ package final class ActionStripViewModel {
         return replyDrafts[itemID].map { .composing(text: $0.text, error: $0.error) }
     }
 
-    /// Item `itemID` has a Reply open (pending, approved or executing) in
-    /// the last read: one reply per item at a time.
+    /// Item `itemID` has a Reply open (pending, approved or executing): one
+    /// reply per item at a time. Go's `reply_waiting` for a row on an
+    /// artifact; the Messages stand-in card is a legacy card, which the feed
+    /// sends without ref facts, so there the open proposals are looked at.
     package func replyWaiting(_ itemID: Int) -> Bool {
-        feed.proposals.contains { InboxReplyPolicy.isOpenReply($0, itemID: itemID) }
+        if let facts = refFacts(InboxRef(kind: .inboxItem, id: Int64(itemID))) { return facts.replyWaiting }
+        return feed.proposals.contains { InboxReplyPolicy.isOpenReply($0, itemID: itemID) }
+    }
+
+    /// Whether item `itemID`'s row on an artifact has **Reply…**: Go's
+    /// `reply` (a Slack, Jira or Linear item with its place); false when
+    /// the feed has no facts for it.
+    package func canReply(_ itemID: Int64) -> Bool {
+        refFacts(InboxRef(kind: .inboxItem, id: itemID))?.reply ?? false
     }
 
     /// **Reply…**: opens the composer under the row (nothing written).
@@ -1362,33 +1394,37 @@ package final class ActionStripViewModel {
         let seenRowID: Int64?
     }
 
-    /// What the Desktop knows about the target button of `contextID`.
-    package func targetFacts(contextID: String) -> InboxTargetButtonFacts {
+    /// The target button of `contextID` as drawn: Go's state of the feed's
+    /// `action` (nil: idle) with the press addresses of its newest proposal
+    /// and this Desktop's own processes on it.
+    package func targetButton(contextID: String, action: CardAction?) -> InboxTargetButton {
+        var button = InboxTargetButton(action: action)
         let row = targetProposals[contextID]
-        return InboxTargetButtonFacts(
-            proposal: row.map(InboxTargetButtonFacts.Proposal.init),
-            taskID: row.flatMap { targetTasks[$0.id] },
-            inFlight: row.map { actionFeed.inFlight.contains($0.id) } ?? false,
-            pressError: targetPressErrors[contextID]?.message,
-            applyError: row.flatMap { actionFeed.rowErrors[$0.id]?.message }
-        )
+        button.proposalID = row?.id
+        button.taskID = row.flatMap { targetTasks[$0.id] }
+        button.inFlight = row.map { actionFeed.inFlight.contains($0.id) } ?? false
+        button.pressError = targetPressErrors[contextID]?.message
+        button.applyError = row.flatMap { actionFeed.rowErrors[$0.id]?.message }
+        return button
     }
 
-    /// The button facts of a `create_target` proposal an Inbox button made,
-    /// when it is its button's newest row; nil for any other row (an older
-    /// row of a button is never offered Try again).
-    package func targetFacts(for action: AgentAction) -> InboxTargetButtonFacts? {
-        guard action.tool == "create_target", action.contextType == AgentActionQueries.buttonContextType,
-              targetProposals[action.contextID]?.id == action.id else { return nil }
-        return targetFacts(contextID: action.contextID)
+    /// The target button a proposal's approval card draws, when the feed
+    /// says the proposal is its button's newest row (`Approval.target`);
+    /// nil for any other row (an older row of a button is never offered
+    /// Try again).
+    package func targetButton(forApproval action: AgentAction) -> InboxTargetButton? {
+        guard var button = InboxTargetButton(approval: feedApproval(action.id)) else { return nil }
+        button.proposalID = action.id
+        button.taskID = targetTasks[action.id]
+        button.inFlight = actionFeed.inFlight.contains(action.id)
+        button.applyError = actionFeed.rowErrors[action.id]?.message
+        return button
     }
 
-    /// A button's row with a newer row of the same button: nothing on its
-    /// card may retry it (Go refuses it with exit 3).
+    /// A button's row with a newer row of the same button (the feed's
+    /// `Approval.superseded`): nothing on its card may retry it (Go refuses it).
     package func isSupersededButtonRow(_ action: AgentAction) -> Bool {
-        guard action.contextType == AgentActionQueries.buttonContextType,
-              let newest = targetProposals[action.contextID] else { return false }
-        return newest.id != action.id
+        feedApproval(action.id)?.superseded ?? false
     }
 
     /// The press of an idle target button: one `actions propose`, never

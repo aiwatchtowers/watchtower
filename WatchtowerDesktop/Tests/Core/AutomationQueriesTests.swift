@@ -171,10 +171,8 @@ final class AutomationQueriesTests: XCTestCase {
         XCTAssertEqual(byID[broken]?.recipeState, .parseError)
         XCTAssertEqual(byID[broken]?.recipeRemoved, false)
         XCTAssertEqual(byID[removed]?.recipeRemoved, true)
-        XCTAssertEqual(byID[removed].map(InboxCardAction.replyState), .removed)
         XCTAssertEqual(byID[live]?.recipeState, .runnable)
         XCTAssertEqual(byID[live]?.recipeRemoved, false)
-        XCTAssertEqual(byID[broken].map(InboxCardAction.replyState), .unreadable)
     }
 
     /// `since` and `limit` narrow the read (Home); without them every unread

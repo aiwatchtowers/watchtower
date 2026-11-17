@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import WatchtowerCore
+import WatchtowerInterface
 import WatchtowerTestSupport
 
 /// The Inbox center's target button facts (Inbox builder A, plan Task 15):
@@ -103,14 +104,13 @@ final class InboxTargetButtonFactsTests: XCTestCase {
         let vm = ActionStripViewModel(dbPool: fx.pool, cliRunner: FakeCLIRunner())
         await vm.refreshListingEverything()
 
-        let facts = vm.targetFacts(contextID: fx.context)
-        XCTAssertEqual(facts.proposal?.id, id)
+        let facts = vm.targetButton(contextID: fx.context, action: nil)
+        XCTAssertEqual(facts.proposalID, id)
         XCTAssertNotNil(facts.taskID)
-        XCTAssertTrue(facts.taskExists)
-        XCTAssertFalse(facts.inFlight)
+                XCTAssertFalse(facts.inFlight)
         XCTAssertNil(facts.pressError)
         // Another index or hash of the same output finds nothing.
-        XCTAssertNil(vm.targetFacts(contextID: "\(fx.outputID):0:fedcba9876543210").proposal)
+        XCTAssertNil(vm.targetButton(contextID: "\(fx.outputID):0:fedcba9876543210", action: nil).proposalID)
     }
 
     // MARK: - The press
@@ -125,7 +125,7 @@ final class InboxTargetButtonFactsTests: XCTestCase {
         await vm.proposeTarget(press(fx))
 
         XCTAssertEqual(runner.invocations, [press(fx).arguments])
-        XCTAssertNil(vm.targetFacts(contextID: fx.context).pressError)
+        XCTAssertNil(vm.targetButton(contextID: fx.context, action: nil).pressError)
         XCTAssertFalse(vm.proposingTargets.contains(fx.context))
     }
 
@@ -138,7 +138,7 @@ final class InboxTargetButtonFactsTests: XCTestCase {
 
         // Exit 1: kept for the button, as stderr's own text; no Inbox banner.
         await vm.proposeTarget(press(fx))
-        XCTAssertEqual(vm.targetFacts(contextID: fx.context).pressError, "parent_id: task #3 is closed")
+        XCTAssertEqual(vm.targetButton(contextID: fx.context, action: nil).pressError, "parent_id: task #3 is closed")
         XCTAssertNil(vm.lastError)
 
         // Navigating away and back (off screen, another card, a read) keeps it.
@@ -147,25 +147,25 @@ final class InboxTargetButtonFactsTests: XCTestCase {
         await vm.refreshListingEverything()
         vm.setOnScreen(true)
         await vm.onScreenRefresh?.value
-        XCTAssertEqual(vm.targetFacts(contextID: fx.context).pressError, "parent_id: task #3 is closed")
+        XCTAssertEqual(vm.targetButton(contextID: fx.context, action: nil).pressError, "parent_id: task #3 is closed")
 
         // The next propose that lands clears it.
         runner.shouldThrow = nil
         await vm.proposeTarget(press(fx))
-        XCTAssertNil(vm.targetFacts(contextID: fx.context).pressError)
+        XCTAssertNil(vm.targetButton(contextID: fx.context, action: nil).pressError)
 
         // Exit 3 stores nothing.
         runner.shouldThrow = CLIRunnerError.nonZeroExit(code: 3, stderr: "This button already has a proposal (#4)")
         await vm.proposeTarget(press(fx))
-        XCTAssertNil(vm.targetFacts(contextID: fx.context).pressError)
+        XCTAssertNil(vm.targetButton(contextID: fx.context, action: nil).pressError)
 
         // A read that finds a row newer than the one seen at the press clears it.
         runner.shouldThrow = CLIRunnerError.nonZeroExit(code: 1, stderr: "busy")
         await vm.proposeTarget(press(fx))
-        XCTAssertEqual(vm.targetFacts(contextID: fx.context).pressError, "busy")
+        XCTAssertEqual(vm.targetButton(contextID: fx.context, action: nil).pressError, "busy")
         try await proposal(fx, status: "pending")
         await vm.refreshListingEverything()
-        XCTAssertNil(vm.targetFacts(contextID: fx.context).pressError)
+        XCTAssertNil(vm.targetButton(contextID: fx.context, action: nil).pressError)
     }
 
     /// A refusal after a warning line shows the refusal alone (the CLI's
@@ -188,7 +188,7 @@ final class InboxTargetButtonFactsTests: XCTestCase {
         await vm.refreshListingEverything()
         await vm.proposeTarget(press(fx))
         await vm.refreshListingEverything()
-        XCTAssertEqual(vm.targetFacts(contextID: fx.context).pressError, "busy")
+        XCTAssertEqual(vm.targetButton(contextID: fx.context, action: nil).pressError, "busy")
     }
 
     func testTargetButton_Exit3RereadsWithoutBanner() async throws {
@@ -209,8 +209,8 @@ final class InboxTargetButtonFactsTests: XCTestCase {
 
         await vm.proposeTarget(press(fx))
 
-        let facts = vm.targetFacts(contextID: fx.context)
-        XCTAssertEqual(facts.proposal?.status, "pending")
+        let facts = vm.targetButton(contextID: fx.context, action: nil)
+        XCTAssertNotNil(facts.proposalID, "the row the other press wrote is read")
         XCTAssertNil(facts.pressError)
         XCTAssertNil(vm.lastError)
     }
@@ -262,7 +262,7 @@ final class InboxTargetButtonFactsTests: XCTestCase {
         await vm.refreshListingEverything()
         await vm.tryAgainTarget(id)
         XCTAssertNil(vm.actionFeed.rowErrors[id])
-        XCTAssertNil(vm.targetFacts(contextID: fx.context).applyError)
+        XCTAssertNil(vm.targetButton(contextID: fx.context, action: nil).applyError)
     }
 
     /// A Try again whose CLI fails without moving the row keeps its reason
@@ -279,25 +279,48 @@ final class InboxTargetButtonFactsTests: XCTestCase {
         await running.value
         vm.setOnScreen(true)
         await vm.onScreenRefresh?.value
-        XCTAssertTrue(vm.targetFacts(contextID: fx.context).applyError?.contains("database is locked") == true)
+        XCTAssertTrue(vm.targetButton(contextID: fx.context, action: nil).applyError?.contains("database is locked") == true)
     }
 
+    /// Which row is its button's newest is Go's (`Approval.target`,
+    /// `Approval.superseded`): an older row is never offered Try again.
     func testOnlyTheNewestRowIsTheButtons() async throws {
         let fx = try await fixture()
         defer { TestDatabase.cleanup(path: fx.path) }
         let older = try await proposal(fx, status: "failed")
         let newer = try await proposal(fx, status: "pending")
         let vm = ActionStripViewModel(dbPool: fx.pool, cliRunner: FakeCLIRunner())
-        await vm.refreshListingEverything()
+        let feed = try TestInboxFeeds.everything(fx.pool)
+        await vm.showFeed(TestInboxFeeds.adding([
+            TestInboxFeeds.approvalCard(older, TestInboxFeeds.approval(title: "Create task", superseded: true)),
+            TestInboxFeeds.approvalCard(newer, TestInboxFeeds.approval(title: "Create task", target: "waiting"))
+        ], to: feed))
         let rows = try await fx.pool.read { db in
             (try AgentActionQueries.fetch(db, id: older), try AgentActionQueries.fetch(db, id: newer))
         }
         let olderRow = try XCTUnwrap(rows.0)
         let newerRow = try XCTUnwrap(rows.1)
-        XCTAssertNil(vm.targetFacts(for: olderRow))
+        XCTAssertNil(vm.targetButton(forApproval: olderRow))
         XCTAssertTrue(vm.isSupersededButtonRow(olderRow))
-        XCTAssertEqual(vm.targetFacts(for: newerRow)?.proposal?.id, newer)
+        let button = try XCTUnwrap(vm.targetButton(forApproval: newerRow))
+        XCTAssertEqual(button.detail, "waiting")
+        XCTAssertEqual(button.proposalID, newer)
         XCTAssertFalse(vm.isSupersededButtonRow(newerRow))
+    }
+
+    /// The button's state is the feed's action at its press index.
+    func testButtonStateIsTheFeedsAction() async throws {
+        let fx = try await fixture()
+        defer { TestDatabase.cleanup(path: fx.path) }
+        let id = try await proposal(fx, status: "failed")
+        let vm = ActionStripViewModel(dbPool: fx.pool, cliRunner: FakeCLIRunner())
+        await vm.refreshListingEverything()
+        let action = CardAction(index: 0, kind: "target", label: "Make a task", state: .enabled, detail: "failed",
+                                note: "parent_id: task #3 is closed", until: "")
+        let button = vm.targetButton(contextID: fx.context, action: action)
+        XCTAssertEqual(button.detail, "failed")
+        XCTAssertEqual(button.note, "parent_id: task #3 is closed")
+        XCTAssertEqual(button.proposalID, id, "Try again applies the newest row")
     }
 
 }
@@ -338,8 +361,8 @@ final class InboxTargetOrphanedProposalTests: XCTestCase {
         XCTAssertTrue(vm.folderEntries.contains { $0.id == "approval:action:\(proposalID)" },
                       "the open approval stays on screen")
         // The button drawn now (another hash, or no card at all) has no proposal.
-        let now = vm.targetFacts(contextID: "\(outputID):0:fedcba9876543210")
-        XCTAssertNil(now.proposal)
+        let now = vm.targetButton(contextID: "\(outputID):0:fedcba9876543210", action: nil)
+        XCTAssertNil(now.proposalID)
         XCTAssertFalse(now.inFlight)
 
         let action = try XCTUnwrap(vm.feed.proposals.first { $0.id == proposalID })

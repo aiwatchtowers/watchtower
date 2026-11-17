@@ -98,32 +98,6 @@ package struct InboxCardAction: Equatable, Sendable {
               number == NSNumber(value: number.int64Value) else { return nil }
         return .id(number.int64Value)
     }
-
-    /// What the card's Reply buttons can do now: a press already made wins,
-    /// then a removed recipe, then the recipe's state (the CLI refuses a
-    /// recipe that cannot run).
-    package static func replyState(_ card: AutomationOutputCard) -> InboxReplyState {
-        if card.pressedAction != nil { return .sent(runID: card.pressedRunID) }
-        if card.recipeRemoved { return .removed }
-        switch card.recipeState {
-        case .runnable: return .ready
-        case .needsConfirmation: return .needsConfirmation
-        case .disabled: return .off
-        case .parseError: return .unreadable
-        }
-    }
-}
-
-/// The Reply buttons of one card: one press per card ("Sent — run #N").
-package enum InboxReplyState: Equatable, Sendable {
-    case ready
-    /// Pressed; `runID` is nil when the queued run was since deleted.
-    case sent(runID: Int64?)
-    case needsConfirmation
-    case off
-    case unreadable
-    /// The recipe's file is gone: nothing to confirm or turn on.
-    case removed
 }
 
 /// The press of a `target` button (spec "The press"): `actions propose` of
