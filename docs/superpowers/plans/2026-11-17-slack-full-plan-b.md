@@ -2,14 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A company gets Watchtower's Slack app into its own workspace with one paste of a configuration token, every colleague connects from the app's About page (or an MDM key, or a pasted code) with PKCE and no client secret, tokens refresh on their own, and accounts on the retired shared public app keep working under a banner that offers Full or Live. Every screen of the screens spec ships with it.
+**Goal:** A company gets Watchtower's Slack app into its own workspace with one paste of a configuration token, every colleague connects from the app's About page (or an MDM key, or a pasted code) with PKCE and no client secret, tokens refresh on their own, accounts on the retired shared public app keep working under a banner that offers Full or Live and move to Full on the same account row (history kept), and a company that already has its own Watchtower app (the corp build's baked app) brings that app up to date instead of creating a second one. Every screen of the screens spec ships with it.
 
 **Architecture:**
 - **Go owns every Slack call and every write.** A new package `internal/slackconnect` holds the PKCE loopback flow (link and code parsing, the authorize URL, the callback, the secret-less code exchange, one flow at a time). A new package `internal/slackapp` holds the workspace-app setup (our manifest, `apps.manifest.create`/`update` behind an interface, the setup record). A new `internal/slackauth` holds token freshness (refresh under a per-account flock) for every token reader.
 - **Port 18551 has one owner at a time.** While the Desktop runs, its long-lived child `watchtower slack connect serve` holds 127.0.0.1:18551, answers `/slack/connect` and `/callback`, and talks to the Desktop in JSON lines over stdin/stdout. Without the Desktop, `watchtower slack connect --team --client` binds it one-shot. The child exits on stdin EOF, so it dies with the app.
 - **The link's first hop never redirects.** `/slack/connect` answers at once with a page "Switch to Watchtower to confirm"; the Desktop comes forward with the confirm sheet; on **Connect** the child opens Slack's authorize URL in the browser. Pasted links, codes, MDM rows and Reconnect skip the confirm and start at the same "open the browser" step, so there is one flow.
-- **Setup is three CLI verbs** (`slack app create|link|status --json`, config token on stdin, one JSON line per step) run by `SlackAppSetupModel` on `AppState`; the admin's own connect is the ordinary connect flow.
-- **Shared-app detection is Go-only and the same in every build** (`shared_app` in `slack accounts --json`); Swift only reads the flag. Each build profile names its own baked client id as retired (`RETIRED_SLACK_CLIENT_ID`): the public build's shared app and the corp build's baked company app alike (ask #1414: «корп как все»). A release guard in `scripts/build-app.sh` makes every release, public or corp, able to recognise them.
+- **Setup is four CLI verbs** (`slack app create|adopt|link|status --json`, config token on stdin, one JSON line per step) run by `SlackAppSetupModel` on `AppState`; `adopt` brings an existing company app (the corp build's baked app) in line with our manifest through `apps.manifest.update` instead of creating a second app (ask #1425); the admin's own connect is the ordinary connect flow.
+- **Moving to Full re-binds the account row** (ask #1425): a connect for a team that already has a live account writes the new token and client id onto that same row, so the account id, its namespaced data and its sync position stay; nothing is soft-removed.
+- **Shared-app detection is Go-only and has one rule, with no build-flavor check in app code** (`shared_app` in `slack accounts --json`; ask #1425): an account is on the shared app iff its `client_id` equals `auth.RetiredSharedClientID`, the retired **public** shared app's id. Any other client id — a workspace app made by setup, an id from MDM `SlackApps` or a link, the corp build's baked company app — is a company app, i.e. Full. Rows written before migration 00194 get their client id backfilled from the id the build bakes (or, once nothing is baked, from `RetiredSharedClientID`). Swift only reads the flag. Only the public profile sets `RETIRED_SLACK_CLIENT_ID`; the release guard in `scripts/build-app.sh` makes every public release set it.
 - **Screens** follow the approved screens spec: `SlackModePresentation`, `SlackAppSetupModel`, `SlackConnectFlowModel` own every string; views lay them out with the design kit; colors only through `Tone`.
 
 **Tech Stack:** Go 1.26 (cobra, `database/sql` on the in-repo SQLCipher driver, goose SQL migrations, `net/http` loopback server, `testing/synctest`, `golang.org/x/sys/unix` flock as `internal/db` already uses), SwiftUI + GRDB (WatchtowerCore, design kit), bash release scripts.
@@ -23,7 +24,7 @@
 - **The link:** `http://127.0.0.1:18551/slack/connect?team=<team id>&client=<client id>`; the code: `<team id>:<client id>`. Team ids match `^[TE][A-Z0-9]{2,}$`, client ids `^[0-9]+\.[0-9]+$` (parse refuses anything else; pinned by `TestParseConnectInput`).
 - **The listener** answers only `GET /slack/connect` and `GET /callback`, checks `Host` is exactly `127.0.0.1:18551` (or the test port), never serves files, binds `127.0.0.1` only. `TestOAuthPortRanges_Disjoint` (`internal/slackconnect`) lists every listener's range (Slack 18491–18500, Calendar 18501–18510, Jira 18511–18520, Gmail 18521–18530, Outlook/IMAP 18531–18540, Linear 18531–18535 as the listed known exception, Quick Connections 18541–18550) and asserts 18551 is in none.
 - **One connect flow at a time**, in the child (Go registry) and in the Desktop (`SlackAuthFlowState` guard, shared with Reconnect and the legacy Workspace block).
-- **Flow lifetime:** in memory only; a confirmed flow waits for its callback up to 10 minutes (injected clock), then ends as failed; a callback with no live flow gets the "start again" page (`internal/oauthpage`), nothing stored.
+- **Flow lifetime (A22, needs the owner):** in memory only; a confirmed flow has **no deadline**: it waits for its callback until the callback, **Cancel**, or the app quits. The browser-step sheet shows how long it has waited ("Waiting for Slack since 12 min") once past 5 minutes, and keeps **Cancel**. Reason: a slow admin approval never produces a callback (Slack shows its own "request sent" page, screens §4.3; spike Q5), so a longer timer would only keep a dead flow; and a member who is slow on Slack's consent page must not lose the flow to a timer. A callback with no live flow gets the "start again" page (`internal/oauthpage`), nothing stored.
 - **Next migration:** `00194` (main ends at `00193`). Mirror into `internal/db/schema.sql`; add new tables to `TestAllTablesExist`; regenerate `go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema' -update`.
 - **UI:** strings only in `SlackModePresentation`, `SlackAppSetupModel`, `SlackConnectFlowModel` (plus `FeatureReadiness`/`ReadinessSource` and the phone's `AccountStatusStyle` for their own), each pinned by tests; colors only via `Tone`; design kit components; the implementation re-renders the screens spec's shot names from the real views (`DesignShotsTests.testSlackFullLiveShotsRender`). English UI; Full / Live names (D1).
 - **Tests:** never wait on wall-clock (`synctest`, injected clocks, fakes); a test that starts a process reaps its process group in `t.Cleanup`; the Go listener is tested in-process on port 0, never on 18551; no real Slack ids, domains or names (placeholders, `acme`, `example.com`).
@@ -38,8 +39,9 @@
 2. The `client_secret` of `apps.manifest.create` never lands in a file, the DB, a log line or stdout — `TestAppSetup_SecretNeverStored` greps the workspace dir, the DB dump and captured output (Task 9).
 3. A second `slack app create` after a create that was cut off (Mac closed) never creates a second app — `TestAppSetup_ResumeAfterCreate` (Task 9).
 4. Two processes refresh the same rotated token: only one calls Slack, the other re-reads the file; the old refresh token is never used twice — `TestSlackRefresh_LockRace` (Task 8).
-5. A build without `RETIRED_SLACK_CLIENT_ID` never calls a workspace-app account "shared"; the corp build is not special — its baked id counts as retired — `TestSlackAccountSharedApp_*` (Task 3).
-6. Moving a shared-app account to Full: the new row is `ok` before the old one is soft-removed (SLACK-01 path), and a failure in between leaves the old account syncing — `TestSlackLinkConnect_MoveFromSharedApp*` (Task 7).
+5. Only the retired public shared id is "shared": the corp build's baked company app, an MDM or link id, and a build without `RETIRED_SLACK_CLIENT_ID` never show the banner — `TestSlackAccountSharedApp_*`, `TestBackfillSlackClientIDs_*` (Task 3).
+6. Moving a shared-app account to Full re-binds the same row: messages, digests and the search watermark stay with the account id; a failed exchange or token save leaves the old token working; a crash between the token save and the row update is repaired on the next token read — `TestSlackLinkConnect_Rebind*` (Task 7).
+8. Refresh happens when the access token has < 1 h left **or** the refresh token has < 7 days left, so a Mac that syncs rarely never lets the refresh token lapse — `TestSlackRefresh_RefreshTokenNearExpiry` (Task 8).
 7. Team in the link ≠ team Slack returns: nothing stored, the row is rolled back — `TestSlackLinkConnect_TeamMismatch` (Task 7).
 
 ## Task 1 spike — answers (filled by the controller after Task 1)
@@ -56,23 +58,32 @@
 | Q8 | `apps.manifest.update` keeps `app_id` and `client_id`, does not reset installs or require re-approval when only `long_description` changes? | _pending_ | Task 16 |
 | Q9 | Token rotation: `expires_in` of the access token, `refresh_token` present for the user token, refresh with `grant_type=refresh_token` + `client_id` and no secret, does the refresh token rotate, refresh token lifetime, error codes for an expired / reused refresh token | _pending_ | Task 16: the refresher's thresholds (Task 8 defaults: refresh when the access token has < 1 h left; Re-login on `invalid_refresh_token`) |
 | Q10 | Rate tier of `conversations.history` for the internal workspace app (expected Tier 3, not the non-Marketplace Tier 1) | _pending_ | feature note only |
+| Q11 | Adopt (ask #1425): `apps.manifest.export` and `apps.manifest.update` on an **existing** app with a config token of one of its collaborators — accepted? Error code for a token of a non-collaborator? Does adding a redirect URL / user scopes / changing `long_description` force a reinstall or a new admin approval, and do existing user tokens keep working? | _pending_ | Task 16: adopt's error map (`not_collaborator`), whether adopt must warn "colleagues will be asked to approve again" |
+| Q12 | Can the app id of an existing app be read from a user token connected through it (`auth.test` fields, or `app_id` in `oauth.v2.access` / refresh responses)? | _pending_ | Task 16: whether adopt asks for the App ID (Decision A19) or derives it |
+| Q13 | PKCE without a secret on an app that **has** a client secret and was created without PKCE (the corp app): does secret-less exchange work after adopt adds the loopback redirect, or does the app need a setting? | _pending_ | Task 16: adopt's manifest change; if impossible, corp keeps its baked id until a new app exists — **stop and ask the owner** |
+| Q14 | Turning on token rotation on an existing app (adopt): can it be turned off again, and what happens to existing non-rotating tokens? | _pending_ | adopt leaves the app's rotation setting as it is (A20); recorded for the feature note |
 
 ## Owner rulings in ask #1414
 
-- **Move off the shared app:** «Новая строка, как в спеке» — a new account row, the old one soft-removed (spec §6, D11); history stays under the old account and follows PURGE-01. Closed.
+- **Move off the shared app:** ask #1414 chose «Новая строка, как в спеке»; **overturned by ask #1425: «Перепривязать строку»** — the existing `slack_accounts` row is re-bound to the new client id (new token, same account id, history kept); nothing is soft-removed or purged (Task 7, A6).
 - **Contracts:** «Одобряю» — SLACKFULL-01/02, `SlackApps` in POLICY-01/02, the `slack accounts --json` document.
-- **Corp:** «Убираем, корп как все» — no corp-build-only rule anywhere. The corp build's baked client id is a retired shared app too: its accounts get the chip, banner and tag, its profile sets `RETIRED_SLACK_CLIENT_ID` to its own baked id, the release guard covers it, and Task 18 drops the baked id from the corp profile as well. This supersedes ask #1315 decisions #19, #24, #27 and the corp wording of ask #1337 (adaptive sync plan). Lines of the specs it changes (to be edited in Task 17):
-  - screens spec §1.1 table, row **Shared app**: "**public build only**" → every build;
-  - screens spec §1.1 "Which account is on the shared app (build-aware)": the **Public build** bullet becomes the rule for every build; the **Corp build** bullet (`shared_app` always false) is dropped; the guard paragraph's "stops a **public release**" → every release, and "A corp profile and `--dev` builds are not checked" → only `--dev` is not checked; the test list loses "corp → passes"; the test `TestSlackAccountSharedApp_CorpBuildNever` is dropped;
-  - screens spec §4.2 last paragraph: "Scope: **public build only, after T9** … The corp build keeps its baked company app and keeps **Add Slack Account**" → every build, after T9;
-  - screens spec §10 row "Every public release can recognise shared-app accounts (corp never shows the banner)" → "Every release recognises shared-app accounts";
-  - screens spec §11 approved decisions #19, #24, #27: "public build only" / "corp build never" / "a public release" → every build;
-  - parent spec §5.4 "The corp build keeps its baked credentials until its admin moves to the key; nothing changes for it on day one" → the corp build follows the same retirement as the public one;
-  - parent spec §6 "The public build stops baking `DefaultClientID`/`DefaultClientSecret`" → every build stops baking them.
+- **Corp:** ask #1414 «Убираем, корп как все» (corp's baked app counted as a retired shared app) is **overturned by ask #1425: «да и я бы тут добавил, что я бы хотел его просто модифицировать»** — the corp build's baked app is that company's own workspace app (Full): no banner, no chip, no second Watchtower app. **Set up for my company** can modify an existing app (`slack app adopt`: our scopes, the loopback redirect URL and the About link through `apps.manifest.update`). The baked id still leaves the corp build in Task 18; corp users then get the id from the About link or MDM `SlackApps`, and because the row re-binds, nothing is lost if the id changes. There is still no corp-only code path in the app: the rule is "the retired public shared id is shared; every other id is a company app".
+- **Spec lines superseded by asks #1414/#1425** (edited in Task 17, each marked with its ask):
+  - parent spec D11 "synced data follows the purge rules" and §6 "Moving to Full adds a new account row and soft-removes the old one (SLACK-01 unchanged); the old data then follows the purge lease (PURGE-01)" → the move re-binds the same row; nothing is removed or purged (#1425);
+  - parent spec §9 row "The shared app is retired, old accounts move | T9 | `TestSlack01_*` unchanged" → test `TestSlackLinkConnect_Rebind*` (#1425);
+  - parent spec §5.1 → the setup also adopts an existing app with `apps.manifest.update` (#1425);
+  - parent spec §5.4 "The corp build keeps its baked credentials until its admin moves to the key; nothing changes for it on day one" → the corp build keeps its baked id until Task 18, its admin adopts the app first, and its accounts are Full throughout (#1425);
+  - parent spec §6 "The public build stops baking `DefaultClientID`/`DefaultClientSecret`" → every build stops baking them (#1414, kept by #1425);
+  - screens spec §1.1 "Which account is on the shared app (build-aware)": the Public/Corp build bullets and the `FlavorOf` rule → one rule by client id, no flavor check in app code; "Empty at run time anyway … logs once" → rows without a client id are backfilled (Task 3), so an unset `RetiredSharedClientID` simply means "nothing is shared"; `TestSlackAccountSharedApp_PublicBuild`/`_CorpBuildNever`/`_EmptyRetiredIDFallsBack` → `TestSlackAccountSharedApp_RetiredIDOnly`, `TestBackfillSlackClientIDs_*` (#1425);
+  - screens spec §3 → new adopt states and the "ask your admin" note (Task 13, mockups added on this branch) (#1425, review #1426);
+  - screens spec §4.2 last paragraph and §11 #19 "public build only, after T9 … the corp build keeps **Add Slack Account**" → every build once it no longer bakes an app (`builtin_app`, A8) (#1414, kept by #1425);
+  - screens spec §5 banner "it goes when the account moves (the new row soft-removes the old one, SLACK-01)" → it goes when the row is re-bound (#1425);
+  - screens spec §11 #24 "public build = …; corp build never" → the single client-id rule (#1425);
+  - screens spec §4.4 "Paste the link or the code here instead" → narrowed if spike Q4 says Slack is strict about the port (A9).
 - **Agent decisions A1–A16:** «Принять все».
-- **Consequence (not yet confirmed by the owner):** once plan B ships, corp-build accounts show **Shared app** and the banner right away (before Task 18), and moving them to Full means creating a second Watchtower app in the company workspace through **Set up for my company**; the old baked company app stays in the workspace until its admin deletes it.
+- **Review round 1 (ask #1426)** folded in: refresh on refresh-token expiry (Task 8), every token-file writer under one lock (Task 8), mockups for the onboarding connect sheet and the new setup states (Task 13, Task 15), the flow's callback wait (A22), the "ask your admin" state (Task 13), A9's narrowing (Task 17).
 
-## Decisions made by the agent (approved in ask #1414)
+## Decisions made by the agent (A1–A16 approved in ask #1414; A17–A23 new)
 
 | # | Decision | Recommendation |
 |---|---|---|
@@ -81,34 +92,41 @@
 | A3 | Without the Desktop, `slack connect --team T --client C` binds 18551 one-shot; with the Desktop running it fails with "port 18551 is busy (is Watchtower open? connect from Connections → Slack)" | accept |
 | A4 | The admin's own connect in setup is the ordinary connect flow, started by `SlackAppSetupModel` (skip-confirm) after `slack app create`; `app create` itself never binds 18551 | accept |
 | A5 | The setup record is a DB table `slack_app_setups` (one row per team), "connected" is derived from an `ok` `slack_accounts` row with that client id, never stored | accept |
-| A6 | Connecting a team that already has a live account: same client id → re-consent that row (Reconnect); a different client id (a retired shared app, another workspace app) → new row, then soft-remove every other live row of that team (`removeSlackAccount`, SLACK-01), only after the new row is `ok` | accepted (history: owner chose the spec's new row, ask #1414) |
+| A6 | Connecting a team that already has a live account re-binds that row, whatever its client id (ask #1425): token file first (atomic), then the row's `client_id`/`app_id`; a token file whose client id differs from the row is the truth and the next token read repairs the row; no new row, no soft-remove | owner's ruling (ask #1425) |
 | A7 | Reconnect of a workspace-app account in the Desktop goes through the connect flow (`start` with the account id, skip-confirm); `slack accounts --json` says per account `relogin: "builtin" \| "connect"` | accept |
 | A8 | `slack accounts --json` gains top-level `builtin_app` (a baked or env client id **and** secret exist). The Desktop shows **Add Slack Account** only when it is true, **Connect another workspace…** otherwise. After T9 no build bakes a Slack app, so the sheet goes everywhere (ask #1414 supersedes #1315 #19's corp exception); Swift never needs the build flavor | accept |
-| A9 | If the spike says Slack is strict about the redirect port (Q4), the manifest registers `http://127.0.0.1:18551/callback` only and a paste with 18551 busy shows "free port 18551 or quit the app holding it" (no way around it). If Slack accepts any loopback port, a paste or MDM connect while 18551 is busy uses an ephemeral callback port | decide after the spike; the screens spec's port-busy line promises the paste works, which holds only in the second case |
+| A9 | If the spike says Slack is strict about the redirect port (Q4), the manifest registers `http://127.0.0.1:18551/callback` only and a paste with 18551 busy shows "free port 18551 or quit the app holding it" (no way around it). If Slack accepts any loopback port, a paste or MDM connect while 18551 is busy uses an ephemeral callback port | decide after the spike; if Slack is strict about the port, the screens spec's promise "paste works while 18551 is busy" (§4.4, §6 Listener row) narrows to "free the port", and Task 17 updates the screens spec |
 | A10 | The Desktop restarts the listener child once on an unexpected exit, then only when Connections → Slack opens (the same rule as the port-busy retry) | accept |
 | A11 | Manifest user scopes = today's `auth.UserScopes` minus the write scopes no code calls (`channels:write`, `groups:write`, `im:write`, `mpim:write` if the grep in Task 9 finds no caller), `chat:write` kept; pinned by `TestManifest_Scopes` | accept |
 | A12 | Token refresh is a pre-use check in every token reader (`slackauth.LoadFresh`) plus the daemon's per-cycle call, not a separate timer | accept |
 | A13 | The onboarding Slack step follows `builtin_app` too: false → its Slack card opens a sheet with the connect section (link/code field, MDM rows, **Set up for my company**) instead of `AddSlackAccountView` (not covered by the screens spec) | accept |
 | A14 | The legacy **Workspace** block (`auth login`, account #1) routes its Reconnect through the same per-account rule as A7 | accept |
-| A15 | After retirement (Task 18) the `retired-slack-id-check` also refuses any release (public or corp) that still sets `WATCHTOWER_OAUTH_CLIENT_SECRET`, or sets `WATCHTOWER_OAUTH_CLIENT_ID` equal to `RETIRED_SLACK_CLIENT_ID` | accept (keeps the retirement from being undone by a stale profile) |
+| A15 | After retirement (Task 18) the `retired-slack-id-check` also refuses any release (public or corp) that still sets `WATCHTOWER_OAUTH_CLIENT_SECRET`, and a public release whose `WATCHTOWER_OAUTH_CLIENT_ID` equals `RETIRED_SLACK_CLIENT_ID` | accept (keeps the retirement from being undone by a stale profile) |
 | A16 | New inventory entries SLACKFULL-01 (nothing connects without the owner's press), SLACKFULL-02 (no Slack client secret or config token is stored, logged or in argv) | accept |
+| A17 | Rows without a client id (connected before 00194) are backfilled once from the id the build bakes, or, when nothing is baked, from `RetiredSharedClientID`; a single `UPDATE … WHERE client_id = ''` run by `slack accounts`, the daemon's start and every connect (Task 3). After Task 18, a corp row never backfilled (an install that skipped every plan-B release) stays without a client id: not shared, and its Re-login goes through the link / MDM | needs the owner |
+| A18 | Re-binding refuses a sign-in as a **different Slack user** than the row's `current_user_id` ("Signed in as someone else; nothing was changed") — the row's history belongs to its user | needs the owner |
+| A19 | `slack app adopt` takes the app's client id from the team's live account row; the App ID comes from the row's `app_id` (stored from every `oauth.v2.access` from 00194 on) and, when unknown (corp rows connected earlier, unless spike Q12 finds a way), from one field in the sheet: "App ID (on the app's Basic Information page)" | needs the owner (one field the app cannot derive) |
+| A20 | Adopt merges, never replaces: it reads the app's manifest (`apps.manifest.export`), adds our loopback redirect URL and any missing user scopes, writes `long_description`, and keeps every other field (existing redirect URLs, bot, scopes we do not use, token-rotation setting) | needs the owner |
+| A21 | The old shared-app token is dropped from disk on re-bind, not revoked in Slack (the retired app stops working on Slack's side anyway; a revoke adds a failure mode for nothing) | needs the owner |
+| A22 | A confirmed connect flow has no deadline (see Global Constraints) instead of the earlier 10-minute timer, which had no source | needs the owner |
+| A23 | "Ask your admin" (the setup's `not_allowed` state, screens §3.2): adds **Copy a note for your admin** — "Please set up Watchtower for <workspace>: <guide link>", the guide page on setting up Slack for a company (`ReleaseLinks` guide URL + anchor) — beside **Cancel**/**Try again** | needs the owner |
 
 ## Contract changes (approved in ask #1414)
 
 - **New contracts:** SLACKFULL-01 and SLACKFULL-02 (A16) in `docs/inventory/slack-accounts.md`.
 - **POLICY-01/02:** new key `SlackApps` (approved in the spec, D4). Its fail-closed value is "no organization rows" (an empty list), problems reported like the other list keys; `policy show --json` gains `keys.SlackApps` (the pinned document grows one key).
-- **SLACK-01:** unchanged; the move from the shared app (A6) is a new caller of `removeSlackAccount`.
+- **SLACK-01:** unchanged and no longer touched: the move re-binds the row (ask #1425), so `removeSlackAccount` gets no new caller.
 - **`slack accounts`** gains `--json` (new document: `builtin_app`, `accounts[]` with `id`, `team_id`, `client_id`, `shared_app`, `relogin`).
-- **Spec deviation:** the corp rules listed under "Owner rulings in ask #1414" (edited in Task 17); A9 may narrow the screens spec's "port busy → paste works" (depends on the spike).
+- **Spec deviation:** the lines listed under "Spec lines superseded by asks #1414/#1425" (edited in Task 17); A9 may narrow the screens spec's "port busy → paste works" (depends on the spike).
 
 ## Writers of the same data
 
 | Data | Writers | Race rule |
 |---|---|---|
-| `slack_accounts` row + `slack_token_<id>.json` | `slack login`, `slack add`, the connect flow (`slack connect` / `connect serve`), the refresher (`slackauth.LoadFresh` in any process), `slack remove`, the purge | per-account flock `slack_token_<id>.lock` around every token-file write and every refresh; the holder wins, a waiter re-reads the file after taking the lock and refreshes only if it is still stale. Row writes are single statements inside the same lock section. The sync reads only. |
-| `slack_accounts.client_id`, `refresh_token_expires_at` | the same connect/login path (once per connect), the refresher (`refresh_token_expires_at`) | same flock |
-| `slack_app_setups` | `slack app create` (insert), `slack app link` (`link_written`), the connect flow (`install_requested_at`, only if Q5 says Slack reports it) | `create`/`link` hold `slack_app_setup.lock` for the whole run (one setup at a time; a second run answers `busy`); the connect flow's one `UPDATE` needs no lock (it touches only its own column) |
-| The app's `long_description` | `slack app create` (via `apps.manifest.update`), `slack app link` | last write wins; both write the same text |
+| `slack_accounts` row + `slack_token_<id>.json` | `slack login`, `slack add`, the legacy migration (`ensureLegacySlackAccount`, `cmd/slack_legacy.go`), the connect flow incl. the re-bind (`slack connect` / `connect serve`), the refresher and its row repair (`slackauth.LoadFresh` in any process), `slack remove`, the purge | per-account flock `slack_token_<id>.json.lock` (`TokenStore.Lock`, the `linear.TokenStore.Lock` pattern on `fsutil.LockFile`) around every token-file write and every refresh; the holder wins, a waiter re-reads the file after taking the lock and refreshes only if it is still stale. Row writes are single statements inside the same lock section. The sync reads only. |
+| `slack_accounts.client_id`, `app_id`, `refresh_token_expires_at` | the connect/login path incl. the re-bind (once per connect), the refresher (`refresh_token_expires_at`), `LoadFresh`'s repair (copies the token file's client id onto the row), the backfill (A17: only rows with `client_id = ''`) | same flock for the first three; the backfill's `WHERE client_id = ''` never overwrites a set id, so it needs none |
+| `slack_app_setups` | `slack app create` and `slack app adopt` (insert), `slack app link` (`link_written`), the connect flow (`install_requested_at`, only if Q5 says Slack reports it) | `create`/`link` hold `slack_app_setup.lock` for the whole run (one setup at a time; a second run answers `busy`); the connect flow's one `UPDATE` needs no lock (it touches only its own column) |
+| The app's manifest (`long_description`; for adopt also redirect URLs and scopes) | `slack app create`/`adopt` (via `apps.manifest.update`), `slack app link`; the company's own edits on api.slack.com | last write wins; adopt and link re-read the manifest (`apps.manifest.export`) right before the update and merge, so a human edit in between is kept |
 | The connect flow | link, paste, MDM, Reconnect, setup's admin connect | one flow at a time in the child; the Desktop refuses a second start while one runs |
 | Port 18551 | the Desktop's child, or one-shot `slack connect` | first bind wins; the loser reports busy |
 
@@ -157,10 +175,10 @@ The controller runs this once the owner has generated a configuration token for 
 
 **Files:**
 - Create: `internal/db/migrations/00194_slack_full.sql`
-- Modify: `internal/db/schema.sql`, `internal/db/slack_accounts.go` (`SlackAccount.ClientID`, `RefreshTokenExpiresAt`; scan in every `ListSlackAccounts`/`GetSlackAccount` query; `SetSlackAccountClientID`, `SetSlackRefreshExpiry`)
+- Modify: `internal/db/schema.sql`, `internal/db/slack_accounts.go` (`SlackAccount.ClientID`, `AppID`, `RefreshTokenExpiresAt`; scan in every `ListSlackAccounts`/`GetSlackAccount` query; `SetSlackAccountApp(id, clientID, appID)`, `SetSlackRefreshExpiry`, `BackfillSlackClientIDs(id string) (int64, error)` — `UPDATE … SET client_id = ? WHERE client_id = ''`)
 - Create: `internal/db/slack_app_setups.go`, `internal/db/slack_app_setups_test.go`
 - Modify: `internal/db/db_test.go` (`expectedTables` += `slack_app_setups`)
-- Modify: `internal/slack/token_store.go` (`Token.RefreshToken`, `ExpiresAt`, `ClientID`, all `omitempty`)
+- Modify: `internal/slack/token_store.go` (`Token.RefreshToken`, `ExpiresAt`, `RefreshExpiresAt`, `ClientID`, `AppID`, all `omitempty`; `func (s *TokenStore) Lock(ctx) (func(), error)` on `fsutil.LockFile(path+".lock")`, the same shape as `linear.TokenStore.Lock`)
 - Modify: `cmd/slack.go` (`connectSlackAccount` takes the client id and writes it; `slack add`/`login` pass the resolved builtin id)
 - Regenerate: schema golden, `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift`
 
@@ -174,7 +192,8 @@ Migration (plain adds, no rebuild):
 
 ```sql
 -- +goose Up
-ALTER TABLE slack_accounts ADD COLUMN client_id TEXT NOT NULL DEFAULT '';           -- '' = connected before 00194
+ALTER TABLE slack_accounts ADD COLUMN client_id TEXT NOT NULL DEFAULT '';           -- '' = connected before 00194 (backfilled, A17)
+ALTER TABLE slack_accounts ADD COLUMN app_id TEXT NOT NULL DEFAULT '';              -- from oauth.v2.access; '' = unknown
 ALTER TABLE slack_accounts ADD COLUMN refresh_token_expires_at TEXT NOT NULL DEFAULT ''; -- '' = no rotation
 CREATE TABLE slack_app_setups (
   team_id TEXT PRIMARY KEY,
@@ -188,7 +207,7 @@ CREATE TABLE slack_app_setups (
 );
 ```
 
-- [ ] **Step 1: Failing tests:** `TestSlackAppSetups_InsertGetList`, `TestSlackAppSetups_SecondInsertRefused`, `TestSlackAppSetups_LinkWrittenAndInstallRequested`, `TestSlackAccounts_ClientIDRoundTrip`, `TestTokenStore_RefreshFieldsRoundTrip` (and an old file without them still loads), `cmd::TestConnectSlackAccount_WritesClientID`.
+- [ ] **Step 1: Failing tests:** `TestSlackAppSetups_InsertGetList`, `TestSlackAppSetups_SecondInsertRefused`, `TestSlackAppSetups_LinkWrittenAndInstallRequested`, `TestSlackAccounts_ClientIDRoundTrip`, `TestBackfillSlackClientIDs_OnlyEmptyRows` (a set id is never overwritten; idempotent), `TestTokenStore_RefreshFieldsRoundTrip` (and an old file without them still loads), `cmd::TestConnectSlackAccount_WritesClientID`.
 - [ ] **Step 2: Run, expect FAIL:** `go test ./internal/db ./internal/slack -run 'SlackAppSetups|ClientID|RefreshFields'`, `go test ./cmd -run TestConnectSlackAccount_WritesClientID`.
 - [ ] **Step 3: Implement** the migration, mirror, accessors, token fields, the `connectSlackAccount` parameter; regenerate goldens.
 - [ ] **Step 4: Run, expect PASS** plus `go test ./internal/db -run 'TestAllTablesExist|TestSchemaGolden|TestDesktopTestSchema'`, `go test ./cmd -run 'Slack'`; `make lint-diff`.
@@ -199,7 +218,7 @@ CREATE TABLE slack_app_setups (
 **Depends on:** Task 2
 
 **Files:**
-- Modify: `internal/auth/oauth.go` (`var RetiredSharedClientID string`, ldflag; `func BuiltinApp() (OAuthConfig, bool)`)
+- Modify: `internal/auth/oauth.go` (`var RetiredSharedClientID string`, ldflag set only by the public profile; `func BuiltinApp() (OAuthConfig, bool)`)
 - Create: `internal/slackmode/sharedapp.go`, `internal/slackmode/sharedapp_test.go`
 - Modify: `cmd/slack.go` (`slack accounts --json`), `cmd/auth.go` (`resolveOAuthConfig` via `auth.BuiltinApp`)
 - Modify: `Makefile` `LDFLAGS` (`-X watchtower/internal/auth.RetiredSharedClientID=$(RETIRED_SLACK_CLIENT_ID)`, exported like the others)
@@ -207,13 +226,15 @@ CREATE TABLE slack_app_setups (
 
 **Interfaces:**
 - Produces:
-  - `func SharedApp(a db.SlackAccount, retiredID string, logOnce func()) bool` — the same in every build (no flavor input, ask #1414): `a.ClientID == retiredID && retiredID != ""` or `a.ClientID == ""`; when `retiredID == ""` only the empty-id rule, and `logOnce` fires (the caller wraps it in `sync.Once`; text "slack: RetiredSharedClientID not set; shared-app detection limited to accounts without a client id").
+  - `func SharedApp(a db.SlackAccount, retiredID string) bool` — one rule, no flavor input (ask #1425): `retiredID != "" && a.ClientID == retiredID`. Every other id (setup's app, MDM/link id, the corp build's baked company app) is a company app.
+  - `func BackfillSource() string` — the baked/env client id if any, else `RetiredSharedClientID`, else `""` (no backfill). Callers: `slack accounts`, the daemon's start, `writeConnectedAccount` (A17).
   - `slack accounts --json` → `{"builtin_app": bool, "accounts": [{"id", "team_id", "team_name", "label", "status", "enabled", "client_id", "shared_app", "relogin": "builtin"|"connect"}]}`; `relogin` = `connect` when `client_id != ""` and differs from the builtin id, else `builtin`. Removed rows are listed (the Desktop filters), `shared_app` is false for them.
-- [ ] **Step 1: Failing tests:** `TestSlackAccountSharedApp_EveryBuild` (retired id and empty → true; a workspace app → false; the result does not change with `cmd.BuildFlavor` set to `""` or a corp value), `TestSlackAccountSharedApp_EmptyRetiredIDFallsBack` (only empty `client_id`; one log line over two calls), `TestSlackAccountsJSON_Shape` (golden keys), `TestSlackAccountsJSON_BuiltinApp` (env id+secret → true; none → false), `TestSlackAccountsJSON_Relogin`.
+- [ ] **Step 1: Failing tests:** `TestSlackAccountSharedApp_RetiredIDOnly` (retired id → true; a setup app, an MDM id and a corp-baked id → false; `retiredID == ""` → nothing shared; the result does not depend on `cmd.BuildFlavor`), `TestBackfillSlackClientIDs_FromBakedID` (public before Task 18: empty rows get the shared id → shared; corp: empty rows get the corp id → not shared), `TestBackfillSlackClientIDs_AfterRetirement` (nothing baked: empty rows get `RetiredSharedClientID` when set, stay empty otherwise), `TestSlackAccountsJSON_Shape` (golden keys), `TestSlackAccountsJSON_BuiltinApp` (env id+secret → true; none → false), `TestSlackAccountsJSON_Relogin`.
 - [ ] **Step 2: Run, expect FAIL:** `go test ./internal/slackmode ./cmd -run 'SharedApp|SlackAccountsJSON'`.
 - [ ] **Step 3: Implement.** No flavor check anywhere on this path.
+- [ ] **Step 3a:** the daemon's start calls the backfill once (`cmd/daemon*.go` start path; a failure is logged and retried at the next start).
 - [ ] **Step 4: Run, expect PASS;** `make lint-diff`.
-- [ ] **Step 5: Commit** `feat(slack): build-aware shared-app flag in slack accounts --json (#1709)`.
+- [ ] **Step 5: Commit** `feat(slack): shared-app flag by client id in slack accounts --json (#1709)`.
 
 ### Task 4: Release guard `retired-slack-id-check`
 
@@ -224,11 +245,11 @@ CREATE TABLE slack_app_setups (
 - Create: `scripts/tests/test-build-app-retired-slack-id.sh` (extracts the block verbatim like `test-build-app-bridge.sh`)
 - Modify: `Makefile` `test-scripts` (runs the new test)
 
-- [ ] **Step 1: Failing test script** asserting: a release (not `--dev`, `NOTARIZE_PROFILE` set; any flavor, public or corp) + empty `RETIRED_SLACK_CLIENT_ID` → exit 1 with "ERROR: a release must set RETIRED_SLACK_CLIENT_ID (recognises accounts on the retired Slack app this build used to bake)"; public release + set → passes; corp release + empty → exit 1; corp release + set → passes; `--dev` → passes; non-release (no `NOTARIZE_PROFILE`) → passes.
+- [ ] **Step 1: Failing test script** asserting: a public release (flavor `""`/`dev`, not `--dev`, `NOTARIZE_PROFILE` set) + empty `RETIRED_SLACK_CLIENT_ID` → exit 1 with "ERROR: a public release must set RETIRED_SLACK_CLIENT_ID (recognises accounts on the retired shared Slack app)"; public release + set → passes; corp release (its baked app is a company app, ask #1425) → passes without it; `--dev` → passes; non-release (no `NOTARIZE_PROFILE`) → passes. The flavor test lives only in this build-script block, never in app code.
 - [ ] **Step 2: Run, expect FAIL:** `bash scripts/tests/test-build-app-retired-slack-id.sh`.
 - [ ] **Step 3: Implement** the block before anything is built.
 - [ ] **Step 4: Run, expect PASS:** the script and `make test-scripts`.
-- [ ] **Step 5: Commit** `build: every release must recognise its retired Slack app (#1709)`.
+- [ ] **Step 5: Commit** `build: a public release must recognise the retired shared Slack app (#1709)`.
 
 ### Task 5: MDM key `SlackApps`
 
@@ -259,14 +280,14 @@ Rules: absent key → nil (no rows). Wrong type (not an array) → `[]` + `wrong
 - Produces:
   - `const Port = 18551`; `var RedirectURL = "http://127.0.0.1:18551/callback"` (Task 16 may switch to https).
   - `type Target struct { TeamID, ClientID string; AccountID int64 /*0 = new*/ }`; `func ParseConnectInput(s string) (Target, error)` — the full link (scheme, host `127.0.0.1:18551`, path `/slack/connect`, both params) or the code; anything else `ErrNotConnectInput`.
-  - `type Registry` — one flow at a time: `Begin(t Target, needsConfirm bool) (FlowID, error)` (`ErrFlowRunning`), `Confirm(id) (authorizeURL string, err)`, `Cancel(id)`, `Callback(state, code, slackErr string) (Result, error)`; each flow holds its `PKCEPair` (reuse `auth.NewPKCEPair`), state, deadline (`Clock` injected, 10 min after confirm).
+  - `type Registry` — one flow at a time: `Begin(t Target, needsConfirm bool) (FlowID, error)` (`ErrFlowRunning`), `Confirm(id) (authorizeURL string, err)`, `Cancel(id)`, `Callback(state, code, slackErr string) (Result, error)`; each flow holds its `PKCEPair` (reuse `auth.NewPKCEPair`), state, the start time (`Clock` injected, for the "waiting since" line); no deadline (A22).
   - `func AuthorizeURL(t Target, pkce auth.PKCEPair, state string) string` — `user_scope`, `redirect_uri`, `code_challenge`, `code_challenge_method=S256`, `client_id`, `state`, and `team=<team id>` (Slack's workspace hint).
-  - `type Exchanger func(ctx, clientID, code, verifier, redirectURI string) (Grant, error)` — real one posts `oauth.v2.access` with no secret; `Grant{AccessToken, RefreshToken, ExpiresIn, TeamID, TeamName, UserID, Scope}`.
+  - `type Exchanger func(ctx, clientID, code, verifier, redirectURI string) (Grant, error)` — real one posts `oauth.v2.access` with no secret; `Grant{AccessToken, RefreshToken, ExpiresIn, RefreshExpiresIn, ClientID, AppID, TeamID, TeamName, UserID, Scope}`.
   - `func Handler(reg *Registry, events chan<- Event, host string) http.Handler` — `GET /slack/connect` → parse; begin with confirm; event `link{flow, team, client}`; answers 200 "Switch to Watchtower to confirm" (oauthpage style). `GET /callback` → `reg.Callback`; no flow → the "start again" page (`oauthpage.Stale()`), nothing else. Any other path, method or `Host` → 404/405/421 with no body detail.
 - [ ] **Step 1: Failing tests:**
   - `TestParseConnectInput` (table: link, code, whitespace, wrong host, wrong path, missing param, bad patterns, `javascript:` and `file:` URLs).
   - `TestOAuthPortRanges_Disjoint` (the ranges of Global Constraints, read from the packages' constants where exported, else listed with a comment naming the file; 18551 in none; Linear/Outlook overlap listed as the known exception).
-  - `TestRegistry_OneFlowAtATime`, `TestRegistry_ConfirmRequiredForLink` (a link flow cannot reach `AuthorizeURL` without `Confirm`), `TestRegistry_PasteSkipsConfirm`, `TestRegistry_DeadlineEndsFlow` (synctest), `TestRegistry_CallbackStateMismatchIgnored` (does not end the flow), `TestRegistry_DeniedCallback` (`error=access_denied` → `denied`), `TestRegistry_TeamMismatch` (exchange returns another team → `team_mismatch`, no grant handed out).
+  - `TestRegistry_OneFlowAtATime`, `TestRegistry_ConfirmRequiredForLink` (a link flow cannot reach `AuthorizeURL` without `Confirm`), `TestRegistry_PasteSkipsConfirm`, `TestRegistry_FlowWaitsUntilCancel` (synctest: a confirmed flow is still live after 24 h of bubble time; `Cancel` ends it; a second `Begin` is `ErrFlowRunning` meanwhile), `TestRegistry_CallbackStateMismatchIgnored` (does not end the flow), `TestRegistry_DeniedCallback` (`error=access_denied` → `denied`), `TestRegistry_TeamMismatch` (exchange returns another team → `team_mismatch`, no grant handed out).
   - `TestSlackConnectListener_RequiresConfirm` (in-process server on port 0: GET `/slack/connect` → 200 page, one `link` event, no outbound exchange call, no browser open).
   - `TestSlackConnectListener_CallbackWithoutFlow` (fresh registry: `/callback?state=x&code=y` → the start-again page; the exchanger is never called).
   - `TestSlackConnectListener_RejectsOtherHostsMethodsPaths`.
@@ -290,15 +311,15 @@ Rules: absent key → nil (no rows). Wrong type (not an array) → `[]` + `wrong
   - `{"event":"listening","port":18551}` / `{"event":"port_busy","port":18551}` (then exit 3)
   - `{"event":"link","flow":"<id>","team_id":"…","client_id":"…"}` (needs confirm)
   - `{"event":"browser","flow":"<id>"}` (authorize URL opened)
-  - `{"event":"connected","flow":"<id>","account_id":N,"team_id":"…","team_name":"…","moved_from":[ids]}`
-  - `{"event":"failed","flow":"<id>","reason":"team_mismatch|denied|expired|cancelled|exchange|policy|purge_running|other","message":"…"}`
+  - `{"event":"connected","flow":"<id>","account_id":N,"team_id":"…","team_name":"…","rebound_from":"<old client id or ''>"}`
+  - `{"event":"failed","flow":"<id>","reason":"team_mismatch|other_user|denied|cancelled|exchange|policy|purge_running|other","message":"…"}`
   - `{"event":"busy","flow":"<id of the running flow>"}` (a second start refused)
   - Stdin JSON lines: `{"cmd":"start","team_id","client_id","account_id"}` (skip confirm: paste, MDM, Reconnect, setup), `{"cmd":"confirm","flow"}`, `{"cmd":"cancel","flow"}`. Stdin EOF → close the listener and exit 0.
-- `func writeConnectedAccount(ctx, cfg, database, t slackconnect.Target, g slackconnect.Grant) (accountID int64, movedFrom []int64, err error)` — the one write path for every PKCE connect:
-  - `t.AccountID != 0` → re-consent that row (home-team check of `checkSlackLoginTeam`).
-  - else a live row of the same team with the same client id → re-consent it.
-  - else create a row; `connectSlackAccount` with the grant and the client id (a duplicate team is allowed only when every other live row of that team has a different client id); then, after the new row is `ok`, `removeSlackAccount` on each other live row of the team (A6). A failed remove is a warning in the result (`moved_from` lists only those removed); the next connect of that team retries it.
-  - Saves `RefreshToken`, `ExpiresAt`, `ClientID` in the token file and `refresh_token_expires_at` on the row (under the Task 8 flock once it lands; until then the plain store).
+- `func writeConnectedAccount(ctx, cfg, database, t slackconnect.Target, g slackconnect.Grant) (accountID int64, reboundFrom string, err error)` — the one write path for every PKCE connect (ask #1425, A6):
+  - Target row: `t.AccountID` when set; else the team's live row (`refuseDuplicateSlackTeam` keeps it single); else a new row.
+  - An existing row: the home-team check (`checkSlackLoginTeam`) and A18's same-user check run **before** any write.
+  - Under `TokenStore.Lock`: (1) save the token file atomically (temp + rename) with the new access/refresh tokens, `ClientID`, `AppID`; (2) `SetSlackAccountApp(id, g.ClientID, g.AppID)`, `SetSlackRefreshExpiry`, auth state `ok`. A failure in (1) leaves the old file, so the old token keeps syncing; a crash between (1) and (2) is repaired by `LoadFresh` (Task 8), which copies the file's client and app id onto the row. Data, watermarks and the account id are never touched; nothing is soft-removed (SLACK-01 untouched).
+  - The old token is dropped, not revoked (A21).
   - Calls `SetSlackAppSetupInstallRequested(team, zero)` when a setup record exists for the team (the install happened).
 - [ ] **Step 1: Failing tests** (`synctest` + the in-process `serve` with `io.Pipe` stdin/stdout and an httptest Slack; the exchanger and the browser opener are fakes):
   - `TestSlackConnectServe_LinkConfirmConnected` (link → `link` event → `confirm` → `browser` → callback → `connected`; row `ok`, `client_id` set, token file has the refresh token).
@@ -307,7 +328,11 @@ Rules: absent key → nil (no rows). Wrong type (not an array) → `[]` + `wrong
   - `TestSlackConnectListener_PortBusy` (a pre-bound port → `port_busy`, exit 3) and the one-shot `TestSlackConnect_PortBusyMessage`.
   - `TestSlackLinkConnect_TeamMismatch` (nothing stored; a new row rolled back via `rollbackSlackAccount`).
   - `TestSlackLinkConnect_ReconsentSameClient` (no new row).
-  - `TestSlackLinkConnect_MoveFromSharedApp` (shared-app row 1 live; connect same team, new client → row 2 `ok`, row 1 `removed` via the SLACK-01 path, data of row 1 untouched) and `TestSlackLinkConnect_MoveFromSharedAppRemoveFails` (remove fails → both live, warning; a second connect removes row 1).
+  - `TestSlackLinkConnect_RebindKeepsHistory` (shared-app row 1 with messages, digests and `search_last_date`; connect same team, new client → still one row, id 1, `client_id` new, `shared_app` false, every table's row count unchanged, watermark unchanged).
+  - `TestSlackLinkConnect_RebindExchangeFails` / `_RebindTokenSaveFails` (the old token file byte-identical, row unchanged, the old token still used by the next sync).
+  - `TestSlackLinkConnect_RebindRestartMidway` (token saved, process "dies" before the row update: a new process's `LoadFresh` repairs `client_id`/`app_id`; `slack accounts --json` then says `shared_app: false`).
+  - `TestSlackLinkConnect_RebindOtherUserRefused` (A18; nothing written).
+  - `TestSlackLinkConnect_CorpBakedRowRebinds` (a row on a corp-baked id connected through the same app's link → same row, still Full).
   - `TestSlackLinkConnect_PolicyBlocksSlack` (`policytest.Set` without `slack` → `failed/policy`, no browser).
   - `TestSlackLogin_WorkspaceAppAccountUsesPKCE` (`slack login --account N` with `client_id` ≠ builtin → one-shot flow, no secret needed).
   - `TestPolicyLogin_EverySourceCommandIsGuarded` (existing) passes with the new verbs.
@@ -321,22 +346,30 @@ Rules: absent key → nil (no rows). Wrong type (not an array) → `[]` + `wrong
 **Depends on:** Task 2. The thresholds and error codes are finalised in Task 16 — Depends on: Task 1 (spike) for Step 3's constants only.
 
 **Files:**
-- Create: `internal/slackauth/fresh.go`, `internal/slackauth/lock.go`, `internal/slackauth/fresh_test.go`
-- Modify (every token reader goes through `LoadFresh`): `cmd/sync.go` (`wireSlackSyncers`), `cmd/actions_registry.go`, `cmd/reaction_commands.go`, `cmd/slack_backfill.go`, `internal/repl/commands.go`; token writers take the lock: `cmd/slack.go` (`connectSlackAccount`, `removeSlackAccount`), `cmd/slack_connect.go`, `internal/purge/run.go`
+- Create: `internal/slackauth/fresh.go`, `internal/slackauth/fresh_test.go`
+- Modify — every token reader goes through `LoadFresh`: `cmd/sync.go` (`wireSlackSyncers`), `cmd/actions_registry.go`, `cmd/reaction_commands.go`, `cmd/slack_backfill.go`, `internal/repl/commands.go`.
+- Modify — every token-file writer takes `TokenStore.Lock` (Task 2; the `saveLinearTokenLocked` pattern, `cmd/linear.go`), the complete list:
+  - `cmd/slack.go` `connectSlackAccount` (save) and `removeSlackAccount` (delete);
+  - `cmd/slack_legacy.go` `ensureLegacySlackAccount` (the legacy config-token migration's save) — today outside any lock (review #1426);
+  - `cmd/slack_connect.go` `writeConnectedAccount` (save, re-bind);
+  - `internal/slackauth` `LoadFresh` (refresh save, row repair);
+  - `internal/purge/run.go` (delete).
+  A test lists them: `TestSlackTokenWriters_AllLocked` greps `cmd/` and `internal/` for `NewTokenStore(...).Save`/`.Delete` on the Slack store and fails on a call site outside this list.
 
 **Interfaces:**
-- `func Lock(workspaceDir string, accountID int64) (unlock func(), err error)` — flock on `slack_token_<id>.lock` (blocking with ctx; tests use two goroutines, no sleeps).
-- `func LoadFresh(ctx context.Context, workspaceDir string, database *db.DB, accountID int64, refresh Refresher, now func() time.Time) (*slack.Token, error)` — a token without `RefreshToken` is returned as is (no rotation: a retired baked app, old rows). With one: if `ExpiresAt - now >= refreshAhead` → as is; else take the lock, **re-read the file**, check again, refresh (`Refresher(ctx, clientID, refreshToken)`), save atomically, update `refresh_token_expires_at`, unlock. `invalid_refresh_token`/`token_revoked` → `SetSlackAccountAuthState(id, "error", "Sign in again: the Slack sign-in expired")` (the existing Re-login state) and `ErrReloginNeeded`.
-- `var refreshAhead = time.Hour` (Task 16 sets it from Q9).
-- [ ] **Step 1: Failing tests:** `TestSlackRefresh_NoRotationUntouched`, `TestSlackRefresh_RefreshesWhenDue` (fake clock), `TestSlackRefresh_LockRace` (two goroutines due at once; the fake refresher counts one call and refuses the old refresh token on a second use; both return the new access token), `TestSlackRefresh_Expired` (refresher → `invalid_refresh_token` → row `error` with the Re-login text), `TestSlackRefresh_NoSecretInForm` (the real refresher's form), `TestSlackRefresh_CrashBeforeSaveKeepsOldFile` (refresher ok, save fails → the old file intact, error returned).
+- `func saveSlackTokenLocked(ctx, store *watchtowerslack.TokenStore, tok *watchtowerslack.Token) error` (cmd; one-minute lock wait like the Linear helper) and the same for delete.
+- `func LoadFresh(ctx context.Context, workspaceDir string, database *db.DB, accountID int64, refresh Refresher, now func() time.Time) (*slack.Token, error)` — a token without `RefreshToken` is returned as is (no rotation: the retired shared app, a company app without rotation, old rows). With one, it refreshes when **either** `ExpiresAt - now < refreshAhead` (1 h) **or** `RefreshExpiresAt - now < refreshTokenAhead` (7 days, parent spec §5.5; review #1426) — so a token the daemon uses rarely never lets its refresh token lapse. Refresh: take the lock, **re-read the file**, check again, refresh (`Refresher(ctx, clientID, refreshToken)`), save atomically, update `refresh_token_expires_at`, unlock. Under the same lock it repairs a row whose `client_id`/`app_id` differ from the file (Task 7's crash window). `invalid_refresh_token`/`token_revoked` → `SetSlackAccountAuthState(id, "error", "Sign in again: the Slack sign-in expired")` (the existing Re-login state) and `ErrReloginNeeded`.
+- `var refreshAhead = time.Hour`, `var refreshTokenAhead = 7 * 24 * time.Hour` (Task 16 adjusts from Q9).
+- The daemon calls `LoadFresh` for every enabled account at the start of each cycle, also for accounts whose Slack run the adaptive cadence skips, so the 7-day check runs at least once a cycle.
+- [ ] **Step 1: Failing tests:** `TestSlackRefresh_NoRotationUntouched`, `TestSlackRefresh_RefreshesWhenDue` (fake clock), `TestSlackRefresh_RefreshTokenNearExpiry` (access token valid for 10 h, refresh token 6 days left → one refresh; 8 days left → none), `TestSlackRefresh_SkippedCadenceStillRefreshes` (daemon cycle with the account's Slack run not due → `LoadFresh` still called), `TestSlackRefresh_LockRace` (two goroutines due at once; the fake refresher counts one call and refuses the old refresh token on a second use; both return the new access token), `TestSlackRefresh_Expired` (refresher → `invalid_refresh_token` → row `error` with the Re-login text), `TestSlackRefresh_NoSecretInForm` (the real refresher's form), `TestSlackRefresh_CrashBeforeSaveKeepsOldFile` (refresher ok, save fails → the old file intact, error returned), `TestSlackRefresh_RepairsRowFromFile`, `TestEnsureLegacySlackAccount_SavesUnderLock` (a held lock makes the migration wait; released → saved), `TestSlackTokenWriters_AllLocked`.
 - [ ] **Step 2: Run, expect FAIL:** `go test ./internal/slackauth`.
 - [ ] **Step 3: Implement** and switch the readers.
-- [ ] **Step 4: Run, expect PASS:** `go test ./internal/slackauth ./internal/purge ./internal/repl`, `go test ./cmd -run 'Slack|Sync|Reaction|Action'`, `make lint-diff`.
+- [ ] **Step 4: Run, expect PASS:** `go test ./internal/slackauth ./internal/purge ./internal/repl`, `go test ./cmd -run 'Slack|Sync|Reaction|Action|Legacy'`, `make lint-diff`.
 - [ ] **Step 5: Commit** `feat(slack): refresh rotated tokens under a per-account lock (#1709)`.
 
-### Task 9: Workspace-app setup (`internal/slackapp`, `slack app create|link|status`)
+### Task 9: Workspace-app setup (`internal/slackapp`, `slack app create|adopt|link|status`)
 
-**Depends on:** Task 2. The real Slack client's error mapping and team lookup are finalised in Task 16 — Depends on: Task 1 (spike) for those only.
+**Depends on:** Task 2. The real Slack client's error mapping, team lookup and adopt's merge details are finalised in Task 16 — Depends on: Task 1 (spike, Q1, Q2, Q11–Q14) for those only.
 
 **Files:**
 - Create: `internal/slackapp/manifest.go`, `manifest_test.go`, `testdata/manifest.golden.json`, `api.go` (interface + real client), `setup.go`, `setup_test.go`
@@ -344,15 +377,18 @@ Rules: absent key → nil (no rows). Wrong type (not an array) → `[]` + `wrong
 - Modify: `cmd/accounts.go` (guards)
 
 **Interfaces:**
-- `type API interface { Team(ctx, cfgToken) (teamID, teamName string, err error); Create(ctx, cfgToken string, m Manifest) (appID, clientID string, err error); Update(ctx, cfgToken, appID string, m Manifest) error }` — the real client decodes the create response into a struct **without** a secret field (the secret is never decoded).
-- `func BuildManifest(teamID, clientID string) Manifest` — name "Watchtower", `description`, `long_description` = screens §4.1 text (link and code filled; empty client id → no link lines, used for the create call), user scopes (A11), `redirect_urls: [slackconnect.RedirectURL]`, `token_rotation_enabled: true`, no bot user, no features, no event subscriptions.
+- `type API interface { Team(ctx, cfgToken) (teamID, teamName string, err error); Create(ctx, cfgToken string, m Manifest) (appID, clientID string, err error); Update(ctx, cfgToken, appID string, m Manifest) error; Export(ctx, cfgToken, appID string) (Manifest, error) }` — the real client decodes the create response into a struct **without** a secret field (the secret is never decoded).
+- `func MergeManifest(theirs Manifest, teamID, clientID string) Manifest` (A20) and `func BuildManifest(teamID, clientID string) Manifest` — name "Watchtower", `description`, `long_description` = screens §4.1 text (link and code filled; empty client id → no link lines, used for the create call), user scopes (A11), `redirect_urls: [slackconnect.RedirectURL]`, `token_rotation_enabled: true`, no bot user, no features, no event subscriptions.
 - `func Create(ctx, d *db.DB, api API, cfgToken string, emit func(Step)) (Result, error)` and `Link(...)`: steps `check_token` → `create_app` → `write_link`, each emitted as running then done/failed. Result kinds: `ok`, `bad_token`, `not_allowed`, `network`, `refused` (with Slack's code), `link_failed` (app created, link not written), `exists` (a record for this team: no create; returns the record), `busy`.
 - CLI (token on stdin, one line; `--json` prints one JSON line per step `{"step":"create_app","state":"running|done|failed"}` and a final `{"result":"…","team_id","team_name","app_id","client_id","link_written",…}`):
   - `slack app create --json` — holds `slack_app_setup.lock`; Team lookup; an existing record → `exists`; else create, insert the record **before** anything else can fail, then update with the link.
-  - `slack app link --json [--team T]` — the record's app; update; `link_written`.
+  - `slack app create --json` on a team that already has a live account on a company app (any client id but the retired shared one) answers `existing_app` with that client id and its `app_id` (or `app_id: ""`) and creates nothing — the sheet then offers adopt (ask #1425: no second Watchtower app).
+  - `slack app adopt --json [--app-id A]` — holds the setup lock; Team lookup; the client id from the team's live company-app row; the app id from that row's `app_id`, else `--app-id`, else result `need_app_id` (A19); `Export` → `MergeManifest` (A20) → `Update`; inserts the record (`app_id`, `client_id`, `link_written=1`) only after the update succeeds. Results: `ok`, `bad_token`, `not_collaborator` (Q11), `app_not_found`, `need_app_id`, `network`, `refused`, `busy`.
+  - `slack app link --json [--team T]` — the record's app; `Export` → merge only `long_description` → `Update`; `link_written`.
   - `slack app status --json` — every record with derived `connected` (an `ok` row with that client id), `link_written`, `install_requested` and a `stage` (`install` | `approval` | `link_missing` | `done`).
 - [ ] **Step 1: Find unused write scopes (A11):** `grep -rn` the Slack client for API methods needing `channels:write`, `groups:write`, `im:write`, `mpim:write` (e.g. `conversations.join`, `.mark`, `.open`); record the result in the task's commit message; the manifest drops only those with no caller.
 - [ ] **Step 2: Failing tests** (fake `API`):
+  - `TestAdopt_MergeKeepsTheirFields` (their redirect URLs, bot, extra scopes and rotation setting kept; our redirect URL and missing scopes added; `long_description` replaced), `TestAdopt_NoSecondApp` (`create` on a team with a company-app row → `existing_app`, `Create` never called), `TestAdopt_NeedAppID` (row without `app_id`, no flag → `need_app_id`, nothing sent), `TestAdopt_NotCollaborator` (`Export` → the Q11 code → `not_collaborator`, no record), `TestAdopt_UpdateFailsNoRecord`, `TestAdopt_SecretNeverStored` (an export carrying credentials is never stored).
   - `TestManifest_Golden`, `TestManifest_Scopes` (a subset of `auth.UserScopes`, `chat:write` kept), `TestManifest_NoBotNoSecretFields`.
   - `TestAppSetup_BadConfigToken` (`Team` → `invalid_auth` → `bad_token`; `Create` never called).
   - `TestAppSetup_WritesLinkToDescription` (the `Update` manifest's `long_description` holds the link and the code of screens §4.1).
@@ -426,11 +462,11 @@ Rules: absent key → nil (no rows). Wrong type (not an array) → `[]` + `wrong
 - Create: `WatchtowerDesktop/Sources/Views/Settings/SlackAppSetupSheet.swift`, the record row in `SlackConnectionDetail`
 
 **Interfaces:**
-- `func startCreate(token: String)`, `func startLink(team: String, token: String)`, `func checkAgain()`, `func reloadRecords()`; state per screens §3.2/§3.3; `records: [SetupRecord]` from `slack app status --json`.
-- Order of a create run (A4, Q2-proof): `slack app create --json` (stdin token) → on `ok` or `link_failed`: start the connect flow (`SlackConnectFlowModel.start(team, client, skipConfirm: true)`, Task 14 — until then a protocol the model calls) and mirror it as step 4 → if the link was not written and the token is still held → `slack app link --json` → drop the token. On `exists` → the record row's **Continue setup** path, never a second create.
-- [ ] **Step 1: Failing tests** (`FakeCLILineStream`, fake connect starter): every string of §3.2–§3.4; `testStepMarksFromScriptedCLI`; `testTokenNeverInArgv` (the fake records args and stdin: the token only in stdin); `testTokenDroppedAfterRun`; `testCloseKeepsRunning`; `testRecordOffersContinueNotCreate`; `testLinkFailedOffersAddLink`; `testBadTokenState`, `testNotAllowedState`, `testNetworkState`, `testRefusedState`; `testBusyShowsAlreadyRunning`; `testApprovalRowOnlyWhenRecordSaysSo`.
+- `func startCreate(token: String)`, `func startAdopt(token: String, appID: String?)`, `func startLink(team: String, token: String)`, `func copyAdminNote() -> String` (A23), `func checkAgain()`, `func reloadRecords()`; state per screens §3.2/§3.3; `records: [SetupRecord]` from `slack app status --json`.
+- Order of a create run (A4, Q2-proof): `slack app create --json` (stdin token) → on `ok` or `link_failed`: start the connect flow (`SlackConnectFlowModel.start(team, client, skipConfirm: true)`, Task 14 — until then a protocol the model calls) and mirror it as step 4 → if the link was not written and the token is still held → `slack app link --json` → drop the token. On `exists` → the record row's **Continue setup** path, never a second create. On `existing_app` → the adopt state: "Watchtower's app already exists in <workspace>" / "Update it to the current version: Watchtower adds the connect link to its About page and the sign-in settings it needs. Nothing changes for colleagues already connected." with **Update the app**; `need_app_id` adds a field "App ID" with "Find it on the app's Basic Information page at api.slack.com/apps."; `not_collaborator` → "Your token cannot change this app. Ask one of its collaborators (listed on its Collaborators page) to run this setup." with **Copy a note for your admin**. Adopt success reuses the success state. Strings are provisional until the owner answers A19/A23.
+- [ ] **Step 1: Failing tests** (`FakeCLILineStream`, fake connect starter): every string of §3.2–§3.4; `testStepMarksFromScriptedCLI`; `testTokenNeverInArgv` (the fake records args and stdin: the token only in stdin); `testTokenDroppedAfterRun`; `testCloseKeepsRunning`; `testRecordOffersContinueNotCreate`; `testLinkFailedOffersAddLink`; `testBadTokenState`, `testNotAllowedState` (with **Copy a note for your admin**), `testAdminNoteText` (workspace name and guide link), `testNetworkState`, `testRefusedState`; `testExistingAppOffersAdoptNotCreate`, `testAdoptNeedsAppID`, `testNotCollaboratorState`, `testAdoptSuccess`; `testBusyShowsAlreadyRunning`; `testApprovalRowOnlyWhenRecordSaysSo`.
 - [ ] **Step 2: Run, expect FAIL:** `make test-swift FILTER=SlackAppSetupModelTests`.
-- [ ] **Step 3: Implement** model, sheet (secure field), record row; the `slack-fl-setup-*` and `slack-fl-pane-setup*`/`-linkMissing` shots from the real views.
+- [ ] **Step 3: Implement** model, sheet (secure field), record row; the `slack-fl-setup-*` and `slack-fl-pane-setup*`/`-linkMissing` shots from the real views, including the new ones mocked on this branch: `slack-fl-setup-notAllowed` (now with the admin note), `slack-fl-setup-adopt`, `slack-fl-setup-adoptAppId`, `slack-fl-setup-adoptNotCollaborator` (`docs/design/mockups/slack-full-live/`).
 - [ ] **Step 4: Run, expect PASS;** `make test-swift FILTER='SlackAppSetupModelTests|DesignShotsTests'`, `make lint-swift`.
 - [ ] **Step 5: Commit** `feat(desktop): set up Watchtower's Slack app for a company (#1709)`.
 
@@ -444,7 +480,7 @@ Rules: absent key → nil (no rows). Wrong type (not an array) → `[]` + `wrong
 - Modify: `SlackAccountsViewModel.relogin` and the legacy Workspace Reconnect — `relogin == "connect"` → the flow (A7, A14); reads `slack accounts --json`
 - Modify: `AppState` — a `link` event brings the app forward (`NSApp.activate`), selects Connections → Slack and shows the confirm sheet
 
-- [ ] **Step 1: Failing tests:** every string of screens §4.2–§4.4; `testFreshModelIsIdle`; `testLinkStartsAtConfirm`; `testPasteSkipsConfirm`, `testMDMConnectSkipsConfirm`; `testSecondLinkWhileRunningIsRefused` (sends nothing, keeps the sheet); `testPasteRejectsOtherText`; `testMismatchAndDeniedStates`; `testCancelSendsCancel`; `testPortBusyLine`, `testFullFoldsConnectSection`, `testFullOpensFoldWhileIdleAndPortBusy`; `testReloginRoutesWorkspaceAppToFlow`; `testOrganizationRowsFromPolicy` (MDM rows minus teams already connected with that client).
+- [ ] **Step 1: Failing tests:** every string of screens §4.2–§4.4; `testFreshModelIsIdle`; `testWaitingLineAfterFiveMinutes` (injected clock: none at 4 min, "Waiting for Slack since 5 min" at 5 min, **Cancel** kept); `testLinkStartsAtConfirm`; `testPasteSkipsConfirm`, `testMDMConnectSkipsConfirm`; `testSecondLinkWhileRunningIsRefused` (sends nothing, keeps the sheet); `testPasteRejectsOtherText`; `testMismatchAndDeniedStates`; `testCancelSendsCancel`; `testPortBusyLine`, `testFullFoldsConnectSection`, `testFullOpensFoldWhileIdleAndPortBusy`; `testReloginRoutesWorkspaceAppToFlow`; `testOrganizationRowsFromPolicy` (MDM rows minus teams already connected with that client).
 - [ ] **Step 2: Run, expect FAIL:** `make test-swift FILTER='SlackConnectFlowModelTests|SlackModePresentationTests'`.
 - [ ] **Step 3: Implement;** the `slack-fl-connect-*`, `slack-fl-pane-organization`, `-portBusy`, `-pasteInvalid` shots from the real views.
 - [ ] **Step 4: Run, expect PASS;** `make lint-swift`.
@@ -457,12 +493,12 @@ Rules: absent key → nil (no rows). Wrong type (not an array) → `[]` + `wrong
 **Files:**
 - Modify: `SlackModePresentation` (`sharedAppBanner`, the **Shared app** chip override, the account tag and line, `overviewStatusLine`), `SlackAccountsViewModel` (merge `shared_app`, `relogin`, `builtin_app` from `slack accounts --json` by id; a failed CLI read keeps the last flags and shows no banner on first read), `SlackConnectionDetail` (banner on top; **Add Slack Account** only when `builtin_app`, else **Connect another workspace…**, A8)
 - Modify: the Connections overview Slack card (status line "Shared app retiring", `needsAttention` false)
-- Modify: `OnboardingConnectStepView` (A13: `builtin_app` false → the connect section sheet)
-- Tests: `SlackModePresentationTests.testSharedAppBanner`, `testSharedAppIsNotAttention`, `testSharedAppFollowsFlag`, `testAddAccountFollowsBuiltinApp`; `SlackAccountsViewModelTests.testFlagsReadFailureKeepsLast`; `OnboardingConnectStepTests.testSlackWithoutBuiltinAppOpensConnectSection`
+- Modify: `OnboardingConnectStepView` (A13: `builtin_app` false → the connect section sheet `SlackOnboardingConnectSheet`; its strings — title "Connect Slack", caption, field, buttons — live in `SlackConnectFlowModel.onboarding*`; states: empty, organization rows (MDM), paste invalid, port busy, then the flow's own browser/success/failed states). Mockups on this branch: `slack-fl-onboarding-empty`, `-organization`, `-pasteInvalid`, `-portBusy` (+ `-empty-narrow`); the real view re-renders the same names.
+- Tests: `SlackModePresentationTests.testSharedAppBanner`, `testSharedAppIsNotAttention`, `testSharedAppFollowsFlag`, `testAddAccountFollowsBuiltinApp`; `SlackAccountsViewModelTests.testFlagsReadFailureKeepsLast`; `OnboardingConnectStepTests.testSlackWithoutBuiltinAppOpensConnectSection`; `SlackConnectFlowModelTests.testOnboardingStrings`
 
 - [ ] **Step 1: Failing tests** above.
 - [ ] **Step 2: Run, expect FAIL:** `make test-swift FILTER='SlackModePresentationTests|SlackAccountsViewModelTests|OnboardingConnectStep'`.
-- [ ] **Step 3: Implement;** shots `slack-fl-pane-sharedApp`, `-sharedApp-narrow`, `-full`, `-fullLive` from the real views.
+- [ ] **Step 3: Implement;** shots `slack-fl-pane-sharedApp`, `-sharedApp-narrow`, `-full`, `-fullLive`, `slack-fl-onboarding-*` from the real views.
 - [ ] **Step 4: Run, expect PASS;** `make lint-swift`.
 - [ ] **Step 5: Commit** `feat(desktop): shared Slack app banner and Connect another workspace (#1709)`.
 
@@ -484,7 +520,7 @@ Rules: absent key → nil (no rows). Wrong type (not an array) → `[]` + `wrong
 **Files:**
 - Modify: `docs/guide/concepts/sources-and-accounts.md` (Full, Live, setup, the link, the code, MDM, the banner; 8 KB cap)
 - Modify: `docs/features/slack-multi-account.md` (client id per account, shared-app retirement, `slack accounts --json`, refresh), `docs/features/slack-live.md` (the screens; "Full comes in plan B" → done), `docs/features/connections-tab.md` (the pane), `docs/features/mdm-policy.md` (`SlackApps` row), `docs/features/README.md` summaries
-- Modify: `docs/superpowers/specs/2026-11-15-slack-full-live-screens-design.md` and `docs/superpowers/specs/2026-11-14-slack-full-and-live-design.md` — the lines listed under "Owner rulings in ask #1414", each marked "superseded by ask #1414"
+- Modify: `docs/superpowers/specs/2026-11-15-slack-full-live-screens-design.md` and `docs/superpowers/specs/2026-11-14-slack-full-and-live-design.md` — the lines listed under "Spec lines superseded by asks #1414/#1425", each marked with its ask; the screens spec's §4.4 promise "paste works while 18551 is busy" narrowed if the spike (Q4) says Slack is strict about the port (A9); new screens-spec rows for the adopt states, the admin note and the onboarding sheet with their shots
 - Create: `docs/features/slack-full.md` (the entry into Full: listener, CLI verbs and JSON lines, setup record, refresh, port, A1–A16 as shipped, v1 limits); add it to `CLAUDE.md`'s Feature Notes list and to `docs/features/README.md`
 - Modify: `docs/inventory/slack-accounts.md` (SLACKFULL-01, SLACKFULL-02 once approved; SLACK-01 note about the move), `docs/inventory/policy.md` (`SlackApps`), `docs/inventory/README.md` (module map gains `internal/slackconnect`, `internal/slackapp`, `internal/slackauth`, `cmd/slack_connect.go`, `cmd/slack_app.go`)
 
@@ -493,15 +529,15 @@ Rules: absent key → nil (no rows). Wrong type (not an array) → `[]` + `wrong
 
 ### Task 18: Retire the baked Slack app in every build ("T9")
 
-**Depends on:** Task 15, Task 16, Task 17 merged to main and a release with them out; the owner's go (ask)
+**Depends on:** Task 15, Task 16, Task 17 merged to main and a release with them out; the owner's go (ask). For the corp profile also: the corp admin has run **Set up for my company** (adopt) on the corp app, so its About page carries the link and PKCE Re-login works without the baked id (Q13).
 
 **Files:**
-- Modify: `scripts/build-app.sh` `retired-slack-id-check` (A15: any release, public or corp, refuses a set `WATCHTOWER_OAUTH_CLIENT_SECRET` or `WATCHTOWER_OAUTH_CLIENT_ID == RETIRED_SLACK_CLIENT_ID`), `scripts/tests/test-build-app-retired-slack-id.sh` (four more cases: public and corp × secret set / id equal to the retired one)
-- Owner action (not in the repo): the public **and** the corp build profiles drop `WATCHTOWER_OAUTH_CLIENT_ID`/`_SECRET` for Slack and set `RETIRED_SLACK_CLIENT_ID` to the id each used to bake
+- Modify: `scripts/build-app.sh` `retired-slack-id-check` (A15: any release refuses a set `WATCHTOWER_OAUTH_CLIENT_SECRET`; a public release also refuses `WATCHTOWER_OAUTH_CLIENT_ID == RETIRED_SLACK_CLIENT_ID`), `scripts/tests/test-build-app-retired-slack-id.sh` (three more cases)
+- Owner action (not in the repo): the public and the corp build profiles drop `WATCHTOWER_OAUTH_CLIENT_ID`/`_SECRET` for Slack; only the public profile sets `RETIRED_SLACK_CLIENT_ID` (the shared app's id). Corp rows keep their company-app id (backfilled before this release), stay Full, and re-login through the link or MDM.
 
 - [ ] **Step 1: Failing cases** in the script test; run, FAIL.
 - [ ] **Step 2: Implement;** run, PASS; `make test-scripts`.
-- [ ] **Step 3: Check** with a `make app` built from the new profile (not a release): `slack accounts --json` → `builtin_app: false`; the pane shows **Connect another workspace…**, no **Add Slack Account**; onboarding's Slack card opens the connect section; a shared-app account still syncs and shows the banner.
+- [ ] **Step 3: Check** with a `make app` built from the new profile (not a release): `slack accounts --json` → `builtin_app: false`; the pane shows **Connect another workspace…**, no **Add Slack Account**; onboarding's Slack card opens the connect section; a shared-app account still syncs and shows the banner; a corp-app account (fixture) shows no banner and its Re-login runs the connect flow.
 - [ ] **Step 4: Commit** `build: no build bakes a Slack app any more (#1709, #1767)`.
 
 ---
@@ -519,18 +555,23 @@ Rules: absent key → nil (no rows). Wrong type (not an array) → `[]` + `wrong
 | Setup | token in argv or on disk | never | `TestAppSetup_TokenNeverInArgv`, `testTokenNeverInArgv`, `testTokenDroppedAfterRun` |
 | Link | a web page opens the loopback URL | confirm; nothing starts without **Connect** | `TestSlackConnectListener_RequiresConfirm`, `testLinkStartsAtConfirm` |
 | Link | app quits between redirect and callback | child exits on stdin EOF; a late callback hits nothing or a fresh child → "start again"; nothing stored | `TestSlackConnectServe_StdinEOFExits`, `TestSlackConnectListener_CallbackWithoutFlow`, `testFreshModelIsIdle` |
-| Link | flow never completes | ends at the 10-minute deadline as `expired` | `TestRegistry_DeadlineEndsFlow` |
+| Link | flow never completes (approval pending, tab abandoned) | stays pending with "waiting since N min" and **Cancel**; a second start is refused until then (A22) | `TestRegistry_FlowWaitsUntilCancel`, `SlackConnectFlowModelTests.testWaitingLineAfterFiveMinutes` |
 | Link | team mismatch / denied | failed, nothing stored, new row rolled back | `TestSlackLinkConnect_TeamMismatch`, `TestRegistry_DeniedCallback`, `testMismatchAndDeniedStates` |
 | Link | second link while a flow runs | refused; the running sheet stays | `TestSlackConnectServe_SecondStartBusy`, `testSecondLinkWhileRunningIsRefused` |
 | Link | port 18551 busy | `port_busy`; pane line; rebind on pane open; paste per A9 | `TestSlackConnectListener_PortBusy`, `testPortBusyLine`, `SlackConnectListenerHostTests.testEnsureRunningRebindsAfterPortBusy` |
 | Link | the child crashes | one restart, then on pane open | `testUnexpectedExitRestartsOnce` |
 | Link | the Desktop is quit or killed | child process group reaped; port free | `testCancelKillsProcessGroup`, `TestSlackConnectServe_StdinEOFExits` |
 | Link | policy forbids Slack | `failed/policy`, no browser | `TestSlackLinkConnect_PolicyBlocksSlack` |
-| Move | new row ok, old remove fails | both live, warning; next connect retries | `TestSlackLinkConnect_MoveFromSharedAppRemoveFails` |
+| Move | exchange or token save fails mid re-bind | old token file intact, old token keeps syncing, row unchanged | `TestSlackLinkConnect_RebindExchangeFails`, `_RebindTokenSaveFails` |
+| Move | restart between token save and row update | the next `LoadFresh` repairs the row from the file | `TestSlackLinkConnect_RebindRestartMidway`, `TestSlackRefresh_RepairsRowFromFile` |
+| Move | someone else signs in | refused, nothing written (A18) | `TestSlackLinkConnect_RebindOtherUserRefused` |
+| Adopt | token of a non-collaborator / unknown app id / update fails | nothing changed, no record; the state says what to do | `TestAdopt_NotCollaborator`, `TestAdopt_NeedAppID`, `TestAdopt_UpdateFailsNoRecord` |
+| Tokens | refresh token near expiry on a rarely used account | refreshed when < 7 days are left, every cycle | `TestSlackRefresh_RefreshTokenNearExpiry`, `TestSlackRefresh_SkippedCadenceStillRefreshes` |
+| Tokens | the legacy migration writes the token while a refresh runs | waits for the lock | `TestEnsureLegacySlackAccount_SavesUnderLock`, `TestSlackTokenWriters_AllLocked` |
 | Tokens | refresh races login / another refresh | flock; holder wins; waiter re-reads | `TestSlackRefresh_LockRace` |
 | Tokens | refresh token expired (offline past its life) | Re-login state | `TestSlackRefresh_Expired` |
 | Tokens | crash between refresh and save | old file intact; next use refreshes again (or Re-login if the old refresh token was consumed) | `TestSlackRefresh_CrashBeforeSaveKeepsOldFile` |
-| Build | a release (public or corp) without `RETIRED_SLACK_CLIENT_ID` | refused before building; at run time empty id narrows detection and logs once | `test-build-app-retired-slack-id.sh`, `TestSlackAccountSharedApp_EmptyRetiredIDFallsBack` |
+| Build | a public release without `RETIRED_SLACK_CLIENT_ID` | refused before building; a non-release binary without it shows no banner | `test-build-app-retired-slack-id.sh`, `TestSlackAccountSharedApp_RetiredIDOnly` |
 | Shared app | `slack accounts --json` read fails | last flags kept; no banner on a first failed read | `testFlagsReadFailureKeepsLast` |
 | MDM | malformed `SlackApps` | no organization rows, problem reported | `TestPolicy01_WrongTypesFailClosed`, fixture cases |
 
@@ -547,12 +588,15 @@ Rules: absent key → nil (no rows). Wrong type (not an array) → `[]` + `wrong
 | Team mismatch refused (§5.3) | 6, 7 | `TestRegistry_TeamMismatch`, `TestSlackLinkConnect_TeamMismatch` |
 | MDM `SlackApps` with one-click Connect (§5.4) | 5, 14 | `policy_cases.json`, `testOrganizationRowsFromPolicy`, `testMDMConnectSkipsConfirm` |
 | No client secret anywhere (D13) | 6, 8, 9 | `TestExchange_NoSecretInForm`, `TestSlackRefresh_NoSecretInForm`, `TestAppSetup_SecretNeverStored` |
-| Tokens refresh before expiry, one writer (§5.5) | 8, 16 | `TestSlackRefresh_*` |
+| Tokens refresh before expiry (access < 1 h or refresh < 7 days), one writer (§5.5) | 8, 16 | `TestSlackRefresh_*`, `TestSlackTokenWriters_AllLocked` |
 | Waiting for approval shown when Slack says so (§5.1 step 5, screens §3.4) | 9, 13, 16 | `testApprovalRowOnlyWhenRecordSaysSo`, spike Q5 |
 | Shared-app accounts keep working, banner offers Full or Live (§6, D11) | 3, 15 | `TestSlackAccountSharedApp_*` (the parent's `TestSharedAppBanner`), `testSharedAppBanner`, `testSharedAppIsNotAttention` |
-| Moving to Full adds a row and soft-removes the old (§6, SLACK-01) | 7 | `TestSlackLinkConnect_MoveFromSharedApp*`, `TestSlack01_*` unchanged |
-| Every release, corp included, recognises its retired app's accounts (screens §1.1 as changed by ask #1414) | 3, 4 | `TestSlackAccountSharedApp_EveryBuild`, `test-build-app-retired-slack-id.sh` |
-| No build bakes a Slack app any more (§6, ask #1414) | 18 | `test-build-app-retired-slack-id.sh` (A15 cases) |
+| Moving to Full re-binds the same row, history kept (§6 as changed by ask #1425) | 7, 8 | `TestSlackLinkConnect_Rebind*`, `TestSlack01_*` unchanged |
+| A company with its own app updates it instead of creating a second one (ask #1425) | 9, 13 | `TestAdopt_*`, `testExistingAppOffersAdoptNotCreate` |
+| A member who cannot create apps can hand the setup to an admin (review #1426) | 13 | `testNotAllowedState`, `testAdminNoteText` |
+| Onboarding connects Slack without a baked app (A13) | 15 | `testSlackWithoutBuiltinAppOpensConnectSection`, `testOnboardingStrings`, `slack-fl-onboarding-*` shots |
+| Every public release recognises shared-app accounts; a corp-app account is Full (screens §1.1 as changed by ask #1425) | 2, 3, 4 | `TestSlackAccountSharedApp_RetiredIDOnly`, `TestBackfillSlackClientIDs_*`, `test-build-app-retired-slack-id.sh` |
+| No build bakes a Slack app any more (§6, asks #1414/#1425) | 18 | `test-build-app-retired-slack-id.sh` (A15 cases) |
 | A second workspace connects in Full; Add Slack Account only while a build still bakes an app (screens §4.2 as changed by ask #1414) | 14, 15 | `testFullFoldsConnectSection`, `testAddAccountFollowsBuiltinApp` |
 | Mode pane, Live rows with age, every block state (screens §1) | 11 | `SlackModePresentationTests`, `SlackLiveStatusCenterTests` |
 | `needsFullSlack` on Slack-dependent screens, sidebar, Knowledge note, phone (screens §2) | 12 | `FeatureReadinessTests.testNeedsFullSlack*`, `SidebarVisibilityTests`, `TestDBAccounts_LiveOnlySlackRow`, `AccountStatusStyleTests.testLiveOnly` |
