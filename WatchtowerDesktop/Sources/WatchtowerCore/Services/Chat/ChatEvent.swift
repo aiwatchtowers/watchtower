@@ -150,6 +150,64 @@ package struct ChatRoutingMetadata: Equatable, Sendable {
     }
 }
 
+/// A persisting session's `started` (mobile Inbox spec §8): the turn's
+/// starting rows are committed, with what its prefix commands did (remember,
+/// a knowledge prefix — Go runs them for a new owner row).
+package struct ChatStarted: Equatable, Sendable {
+    package let conversationID: Int64
+    /// 0: no owner row was written (a regenerate reuses its owner message).
+    package let ownerMessageID: Int64
+    package let assistantMessageID: Int64
+    package let turnID: String
+    /// "" = not a remember message; else added, already_present, too_long,
+    /// empty or not_owner_text.
+    package let rememberOutcome: String
+    package let rememberLineID: Int64
+    /// The chat-born idea a knowledge prefix wrote (0 = none), and its kind.
+    package let ideaID: Int64
+    package let ideaKind: String
+    /// The first failure of the prefix commands ("" = none).
+    package let prefixError: String
+
+    package init(
+        conversationID: Int64,
+        ownerMessageID: Int64,
+        assistantMessageID: Int64,
+        turnID: String,
+        rememberOutcome: String = "",
+        rememberLineID: Int64 = 0,
+        ideaID: Int64 = 0,
+        ideaKind: String = "",
+        prefixError: String = ""
+    ) {
+        self.conversationID = conversationID
+        self.ownerMessageID = ownerMessageID
+        self.assistantMessageID = assistantMessageID
+        self.turnID = turnID
+        self.rememberOutcome = rememberOutcome
+        self.rememberLineID = rememberLineID
+        self.ideaID = ideaID
+        self.ideaKind = ideaKind
+        self.prefixError = prefixError
+    }
+}
+
+/// A persisting session's `refused`: nothing was written or sent.
+package struct ChatRefusal: Equatable, Sendable {
+    /// Nil for a turn refused before it had an id (`turn_id_required`).
+    package let turnID: String?
+    /// `conversation_busy` (another owner holds the lease) or `turn_id_required`.
+    package let reason: String
+    /// The lease holder (`hub` or `desktop`) of a busy conversation.
+    package let holder: String
+
+    package init(turnID: String?, reason: String, holder: String) {
+        self.turnID = turnID
+        self.reason = reason
+        self.holder = holder
+    }
+}
+
 /// One `watchtower ai session` protocol-v2 event (spec §1.1). There is no
 /// `reset` in v2: text already shown is never wiped (CHAT-02).
 package enum ChatEvent: Equatable, Sendable {
@@ -166,6 +224,15 @@ package enum ChatEvent: Equatable, Sendable {
     case usage(ChatUsage)
     case turnDone(turnID: String, status: ChatTurnStatus, sessionID: String?)
     case error(ChatSessionError)
+    /// `--persist` only: the turn's rows are on disk, before its first delta.
+    case started(ChatStarted)
+    /// `--persist` only: the turn was not started.
+    case refused(ChatRefusal)
+    /// `--persist` only: the turn's last write is done (after its end event).
+    case turnSaved(turnID: String)
+    /// `--persist` only: a write of the turn's reply failed ("Couldn't save
+    /// the reply: …"); shown under the thread.
+    case saveError(turnID: String, message: String)
     /// Synthesized by the process wrapper when the session process exits.
     case exited(status: Int32, stderrTail: String)
 
@@ -224,6 +291,28 @@ package enum ChatEvent: Equatable, Sendable {
                                            message: fields.string("message"), retryable: fields.bool("retryable"),
                                            reason: fields.optional("reason")))
         default:
+            return persistEvent(type, fields)
+        }
+    }
+
+    /// The events only a persisting process (`--persist`) sends.
+    private static func persistEvent(_ type: String, _ fields: Fields) -> Self? {
+        switch type {
+        case "started":
+            return .started(ChatStarted(
+                conversationID: fields.int64("conversation_id"), ownerMessageID: fields.int64("owner_message_id"),
+                assistantMessageID: fields.int64("assistant_message_id"), turnID: fields.string("turn_id"),
+                rememberOutcome: fields.string("remember_outcome"), rememberLineID: fields.int64("remember_line_id"),
+                ideaID: fields.int64("idea_id"), ideaKind: fields.string("idea_kind"),
+                prefixError: fields.string("prefix_error")))
+        case "refused":
+            return .refused(ChatRefusal(turnID: fields.optional("turn_id"), reason: fields.string("reason"),
+                                        holder: fields.string("holder")))
+        case "turn_saved":
+            return .turnSaved(turnID: fields.string("turn_id"))
+        case "save_error":
+            return .saveError(turnID: fields.string("turn_id"), message: fields.string("message"))
+        default:
             return nil
         }
     }
@@ -240,6 +329,8 @@ private struct Fields {
     }
 
     func int(_ key: String) -> Int { (json[key] as? NSNumber)?.intValue ?? 0 }
+
+    func int64(_ key: String) -> Int64 { (json[key] as? NSNumber)?.int64Value ?? 0 }
 
     /// A JSON number; nil when absent, a bool or anything else.
     func double(_ key: String) -> Double? {

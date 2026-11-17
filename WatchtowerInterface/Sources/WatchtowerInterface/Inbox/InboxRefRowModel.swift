@@ -55,13 +55,15 @@ public struct InboxRefRowModel: Equatable, Sendable {
         )
     }
 
-    /// Reply…'s Propose: the reply goes to Needs approval.
+    /// Reply…'s Propose: the reply goes to Needs approval. Go's
+    /// `replyPropose` reads `ref_kind` (an inbox item), `ref_id` and a
+    /// non-blank `text`, and answers `unsupported` without any of them.
     public func replyRequest(text: String, cardID: String, requestID: String) -> ActRequest {
         ActRequest(
             requestID: requestID,
             target: cardID,
             verb: .replyPropose,
-            params: ActParams(text: text, refID: facts.id)
+            params: ActParams(text: text, refKind: facts.kind, refID: facts.id)
         )
     }
 

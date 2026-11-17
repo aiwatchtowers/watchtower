@@ -2,6 +2,7 @@ import Foundation
 import GRDB
 import Observation
 import WatchtowerCore
+import WatchtowerInterface
 
 /// The chat project page (spec §6.1): name, instructions (debounced save),
 /// pinned sources, files, and the project's chats. The page is short-lived
@@ -10,8 +11,9 @@ import WatchtowerCore
 ///
 /// Edits reach the assistant on each chat's next turn: the project block and
 /// first-turn files are read by `ai session` at spawn, so every write that
-/// changes them drops the chats' stored sessions (`ChatProjectQueries`) and
-/// reports `onPromptChanged`, whose owner retires the warm processes.
+/// changes them drops the chats' stored sessions (the `chat.project.*`
+/// commands, in Go) and reports `onPromptChanged`, whose owner retires the
+/// warm processes.
 @MainActor
 @Observable
 final class ProjectDetailViewModel {
@@ -39,30 +41,29 @@ final class ProjectDetailViewModel {
     var knowledge: [ProjectKnowledgeItem] { ProjectKnowledgeItem.merged(files: files, sources: sources) }
 
     private let dbPool: DatabasePool
+    private let chatWrites: ChatWrites
     /// Every write of this view model, in order (board #670).
     @ObservationIgnored private let writes = SerialWrites()
     /// One pending delete (board #670).
     private let pendingWrites = PendingWrites()
     private let debounce: Duration
     private let importFile: (URL, Int64) async throws -> ChatAttachment
-    /// `chat_files` root: a deleted project's (now empty) directory goes too.
-    private let attachmentsRoot: URL?
     /// After a committed write that changes the project's prompt.
     private let onPromptChanged: (Int64) -> Void
 
     init(
         projectID: Int64,
         dbPool: DatabasePool,
+        writes: ChatWrites,
         debounce: Duration = .milliseconds(500),
-        attachmentsRoot: URL? = nil,
         importFile: @escaping (URL, Int64) async throws -> ChatAttachment,
         onPromptChanged: @escaping (Int64) -> Void = { _ in }
     ) {
         self.projectID = projectID
         self.dbPool = dbPool
+        self.chatWrites = writes
         self.debounce = debounce
         self.importFile = importFile
-        self.attachmentsRoot = attachmentsRoot
         self.onPromptChanged = onPromptChanged
     }
 
@@ -144,7 +145,8 @@ final class ProjectDetailViewModel {
     }
 
     func rename(_ name: String) async {
-        await write { db, id in try ChatProjectQueries.rename(db, id: id, name: name) }
+        let id = projectID
+        let _: ChatDone? = await write(.chatProjectRename) { ChatProjectRenameRequest(requestID: $0, projectID: id, name: name) }
         // Text typed while the rename waited stays.
         if nameDraft == name { nameDraft = project?.name ?? nameDraft }
     }
@@ -152,17 +154,19 @@ final class ProjectDetailViewModel {
     func addSource(_ hit: ChatEntityHit) async {
         guard let kind = ChatProjectSource.Kind(entity: hit.kind) else { return }
         let (ref, label) = (hit.ref, hit.label)
-        let added = await write { db, id in
-            try ChatProjectQueries.addSource(db, projectID: id, kind: kind, ref: ref, label: label)
+        let id = projectID
+        let added: ChatChanged? = await write(.chatProjectAddSource) {
+            ChatProjectAddSourceRequest(requestID: $0, projectID: id, kind: kind.rawValue, ref: ref, label: label)
         }
-        if added == true { onPromptChanged(projectID) }
+        if added?.changed == true { onPromptChanged(projectID) }
     }
 
     func removeSource(_ source: ChatProjectSource) async {
         let sourceID = source.id
-        if await write({ db, _ in try ChatProjectQueries.removeSource(db, id: sourceID) }) == true {
-            onPromptChanged(projectID)
+        let removed: ChatChanged? = await write(.chatProjectRemoveSource) {
+            ChatProjectSourceRequest(requestID: $0, sourceID: sourceID)
         }
+        if removed?.changed == true { onPromptChanged(projectID) }
     }
 
     /// Copied and recorded off the main thread, in this view model's chain
@@ -188,9 +192,10 @@ final class ProjectDetailViewModel {
     func removeFile(_ file: ChatAttachment) async {
         let fileID = file.id
         do {
-            let result = try await chained { try ChatProjectQueries.removeFile($0, id: fileID) }
-            if result.removed { onPromptChanged(projectID) }
-            if let path = result.orphanPath { Self.removeFromDisk([path]) }
+            let result: ChatChanged = try await chained(.chatProjectRemoveFile) {
+                ChatAttachmentRequest(requestID: $0, attachmentID: fileID)
+            }
+            if result.changed { onPromptChanged(projectID) }
             if refresh() { errorMessage = nil }
         } catch {
             errorMessage = "Could not remove \(file.name): \(error.localizedDescription)"
@@ -210,11 +215,8 @@ final class ProjectDetailViewModel {
         // The delete is in the chain: a save asked for before it lands first.
         do {
             let id = projectID
-            let paths = try await chained { try ChatProjectQueries.delete($0, id: id) }
-            Self.removeFromDisk(paths)
-            if let attachmentsRoot {
-                ChatAttachmentStore.removeFiles(for: .project(id), rootDir: attachmentsRoot)
-            }
+            // Go removes the project's files after its commit.
+            let _: ChatDone = try await chained(.chatProjectDelete) { ChatProjectRequest(requestID: $0, projectID: id) }
             // Nothing is left to save into: the page's closing flush must not
             // write an unsaved draft to the deleted row.
             draftsLoaded = false
@@ -267,8 +269,10 @@ final class ProjectDetailViewModel {
         }
         let id = projectID
         do {
-            // Already in the chain: the pool directly, or it would wait for itself.
-            try await dbPool.write { try ChatProjectQueries.updateInstructions($0, id: id, instructions: text) }
+            // Already in the chain: the tower directly, or it would wait for itself.
+            let _: ChatDone = try await chatWrites.perform(.chatProjectInstructions) {
+                ChatProjectInstructionsRequest(requestID: $0, projectID: id, instructions: text)
+            }
             pendingSave = nil
             savedInstructions = text
             onPromptChanged(id)
@@ -282,28 +286,18 @@ final class ProjectDetailViewModel {
         }
     }
 
-    /// The write's value, nil when it did not commit.
+    /// The write's answer, nil when it was not applied.
     @discardableResult
-    private func write<T: Sendable>(_ body: @escaping @Sendable (Database, Int64) throws -> T) async -> T? {
-        let id = projectID
+    private func write<Resp: Decodable & Sendable, Params: Encodable & Sendable>(
+        _ command: TowerCommand, _ params: @escaping @Sendable (String) -> Params
+    ) async -> Resp? {
         do {
-            let value = try await chained { try body($0, id) }
+            let value: Resp = try await chained(command, params)
             if refresh() { errorMessage = nil }
             return value
         } catch {
             errorMessage = error.localizedDescription
             return nil
-        }
-    }
-
-    /// Best effort, post-commit (spec §7.1): a file already gone is success.
-    private static func removeFromDisk(_ paths: [String]) {
-        for path in paths where FileManager.default.fileExists(atPath: path) {
-            do {
-                try FileManager.default.removeItem(atPath: path)
-            } catch {
-                NSLog("ProjectDetailViewModel: could not remove %@: %@", path, error.localizedDescription)
-            }
         }
     }
 }
@@ -317,15 +311,20 @@ extension ProjectDetailViewModel {
     /// The production importer: the shared attachment store (validation,
     /// 0600 copy under `chat_files/projects/<id>/`). Without an active
     /// workspace every import fails with a visible reason.
-    static func storeImporter(dbPool: DatabasePool, rootDir: URL?) -> (URL, Int64) async throws -> ChatAttachment {
+    static func storeImporter(
+        dbPool: DatabasePool, rootDir: URL?, writes: ChatWrites
+    ) -> (URL, Int64) async throws -> ChatAttachment {
         guard let rootDir else { return { _, _ in throw ImportError.noWorkspace } }
-        let store = ChatAttachmentStore(db: dbPool, rootDir: rootDir)
+        let store = ChatAttachmentStore(db: dbPool, rootDir: rootDir, writes: writes)
         return { url, projectID in try await store.importFile(url: url, projectID: projectID) }
     }
 
-    /// A database write in this view model's chain (board #670): it starts
+    /// A chat write in this view model's chain (board #670): it is sent
     /// only once every write asked for before it finished.
-    private func chained<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
-        try await writes.runThrowing { try await self.dbPool.write(body) }
+    private func chained<Resp: Decodable & Sendable, Params: Encodable & Sendable>(
+        _ command: TowerCommand, _ params: @escaping @Sendable (String) -> Params
+    ) async throws -> Resp {
+        let chatWrites = chatWrites
+        return try await writes.runThrowing { try await chatWrites.perform(command, params) }
     }
 }

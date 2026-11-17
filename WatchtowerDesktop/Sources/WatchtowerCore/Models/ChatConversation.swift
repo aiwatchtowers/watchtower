@@ -3,16 +3,16 @@ import GRDB
 
 package struct ChatConversation: FetchableRecord, Decodable, Identifiable, Equatable, Sendable {
     package let id: Int64
-    package let title: String
+    package var title: String
     package let sessionID: String?
     package let contextType: String?
     package let contextID: String?
     package let createdAt: Double
     package let updatedAt: Double
-    package let pinned: Bool
+    package var pinned: Bool
     package let archivedAt: Double?
     /// `prefix` (first 80 chars of the first message), `ai` (`chat title`) or `user` (renamed).
-    package let titleSource: String
+    package var titleSource: String
     package let provider: String?
     package let model: String?
     package let routingMode: String
@@ -24,7 +24,7 @@ package struct ChatConversation: FetchableRecord, Decodable, Identifiable, Equat
     package let activeLeafMessageID: Int64?
     /// When the owner last saw this chat (`ChatConversationQueries.markRead`);
     /// nil = never marked read.
-    package let readAt: Double?
+    package var readAt: Double?
     /// Only `ChatConversationQueries.fetchStandalone` selects it; false elsewhere.
     package let hasAttachments: Bool
 

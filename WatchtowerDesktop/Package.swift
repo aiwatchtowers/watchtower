@@ -149,8 +149,10 @@ let package = Package(
             dependencies: [
                 "WatchtowerCore",
                 .product(name: "GRDB", package: "GRDB.swift"),
-                // TestInboxFeeds: the canned tower feeds the Inbox's tests read.
+                // TestInboxFeeds (the Inbox's canned tower feeds) and the chat writers' fakes
+                // (FakeChatTower) speak the generated commands.
                 .product(name: "WatchtowerInterface", package: "WatchtowerInterface"),
+                .product(name: "WatchtowerChatText", package: "WatchtowerChatText"),
             ],
             path: "Tests/Support"
         ),

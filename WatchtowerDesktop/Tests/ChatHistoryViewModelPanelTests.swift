@@ -185,7 +185,7 @@ final class ChatHistoryViewModelLevelTests: XCTestCase {
         XCTAssertEqual(vm.rows.first.map(vm.state(of:)), .unread)
         vm.selectedConversationID = id
         await vm.writesSettled()
-        XCTAssertEqual(vm.rows.first?.isUnread, true, "the mark itself reads nothing back")
+        XCTAssertEqual(vm.rows.first?.isUnread, false, "the row reads as read at once; the chat.read write follows")
         await reloaded(vm)
         XCTAssertEqual(vm.rows.first?.isUnread, false)
         XCTAssertEqual(vm.rows.first.map(vm.state(of:)), .read)

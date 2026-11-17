@@ -235,6 +235,7 @@ struct DecisionDetailView: View {
                 idea: idea,
                 mentions: mentions,
                 dbManager: dbManager,
+                chatWrites: appState.chatWrites,
                 center: appState.embeddedChatCenter,
                 state: $discuss
             )

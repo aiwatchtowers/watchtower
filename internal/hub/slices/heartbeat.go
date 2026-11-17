@@ -46,7 +46,11 @@ type HeartbeatFacts struct {
 	Recordings    func() bool
 	// Chat says whether the AI chat is on and, when off, why (wire.ChatOff*);
 	// nil carries no chat capability.
-	Chat  func() (on bool, reason string)
+	Chat func() (on bool, reason string)
+	// Inbox says whether the phone Inbox is published (true) or the
+	// organization's policy keeps it on the Mac (false: policy_off); nil
+	// carries no inbox capability.
+	Inbox func() bool
 	Clock func() time.Time
 }
 
@@ -105,6 +109,13 @@ func (h *heartbeatSource) Items(ctx context.Context) ([]Item, error) {
 			caps.Chat = "on"
 		} else {
 			caps.Chat, caps.ChatReason = "off", reason
+		}
+	}
+	if h.f.Inbox != nil {
+		if h.f.Inbox() {
+			caps.Inbox = wire.InboxOn
+		} else {
+			caps.Inbox, caps.InboxReason = wire.InboxPolicyOff, wire.InboxOffPolicy
 		}
 	}
 	changed = changed || caps != h.caps

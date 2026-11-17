@@ -129,19 +129,29 @@ final class ChatKnowledgeCenterTests: XCTestCase {
         XCTAssertEqual(try ideas(), [], "the transaction rolled back")
     }
 
-    /// The factory hands every stored owner message to both centers; each acts
-    /// on its own prefix (the main chat and every embedded engine go here).
-    func testFactoryFeedsTheKnowledgeCenter() async throws {
+    /// The main chat's started turn: Go wrote the item in the start, and the
+    /// factory sets the mark from `started` (no second write); a remember
+    /// message is not the knowledge center's.
+    func testFactoryMarksTheMainChatsStartedTurn() async throws {
         let factory = EmbeddedChatEngineFactory()
         XCTAssertNil(factory.knowledgeCenter)
+        factory.chatWrites = .fake(pool)
         factory.dbPool = pool
         let center = try XCTUnwrap(factory.knowledgeCenter)
-        factory.ownerMessageStored(text: "decided: ship on Thursdays", conversationID: 3, messageID: 11)
-        factory.ownerMessageStored(text: "remember: answer short", conversationID: 3, messageID: 12)
-        await center.waitForIdle()
-        guard case .saved? = center.mark(for: 11) else { return XCTFail("no mark") }
+        let ideaID = try await pool.write {
+            try IdeaQueries.createFromChat($0, kind: "decision", body: "ship on Thursdays", conversationID: 3, messageID: 11)
+        }
+        factory.ownerMessageStarted(ChatStarted(conversationID: 3, ownerMessageID: 11, assistantMessageID: 21,
+                                                turnID: "t1", ideaID: ideaID, ideaKind: "decision"),
+                                    text: "decided: ship on Thursdays")
+        factory.ownerMessageStarted(ChatStarted(conversationID: 3, ownerMessageID: 12, assistantMessageID: 22,
+                                                turnID: "t2", rememberOutcome: "added", rememberLineID: 5),
+                                    text: "remember: answer short")
+        await untilTurn { center.mark(for: 11) != nil }
+        guard case .saved(_, let saved)? = center.mark(for: 11) else { return XCTFail("no mark") }
+        XCTAssertEqual(saved, ideaID)
         XCTAssertNil(center.mark(for: 12))
-        XCTAssertEqual(try ideas().count, 1)
+        XCTAssertEqual(try ideas().count, 1, "nothing written twice")
     }
 
     private func engineSpec(contextType: String, conversationID: Int64) -> ChatSurfaceSpec {
@@ -156,6 +166,7 @@ final class ChatKnowledgeCenterTests: XCTestCase {
     /// another embedded chat (a target chat) still saves it.
     func testCodeQuestionEngineSavesNoKnowledge() async throws {
         let factory = EmbeddedChatEngineFactory()
+        factory.chatWrites = .fake(pool)
         factory.dbPool = pool
         let center = try XCTUnwrap(factory.knowledgeCenter)
 

@@ -18,11 +18,17 @@ final class ChatTurnLeaseTests: XCTestCase {
     private var turnCounter = 0
     private var defaults: UserDefaults!
     private var defaultsSuite: String!
-    /// The lease clock: 2026-11-15, fixed.
-    private let now = Date(timeIntervalSince1970: 1_794_700_000)
+    /// The lease clock, fixed per test at the wall time the sessions (and
+    /// the fake tower) stamp their own leases with. Set in `setUp`, never at
+    /// init: XCTest makes every test's instance when the run starts, and the
+    /// sessions stamp `Date()` — a clock frozen at init drifts past the
+    /// lease's 60 s staleness in a long CI shard, so a "fresh" hub lease
+    /// reads as stale to them (PR #952 CI).
+    private var now = Date()
     private var nowMS: Int64 { ChatLease.milliseconds(now) }
 
     override func setUpWithError() throws {
+        now = Date()
         ProviderCatalogFixture.seedShared()
         (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
         defaultsSuite = "ChatTurnLeaseTests.\(UUID().uuidString)"
@@ -40,7 +46,7 @@ final class ChatTurnLeaseTests: XCTestCase {
         defaults.removePersistentDomain(forName: defaultsSuite)
     }
 
-    private func sessionPool(_ dbPool: DatabasePool) -> ChatSessionPool {
+    private func sessionPool(_ dbPool: DatabasePool, launch: String = "launch-now") -> ChatSessionPool {
         ChatSessionPool(
             dbPool: dbPool,
             processFactory: { [weak self] args in
@@ -48,12 +54,13 @@ final class ChatTurnLeaseTests: XCTestCase {
                 self?.fakes.append(fake)
                 return fake
             },
-            closeGrace: .milliseconds(20)
+            closeGrace: .milliseconds(20),
+            leaseOwnerID: launch
         )
     }
 
     private func makeViewModel(
-        dbManager: DatabaseManager? = nil, pool: ChatSessionPool? = nil, launch: String = "launch-now"
+        dbManager: DatabaseManager? = nil, pool: ChatSessionPool? = nil
     ) -> ChatViewModel {
         let clock = now
         let makeTurnID: () -> String = { [weak self] in
@@ -62,7 +69,7 @@ final class ChatTurnLeaseTests: XCTestCase {
             return "turn-\(self.turnCounter)"
         }
         return ChatViewModel(dbManager: dbManager ?? self.dbManager, pool: pool ?? self.pool, provider: .claude,
-                             defaults: defaults, makeTurnID: makeTurnID, leaseOwnerID: launch) { clock }
+                             defaults: defaults, makeTurnID: makeTurnID) { clock }
     }
 
     private func conversation() throws -> Int64 {
@@ -97,11 +104,11 @@ final class ChatTurnLeaseTests: XCTestCase {
         config.busyMode = .timeout(5)
         let poolA = try DatabasePool(path: dbPath, configuration: config)
         let poolB = try DatabasePool(path: dbPath, configuration: config)
-        let sessionsA = sessionPool(poolA)
-        let sessionsB = sessionPool(poolB)
+        let sessionsA = sessionPool(poolA, launch: "launch-a")
+        let sessionsB = sessionPool(poolB, launch: "launch-b")
         extraPools = [sessionsA, sessionsB]
-        let vmA = makeViewModel(dbManager: DatabaseManager(pool: poolA), pool: sessionsA, launch: "launch-a")
-        let vmB = makeViewModel(dbManager: DatabaseManager(pool: poolB), pool: sessionsB, launch: "launch-b")
+        let vmA = makeViewModel(dbManager: DatabaseManager(pool: poolA), pool: sessionsA)
+        let vmB = makeViewModel(dbManager: DatabaseManager(pool: poolB), pool: sessionsB)
         vmA.select(conversationID: conv)
         vmB.select(conversationID: conv)
 
@@ -149,7 +156,6 @@ final class ChatTurnLeaseTests: XCTestCase {
 
         vm.stop()
         await waitForCondition { (try? self.lease(conv))?.cancelRequestedAtMS != nil }
-        XCTAssertEqual(try lease(conv)?.cancelRequestedAtMS, nowMS)
         XCTAssertEqual(try lease(conv)?.owner, .hub)
 
         // The hub released it: the line goes, Send comes back.
@@ -161,42 +167,54 @@ final class ChatTurnLeaseTests: XCTestCase {
 
     // MARK: - The Mac's own turn
 
-    /// Spec §7 "Stop from the other device": the cancel the phone set runs
-    /// the session's own Stop (`cancel` to the process).
-    func testDriverHonoursRemoteCancel() async throws {
+    /// The Mac's session claims the turn's lease as this app launch
+    /// (`--lease-owner desktop --lease-owner-id`), exactly as the Swift claim
+    /// did. A Stop the phone sets, and a conversation deleted under the
+    /// turn, are the session's to honour now (Go:
+    /// `TestPersist_RemoteStopEndsTheTurnWithPartial`,
+    /// `TestPersist_LostLeaseStopsWritingAndCancels`).
+    func testTheSessionClaimsTheLeaseAsThisLaunch() async throws {
         let conv = try conversation()
         let vm = makeViewModel()
         vm.select(conversationID: conv)
         let sent = await vm.send(text: "q")
         XCTAssertTrue(sent)
-        let client = try XCTUnwrap(pool.client(for: conv))
         let fake = try XCTUnwrap(fakes.last)
+        XCTAssertEqual(fake.argument(after: "--lease-owner"), "desktop")
+        XCTAssertEqual(fake.argument(after: "--lease-owner-id"), "launch-now")
         let held = try XCTUnwrap(try lease(conv))
         XCTAssertEqual(held.owner, .desktop)
         XCTAssertEqual(held.ownerID, "launch-now")
         XCTAssertEqual(held.turnID, "turn-1")
-
-        await client.driver.pollLease()
-        XCTAssertNotEqual(fake.sent.last, .cancel, "no cancel requested yet")
-
-        let requested = try await dbManager.dbPool.write { db in
-            try ChatLeaseQueries.requestCancel(db, conversationID: conv, turnID: "turn-1", nowMS: 1)
-        }
-        XCTAssertTrue(requested)
-        await client.driver.pollLease()
-        XCTAssertEqual(fake.sent.last, .cancel)
-        let cancels = fake.sent.filter { $0 == .cancel }.count
-        await client.driver.pollLease()
-        XCTAssertEqual(fake.sent.filter { $0 == .cancel }.count, cancels, "honoured once")
-
-        fake.emit(.turnDone(turnID: "turn-1", status: .interrupted, sessionID: nil))
-        await waitForCondition { !vm.isBusy }
-        XCTAssertNil(try lease(conv), "finalize released it")
     }
 
-    /// Spec §7 "Conversation deleted during a Mac-run turn": the first write
-    /// that changes no row stops the turn's writes and cancels it; no orphan
-    /// rows are left.
+    /// A session that dies after `started` leaves its lease: the Mac sends
+    /// `chat.recover`, so the next send is not refused as answering elsewhere.
+    func testADeadSessionsTurnIsRecoveredSoTheNextSendGoesOut() async throws {
+        let conv = try conversation()
+        let vm = makeViewModel()
+        vm.select(conversationID: conv)
+        _ = await vm.send(text: "q")
+        let fake = try XCTUnwrap(fakes.last)
+        fake.emit(.textDelta(turnID: "turn-1", text: "half"))
+        await waitForCondition { vm.liveTurn?.fullText == "half" }
+        fake.exit(status: 9)
+        await waitForCondition { (try? self.lease(conv)) == nil }
+        let marked = try count("""
+            SELECT COUNT(*) FROM chat_messages WHERE conversation_id = ? AND error_code = 'session_lost' AND status = 'partial'
+            """, conv)
+        XCTAssertEqual(marked, 1)
+        let again = await vm.send(text: "again")
+        XCTAssertTrue(again)
+    }
+
+    /// Spec §7 "Conversation deleted during a Mac-run turn" (CHAT-01): the
+    /// session finds its chat gone, cancels the turn, lets it go
+    /// (`turn_saved`) and ends; the Mac shows no error, recovers nothing and
+    /// never reuses that session, and no orphan rows, steps or lease remain.
+    /// The session's half (one cancel, no writes) is Go's guard of the same
+    /// name (`cmd/ai_session_conv_deleted_test.go`); the fake plays it here.
+    /// BEHAVIOR CHAT-01 — see docs/inventory/chat.md
     func testDriverStopsWhenConversationDeleted() async throws {
         let conv = try conversation()
         let vm = makeViewModel()
@@ -204,33 +222,67 @@ final class ChatTurnLeaseTests: XCTestCase {
         _ = await vm.send(text: "q")
         let client = try XCTUnwrap(pool.client(for: conv))
         let fake = try XCTUnwrap(fakes.last)
-        var gone = 0
-        let cancelOnGone = client.driver.onConversationGone
-        client.driver.onConversationGone = {
-            gone += 1
-            cancelOnGone?()
-        }
+        var lost = 0
+        client.onTurnLost = { _, _ in lost += 1 }
+        fake.emit(.textDelta(turnID: "turn-1", text: "Hel"))
+        await waitForCondition { vm.liveTurn?.fullText == "Hel" }
 
         // Deleted from the phone: the cascade takes the rows and the lease.
         try await dbManager.dbPool.write { try $0.execute(sql: "DELETE FROM chat_conversations WHERE id = ?", arguments: [conv]) }
-        fake.emit(.textDelta(turnID: "turn-1", text: "Hel"))
-        await waitForCondition { client.driver.conversationGone }
-        await client.driver.writesSettled()
-        XCTAssertEqual(gone, 1)
-        XCTAssertEqual(fake.sent.last, .cancel, "the turn is cancelled")
-
-        fake.emit(.toolStart(ChatToolStart(turnID: "turn-1", id: "a", name: "search_knowledge", argsJSON: "{}")))
         fake.emit(.turnDone(turnID: "turn-1", status: .interrupted, sessionID: nil))
         await waitForCondition { !client.isBusy }
-        await client.driver.writesSettled()
-        XCTAssertEqual(gone, 1, "once")
+        fake.exit(status: 0)
+        await waitForCondition { !client.isAlive }
+        XCTAssertFalse(client.isAlive, "the session is not reused")
+        XCTAssertEqual(lost, 0, "a turn it let go is not recovered")
+        XCTAssertNil(vm.errorMessage, "an ended session of a deleted chat is not an error")
         XCTAssertEqual(try count("SELECT COUNT(*) FROM chat_messages WHERE conversation_id = ?", conv), 0)
-        XCTAssertEqual(try count("SELECT COUNT(*) FROM chat_turn_steps WHERE message_id IN "
-                                 + "(SELECT id FROM chat_messages WHERE conversation_id = ?)", conv), 0)
         let steps = try await dbManager.dbPool.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM chat_turn_steps") }
         XCTAssertEqual(steps, 0, "no orphan step")
         XCTAssertNil(try lease(conv))
-        XCTAssertFalse(client.isAlive, "the session is not reused")
+    }
+
+    /// A Stop pressed while a send waits for `chat.recover` (fix round 2)
+    /// wins: the turn goes out once the recovery is done and is stopped at
+    /// its `started`, like a held turn's Stop — the message stays with a
+    /// `partial` reply and nothing more is answered.
+    func testAStopWhileTheSendWaitsForRecoveryStopsTheTurnAtItsStart() async throws {
+        let conv = try conversation()
+        let (writes, tower) = FakeChatTower.writes(dbManager.dbPool)
+        let vm = ChatViewModel(dbManager: dbManager, pool: pool, writes: writes, provider: .claude,
+                               defaults: defaults) { [weak self] in
+            guard let self else { return UUID().uuidString }
+            self.turnCounter += 1
+            return "turn-\(self.turnCounter)"
+        }
+        vm.select(conversationID: conv)
+        await vm.send(text: "q1")
+        let first = try XCTUnwrap(fakes.last)
+        first.emit(.textDelta(turnID: "turn-1", text: "half"))
+        await waitForCondition { vm.liveTurn?.fullText == "half" }
+        let hold = TowerHold(tower)
+        first.exit(status: 9)
+        await waitForCondition { !tower.calls(.chatRecover).isEmpty }
+
+        let sending = Task { await vm.send(text: "q2") }
+        await waitForCondition { vm.pendingOwnerText == "q2" }
+        XCTAssertTrue(vm.canStop, "Stop is offered while the send waits")
+        vm.stop()
+        hold.release()
+        let sent = await sending.value
+        XCTAssertTrue(sent, "the message stays in the transcript")
+        let second = try XCTUnwrap(fakes.last)
+        XCTAssertFalse(second === first)
+        await waitForCondition { second.sent.contains(.cancel) }
+        XCTAssertEqual(second.sent.filter { $0 == .cancel }.count, 1, "stopped at its started")
+        second.emit(.turnDone(turnID: "turn-2", status: .interrupted, sessionID: nil))
+        await waitForCondition { !vm.isBusy }
+        XCTAssertEqual(try count("SELECT COUNT(*) FROM chat_messages WHERE conversation_id = ? AND role = 'user'", conv), 2)
+        let last = try await dbManager.dbPool.read {
+            try String.fetchOne($0, sql: "SELECT status FROM chat_messages WHERE conversation_id = ? ORDER BY id DESC LIMIT 1",
+                                arguments: [conv])
+        }
+        XCTAssertEqual(last, "partial")
     }
 
     func testFinalizeReleasesLease() async throws {
@@ -264,7 +316,7 @@ final class ChatTurnLeaseTests: XCTestCase {
                                                              startedAtMS: 1, heartbeatAtMS: 1), nowMS: 1)
             }
         }
-        await AppState.releaseEarlierLaunchesChatLeases(dbManager.dbPool, launchID: "launch-now")
+        await AppState.releaseEarlierLaunchesChatLeases(.fake(dbManager.dbPool), launchID: "launch-now")
         XCTAssertNil(try lease(earlier))
         XCTAssertEqual(try lease(current)?.ownerID, "launch-now")
         XCTAssertEqual(try lease(hub)?.owner, .hub)

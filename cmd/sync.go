@@ -1047,29 +1047,34 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	// Refresh the shipped assistant skills in the workspace. Log-only: a skills
 	// directory we cannot write is not a reason to refuse to run the daemon.
 	deployShippedSkills(cfg, logger)
+	// The tower, one for the socket and the hub: what the hub's approvals
+	// run in the background is waited for (at most towerBackgroundBudget)
+	// after the hub and the socket stopped, before the database closes.
+	bg := &towerBackground{}
+	defer bg.wait(towerBackgroundBudget)
+	tw := newDaemonTower(ws, database, noSync, commands.Deps{
+		DisabledFeatures: towerDisabledFeatures(cfg, logger),
+		Act:              towerActDeps(cfg, database, d.WakeAutomations, bg.run),
+	}, logger)
 	// Go hub, phase 1: only behind WATCHTOWER_HUB_DIR in a hubtest-* workspace.
-	defer startGoHub(ctx, cfg, database, logger)()
+	defer startGoHub(ctx, cfg, database, tw, logger)()
 	// The tower request ledger: pruned at start and hourly, hub or no hub;
 	// the loop has returned before the database closes.
 	defer tower.StartPrune(ctx, database, time.Now)()
 	// The tower socket, hub or no hub: stopped (its calls waited for) before
 	// the database closes.
-	defer serveTower(ctx, ws, database, noSync, commands.Deps{
-		DisabledFeatures: towerDisabledFeatures(cfg, logger),
-		Act:              towerActDeps(cfg, database, d.WakeAutomations),
-	}, logger)()
+	defer serveTower(ctx, ws, tw, logger)()
 	return d.Run(ctx)
 }
 
-// serveTower serves the tower interface on the workspace's socket
-// (tower.ServeWorkspace) with every registered command, the change watch and
-// the pause; a socket that cannot be served is logged and the daemon runs
-// without it. The returned func stops it.
-func serveTower(ctx context.Context, ws string, database *db.DB, noSync bool,
-	deps commands.Deps, logger *log.Logger) (stop func()) {
+// newDaemonTower is the daemon's tower: every registered command, the change
+// watch and the pause, the Desktop's signature check for the owner's
+// gestures over the socket and the owner's sentences for faults. The socket
+// and the hub call the same tower.
+func newDaemonTower(ws string, database *db.DB, noSync bool, deps commands.Deps, logger *log.Logger) *tower.Tower {
 	var reg tower.Registry
 	commands.RegisterAll(&reg, deps)
-	t := tower.New(database, tower.Options{
+	return tower.New(database, tower.Options{
 		Registry:  &reg,
 		Build:     Version,
 		Workspace: ws,
@@ -1084,6 +1089,12 @@ func serveTower(ctx context.Context, ws string, database *db.DB, noSync bool,
 			return inboxfeed.FaultSentence(command, err)
 		},
 	})
+}
+
+// serveTower serves t on the workspace's socket (tower.ServeWorkspace); a
+// socket that cannot be served is logged and the daemon runs without it.
+// The returned func stops it.
+func serveTower(ctx context.Context, ws string, t *tower.Tower, logger *log.Logger) (stop func()) {
 	stop, err := tower.ServeWorkspace(ctx, ws, t)
 	if err != nil {
 		logger.Printf("tower: socket not served: %v", err)
@@ -1096,8 +1107,9 @@ func serveTower(ctx context.Context, ws string, database *db.DB, noSync bool,
 // registry `watchtower actions` uses, Run Now as `automations run` queues it
 // (a slot run asks for a sync now, as the CLI does; any other wakes the
 // executor), the in-process executor wake, and `tracks start` for an
-// approved create_track. The hub's Background is set with the hub (Task 13).
-func towerActDeps(cfg *config.Config, database *db.DB, wake func()) inboxfeed.ActDeps {
+// approved create_track; background runs the tool a phone approval applies
+// after the hub answered.
+func towerActDeps(cfg *config.Config, database *db.DB, wake func(), background func(fn func())) inboxfeed.ActDeps {
 	return inboxfeed.ActDeps{
 		Registry: buildToolRegistry(cfg, database),
 		RunNow: func(_ context.Context, automationID int64) (int64, error) {
@@ -1119,7 +1131,8 @@ func towerActDeps(cfg *config.Config, database *db.DB, wake func()) inboxfeed.Ac
 			}
 			return q.runID, nil
 		},
-		Wake: wake,
+		Wake:       wake,
+		Background: background,
 		// An approved create_track is watched at once, as `tracks start`
 		// (the Mac's startWatchingIfTrack) starts it.
 		StartWatch: towerStartWatch(cfg, database),
@@ -1145,12 +1158,15 @@ func towerDisabledFeatures(start *config.Config, logger *log.Logger) func() []st
 // startGoHub starts the Go hub beside the daemon when hub.Resolve says so
 // and logs whether it did; the returned func stops it and waits. Its cycle
 // tick is the daemon's poll interval.
-func startGoHub(ctx context.Context, cfg *config.Config, database *db.DB, logger *log.Logger) (stop func()) {
+func startGoHub(ctx context.Context, cfg *config.Config, database *db.DB, tw *tower.Tower, logger *log.Logger) (stop func()) {
 	o, err := hub.Resolve(cfg, database, hostProbe())
 	if err != nil {
 		logger.Printf("hub: off (%s)", hub.Refusal(err))
 		return func() {}
 	}
+	// The phone Inbox reads and writes through the daemon's tower (the
+	// socket's), as the hub.
+	o.Tower = tw
 	// The session port's seams; the socket stays Resolve's (test mode: the
 	// override only, never the Desktop's host; live: the default socket).
 	sd := sessionStartDeps(cfg, database)

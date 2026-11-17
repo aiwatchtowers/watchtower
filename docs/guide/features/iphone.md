@@ -1,6 +1,6 @@
 # iPhone
 
-The Watchtower iPhone app is a window onto your tower: your Mac or server running Watchtower. It shows what waits for you, lets you answer asks, edit the board and start sessions, and records meetings away from your desk.
+The Watchtower iPhone app is a window onto your tower: your Mac or server running Watchtower. It shows what waits for you, lets you act on it, and records meetings away from your desk.
 
 ## Why use it
 
@@ -12,13 +12,13 @@ The Mac is the **hub**. With **Mobile sync** on, it publishes asks, Workbench bo
 
 Everything is sealed with keys exchanged at linking, so iCloud holds only ciphertext. The phone never gets terminal output or a raw transcript, except a session's chat (below).
 
-An ask answered on the phone waits as **Waiting for your tower** while it sleeps. A Mac checks for requests every 30 seconds (every 3 for ten minutes after one) and writes a heartbeat every 15 minutes.
+An ask answered on the phone waits as **Waiting for your tower** while it sleeps. A Mac checks for requests every 30 seconds and writes a heartbeat every 15 minutes.
 
 A phone links up to four towers and switches between them; each has its own data.
 
 ### What the Mac shows about each phone
 
-Settings → **Mobile** on the Mac lists each phone with how it syncs and who switched it last. A phone's row adds a line when something needs you, such as notifications not set up. **Diagnostics** shows how fast the Mac handles phone actions; the timings stay on the Mac.
+Settings → **Mobile** on the Mac lists each phone with how it syncs and who switched it last. A phone's row adds a line when something needs you. **Diagnostics** shows how fast the Mac handles phone actions; the timings stay on the Mac.
 
 ### Which builds pair
 
@@ -56,7 +56,7 @@ done_when: iphone.paired
 
 If the phone uses the same Apple ID as the Mac, it syncs through your private iCloud. With another Apple ID, it joins the two folders the Mac shares. Failed phone recordings wait under **Recordings** (**Retry**, **Discard…**).
 
-### Use the three tabs
+### Use the tabs
 <!-- learn
 id: iphone-answer-asks
 title: Answer asks from your phone
@@ -77,6 +77,7 @@ since: 0.24.0
 -->
 
 - **Now** shows your tower's status, then **Waiting for you**, **Working**, **Ended** and the next meeting (see [Now and sessions](iphone-workbench.md#now-and-sessions)). The gear opens Settings.
+- **Inbox** is the Mac's Inbox; the orange badge counts what waits on you. Swipe a row for **Done**, **Snooze** or **Hide**, or hold it. See [Inbox](inbox.md).
 - **Workbench** lists your workbenches as cards. Open one for **Sessions** (split like Now) or **Board** (targets with status, priority and comments). A group's done sub-targets stay hidden until you tap **Show done (N)** (remembered).
 - **Calendar** shows your tower's events with prep and **Record**, kept 30 minutes past an unrecorded event's end. **Recordings** has **Record a voice note**.
 

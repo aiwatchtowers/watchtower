@@ -66,6 +66,13 @@ var (
 	// aiFlagPurpose records this query's LLM calls under its own purpose
 	// in the usage ledger (one of queryPurposes; "" keeps the default).
 	aiFlagPurpose string
+	// aiFlagPersist saves the turn's rows in this process (an embedded
+	// chat's database turn: chatstore.BeginEmbedded), with --events v2,
+	// --conversation and --turn; the owner's text is --prompt-stdin's
+	// owner_text (absent: a hidden prompt, no owner row).
+	aiFlagPersist bool
+	// aiQueryOwnerText is --prompt-stdin's owner_text (--persist only).
+	aiQueryOwnerText *string
 )
 
 // queryPurposes are the --purpose values ai query accepts: embedded chats
@@ -181,6 +188,8 @@ func init() {
 		"run, like --read-folder, in the folder the reviewer of spec/plan review ask N read; exit 2 if it is no such ask")
 	aiQueryCmd.Flags().Int64Var(&aiFlagReadFolderRound, "read-folder-round", 0,
 		"run, like --read-folder, in the folder diff review round N was taken from; exit 2 if it is no such round")
+	aiQueryCmd.Flags().BoolVar(&aiFlagPersist, "persist", false,
+		"save the turn's rows here (an embedded chat): needs --events v2, --conversation and --turn; owner_text rides --prompt-stdin")
 	aiQueryCmd.Flags().StringVar(&aiFlagPurpose, "purpose", "",
 		"record this query's LLM calls under this usage purpose (spec_review.discuss, review.reviewer, tuning.chat); exit 2 on any other value")
 }
@@ -244,6 +253,8 @@ func querySystemPrompt(stdin io.Reader) (string, error) {
 type stdinQuery struct {
 	Prompt       string `json:"prompt"`
 	SystemPrompt string `json:"system_prompt"`
+	// OwnerText is the owner's message as the chat stores it (--persist).
+	OwnerText *string `json:"owner_text,omitempty"`
 }
 
 // queryInput returns the prompt and system prompt: with --prompt-stdin both
@@ -281,6 +292,10 @@ func queryInput(args []string, stdin io.Reader) (prompt, systemPrompt string, er
 		// An empty prompt means the delivery failed: never run without it.
 		return "", "", errors.New("--prompt-stdin: the query has no prompt")
 	}
+	if q.OwnerText != nil && !aiFlagPersist {
+		return "", "", errors.New("--prompt-stdin: owner_text is read with --persist only")
+	}
+	aiQueryOwnerText = q.OwnerText
 	return q.Prompt, q.SystemPrompt, nil
 }
 
@@ -305,6 +320,10 @@ func runAIQuery(cmd *cobra.Command, args []string) error {
 	// Before the config/DB work below, so a writer feeding a large prompt on
 	// stdin is not kept waiting (the Desktop tolerates a CLI that exits
 	// before reading — see WatchtowerAIService.feedStdin).
+	if err := checkQueryPersist(); err != nil {
+		emitError(enc, err.Error())
+		return nil
+	}
 	prompt, systemPrompt, err := queryInput(args, os.Stdin)
 	if err != nil {
 		emitError(enc, err.Error())
@@ -372,10 +391,21 @@ func runAIQuery(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	textCh, errCh, sidCh := aiClient.Query(ctx, systemPrompt, prompt, aiFlagSessionID)
+	var persisted *queryPersist
+	if aiFlagPersist {
+		// The owner's row and the reply's placeholder are on disk before the
+		// provider runs; a failed write sends nothing.
+		if persisted, err = beginQueryPersist(ctx, cfg, dbPath, os.Stdout); err != nil {
+			emitError(enc, err.Error())
+			return nil
+		}
+		defer persisted.close()
+	}
+
+	textCh, errCh, sidCh := queryStream(ctx, aiClient, systemPrompt, prompt, aiFlagSessionID)
 
 	if aiFlagEvents == "v2" {
-		streamQueryV2(os.Stdout, v2TurnID(), textCh, errCh, sidCh)
+		streamQueryV2Observed(os.Stdout, v2TurnID(), textCh, errCh, sidCh, persisted.observer(ctx))
 		return nil
 	}
 	streamQueryV1(enc, textCh, errCh, sidCh)
@@ -600,7 +630,15 @@ func v2TurnID() string {
 // (transport.Options.ToolEvents), then turn_done —
 // or, on failure, one classified turn error in its place.
 func streamQueryV2(w io.Writer, turnID string, textCh <-chan ai.StreamChunk, errCh <-chan error, sidCh <-chan string) {
+	streamQueryV2Observed(w, turnID, textCh, errCh, sidCh, nil)
+}
+
+// streamQueryV2Observed is streamQueryV2 with observe (when set) hearing
+// every event after it is written — the --persist writer.
+func streamQueryV2Observed(w io.Writer, turnID string, textCh <-chan ai.StreamChunk, errCh <-chan error, sidCh <-chan string,
+	observe func(chat.Event)) {
 	out := chat.NewEventWriter(w)
+	out.Observe = observe
 	_ = out.Emit(chat.Event{Type: chat.EventTurnStart, TurnID: turnID})
 	for chunk := range textCh {
 		for _, e := range chat.ChunkEvents(turnID, chunk) {

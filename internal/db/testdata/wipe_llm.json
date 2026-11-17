@@ -1,0 +1,63 @@
+{
+  "seed": [
+    "INSERT INTO workspace (id, name, inbox_last_processed_ts) VALUES ('T1', 'acme', 1794816000)",
+    "INSERT INTO channels (id, name, type) VALUES ('C1', 'general', 'public')",
+    "INSERT INTO digests (id, channel_id, period_from, period_to, type, summary, model) VALUES (5, 'C1', 1, 2, 'channel', 's', 'm')",
+    "INSERT INTO decision_reads (digest_id, decision_idx) VALUES (5, 0)",
+    "INSERT INTO user_analyses (user_id, period_from, period_to) VALUES ('U1', 1, 2)",
+    "INSERT INTO period_summaries (period_from, period_to) VALUES (1, 2)",
+    "INSERT INTO people_cards (user_id, period_from, period_to) VALUES ('U1', 1, 2)",
+    "INSERT INTO people_card_summaries (period_from, period_to) VALUES (1, 2)",
+    "INSERT INTO tracks (id, text) VALUES (1, 'T')",
+    "INSERT INTO briefings (id, user_id, date) VALUES (1, 'U1', '2026-11-16')",
+    "INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme-wipe')",
+    "INSERT INTO targets (id, text, level, period_start, period_end, source_type) VALUES (1, 'AI', 'day', '2026-11-16', '2026-11-16', 'extract')",
+    "INSERT INTO targets (id, text, level, period_start, period_end, source_type) VALUES (2, 'Mine', 'day', '2026-11-16', '2026-11-16', 'manual')",
+    "INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type, project_id) VALUES (3, 'Board', 'custom', 'project', '2026-11-16', '2026-11-16', 'chat', 1)",
+    "INSERT INTO targets (id, text, level, period_start, period_end, source_type) VALUES (4, 'From inbox', 'day', '2026-11-16', '2026-11-16', 'inbox')",
+    "INSERT INTO inbox_items (id, channel_id, message_ts, sender_user_id, trigger_type) VALUES (1, 'C1', '1.0', 'U1', 'mention')",
+    "INSERT INTO pipeline_runs (id, pipeline) VALUES (1, 'digests')",
+    "INSERT INTO pipeline_steps (run_id, step, total) VALUES (1, 1, 1)",
+    "INSERT INTO feedback (entity_type, entity_id, rating) VALUES ('digest', '5', 1)",
+    "INSERT INTO user_interactions (user_a, user_b, period_from, period_to) VALUES ('U1', 'U2', 1, 2)"
+  ],
+  "rows": {
+    "digests": [],
+    "decision_reads": [],
+    "user_analyses": [],
+    "period_summaries": [],
+    "people_cards": [],
+    "people_card_summaries": [],
+    "tracks": [],
+    "briefings": [],
+    "inbox_items": [],
+    "pipeline_runs": [],
+    "pipeline_steps": [],
+    "feedback": [],
+    "user_interactions": [],
+    "targets": [
+      {
+        "id": 2
+      },
+      {
+        "id": 3
+      }
+    ],
+    "channels": [
+      {
+        "id": "C1"
+      }
+    ],
+    "workspace": [
+      {
+        "id": "T1",
+        "CAST(inbox_last_processed_ts AS INTEGER)": 0
+      }
+    ],
+    "projects": [
+      {
+        "id": 1
+      }
+    ]
+  }
+}

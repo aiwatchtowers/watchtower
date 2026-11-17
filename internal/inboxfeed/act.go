@@ -556,62 +556,66 @@ func (a actor) refTrack(ctx context.Context, id64 int64) (api.ActResult, error) 
 	if err != nil {
 		return api.ActResult{}, err
 	}
-	return a.write(ctx, func(tx *sql.Tx) (api.ActResult, error) {
-		var dismissedAt, origin string
-		var read, hasUpdates, unreadEvents, enabled bool
-		var automationID sql.NullInt64
-		err := tx.QueryRow(`SELECT dismissed_at, origin, COALESCE(read_at, '') != '', has_updates != 0,
-			EXISTS(SELECT 1 FROM track_events e WHERE e.track_id = tracks.id AND (e.read_at IS NULL OR e.read_at = '')),
-			enabled != 0, automation_id
-			FROM tracks WHERE id = ?`, id).Scan(&dismissedAt, &origin, &read, &hasUpdates, &unreadEvents, &enabled, &automationID)
-		if errors.Is(err, sql.ErrNoRows) {
-			return api.ActResult{}, a.refuse(api.CodeNotFound, "")
+	return a.write(ctx, func(tx *sql.Tx) (api.ActResult, error) { return a.trackVerbTx(tx, id, verb, bound) })
+}
+
+// trackVerbTx is a track's Done, Stop or Restore in tx, bound being what
+// boundRecipeGate read before the transaction.
+func (a actor) trackVerbTx(tx *sql.Tx, id int, verb api.RefVerb, bound bool) (api.ActResult, error) {
+	var dismissedAt, origin string
+	var read, hasUpdates, unreadEvents, enabled bool
+	var automationID sql.NullInt64
+	err := tx.QueryRow(`SELECT dismissed_at, origin, COALESCE(read_at, '') != '', has_updates != 0,
+		EXISTS(SELECT 1 FROM track_events e WHERE e.track_id = tracks.id AND (e.read_at IS NULL OR e.read_at = '')),
+		enabled != 0, automation_id
+		FROM tracks WHERE id = ?`, id).Scan(&dismissedAt, &origin, &read, &hasUpdates, &unreadEvents, &enabled, &automationID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return api.ActResult{}, a.refuse(api.CodeNotFound, "")
+	}
+	if err != nil {
+		return api.ActResult{}, err
+	}
+	custom := origin == "custom"
+	if (verb == api.RefStop || verb == api.RefRestore) && custom && automationID.Valid != bound {
+		// Bound or unbound since the gate read it: look again.
+		return api.ActResult{}, a.refuse(api.CodeChanged, "")
+	}
+	switch verb {
+	case api.RefDone:
+		if read && !hasUpdates && !unreadEvents {
+			return already, nil
 		}
-		if err != nil {
-			return api.ActResult{}, err
+		return api.ActResult{}, db.MarkTrackDoneTx(tx, id)
+	case api.RefStop:
+		if dismissedAt != "" && (!custom || !enabled) {
+			return already, nil
 		}
-		custom := origin == "custom"
-		if (verb == api.RefStop || verb == api.RefRestore) && custom && automationID.Valid != bound {
-			// Bound or unbound since the gate read it: look again.
-			return api.ActResult{}, a.refuse(api.CodeChanged, "")
+		if custom {
+			// CustomTrackControlling.stopWatching: collection off first,
+			// so a stopped track never keeps spending tokens.
+			if err := a.setCollecting(tx, id, automationID, false); err != nil {
+				return api.ActResult{}, err
+			}
 		}
-		switch verb {
-		case api.RefDone:
-			if read && !hasUpdates && !unreadEvents {
-				return already, nil
-			}
-			return api.ActResult{}, db.MarkTrackDoneTx(tx, id)
-		case api.RefStop:
-			if dismissedAt != "" && (!custom || !enabled) {
-				return already, nil
-			}
-			if custom {
-				// CustomTrackControlling.stopWatching: collection off first,
-				// so a stopped track never keeps spending tokens.
-				if err := a.setCollecting(tx, id, automationID, false); err != nil {
-					return api.ActResult{}, err
-				}
-			}
-			if dismissedAt != "" {
-				return api.ActResult{}, nil
-			}
-			return api.ActResult{}, db.StopTrackTx(tx, []int{id})
-		default: // restore
-			if dismissedAt == "" && (!custom || enabled) {
-				return already, nil
-			}
-			if dismissedAt != "" {
-				if err := db.RestoreTrackTx(tx, id); err != nil {
-					return api.ActResult{}, err
-				}
-			}
-			if custom {
-				// resumeWatching: the track restored, then its collection on.
-				return api.ActResult{}, a.setCollecting(tx, id, automationID, true)
-			}
+		if dismissedAt != "" {
 			return api.ActResult{}, nil
 		}
-	})
+		return api.ActResult{}, db.StopTrackTx(tx, []int{id})
+	default: // restore
+		if dismissedAt == "" && (!custom || enabled) {
+			return already, nil
+		}
+		if dismissedAt != "" {
+			if err := db.RestoreTrackTx(tx, id); err != nil {
+				return api.ActResult{}, err
+			}
+		}
+		if custom {
+			// resumeWatching: the track restored, then its collection on.
+			return api.ActResult{}, a.setCollecting(tx, id, automationID, true)
+		}
+		return api.ActResult{}, nil
+	}
 }
 
 // boundRecipeGate is the gate of Stop and Restore on a custom track bound

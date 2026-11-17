@@ -37,6 +37,7 @@ struct IdeaDiscussSection: View {
     let idea: Idea
     let mentions: [IdeaMention]
     let dbManager: DatabaseManager
+    let chatWrites: ChatWrites
     let center: EmbeddedChatCenter
     @Binding var state: IdeaDiscussState
 
@@ -128,7 +129,7 @@ struct IdeaDiscussSection: View {
         Task {
             defer { isCreatingChat = false }
             do {
-                state.conversationID = try await IdeaChatSurface.conversationID(for: idea, dbPool: dbManager.dbPool)
+                state.conversationID = try await IdeaChatSurface.conversationID(for: idea, dbPool: dbManager.dbPool, writes: chatWrites)
                 loadError = nil
                 withAnimation(.easeInOut(duration: 0.2)) { state.isExpanded = true }
             } catch {

@@ -524,20 +524,18 @@ final class ChatHistoryViewModelTests: XCTestCase {
         super.tearDown()
     }
 
+    /// A chat row (Go's `chat.new` in the app), then the panel re-read.
     @MainActor
-    func testCreateConversation() async {
-        let vm = ChatHistoryViewModel(dbManager: dbManager)
-        let conv = await vm.createConversation()
-
-        XCTAssertNotNil(conv)
-        XCTAssertEqual(vm.conversations.count, 1)
-        XCTAssertEqual(vm.selectedConversationID, conv?.id)
+    private func createConversation(_ vm: ChatHistoryViewModel, title: String = "") async -> ChatConversation? {
+        let conv = try? await dbManager.dbPool.write { try ChatConversationQueries.create($0, title: title) }
+        await withCheckedContinuation { done in vm.reloadRows { done.resume() } }
+        return conv
     }
 
     @MainActor
     func testDeleteConversation() async throws {
         let vm = ChatHistoryViewModel(dbManager: dbManager)
-        let convRow = await vm.createConversation()
+        let convRow = await createConversation(vm)
         let conv = try XCTUnwrap(convRow)
         XCTAssertEqual(vm.conversations.count, 1)
 
@@ -551,9 +549,9 @@ final class ChatHistoryViewModelTests: XCTestCase {
     /// without being shown; the view lands).
     func testDeleteSelectedClearsTheSelection() async throws {
         let vm = ChatHistoryViewModel(dbManager: dbManager)
-        let conv1Row = await vm.createConversation()
+        let conv1Row = await createConversation(vm)
         let conv1 = try XCTUnwrap(conv1Row)
-        let conv2Row = await vm.createConversation()
+        let conv2Row = await createConversation(vm)
         let conv2 = try XCTUnwrap(conv2Row)
         vm.selectedConversationID = conv2.id
 
@@ -566,10 +564,8 @@ final class ChatHistoryViewModelTests: XCTestCase {
     @MainActor
     func testFilteredConversations() async {
         let vm = ChatHistoryViewModel(dbManager: dbManager)
-        _ = await vm.createConversation()
-        await vm.updateTitle(vm.conversations[0].id, title: "Slack discussion")
-        _ = await vm.createConversation()
-        await vm.updateTitle(vm.conversations[0].id, title: "Meeting notes")
+        _ = await createConversation(vm, title: "Slack discussion")
+        _ = await createConversation(vm, title: "Meeting notes")
 
         vm.searchText = "slack"
         XCTAssertEqual(vm.filteredConversations.count, 1)
@@ -579,23 +575,11 @@ final class ChatHistoryViewModelTests: XCTestCase {
     @MainActor
     func testFilteredConversationsEmptySearch() async {
         let vm = ChatHistoryViewModel(dbManager: dbManager)
-        _ = await vm.createConversation()
-        _ = await vm.createConversation()
+        _ = await createConversation(vm)
+        _ = await createConversation(vm)
 
         vm.searchText = ""
         XCTAssertEqual(vm.filteredConversations.count, 2)
-    }
-
-    @MainActor
-    func testUpdateSessionID() async throws {
-        let vm = ChatHistoryViewModel(dbManager: dbManager)
-        let convRow = await vm.createConversation()
-        let conv = try XCTUnwrap(convRow)
-
-        await vm.updateSessionID(conv.id, sessionID: "sess-abc")
-
-        let updated = vm.conversations.first { $0.id == conv.id }
-        XCTAssertEqual(updated?.sessionID, "sess-abc")
     }
 
     @MainActor

@@ -1,223 +1,105 @@
 import XCTest
-import GRDB
 import WatchtowerTestSupport
 @testable import WatchtowerCore
 
+/// The stream half of a turn: the session (`ai session --persist`) writes
+/// the rows, so the driver only folds events into the live turn. The rows'
+/// side of these behaviours is Go's (`cmd/ai_session_persist_test.go`,
+/// `internal/chatstore`), CHAT-02's persistence guards included.
 @MainActor
 final class ChatTurnDriverTests: XCTestCase {
-    private var pool: DatabasePool!
-    private var path: String!
     private var clock = ChatTestClock()
-    private var conversationID: Int64 = 0
-    private var messageID: Int64 = 0
 
-    override func setUpWithError() throws {
-        (pool, path) = try TestDatabase.createPool()
+    override func setUp() {
         clock = ChatTestClock()
-        (conversationID, messageID) = try pool.write { d in
-            let conv = try TestDatabase.insertChatConversation(d)
-            let msg = try ChatTreeQueries.insertAssistant(
-                d, conversationID: conv, parentID: nil, turnID: "t", provider: "claude", model: "")
-            return (conv, msg.id)
-        }
-    }
-
-    override func tearDown() {
-        TestDatabase.cleanup(path: path)
     }
 
     private func makeDriver() -> ChatTurnDriver {
         let clock = self.clock
-        return ChatTurnDriver(conversationID: conversationID, store: ChatTurnStore(dbPool: pool)) { clock.now }
+        return ChatTurnDriver(conversationID: 1) { clock.now }
     }
 
-    private func row() throws -> ChatMessageRecord {
-        let id = messageID
-        return try XCTUnwrap(pool.read { d in
-            try ChatMessageRecord.fetchOne(d, sql: "SELECT * FROM chat_messages WHERE id = ?", arguments: [id])
-        })
-    }
-
-    func testTextIsFlushedAtMostOncePerSecondThenCompleted() async throws {
+    func testTextStreamsAndTheTurnEndsAtTurnSaved() {
         let driver = makeDriver()
-        driver.begin(messageID: messageID, turnID: "t")
-        driver.apply(.textDelta(turnID: "t", text: "Hel"))
-        await driver.writesSettled()
-        XCTAssertEqual(try row().text, "Hel", "the first delta flushes (no flush yet)")
-        driver.apply(.textDelta(turnID: "t", text: "lo"))
-        await driver.writesSettled()
-        XCTAssertEqual(try row().text, "Hel", "inside the flush interval")
-        clock.advance(1.1)
-        driver.apply(.textDelta(turnID: "t", text: "!"))
-        await driver.writesSettled()
-        XCTAssertEqual(try row().text, "Hello!")
-        XCTAssertEqual(try row().status, "partial")
-
         var finished: LiveTurn?
         driver.onTurnFinished = { finished = $0 }
+        let turn = driver.begin(messageID: 7, turnID: "t")
+        driver.apply(.textDelta(turnID: "t", text: "Hel"))
+        driver.apply(.textDelta(turnID: "t", text: "lo"))
+        XCTAssertEqual(turn.fullText, "Hello")
         driver.apply(.usage(ChatUsage(turnID: "t", tokensIn: 3, tokensOut: 4, model: "model-b")))
         driver.apply(.turnDone(turnID: "t", status: .complete, sessionID: "s9"))
-        await driver.writesSettled()
-        let done = try row()
-        XCTAssertEqual(done.status, "complete")
-        XCTAssertEqual(done.tokensOut, 4)
-        XCTAssertEqual(done.model, "model-b")
-        XCTAssertNil(driver.liveTurn)
-        XCTAssertEqual(finished?.messageID, messageID)
-        let conv = conversationID
-        let session = try await pool.read { d in try ChatConversationQueries.fetchByID(d, id: conv)?.sessionID }
-        XCTAssertEqual(session, "s9")
+        XCTAssertEqual(turn.phase, .complete)
+        XCTAssertTrue(driver.isFinishing, "the session's last write is still under way")
+        XCTAssertTrue(driver.isBusy)
+        XCTAssertNil(finished)
         XCTAssertEqual(driver.sessionID, "s9")
+
+        driver.apply(.turnSaved(turnID: "t"))
+        XCTAssertNil(driver.liveTurn)
+        XCTAssertFalse(driver.isBusy)
+        XCTAssertEqual(finished?.messageID, 7)
     }
 
-    /// CHAT-02: every tool call is persisted as it happens.
-    /// BEHAVIOR CHAT-02 — see docs/inventory/chat.md
-    func testChat02ToolStepsArePersistedImmediately() async throws {
+    /// CHAT-02's live side: a step shows as it starts and as it ends.
+    func testToolStepsShowAsTheyHappen() {
         let driver = makeDriver()
-        let msg = messageID
-        driver.begin(messageID: msg, turnID: "t")
+        let turn = driver.begin(messageID: 7, turnID: "t")
         driver.apply(.toolStart(ChatToolStart(turnID: "t", id: "a", name: "search_knowledge", argsJSON: "{}")))
-        await driver.writesSettled()
-        var steps = try await pool.read { d in try ChatStepQueries.fetch(d, messageIDs: [msg])[msg] ?? [] }
-        XCTAssertEqual(steps.map(\.state), [.running])
+        XCTAssertEqual(turn.steps.map(\.state), [.running])
         driver.apply(.toolEnd(ChatToolEnd(turnID: "t", id: "a", ok: true, summary: "3 hits",
                                           sources: [ChatSource(kind: "slack", title: "x", url: nil, ref: "r")])))
-        await driver.writesSettled()
-        steps = try await pool.read { d in try ChatStepQueries.fetch(d, messageIDs: [msg])[msg] ?? [] }
-        XCTAssertEqual(steps.map(\.state), [.succeeded])
-        XCTAssertEqual(steps.first?.sources.map(\.ref), ["r"])
+        XCTAssertEqual(turn.steps.map(\.state), [.succeeded])
     }
 
-    func testInterruptedAndExitedKeepPartialText() async throws {
+    func testInterruptedAndExitedKeepTheStreamedText() {
         let driver = makeDriver()
-        driver.begin(messageID: messageID, turnID: "t")
+        let first = driver.begin(messageID: 7, turnID: "t")
         driver.apply(.textDelta(turnID: "t", text: "part"))
         driver.apply(.turnDone(turnID: "t", status: .interrupted, sessionID: nil))
-        await driver.writesSettled()
-        XCTAssertEqual(try row().status, "partial")
-        XCTAssertEqual(try row().text, "part")
+        driver.apply(.turnSaved(turnID: "t"))
+        XCTAssertEqual(first.phase, .interrupted)
+        XCTAssertEqual(first.fullText, "part")
 
-        driver.begin(messageID: messageID, turnID: "t2")
+        let second = driver.begin(messageID: 8, turnID: "t2")
         driver.apply(.textDelta(turnID: "t2", text: "more"))
         driver.apply(.exited(status: 9, stderrTail: ""))
-        await driver.writesSettled()
-        XCTAssertEqual(try row().text, "more")
-        XCTAssertEqual(try row().status, "partial")
+        XCTAssertEqual(second.phase, .interrupted)
+        XCTAssertEqual(second.fullText, "more")
+        XCTAssertNil(driver.liveTurn, "a dead session ends the turn at once")
     }
 
-    func testErrorMarksTheRowWithItsCodeAndMessage() async throws {
+    func testErrorFailsTheTurnWithItsCode() {
         let driver = makeDriver()
-        driver.begin(messageID: messageID, turnID: "t")
+        let turn = driver.begin(messageID: 7, turnID: "t")
         driver.apply(.error(ChatSessionError(turnID: "t", code: .rateLimit, message: "slow", retryable: true)))
-        await driver.writesSettled()
-        XCTAssertEqual(try row().status, "error")
-        XCTAssertEqual(try row().errorCode, "rate_limit")
-        XCTAssertEqual(try row().errorMessage, "slow", "the session's own text is kept for the card")
-        XCTAssertNil(driver.liveTurn)
+        guard case let .failed(error) = turn.phase else { return XCTFail("not failed: \(turn.phase)") }
+        XCTAssertEqual(error.code, .rateLimit)
+        XCTAssertEqual(error.message, "slow")
     }
 
-    /// CHAT-05 storage side: a completed turn's `:::artifact` blocks are
-    /// versioned once finalize runs (A33/A38 — the driver persists, not the VM).
-    func testCompleteTurnPersistsArtifacts() async throws {
+    /// A lost turn (its conversation deleted, its lease taken): the session
+    /// lets go of it before any end event; it ends here.
+    func testTurnSavedBeforeItsEndEndsARunningTurn() {
         let driver = makeDriver()
-        driver.begin(messageID: messageID, turnID: "t")
-        driver.apply(.textDelta(turnID: "t", text: ":::artifact key=\"q3\" kind=\"document\" title=\"Q3\"\nbody\n:::"))
-        driver.apply(.turnDone(turnID: "t", status: .complete, sessionID: nil))
-        await driver.writesSettled()
-        let conv = conversationID
-        let saved = try await pool.read { try ChatArtifactQueries.latest($0, conversationID: conv, key: "q3") }
-        XCTAssertEqual(saved?.content, "body")
-        XCTAssertEqual(saved?.version, 1)
-    }
-
-    /// A partial (interrupted/exited) turn still versions whatever artifacts
-    /// it streamed — an unterminated block is kept as complete content.
-    func testPartialTurnPersistsArtifacts() async throws {
-        let driver = makeDriver()
-        driver.begin(messageID: messageID, turnID: "t")
-        driver.apply(.textDelta(turnID: "t", text: ":::artifact key=\"q3\" kind=\"document\" title=\"Q3\"\nbody"))
+        var calls = 0
+        driver.onTurnFinished = { _ in calls += 1 }
+        let turn = driver.begin(messageID: 7, turnID: "t")
+        driver.apply(.textDelta(turnID: "t", text: "x"))
+        driver.apply(.turnSaved(turnID: "t"))
+        XCTAssertEqual(turn.phase, .interrupted)
+        XCTAssertEqual(calls, 1)
         driver.apply(.turnDone(turnID: "t", status: .interrupted, sessionID: nil))
-        await driver.writesSettled()
-        let conv = conversationID
-        let saved = try await pool.read { try ChatArtifactQueries.latest($0, conversationID: conv, key: "q3") }
-        XCTAssertEqual(saved?.content, "body")
-    }
-
-    /// An errored turn produces no artifacts, even if the text streamed so far
-    /// contained a well-formed block.
-    func testErroredTurnDoesNotPersistArtifacts() async throws {
-        let driver = makeDriver()
-        driver.begin(messageID: messageID, turnID: "t")
-        driver.apply(.textDelta(turnID: "t", text: ":::artifact key=\"q3\" kind=\"document\" title=\"Q3\"\nbody\n:::"))
-        driver.apply(.error(ChatSessionError(turnID: "t", code: .internalError, message: "boom", retryable: false)))
-        await driver.writesSettled()
-        let conv = conversationID
-        let saved = try await pool.read { try ChatArtifactQueries.latest($0, conversationID: conv, key: "q3") }
-        XCTAssertNil(saved)
-    }
-
-    /// Review round 1 finding: the message-finalizing write and the artifact
-    /// write must commit as ONE transaction — a failure on either side must
-    /// roll back both, never leave a `complete` row with no matching
-    /// `chat_artifacts` rows (or vice versa). Failure injected via a SQLite
-    /// trigger on the artifact insert (the `testChat01NothingIsSentWhen…`
-    /// precedent in `ChatViewModelTests.swift`).
-    func testArtifactWriteFailureRollsBackTheMessageFinalize() async throws {
-        try await pool.write { db in
-            try db.execute(sql: """
-                CREATE TRIGGER fail_artifact BEFORE INSERT ON chat_artifacts
-                BEGIN SELECT RAISE(ABORT, 'boom'); END
-                """)
-        }
-        let driver = makeDriver()
-        driver.begin(messageID: messageID, turnID: "t")
-        driver.apply(.textDelta(turnID: "t", text: ":::artifact key=\"q3\" kind=\"document\" title=\"Q3\"\nbody\n:::"))
-        var finished: LiveTurn?
-        driver.onTurnFinished = { finished = $0 }
-        driver.apply(.turnDone(turnID: "t", status: .complete, sessionID: nil))
-
-        await driver.writesSettled()
-        XCTAssertEqual(try row().status, "partial", "the message write rolled back with the failed artifact write")
-        let conv = conversationID
-        let artifact = try await pool.read { try ChatArtifactQueries.latest($0, conversationID: conv, key: "q3") }
-        XCTAssertNil(artifact)
-        XCTAssertNotNil(finished?.persistError)
-        XCTAssertNil(driver.liveTurn, "the turn still ends — a stuck retry loop is worse than a lost write")
-    }
-
-    /// A failed finalize rolls its lease release back with it; the driver
-    /// then frees the lease in its own write, so the next send is not
-    /// refused as "answering elsewhere" until the lease goes stale.
-    func testFailedFinalizeStillReleasesTheLease() async throws {
-        let conv = conversationID
-        try await pool.write { db in
-            let lease = ChatLease(conversationID: conv, owner: .desktop, ownerID: "launch", turnID: "t",
-                                  startedAtMS: 1, heartbeatAtMS: 1)
-            XCTAssertTrue(try ChatLeaseQueries.claim(db, lease, nowMS: 1))
-            try db.execute(sql: """
-                CREATE TRIGGER fail_artifact BEFORE INSERT ON chat_artifacts
-                BEGIN SELECT RAISE(ABORT, 'boom'); END
-                """)
-        }
-        let driver = makeDriver()
-        driver.begin(messageID: messageID, turnID: "t")
-        driver.apply(.textDelta(turnID: "t", text: ":::artifact key=\"q3\" kind=\"document\" title=\"Q3\"\nbody\n:::"))
-        var finished: LiveTurn?
-        driver.onTurnFinished = { finished = $0 }
-        driver.apply(.turnDone(turnID: "t", status: .complete, sessionID: nil))
-
-        await driver.writesSettled()
-        XCTAssertNotNil(finished?.persistError, "the finalize failed")
-        let lease = try await pool.read { try ChatLeaseQueries.fetch($0, conversationID: conv) }
-        XCTAssertNil(lease, "released in its own write after the failed finalize")
+        XCTAssertEqual(calls, 1, "a late end is ignored")
     }
 
     func testEventsForAnotherTurnAreIgnored() {
         let driver = makeDriver()
-        driver.begin(messageID: messageID, turnID: "t")
+        driver.begin(messageID: 7, turnID: "t")
         driver.apply(.textDelta(turnID: "stale", text: "zzz"))
         driver.apply(.turnDone(turnID: "stale", status: .complete, sessionID: nil))
         driver.apply(.error(ChatSessionError(turnID: "stale", code: .internalError, message: "x", retryable: false)))
+        driver.apply(.turnSaved(turnID: "stale"))
         XCTAssertEqual(driver.liveTurn?.fullText, "")
         XCTAssertEqual(driver.liveTurn?.isRunning, true)
     }
@@ -229,26 +111,21 @@ final class ChatTurnDriverTests: XCTestCase {
         XCTAssertEqual(driver.lastSessionError?.code, .auth)
     }
 
-    /// Degenerate: finishing with no running turn is a no-op, and a finished
-    /// turn is never re-finalized.
-    func testFinishWithoutARunningTurnIsANoOp() async throws {
+    /// Degenerate: finishing with no turn is a no-op, and an ended turn
+    /// finishes once.
+    func testFinishWithoutARunningTurnIsANoOp() {
         let driver = makeDriver()
         var calls = 0
         driver.onTurnFinished = { _ in calls += 1 }
         driver.finishRunningAsPartial()
-        await driver.writesSettled()
         XCTAssertEqual(calls, 0)
-        driver.begin(messageID: messageID, turnID: "t")
+        let turn = driver.begin(messageID: 7, turnID: "t")
         driver.apply(.turnDone(turnID: "t", status: .complete, sessionID: nil))
         driver.finishRunningAsPartial()
-        await driver.writesSettled()
         XCTAssertEqual(calls, 1)
-        XCTAssertEqual(try row().status, "complete")
-    }
-
-    private func steps() throws -> [ChatTurnStep] {
-        let msg = messageID
-        return try pool.read { d in try ChatStepQueries.fetch(d, messageIDs: [msg])[msg] ?? [] }
+        XCTAssertEqual(turn.phase, .complete, "an ended turn is not cut afterwards")
+        driver.apply(.turnSaved(turnID: "t"))
+        XCTAssertEqual(calls, 1)
     }
 
     private func wait(_ id: String, action: Int64, turn: String = "t") -> ChatEvent {
@@ -258,11 +135,12 @@ final class ChatTurnDriverTests: XCTestCase {
     /// CHAT-02: a call the gate holds for the owner's approval is a visible
     /// waiting step until its `tool_end`; a denied/timed-out one is a red
     /// step carrying the gate's reason, an approved one a normal step.
-    /// Waiting is live only — `chat_turn_steps` sees the usual start/end.
+    /// Waiting is live only — the rows (Go's
+    /// `TestChat02WaitingStepIsVisibleUntilItEnds`) see the usual start/end.
     /// BEHAVIOR CHAT-02 — see docs/inventory/chat.md
-    func testChat02WaitingStepIsVisibleUntilItEnds() async throws {
+    func testChat02WaitingStepIsVisibleUntilItEnds() {
         let driver = makeDriver()
-        let turn = driver.begin(messageID: messageID, turnID: "t")
+        let turn = driver.begin(messageID: 7, turnID: "t")
         driver.apply(.toolStart(ChatToolStart(turnID: "t", id: "a", name: "mcp__claude_ai_Gmail__send", argsJSON: "{}")))
         driver.apply(.toolStart(ChatToolStart(turnID: "t", id: "b", name: "mcp__claude_ai_Docs__create", argsJSON: "{}")))
         driver.apply(wait("a", action: 41))
@@ -270,8 +148,6 @@ final class ChatTurnDriverTests: XCTestCase {
         XCTAssertEqual(turn.steps.map(\.state), [.waiting(actionID: 41), .waiting(actionID: 42)])
         XCTAssertEqual(turn.steps.map(\.summary), ["Waiting for your approval", "Waiting for your approval"])
         XCTAssertEqual(turn.waitingActionIDs, [41, 42])
-        await driver.writesSettled()
-        XCTAssertEqual(try steps().map(\.state), [.running, .running], "waiting is never persisted")
 
         clock.advance(5)
         driver.apply(.textDelta(turnID: "t", text: "still thinking"))
@@ -282,15 +158,10 @@ final class ChatTurnDriverTests: XCTestCase {
         XCTAssertEqual(turn.steps[0].state, .failed)
         XCTAssertEqual(turn.steps[0].summary, "not approved within 15 minutes")
         XCTAssertEqual(turn.waitingActionIDs, [42], "the other call keeps waiting on its own")
-        await driver.writesSettled()
-        XCTAssertEqual(try steps().first?.state, .failed)
-        XCTAssertEqual(try steps().first?.summary, "not approved within 15 minutes")
 
         driver.apply(.toolEnd(ChatToolEnd(turnID: "t", id: "b", ok: true, summary: "created", sources: [])))
         XCTAssertEqual(turn.steps[1].state, .succeeded)
         XCTAssertEqual(turn.waitingActionIDs, [])
-        await driver.writesSettled()
-        XCTAssertEqual(try steps().map(\.state), [.failed, .succeeded])
     }
 
     /// A new wait (not a repeat, not a late one) asks the action feeds to
@@ -299,7 +170,7 @@ final class ChatTurnDriverTests: XCTestCase {
         let driver = makeDriver()
         var announced: [Int64] = []
         driver.onActionAwaited = { announced.append($0) }
-        driver.begin(messageID: messageID, turnID: "t")
+        driver.begin(messageID: 7, turnID: "t")
         driver.apply(.toolStart(ChatToolStart(turnID: "t", id: "a", name: "x", argsJSON: "{}")))
         driver.apply(wait("a", action: 9))
         driver.apply(wait("a", action: 9))
@@ -313,9 +184,9 @@ final class ChatTurnDriverTests: XCTestCase {
     /// never reopens it), a repeated wait, and one whose start never arrived
     /// (still a visible step). A turn that ends while a call waits leaves no
     /// step claiming it still waits.
-    func testToolWaitDegenerateCases() async throws {
+    func testToolWaitDegenerateCases() {
         let driver = makeDriver()
-        let turn = driver.begin(messageID: messageID, turnID: "t")
+        let turn = driver.begin(messageID: 7, turnID: "t")
         driver.apply(.toolStart(ChatToolStart(turnID: "t", id: "a", name: "x", argsJSON: "{}")))
         driver.apply(wait("a", action: 1, turn: "stale"))
         XCTAssertEqual(turn.steps.first?.state, .running)
@@ -329,142 +200,24 @@ final class ChatTurnDriverTests: XCTestCase {
         driver.apply(wait("orphan", action: 2))
         XCTAssertEqual(turn.steps.count, 2, "a wait without its start is one visible step")
         XCTAssertEqual(turn.steps.last?.state, .waiting(actionID: 2))
-        await driver.writesSettled()
-        XCTAssertEqual(try steps().map(\.toolID), ["a", "orphan"], "its start is persisted, never its waiting state")
-        XCTAssertEqual(try steps().last?.state, .running)
 
         driver.apply(.toolStart(ChatToolStart(turnID: "t", id: "orphan", name: "late_name", argsJSON: #"{"k":1}"#)))
         XCTAssertEqual(turn.steps.last?.name, "late_name", "a start after its wait names the step")
         XCTAssertEqual(turn.steps.last?.state, .waiting(actionID: 2))
-        await driver.writesSettled()
-        XCTAssertEqual(try steps().last?.name, "late_name")
 
         driver.apply(.turnDone(turnID: "t", status: .interrupted, sessionID: nil))
         XCTAssertEqual(turn.steps.last?.state, .running, "an ended turn's unfinished call reads as stopped")
         XCTAssertEqual(turn.waitingActionIDs, [])
-        await driver.writesSettled()
-        XCTAssertEqual(try steps().map(\.toolID), ["a", "orphan"], "the held call is still a step after the turn")
-    }
-}
-
-extension ChatTurnDriverTests {
-    func testActualRoutingAndStartedQuotaSurviveReloadWithAndWithoutPartial() async throws {
-        for provider in ["claude", "codex"] {
-            for text in ["", "Saved partial"] {
-                let driver = makeDriver()
-                driver.begin(messageID: messageID, turnID: "t")
-                let preferred = provider == "claude" ? "codex" : "claude"
-                let json = """
-                    {"type":"session_ready","provider":"\(provider)","model":"actual-\(provider)",
-                     "preferred_provider":"\(preferred)","routing_mode":"preferred_reserve","reason":"quota_exhausted"}
-                    """
-                driver.apply(try XCTUnwrap(ChatEvent.parse(json)))
-                driver.apply(.textDelta(turnID: "t", text: text))
-                driver.apply(try XCTUnwrap(ChatEvent.parse("""
-                    {"type":"error","turn_id":"t","code":"rate_limit","reason":"quota_exhausted",
-                     "message":"Quota reached","retryable":false}
-                    """)))
-                await driver.writesSettled()
-                let reloaded = try row()
-                XCTAssertEqual(reloaded.provider, provider)
-                XCTAssertEqual(reloaded.model, "actual-\(provider)")
-                XCTAssertEqual(reloaded.text, text)
-                XCTAssertEqual(reloaded.status, text.isEmpty ? "error" : "partial")
-                XCTAssertEqual(reloaded.errorCode, "quota_exhausted")
-                XCTAssertFalse(ChatErrorPresentation.isRetryable(reloaded.errorCode))
-                let id = conversationID
-                let conv = try await pool.read { try ChatConversationQueries.fetchByID($0, id: id) }
-                XCTAssertEqual(conv?.actualProvider, provider)
-                XCTAssertEqual(conv?.actualModel, "actual-\(provider)")
-                XCTAssertEqual(driver.routing?.preferredProvider, preferred)
-            }
-        }
     }
 
-    func testTransientRateLimitDoesNotBecomeStartedQuota() async throws {
+    /// The actual provider of a routed session shows from its session_ready.
+    func testSessionReadyNamesTheActualProvider() {
         let driver = makeDriver()
-        driver.begin(messageID: messageID, turnID: "t")
-        driver.apply(.error(ChatSessionError(turnID: "t", code: .rateLimit, message: "Slow down", retryable: true)))
-        await driver.writesSettled()
-        XCTAssertEqual(try row().errorCode, "rate_limit")
-        XCTAssertTrue(ChatErrorPresentation.isRetryable(try row().errorCode))
-    }
-}
-
-extension ChatTurnDriverTests {
-    func testPinnedWarmReadySuppliesActualModelWithoutUsageEvents() async throws {
-        let driver = makeDriver()
-        let metadata = ChatRoutingMetadata(preferredProvider: "claude", mode: "pinned", reason: "explicit_pin")
-        driver.apply(.sessionReady(sessionID: nil, provider: "codex", model: "resolved-model", routing: metadata))
-        await driver.writesSettled()
-        driver.begin(messageID: messageID, turnID: "t")
-        driver.apply(.turnDone(turnID: "t", status: .complete, sessionID: nil))
-        await driver.writesSettled()
-        XCTAssertEqual(try row().provider, "codex")
-        XCTAssertEqual(try row().model, "resolved-model")
-    }
-}
-
-extension ChatTurnDriverTests {
-    func testEagerReadyStorageFailureIsRetainedAcrossBeginUntilActualSaveSucceeds() async throws {
-        try await pool.write { db in
-            try db.execute(sql: """
-                CREATE TRIGGER fail_actual BEFORE UPDATE OF actual_provider ON chat_conversations
-                BEGIN SELECT RAISE(ABORT, 'actual metadata blocked'); END
-                """)
-        }
-        let driver = makeDriver()
-        let metadata = ChatRoutingMetadata(preferredProvider: "claude", mode: "pinned", reason: "explicit_pin")
-        let ready = ChatEvent.sessionReady(sessionID: nil, provider: "codex", model: "resolved-model", routing: metadata)
-        driver.apply(ready)
-        await driver.writesSettled()
-        XCTAssertNil(driver.liveTurn)
-        XCTAssertTrue(driver.lastSessionError?.message.contains("actual metadata blocked") == true)
-        XCTAssertEqual(driver.lastSessionError?.code, .internalError)
-        let turn = driver.begin(messageID: messageID, turnID: "t")
-        XCTAssertTrue(turn.persistError?.contains("actual metadata blocked") == true)
-        await driver.writesSettled()
-        XCTAssertTrue(turn.persistError?.contains("actual metadata blocked") == true)
-        try await pool.write { try $0.execute(sql: "DROP TRIGGER fail_actual") }
-        driver.apply(ready)
-        await driver.writesSettled()
-        XCTAssertNil(driver.lastSessionError)
-        XCTAssertNil(turn.persistError)
-        XCTAssertEqual(try row().model, "resolved-model")
-        driver.apply(.turnDone(turnID: "t", status: .complete, sessionID: nil))
-        await driver.writesSettled()
-        XCTAssertNil(driver.liveTurn)
-    }
-}
-
-extension ChatTurnDriverTests {
-    func testIdleActualRepairQueuedBeforeBeginClearsTheInheritedDiagnostic() async throws {
-        for unrelatedError in [false, true] {
-            try await pool.write { db in
-                try db.execute(sql: """
-                    CREATE TRIGGER fail_actual_repair BEFORE UPDATE OF actual_provider ON chat_conversations
-                    BEGIN SELECT RAISE(ABORT, 'actual metadata blocked'); END
-                    """)
-            }
-            let driver = makeDriver()
-            let metadata = ChatRoutingMetadata(preferredProvider: "claude", mode: "pinned", reason: "explicit_pin")
-            let ready = ChatEvent.sessionReady(sessionID: nil, provider: "codex", model: "resolved-model", routing: metadata)
-            driver.apply(ready)
-            await driver.writesSettled()
-            XCTAssertNotNil(driver.actualPersistenceError)
-            try await pool.write { try $0.execute(sql: "DROP TRIGGER fail_actual_repair") }
-            // The repair captured no turn. Begin inherits the still-visible failure
-            // before that queued write runs, and its own write follows the repair.
-            driver.apply(ready)
-            let turn = driver.begin(messageID: messageID, turnID: "t")
-            XCTAssertNotNil(turn.persistError)
-            if unrelatedError { turn.persistError = "Unrelated reply storage failure" }
-            await driver.writesSettled()
-            XCTAssertNil(driver.actualPersistenceError)
-            XCTAssertNil(driver.lastSessionError)
-            XCTAssertEqual(turn.persistError, unrelatedError ? "Unrelated reply storage failure" : nil)
-            driver.apply(.turnDone(turnID: "t", status: .complete, sessionID: nil))
-            await driver.writesSettled()
-        }
+        driver.apply(.sessionReady(sessionID: nil, provider: "codex", model: "gpt-x",
+                                   routing: ChatRoutingMetadata(preferredProvider: "claude", mode: "preferred_reserve",
+                                                                reason: "fallback")))
+        XCTAssertEqual(driver.actualProvider, "codex")
+        XCTAssertEqual(driver.actualModel, "gpt-x")
+        XCTAssertEqual(driver.routing?.reason, "fallback")
     }
 }

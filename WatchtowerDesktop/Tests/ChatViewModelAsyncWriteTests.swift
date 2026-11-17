@@ -65,8 +65,7 @@ final class ChatViewModelAsyncWriteTests: XCTestCase {
         XCTAssertFalse(vm.canStop, "nothing could stop it now")
         XCTAssertTrue(vm.isBusy, "and no next send meanwhile")
         held.release()
-        await vm.writesSettled()
-        XCTAssertFalse(vm.isFinishingTurn)
+        await waitForCondition { !vm.isFinishingTurn }
         XCTAssertTrue(vm.canStop)
     }
 

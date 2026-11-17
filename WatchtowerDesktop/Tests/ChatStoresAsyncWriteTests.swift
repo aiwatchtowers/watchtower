@@ -27,42 +27,8 @@ final class ChatStoresAsyncWriteTests: XCTestCase {
         try await pool.read { try ChatMessageRecord.fetchOne($0, sql: "SELECT * FROM chat_messages WHERE id = ?", arguments: [id]) }
     }
 
-    // MARK: - Main chat turn driver
-
-    /// A finished turn stays live (its full text on screen, no longer
-    /// running) while its final write waits; it leaves, and the screen is
-    /// told, once the write landed.
-    func testAFinishedTurnStaysShownUntilItsFinalWriteLanded() async throws {
-        let (conv, msg) = try await pool.write { db in
-            let conv = try TestDatabase.insertChatConversation(db)
-            let msg = try ChatTreeQueries.insertAssistant(db, conversationID: conv, parentID: nil, turnID: "t",
-                                                          provider: "claude", model: "")
-            return (conv, msg.id)
-        }
-        let driver = ChatTurnDriver(conversationID: conv, store: ChatTurnStore(dbPool: pool))
-        var finished = 0
-        driver.onTurnFinished = { _ in finished += 1 }
-        driver.begin(messageID: msg, turnID: "t")
-        let held = HeldWriter(pool)
-        defer { held.release() }
-
-        driver.apply(.textDelta(turnID: "t", text: "the whole answer"))
-        driver.apply(.turnDone(turnID: "t", status: .complete, sessionID: nil))
-        XCTAssertEqual(driver.liveTurn?.fullText, "the whole answer", "still shown while its write waits")
-        XCTAssertEqual(driver.liveTurn?.isRunning, false, "and no longer stoppable")
-        XCTAssertTrue(driver.isFinishing)
-        XCTAssertTrue(driver.isBusy, "no next turn until it landed")
-        XCTAssertEqual(finished, 0)
-
-        held.release()
-        await driver.writesSettled()
-        XCTAssertNil(driver.liveTurn)
-        XCTAssertFalse(driver.isBusy)
-        XCTAssertEqual(finished, 1)
-        let row = try await message(msg)
-        XCTAssertEqual(row?.text, "the whole answer")
-        XCTAssertEqual(row?.status, "complete")
-    }
+    // The main chat's finished turn staying shown until its write landed
+    // is `ChatTurnDriverTests.testTextStreamsAndTheTurnEndsAtTurnSaved`.
 
     // MARK: - Embedded chat engine
 
@@ -118,7 +84,9 @@ final class ChatStoresAsyncWriteTests: XCTestCase {
         held.release()
         await engine.finished()
 
-        XCTAssertTrue(ai.calls.isEmpty)
+        // The turn's process saves its rows itself, so it was started; the
+        // quit stops it before anything else is sent.
+        XCTAssertEqual(ai.terminated, [true])
         XCTAssertFalse(engine.isBusy)
         let rows = try await pool.read { try ChatMessageQueries.fetchByConversation($0, conversationID: conv) }
         XCTAssertEqual(rows.map(\.role), ["user", "assistant"])

@@ -66,7 +66,7 @@ struct EmbeddedChatRows<Accessory: View>: View {
     @ViewBuilder var accessory: (ChatThreadItem) -> Accessory
 
     var body: some View {
-        if engine.messages.isEmpty && !engine.isQueued {
+        if engine.messages.isEmpty && !engine.isQueued && engine.pendingOwnerText == nil {
             EmbeddedChatEmptyState(hint: engine.spec.emptyHint, prompts: engine.spec.starterPrompts) { prompt in
                 if prompt.sendsImmediately {
                     engine.send(prompt.text)
@@ -88,6 +88,11 @@ struct EmbeddedChatRows<Accessory: View>: View {
             if engine.reviewedMessageID == item.id {
                 ChatActionReviewView(actions: engine.reviewedActions)
             }
+        }
+        // The owner's message at once, while its run writes it.
+        if let pending = engine.pendingOwnerText {
+            UserMessageBubble(text: pending)
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
         if let queued = engine.queuedText {
             VStack(alignment: .trailing, spacing: 2) {
@@ -160,7 +165,7 @@ struct EmbeddedChatComposer: View {
                 isStreaming: engine.isBusy,
                 onSend: { engine.sendDraft() },
                 // Nothing stops a turn whose rows or end are being written.
-                onStop: engine.isFinishing || engine.isStarting ? nil : { engine.stop() },
+                onStop: engine.isFinishing ? nil : { engine.stop() },
                 placeholder: placeholder,
                 dictationTargetID: dictationTargetID,
                 maxHeight: density.composerMaxHeight,

@@ -171,11 +171,24 @@ type Heartbeat struct {
 // runs; the phone shows chat only on an explicit "on" (an absent key is an
 // older hub). ChatReason says why it is "off": not_relay, runner_down,
 // desktop_too_old or policy.
+//
+// Inbox is the phone Inbox (mobile Inbox spec §6): InboxOn, or
+// InboxPolicyOff with InboxReason InboxOffPolicy under the organization's
+// workbench_only policy; an absent key is an older hub, as for chat.
 type HeartbeatCapabilities struct {
-	Recordings string `json:"recordings,omitempty"`
-	Chat       string `json:"chat,omitempty"`
-	ChatReason string `json:"chat_reason,omitempty"`
+	Recordings  string `json:"recordings,omitempty"`
+	Chat        string `json:"chat,omitempty"`
+	ChatReason  string `json:"chat_reason,omitempty"`
+	Inbox       string `json:"inbox,omitempty"`
+	InboxReason string `json:"inbox_reason,omitempty"`
 }
+
+// The inbox capability's values and its off reason.
+const (
+	InboxOn        = "on"
+	InboxPolicyOff = "policy_off"
+	InboxOffPolicy = "policy"
+)
 
 // The chat capability's off reasons.
 const (

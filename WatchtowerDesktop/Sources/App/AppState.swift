@@ -581,7 +581,7 @@ final class AppState {
         let cvm = makeMainChatViewModel(db)
         // Once per launch, before anything is shown or listed.
         cvm.cleanUpUntouchedConversations()
-        let hvm = ChatHistoryViewModel(dbManager: db)
+        let hvm = ChatHistoryViewModel(dbManager: db, writes: chatWrites)
         hvm.reloadRows()
         hvm.startObserving()
         Self.wireChat(cvm, history: hvm)
@@ -594,26 +594,12 @@ final class AppState {
     func ensureChatSessionPool(_ db: DatabaseManager) -> ChatSessionPool {
         if let chatSessionPool { return chatSessionPool }
         let pool = ChatSessionPool(dbPool: db.dbPool)
-        Task { await Self.releaseEarlierLaunchesChatLeases(db.dbPool) }
+        let writes = chatWrites
+        Task { await Self.releaseEarlierLaunchesChatLeases(writes) }
         pool.holdAdmissionUntil { _ = await Constants.resolvedEnvironmentAsync() }
         pool.startPolicy() // CHAT-03: an idle session dies within TTL + one 30 s poll.
         chatSessionPool = pool
         return pool
-    }
-
-    /// At launch (the pool's first creation): the chat leases an earlier
-    /// launch of this app left behind when it crashed (spec 2026-11-15 §5).
-    /// A failure is logged; such a lease is free for anyone after 60 s anyway.
-    nonisolated static func releaseEarlierLaunchesChatLeases(
-        _ dbPool: DatabasePool, launchID: String = ChatLease.desktopLaunchID
-    ) async {
-        do {
-            _ = try await dbPool.write { db in
-                try ChatLeaseQueries.releaseEarlierDesktopLaunches(db, currentLaunchID: launchID)
-            }
-        } catch {
-            NSLog("AppState: releasing an earlier launch's chat leases failed: %@", error.localizedDescription)
-        }
     }
 
     /// The editor panel's chat for one automation: its engine comes from
@@ -624,7 +610,7 @@ final class AppState {
               let automation = try await pool.read({ db in try AutomationQueries.fetchAutomation(db, id: automationID) })
         else { return nil }
         let provider = Constants.aiProviderID()
-        let conversationID = try await AutomationEditorChatSurface.conversationID(for: automation, dbPool: pool)
+        let conversationID = try await AutomationEditorChatSurface.conversationID(for: automation, dbPool: pool, writes: chatWrites)
         let box = PanelDraftBox()
         let prompts = await builtinDefaultPrompts(automation)
         return makeAutomationEditorChat(
@@ -750,6 +736,7 @@ final class AppState {
     /// (reinitializeAfterOnboarding), which must not stack observers.
     private func installLifecycleHooks() {
         targetAssistantCenter.embeddedChats = embeddedChatCenter
+        targetAssistantCenter.chatWrites = chatWrites
         startUIVisibility()
         if terminateObserver == nil {
             terminateObserver = NotificationCenter.default.addObserver(
@@ -1383,6 +1370,7 @@ final class AppState {
         // A new draft the editor holds is a list row, cached draft rows or not.
         vm.openNewDrafts = { [weak editorCenter] in editorCenter?.openNewDraftNames ?? [:] }
         vm.embeddedChats = embeddedChatCenter
+        vm.chatWrites = chatWrites
         vm.discardEditorDraft = { [weak editorCenter] in editorCenter?.discard($0) }
         wireInboxRoute(vm)
         automationEditorCenter = editorCenter
@@ -1563,6 +1551,7 @@ final class AppState {
             override(manager)
             return
         }
+        embeddedChats.chatWrites = chatWrites
         embeddedChats.dbPool = manager.dbPool
         wireMeetingRecorderLoaders(dbPool: manager.dbPool)
         wireTargetBriefCenter()

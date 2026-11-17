@@ -69,6 +69,10 @@ enum PhoneOpacity {
     static let waveform = 0.85
     /// A button under the finger.
     static let pressed = 0.8
+    /// A row whose press is on its way (mobile Inbox mockup §2).
+    static let busy = 0.45
+    /// A button the phone does not press ("On your Mac").
+    static let disabled = 0.5
     /// The white of a file tile or pill on the owner's accent bubble (iPhone chat mockup 2b).
     static let thumbTint = 0.22
 }
