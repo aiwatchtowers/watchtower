@@ -93,16 +93,28 @@ enum FileVaultProcess {
             if pid > 0, !reaped { _ = killpg(pid, SIGKILL) }
         }
 
-        /// Reaps the child under the lock; one still running is killed first.
-        /// Returns the wait status, nil when waiting failed.
+        var wasCancelled: Bool {
+            lock.lock(); defer { lock.unlock() }
+            return cancelled
+        }
+
+        /// Kills the group (a failed read; the child may still run).
+        func killNow() {
+            lock.lock(); defer { lock.unlock() }
+            if pid > 0, !reaped { _ = killpg(pid, SIGKILL) }
+        }
+
+        /// Waits for the child to exit WITHOUT reaping (it stays a zombie, so
+        /// its pid cannot be recycled) and outside the lock, so a cancel
+        /// still reaches killpg; then reaps under the lock.
         func reap() -> Int32? {
+            var info = siginfo_t()
+            while waitid(P_PID, id_t(pid), &info, WEXITED | WNOWAIT) < 0 {
+                if errno != EINTR { break }
+            }
             lock.lock(); defer { lock.unlock() }
             var status: Int32 = 0
-            var result = waitpid(pid, &status, WNOHANG)
-            if result == 0 {
-                _ = killpg(pid, SIGKILL)
-                result = waitpid(pid, &status, 0)
-            }
+            var result = waitpid(pid, &status, 0)
             while result < 0 && errno == EINTR { result = waitpid(pid, &status, 0) }
             reaped = true
             return result == pid ? status : nil
@@ -151,7 +163,9 @@ enum FileVaultProcess {
                 break
             }
         }
+        if readFailed { box.killNow() }
         let status = box.reap()
+        if box.wasCancelled { throw CancellationError() }
         // WIFEXITED with status 0: the raw wait status is 0.
         guard !readFailed, status == 0, let text = String(bytes: data, encoding: .utf8) else {
             throw CocoaError(.fileReadUnknown)

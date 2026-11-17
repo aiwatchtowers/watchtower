@@ -31,9 +31,10 @@ extension AppState {
     func watchFileVault(status: FileVaultStatus = .live) {
         fileVaultTask?.cancel()
         fileVaultTask = Task { [weak self] in
-            let activations = NotificationCenter.default.notifications(named: NSApplication.didBecomeActiveNotification)
+            var activations = NotificationCenter.default
+                .notifications(named: NSApplication.didBecomeActiveNotification).makeAsyncIterator()
             self?.fileVaultState = await status.read()
-            for await _ in activations {
+            while await activations.next() != nil {
                 guard let self else { return }
                 self.fileVaultState = await status.read()
             }

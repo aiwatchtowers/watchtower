@@ -48,10 +48,51 @@ final class FileVaultStatusTests: XCTestCase {
         } catch {}
     }
 
+    /// A child that exits normally right after closing its output is read, not killed.
+    func testSpawnExitingRightAfterClosingOutputIsRead() async throws {
+        for _ in 0..<50 {
+            let out = try await FileVaultProcess.output(
+                executable: "/bin/sh", arguments: ["-c", "echo 'FileVault is On.'; exec >&- 2>&-"])
+            XCTAssertEqual(FileVaultStatus.parse(out), .on)
+        }
+    }
+
     func testSpawnCancelKillsAndReaps() async throws {
-        let task = Task { try await FileVaultProcess.output(executable: "/bin/sleep", arguments: ["3600"]) }
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fv-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: marker) }
+        // The child writes its pid (it execs into sleep) once it runs.
+        let task = Task {
+            try await FileVaultProcess.output(
+                executable: "/bin/sh", arguments: ["-c", "echo $$ > '\(marker.path)'; exec sleep 3600"])
+        }
+        var pid: pid_t = 0
+        for _ in 0..<5000 {
+            if let text = try? String(contentsOf: marker, encoding: .utf8),
+               let value = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                pid = value
+                break
+            }
+            await Task.yield()
+            usleep(1000)
+        }
+        XCTAssertGreaterThan(pid, 0, "the child never started")
+        addTeardownBlock { if pid > 0 { _ = killpg(pid, SIGKILL) } }
         task.cancel()
-        let result = await task.result
-        if case .success = result { XCTFail("a cancelled sleep must not succeed") }
+        // A regression (cancel not reaching the child) fails here instead of hanging.
+        let outcome = await withTaskGroup(of: Result<String, Error>?.self) { group in
+            group.addTask { await task.result }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(30))
+                if pid > 0 { _ = killpg(pid, SIGKILL) }
+                return nil
+            }
+            let first = await group.next().flatMap { $0 }
+            group.cancelAll()
+            return first
+        }
+        guard case .failure(let error)? = outcome else { return XCTFail("cancel did not end the read") }
+        XCTAssertTrue(error is CancellationError, "\(error)")
+        XCTAssertNotEqual(kill(pid, 0), 0, "the child must be gone (reaped)")
     }
 }
