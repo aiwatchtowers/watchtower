@@ -1,3 +1,4 @@
+import Foundation
 import WatchtowerInterface
 import XCTest
 
@@ -124,7 +125,25 @@ final class InboxRefRowModelTests: XCTestCase {
         XCTAssertFalse(row(waiting, platform: .mac).canReply)
         let request = row(Fix.ref(.inboxItem, 7, reply: true)).replyRequest(text: "On it", cardID: "o1", requestID: "r3")
         XCTAssertEqual(request, ActRequest(
-            requestID: "r3", target: "o1", verb: .replyPropose, params: ActParams(text: "On it", refID: 7)
+            requestID: "r3", target: "o1", verb: .replyPropose,
+            params: ActParams(text: "On it", refKind: .inboxItem, refID: 7)
         ))
+    }
+
+    /// The wire form Go's `inbox.act` reply_propose accepts
+    /// (`inboxfeed.replyPropose`: ref_kind inbox_item, ref_id > 0, text),
+    /// as `act_owner_test.go` sends it, and nothing else.
+    func testReplyRequestCarriesWhatGoRequires() throws {
+        let request = row(Fix.ref(.inboxItem, 41, reply: true))
+            .replyRequest(text: "Sounds good", cardID: "o1", requestID: "6f1c2d3e-0000-4000-8000-000000000008")
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any])
+        XCTAssertEqual(object["request_id"] as? String, "6f1c2d3e-0000-4000-8000-000000000008")
+        XCTAssertEqual(object["target"] as? String, "o1")
+        XCTAssertEqual(object["verb"] as? String, "reply_propose")
+        let params = try XCTUnwrap(object["params"] as? [String: Any])
+        XCTAssertEqual(Set(params.keys), ["ref_kind", "ref_id", "text"])
+        XCTAssertEqual(params["ref_kind"] as? String, "inbox_item")
+        XCTAssertEqual(params["ref_id"] as? Int, 41)
+        XCTAssertEqual(params["text"] as? String, "Sounds good")
     }
 }
