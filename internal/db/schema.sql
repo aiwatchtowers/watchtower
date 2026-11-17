@@ -3930,11 +3930,14 @@ CREATE TABLE IF NOT EXISTS watchman_backtest_rows (
     backtest_id INTEGER NOT NULL REFERENCES watchman_backtests(id) ON DELETE CASCADE,
     category    TEXT NOT NULL,
     total       INTEGER NOT NULL DEFAULT 0,
-    agree       INTEGER NOT NULL DEFAULT 0,
-    wrong_high  INTEGER NOT NULL DEFAULT 0,
+    agree       INTEGER NOT NULL DEFAULT 0,  -- decisions the judge graded same as the owner's
+    wrong_high  INTEGER NOT NULL DEFAULT 0,  -- decisions graded bad while the twin's confidence was high
     cost_usd    REAL NOT NULL DEFAULT 0,
-    baseline    REAL NOT NULL DEFAULT 0,  -- share of the most common owner choice among the hidden items
+    baseline    REAL NOT NULL DEFAULT 0,  -- share of the most common owner choice among the hidden items (informational)
     status      TEXT NOT NULL CHECK (status IN ('strong','weak','not_measured')),
+    acceptable  INTEGER NOT NULL DEFAULT 0,  -- a different but reasonable decision
+    bad         INTEGER NOT NULL DEFAULT 0,  -- a decision the owner would have had to undo; strong = bad <= 5 % and wrong_high = 0
+    rec_baseline REAL NOT NULL DEFAULT 0,    -- share of decisions where the owner picked the agent's recommended option (informational)
     PRIMARY KEY (backtest_id, category)
 );
 

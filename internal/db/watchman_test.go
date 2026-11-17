@@ -124,7 +124,7 @@ func TestWatchmanBacktest_LatestRows(t *testing.T) {
 	_, err := d.InsertWatchmanBacktest(WatchmanBacktest{WorkbenchID: 1, StartedAt: at, FinishedAt: &fin, Status: "done", Verdict: "stop"})
 	require.NoError(t, err)
 	id, err := d.InsertWatchmanBacktest(WatchmanBacktest{WorkbenchID: 1, StartedAt: at.Add(time.Hour), FinishedAt: &fin, Status: "done", Verdict: "go", CostUSD: 1.5,
-		Rows: []WatchmanBacktestRow{{Category: "permission", Total: 40, Agree: 38, WrongHigh: 1, Status: "strong", CostUSD: 0.5}, {Category: "design", Total: 5, Status: "not_measured"}}})
+		Rows: []WatchmanBacktestRow{{Category: "permission", Total: 40, Agree: 30, Acceptable: 8, Bad: 2, WrongHigh: 1, Status: "strong", CostUSD: 0.5, RecBaseline: 0.6}, {Category: "design", Total: 5, Status: "not_measured"}}})
 	require.NoError(t, err)
 	b, rows, err := d.LatestWatchmanBacktest(1)
 	require.NoError(t, err)
@@ -132,7 +132,10 @@ func TestWatchmanBacktest_LatestRows(t *testing.T) {
 	require.Equal(t, "go", b.Verdict)
 	require.Len(t, rows, 2)
 	require.Equal(t, "design", rows[0].Category) // ordered by category
-	require.Equal(t, 38, rows[1].Agree)
+	require.Equal(t, 30, rows[1].Agree)
+	require.Equal(t, 8, rows[1].Acceptable)
+	require.Equal(t, 2, rows[1].Bad)
+	require.InDelta(t, 0.6, rows[1].RecBaseline, 1e-9)
 
 	none, nrows, err := d.LatestWatchmanBacktest(99)
 	require.NoError(t, err)

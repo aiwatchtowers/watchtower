@@ -48,15 +48,20 @@ type WatchmanBacktest struct {
 	Rows            []WatchmanBacktestRow
 }
 
-// WatchmanBacktestRow is one category's result in a backtest.
+// WatchmanBacktestRow is one category's result in a backtest. Every scored
+// decision (one per question of a multi-question ask) is graded same
+// (Agree), Acceptable or Bad; Total counts them.
 type WatchmanBacktestRow struct {
-	Category  string
-	Total     int
-	Agree     int
-	WrongHigh int
-	Status    string // strong, weak, not_measured
-	CostUSD   float64
-	Baseline  float64 // share of the most common owner choice among the hidden items
+	Category    string
+	Total       int
+	Agree       int
+	Acceptable  int
+	Bad         int
+	WrongHigh   int    // bad while the twin's confidence was high
+	Status      string // strong, weak, not_measured
+	CostUSD     float64
+	Baseline    float64 // share of the most common owner choice among the hidden items (informational)
+	RecBaseline float64 // share of the decisions where the owner picked the agent's recommended option (informational)
 }
 
 func wmTime(t time.Time) string { return t.UTC().Format(time.RFC3339) }
@@ -254,9 +259,8 @@ func (db *DB) InsertWatchmanBacktest(b WatchmanBacktest) (int64, error) {
 		return 0, fmt.Errorf("inserting watchman backtest: %w", err)
 	}
 	for _, r := range b.Rows {
-		if _, err := tx.Exec(`INSERT INTO watchman_backtest_rows (backtest_id, category, total, agree, wrong_high, cost_usd, baseline, status)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, id, r.Category, r.Total, r.Agree, r.WrongHigh, r.CostUSD, r.Baseline, r.Status); err != nil {
-			return 0, fmt.Errorf("inserting watchman backtest row %s: %w", r.Category, err)
+		if err := insertWatchmanBacktestRow(tx, id, r); err != nil {
+			return 0, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -283,7 +287,8 @@ func (db *DB) watchmanBacktestWhere(where string, workbenchID int64) (*WatchmanB
 		t, _ := time.Parse(time.RFC3339, fin.String)
 		b.FinishedAt = &t
 	}
-	rows, err := db.Query(`SELECT category, total, agree, wrong_high, status, cost_usd, baseline FROM watchman_backtest_rows WHERE backtest_id = ? ORDER BY category`, b.ID)
+	rows, err := db.Query(`SELECT category, total, agree, acceptable, bad, wrong_high, status, cost_usd, baseline, rec_baseline
+		FROM watchman_backtest_rows WHERE backtest_id = ? ORDER BY category`, b.ID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading watchman backtest rows %d: %w", b.ID, err)
 	}
@@ -291,7 +296,8 @@ func (db *DB) watchmanBacktestWhere(where string, workbenchID int64) (*WatchmanB
 	var out []WatchmanBacktestRow
 	for rows.Next() {
 		var r WatchmanBacktestRow
-		if err := rows.Scan(&r.Category, &r.Total, &r.Agree, &r.WrongHigh, &r.Status, &r.CostUSD, &r.Baseline); err != nil {
+		if err := rows.Scan(&r.Category, &r.Total, &r.Agree, &r.Acceptable, &r.Bad, &r.WrongHigh, &r.Status, &r.CostUSD,
+			&r.Baseline, &r.RecBaseline); err != nil {
 			return nil, nil, fmt.Errorf("scanning watchman backtest row: %w", err)
 		}
 		out = append(out, r)

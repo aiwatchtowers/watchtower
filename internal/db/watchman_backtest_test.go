@@ -45,7 +45,8 @@ func TestWatchmanBacktest_AddRowAndFinish(t *testing.T) {
 	t0 := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
 	id, err := d.InsertWatchmanBacktest(WatchmanBacktest{WorkbenchID: 1, StartedAt: t0, Status: "running"})
 	require.NoError(t, err)
-	require.NoError(t, d.AddWatchmanBacktestRow(id, WatchmanBacktestRow{Category: "tests", Total: 30, Agree: 25, Status: "strong", CostUSD: 0.5}))
+	require.NoError(t, d.AddWatchmanBacktestRow(id, WatchmanBacktestRow{Category: "tests", Total: 32, Agree: 25,
+		Acceptable: 6, Bad: 1, WrongHigh: 0, Status: "strong", CostUSD: 0.5, Baseline: 0.4, RecBaseline: 0.75}))
 	require.NoError(t, d.FinishWatchmanBacktest(id, "done", "stop", "", 0.5, t0.Add(time.Hour)))
 	b, rows, err := d.LatestWatchmanBacktest(1)
 	require.NoError(t, err)
@@ -54,7 +55,8 @@ func TestWatchmanBacktest_AddRowAndFinish(t *testing.T) {
 	require.InDelta(t, 0.5, b.CostUSD, 1e-9)
 	require.NotNil(t, b.FinishedAt)
 	require.Len(t, rows, 1)
-	require.Equal(t, 25, rows[0].Agree)
+	require.Equal(t, WatchmanBacktestRow{Category: "tests", Total: 32, Agree: 25, Acceptable: 6, Bad: 1,
+		Status: "strong", CostUSD: 0.5, Baseline: 0.4, RecBaseline: 0.75}, rows[0])
 	// A finished row is not reopened or rewritten.
 	require.NoError(t, d.FinishWatchmanBacktest(id, "failed", "", "late", 9, t0.Add(2*time.Hour)))
 	b, _, err = d.LatestWatchmanBacktest(1)
