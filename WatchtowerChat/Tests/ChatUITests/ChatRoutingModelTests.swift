@@ -208,7 +208,8 @@ final class ChatRoutingModelTests: XCTestCase {
                        "the menu offers the current choices and the current provider")
     }
 
-    func testHealthErrorShowsLine() throws {
+    /// The drawn warning line: Desktop `ChatRoutingAccessoryViewTests.testHealthErrorShowsLine`.
+    func testHealthErrorKeepsThePillAndItsLines() throws {
         let rig = Rig()
         rig.routing.catalog = try catalog(status: nil, statusError: "Couldn't read provider availability")
         XCTAssertEqual(rig.routing.catalog?.statusError, "Couldn't read provider availability")
@@ -216,7 +217,9 @@ final class ChatRoutingModelTests: XCTestCase {
         XCTAssertTrue(rig.routing.showsPill, "the providers are still offered")
     }
 
-    func testRefreshOnChatChangeActivationAndTurnEnd() async {
+    /// The refresh hooks the accessory's triggers call (the triggers themselves: Desktop
+    /// `ChatRoutingAccessoryViewTests.testRefreshOnChatChangeActivationAndTurnEnd`).
+    func testRefreshHooksCallOnRefreshOnlyWhenSet() async {
         let rig = Rig(refresh: true)
         await rig.routing.conversationChanged()
         XCTAssertEqual(rig.refreshes, 1)
@@ -239,5 +242,60 @@ final class ChatRoutingModelTests: XCTestCase {
         rig.show(9)
         rig.composer.newChatChoices = ChatNewChatChoices(projects: [ChatList.Project(id: 7, name: "acme")])
         XCTAssertEqual(rig.composer.projectChip, ChatComposerChip(label: "No project", editable: false))
+    }
+
+    /// I1: the pill's automatic entry on a saved automatic chat stuck on the reserve clears the stickiness, as main's
+    /// pill did (the card's same `use_preferred`); on a chat with no actual provider, or a pinned one, it only sets
+    /// the next turn's routing.
+    func testAutomaticPickOnAStickyChatClearsTheReserve() async throws {
+        let rig = Rig()
+        rig.routing.catalog = try catalog()
+        rig.show(7, actual: "codex", reason: "quota_exhausted")
+        rig.routing.pick(try XCTUnwrap(rig.routing.menu.first?.items.first))
+        await rig.routing.writesSettled()
+        XCTAssertEqual(rig.client.ops, [.manage(conversationID: 7, op: .usePreferred, title: nil, projectID: nil)])
+        XCTAssertEqual(rig.composer.routing, ChatRouting(mode: "auto"))
+
+        let fresh = Rig()
+        fresh.routing.catalog = try catalog()
+        fresh.show(8)
+        fresh.routing.selectAutomatic()
+        await fresh.routing.writesSettled()
+        XCTAssertTrue(fresh.client.ops.isEmpty, "no actual provider: nothing to clear")
+
+        let pinned = Rig()
+        pinned.routing.catalog = try catalog()
+        pinned.show(9, routing: .init(mode: "pinned", provider: "claude"), actual: "claude")
+        pinned.routing.selectAutomatic()
+        await pinned.routing.writesSettled()
+        XCTAssertTrue(pinned.client.ops.isEmpty, "a pinned chat turns automatic with its next turn's routing")
+        XCTAssertEqual(pinned.composer.routing, ChatRouting(mode: "auto"))
+    }
+
+    /// I2 (main's rule): the actual provider's row only while an automatic chat runs on the preferred provider's
+    /// reserve; a pick moves the row at once.
+    func testCapabilitiesFollowThePickUnlessAutomaticOnTheReserve() throws {
+        let rig = Rig()
+        rig.routing.catalog = try catalog()
+        rig.show(7, actual: "codex", reason: "quota_exhausted")
+        XCTAssertEqual(rig.routing.capabilities?.pdfs, false, "automatic on the reserve: the reserve's row")
+        rig.routing.selectProvider("claude")
+        XCTAssertEqual(rig.routing.capabilities?.pdfs, true, "Only Claude picked on an auto chat sitting on Codex")
+        XCTAssertNil(rig.routing.presentation?.missingCapabilities)
+
+        let pinned = Rig()
+        pinned.routing.catalog = try catalog()
+        pinned.show(8, routing: .init(mode: "pinned", provider: "claude"), actual: "claude")
+        XCTAssertEqual(pinned.routing.capabilities?.pdfs, true)
+        pinned.routing.selectProvider("codex")
+        XCTAssertEqual(pinned.routing.capabilities?.pdfs, false, "Only Codex picked on a pinned-Claude chat")
+        XCTAssertEqual(pinned.routing.capabilities?.pdfUnavailableReason, "PDFs need a provider that reads them.")
+
+        let off = Rig()
+        off.routing.catalog = try catalog(status: """
+            {"preferred_provider":"claude","enabled":false,"revision":"r","providers":[]}
+            """)
+        off.show(9, actual: "codex", reason: "quota_exhausted")
+        XCTAssertEqual(off.routing.capabilities?.pdfs, true, "fallback off: a historical reserve does not gate")
     }
 }

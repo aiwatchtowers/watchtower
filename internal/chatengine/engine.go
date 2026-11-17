@@ -478,8 +478,13 @@ func (e *Engine) usePreferred(ctx context.Context, conv int64) error {
 	}
 	e.mu.Lock()
 	for _, s := range e.sessions {
-		if s.conv == conv && s.turn == nil && !s.closing && !s.dropped && !s.retire {
+		if s.conv == conv && s.turn == nil && !s.closing && !s.dropped {
 			s.retire = true
+			// Its reported route is the old one: the feed shows the row now.
+			s.readyLive = nil
+			if s.phase == phasePending {
+				s.dropped = true // a warm session not launched yet never launches
+			}
 			s.poke()
 		}
 	}

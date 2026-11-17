@@ -131,6 +131,27 @@ final class ChatViewModelShellTests: XCTestCase {
         XCTAssertFalse(vm.isOnLanding)
     }
 
+    /// The Mac behaves as on main (#1822 T17 fix round, I1 and I2): on a chat stuck on the reserve, "Preferred +
+    /// reserve · Auto model" clears the stickiness (`chat_manage use_preferred`), and the attach gating follows a pick
+    /// at once (Only Claude on an automatic chat sitting on Codex takes PDFs again).
+    func testTheAutoPickClearsAStickyReserveAndThePickMovesTheAttachGating() async throws {
+        ProviderCatalogFixture.seedShared()
+        await vm.refreshRoutingStatus()
+        vm.select(conversationID: 4)
+        vm.conversation.store.apply(.snapshot(ChatFeed(
+            conversation: ChatFeed.Conversation(id: 4, title: "Plan", actualProvider: "codex", actualModel: "gpt-x",
+                                                routingReason: "quota_exhausted"),
+            messages: [ChatFeed.Message(id: 1, role: "user", text: "Hi", createdAt: Date())]
+        )))
+        vm.conversation.reachability = .connected
+        XCTAssertEqual(vm.pdfUnavailableReason, "PDFs need a provider that reads them.", "on the reserve: its row")
+        vm.routing.selectProvider("claude")
+        XCTAssertNil(vm.pdfUnavailableReason, "Only Claude picked: Claude's row")
+        vm.routing.pick(try XCTUnwrap(vm.routing.menu.first?.items.first))
+        await vm.routing.writesSettled()
+        XCTAssertTrue(client.ops.contains(.manage(conversationID: 4, op: .usePreferred, title: nil, projectID: nil)))
+    }
+
     /// The picked mentions still in the text and the `/` skill go in the turn's compose.
     func testPickedMentionsAndSkillRideAlong() async throws {
         vm.select(conversationID: 4)

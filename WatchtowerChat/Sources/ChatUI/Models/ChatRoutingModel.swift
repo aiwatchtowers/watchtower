@@ -15,7 +15,13 @@ public struct ChatRoutingMenuItem: Equatable, Sendable, Identifiable {
 
     public let label: String
     public let pick: Pick
-    public var id: String { label }
+    public var id: String {
+        switch pick {
+        case .automatic: "automatic"
+        case .provider(let id): "provider:" + id
+        case .model(let model): "model:" + model
+        }
+    }
 
     public init(label: String, pick: Pick) {
         self.label = label
@@ -150,10 +156,16 @@ public final class ChatRoutingModel {
 
     /// The capability row of the provider the chat runs (or would run) on; nil when the catalog's rows are not the
     /// transport table's.
+    /// main's rule: the actual provider's row only while an automatic chat (fallback not off) runs on the preferred
+    /// provider's reserve; otherwise the row of the provider the next turn asks for (the pick, the pin or the
+    /// preferred), so a pick moves the attach gating and the capability line at once.
     public var capabilities: ChatProviderCaps? {
         guard let catalog, catalog.capabilitiesKnown else { return nil }
+        let pick = current
         let actual = savedConversation?.actualProvider ?? ""
-        return catalog.provider(actual.isEmpty ? provider : actual)?.caps
+        let onReserve = pick.automatic && catalog.status?.enabled != false && !actual.isEmpty
+            && actual == catalog.provider(preferredProvider)?.reservePeer
+        return catalog.provider(onReserve ? actual : pick.provider)?.caps
     }
 
     /// R5–R8: the actual line, what the provider lacks, the fallback card and the claude.ai-tools notice.
@@ -186,10 +198,22 @@ public final class ChatRoutingModel {
         }
     }
 
+    /// The automatic choice. On a saved automatic chat stuck on another provider (a sticky reserve) it also clears
+    /// that stickiness as main's pill did: the same `chat_manage use_preferred` as the card's **Use preferred**
+    /// (`writesSettled()` awaits it). A turn's `auto` request alone never clears it, or a chat would never stay put.
     public func selectAutomatic() {
         guard !isBusy else { return }
         set(.automatic)
+        guard isReachable, let id = composer.conversation.conversationID, let saved = savedConversation,
+              saved.routing.mode != "pinned", !saved.actualProvider.isEmpty else { return }
+        clearing = Task { await sendUsePreferred(id) }
     }
+
+    /// The `use_preferred` an automatic pick started, if any.
+    @ObservationIgnored private var clearing: Task<Void, Never>?
+
+    /// Waits for the write an automatic pick started (tests and the shots).
+    public func writesSettled() async { await clearing?.value }
 
     public func selectProvider(_ id: String) {
         guard !isBusy else { return }
@@ -216,6 +240,11 @@ public final class ChatRoutingModel {
             selectAutomatic()
             return
         }
+        await sendUsePreferred(id)
+    }
+
+    private func sendUsePreferred(_ id: Int64) async {
+        let composer = composer
         do {
             switch try await client.send(.manage(conversationID: id, op: .usePreferred, title: nil, projectID: nil)) {
             case .applied:
@@ -260,7 +289,8 @@ public final class ChatRoutingModel {
             ChatRoutingMenuItem(label: ProviderFallbackPreview.pinnedChoice(provider: provider.name), pick: .provider(provider.id))
         }))
         sections.append(ChatRoutingMenuSection(title: "Model", items: [ChatRoutingMenuItem(label: autoModel, pick: .model(""))]
-            + models.map { ChatRoutingMenuItem(label: $0, pick: .model($0)) }))
+            + models.reduce(into: [String]()) { if !$1.isEmpty, !$0.contains($1) { $0.append($1) } }
+                .map { ChatRoutingMenuItem(label: $0, pick: .model($0)) }))
         return sections
     }
 }

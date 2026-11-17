@@ -95,4 +95,15 @@ final class ChatRoutingPhoneTests: XCTestCase {
         let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as? [String: Any])
         XCTAssertTrue(try XCTUnwrap(json["chat_manage_ops"] as? [String]).contains(ChatManageOp.usePreferred.rawValue))
     }
+
+    /// I1 on the phone: "Preferred + reserve · Auto model" on a chat stuck on the reserve clears it through the hub.
+    func testAutoPickOnAStickyChatSendsUsePreferred() async throws {
+        let center = ChatFixture.center(recorder, sleeper: sleeper)
+        center.apply(ChatsSnapshot(list: ChatList(conversations: [], models: models, routing: try routing())))
+        let (composer, pill) = screen(center)
+        pill.pick(try XCTUnwrap(pill.menu.first?.items.first))
+        try await poll({ (try? self.recorder.params(ChatManageParams.self).count) == 1 }, "chat_manage sent")
+        XCTAssertEqual(try recorder.params(ChatManageParams.self).first?.op, .usePreferred)
+        XCTAssertEqual(composer.routing, ChatRouting(mode: "auto"))
+    }
 }

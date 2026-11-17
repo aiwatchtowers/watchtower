@@ -32,5 +32,9 @@ struct MainChatComposer: View {
         .onChange(of: chatVM.composer.draft) { old, new in
             if old.isEmpty, !new.isEmpty { Task { await chatVM.draftStarted() } }
         }
+        // `ai models` read after the chat opened: the pill gets its models, pair and capability rows at once.
+        .onReceive(NotificationCenter.default.publisher(for: AIModelCatalog.didLoadNotification, object: AIModelCatalog.shared)) { _ in
+            Task { await chatVM.refreshRoutingStatus() }
+        }
     }
 }

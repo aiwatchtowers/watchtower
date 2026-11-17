@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/chat"
 	"watchtower/internal/chatstore"
 	"watchtower/internal/config"
+	"watchtower/internal/db"
 	"watchtower/internal/policy/policytest"
 	"watchtower/internal/providerhealth"
 	"watchtower/internal/providerrouting"
@@ -94,7 +95,7 @@ func TestChatengine_FeedCarriesRoutingReason(t *testing.T) {
 // same way.
 func TestChatengine_UsePreferredClearsStickyAndRetiresIdleSession(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		g := newRig(t, fakeOpts{})
+		g := newRig(t, fakeOpts{ignoreClose: true}) // the retiring process lingers, as a real one may
 		c := newConversation(t, g.d)
 		g.send(t, c, "one", nil)
 		synctest.Wait()
@@ -102,13 +103,25 @@ func TestChatengine_UsePreferredClearsStickyAndRetiresIdleSession(t *testing.T) 
 		idle := procOf(t, g, c)
 		require.Len(t, idle, 1)
 		require.False(t, idle[0].isExited(), "the idle session is warm")
+		// The idle session itself reports the reserve (the live overlay), not only the row.
+		idle[0].emit(chat.Event{Type: chat.EventSessionReady, Provider: "codex", Model: "gpt-x",
+			RoutingMode: "preferred_reserve", Reason: "quota_exhausted"})
+		synctest.Wait()
+		before, err := g.r.Feed(context.Background(), c, 0)
+		require.NoError(t, err)
+		require.Equal(t, "quota_exhausted", before.Conversation.RoutingReason, "the live reserve shows before")
 		sub := g.r.Subscribe(Target{Conversation: c}, Client{Kind: "mac"})
 		defer sub.Close()
 		synctest.Wait()
 		drain(sub)
 
 		require.NoError(t, g.r.Manage(context.Background(), ManageRequest{Conversation: c, Op: ManageUsePreferred}))
-		time.Sleep(time.Second)
+		// At once, before the retiring session exits: its old route no longer overlays the feed.
+		after, err := g.r.Feed(context.Background(), c, 0)
+		require.NoError(t, err)
+		assert.Empty(t, after.Conversation.RoutingReason)
+		assert.Empty(t, after.Conversation.ActualProvider)
+		time.Sleep(time.Minute)
 		synctest.Wait()
 		assert.Equal(t, routingRow{Mode: "preferred_reserve", ProviderNull: true, ModelNull: true}, readRouting(t, g, c))
 		assert.True(t, idle[0].isExited(), "the idle session is retired")
@@ -126,10 +139,11 @@ func TestChatengine_UsePreferredClearsStickyAndRetiresIdleSession(t *testing.T) 
 		pinned := newConversation(t, g.d)
 		g.send(t, pinned, "one", &chatstore.Routing{Provider: "codex", Model: "gpt-x"})
 		synctest.Wait()
-		_, err := g.d.Exec(`UPDATE chat_conversations SET actual_provider = 'codex', actual_model = 'gpt-x' WHERE id = ?`, pinned)
+		_, err = g.d.Exec(`UPDATE chat_conversations SET actual_provider = 'codex', actual_model = 'gpt-x' WHERE id = ?`, pinned)
 		require.NoError(t, err)
 		require.Equal(t, "pinned", readRouting(t, g, pinned).Mode)
 		require.NoError(t, g.r.Manage(context.Background(), ManageRequest{Conversation: pinned, Op: ManageUsePreferred}))
+		time.Sleep(time.Minute)
 		synctest.Wait()
 		assert.Equal(t, routingRow{Mode: "preferred_reserve", ProviderNull: true, ModelNull: true}, readRouting(t, g, pinned))
 		assert.True(t, procOf(t, g, pinned)[0].isExited())
@@ -155,6 +169,31 @@ func TestChatengine_UsePreferredRefusedWhileTurnRuns(t *testing.T) {
 		assert.NotContains(t, p.log(), "close")
 		p.finish()
 		synctest.Wait()
+	})
+}
+
+// TestChatengine_UsePreferredRefusedWhileALeaseIsLive: an older app's turn
+// holds chat_turn_leases (the one release that keeps it): Use preferred is
+// refused busy and the row is unchanged; a stale lease does not block it.
+func TestChatengine_UsePreferredRefusedWhileALeaseIsLive(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		g := newRig(t, fakeOpts{})
+		c := newConversation(t, g.d)
+		stickOnReserve(t, g, c)
+		now := time.Now().UnixMilli()
+		_, err := g.d.Exec(`INSERT INTO chat_turn_leases (conversation_id, owner, owner_id, turn_id, started_at_ms, heartbeat_at_ms)
+			VALUES (?, 'desktop', 'app-1', 'T', ?, ?)`, c, now, now)
+		require.NoError(t, err)
+		before := readRouting(t, g, c)
+		err = g.r.Manage(context.Background(), ManageRequest{Conversation: c, Op: ManageUsePreferred})
+		require.ErrorIs(t, err, chatstore.ErrBusy)
+		assert.Equal(t, before, readRouting(t, g, c))
+
+		_, err = g.d.Exec(`UPDATE chat_turn_leases SET heartbeat_at_ms = ? WHERE conversation_id = ?`, now-2*db.ChatLeaseStaleMS, c)
+		require.NoError(t, err)
+		require.NoError(t, g.r.Manage(context.Background(), ManageRequest{Conversation: c, Op: ManageUsePreferred}))
+		assert.Equal(t, "preferred_reserve", readRouting(t, g, c).Mode)
+		assert.Empty(t, readRouting(t, g, c).Reason)
 	})
 }
 
