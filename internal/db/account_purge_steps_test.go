@@ -480,6 +480,19 @@ func TestStartAccountPurge_ZeroLeaseNeedsRemovedStill(t *testing.T) {
 // form names the account's tables, after a complete drain it is empty for
 // every source, and another account's rows never count.
 func TestPurgeLeft_CountsWhatTheStepsMatch(t *testing.T) {
+	ctx := context.Background()
+	left := func(d *DB, source string, id int64) map[string]int64 {
+		t.Helper()
+		steps, err := d.PurgeSteps(source, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := d.PurgeLeft(ctx, steps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
 	d := OpenTestDB(t)
 	seedSlackIsolation(t, d)
 	mustExecAll(t, d,
@@ -489,12 +502,8 @@ func TestPurgeLeft_CountsWhatTheStepsMatch(t *testing.T) {
 			('ev-gone', 'cal1', '2026-01-02T10:00:00Z', '2026-01-02T11:00:00Z')`,
 		`INSERT INTO meeting_transcripts (title, transcript_text, event_id) VALUES ('standup', 'text', 'ev-kept')`,
 	)
-	left, err := d.PurgeLeft("slack", 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if left["messages"] != 2 || left["users"] != 1 {
-		t.Fatalf("before: %v; want messages=2, users=1", left)
+	if got := left(d, "slack", 1); got["messages"] != 2 || got["users"] != 1 {
+		t.Fatalf("before: %v; want messages=2, users=1", got)
 	}
 	trackers := OpenTestDB(t)
 	seedTrackerIsolation(t, trackers)
@@ -502,16 +511,51 @@ func TestPurgeLeft_CountsWhatTheStepsMatch(t *testing.T) {
 		d      *DB
 		source string
 	}{{d, "slack"}, {d, "google"}, {trackers, "jira"}, {trackers, "linear"}} {
+		// The list the purge ran, read before its deletes (stream digest
+		// and Confluence space ids included).
+		steps, err := c.d.PurgeSteps(c.source, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
 		drainPurge(t, c.d, c.source, 1, 500)
-		left, err := c.d.PurgeLeft(c.source, 1)
-		if err != nil || len(left) != 0 {
-			t.Fatalf("%s after drain: %v %v; want nothing left", c.source, left, err)
+		got, err := c.d.PurgeLeft(ctx, steps)
+		if err != nil || len(got) != 0 {
+			t.Fatalf("%s after drain: %v %v; want nothing left", c.source, got, err)
 		}
 	}
-	if left, err := d.PurgeLeft("slack", 10); err != nil || left["messages"] != 2 {
-		t.Fatalf("slack account 10: %v %v; want its messages counted", left, err)
+	if got := left(d, "slack", 10); got["messages"] != 2 {
+		t.Fatalf("slack account 10: %v; want its messages counted", got)
 	}
-	if left, err := trackers.PurgeLeft("jira", 10); err != nil || left["jira_issues"] != 2 {
-		t.Fatalf("jira account 10: %v %v; want its issues counted", left, err)
+	if got := left(trackers, "jira", 10); got["jira_issues"] != 2 {
+		t.Fatalf("jira account 10: %v; want its issues counted", got)
+	}
+	// A cancelled context stops the count.
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	steps, err := d.PurgeSteps("slack", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.PurgeLeft(cancelled, steps); err == nil {
+		t.Fatal("a cancelled context must stop the count")
+	}
+}
+
+// A zero-lease row scheduled before the account's latest confirmed access
+// (added back and removed again) does not start (#1769 fix round 1, F1).
+func TestStartAccountPurge_ZeroLeaseStaleAfterReadd(t *testing.T) {
+	d := OpenTestDB(t)
+	now := time.Now().UTC()
+	mustExecAll(t, d,
+		`INSERT INTO slack_accounts (id, team_id, status, access_ok_at) VALUES (1, 'T1', 'removed', '`+now.Add(-time.Hour).Format(time.RFC3339)+`')`,
+		`INSERT INTO account_purges (id, source, account_id, reason, due_at, scheduled_at) VALUES (1, 'slack', 1, 'lease', '2026-01-01T00:00:00Z', '`+
+			now.Add(-2*time.Hour).Format(time.RFC3339)+`')`,
+	)
+	if got, err := d.StartAccountPurge(1, now, true); err != nil || got {
+		t.Fatalf("start of a row older than the access = %v, %v; want false", got, err)
+	}
+	mustExecAll(t, d, `UPDATE account_purges SET scheduled_at = '`+now.Add(-30*time.Minute).Format(time.RFC3339)+`'`)
+	if got, err := d.StartAccountPurge(1, now, true); err != nil || !got {
+		t.Fatalf("start of a row newer than the access = %v, %v; want true", got, err)
 	}
 }

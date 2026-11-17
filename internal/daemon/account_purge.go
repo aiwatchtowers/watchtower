@@ -92,7 +92,9 @@ func (d *Daemon) applyPurgeSchedule(rules func(db.PurgeAccount) purge.Rule, leas
 }
 
 // refreshPurgeHold rebuilds the set of accounts the sync phases skip: status
-// purged, or a purge running (a failed purge releases its account). A failed
+// purged, a purge running, or a purge that failed its verify count with rows
+// left (purge.VerifyHeld, until access is confirmed again); a purge failed by
+// its chunks releases its account. A failed
 // read keeps the previous set.
 func (d *Daemon) refreshPurgeHold() {
 	if d.db == nil {
@@ -103,18 +105,19 @@ func (d *Daemon) refreshPurgeHold() {
 		d.logger.Printf("account purge: reading accounts: %v", err)
 		return
 	}
-	open, err := d.db.ListAccountPurges(true)
+	ledger, err := d.db.ListAccountPurges(false)
 	if err != nil {
 		d.logger.Printf("account purge: reading ledger: %v", err)
 		return
 	}
+	verifyHeld := purge.VerifyHeld(accounts, ledger)
 	hold := map[purgeKey]bool{}
 	for _, a := range accounts {
-		if a.Status == "purged" {
+		if a.Status == "purged" || verifyHeld(a.Source, a.ID) {
 			hold[purgeKey{a.Source, a.ID}] = true
 		}
 	}
-	for _, p := range open {
+	for _, p := range ledger {
 		if p.State == "running" {
 			hold[purgeKey{p.Source, p.AccountID}] = true
 		}

@@ -493,3 +493,94 @@ func TestPlan_LongOfflineRevokedGetsFullNotice(t *testing.T) {
 		}
 	}
 }
+
+// TestPlan_ReaddAndRemoveAgainReschedules (#1769 fix round 1, F1): a removed
+// Slack account added back and removed again before the next pass keeps its
+// old row, but access confirmed after that row was scheduled invalidates it:
+// the row is cancelled (never due at its old date) and the next pass gives a
+// fresh 72 h notice.
+func TestPlan_ReaddAndRemoveAgainReschedules(t *testing.T) {
+	scheduledAt := t0.Add(-time.Hour)
+	removedAgain := []db.PurgeAccount{acct("slack", 1, "removed", t0)} // re-added (access stamped) at t0, removed again
+	open := []db.AccountPurge{row(4, "slack", 1, ReasonLease, "scheduled", scheduledAt.Add(Grace))}
+	open[0].ScheduledAt = ts(scheduledAt)
+	for _, now := range []time.Time{t0, scheduledAt.Add(Grace)} {
+		got := Plan(removedAgain, open, setting(true), now)
+		if len(got.Cancel) != 1 || got.Cancel[0] != 4 || len(got.Due) != 0 {
+			t.Fatalf("at %s: the stale row must be cancelled, never due, got %+v", now, got)
+		}
+	}
+	got := Plan(removedAgain, nil, setting(true), t0.Add(time.Hour))
+	if len(got.Schedule) != 1 || !got.Schedule[0].DueAt.Equal(t0.Add(time.Hour+Grace)) {
+		t.Fatalf("the next pass gives a fresh notice, got %+v", got.Schedule)
+	}
+	// Access older than the row's scheduling keeps it.
+	removed := []db.PurgeAccount{acct("slack", 1, "removed", scheduledAt.Add(-time.Minute))}
+	if got := Plan(removed, open, setting(true), scheduledAt.Add(Grace)); len(got.Due) != 1 || len(got.Cancel) != 0 {
+		t.Fatalf("an unchanged removed account's row runs, got %+v", got)
+	}
+}
+
+// TestPurgeRun_VerifyFailureHoldsWithoutLoop (#1769 fix round 1, F4, spec §9):
+// an account whose purge failed its verify count stays held — never
+// scheduled again on its own, so a leftover that cannot be deleted gives no
+// new notice every 72 h — until access is confirmed after the failure (a
+// Re-login or "add again"); a chunk failure keeps today's retry.
+func TestPurgeRun_VerifyFailureHoldsWithoutLoop(t *testing.T) {
+	failedAt := t0.Add(-time.Hour)
+	revoked := acct("slack", 1, "revoked", t0.Add(-48*time.Hour))
+	revoked.RevokedAt = ts(t0.Add(-24 * time.Hour))
+	rows := []db.AccountPurge{
+		{ID: 1, Source: "slack", AccountID: 1, Reason: ReasonRevoked, State: "failed", FinishedAt: ts(t0.Add(-200 * time.Hour)), Error: "boom"},
+		{ID: 2, Source: "slack", AccountID: 1, Reason: ReasonRevoked, State: "failed", FinishedAt: ts(failedAt), Error: "left: messages=1"},
+	}
+	held := VerifyHeld([]db.PurgeAccount{revoked}, rows)
+	if !held("slack", 1) || held("slack", 2) {
+		t.Fatal("the verify-failed account is held, no other")
+	}
+	rules := holdRules(setting(true), held)
+	for _, now := range []time.Time{t0, t0.Add(Grace), t0.Add(30 * 24 * time.Hour)} {
+		if got := Plan([]db.PurgeAccount{revoked}, nil, rules, now); len(got.Schedule) != 0 {
+			t.Fatalf("at %s: a held account is never rescheduled, got %+v", now, got.Schedule)
+		}
+	}
+	// A Re-login after the failure releases it.
+	back := revoked
+	back.AccessOKAt = ts(t0)
+	if VerifyHeld([]db.PurgeAccount{back}, rows)("slack", 1) {
+		t.Fatal("access after the failure releases the hold")
+	}
+	// A chunk failure is not a verify failure: no hold.
+	chunk := []db.AccountPurge{rows[0]}
+	if VerifyHeld([]db.PurgeAccount{revoked}, chunk)("slack", 1) {
+		t.Fatal("a chunk failure keeps the retry")
+	}
+	// A newer row (scheduled after a release) replaces the failed one.
+	newer := append(rows, db.AccountPurge{ID: 3, Source: "slack", AccountID: 1, Reason: ReasonRevoked, State: "scheduled"})
+	if VerifyHeld([]db.PurgeAccount{revoked}, newer)("slack", 1) {
+		t.Fatal("only the newest row decides")
+	}
+}
+
+// Apply reads the whole ledger: a verify-failed account is not scheduled
+// again by the daemon's passes.
+func TestApply_VerifyFailedAccountNotRescheduled(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	if _, err := d.Exec(`INSERT INTO slack_accounts (id, team_id, status, revoked_at) VALUES (1, 'T1', 'revoked', ?)`, ts(t0)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`INSERT INTO account_purges (source, account_id, reason, due_at, state, finished_at, error)
+		VALUES ('slack', 1, 'revoked', ?, 'failed', ?, 'left: messages=1')`, ts(t0), ts(t0)); err != nil {
+		t.Fatal(err)
+	}
+	for _, now := range []time.Time{t0, t0.Add(10 * Grace)} {
+		got, err := Apply(d, setting(true), true, now)
+		if err != nil || len(got.Schedule) != 0 {
+			t.Fatalf("at %s: Apply = %+v, %v; want nothing scheduled", now, got, err)
+		}
+	}
+}

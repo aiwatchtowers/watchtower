@@ -384,16 +384,14 @@ func (db *DB) RunPurgeStep(ctx context.Context, step PurgeStep, limit int) (int6
 	return n, nil
 }
 
-// PurgeLeft counts, per driving table, the rows the account's steps still
-// match (#1769, A4): each step's count form, in one read-only transaction.
-// Only tables with rows left are in the map; an empty map is a complete
+// PurgeLeft counts, per driving table, the rows steps still match (#1769,
+// A4): each step's count form, in one read-only transaction under ctx. steps
+// is the list the purge ran, read before its deletes, so the ids its
+// knowledge steps carry (stream digests, Confluence spaces) are the original
+// ones. Only tables with rows left are in the map; an empty map is a complete
 // purge.
-func (db *DB) PurgeLeft(source string, accountID int64) (map[string]int64, error) {
-	steps, err := db.PurgeSteps(source, accountID)
-	if err != nil {
-		return nil, err
-	}
-	tx, err := db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+func (db *DB) PurgeLeft(ctx context.Context, steps []PurgeStep) (map[string]int64, error) {
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, fmt.Errorf("purge verify: %w", err)
 	}
@@ -401,7 +399,7 @@ func (db *DB) PurgeLeft(source string, accountID int64) (map[string]int64, error
 	left := map[string]int64{}
 	for _, step := range steps {
 		var n int64
-		if err := tx.QueryRow(step.Count, step.Args...).Scan(&n); err != nil {
+		if err := tx.QueryRowContext(ctx, step.Count, step.Args...).Scan(&n); err != nil {
 			return nil, fmt.Errorf("purge verify %s: %w", step.Name, err)
 		}
 		if n > 0 {
@@ -428,8 +426,9 @@ UNION ALL SELECT 'linear', id, status, access_ok_at, revoked_at FROM linear_acco
 // leaseCutoff (purge.Cutoff: now − Lease, or now for a removed Slack
 // account's zero lease) in its lease scope — its own for a removed account,
 // every live account of its source otherwise (purge.Plan's deadlines) — and,
-// with requireRemoved, the account still removed (an "add again" after the
-// re-plan wins). The clocks are fixed-width RFC 3339 UTC, so text order is time
+// with requireRemoved, the account still removed and no access confirmed
+// after the row was scheduled (an "add again" after the re-plan wins, and so
+// does an add-and-remove-again since the scheduling). The clocks are fixed-width RFC 3339 UTC, so text order is time
 // order. A row cancelled since the caller read it, already running, or whose
 // account no longer qualifies is left as it is (false).
 func (db *DB) StartAccountPurge(id int64, leaseCutoff time.Time, requireRemoved bool) (bool, error) {
@@ -439,7 +438,8 @@ func (db *DB) StartAccountPurge(id int64, leaseCutoff time.Time, requireRemoved 
 			WHERE a.source = p.source AND a.id = p.account_id AND (
 				(p.reason = 'revoked' AND a.status = 'revoked'
 					AND (a.access_ok_at = '' OR a.revoked_at = '' OR a.access_ok_at <= a.revoked_at))
-				OR (p.reason = 'lease' AND a.status != 'purged' AND (NOT ?3 OR a.status = 'removed') AND NOT EXISTS (
+				OR (p.reason = 'lease' AND a.status != 'purged'
+					AND (NOT ?3 OR (a.status = 'removed' AND a.access_ok_at <= p.scheduled_at)) AND NOT EXISTS (
 					SELECT 1 FROM (`+purgeAccountFactsSQL+`) b
 					WHERE b.source = a.source AND b.access_ok_at > ?2
 						AND CASE WHEN a.status = 'removed' THEN b.id = a.id

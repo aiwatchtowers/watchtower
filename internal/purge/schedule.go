@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"watchtower/internal/db"
@@ -120,7 +121,7 @@ func Plan(accounts []db.PurgeAccount, open []db.AccountPurge, rules func(db.Purg
 		case ReasonLease:
 			deadline, ok := deadlines[k]
 			switch {
-			case !ok || deadline.After(due):
+			case !ok || deadline.After(due) || (zeroLease(a, rules(a)) && accessSinceScheduled(a, p)):
 				out.Cancel = append(out.Cancel, p.ID)
 			case !now.Before(due) && !now.Before(deadline):
 				out.Due = append(out.Due, p)
@@ -216,6 +217,65 @@ func leaseDeadlines(accounts []db.PurgeAccount, rules func(db.PurgeAccount) Rule
 	return out
 }
 
+// accessSinceScheduled reports whether the account confirmed access after
+// the row was scheduled (#1769 fix round 1): a removed Slack account added
+// back and removed again before the next pass keeps its old zero-lease row,
+// whose due date then gives less than the full notice — the row is
+// cancelled and the next pass schedules a fresh one. An empty or unreadable
+// time on either side is no evidence: false.
+func accessSinceScheduled(a db.PurgeAccount, p db.AccountPurge) bool {
+	okAt, ok := parseTime(a.AccessOKAt)
+	if !ok {
+		return false
+	}
+	scheduledAt, ok := parseTime(p.ScheduledAt)
+	return ok && okAt.After(scheduledAt)
+}
+
+// VerifyHeld returns whether an account is held after a failed verify count
+// (#1769, spec §9 "the account stays held"): its newest ledger row is failed
+// with rows left (verifyLeftPrefix) and it has confirmed no access since
+// that row finished. Such an account is not scheduled again on its own — a
+// leftover the steps cannot delete would otherwise give a new notice every
+// 72 h forever — and the sync phases skip it; the failed row stays visible.
+// Access confirmed after the failure (a Re-login, or adding a removed
+// account back) releases it. A chunk failure (MaxChunkFailures) holds
+// nothing: its account is scheduled again with a new notice, as before.
+func VerifyHeld(accounts []db.PurgeAccount, rows []db.AccountPurge) func(source string, id int64) bool {
+	newest := map[accountKey]db.AccountPurge{}
+	for _, r := range rows {
+		k := accountKey{r.Source, r.AccountID}
+		if cur, ok := newest[k]; !ok || r.ID > cur.ID {
+			newest[k] = r
+		}
+	}
+	held := map[accountKey]bool{}
+	for _, a := range accounts {
+		k := accountKey{a.Source, a.ID}
+		r, ok := newest[k]
+		if !ok || r.State != "failed" || !strings.HasPrefix(r.Error, verifyLeftPrefix) {
+			continue
+		}
+		okAt, hasAccess := parseTime(a.AccessOKAt)
+		finishedAt, hasFinish := parseTime(r.FinishedAt)
+		if hasAccess && hasFinish && okAt.After(finishedAt) {
+			continue
+		}
+		held[k] = true
+	}
+	return func(source string, id int64) bool { return held[accountKey{source, id}] }
+}
+
+// holdRules is rules with every account held reports at RuleNone.
+func holdRules(rules func(db.PurgeAccount) Rule, held func(string, int64) bool) func(db.PurgeAccount) Rule {
+	return func(a db.PurgeAccount) Rule {
+		if held(a.Source, a.ID) {
+			return RuleNone
+		}
+		return rules(a)
+	}
+}
+
 // accessAfterRevocation reports whether the account's last confirmed access
 // is newer than its revocation. An empty or unreadable time on either side
 // is no proof: false.
@@ -241,7 +301,8 @@ func parseTime(s string) (time.Time, bool) {
 	return t, true
 }
 
-// Apply reads the accounts and the open ledger rows, plans with rules (built
+// Apply reads the accounts and the ledger, plans the open rows with rules —
+// an account VerifyHeld reports at RuleNone — (built
 // by the caller from Enabled and policy.SourceAllowed), and writes the
 // cancels and schedules (each its own short statement). leases says whether
 // lease rows may be scheduled: the daemon's start-of-cycle pass says no, so
@@ -255,11 +316,17 @@ func Apply(d *db.DB, rules func(db.PurgeAccount) Rule, leases bool, now time.Tim
 	if err != nil {
 		return Actions{}, err
 	}
-	open, err := d.ListAccountPurges(true)
+	ledger, err := d.ListAccountPurges(false)
 	if err != nil {
 		return Actions{}, err
 	}
-	plan := Plan(accounts, open, rules, now)
+	var open []db.AccountPurge
+	for _, p := range ledger {
+		if p.State == "scheduled" || p.State == "running" {
+			open = append(open, p)
+		}
+	}
+	plan := Plan(accounts, open, holdRules(rules, VerifyHeld(accounts, ledger)), now)
 	done := Actions{Due: plan.Due}
 	var errs []error
 	for _, id := range plan.Cancel {

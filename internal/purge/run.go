@@ -36,6 +36,10 @@ var afterSteps = func() {}
 // tests.
 var clock = time.Now
 
+// verifyLeftPrefix starts the error of a purge whose verify count found rows
+// left; VerifyHeld recognises such a row by it.
+const verifyLeftPrefix = "left: "
+
 // purgeLeft is the verify count (db.PurgeLeft); a seam for tests.
 var purgeLeft = (*db.DB).PurgeLeft
 
@@ -88,7 +92,7 @@ func Run(ctx context.Context, d *db.DB, workspaceDir string, p db.AccountPurge,
 		}
 	}
 	afterSteps()
-	if err := verify(d, p); err != nil {
+	if paused, err := verify(ctx, d, p, steps, deadline); paused || err != nil {
 		return false, err
 	}
 	back, err := d.PurgeAccessReturned(p.ID)
@@ -152,17 +156,29 @@ func start(d *db.DB, p db.AccountPurge, rules func(db.PurgeAccount) Rule, now ti
 	return nil
 }
 
-// verify counts what the account's steps still match after the last one
-// (PURGE-02, A4). A failed count is recorded like a failed chunk (retried
-// next cycle, MaxChunkFailures in a row end the row); rows left end the row
-// failed at once, error "left: <table>=<n>, …" in table order.
-func verify(d *db.DB, p db.AccountPurge) error {
-	left, err := purgeLeft(d, p.Source, p.AccountID)
+// verify counts what the steps the run executed still match after the last
+// one (PURGE-02, A4), under ctx and the run's budget: a shutdown or a spent
+// budget there is a pause (paused, nil error: the row stays running and
+// resumes next cycle). A failed count is recorded like a failed chunk
+// (retried next cycle, MaxChunkFailures in a row end the row); rows left end
+// the row failed at once, error verifyLeftPrefix + "<table>=<n>, …" in table
+// order, and the account stays held (VerifyHeld).
+func verify(ctx context.Context, d *db.DB, p db.AccountPurge, steps []db.PurgeStep, deadline time.Time) (paused bool, err error) {
+	remaining := deadline.Sub(clock())
+	if remaining <= 0 || ctx.Err() != nil {
+		return true, nil
+	}
+	countCtx, cancel := context.WithTimeout(ctx, remaining)
+	defer cancel()
+	left, err := purgeLeft(d, countCtx, steps)
 	if err != nil {
-		return fail(d, p.ID, err)
+		if countCtx.Err() != nil || !clock().Before(deadline) {
+			return true, nil
+		}
+		return false, fail(d, p.ID, err)
 	}
 	if len(left) == 0 {
-		return nil
+		return false, nil
 	}
 	tables := make([]string, 0, len(left))
 	for t := range left {
@@ -173,11 +189,11 @@ func verify(d *db.DB, p db.AccountPurge) error {
 	for i, t := range tables {
 		pairs[i] = fmt.Sprintf("%s=%d", t, left[t])
 	}
-	msg := "left: " + strings.Join(pairs, ", ")
+	msg := verifyLeftPrefix + strings.Join(pairs, ", ")
 	if _, err := d.FailAccountPurge(p.ID, msg, 1); err != nil {
-		return errors.Join(errors.New(msg), err)
+		return false, errors.Join(errors.New(msg), err)
 	}
-	return fmt.Errorf("purge %d failed: %s", p.ID, msg)
+	return false, fmt.Errorf("purge %d failed: %s", p.ID, msg)
 }
 
 // fail records err on the ledger row and returns it (joined with a failure
