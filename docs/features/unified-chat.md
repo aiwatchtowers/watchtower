@@ -1,0 +1,94 @@
+# Unified chat — one Go engine, one protocol, one chat UI for the Mac and the iPhone (2026-11-16, board #1822)
+
+Spec: `docs/superpowers/specs/2026-11-16-unified-chat-design.md` (approved, ask #1378; §14 overrides earlier sections). Plan: `docs/superpowers/plans/2026-11-16-unified-chat.md` (ask #1387). Contracts: CHAT-01/03/05 amended and CHAT-06 added in `docs/inventory/chat.md` (owner approval, ask #1371). Guide: `docs/guide/features/ai-chat.md`, `docs/guide/features/iphone-chat.md`. Supersedes parts of [iphone-chat.md](iphone-chat.md) (D1, D5, D6, D11, D13, D18) and [chat-redesign.md](chat-redesign.md) (the Swift turn path and pool).
+
+The main chat has one writer, the Go engine in the daemon. The Mac reaches it over `chat.sock`, the phone through the hub over the relay, and both draw a conversation with the same SwiftUI package. A turn started on one device streams live on the other with the normal Stop.
+
+## Architecture
+
+```
+Mac app: ChatUI -> SocketChatClient --chat.sock--> chatengine.Server -+
+iPhone:  ChatUI -> RelayChatClient --relay--> hub actions/slices -----+--> chatengine.Engine --> ai session (v2)
+                                                                       (one writer)  `--> chat_* rows
+```
+
+- **`internal/chatengine`** absorbs the hub's `chatrun` and wraps `internal/chatstore`: the pool, the runner, the per-conversation turn lock (an in-memory lock, so `busy` for a second turn), the live state of each running turn, the subscription fan-out and every operation. It imports no hub package. `platform.PeerUID` and the peer checks moved to `internal/platform`; `wire.Time` to `internal/wiretime`.
+- **The engine is the only writer** of the main chat's rows: `chat_conversations`, `chat_messages`, `chat_turn_steps` (not `chat_steps`), `chat_artifacts`, `chat_attachments`, `chat_projects`, `chat_project_sources`, `chat_knowledge_artifacts`, `chat_artifact_comments`, plus the chat-born `ideas` and `instruction_chat_lines` (prefixes). Exceptions: `ai session` writes the routing columns of `chat_conversations` itself (`SetChatRouting`/`SetChatActual`); `watchtower chat title` writes the title only (never over `title_source='user'`); embedded chats write their own rows (`context_type` not null) through `EmbeddedChatStore`; `chat_queued_drafts` stays a Desktop writer. The Swift write path is deleted; there is no fallback writer and no second feed builder.
+- **Own database handle (D20).** The engine opens one write connection and a small read-only pool, so a sync cycle's queries never block chat.
+- **Hub adapter.** `internal/hub/actions/handlers/chat_*.go` and `slices/sources/chat_*.go` call the in-process engine (`hub.Options.ChatEngine`); the feed source reads the engine's snapshot, with payload and fallback for every part (D21: the relay phone declares no kinds). The hub no longer watches `chat_*` tables (only `agent_actions`) and the push of a turn is the engine's `OnTurnEnd`.
+- **One pool.** At most 3 live `ai session` processes for the Mac and the phone together (`chatengine.MaxLive`), 10-minute idle TTL, a running turn never cut, the 4th waits. The hub's pool of 2 and the Desktop's pool are gone.
+- **Daemon wiring.** `cmd/sync.go` starts the engine after the database opens and before the hub, and stops it after the hub. `chat.sock` is served for the daemon's whole life, whatever the Mobile setting or MDM `MobileSync`.
+- **Swift packages.** `WatchtowerChat/` has `ChatWire` (Foundation only: models, operations, `ChatClient`, `ChatFeedStore`/`ChatListStore`) and `ChatUI` (SwiftUI; imports only SwiftUI/AppKit/UIKit/WebKit, `ChatWire`, `WatchtowerChatText` and the Kit's `WatchtowerDesign`; `make chat-test`). `WatchtowerKit` does not depend on `ChatWire` (that would be a package cycle): the chat models left the Kit, and the two Kit-only conformances live in the phone app. `ChatUI` draws controls through an injected `ChatUIStyle` (the Mac passes `DesignKitChatStyle`, the phone `PhoneChatStyle`); platform parts sit behind `#if os(macOS)`/`#if os(iOS)` in `Platform/`.
+- **Mac shell** (`WatchtowerCore/Services/Chat/SocketChatClient.swift`, `ChatSocketPaths.swift`, the window shell in `Views/Chat/`): the sidebar, inspector, project and artifact pages, ⌘K/⌘N and the ⌘/ help panel (which sends `screen_context`). **Phone shell** (`WatchtowerMobile/Sources/Features/Chats/`): the tab and its gate (`ChatsGateModel`), the offline copy and prefetch, `RelayChatClient`, push routing. Embedded chats, Workchat and the owner-ask drawer keep their own engines and draw through `ChatUI` with Mac style hooks (see [embedded-chat.md](embedded-chat.md), [session-chat-feed.md](session-chat-feed.md)).
+
+## chat.sock
+
+- Path `<workspace>/chat.sock`, 0600, folder 0700, one listener under `chat.sock.lock`. A path over darwin's `sun_path` falls back to one shorter rule that Go and Swift compute alike (`socket_paths.json`).
+- Newline-delimited JSON, request lines at most 2 MiB (attachments are not inline). **The server speaks first** (`{"event":"ready","protocol":1}`); a client byte before that is `forbidden` and the connection closes. The client's first request is `hello{protocol, client, part_kinds}` (the app says `mac`); the answer carries the protocol version and the op list. Each request has an `id`; the answer echoes it; pushed events have none. Errors: `busy`, `not_found`, `invalid`, `forbidden`, `closed`, `internal`.
+- **Only the signed app (D17).** The peer is verified by its audit token read at accept (`ownerconfirm.VerifyDesktopPeer`, with ownerconfirm's dev-build rule). The same-team `watchtower` CLI may send exactly `hello` and `chat_shutdown`; every other peer or op is `forbidden` and nothing is written. There is no approval op (D12): the Mac approves through `actions approve|reject` with owner-confirm, the phone through the hub's `chat_action_answer`.
+- **Backpressure.** 256 events per subscription queue; a subscriber that falls behind gets one `resync` and a fresh snapshot, so the end of a turn is never missed. At most 32 operations in flight per connection (one more is `busy`).
+- **Client reconnect.** The Mac client backs off from 100 ms, doubling to 2 s, and resubscribes. "Unavailable" shows after 10 s without a connection.
+
+### Operations
+
+`hello`, `chat_new`, `chat_turn`, `chat_cancel`, `subscribe`/`unsubscribe` (a list or a conversation, with `before_message_id` for an older page), `chat_page` (60 messages), `chat_search`, `chat_read`, `chat_branch_select`, `chat_manage`, `project_manage`, `artifact_manage`, `attach`, `entity_search`, `skills_list`, `chat_shutdown`, and the ones added during the build:
+
+- `chat_manage` ops: `pin`, `unpin`, `rename`, `delete`, `move`, plus `archive` (T8) and `discard` (T8 fix: deletes the chat only while it is an untouched draft with no message and no attachment).
+- `chat_warm` (T8: starts a conversation's session before its first turn so the first answer is not slower; it takes only a free slot, never one a turn needs) and `chat_sessions_retire` (T8: a claude.ai connector switch retires the warm sessions).
+- `attach_discard` (the composer's remove-chip), beside `attach`, which on the Mac is path-only (the app passes a path; a paste goes through a temp file; the engine validates and stores like `ChatAttachmentStore` did).
+- `chat_turn` carries `mode send|regenerate|edit|retry|continue`, `compose {skill, mentions, quotes}` (moved from Swift `ChatTurnComposer`; `compose_cases.json`), `screen_context` (prefixed to the provider text only, never stored), `artifact_comment_ids` (composed into the owner message and marked sent in the start transaction) and `client_key`. The same `compose` and `client_key` are accepted on the relay's `chat_turn` (T9 fix).
+- Relay peers of these ops: `chat_new`, `chat_turn`, `chat_cancel`, `chat_feed_request` (the subscription), `chat_page`, `chat_search`, `chat_read`, `chat_branch_select`, `chat_manage` (pin, unpin, rename, delete), `chat_attachment` (the sealed upload), `chat_action_answer`, and the two picker kinds `chat_entity_search` and `chat_skills_list` (idempotent, results in the `applied` echo; nudge `chat_list`). The phone refuses locally with `unsupported` what the relay does not carry: `continue`, `move`, `archive`, `discard`, `warm`, `sessions retire`, project and artifact management, Mac file attach and `shutdown`.
+- CLI side: `watchtower chat shutdown [--socket-timeout D]` (default 15 s for the `chat.sock` step; the app passes `1s` so its direct reap of the session sockets still runs inside its 12 s watchdog).
+
+### Repeated sends
+
+`chat_turn.client_key` is stored on the owner row (`chat_messages.client_key`, unique per conversation, migration 00194). A repeated key is answered with the turn it already started, also after a daemon restart, so a send whose echo was lost to a dropped socket is neither lost nor duplicated. A regenerate stores the key on the new reply row (the owner row is reused); a regenerate retried after a lost echo is matched by that row's key, with the same effect. Clients keep the text in the composer until the engine's echo is `applied`.
+
+## Parts and fallbacks
+
+A feed message carries `parts[]` beside the old flat fields (`text`, `steps`, `artifacts`, ...) for one release. Part kinds in v1, exactly: `text`, `steps`, `sources`, `artifact`, `approval`, `question`, `error`, `remember_mark`, `knowledge_mark`, `published_link`, `attachment`, `routing_note`.
+
+- The engine builds every part that does not live in the answer text (`chatengine/parts.go`, one builder). `artifact` and `question` are split out of the `text` part on the client by `WatchtowerChatText` only (D14: `ArtifactParser`, `ChatQuestionParser`); the text itself is their fallback, and Go keeps twins only for fallbacks and artifact rows.
+- Every part has a payload and a non-empty fallback `{text, actions[]}`. A fallback's actions are only `chat_turn` (a fixed text from `FallbackTurnTexts`), `open_url` (the CHAT-05 open/copy rules: a `https://claude.ai/<page>` the turn published) or `none`. Example: an `approval` part falls back to "Send a Slack message to #general — waiting for your approval" with **Open on the Mac** (`none`).
+- A client that did not list a kind in `hello.part_kinds` gets only the fallback (no payload); an unknown kind or an unreadable payload renders `FallbackPartView` (the text and one button per action). The relay always gets payload and fallback (D21). `ChatWire` builds parts from the flat fields when a feed carries none, as a Mac one version behind sends (D22), and for the embedded chats.
+- The remember and knowledge marks are not built at or after a conversation's first Live Slack message (LIVE-01).
+- Guards: CHAT-06 (`TestCHAT06_EveryPartKindHasFallback`, `testChat06EveryFixtureKindIsRegistered`) and CHAT-05's fallback rule.
+
+## Lifecycle
+
+- **Turns outlive the daemon (D23).** `ai session` runs detached (own session, `setsid`) with `--listen <workspace>/chatengine/sessions/<conversation>.sock` (0600 in a 0700 folder; the peer must be the same-team CLI, checked by audit token, server-greets-first). Protocol v2 is unchanged; only its transport moves from stdio to the socket. The session keeps the current turn's events (text capped at 600 KB; past the cap the latest text snapshot plus every step event).
+- **Detach and reattach.** An engine stop only detaches (flush, drop the connection, close `chat.sock`, keep the lease). The next engine lists `chatengine/sessions/*.sock`, `attach`es and the session replays the turn from its start; the engine's writes are idempotent (text set whole, steps upsert by id, artifacts by key), so the final text and every step are written once. A session still binding its socket is adopted once it listens. While no engine is attached nothing is written; clients reconnect, resubscribe and get a fresh snapshot. A session with no engine exits 10 minutes after its turn ends (`ListenIdleTTL`); a turn that ended while detached hands its whole result over on the next `attach`.
+- **Startup sweep.** Before reattaching, a `partial` row with no live session socket gets `error_code='session_lost'`; stale sockets and pgid files are removed.
+- **Restarts from the app** (`restartOnChain`, every launch) are instant and need no app change.
+- **Stops that end the chat** go through `chat_shutdown` (`cancel` each running turn, finalise `partial`, `close` each session, 2 s grace, SIGTERM, SIGKILL after 3 s): app quit, the Settings data wipe, a Slack disconnect, and the owner's `watchtower sync stop`. With no daemon answering, `watchtower chat shutdown` does the same over the session sockets and group files. The app calls `AppState.shutdownChat()` (the socket first, the CLI when the engine could not end it); the launch's compaction runs `chat shutdown` first. An account removal that purges data runs inside the daemon (`account_purges`), so the app does not stop the daemon for it.
+- **The marker (D11).** `watchtower sync stop` writes `<workspace>/daemon.stopped` (0600, `{"at": <RFC 3339>, "by": "cli"}`) after the daemon stopped; `--internal` (every stop the app runs) writes none; every daemon start removes it first. With `chat.sock` unreachable, the client reads it: present gives "Chat needs Watchtower's background service, which is stopped" with **Start** (nothing starts silently); absent starts the daemon once through `ensureDaemonRunning` and shows "Chat is starting…", then after 10 s "Chat is unavailable — Watchtower's background service is not running" with **Retry**. The draft stays and Send is off.
+- **Legacy lease, one release.** The engine claims and releases `chat_turn_leases` as owner `hub`, id `chatengine` (15 s heartbeat, cancel poll), so an older app against a new daemon sees its turns. The next release drops the table. The heartbeat's `chat_lease` field and `hub desktop heartbeat --chat-lease` are accepted and ignored for one release; `desktop_too_old` is gone.
+
+## Go and Swift fixtures
+
+| Fixture | Go reader | Swift reader |
+|---|---|---|
+| `internal/chatengine/testdata/parts.json` (every kind, one sample) | `parts_test.go` | `ChatWire` `ChatPartsTests`, `ChatUI` `ChatPartRegistryTests` |
+| `internal/chat/testdata/question_parse_cases.json` | `internal/chat` `TestQuestionParse_SharedCases` | `WatchtowerChatText` `QuestionParseFixtureTests` |
+| `internal/chat/testdata/artifact_parse_cases.json` | `internal/chat` | `WatchtowerChatText` `ArtifactParseFixtureTests` (the streaming fence hider) |
+| `internal/chatengine/testdata/compose_cases.json` | `compose_test.go` (`TestCompose_SharedCases`) | `WatchtowerChatText` `ChatOwnerTextTests` |
+| `internal/chatengine/testdata/entity_search_cases.json` | `entities_test.go` | the Swift `ChatEntitySearch` was deleted (the pickers go over `entity_search`) |
+| `internal/chatengine/testdata/socket_paths.json` | `paths_test.go` | `ChatSocketPathsTests` |
+
+Hub-to-Kit fixtures (`workbench/chat_{list,feed,page,search}.json`, `chat/actions.json`, `link/hub_contract_cases.json`) are read by `ChatWire` (`ChatSliceMirrorTests`, `ChatActionParamsTests`) and the Kit. The eight turn-store fixtures of the Swift writer are retired.
+
+## v1 limits
+
+- Embedded chats and Workchat keep their own engines; only their views are shared.
+- No chat on the Mac while the daemon is down (seconds at launch and during compaction; longer only if it fails to start). No offline read path on the Mac.
+- Turns end when the app quits (`chat_shutdown`); they survive every daemon restart. Worst cases of a quit, wipe or Slack disconnect: a healthy engine answers within its 10 s budget; a socket that does not greet within 2 s goes straight to the CLI fallback (about 20 s at worst, 8 s shutdown plus the 12 s CLI watchdog); an engine that greeted and then wedged takes about 18-25 s for the chat step and at most about 38-40 s for the whole quit (still hard-bounded, so a restart is never held). A quit cancelled after a successful wipe keeps daemon starts blocked for that process.
+- The phone gets no project editor; artifact comments and Add to Knowledge are Mac shell UI (the phone has the shared artifact viewer's controls). The phone's `unsupported` ops are listed above.
+- `chat_turn_leases` is not dropped yet (one release of compatibility, with the `chat_lease` flag).
+- A turn resent after a daemon restart lacks the first send's actions-outcome block and `screen_context`.
+- The Mac feed's message text is cut at `MaxMessageText` (40 KB); the phone's records stay at 600 000 bytes.
+- Residual risk, same threat model as `internal/ownerconfirm` ("not against a malicious program running as the owner, which can write the database itself"): a same-user process that keeps the socket's fd across the app's exec and runs after the greeting could drive `chat.sock`. Exec-before-accept is closed by the audit token and server-greets-first.
+- Slack disconnect ends the chat too (beyond spec §7).
+
+## Tests
+
+Go: `go test ./internal/chatengine ./internal/chatstore ./internal/chat ./internal/db -run 'Chat|CHAT|LIVE01|Lease'`, `./internal/hub/...`, `./cmd/... -run 'Sync|AISession|Chat'`. Swift: `make chat-test`, `make test-swift FILTER=...` (Desktop `Chat`, `QuitCoordinator`, `AppStateDaemonStart`), `make chattext-test`, `make kit-test`, `make mobile-test`. Design shots: `make desktop-shots` (`chat-daemon-starting`, `chat-daemon-unavailable`, `chat-daemon-stopped`, `chat-part-fallback`, `chat-remote-turn-live`).

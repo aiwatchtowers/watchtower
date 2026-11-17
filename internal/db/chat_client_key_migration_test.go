@@ -7,11 +7,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestMigration00192_ClientKeyUniquePerConversation: chat_messages.client_key
+// TestMigration00194_ClientKeyUniquePerConversation: chat_messages.client_key
 // is unique per conversation only where it is set — rows without a key never
 // clash, the same key twice in one conversation is refused, and the same key
 // in two conversations is allowed. Down drops the column and its index.
-func TestMigration00192_ClientKeyUniquePerConversation(t *testing.T) {
+func TestMigration00194_ClientKeyUniquePerConversation(t *testing.T) {
 	d := openTestDB(t)
 	conv := func() int64 {
 		res, err := d.Exec(`INSERT INTO chat_conversations (title, created_at, updated_at) VALUES ('', 1, 1)`)
