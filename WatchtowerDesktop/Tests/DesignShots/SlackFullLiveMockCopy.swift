@@ -162,4 +162,25 @@ enum SlackFullLiveMockCopy {
 
     static let keepTitle = "Add to Knowledge"
     static let keepReason = "Built on Live Slack answers, which are not kept"
+
+    // MARK: Plan B additions (asks #1425, #1426): admin note, adopt, onboarding
+
+    static let copyAdminNote = "Copy a note for your admin"
+    static let adminNoteCopied = "Copied. Send it to a workspace admin."
+    static let adminNote = "Please set up Watchtower for acme in Slack: "
+        + "https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/concepts/sources-and-accounts.md"
+    static let adoptTitle = "Watchtower's app already exists in acme"
+    static let adoptBody = "Update it to the current version: Watchtower adds the connect link to its About page "
+        + "and the sign-in settings it needs. Nothing changes for colleagues already connected."
+    static let adoptAction = "Update the app"
+    static let adoptAppIDLabel = "App ID"
+    static let adoptAppIDHelp = "Find it on the app's Basic Information page at api.slack.com/apps."
+    static let notCollaborator = "Your token cannot change this app. Ask one of its collaborators "
+        + "(listed on its Collaborators page) to run this setup."
+    static let onboardingTitle = "Connect Slack"
+    static let onboardingCaption = "Watchtower connects through your workspace's own Slack app. "
+        + "Open Watchtower in Slack, go to its About tab and click the connect link, or paste the link or code here."
+    static let onboardingLiveHint = "No app in your workspace? Chats can still read Slack through Live "
+        + "in your Claude or ChatGPT account."
+    static let skip = "Skip"
 }

@@ -35,6 +35,17 @@ final class SlackFullLiveMockCopyTests: XCTestCase {
         XCTAssertEqual(Copy.keepReason, ArtifactPanelModel.liveSlackReason)
     }
 
+    func testPlanBAdditions() {
+        typealias Copy = SlackFullLiveMockCopy
+        XCTAssertEqual(Copy.copyAdminNote, "Copy a note for your admin")
+        XCTAssertTrue(Copy.adminNote.contains("docs/guide/"))
+        XCTAssertTrue(Copy.adoptBody.contains("Nothing changes for colleagues already connected."))
+        XCTAssertEqual(Copy.adoptAction, "Update the app")
+        XCTAssertTrue(Copy.notCollaborator.contains("collaborators"))
+        XCTAssertTrue(Copy.onboardingCaption.contains("paste the link or code"))
+        XCTAssertEqual(Copy.onboardingTitle, "Connect Slack")
+    }
+
     func testEveryFrameHasAShot() {
         let names = Set(SlackFullLiveShotFixtures.shots.map(\.name))
         for pane in SlackFullLiveShotFixtures.Pane.allCases {
@@ -42,6 +53,9 @@ final class SlackFullLiveMockCopyTests: XCTestCase {
         }
         for frame in SlackFullLiveShotFixtures.Setup.allCases {
             XCTAssertTrue(names.contains("slack-fl-setup-\(frame.rawValue)"))
+        }
+        for frame in SlackFullLiveShotFixtures.Onboarding.allCases {
+            XCTAssertTrue(names.contains("slack-fl-onboarding-\(frame.rawValue)"))
         }
         for frame in SlackFullLiveShotFixtures.Connect.allCases {
             XCTAssertTrue(names.contains("slack-fl-connect-\(frame.rawValue)"))

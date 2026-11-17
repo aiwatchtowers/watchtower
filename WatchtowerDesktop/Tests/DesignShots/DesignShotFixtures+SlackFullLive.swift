@@ -20,11 +20,17 @@ enum SlackFullLiveShotFixtures {
     enum Setup: String, CaseIterable {
         case empty, ready, progress, success, badToken, notAllowed, linkFailed, approval
         case addLinkEmpty, addLinkBusy, addLinkError, addLinkDone
+        case adopt, adoptAppId, adoptNotCollaborator
     }
 
     /// Connecting from a link or a pasted code.
     enum Connect: String, CaseIterable {
         case confirm, browser, success, teamMismatch, denied
+    }
+
+    /// The onboarding Slack card's sheet when no build-baked app exists (plan B, A13).
+    enum Onboarding: String, CaseIterable {
+        case empty, organization, pasteInvalid, portBusy
     }
 
     static var shots: [DesignShot] {
@@ -51,7 +57,14 @@ enum SlackFullLiveShotFixtures {
             DesignShot(name: "slack-fl-connect-\(frame.rawValue)", size: NSSize(width: 440, height: 0)) {
                 AnyView(SlackConnectSheetMock(frame: frame))
             }
+        } + Onboarding.allCases.map { frame in
+            DesignShot(name: "slack-fl-onboarding-\(frame.rawValue)", size: NSSize(width: 520, height: 0)) {
+                AnyView(SlackOnboardingConnectMock(frame: frame))
+            }
         } + [
+            DesignShot(name: "slack-fl-onboarding-empty-narrow", size: NSSize(width: 380, height: 0)) {
+                AnyView(SlackOnboardingConnectMock(frame: .empty))
+            },
             DesignShot(name: "slack-fl-needs-full-digests", size: NSSize(width: 720, height: 360)) {
                 AnyView(NeedsFullSlackDigestsMock())
             },
@@ -357,7 +370,8 @@ private struct SlackSetupSheetMock: View {
     }
 
     private var showsForm: Bool {
-        [.empty, .ready, .badToken, .notAllowed, .addLinkEmpty, .addLinkBusy, .addLinkError].contains(frame)
+        [.empty, .ready, .badToken, .notAllowed, .addLinkEmpty, .addLinkBusy, .addLinkError,
+         .adopt, .adoptAppId, .adoptNotCollaborator].contains(frame)
     }
 
     private var form: some View {
@@ -427,6 +441,20 @@ private struct SlackSetupSheetMock: View {
             }
         case .addLinkDone:
             notice(icon: "checkmark.circle.fill", tone: Tone.success, title: nil, body: Copy.addLinkDone)
+        case .adopt:
+            notice(icon: "arrow.triangle.2.circlepath", tone: Tone.status("blue"), title: Copy.adoptTitle, body: Copy.adoptBody)
+        case .adoptAppId:
+            VStack(alignment: .leading, spacing: Spacing.medium) {
+                notice(icon: "arrow.triangle.2.circlepath", tone: Tone.status("blue"),
+                       title: Copy.adoptTitle, body: Copy.adoptBody)
+                VStack(alignment: .leading, spacing: Spacing.small) {
+                    TextField(Copy.adoptAppIDLabel, text: .constant("")).textFieldStyle(.kit)
+                    Text(Copy.adoptAppIDHelp).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        case .adoptNotCollaborator:
+            notice(icon: "exclamationmark.triangle.fill", tone: Tone.warning, title: Copy.adoptTitle,
+                   body: Copy.notCollaborator)
         default:
             EmptyView()
         }
@@ -454,9 +482,16 @@ private struct SlackSetupSheetMock: View {
                 Button(Copy.createApp) {}.buttonStyle(.kitPrimary).disabled(token.isEmpty)
             case .progress:
                 Button(Copy.close) {}.buttonStyle(.kitSecondary)
-            case .badToken, .notAllowed:
+            case .badToken:
                 Button(Copy.cancel) {}.buttonStyle(.kitSecondary)
                 Button(Copy.tryAgain) {}.buttonStyle(.kitPrimary)
+            case .notAllowed, .adoptNotCollaborator:
+                Button(Copy.cancel) {}.buttonStyle(.kitSecondary)
+                Button(Copy.copyAdminNote) {}.buttonStyle(.kitSecondary)
+                Button(Copy.tryAgain) {}.buttonStyle(.kitPrimary)
+            case .adopt, .adoptAppId:
+                Button(Copy.cancel) {}.buttonStyle(.kitSecondary)
+                Button(Copy.adoptAction) {}.buttonStyle(.kitPrimary).disabled(frame == .adoptAppId)
             case .success:
                 Button(Copy.copyCode) {}.buttonStyle(.kitSecondary)
                 Button(Copy.done) {}.buttonStyle(.kitPrimary)
@@ -476,6 +511,69 @@ private struct SlackSetupSheetMock: View {
                 Button(Copy.done) {}.buttonStyle(.kitPrimary)
             }
         }
+    }
+}
+
+// MARK: - Onboarding: connect Slack without a build-baked app (plan B, A13)
+
+private struct SlackOnboardingConnectMock: View {
+    let frame: SlackFullLiveShotFixtures.Onboarding
+
+    private var pasteText: String { frame == .pasteInvalid ? "https://acme.slack.com/apps/A0ACME" : "" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.large) {
+            VStack(alignment: .leading, spacing: Spacing.small) {
+                Text(Copy.onboardingTitle).font(.title3.weight(.semibold))
+                Text(Copy.onboardingCaption)
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            VStack(alignment: .leading, spacing: Spacing.medium) {
+                if frame == .organization {
+                    VStack(alignment: .leading, spacing: Spacing.compact) {
+                        Text(Copy.orgTitle).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        HStack {
+                            Label(Copy.orgRow, systemImage: "building.2").font(.callout)
+                            Spacer(minLength: Spacing.medium)
+                            Button(Copy.connect) {}.buttonStyle(.kitPrimary)
+                        }
+                    }
+                }
+                if frame == .portBusy {
+                    HStack(alignment: .top, spacing: Spacing.regular) {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Tone.warning)
+                        Text(Copy.portBusy).font(.caption).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                HStack(spacing: Spacing.regular) {
+                    TextField(Copy.pastePlaceholder, text: .constant(pasteText)).textFieldStyle(.kit)
+                    Button(Copy.connect) {}
+                        .buttonStyle(.kitSecondary)
+                        .disabled(pasteText.isEmpty)
+                }
+                if frame == .pasteInvalid {
+                    Text(Copy.pasteInvalid)
+                        .font(.caption).foregroundStyle(Tone.error).fixedSize(horizontal: false, vertical: true)
+                }
+                HStack(spacing: Spacing.regular) {
+                    Text(Copy.noAppYet).font(.caption).foregroundStyle(.secondary)
+                    Button(Copy.setUpForCompany) {}.buttonStyle(.kitQuiet)
+                }
+            }
+            .padding(Spacing.medium)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .card()
+            Text(Copy.onboardingLiveHint)
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button(Copy.skip) {}.buttonStyle(.kitSecondary)
+            }
+        }
+        .controlSize(.small)
+        .padding(Spacing.page)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .detailBackground()
     }
 }
 
