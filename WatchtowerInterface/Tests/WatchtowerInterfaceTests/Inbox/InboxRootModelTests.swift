@@ -1,3 +1,4 @@
+import Foundation
 import WatchtowerInterface
 import XCTest
 
@@ -15,6 +16,20 @@ final class InboxRootModelTests: XCTestCase {
         ])
         XCTAssertEqual(InboxRootModel(feed: feed, platform: .phone).badge, 5)
         XCTAssertEqual(InboxRootModel(feed: feed, platform: .mac).countBadge, 8)
+    }
+
+    /// A folder under a hidden one is hidden with it, flagged or not: it leaves the menu and both badges.
+    func testAHiddenFolderHidesItsWholeSubtree() {
+        let feed = Fix.feed(folders: [
+            Fix.root, Fix.folder(2, kind: .approvals, count: 1, waiting: 1),
+            Fix.folder(10, position: 1, count: 2, waiting: 2, hidden: true),
+            Fix.folder(13, parent: 10, count: 3, waiting: 3), Fix.folder(14, parent: 13, count: 4, waiting: 4)
+        ])
+        let phone = InboxRootModel(feed: feed, platform: .phone)
+        XCTAssertEqual(phone.badge, 1, "only Needs approval is shown")
+        XCTAssertEqual(phone.rows.map(\.folder.id), [2])
+        XCTAssertEqual(InboxRootModel(feed: feed, platform: .mac).countBadge, 1)
+        XCTAssertTrue(InboxFolderModel(feed: feed, folderID: 13, platform: .phone, hidden: InboxHiddenRows(), now: Date()).cards.isEmpty)
     }
 
     func testFoldersOrderedByPosition() throws {

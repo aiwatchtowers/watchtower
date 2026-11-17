@@ -36,11 +36,15 @@ const fallbackTitleChars = 200
 // daemon tower's own command, so the phone reads what the Mac reads.
 type InboxFeed func(ctx context.Context, o inboxfeed.Options) (api.Feed, error)
 
-// inboxFolderRecord is an inbox_folder record: the folder and how many of
-// its cards PhoneInboxLimit left out (Feed.More).
+// inboxFolderRecord is an inbox_folder record: the folder, how many of its
+// cards PhoneInboxLimit left out (Feed.More), and the ids of its cards in the
+// feed's order. The replica keeps no publish order, so the phone lists a
+// folder's cards by CardIDs; carrying the order here keeps card records
+// order-free, so a new card changes only its own record and its folder's.
 type inboxFolderRecord struct {
 	api.Folder
-	More int `json:"more,omitempty"`
+	More    int      `json:"more,omitempty"`
+	CardIDs []string `json:"card_ids"`
 }
 
 // InboxSource is the phone Inbox (mobile Inbox spec §6): inbox_folder-<id>,
@@ -115,9 +119,17 @@ func folderItems(feed *api.Feed) ([]slices.Item, error) {
 	for _, m := range feed.More {
 		more[m.FolderID] = m.Count
 	}
+	ids := map[int64][]string{}
+	for _, c := range feed.Cards {
+		ids[c.FolderID] = append(ids[c.FolderID], c.ID)
+	}
 	out := make([]slices.Item, 0, len(feed.Folders))
 	for _, f := range feed.Folders {
-		payload, err := wire.Marshal(inboxFolderRecord{Folder: f, More: more[f.ID]})
+		cardIDs := ids[f.ID]
+		if cardIDs == nil {
+			cardIDs = []string{}
+		}
+		payload, err := wire.Marshal(inboxFolderRecord{Folder: f, More: more[f.ID], CardIDs: cardIDs})
 		if err != nil {
 			return nil, err
 		}

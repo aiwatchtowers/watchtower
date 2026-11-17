@@ -8,7 +8,8 @@ public struct InboxRootModel: Equatable, Sendable {
     /// approval is listed only while it holds something.
     public let rows: [InboxFolderRow]
     /// The phone's tab badge: the sum of the shown folders' `waiting` (open
-    /// approvals and open rows that wait on the owner; ask #1349).
+    /// approvals and open rows that wait on the owner; ask #1349). A folder
+    /// under a hidden one is not shown and counts nothing.
     public let badge: Int
     /// The Mac's sidebar badge: the sum of the shown folders' `count`
     /// (`InboxFolderCounts.badge`).
@@ -17,7 +18,7 @@ public struct InboxRootModel: Equatable, Sendable {
     public init(feed: Feed, platform: Platform) {
         let tree = InboxFolderTree(feed.folders)
         rootFolderID = tree.root?.id
-        let shown = feed.folders.filter { !$0.hidden }
+        let shown = InboxFolderTree.shown(feed.folders)
         badge = shown.reduce(0) { $0 + $1.waiting }
         countBadge = shown.reduce(0) { $0 + $1.count }
         rows = tree.children(of: tree.root?.id)
@@ -49,7 +50,7 @@ struct InboxFolderTree {
     private let childIDs: [Int64?: [Folder]]
 
     init(_ folders: [Folder]) {
-        let shown = folders.filter { !$0.hidden }
+        let shown = Self.shown(folders)
         root = shown.first { $0.kind == .root }
         byID = Dictionary(shown.map { ($0.id, $0) }) { first, _ in first }
         var children: [Int64?: [Folder]] = [:]
@@ -58,6 +59,22 @@ struct InboxFolderTree {
             children[folder.parentID ?? root?.id, default: []].append(folder)
         }
         childIDs = children.mapValues { $0.sorted { ($0.position, $0.id) < ($1.position, $1.id) } }
+    }
+
+    /// The folders drawn: neither hidden nor under a hidden folder. The hub sends `hidden` as the effective
+    /// value already; a child it left unflagged under a hidden folder is hidden here too, so the menu and the
+    /// badges always agree with what is shown.
+    static func shown(_ folders: [Folder]) -> [Folder] {
+        let byID = Dictionary(folders.map { ($0.id, $0) }) { first, _ in first }
+        return folders.filter { folder in
+            var current: Folder? = folder
+            var seen: Set<Int64> = []
+            while let step = current, seen.insert(step.id).inserted {
+                if step.hidden { return false }
+                current = step.parentID.flatMap { byID[$0] }
+            }
+            return true
+        }
     }
 
     func children(of id: Int64?) -> [Folder] {

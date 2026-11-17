@@ -107,7 +107,13 @@ func TestInboxSource_RecordsMatchTheGoGolden(t *testing.T) {
 				t.Fatalf("%d folders, %d cards; want %d, %d", len(folders), len(cards), len(c.Expect.Folders), len(c.Expect.Cards))
 			}
 			for _, f := range c.Expect.Folders {
-				want := marshalWire(t, inboxFolderRecord{Folder: f})
+				ids := []string{}
+				for _, card := range c.Expect.Cards {
+					if card.FolderID == f.ID {
+						ids = append(ids, card.ID)
+					}
+				}
+				want := marshalWire(t, inboxFolderRecord{Folder: f, CardIDs: ids})
 				if got := folders[strconv.FormatInt(f.ID, 10)]; string(got) != string(want) {
 					t.Errorf("folder %d:\n got %s\nwant %s", f.ID, got, want)
 				}
@@ -332,5 +338,47 @@ func TestInboxSource_AnOldBuildIsNotShared(t *testing.T) {
 	}
 	if builds != 2 {
 		t.Fatalf("%d builds, want 2: a minute-old feed was shared", builds)
+	}
+}
+
+// TestInboxSource_FoldersCarryTheirCardOrder: the replica keeps no publish
+// order, so each inbox_folder record lists its cards' ids in the feed's
+// order, and card records stay order-free: a new card at the top changes only
+// its own record and its folder's.
+func TestInboxSource_FoldersCarryTheirCardOrder(t *testing.T) {
+	cards := []api.Card{{ID: "a2", FolderID: 2}, {ID: "o9", FolderID: 1}, {ID: "o1", FolderID: 1}}
+	build := func(context.Context, inboxfeed.Options) (api.Feed, error) {
+		return api.Feed{V: 1, Folders: []api.Folder{{ID: 1, Kind: api.FolderRoot}, {ID: 2, Kind: api.FolderApprovals}, {ID: 3}},
+			Cards: append([]api.Card(nil), cards...)}, nil
+	}
+	ids := func(record []byte) []string {
+		var rec struct {
+			CardIDs []string `json:"card_ids"`
+		}
+		if err := json.Unmarshal(record, &rec); err != nil || rec.CardIDs == nil {
+			t.Fatalf("folder record %s (%v)", record, err)
+		}
+		return rec.CardIDs
+	}
+	folders, before := inboxItems(t, InboxSource(build, nil))
+	if got := ids(folders["1"]); strings.Join(got, ",") != "o9,o1" {
+		t.Fatalf("root card ids %v", got)
+	}
+	if got := ids(folders["3"]); len(got) != 0 {
+		t.Fatalf("an empty folder lists %v", got)
+	}
+
+	cards = append([]api.Card{{ID: "o10", FolderID: 1}}, cards...)
+	foldersAfter, after := inboxItems(t, InboxSource(build, nil))
+	if got := ids(foldersAfter["1"]); strings.Join(got, ",") != "o10,o9,o1" {
+		t.Fatalf("root card ids after %v", got)
+	}
+	for _, id := range []string{"a2", "o9", "o1"} {
+		if string(before[id]) != string(after[id]) {
+			t.Errorf("card %s changed: %s -> %s", id, before[id], after[id])
+		}
+	}
+	if string(folders["2"]) != string(foldersAfter["2"]) {
+		t.Errorf("an untouched folder's record changed")
 	}
 }
