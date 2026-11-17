@@ -35,16 +35,28 @@ func TestDriverStopsWhenConversationDeleted(t *testing.T) {
 	_, err := d.Exec(`DELETE FROM chat_conversations WHERE id = ?`, r.convID)
 	require.NoError(t, err)
 	clock.advance(chatrun.HeartbeatEvery)
-	// One tick: it finds the chat gone. The session then ends by itself,
-	// so a later tick has no reader (settle's second one would block).
-	tick <- clock.now()
+	// settle returns once the loop TOOK its second tick, not once it handled
+	// it: that tick's lease watch may run after the delete above and find the
+	// chat gone itself. Then the session ends at once and nothing reads a
+	// further tick — so the next tick is offered only while the run is alive,
+	// never waited for (a bare send hung CI for 20 min, PR #963).
+	ended := false
+	select {
+	case tick <- clock.now():
+	case err := <-r.done:
+		ended = true
+		require.NoError(t, err)
+	}
 	assert.Equal(t, "t1", r.next(chat.EventTurnSaved).TurnID, "the Mac lets the turn go")
 	assert.Equal(t, chat.StatusInterrupted, r.next(chat.EventTurnDone).Status, "the turn is cancelled")
 	// The session has no chat left to serve: it ends by itself, so the Mac
-	// never reuses it.
+	// never reuses it. Every wait below ends with the run: the event stream
+	// closes when the command returns (in process, no child to reap).
 	for range r.events {
 	}
-	assert.NoError(t, <-r.done)
+	if !ended {
+		require.NoError(t, <-r.done)
+	}
 
 	_, cancels = backend.counts()
 	assert.Equal(t, 1, cancels, "once")

@@ -204,7 +204,7 @@ These stay as Mac views over the screen models: `InboxFolderMenuModel`, `InboxFo
 
 - **The feed:** `Feed{v, built_at, folders[], cards[], more}`.
 - **A folder:** `{id, kind (root|approvals|owner), slug, title, icon, parent_id, position, count, waiting}`. `waiting` is the part of `count` that waits on the owner: open approvals, plus open rows with a `ref` that wait.
-- **Card ids** are typed so that they never collide: `o<output>`, `a<action>`, `r<reminder>`, `n<builtin migration>`, `brief-<date>`, `tracks`, `ideas`, `thread-briefs`, `messages`.
+- **Card ids** are typed so that they never collide: `o<output>`, `a<action>`, `r<reminder>`, `n<builtin migration>`, `brief-<date>`, `tracks`, `ideas`, `thread-brief-<id>` (one card per thread brief, at its own time — controller ruling on Task 7 Q2, revised in Task 11b), `messages`.
 - **A card** has these fields:
   - `folder_id` and `card_kind` (`artifact`, `approval_native`, `reminder`, `notice` or `legacy`);
   - `title`, `source_line`, `preview`, `stamp`, `living`, `unread`, `priority`, `pinned`;
