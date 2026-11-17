@@ -64,3 +64,25 @@ v1 limits, not changes: the phone's model menu lists the registry's models only 
 ## Images
 
 The PNGs are not in the repository. They were copied, light mode only (the dark and narrow variants exist in the render folders), to the reviewer's scratch folder; the controller attaches them to the review ask. Names are `<#>-<frame>-<base|head>.png`.
+
+The 20 images, by change:
+
+| Change | Base | HEAD |
+|---|---|---|
+| M1 | `M1-composer-main-editing-base.png` | `M1-composer-main-editing-head.png` |
+| P1 | `P1-C2i-chat-quote-base.png` | `P1-C2i-chat-quote-head.png` |
+| P2 | (new frame) | `P2-iphone-chat-composer-mentions-head.png` |
+| P3 | (new frame) | `P3-iphone-chat-composer-attachments-head.png` |
+| P7 | `P7-C2c-chat-approvals-base.png` | `P7-C2c-chat-approvals-head.png` |
+| P8 | (new frame) | `P8-iphone-chat-approval-jira-head.png` |
+| P9 | (new frame) | `P9-iphone-chat-approval-confluence-head.png` |
+| P10 | (new frame) | `P10-iphone-chat-approval-connector-head.png` |
+| P11 | (new frame) | `P11-iphone-chat-approval-settled-head.png` |
+| P12 | (new frame) | `P12-iphone-chat-approval-no-permission-head.png` |
+| P15 | `P15-C2h-chat-new-base.png` | `P15-C2h-chat-new-head.png` |
+| P16, P17 | `P16-C2a-chat-done-base.png` | `P16-C2a-chat-done-head.png` |
+| P18 | (new frame) | `P18-iphone-chat-routing-fallback-head.png` |
+| P19 | (new frame) | `P19-iphone-chat-routing-recovered-head.png` |
+| P20 | (new frame) | `P20-iphone-chat-routing-unsupported-head.png` |
+
+Pixel diff of the light phone frames, base vs HEAD: C2a–C2i and `iphone-chat-approval-slack` differ (the changes above). C1d and C1g differ only in the glass tab bar and the asleep banner's glass. Every other shared frame is identical.
