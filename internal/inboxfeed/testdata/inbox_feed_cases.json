@@ -7189,5 +7189,2252 @@
       ]
     },
     "desktop": true
+  },
+  {
+    "name": "desktop_output_lists_open",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (1, 'mail-summary', 'personal', '/tmp/acme/automations/mail-summary.md', 'Mail summary', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, done_at, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'New mail', 'Two threads need you.', 'medium', '2026-10-01T09:00:05Z', '2026-10-01T10:00:00Z', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, dismissed_at, written_at, changed_at) VALUES (2, 1, 1, 'inbox', 'New mail', 'Two threads need you.', 'medium', '2026-10-01T09:00:05Z', '2026-10-01T10:00:00Z', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, read_at, done_at, written_at, changed_at) VALUES (3, 1, 1, 'inbox', 'New mail', 'Two threads need you.', 'medium', '2026-10-01T09:00:05Z', '2026-10-01T10:00:00Z', '2026-10-01T10:00:00Z', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, written_at, changed_at) VALUES (4, 1, 1, 'inbox', 'Old', 'Two threads need you.', 'medium', '2026-10-01T09:00:00Z', '2026-10-01T09:00:00Z', '2026-10-01T09:00:00Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, read_at, written_at, changed_at) VALUES (5, 1, 1, 'inbox', 'Read', 'Two threads need you.', 'medium', '2026-10-01T12:00:00Z', '2026-10-01T13:00:00Z', '2026-10-01T12:00:00Z', '2026-10-01T12:00:00Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, written_at, changed_at) VALUES (6, 1, 1, 'inbox', 'New', 'Two threads need you.', 'medium', '2026-10-02T09:00:00Z', '2026-10-02T09:00:00Z', '2026-10-02T09:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 2,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "o6",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "New",
+          "source_line": "Mail summary",
+          "preview": "Two threads need you.",
+          "stamp": "2026-10-02T09:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Mail summary",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "",
+          "body": "Two threads need you.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": []
+        },
+        {
+          "id": "o5",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "Read",
+          "source_line": "Mail summary",
+          "preview": "Two threads need you.",
+          "stamp": "2026-10-01T12:00:00Z",
+          "living": false,
+          "unread": false,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Mail summary",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "",
+          "body": "Two threads need you.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": []
+        },
+        {
+          "id": "o4",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "Old",
+          "source_line": "Mail summary",
+          "preview": "Two threads need you.",
+          "stamp": "2026-10-01T09:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Mail summary",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "",
+          "body": "Two threads need you.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": []
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_output_done",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (1, 'mail-summary', 'personal', '/tmp/acme/automations/mail-summary.md', 'Mail summary', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'New mail', 'Two threads need you.', 'medium', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "o1",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "New mail",
+          "source_line": "Mail summary",
+          "preview": "Two threads need you.",
+          "stamp": "2026-10-01T09:00:05Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Mail summary",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "",
+          "body": "Two threads need you.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": []
+        }
+      ]
+    },
+    "desktop": true,
+    "steps": [
+      {
+        "name": "done",
+        "act": {
+          "target": "o1",
+          "verb": "done",
+          "params": {
+            "content_hash": ""
+          },
+          "request_id": "00000000-0000-4000-8000-000000900004"
+        },
+        "when": "SELECT done_at IS NOT NULL FROM automation_outputs WHERE id = 1",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            }
+          ],
+          "cards": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "desktop_output_dismissed",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (1, 'mail-summary', 'personal', '/tmp/acme/automations/mail-summary.md', 'Mail summary', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'New mail', 'Two threads need you.', 'medium', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "o1",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "New mail",
+          "source_line": "Mail summary",
+          "preview": "Two threads need you.",
+          "stamp": "2026-10-01T09:00:05Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Mail summary",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "",
+          "body": "Two threads need you.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": []
+        }
+      ]
+    },
+    "desktop": true,
+    "steps": [
+      {
+        "name": "dismissed",
+        "act": {
+          "target": "o1",
+          "verb": "dismiss",
+          "params": {
+            "content_hash": ""
+          },
+          "request_id": "00000000-0000-4000-8000-000000900005"
+        },
+        "when": "SELECT dismissed_at IS NOT NULL FROM automation_outputs WHERE id = 1",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            }
+          ],
+          "cards": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "desktop_output_two_closed_then_a_third",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (1, 'mail-summary', 'personal', '/tmp/acme/automations/mail-summary.md', 'Mail summary', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'New mail', 'Two threads need you.', 'medium', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, written_at, changed_at) VALUES (2, 1, 1, 'inbox', 'New mail', 'Two threads need you.', 'medium', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 2,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "o2",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "New mail",
+          "source_line": "Mail summary",
+          "preview": "Two threads need you.",
+          "stamp": "2026-10-01T09:00:05Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Mail summary",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "",
+          "body": "Two threads need you.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": []
+        },
+        {
+          "id": "o1",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "New mail",
+          "source_line": "Mail summary",
+          "preview": "Two threads need you.",
+          "stamp": "2026-10-01T09:00:05Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Mail summary",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "",
+          "body": "Two threads need you.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": []
+        }
+      ]
+    },
+    "desktop": true,
+    "steps": [
+      {
+        "name": "second_done",
+        "act": {
+          "target": "o2",
+          "verb": "done",
+          "params": {
+            "content_hash": ""
+          },
+          "request_id": "00000000-0000-4000-8000-000000900006"
+        },
+        "when": "SELECT done_at IS NOT NULL FROM automation_outputs WHERE id = 2",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 1,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            }
+          ],
+          "cards": [
+            {
+              "id": "o1",
+              "folder_id": 1,
+              "card_kind": "artifact",
+              "title": "New mail",
+              "source_line": "Mail summary",
+              "preview": "Two threads need you.",
+              "stamp": "2026-10-01T09:00:05Z",
+              "living": false,
+              "unread": true,
+              "priority": "medium",
+              "pinned": false,
+              "automation": {
+                "id": 1,
+                "name": "Mail summary",
+                "builtin_id": "",
+                "run_id": 1
+              },
+              "blocks": "",
+              "body": "Two threads need you.",
+              "body_clipped": false,
+              "link": "",
+              "content_hash": "",
+              "actions": [],
+              "ref_facts": []
+            }
+          ]
+        }
+      },
+      {
+        "name": "first_done",
+        "act": {
+          "target": "o1",
+          "verb": "done",
+          "params": {
+            "content_hash": ""
+          },
+          "request_id": "00000000-0000-4000-8000-000000900007"
+        },
+        "when": "SELECT done_at IS NOT NULL FROM automation_outputs WHERE id = 1",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            }
+          ],
+          "cards": []
+        }
+      },
+      {
+        "name": "third_written",
+        "sql": [
+          "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, written_at, changed_at) VALUES (3, 1, 1, 'inbox', 'New mail', 'Two threads need you.', 'medium', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z')"
+        ],
+        "when": "SELECT COUNT(*) FROM automation_outputs WHERE id = 3",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 1,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            }
+          ],
+          "cards": [
+            {
+              "id": "o3",
+              "folder_id": 1,
+              "card_kind": "artifact",
+              "title": "New mail",
+              "source_line": "Mail summary",
+              "preview": "Two threads need you.",
+              "stamp": "2026-10-01T09:00:05Z",
+              "living": false,
+              "unread": true,
+              "priority": "medium",
+              "pinned": false,
+              "automation": {
+                "id": 1,
+                "name": "Mail summary",
+                "builtin_id": "",
+                "run_id": 1
+              },
+              "blocks": "",
+              "body": "Two threads need you.",
+              "body_clipped": false,
+              "link": "",
+              "content_hash": "",
+              "actions": [],
+              "ref_facts": []
+            }
+          ]
+        }
+      },
+      {
+        "name": "third_dismissed",
+        "act": {
+          "target": "o3",
+          "verb": "dismiss",
+          "params": {
+            "content_hash": ""
+          },
+          "request_id": "00000000-0000-4000-8000-000000900008"
+        },
+        "when": "SELECT dismissed_at IS NOT NULL FROM automation_outputs WHERE id = 3",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            }
+          ],
+          "cards": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "desktop_output_press_and_recipe_state",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (1, 'live', 'personal', '/tmp/acme/automations/live.md', 'Live', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (2, 1, 'reply', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, link, actions_json, pressed_action, pressed_run_id, pressed_at, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'New mail', 'Two threads need you.', 'medium', '2026-10-01T09:00:03Z', 'https://example.com/a', '[{\"label\":\"Yes\",\"reply\":\"yes\"}]', 0, 2, '2026-10-01T09:10:00Z', '2026-10-01T09:00:03Z', '2026-10-01T09:00:03Z')",
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (2, 'off', 'personal', '/tmp/acme/automations/off.md', 'Off', 'manual', '{\"manual\":true}', 'h1', 'h1', 0, '[]', '[]')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (3, 2, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, written_at, changed_at) VALUES (2, 2, 3, 'inbox', 'New mail', 'Two threads need you.', 'medium', '2026-10-01T09:00:02Z', '2026-10-01T09:00:02Z', '2026-10-01T09:00:02Z')",
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (3, 'new', 'personal', '/tmp/acme/automations/new.md', 'New', 'manual', '{\"manual\":true}', 'h1', '', 1, '[]', '[]')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (4, 3, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, written_at, changed_at) VALUES (3, 3, 4, 'inbox', 'New mail', 'Two threads need you.', 'medium', '2026-10-01T09:00:01Z', '2026-10-01T09:00:01Z', '2026-10-01T09:00:01Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 3,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "o1",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "New mail",
+          "source_line": "Live",
+          "preview": "Two threads need you.",
+          "stamp": "2026-10-01T09:00:03Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Live",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "",
+          "body": "Two threads need you.",
+          "body_clipped": false,
+          "link": "https://example.com/a",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": []
+        },
+        {
+          "id": "o2",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "New mail",
+          "source_line": "Off",
+          "preview": "Two threads need you.",
+          "stamp": "2026-10-01T09:00:02Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 2,
+            "name": "Off",
+            "builtin_id": "",
+            "run_id": 3
+          },
+          "blocks": "",
+          "body": "Two threads need you.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": []
+        },
+        {
+          "id": "o3",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "New mail",
+          "source_line": "New",
+          "preview": "Two threads need you.",
+          "stamp": "2026-10-01T09:00:01Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 3,
+            "name": "New",
+            "builtin_id": "",
+            "run_id": 4
+          },
+          "blocks": "",
+          "body": "Two threads need you.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": []
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_output_with_run_proposal_and_reminder",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (1, 'mail-summary', 'personal', '/tmp/acme/automations/mail-summary.md', 'Mail summary', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'New mail', 'Two threads need you.', 'medium', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z')",
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (1, 'create_target', 0, '{\"text\":\"Call Vasya\",\"reason\":\"r\"}', 'r', 'automation', 0, 'automation_run', '1', 'turn-1', 'pending', '', '', '2026-09-04T10:00:00Z', '', '', '')",
+      "INSERT INTO reminders (id, message_ref, note, remind_at, status, created_at) VALUES (1, 'C1@1', 'call back', '2000-01-01T00:00:00Z', 'pending', '2026-11-16T08:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 2,
+          "waiting": 2
+        }
+      ],
+      "cards": [
+        {
+          "id": "o1",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "New mail",
+          "source_line": "Mail summary",
+          "preview": "Two threads need you.",
+          "stamp": "2026-10-01T09:00:05Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Mail summary",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "",
+          "body": "Two threads need you.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": []
+        },
+        {
+          "id": "a1",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "⚙ Mail summary · run #1",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_target",
+            "title": "Create a target",
+            "summary": "Call Vasya",
+            "args_sha256": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+            "status": "pending",
+            "error": "",
+            "proposer": "⚙ Mail summary · run #1",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        },
+        {
+          "id": "r1",
+          "folder_id": 2,
+          "card_kind": "reminder",
+          "title": "call back",
+          "source_line": "Reminder",
+          "preview": "",
+          "stamp": "2000-01-01T00:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [
+            {
+              "kind": "reminder",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "https://slack.com/archives/C1/p1",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ]
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_output_living_rewritten",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (1, 'mail-summary', 'personal', '/tmp/acme/automations/mail-summary.md', 'Mail summary', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, blocks_json, output_key, content_hash, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'New mail', '- Thread A', 'medium', '2026-10-01T09:00:05Z', '{\"v\":1,\"blocks\":[]}', 'threads', 'h1', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "o1",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "New mail",
+          "source_line": "Mail summary",
+          "preview": "Thread A",
+          "stamp": "2026-10-01T09:00:05Z",
+          "living": true,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Mail summary",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "{\"v\":1,\"blocks\":[]}",
+          "body": "- Thread A",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "h1",
+          "actions": [],
+          "ref_facts": []
+        }
+      ]
+    },
+    "desktop": true,
+    "steps": [
+      {
+        "name": "rewritten",
+        "sql": [
+          "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (2, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+          "UPDATE automation_outputs SET run_id = 2, body = '- Thread B', blocks_json = '{\"v\":1,\"blocks\":[]}', content_hash = 'h2', written_at = '2026-10-02T09:00:00Z', changed_at = '2026-10-02T09:00:00Z', read_at = NULL, done_at = NULL, dismissed_at = NULL, pressed_action = NULL, pressed_run_id = NULL, pressed_at = NULL WHERE id = 1"
+        ],
+        "when": "SELECT content_hash = 'h2' FROM automation_outputs WHERE id = 1",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 1,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            }
+          ],
+          "cards": [
+            {
+              "id": "o1",
+              "folder_id": 1,
+              "card_kind": "artifact",
+              "title": "New mail",
+              "source_line": "Mail summary",
+              "preview": "Thread B",
+              "stamp": "2026-10-02T09:00:00Z",
+              "living": true,
+              "unread": true,
+              "priority": "medium",
+              "pinned": false,
+              "automation": {
+                "id": 1,
+                "name": "Mail summary",
+                "builtin_id": "",
+                "run_id": 2
+              },
+              "blocks": "{\"v\":1,\"blocks\":[]}",
+              "body": "- Thread B",
+              "body_clipped": false,
+              "link": "",
+              "content_hash": "h2",
+              "actions": [],
+              "ref_facts": []
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "desktop_output_living_done",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (1, 'mail-summary', 'personal', '/tmp/acme/automations/mail-summary.md', 'Mail summary', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, output_key, content_hash, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'New mail', 'Two threads need you.', 'medium', '2026-10-01T09:00:05Z', 'threads', 'h1', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "o1",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "New mail",
+          "source_line": "Mail summary",
+          "preview": "Two threads need you.",
+          "stamp": "2026-10-01T09:00:05Z",
+          "living": true,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Mail summary",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "",
+          "body": "Two threads need you.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "h1",
+          "actions": [],
+          "ref_facts": []
+        }
+      ]
+    },
+    "desktop": true,
+    "steps": [
+      {
+        "name": "done",
+        "act": {
+          "target": "o1",
+          "verb": "done",
+          "params": {
+            "content_hash": "h1"
+          },
+          "request_id": "00000000-0000-4000-8000-000000900009"
+        },
+        "when": "SELECT done_at IS NOT NULL FROM automation_outputs WHERE id = 1",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            }
+          ],
+          "cards": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "desktop_folders_menu_tree",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "UPDATE inbox_folder_state SET revision = 7",
+      "INSERT INTO inbox_folders (id, kind, parent_id, slug, title, icon, position, hidden) VALUES (3, 'owner', 1, 'release', 'Release', 'flag', 1, 0)",
+      "INSERT INTO inbox_folders (id, kind, parent_id, slug, title, icon, position, hidden) VALUES (4, 'owner', 3, 'blockers', 'Blockers', '', 0, 0)",
+      "INSERT INTO inbox_folders (id, kind, parent_id, slug, title, icon, position, hidden) VALUES (5, 'owner', 4, 'deep', 'Deep', '', 0, 0)",
+      "INSERT INTO inbox_folders (id, kind, parent_id, slug, title, icon, position, hidden) VALUES (6, 'owner', 1, 'team', 'Team', '', 2, 0)",
+      "INSERT INTO inbox_folders (id, kind, parent_id, slug, title, icon, position, hidden) VALUES (7, 'owner', 1, 'old', 'Old', '', 3, 1)",
+      "INSERT INTO inbox_folders (id, kind, parent_id, slug, title, icon, position, hidden) VALUES (8, 'owner', 7, 'old-child', 'Old-Child', '', 0, 0)",
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (1, 'digest', 'personal', '/tmp/acme/automations/digest.md', 'Digest', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]')",
+      "INSERT INTO inbox_folder_routes (automation_id, folder_id) VALUES (1, 3)",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'New mail', 'Two threads need you.', 'medium', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 3,
+          "kind": "owner",
+          "slug": "release",
+          "title": "Release",
+          "icon": "flag",
+          "parent_id": 1,
+          "position": 1,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 4,
+          "kind": "owner",
+          "slug": "blockers",
+          "title": "Blockers",
+          "icon": "",
+          "parent_id": 3,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 5,
+          "kind": "owner",
+          "slug": "deep",
+          "title": "Deep",
+          "icon": "",
+          "parent_id": 4,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 6,
+          "kind": "owner",
+          "slug": "team",
+          "title": "Team",
+          "icon": "",
+          "parent_id": 1,
+          "position": 2,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 7,
+          "kind": "owner",
+          "slug": "old",
+          "title": "Old",
+          "icon": "",
+          "parent_id": 1,
+          "position": 3,
+          "hidden": true,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 8,
+          "kind": "owner",
+          "slug": "old-child",
+          "title": "Old-Child",
+          "icon": "",
+          "parent_id": 7,
+          "position": 0,
+          "hidden": true,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "o1",
+          "folder_id": 3,
+          "card_kind": "artifact",
+          "title": "New mail",
+          "source_line": "Digest",
+          "preview": "Two threads need you.",
+          "stamp": "2026-10-01T09:00:05Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Digest",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "",
+          "body": "Two threads need you.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": []
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_reply_press_card",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (1, 'triage', 'personal', '/tmp/acme/automations/triage.md', 'Triage', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (1, 'create_target', 0, '{\"text\":\"Call Vasya\",\"reason\":\"r\"}', 'r', 'main', 1, '', '', 'turn-1', 'pending', '', '', '2026-09-04T10:00:00Z', '', '', '')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, actions_json, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'New mail', 'Two threads need you.', 'medium', '2026-10-01T09:00:05Z', '[{\"label\":\"Open\",\"kind\":\"link\",\"open\":\"https://example.com\"},{\"label\":\"Backlog\",\"kind\":\"reply\",\"reply\":\"backlog\",\"data\":{\"id\":\"A-1\"}}]', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 1
+        }
+      ],
+      "cards": [
+        {
+          "id": "o1",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "New mail",
+          "source_line": "Triage",
+          "preview": "Two threads need you.",
+          "stamp": "2026-10-01T09:00:05Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Triage",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "",
+          "body": "Two threads need you.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [
+            {
+              "index": 0,
+              "kind": "link",
+              "label": "Open",
+              "state": "enabled",
+              "detail": "",
+              "note": "",
+              "until": ""
+            },
+            {
+              "index": 1,
+              "kind": "reply",
+              "label": "Backlog",
+              "state": "enabled",
+              "detail": "ready",
+              "note": "",
+              "until": ""
+            }
+          ],
+          "ref_facts": []
+        },
+        {
+          "id": "a1",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_target",
+            "title": "Create a target",
+            "summary": "Call Vasya",
+            "args_sha256": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+            "status": "pending",
+            "error": "",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_label_automation_run",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (1, 'mail-summary', 'personal', '/tmp/acme/automations/mail-summary.md', 'Mail summary', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (2, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (3, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (4, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (5, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (6, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (7, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (8, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (9, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (10, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (11, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (12, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (1, 'create_target', 0, '{\"text\":\"Call Vasya\",\"reason\":\"r\"}', 'r', 'automation', 0, 'automation_run', '12', 'turn-1', 'pending', '', '', '2026-09-04T10:00:00Z', '', '', '')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 1
+        }
+      ],
+      "cards": [
+        {
+          "id": "a1",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "⚙ Mail summary · run #12",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_target",
+            "title": "Create a target",
+            "summary": "Call Vasya",
+            "args_sha256": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+            "status": "pending",
+            "error": "",
+            "proposer": "⚙ Mail summary · run #12",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_label_other_rows",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (1, 'digest', 'personal', '/tmp/acme/automations/digest.md', 'Digest', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (1, 'create_target', 0, '{\"text\":\"Call Vasya\",\"reason\":\"r\"}', 'r', 'main', 1, '', '', 'chat', 'pending', '', '', '2026-09-04T10:00:00Z', '', '', '')",
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (2, 'create_target', 0, '{\"text\":\"Call Vasya\",\"reason\":\"r\"}', 'r', 'main', 1, 'target', '1', 'target', 'pending', '', '', '2026-09-04T10:00:00Z', '', '', '')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 2,
+          "waiting": 2
+        }
+      ],
+      "cards": [
+        {
+          "id": "a1",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_target",
+            "title": "Create a target",
+            "summary": "Call Vasya",
+            "args_sha256": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+            "status": "pending",
+            "error": "",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        },
+        {
+          "id": "a2",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_target",
+            "title": "Create a target",
+            "summary": "Call Vasya",
+            "args_sha256": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+            "status": "pending",
+            "error": "",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_label_deleted_automation",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (1, 'create_target', 0, '{\"text\":\"Call Vasya\",\"reason\":\"r\"}', 'r', 'automation', 0, 'automation_run', '12', 'turn-1', 'pending', '', '', '2026-09-04T10:00:00Z', '', '', '')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 1
+        }
+      ],
+      "cards": [
+        {
+          "id": "a1",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "⚙ automation · run #12",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_target",
+            "title": "Create a target",
+            "summary": "Call Vasya",
+            "args_sha256": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+            "status": "pending",
+            "error": "",
+            "proposer": "⚙ automation · run #12",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_tracks_custom_and_auto",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO tracks (id, text, context, category, ownership, priority, tags, channel_ids, source_refs, has_updates, participants, requester_name, blocking, decision_summary, decision_options, sub_items, related_digest_ids, model, assignee_user_id, owner_user_id, requester_user_id, created_at, updated_at, origin, enabled, instruction) VALUES (1, 'Watch the launch', 'Discussed in standup', 'task', 'mine', 'medium', '[]', '[\"C001\"]', '[]', 0, '[]', '', '', '', '[]', '[]', '[]', 'haiku', '', '', '', '2026-11-16T08:00:00Z', '2026-11-16T08:00:00Z', 'custom', 1, 'old')",
+      "INSERT INTO tracks (id, text, context, category, ownership, priority, tags, channel_ids, source_refs, has_updates, participants, requester_name, blocking, decision_summary, decision_options, sub_items, related_digest_ids, model, assignee_user_id, owner_user_id, requester_user_id, created_at, updated_at) VALUES (2, 'Extracted', 'Discussed in standup', 'task', 'mine', 'medium', '[]', '[\"C001\"]', '[]', 0, '[]', '', '', '', '[]', '[]', '[]', 'haiku', '', '', '', '2026-11-16T08:00:00Z', '2026-11-16T08:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "tracks",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Track my threads",
+          "source_line": "",
+          "preview": "2 unread",
+          "stamp": "2026-11-16T08:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "tracks",
+            "items": [
+              {
+                "ref_kind": "track",
+                "id": 1,
+                "title": "Watch the launch",
+                "subtitle": "Track",
+                "preview": "",
+                "stamp": "2026-11-16T08:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              },
+              {
+                "ref_kind": "track",
+                "id": 2,
+                "title": "Extracted",
+                "subtitle": "Track",
+                "preview": "",
+                "stamp": "2026-11-16T08:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_tracks_both_stopped",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO tracks (id, text, context, category, ownership, priority, tags, channel_ids, source_refs, has_updates, participants, requester_name, blocking, decision_summary, decision_options, sub_items, related_digest_ids, model, assignee_user_id, owner_user_id, requester_user_id, created_at, updated_at, origin, enabled, instruction, dismissed_at) VALUES (1, 'Watch the launch', 'Discussed in standup', 'task', 'mine', 'medium', '[]', '[\"C001\"]', '[]', 0, '[]', '', '', '', '[]', '[]', '[]', 'haiku', '', '', '', '2026-11-16T08:00:00Z', '2026-11-16T08:00:00Z', 'custom', 1, 'old', '2026-11-16T09:00:00Z')",
+      "INSERT INTO tracks (id, text, context, category, ownership, priority, tags, channel_ids, source_refs, has_updates, participants, requester_name, blocking, decision_summary, decision_options, sub_items, related_digest_ids, model, assignee_user_id, owner_user_id, requester_user_id, created_at, updated_at, dismissed_at) VALUES (2, 'Extracted', 'Discussed in standup', 'task', 'mine', 'medium', '[]', '[\"C001\"]', '[]', 0, '[]', '', '', '', '[]', '[]', '[]', 'haiku', '', '', '', '2026-11-16T08:00:00Z', '2026-11-16T08:00:00Z', '2026-11-16T09:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "tracks",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Track my threads",
+          "source_line": "",
+          "preview": "",
+          "stamp": "2026-11-16T08:00:00Z",
+          "living": false,
+          "unread": false,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "tracks",
+            "items": [
+              {
+                "ref_kind": "track",
+                "id": 2,
+                "title": "Extracted",
+                "subtitle": "Track",
+                "preview": "",
+                "stamp": "2026-11-16T08:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": true,
+                "done": false,
+                "date": ""
+              },
+              {
+                "ref_kind": "track",
+                "id": 1,
+                "title": "Watch the launch",
+                "subtitle": "Track",
+                "preview": "",
+                "stamp": "2026-11-16T08:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": true,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true,
+    "steps": [
+      {
+        "name": "auto_restored",
+        "sql": [
+          "UPDATE tracks SET dismissed_at = '' WHERE id = 2"
+        ],
+        "when": "SELECT dismissed_at = '' FROM tracks WHERE id = 2",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            }
+          ],
+          "cards": [
+            {
+              "id": "tracks",
+              "folder_id": 1,
+              "card_kind": "legacy",
+              "title": "Track my threads",
+              "source_line": "",
+              "preview": "1 unread",
+              "stamp": "2026-11-16T08:00:00Z",
+              "living": false,
+              "unread": true,
+              "priority": "medium",
+              "pinned": false,
+              "blocks": "",
+              "body": "",
+              "body_clipped": false,
+              "link": "",
+              "content_hash": "",
+              "actions": [],
+              "ref_facts": [],
+              "legacy": {
+                "kind": "tracks",
+                "items": [
+                  {
+                    "ref_kind": "track",
+                    "id": 2,
+                    "title": "Extracted",
+                    "subtitle": "Track",
+                    "preview": "",
+                    "stamp": "2026-11-16T08:00:00Z",
+                    "end": "",
+                    "unread": true,
+                    "high": false,
+                    "stopped": false,
+                    "done": false,
+                    "date": ""
+                  },
+                  {
+                    "ref_kind": "track",
+                    "id": 1,
+                    "title": "Watch the launch",
+                    "subtitle": "Track",
+                    "preview": "",
+                    "stamp": "2026-11-16T08:00:00Z",
+                    "end": "",
+                    "unread": true,
+                    "high": false,
+                    "stopped": true,
+                    "done": false,
+                    "date": ""
+                  }
+                ],
+                "attention": []
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "desktop_feedtest_drawn_output",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (1, 'mail-summary', 'personal', '/tmp/acme/automations/mail-summary.md', 'Mail summary', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, content_hash, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'New mail', 'Two threads need you.', 'medium', '2026-10-01T09:00:05Z', 'h-drawn', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "o1",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "New mail",
+          "source_line": "Mail summary",
+          "preview": "Two threads need you.",
+          "stamp": "2026-10-01T09:00:05Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Mail summary",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "",
+          "body": "Two threads need you.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "h-drawn",
+          "actions": [],
+          "ref_facts": []
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_feedtest_action_ship_it",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (1, 'create_target', 0, '{\"text\":\"Ship it\",\"reason\":\"r\"}', 'r', 'main', 1, '', '', 'turn-1', 'pending', '', '', '2026-09-04T10:00:00Z', '', '', '')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 1
+        }
+      ],
+      "cards": [
+        {
+          "id": "a1",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "fe7b49bdd26d689cb65c67552d99b283ccce55bb0e9c2a5f4c9d30b6db52915e",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_target",
+            "title": "Create a target",
+            "summary": "Ship it",
+            "args_sha256": "fe7b49bdd26d689cb65c67552d99b283ccce55bb0e9c2a5f4c9d30b6db52915e",
+            "status": "pending",
+            "error": "",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_feedtest_triage_output",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (1, 'triage', 'personal', '/tmp/acme/automations/triage.md', 'Triage', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, content_hash, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'New mail', 'Two threads need you.', 'medium', '2026-10-01T09:00:05Z', 'h1', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "o1",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "New mail",
+          "source_line": "Triage",
+          "preview": "Two threads need you.",
+          "stamp": "2026-10-01T09:00:05Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Triage",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "",
+          "body": "Two threads need you.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "h1",
+          "actions": [],
+          "ref_facts": []
+        }
+      ]
+    },
+    "desktop": true
   }
 ]

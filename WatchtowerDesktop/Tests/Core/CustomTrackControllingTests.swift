@@ -31,6 +31,10 @@ final class CustomTrackControllingTests: XCTestCase {
         return try XCTUnwrap(pool.read { db in try TrackQueries.fetchByID(db, id: id) })
     }
 
+    private func track(_ id: Int) throws -> Track {
+        try XCTUnwrap(pool.read { db in try TrackQueries.fetchByID(db, id: id) })
+    }
+
     private func row(_ id: Int) throws -> Row {
         try XCTUnwrap(pool.read { db in try Row.fetchOne(db, sql: "SELECT * FROM tracks WHERE id = ?", arguments: [id]) })
     }
@@ -215,15 +219,17 @@ final class CustomTrackControllingTests: XCTestCase {
     /// seam once and nothing else writes it; an auto track is dismissed
     /// directly and never reaches the seam.
     func testStopWatchingSendsOnlyACustomTrackThroughTheSeam() async throws {
-        let custom = try customTrack()
-        let auto = try await pool.write { db in Int(try TestDatabase.insertTrack(db, text: "Extracted")) }
+        // Custom track 1 ("Watch the launch", collecting) and auto track 2 ("Extracted").
+        let tower = try FeedCaseTransport.seeded("desktop_tracks_custom_and_auto", pool: pool)
+        let custom = try track(1)
+        let auto = 2
         let suite = "CustomTrackControllingTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let fake = RecordingCustomTrackControls()
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), customTrackControls: fake,
                                       defaults: defaults)
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
         let autoTrack = try XCTUnwrap(vm.feed.tracks.map(\.track).first { $0.id == auto })
 
         await vm.stopWatching(custom)
@@ -239,20 +245,17 @@ final class CustomTrackControllingTests: XCTestCase {
     /// A stopped track is read into the Stopped fold only; Restore brings it
     /// back — a custom one through the seam (resume), an auto one directly.
     func testRestoreUndoesStopWatching() async throws {
-        let custom = try customTrack()
-        let auto = try await pool.write { db -> Int in
-            let id = Int(try TestDatabase.insertTrack(db, text: "Extracted"))
-            try TrackQueries.dismiss(db, id: id)
-            try TrackQueries.dismiss(db, id: custom.id)
-            return id
-        }
+        // Tracks 1 (custom) and 2 (auto), both stopped; Go's next feed once 2 is restored.
+        let tower = try FeedCaseTransport.seeded("desktop_tracks_both_stopped", pool: pool)
+        let custom = try track(1)
+        let auto = 2
         let suite = "CustomTrackControllingTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let fake = RecordingCustomTrackControls()
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), customTrackControls: fake,
                                       defaults: defaults)
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
         XCTAssertTrue(vm.feed.tracks.isEmpty)
         XCTAssertEqual(Set(vm.feed.stoppedTracks.map(\.track.id)), [custom.id, auto])
         let stoppedCustom = try XCTUnwrap(vm.feed.stoppedTracks.map(\.track).first { $0.id == custom.id })

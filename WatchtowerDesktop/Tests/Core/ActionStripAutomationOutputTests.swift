@@ -14,14 +14,6 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         let runID: Int64
     }
 
-    private func seedAutomation(_ pool: DatabasePool) async throws -> Seed {
-        try await pool.write { db in
-            let automationID = try TestDatabase.insertAutomation(db, slug: "mail-summary", name: "Mail summary")
-            let runID = try TestDatabase.insertAutomationRun(db, automationID: automationID)
-            return Seed(automationID: automationID, runID: runID)
-        }
-    }
-
     private func outputRow(_ pool: DatabasePool, _ id: Int64) throws -> Row? {
         try pool.read { db in
             try Row.fetchOne(db, sql: "SELECT * FROM automation_outputs WHERE id = ?", arguments: [id])
@@ -31,34 +23,14 @@ final class ActionStripAutomationOutputTests: XCTestCase {
     func testStripListsOpenInboxOutputs() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let seed = try await seedAutomation(pool)
-        let (unread, read, newer) = try await pool.write { db -> (Int64, Int64, Int64) in
-            try TestDatabase.insertAutomationOutput(
-                db, automationID: seed.automationID, runID: seed.runID, doneAt: "2026-10-01T10:00:00Z"
-            )
-            try TestDatabase.insertAutomationOutput(
-                db, automationID: seed.automationID, runID: seed.runID, dismissedAt: "2026-10-01T10:00:00Z"
-            )
-            // Backfilled by the migration: done_at = read_at.
-            try TestDatabase.insertAutomationOutput(
-                db, automationID: seed.automationID, runID: seed.runID,
-                readAt: "2026-10-01T10:00:00Z", doneAt: "2026-10-01T10:00:00Z"
-            )
-            let unread = try TestDatabase.insertAutomationOutput(
-                db, automationID: seed.automationID, runID: seed.runID, title: "Old", createdAt: "2026-10-01T09:00:00Z"
-            )
-            let read = try TestDatabase.insertAutomationOutput(
-                db, automationID: seed.automationID, runID: seed.runID, title: "Read",
-                createdAt: "2026-10-01T12:00:00Z", readAt: "2026-10-01T13:00:00Z"
-            )
-            let newer = try TestDatabase.insertAutomationOutput(
-                db, automationID: seed.automationID, runID: seed.runID, title: "New", createdAt: "2026-10-02T09:00:00Z"
-            )
-            return (unread, read, newer)
-        }
+        // Mail summary's run 1 wrote 1 (done), 2 (dismissed), 3 (read and done:
+        // the migration's backfill), 4 "Old" unread, 5 "Read" read, 6 "New" unread.
+        let tower = try FeedCaseTransport.seeded("desktop_output_lists_open", pool: pool)
+        let (unread, read, newer): (Int64, Int64, Int64) = (4, 5, 6)
+        let seed = Seed(automationID: 1, runID: 1)
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
 
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
 
         XCTAssertEqual(vm.outputRows.map(\.id), [newer, read, unread])
         XCTAssertEqual(vm.outputRows.map(\.isUnread), [true, false, true])
@@ -69,17 +41,14 @@ final class ActionStripAutomationOutputTests: XCTestCase {
     }
 
     func testDoneWritesOnlyDoneAt() async throws {
-        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
-
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let seed = try await seedAutomation(pool)
-        let id = try await pool.write { db in
-            try TestDatabase.insertAutomationOutput(db, automationID: seed.automationID, runID: seed.runID)
-        }
+        // Output 1, unread; Go's next feed once it is done.
+        let tower = try FeedCaseTransport.seeded("desktop_output_done", pool: pool)
+        let id: Int64 = 1
         let before = try outputRow(pool, id)
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
 
         await vm.markOutputDone(id)
 
@@ -96,17 +65,14 @@ final class ActionStripAutomationOutputTests: XCTestCase {
     }
 
     func testDismissWritesOnlyDismissedAt() async throws {
-        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
-
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let seed = try await seedAutomation(pool)
-        let id = try await pool.write { db in
-            try TestDatabase.insertAutomationOutput(db, automationID: seed.automationID, runID: seed.runID)
-        }
+        // Output 1, unread; Go's next feed once it is dismissed.
+        let tower = try FeedCaseTransport.seeded("desktop_output_dismissed", pool: pool)
+        let id: Int64 = 1
         let before = try outputRow(pool, id)
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
 
         await vm.dismissOutput(id)
 
@@ -125,13 +91,12 @@ final class ActionStripAutomationOutputTests: XCTestCase {
     func testOpeningWritesOnlyReadAt() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let seed = try await seedAutomation(pool)
-        let id = try await pool.write { db in
-            try TestDatabase.insertAutomationOutput(db, automationID: seed.automationID, runID: seed.runID)
-        }
+        // Output 1, unread.
+        let tower = try FeedCaseTransport.seeded("desktop_output_done", pool: pool)
+        let id: Int64 = 1
         let before = try outputRow(pool, id)
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
 
         await vm.select(.output(id))
 
@@ -156,17 +121,14 @@ final class ActionStripAutomationOutputTests: XCTestCase {
     }
 
     func testDoneAndDismissClearTheirSelection() async throws {
-        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
-
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let seed = try await seedAutomation(pool)
-        let (first, second) = try await pool.write { db -> (Int64, Int64) in
-            (try TestDatabase.insertAutomationOutput(db, automationID: seed.automationID, runID: seed.runID),
-             try TestDatabase.insertAutomationOutput(db, automationID: seed.automationID, runID: seed.runID))
-        }
+        // Outputs 1 and 2; Go's feeds once 2, then 1, are done, 3 is written and dismissed.
+        let tower = try FeedCaseTransport.seeded("desktop_output_two_closed_then_a_third", pool: pool)
+        let seed = Seed(automationID: 1, runID: 1)
+        let (first, second): (Int64, Int64) = (1, 2)
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
 
         await vm.select(.output(first))
         await vm.markOutputDone(second)
@@ -177,7 +139,7 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         let third = try await pool.write { db in
             try TestDatabase.insertAutomationOutput(db, automationID: seed.automationID, runID: seed.runID)
         }
-        await vm.refreshListingEverything()
+        await vm.refresh()
         await vm.select(.output(third))
         await vm.dismissOutput(third)
         XCTAssertNil(vm.selection)
@@ -187,16 +149,13 @@ final class ActionStripAutomationOutputTests: XCTestCase {
     /// Opening a card writes `read_at` under its own key: a Done pressed
     /// while that write still waits for the writer lands, it is not dropped.
     func testDoneWhileOpeningLands() async throws {
-        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
-
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let seed = try await seedAutomation(pool)
-        let id = try await pool.write { db in
-            try TestDatabase.insertAutomationOutput(db, automationID: seed.automationID, runID: seed.runID)
-        }
+        // Output 1, unread; Go's next feed once it is done.
+        let tower = try FeedCaseTransport.seeded("desktop_output_done", pool: pool)
+        let id: Int64 = 1
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
         // Hold the writer, so the opening write waits for it.
         let started = DispatchSemaphore(value: 0)
         let release = DispatchSemaphore(value: 0)
@@ -230,30 +189,13 @@ final class ActionStripAutomationOutputTests: XCTestCase {
     func testCardCarriesPressAndRecipeState() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let ids = try await pool.write { db -> (pressed: Int64, run: Int64, disabled: Int64, unconfirmed: Int64) in
-            let live = try TestDatabase.insertAutomation(db, slug: "live", name: "Live")
-            let run = try TestDatabase.insertAutomationRun(db, automationID: live)
-            let pressRun = try TestDatabase.insertAutomationRun(db, automationID: live, trigger: "reply")
-            let pressed = try TestDatabase.insertAutomationOutput(
-                db, automationID: live, runID: run, createdAt: "2026-10-01T09:00:03Z",
-                link: "https://example.com/a", actionsJSON: #"[{"label":"Yes","reply":"yes"}]"#,
-                pressedAction: 0, pressedRunID: pressRun, pressedAt: "2026-10-01T09:10:00Z"
-            )
-            let off = try TestDatabase.insertAutomation(db, slug: "off", name: "Off", enabled: false)
-            let offRun = try TestDatabase.insertAutomationRun(db, automationID: off)
-            let disabled = try TestDatabase.insertAutomationOutput(
-                db, automationID: off, runID: offRun, createdAt: "2026-10-01T09:00:02Z"
-            )
-            let new = try TestDatabase.insertAutomation(db, slug: "new", name: "New", confirmedHash: "")
-            let newRun = try TestDatabase.insertAutomationRun(db, automationID: new)
-            let unconfirmed = try TestDatabase.insertAutomationOutput(
-                db, automationID: new, runID: newRun, createdAt: "2026-10-01T09:00:01Z"
-            )
-            return (pressed, pressRun, disabled, unconfirmed)
-        }
+        // Live (1): output 1 of run 1, its "Yes" pressed by run 2; Off (2, disabled):
+        // output 2; New (3, unconfirmed): output 3.
+        let tower = try FeedCaseTransport.seeded("desktop_output_press_and_recipe_state", pool: pool)
+        let ids: (pressed: Int64, run: Int64, disabled: Int64, unconfirmed: Int64) = (1, 2, 2, 3)
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
 
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
 
         let cards = Dictionary(uniqueKeysWithValues: vm.outputRows.map { ($0.id, $0) })
         let pressed = try XCTUnwrap(cards[ids.pressed])
@@ -272,12 +214,11 @@ final class ActionStripAutomationOutputTests: XCTestCase {
     func testFailedWriteKeepsCard() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let seed = try await seedAutomation(pool)
-        let id = try await pool.write { db in
-            try TestDatabase.insertAutomationOutput(db, automationID: seed.automationID, runID: seed.runID)
-        }
+        // Output 1, unread.
+        let tower = try FeedCaseTransport.seeded("desktop_output_done", pool: pool)
+        let id: Int64 = 1
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
         try await pool.write { db in
             try db.execute(sql: """
                 CREATE TRIGGER refuse_output_update BEFORE UPDATE ON automation_outputs
@@ -297,17 +238,8 @@ final class ActionStripAutomationOutputTests: XCTestCase {
     func testRefreshIsAPureRead() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let seed = try await seedAutomation(pool)
-        try await pool.write { db in
-            try TestDatabase.insertAutomationOutput(db, automationID: seed.automationID, runID: seed.runID)
-            try TestDatabase.insertAgentAction(
-                db, surface: "automation", conversationID: 0, contextType: "automation_run", contextID: String(seed.runID)
-            )
-            try db.execute(sql: """
-                INSERT INTO reminders (message_ref, note, remind_at, status)
-                VALUES ('C1@1','call back','2000-01-01T00:00:00Z','pending')
-                """)
-        }
+        // Output 1, its run's proposal and a due reminder.
+        let tower = try FeedCaseTransport.seeded("desktop_output_with_run_proposal_and_reminder", pool: pool)
         let tables = ["agent_actions", "reminders", "automation_outputs", "automation_runs", "automations", "pipeline_runs",
                       "inbox_folders", "inbox_folder_state", "inbox_folder_routes"]
         let snapshot = {
@@ -320,8 +252,8 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         let before = try await snapshot()
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
 
-        await vm.refreshListingEverything()
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
+        await vm.refresh()
 
         let after = try await snapshot()
         XCTAssertEqual(after, before)
@@ -336,15 +268,12 @@ final class ActionStripAutomationOutputTests: XCTestCase {
     /// rewritten by a later run to `h2` before the owner presses.
     private func livingCardRewrittenUnderTheView(_ pool: DatabasePool) async throws
         -> (ActionStripViewModel, Int64) {
-        let seed = try await seedAutomation(pool)
-        let id = try await pool.write { db in
-            try TestDatabase.insertAutomationOutput(
-                db, automationID: seed.automationID, runID: seed.runID, body: "- Thread A",
-                blocksJSON: #"{"v":1,"blocks":[]}"#, outputKey: "threads", contentHash: "h1"
-            )
-        }
+        // Output 1 at h1; Go's next feed once a later run rewrote it to h2.
+        let tower = try FeedCaseTransport.seeded("desktop_output_living_rewritten", pool: pool)
+        let seed = Seed(automationID: 1, runID: 1)
+        let id: Int64 = 1
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
         XCTAssertEqual(vm.outputRows.first?.contentHash, "h1")
         try await pool.write { db in
             let run = try TestDatabase.insertAutomationRun(db, automationID: seed.automationID)
@@ -385,17 +314,13 @@ final class ActionStripAutomationOutputTests: XCTestCase {
 
     /// With the drawn hash the same writes land once, as before.
     func testDoneWithTheDrawnHashMarksOnce() async throws {
-        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
-
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let seed = try await seedAutomation(pool)
-        let id = try await pool.write { db in
-            try TestDatabase.insertAutomationOutput(db, automationID: seed.automationID, runID: seed.runID,
-                                                    outputKey: "threads", contentHash: "h1")
-        }
+        // Living output 1 at h1; Go's next feed once it is done.
+        let tower = try FeedCaseTransport.seeded("desktop_output_living_done", pool: pool)
+        let id: Int64 = 1
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
         await vm.select(.output(id))
         XCTAssertNotNil(try XCTUnwrap(outputRow(pool, id))["read_at"] as String?)
 

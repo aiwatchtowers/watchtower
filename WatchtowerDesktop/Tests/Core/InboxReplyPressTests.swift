@@ -8,17 +8,10 @@ import WatchtowerTestSupport
 /// for it (STRIP-02).
 @MainActor
 final class InboxReplyPressTests: XCTestCase {
-    private func seed(_ pool: DatabasePool) async throws -> Int64 {
-        try await pool.write { db in
-            let automationID = try TestDatabase.insertAutomation(db, slug: "triage", name: "Triage")
-            let runID = try TestDatabase.insertAutomationRun(db, automationID: automationID)
-            _ = try TestDatabase.insertAgentAction(db)
-            return try TestDatabase.insertAutomationOutput(
-                db, automationID: automationID, runID: runID,
-                actionsJSON: #"[{"label":"Open","kind":"link","open":"https://example.com"},"#
-                    + #"{"label":"Backlog","kind":"reply","reply":"backlog","data":{"id":"A-1"}}]"#
-            )
-        }
+    /// Triage's output 1 with an Open link and a Backlog reply button, and
+    /// an agent action (Go's case `desktop_reply_press_card`).
+    private func seed(_ pool: DatabasePool) throws -> (id: Int64, tower: FeedCaseTransport) {
+        (1, try FeedCaseTransport.seeded("desktop_reply_press_card", pool: pool))
     }
 
     private func dump(_ pool: DatabasePool) throws -> [String: [Row]] {
@@ -34,11 +27,11 @@ final class InboxReplyPressTests: XCTestCase {
     func testAuto09_ReplyPressOnlyQueues() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let id = try await seed(pool)
+        let (id, tower) = try seed(pool)
         let before = try dump(pool)
         let runner = FakeCLIRunner(stdout: Data(#"{"run_id":7,"daemon_running":true}"#.utf8))
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
 
         await vm.pressReply(outputID: id, action: 1, contentHash: "h1")
 
@@ -53,12 +46,12 @@ final class InboxReplyPressTests: XCTestCase {
     func testSecondPressWhileWritingIsDropped() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let id = try await seed(pool)
+        let (id, tower) = try seed(pool)
         let runner = FakeCLIRunner(stdout: Data(#"{"run_id":7,"daemon_running":true}"#.utf8))
         runner.blockUntilCancelled = true
         runner.returnDataOnCancelInsteadOfThrowing = true
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
 
         let first = Task { await vm.pressReply(outputID: id, action: 1, contentHash: "h1") }
         await runner.untilInvocations(1)
@@ -76,10 +69,10 @@ final class InboxReplyPressTests: XCTestCase {
     func testCLIFailureKeepsCardAndSaysWhy() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let id = try await seed(pool)
+        let (id, tower) = try seed(pool)
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: Sent — run #7\n"))
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
 
         await vm.pressReply(outputID: id, action: 1, contentHash: "h1")
 
@@ -92,11 +85,11 @@ final class InboxReplyPressTests: XCTestCase {
     func testChangedCardRefusalSaysLookAgain() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let id = try await seed(pool)
+        let (id, tower) = try seed(pool)
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(
             code: 1, stderr: "Error: This card changed — look again\n"))
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
 
         await vm.pressReply(outputID: id, action: 1, contentHash: "stale")
 
@@ -109,10 +102,10 @@ final class InboxReplyPressTests: XCTestCase {
     func testCLIRefusalDropsTheErrorPrefix() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let id = try await seed(pool)
+        let (id, tower) = try seed(pool)
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: Sent — run #7\n"))
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
 
         await vm.pressReply(outputID: id, action: 1, contentHash: "h1")
 

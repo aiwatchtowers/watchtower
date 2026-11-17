@@ -80,6 +80,21 @@ package final class FeedCaseTransport: TowerTransport, @unchecked Sendable {
         }
     }
 
+    /// The case's feed for a test whose own setUp seeded the rows the case
+    /// mirrors: throws unless the database's folder tree is the feed's.
+    package func mirroredFeed() throws -> Feed {
+        let feed = current().feed
+        let rows = try pool.read { db in
+            try Row.fetchAll(db, sql: "SELECT id, kind, parent_id, slug, title, position FROM inbox_folders ORDER BY id")
+                .map { "\($0["id"] as Int64) \($0["kind"] as String) \(($0["parent_id"] as Int64?) ?? 0) "
+                    + "\($0["slug"] as String) \($0["title"] as String) \($0["position"] as Int)" }
+        }
+        let folders = feed.folders.sorted { $0.id < $1.id }
+            .map { "\($0.id) \($0.kind.rawValue) \($0.parentID ?? 0) \($0.slug) \($0.title) \($0.position)" }
+        guard rows == folders else { throw FixtureError.notMirrored(fixture.name, rows: rows, feed: folders) }
+        return feed
+    }
+
     /// Makes step `name`'s write on the test's database (the write the CLI
     /// or another process makes in the case).
     package func write(_ name: String) throws {
@@ -145,12 +160,14 @@ package final class FeedCaseTransport: TowerTransport, @unchecked Sendable {
         case noCase(String)
         case notDesktop(String)
         case noStep(String)
+        case notMirrored(String, rows: [String], feed: [String])
 
         package var description: String {
             switch self {
             case let .noCase(name): "inbox_feed_cases.json has no case \(name)"
             case let .notDesktop(name): "case \(name) is not marked \"desktop\": true"
             case let .noStep(name): "the case has no SQL step \(name)"
+            case let .notMirrored(name, rows, feed): "case \(name) does not mirror the test's folders: \(rows) vs \(feed)"
             }
         }
     }

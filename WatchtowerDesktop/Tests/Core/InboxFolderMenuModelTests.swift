@@ -1,5 +1,6 @@
 import XCTest
 import GRDB
+import WatchtowerInterface
 @testable import WatchtowerCore
 import WatchtowerTestSupport
 
@@ -66,6 +67,12 @@ final class InboxFolderMenuModelTests: XCTestCase {
                 #"{"revision":8,"folder":\#(Self.folderJSON(99))}"#
             }
         }
+    }
+
+    /// Go's feed over setUp's rows (the case mirrors them): the counts the
+    /// menu shows are the tower's.
+    private func towerFeed() throws -> Feed {
+        try FeedCaseTransport("desktop_folders_menu_tree", pool: XCTUnwrap(pool)).mirroredFeed()
     }
 
     private func setRevision(_ revision: Int64) throws {
@@ -419,9 +426,8 @@ final class InboxFolderMenuModelTests: XCTestCase {
     // MARK: - Delete, selection, hidden
 
     func testDeleteSummaryCountsFromTheTree() async throws {
-        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
-
         let model = await model(answering())
+        model.towerFeed = try towerFeed()
 
         model.askDelete(ids.release)
 
@@ -487,9 +493,8 @@ final class InboxFolderMenuModelTests: XCTestCase {
     }
 
     func testRowsCarryDepthsCountsAndCollapse() async throws {
-        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
-
         let model = await model(answering())
+        model.towerFeed = try towerFeed()
 
         let rows = model.content.rows
         XCTAssertEqual(rows.first { $0.id == ids.deep }?.depth, 3)
@@ -521,7 +526,7 @@ final class InboxFolderMenuModelTests: XCTestCase {
             }
         }
         let strip = ActionStripViewModel(dbPool: pool, cliRunner: cli)
-        await strip.refreshListingEverything()
+        await strip.refresh()
         let menu = strip.folderMenu
         menu.select(ids.team)
         menu.beginCreate(parent: nil)
@@ -533,7 +538,7 @@ final class InboxFolderMenuModelTests: XCTestCase {
         await gate.open()
         await write.value
         strip.setOnScreen(true)
-        await strip.refreshListingEverything()
+        await strip.refresh()
 
         XCTAssertTrue(strip.folderMenu === menu)
         XCTAssertTrue(strip.folderMenu.tree.folders.contains { $0.slug == "acme" })
@@ -543,7 +548,7 @@ final class InboxFolderMenuModelTests: XCTestCase {
 
     func testStripRefreshReadsTheMenuAndApprovalsFeature() async {
         let strip = ActionStripViewModel(dbPool: pool, cliRunner: answering())
-        await strip.refreshListingEverything()
+        await strip.refresh()
         XCTAssertEqual(strip.folderMenu.tree.revision, 7)
         strip.disabledFeatures = [ActionStripViewModel.approvalsFeatureID]
         XCTAssertFalse(strip.folderMenu.content.approvalsEnabled)

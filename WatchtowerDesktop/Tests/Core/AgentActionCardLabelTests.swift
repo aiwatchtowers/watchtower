@@ -10,17 +10,12 @@ final class AgentActionCardLabelTests: XCTestCase {
     func testAutomationRowGetsLabel() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let actionID = try await pool.write { db -> Int64 in
-            let automationID = try TestDatabase.insertAutomation(db, slug: "mail-summary", name: "Mail summary")
-            var runID: Int64 = 0
-            while runID < 12 { runID = try TestDatabase.insertAutomationRun(db, automationID: automationID) }
-            return try TestDatabase.insertAgentAction(
-                db, surface: "automation", conversationID: 0, contextType: "automation_run", contextID: "12"
-            )
-        }
+        // Mail summary's runs 1–12; action 1 proposed by run 12.
+        let tower = try FeedCaseTransport.seeded("desktop_label_automation_run", pool: pool)
+        let actionID: Int64 = 1
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
 
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
 
         XCTAssertEqual(vm.actionLabels[actionID], "⚙ Mail summary · run #12")
         XCTAssertNil(vm.lastError)
@@ -29,18 +24,13 @@ final class AgentActionCardLabelTests: XCTestCase {
     func testOtherRowsHaveNoLabel() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let ids = try await pool.write { db -> [Int64] in
-            let automationID = try TestDatabase.insertAutomation(db)
-            let runID = try TestDatabase.insertAutomationRun(db, automationID: automationID)
-            return [
-                try TestDatabase.insertAgentAction(db, turnID: "chat"),
-                // Same id in context_id, different context: no label.
-                try TestDatabase.insertAgentAction(db, contextType: "target", contextID: String(runID), turnID: "target")
-            ]
-        }
+        // Run 1; action 1 from a chat, action 2 with run 1's id in context_id
+        // but another context: no label.
+        let tower = try FeedCaseTransport.seeded("desktop_label_other_rows", pool: pool)
+        let ids: [Int64] = [1, 2]
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
 
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
 
         XCTAssertEqual(vm.actionRows.count, 2)
         for id in ids { XCTAssertNil(vm.actionLabels[id]) }
@@ -49,14 +39,12 @@ final class AgentActionCardLabelTests: XCTestCase {
     func testDeletedAutomationFallsBackToRunOnly() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let actionID = try await pool.write { db in
-            try TestDatabase.insertAgentAction(
-                db, surface: "automation", conversationID: 0, contextType: "automation_run", contextID: "12"
-            )
-        }
+        // Action 1 proposed by run 12 of an automation that is gone.
+        let tower = try FeedCaseTransport.seeded("desktop_label_deleted_automation", pool: pool)
+        let actionID: Int64 = 1
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
 
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
 
         XCTAssertEqual(vm.actionLabels[actionID], "⚙ automation · run #12")
     }
