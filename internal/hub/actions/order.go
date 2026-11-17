@@ -332,7 +332,7 @@ func (p *Processor) apply(ctx context.Context, b mailbox, r record, o secure.Ope
 	if run {
 		p.contact(now) // admitted: the phone was in touch
 	}
-	if run && reg.opts.NonIdempotent {
+	if run && reg.opts.nonIdempotent(a) {
 		claimed, err := p.claim(ctx, b, r, o, a, key, plain, reg.opts.ReceivedEcho, now, ps)
 		if err != nil {
 			return err

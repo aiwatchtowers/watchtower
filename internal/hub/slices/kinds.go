@@ -23,6 +23,10 @@ const (
 	KindChatFeed    Kind = "chat_feed"
 	KindChatPage    Kind = "chat_page"
 	KindChatSearch  Kind = "chat_search"
+	// KindInboxFolder and KindInboxCard are the phone Inbox (#1170): one
+	// record per folder and per card of inbox.feed.
+	KindInboxFolder Kind = "inbox_folder"
+	KindInboxCard   Kind = "inbox_card"
 )
 
 // AllKinds is the Kit's SliceKind.allCases, in its order. A new Kit kind is
@@ -33,7 +37,7 @@ var AllKinds = []Kind{
 	"slack_account", "google_account", "jira_account", KindHeartbeat, KindDeviceGrant, "recording_job",
 	"workbench", "workbench_target", "workbench_comment", "terminal_session", "owner_ask", "session_report",
 	"session_timeline", KindAskAlert, "permission_request", KindSessionChat, KindChatList, KindChatFeed,
-	KindChatPage, KindChatSearch,
+	KindChatPage, KindChatSearch, KindInboxFolder, KindInboxCard,
 }
 
 // UrgentKinds is what the owner waits for at once (the Swift hub's

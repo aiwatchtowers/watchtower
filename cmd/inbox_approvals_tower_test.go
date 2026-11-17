@@ -50,7 +50,7 @@ func TestTowerActDeps_ApprovalWritersFireTheHook(t *testing.T) {
 			require.False(t, d.HasApprovalHook())
 
 			var r tower.Registry
-			commands.RegisterAll(&r, commands.Deps{Act: towerActDeps(cfg, d, func() {})})
+			commands.RegisterAll(&r, commands.Deps{Act: towerActDeps(cfg, d, func() {}, nil)})
 			require.True(t, d.HasApprovalHook(), "towerActDeps hooks the tower's handle")
 			tw := tower.New(d, tower.Options{Registry: &r})
 

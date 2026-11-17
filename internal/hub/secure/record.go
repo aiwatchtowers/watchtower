@@ -137,7 +137,7 @@ var (
 		"slack_account", "google_account", "jira_account", heartbeatName, "recording_job", "workbench",
 		"workbench_target", "workbench_comment", "terminal_session", "owner_ask", "session_report",
 		"session_timeline", "permission_request", "session_chat", "chat_list", "chat_feed", "chat_page", "chat_search",
-		"transport",
+		"inbox_folder", "inbox_card", "transport",
 	}
 	relayKinds = []string{"action", "recording_upload", "chat_attachment", "device", "control"}
 )
