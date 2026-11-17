@@ -162,6 +162,53 @@ struct DesignKitChatStyle: ChatUIStyle {
     }
 
     private static let errorFillOpacity = 0.08
+
+    // MARK: The approval card (unified chat T15): the Mac card's look on every surface
+
+    /// The Mac card's accent tint, radius and padding; outlined (the turn waits on it) in the waiting tone.
+    func approvalCard(_ content: AnyView, outlined: Bool) -> AnyView {
+        AnyView(
+            content
+                .padding(Spacing.cozy)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.accentColor.opacity(Self.approvalFillOpacity),
+                            in: RoundedRectangle(cornerRadius: Radius.container))
+                .overlay {
+                    if outlined {
+                        RoundedRectangle(cornerRadius: Radius.container).strokeBorder(Tone.warning, lineWidth: Stroke.selection)
+                    }
+                }
+        )
+    }
+
+    private static let approvalFillOpacity = 0.06
+
+    /// The external or checklist icon, the title and the status, in caption type.
+    func approvalHeader(_ header: ChatApprovalHeader) -> AnyView {
+        AnyView(HStack(spacing: Spacing.compact) {
+            Image(systemName: header.external ? "arrow.up.right.square" : "checklist")
+                .foregroundStyle(Color.accentColor)
+            Text(header.title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Spacer()
+            Text(header.status)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("agentAction.status")
+        })
+    }
+
+    /// The system's prominent Approve and plain Reject, as the Mac card always drew them. The stock prominent style is
+    /// the card's lint-baseline debt, kept so the T15 move stays byte-identical (`.kitPrimary` would change the
+    /// disabled "Approve & send"); switching is the owner's call.
+    func approvalButton(_ title: String, prominent: Bool, action: @escaping () -> Void) -> AnyView {
+        guard prominent else { return AnyView(Button(title, action: action)) }
+        return AnyView(Button(title, action: action)
+            .buttonStyle(.borderedProminent))
+    }
+
+    func approvalSlackText(_ text: String) -> AnyView {
+        AnyView(Text(text).font(.callout).fixedSize(horizontal: false, vertical: true))
+    }
 }
 
 extension View {

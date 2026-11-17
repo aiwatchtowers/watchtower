@@ -47,6 +47,8 @@ public struct ChatFeedContext {
     /// The feed's flat actions; the ones no approval part shows are drawn after the last message.
     public var actions: [ChatFeed.Action]
     public var isTurnRunning: Bool
+    /// The turn running now: an approval card it waits on is outlined.
+    public var runningTurnID: String?
     public var hasEarlier: Bool
     /// A subtle line while the feed is stale (events were lost; the fresh snapshot is on its way).
     public var staleLine: String?
@@ -98,7 +100,8 @@ public struct ChatFeedContext {
         rowActions: ChatRowActions = ChatRowActions(),
         messageAccessory: ((ChatFeed.Message) -> AnyView?)? = nil,
         footer: AnyView? = nil,
-        focusMessageID: Int64? = nil
+        focusMessageID: Int64? = nil,
+        runningTurnID: String? = nil
     ) {
         self.provider = provider
         self.artifacts = artifacts
@@ -112,6 +115,7 @@ public struct ChatFeedContext {
         self.messageAccessory = messageAccessory
         self.footer = footer
         self.focusMessageID = focusMessageID
+        self.runningTurnID = runningTurnID
     }
 }
 
@@ -245,6 +249,10 @@ public struct ChatFeedRows: View {
                 heading
             }
             rowView(row).id(row.id)
+            if case let .message(_, parts) = row, let approveAll = context.partActions.approvals.approveAll,
+               let turn = ApproveAllRow.turn(of: approvalActions(parts)) {
+                ApproveAllRow(turnID: turn, approveAll: approveAll)
+            }
             if case let .message(message, _) = row, let accessory = context.messageAccessory?(message) {
                 accessory
             }
@@ -291,8 +299,19 @@ public struct ChatFeedRows: View {
             artifacts: context.artifacts,
             isAnswerable: ChatFeedLayout.isAnswerable(message.id, in: messages, isTurnRunning: context.isTurnRunning),
             answerText: ChatFeedLayout.ownerReply(after: message.id, in: messages),
+            runningTurnID: context.runningTurnID,
             actions: context.partActions
         )
+    }
+
+    /// A reply's approval parts as the cards draw them (the screen's row, else the payload).
+    private func approvalActions(_ parts: [ChatPart]) -> [ChatAgentAction] {
+        let services = context.partActions.approvals
+        return parts.compactMap { part in
+            guard part.kind == ChatPartKind.approval,
+                  let payload = try? part.decodePayload(ChatApprovalPayload.self) else { return nil }
+            return services.resolve?(payload) ?? ChatAgentAction(payload: payload)
+        }
     }
 
     private static let placeholder = ChatFeed.Message(id: 0, role: "assistant", text: "", createdAt: .distantPast)

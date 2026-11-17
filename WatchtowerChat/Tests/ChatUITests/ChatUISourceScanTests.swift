@@ -67,7 +67,18 @@ final class ChatUISourceScanTests: XCTestCase {
             "Platform/macOS/ArtifactPrinter.swift",
             "Platform/macOS/SandboxedHTMLGlue.swift",
             "Platform/macOS/PresentWindow.swift",
-            "Platform/iOS/SandboxedArtifactWebView.swift"
+            "Platform/iOS/SandboxedArtifactWebView.swift",
+            // The approval card both devices draw (unified chat T15): its effects go through the injected services.
+            "Parts/ApprovalPartView.swift",
+            "Parts/Approval/AgentActionCard.swift",
+            "Parts/Approval/AgentActionCard+Decision.swift",
+            "Parts/Approval/AgentActionCard+Slack.swift",
+            "Parts/Approval/AgentActionCard+Confluence.swift",
+            "Parts/Approval/AgentActionCard+Connector.swift",
+            "Parts/Approval/ApprovalServices.swift",
+            "Parts/Approval/ApproveAllRow.swift",
+            "Platform/macOS/ConnectorInputEditor+Mac.swift",
+            "Platform/iOS/ConnectorInputEditor+Phone.swift"
         ]
         for file in files {
             let text = try String(contentsOf: ChatUIFixtures.chatUISources.appendingPathComponent(file), encoding: .utf8)

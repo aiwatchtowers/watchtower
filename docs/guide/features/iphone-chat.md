@@ -42,7 +42,7 @@ Touch and hold your own message for **Edit**. On the last answer, **Regenerate**
 ### Approve what the assistant wants to do
 <!-- learn: none -->
 
-When the assistant proposes a write (a Slack message, a Jira comment), the answer shows an orange card with what it will do, **Approve** and **Reject**. Approving needs the permission to **Answer permission prompts from this phone** on the Mac; without it the card says **Approve on the Mac**. If the action changed since the phone showed it, you see **The action changed — look again** and decide again.
+When the assistant proposes a write (a Slack message, a Jira comment), the answer shows an orange card with what it will do, **Approve** and **Reject**. Approving needs the permission to **Answer permission prompts from this phone** on the Mac; without it the card says **Approve on the Mac**. If the action changed since the phone showed it, you see **The action changed — look again** and decide again. The card is the one the Mac shows: who a Slack message goes to, a Jira issue's fields, the changes to a Confluence page, and the result once it ran. Editing the text first, **Approve all**, **Retry** and **Dismiss** stay on the Mac.
 
 ### Artifacts and sources
 <!-- learn: none -->

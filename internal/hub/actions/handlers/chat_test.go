@@ -490,6 +490,26 @@ func TestChatActionAnswer_StaleHashRefused(t *testing.T) {
 	}
 }
 
+// TestChatActionAnswer_RepeatedApproveAnswersAlreadyApproved: a phone whose
+// relay dropped after its approve went sends it again; the second answer
+// reads "Already approved" and never runs the action twice (#1822 T15).
+func TestChatActionAnswer_RepeatedApproveAnswersAlreadyApproved(t *testing.T) {
+	c := newChatEnv(t, false)
+	id, sum := c.chatAction("claude_ai_connector_call", "pending")
+	answer := map[string]any{"action_id": id, "decision": "approve", "args_sha256": sum}
+	wantOutcome(t, c.run("chat_action_answer", answer), wire.StatusApplied, "")
+	c.h.WaitChat()
+	decidedAt := c.scalar(`SELECT decided_at FROM agent_actions WHERE id = ?`, id)
+	out := c.run("chat_action_answer", answer)
+	wantOutcome(t, out, wire.StatusFailed, reasonNotPending)
+	if out.Message != "Already approved" || out.Result["status"] != "approved" {
+		t.Fatalf("second approve: message %q result %+v", out.Message, out.Result)
+	}
+	if got := c.scalar(`SELECT decided_at FROM agent_actions WHERE id = ?`, id); got != decidedAt {
+		t.Fatalf("decided again: %q then %q", decidedAt, got)
+	}
+}
+
 func TestChatActionAnswer_DeadSessionRowIsFinal(t *testing.T) {
 	c := newChatEnv(t, false)
 	id, sum := c.chatAction("claude_ai_connector_call", "pending")
