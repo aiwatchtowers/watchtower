@@ -29,6 +29,9 @@ func (t *Tower) Call(ctx context.Context, req api.Request, o Origin) api.Respons
 		return t.fail(resp, req.Command, err)
 	}
 	c := &Ctx{DB: t.db, Origin: o, Now: t.opts.Now, tower: t, command: req.Command, spec: cmd.Spec}
+	if cmd.Spec.Read && t.opts.ReadDB != nil {
+		c.DB = t.opts.ReadDB
+	}
 	if cmd.Spec.Read || cmd.Spec.Watch {
 		out, err := run(ctx, c)
 		if err != nil {
