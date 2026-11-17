@@ -89,6 +89,8 @@ public struct ChatComposerView: View {
                     }
                 }
             }
+            // The phone's model and project chips come first, as before the shared composer.
+            if ComposerMetrics.accessoryAboveField { accessorySlot }
             if !model.quotes.isEmpty {
                 QuoteBatchView(
                     quotes: model.quotes,
@@ -98,7 +100,6 @@ public struct ChatComposerView: View {
                     onRemove: { id in model.quotes.removeAll { $0.id == id } }
                 )
             }
-            if ComposerMetrics.accessoryAboveField { accessorySlot }
             ComposerChipsRow(
                 mentions: picker.mentions,
                 skill: picker.skill,
@@ -116,9 +117,11 @@ public struct ChatComposerView: View {
         .accessibilityIdentifier("chat.composer")
     }
 
-    /// The Mac shows the composer's notice as the status line's error over the field; the phone shows its line under.
+    /// The Mac shows the composer's notice (or why Send is off over the length cap) as the status line's error over
+    /// the field; the phone shows its line under.
     private var status: ChatComposerStatus? {
         guard ComposerMetrics.noticeAsStatus else { return nil }
+        if !model.fits { return .error(ChatComposerModel.overLimitLine) }
         return (model.notice ?? conversation.notice).map(ChatComposerStatus.error)
     }
 

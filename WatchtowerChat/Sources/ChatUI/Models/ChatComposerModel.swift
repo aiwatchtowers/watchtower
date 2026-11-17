@@ -33,9 +33,15 @@ public final class ChatComposerModel {
     public static let sendLabel = "Send"
     public static let stopLabel = "Stop"
     public static let retryLabel = "Retry"
+    /// A file whose `attach` got no answer (the chat could not be reached); the message itself may still go.
+    public static let attachUnreachableLine = "Couldn't reach Watchtower to attach it."
 
     public let conversation: ChatConversationModel
-    public var draft = ""
+    public var draft = "" {
+        // A draft changed away from an unanswered send is a new message: typing the same words again later is a new
+        // send too, never the old turn (final review M1).
+        didSet { if let sent = unanswered?.content.draft, draft != sent { unanswered = nil } }
+    }
     public var quotes: [ChatQuoteDraft] = []
     public private(set) var attachments: [ChatComposerAttachment] = []
     /// The `@` and `/` picker: its rows, and the mentions and skill picked for the draft.
@@ -75,6 +81,8 @@ public final class ChatComposerModel {
     /// The last send the engine never answered, and what it carried: Send again with the same content reuses its
     /// `client_key`, so the engine answers the first turn instead of starting a second (final review M1).
     @ObservationIgnored private var unanswered: (key: String, content: SentContent)?
+    /// The last import refused while a send waited for its files.
+    @ObservationIgnored private var lastImportRefusal: String?
 
     /// What a send carries, to tell a resend of the same message from a new one.
     private struct SentContent: Equatable {
@@ -140,12 +148,13 @@ public final class ChatComposerModel {
         defer { isSending = false }
         var importRefusal: String?
         if !importing.isEmpty {
-            // The files dropped or pasted just before Send go with it; a refused one leaves its reason.
-            let before = notice
+            // The files dropped or pasted just before Send go with it; a refused one leaves its reason, which stays
+            // after the message went.
+            lastImportRefusal = nil
             isWaitingForAttachments = true
             await withCheckedContinuation { importWaiters.append($0) }
             isWaitingForAttachments = false
-            if notice != before { importRefusal = notice }
+            importRefusal = lastImportRefusal
         }
         let sentDraft = draft
         let liveMentions = ComposerPickerModel.liveMentions(text: draft, mentions: mentions)
@@ -259,11 +268,19 @@ public final class ChatComposerModel {
             case .applied:
                 break
             case let .refused(code, message):
-                notice = "\(name): " + ChatConversationModel.refusalLine(code: code, message: message)
+                refuseImport(name, ChatConversationModel.refusalLine(code: code, message: message))
             }
         } catch {
-            notice = ChatConversationModel.couldNotSend
+            // The host went away before it answered: the file is not attached; nothing else failed.
+            refuseImport(name, Self.attachUnreachableLine)
         }
+    }
+
+    /// A file that was not attached: the line names it and says why.
+    private func refuseImport(_ name: String, _ reason: String) {
+        let line = "\(name): " + reason
+        notice = line
+        lastImportRefusal = line
     }
 
     /// Drops an attachment from the draft (the engine deletes the stored file).

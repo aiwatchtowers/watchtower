@@ -183,4 +183,43 @@ final class ChatComposerModelPickerTests: XCTestCase {
         XCTAssertTrue(composer.importing.isEmpty)
         XCTAssertEqual(composer.notice?.contains("acme-report.pdf"), true, "the refused file is named")
     }
+
+    /// The host goes away while a send waits for a file (I2): the message still goes, and the line names the file
+    /// that was not attached and never says the send failed.
+    func testHostGoneDuringImportNamesTheFileAndNotTheSend() async {
+        let gate = Gate()
+        client.respond { _ in
+            await gate.wait()
+            throw FakeChatClient.Dropped()
+        }
+        let attach = Task { await composer.attach(.path("/tmp/acme-report.pdf")) }
+        while composer.importing.isEmpty { await Task.yield() }
+        _ = await client.nextOp()
+        composer.draft = "Here is the report"
+        client.respond { _ in Self.started }
+        let send = Task { await composer.send() }
+        while !composer.isWaitingForAttachments { await Task.yield() }
+        await gate.release()
+        await attach.value
+        await send.value
+        XCTAssertEqual(turnRequests().last?.attachmentIDs, [])
+        XCTAssertEqual(composer.draft, "", "the message went")
+        XCTAssertEqual(composer.notice, "acme-report.pdf: " + ChatComposerModel.attachUnreachableLine)
+        XCTAssertNotEqual(composer.line, ChatConversationModel.couldNotSend)
+        XCTAssertFalse(composer.line?.contains("send") ?? false)
+    }
+
+    /// A draft cleared after a lost answer and typed again later is a new message: a new key, never the old turn.
+    func testRetypedDraftAfterClearingGetsNewKey() async {
+        conversation.start()
+        composer.draft = "Ship it"
+        await loseAnswer()
+        composer.draft = ""
+        composer.draft = "Ship it"
+        client.respond { _ in Self.started }
+        await composer.send()
+        let keys = turnRequests().map(\.clientKey)
+        XCTAssertEqual(keys.count, 3)
+        XCTAssertNotEqual(keys[2], keys[0])
+    }
 }

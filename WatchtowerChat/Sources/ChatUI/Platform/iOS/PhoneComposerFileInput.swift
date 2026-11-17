@@ -14,6 +14,8 @@ enum ComposerMetrics {
     static let rowVertical: CGFloat = 0
     static let rowSpacing: CGFloat = Spacing.regular
     static let chipsInset: CGFloat = 0
+    /// The gap between the draft's file pills (mockup 2b).
+    static let attachmentChipSpacing: CGFloat = Spacing.small
     /// The composer's line (a hold, a refusal, the edit mode) shows under the field.
     static let noticeAsStatus = false
     /// The model and project chips sit over the field.

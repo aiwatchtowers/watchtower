@@ -157,6 +157,15 @@ final class ComposerPickerModelTests: XCTestCase {
     }
 
     func testReferenceTokensAndInsertionText() async {
+        let everyKind = [
+            ChatEntityHit(kind: "person", id: "1:U1", label: "Anna"), ChatEntityHit(kind: "channel", id: "1:C1", label: "#pay"),
+            ChatEntityHit(kind: "jira", id: "PAY-1", label: "PAY-1"), ChatEntityHit(kind: "linear", id: "ENG-1", label: "ENG-1"),
+            ChatEntityHit(kind: "target", id: "5", label: "Ship"), ChatEntityHit(kind: "track", id: "9", label: "Rev")
+        ]
+        let all = ComposerPickerModel { _ in everyKind }
+        await update(all, "@x", 2)
+        XCTAssertEqual(all.items.map(\.id),
+                       ["person:1:U1", "channel:1:C1", "jira:PAY-1", "linear:ENG-1", "target:5", "track:9"])
         let model = ComposerPickerModel { _ in [ChatEntityHit(kind: "channel", id: "1:C1", label: "#pay")] }
         await update(model, "@p", 2)
         XCTAssertEqual(model.items.map(\.id), ["channel:1:C1"])

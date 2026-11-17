@@ -18,8 +18,9 @@ enum ComposerMetrics {
     static let rowInset: CGFloat = 12
     static let rowVertical: CGFloat = 8
     static let rowSpacing: CGFloat = 6
-    /// The attachment chips.
+    /// The attachment chips, and the gap between them.
     static let chipsInset: CGFloat = Spacing.medium
+    static let attachmentChipSpacing: CGFloat = Spacing.compact
     /// The composer's notice shows as the status line's error above the field; nothing shows under it.
     static let noticeAsStatus = true
     /// The routing accessory sits under the field.

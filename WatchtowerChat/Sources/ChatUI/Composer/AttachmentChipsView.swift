@@ -88,7 +88,7 @@ public struct AttachmentChipsView: View {
 
     public var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Spacing.compact) {
+            HStack(spacing: ComposerMetrics.attachmentChipSpacing) {
                 ForEach(chips.indices, id: \.self) { index in
                     style.attachmentChip(chips[index])
                 }
