@@ -20,8 +20,9 @@ import (
 
 // The chat.* tower commands (spec 2026-11-15-mobile-inbox-design §8): every
 // conversation-level chat write the Desktop made through GRDB, ported to Go
-// and pinned with its Swift writer by testdata/chat_writes.json until Task
-// 18 deletes the Swift writers. A turn's own rows are not here: `ai session
+// and pinned by testdata/chat_writes.json (the golden the deleted Swift
+// writers were checked against); since Task 18 the Desktop writes no chat
+// row itself. A turn's own rows are not here: `ai session
 // --persist` writes them. Each command is a guarded write: its rows and its
 // ledger row commit in one transaction (tower.Ctx.Write); files are written
 // before it and removed after it, never inside it.
@@ -51,7 +52,38 @@ const (
 	sentenceEmptyComment = "Write a comment first."
 	sentenceEmptyQuote   = "Select the text to comment on."
 	sentenceLiveSlack    = "This chat used Live Slack, so its artifacts can't be kept in Knowledge."
+	sentenceEmbeddedOnly = "This chat's replies are written by its own session."
 )
+
+// errNotEmbedded: a chat.reply.finish / chat.message.append for a chat that
+// is not an embedded (context) chat — the main chat's rows are its
+// session's alone.
+var errNotEmbedded = errors.New("not an embedded chat")
+
+// embeddedOnly is what chat.reply.finish and chat.message.append accept: the
+// Mac (over its socket) writing an embedded chat's notice or reply end —
+// never the hub's `chat` grant, and never a main chat's reply (review M3).
+func embeddedOnly(c *tower.Ctx) error {
+	if c.Origin.Transport != "socket" {
+		return tower.Refuse(api.CodeNotPermitted, sentenceMacOnly)
+	}
+	return nil
+}
+
+// requireEmbeddedTx: the conversation exists and is an embedded chat.
+func requireEmbeddedTx(tx *sql.Tx, conv int64) error {
+	var contextType sql.NullString
+	err := tx.QueryRow(`SELECT context_type FROM chat_conversations WHERE id = ?`, conv).Scan(&contextType)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return ErrConversationGone
+	case err != nil:
+		return fmt.Errorf("reading chat conversation %d: %w", conv, err)
+	case !contextType.Valid:
+		return errNotEmbedded
+	}
+	return nil
+}
 
 func sentenceUnknownProvider(p string) string {
 	return fmt.Sprintf("Watchtower doesn't know the AI provider %q.", p)
@@ -178,6 +210,8 @@ func RegisterCommands(r *tower.Registry) {
 
 	// A recording's delete takes its meeting chat with it (the last Swift
 	// writer of the chat tables outside the chat screens).
+	register(r, "chat.message.append", []string{"chat_messages"}, chatMessageAppend)
+	register(r, "chat.reply.finish", []string{"chat_messages", "chat_conversations"}, chatReplyFinish)
 	register(r, "meetings.delete", []string{"meeting_transcripts", "meeting_recaps", "chat_conversations", "chat_messages"}, meetingsDelete)
 }
 
@@ -332,6 +366,8 @@ func refusal(err error, gone string) error {
 		return tower.Refuse(api.CodeUnsupported, sentenceEmptyQuote)
 	case errors.Is(err, db.ErrChatLiveSlack):
 		return tower.Refuse(api.CodeNotPermitted, sentenceLiveSlack)
+	case errors.Is(err, errNotEmbedded):
+		return tower.Refuse(api.CodeNotPermitted, sentenceEmbeddedOnly)
 	case gone != "" && isForeignKeyFailure(err):
 		return tower.Refuse(api.CodeNotFound, gone)
 	}
@@ -749,3 +785,61 @@ func changed(res sql.Result, err error) (bool, error) {
 }
 
 func nullString(s string) sql.NullString { return sql.NullString{String: s, Valid: s != ""} }
+
+// chatMessageAppend is ChatMessageQueries.insert behind requireConversation:
+// a complete row with no turn.
+func chatMessageAppend(ctx context.Context, c *tower.Ctx, q api.ChatMessageAppendRequest) (api.ChatMessageAppendResponse, error) {
+	if q.ConversationID <= 0 || !slices.Contains([]string{"user", "assistant", "system"}, q.Role) {
+		return api.ChatMessageAppendResponse{}, tower.Refuse(api.CodeUnsupported, sentenceBadRequest)
+	}
+	if err := embeddedOnly(c); err != nil {
+		return api.ChatMessageAppendResponse{}, err
+	}
+	return write(ctx, c, sentenceChatGone, func(tx *sql.Tx) (api.ChatMessageAppendResponse, error) {
+		if err := requireEmbeddedTx(tx, q.ConversationID); err != nil {
+			return api.ChatMessageAppendResponse{}, err
+		}
+		res, err := tx.Exec(`INSERT INTO chat_messages (conversation_id, role, text, created_at, turn_id) VALUES (?, ?, ?, ?, '')`,
+			q.ConversationID, q.Role, q.Text, seconds(c.Now()))
+		if err != nil {
+			return api.ChatMessageAppendResponse{}, fmt.Errorf("appending a chat message: %w", err)
+		}
+		id, err := res.LastInsertId()
+		return api.ChatMessageAppendResponse{MessageID: id}, err
+	})
+}
+
+// chatReplyFinish is ChatMessageQueries.finalizeEmbedded (and the store's
+// touch of a complete reply): the reply's text, status and error, by its id
+// within its conversation.
+func chatReplyFinish(ctx context.Context, c *tower.Ctx, q api.ChatReplyFinishRequest) (api.ChatDone, error) {
+	if q.ConversationID <= 0 || q.MessageID <= 0 ||
+		!slices.Contains([]string{StatusComplete, StatusPartial, StatusError}, q.Status) {
+		return api.ChatDone{}, tower.Refuse(api.CodeUnsupported, sentenceBadRequest)
+	}
+	if err := embeddedOnly(c); err != nil {
+		return api.ChatDone{}, err
+	}
+	code := sql.NullString{String: q.ErrorCode, Valid: q.ErrorCode != ""}
+	msg := sql.NullString{String: q.ErrorMessage, Valid: q.ErrorMessage != "" || q.ErrorCode != ""}
+	return write(ctx, c, sentenceMessageGone, func(tx *sql.Tx) (api.ChatDone, error) {
+		if err := requireEmbeddedTx(tx, q.ConversationID); errors.Is(err, ErrConversationGone) {
+			return api.ChatDone{}, ErrNotFound
+		} else if err != nil {
+			return api.ChatDone{}, err
+		}
+		res, err := tx.Exec(`UPDATE chat_messages SET text = ?, status = ?, error_code = ?, error_message = ?
+			WHERE id = ? AND conversation_id = ? AND role = 'assistant'`,
+			q.Text, q.Status, code, msg, q.MessageID, q.ConversationID)
+		if err := requireRow(res, err); errors.Is(err, ErrConversationGone) {
+			return api.ChatDone{}, ErrNotFound
+		} else if err != nil {
+			return api.ChatDone{}, fmt.Errorf("finishing chat reply %d: %w", q.MessageID, err)
+		}
+		if q.Status != StatusComplete {
+			return api.ChatDone{}, nil
+		}
+		_, err = tx.Exec(`UPDATE chat_conversations SET updated_at = ? WHERE id = ?`, seconds(c.Now()), q.ConversationID)
+		return api.ChatDone{}, err
+	})
+}

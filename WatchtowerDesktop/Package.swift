@@ -129,6 +129,8 @@ let package = Package(
                 .product(name: "Qwen3ASR", package: "speech-swift"),
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
                 .product(name: "WatchtowerSync", package: "WatchtowerKit"),
+                // AppState's TowerClient (the tray's Pause Sync).
+                .product(name: "WatchtowerInterface", package: "WatchtowerInterface"),
                 "CloudBridgeCore",
             ],
             path: "Sources",
@@ -147,6 +149,9 @@ let package = Package(
             dependencies: [
                 "WatchtowerCore",
                 .product(name: "GRDB", package: "GRDB.swift"),
+                // The chat writers' fakes (FakeChatTower) speak the generated commands.
+                .product(name: "WatchtowerInterface", package: "WatchtowerInterface"),
+                .product(name: "WatchtowerChatText", package: "WatchtowerChatText"),
             ],
             path: "Tests/Support"
         ),
@@ -181,6 +186,7 @@ let package = Package(
                 .product(name: "WatchtowerSync", package: "WatchtowerKit"),
                 // F25: the test hub and phone (fixed pairing) that seal and open what the hub publishes.
                 .product(name: "WatchtowerE2ETesting", package: "WatchtowerKit"),
+                .product(name: "WatchtowerInterface", package: "WatchtowerInterface"),
             ],
             path: "Tests",
             exclude: ["Core", "Support", "OCRHelperTests", "CloudBridge"]

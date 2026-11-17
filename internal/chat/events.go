@@ -39,6 +39,14 @@ const (
 	// sent; Reason "conversation_busy" while another owner (Holder: "hub" or
 	// "desktop") holds the conversation's lease.
 	EventRefused = "refused"
+	// EventTurnSaved (`ai session --persist`): the turn's last write is
+	// done (or given up), after its turn_done or error — a reload now reads
+	// what the turn left.
+	EventTurnSaved = "turn_saved"
+	// EventSaveError (`ai session --persist`): a write of the turn's reply
+	// failed (a flush, its end, a retry); Message says which and why, for
+	// the Mac to show under the thread (the reply on disk may be stale).
+	EventSaveError = "save_error"
 )
 
 // turn_done statuses.
@@ -201,6 +209,9 @@ type Command struct {
 	EditMessageID int64   `json:"edit_message_id,omitempty"`
 	Quotes        []int64 `json:"quotes,omitempty"`
 	TitleText     *string `json:"title_text,omitempty"`
+	// Screen (a send only) is the Mac help popup's current-screen block:
+	// sent to the provider ahead of the turn's text, never stored.
+	Screen string `json:"screen,omitempty"`
 }
 
 // errorEvent builds an error event. A non-empty turnID makes it the turn's

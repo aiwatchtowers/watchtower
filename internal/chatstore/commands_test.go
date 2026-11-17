@@ -3,6 +3,7 @@ package chatstore
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -19,8 +20,8 @@ import (
 	"watchtower/internal/tower/api"
 )
 
-// chatWritesFile is testdata/chat_writes.json, read by the Swift
-// ChatWritesFixtureTests too.
+// chatWritesFile is testdata/chat_writes.json, the golden the Swift chat
+// writers were checked against until Task 18 deleted them.
 type chatWritesFile struct {
 	Cases []chatWriteCase `json:"cases"`
 }
@@ -154,10 +155,10 @@ var chatCommandNames = []string{
 	"chat.attach", "chat.attach_delete", "chat.attach_link", "chat.branch",
 	"chat.code_question.delete_empty", "chat.comment.add", "chat.comment.apply",
 	"chat.comment.delete_unsent", "chat.comment.mark_sent", "chat.comment.resolve", "chat.context",
-	"chat.delete", "chat.delete_untouched", "chat.draft.clear", "chat.draft.save", "chat.new", "chat.pin",
+	"chat.delete", "chat.delete_untouched", "chat.draft.clear", "chat.draft.save", "chat.message.append", "chat.new", "chat.pin",
 	"chat.project.add_source", "chat.project.archive", "chat.project.create", "chat.project.delete",
 	"chat.project.instructions", "chat.project.remove_file", "chat.project.remove_source",
-	"chat.project.rename", "chat.read", "chat.recover", "chat.release_launches", "chat.rename",
+	"chat.project.rename", "chat.read", "chat.recover", "chat.release_launches", "chat.rename", "chat.reply.finish",
 	"chat.reviewer_thread", "chat.set_model", "chat.set_project", "chat.set_routing", "chat.set_title",
 	"chat.stop", "meetings.delete",
 }
@@ -387,4 +388,44 @@ func TestMeetingsDelete_RemovesTheAudioFile(t *testing.T) {
 	resp := callChat(t, tw, "meetings.delete", "m1", json.RawMessage(`{"transcript_id":1}`), "socket")
 	require.Equal(t, api.StatusOK, resp.Status, "%+v", resp.Refusal)
 	assert.NoFileExists(t, audio)
+}
+
+// TestEmbeddedWrites_RefusedForTheHubAndForTheMainChat: chat.reply.finish and
+// chat.message.append serve the Mac's embedded chats only — the hub's `chat`
+// grant cannot overwrite a reply or add a row, and no caller can write a
+// main chat's rows through them (its session's alone). Review M3.
+func TestEmbeddedWrites_RefusedForTheHubAndForTheMainChat(t *testing.T) {
+	tw, d, _ := chatTower(t)
+	for _, s := range []string{
+		`INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, 'Embedded', 'target', '7', 1, 1)`,
+		`INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (2, 'Main', 1, 1)`,
+		`INSERT INTO chat_messages (id, conversation_id, role, text, created_at, turn_id, status) VALUES (5, 1, 'assistant', 'kept', 2, 't1', 'complete')`,
+		`INSERT INTO chat_messages (id, conversation_id, role, text, created_at, turn_id, status) VALUES (6, 2, 'assistant', 'kept', 2, 't2', 'partial')`,
+	} {
+		_, err := d.Exec(s)
+		require.NoError(t, err, s)
+	}
+	finish := func(conv, msg int) json.RawMessage {
+		return json.RawMessage(fmt.Sprintf(`{"conversation_id":%d,"message_id":%d,"text":"overwritten","status":"complete"}`, conv, msg))
+	}
+	appendTo := func(conv int) json.RawMessage {
+		return json.RawMessage(fmt.Sprintf(`{"conversation_id":%d,"role":"system","text":"injected"}`, conv))
+	}
+	for _, tc := range []struct {
+		name, command, transport string
+		params                   json.RawMessage
+	}{
+		{"hub finish", "chat.reply.finish", "hub", finish(1, 5)},
+		{"hub append", "chat.message.append", "hub", appendTo(1)},
+		{"main chat finish", "chat.reply.finish", "socket", finish(2, 6)},
+		{"main chat append", "chat.message.append", "socket", appendTo(2)},
+	} {
+		resp := callChat(t, tw, tc.command, "req-"+tc.name, tc.params, tc.transport)
+		require.Equal(t, api.StatusRefused, resp.Status, tc.name)
+		assert.Equal(t, api.CodeNotPermitted, resp.Refusal.Code, tc.name)
+		assert.NotEmpty(t, resp.Refusal.Sentence, tc.name)
+	}
+	assert.Equal(t, [][]any{{"kept", "complete"}, {"kept", "partial"}},
+		rowsOf(t, d, `SELECT text, status FROM chat_messages ORDER BY id`), "no reply was overwritten")
+	assert.Equal(t, [][]any{{2.0}}, rowsOf(t, d, `SELECT COUNT(*) FROM chat_messages`), "no row was added")
 }

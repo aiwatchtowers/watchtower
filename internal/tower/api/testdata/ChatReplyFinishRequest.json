@@ -1,0 +1,9 @@
+{
+  "request_id": "6f1c2d3e-0000-4000-8000-0000000000aa",
+  "conversation_id": 12,
+  "message_id": 40,
+  "text": "Done.",
+  "status": "error",
+  "error_code": "internal",
+  "error_message": "The assistant returned no text."
+}

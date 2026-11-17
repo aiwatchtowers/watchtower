@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import os
 import WatchtowerInterface
 import XCTest
 @testable import WatchtowerCore
@@ -308,6 +309,25 @@ final class SocketTransportTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? TowerTransportError, .down)
         }
+    }
+
+    /// A fresh install before onboarding creates a workspace: down, then
+    /// found once the workspace exists (asked for every new connection).
+    func testNoWorkspaceIsDownAndAWorkspaceLaterIsFound() async throws {
+        let server = try makeServer()
+        server.answer = { [Self.ok($0, #"{"at":"now"}"#)] }
+        let workspace = OSAllocatedUnfairLock<String?>(initialState: nil)
+        let transport = SocketTransport { workspace.withLock { $0 } }
+        do {
+            _ = try await transport.call(try Self.ping("a"))
+            XCTFail("no workspace: down")
+        } catch {
+            XCTAssertEqual(error as? TowerTransportError, .down)
+        }
+
+        workspace.withLock { $0 = server.dir }
+        let answer = try await transport.call(try Self.ping("b"))
+        XCTAssertEqual(answer.status, .ok)
     }
 
     func testReadsTheFallbackPathFile() async throws {

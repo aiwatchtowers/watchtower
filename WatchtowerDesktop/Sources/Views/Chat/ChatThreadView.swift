@@ -27,6 +27,11 @@ struct ChatThreadView: View {
                 actionCards(forTurn: item.message.turnID)
             }
             unattachedActionCards
+            // The owner's message at once, while its session writes it.
+            if let pending = chatVM.pendingOwnerText {
+                UserMessageBubble(text: pending)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
             if chatVM.isWaitingForSession {
                 Text("Waiting for a free chat session…")
                     .font(.caption)
@@ -168,8 +173,7 @@ struct ChatErrorStrip: View {
 
     var body: some View {
         // Nothing at all without an error, so a caller's padding adds no gap.
-        if chatVM.errorMessage != nil || chatVM.liveTurn?.persistError != nil
-            || chatVM.sessionPersistenceError != nil || chatVM.actionFeed.lastError != nil {
+        if chatVM.errorMessage != nil || chatVM.sessionPersistenceError != nil || chatVM.actionFeed.lastError != nil {
             VStack(alignment: .leading, spacing: 6) {
                 if let error = chatVM.errorMessage {
                     Text(error)
@@ -179,10 +183,7 @@ struct ChatErrorStrip: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
                 }
-                if let persist = chatVM.liveTurn?.persistError {
-                    Text(persist).font(.caption).foregroundStyle(.red)
-                }
-                if let error = chatVM.sessionPersistenceError, error != chatVM.liveTurn?.persistError {
+                if let error = chatVM.sessionPersistenceError {
                     Text(error).font(.caption).foregroundStyle(Tone.error)
                 }
                 if let err = chatVM.actionFeed.lastError {

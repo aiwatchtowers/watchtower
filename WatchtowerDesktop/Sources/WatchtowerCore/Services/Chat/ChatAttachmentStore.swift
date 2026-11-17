@@ -1,21 +1,26 @@
-import CryptoKit
 import Foundation
 import GRDB
+import WatchtowerInterface
 
-/// Copies owner-chosen files into `<workspace>/chat_files/<conversations|projects>/<id>/`
-/// (0700 dirs, 0600 files) and records them in `chat_attachments`. Go reads
-/// the stored path from the `turn` command's stdin (CHAT-04: never argv).
+/// Adds owner-chosen files to a chat or a project through `chat.attach`
+/// (mobile Inbox spec §8): Go copies them into `<workspace>/chat_files/
+/// <conversations|projects>/<id>/` (0700 dirs, 0600 files) and records them
+/// in `chat_attachments`. Go reads the stored path from the `turn`
+/// command's stdin (CHAT-04: never argv).
 ///
-/// Every call is `async` and runs off the main actor (board #670): the file
-/// is read, hashed and copied there, and the row awaits the writer, so a
-/// big file or another process's write lock never freezes the UI.
+/// Every call is `async` and runs off the main actor (board #670): a file
+/// is first checked here (the composer's own message for a refused kind),
+/// then read and copied by the daemon from its path; a pasted file goes as
+/// bytes.
 package final class ChatAttachmentStore: Sendable {
-    package let db: any DatabaseWriter
+    package let db: any DatabaseReader
     package let rootDir: URL
+    private let writes: ChatWrites
 
-    package init(db: any DatabaseWriter, rootDir: URL) {
+    package init(db: any DatabaseReader, rootDir: URL, writes: ChatWrites) {
         self.db = db
         self.rootDir = rootDir
+        self.writes = writes
     }
 
     /// `Constants.activeWorkspaceDir()/chat_files` — the Swift side of Go
@@ -39,63 +44,48 @@ package final class ChatAttachmentStore: Sendable {
     }
 
     package func importFile(url: URL, owner: ChatAttachmentOwner) async throws -> ChatAttachment {
-        let kind = try AttachmentValidator.validate(url: url).get()
-        let data = try Data(contentsOf: url)
-        return try await store(data: data, name: url.lastPathComponent, kind: kind, owner: owner)
+        _ = try AttachmentValidator.validate(url: url).get()
+        let (name, path) = (url.lastPathComponent, url.path)
+        return try await attach(owner: owner) { requestID, conversationID, projectID in
+            ChatAttachRequest(requestID: requestID, conversationID: conversationID, projectID: projectID, name: name,
+                              path: path)
+        }
     }
 
     package func importData(_ data: Data, name: String, owner: ChatAttachmentOwner) async throws -> ChatAttachment {
-        let kind = try AttachmentValidator.validate(data: data, fileName: name).get()
-        return try await store(data: data, name: name, kind: kind, owner: owner)
+        _ = try AttachmentValidator.validate(data: data, fileName: name).get()
+        let encoded = data.base64EncodedString()
+        return try await attach(owner: owner) { requestID, conversationID, projectID in
+            ChatAttachRequest(requestID: requestID, conversationID: conversationID, projectID: projectID, name: name,
+                              dataBase64: encoded)
+        }
     }
 
-    /// Removes a pending attachment's row, and its file once no row points at it.
+    /// Removes a pending attachment's row, and its file once no row points
+    /// at it (`chat.attach_delete`).
     package func discard(_ attachment: ChatAttachment) async throws {
-        let stillReferenced = try await db.write { db -> Bool in
-            try ChatAttachmentQueries.delete(db, id: attachment.id)
-            return try ChatAttachmentQueries.referenceCount(db, path: attachment.path) > 0
-        }
-        if !stillReferenced {
-            // Best effort: a missing file is already the desired end state.
-            try? FileManager.default.removeItem(atPath: attachment.path)
+        let id = attachment.id
+        let _: ChatChanged = try await writes.perform(.chatAttachDelete) {
+            ChatAttachmentRequest(requestID: $0, attachmentID: id)
         }
     }
 
-    /// Post-commit cleanup after a conversation/project delete (rows are gone
-    /// by FK cascade). Best effort; a missing directory is a no-op.
-    package static func removeFiles(for owner: ChatAttachmentOwner, rootDir: URL) {
-        try? FileManager.default.removeItem(at: rootDir.appendingPathComponent(owner.directoryName, isDirectory: true))
-    }
-
-    private func store(data: Data, name: String, kind: AttachmentKind, owner: ChatAttachmentOwner) async throws -> ChatAttachment {
-        let sha = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        let existing = try await db.read { try ChatAttachmentQueries.existingPath($0, owner: owner, sha256: sha) }
-        let reused = existing.flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil }
-        let path = try reused ?? writeFile(data: data, ext: kind.fileExtension(fallbackName: name), owner: owner)
-        do {
-            return try await db.write { db in
-                let row = try ChatAttachmentQueries.insert(db, owner: owner, name: name, mime: kind.mime,
-                                                           size: Int64(data.count), path: path, sha256: sha)
-                if case let .project(projectID) = owner {
-                    try ChatProjectQueries.dropSessions(db, projectID: projectID)
-                }
-                return row
-            }
-        } catch {
-            if reused == nil { try? FileManager.default.removeItem(atPath: path) }
-            throw error
+    private func attach(
+        owner: ChatAttachmentOwner,
+        _ request: @escaping @Sendable (String, Int64?, Int64?) -> ChatAttachRequest
+    ) async throws -> ChatAttachment {
+        var conversationID: Int64?
+        var projectID: Int64?
+        switch owner {
+        case .conversation(let id): conversationID = id
+        case .project(let id): projectID = id
         }
-    }
-
-    private func writeFile(data: Data, ext: String, owner: ChatAttachmentOwner) throws -> String {
-        let dir = directory(for: owner)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
-                                                attributes: [.posixPermissions: 0o700])
-        let file = dir.appendingPathComponent("\(UUID().uuidString.lowercased()).\(ext)")
-        guard FileManager.default.createFile(atPath: file.path, contents: data,
-                                             attributes: [.posixPermissions: 0o600]) else {
-            throw CocoaError(.fileWriteUnknown)
-        }
-        return file.path
+        let (conversation, project) = (conversationID, projectID)
+        let added: ChatAttachResponse = try await writes.perform(.chatAttach) { request($0, conversation, project) }
+        let id = added.attachmentID
+        guard let row = try await db.read({ db in
+            try ChatAttachment.fetchOne(db, sql: "SELECT * FROM chat_attachments WHERE id = ?", arguments: [id])
+        }) else { throw ChatWriteError(sentence: "The file was attached, but its row is gone.") }
+        return row
     }
 }

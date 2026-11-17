@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import WatchtowerCore
+import WatchtowerInterface
 
 @MainActor
 @Observable
@@ -56,14 +57,13 @@ final class ChatHistoryViewModel {
     @ObservationIgnored var isAnswering: (Int64) -> Bool = { _ in false }
 
     private let dbManager: DatabaseManager
+    /// Every chat write: the `chat.*` tower commands (Go writes the rows).
+    @ObservationIgnored private let chatWrites: ChatWrites
     @ObservationIgnored private let defaults: UserDefaults
     /// Every write of this view model, in order (board #670).
     @ObservationIgnored private let writes = SerialWrites()
     /// One pending pin write per chat (board #670).
     let pendingWrites = PendingWrites()
-    /// `chat_files/` root for post-delete cleanup; nil without an active
-    /// workspace, matching `ChatAttachmentStore.defaultRootDir()`.
-    private let attachmentsRoot: URL?
     /// Stamps every read of the panel (the observation's too) with its
     /// order and the level generation it started under: an older read never
     /// overwrites a newer one, and one older than the last level change
@@ -80,11 +80,11 @@ final class ChatHistoryViewModel {
 
     init(
         dbManager: DatabaseManager,
-        attachmentsRoot: URL? = ChatAttachmentStore.defaultRootDir(),
+        writes: ChatWrites,
         defaults: UserDefaults = .standard
     ) {
         self.dbManager = dbManager
-        self.attachmentsRoot = attachmentsRoot
+        self.chatWrites = writes
         self.defaults = defaults
         let workspace = dbManager.dbPool.path
         let restored = defaults.string(forKey: Self.levelKey(workspace)).flatMap(ChatPanelLevel.init(storageValue:))
@@ -213,16 +213,17 @@ final class ChatHistoryViewModel {
 
     /// Marks the chat read through its newest complete answer (spec §5.2):
     /// on selection, on entering the tab, and when a turn finishes on the
-    /// chat on screen. The row changes only once the mark is written: the
-    /// observation (`startObserving`) re-reads it — no read here, since ↑/↓
-    /// held down marks one chat per step.
+    /// chat on screen. The row reads as read at once; the `chat.read` write
+    /// follows, and a refused one puts the row back (a re-read).
     func markRead(_ id: Int64) {
+        changeRow(id) { $0.readAt = Date().timeIntervalSince1970 }
+        let chatWrites = chatWrites
         writes.start { [weak self] in
-            guard let self else { return }
             do {
-                try await self.dbManager.dbPool.write { db in try ChatConversationQueries.markRead(db, id: id) }
+                let _: ChatDone = try await chatWrites.perform(.chatRead) { ChatReadRequest(requestID: $0, conversationID: id) }
             } catch {
                 NSLog("ChatHistoryViewModel: marking chat %lld read failed: %@", id, error.localizedDescription)
+                self?.reloadSynchronously()
             }
         }
     }
@@ -234,16 +235,20 @@ final class ChatHistoryViewModel {
     }
 
     func rename(_ id: Int64, title: String) async {
-        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = String(title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
         guard !trimmed.isEmpty else { return }
-        await mutate { db in try ChatConversationQueries.rename(db, id: id, title: String(trimmed.prefix(120))) }
+        await mutate(id, { $0.title = trimmed; $0.titleSource = "user" },
+                     params: { ChatRenameRequest(requestID: $0, conversationID: id, title: trimmed) },
+                     send: { writes, params in let _: ChatDone = try await writes.perform(.chatRename, params) })
     }
 
     /// A second press while the pin is written does nothing (board #670).
     func togglePin(_ id: Int64) async {
         await pendingWrites.run("pin:\(id)") {
-            let pinned = conversations.first { $0.id == id }?.pinned ?? false
-            await mutate { db in try ChatConversationQueries.pin(db, id: id, pinned: !pinned) }
+            let pinned = !(conversations.first { $0.id == id }?.pinned ?? false)
+            await mutate(id, { $0.pinned = pinned },
+                         params: { ChatPinRequest(requestID: $0, conversationID: id, pinned: pinned) },
+                         send: { writes, params in let _: ChatDone = try await writes.perform(.chatPin, params) })
         }
     }
 
@@ -253,7 +258,10 @@ final class ChatHistoryViewModel {
     /// - Returns: whether it was archived (`lastError` says why not).
     @discardableResult
     func archive(_ id: Int64) async -> Bool {
-        guard await mutate({ db in try ChatConversationQueries.archive(db, id: id) }) else { return false }
+        let archived = await mutate(id, nil,
+                                    params: { ChatConversationRequest(requestID: $0, conversationID: id) },
+                                    send: { writes, params in let _: ChatDone = try await writes.perform(.chatArchive, params) })
+        guard archived else { return false }
         if selectedConversationID == id { selectedConversationID = nil }
         return true
     }
@@ -271,19 +279,40 @@ final class ChatHistoryViewModel {
         }
     }
 
+    /// One chat write in this view model's chain: the row changes at once
+    /// (`change`), the tower write follows; a refusal puts the row back (a
+    /// re-read) and says why. A chat gone elsewhere leaves the list.
     @discardableResult
-    private func mutate(_ write: @escaping @Sendable (Database) throws -> Void) async -> Bool {
+    private func mutate<Params: Encodable & Sendable>(
+        _ id: Int64,
+        _ change: ((inout ChatConversation) -> Void)?,
+        params: @escaping @Sendable (String) -> Params,
+        send: @escaping @Sendable (ChatWrites, @escaping @Sendable (String) -> Params) async throws -> Void
+    ) async -> Bool {
+        if let change { changeRow(id, change) }
+        let chatWrites = chatWrites
         do {
-            try await chained { db in try write(db) }
+            try await writes.runThrowing { try await send(chatWrites, params) }
             lastError = nil
             reloadSynchronously()
             return true
         } catch {
-            // A chat deleted elsewhere leaves the list instead of lingering.
-            if error is RowNotFoundError { reloadSynchronously() }
+            reloadSynchronously()
             lastError = error.localizedDescription
             return false
         }
+    }
+
+    /// The row as the write will leave it, before the write lands.
+    private func changeRow(_ id: Int64, _ change: (inout ChatConversation) -> Void) {
+        guard let index = loadedRows.firstIndex(where: { $0.id == id }) else { return }
+        let row = loadedRows[index]
+        var conversation = row.conversation
+        change(&conversation)
+        loadedRows[index] = ChatPanelRow(conversation: conversation, lastAnswerAt: row.lastAnswerAt,
+                                         lastAnswerPreview: row.lastAnswerPreview,
+                                         pendingApprovals: row.pendingApprovals, pendingTool: row.pendingTool,
+                                         projectName: row.projectName, answeringElsewhere: row.answeringElsewhere)
     }
 
     var filteredConversations: [ChatConversation] {
@@ -352,31 +381,19 @@ final class ChatHistoryViewModel {
         if resolved != level { selectLevel(resolved) }
     }
 
-    func createConversation() async -> ChatConversation? {
-        do {
-            let conv = try await chained { db in
-                try ChatConversationQueries.create(db)
-            }
-            reloadSynchronously()
-            selectedConversationID = conv.id
-            return conv
-        } catch {
-            return nil
-        }
-    }
-
+    /// Deletes the chat (`chat.delete`, its attachment files with it). A
+    /// chat already gone counts as deleted.
     func deleteConversation(_ id: Int64) async {
+        let chatWrites = chatWrites
         do {
-            try await chained { db in
-                try ChatConversationQueries.delete(db, id: id)
+            try await writes.runThrowing {
+                let _: ChatDone = try await chatWrites.perform(.chatDelete) {
+                    ChatDeleteRequest(requestID: $0, conversationID: id)
+                }
             }
-            // Rows are already gone by FK cascade; only the files remain.
-            if let attachmentsRoot {
-                ChatAttachmentStore.removeFiles(for: .conversation(id), rootDir: attachmentsRoot)
-            }
-            loadedRows.removeAll { $0.id == id }
-            // Nothing else is selected (and marked read) in its place.
-            if selectedConversationID == id { selectedConversationID = nil }
+            deleted(id)
+        } catch let error as ChatWriteError where error.isGone {
+            deleted(id)
         } catch {
             // The chat is listed again (its delete's hiding ends with the
             // caller); the panel says why it stayed.
@@ -385,38 +402,10 @@ final class ChatHistoryViewModel {
         }
     }
 
-    func updateTitle(_ id: Int64, title: String) async {
-        let trimmed = String(title.prefix(80))
-        do {
-            try await chained { db in
-                try ChatConversationQueries.updateTitle(db, id: id, title: trimmed)
-            }
-            reloadSynchronously()
-        } catch {
-            // silently ignore
-        }
-    }
-
-    func updateSessionID(_ id: Int64, sessionID: String) async {
-        do {
-            try await chained { db in
-                try ChatConversationQueries.updateSessionID(db, id: id, sessionID: sessionID)
-            }
-            reloadSynchronously()
-        } catch {
-            // silently ignore
-        }
-    }
-
-    func touch(_ id: Int64) async {
-        do {
-            try await chained { db in
-                try ChatConversationQueries.touch(db, id: id)
-            }
-            reloadSynchronously()
-        } catch {
-            // silently ignore
-        }
+    private func deleted(_ id: Int64) {
+        loadedRows.removeAll { $0.id == id }
+        // Nothing else is selected (and marked read) in its place.
+        if selectedConversationID == id { selectedConversationID = nil }
     }
 
     private func reloadSynchronously() {
@@ -427,11 +416,6 @@ final class ChatHistoryViewModel {
         }
     }
 
-    /// A database write in this view model's chain (board #670): it starts
-    /// only once every write asked for before it finished.
-    private func chained<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
-        try await writes.runThrowing { try await self.dbManager.dbPool.write(body) }
-    }
 }
 
 /// One read of the panel: its rows and which projects still exist (the

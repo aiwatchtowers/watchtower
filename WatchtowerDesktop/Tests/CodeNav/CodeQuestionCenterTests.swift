@@ -62,6 +62,7 @@ private final class FakeQuestionPage: CodeQuestionPage {
 @MainActor
 final class CodeQuestionCenterTests: XCTestCase {
     private var pool: DatabasePool!
+    private var tower: FakeChatTower!
     private var dbPath: String!
     private var defaults: UserDefaults!
     private var suite: String!
@@ -123,6 +124,9 @@ final class CodeQuestionCenterTests: XCTestCase {
         workbenchesVM = vm
         center.workbenches = vm
         center.dbPool = pool
+        let (writes, tower) = FakeChatTower.writes(pool)
+        center.chatWrites = writes
+        self.tower = tower
         let dbPool: DatabasePool = pool
         let ai: ScriptedAIService = ai
         center.embeddedChats = EmbeddedChatCenter { spec, gate in makeSurfaceEngine(spec, dbPool: dbPool, ai: ai, gate: gate) }
@@ -146,7 +150,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         guard started else { return }
         ai.emit(.text(reply), .turnComplete(reply), .done)
         ai.finish()
-        let done = await eventually { engine?.isStreaming == false }
+        let done = await eventually { engine?.isBusy == false }
         XCTAssertTrue(done)
     }
 
@@ -506,10 +510,12 @@ final class CodeQuestionCenterTests: XCTestCase {
         XCTAssertTrue(started)
         center.closeQuestion(workbenchID: project.id)
         center.unregisterPage(page, for: project.id)
-        XCTAssertTrue(engine.isStreaming, "leaving does not stop the answer")
+        // The run reaches its `started` (Go wrote the rows) and streams on.
+        let streaming = await eventually { engine.isStreaming }
+        XCTAssertTrue(streaming, "leaving does not stop the answer")
         ai.emit(.text("It loads the config."), .turnComplete("It loads the config."), .done)
         ai.finish()
-        let done = await eventually { !engine.isStreaming }
+        let done = await eventually { !engine.isBusy }
         XCTAssertTrue(done)
         let stored = try await pool.read { db in
             try String.fetchOne(db, sql: "SELECT text FROM chat_messages WHERE role = 'assistant' AND status = 'complete'")
@@ -572,7 +578,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         await ai.untilCalls(1)
         ai.emit(.sessionID("s1"), .text("It loads."), .turnComplete("It loads."), .done)
         ai.finish()
-        _ = await eventually { engine?.isStreaming == false }
+        _ = await eventually { engine?.isBusy == false }
         await center.quickAction(.whereUsed, workbenchID: project.id)
         await reply("At a.swift:1.", after: 2, engine: engine)
         let system = try XCTUnwrap(ai.calls[1].systemPrompt)
@@ -660,7 +666,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         await ai.untilCalls(1)
         ai.emit(.sessionID("s1"), .text("It loads."), .turnComplete("It loads."), .done)
         ai.finish()
-        _ = await eventually { !engine.isStreaming }
+        _ = await eventually { !engine.isBusy }
         await center.quickAction(.whereUsed, workbenchID: project.id)
         XCTAssertEqual(center.sessions[project.id]?.isSearchingUsages, true)
         return (center, engine)
@@ -768,7 +774,9 @@ final class CodeQuestionCenterTests: XCTestCase {
         XCTAssertEqual(relaunched.inspectorTab(workbenchID: project.id), .questions)
         let ref = try XCTUnwrap(center.questionRef(conversationID))
         XCTAssertTrue(center.engine(for: ref) === engine, "the same engine")
-        XCTAssertTrue(engine.isStreaming, "the answer keeps streaming")
+        // The run reaches its `started` (Go wrote the rows) and streams on.
+        let streaming = await eventually { engine.isStreaming }
+        XCTAssertTrue(streaming, "the answer keeps streaming")
         await reply("It loads the config.", after: 1, engine: engine)
         XCTAssertEqual(ai.calls.count, 1, "no second turn")
         XCTAssertEqual(center.modelChoice(conversationID: conversationID), .init(provider: .claude, model: ""))
@@ -989,7 +997,7 @@ final class CodeQuestionCenterTests: XCTestCase {
 
         ai.emit(.text("ok"), .turnComplete("ok"), .done)
         ai.finish()
-        _ = await eventually { engine?.isStreaming == false }
+        _ = await eventually { engine?.isBusy == false }
         center.handToClaude(workbenchID: project.id)
         XCTAssertNil(center.sessions[project.id], "the popover closes first")
         XCTAssertEqual(page.closed, 1)
@@ -1052,7 +1060,7 @@ final class CodeQuestionCenterTests: XCTestCase {
     func testASecondAskWhileTheConversationIsWrittenDoesNothing() async throws {
         let (center, _, buffer) = makeCenter()
         await center.askAI(bufferID: buffer.id, project: project, root: root)
-        let held = HeldWriter(pool)
+        let held = TowerHold(tower)
         defer { held.release() }
         let first = Task { await center.ask("Why?", workbenchID: project.id) }
         let starting = await eventually { center.sessions[self.project.id]?.isStarting == true }
@@ -1076,7 +1084,7 @@ final class CodeQuestionCenterTests: XCTestCase {
     func testAPopoverClosedWhileItsConversationIsWrittenLeavesNothing() async throws {
         let (center, _, buffer) = makeCenter()
         await center.askAI(bufferID: buffer.id, project: project, root: root)
-        let held = HeldWriter(pool)
+        let held = TowerHold(tower)
         defer { held.release() }
         let asking = Task { await center.ask("Why?", workbenchID: project.id) }
         let starting = await eventually { center.sessions[self.project.id]?.isStarting == true }
@@ -1095,12 +1103,7 @@ final class CodeQuestionCenterTests: XCTestCase {
     func testAFailedConversationWriteKeepsTheDraftAndSaysSo() async throws {
         let (center, _, buffer) = makeCenter()
         await center.askAI(bufferID: buffer.id, project: project, root: root)
-        try await pool.write { db in
-            try db.execute(sql: """
-                CREATE TRIGGER refuse_conversations BEFORE INSERT ON chat_conversations
-                BEGIN SELECT RAISE(ABORT, 'refused'); END
-                """)
-        }
+        tower.refuse(.chatNew, with: "refused")
         center.setDraft("Why?", workbenchID: project.id)
         let sent = await center.ask("Why?", workbenchID: project.id)
         XCTAssertFalse(sent)
@@ -1111,7 +1114,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         XCTAssertTrue(session.notice?.hasPrefix("Couldn't start the question:") == true, session.notice ?? "")
         XCTAssertTrue(ai.calls.isEmpty)
 
-        try await pool.write { try $0.execute(sql: "DROP TRIGGER refuse_conversations") }
+        tower.refuse(.chatNew, with: nil)
         let retried = await center.ask("Why?", workbenchID: project.id)
         XCTAssertTrue(retried)
         XCTAssertNil(center.sessions[project.id]?.notice)
@@ -1126,7 +1129,7 @@ final class CodeQuestionCenterTests: XCTestCase {
             return XCTFail("start")
         }
         await reply("ok", after: 1, engine: center.engine(for: try XCTUnwrap(center.questionRef(id))))
-        let held = HeldWriter(pool)
+        let held = TowerHold(tower)
         defer { held.release() }
         let picking = Task { await center.setModelChoice(.init(provider: .codex, model: ""), conversationID: id) }
         let storing = await eventually { center.storingChoices.contains(id) }
@@ -1154,7 +1157,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         await reply("ok", after: 1, engine: center.engine(for: try XCTUnwrap(center.questionRef(id))))
         center.reloadQuestionList(workbenchID: project.id)
         let question = try XCTUnwrap(center.questionRef(id))
-        let held = HeldWriter(pool)
+        let held = TowerHold(tower)
         defer { held.release() }
         let deleting = Task { await center.deleteQuestion(question) }
         let pending = await eventually { center.isDeleting(id) }
@@ -1205,7 +1208,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         let (center, _, buffer) = makeCenter()
         await center.askAI(bufferID: buffer.id, project: project, root: root)
         center.setDraft("Why?", workbenchID: project.id)
-        let held = HeldWriter(pool)
+        let held = TowerHold(tower)
         defer { held.release() }
         let asking = Task { await center.ask("Why?", workbenchID: project.id) }
         let starting = await eventually { center.sessions[self.project.id]?.isStarting == true }

@@ -201,7 +201,7 @@ struct TrackDetailView: View {
         Task {
             defer { chatCreates.end(key) }
             do {
-                let id = try await TrackChatSurface.conversationID(for: requested, dbPool: db.dbPool)
+                let id = try await TrackChatSurface.conversationID(for: requested, dbPool: db.dbPool, writes: appState.chatWrites)
                 guard chatShownKey == key else { return }
                 chatConversationID = id
                 chatError = nil

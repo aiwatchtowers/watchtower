@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import Observation
+import WatchtowerInterface
 
 /// The comments of one artifact panel (conversation, key): the latest stored
 /// version's text they anchor on, their located ranges, and the owner's
@@ -8,7 +9,7 @@ import Observation
 /// It never sends anything (CHAT-05): it only hands out the composed message
 /// (`outgoing()`); the chat sends it as the owner's own turn.
 ///
-/// Its writes await the writer off the main thread, one after another
+/// Its writes are `chat.comment.*` tower commands, one after another
 /// (board #670). A re-anchoring plan is shown at once and stored behind
 /// them; a sync asked for while a write waits runs once it landed, so the
 /// list never shows a row an earlier write already changed.
@@ -23,13 +24,15 @@ package final class ArtifactCommentsModel {
     /// Comment id → its range (UTF-16) in `rendered.text`.
     package private(set) var ranges: [Int64: NSRange] = [:]
     package private(set) var errorMessage: String?
-    @ObservationIgnored private let db: any DatabaseWriter
+    @ObservationIgnored private let db: any DatabaseReader
+    @ObservationIgnored private let chatWrites: ChatWrites
     @ObservationIgnored private let writes = SerialWrites()
     /// One write per comment at a time (Delete, Resolve).
     @ObservationIgnored private var changing: Set<Int64> = []
 
-    package init(db: any DatabaseWriter, conversationID: Int64, key: String) {
+    package init(db: any DatabaseReader, writes: ChatWrites, conversationID: Int64, key: String) {
         self.db = db
+        self.chatWrites = writes
         self.conversationID = conversationID
         self.key = key
     }
@@ -90,10 +93,12 @@ package final class ArtifactCommentsModel {
 
     /// Writes what moved or was lost; on a failure the next sync plans again.
     private func store(_ plan: ArtifactCommentReanchor.Plan, version: Int) {
-        let db = db
+        let chatWrites = chatWrites
         writes.start { [self] in
             do {
-                try await db.write { try ArtifactCommentQueries.apply($0, plan: plan, version: version) }
+                let _: ChatDone = try await chatWrites.perform(.chatCommentApply) {
+                    ChatCommentApplyRequest(requestID: $0, moved: plan.moved, lost: plan.lost, version: Int64(version))
+                }
             } catch {
                 errorMessage = "Could not load the comments: \(error.localizedDescription)"
             }
@@ -118,12 +123,14 @@ package final class ArtifactCommentsModel {
             return false
         }
         let anchor = CommentAnchor.make(text: rendered.text, range: range, headings: rendered.headingOffsets)
-        let (db, conversationID, key, version) = (db, conversationID, key, artifact.version)
+        let (chatWrites, conversationID, key, version) = (chatWrites, conversationID, key, artifact.version)
+        let wire = ChatCommentAnchor(quote: anchor.quote, prefix: anchor.prefix, suffix: anchor.suffix,
+                                     heading: anchor.heading)
         return await writes.run { [self] in
             do {
-                _ = try await db.write {
-                    try ArtifactCommentQueries.add($0, conversationID: conversationID, key: key,
-                                                   version: version, anchor: anchor, body: body)
+                let _: ChatCommentAddResponse = try await chatWrites.perform(.chatCommentAdd) {
+                    ChatCommentAddRequest(requestID: $0, conversationID: conversationID, artifactKey: key,
+                                          version: Int64(version), anchor: wire, body: body)
                 }
                 load(latest: self.artifact)
                 return true
@@ -137,11 +144,11 @@ package final class ArtifactCommentsModel {
     /// The comment stays listed until its delete landed; a second press
     /// meanwhile does nothing.
     package func delete(_ id: Int64) {
-        write(id) { try ArtifactCommentQueries.deleteUnsent($0, id: id) }
+        write(id, .chatCommentDeleteUnsent)
     }
 
     package func resolve(_ id: Int64) {
-        write(id) { try ArtifactCommentQueries.resolve($0, id: id) }
+        write(id, .chatCommentResolve)
     }
 
     /// A Delete or Resolve of `id` is under way.
@@ -164,13 +171,13 @@ package final class ArtifactCommentsModel {
         return ArtifactCommentMessage.Outgoing(text: text, ids: pending.map(\.id))
     }
 
-    private func write(_ id: Int64, _ change: @escaping @Sendable (Database) throws -> Bool) {
+    private func write(_ id: Int64, _ command: TowerCommand) {
         guard changing.insert(id).inserted else { return }
-        let db = db
+        let chatWrites = chatWrites
         writes.start { [self] in
             defer { changing.remove(id) }
             do {
-                _ = try await db.write(change)
+                let _: ChatChanged = try await chatWrites.perform(command) { ChatCommentRequest(requestID: $0, commentID: id) }
                 load(latest: artifact)
             } catch {
                 errorMessage = "Could not update the comment: \(error.localizedDescription)"

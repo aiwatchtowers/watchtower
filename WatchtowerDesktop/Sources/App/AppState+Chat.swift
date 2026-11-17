@@ -1,14 +1,34 @@
 import Foundation
 import WatchtowerCore
+import WatchtowerInterface
 
 extension AppState {
+    /// Every chat write goes to Go through the tower (mobile Inbox spec §8).
+    var chatWrites: ChatWrites { ChatWrites(tower: towerClient) }
+
     /// A new automatic context reads the current saved preference; a running
     /// host keeps its existing snapshot until its turn finishes.
     func makeMainChatViewModel(_ db: DatabaseManager) -> ChatViewModel {
         let currentProvider = { AIProvider.fromConfig(Constants.aiProviderID()) }
-        return ChatViewModel(dbManager: db, pool: ensureChatSessionPool(db),
+        return ChatViewModel(dbManager: db, pool: ensureChatSessionPool(db), writes: chatWrites,
                              provider: AIProvider.fromConfig(ConfigService().aiProvider),
                              cliRunner: ProcessCLIRunner.makeDefault(), preferredProviderSource: currentProvider)
+    }
+
+    /// At launch (the pool's first creation): the chat leases an earlier
+    /// launch of this app left behind when it crashed, their turns marked
+    /// `session_lost` (`chat.release_launches`, spec 2026-11-15 §5). A failure
+    /// is logged; such a lease is free for anyone after 60 s anyway.
+    nonisolated static func releaseEarlierLaunchesChatLeases(
+        _ writes: ChatWrites, launchID: String = ChatLease.desktopLaunchID
+    ) async {
+        do {
+            let _: ChatReleaseLaunchesResponse = try await writes.perform(.chatReleaseLaunches) {
+                ChatReleaseLaunchesRequest(requestID: $0, keep: launchID)
+            }
+        } catch {
+            NSLog("AppState: releasing an earlier launch's chat leases failed: %@", error.localizedDescription)
+        }
     }
 
     /// The main chat's two view models: the history list follows the chat's

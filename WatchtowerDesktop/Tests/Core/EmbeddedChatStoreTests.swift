@@ -20,8 +20,15 @@ final class EmbeddedChatStoreTests: XCTestCase {
         TestDatabase.cleanup(path: path)
     }
 
+    /// The stores that write a turn's rows in-process: the memory store. A
+    /// database chat's rows are written by its `ai query --persist` run; the
+    /// same promises are Go's `TestEmbeddedTurn_*` (`internal/chatstore`):
+    /// BeginWritesOwnerAndPartialReply, ReplyRecordsItsProvider,
+    /// FollowUpWritesNoOwnerRow, ErrorEndKeepsTheTextAndItsCode,
+    /// RowsKeepTheTreeColumnsAtTheirDefaults,
+    /// OnlyACompletedReplyTouchesTheConversation, DeletedConversationMidTurnIsGone.
     private func stores() -> [EmbeddedChatStore] {
-        [DatabaseEmbeddedChatStore(dbPool: pool, conversationID: conversationID), MemoryEmbeddedChatStore()]
+        [MemoryEmbeddedChatStore()]
     }
 
     func testBeginTurnWritesTheOwnerRowThenAnEmptyPartialReply() async throws {
@@ -66,49 +73,20 @@ final class EmbeddedChatStoreTests: XCTestCase {
         XCTAssertLessThan(id, 0)
     }
 
+    /// The database store never writes a turn's rows itself (its run does),
+    /// and a deleted chat reads as gone.
     func testADeletedConversationThrowsContextGone() async throws {
         let store = DatabaseEmbeddedChatStore(dbPool: pool, conversationID: conversationID)
-        let ids = try await store.beginTurn(ownerText: "q", turnID: "t", provider: nil)
+        do {
+            _ = try await store.beginTurn(ownerText: "q", turnID: "t", provider: nil)
+            XCTFail("the database store writes no turn rows")
+        } catch {
+            XCTAssertTrue(error is ChatWriteError, "\(error)")
+        }
+        XCTAssertTrue(try store.loadMessages().isEmpty, "nothing was written")
         let id = conversationID
         try await pool.write { db in try ChatConversationQueries.delete(db, id: id) }
-        do {
-            try await store.saveProgress(messageID: ids.assistantID, text: "x")
-            XCTFail("expected ChatContextGoneError")
-        } catch {
-            XCTAssertTrue(error is ChatContextGoneError)
-        }
-        do {
-            _ = try await store.beginTurn(ownerText: "again", turnID: "t2", provider: nil)
-            XCTFail("expected ChatContextGoneError")
-        } catch {
-            XCTAssertTrue(error is ChatContextGoneError)
-        }
         XCTAssertThrowsError(try store.loadMessages()) { XCTAssertTrue($0 is ChatContextGoneError) }
-    }
-
-    /// Storage format unchanged: an embedded row leaves the main chat's tree
-    /// columns at their defaults, so existing readers see a linear thread.
-    func testDatabaseRowsKeepTheTreeColumnsAtTheirDefaults() async throws {
-        let store = DatabaseEmbeddedChatStore(dbPool: pool, conversationID: conversationID)
-        let ids = try await store.beginTurn(ownerText: "q", turnID: "t", provider: nil)
-        try await store.finalize(messageID: ids.assistantID, text: "a", status: "complete", errorCode: nil, errorMessage: nil)
-        let rows = try store.loadMessages()
-        XCTAssertTrue(rows.allSatisfy { $0.parentID == nil && $0.model == nil && $0.tokensIn == nil })
-        XCTAssertEqual(rows.last?.status, "complete")
-        XCTAssertNil(rows.last?.errorCode)
-    }
-
-    func testOnlyACompletedReplyTouchesTheConversation() async throws {
-        let store = DatabaseEmbeddedChatStore(dbPool: pool, conversationID: conversationID)
-        let id = conversationID
-        try await pool.write { db in try db.execute(sql: "UPDATE chat_conversations SET updated_at = 1 WHERE id = ?", arguments: [id]) }
-        let updatedAt = { try self.pool.read { db in try ChatConversationQueries.fetchByID(db, id: id)?.updatedAt } }
-        let failed = try await store.beginTurn(ownerText: "q", turnID: "t", provider: nil)
-        try await store.finalize(messageID: failed.assistantID, text: "", status: "error", errorCode: "internal", errorMessage: "x")
-        XCTAssertEqual(try updatedAt(), 1, "a failed reply is not activity")
-        let done = try await store.beginTurn(ownerText: "q2", turnID: "t2", provider: nil)
-        try await store.finalize(messageID: done.assistantID, text: "a", status: "complete", errorCode: nil, errorMessage: nil)
-        XCTAssertGreaterThan(try XCTUnwrap(updatedAt()), 1)
     }
 
     func testConversationIDReusesTheContextsConversation() async throws {

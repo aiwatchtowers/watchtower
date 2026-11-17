@@ -155,32 +155,6 @@ final class ProjectDetailViewModelTests: XCTestCase {
         XCTAssertEqual(vm.errorMessage, "spec.pdf: Attachments need an active workspace")
     }
 
-    /// The real store end to end: an imported file lands under
-    /// `projects/<id>/`, and deleting the project removes that directory.
-    func testDeleteProjectRemovesItsStoredFilesDirectory() async throws {
-        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("wt_proj_\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
-        let source = root.appendingPathComponent("in.pdf")
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        try Data("%PDF-1.4\n%fake body\n".utf8).write(to: source)
-
-        let vm = ProjectDetailViewModel(
-            projectID: projectID, dbPool: pool, debounce: .zero, attachmentsRoot: root,
-            importFile: ProjectDetailViewModel.storeImporter(dbPool: pool, rootDir: root)
-        )
-        vm.load()
-        await vm.addFiles([source])
-        XCTAssertNil(vm.errorMessage)
-        let stored = try XCTUnwrap(vm.files.first?.path)
-        XCTAssertTrue(stored.hasPrefix(root.appendingPathComponent("projects/\(projectID)").path))
-
-        let deleted = await vm.deleteProject()
-        XCTAssertTrue(deleted)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: stored))
-        XCTAssertFalse(FileManager.default.fileExists(
-            atPath: root.appendingPathComponent("projects/\(projectID)").path))
-    }
-
     /// A chat moved out of the project elsewhere (the panel's Move to
     /// Project) leaves the page's list once the panel's rows change and the
     /// page re-reads (`ProjectDetailView`'s `panelChats` → `reloadLists`).

@@ -282,6 +282,17 @@ public actor TowerClient {
         return stream
     }
 
+    /// One `tower.hello` beside the connect cycle (the Mac's tray reads
+    /// `sync_paused` from it), bounded like every hello. Nil when the tower
+    /// does not answer it or is another interface version. It changes none
+    /// of the client's states.
+    public func helloAnswer() async -> HelloResponse? {
+        guard case .answer(let response) = await sendHello(),
+              case .success(let hello) = Self.decode(response) as Result<HelloResponse, TowerFailure>,
+              hello.interfaceVersion == InterfaceVersion.current else { return nil }
+        return hello
+    }
+
     /// The failure's button. After `failed(.down)` it asks `startDaemon`
     /// first, after `failed(.version)` `restartDaemon`; then it reconnects
     /// from the 0.2 s backoff. Otherwise it re-reads the screen.
@@ -457,13 +468,17 @@ public actor TowerClient {
     /// One hello, bounded by `TowerTiming.helloAnswerLimit`: a daemon that
     /// does not answer counts as down.
     private func hello() async -> Hello {
-        let request = Request(
-            v: Self.envelopeVersion, id: Self.newID(), command: TowerCommand.towerHello.rawValue, params: Self.encode(HelloRequest())
-        )
-        guard case .answer(let response) = await send(request, limit: TowerTiming.helloAnswerLimit) else { return .down }
+        guard case .answer(let response) = await sendHello() else { return .down }
         // A daemon without tower.hello refuses it: another version too.
         guard case .success(let hello) = Self.decode(response) as Result<HelloResponse, TowerFailure> else { return .mismatch }
         return hello.interfaceVersion == InterfaceVersion.current ? .match : .mismatch
+    }
+
+    private func sendHello() async -> Answer {
+        let request = Request(
+            v: Self.envelopeVersion, id: Self.newID(), command: TowerCommand.towerHello.rawValue, params: Self.encode(HelloRequest())
+        )
+        return await send(request, limit: TowerTiming.helloAnswerLimit)
     }
 
     /// `failed(.down)` once the cycle is `TowerTiming.failAfter` old,

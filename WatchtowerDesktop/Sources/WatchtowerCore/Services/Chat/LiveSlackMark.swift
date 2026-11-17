@@ -32,25 +32,6 @@ package enum LiveSlackMark {
         name.hasPrefix(claudePrefix) || name.hasPrefix(codexPrefix)
     }
 
-    /// Marks the conversation of `messageID` when a step with this name starts.
-    package static func markIfSlackStep(_ db: Database, messageID: Int64, name: String) throws {
-        guard isSlackConnectorStep(name) else { return }
-        try db.execute(sql: """
-            UPDATE chat_conversations SET live_slack_since = ?
-            WHERE id = (SELECT conversation_id FROM chat_messages WHERE id = ?) AND live_slack_since IS NULL
-            """, arguments: [messageID, messageID])
-    }
-
-    /// Marks the conversation when the turn's steps include a Slack connector
-    /// call; an already marked conversation keeps its first mark.
-    package static func markIfUsed(_ db: Database, conversationID: Int64, messageID: Int64) throws {
-        let names = try String.fetchAll(db, sql: "SELECT name FROM chat_turn_steps WHERE message_id = ?", arguments: [messageID])
-        guard names.contains(where: isSlackConnectorStep) else { return }
-        try db.execute(sql: """
-            UPDATE chat_conversations SET live_slack_since = ? WHERE id = ? AND live_slack_since IS NULL
-            """, arguments: [messageID, conversationID])
-    }
-
     package static func isMarked(_ db: Database, conversationID: Int64) throws -> Bool {
         try Int64.fetchOne(db, sql: "SELECT live_slack_since FROM chat_conversations WHERE id = ?",
                            arguments: [conversationID]) != nil

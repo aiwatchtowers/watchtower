@@ -2,10 +2,11 @@ import WatchtowerCore
 
 extension AppState {
     /// The main chat (and Ask Watchtower, which uses the same view model):
-    /// remember and the knowledge prefixes, as on every embedded chat.
+    /// the marks of remember and the knowledge prefixes, which Go ran in the
+    /// turn's start.
     func wireRemember(_ chat: ChatViewModel) {
-        chat.onOwnerMessageStored = { [weak self] text, conversationID, messageID in
-            self?.embeddedChats.ownerMessageStored(text: text, conversationID: conversationID, messageID: messageID)
+        chat.onOwnerMessageStarted = { [weak self] started, text in
+            self?.embeddedChats.ownerMessageStarted(started, text: text)
         }
     }
 

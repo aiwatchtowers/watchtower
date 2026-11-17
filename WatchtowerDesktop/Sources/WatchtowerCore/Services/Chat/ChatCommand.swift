@@ -17,15 +17,69 @@ package struct ChatTurnCommand: Equatable, Sendable {
     package let text: String
     package let attachments: [ChatCommandAttachment]
     /// The provider session is not continuous with this branch — Go rebuilds
-    /// the history from `chat_messages` (spec §2.4). Regenerate/edit insert
-    /// their new rows (with this NEW `turnID`) before the turn is sent.
+    /// the history from `chat_messages` (spec §2.4). Under `--persist` Go
+    /// decides it (a regenerate or an edit always replays).
     package let replay: Bool
+    /// `--persist`: what the turn's starting rows are (mobile Inbox spec §8);
+    /// the session writes them before the provider gets the turn.
+    package let start: ChatTurnStart?
 
-    package init(turnID: String, text: String, attachments: [ChatCommandAttachment], replay: Bool) {
+    package init(
+        turnID: String,
+        text: String,
+        attachments: [ChatCommandAttachment],
+        replay: Bool,
+        start: ChatTurnStart? = nil
+    ) {
         self.turnID = turnID
         self.text = text
         self.attachments = attachments
         self.replay = replay
+        self.start = start
+    }
+}
+
+/// A persisted turn's starting rows, as the session's `turn` line carries
+/// them (`internal/chat.Command`): `ai session --persist` runs
+/// `chatstore.Start` on them.
+package struct ChatTurnStart: Equatable, Sendable {
+    package enum Mode: String, Sendable {
+        case send, regenerate, edit
+    }
+
+    package let mode: Mode
+    /// A send: the conversation's pending files to link to the owner row.
+    package let attachmentIDs: [Int64]
+    /// A regenerate: the owner message answered again.
+    package let parentID: Int64?
+    /// An edit: the owner message replaced (its new text is the turn's text).
+    package let editMessageID: Int64?
+    /// A send: the artifact comments of a "Send N comments" batch, marked
+    /// sent in the owner row's transaction.
+    package let quotes: [Int64]
+    /// A send: the owner's own words (the prefix title's source); the turn's
+    /// text is then stored as given (skill line, mentions).
+    package let titleText: String?
+    /// A send: the help popup's current-screen block, sent ahead of the
+    /// text and never stored.
+    package let screen: String?
+
+    package init(
+        mode: Mode,
+        attachmentIDs: [Int64] = [],
+        parentID: Int64? = nil,
+        editMessageID: Int64? = nil,
+        quotes: [Int64] = [],
+        titleText: String? = nil,
+        screen: String? = nil
+    ) {
+        self.mode = mode
+        self.attachmentIDs = attachmentIDs
+        self.parentID = parentID
+        self.editMessageID = editMessageID
+        self.quotes = quotes
+        self.titleText = titleText
+        self.screen = screen
     }
 }
 
@@ -52,8 +106,12 @@ package enum ChatCommand: Equatable, Sendable {
         let command: ChatCommand
 
         enum CodingKeys: String, CodingKey {
-            case type, text, attachments, replay
+            case type, text, attachments, replay, mode, quotes, screen
             case turnID = "turn_id"
+            case attachmentIDs = "attachment_ids"
+            case parentID = "parent_id"
+            case editMessageID = "edit_message_id"
+            case titleText = "title_text"
         }
 
         func encode(to encoder: Encoder) throws {
@@ -65,24 +123,23 @@ package enum ChatCommand: Equatable, Sendable {
                 try container.encode(turn.text, forKey: .text)
                 try container.encode(turn.attachments, forKey: .attachments)
                 try container.encode(turn.replay, forKey: .replay)
+                if let start = turn.start { try Self.encode(start, into: &container) }
             case .cancel:
                 try container.encode("cancel", forKey: .type)
             case .close:
                 try container.encode("close", forKey: .type)
             }
         }
-    }
-}
 
-/// What a view model asks a session client to run.
-package struct ChatTurnRequest: Equatable, Sendable {
-    package let command: ChatTurnCommand
-    /// The `partial` assistant row created before sending (CHAT-01).
-    package let assistantMessageID: Int64
-
-    package init(command: ChatTurnCommand, assistantMessageID: Int64) {
-        self.command = command
-        self.assistantMessageID = assistantMessageID
+        private static func encode(_ start: ChatTurnStart, into container: inout KeyedEncodingContainer<CodingKeys>) throws {
+            try container.encode(start.mode.rawValue, forKey: .mode)
+            if !start.attachmentIDs.isEmpty { try container.encode(start.attachmentIDs, forKey: .attachmentIDs) }
+            try container.encodeIfPresent(start.parentID, forKey: .parentID)
+            try container.encodeIfPresent(start.editMessageID, forKey: .editMessageID)
+            if !start.quotes.isEmpty { try container.encode(start.quotes, forKey: .quotes) }
+            try container.encodeIfPresent(start.titleText, forKey: .titleText)
+            if let screen = start.screen, !screen.isEmpty { try container.encode(screen, forKey: .screen) }
+        }
     }
 }
 

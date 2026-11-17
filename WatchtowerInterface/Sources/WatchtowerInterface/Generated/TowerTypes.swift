@@ -1203,6 +1203,44 @@ public struct ChatDraftSaveRequest: Codable, Hashable, Sendable {
     }
 }
 
+public struct ChatMessageAppendRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var conversationID: Int64
+    public var role: String
+    public var text: String
+
+    public init(
+        requestID: String,
+        conversationID: Int64,
+        role: String,
+        text: String
+    ) {
+        self.requestID = requestID
+        self.conversationID = conversationID
+        self.role = role
+        self.text = text
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case conversationID = "conversation_id"
+        case role
+        case text
+    }
+}
+
+public struct ChatMessageAppendResponse: Codable, Hashable, Sendable {
+    public var messageID: Int64
+
+    public init(messageID: Int64) {
+        self.messageID = messageID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case messageID = "message_id"
+    }
+}
+
 public struct ChatNewRequest: Codable, Hashable, Sendable {
     public var requestID: String
     public var projectID: Int64?
@@ -1498,6 +1536,44 @@ public struct ChatRenameRequest: Codable, Hashable, Sendable {
         case requestID = "request_id"
         case conversationID = "conversation_id"
         case title
+    }
+}
+
+public struct ChatReplyFinishRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var conversationID: Int64
+    public var messageID: Int64
+    public var text: String
+    public var status: String
+    public var errorCode: String?
+    public var errorMessage: String?
+
+    public init(
+        requestID: String,
+        conversationID: Int64,
+        messageID: Int64,
+        text: String,
+        status: String,
+        errorCode: String? = nil,
+        errorMessage: String? = nil
+    ) {
+        self.requestID = requestID
+        self.conversationID = conversationID
+        self.messageID = messageID
+        self.text = text
+        self.status = status
+        self.errorCode = errorCode
+        self.errorMessage = errorMessage
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case conversationID = "conversation_id"
+        case messageID = "message_id"
+        case text
+        case status
+        case errorCode = "error_code"
+        case errorMessage = "error_message"
     }
 }
 

@@ -3,6 +3,7 @@ import GRDB
 import Observation
 import os
 import WatchtowerCore
+import WatchtowerInterface
 import WatchtowerSync
 
 @MainActor
@@ -500,6 +501,14 @@ final class AppState {
     /// children or ask macOS for permissions; nil runs the real thing
     /// (`daemonManager`, `wireAppDatabase`'s body).
     @ObservationIgnored var daemonControlOverride: (any DaemonControl)?
+    /// The Desktop's one tower client (`AppState+Tower`); tests set their own.
+    @ObservationIgnored lazy var towerClient: TowerClient = makeTowerClient()
+    /// The owner's pause, from `tower.hello` or the last Pause/Resume (the tray).
+    var syncPaused = false
+    /// Why the last Pause/Resume did not go through; the tray shows it.
+    var syncPauseError: String?
+    /// The tower's queued daemon start; a second Retry waits for it.
+    @ObservationIgnored var towerDaemonStart: Task<Void, Never>?
     @ObservationIgnored var wireAppDatabaseOverride: ((DatabaseManager) -> Void)?
     /// Test seam: the readiness inputs without the live config, workspace
     /// directory and stamps.
@@ -572,7 +581,7 @@ final class AppState {
         let cvm = makeMainChatViewModel(db)
         // Once per launch, before anything is shown or listed.
         cvm.cleanUpUntouchedConversations()
-        let hvm = ChatHistoryViewModel(dbManager: db)
+        let hvm = ChatHistoryViewModel(dbManager: db, writes: chatWrites)
         hvm.reloadRows()
         hvm.startObserving()
         Self.wireChat(cvm, history: hvm)
@@ -585,26 +594,12 @@ final class AppState {
     func ensureChatSessionPool(_ db: DatabaseManager) -> ChatSessionPool {
         if let chatSessionPool { return chatSessionPool }
         let pool = ChatSessionPool(dbPool: db.dbPool)
-        Task { await Self.releaseEarlierLaunchesChatLeases(db.dbPool) }
+        let writes = chatWrites
+        Task { await Self.releaseEarlierLaunchesChatLeases(writes) }
         pool.holdAdmissionUntil { _ = await Constants.resolvedEnvironmentAsync() }
         pool.startPolicy() // CHAT-03: an idle session dies within TTL + one 30 s poll.
         chatSessionPool = pool
         return pool
-    }
-
-    /// At launch (the pool's first creation): the chat leases an earlier
-    /// launch of this app left behind when it crashed (spec 2026-11-15 §5).
-    /// A failure is logged; such a lease is free for anyone after 60 s anyway.
-    nonisolated static func releaseEarlierLaunchesChatLeases(
-        _ dbPool: DatabasePool, launchID: String = ChatLease.desktopLaunchID
-    ) async {
-        do {
-            _ = try await dbPool.write { db in
-                try ChatLeaseQueries.releaseEarlierDesktopLaunches(db, currentLaunchID: launchID)
-            }
-        } catch {
-            NSLog("AppState: releasing an earlier launch's chat leases failed: %@", error.localizedDescription)
-        }
     }
 
     /// The editor panel's chat for one automation: its engine comes from
@@ -615,7 +610,7 @@ final class AppState {
               let automation = try await pool.read({ db in try AutomationQueries.fetchAutomation(db, id: automationID) })
         else { return nil }
         let provider = Constants.aiProviderID()
-        let conversationID = try await AutomationEditorChatSurface.conversationID(for: automation, dbPool: pool)
+        let conversationID = try await AutomationEditorChatSurface.conversationID(for: automation, dbPool: pool, writes: chatWrites)
         let box = PanelDraftBox()
         let prompts = await builtinDefaultPrompts(automation)
         return makeAutomationEditorChat(
@@ -741,6 +736,7 @@ final class AppState {
     /// (reinitializeAfterOnboarding), which must not stack observers.
     private func installLifecycleHooks() {
         targetAssistantCenter.embeddedChats = embeddedChatCenter
+        targetAssistantCenter.chatWrites = chatWrites
         startUIVisibility()
         if terminateObserver == nil {
             terminateObserver = NotificationCenter.default.addObserver(
@@ -846,39 +842,7 @@ final class AppState {
             // caches whatever path it first resolves.
             daemonManager.startPolling()
             loadModelCatalogAtLaunch()
-            do {
-                let manager = try await migrateCompactOpen().get()
-                ambiguousWorkspaces = []
-                // Before the splash hides, so Day Plan / Briefings never flash
-                // the no-owner state on an install that has one.
-                await wireOnboardingDatabase(manager)
-                await reconcileOnboarding(dbPool: manager.dbPool)
-                profileComplete = !needsOnboarding
-                // Pre-load sidebar badge counts so they're already visible when the splash hides.
-                // Skipped when onboarding is needed — the onboarding view replaces the sidebar entirely.
-                if !needsOnboarding {
-                    initAutomations(dbPool: manager.dbPool)
-                    sidebarCountsViewModel = await SidebarCountsViewModel.started(
-                        dbPool: manager.dbPool, disabledFeatures: featureVisibility.disabledFeatureIDs)
-                }
-                isLoading = false
-                // During onboarding only the account view models run (above):
-                // the rest (watchers that ask for notification permission,
-                // meeting reminders, polling) waits for completeOnboarding().
-                if !needsOnboarding {
-                    wireAppDatabase(manager)
-                    autoDownloadTranscriptionModel()
-                }
-                // The daemon's cycle generates everything itself: a launch
-                // needs nothing more than a running daemon.
-                if !needsOnboarding {
-                    // Ensure a fresh daemon is running (rebuild-safe): stop any existing
-                    // one (possibly from an older binary), then start the current binary.
-                    ensureDaemonRunning()
-                }
-            } catch {
-                await handleLaunchDatabaseFailure(error)
-            }
+            await openDatabaseAndStartDaemon()
             // Any launch that lands in onboarding (a fresh install, or one
             // relaunched before finishing it) may let the transcription
             // langset follow the Mac's languages; "Run setup again" from
@@ -900,6 +864,41 @@ final class AppState {
         // the sidebar/navigation/banner read.
         wireFeatureVisibility()
         Task { await featureManager.load() }
+    }
+
+    /// The launch's database steps, then the daemon (after the compaction
+    /// step; `--no-sync` until onboarding finishes). A fresh install has no
+    /// workspace yet: `openDatabaseForOnboarding` starts it.
+    func openDatabaseAndStartDaemon() async {
+        do {
+            let manager = try await migrateCompactOpen().get()
+            ambiguousWorkspaces = []
+            // Before the splash hides, so Day Plan / Briefings never flash
+            // the no-owner state on an install that has one.
+            await wireOnboardingDatabase(manager)
+            await reconcileOnboarding(dbPool: manager.dbPool)
+            profileComplete = !needsOnboarding
+            // Pre-load sidebar badge counts so they're already visible when the splash hides.
+            // Skipped when onboarding is needed — the onboarding view replaces the sidebar entirely.
+            if !needsOnboarding {
+                initAutomations(dbPool: manager.dbPool)
+                sidebarCountsViewModel = await SidebarCountsViewModel.started(
+                    dbPool: manager.dbPool, disabledFeatures: featureVisibility.disabledFeatureIDs)
+            }
+            isLoading = false
+            // During onboarding only the account view models run (above):
+            // the rest (watchers that ask for notification permission,
+            // meeting reminders, polling) waits for completeOnboarding().
+            if !needsOnboarding {
+                wireAppDatabase(manager)
+                autoDownloadTranscriptionModel()
+            }
+            // The daemon's cycle generates everything itself: a launch needs
+            // nothing more than a fresh daemon of the current binary.
+            ensureDaemonRunning(noSync: daemonRunsWithoutSync)
+        } catch {
+            await handleLaunchDatabaseFailure(error)
+        }
     }
 
     /// Sync the out-of-bundle CLI copy before anything spawns the CLI, so
@@ -1373,6 +1372,7 @@ final class AppState {
         // A new draft the editor holds is a list row, cached draft rows or not.
         vm.openNewDrafts = { [weak editorCenter] in editorCenter?.openNewDraftNames ?? [:] }
         vm.embeddedChats = embeddedChatCenter
+        vm.chatWrites = chatWrites
         vm.discardEditorDraft = { [weak editorCenter] in editorCenter?.discard($0) }
         wireInboxRoute(vm)
         automationEditorCenter = editorCenter
@@ -1498,7 +1498,8 @@ final class AppState {
     /// If an old instance is already running (e.g. from a stale dev rebuild), stop it first,
     /// then start a fresh one. Paired with the QuitCoordinator daemon stop on app terminate
     /// so UI quit/launch cycles the daemon lifecycle. On the one start chain.
-    func ensureDaemonRunning() {
+    /// `noSync` starts it with `--no-sync` (before onboarding finishes).
+    func ensureDaemonRunning(noSync: Bool = false) {
         let daemon = daemonControl
         let manager = daemonManager
         let item = enqueueDaemonStart {
@@ -1508,7 +1509,7 @@ final class AppState {
                 await daemon.stopDaemonNow()
                 try? await Task.sleep(for: .milliseconds(500))
             }
-            if await daemon.startDetached() {
+            if await daemon.startDetached(noSync: noSync) {
                 self.daemonStartQueue.succeeded()
             } else if daemon.daemonIsRunning() {
                 // The old daemon is still there (still exiting, or it did not
@@ -1552,6 +1553,7 @@ final class AppState {
             override(manager)
             return
         }
+        embeddedChats.chatWrites = chatWrites
         embeddedChats.dbPool = manager.dbPool
         wireMeetingRecorderLoaders(dbPool: manager.dbPool)
         wireTargetBriefCenter()

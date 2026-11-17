@@ -11,11 +11,11 @@ extension AppState {
         period: @escaping @MainActor () -> AgentAnalyticsCenter.Period
     ) async throws -> TuningChat? {
         guard let pool = databaseManager?.dbPool else { return nil }
-        let conversationID = try await TuningChatSurface.latestOrNewConversation(dbPool: pool, workbenchID: workbenchID)
+        let conversationID = try await TuningChatSurface.latestOrNewConversation(dbPool: pool, writes: chatWrites, workbenchID: workbenchID)
         // Before the catalog's first read this decides draft-only; the
         // controller decides again on `AIModelCatalog.didLoadNotification`.
         let chat = TuningChat(workbenchID: workbenchID, conversationID: conversationID, dbPool: pool,
-                              center: embeddedChatCenter, coach: coachCenter,
+                              writes: chatWrites, center: embeddedChatCenter, coach: coachCenter,
                               decideTools: { TuningChatSurface.toolsAvailable(provider: nil) }, period: period)
         await chat.refreshCards()
         return chat

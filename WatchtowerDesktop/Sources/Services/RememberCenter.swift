@@ -86,6 +86,34 @@ final class RememberCenter {
         })
     }
 
+    /// A main-chat owner message whose turn started: Go ran its remember
+    /// command in the start (`started.remember_outcome`), so only the mark
+    /// is set here (mobile Inbox spec §8).
+    func record(_ started: ChatStarted, text: String) {
+        guard let rule = RememberCommand.parse(text) else { return }
+        let messageID = started.ownerMessageID
+        switch started.rememberOutcome {
+        case "added" where started.rememberLineID > 0:
+            marks[messageID] = .remembered(lineID: started.rememberLineID)
+            revision += 1
+        case "added", "already_present":
+            marks[messageID] = .alreadyPresent
+        case "too_long":
+            marks[messageID] = .full
+        case "empty":
+            marks[messageID] = .empty
+        case "not_owner_text":
+            marks[messageID] = .failed(Self.notOwnerText)
+        default:
+            marks[messageID] = rule.isEmpty ? .empty
+                : .failed(started.prefixError.isEmpty ? Self.notRemembered : started.prefixError)
+        }
+    }
+
+    /// `watchtower instructions remember`'s `not_owner_text` sentence (LIVE-01).
+    static let notOwnerText = "this conversation used Live Slack: only the owner's own words can be remembered"
+    static let notRemembered = "Watchtower couldn't remember this."
+
     /// Removes the line this message added. A line already gone is not an
     /// error: the mark says so.
     func undo(messageID: Int64) async {

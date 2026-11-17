@@ -1990,6 +1990,160 @@
           ]
         }
       ]
+    },
+    {
+      "name": "message_append_a_notice",
+      "command": "chat.message.append",
+      "swift": "ChatMessageQueries.insert",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, 'Chat', 'target', '7', 1, 1)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "role": "system",
+        "text": "Saved the automation."
+      },
+      "result": {
+        "message_id": 1
+      },
+      "check": [
+        {
+          "sql": "SELECT conversation_id, role, text, turn_id, status, created_at > 1000 FROM chat_messages",
+          "rows": [
+            [
+              1,
+              "system",
+              "Saved the automation.",
+              "",
+              "complete",
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "message_append_to_a_gone_chat_is_refused",
+      "command": "chat.message.append",
+      "swift": "ChatMessageQueries.insert",
+      "seed": [],
+      "params": {
+        "conversation_id": 3,
+        "role": "system",
+        "text": "x"
+      },
+      "refusal": "not_found",
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_messages",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "reply_finish_with_the_surface_text",
+      "command": "chat.reply.finish",
+      "swift": "ChatMessageQueries.finalizeEmbedded",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, 'Chat', 'target', '7', 1, 1)",
+        "INSERT INTO chat_messages (id, conversation_id, role, text, created_at, turn_id, status) VALUES (5, 1, 'assistant', 'raw reply', 2, 't1', 'complete')"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "message_id": 5,
+        "text": "Shown reply",
+        "status": "complete"
+      },
+      "check": [
+        {
+          "sql": "SELECT text, status, error_code, error_message FROM chat_messages",
+          "rows": [
+            [
+              "Shown reply",
+              "complete",
+              null,
+              null
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT updated_at > 1000 FROM chat_conversations",
+          "rows": [
+            [
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "reply_finish_as_an_error",
+      "command": "chat.reply.finish",
+      "swift": "ChatMessageQueries.finalizeEmbedded",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, 'Chat', 'target', '7', 1, 1)",
+        "INSERT INTO chat_messages (id, conversation_id, role, text, created_at, turn_id, status) VALUES (5, 1, 'assistant', 'raw reply', 2, 't1', 'complete')"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "message_id": 5,
+        "text": "raw reply",
+        "status": "error",
+        "error_code": "internal",
+        "error_message": "The assistant returned no text."
+      },
+      "check": [
+        {
+          "sql": "SELECT text, status, error_code, error_message FROM chat_messages",
+          "rows": [
+            [
+              "raw reply",
+              "error",
+              "internal",
+              "The assistant returned no text."
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT updated_at FROM chat_conversations",
+          "rows": [
+            [
+              1.0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "reply_finish_of_another_chats_message_is_refused",
+      "command": "chat.reply.finish",
+      "swift": "ChatMessageQueries.finalizeEmbedded",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, 'Chat', 'target', '7', 1, 1)",
+        "INSERT INTO chat_messages (id, conversation_id, role, text, created_at, turn_id, status) VALUES (5, 1, 'assistant', 'raw reply', 2, 't1', 'complete')"
+      ],
+      "params": {
+        "conversation_id": 2,
+        "message_id": 5,
+        "text": "x",
+        "status": "complete"
+      },
+      "refusal": "not_found",
+      "check": [
+        {
+          "sql": "SELECT text, status FROM chat_messages",
+          "rows": [
+            [
+              "raw reply",
+              "complete"
+            ]
+          ]
+        }
+      ]
     }
   ]
 }
