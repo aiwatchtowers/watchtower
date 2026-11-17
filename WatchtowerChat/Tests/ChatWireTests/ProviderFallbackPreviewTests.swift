@@ -1,6 +1,5 @@
 import XCTest
-@testable import WatchtowerCore
-import WatchtowerTestSupport
+import ChatWire
 
 final class ProviderFallbackPreviewTests: XCTestCase {
     func testEveryStateHasCopyAndAnExplicitActionPolicyInBothDirections() {

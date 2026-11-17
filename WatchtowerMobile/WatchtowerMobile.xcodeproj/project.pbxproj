@@ -204,6 +204,7 @@
 		932888D775631A29C5D47242 /* SideMailboxReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CA776536A469BF58598553A /* SideMailboxReader.swift */; };
 		94516DC3C1C359A8176B328C /* RelayAccountCenterSlotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CA5CC2832CBEF69C498C543 /* RelayAccountCenterSlotTests.swift */; };
 		94A67D2EB260A531583D3E0E /* WatchtowerSync in Frameworks */ = {isa = PBXBuildFile; productRef = 0DCA74F6DB95FEC03BFD7AF5 /* WatchtowerSync */; };
+		9538DA77A9554F8E4FCEB90D /* ChatRoutingPhoneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BCD8A9267E1A8A459F3F1E3 /* ChatRoutingPhoneTests.swift */; };
 		95993A2ACA777AC4F7B95FBB /* WelcomeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABA83461C8013610E3BDCB4 /* WelcomeTests.swift */; };
 		967B04AA367ACC272253AA96 /* AskAnswerer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 966D1C67FDCDE327204EEB07 /* AskAnswerer.swift */; };
 		978E2301EEB5748A01430CCE /* Card.swift in Sources */ = {isa = PBXBuildFile; fileRef = 321E6860B503B814C29C52CE /* Card.swift */; };
@@ -422,6 +423,7 @@
 		16BCC6A51FF4BA83D1B72DE9 /* DemoSeed+Outbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DemoSeed+Outbox.swift"; sourceTree = "<group>"; };
 		17BEEA948099A76E0DAFF3F6 /* ChatsGateModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatsGateModelTests.swift; sourceTree = "<group>"; };
 		1AD41B1E3AB91B5552C46EF2 /* OutboxBacklog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OutboxBacklog.swift; sourceTree = "<group>"; };
+		1BCD8A9267E1A8A459F3F1E3 /* ChatRoutingPhoneTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatRoutingPhoneTests.swift; sourceTree = "<group>"; };
 		1C5E4E06D5EE190C29F3F741 /* NextMeetingCardModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NextMeetingCardModel.swift; sourceTree = "<group>"; };
 		1DD07929D977D2F7FEA3B461 /* WelcomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeView.swift; sourceTree = "<group>"; };
 		1E008E946FEC72751D61A954 /* BoardTargetDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardTargetDetailView.swift; sourceTree = "<group>"; };
@@ -865,6 +867,7 @@
 				80E5D6B23496B65F60CFCFF5 /* ChatArtifactWebRTCTests.swift */,
 				207AD03EB0C7C699C05F5DDC /* ChatAttachmentAndCopyTests.swift */,
 				32F45134607AC2E66721BD45 /* ChatListRetryTests.swift */,
+				1BCD8A9267E1A8A459F3F1E3 /* ChatRoutingPhoneTests.swift */,
 				010CB89776EC632BC826B8DE /* ChatSendRecoveryTests.swift */,
 				E9403473D4755D9239D806F3 /* ChatSendTests.swift */,
 				17BEEA948099A76E0DAFF3F6 /* ChatsGateModelTests.swift */,
@@ -1713,6 +1716,7 @@
 				6CD7A33E0E86A47C3F9D7ECC /* ChatAttachmentAndCopyTests.swift in Sources */,
 				DE1904A97495CEA25039C059 /* ChatFakes.swift in Sources */,
 				F0391E9BB372C1A0F915DA24 /* ChatListRetryTests.swift in Sources */,
+				9538DA77A9554F8E4FCEB90D /* ChatRoutingPhoneTests.swift in Sources */,
 				722E0F50E16316896679688F /* ChatSendRecoveryTests.swift in Sources */,
 				881A82500886AF1637714550 /* ChatSendTests.swift in Sources */,
 				ACE9AD0800A401716937351D /* ChatWireKitConformancesTests.swift in Sources */,

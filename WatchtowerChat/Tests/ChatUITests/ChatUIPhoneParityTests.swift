@@ -3,8 +3,8 @@ import WatchtowerChatText
 import XCTest
 @testable import ChatUI
 
-/// What the phone had before it moved onto ChatUI (unified chat T9), now shared: the new chat's model and project
-/// chips, the 32 000-character cap, a held composer, a chat created by its first turn, a search hit paged into view,
+/// What the phone had before it moved onto ChatUI (unified chat T9), now shared: the routing pill and the project
+/// chip, the 32 000-character cap, a held composer, a chat created by its first turn, a search hit paged into view,
 /// and the list's sections with the older fold and the title search.
 @MainActor
 final class ChatUIPhoneParityTests: XCTestCase {
@@ -16,33 +16,58 @@ final class ChatUIPhoneParityTests: XCTestCase {
 
     private func composer(_ client: FakeChatClient = FakeChatClient(), conversationID: Int64? = nil) -> ChatComposerModel {
         let composer = ChatComposerModel(conversation: ChatConversationModel(client: client, conversationID: conversationID))
-        composer.newChatChoices = ChatNewChatChoices(models: models, projects: projects)
+        composer.newChatChoices = ChatNewChatChoices(projects: projects)
         return composer
     }
 
-    func testANewChatHasEditableChipsAndTheMessagePlaceholder() {
-        let fresh = composer()
-        XCTAssertEqual(fresh.placeholder, "Message")
-        XCTAssertEqual(fresh.modelChip, ChatComposerChip(label: "Auto · Claude", editable: true))
-        XCTAssertEqual(fresh.projectChip, ChatComposerChip(label: "No project", editable: true))
-        XCTAssertFalse(fresh.canSend)
-        fresh.routing = ChatRouting(mode: "pinned", provider: "claude", model: "opus")
-        fresh.projectID = 7
-        fresh.draft = "Hi"
-        XCTAssertEqual(fresh.modelChip?.label, "Claude Opus")
-        XCTAssertEqual(fresh.projectChip?.label, "acme-platform")
-        XCTAssertTrue(fresh.canSend)
-        XCTAssertEqual(ChatComposerModel.modelOptions(models).map(\.label), ["Auto", "Claude", "Claude Opus"])
-        XCTAssertNil(ChatComposerModel(conversation: ChatConversationModel(client: FakeChatClient(), conversationID: nil)).modelChip,
-                     "no chips without the choices (the Mac's composer as it was)")
+    /// The phone's routing pill over `composer`, its catalog from the list's `models[]` (no `routing`: an older daemon).
+    private func routing(_ composer: ChatComposerModel) -> ChatRoutingModel {
+        let routing = ChatRoutingModel(client: composer.conversation.client) { composer }
+        routing.catalog = ChatRoutingCatalog(list: ChatList(conversations: [], projects: projects, models: models))
+        return routing
     }
 
+    /// A new chat: the shared routing pill with the Mac's labels and menu (ask #1418), the project menu, and the
+    /// Message placeholder; a pick goes into the next turn's routing.
+    func testANewChatHasEditableChipsAndTheMessagePlaceholder() {
+        let fresh = composer()
+        let pill = routing(fresh)
+        XCTAssertEqual(fresh.placeholder, "Message")
+        XCTAssertTrue(pill.showsPill)
+        XCTAssertFalse(pill.isBusy, "the pill is editable")
+        XCTAssertEqual(pill.label, "Preferred + reserve · Auto")
+        XCTAssertEqual(fresh.projectChip, ChatComposerChip(label: "No project", editable: true))
+        XCTAssertFalse(fresh.canSend)
+        pill.selectProvider("claude")
+        pill.selectModel("opus")
+        fresh.projectID = 7
+        fresh.draft = "Hi"
+        XCTAssertEqual(pill.label, "Only Claude · opus")
+        XCTAssertEqual(fresh.routing, ChatRouting(mode: "pinned", provider: "claude", model: "opus"))
+        XCTAssertEqual(fresh.projectChip?.label, "acme-platform")
+        XCTAssertTrue(fresh.canSend)
+        XCTAssertEqual(pill.menu.map { [$0.title ?? "-"] + $0.items.map(\.label) }, [
+            ["-", "Preferred + reserve · Auto model"], ["Provider", "Only Claude"], ["Model", "Auto", "opus"]
+        ])
+        let bare = ChatComposerModel(conversation: ChatConversationModel(client: FakeChatClient(), conversationID: nil))
+        XCTAssertNil(bare.projectChip, "no project menu without the choices (the Mac's composer as it was)")
+        XCTAssertFalse(ChatRoutingModel(client: FakeChatClient()) { bare }.showsPill, "no pill without a list")
+    }
+
+    /// A saved chat: its project locks after the first message, and its routing pill shows the chat's own routing and
+    /// stays editable between turns — the Mac's rule (ask #1418); the pick goes with the next turn.
     func testChipsLockAfterTheFirstMessage() {
         let saved = composer(conversationID: 7)
+        let pill = routing(saved)
         saved.conversation.store.apply(.snapshot(ChatUIFixtures.feed(messages: [ChatUIFixtures.message(1, text: "Hi")])))
         XCTAssertEqual(saved.placeholder, "Ask a follow-up")
-        XCTAssertEqual(saved.modelChip, ChatComposerChip(label: "Auto · Claude", editable: false))
         XCTAssertEqual(saved.projectChip, ChatComposerChip(label: "No project", editable: false))
+        XCTAssertEqual(pill.label, "Preferred + reserve · Auto", "the chat's own routing")
+        XCTAssertFalse(pill.isBusy, "editable between turns")
+        pill.selectModel("opus")
+        XCTAssertEqual(pill.label, "Only Claude · opus")
+        XCTAssertEqual(saved.routing, ChatRouting(mode: "pinned", provider: "claude", model: "opus"))
+        XCTAssertEqual(saved.projectChip, ChatComposerChip(label: "No project", editable: false), "the project stays locked")
     }
 
     func testTheLengthCapCountsUnicodeScalars() {

@@ -20,6 +20,9 @@ enum ComposerMetrics {
     static let noticeAsStatus = false
     /// The model and project chips sit over the field.
     static let accessoryAboveField = true
+    /// The routing accessory's inset and the gap under its pill.
+    static let routingInset: CGFloat = 0
+    static let routingBottom: CGFloat = 0
 }
 
 enum ComposerPlatform {
@@ -63,5 +66,10 @@ struct LongPasteOffer: View {
 extension View {
     /// The phone takes no drops into the composer.
     func composerFileDrop(enabled: Bool, accept: @escaping ([URL]) -> Bool) -> some View { self }
+}
+
+extension View {
+    /// The routing pill's menu: the chip itself is the button.
+    func routingPillMenuStyle() -> some View { self }
 }
 #endif

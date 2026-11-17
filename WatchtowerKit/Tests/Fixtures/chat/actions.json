@@ -15,6 +15,7 @@
     {"name": "branch_select", "kind": "chat_branch_select", "params": {"message_id": 1}, "result_keys": []},
     {"name": "manage_rename", "kind": "chat_manage", "params": {"conversation_id": 2, "op": "rename", "title": "Rollout notes"}, "result_keys": []},
     {"name": "manage_pin", "kind": "chat_manage", "params": {"conversation_id": 2, "op": "pin"}, "result_keys": []},
+    {"name": "manage_use_preferred", "kind": "chat_manage", "params": {"conversation_id": 2, "op": "use_preferred"}, "result_keys": []},
     {"name": "action_approve", "kind": "chat_action_answer", "params": {"action_id": 1, "decision": "approve", "args_sha256": "e7b995efa755c5ff3b84d2188b58cb4ae916a59470eb3761df8a814f11763500"}, "result_keys": ["status"]},
     {"name": "entity_search_mention", "kind": "chat_entity_search", "params": {"query": "al", "kinds": []}, "result_keys": ["hits"]},
     {"name": "entity_search_kinds", "kind": "chat_entity_search", "params": {"query": "pay", "kinds": ["channel", "jira"]}, "result_keys": ["hits"]},

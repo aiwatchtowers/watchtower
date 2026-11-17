@@ -150,6 +150,7 @@ let package = Package(
             dependencies: [
                 "WatchtowerCore",
                 .product(name: "GRDB", package: "GRDB.swift"),
+                .product(name: "ChatWire", package: "WatchtowerChat"),
             ],
             path: "Tests/Support"
         ),

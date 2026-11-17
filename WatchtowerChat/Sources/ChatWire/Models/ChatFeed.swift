@@ -55,6 +55,9 @@ public struct ChatFeed: Decodable, Hashable, Sendable {
         public let routing: Routing
         public let actualProvider: String
         public let actualModel: String
+        /// Why the chat runs where it runs (`quota_exhausted`, `required_capability_missing`, …); "" from an older
+        /// daemon (no fallback, recovered or unsupported state then).
+        public let routingReason: String
         /// The first Live Slack message's id (display only on the phone).
         public let liveSlackSince: Int64?
         public let lease: Lease?
@@ -66,6 +69,7 @@ public struct ChatFeed: Decodable, Hashable, Sendable {
             routing: Routing = Routing(mode: "auto"),
             actualProvider: String = "",
             actualModel: String = "",
+            routingReason: String = "",
             liveSlackSince: Int64? = nil,
             lease: Lease? = nil
         ) {
@@ -75,6 +79,7 @@ public struct ChatFeed: Decodable, Hashable, Sendable {
             self.routing = routing
             self.actualProvider = actualProvider
             self.actualModel = actualModel
+            self.routingReason = routingReason
             self.liveSlackSince = liveSlackSince
             self.lease = lease
         }
@@ -87,12 +92,13 @@ public struct ChatFeed: Decodable, Hashable, Sendable {
             routing = try c.decodeIfPresent(Routing.self, forKey: .routing) ?? Routing(mode: "auto")
             actualProvider = try c.decodeIfPresent(String.self, forKey: .actualProvider) ?? ""
             actualModel = try c.decodeIfPresent(String.self, forKey: .actualModel) ?? ""
+            routingReason = try c.decodeIfPresent(String.self, forKey: .routingReason) ?? ""
             liveSlackSince = try c.decodeIfPresent(Int64.self, forKey: .liveSlackSince)
             lease = try c.decodeIfPresent(Lease.self, forKey: .lease)
         }
 
         enum CodingKeys: String, CodingKey {
-            case id, title, project, routing, actualProvider, actualModel, liveSlackSince, lease
+            case id, title, project, routing, actualProvider, actualModel, routingReason, liveSlackSince, lease
         }
     }
 

@@ -1,3 +1,4 @@
+import ChatWire
 import Foundation
 
 /// The provider/model registry as reported by `watchtower ai models --json`.

@@ -182,6 +182,10 @@ type Options struct {
 	// registry with no tools).
 	ChatEngine *chatengine.Engine
 	ChatTools  *tools.Registry
+	// ChatRouting reads the routing pill's catalog for the chat_list record
+	// (unified chat T17): the providers, their pair and capability rows and
+	// the routing status, read on every build. nil leaves `routing` out.
+	ChatRouting func(context.Context) *chatengine.RoutingCatalog
 
 	// Test seams (zero = production).
 	newTransport func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error)

@@ -67,6 +67,16 @@ public protocol ChatUIStyle {
     func approvalButton(_ title: String, prominent: Bool, action: @escaping () -> Void) -> AnyView
     /// A Slack proposal's message text, shown read-only.
     func approvalSlackText(_ text: String) -> AnyView
+
+    // MARK: The routing pill (#1822 T17). The defaults draw the phone's look; the Mac's DesignKitChatStyle its own.
+
+    /// The routing pill's label (the menu's button); `enabled` is false while a turn runs.
+    func routingPillLabel(_ label: String, enabled: Bool) -> AnyView
+    /// A routing line under the pill's accessory: the actual provider, what it lacks (secondary), or a notice and the
+    /// routing error (`warning`).
+    func routingCaption(_ text: String, warning: Bool) -> AnyView
+    /// The fallback card (fallback, recovered, pinned, unsupported) with its action when `onAction` is set.
+    func routingStatusCard(_ copy: ProviderFallbackPreview.Copy, actionEnabled: Bool, onAction: (() -> Void)?) -> AnyView
 }
 
 /// What an approval card's header shows (`ChatUIStyle.approvalHeader`).
@@ -296,6 +306,39 @@ extension ChatUIStyle {
                 .background(Fill.rest, in: RoundedRectangle(cornerRadius: Radius.control))
                 .textSelection(.enabled)
         )
+    }
+
+    public func routingPillLabel(_ label: String, enabled: Bool) -> AnyView {
+        chip(label + " ⌄")
+    }
+
+    public func routingCaption(_ text: String, warning: Bool) -> AnyView {
+        AnyView(Text(text).font(.caption).foregroundStyle(warning ? Tone.warning : .secondary))
+    }
+
+    public func routingStatusCard(_ copy: ProviderFallbackPreview.Copy, actionEnabled: Bool, onAction: (() -> Void)?) -> AnyView {
+        card {
+            VStack(alignment: .leading, spacing: Spacing.regular) {
+                Text(copy.title).font(.headline).foregroundStyle(copy.emphasis.tone)
+                Text(copy.detail).font(.callout).fixedSize(horizontal: false, vertical: true)
+                if copy.busy { ProgressView().accessibilityLabel(copy.title) }
+                if let action = copy.action, let onAction {
+                    primaryButton(action, action: onAction).disabled(!actionEnabled || copy.busy)
+                }
+            }
+        }
+    }
+}
+
+extension ProviderFallbackPreview.Emphasis {
+    /// The fallback card's title colour.
+    public var tone: Color {
+        switch self {
+        case .neutral: .secondary
+        case .success: Tone.success
+        case .warning: Tone.warning
+        case .error: Tone.error
+        }
     }
 }
 

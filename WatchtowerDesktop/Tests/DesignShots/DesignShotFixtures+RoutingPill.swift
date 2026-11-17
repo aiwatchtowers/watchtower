@@ -7,9 +7,14 @@ import WatchtowerCore
 import WatchtowerTestSupport
 
 /// The main chat's routing accessory and the code questions' pill, state by state (#1822 T17): rendered before and
-/// after the pill moved into `ChatUI`, so the two renders can be compared name by name. Synthetic data only.
+/// after the pill moved into `ChatUI` (`ChatRoutingAccessory`, `ChatRoutingPill`), so the two renders can be compared
+/// name by name. Synthetic data only.
 @MainActor
 enum RoutingPillShotFixtures {
+    private static var held: [Any] = []
+
+    static func cleanUp() { held = [] }
+
     static var shots: [DesignShot] {
         let wide = NSSize(width: 560, height: 0)
         return [
@@ -73,23 +78,34 @@ enum RoutingPillShotFixtures {
             """.utf8))
     }
 
-    // MARK: - Today's views (base)
+    // MARK: - The shared views
 
     private static func accessory(_ scene: Scene) -> AnyView {
         ProviderCatalogFixture.seedShared()
-        let catalog = scene.catalogRead ? catalog : AIModelCatalog(providers: [])
-        let preferred = scene.automatic ? "claude" : scene.provider
-        let presentation = ChatRoutingPresentation(
-            pair: catalog.fallbackPair(preferred: preferred), automatic: scene.automatic,
-            actualProvider: scene.actual.isEmpty ? nil : scene.actual,
-            actualModel: scene.actualModel.isEmpty ? nil : scene.actualModel,
-            reason: scene.reason, health: status(scene), busy: scene.busy,
-            actualDisplayName: scene.actual.isEmpty ? nil : catalog.provider(scene.actual)?.displayName,
-            capabilities: scene.catalogRead ? catalog.capabilities(for: scene.actual.isEmpty ? preferred : scene.actual) : nil
+        let models = scene.catalogRead ? catalog : AIModelCatalog(providers: [])
+        let client = RoutingShotClient()
+        let conversation = ChatConversationModel(client: client, conversationID: scene.actual.isEmpty ? nil : 7)
+        if !scene.actual.isEmpty {
+            conversation.store.apply(.snapshot(ChatFeed(
+                conversation: ChatFeed.Conversation(id: 7, title: "Q3 roadmap", actualProvider: scene.actual,
+                                                    actualModel: scene.actualModel, routingReason: scene.reason),
+                messages: []
+            )))
+        }
+        let composer = ChatComposerModel(conversation: conversation)
+        let routing = ChatRoutingModel(client: client) { composer }
+        if !scene.automatic {
+            composer.routing = ChatRouting(mode: "pinned", provider: scene.provider, model: scene.model.isEmpty ? nil : scene.model)
+        }
+        routing.configuredPreferred = "claude"
+        let current = scene.automatic ? "claude" : scene.provider
+        routing.catalog = ChatRoutingCatalog(
+            models: models, offered: scene.catalogRead ? models.providerIDs : [current],
+            status: status(scene), statusError: scene.statusError
         )
-        return AnyView(TodayAccessory(presentation: presentation, error: scene.statusError, busy: scene.busy,
-                                      provider: AIProvider(rawValue: scene.provider) ?? .claude, model: scene.model,
-                                      automatic: scene.automatic)
+        held.append(contentsOf: [client, conversation, composer, routing] as [Any])
+        return AnyView(ChatRoutingAccessory(model: routing, isBusy: scene.busy, reachable: true)
+            .environment(\.chatUIStyle, DesignKitChatStyle())
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(.vertical, Spacing.medium)
             .detailBackground())
@@ -101,7 +117,7 @@ enum RoutingPillShotFixtures {
             Image(systemName: "sparkle").foregroundStyle(.orange)
             Text("SessionStore.swift:42").font(.caption).foregroundStyle(.secondary).lineLimit(1)
             Spacer(minLength: 8)
-            ChatModelPicker(provider: .claude, model: "", suggestions: [], onSelectProvider: { _ in }, onSelectModel: { _ in })
+            CodeQuestionModelPill(choice: .init(provider: .claude, model: ""), suggestions: [], enabled: true) { _ in }
         }
         .padding(.horizontal, 12)
         .padding(.top, 10)
@@ -116,8 +132,7 @@ enum RoutingPillShotFixtures {
             Image(systemName: "chevron.left")
             Text("Code viewer · SessionStore.swift").font(.caption).foregroundStyle(.secondary).lineLimit(1)
             Spacer(minLength: 4)
-            ChatModelPicker(provider: .codex, model: "gpt-5.6-sol", suggestions: [],
-                            onSelectProvider: { _ in }, onSelectModel: { _ in })
+            CodeQuestionModelPill(choice: .init(provider: .codex, model: "gpt-5.6-sol"), suggestions: [], enabled: true) { _ in }
         }
         .padding(Spacing.medium)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -125,36 +140,10 @@ enum RoutingPillShotFixtures {
     }
 }
 
-/// Today's `ChatComposerAccessory` body over fixed data (the real one reads a live `ChatViewModel`).
-private struct TodayAccessory: View {
-    let presentation: ChatRoutingPresentation
-    let error: String?
-    let busy: Bool
-    let provider: AIProvider
-    let model: String
-    let automatic: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.tight) {
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                if let actual = presentation.actual { Text(actual).font(.caption).foregroundStyle(.secondary) }
-                if let missing = presentation.missingCapabilities {
-                    Text(missing).font(.caption).foregroundStyle(.secondary)
-                }
-                if let preview = presentation.preview {
-                    ChatRoutingStatusView(preview: preview, nativeToolsNotice: presentation.nativeToolsNotice,
-                                          actionEnabled: !busy,
-                                          onAction: preview.state == .recovered ? {} : nil)
-                }
-                if let error {
-                    Text(error).font(.caption).foregroundStyle(Tone.warning)
-                }
-            }
-            .padding(.horizontal, Spacing.large)
-            ChatModelPicker(provider: provider, model: model, suggestions: [], onSelectProvider: { _ in },
-                            onSelectModel: { _ in }, automatic: automatic, onSelectAutomatic: {})
-                .disabled(busy)
-                .padding(.horizontal, Spacing.large).padding(.bottom, Spacing.compact)
-        }
-    }
+/// A client that never answers: the shots set the conversation's state themselves.
+private final class RoutingShotClient: ChatClient, @unchecked Sendable {
+    func send(_ op: ChatOperation) async throws -> ChatEcho { .applied(.none) }
+    func feed(_ conversation: Int64) -> AsyncStream<ChatFeedUpdate> { AsyncStream { _ in } }
+    func list() -> AsyncStream<ChatListUpdate> { AsyncStream { _ in } }
+    var reachability: AsyncStream<ChatReachability> { AsyncStream { _ in } }
 }

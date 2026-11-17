@@ -1,6 +1,5 @@
 import XCTest
-@testable import WatchtowerCore
-import WatchtowerTestSupport
+import ChatWire
 
 final class ChatRoutingPresentationTests: XCTestCase {
     func testLocalAvailabilityOffersManualChoiceAndStaysStickyInBothDirections() throws {
@@ -67,7 +66,7 @@ extension ChatRoutingPresentationTests {
     /// neither kind keeps U1's "images" wording.
     @MainActor
     func testMissingCapabilitiesNamePDFsForAnImagesOnlyProvider() {
-        let catalog = AIModelCatalog(providers: ProviderCatalogFixture.providers())
+        let catalog = RoutingFixtures.capabilityRows()
         func missing(_ id: String) -> String? {
             ChatRoutingPresentation(pair: nil, automatic: false, actualProvider: nil, actualModel: nil, reason: nil,
                                     health: nil, busy: false, capabilities: catalog.capabilities(for: id)).missingCapabilities
@@ -112,7 +111,7 @@ extension ChatRoutingPresentationTests {
 extension ChatRoutingPresentationTests {
     @MainActor
     func testQuotaReserveNoticeFollowsActualCapabilitiesAfterReopenAndRecovery() throws {
-        let catalog = AIModelCatalog(providers: ProviderCatalogFixture.providers())
+        let catalog = RoutingFixtures.capabilityRows()
         for pair in ProviderFallbackPreview.Pair.fixturePairs {
             for state in ["quota_wait", "available"] {
                 let health = try ChatRoutingStatus.parse(Data("""

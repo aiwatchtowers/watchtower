@@ -51,6 +51,7 @@ type LiveTurn struct {
 type LiveRouting struct {
 	Mode            string // the session's routing mode ("pinned", …)
 	Provider, Model string // the actual pair
+	Reason          string // why it runs there (session_ready.reason), "" = none
 }
 
 // Overlay is the live state a feed read shows over the database: the
@@ -153,6 +154,7 @@ func applyLiveRouting(c *FeedConversation, r LiveRouting) {
 	}
 	if r.Provider != "" {
 		c.ActualProvider, c.ActualModel = r.Provider, r.Model
+		c.RoutingReason = r.Reason
 	}
 }
 
@@ -226,8 +228,11 @@ type FeedConversation struct {
 	Routing        FeedRouting  `json:"routing"`
 	ActualProvider string       `json:"actual_provider"`
 	ActualModel    string       `json:"actual_model"`
-	LiveSlackSince *int64       `json:"live_slack_since,omitempty"`
-	Lease          *FeedLease   `json:"lease,omitempty"`
+	// RoutingReason is why the chat runs where it runs (`quota_exhausted`,
+	// `required_capability_missing`, …): the live session's, else the row's.
+	RoutingReason  string     `json:"routing_reason"`
+	LiveSlackSince *int64     `json:"live_slack_since,omitempty"`
+	Lease          *FeedLease `json:"lease,omitempty"`
 }
 
 type FeedSiblings struct {
@@ -325,12 +330,12 @@ func chatFeedConversationTx(ctx context.Context, tx *sql.Tx, conv int64, now tim
 	)
 	err := tx.QueryRowContext(ctx, `
 SELECT c.id, c.title, c.active_leaf_message_id, c.project_id, p.name, c.routing_mode, c.provider, c.model,
-       c.actual_provider, c.actual_model, c.live_slack_since, l.owner, l.turn_id, l.heartbeat_at_ms
+       c.actual_provider, c.actual_model, c.routing_reason, c.live_slack_since, l.owner, l.turn_id, l.heartbeat_at_ms
 FROM chat_conversations c
 LEFT JOIN chat_projects p ON p.id = c.project_id
 LEFT JOIN chat_turn_leases l ON l.conversation_id = c.id
 WHERE c.id = ? AND c.context_type IS NULL`, conv).Scan(&c.ID, &c.Title, &leaf, &projectID, &project, &mode, &provider, &mdl,
-		&c.ActualProvider, &c.ActualModel, &slack, &leaseOwner, &leaseTurnID, &heartbeat)
+		&c.ActualProvider, &c.ActualModel, &c.RoutingReason, &slack, &leaseOwner, &leaseTurnID, &heartbeat)
 	if errors.Is(err, sql.ErrNoRows) {
 		return c, leaf, false, nil
 	}

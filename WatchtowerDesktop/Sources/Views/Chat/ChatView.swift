@@ -73,7 +73,6 @@ struct ChatSplitView: View {
                             projectID: projectID,
                             chatVM: chatVM,
                             dbPool: dbPool,
-                            modelSuggestions: appState.aiModelCatalog.suggestions(for: chatVM.selectedProvider.rawValue),
                             maxComposerHeight: max(120, geo.size.height * 0.4),
                             onOpenChat: { historyVM.selectedConversationID = $0 },
                             onDeleted: { chatVM.projectDeleted($0) },
@@ -86,14 +85,12 @@ struct ChatSplitView: View {
                             chatVM: chatVM,
                             recents: ChatLandingPolicy.recents(historyVM.list.conversations),
                             ownerName: appState.owner.displayName,
-                            modelSuggestions: appState.aiModelCatalog.suggestions(for: chatVM.selectedProvider.rawValue),
                             maxComposerHeight: max(120, geo.size.height * 0.4)
                         ) { historyVM.selectedConversationID = $0 }
                     } else {
                         ChatThreadView(chatVM: chatVM, ownerName: appState.owner.displayName)
                         MainChatComposer(
                             chatVM: chatVM,
-                            modelSuggestions: appState.aiModelCatalog.suggestions(for: chatVM.selectedProvider.rawValue),
                             maxHeight: max(120, geo.size.height * 0.4)
                         )
                         .frame(maxWidth: 760)

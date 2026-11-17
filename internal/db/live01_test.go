@@ -192,6 +192,7 @@ var displayOnlyReadersAt = map[string]string{
 	"chatstore/conversations.go:Archive":            "the archived_at column, no text",
 	"chatstore/conversations.go:DeleteIfUntouched":  "delete only, existence checks, no text",
 	"chatstore/conversations.go:Move":               "the project column, an existence count, no text",
+	"chatstore/conversations.go:UsePreferred":       "routing columns only (Use preferred, #1822 T17), no text",
 	"chatstore/attachments.go:SaveAttachment":       "inserts an attachment row of an existing conversation, no text read",
 	// The phone's chat (iPhone chat spec §4.6): the hub's chat slices and the
 	// Go port of the Mac's ⌘K search show chat text on the phone and store

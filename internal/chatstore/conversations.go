@@ -80,6 +80,19 @@ func (s *Store) Rename(ctx context.Context, conv int64, title string) error {
 	return requireConversation(res, err)
 }
 
+// UsePreferred is the chat's "Use preferred" (main's
+// ChatConversationQueries.setRouting with automatic): the chat routes
+// preferred + reserve again, and the sticky reserve (the actual pair and
+// its reason) is cleared, so the next turn starts on the preferred
+// provider. The caller holds the conversation's turn lock and retires the
+// idle session afterwards. ErrConversationGone when absent or not a main
+// chat.
+func (s *Store) UsePreferred(ctx context.Context, conv int64) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE chat_conversations SET routing_mode = 'preferred_reserve', provider = NULL, model = NULL,
+		actual_provider = '', actual_model = '', routing_reason = '' WHERE id = ? AND context_type IS NULL`, conv)
+	return requireConversation(res, err)
+}
+
 // Delete is ChatConversationQueries.delete: the row and, by cascade, its
 // messages, steps, artifacts, attachment rows and lease. The caller removes
 // the attachment folder after it returns (RemoveConversationFiles).

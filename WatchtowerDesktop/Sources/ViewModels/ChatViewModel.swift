@@ -80,15 +80,13 @@ final class ChatViewModel {
 
     // MARK: Routing
 
-    private(set) var selectedProvider: AIProvider
-    private(set) var automaticRouting = true
-    /// Model override; "" = the provider's resolved strong model.
-    private(set) var selectedModel = ""
+    /// The provider/model pill, its lines and fallback card (ChatUI's, shared with the phone): the landing's pick and
+    /// an open chat's live with its composer. Its catalog is `ai models` and `ai routing-status`, re-read on a chat
+    /// change, on app activation and at a turn's end (`refreshRoutingStatus`).
+    let routing: ChatRoutingModel
     @ObservationIgnored private let preferredProviderSource: (() -> AIProvider)?
-    private var configuredPreferred: AIProvider
+    @ObservationIgnored private var configuredPreferred: AIProvider
     private var preferredProvider: AIProvider { preferredProviderSource?() ?? configuredPreferred }
-    private(set) var routingStatus: ChatRoutingStatus?
-    private(set) var routingStatusError: String?
     @ObservationIgnored private var readingRoutingStatus = false
 
     // MARK: Inspector
@@ -176,15 +174,21 @@ final class ChatViewModel {
         self.dbPool = dbPool
         self.cliRunner = cliRunner
         self.uiClock = clock
-        self.selectedProvider = provider
         self.configuredPreferred = provider
         self.preferredProviderSource = preferredProviderSource
         list = ChatListModel(client: client, clock: clock)
         let conversation = ChatConversationModel(client: client, conversationID: nil, clock: clock)
         self.conversation = conversation
-        composer = ChatComposerModel(conversation: conversation)
+        let composer = ChatComposerModel(conversation: conversation)
+        self.composer = composer
+        let owner = ChatViewModelRef()
+        routing = ChatRoutingModel(client: client, composer: { owner.vm?.composer ?? composer },
+                                   onRefresh: { await owner.vm?.refreshRoutingStatus() })
         actionFeed = AgentActionFeed(dbPool: dbPool, cliRunner: cliRunner)
         artifactWriter = ChatArtifactWriter(client: client)
+        owner.vm = self
+        routing.configuredPreferred = preferredProvider.rawValue
+        routing.catalog = routingCatalog(status: nil, statusError: nil)
         wire(conversation)
     }
 
@@ -284,15 +288,15 @@ final class ChatViewModel {
         makingLandingDraft = true
         defer { makingLandingDraft = false }
         composer.projectID = landingProjectID
-        composer.routing = routingRequest
+        composer.routing = routing.request
         guard let id = await composer.prepareConversation() else { return }
         landingDraftID = id
         warm(id)
     }
 
     private func warm(_ id: Int64) {
-        let routing = conversationID == nil || id == landingDraftID ? routingRequest : nil
-        fireAndForget(.warm(conversationID: id, routing: routing))
+        let request = conversationID == nil || id == landingDraftID ? routing.request : nil
+        fireAndForget(.warm(conversationID: id, routing: request))
     }
 
     /// The landing's draft chat, left without a send: discarded by the engine while it is untouched.
@@ -359,7 +363,7 @@ final class ChatViewModel {
     @discardableResult
     func newConversation(projectID: Int64? = nil) async -> Int64? {
         do {
-            switch try await client.send(.new(projectID: projectID, routing: routingRequest ?? ChatRouting(mode: "auto"))) {
+            switch try await client.send(.new(projectID: projectID, routing: routing.request)) {
             case .applied(.conversation(let id)):
                 select(conversationID: id)
                 return id
@@ -466,7 +470,7 @@ final class ChatViewModel {
     /// `screen` is prefixed to the provider text only and never stored.
     func sendDraft(screen: ScreenContext? = nil) async {
         let wasLanding = isOnLanding
-        if conversationID == nil { composer.routing = routingRequest }
+        if conversationID == nil { composer.routing = routing.request }
         let before = conversation
         let sent = await composer.send(screenContext: screen?.block)
         guard sent else { return }
@@ -566,80 +570,40 @@ final class ChatViewModel {
 
     // MARK: - Routing
 
-    /// The routing the next new chat (or the next turn, after a pick) asks for; nil keeps the conversation's.
-    private var routingRequest: ChatRouting? {
-        guard !automaticRouting else { return ChatRouting(mode: "auto") }
-        return ChatRouting(mode: "pinned", provider: selectedProvider.rawValue,
-                           model: selectedModel.isEmpty ? nil : selectedModel)
-    }
+    /// Why the composer cannot attach a file to the provider the chat runs (or would run) on; nil before `ai models`
+    /// is read.
+    var attachUnavailableReason: String? { routing.capabilities?.attachUnavailableReason }
+    var pdfUnavailableReason: String? { routing.capabilities?.pdfUnavailableReason }
 
-    func switchProvider(_ provider: AIProvider) {
-        guard !isBusy else { return }
-        automaticRouting = false
-        if provider != selectedProvider {
-            selectedProvider = provider
-            selectedModel = ""
-        }
-        composer.routing = routingRequest
-    }
-
-    func selectModel(_ model: String) {
-        guard !isBusy else { return }
-        automaticRouting = false
-        selectedModel = model
-        composer.routing = routingRequest
-    }
-
-    func requestAutomaticRouting() {
-        guard !isBusy else { return }
-        automaticRouting = true
-        selectedProvider = preferredProvider
-        selectedModel = ""
-        composer.routing = routingRequest
-    }
-
-    var routingPresentation: ChatRoutingPresentation? {
-        let provider = automaticRouting ? preferredProvider : selectedProvider
-        let catalog = AIModelCatalog.shared
-        let pair = catalog.fallbackPair(preferred: provider.rawValue)
-        let actual = conversation.feed?.conversation.actualProvider ?? ""
-        let actualModel = conversation.feed?.conversation.actualModel ?? ""
-        return ChatRoutingPresentation(pair: pair, automatic: automaticRouting,
-                                       actualProvider: actual.isEmpty ? nil : actual,
-                                       actualModel: actualModel.isEmpty ? nil : actualModel,
-                                       reason: nil, health: routingStatus, busy: isBusy,
-                                       actualDisplayName: actual.isEmpty ? nil : catalog.provider(actual)?.displayName,
-                                       capabilities: providerCapabilities)
-    }
-
-    /// The capability row of the provider the chat runs (or would run) on; nil before the catalog is read.
-    var providerCapabilities: ProviderCapabilities? {
-        let catalog = AIModelCatalog.shared
-        guard catalog.isLoaded else { return nil }
-        let actual = conversation.feed?.conversation.actualProvider ?? ""
-        let provider = automaticRouting ? preferredProvider : selectedProvider
-        return catalog.capabilities(for: actual.isEmpty ? provider.rawValue : actual)
-    }
-
-    var attachUnavailableReason: String? { providerCapabilities?.attachUnavailableReason }
-    var pdfUnavailableReason: String? { providerCapabilities?.pdfUnavailableReason }
-
-    /// Reads the local provider availability (`ai routing-status`); never an upstream probe.
+    /// Reads the local provider availability (`ai routing-status`; never an upstream probe) and puts it, with the
+    /// `ai models` catalog, under the routing pill.
     func refreshRoutingStatus() async {
-        guard !readingRoutingStatus, let cliRunner else { return }
-        readingRoutingStatus = true
-        defer { readingRoutingStatus = false }
-        do {
-            let data = try await cliRunner.run(args: ["ai", "routing-status"], timeout: 5)
-            let status = try ChatRoutingStatus.parse(data)
-            routingStatus = status
-            if let provider = AIProvider(rawValue: status.preferredProvider ?? "") { configuredPreferred = provider }
-            if automaticRouting { selectedProvider = preferredProvider }
-            routingStatusError = nil
-        } catch {
-            routingStatus = nil
-            routingStatusError = "Couldn't read provider availability: \(error.localizedDescription)"
+        var status = routing.catalog?.status
+        var statusError = routing.catalog?.statusError
+        if let cliRunner, !readingRoutingStatus {
+            readingRoutingStatus = true
+            defer { readingRoutingStatus = false }
+            do {
+                let data = try await cliRunner.run(args: ["ai", "routing-status"], timeout: 5)
+                let read = try ChatRoutingStatus.parse(data)
+                if let provider = AIProvider(rawValue: read.preferredProvider) { configuredPreferred = provider }
+                status = read
+                statusError = nil
+            } catch {
+                status = nil
+                statusError = "Couldn't read provider availability: \(error.localizedDescription)"
+            }
         }
+        routing.configuredPreferred = preferredProvider.rawValue
+        routing.catalog = routingCatalog(status: status, statusError: statusError)
+    }
+
+    /// The Mac's routing catalog: the providers the chat's menu offers, from `ai models`.
+    private func routingCatalog(status: ChatRoutingStatus?, statusError: String?) -> ChatRoutingCatalog {
+        let models = AIModelCatalog.shared
+        let current = AIProvider(rawValue: routing.provider) ?? preferredProvider
+        return ChatRoutingCatalog(models: models, offered: AIProvider.offered(by: models, current: current).map(\.rawValue),
+                                  status: status, statusError: statusError)
     }
 
     // MARK: - Artifacts
@@ -847,4 +811,10 @@ final class ChatViewModel {
             siblings: message.siblings, attachments: message.attachments, steps: message.steps, parts: parts
         )
     }
+}
+
+/// The routing model's way back to the chat's current composer and refresh, without a strong cycle.
+@MainActor
+private final class ChatViewModelRef {
+    weak var vm: ChatViewModel?
 }

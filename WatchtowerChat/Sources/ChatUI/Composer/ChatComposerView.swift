@@ -33,9 +33,9 @@ public struct ChatComposerView: View {
     let field: ChatComposerFieldConfig
     /// Opens the platform's file picker (the phone's attachment menu); nil hides the phone's paperclip.
     var onAttach: (() -> Void)?
-    /// The routing accessory slot: the Mac's routing state and model pill (under the field). Nil fills it with the
-    /// model and project chips of a new chat (the phone, over the field). T17 puts the shared routing view here.
-    var accessory: AnyView?
+    /// The routing pill and its lines (`ChatRoutingAccessory`): under the field on the Mac, over it on the phone, with
+    /// the phone's project menu beside the pill. Nil: no routing accessory.
+    var routing: ChatRoutingModel?
     /// Files from the paperclip's open panel, a drop or a pasted Finder file (the Mac); nil: no paperclip, no drop.
     var onAttachFiles: (([URL]) -> Void)?
     /// A paste that becomes a file (an image, a PDF, a long text); true once attached. nil: ⌘V inserts text.
@@ -54,7 +54,7 @@ public struct ChatComposerView: View {
         model: ChatComposerModel,
         field: ChatComposerFieldConfig,
         onAttach: (() -> Void)? = nil,
-        accessory: AnyView? = nil,
+        routing: ChatRoutingModel? = nil,
         onAttachFiles: (([URL]) -> Void)? = nil,
         onPasteData: ((Data, String) async -> Bool)? = nil,
         shellFiles: ChatComposerShellFiles? = nil,
@@ -64,7 +64,7 @@ public struct ChatComposerView: View {
         self.model = model
         self.field = field
         self.onAttach = onAttach
-        self.accessory = accessory
+        self.routing = routing
         self.onAttachFiles = onAttachFiles
         self.onPasteData = onPasteData
         self.shellFiles = shellFiles
@@ -89,7 +89,7 @@ public struct ChatComposerView: View {
                     }
                 }
             }
-            // The phone's model and project chips come first, as before the shared composer.
+            // The phone's routing pill and project menu come first, as its chips did before the shared composer.
             if ComposerMetrics.accessoryAboveField { accessorySlot }
             if !model.quotes.isEmpty {
                 QuoteBatchView(
@@ -164,39 +164,12 @@ public struct ChatComposerView: View {
         }
     }
 
-    /// The routing accessory slot: the shell's accessory, else a new chat's model and project chips.
+    /// The routing accessory slot: the shared pill and its lines, with the phone's project menu on a new chat.
     @ViewBuilder private var accessorySlot: some View {
-        if let accessory {
-            accessory
-        } else {
-            newChatChips
-        }
-    }
-
-    /// The model and project chips (a menu each on a new chat, locked text once it is saved).
-    @ViewBuilder private var newChatChips: some View {
-        if let modelChip = model.modelChip, let projectChip = model.projectChip, let choices = model.newChatChoices {
-            HStack(spacing: Spacing.compact) {
-                if modelChip.editable {
-                    Menu {
-                        ForEach(Array(ChatComposerModel.modelOptions(choices.models).enumerated()), id: \.offset) { _, option in
-                            Button(option.label) { model.routing = option.routing }
-                        }
-                    } label: { style.chip(modelChip.label + " ⌄") }
-                    .accessibilityIdentifier("chat.composer.model")
-                } else {
-                    style.chip(modelChip.label)
-                }
-                if projectChip.editable {
-                    Menu {
-                        Button(ChatComposerModel.noProject) { model.projectID = nil }
-                        ForEach(choices.projects) { project in Button(project.name) { model.projectID = project.id } }
-                    } label: { style.chip(projectChip.label + " ⌄") }
-                    .accessibilityIdentifier("chat.composer.project")
-                } else {
-                    style.chip(projectChip.label)
-                }
-            }
+        if let routing {
+            ChatRoutingAccessory(model: routing, isBusy: conversation.isTurnRunning || model.isSending,
+                                 reachable: conversation.reachability == .connected,
+                                 projects: model.newChatChoices, projectID: $model.projectID)
         }
     }
 }

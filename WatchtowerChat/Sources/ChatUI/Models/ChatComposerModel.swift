@@ -56,14 +56,15 @@ public final class ChatComposerModel {
         get { picker.skill }
         set { picker.skill = newValue }
     }
-    /// The routing of a new conversation (nil: automatic).
+    /// The routing the next turn (or a new conversation) asks for; nil keeps the conversation's own (a new one is
+    /// automatic). Set only by the routing pill (`ChatRoutingModel`).
     public var routing: ChatRouting?
     /// The project of a new conversation.
     public var projectID: Int64?
     /// Editing this owner message instead of sending a new one.
     public var editing: Int64?
     public private(set) var isSending = false
-    /// What a new chat may be started with; set by a shell that shows the model and project chips.
+    /// The projects a new chat may be started in; set by a shell that shows the project menu (the phone).
     public var newChatChoices: ChatNewChatChoices?
     /// Why the shell holds sending (for example a send that waits for the hub after a relaunch): Send is off and the
     /// line says so. Nil lets the composer send.

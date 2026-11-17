@@ -52,7 +52,9 @@ func (h *Handlers) chatBranchSelect(ctx context.Context, r actions.Request) acti
 }
 
 // chatManage is `chat_manage` (params {conversation_id, op pin|unpin|rename|
-// delete, title?}): what the Mac's Chats panel writes. rename sets
+// delete|use_preferred, title?}): what the Mac's Chats panel writes, and the
+// fallback card's "Use preferred" (refused conversation_busy while a turn
+// runs). rename sets
 // title_source 'user'. delete (the engine's) removes the row (its messages,
 // files' rows and lease go with it), stops its running turn and then, after
 // the commit, the conversation's attachment folder, as the Mac's ✕ does. The
@@ -67,7 +69,7 @@ func (h *Handlers) chatManage(ctx context.Context, r actions.Request) actions.Ou
 		}
 		req := chatengine.ManageRequest{Conversation: conv, Op: op}
 		switch op {
-		case chatengine.ManagePin, chatengine.ManageUnpin, chatengine.ManageDelete:
+		case chatengine.ManagePin, chatengine.ManageUnpin, chatengine.ManageDelete, chatengine.ManageUsePreferred:
 		case chatengine.ManageRename:
 			title, ok := stringParam(r, "title")
 			if !ok {
@@ -75,12 +77,14 @@ func (h *Handlers) chatManage(ctx context.Context, r actions.Request) actions.Ou
 			}
 			req.Title = title
 		default:
-			return failed(reasonInvalidParams, "op must be pin, unpin, rename or delete")
+			return failed(reasonInvalidParams, "op must be pin, unpin, rename, delete or use_preferred")
 		}
 		err := c.Engine.Manage(ctx, req)
 		switch {
 		case errors.Is(err, chatstore.ErrConversationGone):
 			return failed(reasonNotFound, chatGoneMessage)
+		case errors.Is(err, chatstore.ErrBusy):
+			return failed(reasonConversationBusy, chatBusyMessage)
 		case errors.Is(err, chatstore.ErrInvalid):
 			return failed(reasonInvalidParams, "A chat's name can't be empty")
 		case err != nil:

@@ -119,7 +119,7 @@ final class ChatViewModelShellTests: XCTestCase {
         var created: Int64?
         vm.onConversationCreated = { created = $0 }
         vm.showLanding(inProject: 5)
-        vm.switchProvider(.codex)
+        vm.routing.selectProvider("codex")
         vm.composer.draft = "Start the brief"
         await vm.sendDraft()
         guard case let .new(projectID, routing)? = client.ops.first else { return XCTFail("no chat_new first") }
@@ -266,7 +266,7 @@ final class ChatViewModelKeptBehaviourTests: XCTestCase {
     /// the landing unsent discards the draft; a sent draft is never discarded.
     func testTheLandingWarmsItsChatOnTheFirstKeystrokeAndDiscardsItIfLeft() async throws {
         vm.showLanding(inProject: 3)
-        vm.switchProvider(.codex)
+        vm.routing.selectProvider("codex")
         vm.composer.draft = "S"
         await vm.draftStarted()
         await vm.engineCallsSettled()

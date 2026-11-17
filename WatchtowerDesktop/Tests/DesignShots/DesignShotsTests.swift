@@ -1,4 +1,5 @@
 import AppKit
+import ChatWire
 import SwiftUI
 import XCTest
 import WatchtowerCore

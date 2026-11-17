@@ -668,6 +668,7 @@ enum DesignShotFixtures {
         UnifiedChatShotFixtures.cleanUp()
         ComposerShotFixtures.cleanUp()
         ApprovalCardShotFixtures.cleanUp()
+        RoutingPillShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil
         UserDefaults().removePersistentDomain(forName: defaultsSuite)

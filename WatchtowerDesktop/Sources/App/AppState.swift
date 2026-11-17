@@ -588,7 +588,7 @@ final class AppState {
         Self.wireChat(cvm, panel: panel)
         cvm.onStartDaemon = { [weak self] in self?.startChatDaemon() }
         onboardingGoals.onProviderSwitched = { [weak cvm] provider in
-            cvm?.switchProvider(AIProvider.fromConfig(provider))
+            cvm?.routing.selectProvider(AIProvider.fromConfig(provider).rawValue)
         }
         cvm.start()
         chatViewModel = cvm

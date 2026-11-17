@@ -33,7 +33,7 @@ func (e *Engine) LiveRouting(conv int64) (LiveRouting, bool) {
 		s := e.sessions[i]
 		if s.conv == conv && s.readyLive != nil && !s.dropped {
 			r := s.readyLive
-			return LiveRouting{Mode: r.RoutingMode, Provider: r.Provider, Model: r.Model}, true
+			return LiveRouting{Mode: r.RoutingMode, Provider: r.Provider, Model: r.Model, Reason: r.Reason}, true
 		}
 	}
 	return LiveRouting{}, false

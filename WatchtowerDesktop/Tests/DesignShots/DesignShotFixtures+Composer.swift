@@ -160,7 +160,7 @@ enum ComposerShotFixtures {
     }
 
     private static func mainComposer(_ vm: ChatViewModel, maxHeight: CGFloat) -> some View {
-        MainChatComposer(chatVM: vm, modelSuggestions: [], maxHeight: maxHeight)
+        MainChatComposer(chatVM: vm, maxHeight: maxHeight)
     }
 
     private static func picker(_ vm: ChatViewModel) -> ComposerPickerModel { vm.composer.picker }
