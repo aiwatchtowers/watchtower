@@ -17,7 +17,7 @@
 **Spec:** `docs/superpowers/specs/2026-11-16-unified-chat-design.md` (approved, ask #1378; decisions in asks #1363 and #1371). Builds on `docs/features/iphone-chat.md` and `docs/inventory/chat.md`.
 
 **Branching and execution:**
-- The umbrella branch is `feature/unified-chat`. Each task is one implementer agent working in its own worktree on `feature/unified-chat-tN-<slug>`, branched from the umbrella. Its PR goes **into `feature/unified-chat`**, never into `main`. The umbrella PR into `main` stays a draft until T11 and the addendum's T16 (ask #1409) are merged.
+- The umbrella branch is `feature/unified-chat`. Each task is one implementer agent working in its own worktree on `feature/unified-chat-tN-<slug>`, branched from the umbrella. Its PR goes **into `feature/unified-chat`**, never into `main`. The umbrella PR into `main` stays a draft until T11 and the addendum's T16 (asks #1409 and #1411; T16 follows T17) are merged and the owner has answered T16's review ask.
 - `Depends on` lists the task PRs that must be merged into the umbrella before a lane is branched. Tasks with no dependency between them run in parallel lanes.
 - Lane setup for Swift work: copy the main worktree's `WatchtowerDesktop/.build`, then delete its path-bound `ModuleCache`. Phone lanes use their own `-derivedDataPath` per worktree.
 
@@ -35,7 +35,7 @@
   - B (packages): T6, T7.
   - C (apps): T8, T9, T10b, T12.
   - D (docs): T11.
-  - E (addendum, ask #1409): T13, T14, T15, T16 — the Mac composer and approval cards move into `ChatUI`.
+  - E (addendum, asks #1409 and #1411): T13, T14, T15, T17, T16 — the Mac composer, approval cards and routing pill move into `ChatUI`.
   - T0 runs first, beside T1.
 - **Controller step after T0:** run `make desktop-shots DESKTOP_SHOTS=build/unified-chat-before` and `make mobile-shots SHOTS_ONLY=chat SHOTS_DIR=build/unified-chat-before-phone`. Keep both sets locally as the comparison baseline; they are gitignored. File the owner a **review** ask with the new-state PNGs (§10). **T7 is not dispatched until the owner answers.**
 - Every brief carries the review checklist: `docs/review/review-rules.md`, §§ 7–9 and "Swift / Desktop conventions". The implementer self-reviews against it before hand-back.
@@ -137,6 +137,10 @@
 ---
 
 > **Addendum (ask #1409).** The umbrella's final review (finding I3) found the Mac's composer (`Views/Chat/ChatComposerView`, `ChatComposerBar`, `ChatComposerField`, `AttachmentChipsView`, `MentionPicker`, `QuoteBatchView`) and approval cards (`Views/Chat/AgentActionCardView*`) still in the app beside `ChatUI`'s own. That breaks G3, §6.1 and §6.4: a composer or approval-card feature written once reaches one device only. In ask #1409 the owner decided they move into `ChatUI` **in this branch, before it merges to main**. Tasks T13–T16 below do it, in phase E, after T12 and T11. They follow T12's approach: one implementation in `ChatUI`; the Mac's look comes through `ChatUIStyle` hooks (`DesignKitChatStyle`); Mac-only capabilities come as injected services or `Platform/macOS` parts; no view is kept twice. T13 and T14 run in parallel lanes. T15 follows T14 and may run beside T13. T16 runs last.
+>
+> **Ask #1411.**
+> - The owner decided that the Mac's routing pill and the phone's model and project chips also become one `ChatUI` view in this branch. The routing pill includes the model menu, the actual-provider and capability lines, the provider fallback preview and the routing error. **T17** does it after T13, so a model-picker feature written once reaches both devices while the Mac looks and behaves as today (spec §2).
+> - In the same ask the owner confirmed two v1 limits on the phone: **no approval editing** (no Slack edit, no workspace pick, no connector-input edit) and **no bulk approval verbs** (no Approve all, no Dismiss, no Retry). T15 leaves those capabilities nil on the phone, and T16 records them in `unified-chat.md`.
 
 ### Task T0: Design shots for the new states (§10)
 
@@ -1086,16 +1090,19 @@
 
 ---
 
-## Addendum tasks (ask #1409): the composer and the approval cards in `ChatUI`
+## Addendum tasks (asks #1409 and #1411): the composer, the approval cards and the routing pill in `ChatUI`
 
-**Why.** Spec G3, §6.1 and §6.4 put the composer and the per-connector approval cards in `ChatUI`. After T12 the Mac still draws its own, so a feature written once reaches one device only.
+**Why.** Spec G3, §6.1 and §6.4 put the composer and the per-connector approval cards in `ChatUI`. After T12 the Mac still draws its own, so a feature written once reaches one device only. Ask #1411 adds the routing pill (T17).
 
 **Lanes and order.**
 - **T13 ∥ T14.** Two parallel lanes in their own worktrees. T13 is the composer: Swift, Desktop and phone. T14 is the approval data: Go plus `ChatWire`.
 - **T15 after T14.** It may run beside T13.
   - Both T13 and T15 add lines to the same few files: `Style/ChatUIStyle.swift`, `Views/Chat/DesignKitChatStyle.swift`, `Features/Chats/PhoneChatStyle.swift`, `DesignShotCatalog.swift`, `ScreenshotTourTests.swift` and `ChatUISourceScanTests.swift`.
   - The second of the two to merge rebases on the umbrella and resolves these additive conflicts. No other file is shared.
-- **T16 after T13, T14 and T15.**
+- **T17 after T13.** It may run beside T14 and T15.
+  - It shares additive lines with T13 and T15 in `Style/ChatUIStyle.swift`, `DesignKitChatStyle.swift`, `PhoneChatStyle.swift`, `DesignShotCatalog.swift`, `ScreenshotTourTests.swift` and `ChatUISourceScanTests.swift`. It also shares lines with T14 in `internal/chatengine/feed.go` (T14 adds `FeedAction` fields, T17 adds `FeedConversation.RoutingReason`).
+  - The later lane to merge rebases on the umbrella and resolves these additive conflicts.
+- **T16 after T13, T14, T15 and T17.**
 - **Phone lanes** use their own `-derivedDataPath`, as the plan header says.
 
 **Rules for every addendum task** (on top of the Global Constraints):
@@ -1113,7 +1120,7 @@
     - `ExpandingTextInput`, `PastingTextView` and `PastedContent` are already there.
   - **Injected by the Mac app** (`ChatUI` cannot import them):
     - dictation (`DictationCenter` and the FluidAudio ML stack);
-    - the routing accessory (`AIProvider`, `ProviderFallbackPreview`);
+    - the routing accessory (`AIProvider`, `ProviderFallbackPreview`). T13 keeps it as a Mac accessory; T17 then moves it into `ChatUI` (ask #1411), with only the data readers left injected;
     - Reconnect Slack (`AppState.reconnectSlack`);
     - in-app navigation (`AgentActionDestination` → `AppState`);
     - the `save_automation` card body (`SaveAutomationCardModel`);
@@ -1228,7 +1235,7 @@
   - `Views/Targets/TargetDetailView.swift`;
   - `ViewModels/ChatViewModel.swift`: the picker moves into `ChatComposerModel`. `chatVM.picker` goes; `sendDraft` reads the model's picker.
   - `App/` or the root view that sets `.environment(\.chatComposerServices, …)` with dictation.
-- Create (Mac): `Views/Chat/ChatComposerAccessory.swift`. It is today's `routingState` plus `ChatModelPicker`, moved out of the deleted `ChatComposerView.swift`. `ChatModelPicker` stays the Mac's: `CodeQuestionPopover` and `QuestionsView` use it too.
+- Create (Mac): `Views/Chat/ChatComposerAccessory.swift`. It is today's `routingState` plus `ChatModelPicker`, moved out of the deleted `ChatComposerView.swift`. `ChatModelPicker` stays the Mac's: `CodeQuestionPopover` and `QuestionsView` use it too. (This is an interim state: T17 replaces it with `ChatUI`'s routing accessory and pill. T13 moves it unchanged.)
 - Modify (phone):
   - `Features/Chats/PhoneChatStyle.swift`: the composer hooks with today's phone look.
   - `Features/Chats/ChatConversationView.swift`: the attachment pills become `AttachmentChipsView` chips with the phone's upload state. The `accessory` pills are removed.
@@ -1474,8 +1481,8 @@
 - Injected by the Mac (`ChatApprovalServices`): Reconnect Slack, in-app Open, the `save_automation` body, the Inbox target-button row, Dismiss, Retry/apply, the reviewed-actions accessory, and the decision itself (CLI `actions …`).
 - The phone injects only the decision (hub `chat_action_answer`) and its state line.
 - **A capability that is nil hides its control:**
-  - `approveEdited` is nil on the phone, because the relay answer has no patch. So the Slack editor, the workspace pick and Edit Input do not show on the phone (see open question 1).
-  - `approveAll`, `dismiss` and `retry` are nil on the phone (v1 limit, T16).
+  - `approveEdited` is nil on the phone, because the relay answer has no patch. So the Slack editor, the workspace pick and Edit Input do not show on the phone. This is a v1 limit the owner confirmed in ask #1411.
+  - `approveAll`, `dismiss` and `retry` are nil on the phone. This is a v1 limit the owner confirmed in ask #1411; T16 records it.
 
 **Writers:** as in T14. The card calls only the injected `decide`/`retry`/`dismiss`/`approveAll` closures. On the Mac they are `AgentActionFeed` (the CLI with owner-confirm); on the phone, `RelayChatClient.decide` (`chat_action_answer`). There is no new writer, and no approval verb on `chat.sock` (D12).
 
@@ -1612,23 +1619,31 @@
 
 ### Task T16: Docs, inventory close-out, guide, and the owner's review of the new states
 
-**Depends on:** T13, T14, T15.
+**Depends on:** T13, T14, T15, T17.
 
 **Files:**
 - Modify:
   - `docs/features/unified-chat.md`:
-    - Architecture: the composer and the approval card live in `ChatUI`, and the Mac injects dictation, routing, Reconnect Slack, Open, the `save_automation` body and the Inbox target row;
+    - Architecture: the composer, the approval card and the routing pill (`ChatRoutingModel`, `ChatRoutingAccessory`, `ChatRoutingPill`) live in `ChatUI`. The Mac injects dictation, its routing data readers (`AIModelCatalog`, `ai routing-status`), Reconnect Slack, Open, the `save_automation` body and the Inbox target row. The phone's routing data comes from the `chat_list` record's optional `routing`.
+    - Protocol: `chat_manage use_preferred`, the feed's `routing_reason` and the `chat_list` `routing` object (D22 defaults).
     - the I3 item is gone from the open items;
-    - v1 limits: the phone has no Slack edit, no workspace pick, no connector-input edit, no Approve all, no Dismiss and no Retry (no relay verb); clipped args show no Confluence diff on the phone; the Mac's routing pill stays a Mac accessory.
+    - v1 limits:
+      - the phone has no approval editing (no Slack edit, no workspace pick, no connector-input edit) and no bulk approval verbs (no Approve all, no Dismiss, no Retry), because there is no relay verb (owner-confirmed, ask #1411);
+      - clipped args show no Confluence diff on the phone;
+      - the phone's model menu lists the registry's models only, with no live Ollama list;
+      - the phone's provider availability refreshes with the `chat_list` record (any engine change), not on app activation, and it has no "check again".
   - `docs/features/README.md`: the unified-chat summary.
   - `docs/features/agent-actions.md`, `slack-send.md`, `voice-dictation.md` and `chat-redesign.md`: the file paths of the card, the composer and the dictation hook. Grep each for `AgentActionCardView`, `ChatComposerField` and `ChatComposerBar`.
-  - `docs/guide/features/iphone-chat.md`: the phone's approval cards show the connector's details; quotes take a comment; mentions show as chips. Keep the 8 KB cap.
+  - `docs/features/provider-fallback.md` ("Desktop chat intent and actual execution"): the production routing component is `ChatUI`'s `ChatRoutingAccessory` on both devices. Use preferred is `chat_manage use_preferred`. The writers table gains `chatstore.UsePreferred`.
+  - `docs/features/model-provider-registry.md`: the chat model picker is `ChatUI`'s `ChatRoutingPill`, fed by `AIModelCatalog` on the Mac and by `chat_list.routing` + `models[]` on the phone. No model names are hardcoded in Swift.
+  - `docs/guide/features/iphone-chat.md`: the phone's approval cards show the connector's details; quotes take a comment; mentions show as chips; the model pill changes between turns, and it shows the fallback card with Use preferred. Keep the 8 KB cap.
   - `docs/guide/features/ai-chat.md`: only if a Mac-visible change was accepted in Step 1.
-  - `docs/inventory/chat.md`: one closing changelog line for the addendum, with the guard moves of T13 and T15.
+  - `docs/inventory/chat.md`: one closing changelog line for the addendum, with the guard moves of T13, T15 and T17.
   - The plan's Spec coverage rows, if a task moved a promise.
 
 - [ ] **Step 1: Owner review ask (controller).**
-  - File one **review** ask with the PNGs of every phone frame T13 and T15 added (`iphone-chat-composer-*`, `iphone-chat-approval-*`).
+  - File one **review** ask with the PNGs of every phone frame T13, T15 and T17 added (`iphone-chat-composer-*`, `iphone-chat-approval-*`, `iphone-chat-routing-*`).
+  - Add every existing phone frame T17 reported as changed (the model chip now reads the Mac's copy, and a saved chat's pill is a menu), with base and HEAD side by side.
   - Add any Mac pair a task reported as different, with the base and HEAD side by side: `composer-main-editing` (the editing and over-limit lines that `ChatUI`'s composer shows), and anything else listed.
   - The umbrella PR stays a draft until the owner answers.
   - An element the owner rejects is hidden through its `PhoneChatStyle` or `DesignKitChatStyle` hook in a follow-up commit on this task's branch, and its shot is re-rendered.
@@ -1636,9 +1651,331 @@
 - [ ] **Step 3: Verify.**
   - `go test ./docs/guide` (the 8 KB cap)
   - `bash scripts/leak-check.sh`, if run locally
-  - `grep -rn 'AgentActionCardView\|ChatComposerField(\|ChatComposerBar(' WatchtowerDesktop/Sources docs/inventory`: no hits except the adapter's history notes.
+  - `grep -rn 'AgentActionCardView\|ChatComposerField(\|ChatComposerBar(\|ChatModelPicker\|ChatRoutingStatusView' WatchtowerDesktop/Sources docs/inventory`: no hits except the adapter's history notes.
   - Controller phase gate for phase E: `make test`, `make test-swift`, `make lint-all`, `go test ./cmd/...` and `make mobile-test`.
-- [ ] **Step 4: Commit.** `docs: unified chat addendum — composer and approval cards in ChatUI (#1822 T16, ask #1409)`
+- [ ] **Step 4: Commit.** `docs: unified chat addendum — composer, approval cards and routing pill in ChatUI (#1822 T16, asks #1409 and #1411)`
+
+---
+
+### Task T17: One routing pill in `ChatUI` — the Mac's model pill and fallback preview, the phone's model and project chips (ask #1411)
+
+**Depends on:** T13 (the composer's `accessory` slot). It may run beside T14 and T15 (see "Lanes and order").
+
+**Why.** In ask #1411 the owner decided that the Mac's routing accessory and the phone's composer chips become one `ChatUI` view in this branch. The Mac's accessory is the model pill (`ChatModelPicker`), the actual-provider line, the missing-capabilities line, the fallback preview card (`ChatRoutingStatusView` over `ProviderFallbackPreview`) and the routing error. The phone's chips are the model chip and the project chip (`ChatComposerView.newChatChips`). After T17, a model-picker feature written once reaches both devices. The Mac looks and behaves as today (spec §2).
+
+**Code facts this task starts from** (recon on the umbrella at `3feab04`):
+- **The Mac's data is local.**
+  - `ChatViewModel` holds the pick: `selectedProvider`, `selectedModel` and `automaticRouting`.
+  - It builds `ChatRoutingPresentation` from `AIModelCatalog.shared` (`ai models --json`: providers, display names, capabilities, `reserve_peer`, live Ollama models) and from `ai routing-status`, which it reads through `CLIRunner` on a chat change, on app activation and at a turn's end.
+  - The model menu's entries are `AIModelCatalog.suggestions(for:)`, and the providers are `AIProvider.offered(by:current:)`.
+- **The phone's data comes over the relay, and only part of it.**
+  - The `chat_list` record carries `models[]` (`chatengine.RegistryChatModels`: provider, model, `display_name`, `images`, `pdf`) and `projects[]`.
+  - It carries no fallback pair, no preferred provider, no `fallback.enabled`, no availability (`ai routing-status`) and no `read_folder` or `claude_ai_tools` capability.
+  - The live Ollama list is not there either; reading it needs a network call.
+- **Both devices lack the routing reason.**
+  - `FeedConversation` (`internal/chatengine/feed.go`) carries `routing`, `actual_provider` and `actual_model`, but not `chat_conversations.routing_reason`.
+  - The Mac passes `reason: nil` to `ChatRoutingPresentation`. Since T8 its preview therefore shows only the `pinned` state. The `fallback`, `recovered` and `unsupported` states and the claude.ai-tools notice never show; on `main` they read `routingReason` from the row.
+  - T17 restores them for both devices.
+- **"Use preferred" does nothing on an automatic chat.**
+  - On the umbrella, `requestAutomaticRouting` only sets `composer.routing = auto` for the next turn. `chatstore.writeRoutingTx` writes an automatic config only when a *pinned* chat switches to it, so the sticky reserve is never cleared.
+  - On `main` the Mac's **Use preferred** closed the idle session and wrote `preferred_reserve` with the actual pair and the reason cleared (`ChatConversationQueries.setRouting`). `provider-fallback.md`: "Use preferred between turns clears sticky metadata and retires the idle host."
+  - T17 brings this back as one engine operation, so both devices have it.
+- **The phone locks its chips once the first message has gone; the Mac lets the pick change between turns.** One view means one rule. T17 takes the Mac's rule and the Mac's copy, and the phone's changed frames go to the owner (see "Phone frames" and T16 Step 1).
+- **The pill is also used outside the chat.** `CodeQuestionPopover` and `QuestionsView` draw `ChatModelPicker` too. They switch to the shared pill, so no copy of the pill is kept.
+- **The C18 shot names in T13 are wrong.** C18 names `other-provider` and `other-provider-failed`, but those are onboarding shots. The routing base set is the list in Step 1 below.
+
+**Data the phone gets, and its fallback when the data is absent:**
+
+| Data | How it reaches the phone | When it is absent (an older Mac daemon, or a failed read) |
+|---|---|---|
+| Providers, display names, models, the fallback pair (`reserve_peer`), capabilities (`images`, `pdfs`, `read_folder`, `claude_ai_tools`) | New optional `routing.providers[]` on the `chat_list` record | `ChatRoutingCatalog(list:)` builds the providers from `models[]` alone: no pair and only `images`/`pdf`. The pill offers the model choice, with no preview card and no capability line. This is today's phone. |
+| Preferred provider, `fallback.enabled`, availability per quota provider | New optional `routing.status`, the same DTO `ai routing-status` prints (decoded by the same `ChatRoutingStatus` parser), with `application` and `saved_version` left out | No preview card. The pill still works. |
+| A failed availability read | `routing.error`: "Couldn't read provider availability" (fixed copy, so no path or stderr crosses the relay) | The line shows under the pill, as the Mac's does. |
+| Why the chat runs where it runs | New `routing_reason` on the feed's conversation, on both transports (live from the session's `session_ready.reason`, else the row) | `""`: no `fallback`/`recovered`/`unsupported` state. This is the umbrella's state today. |
+| Use preferred | New `chat_manage` op `use_preferred`, on `chat.sock` and through the hub's `chat_manage` action | An older daemon answers `invalid_params`. The phone never offers the action there anyway, because `recovered` needs `routing.status`, which only a new daemon sends. |
+
+The `routing` object is optional and decoded with defaults (D22). It is filled by the hub's `chat_list` source (like `models`), not by `chatengine.ReadList`: the Mac keeps its local readers, because they also list the live Ollama models and refresh on app activation. No new hub action kind is added.
+
+**Behaviours that must survive or reach the phone** (each with the test that pins it after the move):
+
+| # | Behaviour | Pinned by |
+|---|---|---|
+| R1 | The pill's label: "Preferred + reserve · Auto"; "Only <Provider> · <model>"; "Only <Provider> · Auto" | `ChatRoutingModelTests.testLabelsMatchTheMacPicker` (new) |
+| R2 | The menu: "Preferred + reserve · Auto model"; a Provider section ("Only <Provider>" for each provider the policy allows, and the current one); a Model section ("Auto" plus the provider's models). A provider pick resets the model to Auto. | `testMenuEntriesMatchTheMacPicker` (new) |
+| R3 | A pick only sets the next turn's routing (`composer.routing`). Nothing is written until a turn starts. The pill is off while busy. | `testPickWritesComposerRoutingOnly`, `testPillAndActionOffWhileBusy` (new) |
+| R4 | A saved chat shows its own routing until a pick. A new chat shows the landing's pick. | `testSavedChatPillShowsItsRoutingUntilAPick` (new) |
+| R5 | "Current provider: <Provider> · <model>" | `ChatRoutingPresentationTests` (moved, assertions kept) |
+| R6 | "No images / PDFs / file reading with this provider." (U3) | `testMissingCapabilitiesNamePDFsForAnImagesOnlyProvider` (moved) |
+| R7 | The fallback preview card for `pinned`, `fallback`, `recovered` (with **Use preferred**) and `unsupported`, with the next-check time. The action is off while busy. | `ChatRoutingPresentationTests` (moved), shots `provider-chat-*` |
+| R8 | The claude.ai-tools notice on a quota-selected reserve without them | `testQuotaReserveNoticeFollowsActualCapabilitiesAfterReopenAndRecovery` (moved) |
+| R9 | The routing error line, in warning tone | `testHealthErrorShowsLine` (new) |
+| R10 | The status is re-read on a chat change, on app activation and at a turn's end (the Mac). The phone gets it with each `chat_list` record. | `testRefreshOnChatChangeActivationAndTurnEnd` (new) |
+| R11 | **Use preferred** clears the sticky reserve between turns and retires the idle session. It is refused while a turn runs. | `TestChatengine_UsePreferredClearsStickyAndRetiresIdleSession`, `TestChatengine_UsePreferredRefusedWhileTurnRuns` (new) |
+| R12 | The phone's project chip: a menu on a new chat, locked text once the chat is saved. The Mac passes no projects, so it shows no project menu, as today. | `ChatUIPhoneParityTests` (kept), `testProjectMenuOnlyWithProjectsOnANewChat` (new) |
+| R13 | The code-question header and the Questions view use the same pill, with no automatic choice | shots `routing-pill-code-question`, `routing-pill-questions-view`; `CodeQuestionSurfaceTests` (kept) |
+
+**Writers of the routing** (T17 adds one engine path, `use_preferred`; the pill itself writes nothing, it only sets a binding and calls closures):
+- **`chat_conversations.routing_mode`, `provider`, `model`:**
+  - the engine, through `chatstore.writeRoutingTx` on `chat_new`/`chat_turn` with `routing`;
+  - the engine, through the new `chatstore.UsePreferred` on `chat_manage use_preferred`, under the conversation's turn lock;
+  - `ai session` itself (`SetChatRouting`, `cmd/ai_session_routing.go`), with the config it was started with.
+- **`actual_provider`, `actual_model`, `routing_reason`:**
+  - the engine (`chatstore.Turn.recordActual`, from the session's event);
+  - `ai session` (`SetChatActual`).
+  - All three routing writers above clear them (`writeRoutingTx` on a pin, `UsePreferred`, `SetChatRouting`).
+- **`chat_messages.provider`, `model`:** `Turn.recordActual` only.
+- **The next turn's intent** (in memory, no row):
+  - `ChatComposerModel.routing`, set only by `ChatRoutingModel`;
+  - on the phone, also `ChatsCenter.drafts` (`draft.routing`) and the `chat_outgoing` send ledger;
+  - on the Mac, the landing's pick lives in `ChatRoutingModel`, moved out of `ChatViewModel`.
+- **Read-only for the pill:**
+  - the AI config (`ai.provider`, `ai.fallback.*`), written by Settings `ConfigService.save` and the CLI;
+  - the provider-health store, written by routed callers. The pill never passes `--check-again`, and the engine's catalog uses `Router.Status`, never `CheckStatus`.
+- **The code questions' choice:** `CodeQuestionCenter.setModelChoice` (unchanged, its own store).
+- **Who wins:**
+  - Two devices picking for one chat: each device's pick is its own, in memory. The turn that starts writes its routing under the turn lock, so the last turn to start wins. `use_preferred` while a turn runs is refused `busy`, and the row is unchanged.
+  - `use_preferred` writes the row first and then retires the idle session, so the next session reads the new row.
+
+**Failure paths and their tests:**
+
+| Failure | Behaviour | Test |
+|---|---|---|
+| The phone's `chat_list` has no `routing` (an older daemon) | The pill offers models from `models[]` only, with no card and no capability line. Sends work. | `ChatRoutingCatalogTests.testListWithoutRoutingBuildsProvidersFromModels`, `ChatRoutingModelTests.testCatalogWithoutStatusShowsChoiceOnly` (new) |
+| No list yet on the phone (cold start, nothing kept offline) | No pill, as today without `newChatChoices`. The draft is kept. | `testNoCatalogHidesPill` (new) |
+| The Mac's `AIModelCatalog` is unread (`ai models` failed) | The providers come from `AIProvider.offered`, and the Model section has only "Auto", as today. There is no capability line. | `ChatRoutingMacAdapterTests.testUnreadCatalogOffersProvidersAndAutoOnly` (new), shot `routing-catalog-unread` |
+| A pinned model the catalog no longer lists (models changed, or the MDM policy dropped the provider) | The label keeps the pin, so the owner sees what is set. The send goes, and the engine refuses it by policy or model with the existing error part. The menu offers the current choices. | `testPinnedModelMissingFromCatalogKeepsLabel` (new); POLICY-02 `TestPolicy_ForbiddenProviderNeverReachableByCapability` (kept) |
+| Stale availability (the status read some time ago) | The Mac re-reads on chat change, activation and turn end (R10). The phone gets a fresh read with every `chat_list` record, which is rebuilt on any engine change (a turn's end, `use_preferred`, a chat change). | `TestChatList_RoutingStatusReadOnEveryBuild` (new, hub) |
+| The availability read fails | Mac: "Couldn't read provider availability: …" (today). Phone: `routing.error` with the fixed copy, and the providers are still listed. | `testHealthErrorShowsLine` (new), `TestChatengine_RoutingCatalogStatusErrorIsSanitized` (new) |
+| The relay is down (phone offline) | The pill stays editable, because a pick is local and goes with the queued send. **Use preferred** is off, and the card stays as last read. | `testUsePreferredOffWhileUnreachable` (new, `.unavailable` and `.offline`) |
+| `chat.sock` is down (Mac) | The same as offline: the pill is editable and **Use preferred** is off | `testUsePreferredOffWhileUnreachable` |
+| `use_preferred` refused (`busy`, `gone`, or `invalid_params` from an older daemon) | The pick is unchanged, and the notice reads "Couldn't change provider choice: <reason>" (`main`'s copy). `gone` leads to the conversation's gone state. | `testUsePreferredRefusedKeepsSelectionAndShowsNotice` (new), `TestChatengine_UsePreferredOnGoneConversation` (new) |
+| A feed without `routing_reason` (an older daemon) | `""`: no `fallback`/`recovered`/`unsupported` state, and no crash | `ChatFeedTests.testConversationWithoutRoutingReasonDecodes` (new, ChatWire) |
+
+**Files:**
+- Modify (Go):
+  - `internal/chatengine/feed.go`:
+    - `FeedConversation` gains `RoutingReason string \`json:"routing_reason"\``, read from `c.routing_reason`;
+    - `LiveRouting` gains `Reason`, which `applyLiveRouting` copies;
+    - `internal/chatengine/live.go` fills it from `readyLive.Reason`.
+  - `internal/chatengine/engine.go`: `ManageUsePreferred = "use_preferred"`. `Manage` refuses it with `chatstore.ErrBusy` while the conversation's turn runs. Otherwise it calls `store.UsePreferred`, then retires that conversation's idle session (`retire = true`, `poke()`, as `Warm` does), and publishes the change.
+  - `internal/chatstore/store.go`: `UsePreferred(ctx, conv)` writes `routing_mode = 'preferred_reserve'`, `provider = NULL`, `model = NULL`, `actual_provider = ''`, `actual_model = ''`, `routing_reason = ''` for a main-chat row. No row means `ErrConversationGone`.
+  - `internal/chatengine/routing.go` (new): `RoutingCatalog`, `RoutingProvider` and `ReadRoutingCatalog`.
+  - `internal/providerrouting/status_read.go` (new): `ReadStatus`, the loop moved out of `cmd/ai_routing_status.go`. The command prints the same bytes; the `application` fields stay the command's.
+  - `cmd/ai_routing_status.go`: it calls `providerrouting.ReadStatus`.
+  - `internal/hub/slices/sources/chat_list.go`: `ChatListOptions.Routing func(context.Context) *chatengine.RoutingCatalog` (nil leaves the key out); `Items` sets `payload.Routing`. `chatengine.List` gains `Routing *RoutingCatalog \`json:"routing,omitempty"\``.
+  - `internal/hub/slices/sources/registry.go` and the hub wiring: they pass `ReadRoutingCatalog` over the daemon's current AI config and `providerhealth.Installation()`.
+  - `internal/hub/actions/handlers/chat_manage.go`: it allows `use_preferred`; the message becomes "op must be pin, unpin, rename, delete or use_preferred".
+  - `internal/chatengine/testdata/routing_catalog.json` (new, written by `-update`).
+  - `WatchtowerKit/Tests/Fixtures/chat/actions.json`: a `chat_manage use_preferred` case.
+- Create (Swift, `WatchtowerChat/Sources/ChatWire/Routing/`):
+  - `ChatRoutingCatalog.swift` (new);
+  - moved from `WatchtowerCore` with `git mv` (`package` → `public`; Core keeps `package typealias`es, the T14 precedent):
+    - `Services/ProviderFallbackPreview.swift`, the one copy table that Settings and the chat both read;
+    - `Services/Chat/ChatRoutingStatus.swift`, holding `ChatRoutingStatus` and `ChatRoutingPresentation`. `ChatRoutingPresentation.capabilities` becomes `ChatProviderCaps`.
+  - `ChatWire/Models/ChatFeed.swift`: `Conversation.routingReason` (default `""`). `ChatList.swift`: `routing: ChatList.Routing?`.
+  - `ChatWire/Models/ChatActionParams.swift`: `ChatManageOp.usePreferred` (`"use_preferred"`).
+- Create (Swift, `WatchtowerChat/Sources/ChatUI/`):
+  - `Models/ChatRoutingModel.swift`: the pick, the presentation, the menu, and the one `send` (`chat_manage use_preferred`). `Models/` is where the composer model sends, too. The CHAT-05 scan keeps `send(` out of `Composer/`.
+  - `Composer/Routing/ChatRoutingAccessory.swift`: the lines, the card, the error, the pill and the phone's project menu.
+  - `Composer/Routing/ChatRoutingPill.swift`: the menu. The code questions use it too.
+  - `Platform/macOS/AppActivation.swift` (`NSApplication.didBecomeActiveNotification`) and `Platform/iOS/AppActivation.swift` (`scenePhase == .active`), as one `.onAppActivation` modifier, so the shared view needs no `#if`.
+  - `Style/ChatUIStyle.swift`: the routing hooks below.
+- Modify (ChatUI):
+  - `Composer/ChatComposerView.swift`: `newChatChips` is deleted; the composer draws `ChatRoutingAccessory` when a `ChatRoutingModel` is given.
+  - `Composer/ChatComposerChips.swift`: `modelChip`, `modelLabel` and `modelOptions` are deleted. `projectChip` and `ChatNewChatChoices.projects` stay for the project menu.
+  - `WatchtowerChat/Tests/ChatUITests/ChatUISourceScanTests.swift`: `Composer/Routing/` is enumerated.
+- Modify (Mac):
+  - `ViewModels/ChatViewModel.swift`: `selectedProvider`, `selectedModel`, `automaticRouting`, `routingRequest`, `switchProvider`, `selectModel`, `requestAutomaticRouting` and `routingPresentation` move into `ChatRoutingModel` (`chatVM.routing`). `refreshRoutingStatus()` stays as the Mac's refresh closure (the `ai routing-status` CLI read). `attachUnavailableReason` and `pdfUnavailableReason` read `routing.capabilities`.
+  - `WatchtowerCore/Services/Chat/ChatRoutingCatalog+Mac.swift` (new): `ChatRoutingCatalog(models: AIModelCatalog, offered: [String], status: ChatRoutingStatus?, statusError: String?)`.
+  - `Views/Chat/DesignKitChatStyle.swift`: the routing hooks, drawing today's look:
+    - `ProviderFallbackStatus` for the card;
+    - `.caption` secondary lines and the `Tone.warning` error;
+    - the borderless-button menu label in `.caption`.
+  - `Views/Chat/{ChatView,ChatLandingView,ProjectDetailView}.swift`: `modelSuggestions` goes, because the catalog carries them.
+  - `Views/Workbench/CodeNav/{CodeQuestionPopover,QuestionsView}.swift`: `ChatUI.ChatRoutingPill` with `automatic: nil`.
+  - `Views/Chat/ChatComposerAccessory.swift` (from T13) becomes the one line that hands `chatVM.routing` to the composer, or is deleted if T13 left nothing else in it.
+  - `Tests/DesignShots/DesignShotFixtures+ProviderFallback.swift` and `+ProviderCapabilities.swift`: the same scene names, drawn through `ChatRoutingAccessory`.
+- Delete (Mac): `ChatModelPicker` (in `ChatComposerView.swift` or T13's `ChatComposerAccessory.swift`) and `Views/Chat/ChatRoutingStatusView.swift`. `ProviderFallbackStatus` stays: Settings and the Mac's card hook use it.
+- Modify (phone):
+  - `Features/Chats/ChatsCenter.swift`:
+    - `conversation(_:)` gives the composer a `ChatRoutingModel` whose catalog is `ChatRoutingCatalog(list:)`, refreshed on every list update;
+    - `newChatChoices` keeps only the projects.
+  - `Features/Chats/PhoneChatStyle.swift`: the routing hooks, drawing the chip on `Fill.card` for the pill and `Card` for the preview.
+- Tests:
+  - `git mv` `WatchtowerDesktop/Tests/Core/{ChatRoutingPresentationTests,ProviderFallbackPreviewTests}.swift` → `WatchtowerChat/Tests/ChatWireTests/`, assertions unchanged;
+  - new `ChatWireTests/ChatRoutingCatalogTests.swift`, `ChatUITests/ChatRoutingModelTests.swift`, `WatchtowerDesktop/Tests/Core/ChatRoutingMacAdapterTests.swift` and `WatchtowerMobile/Tests/ChatRoutingPhoneTests.swift`;
+  - Go tests in `internal/chatengine`, `internal/chatstore`, `internal/providerrouting` and `internal/hub/...` (Step 2).
+- Shots: `Tests/DesignShots/DesignShotFixtures+RoutingPill.swift` (new), `DesignShotCatalog.swift` and `ScreenshotTourTests.swift`.
+
+**Interfaces:**
+- Consumes:
+  - T13's `ChatComposerView` `accessory` slot and `ChatComposerModel.routing`;
+  - T7's `ChatUIStyle`, `ChatHostText` and `FakeChatClient`;
+  - T2's `chat_manage`.
+- Produces (Go):
+  ```go
+  type RoutingProvider struct {
+      ID          string `json:"id"`
+      DisplayName string `json:"display_name"`
+      ReservePeer string `json:"reserve_peer,omitempty"`
+      Images      bool   `json:"images"`
+      PDFs        bool   `json:"pdfs"`
+      ReadFolder  bool   `json:"read_folder"`
+      ClaudeAI    bool   `json:"claude_ai_tools"`
+  }
+  type RoutingCatalog struct {
+      Providers []RoutingProvider        `json:"providers"` // policy-allowed only (providers.Allowed)
+      Status    *providerrouting.Output  `json:"status,omitempty"` // the `ai routing-status` DTO, application/saved_version cleared
+      Error     string                   `json:"error,omitempty"`  // fixed copy; never the cause's text
+  }
+  func ReadRoutingCatalog(ctx context.Context, cfg *config.Config, r *providerrouting.Router) *RoutingCatalog
+  // providerrouting: func ReadStatus(ctx context.Context, cfg *config.Config, r *Router, checkAgain bool) (Output, error)
+  ```
+- Produces (`ChatWire`, public):
+  ```swift
+  public struct ChatProviderCaps: Equatable, Sendable { public var images, pdfs, readFolder, claudeAITools: Bool }
+  public struct ChatRoutingCatalog: Equatable, Sendable {
+      public struct Provider: Equatable, Sendable {
+          public let id: String; public let displayName: String; public let reservePeer: String?
+          public let models: [String]; public let caps: ChatProviderCaps
+      }
+      public var providers: [Provider]
+      public var status: ChatRoutingStatus?        // nil: no preview card
+      public var statusError: String?
+      public init(list: ChatList)                  // phone: models[] + routing (routing nil → models only, D22)
+      public init(providers: [Provider], status: ChatRoutingStatus?, statusError: String?)
+      public func pair(preferred: String) -> ProviderFallbackPreview.Pair?
+  }
+  ```
+- Produces (`ChatUI`, public):
+  ```swift
+  @MainActor @Observable public final class ChatRoutingModel {
+      public init(client: any ChatClient, composer: @escaping () -> ChatComposerModel,
+                  onRefresh: (() async -> Void)? = nil)    // Mac: ai routing-status; phone: nil (the list carries it)
+      public var catalog: ChatRoutingCatalog?              // nil: no pill (R12 / no list yet)
+      public private(set) var automatic: Bool
+      public private(set) var provider: String
+      public private(set) var model: String                // "" = Auto
+      public private(set) var notice: String?
+      public var label: String                             // R1
+      public var menu: [ChatRoutingMenuSection]            // R2
+      public var presentation: ChatRoutingPresentation?    // R5–R8
+      public var capabilities: ChatProviderCaps?
+      public func selectAutomatic(); public func selectProvider(_ id: String); public func selectModel(_ model: String)
+      public func usePreferred() async                     // saved chat: chat_manage use_preferred; landing: auto only
+  }
+  public struct ChatRoutingMenuSection: Equatable { public let title: String?; public let items: [ChatRoutingMenuItem] }
+  public struct ChatRoutingPill: View {
+      public init(label: String, menu: [ChatRoutingMenuSection], enabled: Bool, onPick: @escaping (ChatRoutingMenuItem) -> Void)
+  }
+  public struct ChatRoutingAccessory: View {
+      public init(model: ChatRoutingModel, isBusy: Bool, reachable: Bool,
+                  projects: ChatNewChatChoices? = nil, projectID: Binding<Int64?>? = nil)
+  }
+  // ChatUIStyle, new hooks (defaults = the phone's look):
+  //   func routingPillLabel(_ label: String, enabled: Bool) -> AnyView
+  //   func routingCaption(_ text: String, warning: Bool) -> AnyView
+  //   func routingStatusCard(_ copy: ProviderFallbackPreview.Copy, actionEnabled: Bool, onAction: (() -> Void)?) -> AnyView
+  ```
+
+- [ ] **Step 1: Base shots** (first commit, no view or data change). Add `DesignShotFixtures+RoutingPill.swift`. It renders today's Desktop views (`ChatModelPicker`, `ChatRoutingStatusView` and the composer's `routingState`) under these names, light and dark:
+  - `routing-pill-auto`, `routing-pill-pinned-model`, `routing-pill-pinned-auto-model`, `routing-pill-busy`;
+  - `routing-actual-line`, `routing-preview-unsupported`, `routing-preview-recovered-busy`, `routing-native-tools-notice`;
+  - `routing-status-error`, `routing-catalog-unread`, `routing-accessory-narrow` (360 pt: the actual line, the missing capabilities and the recovered card);
+  - `routing-pill-code-question`, `routing-pill-questions-view`.
+
+  The base set also includes the existing `provider-chat-{fallback,recovered,stopped,pinned}-{claude,codex}`, their `-narrow` twins, `provider-chat-historical-*-narrow`, `chat-composer-ollama-capabilities` and `provider-fallback-*`, plus T13's `composer-main-*`, and the phone frames `C2a`–`C2i` and `C3a`. Render them with `make desktop-shots DESKTOP_SHOTS=build/t17-base` and `make mobile-shots SHOTS_ONLY=chat SHOTS_DIR=build/t17-base-phone`. Commit: `test(shots): routing pill base shots before the ChatUI move (#1822 T17)`.
+- [ ] **Step 2: Failing tests.**
+  - Go (`internal/chatengine`, `internal/chatstore`, synctest or an injected clock):
+    - `TestChatengine_FeedCarriesRoutingReason`: a row with `routing_reason = 'quota_exhausted'` → `FeedConversation.RoutingReason == "quota_exhausted"`. A live `session_ready` with `reason: "required_capability_missing"` overlays it before the row is written.
+    - `TestChatengine_UsePreferredClearsStickyAndRetiresIdleSession`: an automatic chat sticky on the reserve (`actual_provider` = the reserve, `routing_reason = 'quota_exhausted'`) with an idle warm session → `Manage(use_preferred)`. Then the row has `routing_mode = 'preferred_reserve'`, `provider` and `model` NULL, and `actual_provider`, `actual_model` and `routing_reason` empty. The session is retired, and a subscriber gets one `conversation_update`. A pinned chat becomes automatic in the same way.
+    - `TestChatengine_UsePreferredRefusedWhileTurnRuns`: a running turn → `ErrBusy`; the row is byte-for-byte unchanged and the session is not retired.
+    - `TestChatengine_UsePreferredOnGoneConversation`: a deleted id → `ErrConversationGone`; an embedded row (`context_type` set) → `ErrConversationGone`, unchanged.
+    - `TestChatengine_RoutingCatalogCarriesPairCapsAndStatus`: with a fake health store where claude is `quota_wait` → `providers` has claude and codex with `reserve_peer` pointing at each other and their capability rows; `status.providers[0].state == "quota_wait"`; `status.application == nil`.
+    - `TestChatengine_RoutingCatalogPolicyDropsProvider`: `AllowedAIProviders = claude` → no codex row and no claude `reserve_peer`.
+    - `TestChatengine_RoutingCatalogStatusErrorIsSanitized`: the reader fails with an error that holds a path → `error == "Couldn't read provider availability"`, the text holds no `/`, and the providers are still listed.
+    - `TestChatengine_RoutingCatalogFixture` (`-update` writes `testdata/routing_catalog.json`).
+  - Go (`internal/providerrouting`, `cmd`):
+    - `TestReadStatus_SameOutputAsCommand`: `ReadStatus` and `watchtower ai routing-status` print equal JSON for one config and store.
+    - The existing `go test ./cmd -run 'RoutingStatus|AIModels'` passes unchanged.
+  - Go (hub):
+    - `TestChatList_CarriesRoutingCatalog`: with the option set, the `chat_list` record has `routing.providers` and `routing.status`, and still fits `MaxChatFeedBytes`.
+    - `TestChatList_RoutingNilOmitted`: without the option, there is no `routing` key.
+    - `TestChatList_RoutingStatusReadOnEveryBuild`: two builds → the reader is called twice (a counting fake).
+    - `TestChatManage_UsePreferredAllowed`: the handler passes `use_preferred` to the engine; `busy` → the refusal reason the phone maps.
+  - Swift, `ChatWire`:
+    - `ChatRoutingCatalogTests.testDecodesGoFixture`: `routing_catalog.json` → `providers`, `pair(preferred: "claude")`, `status` and `caps`.
+    - `testListWithoutRoutingBuildsProvidersFromModels`: `models[]` for claude (`opus`, `haiku`) and codex → two providers with their models, no `reservePeer`, `status == nil`, and caps from `images`/`pdf`.
+    - `ChatFeedTests.testConversationWithoutRoutingReasonDecodes`.
+    - The moved `ChatRoutingPresentationTests` and `ProviderFallbackPreviewTests` pass unchanged.
+  - Swift, `ChatUI` (`ChatRoutingModelTests`, `FakeChatClient`, no clock waits):
+    - `testLabelsMatchTheMacPicker`: automatic → "Preferred + reserve · Auto"; `selectProvider("codex")` → "Only Codex · Auto"; `selectModel("gpt-5.6-sol")` → "Only Codex · gpt-5.6-sol".
+    - `testMenuEntriesMatchTheMacPicker`: the sections are `[nil: ["Preferred + reserve · Auto model"]]`, `["Provider": ["Only Claude", "Only Codex"]]` and `["Model": ["Auto"] + the selected provider's models]`; with `automatic: nil` (the code questions) there is no first section.
+    - `testPickWritesComposerRoutingOnly`: each pick sets `composer.routing` to the matching `ChatRouting`, and `client.ops` stays empty.
+    - `testPillAndActionOffWhileBusy`: busy → the picks are ignored and `presentation.canUsePreferred == false`.
+    - `testSavedChatPillShowsItsRoutingUntilAPick`: a saved feed pinned to `codex`/`gpt-5.6-sol` → that label; after `selectAutomatic()` → the automatic label; switching to another chat → its own routing.
+    - `testUsePreferredSendsManageAndTurnsAutomatic`: a saved chat in the `recovered` state → exactly one `.manage(op: .usePreferred)` op; `.applied` → `automatic == true` and `composer.routing == auto`. On the landing → no op, and the routing is auto.
+    - `testUsePreferredRefusedKeepsSelectionAndShowsNotice`: `.refused("busy")` → the pick is unchanged and `notice` starts with "Couldn't change provider choice:". A thrown connection error does the same.
+    - `testUsePreferredOffWhileUnreachable`: reachability `.unavailable` → the card's action is off, the picks still set `composer.routing`, and `usePreferred()` sends nothing.
+    - `testCatalogWithoutStatusShowsChoiceOnly`, `testNoCatalogHidesPill`, `testPinnedModelMissingFromCatalogKeepsLabel`, `testHealthErrorShowsLine` (`statusError` → one warning caption).
+    - `testRefreshOnChatChangeActivationAndTurnEnd`: a counting `onRefresh` → +1 on a conversation change, +1 on busy going to idle, +1 on the activation modifier's action; nothing when `onRefresh` is nil.
+    - `testProjectMenuOnlyWithProjectsOnANewChat`.
+  - Swift, Desktop:
+    - `ChatRoutingMacAdapterTests.testMacCatalogMapsPairCapsAndSuggestions` (the `ai_models_capabilities.json` fixture plus a routing-status fixture): the pair is `AIModelCatalog.fallbackPair`, the models are `suggestions(for:)`, and the caps are mapped from `ProviderCapabilities`.
+    - `testUnreadCatalogOffersProvidersAndAutoOnly`.
+    - `ViewModelTests`' routing cases switch their subject to `chatVM.routing`; their names and assertions are kept.
+  - Swift, phone (`make mobile-test`):
+    - `ChatRoutingPhoneTests.testCatalogFollowsListUpdates`: a list update that adds `routing` → the model's `catalog.status` is set without reopening the screen.
+    - `testSavedChatPillEditableBetweenTurns`: the next `chat_turn` the coordinator sends carries the picked routing.
+    - `testUsePreferredGoesThroughChatManage`: `RelayChatClient` sends the hub `chat_manage` action with `op: "use_preferred"`.
+- [ ] **Step 3: Run them.**
+  - `go test ./internal/chatengine ./internal/chatstore ./internal/providerrouting -run 'RoutingReason|UsePreferred|RoutingCatalog|ReadStatus'`
+  - `go test ./internal/hub/... -run 'ChatList|ChatManage'`
+  - `make chat-test FILTER='ChatRoutingCatalogTests|ChatRoutingModelTests|ChatFeedTests'`
+  - `make test-swift FILTER='ChatRoutingMacAdapterTests|ViewModelTests'`
+  - Expected: FAIL.
+- [ ] **Step 4: Implement.**
+  - The Go fields, `UsePreferred`, the catalog and the hub wiring.
+  - The Swift moves; `ChatRoutingModel` and the two views.
+  - The hooks in `DesignKitChatStyle`, drawing today's Mac look, and in `PhoneChatStyle`, drawing the phone's chip and card.
+  - Switch the main chat, the landing, the project page, the code-question popover, the Questions view and the phone conversation screen.
+  - Delete `ChatModelPicker` and `ChatRoutingStatusView`.
+  - A Mac difference is fixed through a hook. A copy change on the Mac is not allowed: the Mac's strings are the table.
+- [ ] **Step 5: HEAD shots and comparison.**
+  - Run `make desktop-shots DESKTOP_SHOTS=build/t17-head` and `make mobile-shots SHOTS_ONLY=chat SHOTS_DIR=build/t17-head-phone`.
+  - Mac: every name in Step 1 must be the same. The one deliberate difference is that `provider-chat-fallback-*`, `-recovered-*` and the native-tools scenes now come from a real `routing_reason`. Their pixels must still equal the base, because the fixtures always passed a reason. Report each name as "same", or name the difference.
+  - Phone frames:
+    - `C2a`–`C2i` and `C3a` are the same, except the frames that show the model chip: their label now reads the Mac's copy, and a saved chat's pill is a menu. Name each changed frame.
+    - New frames in `testTheChatShots`: `iphone-chat-routing-new-chat` (pill plus project menu), `iphone-chat-routing-saved` (editable between turns), `iphone-chat-routing-fallback`, `iphone-chat-routing-recovered` (with **Use preferred**), `iphone-chat-routing-unsupported`, `iphone-chat-routing-missing-caps`, `iphone-chat-routing-status-error`, `iphone-chat-routing-offline` (action off) and `iphone-chat-routing-no-catalog` (an older daemon: model choice only).
+    - The new frames and the changed ones go to T16's review ask.
+- [ ] **Step 6: Run the tests and the guards.**
+  - Go:
+    - `go test ./internal/chatengine ./internal/chatstore -run 'Chat|CHAT|LIVE01|Lease|Feed|Parts|Routing|Manage|UsePreferred'`
+    - `go test ./internal/providerrouting ./internal/providers ./internal/transporttest` (LLMTRANSPORT-01 Go, POLICY-02)
+    - `go test ./internal/hub/... -run 'Chat|Contract|Fixture'`
+    - `go test ./cmd/... -run 'RoutingStatus|AIModels|AISession|Chat'`
+    - `go test ./internal/chat -run 'Golden|Prompt|Routing'` (`routing_v2.jsonl` unchanged)
+    - `make lint-diff`
+  - Swift:
+    - `make chat-test` (with `ChatUISourceScanTests`, `ChatPartRegistryTests`, `ChatConversationModelTests` and `ChatUIPhoneParityTests`)
+    - `make chattext-test`
+    - `make test-swift FILTER='ChatRouting|ProviderFallback|ProviderCapabilities|AIModelCatalog|ProviderSettings|LLMTransportGuard|ViewModel|ChatComposerField|CodeQuestion|Questions|TuningChat|PublicAPISurface|ArtifactChat05|LIVE01'`
+    - `make kit-test FILTER='SeamBoundaryTests|HubContract'`
+    - `make mobile-test MOBILE_FILTER='TowerTextTests|TowerWordGuardTests|ChatRoutingPhoneTests|ChatSendTests|ChatSendRecoveryTests|RelayChatClientTests|ChatsGateModelTests|ChatWireKitConformancesTests'`
+    - `make lint-swift`
+    - `bash scripts/tests/test-kit-lint-guard.sh`
+  - **LLMTRANSPORT-01 Swift.** `LLMTransportGuardTests` scans `WatchtowerDesktop/Sources`, `WatchtowerKit/Sources` and `WatchtowerChatText/Sources`, but not `WatchtowerChat/Sources`, where T17 moves the routing presentation. Add `WatchtowerChat/Sources` to its roots. This strengthens the guard; its baseline must not grow.
+    - A name check that the scan then finds is rewritten to read the catalog row (`reservePeer`, `caps`), as the moved code already does.
+    - A hit that cannot be rewritten stops the task, and the owner is asked.
+- [ ] **Step 7: Inventory.**
+  - `docs/inventory/chat.md` changelog:
+    - the routing pill moved to `ChatUI` for both devices, with no guard relaxed or renamed;
+    - `ChatRoutingPresentationTests` and `ProviderFallbackPreviewTests` moved with their assertions;
+    - the CHAT-05 scan covers `Composer/Routing/`;
+    - the new `chat_manage use_preferred` op, and its writer, `chatstore.UsePreferred`;
+    - `routing_reason` on the feed.
+  - `docs/inventory/llm-transport.md` changelog: the Swift guard also scans `WatchtowerChat/Sources`, and the baseline is unchanged.
+- [ ] **Step 8: Commit.** `refactor(chat): one routing pill in ChatUI for the Mac and the iPhone (#1822 T17, ask #1411)`
 
 ---
 
@@ -1648,36 +1985,38 @@
 |---|---|
 | §2 G1/D2/D3 | T1, T4, T8 |
 | §2 G2/D4 | T4, T6 |
-| §2 G3/D8–D10 | T6, T7, T13, T15 |
+| §2 G3/D8–D10 | T6, T7, T13, T15, T17 |
 | §2 G4 | T3, T7 |
 | §2 G5/CHAT-06 | T3, T7 |
 | §2 G6 | T1 |
 | §2 non-goals (embedded rendering) | T12, T13 (embedded, Workchat, spec review and target brief composers) |
-| §2 anti-goals (no second path; Mac polish kept) | T13, T15 (base/HEAD shots of every composer and card state) |
+| §2 anti-goals (no second path; Mac polish kept) | T13, T15, T17 (base/HEAD shots of every composer, card and routing-pill state; `ChatModelPicker` and `ChatRoutingStatusView` deleted) |
 | D5 | T1, T5, T8 |
 | D6 | T1 |
-| D7/D22 | T6 |
+| D7/D22 | T6, T17 (optional `chat_list.routing` and feed `routing_reason`, decoded with defaults) |
 | D11/D13 | T8, T10a, T10b |
 | D12 | T4 (no approval op), T5 (relay approval kept), T14, T15 (one card; the Mac still decides through `actions approve\|reject`, the phone through `chat_action_answer`) |
 | D14 | T3, T12 |
 | D15/D21 | T3, T5 |
 | D17 | T4 |
-| D18 | T7, T13, T15 |
+| D18 | T7, T13, T15, T17 |
 | D19 | T7, T8 |
 | D20 | T4 |
 | D23 | T10a |
 | §4 | T1, T4, T5 |
 | §5.1 | T4 |
-| §5.2 | T1, T2, T10a (`chat_shutdown`) |
-| §5.3 | T3, T6 |
+| §5.2 | T1, T2, T10a (`chat_shutdown`), T17 (`chat_manage use_preferred`) |
+| §5.3 | T3, T6, T17 (`routing_reason` on the feed's conversation) |
 | §5.4 | T1, T5, T6 |
-| §6.1 | T6, T7, T13 (composer, `ChatComposerField` in `Platform/macOS`), T15 (approval card with the per-connector bodies) |
+| §6.1 | T6, T7, T13 (composer, `ChatComposerField` in `Platform/macOS`), T15 (approval card with the per-connector bodies), T17 (routing pill and fallback preview) |
 | §6.2 | T8 |
-| §6.3/§6.4 | T5, T9, T13 (the shared composer and pickers on the phone), T14, T15 (per-connector approval cards on the phone) |
+| §6.3/§6.4 | T5, T9, T13 (the shared composer and pickers on the phone), T14, T15 (per-connector approval cards on the phone), T17 (the shared routing pill, fallback card and capability line on the phone) |
 | §7 | T4, T10a, T10b |
-| §8 rows | the named tests in T1, T2, T3, T4, T7, T8, T10a, T10b, T12, T13, T15 |
-| §9 | T1, T3, T5, T7, T8, T10a, T11, T14 (writers of `agent_actions` unchanged), T16 |
-| §10 | T0, T8, T9, T12, T13, T15, T16 (review ask) |
-| §12 | T11, T16 |
+| §8 rows | the named tests in T1, T2, T3, T4, T7, T8, T10a, T10b, T12, T13, T15, T17 |
+| §9 | T1, T3, T5, T7, T8, T10a, T11, T14 (writers of `agent_actions` unchanged), T17 (writers of the routing columns; one new engine writer, `chatstore.UsePreferred`), T16 |
+| §10 | T0, T8, T9, T12, T13, T15, T17, T16 (review ask) |
+| §12 | T11, T16 (v1 limits confirmed in ask #1411) |
 | Final review I3 (ask #1409: composer and approval cards into `ChatUI` before main) | T13, T14, T15, T16 |
 | Final review M1 (a new `client_key` on every Send press) | T13 |
+| Ask #1411: the routing pill (model menu, fallback preview) and the phone's model and project chips are one `ChatUI` view | T17, T16 (docs, owner review of the phone frames) |
+| Ask #1411: phone v1 limits (no approval editing, no bulk approval verbs) | T15 (nil capabilities on the phone), T16 (`unified-chat.md` v1 limits) |
