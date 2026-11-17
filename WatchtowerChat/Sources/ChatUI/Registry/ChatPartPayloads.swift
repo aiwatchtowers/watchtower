@@ -32,6 +32,8 @@ struct ChatStepsPayload: Decodable, Equatable {
         /// Set only for steps that carry their times (the Mac's embedded chats).
         let startedAt: Date?
         let endedAt: Date?
+        let argsJSON: String?
+        let isWaiting: Bool
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -44,9 +46,15 @@ struct ChatStepsPayload: Decodable, Equatable {
             summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
             startedAt = try c.decodeIfPresent(Date.self, forKey: .startedAt)
             endedAt = try c.decodeIfPresent(Date.self, forKey: .endedAt)
+            argsJSON = try c.decodeIfPresent(String.self, forKey: .argsJSON)
+            isWaiting = try c.decodeIfPresent(Bool.self, forKey: .isWaiting) ?? false
         }
 
-        enum CodingKeys: String, CodingKey { case name, ok, summary, startedAt, endedAt }
+        enum CodingKeys: String, CodingKey {
+            case name, ok, summary, startedAt, endedAt
+            case argsJSON = "argsJson"
+            case isWaiting = "waiting"
+        }
     }
 
     let steps: [Step]

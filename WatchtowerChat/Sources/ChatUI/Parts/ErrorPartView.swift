@@ -34,7 +34,7 @@ struct ErrorPartView: View {
         let content = ChatErrorCardContent(
             code: payload.code, message: ChatErrorText.message(for: payload.code, provider: context.provider),
             detail: ChatErrorText.detail(payload.message), retry: retry, continueStopped: continueStopped,
-            reviewActions: reviewActions
+            reviewActions: reviewActions, replyHasText: !context.message.text.isEmpty
         )
         if let card = style.errorCard(content) {
             card.accessibilityIdentifier("chat.error")

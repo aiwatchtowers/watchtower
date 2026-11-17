@@ -20,6 +20,9 @@ struct WorkchatFeed {
     var onAnswer: ((String) -> Void)?
     /// The agent works: no card is answered meanwhile.
     var isWorking = false
+    /// A line the owner sent is still on its way (not yet read back in the feed): a card just answered takes no
+    /// second answer.
+    var answerPending = false
     /// An artifact card opens the viewer.
     var onOpenArtifact: (ChatArtifactContent) -> Void = { _ in }
 
@@ -46,7 +49,8 @@ struct WorkchatFeed {
         partActions.showsSources = false
         partActions.offersContinue = false
         if let onAnswer { partActions.sendFixedText = onAnswer }
-        var context = ChatFeedContext(isTurnRunning: onAnswer == nil || isWorking, partActions: partActions,
+        var context = ChatFeedContext(isTurnRunning: onAnswer == nil || isWorking || answerPending,
+                                      partActions: partActions,
                                       rowActions: rowActions)
         context.compact = true
         context.margins = EdgeInsets(top: Spacing.medium, leading: Spacing.medium, bottom: Spacing.medium,

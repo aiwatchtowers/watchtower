@@ -162,6 +162,25 @@ final class ChatUIMacRowTests: XCTestCase {
             .inspect().find(text: "Worked · 1 step"), "the engine's wire has no times")
     }
 
+    /// An embedded chat's step lines are the app's (review I1): the catalog's icon and label from the arguments, the
+    /// arguments behind a disclosure, and a waiting call's note; ChatUI's own line (main chat, phone) keeps the raw name.
+    func testEmbeddedStepLinesNameTheCallFromItsArguments() throws {
+        let args = #"{"name":"digest.channel"}"#
+        let steps = [
+            ChatFeed.Step(name: "get_prompt", outcome: .running, summary: "Waiting for your approval", argsJSON: args,
+                          isWaiting: true)
+        ]
+        let message = ChatFeed.Message(id: 4, role: "assistant", text: "", status: "pending", createdAt: .distantPast,
+                                       steps: steps)
+        let label = ChatToolCatalog.label(name: "get_prompt", args: args)
+        let embedded = row(message).environment(\.chatUIStyle, DesignKitChatStyle(look: .embedded))
+        XCTAssertNoThrow(try embedded.inspect().find(text: label))
+        XCTAssertNoThrow(try embedded.inspect().find(EmbeddedStepRow.self))
+        XCTAssertNoThrow(try embedded.inspect().find(text: "Waiting for your approval — see the approval card below."))
+        XCTAssertNoThrow(try embedded.inspect().find(text: args), "the arguments behind the disclosure")
+        XCTAssertThrowsError(try row(message).inspect().find(EmbeddedStepRow.self), "the default style keeps ChatUI's line")
+    }
+
     // MARK: - Artifacts, steps, sources, published pages
 
     func testArtifactCardShowsWritingThenOpens() throws {

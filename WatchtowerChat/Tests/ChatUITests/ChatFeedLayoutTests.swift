@@ -1,4 +1,5 @@
 import ChatWire
+import WatchtowerChatText
 import XCTest
 @testable import ChatUI
 
@@ -22,5 +23,14 @@ final class ChatFeedLayoutTests: XCTestCase {
         XCTAssertFalse(ChatFeedLayout.isAnswerable(99, in: later, isTurnRunning: false), "an unknown message")
         XCTAssertNil(ChatFeedLayout.ownerReply(after: 99, in: later))
         XCTAssertNil(ChatFeedLayout.ownerReply(after: 1, in: later), "an owner message is answered by nothing")
+    }
+
+    /// VoiceOver reads an option's label without markup; the phone adds its "Recommended" mark (review n2).
+    func testAnOptionsAccessibilityLabelNamesTheRecommendedMarkOnThePhone() {
+        let option = ChatQuestionOption(label: "**Server** table", recommended: true)
+        XCTAssertEqual(QuestionPartView.accessibilityLabel(option, includesRecommended: true), "Server table, Recommended")
+        XCTAssertEqual(QuestionPartView.accessibilityLabel(option, includesRecommended: false), "Server table")
+        XCTAssertEqual(QuestionPartView.accessibilityLabel(ChatQuestionOption(label: "Cookie"), includesRecommended: true),
+                       "Cookie")
     }
 }

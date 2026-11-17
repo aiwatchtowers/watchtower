@@ -31,7 +31,8 @@ extension ChatFeed.Message {
 
     private var stepsPart: ChatPart {
         let payload = steps.map {
-            StepPayload(name: $0.name, outcome: $0.outcome, summary: $0.summary, startedAt: $0.startedAt, endedAt: $0.endedAt)
+            StepPayload(name: $0.name, outcome: $0.outcome, summary: $0.summary, startedAt: $0.startedAt, endedAt: $0.endedAt,
+                        argsJSON: $0.argsJSON, isWaiting: $0.isWaiting)
         }
         let lines = steps.map { step in
             let label = step.summary.isEmpty ? step.name : step.summary
@@ -137,6 +138,8 @@ private struct StepPayload: Encodable {
     /// Only from a client that has them (the Mac's embedded chats); Go sends none.
     let startedAt: Date?
     let endedAt: Date?
+    let argsJSON: String?
+    let isWaiting: Bool
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -147,10 +150,14 @@ private struct StepPayload: Encodable {
         try c.encode(summary, forKey: .summary)
         try c.encodeIfPresent(startedAt, forKey: .startedAt)
         try c.encodeIfPresent(endedAt, forKey: .endedAt)
+        try c.encodeIfPresent(argsJSON, forKey: .argsJSON)
+        if isWaiting { try c.encode(true, forKey: .isWaiting) }
     }
 
     enum CodingKeys: String, CodingKey {
         case name, ok, summary, startedAt, endedAt
+        case argsJSON = "argsJson"
+        case isWaiting = "waiting"
     }
 }
 

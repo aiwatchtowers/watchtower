@@ -121,6 +121,12 @@ struct DesignKitChatStyle: ChatUIStyle {
 
     var stepsFirst: Bool { look == .embedded }
 
+    /// The embedded chats' step line: the catalog's icon and label from the call's arguments.
+    func stepLine(_ step: ChatStepLine, turnRunning: Bool) -> AnyView? {
+        guard look == .embedded else { return nil }
+        return AnyView(EmbeddedStepRow(step, turnRunning: turnRunning))
+    }
+
     /// The embedded chats' error line: the reason and its detail on a red tint, Retry on the right; a reply stopped by
     /// the subscription quota is the provider-fallback card with "Review actions".
     func errorCard(_ content: ChatErrorCardContent) -> AnyView? {
@@ -145,6 +151,8 @@ struct DesignKitChatStyle: ChatUIStyle {
             }
             .padding(Spacing.regular)
             .background(Tone.error.opacity(Self.errorFillOpacity), in: RoundedRectangle(cornerRadius: Radius.row))
+            // The app's row drew an empty answer body before a failed reply's card: the same gap under the steps.
+            .padding(.top, content.replyHasText ? 0 : Spacing.small)
         )
     }
 

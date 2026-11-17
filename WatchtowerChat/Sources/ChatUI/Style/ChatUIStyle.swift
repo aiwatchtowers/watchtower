@@ -1,3 +1,4 @@
+import ChatWire
 import SwiftUI
 import WatchtowerDesign
 
@@ -33,6 +34,26 @@ public protocol ChatUIStyle {
     var actionsOnCompleteRepliesOnly: Bool { get }
     /// A reply's tool steps come before its text (the Mac's embedded chats); off, they follow it (Go's part order).
     var stepsFirst: Bool { get }
+    /// One tool step's line drawn by the app (the Mac's embedded chats name the call from its arguments); nil draws
+    /// ChatUI's own line.
+    func stepLine(_ step: ChatStepLine, turnRunning: Bool) -> AnyView?
+}
+
+/// One tool step as `ChatUIStyle.stepLine` gets it. `argsJSON` and `isWaiting` are set only by a client that has them.
+public struct ChatStepLine {
+    public let name: String
+    public let outcome: ChatFeed.Step.Outcome
+    public let summary: String
+    public let argsJSON: String?
+    public let isWaiting: Bool
+
+    public init(name: String, outcome: ChatFeed.Step.Outcome, summary: String, argsJSON: String?, isWaiting: Bool) {
+        self.name = name
+        self.outcome = outcome
+        self.summary = summary
+        self.argsJSON = argsJSON
+        self.isWaiting = isWaiting
+    }
 }
 
 /// What a failed or cut reply's card says and offers (`ChatUIStyle.errorCard`); a nil action is not offered.
@@ -43,6 +64,8 @@ public struct ChatErrorCardContent {
     public let retry: (() -> Void)?
     public let continueStopped: (() -> Void)?
     public let reviewActions: (() -> Void)?
+    /// The reply has text before the card.
+    public let replyHasText: Bool
 }
 
 extension ChatUIStyle {
@@ -80,6 +103,8 @@ extension ChatUIStyle {
     public var actionsOnCompleteRepliesOnly: Bool { false }
 
     public var stepsFirst: Bool { false }
+
+    public func stepLine(_ step: ChatStepLine, turnRunning: Bool) -> AnyView? { nil }
 }
 
 /// The default style: borderless controls on the shared tokens, no app look.

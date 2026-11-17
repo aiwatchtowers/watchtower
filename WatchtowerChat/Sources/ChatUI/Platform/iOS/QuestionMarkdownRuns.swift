@@ -14,5 +14,8 @@ struct QuestionMarkdown: View {
 extension QuestionPartView {
     /// An option's label without its markup.
     static func optionLabel(_ text: String) -> AttributedString { inline(text) }
+
+    /// The phone reads an option's "Recommended" mark with its label, as VoiceOver combined them before.
+    static var readsRecommended: Bool { true }
 }
 #endif

@@ -327,6 +327,7 @@ struct SessionChatView: View {
             workchatFeed.onAnswer = { text in Task { await workchat.sendLine(text) } }
         }
         workchatFeed.isWorking = working
+        workchatFeed.answerPending = !(workchat?.outgoing.isEmpty ?? true)
         workchatFeed.onOpenArtifact = { artifact = $0 }
         var context = workchatFeed.context()
         context.hasEarlier = window.hasEarlier(total: total)

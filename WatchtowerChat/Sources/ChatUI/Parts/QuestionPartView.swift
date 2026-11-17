@@ -150,7 +150,7 @@ public struct QuestionPartView: View {
             }
             .buttonStyle(.plain)
             .disabled(!interactive)
-            .accessibilityLabel(String(Self.optionLabel(option.label).characters))
+            .accessibilityLabel(Self.accessibilityLabel(option, includesRecommended: Self.readsRecommended))
             if !option.description.isEmpty {
                 HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
                     Image(systemName: icon).hidden().accessibilityHidden(true)
@@ -185,6 +185,13 @@ public struct QuestionPartView: View {
     static func icon(multi: Bool, selected: Bool) -> String {
         if multi { return selected ? "checkmark.square.fill" : "square" }
         return selected ? "largecircle.fill.circle" : "circle"
+    }
+
+    /// What VoiceOver reads for an option: its label without markup, and on the phone its "Recommended" mark (the Mac's
+    /// card read the label alone).
+    static func accessibilityLabel(_ option: ChatQuestionOption, includesRecommended: Bool) -> String {
+        let label = String(optionLabel(option.label).characters)
+        return includesRecommended && option.recommended ? "\(label), \(recommendedLabel)" : label
     }
 
     /// Inline Markdown (bold, code, links) of a label; plain text when it does not parse.

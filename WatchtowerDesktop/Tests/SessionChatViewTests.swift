@@ -102,6 +102,11 @@ final class SessionChatViewTests: XCTestCase {
         feed.context().partActions.sendFixedText("Ship it?\n- Yes")
         XCTAssertEqual(sent, ["Ship it?\n- Yes"])
 
+        feed.answerPending = true
+        XCTAssertThrowsError(try ChatFeedRows(messages: feed.messages, context: feed.context()).inspect()
+            .find(button: QuestionPartView.sendLabel), "an answer on its way: no second answer (review n1)")
+        feed.answerPending = false
+
         feed.isWorking = true
         XCTAssertThrowsError(try ChatFeedRows(messages: feed.messages, context: feed.context()).inspect()
             .find(button: QuestionPartView.sendLabel), "not while the agent works")

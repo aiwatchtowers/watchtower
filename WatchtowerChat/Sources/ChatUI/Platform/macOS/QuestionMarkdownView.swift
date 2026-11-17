@@ -15,5 +15,8 @@ struct QuestionMarkdown: View {
 extension QuestionPartView {
     /// An option's label without its markup.
     static func optionLabel(_ text: String) -> AttributedString { MarkdownView.inlineLabel(text) }
+
+    /// The Mac's card read an option's label alone.
+    static var readsRecommended: Bool { false }
 }
 #endif

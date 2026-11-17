@@ -55,7 +55,8 @@ final class EmbeddedChatFeedAdapterTests: XCTestCase {
         XCTAssertEqual(messages[1].steps, [ChatFeed.Step(
             name: "search_messages", outcome: .succeeded, summary: "Found 3 messages",
             sources: [ChatFeed.Source(kind: "slack", title: "#payments", url: "https://example.com/p1", ref: "C1")],
-            startedAt: Date(timeIntervalSince1970: 1_700_000_000), endedAt: Date(timeIntervalSince1970: 1_700_000_001)
+            startedAt: Date(timeIntervalSince1970: 1_700_000_000), endedAt: Date(timeIntervalSince1970: 1_700_000_001),
+            argsJSON: "{}"
         )], "the step's times come along (the \"Worked for 1s\" header)")
         XCTAssertEqual(messages[2].steps.map(\.outcome), [.running], "a step the turn left open stays running")
         XCTAssertEqual(messages[2].errorCode, "auth")
