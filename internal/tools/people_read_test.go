@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -298,4 +299,25 @@ func TestGetPerson_StoppedOnlyForTheResolvedPerson(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "pass a user id")
 	assert.NotContains(t, err.Error(), "stopped")
+}
+
+// More than 10 partial matches sorted ahead of the exact one cannot hide it:
+// "zoe" resolves to the user named zoe, not to an ambiguity over the first
+// ten "azoe…" names; two users both exactly named "sam" are ambiguous.
+func TestGetPerson_ExactMatchBeyondPartialCap(t *testing.T) {
+	d := openDB(t)
+	for i := range 12 {
+		require.NoError(t, d.UpsertUser(db.User{ID: fmt.Sprintf("1:U0AZOE%02d", i), Name: fmt.Sprintf("azoe%02d", i)}))
+	}
+	seedPersonCard(t, d, "1:U0ZOE001", "zoe", "Zoe Example", "zoe's card")
+	reg := peopleRegistry(t, d)
+	assert.Contains(t, callReadString(t, reg, "get_person", `{"query":"ZOE"}`), "zoe's card")
+
+	seedPersonCard(t, d, "1:U0SAM001", "sam", "Sam One", "sam one")
+	seedPersonCard(t, d, "2:U0SAM002", "sam", "Sam Two", "sam two")
+	_, err := reg.CallRead(context.Background(), "get_person", json.RawMessage(`{"query":"sam"}`), Binding{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pass a user id")
+	assert.Contains(t, err.Error(), "1:U0SAM001")
+	assert.Contains(t, err.Error(), "2:U0SAM002")
 }

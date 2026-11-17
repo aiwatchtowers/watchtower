@@ -146,11 +146,7 @@ func NewGetPerson() *Tool {
 			if card != nil {
 				return newPersonOutput(*card), nil
 			}
-			users, err := d.SearchUsersByName(a.Query, 10)
-			if err != nil {
-				return nil, fmt.Errorf("searching users: %w", err)
-			}
-			u, err := resolvePersonByName(a.Query, users)
+			u, err := resolvePersonByName(d, a.Query)
 			if err != nil {
 				return nil, err
 			}
@@ -206,33 +202,29 @@ func personCardByID(d *db.DB, query string) (*db.PeopleCard, error) {
 	}
 }
 
-// resolvePersonByName picks the one person a name query means among the
-// substring matches of SearchUsersByName: the single exact (case-insensitive)
-// name, display name or real name match, else the only match. Several
-// matches with no single exact one are an ambiguity error naming each id,
-// so a card — or "the owner stopped it" — is never reported for someone
-// else whose name merely contains the query.
-func resolvePersonByName(query string, users []db.User) (db.User, error) {
-	var exact []db.User
-	for _, u := range users {
-		for _, n := range []string{u.Name, u.DisplayName, u.RealName} {
-			if n != "" && strings.EqualFold(n, query) {
-				exact = append(exact, u)
-				break
-			}
-		}
-	}
-	switch {
-	case len(exact) == 1:
-		return exact[0], nil
-	case len(exact) == 0 && len(users) == 1:
-		return users[0], nil
-	case len(users) == 0:
-		return db.User{}, fmt.Errorf("no people card for %s", strconv.Quote(query))
+// resolvePersonByName picks the one person a name query means: the single
+// exact (case-insensitive) name, display name or real name match, looked up
+// on its own so a capped list of partial matches cannot hide it; else the
+// only partial match. Several exact matches, or several partial ones and no
+// exact one, are an ambiguity error naming each id, so a card — or "the
+// owner stopped it" — is never reported for someone else whose name merely
+// contains the query.
+func resolvePersonByName(d *db.DB, query string) (db.User, error) {
+	exact, err := d.FindUsersByExactName(query, 10)
+	if err != nil {
+		return db.User{}, fmt.Errorf("searching users: %w", err)
 	}
 	candidates := exact
 	if len(candidates) == 0 {
-		candidates = users
+		if candidates, err = d.SearchUsersByName(query, 10); err != nil {
+			return db.User{}, fmt.Errorf("searching users: %w", err)
+		}
+	}
+	switch len(candidates) {
+	case 0:
+		return db.User{}, fmt.Errorf("no people card for %s", strconv.Quote(query))
+	case 1:
+		return candidates[0], nil
 	}
 	opts := make([]string, 0, len(candidates))
 	for _, u := range candidates {

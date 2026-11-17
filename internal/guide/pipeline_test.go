@@ -933,12 +933,19 @@ func TestPeoplePrompt_CustomizedOldTemplateFallsBack(t *testing.T) {
 	require.NoError(t, store.Update(prompts.PeopleReduce, oldReduce, "owner edit"))
 	require.NoError(t, store.Update(prompts.PeopleBatch, oldBatch, "owner edit"))
 	require.NoError(t, store.Update(prompts.PeopleTeam, ownTeam, "owner edit"))
+	// An owner-approved addition survives the fallback.
+	_, err := database.AddPromptAddition(prompts.PeopleReduce, "Keep cards short.", 0, time.Now())
+	require.NoError(t, err)
 
 	p := New(database, testConfig(), &mockGenerator{}, testLogger())
 	p.SetPromptStore(store)
 	for _, id := range []string{prompts.PeopleReduce, prompts.PeopleBatch} {
 		tmpl, version := p.getPrompt(id)
-		assert.Equal(t, prompts.Defaults[id], tmpl, id)
+		want := prompts.Defaults[id]
+		if id == prompts.PeopleReduce {
+			want = prompts.WithAdditions(want, []string{"Keep cards short."})
+		}
+		assert.Equal(t, want, tmpl, id)
 		assert.Zero(t, version, id)
 		assert.Contains(t, tmpl, "- Never infer or mention health", id)
 	}
