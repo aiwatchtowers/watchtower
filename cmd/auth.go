@@ -160,7 +160,7 @@ func runAuthLogout(cmd *cobra.Command, _ []string) error {
 	}
 
 	id := accounts[0].ID
-	if err := removeSlackAccount(cfg, database, id); err != nil {
+	if err := removeSlackAccount(cmd.Context(), cfg, database, id, out); err != nil {
 		return fmt.Errorf("removing account: %w", err)
 	}
 

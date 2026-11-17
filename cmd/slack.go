@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"strconv"
+	"time"
 
 	"watchtower/internal/auth"
 	"watchtower/internal/config"
@@ -14,6 +15,7 @@ import (
 
 	watchtowerslack "watchtower/internal/slack"
 
+	slackgo "github.com/slack-go/slack"
 	"github.com/spf13/cobra"
 )
 
@@ -505,24 +507,48 @@ func runSlackRemove(cmd *cobra.Command, args []string) error {
 	}
 	defer database.Close()
 
-	if err := removeSlackAccount(cfg, database, id); err != nil {
+	out := cmd.OutOrStdout()
+	if err := removeSlackAccount(cmd.Context(), cfg, database, id, out); err != nil {
 		return fmt.Errorf("removing account: %w", err)
 	}
-	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Removed account %d. Its synced data was kept.\n", id)
 	return nil
 }
 
-// removeSlackAccount disconnects account id: deletes its stored OAuth token
+// slackRevokeAPIURL is the Slack Web API base `slack remove` revokes the token
+// at; tests point it at a local server.
+var slackRevokeAPIURL = slackgo.APIURL
+
+// slackRevokeTimeout bounds the auth.revoke call of a remove.
+const slackRevokeTimeout = 10 * time.Second
+
+// slackRevokeWarning is printed when Slack did not confirm the revoke.
+const slackRevokeWarning = "Slack did not confirm the token was revoked; it will expire"
+
+// removeSlackAccount disconnects account id: revokes its OAuth token at Slack
+// (auth.revoke; a failure prints slackRevokeWarning to warnOut and never stops
+// the remove, A25), deletes its stored OAuth token
 // file and marks the row removed/disabled so it stops syncing. Deliberately
 // non-destructive — the account's synced messages/channels/digests/tracks/
 // situations/memory are kept (SetSlackAccountRemoved, NOT a cascade delete),
 // per the plan's v1 decision.
-func removeSlackAccount(cfg *config.Config, database *db.DB, id int64) error {
+func removeSlackAccount(ctx context.Context, cfg *config.Config, database *db.DB, id int64, warnOut io.Writer) error {
 	if _, err := database.GetSlackAccount(id); err != nil {
 		return err
 	}
-	if err := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), id).Delete(); err != nil {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	store := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), id)
+	if tok, err := store.Load(); err == nil && tok != nil && tok.AccessToken != "" {
+		rctx, cancel := context.WithTimeout(ctx, slackRevokeTimeout)
+		err := watchtowerslack.NewClientWithAPIURL(tok.AccessToken, slackRevokeAPIURL).RevokeToken(rctx)
+		cancel()
+		if err != nil {
+			fmt.Fprintln(warnOut, slackRevokeWarning)
+		}
+	}
+	if err := store.Delete(); err != nil {
 		return fmt.Errorf("deleting token file: %w", err)
 	}
 	return database.SetSlackAccountRemoved(id)
