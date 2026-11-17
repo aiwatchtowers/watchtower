@@ -56,6 +56,20 @@ The daemon (`runSyncDaemon` → `serveTower`) serves the tower on a unix socket,
   - `InboxApprovalModel`: Approve/Retry/Dismiss need `permissions` on the phone ("Approve on the Mac"), a save_automation shows "Open Draft — on your Mac", Edit… is Mac-only ("Edit on your Mac"); no Retry on a `superseded` row; `targetRow` ports `AgentActionCardView.targetRow` (creating past `target_until` is stuck); every approval verb pins `args_sha256`.
   - `InboxTabState.resolve`: no capability → `tooOld`, `policy_off` → `policyOff`, not fetched → `loading`, Mac away → `macAway`, no cards → `empty`, else `ready`.
   - `InboxHiddenRows`: the optimistic hide — a key hidden on `ok` is forgotten when a feed leaves it out (a closed ref counts as left out) and shown again after two feeds still hold it.
+  - `InboxMacFolderRows`: the Mac folder list's row texts, ported from `InboxFolderEntries.row` ("N waiting" from `ref_facts` open and waiting, "run #12 · 2 h ago", "updated 6 min ago", a legacy card's `preview`/`source_line`); a Thread briefs card becomes one result row per brief.
+- **The Mac's Inbox on the tower (Task 11b, read side).** The app attaches an `InboxFeedLoader` (`WatchtowerCore`, `AppState.attachTowerInbox`, never under XCTest) to `ActionStripViewModel`. It reads `inbox.feed` (no limit, no clip) on open, on every `changed` event and on folder navigation. One read runs at a time, and a dirty flag adds exactly one more. The watch is open only while the Inbox view is shown in a window on screen (`setOnScreen`, `setWindowOnScreen`).
+  - With a feed, Go decides every folder's list and order, the counts, the row texts and the ref shown/waiting sets (`InboxTowerEntries.listed`/`sections`/`folders`).
+  - The GRDB read only supplies the records that the panes draw, matched by id. A card whose record is not read yet waits for the next read.
+  - The sidebar badge is `InboxRootModel.countBadge`: the open Inbox's feed, else `TowerClient.readAside(inbox.feed, limit: 1)`, a read that never becomes the screen's.
+  - **Writes (Task 11c).** Every Inbox write is one `inbox.act` call (`InboxTowerWrites`, attached with the loader):
+    - opening a card is `read`; Done and Dismiss go at the drawn `content_hash`;
+    - row verbs are `ref` on `r<id>`, `tracks` or `messages` (a message's Snooze sends the CLI's local `yyyy-MM-dd`);
+    - Reply and target buttons are `press` with `action_kind`; Reply… is `reply_propose`;
+    - approvals go through `AgentActionFeed.towerDecide` (`approval` on `a<id>`, `args_sha256`, Edit… as `patch`).
+
+    Owner gestures (Approve, Retry, Dismiss, a Reply or target press, Reply…) are accepted on the socket only from the signed Desktop (AGENT-07, `ownerconfirm.VerifyDesktop` per peer pid). A daemon built without a team signature refuses them with `not_permitted` unless it runs with `WATCHTOWER_DEV_TRUST_UNSIGNED_DESKTOP=1`, and even then the Desktop must carry its identifier (an ad-hoc signature, not a bare `swift build` binary).
+
+    A failure stays on its row with Go's sentence and **Retry**. A record gone meanwhile leaves quietly. Idea verdicts, a track's Make a Task (`createTask`) and Retry on a built-in move keep their own paths (Task 12 and the CLI).
 
 ## Change watch
 

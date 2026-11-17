@@ -33,6 +33,9 @@ type Options struct {
 	Limit int
 	// Clip clips each body to ClipBytes on a rune boundary.
 	Clip bool
+	// Day is a Morning brief day the client has open (FeedRequest.Day):
+	// listed while it has a briefing or a day plan.
+	Day string
 	// DisabledFeatures are the feature registry ids turned off (the
 	// config's switches, as `features list` reports them "disabled"): the
 	// Mac's own feature list. Attention detection off ("secretary-inbox")
@@ -63,6 +66,7 @@ func Build(ctx context.Context, d *db.DB, o Options) (api.Feed, error) {
 	if err != nil {
 		return api.Feed{}, err
 	}
+	s.legacy.openDay = o.Day
 	feed := compose(s, o)
 	feed.BuiltAt = o.Now.UTC().Format(stampLayout)
 	return feed, nil
@@ -167,6 +171,14 @@ func read(ctx context.Context, tx *sql.Tx, now time.Time, disabled []string) (*s
 		}
 		return !s.waitingForMe.hides(o.AutomationID)
 	})
+	if s.legacy, err = readLegacy(ctx, tx, now, off, s.waitingForMe.standIn); err != nil {
+		return nil, err
+	}
+	// The Messages card's items carry their facts too (Reply, an open
+	// Reply, shown, waits), as an artifact's rows do.
+	for _, m := range s.legacy.messages {
+		refs = append(refs, ref{Kind: api.RefInboxItem, ID: m.ID})
+	}
 	if s.refState, err = readRefState(ctx, tx, refs, now); err != nil {
 		return nil, err
 	}
@@ -177,9 +189,6 @@ func read(ctx context.Context, tx *sql.Tx, now time.Time, disabled []string) (*s
 		return nil, err
 	}
 	if err := readApprovalExtras(ctx, tx, s); err != nil {
-		return nil, err
-	}
-	if s.legacy, err = readLegacy(ctx, tx, now, off, s.waitingForMe.standIn); err != nil {
 		return nil, err
 	}
 	legacy, err := legacyCounts(ctx, tx, t, now, s.waitingForMe.standIn, len(s.notices))

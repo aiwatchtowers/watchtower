@@ -78,6 +78,29 @@ func TestLegacy_MorningBriefPerDateUnderTheUnreadRule(t *testing.T) {
 	}
 }
 
+// A day the client has open (Options.Day, a route to an older read day) is
+// listed while it has a briefing or a plan; a day with neither is not, so
+// the route selects nothing (the Mac lists only what Go lists).
+func TestLegacy_OpenDayListedOnlyWithARecord(t *testing.T) {
+	seed := []string{
+		"INSERT INTO briefings (id, user_id, date, attention, read_at, created_at) VALUES " +
+			"(1, 'U1', '2026-11-14', '[]', '2026-11-14T09:00:00Z', '2026-11-14T08:00:00Z')",
+	}
+	if got := fmt.Sprint(cardIDs(buildFeed(t, seed, Options{}).Cards)); got != "[]" {
+		t.Fatalf("a read older day is not listed: %s", got)
+	}
+	open := buildFeed(t, seed, Options{Day: "2026-11-14"})
+	if got := fmt.Sprint(cardIDs(open.Cards)); got != "[brief-2026-11-14]" {
+		t.Fatalf("the open day is listed: %s", got)
+	}
+	if cardByID(t, open, "brief-2026-11-14").Unread {
+		t.Error("the open day keeps its read state")
+	}
+	if got := fmt.Sprint(cardIDs(buildFeed(t, seed, Options{Day: "2026-11-10"}).Cards)); got != "[]" {
+		t.Errorf("a day with neither a briefing nor a plan is not listed: %s", got)
+	}
+}
+
 // Track my threads is one card: the active tracks newest first, then the
 // stopped ones flagged; "N unread" over the active ones only.
 func TestLegacy_TracksCardFlagsStopped(t *testing.T) {
@@ -137,10 +160,12 @@ func TestLegacy_IdeaFinderAndThreadBriefsAndMessages(t *testing.T) {
 	}) {
 		t.Errorf("idea items %s", got)
 	}
-	briefs := cardByID(t, feed, ThreadBriefsCardID)
-	if briefs.Unread || len(briefs.Legacy.Items) != 1 || briefs.Legacy.Items[0].Title != "Brief of #eng" ||
-		briefs.Legacy.Items[0].Preview != "The thread agreed." || briefs.Legacy.Items[0].RefKind != api.RefAction {
-		t.Errorf("thread briefs %+v", briefs)
+	brief := cardByID(t, feed, ThreadBriefCardID(1))
+	if brief.Unread || brief.Title != "Brief of #eng" || brief.SourceLine != "Thread brief" ||
+		brief.Stamp != "2026-11-16T10:00:00Z" || brief.Legacy.Kind != api.LegacyThreadBriefs ||
+		len(brief.Legacy.Items) != 1 || brief.Legacy.Items[0].Title != "Brief of #eng" ||
+		brief.Legacy.Items[0].Preview != "The thread agreed." || brief.Legacy.Items[0].RefKind != api.RefAction {
+		t.Errorf("thread brief %+v", brief)
 	}
 	msgs := cardByID(t, feed, MessagesCardID)
 	if msgs.Preview != "1 waiting" || msgs.SourceLine != "Mentions, DMs and replies" || !msgs.Unread {
@@ -152,7 +177,67 @@ func TestLegacy_IdeaFinderAndThreadBriefsAndMessages(t *testing.T) {
 		t.Errorf("message items %s", got)
 	}
 	// Root order: newest first by each entry's own time.
-	if got := fmt.Sprint(cardIDs(feed.Cards)); got != "[thread-briefs messages ideas]" {
+	if got := fmt.Sprint(cardIDs(feed.Cards)); got != "[thread-brief-1 messages ideas]" {
 		t.Errorf("root %s", got)
+	}
+}
+
+// The Messages card's items carry their ref facts, in item order, as an
+// artifact's rows do: shown and waiting, Reply (a Slack mention with a
+// permalink has one, mail has none) and an open Reply (a pending
+// send_slack_message in the item's context). The Mac's Reply… reads them.
+func TestLegacy_MessagesItemsCarryRefFacts(t *testing.T) {
+	item := func(id int, trigger, permalink, created string) string {
+		return fmt.Sprintf("INSERT INTO inbox_items (id, channel_id, message_ts, sender_user_id, trigger_type, "+
+			"snippet, permalink, status, priority, created_at, updated_at) VALUES (%d, 'C1', '1700000000.00%04d', "+
+			"'U2', '%s', 'Can you look?', '%s', 'pending', 'medium', '%s', '%s')",
+			id, id, trigger, permalink, created, created)
+	}
+	feed := buildFeed(t, []string{
+		item(1, "mention", "https://example.slack.com/archives/C1/p1", "2026-11-16T09:00:00Z"),
+		item(2, "email_received", "", "2026-11-16T08:00:00Z"),
+		item(3, "dm", "https://example.slack.com/archives/C1/p3", "2026-11-16T07:00:00Z"),
+		"INSERT INTO agent_actions (id, tool, args_json, context_type, context_id, status) " +
+			`VALUES (1, 'send_slack_message', '{}', 'inbox_item', '3', 'pending')`,
+	}, Options{})
+	card := cardByID(t, feed, MessagesCardID)
+	if card.Legacy == nil || len(card.Legacy.Items) != 3 {
+		t.Fatalf("messages card items: %+v", card.Legacy)
+	}
+	type fact struct {
+		id                       int64
+		open, waits, reply, wait bool
+	}
+	var got []fact
+	for _, f := range card.RefFacts {
+		if f.Kind != api.RefInboxItem {
+			t.Fatalf("fact kind %s", f.Kind)
+		}
+		got = append(got, fact{f.ID, f.Open, f.Waits, f.Reply, f.ReplyWaiting})
+	}
+	want := []fact{{1, true, true, true, false}, {2, true, true, false, false}, {3, true, true, true, true}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("facts %v, want %v (items in order 1, 2, 3)", got, want)
+	}
+}
+
+// A folder hidden by its own flag under a hidden parent: Hidden is the
+// effective value (an ancestor's included), OwnHidden the folder's own, so
+// the Mac's Show Hidden Folders draws exactly the folders the owner hid.
+func TestFolders_OwnHiddenBesideTheEffectiveFlag(t *testing.T) {
+	feed := buildFeed(t, []string{
+		"INSERT INTO inbox_folders (id, kind, parent_id, slug, title, icon, position, hidden) VALUES (3, 'owner', 1, 'old', 'Old', '', 1, 1)",
+		"INSERT INTO inbox_folders (id, kind, parent_id, slug, title, icon, position, hidden) VALUES (4, 'owner', 3, 'older', 'Older', '', 0, 1)",
+		"INSERT INTO inbox_folders (id, kind, parent_id, slug, title, icon, position, hidden) VALUES (5, 'owner', 3, 'kept', 'Kept', '', 1, 0)",
+	}, Options{})
+	got := map[int64][2]bool{}
+	for _, f := range feed.Folders {
+		got[f.ID] = [2]bool{f.Hidden, f.OwnHidden}
+	}
+	want := map[int64][2]bool{1: {false, false}, 2: {false, false}, 3: {true, true}, 4: {true, true}, 5: {true, false}}
+	for id, w := range want {
+		if got[id] != w {
+			t.Errorf("folder %d hidden/own %v, want %v", id, got[id], w)
+		}
 	}
 }

@@ -10,11 +10,14 @@ package struct BuiltinUpgradeNotice: Equatable, Sendable {
     package let builtinID: String
     package let error: String
     package let updatedAt: Date
+    /// The `builtin_migrations` rowid: the feed's card id is `n<rowID>`.
+    package let rowID: Int64
 
-    package init(builtinID: String, error: String, updatedAt: Date) {
+    package init(builtinID: String, error: String, updatedAt: Date, rowID: Int64 = 0) {
         self.builtinID = builtinID
         self.error = error
         self.updatedAt = updatedAt
+        self.rowID = rowID
     }
 
     /// The built-ins' names by id, twin of Go `builtin.Entry.Name`
@@ -59,14 +62,14 @@ package struct BuiltinUpgradeNotice: Equatable, Sendable {
     package static func load(_ db: Database) throws -> [Self] {
         do {
             let rows = try Row.fetchAll(db, sql: """
-                SELECT builtin_id, error, updated_at FROM builtin_migrations
+                SELECT rowid, builtin_id, error, updated_at FROM builtin_migrations
                 WHERE status = 'failed' ORDER BY updated_at DESC, builtin_id
                 """)
             // Go always writes RFC 3339 UTC; an unparsable date only orders the
             // notice last, it is still a failed move the owner must see.
             return rows.map { row in
                 Self(builtinID: row["builtin_id"], error: row["error"],
-                     updatedAt: AutomationDates.parse(row["updated_at"]) ?? .distantPast)
+                     updatedAt: AutomationDates.parse(row["updated_at"]) ?? .distantPast, rowID: row["rowid"])
             }
         } catch let error as DatabaseError where ActionStripViewModel.isMissingTable(error) {
             return []

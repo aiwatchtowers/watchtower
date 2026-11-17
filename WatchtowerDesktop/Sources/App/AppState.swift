@@ -882,8 +882,7 @@ final class AppState {
             // Skipped when onboarding is needed — the onboarding view replaces the sidebar entirely.
             if !needsOnboarding {
                 initAutomations(dbPool: manager.dbPool)
-                sidebarCountsViewModel = await SidebarCountsViewModel.started(
-                    dbPool: manager.dbPool, disabledFeatures: featureVisibility.disabledFeatureIDs)
+                sidebarCountsViewModel = await startedSidebarCounts(manager.dbPool)
             }
             isLoading = false
             // During onboarding only the account view models run (above):
@@ -1307,8 +1306,7 @@ final class AppState {
         // them now — otherwise the first run shows all-zero badges (incl. Catch-Up) until restart.
         if sidebarCountsViewModel == nil, sidebarCountsSetup == nil, let pool = databaseManager?.dbPool {
             sidebarCountsSetup = Task {
-                sidebarCountsViewModel = await SidebarCountsViewModel.started(
-                    dbPool: pool, disabledFeatures: featureVisibility.disabledFeatureIDs)
+                sidebarCountsViewModel = await startedSidebarCounts(pool)
                 // A feature load that landed during `started` found no view model.
                 sidebarCountsViewModel?.disabledFeatures = featureVisibility.disabledFeatureIDs
             }
@@ -1575,7 +1573,7 @@ final class AppState {
         initSecretaryProfile(dbManager: manager)
         initExternalConnections(dbPool: manager.dbPool)
         initReactionDictionary(dbPool: manager.dbPool)
-        initActionStrip(dbPool: manager.dbPool)
+        initActionStrip(dbPool: manager.dbPool, readsFromTower: true)
         startHostServices(databasePath: manager.dbPool.path) // before the workbenches: their reattach waits for it
         initWorkbenches(dbPool: manager.dbPool)
         if let vm = workbenchesViewModel { replaceAgentAnalytics(cliRunner: ProcessCLIRunner.makeDefault(), workbenches: vm) }
@@ -1625,14 +1623,14 @@ final class AppState {
 
     /// Not marked `private` (mirrors `initSecretaryProfile` below), leaving the
     /// same XCTest entry point open for `ideasViewModel`. The Inbox's idea
-    /// pane uses only its actions (the list is `InboxFeedQueries`'), so it
+    /// pane uses only its actions (the list is the tower feed's), so it
     /// observes and polls nothing.
     func initIdeas(dbManager: DatabaseManager) {
         ideasViewModel = IdeasViewModel(dbManager: dbManager)
     }
 
     /// The Inbox's track pane uses its actions and its Slack links and
-    /// names, read once here (the list is `InboxFeedQueries`'); a write
+    /// names, read once here (the list is the tower feed's); a write
     /// through it reads them again.
     func initTracks(dbManager: DatabaseManager) {
         let vm = TracksViewModel(dbManager: dbManager)
@@ -1773,7 +1771,8 @@ final class AppState {
         reactionDictionaryViewModel = vm
     }
 
-    func initActionStrip(dbPool: DatabasePool, cliRunner: (any CLIRunnerProtocol)? = nil) {
+    /// `readsFromTower`: the app's Inbox reads the tower (`attachTowerInbox`).
+    func initActionStrip(dbPool: DatabasePool, cliRunner: (any CLIRunnerProtocol)? = nil, readsFromTower: Bool = false) {
         // A decision on an automation run's proposal wakes the daemon's
         // automations loop (spec §7.4); the runner resolves per call, like
         // the feed's own.
@@ -1792,6 +1791,7 @@ final class AppState {
             await self?.sidebarCountsViewModel?.refresh()
         }
         vm.disabledFeatures = featureVisibility.disabledFeatureIDs
+        if readsFromTower { attachTowerInbox(vm) }
         Task { await vm.refresh() }
         actionStripViewModel = vm
         inboxArtifactMenu = makeInboxArtifactMenu(strip: vm)

@@ -19,7 +19,7 @@ func Register(r *tower.Registry, disabledFeatures func() []string) {
 			disabled = disabledFeatures()
 		}
 		return Build(ctx, c.DB, Options{
-			Folder: req.Folder, Limit: req.Limit, Clip: req.Clip, DisabledFeatures: disabled, Now: c.Now(),
+			Folder: req.Folder, Limit: req.Limit, Clip: req.Clip, Day: req.Day, DisabledFeatures: disabled, Now: c.Now(),
 		})
 	}, tower.Spec{Read: true, ChangeTables: ChangeTables})
 	tower.Register(r, "inbox.watch", func(context.Context, *tower.Ctx, api.WatchRequest) (api.WatchResponse, error) {

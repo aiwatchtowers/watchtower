@@ -2,6 +2,8 @@ import DesignKit
 import GRDB
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerInterface
+import WatchtowerTestSupport
 import XCTest
 
 /// The Go feed's approval text and target button states equal what the
@@ -10,9 +12,12 @@ import XCTest
 /// `TestApprovalText_SharedCases` and `TestTargetState_SharedCases`):
 /// - `approval_text_cases.json`: the native approval card's title, body
 ///   lines and edit (`AgentActionCardView.title`/`summaryLines`, the Slack
-///   and connector branches of its body, `SaveAutomationProposalPane`);
-/// - `target_button_cases.json`: an Inbox target button's state
-///   (`TargetButtonStateResolver.state`) from its newest proposal.
+///   and connector branches of its body); `SaveAutomationProposalPane`
+///   draws Go's own lines since Task 11d-b, so its case checks they come
+///   through the pane's split unchanged;
+/// - `target_button_cases.json`: an Inbox target button's state, Go's since
+///   Task 11d-b: the Mac draws every state Go sends
+///   (`TargetButtonStateResolver.state` over `InboxTargetButton`).
 final class ApprovalTextParityTests: XCTestCase {
     /// …/internal/inboxfeed/testdata, from …/WatchtowerDesktop/Tests/<this file>.
     private static let testdata = URL(fileURLWithPath: #filePath)
@@ -65,7 +70,7 @@ final class ApprovalTextParityTests: XCTestCase {
             let action = AgentAction(row: Row([
                 "id": 1, "tool": item.tool, "args_json": item.args, "result_json": item.result, "status": item.status ?? "pending"
             ]))
-            let text = Self.cardText(action) { item.workbenchNames[String($0)] }
+            let text = Self.cardText(action, expect: item.expect) { item.workbenchNames[String($0)] }
             XCTAssertEqual(text.title, item.expect.title, "\(item.name): title")
             XCTAssertEqual(text.summary, item.expect.summary, "\(item.name): summary")
             XCTAssertEqual(text.editOnMac, item.expect.editOnMac, "\(item.name): edit on Mac")
@@ -86,7 +91,7 @@ final class ApprovalTextParityTests: XCTestCase {
     /// comes from the app's workbench list, `WorkbenchQueries.summaries`
     /// (the `projects` rows), as the fixture's names stand for.
     private static func cardText(
-        _ action: AgentAction, workbenchName: @escaping (Int64) -> String?
+        _ action: AgentAction, expect: TextCase.Expect, workbenchName: @escaping (Int64) -> String?
     ) -> (title: String, summary: [String], editOnMac: Bool) {
         if action.tool == SaveAutomationCardModel.tool, !action.isPending {
             let model = SaveAutomationCardModel(action: action)
@@ -94,9 +99,12 @@ final class ApprovalTextParityTests: XCTestCase {
                 + (model.dryRunSummary.map { [$0] } ?? []), false)
         }
         if action.tool == SaveAutomationCardModel.tool {
-            let summary = SaveAutomationProposalSummary(model: SaveAutomationCardModel(action: action),
-                                                        workbenchName: workbenchName)
-            return (summary.name, ["For: \(summary.scope)", "When: \(summary.when)", "It may: \(summary.mayLine)"], true)
+            // The pane draws the feed's approval (Go's words): split into
+            // its label and value rows, then read back.
+            var approval = TestInboxFeeds.approval(title: expect.title, summary: expect.summary)
+            approval.editOnMac = expect.editOnMac
+            let summary = SaveAutomationProposalSummary(approval: approval)
+            return (summary.name, summary.lines.map { "\($0.label): \($0.value)" }, approval.editOnMac)
         }
         let title = AgentActionCardView.title(for: action)
         if let connector = ConnectorCallProposal(action: action) {
@@ -167,14 +175,10 @@ final class ApprovalTextParityTests: XCTestCase {
         XCTAssertFalse(cases.isEmpty)
         for item in cases {
             let now = try XCTUnwrap(AutomationDates.parse(item.now), item.name)
-            let proposal = item.proposal.map { proposal in
-                InboxTargetButtonFacts.Proposal(AgentAction(row: Row([
-                    "id": 1, "tool": "create_target", "args_json": "{}", "status": proposal.status,
-                    "decided_at": proposal.decidedAt, "dismissed_at": proposal.dismissedAt, "error": proposal.error
-                ])))
-            }
-            let facts = InboxTargetButtonFacts(proposal: proposal, taskID: item.taskExists ? 1 : nil)
-            let (detail, note) = Self.wire(TargetButtonStateResolver.state(facts, now: now))
+            // Go's state as the feed sends it; a creating one carries its `until`.
+            let until = item.expect.detail == "creating" ? now.addingTimeInterval(1) : nil
+            let button = InboxTargetButton(detail: item.expect.detail, note: item.expect.note, until: until)
+            let (detail, note) = Self.wire(TargetButtonStateResolver.state(button, now: now))
             XCTAssertEqual(detail, item.expect.detail, "\(item.name): state")
             XCTAssertEqual(note, item.expect.note, "\(item.name): note")
         }

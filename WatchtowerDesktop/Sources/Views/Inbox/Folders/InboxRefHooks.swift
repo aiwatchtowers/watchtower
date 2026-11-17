@@ -93,7 +93,9 @@ struct InboxRefHooks {
     }
 
     /// The row's native actions as the last read has its record; nil (no
-    /// actions) when the read does not list it.
+    /// actions) when the read does not list it. What decides a button —
+    /// Reply… on a ping, an idea's verdicts — is Go's ref facts
+    /// (`ActionStripViewModel.refFacts`); the record gives the rest.
     func content(_ ref: InboxRef, _ mode: ArtifactRenderMode) -> InboxRowActionsContent? {
         guard let kind = kind(ref) else { return nil }
         let reply = ref.kind == .inboxItem ? vm.replyState(Int(ref.id)) : nil
@@ -107,9 +109,10 @@ struct InboxRefHooks {
     /// Waiting for me (before its first run, after a failed run): the same
     /// Reply… as a row, for an item with a write path, off with the
     /// footer's line while the CLI is missing. Nil otherwise — today's card.
+    /// Whether the item has a write path is Go's (`reply` on the Messages
+    /// card's item).
     func messageReply(_ row: HomeFeedInboxRow) -> InboxRowActionsContent? {
-        guard vm.folderMenu.snapshot.waitingForMe.messagesStandIn,
-              InboxReplyPolicy.tool(for: row.item) != nil else { return nil }
+        guard vm.folderMenu.snapshot.waitingForMe.messagesStandIn, vm.canReply(Int64(row.item.id)) else { return nil }
         let id = row.item.id
         return InboxRowActionsContent(
             kind: .inboxItem(openLabel: nil, openEnabled: false, canReply: true, showsHandToAgent: true),
@@ -132,13 +135,13 @@ struct InboxRefHooks {
             let link = InboxMessagePane.link(row.item.permalink)
             return .inboxItem(openLabel: link.map { _ in InboxMessagePane.openLabel(row.item.triggerType) },
                               openEnabled: link.map { InboxCardLinkPolicy.permits($0, navScreens: navScreens) } ?? false,
-                              canReply: InboxReplyPolicy.tool(for: row.item) != nil, showsHandToAgent: true)
+                              canReply: vm.canReply(ref.id), showsHandToAgent: true)
         case .track:
             guard let track = feed.tracks.first(where: { Int64($0.track.id) == ref.id })?.track else { return nil }
             return .track(custom: track.isCustom, linkedTargetID: track.linkedTargetID.map(Int64.init))
         case .idea:
             guard let idea = feed.ideas.first(where: { Int64($0.id) == ref.id }) else { return nil }
-            return .idea(kind: idea.kind, status: idea.status, awaitsVerdict: idea.awaitsVerdict)
+            return .idea(kind: idea.kind, status: idea.status, awaitsVerdict: vm.refFacts(ref)?.waits ?? false)
         case .reminder:
             return feed.reminders.contains { $0.id == ref.id } ? .reminder : nil
         case .action:
@@ -379,7 +382,7 @@ struct InboxRowActionHandler {
             // apply --force when stranded in executing).
             guard let action = vm.feed.proposals.first(where: { $0.id == id }),
                   !vm.isSupersededButtonRow(action) else { return }
-            if vm.targetFacts(for: action) != nil { await vm.tryAgainTarget(id) } else { await vm.retry(id) }
+            if vm.targetButton(forApproval: action) != nil { await vm.tryAgainTarget(id) } else { await vm.retry(id) }
         case .dismiss: await vm.dismiss(id)
         case .edit: onEditAction(id)
         case .openDraft:

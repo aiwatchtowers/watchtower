@@ -26,7 +26,6 @@ enum OneInboxShotFixtures {
     private static let defaultsSuite = "OneInboxShotFixtures"
     nonisolated static let now = AutomationDates.parse("2026-10-21T12:00:00Z") ?? Date()
     private static var today: String { HomeFeedBuilder.dayString(now, calendar: .current) }
-    private static let yesterday = "2026-10-20"
     private static let owner = Owner(
         id: "1:U001", source: .slack, slackUserID: "1:U001", email: "", jiraAccountID: "", displayName: "Me"
     )
@@ -46,7 +45,13 @@ enum OneInboxShotFixtures {
         var watch: WatchScene = .legacy
         /// A decision proposed from a chat, with its chat mention, opened.
         var chatDecision = false
+        /// The card the route opens is marked read by the opening: the
+        /// case whose step lists it read once that write landed.
+        var opens: Opens?
     }
+
+    /// A route that marks its card read.
+    enum Opens { case day, message }
 
     /// The custom track before the custom-tracks move (C1's controls), bound
     /// to a watch recipe (as shipped, or changed in the chat), or unbound
@@ -60,49 +65,51 @@ enum OneInboxShotFixtures {
             """#.utf8)
     }
 
-    /// The ids the seed wrote.
+    /// The ids the cases' seed writes.
     struct Seeded {
-        let customTrack: Int
-        let launchTrack: Int
-        let stoppedTrack: Int
-        let proposedIdea: Int
-        let decision: Int
-        let message: Int
+        let customTrack = 1
+        let launchTrack = 2
+        let stoppedTrack = 3
+        let proposedIdea = 1
+        let decision = 2
+        let message = 2
+        /// The decision a chat proposed (`desktop_shot_one_inbox_chat_decision`).
+        let chatDecision = 4
     }
 
     // MARK: - Shots
 
-    static func dayCard() -> AnyView { inbox(Scene { _ in .card(.day(today)) }) }
-    static func dayCardRegenerate() -> AnyView {
-        inbox(Scene(route: { _ in .card(.day(today)) }, dayRow: .regenerate))
+    static func dayCard() async -> AnyView { await inbox(Scene(route: { _ in .card(.day(today)) }, opens: .day)) }
+    static func dayCardRegenerate() async -> AnyView {
+        await inbox(Scene(route: { _ in .card(.day(today)) }, dayRow: .regenerate, opens: .day))
     }
-    static func dayCardEmpty() -> AnyView {
-        inbox(Scene(route: { _ in .card(.day(today)) }, withToday: false))
+    static func dayCardEmpty() async -> AnyView {
+        await inbox(Scene(route: { _ in .card(.day(today)) }, withToday: false))
     }
-    static func trackCard() -> AnyView { inbox(Scene { .card(.track($0.customTrack)) }) }
-    static func trackCard(_ watch: WatchScene) -> AnyView {
-        inbox(Scene(route: { .card(.track($0.customTrack)) }, watch: watch))
+    static func trackCard() async -> AnyView { await inbox(Scene { .card(.track($0.customTrack)) }) }
+    static func trackCard(_ watch: WatchScene) async -> AnyView {
+        await inbox(Scene(route: { .card(.track($0.customTrack)) }, watch: watch))
     }
-    static func tracksStopped() -> AnyView {
-        inbox(Scene(route: { .card(.track($0.stoppedTrack)) }, showsStopped: true))
+    static func tracksStopped() async -> AnyView {
+        await inbox(Scene(route: { .card(.track($0.stoppedTrack)) }, showsStopped: true))
     }
-    static func ideaCard() -> AnyView { inbox(Scene { .card(.idea($0.proposedIdea)) }) }
-    static func decisionCard() -> AnyView { inbox(Scene { .card(.idea($0.decision)) }) }
-    static func chatDecisionCard() -> AnyView { inbox(Scene(chatDecision: true)) }
-    static func ideasNew() -> AnyView {
-        inbox(Scene(route: { .card(.idea($0.proposedIdea)) }, ideasRow: .newIdea))
+    static func ideaCard() async -> AnyView { await inbox(Scene { .card(.idea($0.proposedIdea)) }) }
+    static func decisionCard() async -> AnyView { await inbox(Scene { .card(.idea($0.decision)) }) }
+    static func chatDecisionCard() async -> AnyView { await inbox(Scene(chatDecision: true)) }
+    static func ideasNew() async -> AnyView {
+        await inbox(Scene(route: { .card(.idea($0.proposedIdea)) }, ideasRow: .newIdea))
     }
-    static func messageCard() -> AnyView { inbox(Scene { .card(.message($0.message)) }) }
-    static func cheatSheet() -> AnyView { inbox(Scene(aux: .reactionCommands)) }
-    static func builtinNotice() -> AnyView {
-        inbox(Scene(route: { _ in .card(.builtinNotice("morning-brief")) }, builtinNotice: true))
+    static func messageCard() async -> AnyView { await inbox(Scene(route: { .card(.message($0.message)) }, opens: .message)) }
+    static func cheatSheet() async -> AnyView { await inbox(Scene(aux: .reactionCommands)) }
+    static func builtinNotice() async -> AnyView {
+        await inbox(Scene(route: { _ in .card(.builtinNotice("morning-brief")) }, builtinNotice: true))
     }
 
     /// Today's day card alone at the reading pane's narrowest (420 pt).
     static func dayCardNarrow() -> AnyView {
         do {
             let manager = try freshDatabase()
-            _ = try manager.dbPool.write { db in try seed(db, withToday: true) }
+            _ = try InboxShotFeed.seeded("desktop_shot_one_inbox_default", manager.dbPool)
             let card = try XCTUnwrap(manager.dbPool.read { db in
                 try BriefingQueries.fetchDayCards(db, limit: 1).first
             })
@@ -120,32 +127,11 @@ enum OneInboxShotFixtures {
 
     // MARK: - The Inbox
 
-    private static func inbox(_ scene: Scene) -> AnyView {
+    private static func inbox(_ scene: Scene) async -> AnyView {
         do {
             let manager = try freshDatabase()
-            let seeded = try manager.dbPool.write { db in
-                let seeded = try seed(db, withToday: scene.withToday)
-                if scene.watch == .bound || scene.watch == .edited {
-                    try db.execute(sql: "UPDATE tracks SET automation_id = 42 WHERE id = ?",
-                                   arguments: [seeded.customTrack])
-                }
-                if scene.watch == .unbound {
-                    try db.execute(sql: """
-                        INSERT INTO builtin_migrations (builtin_id, status, error, attempts, updated_at)
-                        VALUES ('custom-tracks', 'done', '', 1, '2026-10-21T06:00:00Z')
-                        """)
-                }
-                if scene.builtinNotice {
-                    try db.execute(sql: """
-                        INSERT INTO builtin_migrations (builtin_id, status, error, attempts, updated_at)
-                        VALUES ('morning-brief', 'failed',
-                                'could not read the old briefing prompt: the prompts table is locked', 1,
-                                '2026-10-21T06:00:00Z')
-                        """)
-                }
-                return seeded
-            }
-            let chatDecision = scene.chatDecision ? try manager.dbPool.write { try seedChatDecision($0) } : nil
+            let tower = try InboxShotFeed.seeded(caseName(scene), manager.dbPool)
+            let seeded = Seeded()
             let defaults = UserDefaults(suiteName: defaultsSuite) ?? .standard
             defaults.removePersistentDomain(forName: defaultsSuite)
             let clock = now
@@ -156,7 +142,9 @@ enum OneInboxShotFixtures {
                                           customTrackControls: controls, defaults: defaults, clock: { clock })
             // swiftlint:enable trailing_closure
             vm.showsStopped = scene.showsStopped
-            opened(vm, chatDecision.map { .card(.idea($0)) } ?? scene.route(seeded))
+            await InboxShotFeed.listed(vm, tower) {
+                await vm.open(folder: nil, select: scene.chatDecision ? .card(.idea(seeded.chatDecision)) : scene.route(seeded))
+            }
             let plan = DayPlanViewModel(databasePool: manager.dbPool, cliRunner: FakeCLIRunner())
             let ideas = IdeasViewModel(dbManager: manager, cliRunner: FakeCLIRunner())
             let appState = AppState()
@@ -168,7 +156,11 @@ enum OneInboxShotFixtures {
                 isEnabling: false, featureError: nil, onEnable: {}, onOpenSettings: {}, onOpen: { _ in },
                 dayPane: { card in dayPane(card, manager: manager, plan: plan, row: scene.dayRow) },
                 ideas: ideas,
-                ideaPane: { idea in InboxIdeaPane(idea: idea, ideas: ideas, allIdeas: vm.feed.ideas) },
+                ideaPane: { idea in
+                    var pane = InboxIdeaPane(idea: idea, ideas: ideas, allIdeas: vm.feed.ideas)
+                    pane.now = clock // a fixed moment: the ages never move with the real date
+                    return pane
+                },
                 onRetryBuiltin: { _ in },
                 tracks: TracksViewModel(dbManager: manager),
                 trackControls: RecordingCustomTrackControls(),
@@ -182,6 +174,23 @@ enum OneInboxShotFixtures {
         } catch {
             return failure(error)
         }
+    }
+
+    /// The Go desktop case holding `scene`'s database: the owner, today's
+    /// and yesterday's day cards (today's only `withToday`), three tracks,
+    /// three ideas, two messages and an automation card; the custom track
+    /// bound to a watch recipe or moved, a built-in's failed move, a decision
+    /// a chat proposed, as the scene asks. Every time is set, never the real clock.
+    private static func caseName(_ scene: Scene) -> String {
+        "desktop_shot_one_inbox_" + {
+            if scene.chatDecision { return "chat_decision" }
+            if scene.opens == .day { return "day_opened" }
+            if scene.opens == .message { return "message_opened" }
+            if scene.builtinNotice { return "builtin_notice" }
+            if scene.watch == .unbound { return "watch_unbound" }
+            if scene.watch != .legacy { return "watch_bound" }
+            return scene.withToday ? "default" : "no_today"
+        }()
     }
 
     private static func dayPane(
@@ -210,154 +219,6 @@ enum OneInboxShotFixtures {
         manager = created
         path = createdPath
         return created
-    }
-
-    /// One install's Inbox: the owner, today's and yesterday's day cards
-    /// (today's only `withToday`), three tracks, three ideas, two messages
-    /// and an automation card. Every time is set, never the real clock.
-    private static func seed(_ db: Database, withToday: Bool) throws -> Seeded {
-        try db.execute(sql: "INSERT INTO slack_accounts (id, current_user_id) VALUES (1, 'U001')")
-        try TestDatabase.insertChannel(db, id: "C001", name: "eng")
-        try TestDatabase.insertUser(db, id: "U002", name: "colleague-a", displayName: "Colleague A")
-        try seedDays(db, withToday: withToday)
-        let tracks = try seedTracks(db)
-        let ideas = try seedIdeas(db)
-        let message = try seedMessages(db)
-        let automation = try TestDatabase.insertAutomation(db, slug: "mail-triage", name: "Morning mail triage",
-                                                           outputsJSON: #"["inbox"]"#)
-        let run = try TestDatabase.insertAutomationRun(db, automationID: automation)
-        _ = try TestDatabase.insertAutomationOutput(
-            db, automationID: automation, runID: run, title: "3 emails waiting for a reply",
-            body: "From colleague A, colleague B and billing@example.com", createdAt: "2026-10-21T08:30:00Z")
-        return Seeded(customTrack: tracks.custom, launchTrack: tracks.launch, stoppedTrack: tracks.stopped,
-                      proposedIdea: ideas.proposed, decision: ideas.decision, message: message)
-    }
-
-    private static func seedDays(_ db: Database, withToday: Bool) throws {
-        try TestDatabase.insertBriefing(
-            db, date: yesterday, role: "Engineering lead · acme",
-            attention: #"[{"text":"Sign off the acme v2 launch checklist","priority":"high"}]"#,
-            readAt: "2026-10-20T08:00:00Z")
-        try db.execute(sql: "UPDATE briefings SET created_at = '2026-10-20T07:00:00Z' WHERE date = ?",
-                       arguments: [yesterday])
-        guard withToday else { return }
-        try TestDatabase.insertBriefing(
-            db, date: today, role: "Engineering lead · acme",
-            attention: #"[{"text":"Colleague A needs your review of the launch plan","priority":"high"},"#
-                + #"{"text":"The acme refund is still waiting on finance","priority":"medium"}]"#,
-            yourDay: #"[{"text":"Review the launch plan before Friday","priority":"high"}]"#,
-            whatHappened: #"[{"text":"The eng channel agreed on a staged rollout for acme v2","channel_name":"eng"}]"#)
-        try db.execute(sql: "UPDATE briefings SET created_at = '2026-10-21T07:00:00Z' WHERE date = ?",
-                       arguments: [today])
-        let plan = try TestDatabase.insertDayPlan(db, planDate: today, generatedAt: "2026-10-21T07:05:00Z")
-        // Title, "HH:MM-HH:MM" UTC (none for the backlog), status.
-        let items: [(String, String?, String)] = [
-            ("Standup", "09:00-09:30", "done"),
-            ("Review the acme launch plan", "10:00-11:00", "pending"),
-            ("Write the rollout notes", "14:00-15:30", "pending"),
-            ("Reply to billing@example.com", nil, "pending")
-        ]
-        for (index, item) in items.enumerated() {
-            let times = item.1?.split(separator: "-").map { "\(today)T\($0):00Z" }
-            try TestDatabase.insertDayPlanItem(
-                db, dayPlanID: plan, kind: times == nil ? "backlog" : "timeblock", title: item.0,
-                startTime: times?.first, endTime: times?.last, status: item.2, orderIndex: index)
-        }
-    }
-
-    private static func seedTracks(_ db: Database) throws -> (custom: Int, launch: Int, stopped: Int) {
-        let custom = try TestDatabase.insertTrack(db, text: "Watch the acme refund",
-                                                  context: "Finance owes acme a refund for the October invoice.")
-        try db.execute(sql: """
-            UPDATE tracks SET origin = 'custom', enabled = 1, updated_at = '2026-10-21T09:40:00Z',
-                instruction = 'Tell me when finance decides on the acme refund' WHERE id = ?
-            """, arguments: [custom])
-        let events: [(String, String?, String)] = [
-            ("Finance asked acme for the original invoice", nil, "2026-10-21T09:30:00Z"),
-            ("Colleague A says the refund is approved in principle", nil, "2026-10-21T08:10:00Z"),
-            ("Acme sent the invoice again", "2026-10-20T09:00:00Z", "2026-10-20T08:00:00Z"),
-            ("Finance opened a ticket for the refund", "2026-10-20T09:00:00Z", "2026-10-19T15:00:00Z"),
-            ("Acme asked for a refund", "2026-10-20T09:00:00Z", "2026-10-19T10:00:00Z")
-        ]
-        for event in events {
-            try db.execute(sql: """
-                INSERT INTO track_events (track_id, summary, read_at, created_at) VALUES (?, ?, ?, ?)
-                """, arguments: [custom, event.0, event.1, event.2])
-        }
-        let launch = try TestDatabase.insertTrack(
-            db, text: "Launch of acme v2", context: "The rollout plan ships on Friday; colleague A owns QA.",
-            priority: "high", hasUpdates: true)
-        try db.execute(sql: "UPDATE tracks SET updated_at = '2026-10-21T08:00:00Z' WHERE id = ?", arguments: [launch])
-        let stopped = try TestDatabase.insertTrack(db, text: "Old vendor migration",
-                                                   context: "Moved off the old billing vendor at example.com.")
-        try db.execute(sql: """
-            UPDATE tracks SET dismissed_at = '2026-10-18T10:00:00Z', updated_at = '2026-10-18T10:00:00Z',
-                read_at = '2026-10-18T10:00:00Z' WHERE id = ?
-            """, arguments: [stopped])
-        return (Int(custom), Int(launch), Int(stopped))
-    }
-
-    private static func seedIdeas(_ db: Database) throws -> (proposed: Int, decision: Int) {
-        let proposed = try TestDatabase.insertIdea(
-            db, title: "Ship a weekly digest email to acme leads",
-            essence: "A short Friday email with what shipped and what is blocked.",
-            createdAt: "2026-10-21T08:20:00Z", updatedAt: "2026-10-21T08:20:00Z")
-        let decision = try TestDatabase.insertIdea(
-            db, kind: "decision", title: "Use staged rollouts for every acme release",
-            essence: "Agreed in #eng: 5 %, 25 %, then everyone, a day apart.", status: "active",
-            createdAt: "2026-10-20T15:00:00Z", updatedAt: "2026-10-20T15:00:00Z")
-        try TestDatabase.insertIdea(
-            db, title: "Self-serve CSV import", essence: "Let acme admins import users without a ticket.",
-            status: "active", createdAt: "2026-10-19T11:00:00Z", updatedAt: "2026-10-19T11:00:00Z")
-        return (Int(proposed), Int(decision))
-    }
-
-    /// A decision the chat miner proposed, its mention pointing at a chat
-    /// message that still exists.
-    private static func seedChatDecision(_ db: Database) throws -> Int {
-        let conversation = try TestDatabase.insertChatConversation(db, title: "acme release cadence")
-        let message = try TestDatabase.insertChatMessage(
-            db, conversationID: conversation, role: "user", text: "Let's move the acme release to Tuesdays.")
-        let decision = try TestDatabase.insertIdea(
-            db, kind: "decision", title: "Release acme on Tuesdays",
-            essence: "Agreed in a chat: the weekly acme release moves from Thursday to Tuesday.",
-            lastMentionAt: "2026-10-21T09:40:00Z", createdAt: "2026-10-21T09:45:00Z",
-            updatedAt: "2026-10-21T09:45:00Z", chatBorn: true)
-        try TestDatabase.insertIdeaMention(
-            db, ideaID: decision, source: "chat", ref: "chat:\(conversation):\(message)",
-            quote: "Let's move the acme release to Tuesdays.", saidAt: "2026-10-21T09:40:00Z")
-        return Int(decision)
-    }
-
-    private static func seedMessages(_ db: Database) throws -> Int {
-        let older = try TestDatabase.insertInboxItem(
-            db, messageTS: "1700000000.000200", triggerType: "dm", snippet: "Lunch at noon tomorrow?",
-            readAt: "2026-10-20T13:00:00Z")
-        let message = try TestDatabase.insertInboxItem(
-            db, snippet: "Can you review the launch plan before Friday? The rollout section changed.",
-            permalink: "https://example.com/archives/C001/p1700000000000100", priority: "high",
-            whyMatters: "You own the rollout; the plan ships Friday.",
-            threadDigest: "Colleague A and colleague B agreed on a staged rollout.")
-        for (id, at) in [(older, "2026-10-20T12:30:00Z"), (message, "2026-10-21T10:30:00Z")] {
-            try db.execute(sql: "UPDATE inbox_items SET created_at = ? WHERE id = ?", arguments: [at, id])
-        }
-        return Int(message)
-    }
-
-    /// The shot renders at once, so the Inbox's async read is waited for
-    /// here by running the main run loop (the test-side `spin` precedent).
-    /// The route opened as a link would open it, run to its end.
-    private static func opened(_ vm: ActionStripViewModel, _ route: InboxRoute.Entry?) {
-        final class Flag { var done = false }
-        let flag = Flag()
-        Task { @MainActor in
-            await vm.open(folder: nil, select: route)
-            flag.done = true
-        }
-        let deadline = Date().addingTimeInterval(5)
-        while !flag.done, Date() < deadline {
-            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
-        }
     }
 
     private static func failure(_ error: Error) -> AnyView {

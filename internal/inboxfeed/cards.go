@@ -14,26 +14,28 @@ import (
 
 // The legacy entries' fixed card ids.
 const (
-	TracksCardID       = "tracks"
-	IdeasCardID        = "ideas"
-	ThreadBriefsCardID = "thread-briefs"
-	MessagesCardID     = "messages"
+	TracksCardID   = "tracks"
+	IdeasCardID    = "ideas"
+	MessagesCardID = "messages"
 )
 
 // The kinds ParseCardID answers.
 const (
-	KindOutput       = "output"
-	KindAction       = "action"
-	KindReminder     = "reminder"
-	KindNotice       = "notice"
-	KindBrief        = "brief"
-	KindTracks       = "tracks"
-	KindIdeas        = "ideas"
-	KindThreadBriefs = "thread-briefs"
-	KindMessages     = "messages"
+	KindOutput      = "output"
+	KindAction      = "action"
+	KindReminder    = "reminder"
+	KindNotice      = "notice"
+	KindBrief       = "brief"
+	KindTracks      = "tracks"
+	KindIdeas       = "ideas"
+	KindThreadBrief = "thread-brief"
+	KindMessages    = "messages"
 )
 
-const briefPrefix = "brief-"
+const (
+	briefPrefix       = "brief-"
+	threadBriefPrefix = "thread-brief-"
+)
 
 // OutputCardID is an artifact's card id: o<automation_outputs.id>.
 func OutputCardID(id int64) string { return "o" + strconv.FormatInt(id, 10) }
@@ -51,6 +53,9 @@ func NoticeCardID(id int64) string { return "n" + strconv.FormatInt(id, 10) }
 // BriefCardID is a Morning brief day's card id: brief-<yyyy-MM-dd>.
 func BriefCardID(date string) string { return briefPrefix + date }
 
+// ThreadBriefCardID is a thread brief's card id: thread-brief-<agent_actions.id>.
+func ThreadBriefCardID(id int64) string { return threadBriefPrefix + strconv.FormatInt(id, 10) }
+
 // ParseCardID reads a card id: its kind (Kind*), the row id of the
 // numbered kinds and the date of a brief.
 func ParseCardID(id string) (kind string, num int64, date string, err error) {
@@ -59,10 +64,15 @@ func ParseCardID(id string) (kind string, num int64, date string, err error) {
 		return KindTracks, 0, "", nil
 	case IdeasCardID:
 		return KindIdeas, 0, "", nil
-	case ThreadBriefsCardID:
-		return KindThreadBriefs, 0, "", nil
 	case MessagesCardID:
 		return KindMessages, 0, "", nil
+	}
+	if n, ok := strings.CutPrefix(id, threadBriefPrefix); ok {
+		num, perr := strconv.ParseInt(n, 10, 64)
+		if perr != nil || num <= 0 || strconv.FormatInt(num, 10) != n {
+			return "", 0, "", fmt.Errorf("inboxfeed: card id %q: bad number", id)
+		}
+		return KindThreadBrief, num, "", nil
 	}
 	if d, ok := strings.CutPrefix(id, briefPrefix); ok {
 		if _, perr := time.Parse("2006-01-02", d); perr != nil {

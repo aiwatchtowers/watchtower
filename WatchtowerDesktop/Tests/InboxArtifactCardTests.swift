@@ -3,6 +3,8 @@ import SwiftUI
 import ViewInspector
 @testable import WatchtowerDesktop
 @testable import WatchtowerCore
+import WatchtowerInterface
+import WatchtowerTestSupport
 
 /// A card with blocks in today's Inbox (spec "Today's Inbox", "Press
 /// address"): the reading pane's choice by `ArtifactDocument.decode`, the
@@ -68,12 +70,19 @@ final class InboxArtifactCardTests: XCTestCase {
         XCTAssertTrue(layout.hasReply)
         let press = try XCTUnwrap(layout.pressable.last)
 
-        XCTAssertEqual(InboxCardPress.resolve(press, card: shown, reply: .ready, workbenches: []),
+        // The Reply's state is the feed's (Go's), at the same flattened index.
+        func buttons(_ detail: String, _ state: ActionState = .enabled, label: String = "Backlog") -> InboxFeedButtons {
+            InboxFeedButtons(TestInboxFeeds.artifact(5, actions: [
+                TestInboxFeeds.reply(3, label: label, detail: detail, state: state)
+            ]))
+        }
+        XCTAssertEqual(InboxCardPress.resolve(press, card: shown, buttons: buttons("ready"), workbenches: []),
                        .command(.reply(outputID: 5, action: 3, contentHash: "h7")))
-        XCTAssertEqual(InboxCardPress.resolve(press, card: shown, reply: .off, workbenches: []),
+        XCTAssertEqual(InboxCardPress.resolve(press, card: shown, buttons: buttons("off"), workbenches: []),
                        .command(.openAutomation(shown)), "a recipe that cannot run opens its card")
-        XCTAssertTrue(InboxCardPress.isDisabled(press, reply: .sent(runID: 9), isWriting: false, navScreens: []))
-        XCTAssertEqual(InboxArtifactCard.replyCaption(.sent(runID: 9)), "Sent — run #9")
+        let sent = buttons("sent", .pressed, label: "Sent — run #9")
+        XCTAssertTrue(InboxCardPress.isDisabled(press, buttons: sent, isWriting: false, navScreens: []))
+        XCTAssertEqual(sent.replyLine(pressed: 3), "Sent — run #9")
     }
 
     /// A target button is pressed in the Inbox (Inbox builder A, plan Task
@@ -102,7 +111,8 @@ final class InboxArtifactCardTests: XCTestCase {
         XCTAssertTrue(press.contextID.hasPrefix("5:0:"))
         XCTAssertFalse(try sut.inspect().find(button: "Draft").isDisabled())
 
-        let source = InboxTargetButtonSource { _ in InboxTargetButtonFacts() } isProposing: { _ in true }
+        var source = InboxTargetButtonSource()
+        source.isProposing = { _ in true }
         let ignore: (InboxCardCommand) -> Void = { _ in }
         let busy = InboxReadingPane(item: .output(shown), navScreens: [], targets: source, onCommand: ignore)
         XCTAssertTrue(try busy.inspect().find(ArtifactTargetButton.self).find(ViewType.Button.self).isDisabled())

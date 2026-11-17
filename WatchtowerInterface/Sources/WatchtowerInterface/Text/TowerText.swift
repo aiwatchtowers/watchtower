@@ -75,6 +75,15 @@ public extension TowerText {
     static let legacyBriefTitle = "Morning brief · today"
     static func withNews(_ n: Int) -> String { "\(n) with news" }
     static func toJudge(_ n: Int) -> String { "\(n) to judge" }
+    // The Mac's folder list rows (`InboxFolderEntries.row`).
+    static func macWaiting(_ n: Int) -> String { "\(n) waiting" }
+    /// "updated 6 min ago", "updated just now".
+    static func macUpdated(_ at: Date, now: Date) -> String { "updated \(InboxTime.ago(at, now: now))" }
+    /// "run #12 · 2 h ago".
+    static func macRunLine(run: Int64, at: Date, now: Date) -> String { "run #\(run) · \(InboxTime.ago(at, now: now))" }
+    static let threadBrief = "Thread brief"
+    /// "Thread brief · 3 h ago".
+    static func threadBriefAgo(_ at: Date, now: Date) -> String { "Thread brief · \(InboxTime.ago(at, now: now))" }
     static let justNow = "just now"
     static func secondsSpan(_ n: Int) -> String { "\(n) s" }
     static func minutesSpan(_ n: Int) -> String { "\(n) min" }
@@ -84,6 +93,9 @@ public extension TowerText {
 
     // §2: Waiting for me rows, their detail and the Reply… sheet.
     static let done = "Done"
+    /// A sent Reply's line when its pressed button is not drawn (the Mac's
+    /// card drawn from blocks).
+    static let sent = "Sent"
     static let notDone = "Not done"
     static let snooze = "Snooze"
     static let snoozeOneHour = "Snooze 1h"

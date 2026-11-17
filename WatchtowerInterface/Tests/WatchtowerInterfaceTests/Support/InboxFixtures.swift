@@ -63,7 +63,7 @@ enum InboxFixtures {
     ) -> Folder {
         Folder(
             id: id, kind: kind, slug: "f\(id)", title: "Folder \(id)", icon: "", parentID: parent,
-            position: position, hidden: hidden, count: count, waiting: waiting
+            position: position, hidden: hidden, ownHidden: hidden, count: count, waiting: waiting
         )
     }
 

@@ -86,4 +86,15 @@ final class TimeFormattingTests: XCTestCase {
         XCTAssertTrue(result.count <= 5)
         XCTAssertTrue(result.contains(":"))
     }
+
+    /// A fixed moment's age reads as SwiftUI's live `.relative` style does.
+    func testRelativeSpanReadsAsTheLiveStyle() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let now = try XCTUnwrap(TimeFormatting.parseISO("2026-11-17T08:00:00Z"))
+        let said = try XCTUnwrap(TimeFormatting.parseISO("2026-10-21T09:40:00Z"))
+        XCTAssertEqual(TimeFormatting.relativeSpan(from: said, now: now, calendar: calendar), "26 days, 22 hr")
+        XCTAssertEqual(TimeFormatting.relativeSpan(from: now, now: now.addingTimeInterval(90), calendar: calendar),
+                       "1 min, 30 sec")
+    }
 }

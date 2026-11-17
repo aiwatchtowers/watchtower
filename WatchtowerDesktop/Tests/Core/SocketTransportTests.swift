@@ -301,6 +301,16 @@ final class SocketTransportTests: XCTestCase {
         XCTAssertEqual(later.status, .ok, "the next call opens a new connection")
     }
 
+    /// The daemon trusts a tower connection as the signed Desktop's (AGENT-07,
+    /// checked per peer pid), so a child the app spawns (a CLI run, a chat
+    /// session) must never inherit it: every connection is close-on-exec.
+    func testConnectionsAreCloseOnExec() throws {
+        let server = try makeServer()
+        let fd = try UnixSocket.connect(server.path)
+        defer { close(fd) }
+        XCTAssertNotEqual(fcntl(fd, F_GETFD) & FD_CLOEXEC, 0, "a spawned child must not inherit the tower connection")
+    }
+
     func testNoSocketIsDown() async throws {
         let transport = SocketTransport(workspace: try makeWorkspace())
         do {

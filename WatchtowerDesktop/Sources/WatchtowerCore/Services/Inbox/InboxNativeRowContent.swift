@@ -292,6 +292,19 @@ package struct InboxRowFailure: Equatable, Sendable {
 }
 
 package extension InboxRef {
+    /// The ref of a row's record (`selection`'s inverse); nil for the kinds
+    /// no row carries.
+    init?(_ item: InboxSelection) {
+        switch item {
+        case let .message(id): self.init(kind: .inboxItem, id: Int64(id))
+        case let .track(id): self.init(kind: .track, id: Int64(id))
+        case let .idea(id): self.init(kind: .idea, id: Int64(id))
+        case let .reminder(id): self.init(kind: .reminder, id: id)
+        case let .proposal(id): self.init(kind: .action, id: id)
+        case .output, .day, .builtinNotice: return nil
+        }
+    }
+
     /// The strip's key for this ref's record: its busy flag and row error.
     var selection: InboxSelection {
         switch kind {

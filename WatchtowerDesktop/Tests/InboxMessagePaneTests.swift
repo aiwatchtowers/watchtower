@@ -112,13 +112,15 @@ final class InboxMessagePaneTests: XCTestCase {
     func testDoneHideAndSnoozeRouteToTheInboxCLI() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let id = try await pool.write { db in try TestDatabase.insertInboxItem(db, snippet: "Review please") }
+        // Message 1: "Review please".
+        let tower = try FeedCaseTransport.seeded("desktop_message_review_please", pool: pool)
+        let id: Int64 = 1
         let suite = "InboxMessagePaneTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let runner = FakeCLIRunner()
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner, defaults: defaults)
-        await vm.refresh()
+        await vm.follow(tower)
         vm.openLegacy(.messages)
         vm.selection = .message(Int(id))
         let sut = InboxSplitView(

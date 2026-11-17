@@ -4,6 +4,7 @@ import SwiftUI
 import ViewInspector
 @testable import WatchtowerDesktop
 @testable import WatchtowerCore
+import WatchtowerInterface
 import WatchtowerTestSupport
 
 /// The pane with the day, track and idea placeholders (before Tasks 8–10).
@@ -35,12 +36,16 @@ final class InboxReadingPaneTests: XCTestCase {
     private let twoActions = #"[{"label":"Move to Backlog","kind":"reply","reply":"backlog","primary":true},"#
         + #"{"label":"Draft a Reply","kind":"chat","chat":"Draft a reply"}]"#
 
+    /// The pane over `card`, its buttons drawn as the feed's `buttons` say.
     private func pane(
         _ card: AutomationOutputCard,
         navScreens: Set<String> = [],
+        buttons: [CardAction] = [],
         onCommand: @escaping (InboxCardCommand) -> Void = { _ in }
     ) -> PlaceholderPane {
-        InboxReadingPane(item: .output(card), navScreens: navScreens, targets: InboxTargetButtonSource(), onCommand: onCommand)
+        let feedCard = TestInboxFeeds.artifact(card.id, actions: buttons)
+        let targets = InboxTargetButtonSource { _ in feedCard }
+        return InboxReadingPane(item: .output(card), navScreens: navScreens, targets: targets, onCommand: onCommand)
     }
 
     private func buttonLabels(_ view: PlaceholderPane) throws -> [String] {
@@ -98,7 +103,9 @@ final class InboxReadingPaneTests: XCTestCase {
         let actions = #"[{"label":"Bad","kind":"teleport"},{"label":"Ask","kind":"agent","#
             + #""agent":{"task":"Fix it","workbench":3}},{"label":"Backlog","kind":"reply","reply":"backlog"}]"#
         let shown = card(actions: actions)
-        let sut = pane(shown) { commands.append($0) }
+        let sut = pane(shown, buttons: [TestInboxFeeds.reply(2, label: "Backlog", detail: "ready")]) {
+            commands.append($0)
+        }
 
         try sut.inspect().find(button: "Ask").tap()
         try sut.inspect().find(button: "Backlog").tap()
@@ -108,28 +115,42 @@ final class InboxReadingPaneTests: XCTestCase {
                                   .reply(outputID: 5, action: 2, contentHash: shown.contentHash)])
     }
 
+    /// Reply's states are the feed's (Go's `replyState`, its label and
+    /// caption): the pane draws them as today's card did.
     func testReplyButtonStates() throws {
         let reply = #"[{"label":"Move to Backlog","kind":"reply","reply":"backlog","primary":true}]"#
 
-        let sent = pane(card(actions: reply, pressedAction: 0, pressedRunID: 7))
+        let sent = pane(card(actions: reply), buttons: [
+            TestInboxFeeds.reply(0, label: "Sent — run #7", detail: "sent", state: .pressed)
+        ])
         XCTAssertTrue(try sent.inspect().find(button: "Sent — run #7").isDisabled())
         XCTAssertThrowsError(try sent.inspect().find(button: "Move to Backlog"))
 
-        for (state, caption) in [(AutomationHeaderButton.State.needsConfirmation, "Needs confirmation"),
-                                 (.disabled, "Off"), (.parseError, "Recipe can't be read")] {
+        for (detail, caption) in [("needs_confirmation", "Needs confirmation"), ("off", "Off"),
+                                  ("unreadable", "Recipe can't be read")] {
             var commands: [InboxCardCommand] = []
-            let shown = card(actions: reply, recipeState: state)
-            let sut = pane(shown) { commands.append($0) }
+            let shown = card(actions: reply)
+            let sut = pane(shown, buttons: [
+                TestInboxFeeds.reply(0, label: "Move to Backlog", detail: detail, note: caption)
+            ]) { commands.append($0) }
             XCTAssertNoThrow(try sut.inspect().find(text: caption), caption)
             try sut.inspect().find(button: "Move to Backlog").tap()
             XCTAssertEqual(commands, [.openAutomation(shown)], caption)
         }
 
         // A removed recipe: nothing to confirm or turn on, so no press.
-        let removed = pane(card(actions: reply, recipeState: .disabled, recipeRemoved: true))
+        let removed = pane(card(actions: reply), buttons: [
+            TestInboxFeeds.reply(0, label: "Move to Backlog", detail: "removed", note: "Recipe removed", state: .disabled)
+        ])
         XCTAssertNoThrow(try removed.inspect().find(text: "Recipe removed"))
         XCTAssertThrowsError(try removed.inspect().find(text: "Off"))
         XCTAssertTrue(try removed.inspect().find(button: "Move to Backlog").isDisabled())
+
+        // A ready Reply sends; with no feed yet it draws closed.
+        XCTAssertFalse(try pane(card(actions: reply), buttons: [
+            TestInboxFeeds.reply(0, label: "Move to Backlog", detail: "ready")
+        ]).inspect().find(button: "Move to Backlog").isDisabled())
+        XCTAssertTrue(try pane(card(actions: reply)).inspect().find(button: "Move to Backlog").isDisabled())
     }
 
     func testLinkButtonRefusedByPolicyIsDisabled() throws {
@@ -344,11 +365,10 @@ final class InboxReadingPaneTests: XCTestCase {
         let suite = "InboxReadingPaneTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        try await pool.write { db in
-            _ = try TestDatabase.insertSlackAccount(db, currentUserID: "1:U1")
-        }
+        // The owner is known (a Slack account).
+        let tower = try FeedCaseTransport.seeded("desktop_owner_known", pool: pool)
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), defaults: defaults)
-        await vm.refresh()
+        await vm.follow(tower)
         let sut = ActionStripActionsView(
             vm: vm, cheatSheetRows: [], feature: .on(lastCheck: nil), isEnabling: false, featureError: nil,
             onEnable: {}, onOpenSettings: {}, onOpen: { _ in })
@@ -534,10 +554,14 @@ final class SaveAutomationProposalPaneTests: XCTestCase {
     func testPaneShowsTheSummaryAndItsTwoButtons() throws {
         var opened: [SaveAutomationCardModel] = []
         var rejected = 0
-        let sut = SaveAutomationProposalPane(action: try proposal(), workbenchName: { $0 == 3 ? "acme" : nil },
+        // The feed's words for it (Go `SummarizeSaveAutomation`).
+        let approval = TestInboxFeeds.approval(title: "Save automation Mail digest", summary: [
+            "For: acme", "When: Every weekday at 09:00", "It may: Read mail in work (Gmail), Use the light model and 1 more"
+        ])
+        let sut = SaveAutomationProposalPane(action: try proposal(), approval: approval,
                                              onOpenDraft: { opened.append($0) }, onReject: { rejected += 1 })
 
-        for text in ["Save automation Mail digest", "acme", "Every weekday at 09:00",
+        for text in ["Save automation Mail digest", "For", "acme", "When", "Every weekday at 09:00", "It may",
                      "Read mail in work (Gmail), Use the light model and 1 more", "Skip newsletters"] {
             XCTAssertNoThrow(try sut.inspect().find(text: text), text)
         }
@@ -550,7 +574,7 @@ final class SaveAutomationProposalPaneTests: XCTestCase {
 
     func testReadingPaneUsesItForAPendingSaveOnly() throws {
         let pane: (AgentAction) -> SaveAutomationProposalPane = { action in
-            SaveAutomationProposalPane(action: action, workbenchName: { _ in nil }, onOpenDraft: { _ in }, onReject: {})
+            SaveAutomationProposalPane(action: action, approval: nil, onOpenDraft: { _ in }, onReject: {})
         }
         let pending = InboxReadingPane(item: .proposal(try proposal()), navScreens: [], targets: InboxTargetButtonSource(), onCommand: { _ in },
                                        saveProposal: pane)

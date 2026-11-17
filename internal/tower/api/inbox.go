@@ -18,6 +18,10 @@ type FeedRequest struct {
 	Limit int `json:"limit,omitempty"`
 	// Clip clips each card's body to 16 KB on a rune boundary.
 	Clip bool `json:"clip,omitempty"`
+	// Day is a Morning brief day ("2006-01-02") the client has open (a
+	// route to an older, read day): it is listed in the root while it has a
+	// briefing or a day plan, as today's and the unread days are. "" = none.
+	Day string `json:"day,omitempty"`
 }
 
 // Feed is the Inbox as one read-only snapshot: every folder with its counts
@@ -63,6 +67,10 @@ type Folder struct {
 	// (unless the owner shows hidden folders) and the badge; which ancestor
 	// hid it is found by walking parent_id.
 	Hidden bool `json:"hidden"`
+	// OwnHidden is the folder's own flag: set where the owner hid this
+	// folder itself, whatever its ancestors are (the Mac's Show Hidden
+	// Folders draws each such folder as hidden).
+	OwnHidden bool `json:"own_hidden"`
 	// Count is the folder's own count (not its children's).
 	Count int `json:"count"`
 	// Waiting is the part of Count that waits on the owner.

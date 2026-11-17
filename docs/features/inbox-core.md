@@ -4,7 +4,7 @@ Stage 1 of #1170 (spec `docs/superpowers/specs/2026-11-15-mobile-inbox-design.md
 
 ## The feed
 
-`inboxfeed.Build(ctx, d, Options{Folder, Limit, Clip, Now})` reads the Inbox in one `BeginTx(ReadOnly: true)` transaction, so every count and every card comes from one snapshot. It writes nothing (`TestBuild_WritesNothing` checks `data_version` on a second handle and `total_changes`).
+`inboxfeed.Build(ctx, d, Options{Folder, Limit, Clip, Day, Now})` reads the Inbox in one `BeginTx(ReadOnly: true)` transaction, so every count and every card comes from one snapshot. It writes nothing (`TestBuild_WritesNothing` checks `data_version` on a second handle and `total_changes`).
 
 `api.Feed{v, built_at, folders[], cards[], more}` (`internal/tower/api/inbox.go`, `FeedVersion = 1`):
 
@@ -74,7 +74,7 @@ Stage 1 of #1170 (spec `docs/superpowers/specs/2026-11-15-mobile-inbox-design.md
 - **Track my threads** (`tracks`) while a track exists, stopped ones included: "N unread" over the active tracks, the active tracks newest first, then the stopped ones with `stopped`.
 - **Idea finder** (`ideas`) while an idea exists or the `idea-finder` built-in is indexed: "N to judge", the ideas to judge first, then the rest newest first.
 - **Messages** (`messages`) while it stands in for Waiting for me and has a message: "N waiting", "Mentions, DMs and replies", the open messages newest first.
-- **Thread briefs** (`thread-briefs`) while a `brief_context` was applied in the last 24 hours: one item per brief (`action` ref, its reason, its summary), never unread. The Mac lists each brief as its own root entry; the feed carries them as one card at the newest one's place.
+- **Thread briefs** (`thread-brief-<id>`): one card per `brief_context` applied in the last 24 hours, at its own applied time, as the Mac lists each brief as its own root entry. Each card is titled by the brief's reason ("Thread brief" without one), is never unread, and holds the brief as its one `thread_briefs` item (`action` ref, its summary).
 
 Each card's own time places it among the root's artifacts. The Mac keeps drawing the panes with its own views.
 
@@ -87,7 +87,8 @@ Each card's own time places it among the root's artifacts. The Mac keeps drawing
 | due reminder | `r<reminders.id>` | `ReminderCardID` |
 | failed built-in move | `n<builtin_migrations rowid>` (the upsert keeps the rowid) | `NoticeCardID` |
 | Morning brief day | `brief-<yyyy-MM-dd>` | `BriefCardID` |
-| legacy lists | `tracks`, `ideas`, `thread-briefs`, `messages` | constants |
+| legacy lists | `tracks`, `ideas`, `messages` | constants |
+| thread brief | `thread-brief-<agent_actions.id>` | `ThreadBriefCardID` |
 
 `ParseCardID` reads an id back into its kind, its number or its date. It refuses a malformed id, such as `o0`, `o01` or `brief-2026-13-01`.
 
@@ -96,6 +97,7 @@ Each card's own time places it among the root's artifacts. The Mac keeps drawing
 - `Folder` narrows the cards to one folder. Every folder and its count are still sent.
 - `Limit` (300 on the phone, none on the Mac) keeps Needs approval's cards first, then the pinned cards, then the rest by `stamp`, newest first. On a tree without Needs approval, the approval entries the root lists (`a…`, `r…`, `n…`) come first instead. The kept cards stay in list order. `more` counts the cut cards per folder.
 - `Clip` clips each `body` to `ClipBytes` (16 KB) on a rune boundary and sets `body_clipped`.
+- `Day` (`FeedRequest.day`) is a Morning brief day the client has open: a route to an older, read day asks for it, and the root lists it while it has a briefing or a day plan (`TestLegacy_OpenDayListedOnlyWithARecord`). A day with neither stays unlisted, so the Mac selects nothing: it never lists a row Go did not list.
 - `DisabledFeatures` are the feature ids the config has off: the Mac's own feature list (`features list --json` reports them as `disabled`). Four matter: attention detection (`secretary-inbox`, config key `inbox.enabled`), `approval-cards` (off, every approval draws natively), and `briefing` with `day-plan` (both off, no placeholder day). When it is off, Waiting for me is turned off whatever its row says, as `InboxFolderQueries.waitingForMe(featureOn:)` has it: its artifacts are not shown and nothing counts for it, the Messages stand-in included. The owner's off wins over a stop by the daemon.
 - `Now` is the moment the feed is read. Its location is used for one date-only value, an idea's "not now" day, which the owner's zone wrote.
 
@@ -148,21 +150,29 @@ These stay on the Mac:
 - the handoff texts (`discussMessage`, `handToAgentTask`, `agentActionTask`, `agentActionHelp`, `attachmentMarkdown`, `notice`, `readingSourceLine`);
 - the time part of `sourceLine`, `stamped` and `updated`, which belong to the screen models.
 
-`InboxCardNotice` is not ported: no notice is posted on either side today.
+Since Task 11d-b the Mac draws those facts from the feed's `Card` and no longer decides them:
+
+- a Reply's label, closed state and caption, and whether a press sends or opens the automation, come from `Card.actions` (`InboxFeedButtons`);
+- a target button's state comes from its action's `detail`, `note` and `until`, or from an approval card's `target`, `target_note` and `target_until` (`InboxTargetButton`). `TargetButtonStateResolver` lays only the Mac's own processes over it: a failed propose, an apply of its own that is still running or has failed, and the clock passing `until`;
+- an approval card's `superseded` decides whether a Retry is offered;
+- a pending `save_automation`'s pane draws `Approval.title` and the summary lines (`SaveAutomationProposalSummary`);
+- a row's Reply… (`reply`), its open reply (`reply_waiting`) and an idea's verdict buttons (`waits`) come from the ref facts Go sends on the artifact the row is on, or on the Messages card's items (the Messages stand-in's Reply…).
+
+`InboxReplyPolicy` is left only for the local reply writer, which Task 12 deletes. The press addresses (a button's newest proposal and its task) are still read by id.
+
+`InboxCardNotice` is not ported, and its Swift copy was deleted in Task 11d-b: neither side posts a notice today.
 
 The switch the Mac reads (its feature list) and the one Go reads (`config.yaml` through `features.DisabledIDs`) are the same config keys. The Mac also folds in a toggle it has staged but not yet written; Go sees the toggle once the CLI writes it.
 
 ## The parity fixture
 
-`internal/inboxfeed/testdata/inbox_feed_cases.json` is a list of cases. Each case has `{name, now, seed: [SQL], opts: FeedRequest, expect: Feed}` with `built_at` blank, and its seed runs on a fresh migrated file. Two tests run it:
+`internal/inboxfeed/testdata/inbox_feed_cases.json` is a list of cases. Each case has `{name, now, seed: [SQL], opts: FeedRequest, expect: Feed}` with `built_at` blank, and its seed runs on a fresh migrated file.
 
-- Go runs it in `TestInboxFeedCases`; `go test ./internal/inboxfeed/ -run TestInboxFeedCases -update` rewrites the expects.
-- The Mac runs it in `WatchtowerDesktop/Tests/Core/InboxFeedParityTests.swift`. That test seeds a `TestDatabase` with the migration's root and Needs approval rows, runs today's Swift builders at `now` in UTC, maps them through `Tests/Core/Support/SwiftFeedAdapter.swift` and compares the result with `expect`:
-  - The fields Swift does not compute are listed in `SwiftFeedAdapter.goOnlyFields`, each with a reason, and blanked on both sides.
-  - The fields the adapter derives from Swift data with a Swift builder's own rule (pin, stamp, the source line without its time, a notice's id) are listed in `restatedFields` and compared.
-  - A case's `disabled_features` reach the Go `Options` and the Swift readers alike.
-  - Every entry is mapped, the approvals and legacy entries included; the native approval's text is compared by the app target's `ApprovalTextParityTests` over `testdata/approval_text_cases.json`, and the target button states over `testdata/target_button_cases.json` (Go: `TestApprovalText_SharedCases`, `TestTargetState_SharedCases`).
-  - A limited case checks that the Go cards are the Swift cards in order with the cut ones out, and that `more` counts the cut.
+- Go runs it in `TestInboxFeedCases`; `go test ./internal/inboxfeed/ -run TestInboxFeedCases -update` rewrites the expects. It is the Go golden of the Inbox's rules.
+- The Swift half (`InboxFeedParityTests` over the Swift builders through `SwiftFeedAdapter`) ran until the Mac switched to the feed. It was deleted with the builders in Task 11d-a.
+- The Desktop's tests list Go-written feeds: a test seeds a `"desktop": true` case and serves its feed through the fake tower (`Tests/Support/FeedCaseTransport`, `ActionStripViewModel.follow`). Pure drawing tests hand a pane a single canned card (`Tests/Support/TestInboxFeeds+Texts`).
+- A case marked `"desktop": true` is a test-only scenario. The Go golden test regenerates it like any other case, and the Desktop's tests seed its SQL and serve its `expect` (`FeedCaseTransport`). The Inbox design shots do the same: each shot's database is a `desktop_shot_*` case, so no shot builds an Inbox list in Swift (`InboxShotFeed`). The five `inbox-feed-*` shots draw mockup §7's states (first load, a failed read over the kept list, a failed action on its row, reconnecting, another version) through `InboxMacFeedStatus`.
+- The native approval's text and the target button states stay pinned by `testdata/approval_text_cases.json` and `testdata/target_button_cases.json` (Go: `TestApprovalText_SharedCases`, `TestTargetState_SharedCases`).
 
 `testdata/save_automation_summary_cases.json` is run the same way, by `TestSaveAutomationSummary_SharedCases` and `testSaveAutomationSummaryMatchesGo`.
 

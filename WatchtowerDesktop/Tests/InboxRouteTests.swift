@@ -12,13 +12,17 @@ import WatchtowerTestSupport
 /// hidden.
 @MainActor
 final class InboxRouteTests: XCTestCase {
-    private static let today = AppState.inboxToday()
+    /// The moment Go built the route cases' feeds at; the app's today is its day.
+    private static let caseNow = AutomationDates.parse("2026-11-16T12:00:00Z") ?? Date()
+    private static let today = AppState.inboxToday(caseNow)
     private var manager: DatabaseManager!
     private var path = ""
     private var savedFolder: Any?
     private var savedFilter: Any?
 
     override func setUp() async throws {
+        let caseNow = Self.caseNow
+        AppState.inboxNow = { caseNow }
         (manager, path) = try TestDatabase.createDatabaseManager()
         // An owner, so the root lists today's day card (OWNER-02).
         try await manager.dbPool.write { db in
@@ -33,6 +37,7 @@ final class InboxRouteTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        AppState.inboxNow = { Date() }
         UserDefaults.standard.set(savedFolder, forKey: ActionStripViewModel.folderKey)
         UserDefaults.standard.set(savedFilter, forKey: Self.oldFilterKey)
         TestDatabase.cleanup(path: path)
@@ -51,6 +56,20 @@ final class InboxRouteTests: XCTestCase {
         state.initActionStrip(dbPool: manager.dbPool)
         state.selectedDestination = .home
         return state
+    }
+
+    /// An AppState whose Inbox lists Go's case through `tower` (the fake
+    /// tower over the test database; its steps followed).
+    private func appState(listing tower: FeedCaseTransport) async -> AppState {
+        let state = appState()
+        await state.actionStripViewModel?.follow(tower)
+        return state
+    }
+
+    /// Go's case `name` seeded into the test database (setUp's owner row
+    /// is the case's own, inserted once).
+    private func tower(_ name: String) throws -> FeedCaseTransport {
+        try FeedCaseTransport.seeded(name, pool: manager.dbPool)
     }
 
     /// Where a route left the Inbox: its folder (nil = the root), the open
@@ -109,9 +128,10 @@ final class InboxRouteTests: XCTestCase {
             ("ideas", .legacy(.ideas), .legacy(.ideas))
         ]
         XCTAssertEqual(InboxRoute.aliasHosts, Set(cases.map(\.0)))
+        let tower = try tower("desktop_route_owner_only")
         for (host, route, expected) in cases {
             XCTAssertEqual(InboxRoute.fromNavHost(host, today: Self.today), route)
-            let state = appState()
+            let state = await appState(listing: tower)
             state.isHelpChatShown = true
             XCTAssertTrue(state.visibleHelpScreenIDs.contains(host), host)
             state.openNavLink(NavLink.url(host))
@@ -172,40 +192,35 @@ final class InboxRouteTests: XCTestCase {
 
     func testNavigateHelpersOpenTheirCard() async throws {
         let briefingDate = "2026-10-20"
-        let briefingID = try await manager.dbPool.write { db -> Int in
-            // A day card exists for the date the day-plan route opens.
-            try TestDatabase.insertDayPlan(db, planDate: "2026-10-19")
-            try TestDatabase.insertBriefing(db, date: briefingDate)
-            let id = Int(db.lastInsertedRowID)
-            // The idea and track the helpers open: a route selects only a listed card.
-            let idea = try TestDatabase.insertIdea(db, title: "A shared glossary")
-            try db.execute(sql: "UPDATE ideas SET id = 5 WHERE id = ?", arguments: [idea])
-            let track = try TestDatabase.insertTrack(db, text: "Launch")
-            try db.execute(sql: "UPDATE tracks SET id = 7 WHERE id = ?", arguments: [track])
-            return id
-        }
+        // A day plan for 2026-10-19 (the date the day-plan route opens),
+        // briefing 1 of 2026-10-20, and the idea (5) and track (7) the
+        // helpers open: a route selects only a listed card. The read 2026-10-19
+        // is listed because the route asks for it (`FeedRequest.day`): the
+        // case is built with that request (`opts.day`).
+        let tower = try tower("desktop_route_navigate_helpers")
+        let briefingID = 1
 
-        var state = appState()
+        var state = await appState(listing: tower)
         await state.navigateToIdea(5)?.value
         assertLanding(state, .legacy(.ideas, .idea(5)), "idea")
 
-        state = appState()
+        state = await appState(listing: tower)
         await state.navigateToTrack(7)?.value
         assertLanding(state, .legacy(.tracks, .track(7)), "track")
 
-        state = appState()
+        state = await appState(listing: tower)
         await state.navigateToDayPlan("2026-10-19")?.value
         assertLanding(state, .day("2026-10-19"), "day plan of a date")
 
-        state = appState()
+        state = await appState(listing: tower)
         await state.navigateToDayPlan()?.value
         assertLanding(state, .day(Self.today), "today's day plan")
 
-        state = appState()
+        state = await appState(listing: tower)
         await state.navigateToBriefing(briefingID)?.value
         assertLanding(state, .day(briefingDate), "a briefing opens its own day")
 
-        state = appState()
+        state = await appState(listing: tower)
         await state.navigateToBriefing(99_999)?.value
         assertLanding(state, .day(Self.today), "a vanished briefing opens today")
     }
@@ -214,16 +229,15 @@ final class InboxRouteTests: XCTestCase {
 
     func testHomeBriefLinkOpensTheDayCard() async throws {
         let date = "2026-10-21"
-        let briefingID = try await manager.dbPool.write { db -> Int in
-            try TestDatabase.insertBriefing(db, date: date)
-            return Int(db.lastInsertedRowID)
-        }
-        let state = appState()
+        // Briefing 1 of 2026-10-21.
+        let tower = try tower("desktop_route_home_brief")
+        let briefingID = 1
+        let state = await appState(listing: tower)
         state.openHomeLink(.briefing(id: briefingID))
         await settle(state, .day(date))
         assertLanding(state, .day(date), "brief")
 
-        let plan = appState()
+        let plan = await appState(listing: tower)
         plan.openHomeLink(.feature(.dayPlan))
         await settle(plan, .day(Self.today))
         assertLanding(plan, .day(Self.today), "plan")
@@ -240,17 +254,18 @@ final class InboxRouteTests: XCTestCase {
         XCTAssertTrue(noSource.homeLinksAllowed.isSuperset(of: [.briefing, .dayPlan]))
     }
 
-    func testGettingReadyOpenForTheFourFeatures() async {
+    func testGettingReadyOpenForTheFourFeatures() async throws {
         let cases: [(ReadinessFeature, InboxRoute, Landing)] = [
             (.briefing, .card(.day(Self.today)), .day(Self.today)),
             (.dayPlan, .card(.day(Self.today)), .day(Self.today)),
             (.tracks, .legacy(.tracks), .legacy(.tracks)),
             (.ideas, .legacy(.ideas), .legacy(.ideas))
         ]
+        let tower = try tower("desktop_route_owner_only")
         for (feature, route, expected) in cases {
             XCTAssertEqual(InboxRoute.forFeature(feature, today: Self.today), route)
             XCTAssertNil(AppState.homeDestination(for: feature), "\(feature) has no tab of its own")
-            let state = appState()
+            let state = await appState(listing: tower)
             state.openHomeLink(.feature(feature))
             await settle(state, expected)
             assertLanding(state, expected, "\(feature)")

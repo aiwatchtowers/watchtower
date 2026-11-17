@@ -363,7 +363,8 @@ extension DemoSeed {
             _ id: Int64, _ kind: FolderKind, _ title: String, icon: String = "", parent: Int64?, position: Int, count: Int, waiting: Int = 0
         ) -> Folder {
             Folder(
-                id: id, kind: kind, slug: title.lowercased(), title: title, icon: icon, parentID: parent, position: position, hidden: false,
+                id: id, kind: kind, slug: title.lowercased(), title: title, icon: icon, parentID: parent,
+                position: position, hidden: false, ownHidden: false,
                 count: count, waiting: waiting
             )
         }

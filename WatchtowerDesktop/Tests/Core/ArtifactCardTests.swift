@@ -215,7 +215,9 @@ final class ArtifactCardTests: XCTestCase {
         }
         XCTAssertEqual(try queue.read { db in try AutomationQueries.artifactPeople(db) }, ["acme:U1": "Colleague A"])
         let snapshot = try queue.read { db in
-            try InboxFeedQueries.read(db, nowUTC: "2026-10-16T12:00:00Z", dayLimit: 1)
+            var ids = InboxRecords.IDs()
+            ids.outputs = Set(try Int64.fetchAll(db, sql: "SELECT id FROM automation_outputs"))
+            return try InboxRecords.read(db, ids: ids, now: Date())
         }
         XCTAssertEqual(snapshot.outputs.count, 2)
         XCTAssertEqual(snapshot.outputs.first?.id, healthy)
@@ -235,7 +237,7 @@ final class ArtifactCardTests: XCTestCase {
         XCTAssertTrue(InboxCardTexts.readingSourceLine(feed, now: now).contains("run #7"))
     }
 
-    // MARK: - Notices
+    // MARK: - Cards
 
     private func card(
         id: Int64,
@@ -250,28 +252,5 @@ final class ArtifactCardTests: XCTestCase {
             id: id, automationID: automationID, automationName: "Threads waiting for me", runID: runID,
             title: "Card \(id)", body: "", priority: "medium", createdAt: now.addingTimeInterval(-3600),
             outputKey: outputKey, contentHash: hash, writtenAt: writtenAt, changedAt: changedAt)
-    }
-
-    func testNoticeSkipsSameHashRewrites() {
-        let previous = [card(id: 1), card(id: 2)]
-        // Rewritten by run 8 with the same content: `written_at` moved only.
-        let rewritten = [card(id: 1, runID: 8, writtenAt: now), card(id: 2, runID: 8, writtenAt: now)]
-        XCTAssertEqual(InboxCardNotice.cards(changedIn: rewritten, previous: previous), [])
-    }
-
-    func testNoticeOnePerAutomationPerRun() {
-        let previous = [card(id: 1), card(id: 2), card(id: 3)]
-        let current = [
-            card(id: 1, runID: 8, hash: "h2", changedAt: now),
-            card(id: 2, runID: 8, hash: "h2", changedAt: now),
-            card(id: 3, runID: 8),
-            card(id: 4, runID: 8, changedAt: now),
-            card(id: 5, automationID: 4, runID: 9, changedAt: now)
-        ]
-        let notices = InboxCardNotice.cards(changedIn: current, previous: previous)
-        XCTAssertEqual(notices.map(\.count), [3, 1])
-        XCTAssertEqual(notices.map(\.runID), [8, 9])
-        XCTAssertEqual(notices.first?.text, "Threads waiting for me: 3 cards changed")
-        XCTAssertEqual(notices.last?.text, "Threads waiting for me: 1 card changed")
     }
 }

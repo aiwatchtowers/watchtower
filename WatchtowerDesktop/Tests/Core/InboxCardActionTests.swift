@@ -1,5 +1,6 @@
 import XCTest
 @testable import WatchtowerCore
+import WatchtowerTestSupport
 
 /// An Inbox card's own buttons, decoded from `automation_outputs.actions_json`
 /// (Go `db.InboxAction`): tolerant, never throws, `data` stays in Go.
@@ -54,19 +55,47 @@ final class InboxCardActionTests: XCTestCase {
         XCTAssertEqual(ref("9007199254740993"), .some(.id(9_007_199_254_740_993)))
     }
 
-    func testReplyState() {
-        func card(_ state: AutomationHeaderButton.State, pressed: Int? = nil, run: Int64? = nil) -> AutomationOutputCard {
-            AutomationOutputCard(id: 1, automationID: 2, automationName: "Triage", runID: 3, title: "T", body: "B",
-                                 priority: "medium", createdAt: Date(), pressedAction: pressed, pressedRunID: run,
-                                 recipeState: state)
-        }
-        XCTAssertEqual(InboxCardAction.replyState(card(.runnable, pressed: 0, run: 9)), .sent(runID: 9))
-        // A press wins over the recipe's state; its run may since be deleted.
-        XCTAssertEqual(InboxCardAction.replyState(card(.disabled, pressed: 1)), .sent(runID: nil))
-        XCTAssertEqual(InboxCardAction.replyState(card(.runnable)), .ready)
-        XCTAssertEqual(InboxCardAction.replyState(card(.needsConfirmation)), .needsConfirmation)
-        XCTAssertEqual(InboxCardAction.replyState(card(.disabled)), .off)
-        XCTAssertEqual(InboxCardAction.replyState(card(.parseError)), .unreadable)
+    /// A Reply's state is Go's (`inboxfeed.replyState`, its cases in
+    /// `internal/inboxfeed`): the Mac draws the feed's label, closed state
+    /// and caption, and sends only a Reply Go says is ready.
+    func testReplyStateIsTheFeeds() {
+        let sent = InboxFeedButtons(TestInboxFeeds.artifact(1, actions: [
+            TestInboxFeeds.reply(0, label: "Sent — run #9", detail: "sent", state: .pressed),
+            TestInboxFeeds.reply(1, label: "Later", detail: "sent", state: .pressed)
+        ]))
+        XCTAssertEqual(sent.label(at: 0, recipe: "Backlog"), "Sent — run #9")
+        XCTAssertEqual(sent.label(at: 1, recipe: "Later"), "Later")
+        XCTAssertTrue(sent.replyClosed(at: 0))
+        XCTAssertFalse(sent.replySends(at: 0))
+        XCTAssertNil(sent.replyCaption)
+        XCTAssertEqual(sent.replyLine(pressed: 0), "Sent — run #9")
+        XCTAssertEqual(sent.replyLine(pressed: nil), InboxFeedButtons.sentLabel)
+        XCTAssertEqual(InboxFeedButtons.sentLabel, "Sent")
+
+        let ready = InboxFeedButtons(TestInboxFeeds.artifact(1, actions: [TestInboxFeeds.reply(0, label: "Go", detail: "ready")]))
+        XCTAssertTrue(ready.replySends(at: 0))
+        XCTAssertFalse(ready.replyClosed(at: 0))
+        XCTAssertNil(ready.replyLine(pressed: nil))
+
+        let off = InboxFeedButtons(TestInboxFeeds.artifact(1, actions: [
+            TestInboxFeeds.reply(0, label: "Go", detail: "needs_confirmation", note: "Needs confirmation")
+        ]))
+        XCTAssertFalse(off.replySends(at: 0), "opens its automation")
+        XCTAssertFalse(off.replyClosed(at: 0))
+        XCTAssertEqual(off.replyCaption, "Needs confirmation")
+        XCTAssertEqual(off.replyLine(pressed: nil), "Needs confirmation")
+
+        let removed = InboxFeedButtons(TestInboxFeeds.artifact(1, actions: [
+            TestInboxFeeds.reply(0, label: "Go", detail: "removed", note: "Recipe removed", state: .disabled)
+        ]))
+        XCTAssertTrue(removed.replyClosed(at: 0))
+        XCTAssertEqual(removed.replyCaption, "Recipe removed")
+
+        // No feed: a Reply draws closed under its recipe label.
+        let none = InboxFeedButtons(nil)
+        XCTAssertTrue(none.replyClosed(at: 0))
+        XCTAssertEqual(none.label(at: 0, recipe: "Go"), "Go")
+        XCTAssertNil(none.replyCaption)
     }
 }
 
