@@ -23,6 +23,11 @@ package enum AccountPurgeNoticePolicy {
         if p.state == "running" { return "Watchtower is deleting \(label)'s data." }
         let due = p.dueAt.map { date($0, zone: zone) } ?? "soon"
         if p.reason == "lease" {
+            if p.isRemovedAccount, p.source == "slack" {
+                // Zero lease (#1769, A2): due 72 h after the remove, so no "since".
+                return "\(label) was removed. Its data will be deleted on \(shortDate(p.dueAt, zone: zone)) "
+                    + "unless you add it again."
+            }
             if p.isRemovedAccount {
                 let since = p.accessOkAt.map { " and has not been reached since \(date($0, zone: zone))" } ?? ""
                 return "\(label) was removed\(since). Its data will be deleted on \(due) unless you add it again."
@@ -51,12 +56,19 @@ package enum AccountPurgeNoticePolicy {
         return "\(p.displayLabel)'s data was deleted\(when)."
     }
 
-    /// The line of a failed purge: it stopped after repeated errors and the
-    /// account keeps syncing; another attempt is scheduled with a new notice.
+    /// The line of a failed purge. Stopped after repeated chunk errors (or
+    /// rows left on a live account): the account keeps syncing and another
+    /// attempt comes with a new notice. Rows left (`left: …`, the verify
+    /// count) on a revoked or removed account: the account is held — no new
+    /// attempt until a Re-login or adding it back (spec §9).
     package static func failedLine(_ p: AccountPurge, zone: TimeZone = .current) -> String {
         let why = p.error.isEmpty ? "" : " (\(p.error))"
-        return "Watchtower could not finish deleting \(p.displayLabel)'s data\(why). "
-            + "Any new attempt comes with a new notice."
+        let head = "Watchtower could not finish deleting \(p.displayLabel)'s data\(why). "
+        if p.error.hasPrefix("left:") {
+            if p.isRemovedAccount { return head + "No new attempt is made until you add it again." }
+            if p.accountStatus == "revoked" { return head + "No new attempt is made until you Re-login." }
+        }
+        return head + "Any new attempt comes with a new notice."
     }
 
     /// The line of a `purged` account in the Connections tab: the done line
@@ -103,6 +115,17 @@ package enum AccountPurgeNoticePolicy {
             kept.insert(key)
         }
         return (notices: notices, sent: kept)
+    }
+
+    /// "Nov 20, 14:00" in `zone` (the removed-workspace line's form, spec §8);
+    /// "soon" without a date.
+    package static func shortDate(_ date: Date?, zone: TimeZone) -> String {
+        guard let date else { return "soon" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = zone
+        formatter.dateFormat = "MMM d, HH:mm"
+        return formatter.string(from: date)
     }
 
     /// "October 24 at 14:00" in `zone`. UI text is English only.

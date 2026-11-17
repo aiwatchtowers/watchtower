@@ -3,8 +3,8 @@ import WatchtowerCore
 
 /// Settings → System → Privacy (board #601): the purge on revoked access
 /// switch. The shown value is the owner's unsaved or saved choice, else the
-/// effective one Go reports (`accounts purges --json`: policy > setting >
-/// build default); Save writes `privacy.purge_revoked_data` through
+/// effective one Go reports (`accounts purges --json`), else on
+/// (`AccountPurgeStatus.shownValue`, #1769); Save writes `privacy.purge_revoked_data` through
 /// `ConfigSaveBar`.
 struct PrivacySettings: View {
     @Environment(AppState.self) private var appState
@@ -16,8 +16,10 @@ struct PrivacySettings: View {
                 // A forced PurgeRevokedData (#608) shows its value; the
                 // owner's stored setting is kept, outvoted.
                 get: {
-                    appState.managedPolicy.policy.purgeRevokedData
-                        ?? config.purgeRevokedData ?? appState.accountPurgeCenter?.status?.enabled ?? false
+                    AccountPurgeStatus.shownValue(
+                        policy: appState.managedPolicy.policy.purgeRevokedData,
+                        setting: config.purgeRevokedData,
+                        status: appState.accountPurgeCenter?.status)
                 },
                 set: { config.purgeRevokedData = $0 }
             ),
@@ -39,12 +41,12 @@ struct PrivacySettingsContent: View {
 
     var body: some View {
         Section {
-            SettingRow(title: "Delete an account's data when its access is revoked", caption: caption) {
+            SettingRow(title: AccountPurgeStatus.switchTitle, caption: caption) {
                 Toggle("", isOn: $isOn)
                     .labelsHidden()
                     .managedByOrganization(lockedByPolicy || (status?.isSetByPolicy ?? false))
             }
-            Text(Self.footnote(status))
+            Text(AccountPurgeStatus.footnote(status, shown: isOn))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -53,17 +55,9 @@ struct PrivacySettingsContent: View {
         }
     }
 
+    /// "On by default" while on by its default origin; otherwise a failed
+    /// status read, if any.
     private var caption: String? {
-        statusError
-    }
-
-    /// The grace and lease numbers come from Go; the defaults stand in until it answers.
-    static func footnote(_ status: AccountPurgeStatus?) -> String {
-        let grace = status?.graceHours ?? 72
-        let lease = status?.leaseDays ?? 30
-        return "When a company revokes your access, or Watchtower has not reached a source for \(lease) days, "
-            + "the account's synced messages, mail, events and issues are deleted \(grace) hours later "
-            + "unless you reconnect. A removed account's data goes the same way \(lease) days after it was last reached. "
-            + "Briefings, recaps, ideas, memory, chats and meeting transcripts are kept."
+        AccountPurgeStatus.caption(status, shown: isOn) ?? statusError
     }
 }
