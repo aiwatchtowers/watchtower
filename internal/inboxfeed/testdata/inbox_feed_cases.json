@@ -11449,5 +11449,299 @@
         }
       }
     ]
+  },
+  {
+    "name": "desktop_owner_none_plan_today",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO day_plans (id, user_id, plan_date, status, has_conflicts, generated_at, regenerate_count, created_at, updated_at) VALUES (1, 'U001', '2026-11-16', 'active', 0, '2026-04-23T08:00:00Z', 0, '2026-11-16T08:00:00Z', '2026-11-16T08:00:00Z')",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, title, priority, status, order_index, created_at, updated_at) VALUES (1, 1, 'backlog', 'manual', 'Standup', 'medium', 'pending', 0, '2026-11-16T08:00:00Z', '2026-11-16T08:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "brief-2026-11-16",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Morning brief",
+          "source_line": "Your day · Mon 16 Nov",
+          "preview": "today",
+          "stamp": "2026-04-23T08:00:00Z",
+          "living": false,
+          "unread": false,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "morning_brief",
+            "items": [
+              {
+                "ref_kind": "plan_item",
+                "id": 1,
+                "title": "Standup",
+                "subtitle": "",
+                "preview": "",
+                "stamp": "",
+                "end": "",
+                "unread": false,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": "2026-11-16"
+              }
+            ],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_owner_arrives",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": []
+    },
+    "desktop": true,
+    "steps": [
+      {
+        "name": "owner_known",
+        "sql": [
+          "INSERT INTO slack_accounts (id, team_id, team_name, team_domain, label, current_user_id, status, error, enabled, search_last_date, created_at) VALUES (1, '', '', '', '', '1:U1', 'ok', '', 1, '', '2026-01-01T00:00:00Z')"
+        ],
+        "when": "SELECT COUNT(*) FROM slack_accounts WHERE current_user_id != ''",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            }
+          ],
+          "cards": [
+            {
+              "id": "brief-2026-11-16",
+              "folder_id": 1,
+              "card_kind": "legacy",
+              "title": "Morning brief",
+              "source_line": "Your day · Mon 16 Nov",
+              "preview": "today",
+              "stamp": "2026-11-16T00:00:00Z",
+              "living": false,
+              "unread": false,
+              "priority": "medium",
+              "pinned": false,
+              "blocks": "",
+              "body": "",
+              "body_clipped": false,
+              "link": "",
+              "content_hash": "",
+              "actions": [],
+              "ref_facts": [],
+              "legacy": {
+                "kind": "morning_brief",
+                "items": [],
+                "attention": []
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "desktop_owner_placeholder_both_off",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO slack_accounts (id, team_id, team_name, team_domain, label, current_user_id, status, error, enabled, search_last_date, created_at) VALUES (1, '', '', '', '', '1:U1', 'ok', '', 1, '', '2026-01-01T00:00:00Z')"
+    ],
+    "opts": {},
+    "disabled_features": [
+      "briefing",
+      "day-plan"
+    ],
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": []
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_owner_placeholder_briefing_off",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO slack_accounts (id, team_id, team_name, team_domain, label, current_user_id, status, error, enabled, search_last_date, created_at) VALUES (1, '', '', '', '', '1:U1', 'ok', '', 1, '', '2026-01-01T00:00:00Z')"
+    ],
+    "opts": {},
+    "disabled_features": [
+      "briefing"
+    ],
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "brief-2026-11-16",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Morning brief",
+          "source_line": "Your day · Mon 16 Nov",
+          "preview": "today",
+          "stamp": "2026-11-16T00:00:00Z",
+          "living": false,
+          "unread": false,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "morning_brief",
+            "items": [],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true
   }
 ]

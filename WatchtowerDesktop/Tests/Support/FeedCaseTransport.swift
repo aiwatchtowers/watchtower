@@ -193,22 +193,26 @@ package extension ActionStripViewModel {
         let client = TowerClient(transport: transport, clock: ContinuousClock(), restartDaemon: nil, startDaemon: nil)
         let loader = InboxFeedLoader(client: client) { FeedRequest() }
         attach(loader)
+        // Each answer is listed here, then read at once (`list`), so no
+        // records read the listing starts is left running when a test acts.
+        loader.onFeed = nil
         let previous = onFeedRefreshed
         onFeedRefreshed = { [weak self, weak loader] in
-            if let self, let loader, transport.hasNewStep {
-                await Self.read(loader)
-                await self.refresh()
-            }
+            if let self, let loader, transport.hasNewStep { await self.list(loader) }
             await previous?()
         }
-        await Self.read(loader)
-        await refresh()
+        await list(loader)
     }
 
-    /// One read of the loader, waited for (its answer is listed at once).
+    /// One read of the loader, waited for; its feed listed and the panes'
+    /// records read. The refresh starts in the same turn as the listing, so
+    /// the refresh `receiveTowerFeed` queues joins it instead of trailing it.
     @MainActor
-    private static func read(_ loader: InboxFeedLoader) async {
+    private func list(_ loader: InboxFeedLoader) async {
         loader.reload()
         while let read = loader.pendingRead { await read.value }
+        guard let feed = loader.feed else { return }
+        receiveTowerFeed(feed)
+        await refresh()
     }
 }
