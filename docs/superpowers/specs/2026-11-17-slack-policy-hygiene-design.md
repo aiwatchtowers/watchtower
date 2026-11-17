@@ -61,14 +61,14 @@ Out of scope: database encryption Stage 2 + 3 (#603; this work ships the FileVau
 | A19 | Disclosure lives in four places: the manifest's `long_description` (scope reasons, AI providers, privacy link), the Full setup confirm, the guide, and the privacy policy | Each place where an admin or a user decides | ask #1412 |
 | A20 | Privacy policy changes are a text list in §7, applied in the site's repo (separate from this one) | The site is not in this repo | ask #1412 |
 
-### New agent decisions after the spec review (for the next owner ask)
+### Agent decisions after the spec review, approved in ask #1416
 
 | # | Decision | Recommendation / why | Source |
 |---|---|---|---|
-| A21 | The purge decides per account, not per source: one `purge.Rules` function gives each account its rule (full, revoked + removed only, or none), used by the scheduling pass, the re-plan before a start, and the start's SQL re-check (§2, "Per-account rules") | The existing `leaseHeld` seam holds whole sources, so "live accounts held, removed ones due" cannot be expressed with it; the re-plan in `purge.start` would otherwise refuse every zero-lease row | «решил агент» (review finding 3) |
-| A22 | Database encryption (Stage 2 + 3) is out of scope of this work and stays tracked in #603 with its own plans and gate; the FileVault line (A18) is the interim here, removed when Stage 2 ships | Stage 2 is a large, separately designed project parked by the owner (ask #497); bundling it would block the rest | «решил агент» (review finding 7) |
-| A23 | The privacy policy's deletion sentence names the switch and both of its states (§7, item 2) | It must be true for an owner who turned the purge off | «решил агент» (review finding 5) |
-| A24 | Task H3 also updates the embedded developer skill `watchtower-who-to-ask` and checks `get_person`'s output (§5.3, "Readers") | Both name the dropped fields today | «решил агент» (review finding 6) |
+| A21 | The purge decides per account, not per source: one `purge.Rules` function gives each account its rule (full, revoked + removed only, or none), used by the scheduling pass, the re-plan before a start, and the start's SQL re-check (§2, "Per-account rules") | The existing `leaseHeld` seam holds whole sources, so "live accounts held, removed ones due" cannot be expressed with it; the re-plan in `purge.start` would otherwise refuse every zero-lease row | ask #1416: «Принять все» (review finding 3) |
+| A22 | Database encryption (Stage 2 + 3) is out of scope of this work and stays tracked in #603 with its own plans and gate; the FileVault line (A18) is the interim here, removed when Stage 2 ships | Stage 2 is a large, separately designed project parked by the owner (ask #497); bundling it would block the rest | ask #1416: «Принять все» (review finding 7) |
+| A23 | The privacy policy's deletion sentence names the switch and both of its states (§7, item 2) | It must be true for an owner who turned the purge off | ask #1416: «Принять все» (review finding 5) |
+| A24 | Task H3 also updates the embedded developer skill `watchtower-who-to-ask` and checks `get_person`'s output (§5.3, "Readers") | Both name the dropped fields today | ask #1416: «Принять все» (review finding 6) |
 
 ## 1. What Slack asks of an internal app
 
@@ -389,13 +389,13 @@ H1–H4 are independent of each other; H2 must land before or with parent T7.
 - **DEV-03** — unchanged (`find_experts` loses a non-evidence field only).
 - **POLICY-01/02** — unchanged (no new key).
 
-## 13. Owner answers (ask #1412) and what is still open
+## 13. Owner answers (asks #1412, #1416)
 
 - Purge by default and the removed Slack workspace after 72 h, with the PURGE-01/SLACK-01 amendments: «Да, одобряю» (P7).
 - People-card and `find_experts` cuts, including the clearing migration: «Да, резать всё» (P8).
 - AI text that mixes sources after a purge: «Оставлять и сказать об этом» (P9).
 - The other agent decisions (A3–A11, A18–A20): «Принять все» (P10).
-- Open: the new agent decisions A21–A24 (next owner ask).
+- The agent decisions after the spec review (A21–A24): «Принять все» (ask #1416).
 
 ## 14. Concerns
 
