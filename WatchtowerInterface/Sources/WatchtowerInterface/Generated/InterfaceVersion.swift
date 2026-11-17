@@ -3,5 +3,5 @@
 /// The generated interface's version: the first 16 hex characters of the
 /// SHA-256 of TowerTypes.swift and TowerCommands.swift; tower.hello answers it.
 public enum InterfaceVersion {
-    public static let current = "75f8d03854c9a8ef"
+    public static let current = "89e5252641ba4629"
 }
