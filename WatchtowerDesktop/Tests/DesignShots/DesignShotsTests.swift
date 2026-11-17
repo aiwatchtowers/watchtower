@@ -107,6 +107,14 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(DesignShotCatalog.all.filter { shot in parts.contains { shot.name.contains($0) } })
     }
 
+    /// The routing pill, the fallback card and every shot that holds them, for the before/after comparison of the
+    /// pill's move into ChatUI (#1822 T17).
+    func testRoutingShotsRender() throws {
+        let parts = ["routing-", "provider-chat-", "provider-fallback-", "chat-composer-ollama-capabilities", "composer-main-"]
+        try renderShots(DesignShotCatalog.all.filter { shot in parts.contains { shot.name.hasPrefix($0) } }
+            + ProviderFallbackShotFixtures.historicalActualShots)
+    }
+
     func testUnifiedChatShotsRender() throws {
         try renderShots(UnifiedChatShotFixtures.shots)
     }

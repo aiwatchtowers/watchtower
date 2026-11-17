@@ -620,6 +620,7 @@ enum DesignShotCatalog {
             + UnifiedChatShotFixtures.shots // The unified chat's new states and baselines (#1822 T0).
             + ComposerShotFixtures.shots // The composer on every Mac surface, before and after ChatUI (#1822 T13).
             + ApprovalCardShotFixtures.shots // The approval card before and after its move to ChatUI (#1822 T15).
+            + RoutingPillShotFixtures.shots // The routing pill and fallback card before and after ChatUI (#1822 T17).
     }
 }
 
