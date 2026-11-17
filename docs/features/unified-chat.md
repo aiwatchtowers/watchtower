@@ -77,6 +77,10 @@ A feed message carries `parts[]` beside the old flat fields (`text`, `steps`, `a
 
 Hub-to-Kit fixtures (`workbench/chat_{list,feed,page,search}.json`, `chat/actions.json`, `link/hub_contract_cases.json`) are read by `ChatWire` (`ChatSliceMirrorTests`, `ChatActionParamsTests`) and the Kit. The eight turn-store fixtures of the Swift writer are retired.
 
+### The composer
+
+One composer for the Mac and the phone (#1822 T13, ask #1409): `ChatUI`'s `ChatComposerField` (the input row every surface uses: notices, attachment chips, paperclip, the platform text view, dictation, Send/Stop), `ChatComposerBar` (status line, field, accessory), and `ChatComposerView` (the main chat: state line, the `@`/`/` picker of the model's `ComposerPickerModel`, the quote batch, mention and skill chips, the routing accessory slot). The views hold no model of their own: they edit a binding and call closures. Each app draws the composer's controls through its `ChatUIStyle` hooks (`composerFieldBackground`, `sendStopButton`, `attachmentChip`, `composerChip`, `quoteRow`, `pickerList`; the Mac's `DesignKitChatStyle` keeps the look it had), the Mac adds dictation through `\.chatComposerServices` (`.macComposerStyle()` on each composer), and the per-platform layout values live in `Platform/{macOS,iOS}` (`ComposerMetrics`). The routing accessory slot holds the Mac's routing state and model pill (`ChatComposerAccessory`) under the field, and the phone's new-chat model and project chips over it; T17 puts one shared routing view there. An unanswered send's `client_key` is reused while its content is unchanged, so pressing Send again after "Couldn't reach Watchtower" is answered with the first turn instead of starting a second.
+
 ## v1 limits
 
 - Embedded chats and Workchat keep their own engines; only their views are shared.

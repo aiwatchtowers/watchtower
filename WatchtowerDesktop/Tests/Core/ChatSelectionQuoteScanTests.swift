@@ -36,7 +36,9 @@ final class ChatSelectionQuoteScanTests: XCTestCase {
     }
 
     func testTheSelectionOverlayAndTheBatchViewNeverSend() throws {
-        for file in ["../../WatchtowerChat/Sources/ChatUI/Platform/macOS/ChatSelectionQuote.swift", "Views/Chat/QuoteBatchView.swift"] {
+        // The batch view is ChatUI's since unified chat T13 (both devices draw it).
+        for file in ["../../WatchtowerChat/Sources/ChatUI/Platform/macOS/ChatSelectionQuote.swift",
+                     "../../WatchtowerChat/Sources/ChatUI/Composer/QuoteBatchView.swift"] {
             let text = try source(file)
             for token in [".send(", "sendDraft", "startTurn", "ChatSessionPool", "Process(", "URLSession"] {
                 XCTAssertFalse(text.contains(token), "\(file) must not reference \(token)")

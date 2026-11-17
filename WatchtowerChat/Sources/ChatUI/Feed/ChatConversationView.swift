@@ -9,7 +9,7 @@ public struct ChatConversationView: View {
     let composer: ChatComposerModel
     let partActions: ChatPartActions
     var onAttach: (() -> Void)?
-    var composerAccessory: AnyView?
+    var composerFiles: ChatComposerShellFiles?
     var focusMessageID: Int64?
 
     public init(
@@ -24,28 +24,29 @@ public struct ChatConversationView: View {
         self.onAttach = onAttach
     }
 
-    /// With the shell's row over the composer field (`ChatComposerView.accessory`) and a message to show first (a
-    /// search hit: the feed pages back to it and scrolls to it).
+    /// With the shell's own files in the composer's chips (`ChatComposerView.shellFiles`) and a message to show first
+    /// (a search hit: the feed pages back to it and scrolls to it).
     public init(
         conversation: ChatConversationModel,
         composer: ChatComposerModel,
         partActions: ChatPartActions,
         onAttach: (() -> Void)?,
-        composerAccessory: AnyView?,
+        composerFiles: ChatComposerShellFiles?,
         focusMessageID: Int64?
     ) {
         self.conversation = conversation
         self.composer = composer
         self.partActions = partActions
         self.onAttach = onAttach
-        self.composerAccessory = composerAccessory
+        self.composerFiles = composerFiles
         self.focusMessageID = focusMessageID
     }
 
     public var body: some View {
         VStack(spacing: 0) {
             ChatFeedView(messages: conversation.messages, context: feedContext)
-            ChatComposerView(model: composer, onAttach: onAttach, accessory: composerAccessory)
+            ChatComposerView(model: composer, field: ChatComposerFieldConfig(placeholder: composer.placeholder),
+                             onAttach: onAttach, shellFiles: composerFiles)
         }
         .onAppear {
             if let focusMessageID { conversation.focusMessageID = focusMessageID }

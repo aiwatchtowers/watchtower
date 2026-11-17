@@ -1,3 +1,4 @@
+import ChatUI
 import SwiftUI
 @testable import WatchtowerDesktop
 import WatchtowerCore
@@ -20,8 +21,11 @@ enum ProviderCapabilitiesShotFixtures {
             if let missing = presentation.missingCapabilities {
                 Text(missing).font(.caption).foregroundStyle(.secondary)
             }
-            ChatComposerField(text: .constant(""), isStreaming: false, onSend: {}, placeholder: "Ask about your work…",
-                              onAttachFiles: { _ in }, attachUnavailableReason: caps.attachUnavailableReason)
+            ChatComposerField(text: .constant(""), isStreaming: false,
+                              config: ChatComposerFieldConfig(placeholder: "Ask about your work…",
+                                                              attachUnavailableReason: caps.attachUnavailableReason),
+                              onSend: {}, onAttachFiles: { _ in })
+                .macComposerStyle()
         }
         .padding(.horizontal, Spacing.large)
         .padding(.vertical, 12))

@@ -213,11 +213,11 @@ struct SpecReviewThreadView: View {
                 ChatComposerField(
                     text: $draft,
                     isStreaming: content.isReplying || content.isQueued,
+                    config: ChatComposerFieldConfig(placeholder: placeholder, autoFocus: autoFocus),
                     onSend: send,
-                    onStop: onStop,
-                    placeholder: placeholder,
-                    autoFocus: autoFocus
+                    onStop: onStop
                 )
+                .macComposerStyle()
                 .disabled(content.isOpening || content.loadError != nil)
             }
         }

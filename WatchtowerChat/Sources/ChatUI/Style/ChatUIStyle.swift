@@ -1,5 +1,6 @@
 import ChatWire
 import SwiftUI
+import WatchtowerChatText
 import WatchtowerDesign
 
 /// How the chat draws its controls (unified chat spec §14, D18). The tokens come from `WatchtowerDesign`; the
@@ -40,6 +41,21 @@ public protocol ChatUIStyle {
     /// A chat list row drawn by the app (the Mac's Chats panel keeps the row it had, spec §2 "a move, not a
     /// redesign"); nil draws ChatUI's own row.
     func listRow(_ content: ChatListRowContent) -> AnyView?
+
+    // MARK: The composer (#1822 T13). The defaults draw the phone's look; the Mac's DesignKitChatStyle its own.
+
+    /// The frame around the composer's text view (its padding and background).
+    func composerFieldBackground(_ field: AnyView) -> AnyView
+    /// The composer's Send, or Stop while a turn runs; off when `active` is false.
+    func sendStopButton(isStreaming: Bool, active: Bool, action: @escaping () -> Void) -> AnyView
+    /// One attachment chip of the draft.
+    func attachmentChip(_ chip: ChatAttachmentChipContent) -> AnyView
+    /// A picked mention or skill, with its remove.
+    func composerChip(_ chip: ChatComposerChipContent) -> AnyView
+    /// One quote of the pending batch: the quote, its editable comment, and its remove.
+    func quoteRow(_ quote: ChatQuoteDraft, comment: Binding<String>, onRemove: @escaping () -> Void) -> AnyView
+    /// The `@`/`/` picker's rows, the selected one marked.
+    func pickerList(_ rows: [ComposerPickerItem], selected: Int, onPick: @escaping (Int) -> Void) -> AnyView
 }
 
 /// One tool step as `ChatUIStyle.stepLine` gets it. `argsJSON` and `isWaiting` are set only by a client that has them.
@@ -110,6 +126,114 @@ extension ChatUIStyle {
     public func stepLine(_ step: ChatStepLine, turnRunning: Bool) -> AnyView? { nil }
 
     public func listRow(_ content: ChatListRowContent) -> AnyView? { nil }
+
+    public func composerFieldBackground(_ field: AnyView) -> AnyView {
+        AnyView(
+            field
+                .padding(.horizontal, Spacing.medium)
+                .padding(.vertical, Spacing.regular)
+                .background(Fill.rest, in: RoundedRectangle(cornerRadius: Radius.bubble))
+        )
+    }
+
+    public func sendStopButton(isStreaming: Bool, active: Bool, action: @escaping () -> Void) -> AnyView {
+        if isStreaming {
+            return AnyView(secondaryButton(ChatComposerModel.stopLabel, action: action)
+                .disabled(!active)
+                .accessibilityIdentifier("chat.composer.stop"))
+        }
+        return AnyView(primaryButton(ChatComposerModel.sendLabel, action: action)
+            .disabled(!active)
+            .accessibilityIdentifier("chat.composer.send"))
+    }
+
+    public func attachmentChip(_ chip: ChatAttachmentChipContent) -> AnyView {
+        AnyView(
+            HStack(spacing: Spacing.small) {
+                if !chip.icon.isEmpty { Image(systemName: chip.icon) }
+                Text(chip.name).lineLimit(1).truncationMode(.middle)
+                switch chip.state {
+                case .importing: ProgressView().controlSize(.mini)
+                case .failed: if let retry = chip.onRetry { Button(ChatComposerModel.retryLabel, action: retry) }
+                case .attached: EmptyView()
+                }
+                if let remove = chip.onRemove {
+                    Button(action: remove) { Image(systemName: "xmark") }
+                        .disabled(chip.removeDisabled)
+                        .accessibilityLabel("Remove \(chip.name)")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, Spacing.regular)
+            .padding(.vertical, Spacing.small)
+            .background(Fill.card, in: Capsule())
+        )
+    }
+
+    public func composerChip(_ chip: ChatComposerChipContent) -> AnyView {
+        AnyView(
+            HStack(spacing: Spacing.tight) {
+                self.chip(chip.title)
+                Button(action: chip.onRemove) {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Remove \(chip.title)")
+            }
+        )
+    }
+
+    public func quoteRow(_ quote: ChatQuoteDraft, comment: Binding<String>, onRemove: @escaping () -> Void) -> AnyView {
+        AnyView(
+            HStack(alignment: .top, spacing: Spacing.regular) {
+                VStack(alignment: .leading, spacing: Spacing.small) {
+                    Text("\u{201C}\(quote.quote)\u{201D}")
+                        .font(.caption)
+                        .italic()
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    TextField("Comment (optional)", text: comment, axis: .vertical)
+                        .lineLimit(1...3)
+                        .font(.callout)
+                }
+                Button(action: onRemove) { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Remove quote")
+            }
+            .padding(Spacing.regular)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Fill.card, in: RoundedRectangle(cornerRadius: Radius.row))
+        )
+    }
+
+    public func pickerList(_ rows: [ComposerPickerItem], selected: Int, onPick: @escaping (Int) -> Void) -> AnyView {
+        AnyView(
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                    Button { onPick(index) } label: {
+                        HStack(spacing: Spacing.regular) {
+                            Image(systemName: row.icon).foregroundStyle(.secondary).frame(width: IconSize.composer)
+                            Text(row.title).lineLimit(1)
+                            if !row.subtitle.isEmpty {
+                                Text(row.subtitle).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, Spacing.regular)
+                        .padding(.vertical, Spacing.small)
+                        .background(index == selected ? Fill.selected : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: Radius.row))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .font(.callout)
+            .padding(Spacing.small)
+            .background(Fill.card, in: RoundedRectangle(cornerRadius: Radius.row))
+        )
+    }
 }
 
 /// The default style: borderless controls on the shared tokens, no app look.

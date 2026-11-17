@@ -4,6 +4,7 @@ import ViewInspector
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerTestSupport
+import ChatUI
 
 @MainActor
 final class ChatComposerFieldViewTests: XCTestCase {
@@ -17,19 +18,19 @@ final class ChatComposerFieldViewTests: XCTestCase {
         onStop: (() -> Void)? = nil,
         placeholder: String = "Ask about your workspace...",
         dictationTargetID: String? = nil
-    ) -> ChatComposerField {
+    ) -> some View {
         var stored = text
         return ChatComposerField(
             text: Binding(get: { stored }, set: { stored = $0 }),
             isStreaming: isStreaming,
+            config: ChatComposerFieldConfig(placeholder: placeholder, dictationTargetID: dictationTargetID),
             onSend: onSend,
-            onStop: onStop,
-            placeholder: placeholder,
-            dictationTargetID: dictationTargetID
+            onStop: onStop
         )
+        .macComposerStyle()
     }
 
-    private func hasMicButton(_ view: ChatComposerField) throws -> Bool {
+    private func hasMicButton(_ view: some View) throws -> Bool {
         (try? view.inspect().find(ViewType.Image.self) { try $0.actualImage().name() == "mic.fill" }) != nil
     }
 
@@ -111,10 +112,9 @@ final class ChatComposerFieldViewTests: XCTestCase {
     }
 
     /// The positive control for the two guards above: targetID set AND a
-    /// DictationCenter present → the mic button IS in the hierarchy. Driven
-    /// through `ChatComposerFieldContent` (the plain view `ChatComposerField` renders) with
-    /// an explicit center — ViewInspector cannot inject custom `@Environment`
-    /// values (the `TrayMenuContent` precedent).
+    /// DictationCenter present → the mic button IS in the hierarchy (the
+    /// Mac's dictation service with an explicit center — ViewInspector
+    /// cannot inject custom `@Environment` values into the service's view).
     func testMicButtonShownWhenTargetIDSetAndCenterPresent() throws {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: "ChatComposerFieldViewTests-\(UUID().uuidString)"))
         // Pin the whisper lane (absent key → Apple on macOS 26) so the
@@ -128,15 +128,15 @@ final class ChatComposerFieldViewTests: XCTestCase {
             engineIdleTTL: .seconds(900)
         )
         var stored = ""
-        let view = ChatComposerFieldContent(
+        let view = ChatComposerField(
             text: Binding(get: { stored }, set: { stored = $0 }),
             isStreaming: false,
+            config: ChatComposerFieldConfig(placeholder: "Type here…", dictationTargetID: "chat.workspace"),
             onSend: {},
-            onStop: nil,
-            placeholder: "Type here…",
-            dictationTargetID: "chat.workspace",
-            dictationCenter: center
+            onStop: nil
         )
+        .environment(\.chatUIStyle, DesignKitChatStyle())
+        .environment(\.chatComposerServices, .mac(center: center))
         let found = (try? view.inspect().find(ViewType.Image.self) {
             try $0.actualImage().name() == "mic.fill"
         }) != nil
@@ -148,7 +148,8 @@ final class ChatComposerFieldViewTests: XCTestCase {
         var sent = 0
         var stored = ""
         let view = ChatComposerField(text: Binding(get: { stored }, set: { stored = $0 }), isStreaming: false,
-                                     onSend: { sent += 1 }, hasPendingContent: true)
+                                     config: ChatComposerFieldConfig(placeholder: "", hasPendingContent: true)) { sent += 1 }
+            .macComposerStyle()
         let button = try view.inspect().find(ViewType.Button.self)
         XCTAssertFalse(try button.isDisabled())
         try button.tap()
@@ -165,19 +166,21 @@ extension ChatComposerFieldViewTests {
         XCTAssertEqual(reason, "Images and PDFs need a provider that reads them.")
         var stored = ""
         let off = ChatComposerField(text: Binding(get: { stored }, set: { stored = $0 }), isStreaming: false,
-                                    onSend: {}, placeholder: "Ask", onAttachFiles: { _ in },
-                                    attachUnavailableReason: reason)
+                                    config: ChatComposerFieldConfig(placeholder: "Ask", attachUnavailableReason: reason),
+                                    onSend: {}, onAttachFiles: { _ in })
+            .macComposerStyle()
         let clip = try off.inspect().find(ViewType.Button.self) { try $0.accessibilityLabel().string() == "Attach files" }
         XCTAssertFalse(try clip.isDisabled(), "text files still attach")
         XCTAssertEqual(try clip.help().string(), "Attach text files. " + reason)
 
         let on = ChatComposerField(text: Binding(get: { stored }, set: { stored = $0 }), isStreaming: false,
-                                   onSend: {}, placeholder: "Ask", onAttachFiles: { _ in }, attachUnavailableReason: nil)
+                                   config: ChatComposerFieldConfig(placeholder: "Ask"), onSend: {}, onAttachFiles: { _ in })
+            .macComposerStyle()
         let enabled = try on.inspect().find(ViewType.Button.self) { try $0.accessibilityLabel().string() == "Attach files" }
         XCTAssertFalse(try enabled.isDisabled())
-        XCTAssertTrue(ChatComposerFieldContent.isBinary(URL(fileURLWithPath: "/tmp/a.png")))
-        XCTAssertTrue(ChatComposerFieldContent.isBinary(URL(fileURLWithPath: "/tmp/a.pdf")))
-        XCTAssertFalse(ChatComposerFieldContent.isBinary(URL(fileURLWithPath: "/tmp/a.csv")))
+        XCTAssertTrue(ComposerAttachmentRules.isBinary(URL(fileURLWithPath: "/tmp/a.png")))
+        XCTAssertTrue(ComposerAttachmentRules.isBinary(URL(fileURLWithPath: "/tmp/a.pdf")))
+        XCTAssertFalse(ComposerAttachmentRules.isBinary(URL(fileURLWithPath: "/tmp/a.csv")))
     }
 
     /// F8: an images-only provider (Codex) refuses a PDF at drop, paste and
@@ -186,21 +189,49 @@ extension ChatComposerFieldViewTests {
     func testImagesOnlyProviderRefusesPDFs() throws {
         let codex = AIModelCatalog(providers: ProviderCatalogFixture.providers()).capabilities(for: "codex")
         let pdfReason = try XCTUnwrap(codex.pdfUnavailableReason)
-        let pdf = ChatComposerFieldContent.kind(URL(fileURLWithPath: "/tmp/a.pdf"))
-        let png = ChatComposerFieldContent.kind(URL(fileURLWithPath: "/tmp/a.png"))
+        let pdf = ComposerAttachmentRules.kind(URL(fileURLWithPath: "/tmp/a.pdf"))
+        let png = ComposerAttachmentRules.kind(URL(fileURLWithPath: "/tmp/a.png"))
         XCTAssertEqual(pdf, .pdf)
         XCTAssertEqual(png, .image)
-        XCTAssertEqual(ChatComposerFieldContent.refusal(of: pdf, attach: nil, pdf: pdfReason), pdfReason)
-        XCTAssertNil(ChatComposerFieldContent.refusal(of: png, attach: nil, pdf: pdfReason))
-        XCTAssertNil(ChatComposerFieldContent.refusal(of: nil, attach: "no", pdf: pdfReason), "text files attach")
-        XCTAssertEqual(ChatComposerFieldContent.refusal(of: png, attach: "U1", pdf: nil), "U1")
-        XCTAssertEqual(ChatComposerFieldContent.refusal(of: pdf, attach: "U1", pdf: nil), "U1")
+        XCTAssertEqual(ComposerAttachmentRules.refusal(of: pdf, attach: nil, pdf: pdfReason), pdfReason)
+        XCTAssertNil(ComposerAttachmentRules.refusal(of: png, attach: nil, pdf: pdfReason))
+        XCTAssertNil(ComposerAttachmentRules.refusal(of: nil, attach: "no", pdf: pdfReason), "text files attach")
+        XCTAssertEqual(ComposerAttachmentRules.refusal(of: png, attach: "U1", pdf: nil), "U1")
+        XCTAssertEqual(ComposerAttachmentRules.refusal(of: pdf, attach: "U1", pdf: nil), "U1")
 
         var stored = ""
         let field = ChatComposerField(text: Binding(get: { stored }, set: { stored = $0 }), isStreaming: false,
-                                      onSend: {}, placeholder: "Ask", onAttachFiles: { _ in },
-                                      pdfUnavailableReason: pdfReason)
+                                      config: ChatComposerFieldConfig(placeholder: "Ask", pdfUnavailableReason: pdfReason),
+                                      onSend: {}, onAttachFiles: { _ in })
+            .macComposerStyle()
         let clip = try field.inspect().find(ViewType.Button.self) { try $0.accessibilityLabel().string() == "Attach files" }
         XCTAssertEqual(try clip.help().string(), "Attach images or text files. " + pdfReason)
+    }
+
+    /// C7: the dictation hook gets the field's target and a binding that writes into the draft; a field with no
+    /// target never calls it.
+    func testDictationHookGetsTargetIDAndText() throws {
+        var stored = ""
+        var targets: [String] = []
+        var binding: Binding<String>?
+        let services = ChatComposerServices { field, text, id in
+            targets.append(id)
+            binding = text
+            return field
+        }
+        let field = ChatComposerField(text: Binding(get: { stored }, set: { stored = $0 }), isStreaming: false,
+                                      config: ChatComposerFieldConfig(placeholder: "Ask", dictationTargetID: "chat.workspace")) {}
+            .environment(\.chatComposerServices, services)
+        _ = try field.inspect().find(ViewType.Button.self)
+        XCTAssertEqual(targets.last, "chat.workspace")
+        binding?.wrappedValue = "spoken words"
+        XCTAssertEqual(stored, "spoken words")
+
+        targets = []
+        let silent = ChatComposerField(text: Binding(get: { stored }, set: { stored = $0 }), isStreaming: false,
+                                       config: ChatComposerFieldConfig(placeholder: "Ask")) {}
+            .environment(\.chatComposerServices, services)
+        _ = try silent.inspect().find(ViewType.Button.self)
+        XCTAssertTrue(targets.isEmpty, "no target: no dictation")
     }
 }

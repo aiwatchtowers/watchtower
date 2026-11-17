@@ -88,6 +88,30 @@ final class ChatUISourceScanTests: XCTestCase {
         }
     }
 
+    /// BEHAVIOR CHAT-05 — see docs/inventory/chat.md
+    /// The composer's views (every file under Composer/, enumerated, and the platform text inputs and file input) only
+    /// edit their binding and call their closures: none reaches the client, a process or the network. The main
+    /// composer view alone drives its model's `send()` (the engine's echo decides, CHAT-01), so `.send(` is allowed
+    /// there and nowhere else.
+    func testChat05ComposerOnlyEditsItsBindingAndCallsClosures() throws {
+        let composer = try swiftFiles(under: ChatUIFixtures.chatUISources.appendingPathComponent("Composer")).map(relative)
+        XCTAssertTrue(composer.contains("Composer/ChatComposerField.swift"))
+        let files = composer + [
+            "Platform/macOS/ChatComposerTextInput.swift",
+            "Platform/macOS/ComposerFileInput.swift",
+            "Platform/macOS/LongPasteOffer.swift",
+            "Platform/iOS/ComposerTextField.swift",
+            "Platform/iOS/PhoneComposerFileInput.swift"
+        ]
+        for file in files {
+            let text = try String(contentsOf: ChatUIFixtures.chatUISources.appendingPathComponent(file), encoding: .utf8)
+            let tokens = file == "Composer/ChatComposerView.swift" ? Self.forbidden.filter { $0 != ".send(" } : Self.forbidden
+            for token in tokens {
+                XCTAssertFalse(text.contains(token), "\(file) must not reference \(token) (CHAT-05)")
+            }
+        }
+    }
+
     func testPasteClassifierTextLimitMatchesAttachmentLimits() {
         XCTAssertEqual(PasteClassifier.textAttachmentLimit, ChatAttachmentLimits.textLimit)
     }

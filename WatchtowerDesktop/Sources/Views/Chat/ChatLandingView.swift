@@ -17,7 +17,7 @@ struct ChatLandingView: View {
         ScrollView {
             VStack(spacing: 20) {
                 ChatEmptyState(ownerName: ownerName, onPrompt: usePrompt)
-                ChatComposerView(
+                MainChatComposer(
                     chatVM: chatVM,
                     modelSuggestions: modelSuggestions,
                     maxHeight: maxComposerHeight

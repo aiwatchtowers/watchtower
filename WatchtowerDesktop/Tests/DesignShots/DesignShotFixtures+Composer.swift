@@ -160,10 +160,10 @@ enum ComposerShotFixtures {
     }
 
     private static func mainComposer(_ vm: ChatViewModel, maxHeight: CGFloat) -> some View {
-        ChatComposerView(chatVM: vm, modelSuggestions: [], maxHeight: maxHeight)
+        MainChatComposer(chatVM: vm, modelSuggestions: [], maxHeight: maxHeight)
     }
 
-    private static func picker(_ vm: ChatViewModel) -> ComposerPickerModel { vm.picker }
+    private static func picker(_ vm: ChatViewModel) -> ComposerPickerModel { vm.composer.picker }
 
     /// Opens the `@`/`/` picker on `text` (caret at the end) and waits for its rows.
     private static func openPicker(_ vm: ChatViewModel, text: String) {
@@ -230,13 +230,14 @@ enum ComposerShotFixtures {
             input: ChatComposerField(
                 text: Binding(get: { stored }, set: { stored = $0 }),
                 isStreaming: busy,
+                config: ChatComposerFieldConfig(placeholder: "Ask about this task",
+                                                maxHeight: ChatDensity.regular.composerMaxHeight,
+                                                dictationTargetID: "chat.embedded.shot"),
                 onSend: {},
-                onStop: status == .finishing ? nil : {},
-                placeholder: "Ask about this task",
-                dictationTargetID: "chat.embedded.shot",
-                maxHeight: ChatDensity.regular.composerMaxHeight
+                onStop: status == .finishing ? nil : {}
             )
         )
+        .macComposerStyle()
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(.vertical, Spacing.medium)
         .macChatStyle(hooks: ChatMacArtifactHooks(), look: .embedded)
@@ -249,11 +250,12 @@ enum ComposerShotFixtures {
         return AnyView(ChatComposerBar(input: ChatComposerField(
             text: Binding(get: { stored }, set: { stored = $0 }),
             isStreaming: false,
+            config: ChatComposerFieldConfig(placeholder: "Ask about your work…",
+                                            attachUnavailableReason: ProviderCapabilities.none.attachUnavailableReason),
             onSend: {},
-            placeholder: "Ask about your work…",
-            onAttachFiles: { _ in },
-            attachUnavailableReason: ProviderCapabilities.none.attachUnavailableReason
+            onAttachFiles: { _ in }
         ))
+        .macComposerStyle()
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(.vertical, Spacing.medium)
         .macChatStyle(hooks: ChatMacArtifactHooks())
@@ -266,10 +268,9 @@ enum ComposerShotFixtures {
         return AnyView(ChatComposerBar(input: ChatComposerField(
             text: Binding(get: { stored }, set: { stored = $0 }),
             isStreaming: false,
-            onSend: {},
-            placeholder: "Ask how Watchtower works…",
-            maxHeight: 120
-        ))
+            config: ChatComposerFieldConfig(placeholder: "Ask how Watchtower works…", maxHeight: 120)
+        ) {})
+        .macComposerStyle()
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(.vertical, Spacing.medium)
         .macChatStyle(hooks: ChatMacArtifactHooks())
@@ -287,10 +288,10 @@ enum ComposerShotFixtures {
             ChatComposerBar(input: ChatComposerField(
                 text: Binding(get: { stored }, set: { stored = $0 }),
                 isStreaming: false,
-                onSend: {},
-                placeholder: "Ask the assistant about this target…",
-                dictationTargetID: "chat.target-assistant.1"
-            ))
+                config: ChatComposerFieldConfig(placeholder: "Ask the assistant about this target…",
+                                                dictationTargetID: "chat.target-assistant.1")
+            ) {})
+            .macComposerStyle()
         }
         .padding(Spacing.medium)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

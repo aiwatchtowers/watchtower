@@ -22,15 +22,18 @@ struct HelpChatPanel: View {
             ChatComposerBar(input: ChatComposerField(
                 text: Binding(get: { chatVM.composer.draft }, set: { chatVM.composer.draft = $0 }),
                 isStreaming: chatVM.isBusy,
+                config: ChatComposerFieldConfig(
+                    placeholder: "Ask how Watchtower works…",
+                    maxHeight: 120,
+                    autoFocus: true,
+                    sendBlocked: chatVM.conversation.reachability != .connected || chatVM.conversation.isGone
+                ),
                 onSend: send,
                 onStop: chatVM.conversation.canStop ? { chatVM.stop() } : nil,
-                placeholder: "Ask how Watchtower works…",
-                maxHeight: 120,
                 // Esc stops a running answer first, then closes the panel.
-                onEscape: escape,
-                autoFocus: true,
-                sendBlocked: chatVM.conversation.reachability != .connected || chatVM.conversation.isGone
+                onEscape: escape
             ))
+            .macComposerStyle()
         }
         .frame(width: 420, height: 560)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))

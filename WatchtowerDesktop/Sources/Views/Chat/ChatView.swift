@@ -91,7 +91,7 @@ struct ChatSplitView: View {
                         ) { historyVM.selectedConversationID = $0 }
                     } else {
                         ChatThreadView(chatVM: chatVM, ownerName: appState.owner.displayName)
-                        ChatComposerView(
+                        MainChatComposer(
                             chatVM: chatVM,
                             modelSuggestions: appState.aiModelCatalog.suggestions(for: chatVM.selectedProvider.rawValue),
                             maxHeight: max(120, geo.size.height * 0.4)

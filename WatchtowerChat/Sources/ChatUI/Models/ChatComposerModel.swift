@@ -32,16 +32,24 @@ public final class ChatComposerModel {
     public static let overLimitLine = "A message holds up to 32 000 characters."
     public static let sendLabel = "Send"
     public static let stopLabel = "Stop"
+    public static let retryLabel = "Retry"
 
     public let conversation: ChatConversationModel
     public var draft = ""
     public var quotes: [ChatQuoteDraft] = []
     public private(set) var attachments: [ChatComposerAttachment] = []
-    /// The `@` mentions picked into the draft (the engine composes the references and drops the ones no longer in
-    /// the text).
-    public var mentions: [ChatCompose.Mention] = []
+    /// The `@` and `/` picker: its rows, and the mentions and skill picked for the draft.
+    public let picker: ComposerPickerModel
+    /// The `@` mentions picked into the draft; only those still in the text go with the message.
+    public var mentions: [ChatCompose.Mention] {
+        get { picker.mentions }
+        set { picker.mentions = newValue }
+    }
     /// The `/` skill picked for the next message.
-    public var skill: String?
+    public var skill: String? {
+        get { picker.skill }
+        set { picker.skill = newValue }
+    }
     /// The routing of a new conversation (nil: automatic).
     public var routing: ChatRouting?
     /// The project of a new conversation.
@@ -57,8 +65,6 @@ public final class ChatComposerModel {
     /// The shell holds files of its own that go with the next send (the phone's staged pills, uploaded by its client):
     /// a saved chat may then send them with no text, as it may its own `attachments`.
     public var hasShellAttachments = false
-    /// The `/` picker's catalog, read once.
-    private var skillCatalog: [ChatSkill]?
     public private(set) var notice: String?
     /// Files being attached (their names) and attachments being removed: the chips show it.
     public private(set) var importing: [String] = []
@@ -66,9 +72,27 @@ public final class ChatComposerModel {
     /// A send waits for the files attached just before it.
     public private(set) var isWaitingForAttachments = false
     private var importWaiters: [CheckedContinuation<Void, Never>] = []
+    /// The last send the engine never answered, and what it carried: Send again with the same content reuses its
+    /// `client_key`, so the engine answers the first turn instead of starting a second (final review M1).
+    @ObservationIgnored private var unanswered: (key: String, content: SentContent)?
+
+    /// What a send carries, to tell a resend of the same message from a new one.
+    private struct SentContent: Equatable {
+        let draft: String
+        let quotes: [ChatQuoteDraft]
+        let attachmentIDs: [Int64]
+        let mentions: [ChatCompose.Mention]
+        let skill: String?
+        let editing: Int64?
+    }
 
     public init(conversation: ChatConversationModel) {
         self.conversation = conversation
+        let client = conversation.client
+        picker = ComposerPickerModel(
+            searchEntities: { query in await Self.search(entities: query, client: client) },
+            skills: { await Self.skills(client: client) }
+        )
     }
 
     private var client: any ChatClient { conversation.client }
@@ -114,13 +138,20 @@ public final class ChatComposerModel {
         guard canSend else { return false }
         isSending = true
         defer { isSending = false }
+        var importRefusal: String?
         if !importing.isEmpty {
-            // The files dropped or pasted just before Send go with it.
+            // The files dropped or pasted just before Send go with it; a refused one leaves its reason.
+            let before = notice
             isWaitingForAttachments = true
             await withCheckedContinuation { importWaiters.append($0) }
             isWaitingForAttachments = false
+            if notice != before { importRefusal = notice }
         }
         let sentDraft = draft
+        let liveMentions = ComposerPickerModel.liveMentions(text: draft, mentions: mentions)
+        let content = SentContent(draft: draft, quotes: quotes, attachmentIDs: attachments.map(\.id),
+                                  mentions: liveMentions, skill: skill, editing: editing)
+        let clientKey = unanswered?.content == content ? unanswered?.key ?? UUID().uuidString : UUID().uuidString
         let text = sendText ?? ""
         // A client that creates the chat with its first turn sends conversation 0 (the send is kept from the start).
         let createsOnTurn = conversation.conversationID == nil && client.createsConversationOnTurn
@@ -138,27 +169,30 @@ public final class ChatComposerModel {
             text: text,
             attachmentIDs: attachments.map(\.id),
             routing: routing,
-            compose: skill == nil && mentions.isEmpty ? nil : ChatCompose(skill: skill, mentions: mentions),
+            compose: skill == nil && liveMentions.isEmpty ? nil : ChatCompose(skill: skill, mentions: liveMentions),
             screenContext: screenContext,
-            clientKey: UUID().uuidString,
+            clientKey: clientKey,
             projectID: createsOnTurn ? projectID : nil,
             draft: ChatTurnDraft(text: draft, quotes: quotes.map(\.quote))
         )
+        unanswered = (clientKey, content)
         let echo = await conversation.sendTurn(request)
         if case .applied(.turn(let started))? = echo, let created = started.conversationID, conversation.conversationID == nil {
             conversation.adopt(created)
         }
         switch echo {
         case .applied?:
-            notice = nil
+            unanswered = nil
+            notice = importRefusal
             draft = Self.remainder(of: draft, after: sentDraft)
             quotes = []
             attachments = []
-            mentions = []
-            skill = nil
+            picker.reset()
             editing = nil
             return true
         case let .refused(code, message)?:
+            // Unreachable past the patience: the engine may still have taken it, so the key is kept for a resend.
+            if code != ChatConversationModel.unreachableCode { unanswered = nil }
             notice = ChatConversationModel.refusalLine(code: code, message: message)
             return false
         case nil:
@@ -225,7 +259,7 @@ public final class ChatComposerModel {
             case .applied:
                 break
             case let .refused(code, message):
-                notice = ChatConversationModel.refusalLine(code: code, message: message)
+                notice = "\(name): " + ChatConversationModel.refusalLine(code: code, message: message)
             }
         } catch {
             notice = ChatConversationModel.couldNotSend
@@ -275,44 +309,26 @@ public final class ChatComposerModel {
         }
     }
 
-    /// The `@` picker's hits.
+    /// The `@` picker's hits (`entity_search`).
     public func search(entities query: String) async -> [ChatEntityHit] {
+        await Self.search(entities: query, client: client)
+    }
+
+    private static func search(entities query: String, client: any ChatClient) async -> [ChatEntityHit] {
         guard case .applied(.entities(let hits))? = try? await client.send(.entitySearch(query: query, kinds: [])) else {
             return []
         }
         return hits
     }
 
-    /// The `/` picker's skills.
+    /// The `/` picker's skills (`skills_list`).
     public func skills() async -> [ChatSkill] {
+        await Self.skills(client: client)
+    }
+
+    private static func skills(client: any ChatClient) async -> [ChatSkill] {
         guard case .applied(.skills(let skills))? = try? await client.send(.skillsList) else { return [] }
         return skills
-    }
-
-    /// The skills the `/` picker offers for the `/query` at `cursor` (a `/` at the start of the message, spec §6.4):
-    /// the catalog is read once per composer (`skills_list`), then filtered by the typed prefix. Empty when no `/`
-    /// trigger is active.
-    public func skillHits(cursor: Int) async -> [ChatSkill] {
-        guard let trigger = MentionTokenizer.activeSkill(text: draft, cursor: cursor) else { return [] }
-        if skillCatalog == nil {
-            let loaded = await skills()
-            if !loaded.isEmpty { skillCatalog = loaded }
-        }
-        return (skillCatalog ?? []).filter { trigger.query.isEmpty || $0.name.hasPrefix(trigger.query) }
-    }
-
-    /// Picks a skill: it rides with the next message, and the `/query` leaves the text (the Mac's picker rule).
-    /// Returns the caret after the edit.
-    public func pick(skill picked: ChatSkill, cursor: Int) -> Int {
-        guard let trigger = MentionTokenizer.activeSkill(text: draft, cursor: cursor) else { return cursor }
-        skill = picked.name
-        let edit = MentionTokenizer.replace(trigger, in: draft, cursor: cursor, with: "")
-        draft = edit.text
-        return edit.cursor
-    }
-
-    public func clearSkill() {
-        skill = nil
     }
 
     /// Adds a quoted passage of an answer ("Ask about this"): it goes with the next message (`ChatQuoteReply`).
@@ -322,21 +338,17 @@ public final class ChatComposerModel {
         quotes.append(ChatQuoteDraft(quote: trimmed, comment: ""))
     }
 
-    /// Picks a mention: the `@query` at `cursor` becomes `@Label`.
-    public func pick(_ hit: ChatEntityHit, cursor: Int) -> Int {
-        guard let trigger = MentionTokenizer.activeMention(text: draft, cursor: cursor) else { return cursor }
-        let edit = MentionTokenizer.replace(trigger, in: draft, cursor: cursor, with: "@\(hit.label) ")
-        draft = edit.text
-        if !mentions.contains(where: { $0.kind == hit.kind && $0.id == hit.id }) {
-            mentions.append(ChatCompose.Mention(kind: hit.kind, id: hit.id, label: hit.label))
-        }
-        return edit.cursor
-    }
-
     /// Starts editing an owner message: its words go into the field (the engine keeps its skill and mentions).
     public func beginEditing(_ message: ChatFeed.Message) {
         editing = message.id
         draft = ChatOwnerText.displayParts(message.text).body
+    }
+
+    /// ↑ in an empty field: edits the last owner message, never while a turn runs.
+    public func beginEditingLast() {
+        guard !conversation.isTurnRunning,
+              let last = conversation.messages.last(where: { $0.role == "user" }) else { return }
+        beginEditing(last)
     }
 
     public func cancelEditing() {

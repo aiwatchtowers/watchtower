@@ -170,18 +170,22 @@ final class ChatConversationModelTests: XCTestCase {
         let catalog = [ChatSkill(name: "review", description: "Review a PR"), ChatSkill(name: "plan", description: "Plan")]
         client.respond { _ in .applied(.skills(catalog)) }
         composer.draft = "/rev"
-        let hits = await composer.skillHits(cursor: 4)
-        XCTAssertEqual(hits.map(\.name), ["review"])
-        XCTAssertEqual(composer.pick(skill: hits[0], cursor: 4), 0)
+        composer.picker.update(text: "/rev", cursor: 4)
+        await composer.picker.searchSettled()
+        XCTAssertEqual(composer.picker.items.map(\.title), ["review"])
+        let edit = composer.picker.accept(index: 0, text: "/rev", cursor: 4)
+        XCTAssertEqual(edit?.cursor, 0)
+        composer.draft = edit?.text ?? ""
         XCTAssertEqual(composer.skill, "review")
         XCTAssertEqual(composer.draft, "")
-        composer.draft = "/"
-        let all = await composer.skillHits(cursor: 1)
-        XCTAssertEqual(all.count, 2)
+        composer.picker.update(text: "/", cursor: 1)
+        await composer.picker.searchSettled()
+        XCTAssertEqual(composer.picker.items.count, 2)
         XCTAssertEqual(client.ops, [.skillsList], "the catalog is read once")
         composer.draft = "summarise the thread"
-        let none = await composer.skillHits(cursor: 5)
-        XCTAssertTrue(none.isEmpty, "no `/` trigger, no picker")
+        composer.picker.update(text: composer.draft, cursor: 5)
+        await composer.picker.searchSettled()
+        XCTAssertFalse(composer.picker.isOpen, "no `/` trigger, no picker")
         await composer.send()
         XCTAssertEqual(turnRequest(client.ops.last)?.compose?.skill, "review")
         XCTAssertNil(composer.skill, "a sent skill is cleared")

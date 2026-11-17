@@ -92,9 +92,10 @@ final class DesignShotsTests: XCTestCase {
     /// The unified chat's new states and baselines (#1822 T0).
     /// The composer's shots and the existing shots that hold a composer (#1822 T13).
     func testComposerShotsRender() throws {
-        let parts = ["composer-", "chat-daemon-", "other-provider", "chat-composer-ollama-capabilities",
-                        "workchat-hold-caption", "spec-review-thread-replying", "chat-project-page-", "embedded-chat-",
-                        "chat-remote-turn-live"]
+        let parts = [
+            "composer-", "chat-daemon-", "other-provider", "chat-composer-ollama-capabilities", "workchat-hold-caption",
+            "spec-review-thread-replying", "chat-project-page-", "embedded-chat-", "chat-remote-turn-live"
+        ]
         try renderShots(DesignShotCatalog.all.filter { shot in parts.contains { shot.name.contains($0) } })
     }
 
