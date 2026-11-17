@@ -55,17 +55,14 @@ final class HomeLinkTests: XCTestCase {
     /// An automation note opens its Inbox card (with its buttons); before
     /// the Inbox exists it falls back to the run.
     func testInboxOutputOpensItsCardOrTheRun() async throws {
-        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
-
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let (output, automation, run) = try await pool.write { db -> (Int64, Int64, Int64) in
-            let automation = try TestDatabase.insertAutomation(db)
-            let run = try TestDatabase.insertAutomationRun(db, automationID: automation)
-            return (try TestDatabase.insertAutomationOutput(db, automationID: automation, runID: run), automation, run)
-        }
+        // Digest's run 1 wrote output 1.
+        let tower = try FeedCaseTransport.seeded("desktop_one_output_of_digest", pool: pool)
+        let (output, automation, run): (Int64, Int64, Int64) = (1, 1, 1)
         let appState = AppState.isolated()
         appState.initActionStrip(dbPool: pool)
+        await appState.actionStripViewModel?.follow(tower)
         appState.openHomeLink(.inboxOutput(id: output, automationID: automation, runID: run))
         XCTAssertEqual(appState.selectedDestination, .inbox)
         for _ in 0..<2000 where appState.actionStripViewModel?.selection == nil { await Task.yield() }

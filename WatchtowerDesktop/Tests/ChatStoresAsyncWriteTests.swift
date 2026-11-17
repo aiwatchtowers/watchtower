@@ -176,17 +176,11 @@ final class ChatStoresAsyncWriteTests: XCTestCase {
     /// buttons wait meanwhile, a second press does nothing, and the card
     /// leaves once the write landed.
     func testAReminderLeavesTheStripOnlyOnceItsDoneLanded() async throws {
-        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
-
-        let id = try await pool.write { db -> Int64 in
-            try db.execute(sql: """
-                INSERT INTO reminders (message_ref, note, remind_at, status)
-                VALUES ('C1@1','call back','2000-01-01T00:00:00Z','pending')
-                """)
-            return db.lastInsertedRowID
-        }
+        // Reminder 1, due; Go's next feed once it is done.
+        let tower = try FeedCaseTransport.seeded("desktop_strip_reminder_done", pool: pool)
+        let id: Int64 = 1
         let strip = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await strip.refresh()
+        await strip.follow(tower)
         XCTAssertEqual(strip.reminderRows.map(\.id), [id])
         let held = HeldWriter(pool)
         defer { held.release() }
@@ -206,22 +200,17 @@ final class ChatStoresAsyncWriteTests: XCTestCase {
     /// A Done that cannot be written keeps the card, says why, and gives
     /// the card its buttons back.
     func testAFailedStripWriteKeepsTheCardAndReEnablesIt() async throws {
-        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
-
-        let id = try await pool.write { db -> Int64 in
-            try db.execute(sql: """
-                INSERT INTO reminders (message_ref, note, remind_at, status)
-                VALUES ('C1@1','call back','2000-01-01T00:00:00Z','pending')
-                """)
-            let id = db.lastInsertedRowID
+        // Reminder 1, due; Go's next feed once it is done (never, here).
+        let tower = try FeedCaseTransport.seeded("desktop_strip_reminder_done", pool: pool)
+        let id: Int64 = 1
+        try await pool.write { db in
             try db.execute(sql: """
                 CREATE TRIGGER fail_reminder BEFORE UPDATE ON reminders
                 BEGIN SELECT RAISE(ABORT, 'disk full'); END
                 """)
-            return id
         }
         let strip = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await strip.refresh()
+        await strip.follow(tower)
 
         await strip.markReminderDone(id)
 

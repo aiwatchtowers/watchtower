@@ -12693,5 +12693,596 @@
       ]
     },
     "desktop": true
+  },
+  {
+    "name": "desktop_actions_view_pending_brief_context",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (1, 'brief_context', 0, '{\"text\":\"Call Vasya\",\"reason\":\"r\"}', 'r', 'main', 1, '', '', 'turn-1', 'pending', '', '', '2026-09-04T10:00:00Z', '', '', '')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 1
+        }
+      ],
+      "cards": [
+        {
+          "id": "a1",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "brief_context",
+            "title": "Brief me",
+            "summary": "{\"text\":\"Call Vasya\",\"reason\":\"r\"}",
+            "args_sha256": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+            "status": "pending",
+            "error": "",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_actions_view_one_artifact",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (1, 'weekly', 'personal', '/tmp/acme/automations/weekly.md', 'Weekly mail roundup', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'New mail', 'Two threads need you.', 'medium', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "o1",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "New mail",
+          "source_line": "Weekly mail roundup",
+          "preview": "Two threads need you.",
+          "stamp": "2026-10-01T09:00:05Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Weekly mail roundup",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "",
+          "body": "Two threads need you.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": []
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_one_output_of_digest",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (1, 'digest', 'personal', '/tmp/acme/automations/digest.md', 'Digest', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'New mail', 'Two threads need you.', 'medium', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "o1",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "New mail",
+          "source_line": "Digest",
+          "preview": "Two threads need you.",
+          "stamp": "2026-10-01T09:00:05Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Digest",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "",
+          "body": "Two threads need you.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": []
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_ideas_note_reacted_decision",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO ideas (id, kind, title, essence, status, source, snooze_until, needs_review, review_reason, owner_rating, rating_comment, last_mention_at, created_at, updated_at, chat_born) VALUES (1, 'note', 'A note', '', 'rejected', 'mined', '', 0, '', 0, '', '', '2026-11-10T09:00:00Z', '2026-11-10T09:00:00Z', 0)",
+      "INSERT INTO ideas (id, kind, title, essence, status, source, snooze_until, needs_review, review_reason, owner_rating, rating_comment, last_mention_at, created_at, updated_at, chat_born) VALUES (2, 'idea', 'Reacted idea', '', 'active', 'owner', '', 0, '', 0, '', '', '2026-11-10T09:00:00Z', '2026-11-10T09:00:00Z', 0)",
+      "INSERT INTO ideas (id, kind, title, essence, status, source, snooze_until, needs_review, review_reason, owner_rating, rating_comment, last_mention_at, created_at, updated_at, chat_born) VALUES (3, 'decision', 'Ship on Fridays', '', 'active', 'mined', '', 0, '', 0, '', '', '2026-11-10T09:00:00Z', '2026-11-10T09:00:00Z', 0)"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "ideas",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Idea finder",
+          "source_line": "",
+          "preview": "",
+          "stamp": "2026-11-10T09:00:00Z",
+          "living": false,
+          "unread": false,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "ideas",
+            "items": [
+              {
+                "ref_kind": "idea",
+                "id": 1,
+                "title": "A note",
+                "subtitle": "Note · rejected",
+                "preview": "",
+                "stamp": "2026-11-10T09:00:00Z",
+                "end": "",
+                "unread": false,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              },
+              {
+                "ref_kind": "idea",
+                "id": 2,
+                "title": "Reacted idea",
+                "subtitle": "Idea · active",
+                "preview": "",
+                "stamp": "2026-11-10T09:00:00Z",
+                "end": "",
+                "unread": false,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              },
+              {
+                "ref_kind": "idea",
+                "id": 3,
+                "title": "Ship on Fridays",
+                "subtitle": "Decision · active",
+                "preview": "",
+                "stamp": "2026-11-10T09:00:00Z",
+                "end": "",
+                "unread": false,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_message_review_please",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, thread_ts, sender_user_id, trigger_type, snippet, permalink, status, priority, ai_reason, resolved_reason, snooze_until, item_class, card_status, why_matters, thread_digest, draft_reply, created_at, updated_at) VALUES (1, 'C001', '1700000000.000100', '', 'U002', 'mention', 'Review please', '', 'pending', 'medium', '', '', '', 'actionable', 'none', '', '', '', '2026-10-21T07:00:00Z', '2026-10-21T07:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "messages",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Messages",
+          "source_line": "Mentions, DMs and replies",
+          "preview": "1 waiting",
+          "stamp": "2026-10-21T07:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [
+            {
+              "kind": "inbox_item",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ],
+          "legacy": {
+            "kind": "messages",
+            "items": [
+              {
+                "ref_kind": "inbox_item",
+                "id": 1,
+                "title": "Review please",
+                "subtitle": "Message",
+                "preview": "",
+                "stamp": "2026-10-21T07:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_owner_known",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO slack_accounts (id, team_id, team_name, team_domain, label, current_user_id, status, error, enabled, search_last_date, created_at) VALUES (1, '', '', '', '', '1:U1', 'ok', '', 1, '', '2026-01-01T00:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "brief-2026-11-16",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Morning brief",
+          "source_line": "Your day · Mon 16 Nov",
+          "preview": "today",
+          "stamp": "2026-11-16T00:00:00Z",
+          "living": false,
+          "unread": false,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "morning_brief",
+            "items": [],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_notification_track_and_owner",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO tracks (id, text, context, category, ownership, priority, tags, channel_ids, source_refs, has_updates, participants, requester_name, blocking, decision_summary, decision_options, sub_items, related_digest_ids, model, assignee_user_id, owner_user_id, requester_user_id, created_at, updated_at) VALUES (7, 'Launch', 'Discussed in standup', 'task', 'mine', 'medium', '[]', '[\"C001\"]', '[]', 0, '[]', '', '', '', '[]', '[]', '[]', 'haiku', '', '', '', '2026-11-16T08:00:00Z', '2026-11-16T08:00:00Z')",
+      "INSERT INTO slack_accounts (id, team_id, team_name, team_domain, label, current_user_id, status, error, enabled, search_last_date, created_at) VALUES (1, '', '', '', '', '1:U1', 'ok', '', 1, '', '2026-01-01T00:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "tracks",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Track my threads",
+          "source_line": "",
+          "preview": "1 unread",
+          "stamp": "2026-11-16T08:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "tracks",
+            "items": [
+              {
+                "ref_kind": "track",
+                "id": 7,
+                "title": "Launch",
+                "subtitle": "Track",
+                "preview": "",
+                "stamp": "2026-11-16T08:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        },
+        {
+          "id": "brief-2026-11-16",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Morning brief",
+          "source_line": "Your day · Mon 16 Nov",
+          "preview": "today",
+          "stamp": "2026-11-16T00:00:00Z",
+          "living": false,
+          "unread": false,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "morning_brief",
+            "items": [],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true
   }
 ]
