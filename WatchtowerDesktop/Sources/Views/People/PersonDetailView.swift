@@ -99,7 +99,7 @@ struct PersonDetailView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer(minLength: Spacing.medium)
-            if let onStopCard, !confirmingStop {
+            if onStopCard != nil, !confirmingStop {
                 Button(PeopleCardCopy.stopCard) { confirmingStop = true }
                     .buttonStyle(.kitQuiet)
                     .disabled(isStopPending)

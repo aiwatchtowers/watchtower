@@ -35,7 +35,7 @@ struct PeopleListView: View {
                                     if !vm.isCardStopped(userID), selectedUserID == userID { selectedUserID = nil }
                                 }
                             },
-                            onDismissError: { vm.dismissCardActionError() },
+                            onDismissError: { vm.dismissCardActionError(for: userID) },
                             isPending: vm.isStopPending(userID),
                             actionError: vm.cardActionError(for: userID)
                         )
@@ -58,7 +58,7 @@ struct PeopleListView: View {
                             onStopCard: userID == vm.currentUserID
                                 ? nil
                                 : { Task { await vm.stopCard(userID: userID) } },
-                            onDismissError: { vm.dismissCardActionError() },
+                            onDismissError: { vm.dismissCardActionError(for: userID) },
                             isStopPending: vm.isStopPending(userID),
                             actionError: vm.cardActionError(for: userID)
                         )
@@ -124,12 +124,22 @@ struct PeopleListView: View {
             statsAndSearch(vm)
             Divider()
             if vm.cards.isEmpty, vm.stoppedPeopleIDs.isEmpty, let error = vm.errorMessage {
-                ErrorView(title: "Error", message: error, actionTitle: "Retry") { vm.load() }
+                ErrorView(title: "Error", message: error, actionTitle: PeopleCardCopy.retry) { vm.load() }
             } else if vm.cards.isEmpty, vm.stoppedPeopleIDs.isEmpty {
                 Self.emptyState(context: appState.emptyStateContext)
             } else {
                 if let error = vm.errorMessage {
-                    WriteErrorBanner(message: error) { vm.errorMessage = nil }
+                    if vm.loadFailed {
+                        // The stopped rows stay reachable; the reload is one press away.
+                        HStack(spacing: Spacing.regular) {
+                            WriteErrorBanner(message: error, onClose: nil)
+                            Button(PeopleCardCopy.retry) { vm.load() }
+                                .buttonStyle(.kitSecondary)
+                                .padding(.trailing, Spacing.medium)
+                        }
+                    } else {
+                        WriteErrorBanner(message: error) { vm.errorMessage = nil }
+                    }
                 }
                 userListScrollView(vm)
             }

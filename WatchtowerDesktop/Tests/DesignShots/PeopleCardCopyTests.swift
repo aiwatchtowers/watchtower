@@ -38,6 +38,7 @@ final class PeopleCardCopyTests: XCTestCase {
         XCTAssertEqual(PeopleCardCopy.connectionsTab, "Connections")
         XCTAssertEqual(PeopleCardCopy.viewPickerTitle, "View")
         XCTAssertEqual(PeopleCardCopy.close, "Close")
+        XCTAssertEqual(PeopleCardCopy.retry, "Retry")
         XCTAssertEqual(PeopleCardCopy.profileContextTitle, "How the system understands you")
         XCTAssertEqual(PeopleCardCopy.insufficientData,
                        "Not enough data for full analysis. Results will improve as more messages are collected.")

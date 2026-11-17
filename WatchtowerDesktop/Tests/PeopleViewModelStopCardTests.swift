@@ -36,18 +36,21 @@ final class PeopleViewModelStopCardTests: XCTestCase {
         private var calls: [[String]] = []
         private let pool: DatabasePool
         private let failure: Error?
+        private let failingUser: String?
 
-        init(pool: DatabasePool, failure: Error? = nil) {
+        /// `failure` hits every call, or only `failingUser`'s when given.
+        init(pool: DatabasePool, failure: Error? = nil, failingUser: String? = nil) {
             self.pool = pool
             self.failure = failure
+            self.failingUser = failingUser
         }
 
         var argsSeen: [[String]] { lock.withLock { calls } }
 
         func run(args: [String]) async throws -> Data {
             lock.withLock { calls.append(args) }
-            if let failure { throw failure }
             let userID = args[3]
+            if let failure, failingUser == nil || failingUser == userID { throw failure }
             let excluded = args[1] == "exclude"
             try await pool.write { db in
                 if excluded {
@@ -144,6 +147,53 @@ final class PeopleViewModelStopCardTests: XCTestCase {
         XCTAssertNil(vm.errorMessage, "not the list's load error, so no Retry swallows it")
         let message = try XCTUnwrap(vm.cardActionError(for: "1:UDANA"))
         XCTAssertTrue(message.hasPrefix(PeopleCardCopy.actionFailed(stopping: false, "")), message)
+    }
+
+    /// One person's success does not clear another person's failure; a
+    /// dismiss clears only that person's.
+    func testCardActionErrorsArePerPerson() async throws {
+        try await dbManager.dbPool.write { db in
+            try TestDatabase.insertPeopleCard(db, userID: "1:UBOB")
+        }
+        let runner = PeopleCLIStandIn(
+            pool: dbManager.dbPool,
+            failure: CLIRunnerError.nonZeroExit(code: 1, stderr: "database is locked"),
+            failingUser: "1:UDANA"
+        )
+        let vm = PeopleViewModel(dbManager: dbManager, cliRunner: runner)
+        vm.load()
+
+        await vm.stopCard(userID: "1:UDANA")
+        await vm.stopCard(userID: "1:UBOB")
+
+        XCTAssertNotNil(vm.cardActionError(for: "1:UDANA"), "Bob's success keeps Alice's failure")
+        XCTAssertNil(vm.cardActionError(for: "1:UBOB"))
+        XCTAssertTrue(vm.isCardStopped("1:UBOB"))
+
+        await vm.stopCard(userID: "1:UDANA")  // fails again
+        vm.dismissCardActionError(for: "1:UBOB")
+        XCTAssertNotNil(vm.cardActionError(for: "1:UDANA"), "a dismiss for Bob leaves Alice's")
+        vm.dismissCardActionError(for: "1:UDANA")
+        XCTAssertNil(vm.cardActionError(for: "1:UDANA"))
+    }
+
+    /// A failed reload with stopped people loaded: the cards go, the stopped
+    /// rows stay, and the list knows to offer Retry.
+    func testFailedReloadKeepsStoppedAndOffersRetry() async throws {
+        try await dbManager.dbPool.write { db in
+            try db.execute(sql: "INSERT INTO people_card_exclusions (user_id) VALUES ('1:ULEE')")
+        }
+        let vm = PeopleViewModel(dbManager: dbManager, cliRunner: nil)
+        vm.load()
+        XCTAssertFalse(vm.loadFailed)
+
+        try await dbManager.dbPool.write { db in try db.execute(sql: "DROP TABLE people_cards") }
+        vm.load()
+
+        XCTAssertTrue(vm.loadFailed)
+        XCTAssertNotNil(vm.errorMessage)
+        XCTAssertTrue(vm.cards.isEmpty)
+        XCTAssertEqual(vm.stoppedPeople, ["1:ULEE"], "the stopped rows stay reachable")
     }
 
     /// Stopping a card while an older window is shown keeps that window.

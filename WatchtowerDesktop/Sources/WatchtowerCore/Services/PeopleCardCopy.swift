@@ -45,6 +45,7 @@ public enum PeopleCardCopy {
     public static let connectionsTab = "Connections"
     public static let viewPickerTitle = "View"
     public static let close = "Close"
+    public static let retry = "Retry"
     public static let profileContextTitle = "How the system understands you"
     public static let insufficientData = "Not enough data for full analysis. Results will improve as more "
         + "messages are collected."

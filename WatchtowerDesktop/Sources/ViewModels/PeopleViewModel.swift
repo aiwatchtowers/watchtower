@@ -25,12 +25,11 @@ final class PeopleViewModel {
     private(set) var stoppedPeopleIDs: Set<String> = []
     /// The last Stop card / Make cards again failure, shown on that
     /// person's view.
-    private(set) var cardActionError: CardActionError?
-
-    struct CardActionError: Equatable {
-        let userID: String
-        let message: String
-    }
+    /// Stop card / Make cards again failures by user id, each shown on
+    /// that person's view until it succeeds or is dismissed.
+    private(set) var cardActionErrors: [String: String] = [:]
+    /// The last `load()` failed: the list offers Retry.
+    private(set) var loadFailed = false
     private let dbManager: DatabaseManager
     @ObservationIgnored private let cliRunner: (any CLIRunnerProtocol)?
     private var observationTask: Task<Void, Never>?
@@ -131,9 +130,11 @@ final class PeopleViewModel {
             stoppedPeopleIDs = result.8
             selectedWindow = result.9
             errorMessage = nil
+            loadFailed = false
         } catch {
             cards = []
             errorMessage = error.localizedDescription
+            loadFailed = true
         }
         isLoading = false
     }
@@ -204,11 +205,11 @@ final class PeopleViewModel {
 
     /// The failure of this person's last Stop card / Make cards again.
     func cardActionError(for userID: String) -> String? {
-        cardActionError?.userID == userID ? cardActionError?.message : nil
+        cardActionErrors[userID]
     }
 
-    func dismissCardActionError() {
-        cardActionError = nil
+    func dismissCardActionError(for userID: String) {
+        cardActionErrors[userID] = nil
     }
 
     /// Stop card or Make cards again for this person is running: its button waits.
@@ -242,13 +243,10 @@ final class PeopleViewModel {
             // The CLI answers ok or exits non-zero; an answer that does not
             // decode is a failure too.
             _ = try JSONDecoder().decode(ExcludeAnswer.self, from: data)
-            cardActionError = nil
+            cardActionErrors[userID] = nil
             load()
         } catch {
-            cardActionError = CardActionError(
-                userID: userID,
-                message: PeopleCardCopy.actionFailed(stopping: stopped, error.localizedDescription)
-            )
+            cardActionErrors[userID] = PeopleCardCopy.actionFailed(stopping: stopped, error.localizedDescription)
         }
     }
 
