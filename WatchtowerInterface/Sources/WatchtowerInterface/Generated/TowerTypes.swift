@@ -2597,6 +2597,11 @@ public struct RefFacts: Codable, Hashable, Sendable {
     public var reply: Bool
     public var replyWaiting: Bool
     public var link: String
+    public var triggerType: String
+    public var custom: Bool
+    public var linkedTargetID: Int64
+    public var ideaKind: String
+    public var ideaStatus: String
 
     public init(
         kind: RefKind,
@@ -2605,7 +2610,12 @@ public struct RefFacts: Codable, Hashable, Sendable {
         waits: Bool,
         reply: Bool,
         replyWaiting: Bool,
-        link: String
+        link: String,
+        triggerType: String,
+        custom: Bool,
+        linkedTargetID: Int64,
+        ideaKind: String,
+        ideaStatus: String
     ) {
         self.kind = kind
         self.id = id
@@ -2614,6 +2624,11 @@ public struct RefFacts: Codable, Hashable, Sendable {
         self.reply = reply
         self.replyWaiting = replyWaiting
         self.link = link
+        self.triggerType = triggerType
+        self.custom = custom
+        self.linkedTargetID = linkedTargetID
+        self.ideaKind = ideaKind
+        self.ideaStatus = ideaStatus
     }
 
     enum CodingKeys: String, CodingKey {
@@ -2624,6 +2639,11 @@ public struct RefFacts: Codable, Hashable, Sendable {
         case reply
         case replyWaiting = "reply_waiting"
         case link
+        case triggerType = "trigger_type"
+        case custom
+        case linkedTargetID = "linked_target_id"
+        case ideaKind = "idea_kind"
+        case ideaStatus = "idea_status"
     }
 }
 

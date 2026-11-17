@@ -80,7 +80,12 @@
           "waits": true,
           "reply": false,
           "reply_waiting": false,
-          "link": ""
+          "link": "",
+          "trigger_type": "",
+          "custom": true,
+          "linked_target_id": 4,
+          "idea_kind": "",
+          "idea_status": ""
         }
       ],
       "link": "https://example.com/thread"

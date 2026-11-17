@@ -26,6 +26,10 @@ type refState struct {
 	replyWaiting map[int64]bool
 	// links are an inbox item's permalink and a reminder's Slack message.
 	links map[ref]string
+	// rows are the facts the Mac's row buttons read: an inbox item's
+	// trigger, a track's custom origin and linked target, an idea's kind
+	// and status.
+	rows map[ref]api.RefFacts
 }
 
 // readRefState reads refs' records at now: one query per kind present.
@@ -34,7 +38,7 @@ type refState struct {
 // verdict.
 func readRefState(ctx context.Context, tx *sql.Tx, refs []ref, now time.Time) (refState, error) {
 	st := refState{shown: map[ref]bool{}, waits: map[ref]bool{}, reply: map[int64]bool{},
-		replyWaiting: map[int64]bool{}, links: map[ref]string{}}
+		replyWaiting: map[int64]bool{}, links: map[ref]string{}, rows: map[ref]api.RefFacts{}}
 	ids := map[api.RefKind][]int64{}
 	seen := map[ref]bool{}
 	for _, r := range refs {
@@ -57,7 +61,8 @@ func readRefState(ctx context.Context, tx *sql.Tx, refs []ref, now time.Time) (r
 				FROM inbox_items WHERE id IN (` + marks + `)`
 			args = append([]any{nowUTC}, args...)
 		case api.RefTrack:
-			query = `SELECT id, dismissed_at = '' AND read_at IS NULL FROM tracks WHERE id IN (` + marks + `)`
+			query = `SELECT id, dismissed_at = '' AND read_at IS NULL, origin = 'custom', COALESCE(linked_target_id, 0)
+				FROM tracks WHERE id IN (` + marks + `)`
 		case api.RefReminder:
 			query = `SELECT id, status = 'pending' AND remind_at <= ?, message_ref FROM reminders WHERE id IN (` + marks + `)`
 			args = append([]any{nowUTC}, args...)
@@ -65,7 +70,7 @@ func readRefState(ctx context.Context, tx *sql.Tx, refs []ref, now time.Time) (r
 			query = `SELECT id, ` + db.AwaitingOwnerClause + ` FROM agent_actions WHERE id IN (` + marks + `)`
 		case api.RefIdea:
 			query = `SELECT id, status NOT IN ('merged', 'superseded') AND NOT ` + ideaSnoozedClause + `,
-				(status = 'proposed' OR needs_review = 1) AND (kind != 'decision' OR chat_born = 1)
+				(status = 'proposed' OR needs_review = 1) AND (kind != 'decision' OR chat_born = 1), kind, status
 				FROM ideas WHERE id IN (` + marks + `)`
 			args = append([]any{now.Format("2006-01-02"), nowUTC}, args...)
 		default:
@@ -100,6 +105,7 @@ func (st refState) scan(kind api.RefKind, rows *sql.Rows) error {
 		r.ID = id
 		st.reply[id] = replyTool(trigger, permalink, channel) != ""
 		st.links[r] = permalink
+		st.rows[r] = api.RefFacts{TriggerType: trigger}
 	case api.RefReminder:
 		var message string
 		if err := rows.Scan(&id, &open, &message); err != nil {
@@ -107,12 +113,22 @@ func (st refState) scan(kind api.RefKind, rows *sql.Rows) error {
 		}
 		r.ID = id
 		st.links[r] = slackMessageURL(message)
-	case api.RefIdea:
-		var verdict bool
-		if err := rows.Scan(&id, &open, &verdict); err != nil {
+	case api.RefTrack:
+		var custom bool
+		var target int64
+		if err := rows.Scan(&id, &open, &custom, &target); err != nil {
 			return err
 		}
 		r.ID = id
+		st.rows[r] = api.RefFacts{Custom: custom, LinkedTargetID: target}
+	case api.RefIdea:
+		var verdict bool
+		var ideaKind, status string
+		if err := rows.Scan(&id, &open, &verdict, &ideaKind, &status); err != nil {
+			return err
+		}
+		r.ID = id
+		st.rows[r] = api.RefFacts{IdeaKind: ideaKind, IdeaStatus: status}
 		st.shown[r] = open
 		st.waits[r] = open && verdict
 		return nil
@@ -176,7 +192,8 @@ func replyTool(trigger, permalink, channelID string) string {
 }
 
 // refFacts are a document's row refs as the feed sends them, each once,
-// in document order: shown (open), waits, Reply and link. Closed refs stay
+// in document order: shown (open), waits, Reply, link and the row buttons'
+// facts. Closed refs stay
 // listed; the screen models hide their rows by Open.
 func (st refState) refFacts(refs []ref) []api.RefFacts {
 	out := []api.RefFacts{}
@@ -186,7 +203,8 @@ func (st refState) refFacts(refs []ref) []api.RefFacts {
 			continue
 		}
 		seen[r] = true
-		f := api.RefFacts{Kind: r.Kind, ID: r.ID, Open: st.shown[r], Waits: st.waits[r], Link: st.links[r]}
+		f := st.rows[r]
+		f.Kind, f.ID, f.Open, f.Waits, f.Link = r.Kind, r.ID, st.shown[r], st.waits[r], st.links[r]
 		if r.Kind == api.RefInboxItem {
 			f.Reply, f.ReplyWaiting = st.reply[r.ID], st.replyWaiting[r.ID]
 		}
