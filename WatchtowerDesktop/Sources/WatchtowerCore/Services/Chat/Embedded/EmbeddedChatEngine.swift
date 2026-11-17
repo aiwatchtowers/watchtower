@@ -538,6 +538,14 @@ package final class EmbeddedChatEngine {
                     fail(EmbeddedChatErrorClassifier.classify(failure))
                     continue
                 }
+                if case .saveError(let sentence) = event {
+                    // The turn's process could not write its reply: shown as
+                    // the main chat shows its session's save_error, and kept
+                    // past the turn's end (raised while it ran).
+                    log("save_error: \(sentence)")
+                    bannerError = sentence
+                    continue
+                }
                 if case let .routing(provider, model, _) = event {
                     let store = store
                     await writes.run { [self] in

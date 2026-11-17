@@ -235,6 +235,13 @@ func (p *sessionPersister) forward(line []byte) bool {
 
 func (p *sessionPersister) emit(e chat.Event) { _ = p.out.Emit(e) }
 
+// The save_error sentences of both persisting commands (`ai session` and
+// `ai query`); the Mac shows them as is.
+const (
+	saveReplyFailed     = "Couldn't save the reply"
+	finalizeReplyFailed = "Couldn't finalize the reply"
+)
+
 // saveError tells the Mac a write of the turn failed, as the Desktop's own
 // writer showed it ("Couldn't save the reply: …"); the stderr log keeps the
 // redacted detail.
@@ -336,7 +343,7 @@ func (p *sessionPersister) apply(ev chat.Event) {
 			// the owner's to see.
 			cur.retry = func() error { return cur.t.Apply(ev) }
 		} else {
-			p.saveError(cur.st.TurnID, "Couldn't save the reply", err)
+			p.saveError(cur.st.TurnID, saveReplyFailed, err)
 		}
 	}
 	p.checkDone()
@@ -399,7 +406,7 @@ func (p *sessionPersister) onTick() {
 			return
 		} else if err != nil {
 			stderrLogf("ai session: conversation %d: the final write failed again (%s); the lease goes stale", p.conv, logredact.Full(err))
-			p.saveError(cur.st.TurnID, "Couldn't finalize the reply", err)
+			p.saveError(cur.st.TurnID, finalizeReplyFailed, err)
 			p.letGo()
 			return
 		}
@@ -416,7 +423,7 @@ func (p *sessionPersister) onTick() {
 			return
 		} else if err != nil {
 			stderrLogf("ai session: conversation %d: flushing failed: %s", p.conv, logredact.Full(err))
-			p.saveError(cur.st.TurnID, "Couldn't save the reply", err)
+			p.saveError(cur.st.TurnID, saveReplyFailed, err)
 		}
 	}
 	p.watchLease(cur)
@@ -493,7 +500,7 @@ func (p *sessionPersister) finalize(status string, f *chatstore.Failure) {
 	}
 	if err != nil && !errors.Is(err, chatstore.ErrConversationGone) {
 		stderrLogf("ai session: conversation %d: finalizing turn %s failed: %s", p.conv, cur.st.TurnID, logredact.Full(err))
-		p.saveError(cur.st.TurnID, "Couldn't finalize the reply", err)
+		p.saveError(cur.st.TurnID, finalizeReplyFailed, err)
 	}
 	p.letGo()
 }
@@ -533,7 +540,19 @@ func checkQueryPersist() error {
 // queryPersist is one `ai query --persist` turn's writer.
 type queryPersist struct {
 	database *db.DB
-	turn     *chatstore.EmbeddedTurn
+	turn     queryTurn
+	// out writes the turn's save_error lines. Its own writer on the same
+	// stdout: the stream's writer calls observer under its lock, and its
+	// lines are whole (one Write each), so the two never interleave.
+	out *chat.EventWriter
+}
+
+// queryTurn is what queryPersist needs of a *chatstore.EmbeddedTurn (a seam
+// for tests that make a write fail).
+type queryTurn interface {
+	Apply(ev chat.Event) error
+	Finalize(status string, f *chatstore.Failure) error
+	Done() bool
 }
 
 // beginQueryPersist writes the turn's starting rows and answers `started`.
@@ -548,28 +567,42 @@ func beginQueryPersist(ctx context.Context, cfg *config.Config, dbPath string, w
 		_ = database.Close()
 		return nil, fmt.Errorf("--persist: your message wasn't sent because it couldn't be saved: %w", err)
 	}
-	_ = chat.NewEventWriter(w).Emit(chat.Event{Type: chat.EventStarted, ConversationID: aiFlagConversation,
+	out := chat.NewEventWriter(w)
+	_ = out.Emit(chat.Event{Type: chat.EventStarted, ConversationID: aiFlagConversation,
 		OwnerMessageID: et.OwnerID, AssistantMessageID: et.MessageID, TurnID: aiFlagTurn})
-	return &queryPersist{database: database, turn: et}, nil
+	return &queryPersist{database: database, turn: et, out: out}, nil
+}
+
+// saveError tells the Mac a write of the turn failed, as `ai session
+// --persist` does (sessionPersister.saveError): the embedded chat shows the
+// sentence under the thread. A deleted conversation is no save failure.
+func (q *queryPersist) saveError(what string, err error) {
+	if errors.Is(err, chatstore.ErrConversationGone) {
+		return
+	}
+	_ = q.out.Emit(chat.Event{Type: chat.EventSaveError, TurnID: aiFlagTurn, Message: what + ": " + err.Error()})
 }
 
 // observer folds each written event into the turn; nil without --persist. A
 // failure after the process was told to stop (the embedded chat's Stop is a
 // SIGTERM) is the owner's Stop: the reply ends `partial`, as the engine
-// writes it.
+// writes it. A failed write is logged and answered with save_error.
 func (q *queryPersist) observer(ctx context.Context) func(chat.Event) {
 	if q == nil {
 		return nil
 	}
 	return func(ev chat.Event) {
 		var err error
+		what := saveReplyFailed
 		if ev.Type == chat.EventError && ctx.Err() != nil {
 			err = q.turn.Finalize(chatstore.StatusPartial, nil)
+			what = finalizeReplyFailed
 		} else {
 			err = q.turn.Apply(ev)
 		}
 		if err != nil {
 			stderrLogf("ai query: conversation %d: saving turn %s failed: %s", aiFlagConversation, aiFlagTurn, logredact.Full(err))
+			q.saveError(what, err)
 		}
 	}
 }
@@ -580,7 +613,10 @@ func (q *queryPersist) close() {
 	if !q.turn.Done() {
 		if err := q.turn.Finalize(chatstore.StatusPartial, nil); err != nil {
 			stderrLogf("ai query: conversation %d: finalizing turn %s failed: %s", aiFlagConversation, aiFlagTurn, logredact.Full(err))
+			q.saveError(finalizeReplyFailed, err)
 		}
 	}
-	_ = q.database.Close()
+	if q.database != nil {
+		_ = q.database.Close()
+	}
 }

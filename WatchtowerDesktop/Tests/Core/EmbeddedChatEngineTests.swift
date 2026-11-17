@@ -134,6 +134,22 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertNil(sessionID, "no session is resumed, so its id is not kept (#604 G11)")
     }
 
+    /// `ai query --persist` could not write the reply (`save_error`): the
+    /// embedded chat shows Go's sentence as the main chat does, and it stays
+    /// after the turn ends — the answer is not silently gone on reload.
+    func testAProcessSaveErrorIsShownAndOutlivesTheTurn() async throws {
+        let engine = makeEngine()
+        XCTAssertTrue(engine.send("Hi"))
+        await engine.finished()
+        ai.emit(.text("Answer."), .saveError("Couldn't save the reply: disk I/O error"))
+        expectTrue(await waitForCondition { engine.bannerError != nil })
+        XCTAssertEqual(engine.bannerError, "Couldn't save the reply: disk I/O error", "Go's sentence, no doubled prefix")
+        ai.emit(.done)
+        ai.finish()
+        expectTrue(await waitIdle(engine))
+        XCTAssertEqual(engine.bannerError, "Couldn't save the reply: disk I/O error", "raised while the turn ran: it stays")
+    }
+
     /// `ai query --events v2` (claude and codex): a tool call is a step on the
     /// live row and in `chat_turn_steps` as it happens, the text streamed
     /// before it stays (no reset, CHAT-02), the usage lands on the reply,
