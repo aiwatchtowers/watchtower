@@ -234,19 +234,6 @@ func (h *Handlers) askedAt(r actions.Request) time.Time {
 	return now
 }
 
-// int64sParam is params[name] when it is a JSON array of integers (missing
-// or null = none).
-func int64sParam(r actions.Request, name string) ([]int64, bool) {
-	if isNull(r, name) {
-		return nil, true
-	}
-	var v []int64
-	if err := json.Unmarshal(r.Action.Params[name], &v); err != nil {
-		return nil, false
-	}
-	return v, true
-}
-
 // chatRouting is params.routing: {mode auto|pinned, provider?, model?};
 // nil when absent.
 func chatRouting(r actions.Request) (*chatstore.Routing, bool) {
