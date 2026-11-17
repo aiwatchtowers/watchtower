@@ -419,3 +419,46 @@ func TestReviewBigBranchPromptsRegistered(t *testing.T) {
 		assert.Contains(t, Defaults[id], "From: the ticket of a lane merged into the branch", id)
 	}
 }
+
+// TestPeoplePrompt_HasNoSurveillanceRules pins the no-surveillance people
+// prompts (#1769, A12/A17): each rendered prompt carries one "- Never" rule
+// line naming every forbidden judgment, asks for no red flags and compares
+// nobody with team norms. The versions are bumped so installs re-seed.
+func TestPeoplePrompt_HasNoSurveillanceRules(t *testing.T) {
+	const rule = "- Never infer or mention health, mood, burnout, workload judgments, personal life or protected characteristics, and never give performance verdicts; describe work topics and how to collaborate."
+	for id, floor := range map[string]int{PeopleReduce: 2, PeopleBatch: 2, PeopleTeam: 2} {
+		tmpl := Defaults[id]
+		n := strings.Count(tmpl, "%s")
+		args := make([]any, n)
+		for i := range args {
+			args[i] = fmt.Sprintf("<arg%d>", i)
+		}
+		rendered := fmt.Sprintf(tmpl, args...)
+		require.NotContains(t, rendered, "%!", id)
+
+		var ruleLine string
+		for line := range strings.SplitSeq(rendered, "\n") {
+			if strings.HasPrefix(line, "- Never") && strings.Contains(line, "health") {
+				ruleLine = line
+			}
+		}
+		require.NotEmpty(t, ruleLine, "%s: no '- Never' rule line", id)
+		assert.Equal(t, rule, ruleLine, id)
+		for _, word := range []string{"health", "mood", "burnout", "workload", "personal life", "protected characteristics", "performance"} {
+			assert.Contains(t, ruleLine, word, id)
+		}
+		assert.NotContains(t, rendered, "red_flags", id)
+		assert.NotContains(t, rendered, "TEAM NORMS", id)
+		assert.NotContains(t, rendered, `"attention"`, id)
+		assert.GreaterOrEqual(t, DefaultVersions[id], floor, id)
+	}
+	// The briefing and the day plan read people cards: neither asks for
+	// red flags or volume changes any more.
+	for _, id := range []string{BriefingDaily, DayPlanGenerate} {
+		for _, word := range []string{"red_flag", "red flags", "volume_drop", "volume_spike", "Flag volume"} {
+			assert.NotContains(t, Defaults[id], word, id)
+		}
+	}
+	assert.GreaterOrEqual(t, DefaultVersions[BriefingDaily], 13)
+	assert.GreaterOrEqual(t, DefaultVersions[DayPlanGenerate], 5)
+}

@@ -36,7 +36,7 @@ func (g *recordingGenerator) Generate(_ context.Context, sys, user, _ string) (s
 		}
 		return g.batchResponse, &digest.Usage{}, "", g.batchErr
 	}
-	return `{"summary":"team","attention":[],"tips":[]}`, &digest.Usage{}, "", nil
+	return `{"summary":"team","tips":[]}`, &digest.Usage{}, "", nil
 }
 
 func batchCardJSON(userIDs ...string) string {
@@ -148,10 +148,10 @@ func TestPipeline_ShutdownMidRunIsReported(t *testing.T) {
 	assert.NotContains(t, err.Error(), "no people card produced by AI")
 }
 
-// A resumed window (two users already covered by AI cards) still computes team
-// norms over the whole active population, not just the user left to process —
-// or that user would be compared against themselves.
-func TestPipeline_ResumedWindowKeepsFullTeamNorms(t *testing.T) {
+// A resumed window (two users already covered by AI cards) prompts only for
+// the user left to process, and no prompt compares anyone with team norms
+// (#1769, A12).
+func TestPipeline_ResumedWindowPromptsOnlyRemaining(t *testing.T) {
 	database := testDB(t)
 	from, to := seedLowDataUsers(t, database)
 	seedUser(t, database, "1:U3", "carol")
@@ -166,7 +166,7 @@ func TestPipeline_ResumedWindowKeepsFullTeamNorms(t *testing.T) {
 	_, err := New(database, cfg, first, testLogger()).RunForWindow(context.Background(), from, to)
 	require.NoError(t, err)
 	require.Len(t, first.batchPrompts, 1)
-	require.Contains(t, first.batchPrompts[0], "Team averages (3 people)")
+	assert.NotContains(t, first.batchPrompts[0], "Team averages")
 
 	resumed := &recordingGenerator{batchResponse: batchCardJSON("1:U3")}
 	_, err = New(database, cfg, resumed, testLogger()).RunForWindow(context.Background(), from, to)
@@ -174,5 +174,4 @@ func TestPipeline_ResumedWindowKeepsFullTeamNorms(t *testing.T) {
 	require.Len(t, resumed.batchPrompts, 1)
 	assert.Contains(t, resumed.batchPrompts[0], "(user_id: 1:U3)")
 	assert.NotContains(t, resumed.batchPrompts[0], "(user_id: 1:U1)")
-	assert.Contains(t, resumed.batchPrompts[0], "Team averages (3 people)", "norms cover the whole team, not the remaining user")
 }

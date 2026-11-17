@@ -357,9 +357,6 @@ func (p *Pipeline) gatherAttendeesContext(attendees []attendeeEntry) string {
 		if stats, err := p.db.ComputeUserStats(a.SlackUserID, activityFrom, activityTo); err == nil && stats != nil && stats.MessageCount > 0 {
 			sb.WriteString(fmt.Sprintf("  Activity (7d): %d msgs across %d channels, %d threads started, %d replies\n",
 				stats.MessageCount, stats.ChannelsActive, stats.ThreadsInitiated, stats.ThreadsReplied))
-			if stats.VolumeChangePct != 0 {
-				sb.WriteString(fmt.Sprintf("  Volume change: %.0f%% vs previous week\n", stats.VolumeChangePct))
-			}
 		}
 
 		// Recent situations from digests (last 7 days).

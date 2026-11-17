@@ -31,12 +31,12 @@ const (
 	DefaultFullBatchUsers = 5 // smaller batches for full-data users (more context per user)
 )
 
-// PeopleCardResult is the AI output for a unified people card.
+// PeopleCardResult is the AI output for a unified people card. It has no red
+// flags (#1769, A12): a red_flags key in an old model reply is ignored.
 type PeopleCardResult struct {
 	Summary            string   `json:"summary"`
 	CommunicationStyle string   `json:"communication_style"`
 	DecisionRole       string   `json:"decision_role"`
-	RedFlags           []string `json:"red_flags"`
 	Highlights         []string `json:"highlights"`
 	Accomplishments    []string `json:"accomplishments"`
 	CommunicationGuide string   `json:"communication_guide"`
@@ -44,20 +44,11 @@ type PeopleCardResult struct {
 	Tactics            []string `json:"tactics"`
 }
 
-// TeamSummaryResult is the AI output for team-level summary.
+// TeamSummaryResult is the AI output for team-level summary. It has no
+// attention list (#1769, A12): the stored attention column stays '[]'.
 type TeamSummaryResult struct {
-	Summary   string   `json:"summary"`
-	Attention []string `json:"attention"`
-	Tips      []string `json:"tips"`
-}
-
-// TeamNorms holds average stats across all users.
-type TeamNorms struct {
-	AvgMessages     float64
-	AvgChannels     float64
-	AvgMsgLength    float64
-	AvgThreadsStart float64
-	TotalUsers      int
+	Summary string   `json:"summary"`
+	Tips    []string `json:"tips"`
 }
 
 // BatchCardResult is the AI output for a single user within a batch response.
@@ -66,7 +57,6 @@ type BatchCardResult struct {
 	Summary            string   `json:"summary"`
 	CommunicationStyle string   `json:"communication_style"`
 	DecisionRole       string   `json:"decision_role"`
-	RedFlags           []string `json:"red_flags"`
 	Highlights         []string `json:"highlights"`
 	Accomplishments    []string `json:"accomplishments"`
 	CommunicationGuide string   `json:"communication_guide"`
@@ -322,9 +312,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 		p.lastOutcome = OutcomeNoData
 		return 0, nil
 	}
-	// todo is who still needs a card; team norms stay computed over every
-	// card candidate of the window (allStats), or a resumed window would
-	// compare its remaining users against themselves.
+	// todo is who still needs a card.
 	todo := allStats
 	if len(covered) > 0 {
 		todo = withoutCovered(allStats, covered)
@@ -360,10 +348,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 		return 0, nil
 	}
 
-	teamNorms := computeTeamNorms(allStats)
-
-	p.logger.Printf("people: team norms: %d users, %.0f avg msgs, %d users with situations",
-		teamNorms.TotalUsers, teamNorms.AvgMessages, len(allSituations))
+	p.logger.Printf("people: %d users, %d users with situations", len(allStats), len(allSituations))
 
 	totalUsers := len(todo)
 
@@ -419,7 +404,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 				break
 			}
 			stepStart := time.Now()
-			results, usage, pv, err := p.generateBatchCards(ctx, batch, from, to, teamNorms)
+			results, usage, pv, err := p.generateBatchCards(ctx, batch, from, to)
 			batchDuration := time.Since(stepStart).Seconds()
 
 			if err != nil {
@@ -522,7 +507,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 				break
 			}
 			stepStart := time.Now()
-			results, usage, pv, err := p.generateBatchCards(ctx, batch, from, to, teamNorms)
+			results, usage, pv, err := p.generateBatchCards(ctx, batch, from, to)
 			batchDuration := time.Since(stepStart).Seconds()
 
 			if err != nil {
@@ -535,7 +520,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 				// Fallback: try individual processing for this batch.
 				p.logger.Printf("people: full-data batch error, falling back to individual: %v", err)
 				for _, entry := range batch {
-					if ferr := p.processUser(ctx, entry.stats, from, to, entry.situations, teamNorms); errors.Is(ferr, errCardSkipped) {
+					if ferr := p.processUser(ctx, entry.stats, from, to, entry.situations); errors.Is(ferr, errCardSkipped) {
 						skip(entry.stats.UserID)
 						continue
 					} else if ferr != nil {
@@ -565,7 +550,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 					serr = p.storeBatchCard(ctx, entry.stats, result, from, to, pv, inTokPer, outTokPer)
 				} else {
 					// AI didn't return this user — fallback to individual.
-					serr = p.processUser(ctx, entry.stats, from, to, entry.situations, teamNorms)
+					serr = p.processUser(ctx, entry.stats, from, to, entry.situations)
 				}
 				if errors.Is(serr, errCardSkipped) {
 					skip(entry.stats.UserID)
@@ -709,8 +694,7 @@ const MinSituations = 3
 const MinSituationMessages = 10
 
 func (p *Pipeline) processUser(ctx context.Context, stats db.UserStats, from, to float64,
-	userSituations []db.ChannelSituations,
-	teamNorms *TeamNorms) error {
+	userSituations []db.ChannelSituations) error {
 	// Count total situations for this user
 	totalSituations := 0
 	for _, cs := range userSituations {
@@ -726,7 +710,6 @@ func (p *Pipeline) processUser(ctx context.Context, stats db.UserStats, from, to
 
 	situationsBlock := p.formatSituations(userSituations)
 	statsBlock := p.formatStats(stats)
-	normsBlock := p.formatTeamNorms(teamNorms)
 	relCtx := p.relationshipContext(stats.UserID)
 	prevCardBlock := p.formatPreviousCard(stats.UserID)
 	rawMsgsBlock := p.formatRawMessages(stats.UserID, to)
@@ -742,7 +725,6 @@ func (p *Pipeline) processUser(ctx context.Context, stats db.UserStats, from, to
 		p.languageInstruction(),
 		situationsBlock,
 		statsBlock,
-		normsBlock,
 		prevCardBlock,
 		rawMsgsBlock,
 	)
@@ -774,7 +756,6 @@ func (p *Pipeline) processUser(ctx context.Context, stats db.UserStats, from, to
 		return fmt.Errorf("parsing result: %w", err)
 	}
 
-	redFlags, _ := json.Marshal(result.RedFlags)
 	highlights, _ := json.Marshal(result.Highlights)
 	accomplishments, _ := json.Marshal(result.Accomplishments)
 	tactics, _ := json.Marshal(result.Tactics)
@@ -787,13 +768,9 @@ func (p *Pipeline) processUser(ctx context.Context, stats db.UserStats, from, to
 		ChannelsActive:      stats.ChannelsActive,
 		ThreadsInitiated:    stats.ThreadsInitiated,
 		ThreadsReplied:      stats.ThreadsReplied,
-		AvgMessageLength:    stats.AvgMessageLength,
-		ActiveHoursJSON:     stats.ActiveHoursJSON,
-		VolumeChangePct:     stats.VolumeChangePct,
 		Summary:             result.Summary,
 		CommunicationStyle:  result.CommunicationStyle,
 		DecisionRole:        result.DecisionRole,
-		RedFlags:            string(redFlags),
 		Highlights:          string(highlights),
 		Accomplishments:     string(accomplishments),
 		CommunicationGuide:  result.CommunicationGuide,
@@ -822,12 +799,23 @@ var errCardSkipped = errors.New("person excluded during the run; no card")
 // storeCard writes a card. The write refuses an excluded person atomically
 // (db.ErrPersonExcluded), which storeCard reports as errCardSkipped.
 func (p *Pipeline) storeCard(card db.PeopleCard) error {
+	withoutSurveillanceFields(&card)
 	_, err := p.db.UpsertPeopleCard(card)
 	if errors.Is(err, db.ErrPersonExcluded) {
 		p.logger.Printf("people: %s was excluded during the run; no card", card.UserID)
 		return fmt.Errorf("%s: %w", card.UserID, errCardSkipped)
 	}
 	return err
+}
+
+// withoutSurveillanceFields sets the card's dropped fields to their column
+// defaults (#1769, A12): a card holds no active hours, volume change,
+// average message length or red flags, whatever the caller filled in.
+func withoutSurveillanceFields(card *db.PeopleCard) {
+	card.AvgMessageLength = 0
+	card.ActiveHoursJSON = "{}"
+	card.VolumeChangePct = 0
+	card.RedFlags = "[]"
 }
 
 // createInsufficientCard stores an insufficient_data card with stats only (no AI call).
@@ -840,11 +828,7 @@ func (p *Pipeline) createInsufficientCard(stats db.UserStats, from, to float64) 
 		ChannelsActive:   stats.ChannelsActive,
 		ThreadsInitiated: stats.ThreadsInitiated,
 		ThreadsReplied:   stats.ThreadsReplied,
-		AvgMessageLength: stats.AvgMessageLength,
-		ActiveHoursJSON:  stats.ActiveHoursJSON,
-		VolumeChangePct:  stats.VolumeChangePct,
 		Summary:          "Insufficient data for analysis this period.",
-		RedFlags:         "[]",
 		Highlights:       "[]",
 		Accomplishments:  "[]",
 		Tactics:          "[]",
@@ -856,7 +840,6 @@ func (p *Pipeline) createInsufficientCard(stats db.UserStats, from, to float64) 
 
 // storeBatchCard converts a BatchCardResult to a db.PeopleCard and stores it.
 func (p *Pipeline) storeBatchCard(ctx context.Context, stats db.UserStats, result *BatchCardResult, from, to float64, pv, inTok, outTok int) error {
-	redFlags, _ := json.Marshal(result.RedFlags)
 	highlights, _ := json.Marshal(result.Highlights)
 	accomplishments, _ := json.Marshal(result.Accomplishments)
 	tactics, _ := json.Marshal(result.Tactics)
@@ -869,13 +852,9 @@ func (p *Pipeline) storeBatchCard(ctx context.Context, stats db.UserStats, resul
 		ChannelsActive:     stats.ChannelsActive,
 		ThreadsInitiated:   stats.ThreadsInitiated,
 		ThreadsReplied:     stats.ThreadsReplied,
-		AvgMessageLength:   stats.AvgMessageLength,
-		ActiveHoursJSON:    stats.ActiveHoursJSON,
-		VolumeChangePct:    stats.VolumeChangePct,
 		Summary:            result.Summary,
 		CommunicationStyle: result.CommunicationStyle,
 		DecisionRole:       result.DecisionRole,
-		RedFlags:           string(redFlags),
 		Highlights:         string(highlights),
 		Accomplishments:    string(accomplishments),
 		CommunicationGuide: result.CommunicationGuide,
@@ -892,7 +871,7 @@ func (p *Pipeline) storeBatchCard(ctx context.Context, stats db.UserStats, resul
 }
 
 // generateBatchCards runs a single AI call for multiple low-data users.
-func (p *Pipeline) generateBatchCards(ctx context.Context, entries []batchUserEntry, from, to float64, teamNorms *TeamNorms) ([]BatchCardResult, *digest.Usage, int, error) {
+func (p *Pipeline) generateBatchCards(ctx context.Context, entries []batchUserEntry, from, to float64) ([]BatchCardResult, *digest.Usage, int, error) {
 	fromStr := time.Unix(int64(from), 0).Local().Format("2006-01-02")
 	toStr := time.Unix(int64(to), 0).Local().Format("2006-01-02")
 
@@ -917,15 +896,12 @@ func (p *Pipeline) generateBatchCards(ctx context.Context, entries []batchUserEn
 		usersBlock.WriteString("\n")
 	}
 
-	normsBlock := p.formatTeamNorms(teamNorms)
-
 	tmpl, pv := p.getPrompt(prompts.PeopleBatch)
 	prompt := fmt.Sprintf(tmpl,
 		fromStr, toStr,
 		p.formatProfileContext(),
 		p.languageInstruction(),
 		p.languageInstruction(),
-		normsBlock,
 		usersBlock.String(),
 	)
 
@@ -1052,12 +1028,7 @@ func (p *Pipeline) generateTeamSummary(ctx context.Context, from, to float64) er
 		userName := p.userName(c.UserID)
 		fmt.Fprintf(&sb, "=== @%s ===\n", userName)
 		fmt.Fprintf(&sb, "Style: %s | Decision role: %s\n", c.CommunicationStyle, c.DecisionRole)
-		fmt.Fprintf(&sb, "Messages: %d | Channels: %d | Volume: %+.0f%%\n",
-			c.MessageCount, c.ChannelsActive, c.VolumeChangePct)
 		fmt.Fprintf(&sb, "Summary: %s\n", sanitize(c.Summary))
-		if c.RedFlags != "" && c.RedFlags != "[]" {
-			fmt.Fprintf(&sb, "Red flags: %s\n", sanitize(c.RedFlags))
-		}
 		if c.Highlights != "" && c.Highlights != "[]" {
 			fmt.Fprintf(&sb, "Highlights: %s\n", sanitize(c.Highlights))
 		}
@@ -1089,13 +1060,12 @@ func (p *Pipeline) generateTeamSummary(ctx context.Context, from, to float64) er
 		return fmt.Errorf("parsing team summary: %w", err)
 	}
 
-	attention, _ := json.Marshal(result.Attention)
 	tips, _ := json.Marshal(result.Tips)
 	s := db.PeopleCardSummary{
 		PeriodFrom:    from,
 		PeriodTo:      to,
 		Summary:       result.Summary,
-		Attention:     string(attention),
+		Attention:     "[]",
 		Tips:          string(tips),
 		Model:         "auto",
 		PromptVersion: pv,
@@ -1132,9 +1102,6 @@ func (p *Pipeline) formatSituations(channelSituations []db.ChannelSituations) st
 				}
 				fmt.Fprintf(&sb, "    Participants: %s\n", strings.Join(parts, ", "))
 			}
-			if len(sit.RedFlags) > 0 {
-				fmt.Fprintf(&sb, "    Red flags: %s\n", strings.Join(sit.RedFlags, "; "))
-			}
 			if len(sit.Observations) > 0 {
 				fmt.Fprintf(&sb, "    Observations: %s\n", strings.Join(sit.Observations, "; "))
 			}
@@ -1150,9 +1117,6 @@ func (p *Pipeline) formatStats(stats db.UserStats) string {
 	if stats.ThreadsInitiated > 0 || stats.ThreadsReplied > 0 {
 		fmt.Fprintf(&sb, "Threads started: %d, replied: %d\n", stats.ThreadsInitiated, stats.ThreadsReplied)
 	}
-	fmt.Fprintf(&sb, "Avg message length: %.0f chars\n", stats.AvgMessageLength)
-	fmt.Fprintf(&sb, "Volume change vs previous period: %+.0f%%\n", stats.VolumeChangePct)
-	fmt.Fprintf(&sb, "Active hours (UTC): %s\n", stats.ActiveHoursJSON)
 	return sb.String()
 }
 
@@ -1168,9 +1132,6 @@ func (p *Pipeline) formatPreviousCard(userID string) string {
 	}
 	if card.CommunicationGuide != "" {
 		fmt.Fprintf(&sb, "Communication guide: %s\n", sanitize(card.CommunicationGuide))
-	}
-	if card.RedFlags != "" && card.RedFlags != "[]" {
-		fmt.Fprintf(&sb, "Red flags: %s\n", sanitize(card.RedFlags))
 	}
 	if card.Highlights != "" && card.Highlights != "[]" {
 		fmt.Fprintf(&sb, "Highlights: %s\n", sanitize(card.Highlights))
@@ -1217,32 +1178,6 @@ func (p *Pipeline) loadReactionsMultiChannel(msgs []db.Message) map[string][]db.
 		maps.Copy(result, rm)
 	}
 	return result
-}
-
-func (p *Pipeline) formatTeamNorms(tn *TeamNorms) string {
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "Team averages (%d people): %.0f msgs/person, %.0f channels, %.0f char avg msg, %.0f threads started\n",
-		tn.TotalUsers, tn.AvgMessages, tn.AvgChannels, tn.AvgMsgLength, tn.AvgThreadsStart)
-	return sb.String()
-}
-
-func computeTeamNorms(allStats []db.UserStats) *TeamNorms {
-	tn := &TeamNorms{TotalUsers: len(allStats)}
-	if len(allStats) == 0 {
-		return tn
-	}
-	for _, s := range allStats {
-		tn.AvgMessages += float64(s.MessageCount)
-		tn.AvgChannels += float64(s.ChannelsActive)
-		tn.AvgMsgLength += s.AvgMessageLength
-		tn.AvgThreadsStart += float64(s.ThreadsInitiated)
-	}
-	n := float64(len(allStats))
-	tn.AvgMessages /= n
-	tn.AvgChannels /= n
-	tn.AvgMsgLength /= n
-	tn.AvgThreadsStart /= n
-	return tn
 }
 
 // relationshipContext determines the relationship between the current user and

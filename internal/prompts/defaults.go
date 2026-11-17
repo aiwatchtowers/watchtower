@@ -125,12 +125,12 @@ var DefaultVersions = map[string]int{
 	DigestDaily:                1,
 	DigestWeekly:               1,
 	DigestPeriod:               1,
-	TracksExtractBatch:         2, // v2: digest-based input instead of raw messages
-	PeopleReduce:               1,
-	PeopleTeam:                 1,
-	BriefingDaily:              12, // v12: FROM YOUR AUTOMATIONS section — output.briefing notes since the previous briefing (automations P2, spec 2026-10-14 §12.6); v11: open owner asks in WORKBENCHES (owner asks, spec 2026-10-03); v10: no workbench documents (owner asks, spec 2026-10-03); v9: the PROJECTS block is WORKBENCHES (Workbench rename, spec 2026-10-02); v8: PROJECTS block (spec 2026-09-29)
+	TracksExtractBatch:         2,  // v2: digest-based input instead of raw messages
+	PeopleReduce:               2,  // v2: no-surveillance rules, no red_flags, no team norms (#1769, A12/A17)
+	PeopleTeam:                 2,  // v2: no attention list, no-surveillance rules (#1769, A12/A17)
+	BriefingDaily:              13, // v13: team_pulse without volume/red-flag signals, no people-card flags (#1769, A12); v12: FROM YOUR AUTOMATIONS section — output.briefing notes since the previous briefing (automations P2, spec 2026-10-14 §12.6); v11: open owner asks in WORKBENCHES (owner asks, spec 2026-10-03); v10: no workbench documents (owner asks, spec 2026-10-03); v9: the PROJECTS block is WORKBENCHES (Workbench rename, spec 2026-10-02); v8: PROJECTS block (spec 2026-09-29)
 	DigestChannelBatch:         5,  // v5: instruct the model to echo channel_id verbatim from the block header (C1)
-	PeopleBatch:                1,  // v1: batch people cards for low-data users
+	PeopleBatch:                2,  // v2: no-surveillance rules, no red_flags, no team norms (#1769, A12/A17)
 	TasksGenerate:              1,  // v1: AI task generation with checklist and due date
 	TasksUpdate:                1,  // v1: AI task update from user instruction
 	MeetingPrep:                5,  // v5: the secretary/assistant persona merge — one assistant everywhere
@@ -138,7 +138,7 @@ var DefaultVersions = map[string]int{
 	MeetingNotes:               2,  // v2: conditional speaker-label attribution (labeled vs. unlabeled transcripts)
 	MeetingChapters:            1,  // v1: chapterize a meeting from a timecoded per-utterance transcript
 	MeetingFollowup:            1,  // v1: owner-voice follow-up draft from stated chapter content (intent-draft contract)
-	DayPlanGenerate:            4,  // v4: the secretary/assistant persona merge — one assistant everywhere
+	DayPlanGenerate:            5,  // v5: the PEOPLE block carries no red flags (#1769, A12); v4: the secretary/assistant persona merge — one assistant everywhere
 	TargetsExtract:             2,  // v2: GROUPING/sub_items + LANGUAGE rules reconciled from the compiled const (fix b7640c0b)
 	TargetsLink:                1,  // v1: single-target link proposal against active snapshot
 	TrackCompose:               1,  // v1: draft custom-track title+instruction from a free-text request
@@ -414,52 +414,47 @@ Rules:
 === DIGESTS ===
 %s`
 
-const defaultPeopleReduce = `You are creating a unified profile card for @%s based on behavioral signals observed across Slack channels over %s to %s.
+const defaultPeopleReduce = `You are creating a unified profile card for @%s based on work signals observed across Slack channels over %s to %s.
 
 %s
 
-Below are SITUATIONS observed in channel context (by the digest pipeline), plus computed statistics and team norms. Your job is to synthesize these into a single card that combines:
-1. ANALYSIS — classify their communication style, role in decisions, flag concerns
-2. COACHING — actionable advice for the viewer on how to work with this person
-
-IMPORTANT: Focus on what makes this person DIFFERENT from team norms. Do NOT describe typical behavior that matches the team average.
+Below are SITUATIONS observed in channel context (by the digest pipeline) and the BASIS of the card (how many messages and channels it rests on). Your job is to synthesize these into a single card that combines:
+1. WORK — the topics they work on, their part in decisions, what they delivered or helped with
+2. COLLABORATION — actionable advice for the viewer on how to work with this person
 
 Return ONLY a JSON object (no markdown fences, no explanation):
 
 {
-  "summary": "1-2 sentences: what makes this person distinctive. Reference specific signals.",
+  "summary": "1-2 sentences: the work topics this person is involved in. Reference specific signals.",
   "communication_style": "driver|collaborator|executor|observer|facilitator",
   "decision_role": "decision-maker|approver|contributor|observer|blocker",
-  "red_flags": ["Specific concerns backed by signals. Empty [] if none."],
   "highlights": ["Positive contributions backed by signals. Empty [] if none."],
   "accomplishments": ["Concrete things delivered/resolved this period from signals."],
-  "communication_guide": "Paragraph: communication preferences, timing, format. ONLY what is specific to this person vs team norms. If they match the norm, say so briefly and focus on exceptions.",
-  "decision_style": "How they participate in decisions — based on bottleneck/rubber_stamping/initiative/blocker signals. If no decision signals, say 'No notable decision patterns this period.'",
+  "communication_guide": "Paragraph: how to communicate with this person about work — channels, format, the kind of ask that works.",
+  "decision_style": "How they take part in decisions, based on the situations. If no decision signals, say 'No notable decision patterns this period.'",
   "tactics": ["If X, then Y — specific actionable tactics based on observed signals. Max 3-4."]
 }
 
 %s
 
 Rules:
+- Never infer or mention health, mood, burnout, workload judgments, personal life or protected characteristics, and never give performance verdicts; describe work topics and how to collaborate.
 - Base ALL analysis on the situations provided. Do NOT invent patterns not supported by evidence.
 - If a situation type appears in multiple channels, it is a PATTERN — emphasize it.
-- If conflicting situations exist (e.g., collaboration in one channel, conflict in another), note the CONTRAST.
-- Compare stats to team norms: only mention stats that deviate significantly (>30%% from avg).
+- If situations differ between channels (e.g., leading in one, reviewing in another), note the CONTRAST.
+- The BASIS counts only say how much the card rests on: never score activity, timing or message volume, and never compare the person with colleagues.
 - Coaching framing: frame guide sections as advice FOR THE VIEWER, not judgments ABOUT the person.
-- If relationship is manager->report: be more direct about concerns and accountability.
+- If relationship is manager->report: be direct about expectations and agreements on the work.
 - If relationship is report->manager: frame tactically (managing up).
 - If too few situations for meaningful analysis, say so in summary.
-- If a PREVIOUS CARD is provided, note trends and changes vs the prior period. Don't just repeat it.
+- If a PREVIOUS CARD is provided, note how the work topics changed vs the prior period. Don't just repeat it.
 - %s
 - Return valid JSON only
 
 === SITUATIONS ===
 %s
 
-=== COMPUTED STATS ===
-%s
-
-=== TEAM NORMS ===
+=== BASIS ===
 %s
 
 === PREVIOUS CARD ===
@@ -472,21 +467,20 @@ const defaultPeopleTeam = `You are creating a team communication summary for %s 
 
 %s
 
-Below are unified people cards for all team members. Create a summary that a manager can quickly scan to understand what needs attention.
+Below are unified people cards for the people the owner works with. Create a summary the owner can quickly scan to understand what the team worked on and how to work well together.
 
 Return ONLY a JSON object (no markdown fences, no explanation):
 
 {
-  "summary": "3-5 sentences: team communication health, dynamics, decision flow.",
-  "attention": ["Who needs attention and WHY — name names, cite specific signals and patterns. Be direct."],
-  "tips": ["Actionable team-level communication tips based on patterns across people."]
+  "summary": "3-5 sentences: what the team worked on, how decisions flowed, how the team communicates about work.",
+  "tips": ["Actionable team-level collaboration tips based on patterns across the cards."]
 }
 
 Rules:
-- Be direct — this is for a busy manager
-- Reference specific people by @username
-- Cross-reference: if multiple people have bottleneck signals, that is a systemic issue
-- Look for signal clusters: multiple conflict signals = team friction
+- Never infer or mention health, mood, burnout, workload judgments, personal life or protected characteristics, and never give performance verdicts; describe work topics and how to collaborate.
+- Be direct — this is for a busy owner
+- Speak about the team's work; never single a person out for concern or rank people against each other
+- Reference specific people by @username only for the work they did or the decisions they made
 - %s
 - Return valid JSON only
 
@@ -511,7 +505,7 @@ Return ONLY a JSON object (no markdown fences, no explanation):
     {"text": "Notable event or decision", "digest_id": 456, "channel_name": "#channel", "item_type": "decision|summary|topic", "importance": "high|medium|low"}
   ],
   "team_pulse": [
-    {"text": "Signal about a team member", "user_id": "U123", "signal_type": "volume_drop|volume_spike|new_red_flag|highlight|conflict", "detail": "Specifics"}
+    {"text": "Signal about a team member", "user_id": "U123", "signal_type": "highlight|conflict", "detail": "Specifics"}
   ],
   "coaching": [
     {"text": "Actionable communication tip", "related_user_id": "U123", "category": "communication|delegation|conflict|process"}
@@ -526,14 +520,13 @@ Rules:
   - Targets have a level (quarter/month/week/day/custom) — prefer day-level targets for scheduling today's work.
   - If no active targets or tracks exist, leave this array empty — do NOT invent items.
 - what_happened: max 7 items in total, from channel digests and automation notes. For digests include digest_id and channel_name. Focus on decisions and blockers.
-- team_pulse: signals from people cards. Include user_id. Flag volume changes, red flags, conflicts.
+- team_pulse: work signals from people cards (highlights, decisions, disagreements about the work). Include user_id. Never infer or mention health, mood, burnout, workload judgments, personal life or protected characteristics, and never give performance verdicts.
 - coaching: max 3 items. Grounded in observed patterns — not generic advice. Include related_user_id when applicable.
   - When suggesting actions, consider existing targets. Use suggest_target=true on tracks where user should create a target.
 - CALENDAR INTEGRATION: When calendar events are present, cross-reference attendees with tracks, inbox, and people data.
   - In "attention": flag meetings in the next 2 hours with unresolved items involving attendees.
   - In "your_day": interleave meetings with targets/tracks, ordered chronologically. Add prep suggestions before important meetings.
   - In "coaching": suggest conversation points based on people cards of attendees.
-  - If a meeting attendee has a people card with red_flags, mention it in team_pulse.
   - Do NOT list meetings as standalone items — always cross-reference with work data.
   - If CALENDAR section is empty, ignore calendar instructions entirely.
 - JIRA INTEGRATION: When JIRA CONTEXT is provided, incorporate Jira signals:
@@ -741,7 +734,7 @@ Rules:
 === CHANNEL DIGESTS ===
 %s`
 
-const defaultPeopleBatch = `You are creating lightweight people cards for multiple users based on limited behavioral signals observed across Slack channels over %s to %s.
+const defaultPeopleBatch = `You are creating lightweight people cards for multiple users based on limited work signals observed across Slack channels over %s to %s.
 
 %s
 
@@ -751,14 +744,13 @@ Return ONLY a JSON array (no markdown fences, no explanation):
 [
   {
     "user_id": "U123ABC",
-    "summary": "1-2 sentences: what stands out about this person based on available signals.",
+    "summary": "1-2 sentences: the work topics this person is involved in, based on available signals.",
     "communication_style": "driver|collaborator|executor|observer|facilitator",
     "decision_role": "decision-maker|approver|contributor|observer|blocker",
-    "red_flags": ["Specific concerns if any. Empty [] if none."],
     "highlights": ["Positive contributions if any. Empty [] if none."],
     "accomplishments": ["Concrete deliverables if visible."],
-    "communication_guide": "Brief: how to communicate with this person based on observed patterns.",
-    "decision_style": "How they participate in decisions, or 'Limited data' if not enough signals.",
+    "communication_guide": "Brief: how to communicate with this person about work, based on observed patterns.",
+    "decision_style": "How they take part in decisions, or 'Limited data' if not enough signals.",
     "tactics": ["If X, then Y — max 2 tactics."]
   }
 ]
@@ -768,17 +760,15 @@ Return [] if no users have enough data for any analysis.
 %s
 
 Rules:
+- Never infer or mention health, mood, burnout, workload judgments, personal life or protected characteristics, and never give performance verdicts; describe work topics and how to collaborate.
 - One entry per user in the USERS block below. Include user_id in each entry.
-- Base analysis on available situations and stats. Do NOT invent patterns.
+- Base analysis on available situations. Do NOT invent patterns.
 - Keep cards concise — these are lightweight summaries, not full profiles.
-- Compare stats to team norms: only mention stats that deviate significantly.
-- If a user has zero situations but has stats, focus on activity patterns.
+- The basis counts only say how much a card rests on: never score activity, timing or message volume, and never compare people with each other.
+- If a user has zero situations, keep the card to the work topics their messages show, or say the data is too thin.
 - communication_style and decision_role: pick the closest match, even with limited data.
 - %s
 - Return valid JSON only
-
-=== TEAM NORMS ===
-%s
 
 === USERS ===
 %s`

@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -273,7 +274,6 @@ func TestParseTeamSummaryResult(t *testing.T) {
 	result, err := parseTeamSummaryResult(raw)
 	require.NoError(t, err)
 	assert.Equal(t, "Team is healthy", result.Summary)
-	assert.Equal(t, []string{"Check on Bob"}, result.Attention)
 	assert.Equal(t, []string{"Use threads more"}, result.Tips)
 }
 
@@ -377,19 +377,6 @@ func TestGetPeopleSignals(t *testing.T) {
 	assert.Len(t, allSignals["U2"], 1)
 }
 
-func TestComputeTeamNorms(t *testing.T) {
-	stats := []db.UserStats{
-		{UserID: "U1", MessageCount: 20, ChannelsActive: 4, AvgMessageLength: 100, ThreadsInitiated: 3},
-		{UserID: "U2", MessageCount: 40, ChannelsActive: 6, AvgMessageLength: 80, ThreadsInitiated: 7},
-	}
-	norms := computeTeamNorms(stats)
-	assert.Equal(t, 2, norms.TotalUsers)
-	assert.InDelta(t, 30, norms.AvgMessages, 0.01)
-	assert.InDelta(t, 5, norms.AvgChannels, 0.01)
-	assert.InDelta(t, 90, norms.AvgMsgLength, 0.01)
-	assert.InDelta(t, 5, norms.AvgThreadsStart, 0.01)
-}
-
 func TestParseBatchCardResult(t *testing.T) {
 	raw := `[
 		{"user_id": "U1", "summary": "Active contributor", "communication_style": "collaborator", "decision_role": "contributor", "red_flags": [], "highlights": ["Fast responder"], "accomplishments": [], "communication_guide": "Be direct", "decision_style": "Quick", "tactics": ["Ping in thread"]},
@@ -465,8 +452,8 @@ type multiMockGenerator struct {
 func (m *multiMockGenerator) Generate(_ context.Context, sys, user, _ string) (string, *digest.Usage, string, error) {
 	m.calls.Add(1)
 	combined := sys + user
-	// Detect batch call by looking for USERS and TEAM NORMS markers in prompt.
-	if strings.Contains(combined, "=== USERS ===") && strings.Contains(combined, "=== TEAM NORMS ===") {
+	// Detect batch call by looking for the USERS marker in prompt.
+	if strings.Contains(combined, "=== USERS ===") {
 		return m.batchResponse, &digest.Usage{Tokens: llmusage.Tokens{Input: 200, Output: 100}}, "mock-session", m.batchErr
 	}
 	// Detect team summary call.
@@ -828,4 +815,102 @@ func TestPeopleExclude_SkipRecordsNoStep(t *testing.T) {
 	assert.Equal(t, 1, n)
 	assert.Equal(t, 1, stepped)
 	assert.Equal(t, 1, skippedEvents)
+}
+
+// surveillanceReplyGenerator answers every people call with a reply that
+// still carries the dropped fields, and records the prompts it was sent.
+type surveillanceReplyGenerator struct {
+	mu       sync.Mutex
+	prompts  []string
+	batchErr error
+}
+
+func (g *surveillanceReplyGenerator) Generate(_ context.Context, sys, user, _ string) (string, *digest.Usage, string, error) {
+	combined := sys + user
+	g.mu.Lock()
+	g.prompts = append(g.prompts, combined)
+	g.mu.Unlock()
+	usage := &digest.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 5}}
+	switch {
+	case strings.Contains(combined, "=== USERS ==="):
+		if g.batchErr != nil {
+			return "", usage, "", g.batchErr
+		}
+		return `[{"user_id":"1:U1","summary":"Works on auth","communication_style":"driver","decision_role":"contributor",` +
+			`"red_flags":["Seems burned out"],"active_hours":{"9":3},"highlights":["Led auth"],"accomplishments":[],` +
+			`"communication_guide":"Be direct","decision_style":"Quick","tactics":[]}]`, usage, "", nil
+	case strings.Contains(combined, "=== PEOPLE CARDS ==="):
+		return `{"summary":"Auth work moved","attention":["Check on alice"],"tips":["Use threads"]}`, usage, "", nil
+	default:
+		return `{"summary":"Works on auth","communication_style":"driver","decision_role":"contributor",` +
+			`"red_flags":["Seems burned out"],"active_hours":{"9":3},"volume_change_pct":-40,"highlights":["Led auth"],` +
+			`"accomplishments":[],"communication_guide":"Be direct","decision_style":"Quick","tactics":[]}`, usage, "", nil
+	}
+}
+
+// TestPeopleCard_DropsSurveillanceFields pins #1769 (A12): a model reply that
+// still carries red_flags and active_hours is parsed and stored with the
+// dropped fields at their defaults, on the batch and the individual path;
+// the prompts carry no average length, volume change, active hours or team
+// norms; the team summary stores no attention list.
+func TestPeopleCard_DropsSurveillanceFields(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		batchErr error
+	}{
+		{"batch", nil},
+		{"individual", errors.New("batch down")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database := testDB(t)
+			require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "W1", Name: "test"}))
+			seedUser(t, database, "1:U1", "alice")
+			seedChannel(t, database, "C1", "general")
+			from := float64(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC).Unix())
+			to := float64(time.Date(2025, 1, 8, 0, 0, 0, 0, time.UTC).Unix())
+			for i := range 12 {
+				seedPartnerMessage(t, database, "C1", fmt.Sprintf("%.6f", from+86400+float64(i*60)), "1:U1", "auth work "+string(rune('a'+i)))
+			}
+			seedDigestWithSituations(t, database, "C1", from, to, `[]`,
+				`[{"topic":"Auth","type":"collaboration","participants":[{"user_id":"1:U1","role":"lead"}],"dynamic":"led","outcome":"done","red_flags":["tense"],"observations":[],"message_refs":[]}]`)
+
+			gen := &surveillanceReplyGenerator{batchErr: tc.batchErr}
+			cfg := testConfig()
+			cfg.AI.Workers = 1
+			pipe := New(database, cfg, gen, testLogger())
+			pipe.ForceRegenerate = true
+			_, err := pipe.RunForWindow(context.Background(), from, to)
+			require.NoError(t, err)
+
+			card, err := database.GetLatestPeopleCard("1:U1")
+			require.NoError(t, err)
+			require.NotNil(t, card)
+			assert.Equal(t, "active", card.Status)
+			assert.Equal(t, "Works on auth", card.Summary)
+			assert.Equal(t, "[]", card.RedFlags)
+			assert.Equal(t, "{}", card.ActiveHoursJSON)
+			assert.Zero(t, card.VolumeChangePct)
+			assert.Zero(t, card.AvgMessageLength)
+			assert.Equal(t, 12, card.MessageCount, "the basis counts stay")
+
+			var raw struct{ RedFlags, ActiveHours string }
+			require.NoError(t, database.QueryRow(`SELECT red_flags, active_hours_json FROM people_cards WHERE user_id = '1:U1'`).Scan(&raw.RedFlags, &raw.ActiveHours))
+			assert.Equal(t, "[]", raw.RedFlags)
+			assert.Equal(t, "{}", raw.ActiveHours)
+
+			summary, err := database.GetLatestPeopleCardSummary()
+			require.NoError(t, err)
+			require.NotNil(t, summary)
+			assert.Equal(t, "[]", summary.Attention)
+
+			gen.mu.Lock()
+			defer gen.mu.Unlock()
+			require.NotEmpty(t, gen.prompts)
+			for _, p := range gen.prompts {
+				for _, word := range []string{"Avg message length", "Volume change", "Volume:", "Active hours", "Team averages", "TEAM NORMS", "Red flags", "red_flags"} {
+					assert.NotContains(t, p, word)
+				}
+			}
+		})
+	}
 }
