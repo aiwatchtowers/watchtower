@@ -34,7 +34,7 @@ enum BoardColumnsShotFixtures {
                 return (pid, code)
             }
             let defaults = try XCTUnwrap(UserDefaults(suiteName: DesignShotFixtures.defaultsSuite))
-            let vm = WorkbenchBoardViewModel(dbPool: pool, projectID: pid, defaults: defaults)
+            let vm = WorkbenchBoardViewModel(dbPool: pool, projectID: pid, defaults: defaults, tower: FakeScreenTower.applying(pool))
             vm.lanesMode = .none
             vm.load()
             vm.renamingColumnKey = BoardColumnLayout.key(code)

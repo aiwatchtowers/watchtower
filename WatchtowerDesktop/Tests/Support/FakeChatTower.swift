@@ -4,7 +4,8 @@ import WatchtowerCore
 import WatchtowerInterface
 import WatchtowerChatText
 
-/// A stand-in for the daemon's `chat.*` commands over a test database: each
+/// A stand-in for the daemon's `chat.*` commands (and the chat's knowledge
+/// items, `ideas.create_from_chat`/`ideas.undo_chat`) over a test database: each
 /// call is recorded and applied with the test writers (`ChatTestWriters`,
 /// the SQL the Go writers are pinned to), or refused as scripted.
 package final class FakeChatTower: ChatTowerSending, @unchecked Sendable {
@@ -59,15 +60,15 @@ package final class FakeChatTower: ChatTowerSending, @unchecked Sendable {
             callsStorage.append(Call(command: command, params: object))
             return refusalsStorage[command]
         }
-        if let refused { return .refused(refused) }
+        if let refused { return .refused(WatchtowerInterface.Refusal(code: .unsupported, sentence: refused)) }
         await beforeApply?(command)
         do {
             let result = try await apply(command, data)
             return .ok(try JSONDecoder().decode(Resp.self, from: result))
         } catch let refusal as Refusal {
-            return .refused(refusal.sentence)
+            return .refused(WatchtowerInterface.Refusal(code: .notFound, sentence: refusal.sentence))
         } catch {
-            return .refused(error.localizedDescription)
+            return .refused(WatchtowerInterface.Refusal(code: .unsupported, sentence: error.localizedDescription))
         }
     }
 
@@ -354,6 +355,40 @@ package final class FakeChatTower: ChatTowerSending, @unchecked Sendable {
                 if q.status == "complete" { try ChatConversationQueries.touch(db, id: q.conversationID) }
             }
             return done
+        case .ideasCreateFromChat:
+            // Go's `db.CreateIdeaFromChatTx`: an active chat-born item with
+            // its `chat` mention, written at once.
+            let q = try request(IdeaFromChatRequest.self)
+            let (id, at) = try await db.write { db -> (Int64, String) in
+                let now = try String.fetchOne(db, sql: "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')") ?? ""
+                let firstLine = q.body.split(maxSplits: 1, omittingEmptySubsequences: false,
+                                             whereSeparator: \.isNewline).first ?? ""
+                try db.execute(sql: """
+                    INSERT INTO ideas (kind, title, essence, status, source, last_mention_at, chat_born)
+                    VALUES (?, ?, ?, 'active', 'owner', ?, 1)
+                    """, arguments: [q.kind, String(firstLine.prefix(120)), q.body, now])
+                let id = db.lastInsertedRowID
+                try db.execute(sql: """
+                    INSERT INTO idea_mentions (idea_id, source, ref, quote, said_at) VALUES (?, 'chat', ?, ?, ?)
+                    """, arguments: [id, "chat:\(q.conversationID):\(q.messageID)", q.body, now])
+                let at = try String.fetchOne(db, sql: "SELECT updated_at FROM ideas WHERE id = ?", arguments: [id]) ?? ""
+                return (id, at)
+            }
+            return try encode(CreatedResult(id: id, updatedAt: at))
+        case .ideasUndoChat:
+            // Go's `db.UndoChatIdeaTx`: deleted only while untouched.
+            let q = try request(IdeaUndoChatRequest.self)
+            let undone = try await db.write { db -> Bool in
+                let untouched = try Bool.fetchOne(db, sql: """
+                    SELECT EXISTS(SELECT 1 FROM ideas WHERE id = ? AND chat_born = 1 AND status = 'active'
+                        AND merged_into_id IS NULL AND updated_at = ?
+                        AND NOT EXISTS (SELECT 1 FROM ideas c WHERE c.merged_into_id = ideas.id))
+                    """, arguments: [q.id, q.createdUpdatedAt]) ?? false
+                guard untouched else { return false }
+                try db.execute(sql: "DELETE FROM ideas WHERE id = ?", arguments: [q.id])
+                return true
+            }
+            return try encode(UndoChatResult(undone: undone))
         default:
             throw Refusal(sentence: "FakeChatTower does not model \(command.rawValue).")
         }

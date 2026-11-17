@@ -12,7 +12,6 @@ final class TargetQueriesMissingRowTests: XCTestCase {
     private typealias Mutator = (name: String, run: (Database, Int) throws -> Void)
 
     private let mutators: [Mutator] = [
-        ("updateStatus", { try TargetQueries.updateStatus($0, id: $1, status: "done") }),
         ("updatePriority", { try TargetQueries.updatePriority($0, id: $1, priority: "high") }),
         ("updateText", { try TargetQueries.updateText($0, id: $1, text: "renamed") }),
         ("updateIntent", { try TargetQueries.updateIntent($0, id: $1, intent: "why") }),
@@ -32,7 +31,6 @@ final class TargetQueriesMissingRowTests: XCTestCase {
         }),
         ("updateProgress", { try TargetQueries.updateProgress($0, id: $1, progress: 0.5) }),
         ("updateSubItems", { try TargetQueries.updateSubItems($0, id: $1, subItems: [TargetSubItem(text: "s", done: false)]) }),
-        ("snooze", { try TargetQueries.snooze($0, id: $1, until: Date()) }),
         ("addTag", { _ = try TargetQueries.addTag($0, id: $1, tag: "ops") }),
         ("removeTag", { _ = try TargetQueries.removeTag($0, id: $1, tag: "ops") })
     ]
@@ -93,28 +91,6 @@ final class TargetQueriesMissingRowTests: XCTestCase {
         }
         let survivor = try queue.read { try TargetQueries.fetchByID($0, id: parent) }
         XCTAssertNotNil(survivor)
-    }
-
-    func testUpdateStatus_OnADeletedTarget_LeavesItsInboxItemsPending() throws {
-        let queue = try TestDatabase.create()
-        let id = try queue.write { db -> Int in
-            let id = try self.createTarget(db)
-            try db.execute(
-                sql: """
-                    INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, target_id, status)
-                    VALUES ('', '1.0', '', 'target_due', ?, 'pending')
-                    """,
-                arguments: [id]
-            )
-            try TargetQueries.delete(db, id: id)
-            return id
-        }
-
-        XCTAssertThrowsError(try queue.write { try TargetQueries.updateStatus($0, id: id, status: "done") })
-        let status = try queue.read {
-            try String.fetchOne($0, sql: "SELECT status FROM inbox_items WHERE target_id = ?", arguments: [id])
-        }
-        XCTAssertEqual(status, "pending", "the INBOX-02 cascade must not run for a write that touched nothing")
     }
 
     func testNotFoundError_NamesTheTarget() {

@@ -28,22 +28,37 @@ final class InboxRowActionsTests: XCTestCase {
         var errorDescription: String? { "the watchtower CLI timed out" }
     }
 
+    /// Go's sentence for a write that did not land.
+    private static let busy = "Couldn't do that: the database is busy."
+
     private static let okEnvelope = Data(#"{"ok":true,"applied_ok":true,"error":""}"#.utf8)
 
+    /// The fake tower of the last `listed` strip.
+    private var tower: FeedCaseTransport!
+
     /// A strip over Go's case `name` (seeded into the pool), following its
-    /// steps through the fake tower; `findCLI` as the app finds the binary.
+    /// steps through the fake tower and writing through it (`writing`; an
+    /// approval's decisions then go through it too, so the proposal tests
+    /// pass false to keep the composed feed's CLI); `findCLI` as the app
+    /// finds the binary.
     private func listed(
         _ name: String,
         _ runner: FakeCLIRunner = FakeCLIRunner(),
+        writing: Bool = true,
         findCLI: (@MainActor () -> (any CLIRunnerProtocol)?)? = nil
     ) async throws -> ActionStripViewModel {
         let tower = try FeedCaseTransport.seeded(name, pool: pool)
+        self.tower = tower
         let vm = if let findCLI {
             ActionStripViewModel(dbPool: pool, findCLI: findCLI)
         } else {
             ActionStripViewModel(dbPool: pool, cliRunner: runner)
         }
-        await vm.follow(tower)
+        if writing {
+            await vm.followWriting(tower)
+        } else {
+            await vm.follow(tower)
+        }
         return vm
     }
 
@@ -58,19 +73,6 @@ final class InboxRowActionsTests: XCTestCase {
         onEdit: @escaping (Int64) -> Void = { _ in }
     ) -> InboxRowActionHandler {
         InboxRowActionHandler(vm: vm, ideas: ideas, onCommand: onCommand, onEditAction: onEdit)
-    }
-
-    private func failUpdates(on table: String) throws {
-        try pool.write { db in
-            try db.execute(sql: """
-                CREATE TRIGGER fail_\(table) BEFORE UPDATE ON \(table)
-                BEGIN SELECT RAISE(ABORT, 'disk is busy'); END
-                """)
-        }
-    }
-
-    private func allowUpdates(on table: String) throws {
-        try pool.write { db in try db.execute(sql: "DROP TRIGGER fail_\(table)") }
     }
 
     // MARK: - The drawn set per kind (today's card's buttons)
@@ -172,7 +174,7 @@ final class InboxRowActionsTests: XCTestCase {
         // which row is superseded (`Approval.superseded`).
         let (older, newer): (Int64, Int64) = (1, 2)
         let runner = FakeCLIRunner(stdout: Self.okEnvelope)
-        let vm = try await listed("desktop_rows_superseded_button", runner)
+        let vm = try await listed("desktop_rows_superseded_button", runner, writing: false)
         let content = try XCTUnwrap(hooks(vm).content(InboxRef(kind: .action, id: older), .inbox))
         guard case let .action(_, buttons) = content.kind else { return XCTFail("\(content.kind)") }
         XCTAssertEqual(buttons, [], "no Retry on the superseded row")
@@ -245,7 +247,7 @@ final class InboxRowActionsTests: XCTestCase {
     func testOpenDraftOpensTheSaveProposalsDraft() async throws {
         let id = Kind.saveAutomation.rawValue
         let runner = FakeCLIRunner()
-        let vm = try await listed("desktop_rows_action_kinds", runner)
+        let vm = try await listed("desktop_rows_action_kinds", runner, writing: false)
         var opened: [Int64] = []
         // Labeled: a trailing closure would bind to `onCommand`.
         // swiftlint:disable:next trailing_closure
@@ -290,9 +292,9 @@ final class InboxRowActionsTests: XCTestCase {
         XCTAssertTrue(action.showsCLIMissingLine)
     }
 
-    /// A reminder's, a track's and an idea's writes go straight to the
-    /// database: they stay on without the CLI, and their rows carry no
-    /// missing-CLI line. A custom track's Stop watching runs the CLI.
+    /// A reminder's, a track's and an idea's writes go through the tower
+    /// (Go writes them): they stay on without the CLI, and their rows carry
+    /// no missing-CLI line. A custom track's Stop watching runs the CLI.
     func testMissingCLIKeepsDatabaseWritesOn() async throws {
         // Reminder 1, due; Go's next feed once it is done.
         let id: Int64 = 1
@@ -310,10 +312,8 @@ final class InboxRowActionsTests: XCTestCase {
                      "an idle reminder row draws nothing under its line")
         await InboxRowActionHandler(vm: vm).press(.done, on: InboxRef(kind: .reminder, id: id))
         XCTAssertNil(vm.rowErrors[.reminder(id)], "Done lands without the CLI")
-        let status = try await pool.read { db in
-            try String.fetchOne(db, sql: "SELECT status FROM reminders WHERE id = ?", arguments: [id])
-        }
-        XCTAssertEqual(status, "done")
+        XCTAssertEqual(tower.acts.map(\.params.refVerb), [.done])
+        XCTAssertTrue(vm.reminderRows.isEmpty)
 
         let auto = InboxRowActionsContent(kind: .track(custom: false, linkedTargetID: nil), cliMissing: true)
         for press: InboxRowPress in [.done, .stopWatching, .makeTask, .retryFailedPress] {
@@ -393,7 +393,7 @@ final class InboxRowActionsTests: XCTestCase {
     func testFooterRetryAfterApproveThenFailedApplyDoesNotApproveAgain() async throws {
         let id: Int64 = 1 // a pending proposal
         let runner = FakeCLIRunner(error: Failure())
-        let vm = try await listed("desktop_strip_action_and_reminder", runner)
+        let vm = try await listed("desktop_strip_action_and_reminder", runner, writing: false)
         let ref = InboxRef(kind: .action, id: id)
         await handler(vm).press(.approve, on: ref)
         XCTAssertEqual(vm.actionFeed.rowErrors[id]?.verb, "approve")
@@ -455,7 +455,7 @@ final class InboxRowActionsTests: XCTestCase {
 
     // MARK: - Presses call today's functions
 
-    func testInboxItemPressesRunTheInboxCLI() async throws {
+    func testInboxItemPressesSendInboxAct() async throws {
         let id: Int64 = 1 // a pending Slack mention
         let runner = FakeCLIRunner()
         let vm = try await listed("desktop_rows_slack_item", runner)
@@ -463,8 +463,9 @@ final class InboxRowActionsTests: XCTestCase {
         await handler(vm).press(.done, on: ref)
         await handler(vm).press(.hide, on: ref)
         await handler(vm).press(.snooze(duration: "3d"), on: ref)
-        XCTAssertEqual(runner.invocations, [["inbox", "resolve", "\(id)"], ["inbox", "dismiss", "\(id)"],
-                                            ["inbox", "snooze", "\(id)", "3d"]])
+        XCTAssertEqual(tower.acts.map(\.params.refVerb), [.resolve, .dismiss, .snooze])
+        XCTAssertEqual(tower.acts.map(\.params.refID), [id, id, id])
+        XCTAssertTrue(runner.invocations.isEmpty)
     }
 
     func testDiscussInChatIsTheCardsCommand() async throws {
@@ -481,7 +482,7 @@ final class InboxRowActionsTests: XCTestCase {
     func testActionPressesGoThroughTheFeed() async throws {
         let id: Int64 = 1 // a pending proposal
         let runner = FakeCLIRunner(stdout: Self.okEnvelope)
-        let vm = try await listed("desktop_strip_action_and_reminder", runner)
+        let vm = try await listed("desktop_strip_action_and_reminder", runner, writing: false)
         let args = try XCTUnwrap(vm.feed.proposals.first?.argsJSON)
         await handler(vm).press(.approve, on: InboxRef(kind: .action, id: id))
         await handler(vm).press(.reject, on: InboxRef(kind: .action, id: id))
@@ -493,7 +494,7 @@ final class InboxRowActionsTests: XCTestCase {
     func testEditOpensTheNativeEditor() async throws {
         let id: Int64 = 1 // a pending proposal
         let runner = FakeCLIRunner()
-        let vm = try await listed("desktop_strip_action_and_reminder", runner)
+        let vm = try await listed("desktop_strip_action_and_reminder", runner, writing: false)
         var edited: [Int64] = []
         // swiftlint:disable:next trailing_closure
         await handler(vm, onEdit: { edited.append($0) }).press(.edit, on: InboxRef(kind: .action, id: id))
@@ -518,9 +519,8 @@ final class InboxRowActionsTests: XCTestCase {
         // Items 1 and 2, both listed under Messages.
         let (first, second): (Int64, Int64) = (1, 2)
         let gate = Gate()
-        let runner = FakeCLIRunner()
-        runner.onRun = { _ in await gate.wait() }
-        let vm = try await listed("desktop_reply_slack_and_mail", runner)
+        let vm = try await listed("desktop_reply_slack_and_mail")
+        tower.actGate = { await gate.wait() }
         let press = Task { await handler(vm).press(.done, on: InboxRef(kind: .inboxItem, id: first)) }
         // Bounded: a press that never starts fails, never hangs.
         for _ in 0..<100_000 where !vm.isWriting(.message(Int(first))) { await Task.yield() }
@@ -539,7 +539,7 @@ final class InboxRowActionsTests: XCTestCase {
         let gate = Gate()
         let runner = FakeCLIRunner(stdout: Self.okEnvelope)
         runner.onRun = { _ in await gate.wait() }
-        let vm = try await listed("desktop_strip_action_and_reminder", runner)
+        let vm = try await listed("desktop_strip_action_and_reminder", runner, writing: false)
         let press = Task { await handler(vm).press(.approve, on: InboxRef(kind: .action, id: id)) }
         // Bounded: a press that never reaches the feed fails, never hangs.
         for _ in 0..<100_000 where !vm.actionFeed.inFlight.contains(id) { await Task.yield() }
@@ -557,45 +557,43 @@ final class InboxRowActionsTests: XCTestCase {
 
     func testFailedWriteKeepsRowAndRetryRepeatsPress_inboxItem() async throws {
         let id: Int64 = 1 // a pending Slack mention
-        let runner = FakeCLIRunner(error: Failure())
-        let vm = try await listed("desktop_rows_slack_item", runner)
+        let vm = try await listed("desktop_rows_slack_item")
         let ref = InboxRef(kind: .inboxItem, id: id)
+        tower.actRefusal = Self.busy
         await handler(vm).press(.snooze(duration: "1w"), on: ref)
-        XCTAssertEqual(hooks(vm).content(ref, .inbox)?.state, .failed(message: "the watchtower CLI timed out"))
-        runner.shouldThrow = nil
+        XCTAssertEqual(hooks(vm).content(ref, .inbox)?.state, .failed(message: Self.busy))
+        tower.actRefusal = nil
         await handler(vm).press(.retryFailedPress, on: ref)
-        XCTAssertEqual(runner.invocations, Array(repeating: ["inbox", "snooze", "\(id)", "1w"], count: 2))
+        XCTAssertEqual(tower.acts.map(\.params.refVerb), [.snooze, .snooze])
+        XCTAssertEqual(tower.acts.map(\.params.until), Array(repeating: tower.acts.first?.params.until, count: 2))
         XCTAssertNil(vm.rowErrors[.message(Int(id))])
     }
 
     func testFailedWriteKeepsRowAndRetryRepeatsPress_track() async throws {
         let id: Int64 = 1 // an automatic track
         let vm = try await listed("desktop_kinds_track_and_idea")
-        try failUpdates(on: "tracks")
+        tower.actRefusal = Self.busy
         let ref = InboxRef(kind: .track, id: id)
         await handler(vm).press(.done, on: ref)
         XCTAssertEqual(vm.rowErrors[.track(Int(id))]?.press, .done)
         guard case .failed? = hooks(vm).content(ref, .inbox)?.state else {
             return XCTFail("the track row keeps its failure")
         }
-        try allowUpdates(on: "tracks")
+        tower.actRefusal = nil
         await handler(vm).press(.retryFailedPress, on: ref)
         XCTAssertNil(vm.rowErrors[.track(Int(id))])
-        let readAt = try await pool.read { db in
-            try String.fetchOne(db, sql: "SELECT read_at FROM tracks WHERE id = ?", arguments: [id])
-        }
-        XCTAssertNotNil(readAt)
+        XCTAssertEqual(tower.acts.map(\.params.refVerb), [.done, .done], "Retry repeats the Done")
     }
 
     func testFailedWriteKeepsRowAndRetryRepeatsPress_reminder() async throws {
         // Reminder 1, due; Go's next feed once it is snoozed out of the due window.
         let id: Int64 = 1
         let vm = try await listed("desktop_rows_reminder_snoozed_an_hour")
-        try failUpdates(on: "reminders")
+        tower.actRefusal = Self.busy
         let ref = InboxRef(kind: .reminder, id: id)
         await handler(vm).press(.snoozeHour, on: ref)
         XCTAssertEqual(vm.rowErrors[.reminder(id)]?.press, .snoozeHour)
-        try allowUpdates(on: "reminders")
+        tower.actRefusal = nil
         await handler(vm).press(.retryFailedPress, on: ref)
         XCTAssertNil(vm.rowErrors[.reminder(id)])
         XCTAssertTrue(vm.reminderRows.isEmpty, "snoozed an hour out of the due window")
@@ -604,7 +602,7 @@ final class InboxRowActionsTests: XCTestCase {
     func testFailedWriteKeepsRowAndRetryRepeatsPress_action() async throws {
         let id: Int64 = 1 // a pending proposal
         let runner = FakeCLIRunner(stdout: Self.okEnvelope, error: Failure())
-        let vm = try await listed("desktop_strip_action_and_reminder", runner)
+        let vm = try await listed("desktop_strip_action_and_reminder", runner, writing: false)
         let ref = InboxRef(kind: .action, id: id)
         await handler(vm).press(.reject, on: ref)
         XCTAssertEqual(hooks(vm).content(ref, .inbox)?.state, .failed(message: "the watchtower CLI timed out"))
@@ -618,14 +616,14 @@ final class InboxRowActionsTests: XCTestCase {
     func testFailedWriteKeepsRowAndRetryRepeatsPress_idea() async throws {
         let id: Int64 = 1 // a proposed idea
         let vm = try await listed("desktop_kinds_track_and_idea")
-        try failUpdates(on: "ideas")
-        let ideas = IdeasViewModel(dbManager: manager)
+        let screens = FakeScreenTower.applying(pool)
+        screens.next(.ideasStatus, .refused(Self.busy))
+        let ideas = IdeasViewModel(dbManager: manager, tower: screens)
         let ref = InboxRef(kind: .idea, id: id)
         await handler(vm, ideas: ideas).press(.approve, on: ref)
         let failure = try XCTUnwrap(vm.rowErrors[.idea(Int(id))])
         XCTAssertEqual(failure.press, .approve)
-        XCTAssertEqual(failure.message, ideas.errorMessage)
-        try allowUpdates(on: "ideas")
+        XCTAssertEqual(failure.message, Self.busy)
         await handler(vm, ideas: ideas).press(.retryFailedPress, on: ref)
         XCTAssertNil(vm.rowErrors[.idea(Int(id))])
         let status = try await pool.read { db in
@@ -636,18 +634,19 @@ final class InboxRowActionsTests: XCTestCase {
 
     func testRowErrorSurvivesRefresh() async throws {
         let id: Int64 = 1 // a pending Slack mention
-        let vm = try await listed("desktop_rows_slack_item", FakeCLIRunner(error: Failure()))
+        let vm = try await listed("desktop_rows_slack_item")
+        tower.actRefusal = Self.busy
         await handler(vm).press(.done, on: InboxRef(kind: .inboxItem, id: id))
         await vm.refresh()
         XCTAssertNil(vm.lastError, "refresh clears the strip-wide line")
-        XCTAssertEqual(vm.rowErrors[.message(Int(id))]?.message, "the watchtower CLI timed out")
+        XCTAssertEqual(vm.rowErrors[.message(Int(id))]?.message, Self.busy)
     }
 
     func testApproveWithChangedArgsShowsRefusalOnRow() async throws {
         let id: Int64 = 1 // a pending proposal
         let refusal = Data(#"{"ok":false,"applied_ok":false,"error":"This proposal changed — look again"}"#.utf8)
         let runner = FakeCLIRunner(stdout: refusal)
-        let vm = try await listed("desktop_strip_action_and_reminder", runner)
+        let vm = try await listed("desktop_strip_action_and_reminder", runner, writing: false)
         let ref = InboxRef(kind: .action, id: id)
         await handler(vm).press(.approve, on: ref)
         XCTAssertEqual(hooks(vm).content(ref, .inbox)?.state,
@@ -666,56 +665,15 @@ final class InboxRowActionsTests: XCTestCase {
         let id: Int64 = 1 // a due reminder
         let vm = try await listed("desktop_strip_reminder_done")
         try await pool.write { db in try db.execute(sql: "DELETE FROM reminders WHERE id = ?", arguments: [id]) }
+        tower.actRefusal = "Couldn't snooze: it's no longer on the Mac."
         await handler(vm).press(.snoozeHour, on: InboxRef(kind: .reminder, id: id))
         XCTAssertNil(vm.rowErrors[.reminder(id)])
         XCTAssertTrue(vm.reminderRows.isEmpty)
     }
 
-    // MARK: - The reminder's Needs approval fire
-
-    func testReminderFireRunsOnceAfterSuccess() async throws {
-        let id: Int64 = 1 // a due reminder
-        let runner = FakeCLIRunner()
-        let vm = try await listed("desktop_strip_reminder_done", runner)
-        await handler(vm).press(.done, on: InboxRef(kind: .reminder, id: id))
-        XCTAssertEqual(runner.invocations, [["inbox", "approvals", "changed", "--ref", "reminder:\(id)"]])
-    }
-
-    /// The fire runs after the press settles: the CLI process never holds the row busy.
-    func testReminderFireDoesNotHoldTheRowBusy() async throws {
-        let id: Int64 = 1 // a due reminder
-        let runner = FakeCLIRunner()
-        let vm = try await listed("desktop_strip_reminder_done", runner)
-        let busyDuringFire = LockedFlag()
-        runner.onRun = { [weak vm] _ in
-            let busy = await MainActor.run { vm?.isWriting(.reminder(id)) ?? true }
-            if busy { busyDuringFire.set() }
-        }
-        await handler(vm).press(.done, on: InboxRef(kind: .reminder, id: id))
-        XCTAssertEqual(runner.invocations.count, 1)
-        XCTAssertFalse(busyDuringFire.value)
-    }
-
-    func testReminderFireNotRunAfterFailure() async throws {
-        let id: Int64 = 1 // a due reminder
-        let runner = FakeCLIRunner()
-        let vm = try await listed("desktop_strip_reminder_done", runner)
-        try failUpdates(on: "reminders")
-        await handler(vm).press(.done, on: InboxRef(kind: .reminder, id: id))
-        XCTAssertTrue(runner.invocations.isEmpty)
-    }
-
-    func testReminderFireFailureIgnored() async throws {
-        // Reminder 1, due; Go's next feed once it is done.
-        let id: Int64 = 1
-        let runner = FakeCLIRunner(error: Failure())
-        let vm = try await listed("desktop_strip_reminder_done", runner)
-        await handler(vm).press(.done, on: InboxRef(kind: .reminder, id: id))
-        XCTAssertEqual(runner.invocations.count, 1)
-        XCTAssertNil(vm.rowErrors[.reminder(id)])
-        XCTAssertNil(vm.lastError)
-        XCTAssertTrue(vm.reminderRows.isEmpty)
-    }
+    // The reminder's Needs approval fire is Go's, after the write in the same
+    // `inbox.act` (TestStrip03_ReminderFireRunsOnceAfterSuccess,
+    // TestStrip03_ReminderFireFailureIgnored, internal/inboxfeed).
 }
 
 /// Holds a fake CLI call until the test opens it.
@@ -733,12 +691,4 @@ private actor Gate {
         waiters.forEach { $0.resume() }
         waiters = []
     }
-}
-
-/// A flag `FakeCLIRunner.onRun` sets off the main actor.
-private final class LockedFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var stored = false
-    var value: Bool { lock.withLock { stored } }
-    func set() { lock.withLock { stored = true } }
 }

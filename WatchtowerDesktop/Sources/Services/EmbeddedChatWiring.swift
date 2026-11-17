@@ -21,7 +21,7 @@ final class EmbeddedChatEngineFactory {
             remember.center = newValue.flatMap { pool in
                 ProcessCLIRunner.makeDefault().map { RememberCenter(cli: WorkbenchCLI(runner: $0), dbPool: pool) }
             }
-            remember.knowledge = newValue.map { ChatKnowledgeCenter(dbPool: $0) }
+            remember.knowledge = newValue.map { [pool] in ChatKnowledgeCenter(dbPool: $0) { pool.writes?.tower } }
         }
     }
     /// The chat writes (the tower); set with `dbPool`.

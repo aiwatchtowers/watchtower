@@ -521,6 +521,9 @@ final class AppState {
     /// Test seam: the CLI a custom track's activity applies actions through
     /// (design shots have no installed CLI); nil finds the installed one.
     @ObservationIgnored var trackActionRunnerOverride: (any CLIRunnerProtocol)?
+    /// Test seam: finds the CLI Wipe LLM Data runs `watchtower db wipe-llm`
+    /// with (the installed one; nil: none installed).
+    @ObservationIgnored var findWipeLLMRunner: @MainActor () -> (any CLIRunnerProtocol)? = { ProcessCLIRunner.makeDefault() }
 
     /// `managedPolicyRead` reads the organization policy (design shots pass a
     /// fixture). `onboardingDefaults` backs the onboarding step and goals,
@@ -665,7 +668,7 @@ final class AppState {
             // two VMs on one conversation.
             let container = self.targetAssistantCenter.container(
                 for: target,
-                viewModel: TargetsViewModel(dbManager: manager),
+                viewModel: TargetsViewModel(dbManager: manager, tower: screenTower),
                 dbManager: manager
             )
             return await container.readyChat()
@@ -1452,18 +1455,23 @@ final class AppState {
     /// people cards and the briefing at once instead of on their cadence.
     /// A failed restart is thrown for the Settings error line.
     func resetLLMData(workspaceDir: String? = Constants.activeWorkspaceDir()) async throws {
-        guard let db = databaseManager else { return }
+        guard databaseManager != nil else { return }
         let daemon = daemonControl
+        let runner = findWipeLLMRunner()
         // One item on the start queue: no other start lands mid-wipe.
         let failure = await enqueueDaemonStart { () -> (any Error)? in
-            await Self.stopWipeRestart(daemon: daemon, db: db, workspaceDir: workspaceDir)
+            await Self.stopWipeRestart(daemon: daemon, runner: runner, workspaceDir: workspaceDir)
         }.value
         if let failure { throw failure }
         daemonStartQueue.succeeded()
     }
 
+    /// The wipe is Go's (`watchtower db wipe-llm`, #1170 Task 12): the
+    /// Desktop deletes none of the tables Go owns itself. It runs while the
+    /// daemon is stopped, so nothing writes meanwhile; a missing CLI wipes
+    /// nothing and is reported after the restart.
     private static func stopWipeRestart(
-        daemon: any DaemonControl, db: DatabaseManager, workspaceDir: String?
+        daemon: any DaemonControl, runner: (any CLIRunnerProtocol)?, workspaceDir: String?
     ) async -> (any Error)? {
         // 1. Stop the daemon so nothing writes while the tables are wiped —
         // only once its process is really gone (a timeout wipes nothing).
@@ -1474,7 +1482,8 @@ final class AppState {
         do {
             try await daemon.waitUntilStopped()
             // 2. Wipe LLM-generated tables and the daemon's stamps.
-            try await db.wipeLLMData()
+            guard let runner else { throw CLIRunnerError.binaryNotFound }
+            _ = try await runner.run(args: ["db", "wipe-llm"])
             if let workspaceDir {
                 try DaemonStampFiles.clear(in: workspaceDir)
             }
@@ -1602,11 +1611,11 @@ final class AppState {
 
     private func initDayPlan(dbPool: DatabasePool) {
         guard let runner = ProcessCLIRunner.makeDefault() else { return }
-        dayPlanViewModel = DayPlanViewModel(databasePool: dbPool, cliRunner: runner)
+        dayPlanViewModel = DayPlanViewModel(databasePool: dbPool, cliRunner: runner, tower: screenTower)
     }
 
     private func initCatchUp(dbPool: DatabasePool) {
-        let vm = CatchUpViewModel(dbPool: dbPool)
+        let vm = CatchUpViewModel(dbPool: dbPool, tower: screenTower)
         // Catch-Up builds recaps in a CLI child process, whose writes the sidebar's
         // ValueObservation cannot see, so the badge is refreshed explicitly once a
         // run (or an acknowledge) has finished. The counts VM is resolved at call
@@ -1626,14 +1635,14 @@ final class AppState {
     /// pane uses only its actions (the list is the tower feed's), so it
     /// observes and polls nothing.
     func initIdeas(dbManager: DatabaseManager) {
-        ideasViewModel = IdeasViewModel(dbManager: dbManager)
+        ideasViewModel = IdeasViewModel(dbManager: dbManager, tower: screenTower)
     }
 
     /// The Inbox's track pane uses its actions and its Slack links and
     /// names, read once here (the list is the tower feed's); a write
     /// through it reads them again.
     func initTracks(dbManager: DatabaseManager) {
-        let vm = TracksViewModel(dbManager: dbManager)
+        let vm = TracksViewModel(dbManager: dbManager, tower: screenTower)
         vm.load()
         tracksViewModel = vm
     }
@@ -1779,9 +1788,9 @@ final class AppState {
         let runner = InstalledCLIRunner()
         let controls = RecipeCustomTrackControls(
             cli: AutomationsCLI(runner: runner),
-            direct: DirectCustomTrackControls(dbPool: dbPool, scanService: TrackScanService(runner: runner)))
+            direct: DirectCustomTrackControls(tower: screenTower, scanService: TrackScanService(runner: runner)))
         customTrackControls = controls
-        let vm = ActionStripViewModel(dbPool: dbPool, cliRunner: cliRunner, customTrackControls: controls) {
+        let vm = ActionStripViewModel(dbPool: dbPool, cliRunner: cliRunner) {
             guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
             try await AutomationsCLI(runner: runner).wake()
         }
@@ -1818,6 +1827,7 @@ final class AppState {
             root: URL(fileURLWithPath: dbPool.path).deletingLastPathComponent()
                 .appendingPathComponent("workchat-attachments", isDirectory: true)
         )
+        vm.tower = screenTower
         vm.readDefaultAgent = { ConfigService.readWorkbenchDefaultAgent() } // Settings → Workbench → Default agent (#399, D1)
         vm.goSessionStart = cliRunner == nil ? nil : GoSessionStartWait() // Go starts new sessions (Go hub 3 Task 8)
         vm.managedPolicy = { [managedPolicy] in managedPolicy.policy }

@@ -268,7 +268,7 @@ final class InboxReadingPaneTests: XCTestCase {
         let (briefing, dayPlan) = try await pool.read { db in
             (try BriefingQueries.fetchByDate(db, date: date), try DayPlanQueries.fetchByDate(db, date: date))
         }
-        let plan = DayPlanViewModel(databasePool: pool, cliRunner: FakeCLIRunner())
+        let plan = DayPlanViewModel(databasePool: pool, cliRunner: FakeCLIRunner(), tower: FakeScreenTower.applying(pool))
         await plan.loadFor(date: date)
         let card = InboxDayCard(date: date, briefing: briefing, plan: dayPlan, planDone: 0,
                                 planTotal: plan.items.count, stamp: Date())

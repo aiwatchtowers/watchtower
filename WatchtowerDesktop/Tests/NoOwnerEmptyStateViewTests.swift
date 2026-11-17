@@ -156,7 +156,7 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
             InboxDayNothingReady(
                 owner: Self.known,
                 briefing: BriefingViewModel(dbManager: DatabaseManager(pool: pool), cliRunner: FakeCLIRunner()),
-                plan: DayPlanViewModel(databasePool: pool, cliRunner: FakeCLIRunner()),
+                plan: DayPlanViewModel(databasePool: pool, cliRunner: FakeCLIRunner(), tower: FakeScreenTower.applying(pool)),
                 emptyState: .neutral, briefingOn: briefingOn, dayPlanOn: dayPlanOn,
                 onMake: {}, onOpenConnections: {})
         }
@@ -238,7 +238,7 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
         return InboxDayNothingReady(
             owner: ownerKnown ? Self.known : .unknown,
             briefing: BriefingViewModel(dbManager: DatabaseManager(pool: pool), cliRunner: FakeCLIRunner()),
-            plan: DayPlanViewModel(databasePool: pool, cliRunner: FakeCLIRunner()),
+            plan: DayPlanViewModel(databasePool: pool, cliRunner: FakeCLIRunner(), tower: FakeScreenTower.applying(pool)),
             emptyState: .neutral,
             onMake: {},
             onOpenConnections: {}

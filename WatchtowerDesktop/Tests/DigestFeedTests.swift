@@ -42,7 +42,7 @@ final class DigestFeedTests: XCTestCase {
             try TestDatabase.insertMeetingTranscript(db, summaryJSON: recapJSON, createdAt: "2026-01-02T00:00:00Z")
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         XCTAssertEqual(vm.feedEntries.count, 3)
@@ -66,7 +66,7 @@ final class DigestFeedTests: XCTestCase {
             try TestDatabase.insertMeetingTranscript(db, summaryJSON: recapJSON, createdAt: "2026-01-02T00:00:00Z")
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
         vm.setSortOrder(.oldestFirst)
 
@@ -96,7 +96,7 @@ final class DigestFeedTests: XCTestCase {
             meetingID = db.lastInsertedRowID
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         let ids = Set(vm.feedEntries.map(\.id))
@@ -115,7 +115,7 @@ final class DigestFeedTests: XCTestCase {
             try TestDatabase.insertMeetingTranscript(db, summaryJSON: recapJSON)
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         XCTAssertEqual(vm.feedEntries.count, 1)
@@ -135,7 +135,7 @@ final class DigestFeedTests: XCTestCase {
             try TestDatabase.insertMeetingTranscript(db, title: "No recap yet")
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         XCTAssertTrue(vm.recordings.isEmpty)
@@ -157,7 +157,7 @@ final class DigestFeedTests: XCTestCase {
             try TestDatabase.insertMeetingTranscript(db, eventID: "evt-1")
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         XCTAssertEqual(vm.recordings.count, 1)
@@ -173,7 +173,7 @@ final class DigestFeedTests: XCTestCase {
             streamID = Int(try TestDatabase.insertStreamDigest(db))
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
         XCTAssertFalse(vm.feedEntries[0].isRead)
         XCTAssertEqual(vm.unreadStreamCount, 1)
@@ -189,10 +189,10 @@ final class DigestFeedTests: XCTestCase {
         try dbManager.dbPool.write { db in
             try TestDatabase.insertStreamDigest(db)
             let readID = try TestDatabase.insertStreamDigest(db)
-            try StreamDigestQueries.markRead(db, id: Int(readID))
+            try db.execute(sql: "UPDATE stream_digests SET read_at = '2026-11-16T09:00:00Z' WHERE id = ?", arguments: [readID])
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         XCTAssertEqual(vm.unreadStreamCount, 1)
@@ -205,7 +205,7 @@ final class DigestFeedTests: XCTestCase {
     /// calls are idempotent in any order.
     @MainActor
     func testStopObservingThenStartObservingReloads() throws {
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.startObserving()
         XCTAssertTrue(vm.feedEntries.isEmpty)
 
@@ -229,7 +229,7 @@ final class DigestFeedTests: XCTestCase {
     /// behavior, now mirrored for `stream_digests`.
     @MainActor
     func testNewStreamDigestSurfacesInAnAlreadyOpenFeed() async throws {
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.startObserving()
         XCTAssertTrue(vm.feedEntries.isEmpty)
 

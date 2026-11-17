@@ -26,38 +26,6 @@ final class ActionStripViewModelTests: XCTestCase {
         XCTAssertNil(vm.lastError)
     }
 
-    func testMarkReminderDoneDropsItOnNextRefresh() async throws {
-        let (pool, path) = try makePool()
-        defer { TestDatabase.cleanup(path: path) }
-        // One due reminder, id 1; Go's next feed once it is done.
-        let tower = try FeedCaseTransport.seeded("desktop_strip_reminder_done", pool: pool)
-        let id: Int64 = 1
-        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await vm.follow(tower)
-        XCTAssertEqual(vm.reminderRows.map(\.id), [id])
-
-        await vm.markReminderDone(id)
-
-        XCTAssertTrue(vm.reminderRows.isEmpty, "markReminderDone must drop the reminder from the strip on refresh")
-        XCTAssertNil(vm.lastError)
-    }
-
-    func testSnoozeReminderMovesItOutOfTheDueWindow() async throws {
-        let (pool, path) = try makePool()
-        defer { TestDatabase.cleanup(path: path) }
-        // One due reminder, id 1; Go's next feed once it is snoozed to 2999.
-        let tower = try FeedCaseTransport.seeded("desktop_strip_reminder_snoozed", pool: pool)
-        let id: Int64 = 1
-        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await vm.follow(tower)
-        XCTAssertEqual(vm.reminderRows.map(\.id), [id])
-
-        await vm.snoozeReminder(id, until: "2999-01-01T00:00:00Z")
-
-        XCTAssertTrue(vm.reminderRows.isEmpty, "a reminder snoozed into the future must drop out of the due strip")
-        XCTAssertNil(vm.lastError)
-    }
-
     /// The CLI writes on its OWN connection (`AgentActionFeedTests.testApproveRefreshesRowsAfterCLI`'s
     /// precedent) — a second pool stands in for it, since the fake runner never touches the DB.
     func testApproveDelegatesToTheComposedAgentActionFeed() async throws {

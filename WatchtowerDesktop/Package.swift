@@ -80,13 +80,17 @@ let package = Package(
             name: "DesignKit",
             dependencies: [
                 .product(name: "WatchtowerDesign", package: "WatchtowerKit"),
+                .product(name: "WatchtowerInterface", package: "WatchtowerInterface"),
             ],
             path: "Sources/DesignKit"
         ),
         // The gallery's views over the kit; never linked into the app.
         .target(
             name: "DesignKitCatalog",
-            dependencies: ["DesignKit"],
+            dependencies: [
+                "DesignKit",
+                .product(name: "WatchtowerInterface", package: "WatchtowerInterface"),
+            ],
             path: "Sources/DesignKitCatalog"
         ),
         // The gallery window (`make design-gallery`): a thin @main over the

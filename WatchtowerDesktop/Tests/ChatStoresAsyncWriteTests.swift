@@ -180,16 +180,18 @@ final class ChatStoresAsyncWriteTests: XCTestCase {
         let tower = try FeedCaseTransport.seeded("desktop_strip_reminder_done", pool: pool)
         let id: Int64 = 1
         let strip = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await strip.follow(tower)
+        await strip.followWriting(tower)
         XCTAssertEqual(strip.reminderRows.map(\.id), [id])
-        let held = HeldWriter(pool)
-        defer { held.release() }
+        // Hold the tower's answer, so the Done waits for it.
+        let (gate, open) = AsyncStream<Void>.makeStream()
+        tower.actGate = { for await _ in gate { return } }
+        defer { open.finish() }
 
         let done = Task { await strip.markReminderDone(id) }
         _ = await eventually { strip.isWriting(reminder: id) }
         XCTAssertEqual(strip.reminderRows.map(\.id), [id], "the card stays while its write waits")
         await strip.markReminderDone(id)
-        held.release()
+        open.yield()
         await done.value
 
         XCTAssertFalse(strip.isWriting(reminder: id))
@@ -203,19 +205,14 @@ final class ChatStoresAsyncWriteTests: XCTestCase {
         // Reminder 1, due; Go's next feed once it is done (never, here).
         let tower = try FeedCaseTransport.seeded("desktop_strip_reminder_done", pool: pool)
         let id: Int64 = 1
-        try await pool.write { db in
-            try db.execute(sql: """
-                CREATE TRIGGER fail_reminder BEFORE UPDATE ON reminders
-                BEGIN SELECT RAISE(ABORT, 'disk full'); END
-                """)
-        }
         let strip = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await strip.follow(tower)
+        await strip.followWriting(tower)
+        tower.actRefusal = "Couldn't mark it done: the disk is full."
 
         await strip.markReminderDone(id)
 
         XCTAssertEqual(strip.reminderRows.map(\.id), [id], "the card stays")
-        XCTAssertNotNil(strip.lastError)
+        XCTAssertEqual(strip.rowErrors[.reminder(id)]?.message, "Couldn't mark it done: the disk is full.")
         XCTAssertFalse(strip.isWriting(reminder: id), "its buttons work again")
     }
 }

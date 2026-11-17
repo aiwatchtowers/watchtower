@@ -31,9 +31,9 @@ var wipeLLMStatements = []string{
 }
 
 // WipeLLMData deletes all AI-generated data in one transaction
-// (`watchtower db wipe-llm`, the Go twin of DatabaseManager.wipeLLMData; the
-// app runs it with the daemon stopped). Any failure rolls every statement
-// back.
+// (`watchtower db wipe-llm`, the Desktop's Reset AI data, which runs it with
+// the daemon stopped; the Swift writer it replaced is deleted). Any failure
+// rolls every statement back.
 func (db *DB) WipeLLMData() error {
 	return db.WithTx(func(tx *sql.Tx) error {
 		for i, q := range wipeLLMStatements {

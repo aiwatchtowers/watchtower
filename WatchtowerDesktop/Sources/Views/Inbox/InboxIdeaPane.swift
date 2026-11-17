@@ -47,9 +47,23 @@ struct InboxIdeaPane: View {
             IdeaDetailPane(idea: idea, allIdeas: allIdeas, actions: actions,
                            isWriting: ideas.pendingWrites.isPending(Self.writeKey(idea.id)),
                            approveIsPrimary: approveIsPrimary, now: now)
+                .pressState(pressState)
                 // Identity at the call site: the pane's own state (rating
                 // draft, open merge row, Discuss chat) resets per idea.
                 .id(idea.id)
+        }
+    }
+
+    /// The idea row's press (mockup §8): Retry repeats it, then the Inbox re-reads.
+    var pressState: IdeaPressState {
+        let row = IdeasViewModel.row(idea.id)
+        let ideas = ideas
+        let onChange = onChange
+        return IdeaPressState(state: ideas.presses.state(row), busyLabel: ideas.presses.label(row)) {
+            Task {
+                await ideas.presses.retry(row)
+                await onChange()
+            }
         }
     }
 

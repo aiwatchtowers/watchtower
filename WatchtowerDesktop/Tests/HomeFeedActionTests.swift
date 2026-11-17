@@ -4,6 +4,7 @@ import Observation
 import os
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerInterface
 import WatchtowerTestSupport
 
 /// A performer that records each call, may wait for `release()` and may
@@ -115,19 +116,6 @@ final class HomeFeedActionTests: XCTestCase {
     /// on every change of it — no deadline.
     private func waitUntil(_ center: HomeCenter, _ condition: @escaping (HomeSnapshot?) -> Bool) async {
         await untilObserved { condition(center.snapshot) }
-    }
-
-    /// The runner's calls as they start (through its `onRun`); each call
-    /// then waits on `hold` when one is given, until it finishes.
-    private func startedCalls(
-        _ runner: FakeCLIRunner, hold: AsyncStream<Void>? = nil
-    ) -> AsyncStream<[String]>.Iterator {
-        let (calls, sink) = AsyncStream<[String]>.makeStream()
-        runner.onRun = { args in
-            sink.yield(args)
-            if let hold { for await _ in hold { return } }
-        }
-        return calls.makeAsyncIterator()
     }
 
     private func shows(_ ref: FeedRef) -> (HomeSnapshot?) -> Bool {
@@ -248,7 +236,9 @@ final class HomeFeedActionTests: XCTestCase {
                 db, automationID: automation, runID: run, createdAt: stamp, outputKey: "threads", contentHash: "h1"))
         }
         let ref = FeedRef.output(id)
-        let center = try makeCenter(performer: LiveHomeFeedPerformer(runner: nil, pool: pool))
+        let tower = FakeScreenTower()
+        tower.next(.outputsDone, .ok(#"{"already":true}"#))
+        let center = try makeCenter(performer: LiveHomeFeedPerformer(runner: nil, tower: tower))
         center.beginReading(pool: pool)
         defer { center.endReading() }
         await waitUntil(center, shows(ref))
@@ -259,6 +249,7 @@ final class HomeFeedActionTests: XCTestCase {
         }
 
         await center.act(.done, on: ref)
+        XCTAssertEqual(tower.calls.first?.params["content_hash"] as? String, "h1", "guarded by the version drawn")
         XCTAssertTrue(shows(ref)(center.snapshot))
         XCTAssertNil(center.feedErrors[ref])
         XCTAssertFalse(center.hiddenRefs.contains(ref))
@@ -294,7 +285,7 @@ final class HomeFeedActionTests: XCTestCase {
         let pool = try makePool()
         let ref = try insertMention(pool)
         let runner = RecordingRunner()
-        let center = try makeCenter(performer: LiveHomeFeedPerformer(runner: runner, pool: pool))
+        let center = try makeCenter(performer: LiveHomeFeedPerformer(runner: runner, tower: FakeScreenTower()))
         center.beginReading(pool: pool)
         defer { center.endReading() }
         await waitUntil(center, shows(ref))
@@ -340,7 +331,7 @@ final class HomeFeedActionTests: XCTestCase {
         let ref = try insertMention(pool)
         let runner = RecordingRunner()
         runner.error = CLIRunnerError.nonZeroExit(code: -1, stderr: "timed out after 30s")
-        let center = try makeCenter(performer: LiveHomeFeedPerformer(runner: runner, pool: pool))
+        let center = try makeCenter(performer: LiveHomeFeedPerformer(runner: runner, tower: FakeScreenTower()))
         center.beginReading(pool: pool)
         defer { center.endReading() }
         await waitUntil(center, shows(ref))
@@ -501,47 +492,48 @@ final class HomeFeedActionTests: XCTestCase {
 
     // MARK: - LiveHomeFeedPerformer
 
-    /// Done marks an automation output done, Hide dismisses it, both through
-    /// GRDB; a second press on a closed output is quiet.
+    /// The calls `tower` got, as "command id[ until]".
+    private func sent(_ tower: FakeScreenTower) -> [String] {
+        tower.calls.map { call in
+            let id = (call.params["id"] as? Int).map(String.init) ?? ""
+            let extra = (call.params["until"] as? String) ?? (call.params["status"] as? String)
+                ?? (call.params["content_hash"] as? String)
+            return "\(call.command.rawValue) \(id)" + (extra.map { " \($0)" } ?? "")
+        }
+    }
+
+    /// Done is `outputs.done`, Hide `outputs.dismiss`, both at the drawn
+    /// hash; Go's guarded no-op (`already`) reads as "nothing written".
     func testAutomationOutputDoneMarksDoneAndHideDismisses() async throws {
-        let pool = try makePool()
-        let (done, hidden) = try await pool.write { db -> (Int64, Int64) in
-            let id = try TestDatabase.insertAutomation(db)
-            let run = try TestDatabase.insertAutomationRun(db, automationID: id)
-            return (try TestDatabase.insertAutomationOutput(db, automationID: id, runID: run),
-                    try TestDatabase.insertAutomationOutput(db, automationID: id, runID: run))
-        }
         let runner = RecordingRunner()
-        let performer = LiveHomeFeedPerformer(runner: runner, pool: pool)
-        try await performer.perform(.done, on: .output(done), contentHash: "", now: Date(), calendar: .current)
-        try await performer.perform(.hide, on: .output(hidden), contentHash: "", now: Date(), calendar: .current)
-        try await performer.perform(.hide, on: .output(done), contentHash: "", now: Date(), calendar: .current)
-        let rows = try await pool.read { db in
-            try Row.fetchAll(db, sql: "SELECT id, read_at, done_at, dismissed_at FROM automation_outputs ORDER BY id")
-        }
-        XCTAssertNotNil(rows[0]["done_at"] as String?)
-        XCTAssertNil(rows[0]["read_at"] as String?)
-        XCTAssertNil(rows[0]["dismissed_at"] as String?)
-        XCTAssertNil(rows[1]["done_at"] as String?)
-        XCTAssertNil(rows[1]["read_at"] as String?)
-        XCTAssertNotNil(rows[1]["dismissed_at"] as String?)
+        let tower = FakeScreenTower()
+        tower.next(.outputsDismiss, .ok("{}"))
+        tower.next(.outputsDismiss, .ok(#"{"already":true}"#))
+        let performer = LiveHomeFeedPerformer(runner: runner, tower: tower)
+        let done = try await performer.perform(.done, on: .output(1), contentHash: "h1", now: Date(), calendar: .current)
+        let hidden = try await performer.perform(.hide, on: .output(2), contentHash: "h2", now: Date(), calendar: .current)
+        let again = try await performer.perform(.hide, on: .output(1), contentHash: "h1", now: Date(), calendar: .current)
+        XCTAssertEqual(sent(tower), ["outputs.done 1 h1", "outputs.dismiss 2 h2", "outputs.dismiss 1 h1"])
+        XCTAssertEqual([done, hidden, again], [true, true, false])
         XCTAssertTrue(runner.calls.isEmpty)
     }
 
     func testInboxDoneRunsResolve() async throws {
         let runner = RecordingRunner()
-        let performer = LiveHomeFeedPerformer(runner: runner, pool: try makePool())
+        let tower = FakeScreenTower()
+        let performer = LiveHomeFeedPerformer(runner: runner, tower: tower)
         try await performer.perform(.done, on: .inbox(1), contentHash: "", now: Date(), calendar: .current)
         try await performer.perform(.hide, on: .inbox(1), contentHash: "", now: Date(), calendar: .current)
         XCTAssertEqual(runner.calls, [["inbox", "resolve", "1"], ["inbox", "dismiss", "1"]])
         XCTAssertEqual(runner.timeouts, [30, 30])
+        XCTAssertTrue(tower.calls.isEmpty)
     }
 
     /// A non-zero exit is a real failure (Go has no "not found" exit for these).
     func testInboxNonZeroExitThrows() async throws {
         let runner = RecordingRunner()
         runner.error = CLIRunnerError.nonZeroExit(code: 1, stderr: "resolving inbox item 1: database is locked")
-        let performer = LiveHomeFeedPerformer(runner: runner, pool: try makePool())
+        let performer = LiveHomeFeedPerformer(runner: runner, tower: FakeScreenTower())
         do {
             try await performer.perform(.done, on: .inbox(1), contentHash: "", now: Date(), calendar: .current)
             XCTFail("expected the CLI error")
@@ -551,7 +543,7 @@ final class HomeFeedActionTests: XCTestCase {
     }
 
     func testNoCLIIsAnError() async throws {
-        let performer = LiveHomeFeedPerformer(runner: nil, pool: try makePool())
+        let performer = LiveHomeFeedPerformer(runner: nil, tower: FakeScreenTower())
         do {
             try await performer.perform(.done, on: .inbox(1), contentHash: "", now: Date(), calendar: .current)
             XCTFail("expected cliUnavailable")
@@ -561,82 +553,34 @@ final class HomeFeedActionTests: XCTestCase {
     }
 
     func testReminderHideSnoozesToTomorrowNine() async throws {
-        let pool = try makePool()
-        let id = try insertReminder(pool)
         let (now, calendar) = try berlin()
-        try await LiveHomeFeedPerformer(runner: nil, pool: pool)
-            .perform(.hide, on: .reminder(id), contentHash: "", now: now, calendar: calendar)
-        let row = try await pool.read { db in
-            try Row.fetchOne(db, sql: "SELECT remind_at, status FROM reminders WHERE id = ?", arguments: [id])
-        }
+        let tower = FakeScreenTower()
+        try await LiveHomeFeedPerformer(runner: nil, tower: tower)
+            .perform(.hide, on: .reminder(7), contentHash: "", now: now, calendar: calendar)
         // Tuesday 09:00 CEST (UTC+2).
-        XCTAssertEqual(row?["remind_at"], "2026-10-20T07:00:00Z")
-        XCTAssertEqual(row?["status"], "pending")
+        XCTAssertEqual(sent(tower), ["reminders.snooze 7 2026-10-20T07:00:00Z"])
     }
 
+    /// Done is `reminders.done`; Go runs Needs approval's redraw
+    /// (`inbox approvals changed`) in the same call, so the Mac runs no CLI.
     func testReminderDoneMarksDone() async throws {
-        let pool = try makePool()
-        let id = try insertReminder(pool)
-        try await LiveHomeFeedPerformer(runner: nil, pool: pool)
-            .perform(.done, on: .reminder(id), contentHash: "", now: Date(), calendar: .current)
-        let status = try await pool.read { db in
-            try String.fetchOne(db, sql: "SELECT status FROM reminders WHERE id = ?", arguments: [id])
-        }
-        XCTAssertEqual(status, "done")
-    }
-
-    /// Home's reminder Done and Hide run the same `inbox approvals changed`
-    /// as the Inbox (`ReminderApprovalHook`), so Needs approval redraws now.
-    func testReminderDoneAndHideQueueNeedsApproval() async throws {
-        let pool = try makePool()
-        let id = try insertReminder(pool)
         let runner = FakeCLIRunner()
-        var calls = startedCalls(runner)
-        let performer = LiveHomeFeedPerformer(runner: runner, pool: pool)
-        try await performer.perform(.hide, on: .reminder(id), contentHash: "", now: Date(), calendar: .current)
-        try await performer.perform(.done, on: .reminder(id), contentHash: "", now: Date(), calendar: .current)
-        let expected = ReminderApprovalHook.arguments(id)
-        _ = await calls.next()
-        _ = await calls.next()
-        XCTAssertEqual(runner.invocations, [expected, expected])
-    }
-
-    /// Done never waits on the `inbox approvals changed` child: it is fired
-    /// after the write, so a slow CLI never holds Home's action (the hook
-    /// still runs, and its failure is only logged).
-    func testReminderDoneReturnsBeforeTheApprovalsHookFinishes() async throws {
-        let pool = try makePool()
-        let id = try insertReminder(pool)
-        let runner = FakeCLIRunner()
-        let (gate, open) = AsyncStream<Void>.makeStream()
-        var calls = startedCalls(runner, hold: gate)
-        defer { open.finish() }
-        let performer = LiveHomeFeedPerformer(runner: runner, pool: pool)
-        // The hook is held until the end: Done returning at all proves it
-        // never waits on the hook (a wait would hang here).
-        try await performer.perform(.done, on: .reminder(id), contentHash: "", now: Date(), calendar: .current)
-        let status = try await pool.read { db in
-            try String.fetchOne(db, sql: "SELECT status FROM reminders WHERE id = ?", arguments: [id])
-        }
-        XCTAssertEqual(status, "done")
-        let hook = await calls.next()
-        XCTAssertEqual(hook, ReminderApprovalHook.arguments(id), "the hook still runs")
-        XCTAssertEqual(runner.invocations, [ReminderApprovalHook.arguments(id)])
-        open.yield()
+        let tower = FakeScreenTower()
+        try await LiveHomeFeedPerformer(runner: runner, tower: tower)
+            .perform(.done, on: .reminder(7), contentHash: "", now: Date(), calendar: .current)
+        XCTAssertEqual(sent(tower), ["reminders.done 7"])
+        XCTAssertTrue(runner.invocations.isEmpty)
     }
 
     func testTargetDoneAndHide() async throws {
-        let pool = try makePool()
-        let (done, hidden) = try await pool.write { db in
-            (Int(try TestDatabase.insertTarget(db, text: "A")), Int(try TestDatabase.insertTarget(db, text: "B")))
-        }
-        let performer = LiveHomeFeedPerformer(runner: nil, pool: pool)
-        try await performer.perform(.done, on: .target(done), contentHash: "", now: Date(), calendar: .current)
-        try await performer.perform(.hide, on: .target(hidden), contentHash: "", now: Date(), calendar: .current)
-        let rows = try await pool.read { db in
-            try Row.fetchAll(db, sql: "SELECT status, snooze_until FROM targets ORDER BY id")
-        }
-        XCTAssertEqual(rows.map { $0["status"] as String }, ["done", "snoozed"])
+        let tower = FakeScreenTower()
+        tower.always(.targetsSetStatus, .ok(#"{"rolled_up":[]}"#))
+        tower.always(.targetsSnooze, .ok(#"{"rolled_up":[]}"#))
+        let (now, calendar) = try berlin()
+        let performer = LiveHomeFeedPerformer(runner: nil, tower: tower)
+        try await performer.perform(.done, on: .target(1), contentHash: "", now: now, calendar: calendar)
+        try await performer.perform(.hide, on: .target(2), contentHash: "", now: now, calendar: calendar)
+        XCTAssertEqual(sent(tower), ["targets.set_status 1 done", "targets.snooze 2 2026-10-20T07:00"])
     }
 
     /// Hide brings a target back tomorrow 09:00 local: `snooze_until` holds
@@ -648,29 +592,49 @@ final class HomeFeedActionTests: XCTestCase {
         for (zone, expected) in [("America/Los_Angeles", "2026-10-20T16:00"), ("Europe/Berlin", "2026-10-20T07:00")] {
             var calendar = Calendar(identifier: .gregorian)
             calendar.timeZone = try XCTUnwrap(TimeZone(identifier: zone))
-            let pool = try makePool()
-            let id = try await pool.write { db in Int(try TestDatabase.insertTarget(db, text: "A")) }
-            try await LiveHomeFeedPerformer(runner: nil, pool: pool)
-                .perform(.hide, on: .target(id), contentHash: "", now: now, calendar: calendar)
-            let stored = try await pool.read { db in
-                try String.fetchOne(db, sql: "SELECT snooze_until FROM targets WHERE id = ?", arguments: [id])
-            }
-            XCTAssertEqual(stored, expected, zone)
+            let tower = FakeScreenTower()
+            tower.always(.targetsSnooze, .ok(#"{"rolled_up":[]}"#))
+            try await LiveHomeFeedPerformer(runner: nil, tower: tower)
+                .perform(.hide, on: .target(1), contentHash: "", now: now, calendar: calendar)
+            XCTAssertEqual(sent(tower), ["targets.snooze 1 \(expected)"], zone)
         }
     }
 
+    /// Go's `not_found` on a reminder or target deleted elsewhere is quiet:
+    /// the row the owner wanted gone is gone.
     func testAReminderOrTargetGoneElsewhereIsQuiet() async throws {
-        let performer = LiveHomeFeedPerformer(runner: nil, pool: try makePool())
+        let tower = FakeScreenTower()
+        for command in [TowerCommand.remindersSnooze, .targetsSetStatus, .targetsSnooze] {
+            tower.always(command, .refused("Couldn't do that: it's no longer on the Mac.", code: .notFound))
+        }
+        let performer = LiveHomeFeedPerformer(runner: nil, tower: tower)
         try await performer.perform(.hide, on: .reminder(999), contentHash: "", now: Date(), calendar: .current)
         try await performer.perform(.done, on: .target(999), contentHash: "", now: Date(), calendar: .current)
         try await performer.perform(.hide, on: .target(999), contentHash: "", now: Date(), calendar: .current)
     }
 
+    /// Gone is Go's `not_found` code, not its words: the same sentence under
+    /// another code is a refusal the owner sees.
+    func testGoneIsTheNotFoundCodeNotTheSentence() async throws {
+        let tower = FakeScreenTower()
+        tower.always(.targetsSetStatus, .refused("Couldn't do that: it's no longer on the Mac.", code: .changed))
+        let performer = LiveHomeFeedPerformer(runner: nil, tower: tower)
+        do {
+            try await performer.perform(.done, on: .target(999), contentHash: "", now: Date(), calendar: .current)
+            XCTFail("a changed refusal is not quiet")
+        } catch let error as TowerWriteError {
+            XCTAssertEqual(error.code, .changed)
+            XCTAssertFalse(error.isGone)
+        }
+    }
+
     func testProposalAndEventAreNoOps() async throws {
         let runner = RecordingRunner()
-        let performer = LiveHomeFeedPerformer(runner: runner, pool: try makePool())
+        let tower = FakeScreenTower()
+        let performer = LiveHomeFeedPerformer(runner: runner, tower: tower)
         try await performer.perform(.done, on: .proposal(1), contentHash: "", now: Date(), calendar: .current)
         try await performer.perform(.hide, on: .event("e1"), contentHash: "", now: Date(), calendar: .current)
         XCTAssertEqual(runner.calls, [])
+        XCTAssertTrue(tower.calls.isEmpty)
     }
 }

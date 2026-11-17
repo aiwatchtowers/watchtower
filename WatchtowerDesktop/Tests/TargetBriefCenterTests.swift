@@ -48,7 +48,7 @@ final class TargetBriefCenterTests: XCTestCase {
         }) else { return nil }
         return TargetChatViewModel(
             target: target,
-            viewModel: TargetsViewModel(dbManager: manager),
+            viewModel: TargetsViewModel(dbManager: manager, tower: manager.fakeTower),
             dbManager: manager,
             conversationID: conversationID,
             aiService: service

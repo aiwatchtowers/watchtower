@@ -110,10 +110,22 @@ struct TrackDetailView: View {
         }
     }
 
+    /// The track's last press through the tower (mockup §8); Retry repeats it.
+    @ViewBuilder
+    private var pressState: some View {
+        let row = TracksViewModel.row(track.id)
+        if let state = viewModel.presses.state(row) {
+            TowerRowState(state: state, busyLabel: viewModel.presses.label(row)) {
+                Task { await viewModel.presses.retry(row) }
+            }
+        }
+    }
+
     private var content: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.page) {
                 headerSection
+                pressState
                 textSection
                 requesterSection
                 contextSection
@@ -334,7 +346,8 @@ struct TrackDetailView: View {
             dbManager: db,
             actionRunner: runner,
             controls: controls,
-            scanCenter: appState.trackScanCenter
+            scanCenter: appState.trackScanCenter,
+            tower: appState.screenTower
         )
         vm.start()
         timelineVM = vm

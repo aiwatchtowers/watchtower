@@ -5,15 +5,7 @@ import WatchtowerInterface
 /// `chat.*` tower commands, which run in Go. `TowerClient` is the app's;
 /// tests pass a fake. A turn's own rows are not here — `ai session
 /// --persist` and `ai query --persist` write them.
-package protocol ChatTowerSending: AnyObject, Sendable {
-    func act<Resp: Decodable & Sendable, Params: Encodable & Sendable>(
-        _ command: TowerCommand,
-        key: String,
-        params: (String) -> Params
-    ) async -> TowerActOutcome<Resp>
-}
-
-extension TowerClient: ChatTowerSending {}
+package typealias ChatTowerSending = TowerSending
 
 /// A chat write the tower did not apply: Go's sentence (or the client's,
 /// when no answer came), shown as is.
@@ -50,8 +42,8 @@ package struct ChatWrites: Sendable {
         switch outcome {
         case .ok(let response):
             return response
-        case .refused(let sentence):
-            throw ChatWriteError(sentence: sentence, isGone: Self.goneSentences.contains(sentence))
+        case .refused(let refusal):
+            throw ChatWriteError(sentence: refusal.sentence, isGone: Self.goneSentences.contains(refusal.sentence))
         case .unknown:
             throw ChatWriteError(sentence: TowerText.didntConfirmMac)
         case .failed(let failure):
@@ -74,6 +66,6 @@ private final class NotReadyChatTower: ChatTowerSending {
     func act<Resp: Decodable & Sendable, Params: Encodable & Sendable>(
         _ command: TowerCommand, key: String, params: (String) -> Params
     ) async -> TowerActOutcome<Resp> {
-        .refused("Watchtower's chat isn't ready yet.")
+        .refused(Refusal(code: .unsupported, sentence: "Watchtower's chat isn't ready yet."))
     }
 }

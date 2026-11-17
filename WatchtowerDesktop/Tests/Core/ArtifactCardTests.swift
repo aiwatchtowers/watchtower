@@ -39,61 +39,6 @@ final class ArtifactCardTests: XCTestCase {
 
     // MARK: - Guarded writers
 
-    func testWritersMarkTheDrawnVersionOnce() throws {
-        let queue = try TestDatabase.create()
-        try queue.write { db in
-            let automationID = try TestDatabase.insertAutomation(db)
-            let run = try TestDatabase.insertAutomationRun(db, automationID: automationID)
-            let ids = try (0..<3).map { _ in
-                try TestDatabase.insertAutomationOutput(db, automationID: automationID, runID: run, contentHash: "h1")
-            }
-            XCTAssertTrue(try AutomationQueries.markOutputOpened(db, id: ids[0], contentHash: "h1", now: now))
-            XCTAssertFalse(try AutomationQueries.markOutputOpened(db, id: ids[0], contentHash: "h1", now: now),
-                           "already read")
-            XCTAssertTrue(try AutomationQueries.markOutputDone(db, id: ids[1], contentHash: "h1", now: now))
-            XCTAssertFalse(try AutomationQueries.markOutputDone(db, id: ids[1], contentHash: "h1", now: now))
-            XCTAssertTrue(try AutomationQueries.dismissOutput(db, id: ids[2], contentHash: "h1", now: now))
-            XCTAssertFalse(try AutomationQueries.dismissOutput(db, id: ids[2], contentHash: "h1", now: now))
-        }
-    }
-
-    /// A row rewritten under the view (its hash moved) takes no stamp from
-    /// any writer, and keeps every column.
-    func testStaleHashChangesNothing() throws {
-        let queue = try TestDatabase.create()
-        let seeded = try queue.write { db -> Seeded in
-            let seeded = try seed(db)
-            try rewrite(db, seeded, hash: "h2", at: "2026-10-16T11:00:00Z")
-            return seeded
-        }
-        let before = try queue.read { db in
-            try Row.fetchOne(db, sql: "SELECT * FROM automation_outputs WHERE id = ?", arguments: [seeded.living])
-        }
-        try queue.write { db in
-            XCTAssertFalse(try AutomationQueries.markOutputOpened(db, id: seeded.living, contentHash: "h1", now: now))
-            XCTAssertFalse(try AutomationQueries.markOutputDone(db, id: seeded.living, contentHash: "h1", now: now))
-            XCTAssertFalse(try AutomationQueries.dismissOutput(db, id: seeded.living, contentHash: "h1", now: now))
-        }
-        let after = try queue.read { db in
-            try Row.fetchOne(db, sql: "SELECT * FROM automation_outputs WHERE id = ?", arguments: [seeded.living])
-        }
-        XCTAssertEqual(after, before)
-    }
-
-    /// A row from before the blocks migration has `content_hash = ''`, and
-    /// the card drew `''`: it still marks.
-    func testPreMigrationRowStillMarks() throws {
-        let queue = try TestDatabase.create()
-        try queue.write { db in
-            let automationID = try TestDatabase.insertAutomation(db)
-            let run = try TestDatabase.insertAutomationRun(db, automationID: automationID)
-            let id = try TestDatabase.insertAutomationOutput(db, automationID: automationID, runID: run)
-            let card = try XCTUnwrap(try AutomationQueries.fetchInboxOutputs(db).first)
-            XCTAssertEqual(card.contentHash, "")
-            XCTAssertTrue(try AutomationQueries.markOutputDone(db, id: id, contentHash: card.contentHash, now: now))
-        }
-    }
-
     // MARK: - Same-hash vs changed rewrites
 
     /// A same-hash rewrite moves only `written_at`: the unread count, the

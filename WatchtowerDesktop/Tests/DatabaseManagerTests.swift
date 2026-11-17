@@ -23,62 +23,6 @@ final class DatabaseManagerTests: XCTestCase {
 
     // MARK: - wipeLLMData
 
-    func testWipeLLMDataPreservesUserCreatedTargets() async throws {
-        try await dbManager.dbPool.write { db in
-            try TestDatabase.insertTarget(db, text: "Manual todo", sourceType: "manual")
-            try TestDatabase.insertTarget(db, text: "Jira-linked", sourceType: "jira")
-            try TestDatabase.insertTarget(db, text: "From digest", sourceType: "digest")
-            try TestDatabase.insertTarget(db, text: "Extracted", sourceType: "extract")
-            try TestDatabase.insertInboxItem(db)
-        }
-
-        try await dbManager.wipeLLMData()
-
-        let remainingTexts: [String] = try await dbManager.dbPool.read { db in
-            try String.fetchAll(db, sql: "SELECT text FROM targets ORDER BY text")
-        }
-        XCTAssertEqual(remainingTexts, ["Jira-linked", "Manual todo"])
-
-        let remainingCount: Int = try await dbManager.dbPool.read { db in
-            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM targets") ?? -1
-        }
-        XCTAssertEqual(remainingCount, 2)
-
-        let inboxCount: Int = try await dbManager.dbPool.read { db in
-            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM inbox_items") ?? -1
-        }
-        XCTAssertEqual(inboxCount, 0)
-    }
-
-    /// Project targets are source_type='chat', which "Wipe LLM data" deletes.
-    /// A project board is durable work state (PROJ-02: only a project delete
-    /// removes it), so the wipe must spare it — and its comments, which would
-    /// cascade with it.
-    func testWipeLLMDataPreservesProjectTargets() async throws {
-        try await dbManager.dbPool.write { db in
-            try db.execute(sql: "INSERT INTO projects (name, folder_path) VALUES ('acme', '/tmp/acme')")
-            let projectID = db.lastInsertedRowID
-            let boardTarget = try TestDatabase.insertTarget(db, text: "Board task", sourceType: "chat")
-            try db.execute(sql: "UPDATE targets SET project_id = ? WHERE id = ?", arguments: [projectID, boardTarget])
-            try db.execute(
-                sql: "INSERT INTO project_comments (project_id, target_id, author, body) VALUES (?, ?, 'agent', 'q')",
-                arguments: [projectID, boardTarget]
-            )
-            try TestDatabase.insertTarget(db, text: "Chat suggestion", sourceType: "chat")
-        }
-
-        try await dbManager.wipeLLMData()
-
-        let texts: [String] = try await dbManager.dbPool.read { db in
-            try String.fetchAll(db, sql: "SELECT text FROM targets ORDER BY text")
-        }
-        XCTAssertEqual(texts, ["Board task"])
-        let comments: Int = try await dbManager.dbPool.read { db in
-            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM project_comments") ?? -1
-        }
-        XCTAssertEqual(comments, 1)
-    }
-
     // MARK: - init(path:) busy wait
 
     /// The real `init(path:)` waits for another process's write lock: the

@@ -345,13 +345,13 @@ struct InboxRowActionHandler {
         }
         if let verdict {
             await vm.runRowPress(.idea(id), press: press) {
-                // `write` sets `errorMessage` on the main actor before it returns: it is this call's.
-                await verdict() ? nil : ideas.errorMessage ?? "Couldn't change the idea"
+                // The press leaves its failure on the idea's row state before it returns: it is this call's.
+                await verdict() ? nil : ideas.pressFailure(idea) ?? "Couldn't change the idea"
             }
         } else if press == .makeTask {
             await vm.runRowPress(.idea(id), press: press) {
                 guard let target = await ideas.convertToTarget(idea) else {
-                    return ideas.errorMessage ?? "Couldn't make a task"
+                    return ideas.pressFailure(idea) ?? "Couldn't make a task"
                 }
                 onIdeaMadeTask(target)
                 return nil

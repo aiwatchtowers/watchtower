@@ -32,19 +32,31 @@ package final class FeedCaseTransport: TowerTransport, @unchecked Sendable {
     }
 
     /// One write of a case: its SQL (a write from elsewhere: the CLI,
-    /// another process), the query telling it landed, and the feed after it.
+    /// another process) or the Mac's `inbox.act` (Go's write), the query
+    /// telling it landed, and the feed after it.
     package struct Step: Decodable, Sendable {
         package let name: String
         package let sql: [String]?
+        package let act: StepAct?
         package let when: String
         package let expect: Feed
     }
 
+    /// A step's `inbox.act`: the press the Mac sends for it.
+    package struct StepAct: Decodable, Sendable {
+        package let target: String
+        package let verb: ActVerb
+    }
+
     private struct State {
         var served: Int?
+        /// The steps an `inbox.act` of the Mac landed (Go's write, which
+        /// the test's database never sees).
+        var landedActs: Set<Int> = []
         var acts: [ActRequest] = []
         var feedReads = 0
         var actRefusal: String?
+        var actAnswer = ActResult()
         var feedRequests: [FeedRequest] = []
     }
 
@@ -122,11 +134,15 @@ package final class FeedCaseTransport: TowerTransport, @unchecked Sendable {
     }
 
     /// The feed of the last step whose write has landed, else the seed's;
-    /// and that step's index (nil: the seed's).
+    /// and that step's index (nil: the seed's). A step lands when its
+    /// query holds on the test's database, or when the Mac sent its act.
     package func current() -> (feed: Feed, step: Int?) {
         let steps = fixture.steps
+        let acted = state.withLock { $0.landedActs }
         let landed = try? pool.read { db in
-            steps.lastIndex { step in ((try? Int.fetchOne(db, sql: step.when)) ?? 0) != 0 }
+            steps.indices.last { index in
+                acted.contains(index) || ((try? Int.fetchOne(db, sql: steps[index].when)) ?? 0) != 0
+            }
         }
         return (landed.map { steps[$0].expect } ?? fixture.expect, landed)
     }
@@ -164,6 +180,16 @@ package final class FeedCaseTransport: TowerTransport, @unchecked Sendable {
         set { state.withLock { $0.actRefusal = newValue } }
     }
 
+    /// What every `inbox.act` answers (ok) from now on; `already: true` is
+    /// Go's guarded no-op, which lands no step.
+    package var actAnswer: ActResult {
+        get { state.withLock { $0.actAnswer } }
+        set { state.withLock { $0.actAnswer = newValue } }
+    }
+
+    /// Awaited before an `inbox.act` is answered (a test holding a press).
+    package var actGate: (@Sendable () async -> Void)?
+
     package func call(_ request: Request) async throws -> Response {
         switch request.command {
         case TowerCommand.towerHello.rawValue:
@@ -179,15 +205,30 @@ package final class FeedCaseTransport: TowerTransport, @unchecked Sendable {
             }
             return try Self.ok(request, feed)
         case TowerCommand.inboxAct.rawValue:
-            if let params = request.params, let act = try? JSONDecoder().decode(ActRequest.self, from: params.data) {
-                state.withLock { $0.acts.append(act) }
-            }
+            let act = request.params.flatMap { try? JSONDecoder().decode(ActRequest.self, from: $0.data) }
+            if let act { state.withLock { $0.acts.append(act) } }
+            await actGate?()
             if let sentence = actRefusal {
                 return Response(id: request.id, status: .refused, refusal: Refusal(code: .unsupported, sentence: sentence))
             }
-            return try Self.ok(request, ActResult())
+            let answer = actAnswer
+            if let act, answer.already != true { land(act) }
+            return try Self.ok(request, answer)
         default:
             return Response(id: request.id, status: .refused, refusal: Refusal(code: .unsupported, sentence: "no"))
+        }
+    }
+
+    /// The first step not landed yet whose act is `act`'s target and verb
+    /// lands: Go's write answered ok.
+    private func land(_ act: ActRequest) {
+        let steps = fixture.steps
+        state.withLock { state in
+            guard let index = steps.indices.first(where: { index in
+                !state.landedActs.contains(index)
+                    && steps[index].act.map { $0.target == act.target && $0.verb == act.verb } == true
+            }) else { return }
+            state.landedActs.insert(index)
         }
     }
 
@@ -230,6 +271,15 @@ package final class FeedCaseTransport: TowerTransport, @unchecked Sendable {
 }
 
 package extension ActionStripViewModel {
+    /// `follow`, and every press through the same tower, as the app does:
+    /// each is an `inbox.act` the transport records and lands its step for.
+    @MainActor
+    func followWriting(_ transport: FeedCaseTransport) async {
+        attachWrites(InboxTowerWrites(client: TowerClient(
+            transport: transport, clock: ContinuousClock(), restartDaemon: nil, startDaemon: nil)))
+        await follow(transport)
+    }
+
     /// Reads the Inbox from `transport` as the app reads the tower (a loader
     /// over a `TowerClient`), and keeps following it: after every refresh
     /// that finds a newly landed step (the VM's own write, a CLI's, a poll's

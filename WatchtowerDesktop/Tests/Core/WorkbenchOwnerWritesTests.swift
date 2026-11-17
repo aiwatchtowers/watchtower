@@ -16,50 +16,6 @@ final class WorkbenchOwnerWritesTests: XCTestCase {
         )
     }
 
-    /// PROJ-05/06: the named target's change is the owner's in its history,
-    /// and the parents the rollup closed in the same write come back too.
-    func testSetStatusClaimsTheOwnerAndReturnsTheRolledUpParents() throws {
-        let queue = try TestDatabase.create()
-        try queue.write { db in
-            let pid = try TestDatabase.insertWorkbench(db)
-            let root = try TestDatabase.insertWorkbenchTarget(db, projectID: pid, text: "Plan")
-            let mid = try TestDatabase.insertWorkbenchTarget(db, projectID: pid, text: "Feature", parentID: root)
-            let leaf = try TestDatabase.insertWorkbenchTarget(db, projectID: pid, text: "Task", parentID: mid)
-
-            let write = try WorkbenchOwnerWrites.setStatus(db, targetID: leaf, status: "done")
-
-            XCTAssertEqual(write, WorkbenchOwnerWrite(target: leaf, rolledUp: [root, mid].sorted()))
-            XCTAssertEqual(write.touched, [leaf] + [root, mid].sorted())
-            XCTAssertEqual(try status(db, leaf), "done")
-            XCTAssertEqual(try status(db, root), "done", "PROJ-05: the chain rolls up")
-            XCTAssertEqual(try lastActor(db, leaf), "owner", "PROJ-06: the owner's change")
-            XCTAssertEqual(try lastActor(db, mid), "system", "the rollup's own change")
-        }
-    }
-
-    func testSetStatusOnAnUnchangedChainReportsOnlyTheTarget() throws {
-        let queue = try TestDatabase.create()
-        try queue.write { db in
-            let pid = try TestDatabase.insertWorkbench(db)
-            let root = try TestDatabase.insertWorkbenchTarget(db, projectID: pid, text: "Plan")
-            let leaf = try TestDatabase.insertWorkbenchTarget(db, projectID: pid, status: "in_progress", parentID: root)
-            _ = try TestDatabase.insertWorkbenchTarget(db, projectID: pid, status: "in_progress", parentID: root)
-
-            let write = try WorkbenchOwnerWrites.setStatus(db, targetID: leaf, status: "in_review")
-
-            XCTAssertEqual(write.touched, [leaf], "the parent stays in_progress")
-        }
-    }
-
-    func testSetStatusOnAMissingTargetThrows() throws {
-        let queue = try TestDatabase.create()
-        try queue.write { db in
-            XCTAssertThrowsError(try WorkbenchOwnerWrites.setStatus(db, targetID: 999_999, status: "done")) {
-                XCTAssertTrue($0 is TargetNotFoundError, "\($0)")
-            }
-        }
-    }
-
     func testSetPriorityWritesAndReportsTheTarget() throws {
         let queue = try TestDatabase.create()
         try queue.write { db in

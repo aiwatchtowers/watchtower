@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import WatchtowerInterface
 
 // MARK: - IdeaDetailPane
 //
@@ -20,6 +21,9 @@ struct IdeaDetailPane: View {
     let actions: IdeaActions
     /// A verdict write is under way: the bar's buttons wait.
     let isWriting: Bool
+    /// The idea's last press through the tower (busy, refused, didn't
+    /// confirm), drawn under the bar with its busy label; Retry repeats it.
+    var press = IdeaPressState()
     /// False while another prominent action is on screen (the Inbox's open
     /// New idea row): Approve drops to the regular style.
     let approveIsPrimary: Bool
@@ -361,6 +365,13 @@ struct IdeaDetailPane: View {
         }
     }
 
+    /// The pane with `press` drawn under its bar.
+    func pressState(_ press: IdeaPressState) -> Self {
+        var pane = self
+        pane.press = press
+        return pane
+    }
+
     // MARK: - Action bar
 
     private var actionBar: some View {
@@ -368,6 +379,10 @@ struct IdeaDetailPane: View {
             ratingRow
             IdeaActionBar(idea: idea, allIdeas: allIdeas, actions: actions, openRow: $openRow,
                           isWriting: isWriting, approveIsPrimary: approveIsPrimary)
+            if press.state != nil {
+                TowerRowState(state: press.state, busyLabel: press.busyLabel, retry: press.retry)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .padding(Spacing.medium)
     }
@@ -415,6 +430,13 @@ struct IdeaDetailPane: View {
 }
 
 // MARK: - IdeaActions
+
+/// An idea's press state for the pane (`IdeasViewModel.presses`).
+struct IdeaPressState {
+    var state: TowerActionState?
+    var busyLabel = ""
+    var retry: () -> Void = {}
+}
 
 /// The writes an idea card can ask for; the caller runs them through
 /// `IdeasViewModel` (today's verdict writes). Each one is awaited, so the

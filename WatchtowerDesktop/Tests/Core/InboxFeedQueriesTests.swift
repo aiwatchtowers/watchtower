@@ -80,26 +80,6 @@ final class InboxFeedQueriesTests: XCTestCase {
         XCTAssertEqual(ids.intersection(hiddenIDs).count, 1, "only the folded row (304) of the n03xx rows shows")
     }
 
-    func testMarkMessageReadWritesOnlyReadAt() throws {
-        let queue = try TestDatabase.create()
-        let id = try queue.write { try message($0, 1) }
-        let dump = {
-            try queue.read { db in try Row.fetchOne(db, sql: "SELECT * FROM inbox_items WHERE id = ?", arguments: [id]) }
-        }
-        let before = try XCTUnwrap(try dump())
-        try queue.write { try InboxQueries.markRead($0, id: Int(id)) }
-        let after = try XCTUnwrap(try dump())
-        XCTAssertNotNil(after["read_at"] as String?)
-        for column in after.columnNames where column != "read_at" {
-            XCTAssertEqual(after[column] as DatabaseValue, before[column] as DatabaseValue, column)
-        }
-        try queue.write { db in
-            try db.execute(sql: "UPDATE inbox_items SET read_at = '2026-10-01T00:00:00Z' WHERE id = ?", arguments: [id])
-            try InboxQueries.markRead(db, id: Int(id))
-        }
-        XCTAssertEqual(try XCTUnwrap(try dump())["read_at"] as String?, "2026-10-01T00:00:00Z")
-    }
-
     func testTrackCardsCountUnreadEventsAndExcludeDismissed() throws {
         let queue = try TestDatabase.create()
         let ids = try queue.write { db -> (Int64, Int64) in
@@ -125,21 +105,6 @@ final class InboxFeedQueriesTests: XCTestCase {
         XCTAssertEqual(cards[0].newEventCount, 2)
         XCTAssertEqual(cards[0].lastEventAt, AutomationDates.parse("2026-10-21T00:00:00Z"))
         XCTAssertTrue(cards[0].isUnread)
-    }
-
-    func testMarkAllEventsReadTouchesOnlyThatTrack() throws {
-        let queue = try TestDatabase.create()
-        let (a, b) = try queue.write { db -> (Int64, Int64) in
-            let a = try TestDatabase.insertTrack(db)
-            let b = try TestDatabase.insertTrack(db)
-            for track in [a, a, b] {
-                try db.execute(sql: "INSERT INTO track_events (track_id, summary) VALUES (?, 's')", arguments: [track])
-            }
-            return (a, b)
-        }
-        try queue.write { try TrackEventQueries.markAllRead($0, trackId: Int(a)) }
-        XCTAssertEqual(try queue.read { try TrackEventQueries.unreadCount($0, trackId: Int(a)) }, 0)
-        XCTAssertEqual(try queue.read { try TrackEventQueries.unreadCount($0, trackId: Int(b)) }, 1)
     }
 
     func testInboxRegistryHidesMergedOnly() throws {
