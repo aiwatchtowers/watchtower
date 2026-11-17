@@ -16,8 +16,19 @@ package final class FeedCaseTransport: TowerTransport, @unchecked Sendable {
         package let name: String
         package let seed: [String]
         package let expect: Feed
-        package let desktop: Bool?
-        package let steps: [Step]?
+        package let desktop: Bool
+        package let steps: [Step]
+
+        private enum CodingKeys: String, CodingKey { case name, seed, expect, desktop, steps }
+
+        package init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            name = try container.decode(String.self, forKey: .name)
+            seed = try container.decode([String].self, forKey: .seed)
+            expect = try container.decode(Feed.self, forKey: .expect)
+            desktop = try container.decodeIfPresent(Bool.self, forKey: .desktop) ?? false
+            steps = try container.decodeIfPresent([Step].self, forKey: .steps) ?? []
+        }
     }
 
     /// One write of a case: its SQL (a write from elsewhere: the CLI,
@@ -44,7 +55,7 @@ package final class FeedCaseTransport: TowerTransport, @unchecked Sendable {
         guard let found = try Self.cases().first(where: { $0.name == name }) else {
             throw FixtureError.noCase(name)
         }
-        guard found.desktop == true else { throw FixtureError.notDesktop(name) }
+        guard found.desktop else { throw FixtureError.notDesktop(name) }
         fixture = found
         self.pool = pool
     }
@@ -86,8 +97,10 @@ package final class FeedCaseTransport: TowerTransport, @unchecked Sendable {
         let feed = current().feed
         let rows = try pool.read { db in
             try Row.fetchAll(db, sql: "SELECT id, kind, parent_id, slug, title, position FROM inbox_folders ORDER BY id")
-                .map { "\($0["id"] as Int64) \($0["kind"] as String) \(($0["parent_id"] as Int64?) ?? 0) "
-                    + "\($0["slug"] as String) \($0["title"] as String) \($0["position"] as Int)" }
+        }
+        .map { row in
+            "\(row["id"] as Int64) \(row["kind"] as String) \((row["parent_id"] as Int64?) ?? 0) "
+                + "\(row["slug"] as String) \(row["title"] as String) \(row["position"] as Int)"
         }
         let folders = feed.folders.sorted { $0.id < $1.id }
             .map { "\($0.id) \($0.kind.rawValue) \($0.parentID ?? 0) \($0.slug) \($0.title) \($0.position)" }
@@ -98,7 +111,7 @@ package final class FeedCaseTransport: TowerTransport, @unchecked Sendable {
     /// Makes step `name`'s write on the test's database (the write the CLI
     /// or another process makes in the case).
     package func write(_ name: String) throws {
-        guard let step = fixture.steps?.first(where: { $0.name == name }), let sql = step.sql else {
+        guard let step = fixture.steps.first(where: { $0.name == name }), let sql = step.sql else {
             throw FixtureError.noStep(name)
         }
         try pool.write { db in
@@ -109,10 +122,10 @@ package final class FeedCaseTransport: TowerTransport, @unchecked Sendable {
     /// The feed of the last step whose write has landed, else the seed's;
     /// and that step's index (nil: the seed's).
     package func current() -> (feed: Feed, step: Int?) {
-        let steps = fixture.steps ?? []
-        let landed = (try? pool.read { db in
+        let steps = fixture.steps
+        let landed = try? pool.read { db in
             steps.lastIndex { step in ((try? Int.fetchOne(db, sql: step.when)) ?? 0) != 0 }
-        }) ?? nil
+        }
         return (landed.map { steps[$0].expect } ?? fixture.expect, landed)
     }
 
@@ -184,7 +197,9 @@ package final class FeedCaseTransport: TowerTransport, @unchecked Sendable {
 
     private static let loaded = Result { () throws -> [Case] in
         let root = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent() // Support
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerDesktop
             .deletingLastPathComponent()
         let url = root.appendingPathComponent("internal/inboxfeed/testdata/inbox_feed_cases.json")
         return try JSONDecoder().decode([Case].self, from: Data(contentsOf: url))

@@ -286,6 +286,8 @@ final class InboxRowActionsTests: XCTestCase {
         // Message 1: a Slack mention with a permalink.
         let id: Int64 = 1
         let ref = InboxRef(kind: .inboxItem, id: Int64(id))
+        // Labeled: the missing CLI reads as such.
+        // swiftlint:disable:next trailing_closure
         let vm = try await listed("desktop_rows_slack_item", findCLI: { nil })
         let hooks = hooks(vm)
         let content = try XCTUnwrap(hooks.content(ref, .inbox))
@@ -320,6 +322,8 @@ final class InboxRowActionsTests: XCTestCase {
     func testMissingCLIKeepsDatabaseWritesOn() async throws {
         // Reminder 1, due; Go's next feed once it is done.
         let id: Int64 = 1
+        // Labeled: the missing CLI reads as such.
+        // swiftlint:disable:next trailing_closure
         let vm = try await listed("desktop_strip_reminder_done", findCLI: { nil })
         let hooks = hooks(vm)
         let reminder = try XCTUnwrap(hooks.content(InboxRef(kind: .reminder, id: id), .inbox))

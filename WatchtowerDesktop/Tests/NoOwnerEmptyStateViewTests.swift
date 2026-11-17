@@ -115,7 +115,7 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
         suites.append(suite)
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         let vm = ActionStripViewModel(dbPool: try testPool(), cliRunner: FakeCLIRunner(), defaults: defaults,
-                                      clock: { Self.caseNow })
+                                      clock: Self.caseClock)
         // Nothing made, no owner; Go's next feed once a Slack account names the owner.
         let tower = try FeedCaseTransport.seeded("desktop_owner_arrives", pool: testPool())
 
@@ -212,13 +212,14 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
     /// The moment Go's cases are built at, and its day: the tower's today.
     private static let caseNow = Date(timeIntervalSince1970: 1_794_830_400) // 2026-11-16T12:00:00Z
     private static let caseDay = "2026-11-16"
+    private static let caseClock: @Sendable () -> Date = { caseNow }
 
     private func inboxVM() throws -> ActionStripViewModel {
         let suite = "NoOwnerEmptyStateViewTests.\(UUID().uuidString)"
         suites.append(suite)
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         return ActionStripViewModel(dbPool: try testPool(), cliRunner: FakeCLIRunner(), defaults: defaults,
-                                    clock: { Self.caseNow })
+                                    clock: Self.caseClock)
     }
 
     /// The dates of the root's Morning brief entries, in list order.
