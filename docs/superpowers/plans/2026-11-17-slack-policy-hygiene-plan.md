@@ -22,8 +22,20 @@
 - Every UI string lives in a WatchtowerCore model pinned by a test, and must equal the matching `SlackPolicyMockCopy` string (the mock table is the spec's copy).
 - Tests never wait on wall-clock time: purge timing uses an injected `now`; `fdesetup` is a stubbed runner with a 2 s timeout, reaped on cancel.
 - Inventory: PURGE-01 and SLACK-01 amendments are approved (ask #1412); PURGE-02 is extended; DEV-03 and POLICY-01/02 are unchanged. No guard test is relaxed or renamed.
-- Migrations: the next free number on `origin/main` at write time is **00194**; if another branch takes it first, renumber at merge (one file, no Go migration).
+- Migrations: one SQL migration (Task 6), numbered with the **next free number at implementation time** (plan B also adds one; whichever lands second renumbers). Written below as `<NNNNN>`; no Go migration.
 - Repo hygiene: sample data only (`acme`, `example.com`, made-up people).
+
+## Decisions taken in this plan
+
+Approved decisions come from the spec (P1–P10, A1–A24). The plan adds these; A25–A27 go to the owner in one ask (plan review ask #1427):
+
+| # | Decision | Recommendation / consequence |
+|---|---|---|
+| A25 | A failed `auth.revoke` on `slack remove` does not stop the remove: the token file is deleted, the row is `removed`, and the CLI prints the warning | Recommend. Consequence: the token stays valid at Slack until it expires (a rotating Full token: its refresh token's 30 days; a legacy token: never) or the admin removes the app; nobody on this Mac holds it any more |
+| A26 | The emoji skip for a **legacy** token (no recorded grant) is persisted as `slack_accounts.emoji_scope_missing` (in Task 6's migration, no migration of its own); a token with a recorded grant decides by the grant alone, so a re-login (which always records the grant) makes the flag irrelevant and nobody has to clear it | Recommend: a restart does not call `emoji.list` and log `missing_scope` again |
+| A27 | The gallery template `team-performance-report` becomes `team-week-summary` ("Team week summary"): what moved, where work is stuck, decisions; no red flags, no "who may be overloaded", no one-on-one list. A template is a gallery file, not a built-in automation (BUILTIN contracts in `docs/inventory/automations.md` cover `builtin:` recipes only), so the rename changes no inventory contract. A copy the owner already installed keeps its name and file; `list_people` no longer returns `RedFlags`, so it reads an empty value | Recommend, follows P8 («резать всё») |
+| — | The dead config key `analysis.legacy_mode` is removed (Task 6) | Part of approved A15's cleanup |
+| — | Manifest single source: the JSON moves to `internal/slackmanifest/`; plan B's `internal/slackapp.BuildManifest`/`MergeManifest` take the scope list and descriptions from `slackmanifest.UserScopes()`/`Description()` instead of their own | Implements approved A10; matching line goes into plan B Task 9 |
 
 ## Review Focus
 
@@ -186,14 +198,14 @@ Expected: PASS
 
 ### Task 4: One manifest, 17 scopes, emoji skip
 
-**Depends on:** none
+**Depends on:** Task 6 (the `emoji_scope_missing` column); the manifest half has no dependency and may start first
 
 **Files:**
 - Create: `internal/slackmanifest/manifest.go`, `internal/slackmanifest/slack-app-manifest.json` (moved from the repo root with `git mv`), `internal/slackmanifest/manifest_test.go`
 - Modify: `internal/auth/oauth.go:53-65` (`UserScopes` from the manifest)
 - Modify: `internal/sync/orchestrator.go:1146-1170` (`syncEmoji`)
 - Test: `internal/sync/coverage_test.go` (emoji cases)
-- Docs: `docs/features/slack-send.md` (manifest path), `docs/features/slack-multi-account.md` (scopes, the move)
+- Docs — every reference to the old root path `slack-app-manifest.json` (grep at implementation time; at plan time): `docs/features/slack-send.md:7` (scope note), `docs/features/slack-multi-account.md` (scopes, the new path), the admin instructions in `docs/guide/concepts/sources-and-accounts.md` (Task 11 writes the scope list there, pointing to the new path). Historical specs and plans (`docs/superpowers/specs/2026-10-02-slack-send-design.md`, `docs/superpowers/plans/2026-10-02-slack-send.md`) stay as written. Plan B (`docs/superpowers/plans/2026-11-17-slack-full-plan-b.md`, Tasks 1 and 9) reads the manifest from `internal/slackmanifest`: its `BuildManifest` takes `slackmanifest.UserScopes()` and `slackmanifest.Description(connectBlock)` (the controller adds that line to plan B). `TestSlackManifest_NoRootCopy` asserts the root file is gone.
 
 **Interfaces:**
 - Produces:
@@ -213,11 +225,12 @@ Expected: PASS
 
 `TestSyncEmoji_RecordedGrantWithoutScopeSkips`: a token whose recorded `Scope` lacks `emoji:read` → no `emoji.list` call.
 
-`TestSyncEmoji_MissingScopeSkipsUntilLogin`: legacy token (empty `Scope`), fake answers `missing_scope` → one call in the first cycle, none in the next two, one log line total.
+`TestSyncEmoji_MissingScopeSkipsUntilLogin`: legacy token (empty `Scope`), fake answers `missing_scope` → one call in the first cycle, `emoji_scope_missing = 1`; a new orchestrator (a restart) on the same DB makes no call and logs nothing; a token file that now records a grant with `emoji:read` calls again whatever the flag says.
 
 - [ ] **Step 2: Run** `go test ./internal/slackmanifest ./internal/auth ./internal/sync -run 'SlackManifest|SyncEmoji'` — Expected: FAIL.
 
-- [ ] **Step 3: Implement.** `git mv slack-app-manifest.json internal/slackmanifest/`; set its user scopes to the 17; `//go:embed slack-app-manifest.json`. `syncEmoji` checks the recorded grant first, and keeps an in-memory `emojiSkip` per orchestrator set on `missing_scope`.
+- [ ] **Step 3: Implement.** `git mv slack-app-manifest.json internal/slackmanifest/`; set its user scopes to the 17; `//go:embed slack-app-manifest.json`. `syncEmoji`: a recorded grant decides alone (call only if it has `emoji:read`); with no recorded grant, skip when `emoji_scope_missing = 1`, else call and set the flag on `missing_scope` (one log line). Writer of the flag: this function only.
+  - `func (db *DB) SetSlackEmojiScopeMissing(accountID int64) error`
 
 - [ ] **Step 4: Run** `go test ./internal/slackmanifest ./internal/auth ./internal/sync ./cmd` — Expected: PASS.
 
@@ -243,7 +256,7 @@ Expected: PASS
 **Depends on:** Task 1 (purge step list file is shared)
 
 **Files:**
-- Create: `internal/db/migrations/00194_people_policy_hygiene.sql`
+- Create: `internal/db/migrations/<NNNNN>_policy_hygiene.sql` (next free number at implementation time)
 - Modify: `internal/db/schema.sql` (the new table), `internal/db/db_test.go` (`TestAllTablesExist`), goldens and `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift` (`go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema' -update`)
 - Create: `internal/db/people_exclusions.go`, `internal/db/people_exclusions_test.go`
 - Modify: `internal/db/user_analyses.go:315` (`ComputeAllUserStats`)
@@ -258,16 +271,19 @@ Expected: PASS
   - `func (db *DB) ExcludePerson(userID string) error` — inserts and deletes the person's `people_cards` rows in one transaction
   - `func (db *DB) IncludePerson(userID string) error`
   - `func (db *DB) PeopleExclusions() (map[string]bool, error)`
-  - `func (db *DB) ComputeAllUserStats(from, to float64, minMessages int, ownerID string) ([]UserStats, error)` — empty `ownerID` → empty result
+  - `func (db *DB) ComputeAllUserStats(from, to float64, minMessages int, owners map[int64]string) ([]UserStats, error)` — `owners` maps a Slack account id to that account's namespaced owner id (`<account>:<current_user_id>` from `slack_accounts`); a person `<account>:<U>` qualifies only through the owner of the same account; an account missing from the map (no `current_user_id`) makes no cards; an empty map → empty result
+  - `func (db *DB) SlackOwnersByAccount() (map[int64]string, error)` — live accounts with a non-empty `current_user_id`
   - CLI `watchtower people exclude|include --user <id> --json` → `{"ok":true,"user_id":"…","excluded":true|false}`; unknown user → non-zero exit, `user not found`
 
 - [ ] **Step 1: Write the failing tests**
 
-`TestMigration_PeopleSurveillanceCleared`: a DB at 00193 with one `people_cards` row (`active_hours_json='{"9":3}'`, `volume_change_pct=-40`, `avg_message_length=80`, `red_flags='["x"]'`), one `people_card_summaries` row (`attention='["y"]'`), one `user_analyses` row, one `user_interactions` row → after 00194: the card's fields are `'{}'`, `0`, `0`, `'[]'`; `attention='[]'`; both legacy tables empty; running the migration's Up statements again changes nothing.
+`TestMigration_PeopleSurveillanceCleared`: a DB at the previous migration with one `people_cards` row (`active_hours_json='{"9":3}'`, `volume_change_pct=-40`, `avg_message_length=80`, `red_flags='["x"]'`), one `people_card_summaries` row (`attention='["y"]'`), one `user_analyses` row, one `user_interactions` row → after `<NNNNN>`: the card's fields are `'{}'`, `0`, `0`, `'[]'`; `attention='[]'`; both legacy tables empty; running the migration's Up statements again changes nothing.
 
-`TestPeopleCards_OnlyInteractionPartners`: owner `1:UOWN`; P1 shares a DM, P2 replied in the owner's thread, P3 mentioned `<@UOWN>`, P4 only posted 30 messages in a channel the owner reads → stats for P1–P3 and the owner only.
+`TestPeopleCards_OnlyInteractionPartners`: owners `{1: "1:UOWN"}`; P1 shares a DM, P2 replied in the owner's thread, P3 mentioned `<@UOWN>`, P4 only posted 30 messages in a channel the owner reads → stats for P1–P3 and the owner only.
 
-`TestPeopleCards_NoOwnerNoCards`: `ownerID == ""` → no stats, and the guide pipeline records the existing owner-unknown readiness, not an error.
+`TestPeopleCards_TwoAccountsTwoOwners`: account 1 owner `1:UOWN`, account 2 owner `2:UME`; `2:UP5` shares a DM with `2:UME`, `1:UP6` only shares a channel with `1:UOWN`, `2:UP7` mentioned `<@UOWN>` (account 1's raw id, in account 2) → stats for `2:UP5` and both owners only.
+
+`TestPeopleCards_NoOwnerNoCards`: an empty owners map → no stats, and the guide pipeline records the existing owner-unknown readiness, not an error.
 
 `TestPeopleExclude_BlocksFutureCards`: exclude P1 (no card yet) → the next pipeline run makes none; include → the next run makes one.
 
@@ -277,7 +293,7 @@ Expected: PASS
 
 - [ ] **Step 2: Run** `go test ./internal/db ./internal/guide ./cmd -run 'PeopleSurveillance|OnlyInteraction|NoOwnerNoCards|PeopleExclude|Purge02|AllTablesExist'` — Expected: FAIL.
 
-- [ ] **Step 3: Implement.** Migration Up: `CREATE TABLE people_card_exclusions …`; the three `UPDATE`s and two `DELETE`s of spec §5.3 (A15). Down: drop the table only. The interaction test is one SQL `EXISTS` over `messages` per spec §5.3 (DM/group DM with both authors, a `thread_ts` with both authors, a mention either way, within `[from, to)`). Remove `analysis.legacy_mode` from `internal/config/config.go:276-279`.
+- [ ] **Step 3: Implement.** Migration Up: `CREATE TABLE people_card_exclusions …`; `ALTER TABLE slack_accounts ADD COLUMN emoji_scope_missing INTEGER NOT NULL DEFAULT 0` (A26, read and written by Task 4's emoji skip; mirror in `schema.sql`); the three `UPDATE`s and two `DELETE`s of spec §5.3 (A15). Down: drop the table only. The interaction test is one SQL `EXISTS` over `messages` per spec §5.3 (DM/group DM with both authors, a `thread_ts` with both authors, a mention either way, within `[from, to)`). Remove `analysis.legacy_mode` from `internal/config/config.go:276-279`.
 
 - [ ] **Step 4: Run** the same command plus `go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema'` — Expected: PASS.
 
@@ -293,6 +309,9 @@ Expected: PASS
 - Modify: `internal/briefing/pipeline.go`, `internal/briefing/prompt.go`, `internal/dayplan/gather.go`, `internal/dayplan/prompt.go`, `internal/memory/node.go`, `internal/memory/seed.go` (stop reading dropped fields)
 - Modify: `internal/tools/people_read.go` (explicit output struct), `internal/tools/experts.go` (drop `ActiveHours`)
 - Modify: `internal/devpack/skills/watchtower-who-to-ask/SKILL.md`
+- Modify: `cmd/people.go:170-280` (text and markdown output print volume change and red flags)
+- Rename: `internal/automations/templates/team-performance-report.md` → `internal/automations/templates/team-week-summary.md` (A27), and its slug in `cmd/automations_templates_test.go`, `internal/automations/templates_test.go`, `WatchtowerDesktop/Tests/Core/AutomationNewChoiceTests.swift`, `WatchtowerDesktop/Tests/DesignShots/DesignShotFixtures+Automations.swift`, `docs/guide/features/automations-recipes.md`, `docs/features/automations.md`
+- Modify: `internal/tools/people_read.go` `list_people` (same output struct as `get_person`)
 - Test: `internal/prompts/defaults_extra_test.go` (golden), `internal/guide/pipeline_test.go`, `internal/tools/people_read_test.go`, `internal/tools/experts_test.go`, `internal/devpack/pack_test.go`
 
 **Interfaces:**
@@ -311,9 +330,13 @@ Expected: PASS
 
 `TestFindExperts_NoActiveHours`: no candidate JSON has `active_hours`; the DEV-03 guards still pass.
 
+`TestNoReaderReturnsDroppedPeopleFields` (`internal/tools`, table-driven): `get_person` and `list_people` JSON, `find_experts` JSON, `watchtower people` text and `--format md` output (`cmd`, run on a fixture card with every dropped field set), and the text of every file in `internal/automations/templates/` contain none of `RedFlags`, `red_flags`, `ActiveHours`, `active_hours`, `VolumeChangePct`, `Volume change`, `volume:`, `Red flags`, `overloaded`, `performance`.
+
+`TestTemplate_TeamWeekSummary`: renders and validates; its prompt asks for what moved, stuck work and decisions, and has no rule about people's performance.
+
 `TestDevpackSkills_NoDroppedPeopleFields`: no embedded skill contains `active_hours`, `ActiveHoursJSON`, `RedFlags`, `VolumeChangePct`; `watchtower-who-to-ask` contains `the owner stopped it`.
 
-- [ ] **Step 2: Run** `go test ./internal/prompts ./internal/guide ./internal/tools ./internal/devpack ./internal/briefing ./internal/dayplan ./internal/memory` — Expected: FAIL on the new tests.
+- [ ] **Step 2: Run** `go test ./internal/prompts ./internal/guide ./internal/tools ./internal/devpack ./internal/briefing ./internal/dayplan ./internal/memory ./internal/automations ./cmd -run 'People|Person|Experts|Template|Devpack|Briefing|DayPlan|Memory'` — Expected: FAIL on the new tests.
 
 - [ ] **Step 3: Implement.** The rule line text: `- Never infer or mention health, mood, burnout, workload judgments, personal life or protected characteristics, and never give performance verdicts; describe work topics and how to collaborate.` Bump the prompt version. Rewrite the skill's field-name bullet to the remaining fields and add `A person with no card may be one the owner stopped — don't guess.`
 
@@ -365,23 +388,23 @@ Expected: PASS
 - [ ] **Step 4: Run** the filter and `make lint-swift` — Expected: PASS.
 - [ ] **Step 5:** guide (privacy page, one line); commit `desktop: FileVault line (#1769)`.
 
-### Task 10: Disclosure copy for setup and connect
+### Task 10: Disclosure copy model (the sheets are plan B's)
 
-**Depends on:** Task 4 (manifest text)
+**Depends on:** Task 4 (manifest text). **Cross-plan:** plan B (`docs/superpowers/plans/2026-11-17-slack-full-plan-b.md`) Task 13 (S3, Set up for my company) and Task 14 (S4, the connect confirm) depend on this task and own the wiring.
 
 **Files:**
 - Create: `WatchtowerDesktop/Sources/WatchtowerCore/Services/SlackDisclosureCopy.swift`
 - Test: `WatchtowerDesktop/Tests/Core/SlackDisclosureCopyTests.swift`
-- Modify (when present on the branch): the Set up for my company sheet and the connect confirm built by the parent spec's T7/T8; otherwise add one line to that plan's setup and connect tasks: "show `SlackDisclosureCopy.setup` before the token paste and `SlackDisclosureCopy.connect` in the confirm (shots `slack-ph-setupDisclosure`, `slack-ph-connectDisclosure`)".
 
 **Interfaces:**
 - Produces: `SlackDisclosureCopy.setupTitle`, `setupLines: [String]`, `connectLine(workspace:) -> String`, `privacyLink`, `privacyURL = URL(string: "https://aiwatchtowers.com/privacy/")!`.
+- Acceptance for plan B (the controller adds it there): S3's sheet shows `SlackDisclosureCopy.setupTitle` and every `setupLines` entry plus the privacy link before the token field (test `SlackAppSetupSheetTests.testShowsDisclosureBeforeTokenField`); S4's confirm shows `connectLine(workspace:)` and the privacy link (test `SlackConnectSheetTests.testConfirmShowsDisclosureLine`); shots `slack-ph-setupDisclosure`, `slack-ph-connectDisclosure` are the reference.
 
-- [ ] **Step 1: Write the failing test** — `SlackDisclosureCopyTests.testMatchesMockupsAndManifest`: `setupLines == SlackPolicyMockCopy.disclosureLines`; `connectLine(workspace: "acme") == SlackPolicyMockCopy.connectLine`; every provider name in `setupLines` also appears in Go's description (read the Go source's constant through the repo path, the `policy_cases.json` pattern).
+- [ ] **Step 1: Write the failing test** — `SlackDisclosureCopyTests.testMatchesMockupsAndManifest`: `setupLines == SlackPolicyMockCopy.disclosureLines`; `connectLine(workspace: "acme") == SlackPolicyMockCopy.connectLine`; every provider name in `setupLines` also appears in `internal/slackmanifest/manifest.go`'s description text (read through the repo path, the `policy_cases.json` pattern).
 - [ ] **Step 2: Run** `make test-swift FILTER=SlackDisclosureCopyTests` — Expected: FAIL.
-- [ ] **Step 3: Implement**, and wire it or add the plan line as above.
+- [ ] **Step 3: Implement** the model only; no sheet is touched here.
 - [ ] **Step 4: Run** the filter and `make lint-swift` — Expected: PASS.
-- [ ] **Step 5: Commit** `desktop: Slack disclosure copy (#1769)`.
+- [ ] **Step 5: Commit** `desktop: Slack disclosure copy model (#1769)`.
 
 ### Task 11: Privacy policy text for the owner, feature notes, guide sweep
 
@@ -417,8 +440,8 @@ Expected: PASS
 | Cards hold no presence, scores or judgments | 6, 7 |
 | Cards only for people the owner works with | 6 |
 | Stop card stays stopped | 6, 8 |
-| `find_experts` and `get_person` give no dropped field; the skill names none | 7 |
+| No reader (`get_person`, `list_people`, `find_experts`, `watchtower people`, templates, the skill) gives a dropped field | 7 |
 | People screens show only work signals | 8 |
-| The admin and every user see the disclosure | 4, 10 |
+| The admin and every user see the disclosure | 4, 10 (model); plan B Tasks 13, 14 (on screen) |
 | FileVault off is said where Slack data is stored | 9 |
 | The privacy policy states §7 | 11 (file for the owner) |
