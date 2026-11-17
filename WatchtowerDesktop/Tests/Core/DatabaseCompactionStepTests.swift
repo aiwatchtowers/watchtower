@@ -53,12 +53,32 @@ final class DatabaseCompactionStepTests: XCTestCase {
         XCTAssertEqual(step.phase, .compacting(dbBytes: 2_000_000_000))
         XCTAssertTrue(step.stoppedDaemon)
         XCTAssertTrue(step.isRunning)
-        XCTAssertEqual(calls.items, ["check", "stopDaemon", "startCompact"])
+        XCTAssertEqual(calls.items, ["check", "chatShutdown", "stopDaemon", "startCompact"])
         child.exit(status: 0, stdout: #"{"compacted":true,"reason":"migration:134","bytes_before":10,"bytes_after":5,"duration_ms":7}"#)
         await run.value
         XCTAssertEqual(step.phase, .finished)
         XCTAssertFalse(step.isRunning)
         XCTAssertNil(step.notice)
+    }
+
+    /// Spec §7: chat sessions a crashed app left alive (they still write
+    /// routing columns and `agent_actions`) end before the daemon stops and
+    /// the database is compacted. A compaction that is not due ends nothing.
+    func testCompactionStepShutsDownChatSessionsFirst() async throws {
+        let step = makeStep(check: .success(.fixture()))
+        let run = await startCompacting(step)
+        let items = calls.items
+        XCTAssertEqual(items.filter { $0 == "chatShutdown" }.count, 1)
+        XCTAssertLessThan(
+            try XCTUnwrap(items.firstIndex(of: "chatShutdown")), try XCTUnwrap(items.firstIndex(of: "stopDaemon"))
+        )
+        child.exit(status: 0)
+        await run.value
+
+        calls.clear()
+        let notDue = makeStep(check: .success(.fixture(due: false)))
+        await notDue.run { "/db" }
+        XCTAssertFalse(calls.items.contains("chatShutdown"), "a compaction that is not due ends no chat")
     }
 
     func testCheckFailureContinues() async {
@@ -79,7 +99,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
     func testStartFailureContinues() async {
         let step = makeStep(check: .success(.fixture()), startFails: true)
         await step.run { "/db" }
-        XCTAssertEqual(calls.items, ["check", "stopDaemon", "startCompact"])
+        XCTAssertEqual(calls.items, ["check", "chatShutdown", "stopDaemon", "startCompact"])
         XCTAssertEqual(step.phase, .finished)
         XCTAssertTrue(logs.items.contains { $0.contains("could not start") })
     }
@@ -130,7 +150,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
         await run.value
         // …and once it has finished.
         await step.run { "/db" }
-        XCTAssertEqual(calls.items, ["check", "stopDaemon", "startCompact"])
+        XCTAssertEqual(calls.items, ["check", "chatShutdown", "stopDaemon", "startCompact"])
         XCTAssertEqual(step.phase, .finished)
     }
 
@@ -237,7 +257,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
             await stop()
         }
         let run = await startCompacting(step)
-        XCTAssertEqual(calls.items, ["check", "queued", "stopDaemon", "startCompact"])
+        XCTAssertEqual(calls.items, ["check", "chatShutdown", "queued", "stopDaemon", "startCompact"])
         child.exit(status: 0)
         await run.value
     }
@@ -270,7 +290,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
         )
         box.step = step
         await step.run { "/db" }
-        XCTAssertEqual(calls.items, ["check", "stopDaemon"])
+        XCTAssertEqual(calls.items, ["check", "chatShutdown", "stopDaemon"])
         XCTAssertEqual(step.phase, .finished)
     }
 
@@ -757,6 +777,7 @@ private final class Recorder: @unchecked Sendable {
     private var stored: [String] = []
     var items: [String] { lock.withLock { stored } }
     func append(_ item: String) { lock.withLock { stored.append(item) } }
+    func clear() { lock.withLock { stored.removeAll() } }
 }
 
 private struct FakeCompactionCLI: CompactionCLI {
@@ -774,6 +795,10 @@ private struct FakeCompactionCLI: CompactionCLI {
             try Task.checkCancellation()
         }
         return try result.get()
+    }
+
+    func chatShutdown() async {
+        calls.append("chatShutdown")
     }
 
     func startCompact(onPhase: @escaping @Sendable (CompactionRunPhase) -> Void) throws -> any CompactionChild {

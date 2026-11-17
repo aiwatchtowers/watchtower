@@ -502,12 +502,17 @@ final class AppState {
     @ObservationIgnored var launchDatabaseStepsRunning = false
     /// A restart the launch's database steps refused (`restoreDaemonStoppedForCompaction`).
     @ObservationIgnored var deferredRestartDuringLaunch = false
+    /// Quit or the data wipe is ending the chat and stopping the daemon:
+    /// every daemon start is refused (`shutdownChat(forGood:)`).
+    @ObservationIgnored var stoppingForGood = false
 
     /// Test seams for the two steps of finishing onboarding that spawn CLI
     /// children or ask macOS for permissions; nil runs the real thing
     /// (`daemonManager`, `wireAppDatabase`'s body).
     @ObservationIgnored var daemonControlOverride: (any DaemonControl)?
     @ObservationIgnored var wireAppDatabaseOverride: ((DatabaseManager) -> Void)?
+    /// `shutdownChat()`'s CLI fallback; tests record it instead.
+    @ObservationIgnored var chatShutdownCLI: @MainActor () async -> Void = { await DaemonManager.chatShutdownBounded() }
     /// Test seam: the readiness inputs without the live config, workspace
     /// directory and stamps.
     @ObservationIgnored var readinessEnvironmentOverride: (any ReadinessEnvironment)?
