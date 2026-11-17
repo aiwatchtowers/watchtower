@@ -12,12 +12,19 @@ struct ConnectionsView: View {
 
     @State private var showEditSheet = false
 
-    private var links: [(role: PeopleCardCopy.OrgRole, userID: String)] {
+    /// One org link; the same person may be both manager and peer.
+    private struct OrgLink {
+        let role: PeopleCardCopy.OrgRole
+        let userID: String
+        var id: String { "\(role):\(userID)" }
+    }
+
+    private var links: [OrgLink] {
         guard let profile else { return [] }
-        var links: [(role: PeopleCardCopy.OrgRole, userID: String)] = []
-        if !profile.manager.isEmpty { links.append((.manager, profile.manager)) }
-        links += profile.decodedPeers.map { (.peer, $0) }
-        links += profile.decodedReports.map { (.report, $0) }
+        var links: [OrgLink] = []
+        if !profile.manager.isEmpty { links.append(OrgLink(role: .manager, userID: profile.manager)) }
+        links += profile.decodedPeers.map { OrgLink(role: .peer, userID: $0) }
+        links += profile.decodedReports.map { OrgLink(role: .report, userID: $0) }
         return links
     }
 
@@ -36,7 +43,7 @@ struct ConnectionsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
                     VStack(alignment: .leading, spacing: Spacing.small) {
-                        ForEach(links, id: \.userID) { link in
+                        ForEach(links, id: \.id) { link in
                             HStack(spacing: Spacing.regular) {
                                 Text(PeopleCardCopy.orgRoleTitle(link.role))
                                     .font(.caption)
@@ -129,59 +136,59 @@ struct EditConnectionsSheet: View {
     private var connectionsList: some View {
         List {
             Section("Manager") {
-                ForEach(usersForManager, id: \.userID) { card in
+                ForEach(usersForManager, id: \.self) { userID in
                     HStack {
-                        Text("@\(userNameResolver(card.userID))")
+                        Text("@\(userNameResolver(userID))")
                         Spacer()
-                        if selectedManager == card.userID {
+                        if selectedManager == userID {
                             Image(systemName: "checkmark")
                                 .foregroundStyle(.blue)
                         }
                     }
                     .contentShape(Rectangle())
                     .onTapGesture {
-                        selectedManager = selectedManager == card.userID ? "" : card.userID
+                        selectedManager = selectedManager == userID ? "" : userID
                     }
                 }
             }
 
             Section("Key Peers") {
-                ForEach(usersForPeers, id: \.userID) { card in
+                ForEach(usersForPeers, id: \.self) { userID in
                     HStack {
-                        Text("@\(userNameResolver(card.userID))")
+                        Text("@\(userNameResolver(userID))")
                         Spacer()
-                        if selectedPeers.contains(card.userID) {
+                        if selectedPeers.contains(userID) {
                             Image(systemName: "checkmark")
                                 .foregroundStyle(.orange)
                         }
                     }
                     .contentShape(Rectangle())
                     .onTapGesture {
-                        if selectedPeers.contains(card.userID) {
-                            selectedPeers.remove(card.userID)
+                        if selectedPeers.contains(userID) {
+                            selectedPeers.remove(userID)
                         } else {
-                            selectedPeers.insert(card.userID)
+                            selectedPeers.insert(userID)
                         }
                     }
                 }
             }
 
             Section("My Reports") {
-                ForEach(usersForReports, id: \.userID) { card in
+                ForEach(usersForReports, id: \.self) { userID in
                     HStack {
-                        Text("@\(userNameResolver(card.userID))")
+                        Text("@\(userNameResolver(userID))")
                         Spacer()
-                        if selectedReports.contains(card.userID) {
+                        if selectedReports.contains(userID) {
                             Image(systemName: "checkmark")
                                 .foregroundStyle(.green)
                         }
                     }
                     .contentShape(Rectangle())
                     .onTapGesture {
-                        if selectedReports.contains(card.userID) {
-                            selectedReports.remove(card.userID)
+                        if selectedReports.contains(userID) {
+                            selectedReports.remove(userID)
                         } else {
-                            selectedReports.insert(card.userID)
+                            selectedReports.insert(userID)
                         }
                     }
                 }
@@ -206,29 +213,37 @@ struct EditConnectionsSheet: View {
         .padding()
     }
 
-    private var availableUsers: [PeopleCard] {
-        let filtered = allCards
-        if searchText.isEmpty { return filtered }
+    private var availableUsers: [String] {
+        let all = Self.choices(cards: allCards, profile: profile)
+        if searchText.isEmpty { return all }
         let query = searchText.lowercased()
-        return filtered.filter {
-            userNameResolver($0.userID).lowercased().contains(query)
-        }
+        return all.filter { userNameResolver($0).lowercased().contains(query) }
     }
 
-    private var usersForManager: [PeopleCard] {
+    /// Everyone with a card plus everyone already linked: a link to a person
+    /// without a card (stopped, or not in this window) can still be removed.
+    static func choices(cards: [PeopleCard], profile: UserProfile?) -> [String] {
+        var ids = cards.map(\.userID)
+        var linked = (profile?.decodedReports ?? []) + (profile?.decodedPeers ?? [])
+        if let manager = profile?.manager, !manager.isEmpty { linked.insert(manager, at: 0) }
+        for id in linked where !ids.contains(id) { ids.append(id) }
+        return ids
+    }
+
+    private var usersForManager: [String] {
         let excluded = selectedPeers.union(selectedReports)
-        return availableUsers.filter { !excluded.contains($0.userID) }
+        return availableUsers.filter { !excluded.contains($0) }
     }
 
-    private var usersForPeers: [PeopleCard] {
+    private var usersForPeers: [String] {
         var excluded = selectedReports
         if !selectedManager.isEmpty { excluded.insert(selectedManager) }
-        return availableUsers.filter { !excluded.contains($0.userID) }
+        return availableUsers.filter { !excluded.contains($0) }
     }
 
-    private var usersForReports: [PeopleCard] {
+    private var usersForReports: [String] {
         var excluded = selectedPeers
         if !selectedManager.isEmpty { excluded.insert(selectedManager) }
-        return availableUsers.filter { !excluded.contains($0.userID) }
+        return availableUsers.filter { !excluded.contains($0) }
     }
 }

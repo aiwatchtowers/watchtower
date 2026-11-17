@@ -17,22 +17,25 @@ struct PersonDetailView: View {
     var dbManager: DatabaseManager?
     /// Runs Stop card for this person; nil hides the action.
     var onStopCard: (() -> Void)?
+    /// Dismisses `actionError`.
+    var onDismissError: (() -> Void)?
     var isStopPending = false
+    /// The last Stop card failure for this person.
+    var actionError: String?
     /// The Stop card confirm is open (a design shot opens it directly).
     @State var confirmingStop = false
 
     @State private var selectedTab = 0  // 0 = Overview, 1 = Connections
-    @State private var deliveryStats: JiraDeliveryStats?
-    @State private var jiraConnected = false
+    @State private var expertiseTags: [String] = []
 
     private var displayName: String { "@\(userName)" }
 
     var body: some View {
         VStack(spacing: 0) {
             if isCurrentUser {
-                KitSegmentedPicker(title: "View", selection: $selectedTab, segments: [
-                    KitSegment(value: 0, title: "Overview"),
-                    KitSegment(value: 1, title: "Connections")
+                KitSegmentedPicker(title: PeopleCardCopy.viewPickerTitle, selection: $selectedTab, segments: [
+                    KitSegment(value: 0, title: PeopleCardCopy.overviewTab),
+                    KitSegment(value: 1, title: PeopleCardCopy.connectionsTab)
                 ])
                 .padding(.horizontal, Spacing.page)
                 .padding(.top, Spacing.medium)
@@ -57,6 +60,9 @@ struct PersonDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.large) {
                 header
+                if let actionError {
+                    WriteErrorBanner(message: actionError) { onDismissError?() }
+                }
                 if confirmingStop {
                     stopConfirm
                 } else {
@@ -69,9 +75,9 @@ struct PersonDetailView: View {
                     decisionRoleSection
                     communicationGuideSection
                     listSection(PeopleCardCopy.tacticsTitle, "lightbulb", card.parsedTactics)
-                    listSection("Accomplishments", "checkmark.circle", card.parsedAccomplishments)
-                    listSection("Highlights", "star", card.parsedHighlights)
-                    deliverySection
+                    listSection(PeopleCardCopy.accomplishmentsTitle, "checkmark.circle", card.parsedAccomplishments)
+                    listSection(PeopleCardCopy.highlightsTitle, "star", card.parsedHighlights)
+                    expertiseSection
                     historySection
                 }
             }
@@ -80,7 +86,7 @@ struct PersonDetailView: View {
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .task(id: card.userID) {
-            loadDeliveryStats()
+            loadExpertise()
         }
     }
 
@@ -101,7 +107,7 @@ struct PersonDetailView: View {
             if let onClose {
                 Button { onClose() } label: { Image(systemName: "xmark") }
                     .buttonStyle(.kitIcon(isOn: false))
-                    .help("Close")
+                    .help(PeopleCardCopy.close)
             }
         }
     }
@@ -136,7 +142,7 @@ struct PersonDetailView: View {
     @ViewBuilder
     private var profileContextSection: some View {
         if let profile, !profile.customPromptContext.isEmpty {
-            PeopleSection(title: "How the system understands you", icon: "brain") {
+            PeopleSection(title: PeopleCardCopy.profileContextTitle, icon: "brain") {
                 Text(profile.customPromptContext).font(.callout).fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -147,8 +153,7 @@ struct PersonDetailView: View {
     @ViewBuilder
     private var insufficientDataBanner: some View {
         if card.isInsufficientData {
-            Label("Not enough data for full analysis. Results will improve as more messages are collected.",
-                  systemImage: "info.circle")
+            Label(PeopleCardCopy.insufficientData, systemImage: "info.circle")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -195,48 +200,15 @@ struct PersonDetailView: View {
         }
     }
 
-    // MARK: - Delivery (Jira)
+    // MARK: - Expertise (Jira)
 
+    /// The Jira components and labels of the person's issues. No per-person
+    /// counts, cycle time or velocity (#1769, A12).
     @ViewBuilder
-    private var deliverySection: some View {
-        if jiraConnected, let stats = deliveryStats,
-           stats.issuesClosed > 0
-            || stats.openIssues > 0
-            || stats.storyPointsCompleted > 0 {
-            PeopleSection(title: "Delivery", icon: "shippingbox") {
-                deliveryMetricsGrid(stats)
-                expertiseTags(stats)
-            }
-        }
-    }
-
-    private func deliveryMetricsGrid(_ stats: JiraDeliveryStats) -> some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: Spacing.cozy) {
-            StatCard(title: "Issues Closed", value: "\(stats.issuesClosed)", detail: "last 30d")
-            StatCard(
-                title: "Cycle Time",
-                value: stats.avgCycleTimeDays > 0 ? String(format: "%.1fd", stats.avgCycleTimeDays) : "-",
-                detail: "avg days"
-            )
-            StatCard(
-                title: "Velocity",
-                value: stats.storyPointsCompleted > 0 ? String(format: "%.0f", stats.storyPointsCompleted) : "-",
-                detail: "story pts"
-            )
-            StatCard(
-                title: "Open Issues",
-                value: "\(stats.openIssues)",
-                detail: stats.overdueIssues > 0 ? "\(stats.overdueIssues) overdue" : nil
-            )
-        }
-    }
-
-    @ViewBuilder
-    private func expertiseTags(_ stats: JiraDeliveryStats) -> some View {
-        let tags = stats.components + stats.labels
+    private var expertiseSection: some View {
+        let tags = expertiseTags
         if !tags.isEmpty {
-            VStack(alignment: .leading, spacing: Spacing.compact) {
-                Text("Expertise").font(.caption).foregroundStyle(.secondary)
+            PeopleSection(title: PeopleCardCopy.expertiseTitle, icon: "tag") {
                 FlowLayout(spacing: Spacing.compact) {
                     ForEach(tags, id: \.self) { tag in
                         Chip(text: tag, color: Tone.status("purple"))
@@ -246,20 +218,20 @@ struct PersonDetailView: View {
         }
     }
 
-    private func loadDeliveryStats() {
-        jiraConnected = JiraQueries.isConnected()
-        guard jiraConnected, let db = dbManager else {
-            deliveryStats = nil
+    private func loadExpertise() {
+        guard JiraQueries.isConnected(), let db = dbManager else {
+            expertiseTags = []
             return
         }
         let now = Date()
-        let thirtyDaysAgo = Calendar.current.date(byAdding: .day, value: -30, to: now) ?? now
+        let from = Calendar.current.date(byAdding: .day, value: -30, to: now) ?? now
         do {
-            deliveryStats = try db.dbPool.read { database in
-                try JiraQueries.fetchDeliveryStats(database, slackID: card.userID, from: thirtyDaysAgo, to: now)
+            let stats = try db.dbPool.read { database in
+                try JiraQueries.fetchDeliveryStats(database, slackID: card.userID, from: from, to: now)
             }
+            expertiseTags = stats.components + stats.labels
         } catch {
-            deliveryStats = nil
+            expertiseTags = []
         }
     }
 
@@ -268,7 +240,7 @@ struct PersonDetailView: View {
     @ViewBuilder
     private var historySection: some View {
         if history.count > 1 {
-            PeopleSection(title: "History", icon: "clock") {
+            PeopleSection(title: PeopleCardCopy.historyTitle, icon: "clock") {
                 ForEach(history) { entry in
                     HStack(spacing: Spacing.regular) {
                         Text(PeopleCardCopy.period(from: entry.periodFromDate, to: entry.periodToDate))
@@ -291,7 +263,9 @@ struct PersonStoppedView: View {
     let userName: String
     var onClose: (() -> Void)?
     let onMakeAgain: () -> Void
+    var onDismissError: (() -> Void)?
     var isPending = false
+    var actionError: String?
 
     var body: some View {
         let name = "@\(userName)"
@@ -302,8 +276,11 @@ struct PersonStoppedView: View {
                 if let onClose {
                     Button { onClose() } label: { Image(systemName: "xmark") }
                         .buttonStyle(.kitIcon(isOn: false))
-                        .help("Close")
+                        .help(PeopleCardCopy.close)
                 }
+            }
+            if let actionError {
+                WriteErrorBanner(message: actionError) { onDismissError?() }
             }
             VStack(alignment: .leading, spacing: Spacing.regular) {
                 Text(PeopleCardCopy.stoppedLine(name: name))
@@ -338,25 +315,6 @@ struct PeopleSection<Content: View>: View {
         }
         .padding(Spacing.medium)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
-    }
-}
-
-struct StatCard: View {
-    let title: String
-    let value: String
-    let detail: String?
-
-    var body: some View {
-        VStack(spacing: Spacing.tight) {
-            Text(value).font(.title3.weight(.bold)).monospacedDigit()
-            Text(title).font(.caption2).foregroundStyle(.secondary)
-            if let detail {
-                Text(detail).font(.caption2).foregroundStyle(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(Spacing.regular)
         .card()
     }
 }

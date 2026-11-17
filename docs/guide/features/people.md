@@ -57,8 +57,8 @@ action: nav:people
 -->
 
 1. Open **People**. **My Card** is pinned first, then everyone else. Select **Team Summary** for the team view.
-2. A card starts with what it is based on ("Based on 42 messages in 5 channels you share"), then the summary, **Decision role**, **Communication Guide**, **Tactics**, **Accomplishments**, **Highlights** and a week-by-week history. When Jira is connected and the person has work there, a **Delivery** box adds closed issues, cycle time, velocity and open issues, plus **Expertise** tags.
-3. A colleague asked you not to keep a card? Press **Stop card for this person**, then **Stop card**. Their card is deleted and no new one is made; messages, digests, search and **Find experts** are not affected. Their view then offers **Make cards again**.
+2. A card starts with what it is based on ("Based on 42 messages in 5 channels you share"), then the summary, **Decision role**, **Communication Guide**, **Tactics**, **Accomplishments**, **Highlights** and a week-by-week history. When Jira is connected and the person has work there, **Expertise** lists the components and labels of their issues.
+3. A colleague asked you not to keep a card? Press **Stop card for this person**, then **Stop card**. Their card is deleted and no new one is made; messages, digests, search and **Find experts** are not affected. They move to **Stopped cards** at the end of the list, where their view offers **Make cards again**.
 4. On **My Card**, the **Connections** tab lists **Your org links**: the manager, peers and reports you entered. **Edit Connections** changes them; the briefing and other cards use that.
 5. The box **How the system understands you** appears on your card when you wrote custom profile context.
 

@@ -37,7 +37,7 @@ struct TeamSummaryDetailView: View {
             if let onClose {
                 Button { onClose() } label: { Image(systemName: "xmark") }
                     .buttonStyle(.kitIcon(isOn: false))
-                    .help("Close")
+                    .help(PeopleCardCopy.close)
             }
         }
     }
@@ -58,8 +58,11 @@ struct TeamSummaryDetailView: View {
     @ViewBuilder
     private var metadata: some View {
         if !summary.model.isEmpty {
-            Text("\(summary.model) · \(summary.inputTokens + summary.outputTokens) tokens · "
-                + String(format: "$%.4f", summary.costUSD))
+            Text(PeopleCardCopy.runLine(
+                model: summary.model,
+                tokens: summary.inputTokens + summary.outputTokens,
+                costUSD: summary.costUSD
+            ))
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .monospacedDigit()

@@ -31,6 +31,27 @@ final class PeopleCardCopyTests: XCTestCase {
         XCTAssertEqual(PeopleCardCopy.orgRoleTitle(.peer), Mock.orgLinks[1].role)
     }
 
+    /// Labels without a mockup string (moved out of the views, fix round 1).
+    func testOtherLabels() {
+        XCTAssertEqual(PeopleCardCopy.stoppedCardsTitle, "Stopped cards")
+        XCTAssertEqual(PeopleCardCopy.overviewTab, "Overview")
+        XCTAssertEqual(PeopleCardCopy.connectionsTab, "Connections")
+        XCTAssertEqual(PeopleCardCopy.viewPickerTitle, "View")
+        XCTAssertEqual(PeopleCardCopy.close, "Close")
+        XCTAssertEqual(PeopleCardCopy.profileContextTitle, "How the system understands you")
+        XCTAssertEqual(PeopleCardCopy.insufficientData,
+                       "Not enough data for full analysis. Results will improve as more messages are collected.")
+        XCTAssertEqual(PeopleCardCopy.insufficientDataShort, "Not enough data for full analysis")
+        XCTAssertEqual(PeopleCardCopy.accomplishmentsTitle, "Accomplishments")
+        XCTAssertEqual(PeopleCardCopy.highlightsTitle, "Highlights")
+        XCTAssertEqual(PeopleCardCopy.expertiseTitle, "Expertise")
+        XCTAssertEqual(PeopleCardCopy.historyTitle, "History")
+        XCTAssertEqual(PeopleCardCopy.runLine(model: "haiku", tokens: 700, costUSD: 0.001), "haiku · 700 tokens · $0.0010")
+        XCTAssertEqual(PeopleCardCopy.orgRoleTitle(.report), "Report")
+        XCTAssertEqual(PeopleCardCopy.actionFailed(stopping: true, "x"), "Couldn't stop the card: x")
+        XCTAssertEqual(PeopleCardCopy.actionFailed(stopping: false, "x"), "Couldn't make cards again: x")
+    }
+
     /// One message or one channel reads in the singular.
     func testBasisLineSingular() {
         XCTAssertEqual(PeopleCardCopy.basisLine(messages: 1, channels: 1),

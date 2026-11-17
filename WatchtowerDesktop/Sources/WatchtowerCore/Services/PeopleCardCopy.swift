@@ -36,6 +36,29 @@ public enum PeopleCardCopy {
         (stopping ? "Couldn't stop the card: " : "Couldn't make cards again: ") + detail
     }
 
+    /// The list's section of people whose cards the owner stopped; a row
+    /// opens the stopped view with Make cards again. New copy (fix round 1).
+    public static let stoppedCardsTitle = "Stopped cards"
+
+    // The person view's other labels (moved here from the views).
+    public static let overviewTab = "Overview"
+    public static let connectionsTab = "Connections"
+    public static let viewPickerTitle = "View"
+    public static let close = "Close"
+    public static let profileContextTitle = "How the system understands you"
+    public static let insufficientData = "Not enough data for full analysis. Results will improve as more "
+        + "messages are collected."
+    public static let insufficientDataShort = "Not enough data for full analysis"
+    public static let accomplishmentsTitle = "Accomplishments"
+    public static let highlightsTitle = "Highlights"
+    public static let expertiseTitle = "Expertise"
+    public static let historyTitle = "History"
+
+    /// The Team Summary's run line: "haiku · 700 tokens · $0.0010".
+    public static func runLine(model: String, tokens: Int, costUSD: Double) -> String {
+        "\(model) · \(tokens) tokens · " + String(format: "$%.4f", costUSD)
+    }
+
     public static let decisionRoleTitle = "Decision role"
     public static let guideTitle = "Communication Guide"
     public static let tacticsTitle = "Tactics"

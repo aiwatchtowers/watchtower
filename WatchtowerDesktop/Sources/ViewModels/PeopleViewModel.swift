@@ -23,6 +23,14 @@ final class PeopleViewModel {
     private(set) var interactions: [UserInteraction] = []
     /// People whose cards the owner stopped (#1769, A14).
     private(set) var stoppedPeopleIDs: Set<String> = []
+    /// The last Stop card / Make cards again failure, shown on that
+    /// person's view.
+    private(set) var cardActionError: CardActionError?
+
+    struct CardActionError: Equatable {
+        let userID: String
+        let message: String
+    }
     private let dbManager: DatabaseManager
     @ObservationIgnored private let cliRunner: (any CLIRunnerProtocol)?
     private var observationTask: Task<Void, Never>?
@@ -62,9 +70,15 @@ final class PeopleViewModel {
 
     func load() {
         isLoading = true
+        // Keep the window the owner is looking at when it still exists.
+        let wanted = availableWindows.indices.contains(selectedWindow) ? availableWindows[selectedWindow] : nil
         do {
             let result = try dbManager.dbPool.read { db in
                 let windows = try PeopleCardQueries.fetchAvailableWindows(db)
+                let index = wanted.flatMap { want in
+                    windows.firstIndex { $0.from == want.from && $0.to == want.to }
+                } ?? 0
+                let selected = windows.indices.contains(index) ? windows[index] : nil
                 let users = try UserQueries.fetchAll(db, activeOnly: false)
 
                 var nameMap: [String: String] = [:]
@@ -75,7 +89,7 @@ final class PeopleViewModel {
 
                 let cards: [PeopleCard]
                 let cs: PeopleCardSummary?
-                if let window = windows.first {
+                if let window = selected {
                     cards = try PeopleCardQueries.fetchForWindow(
                         db, from: window.from, to: window.to
                     )
@@ -97,14 +111,14 @@ final class PeopleViewModel {
 
                 // Load interactions for social graph
                 var ints: [UserInteraction] = []
-                if let uid, let window = windows.first {
+                if let uid, let window = selected {
                     ints = try InteractionQueries.fetchForUser(
                         db, userID: uid, periodFrom: window.from, periodTo: window.to
                     )
                 }
 
                 let stopped = try PeopleCardQueries.fetchExcludedIDs(db)
-                return (cards, windows, nameMap, cs, starred, uid, profile, ints, stopped)
+                return (cards, windows, nameMap, cs, starred, uid, profile, ints, stopped, index)
             }
             cards = result.0
             availableWindows = result.1
@@ -115,6 +129,7 @@ final class PeopleViewModel {
             currentProfile = result.6
             interactions = result.7
             stoppedPeopleIDs = result.8
+            selectedWindow = result.9
             errorMessage = nil
         } catch {
             cards = []
@@ -180,6 +195,22 @@ final class PeopleViewModel {
         stoppedPeopleIDs.contains(userID)
     }
 
+    /// The stopped people by name, for the list's Stopped cards section.
+    var stoppedPeople: [String] {
+        stoppedPeopleIDs.sorted {
+            userName(for: $0).localizedCaseInsensitiveCompare(userName(for: $1)) == .orderedAscending
+        }
+    }
+
+    /// The failure of this person's last Stop card / Make cards again.
+    func cardActionError(for userID: String) -> String? {
+        cardActionError?.userID == userID ? cardActionError?.message : nil
+    }
+
+    func dismissCardActionError() {
+        cardActionError = nil
+    }
+
     /// Stop card or Make cards again for this person is running: its button waits.
     func isStopPending(_ userID: String) -> Bool {
         pendingWrites.isPending("stop:\(userID)")
@@ -211,9 +242,13 @@ final class PeopleViewModel {
             // The CLI answers ok or exits non-zero; an answer that does not
             // decode is a failure too.
             _ = try JSONDecoder().decode(ExcludeAnswer.self, from: data)
+            cardActionError = nil
             load()
         } catch {
-            errorMessage = PeopleCardCopy.actionFailed(stopping: stopped, error.localizedDescription)
+            cardActionError = CardActionError(
+                userID: userID,
+                message: PeopleCardCopy.actionFailed(stopping: stopped, error.localizedDescription)
+            )
         }
     }
 

@@ -18,7 +18,7 @@ enum SlackPolicyShotFixtures {
         case removeOn, removeOff
         case setupDisclosure, connectDisclosure
         case personCard, personStopConfirm, personStopped
-        case peopleList, teamSummary, orgLinks, orgLinksEmpty
+        case peopleList, peopleListStopped, teamSummary, orgLinks, orgLinksEmpty
         case digestHeader
 
         var width: CGFloat {
@@ -55,7 +55,8 @@ enum SlackPolicyShotFixtures {
             SetupDisclosureMock()
         case .connectDisclosure:
             ConnectDisclosureMock()
-        case .personCard, .personStopConfirm, .personStopped, .peopleList, .teamSummary, .orgLinks, .orgLinksEmpty:
+        case .personCard, .personStopConfirm, .personStopped, .peopleList, .peopleListStopped, .teamSummary,
+             .orgLinks, .orgLinksEmpty:
             PeopleShotScenes.scene(frame)
         case .digestHeader:
             DigestHeaderMock()
@@ -270,13 +271,19 @@ private enum PeopleShotScenes {
             }
         case .personStopped:
             PersonStoppedView(userName: "dana") {}
-        case .peopleList:
+        case .peopleList, .peopleListStopped:
+            // After Stop card for @dana: her row moves to Stopped cards.
+            let stopped = frame == .peopleListStopped
             Page {
                 Text(Copy.peopleTitle).font(.title2.weight(.semibold))
                 VStack(alignment: .leading, spacing: Spacing.small) {
-                    ForEach(rows, id: \.userID) { card in
+                    ForEach(rows.filter { !stopped || $0.userID != "1:UDANA" }, id: \.userID) { card in
                         PeoplePersonRow(card: card, userName: name(card.userID)) { EmptyView() }
                     }
+                    PeopleStoppedCardsSection(
+                        people: stopped ? [(id: "1:UDANA", name: "dana")] : [],
+                        selectedUserID: nil
+                    ) { _ in }
                 }
             }
         case .teamSummary:

@@ -30,11 +30,14 @@ struct PeopleListView: View {
                             onMakeAgain: {
                                 Task {
                                     await vm.makeCardsAgain(userID: userID)
-                                    // No card until the next people run.
-                                    if !vm.isCardStopped(userID) { selectedUserID = nil }
+                                    // No card until the next people run; close
+                                    // only if the owner is still on this person.
+                                    if !vm.isCardStopped(userID), selectedUserID == userID { selectedUserID = nil }
                                 }
                             },
-                            isPending: vm.isStopPending(userID)
+                            onDismissError: { vm.dismissCardActionError() },
+                            isPending: vm.isStopPending(userID),
+                            actionError: vm.cardActionError(for: userID)
                         )
                         .id(userID)
                         .frame(minWidth: 400, idealWidth: 500)
@@ -55,7 +58,9 @@ struct PeopleListView: View {
                             onStopCard: userID == vm.currentUserID
                                 ? nil
                                 : { Task { await vm.stopCard(userID: userID) } },
-                            isStopPending: vm.isStopPending(userID)
+                            onDismissError: { vm.dismissCardActionError() },
+                            isStopPending: vm.isStopPending(userID),
+                            actionError: vm.cardActionError(for: userID)
                         )
                         .id(userID)
                         .frame(minWidth: 400, idealWidth: 500)
@@ -118,9 +123,9 @@ struct PeopleListView: View {
             windowPicker(vm)
             statsAndSearch(vm)
             Divider()
-            if vm.cards.isEmpty, let error = vm.errorMessage {
+            if vm.cards.isEmpty, vm.stoppedPeopleIDs.isEmpty, let error = vm.errorMessage {
                 ErrorView(title: "Error", message: error, actionTitle: "Retry") { vm.load() }
-            } else if vm.cards.isEmpty {
+            } else if vm.cards.isEmpty, vm.stoppedPeopleIDs.isEmpty {
                 Self.emptyState(context: appState.emptyStateContext)
             } else {
                 if let error = vm.errorMessage {
@@ -215,9 +220,21 @@ struct PeopleListView: View {
                         )
                         .padding(.horizontal, 4)
                 }
+
+                PeopleStoppedCardsSection(
+                    people: stoppedPeople(vm),
+                    selectedUserID: selectedUserID
+                ) { selectedUserID = $0 }
             }
             .padding(.vertical, 4)
         }
+    }
+
+    /// Stopped people matching the filter, as (id, name).
+    private func stoppedPeople(_ vm: PeopleViewModel) -> [(id: String, name: String)] {
+        let all = vm.stoppedPeople.map { (id: $0, name: vm.userName(for: $0)) }
+        if searchText.isEmpty { return all }
+        return all.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
     }
 
     @ViewBuilder
@@ -324,6 +341,38 @@ struct PeopleListView: View {
     }
 }
 
+/// The end of the People list: people whose cards the owner stopped. A row
+/// opens the person's view with Make cards again (#1769, A14).
+struct PeopleStoppedCardsSection: View {
+    let people: [(id: String, name: String)]
+    let selectedUserID: String?
+    let onSelect: (String) -> Void
+
+    var body: some View {
+        if !people.isEmpty {
+            VStack(alignment: .leading, spacing: Spacing.small) {
+                SectionHeader(
+                    title: PeopleCardCopy.stoppedCardsTitle, systemImage: "person.crop.circle.badge.xmark",
+                    count: people.count
+                )
+                ForEach(people, id: \.id) { person in
+                    Text("@\(person.name)")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, Spacing.cozy)
+                        .padding(.vertical, Spacing.compact)
+                        .contentShape(Rectangle())
+                        .kitRow(isSelected: selectedUserID == person.id)
+                        .onTapGesture { onSelect(person.id) }
+                }
+            }
+            .padding(.horizontal, Spacing.small)
+            .padding(.top, Spacing.medium)
+        }
+    }
+}
+
 /// A People list row: the person, their decision role and work topics. No
 /// red-flag mark, message count or volume change (#1769, A12).
 struct PeoplePersonRow<Accessory: View>: View {
@@ -344,7 +393,7 @@ struct PeoplePersonRow<Accessory: View>: View {
                     Image(systemName: "info.circle")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .help("Not enough data for full analysis")
+                        .help(PeopleCardCopy.insufficientDataShort)
                 }
             }
             if !card.summary.isEmpty {
