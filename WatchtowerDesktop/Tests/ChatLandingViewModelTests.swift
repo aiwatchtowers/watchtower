@@ -17,6 +17,8 @@ final class ChatLandingViewModelTests: XCTestCase {
     private var pool: ChatSessionPool!
     private var fakes: [FakeChatSessionProcess] = []
     private var turnCounter = 0
+    /// New session processes hold their turns' starts until released.
+    private var holdStarts = false
     private var defaults: UserDefaults!
     private var defaultsSuite: String!
     private let window = ChatLandingPolicy.resumeWindow
@@ -31,6 +33,7 @@ final class ChatLandingViewModelTests: XCTestCase {
             dbPool: dbManager.dbPool,
             processFactory: { [weak self] args in
                 let fake = FakeChatSessionProcess(arguments: args)
+                fake.holdsStarts = self?.holdStarts ?? false
                 self?.fakes.append(fake)
                 return fake
             },
@@ -325,6 +328,27 @@ final class ChatLandingViewModelTests: XCTestCase {
         try XCTUnwrap(fakes.last).emit(.turnDone(turnID: "turn-1", status: .complete, sessionID: nil))
         vm.select(conversationID: id)
         XCTAssertEqual(started, [id], "leaving the landing any other way is not announced")
+    }
+
+    /// A landing turn whose `started` arrives after the owner opened another
+    /// chat does not move the history selection to it (final review M4).
+    func testALateLandingStartDoesNotMoveTheHistorySelection() async throws {
+        let (vm, history) = wiredPair()
+        let other = try await dbManager.dbPool.write { try TestDatabase.insertChatConversation($0) }
+        holdStarts = true
+        await vm.draftStarted()
+        let id = try XCTUnwrap(vm.conversationID)
+        let sending = Task { await vm.send(text: "q") }
+        let handed = await waitForCondition { [self] in fakes.last?.sent.isEmpty == false }
+        XCTAssertTrue(handed)
+        let landingSession = try XCTUnwrap(fakes.last)
+        vm.select(conversationID: other)
+        history.selectedConversationID = other
+        landingSession.releaseStarts()
+        let sent = await sending.value
+        XCTAssertTrue(sent)
+        XCTAssertEqual(history.selectedConversationID, other, "the chat the owner opened stays selected")
+        XCTAssertNotEqual(history.selectedConversationID, id)
     }
 
     /// I-1 glue: landing → type a character → open a project shows the
