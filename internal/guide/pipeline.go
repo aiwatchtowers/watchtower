@@ -90,6 +90,7 @@ const (
 	OutcomeCovered                     // every active user already has a card for the window
 	OutcomeNoData                      // no active users with enough messages, or no situations yet
 	OutcomeDeferred                    // provider wait; required cards remain unfinished
+	OutcomeNoOwner                     // no Slack account has a known owner: no cards, never everyone (A13)
 )
 
 // ProgressFunc is called during generation to report progress.
@@ -224,11 +225,37 @@ func (p *Pipeline) HasData(contexts ...context.Context) (bool, error) {
 			return false, nil
 		}
 	}
-	stats, err := p.db.ComputeAllUserStats(from, to, DefaultMinMessages)
+	stats, _, err := p.cardStats(from, to)
 	if err != nil {
-		return false, fmt.Errorf("computing user stats: %w", err)
+		return false, err
 	}
 	return len(stats) > 0, nil
+}
+
+// cardStats is who may get a card in [from, to): the users the owner works
+// with directly (db.ComputeAllUserStats over SlackOwnersByAccount), minus the
+// people the owner stopped cards for. noOwner reports that no Slack account
+// has a known owner, so nobody gets a card (spec 2026-11-17 §5.3, A13, A14).
+func (p *Pipeline) cardStats(from, to float64) (stats []db.UserStats, noOwner bool, err error) {
+	owners, err := p.db.SlackOwnersByAccount()
+	if err != nil {
+		return nil, false, err
+	}
+	if len(owners) == 0 {
+		return nil, true, nil
+	}
+	stats, err = p.db.ComputeAllUserStats(from, to, DefaultMinMessages, owners)
+	if err != nil {
+		return nil, false, fmt.Errorf("computing user stats: %w", err)
+	}
+	excluded, err := p.db.PeopleExclusions()
+	if err != nil {
+		return nil, false, err
+	}
+	if len(excluded) == 0 {
+		return stats, false, nil
+	}
+	return withoutCovered(stats, excluded), false, nil
 }
 
 // RunForWindow executes the people card pipeline for a specific time window.
@@ -258,10 +285,16 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 	p.progress(0, 0, "Computing user statistics...")
 
 	t1 := time.Now()
-	allStats, err := p.db.ComputeAllUserStats(from, to, DefaultMinMessages)
+	allStats, noOwner, err := p.cardStats(from, to)
 	p.logger.Printf("people: ComputeAllUserStats took %s (%d users)", time.Since(t1).Round(time.Millisecond), len(allStats))
 	if err != nil {
-		return 0, fmt.Errorf("computing user stats: %w", err)
+		return 0, err
+	}
+	if noOwner {
+		p.progress(0, 0, "No owner identity: connect Slack to make people cards")
+		p.logger.Println("people: no owner identity (no Slack account with a known user); no cards")
+		p.lastOutcome = OutcomeNoOwner
+		return 0, nil
 	}
 	if len(allStats) == 0 {
 		p.progress(0, 0, "No active users with enough messages")
@@ -583,7 +616,8 @@ func (p *Pipeline) coveredUsers(from, to float64) (map[string]bool, error) {
 	return covered, nil
 }
 
-// withoutCovered drops the users that already have an AI card for the window.
+// withoutCovered drops the users named in covered: those that already have an
+// AI card for the window, or the people the owner stopped cards for.
 func withoutCovered(stats []db.UserStats, covered map[string]bool) []db.UserStats {
 	out := stats[:0:0]
 	for _, s := range stats {

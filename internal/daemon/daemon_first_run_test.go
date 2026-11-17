@@ -48,18 +48,29 @@ func firstRunDayStart() time.Time {
 	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 }
 
-// seedFirstRunMessages seeds U1 and U2 as active users inside people Run's
-// 7-day window.
+// seedFirstRunMessages seeds 1:U1 (the owner of Slack account 1) and 1:U2,
+// who mentions the owner, as active users inside people Run's 7-day window;
+// only the owner and their interaction partners get cards.
 func seedFirstRunMessages(t *testing.T, database *db.DB) {
 	t.Helper()
+	seedPeopleOwnerAndPartner(t, database, firstRunDayStart().Add(-3*24*time.Hour))
+}
+
+// seedPeopleOwnerAndPartner makes Slack account 1 owned by 1:U1 (creating
+// or updating its row) and seeds two
+// active users from base on: 1:U1 and 1:U2, whose messages mention the owner.
+func seedPeopleOwnerAndPartner(t *testing.T, database *db.DB, base time.Time) {
+	t.Helper()
 	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "general", Type: "public"}))
-	base := firstRunDayStart().Add(-3 * 24 * time.Hour)
-	for u, id := range []string{"U1", "U2"} {
+	_, err := database.Exec(`INSERT INTO slack_accounts (id, current_user_id) VALUES (1, '1:U1')
+		ON CONFLICT(id) DO UPDATE SET current_user_id = excluded.current_user_id`)
+	require.NoError(t, err)
+	for u, id := range []string{"1:U1", "1:U2"} {
 		require.NoError(t, database.UpsertUser(db.User{ID: id, Name: id, DisplayName: id}))
 		for i := range 4 {
 			ts := float64(base.Add(time.Duration(u*100+i) * time.Minute).Unix())
 			require.NoError(t, database.UpsertMessage(db.Message{
-				ChannelID: "C1", TS: fmt.Sprintf("%.6f", ts), UserID: id, Text: "msg",
+				ChannelID: "C1", TS: fmt.Sprintf("%.6f", ts), UserID: id, Text: "msg <@U1>",
 			}))
 		}
 	}
@@ -82,7 +93,7 @@ func seedFirstRunSituationAt(t *testing.T, database *db.DB, from, to time.Time) 
 		PeriodFrom: float64(from.Unix()),
 		PeriodTo:   float64(to.Unix()),
 		Summary:    "d", Topics: "[]", Decisions: "[]", ActionItems: "[]", PeopleSignals: "[]",
-		Situations:   `[{"topic":"X","type":"collaboration","participants":[{"user_id":"U1","role":"lead"}],"dynamic":"d","outcome":"o","red_flags":[],"observations":[],"message_refs":[]}]`,
+		Situations:   `[{"topic":"X","type":"collaboration","participants":[{"user_id":"1:U1","role":"lead"}],"dynamic":"d","outcome":"o","red_flags":[],"observations":[],"message_refs":[]}]`,
 		MessageCount: 8,
 	})
 	require.NoError(t, err)

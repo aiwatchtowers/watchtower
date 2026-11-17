@@ -273,6 +273,7 @@ func slackSteps(s *purgeSteps, id int64) {
 		(SELECT CAST(id AS TEXT) FROM user_analyses WHERE user_id >= ? AND user_id < ?)`, lo, hi)
 	s.del("user analyses", "user_analyses", inRange("user_id"), lo, hi)
 	s.del("people cards", "people_cards", inRange("user_id"), lo, hi)
+	s.del("people card exclusions", "people_card_exclusions", inRange("user_id"), lo, hi)
 	s.del("user interactions", "user_interactions", `(user_a >= ? AND user_a < ?) OR (user_b >= ? AND user_b < ?)`, lo, hi, lo, hi)
 
 	// Account-keyed ledgers and links.

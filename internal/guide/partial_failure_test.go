@@ -52,19 +52,19 @@ func batchCardJSON(userIDs ...string) string {
 func seedLowDataUsers(t *testing.T, database *db.DB) (float64, float64) {
 	t.Helper()
 	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "W1", Name: "test"}))
-	seedUser(t, database, "U1", "alice")
-	seedUser(t, database, "U2", "bob")
+	seedUser(t, database, "1:U1", "alice")
+	seedUser(t, database, "1:U2", "bob")
 	seedChannel(t, database, "C1", "general")
 	now := time.Now()
 	from := float64(now.Add(-7 * 24 * time.Hour).Unix())
 	to := float64(now.Unix())
 	base := from + 86400
 	for i := range 4 {
-		seedMessage(t, database, "C1", fmt.Sprintf("%.6f", base+float64(i*60)), "U1", "msg "+string(rune('a'+i)))
-		seedMessage(t, database, "C1", fmt.Sprintf("%.6f", base+float64((i+10)*60)), "U2", "msg "+string(rune('a'+i)))
+		seedPartnerMessage(t, database, "C1", fmt.Sprintf("%.6f", base+float64(i*60)), "1:U1", "msg "+string(rune('a'+i)))
+		seedPartnerMessage(t, database, "C1", fmt.Sprintf("%.6f", base+float64((i+10)*60)), "1:U2", "msg "+string(rune('a'+i)))
 	}
 	seedDigestWithSituations(t, database, "C1", from, to, `[]`,
-		`[{"topic":"Topic X","type":"collaboration","participants":[{"user_id":"U3","role":"lead"}],"dynamic":"unrelated","outcome":"done","red_flags":[],"observations":[],"message_refs":[]}]`)
+		`[{"topic":"Topic X","type":"collaboration","participants":[{"user_id":"1:U3","role":"lead"}],"dynamic":"unrelated","outcome":"done","red_flags":[],"observations":[],"message_refs":[]}]`)
 	return from, to
 }
 
@@ -88,15 +88,15 @@ func TestPipeline_FallbackCardsDoNotCompleteWindow(t *testing.T) {
 	failing := &recordingGenerator{batchErr: fmt.Errorf("AI overloaded")}
 	_, err := New(database, cfg, failing, testLogger()).RunForWindow(context.Background(), from, to)
 	require.Error(t, err)
-	require.Equal(t, "insufficient_data", cardStatus(t, database, "U1"))
+	require.Equal(t, "insufficient_data", cardStatus(t, database, "1:U1"))
 
-	ok := &recordingGenerator{batchResponse: batchCardJSON("U1", "U2")}
+	ok := &recordingGenerator{batchResponse: batchCardJSON("1:U1", "1:U2")}
 	n, err := New(database, cfg, ok, testLogger()).RunForWindow(context.Background(), from, to)
 	require.NoError(t, err)
 	assert.Equal(t, 2, n, "both fallback users are retried")
 	require.Len(t, ok.batchPrompts, 1)
-	assert.Equal(t, "active", cardStatus(t, database, "U1"))
-	assert.Equal(t, "active", cardStatus(t, database, "U2"))
+	assert.Equal(t, "active", cardStatus(t, database, "1:U1"))
+	assert.Equal(t, "active", cardStatus(t, database, "1:U2"))
 }
 
 // A partial run is a success, and the next run over the same window resends
@@ -107,21 +107,21 @@ func TestPipeline_RerunCoversOnlyUsersWithoutAICard(t *testing.T) {
 	cfg := testConfig()
 	cfg.AI.Workers = 1
 
-	partial := &recordingGenerator{batchResponse: batchCardJSON("U1")} // U2 missing from the reply
+	partial := &recordingGenerator{batchResponse: batchCardJSON("1:U1")} // U2 missing from the reply
 	n, err := New(database, cfg, partial, testLogger()).RunForWindow(context.Background(), from, to)
 	require.NoError(t, err, "a partial run stays a success")
 	assert.Equal(t, 2, n)
-	require.Equal(t, "active", cardStatus(t, database, "U1"))
-	require.Equal(t, "insufficient_data", cardStatus(t, database, "U2"))
+	require.Equal(t, "active", cardStatus(t, database, "1:U1"))
+	require.Equal(t, "insufficient_data", cardStatus(t, database, "1:U2"))
 
-	retry := &recordingGenerator{batchResponse: batchCardJSON("U2")}
+	retry := &recordingGenerator{batchResponse: batchCardJSON("1:U2")}
 	n, err = New(database, cfg, retry, testLogger()).RunForWindow(context.Background(), from, to)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n)
 	require.Len(t, retry.batchPrompts, 1)
-	assert.Contains(t, retry.batchPrompts[0], "(user_id: U2)")
-	assert.NotContains(t, retry.batchPrompts[0], "(user_id: U1)", "a user with an AI card is not re-sent")
-	assert.Equal(t, "active", cardStatus(t, database, "U2"))
+	assert.Contains(t, retry.batchPrompts[0], "(user_id: 1:U2)")
+	assert.NotContains(t, retry.batchPrompts[0], "(user_id: 1:U1)", "a user with an AI card is not re-sent")
+	assert.Equal(t, "active", cardStatus(t, database, "1:U2"))
 
 	// Everyone covered now: the window is complete and costs no AI call.
 	done := &recordingGenerator{}
@@ -141,7 +141,7 @@ func TestPipeline_ShutdownMidRunIsReported(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	gen := &recordingGenerator{batchResponse: batchCardJSON("U1", "U2"), onBatch: cancel}
+	gen := &recordingGenerator{batchResponse: batchCardJSON("1:U1", "1:U2"), onBatch: cancel}
 	_, err := New(database, cfg, gen, testLogger()).RunForWindow(ctx, from, to)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
@@ -154,25 +154,25 @@ func TestPipeline_ShutdownMidRunIsReported(t *testing.T) {
 func TestPipeline_ResumedWindowKeepsFullTeamNorms(t *testing.T) {
 	database := testDB(t)
 	from, to := seedLowDataUsers(t, database)
-	seedUser(t, database, "U3", "carol")
+	seedUser(t, database, "1:U3", "carol")
 	base := from + 86400
 	for i := range 4 {
-		seedMessage(t, database, "C1", fmt.Sprintf("%.6f", base+float64((i+20)*60)), "U3", "msg "+string(rune('a'+i)))
+		seedPartnerMessage(t, database, "C1", fmt.Sprintf("%.6f", base+float64((i+20)*60)), "1:U3", "msg "+string(rune('a'+i)))
 	}
 	cfg := testConfig()
 	cfg.AI.Workers = 1
 
-	first := &recordingGenerator{batchResponse: batchCardJSON("U1", "U2")} // U3 falls back
+	first := &recordingGenerator{batchResponse: batchCardJSON("1:U1", "1:U2")} // U3 falls back
 	_, err := New(database, cfg, first, testLogger()).RunForWindow(context.Background(), from, to)
 	require.NoError(t, err)
 	require.Len(t, first.batchPrompts, 1)
 	require.Contains(t, first.batchPrompts[0], "Team averages (3 people)")
 
-	resumed := &recordingGenerator{batchResponse: batchCardJSON("U3")}
+	resumed := &recordingGenerator{batchResponse: batchCardJSON("1:U3")}
 	_, err = New(database, cfg, resumed, testLogger()).RunForWindow(context.Background(), from, to)
 	require.NoError(t, err)
 	require.Len(t, resumed.batchPrompts, 1)
-	assert.Contains(t, resumed.batchPrompts[0], "(user_id: U3)")
-	assert.NotContains(t, resumed.batchPrompts[0], "(user_id: U1)")
+	assert.Contains(t, resumed.batchPrompts[0], "(user_id: 1:U3)")
+	assert.NotContains(t, resumed.batchPrompts[0], "(user_id: 1:U1)")
 	assert.Contains(t, resumed.batchPrompts[0], "Team averages (3 people)", "norms cover the whole team, not the remaining user")
 }

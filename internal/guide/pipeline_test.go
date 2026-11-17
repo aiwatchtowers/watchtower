@@ -2,6 +2,7 @@ package guide
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -18,6 +19,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/llmusage"
+	"watchtower/internal/slack"
 )
 
 type mockGenerator struct {
@@ -75,6 +77,27 @@ func seedMessage(t *testing.T, database *db.DB, channelID, ts, userID, text stri
 	require.NoError(t, err)
 }
 
+// testOwnerRaw is the raw Slack id of the owner the people tests' users work
+// with. Only the owner's interaction partners get a card (spec 2026-11-17
+// §5.3, A13), so seedPartnerMessage stores a user's message together with the
+// owner's reply in its thread and registers the owner on the user's account.
+// The owner has no users row, so it gets no card of its own.
+const testOwnerRaw = "UOWNER"
+
+func seedPartnerMessage(t *testing.T, database *db.DB, channelID, ts, userID, text string) {
+	t.Helper()
+	seedMessage(t, database, channelID, ts, userID, text)
+	acct, _, ok := slack.SplitAccountID(userID)
+	require.True(t, ok, "a partner id is namespaced: %s", userID)
+	owner := fmt.Sprintf("%d:%s", acct, testOwnerRaw)
+	_, err := database.Exec(`INSERT OR IGNORE INTO slack_accounts (id, current_user_id) VALUES (?, ?)`, acct, owner)
+	require.NoError(t, err)
+	require.NoError(t, database.UpsertMessage(db.Message{
+		ChannelID: channelID, TS: ts + "1", UserID: owner, Text: "thanks",
+		ThreadTS: sql.NullString{String: ts, Valid: true},
+	}))
+}
+
 func seedDigestWithSignals(t *testing.T, database *db.DB, channelID string, from, to float64, signals string) {
 	t.Helper()
 	seedDigestFull(t, database, channelID, from, to, signals, "[]")
@@ -112,7 +135,7 @@ func TestPipeline_Run(t *testing.T) {
 	err := database.UpsertWorkspace(db.Workspace{ID: "W1", Name: "test"})
 	require.NoError(t, err)
 
-	seedUser(t, database, "U1", "alice")
+	seedUser(t, database, "1:U1", "alice")
 	seedChannel(t, database, "C1", "general")
 
 	from := float64(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC).Unix())
@@ -121,13 +144,13 @@ func TestPipeline_Run(t *testing.T) {
 	for i := range 5 {
 		ts := base + float64(i*60)
 		tsStr := fmt.Sprintf("%.6f", ts)
-		seedMessage(t, database, "C1", tsStr, "U1", "test message "+string(rune('a'+i)))
+		seedPartnerMessage(t, database, "C1", tsStr, "1:U1", "test message "+string(rune('a'+i)))
 	}
 
 	// Seed channel digest with situations for U1
 	seedDigestWithSituations(t, database, "C1", from, to,
 		`[]`,
-		`[{"topic":"Auth refactor","type":"collaboration","participants":[{"user_id":"U1","role":"lead"}],"dynamic":"Led auth refactor with team","outcome":"Refactor completed","red_flags":[],"observations":["proactive"],"message_refs":[]},{"topic":"Deployment docs","type":"knowledge_transfer","participants":[{"user_id":"U1","role":"author"}],"dynamic":"Shared deployment docs","outcome":"Docs published","red_flags":[],"observations":[],"message_refs":[]},{"topic":"API versioning","type":"decision_deadlock","participants":[{"user_id":"U1","role":"mediator"}],"dynamic":"Resolved API versioning debate","outcome":"Agreement reached","red_flags":[],"observations":[],"message_refs":[]}]`)
+		`[{"topic":"Auth refactor","type":"collaboration","participants":[{"user_id":"1:U1","role":"lead"}],"dynamic":"Led auth refactor with team","outcome":"Refactor completed","red_flags":[],"observations":["proactive"],"message_refs":[]},{"topic":"Deployment docs","type":"knowledge_transfer","participants":[{"user_id":"1:U1","role":"author"}],"dynamic":"Shared deployment docs","outcome":"Docs published","red_flags":[],"observations":[],"message_refs":[]},{"topic":"API versioning","type":"decision_deadlock","participants":[{"user_id":"1:U1","role":"mediator"}],"dynamic":"Resolved API versioning debate","outcome":"Agreement reached","red_flags":[],"observations":[],"message_refs":[]}]`)
 
 	mockResp := `{
 		"summary": "Alice is a proactive contributor",
@@ -152,7 +175,7 @@ func TestPipeline_Run(t *testing.T) {
 	assert.GreaterOrEqual(t, int(gen.calls.Load()), 1)
 
 	// Verify stored people card
-	card, err := database.GetLatestPeopleCard("U1")
+	card, err := database.GetLatestPeopleCard("1:U1")
 	require.NoError(t, err)
 	require.NotNil(t, card)
 	assert.Equal(t, "Alice is a proactive contributor", card.Summary)
@@ -175,7 +198,7 @@ func TestPipeline_SkipsExistingWindow(t *testing.T) {
 	err := database.UpsertWorkspace(db.Workspace{ID: "W1", Name: "test"})
 	require.NoError(t, err)
 
-	seedUser(t, database, "U1", "bob")
+	seedUser(t, database, "1:U1", "bob")
 	seedChannel(t, database, "C1", "general")
 
 	from := float64(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC).Unix())
@@ -184,12 +207,12 @@ func TestPipeline_SkipsExistingWindow(t *testing.T) {
 	for i := range 5 {
 		ts := base + float64(i*60)
 		tsStr := fmt.Sprintf("%.6f", ts)
-		seedMessage(t, database, "C1", tsStr, "U1", "message "+string(rune('a'+i)))
+		seedPartnerMessage(t, database, "C1", tsStr, "1:U1", "message "+string(rune('a'+i)))
 	}
 
 	// A batch-shaped reply naming U1, so the first run stores a real AI card —
 	// only an AI card completes the window (a fallback card does not).
-	gen := &mockGenerator{response: `[{"user_id":"U1","summary":"test","communication_style":"","decision_role":"","red_flags":[],"highlights":[],"accomplishments":[],"communication_guide":"","decision_style":"","tactics":[]}]`}
+	gen := &mockGenerator{response: `[{"user_id":"1:U1","summary":"test","communication_style":"","decision_role":"","red_flags":[],"highlights":[],"accomplishments":[],"communication_guide":"","decision_style":"","tactics":[]}]`}
 	pipe := New(database, cfg, gen, logger)
 	pipe.ForceRegenerate = true
 	cfg.AI.Workers = 1
@@ -461,8 +484,8 @@ func TestPipeline_BatchProcessing(t *testing.T) {
 	err := database.UpsertWorkspace(db.Workspace{ID: "W1", Name: "test"})
 	require.NoError(t, err)
 
-	seedUser(t, database, "U1", "alice") // Will be low-data (batch)
-	seedUser(t, database, "U2", "bob")   // Will be full-data (individual)
+	seedUser(t, database, "1:U1", "alice") // Will be low-data (batch)
+	seedUser(t, database, "1:U2", "bob")   // Will be full-data (individual)
 	seedChannel(t, database, "C1", "general")
 
 	from := float64(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC).Unix())
@@ -472,21 +495,21 @@ func TestPipeline_BatchProcessing(t *testing.T) {
 	// U1: 4 messages (< MinSituationMessages=10), 1 situation (< MinSituations=3)  → batch
 	for i := range 4 {
 		ts := base + float64(i*60)
-		seedMessage(t, database, "C1", fmt.Sprintf("%.6f", ts), "U1", "msg "+string(rune('a'+i)))
+		seedPartnerMessage(t, database, "C1", fmt.Sprintf("%.6f", ts), "1:U1", "msg "+string(rune('a'+i)))
 	}
 	// U2: 12 messages (>= MinSituationMessages=10) → full-data
 	for i := range 12 {
 		ts := base + float64((i+10)*60)
-		seedMessage(t, database, "C1", fmt.Sprintf("%.6f", ts), "U2", "msg "+string(rune('a'+i)))
+		seedPartnerMessage(t, database, "C1", fmt.Sprintf("%.6f", ts), "1:U2", "msg "+string(rune('a'+i)))
 	}
 
 	// Seed situations: U1 gets 1 situation, U2 gets 3 situations
 	seedDigestWithSituations(t, database, "C1", from, to,
 		`[]`,
-		`[{"topic":"Topic A","type":"collaboration","participants":[{"user_id":"U1","role":"contributor"},{"user_id":"U2","role":"lead"}],"dynamic":"worked together","outcome":"done","red_flags":[],"observations":[],"message_refs":[]},{"topic":"Topic B","type":"knowledge_transfer","participants":[{"user_id":"U2","role":"author"}],"dynamic":"shared docs","outcome":"published","red_flags":[],"observations":[],"message_refs":[]},{"topic":"Topic C","type":"decision_deadlock","participants":[{"user_id":"U2","role":"mediator"}],"dynamic":"resolved debate","outcome":"agreed","red_flags":[],"observations":[],"message_refs":[]}]`)
+		`[{"topic":"Topic A","type":"collaboration","participants":[{"user_id":"1:U1","role":"contributor"},{"user_id":"1:U2","role":"lead"}],"dynamic":"worked together","outcome":"done","red_flags":[],"observations":[],"message_refs":[]},{"topic":"Topic B","type":"knowledge_transfer","participants":[{"user_id":"1:U2","role":"author"}],"dynamic":"shared docs","outcome":"published","red_flags":[],"observations":[],"message_refs":[]},{"topic":"Topic C","type":"decision_deadlock","participants":[{"user_id":"1:U2","role":"mediator"}],"dynamic":"resolved debate","outcome":"agreed","red_flags":[],"observations":[],"message_refs":[]}]`)
 
 	gen := &multiMockGenerator{
-		batchResponse:      `[{"user_id":"U1","summary":"Low activity contributor","communication_style":"observer","decision_role":"contributor","red_flags":[],"highlights":["Responsive"],"accomplishments":[],"communication_guide":"Use async","decision_style":"Limited data","tactics":["Follow up in thread"]},{"user_id":"U2","summary":"Active contributor","communication_style":"driver","decision_role":"decision-maker","red_flags":[],"highlights":["Led project"],"accomplishments":["Shipped v2"],"communication_guide":"Be direct","decision_style":"Quick","tactics":["Send summary"]}]`,
+		batchResponse:      `[{"user_id":"1:U1","summary":"Low activity contributor","communication_style":"observer","decision_role":"contributor","red_flags":[],"highlights":["Responsive"],"accomplishments":[],"communication_guide":"Use async","decision_style":"Limited data","tactics":["Follow up in thread"]},{"user_id":"1:U2","summary":"Active contributor","communication_style":"driver","decision_role":"decision-maker","red_flags":[],"highlights":["Led project"],"accomplishments":["Shipped v2"],"communication_guide":"Be direct","decision_style":"Quick","tactics":["Send summary"]}]`,
 		individualResponse: `{"summary":"Active contributor","communication_style":"driver","decision_role":"decision-maker","red_flags":[],"highlights":["Led project"],"accomplishments":["Shipped v2"],"communication_guide":"Be direct","decision_style":"Quick","tactics":["Send summary"]}`,
 		teamResponse:       `{"summary":"Team is healthy","attention":[],"tips":["Use threads"]}`,
 	}
@@ -503,7 +526,7 @@ func TestPipeline_BatchProcessing(t *testing.T) {
 	assert.Equal(t, int32(3), gen.calls.Load())
 
 	// Verify batch card (U1)
-	cardU1, err := database.GetLatestPeopleCard("U1")
+	cardU1, err := database.GetLatestPeopleCard("1:U1")
 	require.NoError(t, err)
 	require.NotNil(t, cardU1)
 	assert.Equal(t, "Low activity contributor", cardU1.Summary)
@@ -511,7 +534,7 @@ func TestPipeline_BatchProcessing(t *testing.T) {
 	assert.Equal(t, "active", cardU1.Status) // batch cards get active status
 
 	// Verify full-data batch card (U2)
-	cardU2, err := database.GetLatestPeopleCard("U2")
+	cardU2, err := database.GetLatestPeopleCard("1:U2")
 	require.NoError(t, err)
 	require.NotNil(t, cardU2)
 	assert.Equal(t, "Active contributor", cardU2.Summary)
@@ -527,8 +550,8 @@ func TestPipeline_BatchFallback(t *testing.T) {
 	err := database.UpsertWorkspace(db.Workspace{ID: "W1", Name: "test"})
 	require.NoError(t, err)
 
-	seedUser(t, database, "U1", "alice") // Low-data → batch
-	seedUser(t, database, "U2", "bob")   // Low-data → batch
+	seedUser(t, database, "1:U1", "alice") // Low-data → batch
+	seedUser(t, database, "1:U2", "bob")   // Low-data → batch
 	seedChannel(t, database, "C1", "general")
 
 	from := float64(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC).Unix())
@@ -538,17 +561,17 @@ func TestPipeline_BatchFallback(t *testing.T) {
 	// Both users: 4 messages, 0 situations → batch tier
 	for i := range 4 {
 		ts := base + float64(i*60)
-		seedMessage(t, database, "C1", fmt.Sprintf("%.6f", ts), "U1", "msg "+string(rune('a'+i)))
+		seedPartnerMessage(t, database, "C1", fmt.Sprintf("%.6f", ts), "1:U1", "msg "+string(rune('a'+i)))
 	}
 	for i := range 4 {
 		ts := base + float64((i+10)*60)
-		seedMessage(t, database, "C1", fmt.Sprintf("%.6f", ts), "U2", "msg "+string(rune('a'+i)))
+		seedPartnerMessage(t, database, "C1", fmt.Sprintf("%.6f", ts), "1:U2", "msg "+string(rune('a'+i)))
 	}
 
 	// Seed a digest with situations for neither user, just to pass the "no situations" skip
 	seedDigestWithSituations(t, database, "C1", from, to,
 		`[]`,
-		`[{"topic":"Topic X","type":"collaboration","participants":[{"user_id":"U3","role":"lead"}],"dynamic":"unrelated","outcome":"done","red_flags":[],"observations":[],"message_refs":[]}]`)
+		`[{"topic":"Topic X","type":"collaboration","participants":[{"user_id":"1:U3","role":"lead"}],"dynamic":"unrelated","outcome":"done","red_flags":[],"observations":[],"message_refs":[]}]`)
 
 	gen := &multiMockGenerator{
 		batchErr:     fmt.Errorf("AI overloaded"),
@@ -569,14 +592,74 @@ func TestPipeline_BatchFallback(t *testing.T) {
 	assert.Equal(t, int32(1), gen.calls.Load(), "one failed batch call, no team summary")
 
 	// Both users should get insufficient_data cards (fallback)
-	cardU1, err := database.GetLatestPeopleCard("U1")
+	cardU1, err := database.GetLatestPeopleCard("1:U1")
 	require.NoError(t, err)
 	require.NotNil(t, cardU1)
 	assert.Equal(t, "insufficient_data", cardU1.Status)
 	assert.Equal(t, "Insufficient data for analysis this period.", cardU1.Summary)
 
-	cardU2, err := database.GetLatestPeopleCard("U2")
+	cardU2, err := database.GetLatestPeopleCard("1:U2")
 	require.NoError(t, err)
 	require.NotNil(t, cardU2)
 	assert.Equal(t, "insufficient_data", cardU2.Status)
+}
+
+// TestPeopleCards_NoOwnerNoCards: active users but no Slack account with a
+// known owner → no stats, no AI call, no error; the run records the
+// owner-unknown outcome and HasData says there is nothing to do (A13: never
+// fall back to everyone).
+func TestPeopleCards_NoOwnerNoCards(t *testing.T) {
+	database := testDB(t)
+	from, to := (&Pipeline{}).currentWindow()
+	seedUser(t, database, "1:U1", "alice")
+	seedChannel(t, database, "C1", "general")
+	for i := range DefaultMinMessages + 1 {
+		seedMessage(t, database, "C1", fmt.Sprintf("%.6f", from+86400+float64(i*60)), "1:U1", "msg")
+	}
+	seedOutcomeSituation(t, database, from, to)
+	gen := &mockGenerator{response: outcomeBatchReply}
+	pipe := New(database, testConfig(), gen, testLogger())
+	pipe.ForceRegenerate = true
+
+	has, err := pipe.HasData()
+	require.NoError(t, err)
+	assert.False(t, has)
+	n, err := pipe.RunForWindow(context.Background(), from, to)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+	assert.Equal(t, OutcomeNoOwner, pipe.LastOutcome())
+	assert.Equal(t, int32(0), gen.calls.Load())
+	cards, err := database.GetPeopleCardsForWindow(from, to)
+	require.NoError(t, err)
+	assert.Empty(t, cards)
+}
+
+// TestPeopleExclude_BlocksFutureCards: a person excluded before any card is
+// made gets none on the next run; after include the next run makes one.
+func TestPeopleExclude_BlocksFutureCards(t *testing.T) {
+	database := testDB(t)
+	from, to := (&Pipeline{}).currentWindow()
+	seedOutcomeUser(t, database, from)
+	seedOutcomeSituation(t, database, from, to)
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	run := func() int {
+		pipe := New(database, cfg, &mockGenerator{response: outcomeBatchReply}, testLogger())
+		pipe.ForceRegenerate = true
+		n, err := pipe.RunForWindow(context.Background(), from, to)
+		require.NoError(t, err)
+		return n
+	}
+
+	require.NoError(t, database.ExcludePerson("1:U1"))
+	assert.Equal(t, 0, run())
+	card, err := database.GetLatestPeopleCard("1:U1")
+	require.NoError(t, err)
+	assert.Nil(t, card)
+
+	require.NoError(t, database.IncludePerson("1:U1"))
+	assert.Equal(t, 1, run())
+	card, err = database.GetLatestPeopleCard("1:U1")
+	require.NoError(t, err)
+	require.NotNil(t, card)
 }

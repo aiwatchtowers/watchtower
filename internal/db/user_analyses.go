@@ -310,9 +310,30 @@ func (db *DB) ComputeUserStats(userID string, from, to float64) (*UserStats, err
 	return s, nil
 }
 
-// ComputeAllUserStats computes stats for all active (non-bot, non-deleted) users
-// in the given time window using bulk SQL queries. Returns only users with at least minMessages.
-func (db *DB) ComputeAllUserStats(from, to float64, minMessages int) ([]UserStats, error) {
+// ComputeAllUserStats computes stats for the active (non-bot, non-deleted)
+// users the owner works with in the given time window, using bulk SQL
+// queries (spec 2026-11-17 §5.3, A13). owners maps a Slack account id to that
+// account's namespaced owner id (SlackOwnersByAccount); a person qualifies
+// only through the owner of the same account (InteractionPartners), and each
+// owner qualifies for their own card. An account missing from owners makes
+// no cards; an empty map returns nothing, never everyone. Returns only users
+// with at least minMessages.
+func (db *DB) ComputeAllUserStats(from, to float64, minMessages int, owners map[int64]string) ([]UserStats, error) {
+	qualified := make(map[string]bool)
+	for acct, owner := range owners {
+		partners, err := db.InteractionPartners(acct, owner, from, to)
+		if err != nil {
+			return nil, err
+		}
+		qualified[owner] = true
+		for _, p := range partners {
+			qualified[p] = true
+		}
+	}
+	if len(qualified) == 0 {
+		return nil, nil
+	}
+
 	// 1. Core stats for all users in a single query
 	rows, err := db.Query(`
 		SELECT m.user_id,
@@ -341,6 +362,9 @@ func (db *DB) ComputeAllUserStats(from, to float64, minMessages int) ([]UserStat
 		var s UserStats
 		if err := rows.Scan(&s.UserID, &s.MessageCount, &s.ChannelsActive, &s.AvgMessageLength); err != nil {
 			return nil, fmt.Errorf("scanning core stats: %w", err)
+		}
+		if !qualified[s.UserID] {
+			continue
 		}
 		statsMap[s.UserID] = &s
 		userOrder = append(userOrder, s.UserID)

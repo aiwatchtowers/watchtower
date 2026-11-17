@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -42,14 +43,82 @@ var peopleGenerateCmd = &cobra.Command{
 	RunE:  runPeopleGenerate,
 }
 
+var (
+	peopleExcludeFlagUser string
+	peopleExcludeFlagJSON bool
+)
+
+var peopleExcludeCmd = &cobra.Command{
+	Use:   "exclude",
+	Short: "Stop people cards for a person",
+	Long: "Stop people cards for a person: their cards are deleted and no new card is made for them " +
+		"until `watchtower people include`.",
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, _ []string) error { return runPeopleExclude(cmd, true) },
+}
+
+var peopleIncludeCmd = &cobra.Command{
+	Use:   "include",
+	Short: "Make people cards for a person again",
+	Long:  "Make people cards for a person again after `watchtower people exclude`; the next people run may make one.",
+	Args:  cobra.NoArgs,
+	RunE:  func(cmd *cobra.Command, _ []string) error { return runPeopleExclude(cmd, false) },
+}
+
 func init() {
 	rootCmd.AddCommand(peopleCmd)
 	peopleCmd.AddCommand(peopleGenerateCmd)
+	for _, c := range []*cobra.Command{peopleExcludeCmd, peopleIncludeCmd} {
+		peopleCmd.AddCommand(c)
+		c.Flags().StringVar(&peopleExcludeFlagUser, "user", "", "the person's user id as stored (\"<account>:<user id>\")")
+		c.Flags().BoolVar(&peopleExcludeFlagJSON, "json", false, "output as JSON")
+	}
 	peopleCmd.Flags().StringVar(&peopleFlagUser, "user", "", "show card for a specific user (@username)")
 	peopleCmd.Flags().BoolVar(&peopleFlagPrevious, "previous", false, "show previous 7-day window")
 	peopleCmd.Flags().IntVar(&peopleFlagWeeks, "weeks", 1, "number of weeks to show")
 	peopleGenerateCmd.Flags().IntVar(&peopleFlagWorkers, "workers", 0, "override ai.workers for this run")
 	peopleGenerateCmd.Flags().BoolVar(&peopleGenFlagProgressJSON, "progress-json", false, "output progress as JSON lines")
+}
+
+// peopleExcludeResult is the --json answer of `people exclude|include`.
+type peopleExcludeResult struct {
+	OK       bool   `json:"ok"`
+	UserID   string `json:"user_id"`
+	Excluded bool   `json:"excluded"`
+}
+
+func runPeopleExclude(cmd *cobra.Command, excluded bool) error {
+	userID := strings.TrimSpace(peopleExcludeFlagUser)
+	if userID == "" {
+		return errors.New("give the person's id with --user")
+	}
+	database, err := openDBFromConfig()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	// A Desktop click: wait out the daemon's write lock (ownerWriteBusyTimeout).
+	if err := database.SetBusyTimeout(ownerWriteBusyTimeout); err != nil {
+		return fmt.Errorf("setting the busy timeout: %w", err)
+	}
+	if excluded {
+		err = database.ExcludePerson(userID)
+	} else {
+		err = database.IncludePerson(userID)
+	}
+	if err != nil {
+		return err
+	}
+	out := cmd.OutOrStdout()
+	if peopleExcludeFlagJSON {
+		return writeJSON(out, peopleExcludeResult{OK: true, UserID: userID, Excluded: excluded})
+	}
+	if excluded {
+		fmt.Fprintf(out, "Stopped people cards for %s\n", userID)
+	} else {
+		fmt.Fprintf(out, "People cards for %s can be made again\n", userID)
+	}
+	return nil
 }
 
 func runPeople(cmd *cobra.Command, args []string) error {

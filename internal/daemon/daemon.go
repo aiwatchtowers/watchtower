@@ -1916,9 +1916,10 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 			if !isBenignShutdownErr(ctx, err) && !digest.ProviderDeferred(err) {
 				d.recordPeopleAttempt(date)
 			}
-		} else if d.peoplePipe.LastOutcome() == guide.OutcomeNoData {
+		} else if o := d.peoplePipe.LastOutcome(); o == guide.OutcomeNoData || o == guide.OutcomeNoOwner {
 			// No data despite the pre-check (a transient pre-check failure,
-			// or the window moved between the two): no stamp, retry.
+			// or the window moved between the two), or no owner yet: no
+			// stamp, retry.
 			d.logger.Printf("people: run found no data; not stamping")
 		} else {
 			if n > 0 {
