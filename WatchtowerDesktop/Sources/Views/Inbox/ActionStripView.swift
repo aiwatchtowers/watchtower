@@ -1,3 +1,4 @@
+import ChatWire
 import GRDB
 import SwiftUI
 import WatchtowerCore

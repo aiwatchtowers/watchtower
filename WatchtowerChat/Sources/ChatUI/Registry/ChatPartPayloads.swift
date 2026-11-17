@@ -90,68 +90,6 @@ struct ChatRoutingPayload: Decodable, Equatable {
     let actualModel: String?
 }
 
-/// An approval card's action (the `approval` payload, or a feed action of a Mac one version behind).
-public struct ChatApprovalPayload: Decodable, Hashable, Sendable {
-    public let id: Int64
-    public let tool: String
-    public let title: String
-    /// The action's arguments as indented JSON (Go `tools` display text).
-    public let argsDisplay: String
-    /// The hash the owner approves: an approval binds to exactly these arguments.
-    public let argsSHA256: String
-    /// pending, approved, executing, applied, rejected or failed.
-    public let status: String
-    public let reason: String?
-
-    public init(
-        id: Int64,
-        tool: String,
-        title: String,
-        argsDisplay: String,
-        argsSHA256: String,
-        status: String,
-        reason: String? = nil
-    ) {
-        self.id = id
-        self.tool = tool
-        self.title = title
-        self.argsDisplay = argsDisplay
-        self.argsSHA256 = argsSHA256
-        self.status = status
-        self.reason = reason
-    }
-
-    public init(action: ChatFeed.Action) {
-        self.init(id: action.id, tool: action.tool, title: action.title, argsDisplay: action.argsDisplay,
-                  argsSHA256: action.argsSHA256, status: action.status, reason: action.reason)
-    }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decode(Int64.self, forKey: .id)
-        tool = try c.decode(String.self, forKey: .tool)
-        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
-        argsDisplay = try c.decodeIfPresent(String.self, forKey: .argsDisplay) ?? ""
-        argsSHA256 = try c.decodeIfPresent(String.self, forKey: .argsSHA256) ?? ""
-        status = try c.decodeIfPresent(String.self, forKey: .status) ?? "pending"
-        reason = try c.decodeIfPresent(String.self, forKey: .reason)
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case id, tool, title, argsDisplay, status, reason
-        case argsSHA256 = "argsSha256"
-    }
-
-    /// The arguments as a JSON object; empty when the display text is not one.
-    var args: [String: Any] {
-        guard let data = argsDisplay.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
-        return object
-    }
-
-    var isPending: Bool { status == "pending" }
-}
-
 /// An artifact as the viewer shows it: the latest stored version when there is one, else the draft in the text.
 public struct ChatArtifactContent: Equatable, Sendable, Identifiable {
     public let key: String

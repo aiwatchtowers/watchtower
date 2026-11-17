@@ -83,8 +83,11 @@ struct ChatThreadView: View {
                 let feed = chatVM.actionFeed
                 switch decision {
                 case .approve:
-                    let shown = feed.rows.first { $0.id == payload.id }?.argsJSON ?? ""
-                    Task { await feed.approve(payload.id, shownArgs: shown) }
+                    // The row's stored args when it is loaded, else the digest the part carries. A part without
+                    // one pins the digest of nothing, which Go refuses as changed args, shown on the row (AGENT-07).
+                    let shown = feed.rows.first { $0.id == payload.id } ?? ChatAgentAction(payload: payload)
+                    let digest = shown.approveDigest ?? ChatAgentAction.digest(of: "")
+                    Task { await feed.approve(payload.id, digest: digest) }
                 case .reject:
                     Task { await feed.reject(payload.id) }
                 }

@@ -13,8 +13,10 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rivo/uniseg"
 
@@ -29,6 +31,8 @@ import (
 const (
 	MaxMessageText     = 40_000
 	maxActionArgsBytes = 4000
+	// maxResultValueBytes caps each result value the approval card shows.
+	maxResultValueBytes = 512
 	// maxLabel caps titles, names and error messages (SliceClip's 200).
 	maxLabel = 200
 )
@@ -155,9 +159,6 @@ func applyLiveRouting(c *FeedConversation, r LiveRouting) {
 // TurnID is the turn the message belongs to (not on the wire: the hub's
 // cap drops the actions of the turns it cut).
 func (m FeedMessage) TurnID() string { return m.turnID }
-
-// TurnID is the turn the action belongs to.
-func (a FeedAction) TurnID() string { return a.turnID }
 
 // readTx runs fn in one read-only transaction, so a read sees one snapshot
 // and never blocks a writer.
@@ -291,8 +292,15 @@ type FeedAction struct {
 	ArgsSHA256  string  `json:"args_sha256"`
 	Status      string  `json:"status"`
 	Reason      *string `json:"reason,omitempty"`
-
-	turnID string
+	// The approval card's fields beyond the args (ask #1409), optional on
+	// the wire for a client one version behind.
+	External bool              `json:"external"`
+	Error    string            `json:"error,omitempty"`
+	Result   map[string]string `json:"result,omitempty"`
+	TurnID   string            `json:"turn_id,omitempty"`
+	// ArgsComplete is false when ArgsDisplay was clipped: the card then
+	// offers no editor and no Confluence diff.
+	ArgsComplete bool `json:"args_complete"`
 }
 
 type Feed struct {
@@ -634,7 +642,8 @@ func chatFeedActionsTx(ctx context.Context, tx *sql.Tx, conv int64, window []cha
 	}
 	in, args := inList(ids)
 	//nolint:gosec // G202: in is "?,?,…" placeholders only
-	rows, err := tx.QueryContext(ctx, `SELECT id, tool, args_json, status, reason, turn_id FROM agent_actions
+	rows, err := tx.QueryContext(ctx, `SELECT id, tool, args_json, status, reason, turn_id, external, error, result_json
+		FROM agent_actions
 		WHERE conversation_id = ? AND turn_id <> ''
 		  AND turn_id IN (SELECT turn_id FROM chat_messages WHERE id IN (`+in+`))
 		ORDER BY id`, append([]any{conv}, args...)...)
@@ -644,12 +653,17 @@ func chatFeedActionsTx(ctx context.Context, tx *sql.Tx, conv int64, window []cha
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var a FeedAction
-		var argsJSON, reason string
-		if err := rows.Scan(&a.ID, &a.Tool, &argsJSON, &a.Status, &reason, &a.turnID); err != nil {
+		var argsJSON, reason, resultJSON string
+		if err := rows.Scan(&a.ID, &a.Tool, &argsJSON, &a.Status, &reason, &a.TurnID,
+			&a.External, &a.Error, &resultJSON); err != nil {
 			return nil, fmt.Errorf("reading chat actions: %w", err)
 		}
 		a.Title = actionTitle(a.Tool)
-		a.ArgsDisplay = argsDisplay(argsJSON)
+		a.ArgsDisplay, a.ArgsComplete = argsDisplay(argsJSON)
+		a.Result = cardResult(resultJSON)
+		// A tool failure's error may hold a whole API response; the card
+		// needs its first line's worth (maxLabel), and the Mac reads the row.
+		a.Error, _ = clipText(a.Error, maxLabel)
 		a.ArgsSHA256 = tools.ArgsSHA256(argsJSON)
 		if reason != "" {
 			a.Reason = &reason
@@ -670,14 +684,69 @@ func actionTitle(tool string) string {
 }
 
 // argsDisplay is an action's args as the phone shows them: indented JSON
-// (the stored text when it is not JSON), cut at 4000 characters. The
-// approval hash is over the stored bytes, never this text.
-func argsDisplay(argsJSON string) string {
+// (the stored text when it is not JSON), cut at 4000 characters, and
+// whether the text is whole. The approval hash is over the stored bytes,
+// never this text.
+func argsDisplay(argsJSON string) (string, bool) {
 	var buf bytes.Buffer
 	text := argsJSON
 	if json.Indent(&buf, []byte(argsJSON), "", "  ") == nil {
 		text = buf.String()
 	}
-	out, _ := clipText(text, maxActionArgsBytes)
+	out, clipped := clipText(text, maxActionArgsBytes)
+	return out, clipped == nil
+}
+
+// cardResultKeys are the result_json keys the approval card shows (the
+// outcome link, "Task #N created", "Board X connected", the Confluence
+// version and the warning); nothing else leaves the Mac.
+var cardResultKeys = []string{"url", "label", "key", "target_id", "board_name", "version", "warning"}
+
+// cardResult is resultJSON cut down to cardResultKeys, each value as text
+// clipped to maxResultValueBytes (a longer url is dropped, never cut); nil
+// when none is present or resultJSON is not an object.
+func cardResult(resultJSON string) map[string]string {
+	if resultJSON == "" {
+		return nil
+	}
+	dec := json.NewDecoder(strings.NewReader(resultJSON))
+	dec.UseNumber()
+	var raw map[string]any
+	if dec.Decode(&raw) != nil {
+		return nil
+	}
+	var out map[string]string
+	for _, k := range cardResultKeys {
+		var v string
+		switch x := raw[k].(type) {
+		case string:
+			v = x
+		case json.Number:
+			v = x.String()
+		case bool:
+			v = strconv.FormatBool(x)
+		default:
+			continue
+		}
+		if k == "url" && len(v) > maxResultValueBytes {
+			continue // a cut link would still open, somewhere else
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[k] = clipBytes(v, maxResultValueBytes)
+	}
 	return out
+}
+
+// clipBytes is s cut to at most limit bytes on a rune boundary.
+func clipBytes(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }

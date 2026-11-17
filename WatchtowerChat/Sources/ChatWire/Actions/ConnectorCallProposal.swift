@@ -7,35 +7,39 @@ import Foundation
 /// Approve stops at `approved`, the live chat session that proposed it claims
 /// and runs it, and nothing else ever can — so the card offers no Retry and
 /// says when that session is gone instead of implying the call still runs.
-package struct ConnectorCallProposal: Equatable, Sendable {
-    package static let tool = "claude_ai_connector_call"
-    package typealias Approval = SlackSendProposal.Approval
+public struct ConnectorCallProposal: Equatable, Sendable {
+    public static let tool = "claude_ai_connector_call"
+    public typealias Approval = SlackSendProposal.Approval
 
     /// Go `internal/tools` `sessionEndedBeforeApproval` /
     /// `sessionEndedWhileRunning`: the errors `ExpireSessionCalls` writes on
     /// the rows a dead session left. Change both together.
-    package static let sessionEndedBeforeApproval = "session ended before approval"
-    package static let sessionEndedWhileRunning = "session ended while the call ran; outcome unknown"
+    public static let sessionEndedBeforeApproval = "session ended before approval"
+    public static let sessionEndedWhileRunning = "session ended while the call ran; outcome unknown"
     /// The chat gate's `CancelSessionCall` reasons: the 15-minute approval
     /// timeout (spec decision Q3) and Stop/Close. Change both together.
-    package static let notApprovedInTime = "not approved within 15 minutes"
-    package static let stopped = "stopped"
+    public static let notApprovedInTime = "not approved within 15 minutes"
+    public static let stopped = "stopped"
+
+    /// The card's line when the args reached this device clipped (`ChatAgentAction.argsClipped`): not unreadable,
+    /// so Approve stays, pinned to the args digest.
+    public static let clippedNote = "This call's input is too long to show in full here."
 
     /// Shown beside Reject on a pending call the card cannot read.
-    package static let unreadableNote = "This call's details can't be shown, so it can't be approved — reject it and ask again."
+    public static let unreadableNote = "This call's details can't be shown, so it can't be approved — reject it and ask again."
 
     /// The connector's display name ("claude.ai Gmail").
-    package let server: String
-    package let toolName: String
+    public let server: String
+    public let toolName: String
     /// The stored input, re-indented with every token as stored — what the
     /// card shows and what the editor starts from. Numbers are never
     /// re-encoded, so the card shows exactly what the session sends.
-    package let inputJSON: String
+    public let inputJSON: String
 
     /// Nil for another tool, and for args without a server, a tool or an
     /// object `input` (unreadable: the card falls back to the raw arguments
     /// and offers no Approve — a call the owner cannot read is never approved).
-    package init?(action: AgentAction) {
+    public init?(action: ChatAgentAction) {
         guard action.tool == Self.tool else { return nil }
         let args = action.args
         guard let server = args["server"] as? String, !server.isEmpty,
@@ -53,7 +57,7 @@ package struct ConnectorCallProposal: Equatable, Sendable {
     /// `reviseConnectorCall` refuses anything else, and server/tool never
     /// change. The edited text is embedded verbatim, not re-serialised, so
     /// what the owner typed (number spelling included) is what runs.
-    package func patch(editedInput: String) -> String? {
+    public func patch(editedInput: String) -> String? {
         let trimmed = editedInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let data = trimmed.data(using: .utf8),
               (try? JSONSerialization.jsonObject(with: data)) is [String: Any] else { return nil }
@@ -62,9 +66,14 @@ package struct ConnectorCallProposal: Equatable, Sendable {
 
     /// What Approve runs for the editor's text: a plain approve when the text
     /// is unchanged, the edit otherwise; nil when the text is not an object.
-    package func approval(editedInput: String) -> Approval? {
+    public func approval(editedInput: String) -> Approval? {
         if editedInput == inputJSON { return .plain }
         return patch(editedInput: editedInput).map { .edited(patch: $0) }
+    }
+
+    /// A call the card cannot read (no Approve, `unreadableNote`); clipped args are not unreadable (`clippedNote`).
+    public static func isUnreadable(_ action: ChatAgentAction) -> Bool {
+        action.tool == tool && !action.argsClipped && Self(action: action) == nil
     }
 
     /// Whether the live chat session that proposed `action` still holds it:
@@ -72,14 +81,14 @@ package struct ConnectorCallProposal: Equatable, Sendable {
     /// gate waits inside the turn that proposed the call). `runningTurnID` is
     /// nil when that conversation has no live session running a turn. A row
     /// without a turn id is never held: nothing ties it to the running turn.
-    package static func sessionHolds(_ action: AgentAction, runningTurnID: String?) -> Bool {
+    public static func sessionHolds(_ action: ChatAgentAction, runningTurnID: String?) -> Bool {
         guard let runningTurnID, !action.turnID.isEmpty else { return false }
         return action.turnID == runningTurnID
     }
 
     /// Approve only while the session that waits for it is alive — an
     /// approval nobody can claim would read as a call about to run.
-    package static func canApprove(_ action: AgentAction, sessionHolds: Bool) -> Bool {
+    public static func canApprove(_ action: ChatAgentAction, sessionHolds: Bool) -> Bool {
         action.isPending && sessionHolds
     }
 
@@ -88,18 +97,18 @@ package struct ConnectorCallProposal: Equatable, Sendable {
     /// owner decision in ask #342) until they dismiss it (`actions dismiss`,
     /// `AgentActionFeed.dismiss`). Every other failed
     /// reason provably sent nothing and waits on nobody.
-    package static func awaitsDismissal(_ action: AgentAction) -> Bool {
+    public static func awaitsDismissal(_ action: ChatAgentAction) -> Bool {
         action.isSessionApplied && action.status == "failed" && action.error == sessionEndedWhileRunning
             && action.dismissedAt.isEmpty
     }
 
     /// Beside Dismiss on a call whose outcome is unknown.
-    package static let dismissNote = "Check the connector to see whether the call ran, then dismiss this card."
+    public static let dismissNote = "Check the connector to see whether the call ran, then dismiss this card."
 
     /// Whether the status label already words this session call's error
     /// (the expiry and cancel reasons, per status); any other error is shown
     /// on its own line.
-    package static func labelCarriesError(_ action: AgentAction) -> Bool {
+    public static func labelCarriesError(_ action: ChatAgentAction) -> Bool {
         guard action.isSessionApplied else { return false }
         switch action.status {
         case "rejected": return [notApprovedInTime, stopped].contains(action.error)
@@ -111,7 +120,7 @@ package struct ConnectorCallProposal: Equatable, Sendable {
     /// The card's status line. Approve stops at `approved` (the session runs
     /// the call), so `approved` never reads "Done"; a row whose session is
     /// gone says so rather than looking like it still runs.
-    package static func statusLabel(for action: AgentAction, sessionHolds: Bool) -> String {
+    public static func statusLabel(for action: ChatAgentAction, sessionHolds: Bool) -> String {
         switch action.status {
         case "pending":
             return sessionHolds ? "Awaiting your approval" : "Chat session ended — reject to dismiss"

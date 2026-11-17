@@ -1,18 +1,13 @@
-import GRDB
 import XCTest
-@testable import WatchtowerCore
+@testable import ChatWire
 
 /// The `send_slack_message` card's pure half (spec 2026-10-02 §7): what the
 /// card reads from the pinned args, when Approve may run, and the
 /// `--patch` it sends — Go's `reviseSlackSend`/`slackSendReady` are the twins.
 final class SlackSendProposalTests: XCTestCase {
-    private func action(args: String, status: String = "pending", error: String = "", tool: String = "send_slack_message") -> AgentAction {
-        AgentAction(row: Row([
-            "id": 7, "tool": tool, "external": true, "args_json": args, "reason": "asked", "surface": "main",
-            "conversation_id": 1, "context_type": "", "context_id": "", "turn_id": "t", "status": status,
-            "trust_at_create": "ask", "result_json": "", "error": error,
-            "created_at": "", "decided_at": "", "applied_at": ""
-        ]))
+    private func action(args: String, status: String = "pending", error: String = "", tool: String = "send_slack_message") -> ChatAgentAction {
+        ChatAgentAction(id: 7, tool: tool, external: true, argsJSON: args, reason: "asked", surface: "main",
+                        conversationID: 1, turnID: "t", status: status, error: error)
     }
 
     private let channelTarget = ##"{"account_id":1,"workspace":"Acme","channel_id":"CGEN","label":"#general"}"##

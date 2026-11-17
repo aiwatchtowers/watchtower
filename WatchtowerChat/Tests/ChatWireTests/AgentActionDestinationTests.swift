@@ -1,7 +1,5 @@
 import XCTest
-import GRDB
-import WatchtowerTestSupport
-@testable import WatchtowerCore
+@testable import ChatWire
 
 /// Where an Inbox strip card links to: the thing an applied action produced
 /// (`AgentActionDestination`) and the Slack message a reaction came from
@@ -13,15 +11,9 @@ final class AgentActionDestinationTests: XCTestCase {
         resultJSON: String = "",
         contextType: String = "",
         contextID: String = ""
-    ) throws -> AgentAction {
-        let queue = try TestDatabase.create()
-        _ = try queue.write { db in
-            try TestDatabase.insertAgentAction(
-                db, tool: tool, contextType: contextType, contextID: contextID,
-                status: status, resultJSON: resultJSON
-            )
-        }
-        return try queue.read { db in try AgentActionQueries.fetchByConversation(db, conversationID: 1) }[0]
+    ) throws -> ChatAgentAction {
+        ChatAgentAction(id: 1, tool: tool, contextType: contextType, contextID: contextID, status: status,
+                        resultJSON: resultJSON)
     }
 
     // MARK: - Destination per tool

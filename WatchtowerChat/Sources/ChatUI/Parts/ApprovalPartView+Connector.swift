@@ -1,3 +1,4 @@
+import ChatWire
 import SwiftUI
 import WatchtowerDesign
 
