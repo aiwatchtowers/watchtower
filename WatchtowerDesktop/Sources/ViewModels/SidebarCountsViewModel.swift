@@ -95,18 +95,33 @@ final class SidebarCountsViewModel {
     /// Awaiting this guarantees the sidebar badges reflect real DB state before the splash screen hides.
     func loadInitial() async {
         apply(await fetch())
-        // After the other badges: a tower that is down or restarting must
-        // not hold them back.
-        await applyTowerBadge()
+        // Off this path: a tower that is down or restarting answers only
+        // when it comes back or fails (up to 15 s), and must hold back
+        // neither the other badges nor whoever awaits this.
+        requestTowerBadge()
     }
 
-    /// The tower's Inbox badge, when it answers.
-    private func applyTowerBadge() async {
-        if let towerInboxBadge, let badge = await towerInboxBadge() {
-            towerBadgeKnown = true
-            inboxStripCount = badge
+    /// Reads the tower's Inbox badge in its own task; the latest request
+    /// wins, so an older read that answers late never overwrites a newer
+    /// one. Nil without a tower.
+    @discardableResult
+    func requestTowerBadge() -> Task<Void, Never>? {
+        guard let towerInboxBadge else { return nil }
+        towerBadgeGeneration += 1
+        let generation = towerBadgeGeneration
+        let read = Task { [weak self] in
+            let badge = await towerInboxBadge()
+            guard let self, generation == self.towerBadgeGeneration, let badge else { return }
+            self.towerBadgeKnown = true
+            self.inboxStripCount = badge
         }
+        towerBadgeRead = read
+        return read
     }
+
+    /// The tower badge read last started (tests await it).
+    private(set) var towerBadgeRead: Task<Void, Never>?
+    private var towerBadgeGeneration = 0
 
     /// The Inbox badge from the tower (mobile Inbox spec §5.1: the sum of
     /// the visible folders' counts, `InboxRootModel.countBadge`); nil keeps
@@ -154,8 +169,9 @@ final class SidebarCountsViewModel {
                         guard !Task.isCancelled else { return }
                         self.apply(counts)
                         // A write here can change what the tower lists (Waiting
-                        // for me turned off): its badge is read again too.
-                        await self.applyTowerBadge()
+                        // for me turned off): its badge is read again too, in
+                        // its own task, never holding back the next change.
+                        self.requestTowerBadge()
                     }
                     return
                 } catch {

@@ -17,21 +17,12 @@ enum InboxShotFeed {
     }
 
     /// Lists the case through `vm` (its feed, then the panes' records),
-    /// then runs `then`; the main run loop turns until both finished, as a
-    /// shot renders at once.
+    /// then runs `then`, awaited by the shot's `prepare`: no run-loop spin,
+    /// no deadline.
     static func listed(
-        _ vm: ActionStripViewModel, _ tower: FeedCaseTransport, then: @escaping @MainActor () async -> Void = {}
-    ) {
-        final class Flag { var done = false }
-        let flag = Flag()
-        Task { @MainActor in
-            await vm.follow(tower)
-            await then()
-            flag.done = true
-        }
-        let deadline = Date().addingTimeInterval(5)
-        while !flag.done, Date() < deadline {
-            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
-        }
+        _ vm: ActionStripViewModel, _ tower: FeedCaseTransport, then: @MainActor () async -> Void = {}
+    ) async {
+        await vm.follow(tower)
+        await then()
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerInterface
 
 /// One row of the Inbox list.
 package enum InboxListItem: Identifiable, Equatable, Sendable {
@@ -40,7 +41,7 @@ package struct InboxSection: Equatable, Sendable {
     }
 
     /// Track my threads' fold of stopped (dismissed) tracks.
-    package static func stoppedTitle(_ count: Int) -> String { "Stopped · \(count)" }
+    package static func stoppedTitle(_ count: Int) -> String { TowerText.stopped(count) }
 }
 
 package extension InboxSection {

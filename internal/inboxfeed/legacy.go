@@ -44,7 +44,10 @@ type legacy struct {
 	// placeholder: today's placeholder day card is listed.
 	placeholder bool
 	today       string
-	startOfDay  time.Time
+	// openDay is the day the client has open (Options.Day): listed while
+	// it has a briefing or a plan.
+	openDay    string
+	startOfDay time.Time
 }
 
 // day is one date of the Morning brief (InboxDayCard).
@@ -461,7 +464,7 @@ func (s *snapshot) legacyCards(folder int64) []timedCard {
 func (l legacy) rootDays() []day {
 	var out []day
 	for _, d := range l.days {
-		if d.Date == l.today || d.Unread {
+		if d.Date == l.today || d.Unread || d.Date == l.openDay {
 			out = append(out, d)
 		}
 	}

@@ -4,7 +4,7 @@ Stage 1 of #1170 (spec `docs/superpowers/specs/2026-11-15-mobile-inbox-design.md
 
 ## The feed
 
-`inboxfeed.Build(ctx, d, Options{Folder, Limit, Clip, Now})` reads the Inbox in one `BeginTx(ReadOnly: true)` transaction, so every count and every card comes from one snapshot. It writes nothing (`TestBuild_WritesNothing` checks `data_version` on a second handle and `total_changes`).
+`inboxfeed.Build(ctx, d, Options{Folder, Limit, Clip, Day, Now})` reads the Inbox in one `BeginTx(ReadOnly: true)` transaction, so every count and every card comes from one snapshot. It writes nothing (`TestBuild_WritesNothing` checks `data_version` on a second handle and `total_changes`).
 
 `api.Feed{v, built_at, folders[], cards[], more}` (`internal/tower/api/inbox.go`, `FeedVersion = 1`):
 
@@ -97,6 +97,7 @@ Each card's own time places it among the root's artifacts. The Mac keeps drawing
 - `Folder` narrows the cards to one folder. Every folder and its count are still sent.
 - `Limit` (300 on the phone, none on the Mac) keeps Needs approval's cards first, then the pinned cards, then the rest by `stamp`, newest first. On a tree without Needs approval, the approval entries the root lists (`a…`, `r…`, `n…`) come first instead. The kept cards stay in list order. `more` counts the cut cards per folder.
 - `Clip` clips each `body` to `ClipBytes` (16 KB) on a rune boundary and sets `body_clipped`.
+- `Day` (`FeedRequest.day`) is a Morning brief day the client has open: a route to an older, read day asks for it, and the root lists it while it has a briefing or a day plan (`TestLegacy_OpenDayListedOnlyWithARecord`). A day with neither stays unlisted, so the Mac selects nothing: it never lists a row Go did not list.
 - `DisabledFeatures` are the feature ids the config has off: the Mac's own feature list (`features list --json` reports them as `disabled`). Four matter: attention detection (`secretary-inbox`, config key `inbox.enabled`), `approval-cards` (off, every approval draws natively), and `briefing` with `day-plan` (both off, no placeholder day). When it is off, Waiting for me is turned off whatever its row says, as `InboxFolderQueries.waitingForMe(featureOn:)` has it: its artifacts are not shown and nothing counts for it, the Messages stand-in included. The owner's off wins over a stop by the daemon.
 - `Now` is the moment the feed is read. Its location is used for one date-only value, an idea's "not now" day, which the owner's zone wrote.
 
@@ -169,7 +170,7 @@ The switch the Mac reads (its feature list) and the one Go reads (`config.yaml` 
 
 - Go runs it in `TestInboxFeedCases`; `go test ./internal/inboxfeed/ -run TestInboxFeedCases -update` rewrites the expects. It is the Go golden of the Inbox's rules.
 - The Swift half (`InboxFeedParityTests` over the Swift builders through `SwiftFeedAdapter`) ran until the Mac switched to the feed. It was deleted with the builders in Task 11d-a.
-- The Desktop's tests read canned feeds. A test whose subject is a press or a pane hands the view model a feed that names its seeded records (`Tests/Support/TestInboxFeeds`).
+- The Desktop's tests list Go-written feeds: a test seeds a `"desktop": true` case and serves its feed through the fake tower (`Tests/Support/FeedCaseTransport`, `ActionStripViewModel.follow`). Pure drawing tests hand a pane a single canned card (`Tests/Support/TestInboxFeeds+Texts`).
 - A case marked `"desktop": true` is a test-only scenario. The Go golden test regenerates it like any other case, and the Desktop's tests seed its SQL and serve its `expect` (`FeedCaseTransport`). The Inbox design shots do the same: each shot's database is a `desktop_shot_*` case, so no shot builds an Inbox list in Swift (`InboxShotFeed`). The five `inbox-feed-*` shots draw mockup §7's states (first load, a failed read over the kept list, a failed action on its row, reconnecting, another version) through `InboxMacFeedStatus`.
 - The native approval's text and the target button states stay pinned by `testdata/approval_text_cases.json` and `testdata/target_button_cases.json` (Go: `TestApprovalText_SharedCases`, `TestTargetState_SharedCases`).
 

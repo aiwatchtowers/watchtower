@@ -79,30 +79,30 @@ enum OneInboxShotFixtures {
 
     // MARK: - Shots
 
-    static func dayCard() -> AnyView { inbox(Scene(route: { _ in .card(.day(today)) }, opens: .day)) }
-    static func dayCardRegenerate() -> AnyView {
-        inbox(Scene(route: { _ in .card(.day(today)) }, dayRow: .regenerate, opens: .day))
+    static func dayCard() async -> AnyView { await inbox(Scene(route: { _ in .card(.day(today)) }, opens: .day)) }
+    static func dayCardRegenerate() async -> AnyView {
+        await inbox(Scene(route: { _ in .card(.day(today)) }, dayRow: .regenerate, opens: .day))
     }
-    static func dayCardEmpty() -> AnyView {
-        inbox(Scene(route: { _ in .card(.day(today)) }, withToday: false))
+    static func dayCardEmpty() async -> AnyView {
+        await inbox(Scene(route: { _ in .card(.day(today)) }, withToday: false))
     }
-    static func trackCard() -> AnyView { inbox(Scene { .card(.track($0.customTrack)) }) }
-    static func trackCard(_ watch: WatchScene) -> AnyView {
-        inbox(Scene(route: { .card(.track($0.customTrack)) }, watch: watch))
+    static func trackCard() async -> AnyView { await inbox(Scene { .card(.track($0.customTrack)) }) }
+    static func trackCard(_ watch: WatchScene) async -> AnyView {
+        await inbox(Scene(route: { .card(.track($0.customTrack)) }, watch: watch))
     }
-    static func tracksStopped() -> AnyView {
-        inbox(Scene(route: { .card(.track($0.stoppedTrack)) }, showsStopped: true))
+    static func tracksStopped() async -> AnyView {
+        await inbox(Scene(route: { .card(.track($0.stoppedTrack)) }, showsStopped: true))
     }
-    static func ideaCard() -> AnyView { inbox(Scene { .card(.idea($0.proposedIdea)) }) }
-    static func decisionCard() -> AnyView { inbox(Scene { .card(.idea($0.decision)) }) }
-    static func chatDecisionCard() -> AnyView { inbox(Scene(chatDecision: true)) }
-    static func ideasNew() -> AnyView {
-        inbox(Scene(route: { .card(.idea($0.proposedIdea)) }, ideasRow: .newIdea))
+    static func ideaCard() async -> AnyView { await inbox(Scene { .card(.idea($0.proposedIdea)) }) }
+    static func decisionCard() async -> AnyView { await inbox(Scene { .card(.idea($0.decision)) }) }
+    static func chatDecisionCard() async -> AnyView { await inbox(Scene(chatDecision: true)) }
+    static func ideasNew() async -> AnyView {
+        await inbox(Scene(route: { .card(.idea($0.proposedIdea)) }, ideasRow: .newIdea))
     }
-    static func messageCard() -> AnyView { inbox(Scene(route: { .card(.message($0.message)) }, opens: .message)) }
-    static func cheatSheet() -> AnyView { inbox(Scene(aux: .reactionCommands)) }
-    static func builtinNotice() -> AnyView {
-        inbox(Scene(route: { _ in .card(.builtinNotice("morning-brief")) }, builtinNotice: true))
+    static func messageCard() async -> AnyView { await inbox(Scene(route: { .card(.message($0.message)) }, opens: .message)) }
+    static func cheatSheet() async -> AnyView { await inbox(Scene(aux: .reactionCommands)) }
+    static func builtinNotice() async -> AnyView {
+        await inbox(Scene(route: { _ in .card(.builtinNotice("morning-brief")) }, builtinNotice: true))
     }
 
     /// Today's day card alone at the reading pane's narrowest (420 pt).
@@ -127,7 +127,7 @@ enum OneInboxShotFixtures {
 
     // MARK: - The Inbox
 
-    private static func inbox(_ scene: Scene) -> AnyView {
+    private static func inbox(_ scene: Scene) async -> AnyView {
         do {
             let manager = try freshDatabase()
             let tower = try InboxShotFeed.seeded(caseName(scene), manager.dbPool)
@@ -142,7 +142,7 @@ enum OneInboxShotFixtures {
                                           customTrackControls: controls, defaults: defaults, clock: { clock })
             // swiftlint:enable trailing_closure
             vm.showsStopped = scene.showsStopped
-            InboxShotFeed.listed(vm, tower) {
+            await InboxShotFeed.listed(vm, tower) {
                 await vm.open(folder: nil, select: scene.chatDecision ? .card(.idea(seeded.chatDecision)) : scene.route(seeded))
             }
             let plan = DayPlanViewModel(databasePool: manager.dbPool, cliRunner: FakeCLIRunner())
@@ -156,7 +156,11 @@ enum OneInboxShotFixtures {
                 isEnabling: false, featureError: nil, onEnable: {}, onOpenSettings: {}, onOpen: { _ in },
                 dayPane: { card in dayPane(card, manager: manager, plan: plan, row: scene.dayRow) },
                 ideas: ideas,
-                ideaPane: { idea in InboxIdeaPane(idea: idea, ideas: ideas, allIdeas: vm.feed.ideas) },
+                ideaPane: { idea in
+                    var pane = InboxIdeaPane(idea: idea, ideas: ideas, allIdeas: vm.feed.ideas)
+                    pane.now = clock // a fixed moment: the ages never move with the real date
+                    return pane
+                },
                 onRetryBuiltin: { _ in },
                 tracks: TracksViewModel(dbManager: manager),
                 trackControls: RecordingCustomTrackControls(),

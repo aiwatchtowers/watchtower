@@ -84,7 +84,7 @@ func marshalWire(t *testing.T, v any) []byte {
 func TestInboxSource_RecordsMatchTheGoGolden(t *testing.T) {
 	ran := 0
 	for _, c := range inboxCases(t) {
-		if c.Opts.Folder != nil || c.Opts.Limit != 0 {
+		if c.Opts.Folder != nil || c.Opts.Limit != 0 || c.Opts.Day != "" {
 			continue // a request the phone never sends
 		}
 		ran++

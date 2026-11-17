@@ -14,6 +14,7 @@ final class ScriptedFeedTransport: TowerTransport, @unchecked Sendable {
         var feedCalls: [FeedRequest] = []
         var nextFeed = Feed(v: 1, builtAt: "2026-11-16T09:00:00Z", folders: [], cards: [])
         var nextRefusal: Refusal?
+        var down = false
         var hold = false
         var held: [CheckedContinuation<Void, Never>] = []
         var watches: [AsyncThrowingStream<ChangedEvent, Error>.Continuation] = []
@@ -45,6 +46,10 @@ final class ScriptedFeedTransport: TowerTransport, @unchecked Sendable {
     func answer(_ feed: Feed) { state.withLock { $0.nextFeed = feed; $0.nextRefusal = nil } }
     func refuse(_ refusal: Refusal) { state.withLock { $0.nextRefusal = refusal } }
     func holdReads(_ on: Bool) { state.withLock { $0.hold = on } }
+    /// While down, every call fails as a socket the daemon closed does.
+    func goDown(_ on: Bool) { state.withLock { $0.down = on } }
+
+    private struct Down: Error {}
 
     /// Lets every held read answer.
     func release() {
@@ -73,6 +78,7 @@ final class ScriptedFeedTransport: TowerTransport, @unchecked Sendable {
     }
 
     func call(_ request: Request) async throws -> Response {
+        if state.withLock({ $0.down }) { throw Down() }
         switch request.command {
         case TowerCommand.towerHello.rawValue:
             return try Self.ok(request, HelloResponse(

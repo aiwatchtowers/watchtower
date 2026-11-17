@@ -78,6 +78,29 @@ func TestLegacy_MorningBriefPerDateUnderTheUnreadRule(t *testing.T) {
 	}
 }
 
+// A day the client has open (Options.Day, a route to an older read day) is
+// listed while it has a briefing or a plan; a day with neither is not, so
+// the route selects nothing (the Mac lists only what Go lists).
+func TestLegacy_OpenDayListedOnlyWithARecord(t *testing.T) {
+	seed := []string{
+		"INSERT INTO briefings (id, user_id, date, attention, read_at, created_at) VALUES " +
+			"(1, 'U1', '2026-11-14', '[]', '2026-11-14T09:00:00Z', '2026-11-14T08:00:00Z')",
+	}
+	if got := fmt.Sprint(cardIDs(buildFeed(t, seed, Options{}).Cards)); got != "[]" {
+		t.Fatalf("a read older day is not listed: %s", got)
+	}
+	open := buildFeed(t, seed, Options{Day: "2026-11-14"})
+	if got := fmt.Sprint(cardIDs(open.Cards)); got != "[brief-2026-11-14]" {
+		t.Fatalf("the open day is listed: %s", got)
+	}
+	if cardByID(t, open, "brief-2026-11-14").Unread {
+		t.Error("the open day keeps its read state")
+	}
+	if got := fmt.Sprint(cardIDs(buildFeed(t, seed, Options{Day: "2026-11-10"}).Cards)); got != "[]" {
+		t.Errorf("a day with neither a briefing nor a plan is not listed: %s", got)
+	}
+}
+
 // Track my threads is one card: the active tracks newest first, then the
 // stopped ones flagged; "N unread" over the active ones only.
 func TestLegacy_TracksCardFlagsStopped(t *testing.T) {

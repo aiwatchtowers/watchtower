@@ -36,14 +36,15 @@ package final class InboxFeedLoader {
     @ObservationIgnored package var onFeed: (@MainActor (Feed) -> Void)?
 
     @ObservationIgnored private let client: TowerClient
-    @ObservationIgnored private let request: () -> FeedRequest
+    /// The params of every read (the view model adds the day a route opened).
+    @ObservationIgnored package var request: @MainActor () -> FeedRequest
     @ObservationIgnored private var reading: Task<Void, Never>?
     @ObservationIgnored private var dirty = false
     @ObservationIgnored private var listeners: [Task<Void, Never>] = []
 
     /// `request` is asked for the params of every read (the Mac: no limit,
     /// no clip, the whole tree).
-    package init(client: TowerClient, request: @escaping () -> FeedRequest) {
+    package init(client: TowerClient, request: @escaping @MainActor () -> FeedRequest) {
         self.client = client
         self.request = request
     }
@@ -132,14 +133,17 @@ package final class InboxFeedLoader {
         onFeed?(feed)
     }
 
+    #if DEBUG
     /// Shows the client's `state` and a read's `failure` as if the tower
     /// had answered so, with no daemon: the design shots draw the Inbox's
-    /// states (mockup §7) through it. The transitions themselves are the
-    /// client's and the loader's own (`TowerClientTests`, `InboxFeedLoaderTests`).
+    /// states (mockup §7) through it. Debug builds only; the transitions
+    /// themselves are the client's and the loader's own (`TowerClientTests`,
+    /// `InboxFeedLoaderTests`, `ActionStripFeedTests.testReconnectingLineAboveTheLastList`).
     package func showForShots(_ state: TowerScreenState, failure: TowerFailure?, reconnectingLine: Bool) {
         self.failure = failure
         show(state, line: reconnectingLine)
     }
+    #endif
 
     private func show(_ state: TowerScreenState, line: Bool) {
         self.state = state

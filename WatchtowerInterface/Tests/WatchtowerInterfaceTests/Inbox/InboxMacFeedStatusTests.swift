@@ -49,3 +49,11 @@ final class InboxMacFeedStatusTests: XCTestCase {
             kind: .failed, text: "Watchtower's background service is a different version.", actionTitle: "Restart"))
     }
 }
+
+/// The button kinds a press names are the wire's (Go `db.InboxAction.Kind`).
+final class InboxActionKindTests: XCTestCase {
+    func testKindsAreTheWireNames() {
+        XCTAssertEqual([InboxActionKind.link, InboxActionKind.chat, InboxActionKind.agent, InboxActionKind.reply,
+                        InboxActionKind.target], ["link", "chat", "agent", "reply", "target"])
+    }
+}

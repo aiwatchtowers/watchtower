@@ -109,12 +109,18 @@ package struct InboxTargetPress: Equatable, Sendable {
     package static let contextType = AgentActionQueries.buttonContextType
 
     package let contextID: String
+    /// The press address the context names: the output and the action's
+    /// flattened index (`inbox.act press` takes them as they are).
+    package let outputID: Int64
+    package let index: Int
     /// The `create_target` arguments: the drawn action's title, intent and
     /// parent, and a reason naming the card and its automation.
     package let argsJSON: String
 
     package init(card: AutomationOutputCard, index: Int, target: InboxCardAction.Target) {
         contextID = Self.contextID(outputID: card.id, index: index, hash: target.hash)
+        outputID = card.id
+        self.index = index
         let cardTitle = card.title.isEmpty ? "Automation output" : card.title
         var args: [String: Any] = [
             "text": target.title,

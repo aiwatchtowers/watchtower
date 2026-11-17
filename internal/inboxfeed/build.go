@@ -33,6 +33,9 @@ type Options struct {
 	Limit int
 	// Clip clips each body to ClipBytes on a rune boundary.
 	Clip bool
+	// Day is a Morning brief day the client has open (FeedRequest.Day):
+	// listed while it has a briefing or a day plan.
+	Day string
 	// DisabledFeatures are the feature registry ids turned off (the
 	// config's switches, as `features list` reports them "disabled"): the
 	// Mac's own feature list. Attention detection off ("secretary-inbox")
@@ -63,6 +66,7 @@ func Build(ctx context.Context, d *db.DB, o Options) (api.Feed, error) {
 	if err != nil {
 		return api.Feed{}, err
 	}
+	s.legacy.openDay = o.Day
 	feed := compose(s, o)
 	feed.BuiltAt = o.Now.UTC().Format(stampLayout)
 	return feed, nil

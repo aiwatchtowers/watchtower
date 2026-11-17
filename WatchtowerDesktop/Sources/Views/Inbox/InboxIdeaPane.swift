@@ -20,6 +20,8 @@ struct InboxIdeaPane: View {
     let onDeleted: (Int) -> Void
     /// False while the open New idea row's Create is the screen's prominent action.
     var approveIsPrimary = true
+    /// The moment the pane's ages are told from (`IdeaDetailPane.now`); nil: live.
+    var now: Date?
 
     init(
         idea: Idea,
@@ -44,7 +46,7 @@ struct InboxIdeaPane: View {
             }
             IdeaDetailPane(idea: idea, allIdeas: allIdeas, actions: actions,
                            isWriting: ideas.pendingWrites.isPending(Self.writeKey(idea.id)),
-                           approveIsPrimary: approveIsPrimary)
+                           approveIsPrimary: approveIsPrimary, now: now)
                 // Identity at the call site: the pane's own state (rating
                 // draft, open merge row, Discuss chat) resets per idea.
                 .id(idea.id)

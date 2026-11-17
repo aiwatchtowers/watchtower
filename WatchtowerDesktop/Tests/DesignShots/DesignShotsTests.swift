@@ -102,20 +102,36 @@ final class DesignShotsTests: XCTestCase {
         }
         try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
         for shot in shots {
+            let view = try Self.prepared(shot)
             // A zero height means "as tall as the content".
             var size = shot.size
             if size.height <= 0 {
-                size.height = ViewRenderProbe.fittingHeight(shot.make(), width: size.width)
+                size.height = ViewRenderProbe.fittingHeight(view, width: size.width)
             }
             let probe = ViewRenderProbe(size: size)
             for (suffix, name) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
                 let appearance = try XCTUnwrap(NSAppearance(named: name))
-                let data = try probe.png(shot.make(), appearance)
+                let data = try probe.png(view, appearance)
                 let bitmap = try XCTUnwrap(NSBitmapImageRep(data: data))
                 XCTAssertGreaterThan(Self.distinctColours(bitmap, limit: 2), 1, "\(shot.name)-\(suffix) is blank")
                 try data.write(to: outputDir.appendingPathComponent("\(shot.name)-\(suffix).png"))
             }
         }
+    }
+
+    /// The shot's view: built at once, or its fixture's async work run to
+    /// its end first (an Inbox shot lists Go's feed). The main run loop turns
+    /// on events only (no deadline, no clock): a test method runs outside the
+    /// main actor's executor, so the fixture's main-actor work drains here.
+    private static func prepared(_ shot: DesignShot) throws -> AnyView {
+        if let make = shot.make { return make() }
+        final class Box { var result: Result<AnyView, Error>? }
+        let box = Box()
+        Task { @MainActor in
+            do { box.result = .success(try await shot.prepare()) } catch { box.result = .failure(error) }
+        }
+        while box.result == nil { RunLoop.main.run(mode: .default, before: .distantFuture) }
+        return try XCTUnwrap(box.result).get()
     }
 
     /// Distinct raw RGBA values in `bitmap`, counting up to `limit` only.

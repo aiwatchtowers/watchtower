@@ -18,10 +18,9 @@ package enum InboxTowerEntries {
 
     /// `folder`'s entries in the feed's order with the Mac's row texts. A
     /// card whose record the last GRDB read does not hold yet is left out
-    /// until the next read has it. `selectedDay` (an open Morning brief
-    /// day) stays listed while it is open, as the Mac keeps it today.
+    /// until the next read has it.
     package static func listed(
-        folder: Int64, feed: Feed, records: InboxFeedSnapshot, selectedDay: String? = nil, now: Date = Date()
+        folder: Int64, feed: Feed, records: InboxFeedSnapshot, now: Date = Date()
     ) -> [Listed] {
         let approvals = feed.folders.first { $0.id == folder }?.kind == .approvals
         let cards = feed.cards.filter { $0.folderID == folder }
@@ -33,14 +32,6 @@ package enum InboxTowerEntries {
                 continue
             }
             out.append(Listed(entry: entry, row: listRow(row, entry: entry)))
-        }
-        if let selectedDay, folder == feed.folders.first(where: { $0.kind == .root })?.id,
-           !out.contains(where: { $0.entry.id == "day:\(selectedDay)" }),
-           let day = records.days.first(where: { $0.date == selectedDay }) {
-            let dayRow = InboxFolderListRow(
-                id: "day:\(day.date)", kind: .legacy, title: "Morning brief", detail: daySource(day.date))
-            let index = out.firstIndex { listedStamp($0.entry, records: records).map { $0 < day.stamp } ?? false }
-            out.insert(Listed(entry: .legacyDay(day), row: dayRow), at: index ?? out.endIndex)
         }
         return out
     }
@@ -81,9 +72,9 @@ package enum InboxTowerEntries {
             }
         }
         var sections = [
-            InboxSection(title: "Needs your decision", items: decisions),
-            InboxSection(title: "Today", items: today),
-            InboxSection(title: "Earlier", items: earlier)
+            InboxSection(title: TowerText.needsYourDecision, items: decisions),
+            InboxSection(title: TowerText.today, items: today),
+            InboxSection(title: TowerText.earlier, items: earlier)
         ].filter { !$0.items.isEmpty }
         if list == .tracks, !stopped.isEmpty {
             sections.append(InboxSection(
@@ -96,6 +87,25 @@ package enum InboxTowerEntries {
     /// count and artifact count, each card's ref rows and which of them are
     /// shown and waiting (`ref_facts`). The tree (the owner's arrangement)
     /// and the built-ins' states stay the read's.
+    /// The menu's folders as Go lists them (`Feed.folders`, in pre-order):
+    /// which folders show, their order and which are hidden come from the
+    /// feed, never from the local read. A folder is drawn hidden only where
+    /// its own flag hid it (Go sends the effective value, an ancestor's
+    /// included). The local read keeps what the feed does not carry: the
+    /// revision every CLI edit sends back and the routes.
+    package static func tree(_ local: InboxFolderTree, feed: Feed) -> InboxFolderTree {
+        guard !feed.folders.isEmpty else { return local }
+        let hidden = Dictionary(feed.folders.map { ($0.id, $0.hidden) }) { first, _ in first }
+        let folders = feed.folders.map { folder in
+            InboxFolder(
+                id: folder.id, kind: InboxFolder.Kind(rawValue: folder.kind.rawValue) ?? .owner,
+                parentID: folder.parentID, slug: folder.slug, title: folder.title, icon: folder.icon,
+                position: folder.position,
+                hidden: folder.hidden && !(folder.parentID.flatMap { hidden[$0] } ?? false))
+        }
+        return InboxFolderTree(revision: local.revision, folders: folders, routes: local.routes)
+    }
+
     package static func folders(_ read: InboxFolderMenuSnapshot, feed: Feed) -> InboxFolderMenuSnapshot {
         let approvalsFolder = feed.folders.first { $0.kind == .approvals }?.id
         var artifacts: [Int64: Int] = [:]
@@ -117,7 +127,7 @@ package enum InboxTowerEntries {
         }
         let counts = Dictionary(feed.folders.map { ($0.id, $0.count) }) { first, _ in first }
         return InboxFolderMenuSnapshot(
-            tree: read.tree, counts: counts, artifacts: artifacts, refs: refs,
+            tree: tree(read.tree, feed: feed), counts: counts, artifacts: artifacts, refs: refs,
             refState: InboxRefState(shown: shown, waiting: waiting), waitingForMe: read.waitingForMe,
             needsApproval: read.needsApproval, ideaFinderPresent: read.ideaFinderPresent)
     }
@@ -197,40 +207,7 @@ package enum InboxTowerEntries {
             unread: row.unread, menu: entry.menuEntries)
     }
 
-    /// The time the root orders an entry by, for the open day kept listed.
-    private static func listedStamp(_ entry: InboxFolderEntry, records: InboxFeedSnapshot) -> Date? {
-        switch entry {
-        case let .artifact(card): card.changedAt
-        case let .legacyDay(day): day.stamp
-        case let .brief(action): AutomationDates.parse(action.appliedAt)
-        case .legacyTracks: (records.tracks + records.stoppedTracks).map(\.lastEventAt).max()
-        case .legacyIdeas: records.ideas.compactMap { AutomationDates.parse($0.updatedAt) }.max()
-        case .legacyMessages: records.messages.map(\.stamp).max()
-        case .approval, .builtinNotice: nil
-        }
-    }
-
-    /// "Your day · Fri 6 Nov".
-    private static func daySource(_ date: String) -> String {
-        guard let day = dayParser.date(from: date) else { return "Your day · \(date)" }
-        return "Your day · \(dayFormatter.string(from: day))"
-    }
-
     private static func parse(_ stamp: String) -> Date? {
         stamp.isEmpty ? nil : AutomationDates.parse(stamp)
     }
-
-    nonisolated(unsafe) private static let dayParser: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter
-    }()
-
-    nonisolated(unsafe) private static let dayFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "EEE d MMM"
-        return formatter
-    }()
 }

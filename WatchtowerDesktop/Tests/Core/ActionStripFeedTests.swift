@@ -74,9 +74,106 @@ final class ActionStripFeedTests: XCTestCase {
         return (vm, older, newer, transport)
     }
 
+    /// `seeded()` on a client whose clock the test moves.
+    private struct OnTestClock {
+        let vm: ActionStripViewModel
+        let newer: Int64
+        let transport: ScriptedFeedTransport
+        let clock: TowerTestClock
+    }
+
+    private func seededOnTestClock() async throws -> OnTestClock {
+        let (vm, _, newer, _) = try await seeded()
+        let transport = ScriptedFeedTransport()
+        let clock = TowerTestClock()
+        let client = TowerClient(transport: transport, clock: clock, restartDaemon: nil, startDaemon: nil)
+        vm.attach(InboxFeedLoader(client: client) { FeedRequest() })
+        return OnTestClock(vm: vm, newer: newer, transport: transport, clock: clock)
+    }
+
     private func settle(_ vm: ActionStripViewModel) async {
         while let read = vm.feedLoader?.pendingRead { await read.value }
         await vm.refresh()
+    }
+
+    /// A route to a day Go does not list (no briefing, no plan) selects
+    /// nothing: the Mac lists only what Go lists. The feed is asked for the
+    /// day (`FeedRequest.day`), which Go lists when it has a record
+    /// (`TestLegacy_OpenDayListedOnlyWithARecord`); choosing another folder
+    /// drops it.
+    func testARouteToADayGoDoesNotListSelectsNothing() async throws {
+        let (vm, _, _, transport) = try await seeded()
+        transport.answer(Feed(v: 1, builtAt: "2026-11-16T09:00:00Z", folders: [folder(1, .root, count: 0)], cards: []))
+        vm.feedLoader?.reload()
+        await settle(vm)
+
+        await vm.open(folder: nil, select: .card(.day("2026-11-10")))
+
+        XCTAssertNil(vm.selection, "not found: nothing selected")
+        XCTAssertNil(vm.entrySelection)
+        XCTAssertFalse(vm.folderEntries.contains { $0.id == "day:2026-11-10" }, "Swift lists no row Go did not list")
+        XCTAssertEqual(transport.feedCalls.last?.day, "2026-11-10", "the feed is asked for the day")
+        vm.selectFolder(1)
+        XCTAssertNil(vm.openDay, "choosing a folder drops the day")
+    }
+
+    /// The loader's own transitions (mockup §7), not a seam: the daemon
+    /// goes away while the list is on screen, the client reconnects, and
+    /// once the tower has been down 1 s "Reconnecting to Watchtower…" shows
+    /// above the last list; the tower back, the line goes and the list is
+    /// current again.
+    func testReconnectingLineAboveTheLastList() async throws {
+        let rig = try await seededOnTestClock()
+        let (vm, newer, transport, clock) = (rig.vm, rig.newer, rig.transport, rig.clock)
+        transport.answer(Feed(v: 1, builtAt: "2026-11-16T09:00:00Z", folders: [folder(1, .root, count: 1)], cards: [
+            artifact(newer, folder: 1, title: "New", stamp: "2026-10-02T09:00:00Z", runID: 1)
+        ]))
+        let loader = try XCTUnwrap(vm.feedLoader)
+        loader.open()
+        await settle(vm)
+        defer { loader.close() }
+        XCTAssertEqual(vm.folderEntries.map(\.id), ["artifact:\(newer)"])
+        XCTAssertNil(vm.feedStatus(now: Date()))
+
+        transport.goDown(true)
+        loader.reload() // the read finds the daemon gone and waits for the link
+        await untilObserved { loader.state == .reconnecting }
+        XCTAssertNil(vm.feedStatus(now: Date()), "no line before the tower has been down 1 s")
+        // The reconnect schedule counts from the drop: moving the clock 1 s
+        // runs its hellos up to the 1 s probe (deadlines are absolute).
+        clock.advance(by: .milliseconds(1_000))
+        await untilObserved { loader.showsReconnectingLine }
+        XCTAssertEqual(vm.feedStatus(now: Date()), InboxMacFeedStatus(kind: .reconnecting, text: TowerText.reconnecting))
+        XCTAssertEqual(vm.folderEntries.map(\.id), ["artifact:\(newer)"], "the last list stays under the line")
+
+        transport.goDown(false)
+        clock.advance(by: .milliseconds(1_000))
+        await untilObserved { loader.state == .ready(stale: nil) }
+        while let read = loader.pendingRead { await read.value }
+        XCTAssertNil(vm.feedStatus(now: Date()), "the tower is back: no line")
+    }
+
+    /// A refused read keeps the last list under the reason, naming when that
+    /// list was read, with Retry (mockup §7).
+    func testAFailedReadKeepsTheListUnderItsLine() async throws {
+        let (vm, _, newer, transport) = try await seeded()
+        let readAt = try XCTUnwrap(AutomationDates.parse("2026-11-16T09:14:00Z"))
+        vm.feedLoader?.clock = { readAt }
+        transport.answer(Feed(v: 1, builtAt: "2026-11-16T09:00:00Z", folders: [folder(1, .root, count: 1)], cards: [
+            artifact(newer, folder: 1, title: "New", stamp: "2026-10-02T09:00:00Z", runID: 1)
+        ]))
+        vm.feedLoader?.reload()
+        await settle(vm)
+        transport.refuse(Refusal(code: .unsupported, sentence: "The database is busy."))
+        vm.feedLoader?.reload()
+        await settle(vm)
+
+        let status = try XCTUnwrap(vm.feedStatus(now: readAt))
+        XCTAssertEqual(status.kind, .failed)
+        XCTAssertEqual(status.actionTitle, TowerText.retry)
+        XCTAssertEqual(status.text, TowerText.refreshFailed(reason: "The database is busy", shownAt: readAt,
+                                                            timeZone: .current, now: readAt))
+        XCTAssertEqual(vm.folderEntries.map(\.id), ["artifact:\(newer)"], "the last list stays")
     }
 
     func testBadgeIsTheRootModelBadge() async throws {
@@ -200,6 +297,7 @@ final class ActionStripFeedTests: XCTestCase {
 
         XCTAssertEqual(vm.rowErrors[.message(Int(id))], InboxRowFailure(message: sentence, press: .done),
                        "the row stays with Go's sentence and Retry repeats Done")
+        XCTAssertNil(vm.lastError, "the failure stays on its row only (mockup §7)")
         let first = try XCTUnwrap(transport.acts.last)
         XCTAssertEqual(first.target, "messages")
         XCTAssertEqual(first.params.refKind, .inboxItem)
@@ -221,6 +319,22 @@ final class ActionStripFeedTests: XCTestCase {
         await vm.messageDone(4242)
 
         XCTAssertNil(vm.rowErrors[.message(4242)])
+        XCTAssertNil(vm.lastError)
+    }
+
+    /// A message an artifact's row names but Go has closed (`ref_facts`
+    /// open false, its record still read by id): a failed write on it leaves
+    /// quietly, as a vanished record does.
+    func testAFailedWriteOnARowGoClosedLeavesQuietly() async throws {
+        // Artifact 1's row is message 1, resolved meanwhile.
+        let transport = ScriptedFeedTransport()
+        let vm = try await writing(transport, listing: "desktop_rows_closed_message_ref")
+        XCTAssertTrue(vm.feed.messages.contains { $0.item.id == 1 }, "the record is read by id")
+        transport.answerActs(refusal: Refusal(code: .changed, sentence: "Couldn't mark it done: it changed."))
+
+        await vm.messageDone(1)
+
+        XCTAssertNil(vm.rowErrors[.message(1)])
         XCTAssertNil(vm.lastError)
     }
 

@@ -56,6 +56,15 @@ private final class PulledChanges: @unchecked Sendable {
 @MainActor
 final class SidebarCountsViewModelTests: XCTestCase {
 
+    /// Waits for the latest tower badge read (a read a newer one replaced
+    /// mid-way leaves its result to the newer one).
+    private static func settleBadge(_ vm: SidebarCountsViewModel) async {
+        while let read = vm.towerBadgeRead {
+            await read.value
+            if vm.towerBadgeRead == read { return }
+        }
+    }
+
     // MARK: - Catch-Up badge
     //
     // The badge is a single "there is a recap waiting for you" dot: one ready,
@@ -135,6 +144,7 @@ final class SidebarCountsViewModelTests: XCTestCase {
         let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
         vm.towerInboxBadge = { await tower.badge() }
         await vm.loadInitial()
+        await Self.settleBadge(vm)
 
         XCTAssertEqual(vm.inboxStripCount, 4, "2 proposals awaiting the owner + 1 due reminder + 1 unread message")
     }
@@ -150,6 +160,7 @@ final class SidebarCountsViewModelTests: XCTestCase {
         let counts = SidebarCountsViewModel(dbPool: manager.dbPool)
         counts.towerInboxBadge = { await tower.badge() }
         await counts.loadInitial()
+        await Self.settleBadge(counts)
         let strip = ActionStripViewModel(dbPool: manager.dbPool, cliRunner: FakeCLIRunner())
         strip.onFeedRefreshed = { await counts.refresh() }
         XCTAssertEqual(counts.inboxStripCount, 0)
@@ -162,6 +173,7 @@ final class SidebarCountsViewModelTests: XCTestCase {
         XCTAssertEqual(counts.inboxStripCount, 0, "no observation runs")
 
         await strip.refresh()
+        await Self.settleBadge(counts)
         XCTAssertEqual(counts.inboxStripCount, 1)
     }
 
@@ -182,11 +194,38 @@ final class SidebarCountsViewModelTests: XCTestCase {
                 .badge()
         }
         await vm.loadInitial()
+        await Self.settleBadge(vm)
         XCTAssertEqual(vm.inboxStripCount, 1, "stopped by the daemon: the Messages entry stands in")
 
         vm.disabledFeatures = [InboxFolderQueries.waitingForMeFeatureID]
         await vm.refresh()
+        await Self.settleBadge(vm)
         XCTAssertEqual(vm.inboxStripCount, 0, "turned off by the owner: nothing counts")
+    }
+
+    /// A tower that never answers (the daemon down, its 15 s failure not yet
+    /// due) holds back neither `loadInitial` nor the other badges: a write
+    /// still moves Catch-Up while the Inbox badge's read waits.
+    func testATowerThatNeverAnswersHoldsBackNoOtherBadge() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let gate = BadgeGate()
+        addTeardownBlock { await gate.open() } // a failed assertion never leaves the read waiting
+        let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
+        vm.towerInboxBadge = {
+            await gate.wait()
+            return 9
+        }
+        await vm.loadInitial() // returns while the badge's read waits
+        vm.startObserving()
+        defer { vm.stopObserving() }
+        try await manager.dbPool.write { try Self.insertRecap($0, status: "ready") }
+        await untilObserved { vm.catchUpTotalCount == 1 }
+        XCTAssertEqual(vm.inboxStripCount, 0, "the tower has not answered")
+
+        await gate.open()
+        await Self.settleBadge(vm)
+        XCTAssertEqual(vm.inboxStripCount, 9, "the latest read lands once the tower answers")
     }
 
     func testInboxBadgeIsZeroOnEmptyDB() async throws {
@@ -381,6 +420,7 @@ final class SidebarCountsViewModelTests: XCTestCase {
         let vm = SidebarCountsViewModel(dbPool: manager.dbPool) { changes.changes($0) }
         vm.towerInboxBadge = { await tower.badge() }
         await vm.loadInitial()
+        await Self.settleBadge(vm)
         XCTAssertEqual(vm.inboxStripCount, 1, "no run yet: the Messages entry stands in")
         vm.startObserving()
         defer { vm.stopObserving() }
@@ -423,5 +463,22 @@ final class SidebarCountsViewModelTests: XCTestCase {
         await starts.until(5)
 
         XCTAssertEqual(pauses.withLock { $0 }, [.seconds(2), .seconds(4), .seconds(8), .seconds(2)])
+    }
+}
+
+/// A wait the test opens: a tower read that does not answer until then.
+private actor BadgeGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters = []
     }
 }

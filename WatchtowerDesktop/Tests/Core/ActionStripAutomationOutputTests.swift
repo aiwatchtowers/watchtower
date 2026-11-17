@@ -91,12 +91,13 @@ final class ActionStripAutomationOutputTests: XCTestCase {
     func testOpeningWritesOnlyReadAt() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        // Output 1, unread.
-        let tower = try FeedCaseTransport.seeded("desktop_output_done", pool: pool)
+        // Output 1, unread; Go's next feed once it is read.
+        let tower = try FeedCaseTransport.seeded("desktop_output_opened", pool: pool)
         let id: Int64 = 1
         let before = try outputRow(pool, id)
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
         await vm.follow(tower)
+        let badgeBefore = await tower.badge() ?? -1
 
         await vm.select(.output(id))
 
@@ -112,6 +113,8 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         XCTAssertEqual(vm.outputRows.map(\.id), [id])
         XCTAssertEqual(vm.outputRows.first?.isUnread, false)
         XCTAssertNil(vm.lastError)
+        let badgeAfter = await tower.badge() ?? -1
+        XCTAssertEqual(badgeAfter, badgeBefore - 1, "an opened plain artifact leaves the badge (inbox builder B)")
 
         await vm.select(nil)
         await vm.select(.output(id))

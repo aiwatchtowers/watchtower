@@ -93,6 +93,9 @@ public extension TowerText {
 
     // §2: Waiting for me rows, their detail and the Reply… sheet.
     static let done = "Done"
+    /// A sent Reply's line when its pressed button is not drawn (the Mac's
+    /// card drawn from blocks).
+    static let sent = "Sent"
     static let notDone = "Not done"
     static let snooze = "Snooze"
     static let snoozeOneHour = "Snooze 1h"

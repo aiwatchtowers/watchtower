@@ -27,6 +27,7 @@ final class TowerTextInboxTests: XCTestCase {
         XCTAssertEqual(TowerText.makeATask, "Make a Task")
         XCTAssertEqual(TowerText.unsupportedCard, "This card needs a newer Watchtower on this iPhone. Showing its text.")
         XCTAssertEqual(TowerText.needsYourDecision, "Needs your decision")
+        XCTAssertEqual(TowerText.sent, "Sent")
         XCTAssertEqual(TowerText.today, "Today")
         XCTAssertEqual(TowerText.earlier, "Earlier")
         XCTAssertEqual(TowerText.justNow, "just now")

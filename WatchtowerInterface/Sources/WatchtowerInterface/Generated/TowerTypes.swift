@@ -1913,21 +1913,25 @@ public struct FeedRequest: Codable, Hashable, Sendable {
     public var folder: Int64?
     public var limit: Int?
     public var clip: Bool?
+    public var day: String?
 
     public init(
         folder: Int64? = nil,
         limit: Int? = nil,
-        clip: Bool? = nil
+        clip: Bool? = nil,
+        day: String? = nil
     ) {
         self.folder = folder
         self.limit = limit
         self.clip = clip
+        self.day = day
     }
 
     enum CodingKeys: String, CodingKey {
         case folder
         case limit
         case clip
+        case day
     }
 }
 

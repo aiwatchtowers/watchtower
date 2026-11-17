@@ -51,7 +51,7 @@ extension AppState {
     /// The sidebar's Inbox badge from the tower: the open Inbox's last feed,
     /// else one small read beside the screen (`limit: 1`: every folder and
     /// its count, one card). Nil when the Inbox does not read from the tower
-    /// (tests) or the tower did not answer: the local count stays.
+    /// (tests) or the tower did not answer: the badge keeps its last value.
     func towerInboxBadge() async -> Int? {
         guard let strip = actionStripViewModel, let loader = strip.feedLoader else { return nil }
         if loader.isOpen, let badge = strip.towerBadge { return badge }

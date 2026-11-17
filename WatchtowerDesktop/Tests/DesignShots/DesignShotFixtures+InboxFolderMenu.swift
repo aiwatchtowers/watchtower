@@ -34,26 +34,27 @@ enum InboxFolderMenuShotFixtures {
     static func model(
         _ folders: [Folder],
         runner: (any CLIRunnerProtocol)? = FakeCLIRunner()
-    ) throws -> (InboxFolderMenuModel, [String: Int64]) {
+    ) async throws -> (InboxFolderMenuModel, [String: Int64]) {
         let (pool, path) = try TestDatabase.createPool()
         poolPaths.append(path)
-        let ids = try pool.write { db in
+        let ids = try await pool.write { db in
             try seed(db, folders)
         }
         let model = InboxFolderMenuModel(dbPool: pool) { runner }
-        spin(until: "the first read", model.tree.folders.count > 1) { await model.reload() }
+        await model.reload()
+        XCTAssertGreaterThan(model.tree.folders.count, 1, "the folder menu fixture's first read")
         mockupCounts(model)
         return (model, ids)
     }
 
     /// The model over Go's case `name`, its feed laid over the folders it
     /// read (each folder's artifacts), with the mockups' counts.
-    static func listedModel(_ name: String) throws -> InboxFolderMenuModel {
+    static func listedModel(_ name: String) async throws -> InboxFolderMenuModel {
         let (pool, path) = try TestDatabase.createPool()
         poolPaths.append(path)
         let tower = try FeedCaseTransport.seeded(name, pool: pool)
         let model = InboxFolderMenuModel(dbPool: pool) { FakeCLIRunner() }
-        spin(until: "the first read", model.tree.folders.count > 1) { await model.reload() }
+        await model.reload()
         // Each folder's artifacts as Go's feed lists them; the menu's
         // numbers stay the mockups' (`mockupCounts`).
         model.towerFeed = try tower.mirroredFeed()
@@ -72,19 +73,15 @@ enum InboxFolderMenuShotFixtures {
         model.apply(InboxFolderMenuSnapshot(tree: model.tree, counts: byID, artifacts: model.snapshot.artifacts))
     }
 
-    /// Runs `start` and the main run loop until `done` (the precedent of the
-    /// automations shots: a model's async press reached from a sync shot).
-    static func spin(until what: String, _ done: @autoclosure () -> Bool, start: @escaping @MainActor () async -> Void) {
-        let task = Task { await start() }
-        let deadline = Date().addingTimeInterval(5)
-        while !done(), Date() < deadline {
-            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
-        }
-        XCTAssertTrue(done(), "the folder menu fixture did not reach \(what)")
-        heldWrites.append(task)
+    /// Starts `start`, which may stay under way (a move the CLI holds), and
+    /// waits until `done`, re-checked on each change of the model it reads:
+    /// no run-loop spin, no deadline.
+    static func reach(_ done: @escaping @MainActor () -> Bool, start: @escaping @MainActor () async -> Void) async {
+        heldWrites.append(Task { await start() })
+        await untilObserved(done)
     }
 
-    private static func seed(
+    nonisolated private static func seed(
         _ db: Database,
         _ folders: [Folder]
     ) throws -> [String: Int64] {
@@ -121,23 +118,22 @@ enum InboxFolderMenuShotFixtures {
     // MARK: - The states
 
     /// Each Task 11 menu shot's content, reached through the model.
-    static func content(_ name: String) throws -> InboxFolderMenuContent {
+    static func content(_ name: String) async throws -> InboxFolderMenuContent {
         switch name {
         case "inbox-b-menu-root":
-            return try model([.release, .blockers, .team]).0.content
+            return try await model([.release, .blockers, .team]).0.content
         case "inbox-b-menu-hidden-shown":
-            let (model, _) = try model([.release, .oldSprint])
-            spin(until: "Show Hidden Folders", model.showsHidden) {
-                await model.perform(.showHiddenFolders, folderID: model.tree.root.id)
-            }
+            let (model, _) = try await model([.release, .oldSprint])
+            await model.perform(.showHiddenFolders, folderID: model.tree.root.id)
+            XCTAssertTrue(model.showsHidden, "Show Hidden Folders")
             return model.content
         case "inbox-b-menu-new-folder":
-            let (model, _) = try model([])
+            let (model, _) = try await model([])
             model.beginCreate(parent: nil)
             model.editDraft("Release acme 2.0")
             return model.content
         case "inbox-b-menu-drag":
-            let (model, ids) = try model([.team, .release])
+            let (model, ids) = try await model([.team, .release])
             let team = try XCTUnwrap(ids["team"]), release = try XCTUnwrap(ids["release"])
             model.beginDrag(team)
             model.dragOver(InboxFolderDrop(targetID: release, placement: .before))
@@ -146,37 +142,37 @@ enum InboxFolderMenuShotFixtures {
         case "inbox-b-menu-changed":
             let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(
                 code: 1, stderr: "the Inbox menu changed — reload it and try again (revision 2, you had 1)"))
-            let (model, ids) = try model([.release], runner: runner)
+            let (model, ids) = try await model([.release], runner: runner)
             let release = try XCTUnwrap(ids["release"])
-            spin(until: "the reload line", model.note == .menuChanged) {
-                await model.setIcon(release, icon: "bolt")
-            }
+            await model.setIcon(release, icon: "bolt")
+            XCTAssertEqual(model.note, .menuChanged, "the reload line")
             mockupCounts(model)
             return model.content
         case "inbox-b-menu-cli-unavailable":
-            return try model([.release], runner: nil).0.content
+            return try await model([.release], runner: nil).0.content
         case "inbox-b-menu-write-refused":
             let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(
                 code: 1, stderr: #"a folder named "Release" already exists here"#))
-            let (model, _) = try model([.shortRelease], runner: runner)
+            let (model, _) = try await model([.shortRelease], runner: runner)
             model.beginCreate(parent: nil)
             model.editDraft("Release")
-            spin(until: "the refusal", model.draft?.error != nil) { await model.commitDraft() }
+            await model.commitDraft()
+            XCTAssertNotNil(model.draft?.error, "the refusal")
             return model.content
         case "inbox-b-menu-move-pending":
             let runner = FakeCLIRunner()
             runner.blockUntilCancelled = true
-            let (model, ids) = try model([.release, .team], runner: runner)
+            let (model, ids) = try await model([.release, .team], runner: runner)
             let team = try XCTUnwrap(ids["team"]), release = try XCTUnwrap(ids["release"])
             model.beginDrag(team)
-            spin(until: "the move in progress", model.pendingMoveID != nil) {
+            await reach({ model.pendingMoveID != nil }, start: {
                 await model.drop(team, onto: InboxFolderDrop(targetID: release, placement: .before))
-            }
+            })
             return model.content
         case "inbox-b-folder-delete-confirm":
             // Release (3) with three routed automations and five artifacts:
             // Go's case, its folders' artifacts from Go's feed.
-            let model = try listedModel("desktop_shot_folder_menu_delete")
+            let model = try await listedModel("desktop_shot_folder_menu_delete")
             let release: Int64 = 3
             model.select(release)
             model.askDelete(release)

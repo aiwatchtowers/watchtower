@@ -165,7 +165,7 @@ func buildSteps(t testing.TB, c feedCase) (api.Feed, []api.Feed) {
 	d := seeded(t, c.Seed)
 	build := func() api.Feed {
 		feed, err := Build(context.Background(), d, Options{
-			Folder: c.Opts.Folder, Limit: c.Opts.Limit, Clip: c.Opts.Clip, Now: now.UTC(),
+			Folder: c.Opts.Folder, Limit: c.Opts.Limit, Clip: c.Opts.Clip, Day: c.Opts.Day, Now: now.UTC(),
 			DisabledFeatures: c.DisabledFeatures,
 		})
 		if err != nil {

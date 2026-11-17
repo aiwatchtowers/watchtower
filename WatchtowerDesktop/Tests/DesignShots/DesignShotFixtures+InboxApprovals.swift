@@ -66,12 +66,12 @@ enum InboxApprovalsShotFixtures {
             ("inbox-b-approvals-empty", 480, State(approvals: []))
         ]
         return states.map { name, height, state in
-            DesignShot(name: name, size: NSSize(width: 1180, height: height)) { view(state) }
+            DesignShot(name: name, prepare: { await view(state) }, size: NSSize(width: 1180, height: height))
         }
     }
 
     /// The Inbox with Needs approval selected over `state`'s database.
-    static func view(_ state: State) -> AnyView {
+    static func view(_ state: State) async -> AnyView {
         do {
             let (pool, path) = try TestDatabase.createPool()
             paths.append(path)
@@ -83,12 +83,10 @@ enum InboxApprovalsShotFixtures {
             // swiftlint:disable:next trailing_closure
             let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), defaults: defaults, clock: { clock })
             vm.disabledFeatures = state.featureOn ? [] : [ActionStripViewModel.approvalsFeatureID]
-            InboxShotFeed.listed(vm, tower) { vm.selectFolder(needsApproval) }
+            await InboxShotFeed.listed(vm, tower) { vm.selectFolder(needsApproval) }
             if let failure = state.turnOnFailure {
-                InboxFolderMenuShotFixtures.spin(until: "the Turn On failure",
-                                                 vm.approvalsNoteContent?.failure == failure) {
-                    await vm.pressApprovalsNote(turnOn: { failure }, runHistory: { _, _ in })
-                }
+                await vm.pressApprovalsNote(turnOn: { failure }, runHistory: { _, _ in })
+                XCTAssertEqual(vm.approvalsNoteContent?.failure, failure, "the Turn On failure")
             }
             let inbox = ActionStripActionsView(
                 vm: vm, cheatSheetRows: [], feature: .on(lastCheck: nil), isEnabling: false, featureError: nil,

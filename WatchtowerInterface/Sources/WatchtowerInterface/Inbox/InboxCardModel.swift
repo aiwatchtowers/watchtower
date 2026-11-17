@@ -88,7 +88,7 @@ public struct InboxCardActionModel: Equatable, Sendable {
         index = action.index
         kind = action.kind
         label = action.label
-        let stuck = action.kind == "target" && action.detail == "creating"
+        let stuck = action.kind == InboxActionKind.target && action.detail == "creating"
             && InboxTime.parse(action.until).map { now >= $0 } == true
         detail = stuck ? "stuck" : action.detail
         let macOnly = action.state == .macOnly || Self.macOnlyKinds.contains(action.kind)
@@ -115,7 +115,7 @@ public struct InboxCardActionModel: Equatable, Sendable {
     private static func granted(_ kind: String, _ grants: Grants) -> Bool {
         switch kind {
         case "link": true
-        case "reply": grants.typing
+        case InboxActionKind.reply: grants.typing
         default: grants.permissions
         }
     }

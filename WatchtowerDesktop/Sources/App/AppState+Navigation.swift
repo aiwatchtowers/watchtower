@@ -43,8 +43,12 @@ extension AppState {
         }
     }
 
+    /// The clock the Inbox's "today" is read from: the real one, or a test's
+    /// fixed moment (the tower's case is built at one).
+    nonisolated(unsafe) static var inboxNow: @Sendable () -> Date = { Date() }
+
     /// Today's local day, "YYYY-MM-DD" — the Inbox's own day key.
-    nonisolated static func inboxToday(_ now: Date = Date()) -> String {
+    nonisolated static func inboxToday(_ now: Date = AppState.inboxNow()) -> String {
         HomeFeedBuilder.dayString(now, calendar: .current)
     }
 

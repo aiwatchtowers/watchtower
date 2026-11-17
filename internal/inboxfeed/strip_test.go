@@ -453,7 +453,10 @@ func TestStrip02_ReplyPressOnlyQueues(t *testing.T) {
 
 // --- STRIP-03: decisions flow through the registry ---
 
-func TestStrip03_ApproveDelegatesToTheRegistry(t *testing.T) {
+// The STRIP-03 guards keep the Swift guards' names (ActionStripViewModelTests:
+// the Mac's decisions went through the composed AgentActionFeed, they now go
+// through inbox.act to the same registry): same names, same meaning.
+func TestStrip03_ApproveDelegatesToTheComposedAgentActionFeed(t *testing.T) {
 	ran := 0
 	d, _, reg := approvalRig(t, func() { ran++ })
 	res := actResult(t, callAct(t, actTower(d, actNow, ActDeps{Registry: reg}), approveParams(t, tools.ArgsSHA256(pendingArgs)), socket))
@@ -477,7 +480,27 @@ func TestStrip03_ApproveClearsAPriorErrorOnSubsequentSuccess(t *testing.T) {
 	}
 }
 
-func TestStrip03_DismissDelegatesToTheRegistry(t *testing.T) {
+func TestStrip03_DismissDelegatesToTheComposedAgentActionFeed(t *testing.T) {
+	// A chat-session call whose outcome is unknown: the registry dismisses it.
+	landing, _ := seededAt(t, []string{`INSERT INTO agent_actions (id, tool, args_json, reason, status, error, created_at)
+		VALUES (1, 'session_call', '{}', 'r', 'failed', 'session ended while the call ran; outcome unknown',
+		'2026-11-16T09:00:00Z')`})
+	sessionReg := tools.New(landing)
+	session := fakeTool(t, "session_call", nil, nil)
+	session.AppliedBySession = true
+	if err := sessionReg.Register(session); err != nil {
+		t.Fatal(err)
+	}
+	res := actResult(t, callAct(t, actTower(landing, actNow, ActDeps{Registry: sessionReg}),
+		actParams(t, "a1", api.ActApproval, api.ActParams{ApprovalVerb: api.ApprovalDismiss}), socket))
+	if res.Already {
+		t.Errorf("dismiss %+v, want it to land", res)
+	}
+	row, err := landing.GetAgentAction(1)
+	if err != nil || row == nil || row.DismissedAt == "" {
+		t.Fatalf("row %+v (%v), want dismissed by the registry", row, err)
+	}
+
 	d, _, reg := approvalRig(t, nil)
 	resp := callAct(t, actTower(d, actNow, ActDeps{Registry: reg}),
 		actParams(t, "a1", api.ActApproval, api.ActParams{ApprovalVerb: api.ApprovalDismiss}), socket)

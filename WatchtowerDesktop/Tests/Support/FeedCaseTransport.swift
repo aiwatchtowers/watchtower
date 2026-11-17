@@ -45,6 +45,7 @@ package final class FeedCaseTransport: TowerTransport, @unchecked Sendable {
         var acts: [ActRequest] = []
         var feedReads = 0
         var actRefusal: String?
+        var feedRequests: [FeedRequest] = []
     }
 
     package let fixture: Case
@@ -146,6 +147,9 @@ package final class FeedCaseTransport: TowerTransport, @unchecked Sendable {
         return InboxRootModel(feed: feed, platform: .mac).countBadge
     }
 
+    /// Every `inbox.feed` request's params, in order.
+    package var feedRequests: [FeedRequest] { state.withLock { $0.feedRequests } }
+
     /// The number of `inbox.feed` reads answered.
     package var feedReads: Int { state.withLock { $0.feedReads } }
 
@@ -167,7 +171,12 @@ package final class FeedCaseTransport: TowerTransport, @unchecked Sendable {
                 interfaceVersion: InterfaceVersion.current, build: "test", syncPaused: false, noSync: false))
         case TowerCommand.inboxFeed.rawValue:
             let (feed, step) = current()
-            state.withLock { $0.served = step; $0.feedReads += 1 }
+            let params = request.params.flatMap { try? JSONDecoder().decode(FeedRequest.self, from: $0.data) }
+            state.withLock {
+                $0.served = step
+                $0.feedReads += 1
+                $0.feedRequests.append(params ?? FeedRequest())
+            }
             return try Self.ok(request, feed)
         case TowerCommand.inboxAct.rawValue:
             if let params = request.params, let act = try? JSONDecoder().decode(ActRequest.self, from: params.data) {

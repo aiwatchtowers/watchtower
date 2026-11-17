@@ -21,7 +21,7 @@ enum InboxShotFixtures {
 
     nonisolated private static let now = AutomationDates.parse("2026-10-21T12:00:00Z") ?? Date()
 
-    static func readingPane() -> AnyView {
+    static func readingPane() async -> AnyView {
         do {
             let (pool, path) = try TestDatabase.createPool()
             cleanUp()
@@ -33,7 +33,7 @@ enum InboxShotFixtures {
             // Labeled: a trailing closure would bind to `automationsWake`.
             // swiftlint:disable:next trailing_closure
             let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), clock: { now })
-            InboxShotFeed.listed(vm, tower)
+            await InboxShotFeed.listed(vm, tower)
             vm.selection = .output(selected)
             return AnyView(InboxSplitView(
                 vm: vm,
@@ -54,7 +54,7 @@ enum InboxShotFixtures {
 
     /// A pending `save_automation` proposal selected: its summary, Open Draft
     /// and Reject in the reading pane.
-    static func proposalPane() -> AnyView {
+    static func proposalPane() async -> AnyView {
         do {
             let (pool, path) = try TestDatabase.createPool()
             cleanUp()
@@ -65,7 +65,7 @@ enum InboxShotFixtures {
             // Labeled: a trailing closure would bind to `automationsWake`.
             // swiftlint:disable:next trailing_closure
             let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), clock: { now })
-            InboxShotFeed.listed(vm, tower)
+            await InboxShotFeed.listed(vm, tower)
             vm.selection = .proposal(selected)
             return AnyView(InboxSplitView(
                 vm: vm,
@@ -113,7 +113,7 @@ enum InboxShotFixtures {
     /// The whole Inbox with its filter bar: two open messages and a reminder,
     /// one message selected (C1: who, where, the text, why it matters, its
     /// buttons and Snooze ▾).
-    static func messagePane() -> AnyView {
+    static func messagePane() async -> AnyView {
         do {
             let (pool, path) = try TestDatabase.createPool()
             cleanUp()
@@ -127,7 +127,7 @@ enum InboxShotFixtures {
             // Labeled: a trailing closure would bind to `automationsWake`.
             // swiftlint:disable:next trailing_closure
             let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), defaults: defaults, clock: { now })
-            InboxShotFeed.listed(vm, tower)
+            await InboxShotFeed.listed(vm, tower)
             vm.selection = .message(selected)
             return AnyView(ActionStripActionsView(
                 vm: vm, cheatSheetRows: [], feature: .on(lastCheck: nil), isEnabling: false, featureError: nil,

@@ -326,6 +326,10 @@ final class NotificationRouteTests: XCTestCase {
         let tower = try FeedCaseTransport.seeded("desktop_notification_track_and_owner", pool: pool)
         let savedFolder = UserDefaults.standard.object(forKey: ActionStripViewModel.folderKey)
         defer { UserDefaults.standard.set(savedFolder, forKey: ActionStripViewModel.folderKey) }
+        // The app's today is the case's (Go built its feed at that moment).
+        let caseNow = try XCTUnwrap(AutomationDates.parse("2026-11-16T12:00:00Z"))
+        AppState.inboxNow = { caseNow }
+        defer { AppState.inboxNow = { Date() } }
         let today = AppState.inboxToday()
         let forwardedUpdate = try XCTUnwrap(
             NotificationForwarding.encode(actionID: UNNotificationDefaultActionIdentifier,

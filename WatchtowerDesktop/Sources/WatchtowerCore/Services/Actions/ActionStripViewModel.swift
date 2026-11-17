@@ -56,7 +56,11 @@ package final class ActionStripViewModel {
     }
     /// Days a route opened that the feed does not list (a day read
     /// already): their records are read too, so the pane can show them.
-    private var routedDays: Set<String> = []
+    /// The Morning brief day a route opened that the feed did not list (an
+    /// older, read day): the feed requests it (`FeedRequest.day`) and Go
+    /// lists it while it has a briefing or a plan. Cleared when another
+    /// folder or entry is chosen.
+    package private(set) var openDay: String?
     /// Action id → "⚙ <automation> · run #<n>" for the rows an automation
     /// run proposed (`context_type='automation_run'`).
     package private(set) var actionLabels: [Int64: String] = [:]
@@ -222,7 +226,6 @@ package final class ActionStripViewModel {
         let now = clock()
         let nowUTC = AutomationDates.format(now)
         let ids = towerFeed.map(InboxRecords.IDs.init(feed:)) ?? InboxRecords.IDs()
-        let routedDays = routedDays
         let disabledFeatures = disabledFeatures
         do {
             // The feed, the labels and the folders in one read: the folder
@@ -231,7 +234,7 @@ package final class ActionStripViewModel {
             // means").
             let snapshot = try await dbPool.read { db in
                 let feed = try InboxRecords.read(
-                    db, ids: ids, extraDates: routedDays, disabledFeatures: disabledFeatures, now: now)
+                    db, ids: ids, disabledFeatures: disabledFeatures, now: now)
                 let runLabels = try AutomationQueries.runLabels(
                     db, runIDs: feed.proposals.compactMap(Self.automationRunID))
                 let buttons = try AgentActionQueries.newestButtonProposals(
@@ -286,8 +289,8 @@ package final class ActionStripViewModel {
     /// Try Again in place of its spinner. Cleared by the first read that lands.
     package private(set) var firstReadError: String?
 
-    /// The selected folder's entries, from the last read: the tower's feed
-    /// decides them when one is wired (`towerFeed`), else the local builder.
+    /// The selected folder's entries: the tower's feed decides them
+    /// (`towerFeed`); with no feed yet there are none.
     package var folderEntries: [InboxFolderEntry] {
         towerListed?.map(\.entry) ?? []
     }
@@ -310,6 +313,7 @@ package final class ActionStripViewModel {
     /// gets is laid over the folders and re-reads the panes' records.
     package func attach(_ loader: InboxFeedLoader) {
         feedLoader = loader
+        loader.request = { [weak self] in FeedRequest(day: self?.openDay) }
         loader.onFeed = { [weak self] feed in self?.receiveTowerFeed(feed) }
         if let feed = loader.feed { receiveTowerFeed(feed) }
         syncFeedWatch()
@@ -363,6 +367,16 @@ package final class ActionStripViewModel {
             if let facts = card.refFacts.first(where: { $0.kind == kind && $0.id == ref.id }) { return facts }
         }
         return nil
+    }
+
+    /// Reads the feed now and lists it (a route asked for a day the last
+    /// feed did not list), then reads the records it names.
+    private func rereadFeed() async {
+        guard let feedLoader else { return }
+        feedLoader.reload()
+        while let read = feedLoader.pendingRead { await read.value }
+        if let feed = feedLoader.feed { receiveTowerFeed(feed) }
+        await refresh()
     }
 
     /// The sidebar's Inbox badge from the tower: the sum of the visible
@@ -426,8 +440,13 @@ package final class ActionStripViewModel {
             await refresh()
             if case let .failed(sentence) = outcome {
                 let gone = item.map { !isOpenRecord($0) } ?? false
-                if !gone { lastError = sentence }
-                if let item, let press, !gone { rowErrors[item] = InboxRowFailure(message: sentence, press: press) }
+                // A row's failure stays on its row only (mockup §7); a press
+                // with no row says it in the Inbox-wide line.
+                if let item, let press {
+                    if !gone { rowErrors[item] = InboxRowFailure(message: sentence, press: press) }
+                } else if !gone {
+                    lastError = sentence
+                }
             }
             return outcome
         }
@@ -439,12 +458,7 @@ package final class ActionStripViewModel {
         guard let towerFeed, hasRead else { return nil }
         return InboxTowerEntries.listed(
             folder: folderMenu.selectedFolderID, feed: towerFeed, records: feed,
-            selectedDay: entrySelection.flatMap(Self.dayOfEntry), now: clock())
-    }
-
-    /// The date of a day entry's id (`day:<yyyy-MM-dd>`), else nil.
-    private static func dayOfEntry(_ id: String) -> String? {
-        id.hasPrefix("day:") ? String(id.dropFirst("day:".count)) : nil
+            now: clock())
     }
 
     /// The selected folder's list column.
@@ -472,6 +486,7 @@ package final class ActionStripViewModel {
     /// The menu picked a folder: its list, nothing selected yet. The pick
     /// is remembered (`inbox.folder`); a route's folder never is.
     package func selectFolder(_ id: Int64) {
+        openDay = nil
         folderMenu.select(id)
         defaults.set(folderMenu.selectedFolderID, forKey: Self.folderKey)
         feedLoader?.navigate(to: folderMenu.selectedFolderID)
@@ -483,6 +498,7 @@ package final class ActionStripViewModel {
     /// Opens an entry: an artifact or a day writes its read mark on opening
     /// (`select`); a legacy list opens today's list for it.
     package func selectEntry(_ id: String?) async {
+        if let openDay, id != "day:\(openDay)" { self.openDay = nil }
         guard let opening = showEntry(id) else { return }
         await select(opening)
     }
@@ -626,8 +642,9 @@ package final class ActionStripViewModel {
     ///   threads, Idea finder, Messages) over the root with its card
     ///   selected when listed: a stopped track opens the Stopped fold, a
     ///   merged idea the idea it was merged into.
-    /// - A day opens its Morning brief entry in the root; a day past the
-    ///   loaded pages reads older pages until it is there.
+    /// - A day opens its Morning brief entry in the root; a day the feed
+    ///   does not list is asked for (`openDay`), and Go lists it only while
+    ///   it has a briefing or a plan: otherwise nothing is selected.
     /// - A thread brief applied in the last 24 hours opens its root entry.
     /// - An automation card opens the folder that lists it; a proposal, a
     ///   reminder, a notice or one of Needs approval's cards opens Needs
@@ -681,11 +698,12 @@ package final class ActionStripViewModel {
             showLegacy(.messages)
             await select(isListed(item) ? item : nil)
         case .day(let date):
-            // A day the feed does not list (read, not today) still opens:
-            // its record is read by date, and the selected day stays listed.
-            if !feed.days.contains(where: { $0.date == date }) {
-                routedDays.insert(date)
-                await refresh()
+            // A day the feed does not list (read, not today) is asked for:
+            // Go lists it while it has a briefing or a plan; a day with
+            // neither stays unlisted and nothing is selected.
+            if !folderEntries.contains(where: { $0.id == "day:\(date)" }) {
+                openDay = date
+                await rereadFeed()
             }
             show(tree.root.id, "day:\(date)")
             if entrySelection != nil { await select(item) }
@@ -1260,7 +1278,7 @@ package final class ActionStripViewModel {
     package func pressReply(outputID: Int64, action: Int, contentHash: String) async {
         if towerWrites != nil {
             await towerWrite(.card(.output(outputID)), target: "o\(outputID)", verb: .press,
-                             params: ActParams(contentHash: contentHash, index: action, actionKind: "reply"))
+                             params: ActParams(contentHash: contentHash, index: action, actionKind: InboxActionKind.reply))
             return
         }
         let runner = cliRunner
@@ -1389,14 +1407,19 @@ package final class ActionStripViewModel {
     }
 
     /// The last read still lists `item`'s record.
+    /// The last read holds `item`'s record and Go has not closed it: a row
+    /// whose ref facts say closed (a record read by id for an artifact's
+    /// row) is gone for its failures too.
     private func isOpenRecord(_ item: InboxSelection) -> Bool {
-        switch item {
+        let held = switch item {
         case let .message(id): feed.messages.contains { $0.item.id == id }
         case let .track(id): feed.tracks.contains { $0.track.id == id }
         case let .idea(id): feed.ideas.contains { $0.id == id }
         case let .reminder(id): feed.reminders.contains { $0.id == id }
         case .proposal, .output, .day, .builtinNotice: false
         }
+        guard held, let ref = InboxRef(item) else { return held }
+        return refFacts(ref)?.open ?? true
     }
 
     // MARK: - Inbox target buttons (Inbox builder A)
@@ -1474,15 +1497,14 @@ package final class ActionStripViewModel {
     /// `create_target` (never approved). A refusal is kept for the button.
     private func towerProposeTarget(_ press: InboxTargetPress, _ towerWrites: InboxTowerWrites) async {
         let context = press.contextID
-        let parts = context.split(separator: ":")
-        guard parts.count >= 2, let outputID = Int64(parts[0]), let index = Int(parts[1]) else { return }
+        let (outputID, index) = (press.outputID, press.index)
         let hash = drawnHash(outputID)
         await pendingWrites.run(CardKey.targetPress(context)) {
             proposingTargets.insert(context)
             defer { proposingTargets.remove(context) }
             let seen = targetProposals[context]?.id
             let outcome = await towerWrites.act(
-                target: "o\(outputID)", verb: .press, params: ActParams(contentHash: hash, index: index, actionKind: "target"))
+                target: "o\(outputID)", verb: .press, params: ActParams(contentHash: hash, index: index, actionKind: InboxActionKind.target))
             if case let .failed(sentence) = outcome {
                 targetPressErrors[context] = TargetPressFailure(message: sentence, seenRowID: seen)
             } else {

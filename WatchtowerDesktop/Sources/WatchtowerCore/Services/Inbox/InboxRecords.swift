@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import os
 import WatchtowerInterface
 
 /// The records the Inbox's panes draw, read by plain id from the cards the
@@ -67,11 +68,12 @@ package enum InboxRecords {
         }
     }
 
-    /// The rows `ids` names (plus `extraDates`, a day a route opens), in a
-    /// snapshot the panes already read from. Each source tolerates a schema
-    /// that predates it.
+    /// The rows `ids` names, in a snapshot the panes already read from.
+    /// Each source tolerates a schema that predates it.
+    private static let log = Logger(subsystem: "watchtower.desktop", category: "inbox-records")
+
     package static func read(
-        _ db: Database, ids: IDs, extraDates: Set<String> = [], disabledFeatures: Set<String> = [], now: Date
+        _ db: Database, ids: IDs, disabledFeatures: Set<String> = [], now: Date
     ) throws -> InboxFeedSnapshot {
         var out = InboxFeedSnapshot()
         out.briefingOn = ReadinessFeature.briefing.featureID.map(disabledFeatures.contains) != true
@@ -82,10 +84,15 @@ package enum InboxRecords {
         out.reminders = try orEmpty { try fetch(Reminder.self, db, "reminders", ids.reminders) }
         out.outputs = try orEmpty { try AutomationQueries.fetchInboxOutputs(db, ids: ids.outputs.sorted()) }
         if !out.outputs.isEmpty {
-            // Names for avatars only: a failure must not take every card with it.
-            out.artifactPeople = (try? AutomationQueries.artifactPeople(db)) ?? [:]
+            // Names for avatars only: a failure must not take every card with
+            // it, so it is logged and the cards draw the recipe's initials.
+            do {
+                out.artifactPeople = try AutomationQueries.artifactPeople(db)
+            } catch {
+                log.error("inbox records: reading the artifacts' people failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
-        out.days = try orEmpty { try BriefingQueries.fetchDayCards(db, dates: ids.dates.union(extraDates).sorted(by: >)) }
+        out.days = try orEmpty { try BriefingQueries.fetchDayCards(db, dates: ids.dates.sorted(by: >)) }
         out.ownerKnown = try OwnerQueries.resolve(db).isKnown
         let tracks = try orEmpty { try TrackQueries.fetchInboxCards(db, ids: ids.tracks.sorted()) }
         out.tracks = tracks.filter { $0.track.dismissedAt.isEmpty }

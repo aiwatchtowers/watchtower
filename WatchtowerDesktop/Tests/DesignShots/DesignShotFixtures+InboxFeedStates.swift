@@ -36,21 +36,21 @@ enum InboxFeedStateShotFixtures {
             ("inbox-feed-different-version", .differentVersion)
         ]
         return states.map { name, state in
-            DesignShot(name: name, size: NSSize(width: 1180, height: 520)) { view(state) }
+            DesignShot(name: name, prepare: { await view(state) }, size: NSSize(width: 1180, height: 520))
         }
     }
 
     /// The failed press's sentence, as Go words a busy database (`inboxfeed.Sentence`).
     static let busySentence = "Couldn't mark it done: the database is busy."
 
-    static func view(_ state: State) -> AnyView {
+    static func view(_ state: State) async -> AnyView {
         do {
             let (pool, path) = try TestDatabase.createPool()
             paths.append(path)
-            // b-01's list; the failed-action shot opens Waiting for me, so its
-            // case lists it read once that opening landed.
-            let tower = try InboxShotFeed.seeded(
-                state == .failedAction ? "desktop_shot_feed_waiting_opened" : "desktop_shot_folders_root", pool)
+            // b-01's list. Waiting for me keeps its unread dot when opened in
+            // the failed-action shot: Go reads a card with ref rows as unread
+            // while a row waits on the owner (`inboxfeed` `artifactCard`).
+            let tower = try InboxShotFeed.seeded("desktop_shot_folders_root", pool)
             let defaults = UserDefaults(suiteName: defaultsSuite) ?? .standard
             defaults.removePersistentDomain(forName: defaultsSuite)
             let clock = now
@@ -61,11 +61,11 @@ enum InboxFeedStateShotFixtures {
                 // A loader attached, its first read not answered yet.
                 let client = TowerClient(transport: tower, clock: ContinuousClock(), restartDaemon: nil, startDaemon: nil)
                 vm.attach(InboxFeedLoader(client: client) { FeedRequest() })
-                InboxFolderMenuShotFixtures.spin(until: "the folder tree", vm.hasRead) { await vm.refresh() }
+                await vm.refresh()
             } else {
-                InboxShotFeed.listed(vm, tower)
+                await InboxShotFeed.listed(vm, tower)
             }
-            try show(state, vm: vm, tower: tower)
+            try await show(state, vm: vm, tower: tower)
             return AnyView(ActionStripActionsView(
                 vm: vm, cheatSheetRows: [], feature: .on(lastCheck: nil), isEnabling: false, featureError: nil,
                 onEnable: {}, onOpenSettings: {}, onOpen: { _ in }, now: now
@@ -77,7 +77,7 @@ enum InboxFeedStateShotFixtures {
         }
     }
 
-    private static func show(_ state: State, vm: ActionStripViewModel, tower: FeedCaseTransport) throws {
+    private static func show(_ state: State, vm: ActionStripViewModel, tower: FeedCaseTransport) async throws {
         let loader = try XCTUnwrap(vm.feedLoader)
         switch state {
         case .firstLoad:
@@ -86,25 +86,20 @@ enum InboxFeedStateShotFixtures {
             // The list read three hours ago; the daemon is down since.
             let readAt = now.addingTimeInterval(-3 * 3600)
             loader.clock = { readAt }
-            InboxFolderMenuShotFixtures.spin(until: "the list's read", loader.answeredAt == readAt) {
-                loader.reload()
-                while let read = loader.pendingRead { await read.value }
-            }
+            loader.reload()
+            while let read = loader.pendingRead { await read.value }
             loader.showForShots(.ready(stale: now.addingTimeInterval(-3 * 3600)),
                                 failure: TowerFailure(kind: .down, sentence: TowerText.daemonDown),
                                 reconnectingLine: false)
         case .failedAction:
             // Waiting for me open (its opening read as the Mac writes it);
             // then Done on its first row, refused by the tower.
-            InboxFolderMenuShotFixtures.spin(until: "Waiting for me open", vm.selectedEntry != nil) {
-                await vm.selectEntry("artifact:1")
-            }
+            await vm.selectEntry("artifact:1")
             tower.actRefusal = busySentence
             vm.attachWrites(InboxTowerWrites(client: TowerClient(
                 transport: tower, clock: ContinuousClock(), restartDaemon: nil, startDaemon: nil)))
-            InboxFolderMenuShotFixtures.spin(until: "the refused Done", vm.rowErrors[.message(1)] != nil) {
-                await InboxRowActionHandler(vm: vm).press(.done, on: InboxRef(kind: .inboxItem, id: 1))
-            }
+            await InboxRowActionHandler(vm: vm).press(.done, on: InboxRef(kind: .inboxItem, id: 1))
+            XCTAssertNotNil(vm.rowErrors[.message(1)], "the refused Done stays on its row")
         case .reconnecting:
             loader.showForShots(.reconnecting, failure: nil, reconnectingLine: true)
         case .differentVersion:

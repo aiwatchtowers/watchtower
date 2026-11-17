@@ -50,12 +50,12 @@ package struct InboxFeedButtons: Equatable, Sendable {
     }
 
     /// A sent Reply's line when the pressed one is not drawn.
-    package static let sentLabel = "Sent"
+    package static let sentLabel = TowerText.sent
 
     private static let ready = "ready"
     private static let sent = "sent"
 
     private var replies: [CardAction] {
-        actions.filter { $0.kind == "reply" }
+        actions.filter { $0.kind == InboxActionKind.reply }
     }
 }

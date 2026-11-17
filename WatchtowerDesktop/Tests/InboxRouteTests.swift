@@ -12,13 +12,17 @@ import WatchtowerTestSupport
 /// hidden.
 @MainActor
 final class InboxRouteTests: XCTestCase {
-    private static let today = AppState.inboxToday()
+    /// The moment Go built the route cases' feeds at; the app's today is its day.
+    private static let caseNow = AutomationDates.parse("2026-11-16T12:00:00Z") ?? Date()
+    private static let today = AppState.inboxToday(caseNow)
     private var manager: DatabaseManager!
     private var path = ""
     private var savedFolder: Any?
     private var savedFilter: Any?
 
     override func setUp() async throws {
+        let caseNow = Self.caseNow
+        AppState.inboxNow = { caseNow }
         (manager, path) = try TestDatabase.createDatabaseManager()
         // An owner, so the root lists today's day card (OWNER-02).
         try await manager.dbPool.write { db in
@@ -33,6 +37,7 @@ final class InboxRouteTests: XCTestCase {
     }
 
     override func tearDown() async throws {
+        AppState.inboxNow = { Date() }
         UserDefaults.standard.set(savedFolder, forKey: ActionStripViewModel.folderKey)
         UserDefaults.standard.set(savedFilter, forKey: Self.oldFilterKey)
         TestDatabase.cleanup(path: path)
@@ -189,7 +194,9 @@ final class InboxRouteTests: XCTestCase {
         let briefingDate = "2026-10-20"
         // A day plan for 2026-10-19 (the date the day-plan route opens),
         // briefing 1 of 2026-10-20, and the idea (5) and track (7) the
-        // helpers open: a route selects only a listed card.
+        // helpers open: a route selects only a listed card. The read 2026-10-19
+        // is listed because the route asks for it (`FeedRequest.day`): the
+        // case is built with that request (`opts.day`).
         let tower = try tower("desktop_route_navigate_helpers")
         let briefingID = 1
 

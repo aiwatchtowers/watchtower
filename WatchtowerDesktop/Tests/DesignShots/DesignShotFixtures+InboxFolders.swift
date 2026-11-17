@@ -23,7 +23,7 @@ enum InboxFoldersShotFixtures {
     }
 
     /// b-01's main panel: the root selected, Weekly mail roundup open.
-    static func root() -> AnyView {
+    static func root() async -> AnyView {
         do {
             let (pool, path) = try TestDatabase.createPool()
             paths.append(path)
@@ -38,7 +38,7 @@ enum InboxFoldersShotFixtures {
             // Labeled: a trailing closure would bind to `automationsWake`.
             // swiftlint:disable:next trailing_closure
             let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), defaults: defaults, clock: { clock })
-            InboxShotFeed.listed(vm, tower) { await vm.selectEntry("artifact:\(weekly)") }
+            await InboxShotFeed.listed(vm, tower) { await vm.selectEntry("artifact:\(weekly)") }
             return AnyView(ActionStripActionsView(
                 vm: vm, cheatSheetRows: [], feature: .on(lastCheck: nil), isEnabling: false, featureError: nil,
                 onEnable: {}, onOpenSettings: {}, onOpen: { _ in }, now: now
