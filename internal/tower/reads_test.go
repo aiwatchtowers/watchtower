@@ -2,6 +2,7 @@ package tower
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"runtime"
 	"testing"
@@ -120,4 +121,30 @@ func TestReads_NoFileFailsAndReadsFallBack(t *testing.T) {
 	r := tw.Call(context.Background(), api.Request{V: api.EnvelopeVersion, ID: "c1", Command: "tower.hello", Params: json.RawMessage(`{}`)},
 		Origin{Transport: "socket"})
 	wantStatus(t, r, api.StatusOK)
+}
+
+// The read handle keeps every connection warm: as many idle as open, none
+// idle-closed.
+func TestReads_HandleKeepsItsConnectionsWarm(t *testing.T) {
+	f := newFixture(t)
+	reads, err := OpenReads(context.Background(), f.d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reads.Close() })
+	ctx := context.Background()
+	var conns []*sql.Conn
+	for range readConns {
+		c, err := reads.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conns = append(conns, c)
+	}
+	for _, c := range conns {
+		_ = c.Close()
+	}
+	if s := reads.Stats(); s.MaxOpenConnections != readConns || s.Idle != readConns {
+		t.Fatalf("stats %+v: want %d open, all idle", s, readConns)
+	}
 }

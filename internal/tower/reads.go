@@ -35,7 +35,10 @@ func OpenReads(ctx context.Context, d *db.DB) (*db.DB, error) {
 	}
 	r.SetMaxOpenConns(readConns)
 	// Daemon-lived, as the daemon's own handle (KeepConnectionWarm there): a
-	// read never pays a fresh connection's key setup.
+	// read never pays a fresh connection's key setup — every connection
+	// stays idle in the pool (database/sql keeps only 2 by default) and
+	// never idle-closes.
+	r.SetMaxIdleConns(readConns)
 	r.KeepConnectionWarm()
 	return r, nil
 }
