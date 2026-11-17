@@ -11108,5 +11108,346 @@
       ]
     },
     "desktop": true
+  },
+  {
+    "name": "desktop_rows_slack_item",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, thread_ts, sender_user_id, trigger_type, snippet, permalink, status, priority, ai_reason, resolved_reason, snooze_until, item_class, card_status, why_matters, thread_digest, draft_reply, created_at, updated_at) VALUES (1, 'C001', '1700000000.000100', '', 'U002', 'mention', 'Hey, can you review this?', 'https://acme.slack.com/archives/C001/p1700000000000100', 'pending', 'medium', '', '', '', 'actionable', 'none', '', '', '', '2026-10-21T07:00:00Z', '2026-10-21T07:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "messages",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Messages",
+          "source_line": "Mentions, DMs and replies",
+          "preview": "1 waiting",
+          "stamp": "2026-10-21T07:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [
+            {
+              "kind": "inbox_item",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": true,
+              "reply_waiting": false,
+              "link": "https://acme.slack.com/archives/C001/p1700000000000100",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ],
+          "legacy": {
+            "kind": "messages",
+            "items": [
+              {
+                "ref_kind": "inbox_item",
+                "id": 1,
+                "title": "Hey, can you review this?",
+                "subtitle": "Message",
+                "preview": "",
+                "stamp": "2026-10-21T07:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_rows_reminder_on_approval_card",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO reminders (id, message_ref, note, remind_at, status, created_at) VALUES (1, 'C1@1', 'call back', '2000-01-01T00:00:00Z', 'pending', '2026-11-16T08:00:00Z')",
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json, origin, builtin_id) VALUES (1, 'needs-approval', 'personal', '/tmp/acme/automations/needs-approval.md', 'Needs approval', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]', 'builtin', 'needs-approval')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, blocks_json, output_key, content_hash, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'New mail', 'Two threads need you.', 'medium', '2026-10-01T09:00:05Z', '{\"v\":1,\"blocks\":[{\"type\":\"list\",\"rows\":[{\"title\":\"Row\",\"ref\":{\"kind\":\"reminder\",\"id\":1}}]}]}', 'reminder:1', 'h', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 1
+        }
+      ],
+      "cards": [
+        {
+          "id": "r1",
+          "folder_id": 2,
+          "card_kind": "reminder",
+          "title": "call back",
+          "source_line": "Reminder",
+          "preview": "",
+          "stamp": "2000-01-01T00:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [
+            {
+              "kind": "reminder",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "https://slack.com/archives/C1/p1",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ]
+        }
+      ]
+    },
+    "desktop": true,
+    "steps": [
+      {
+        "name": "done",
+        "act": {
+          "target": "r1",
+          "verb": "ref",
+          "params": {
+            "ref_kind": "reminder",
+            "ref_id": 1,
+            "ref_verb": "done"
+          },
+          "request_id": "00000000-0000-4000-8000-000000900010"
+        },
+        "when": "SELECT status = 'done' FROM reminders WHERE id = 1",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            }
+          ],
+          "cards": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "desktop_rows_reminder_snoozed_an_hour",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO reminders (id, message_ref, note, remind_at, status, created_at) VALUES (1, 'C1@1', 'call back', '2000-01-01T00:00:00Z', 'pending', '2026-11-16T08:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 1
+        }
+      ],
+      "cards": [
+        {
+          "id": "r1",
+          "folder_id": 2,
+          "card_kind": "reminder",
+          "title": "call back",
+          "source_line": "Reminder",
+          "preview": "",
+          "stamp": "2000-01-01T00:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [
+            {
+              "kind": "reminder",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "https://slack.com/archives/C1/p1",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ]
+        }
+      ]
+    },
+    "desktop": true,
+    "steps": [
+      {
+        "name": "snoozed",
+        "act": {
+          "target": "r1",
+          "verb": "ref",
+          "params": {
+            "ref_kind": "reminder",
+            "ref_id": 1,
+            "ref_verb": "snooze",
+            "until": "2026-11-16T13:00:00Z"
+          },
+          "request_id": "00000000-0000-4000-8000-000000900011"
+        },
+        "when": "SELECT remind_at > '2026-11-16T12:00:00Z' FROM reminders WHERE id = 1",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            }
+          ],
+          "cards": []
+        }
+      }
+    ]
   }
 ]
