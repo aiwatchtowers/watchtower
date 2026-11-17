@@ -26,11 +26,14 @@ extension AppState {
     }
 
     /// FileVault's state now and on every activation (a user who turns it on
-    /// in System Settings comes back to the app).
+    /// in System Settings comes back to the app). Subscribes first, so an
+    /// activation during the first probe is not lost; none under XCTest.
     func watchFileVault(status: FileVaultStatus = .live) {
-        Task { [weak self] in
+        fileVaultTask?.cancel()
+        fileVaultTask = Task { [weak self] in
+            let activations = NotificationCenter.default.notifications(named: NSApplication.didBecomeActiveNotification)
             self?.fileVaultState = await status.read()
-            for await _ in NotificationCenter.default.notifications(named: NSApplication.didBecomeActiveNotification) {
+            for await _ in activations {
                 guard let self else { return }
                 self.fileVaultState = await status.read()
             }

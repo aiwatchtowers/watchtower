@@ -1,6 +1,7 @@
 import AppKit
 import DesignKit
 import SwiftUI
+@testable import WatchtowerDesktop
 import WatchtowerCore
 @testable import WatchtowerDesktop
 
@@ -82,21 +83,7 @@ private struct Page<Content: View>: View {
     }
 }
 
-/// The FileVault-off line, shared by Privacy and Connections → Slack.
-private struct FileVaultLine: View {
-    var body: some View {
-        HStack(alignment: .top, spacing: Spacing.regular) {
-            Image(systemName: "lock.open.fill").foregroundStyle(Tone.warning)
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                Text(Copy.fileVaultOff).font(.callout).fixedSize(horizontal: false, vertical: true)
-                Button(Copy.openFileVault) {}.buttonStyle(.kitSecondary)
-            }
-        }
-        .padding(Spacing.medium)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Tone.warning.opacity(ChipTint.fillOpacity), in: RoundedRectangle(cornerRadius: Radius.row))
-    }
-}
+private typealias FileVaultLine = FileVaultLineContent
 
 // MARK: - Settings → System → Privacy
 

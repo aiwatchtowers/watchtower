@@ -33,4 +33,25 @@ final class FileVaultStatusTests: XCTestCase {
         XCTAssertEqual(state, .unknown)
         await fulfillment(of: [cancelled], timeout: 5)
     }
+
+    // The live runner against stand-in executables.
+    func testSpawnReadsOutput() async throws {
+        let out = try await FileVaultProcess.output(executable: "/bin/echo", arguments: ["FileVault is On."])
+        XCTAssertEqual(FileVaultStatus.parse(out), .on)
+    }
+
+    func testSpawnNonZeroExitThrows() async {
+        do {
+            _ = try await FileVaultProcess.output(
+                executable: "/bin/sh", arguments: ["-c", "echo 'FileVault is Off.'; exit 3"])
+            XCTFail("expected a throw")
+        } catch {}
+    }
+
+    func testSpawnCancelKillsAndReaps() async throws {
+        let task = Task { try await FileVaultProcess.output(executable: "/bin/sleep", arguments: ["3600"]) }
+        task.cancel()
+        let result = await task.result
+        if case .success = result { XCTFail("a cancelled sleep must not succeed") }
+    }
 }

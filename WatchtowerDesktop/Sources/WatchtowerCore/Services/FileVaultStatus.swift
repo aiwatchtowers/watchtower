@@ -54,14 +54,18 @@ public struct FileVaultStatus: Sendable {
 }
 
 /// `/usr/bin/fdesetup status` in its own process group: cancel kills the
-/// group and reaps the child.
+/// group and reaps the child. A read error or a non-zero exit throws.
 enum FileVaultProcess {
     static func output() async throws -> String {
+        try await output(executable: "/usr/bin/fdesetup", arguments: ["status"])
+    }
+
+    static func output(executable: String, arguments: [String]) async throws -> String {
         let box = PidBox()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { cont in
                 DispatchQueue.global(qos: .utility).async {
-                    cont.resume(with: Result { try runBlocking(box) })
+                    cont.resume(with: Result { try runBlocking(box, executable, arguments) })
                 }
             }
         } onCancel: {
@@ -69,36 +73,48 @@ enum FileVaultProcess {
         }
     }
 
+    /// The child's pid and whether it is reaped, under one lock: a cancel
+    /// never signals a pid that has been reaped (and may be recycled).
     private final class PidBox: @unchecked Sendable {
         private let lock = NSLock()
         private var pid: pid_t = 0
+        private var reaped = false
         private var cancelled = false
 
-        /// False when already cancelled: the caller must not start.
-        func set(_ value: pid_t) -> Bool {
+        func set(_ value: pid_t) {
             lock.lock(); defer { lock.unlock() }
             pid = value
             if cancelled { _ = killpg(value, SIGKILL) }
-            return !cancelled
         }
 
         func kill() {
             lock.lock(); defer { lock.unlock() }
             cancelled = true
-            if pid > 0 { _ = killpg(pid, SIGKILL) }
+            if pid > 0, !reaped { _ = killpg(pid, SIGKILL) }
         }
 
-        func clear() {
+        /// Reaps the child under the lock; one still running is killed first.
+        /// Returns the wait status, nil when waiting failed.
+        func reap() -> Int32? {
             lock.lock(); defer { lock.unlock() }
-            pid = 0
+            var status: Int32 = 0
+            var result = waitpid(pid, &status, WNOHANG)
+            if result == 0 {
+                _ = killpg(pid, SIGKILL)
+                result = waitpid(pid, &status, 0)
+            }
+            while result < 0 && errno == EINTR { result = waitpid(pid, &status, 0) }
+            reaped = true
+            return result == pid ? status : nil
         }
     }
 
-    private static func runBlocking(_ box: PidBox) throws -> String {
+    private static func runBlocking(_ box: PidBox, _ path: String, _ arguments: [String]) throws -> String {
         var fds: [Int32] = [0, 0]
         guard pipe(&fds) == 0 else { throw CocoaError(.fileReadUnknown) }
         let (readFD, writeFD) = (fds[0], fds[1])
         _ = fcntl(readFD, F_SETFD, FD_CLOEXEC)
+        _ = fcntl(writeFD, F_SETFD, FD_CLOEXEC)
 
         var actions: posix_spawn_file_actions_t?
         posix_spawn_file_actions_init(&actions)
@@ -106,7 +122,6 @@ enum FileVaultProcess {
         posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
         posix_spawn_file_actions_adddup2(&actions, writeFD, 1)
         posix_spawn_file_actions_adddup2(&actions, writeFD, 2)
-        posix_spawn_file_actions_addclose(&actions, writeFD)
 
         var attr: posix_spawnattr_t?
         posix_spawnattr_init(&attr)
@@ -114,8 +129,7 @@ enum FileVaultProcess {
         posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT))
         posix_spawnattr_setpgroup(&attr, 0)
 
-        let path = "/usr/bin/fdesetup"
-        let argv = [strdup(path), strdup("status"), nil]
+        let argv = ([path] + arguments).map { strdup($0) } + [nil]
         defer { argv.forEach { free($0) } }
         var pid: pid_t = 0
         let spawned = posix_spawn(&pid, path, &actions, &attr, argv, [nil])
@@ -125,18 +139,23 @@ enum FileVaultProcess {
             throw CocoaError(.fileReadUnknown)
         }
         defer { close(readFD) }
-        _ = box.set(pid)
+        box.set(pid)
 
         var data = Data()
         var buffer = [UInt8](repeating: 0, count: 1024)
+        var readFailed = false
         while true {
             let count = read(readFD, &buffer, buffer.count)
-            if count > 0 { data.append(buffer, count: count) } else if count == 0 || errno != EINTR { break }
+            if count > 0 { data.append(buffer, count: count) } else if count == 0 { break } else if errno != EINTR {
+                readFailed = true
+                break
+            }
         }
-        // Reap before the pid is forgotten, so a late cancel never signals a recycled pid.
-        var status: Int32 = 0
-        while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
-        box.clear()
-        return String(bytes: data, encoding: .utf8) ?? ""
+        let status = box.reap()
+        // WIFEXITED with status 0: the raw wait status is 0.
+        guard !readFailed, status == 0, let text = String(bytes: data, encoding: .utf8) else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        return text
     }
 }

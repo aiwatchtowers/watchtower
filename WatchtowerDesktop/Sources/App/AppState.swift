@@ -374,6 +374,7 @@ final class AppState {
     var accountPurgeCenter: AccountPurgeCenter?
     /// `fdesetup status`, read at launch and on activation (#1769); `.unknown` until read.
     var fileVaultState: FileVaultState = .unknown
+    @ObservationIgnored var fileVaultTask: Task<Void, Never>?
     /// The Slack Live probe's verdicts (Connections → Slack).
     var slackLiveStatusCenter: SlackLiveStatusCenter?
     /// The live workbench sessions' agent states (board #312), polled while
@@ -819,6 +820,8 @@ final class AppState {
         questions.stopQuestionSearches()
     }
 
+    deinit { fileVaultTask?.cancel() }
+
     func initialize() {
         guard !isInitializing else { return }
         isInitializing = true
@@ -826,7 +829,7 @@ final class AppState {
         Constants.prewarmResolvedEnvironment()
         // Before anything a key decides starts (the mobile hub, the pickers).
         managedPolicy.start(activation: NSApplication.didBecomeActiveNotification)
-        watchFileVault()
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil { watchFileVault() }
         // Text older versions handed the CLI through temp files (now stdin).
         Task.detached(priority: .utility) {
             StaleTempSweep.run(in: FileManager.default.temporaryDirectory)
