@@ -628,7 +628,22 @@
           "link": "",
           "content_hash": "",
           "actions": [],
-          "ref_facts": [],
+          "ref_facts": [
+            {
+              "kind": "inbox_item",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ],
           "legacy": {
             "kind": "messages",
             "items": [
@@ -1725,7 +1740,22 @@
           "link": "",
           "content_hash": "",
           "actions": [],
-          "ref_facts": [],
+          "ref_facts": [
+            {
+              "kind": "inbox_item",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ],
           "legacy": {
             "kind": "messages",
             "items": [
@@ -3346,7 +3376,36 @@
           "link": "",
           "content_hash": "",
           "actions": [],
-          "ref_facts": [],
+          "ref_facts": [
+            {
+              "kind": "inbox_item",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": true,
+              "reply_waiting": true,
+              "link": "https://acme.slack.com/archives/C1/p1",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            },
+            {
+              "kind": "inbox_item",
+              "id": 2,
+              "open": true,
+              "waits": true,
+              "reply": true,
+              "reply_waiting": false,
+              "link": "",
+              "trigger_type": "linear_assigned",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ],
           "legacy": {
             "kind": "messages",
             "items": [
@@ -4269,7 +4328,64 @@
           "link": "",
           "content_hash": "",
           "actions": [],
-          "ref_facts": [],
+          "ref_facts": [
+            {
+              "kind": "inbox_item",
+              "id": 2,
+              "open": true,
+              "waits": true,
+              "reply": true,
+              "reply_waiting": false,
+              "link": "https://acme.slack.com/p2",
+              "trigger_type": "dm",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            },
+            {
+              "kind": "inbox_item",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": true,
+              "reply_waiting": false,
+              "link": "https://acme.slack.com/p1",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            },
+            {
+              "kind": "inbox_item",
+              "id": 3,
+              "open": true,
+              "waits": true,
+              "reply": true,
+              "reply_waiting": false,
+              "link": "https://acme.slack.com/p3",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            },
+            {
+              "kind": "inbox_item",
+              "id": 4,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "",
+              "trigger_type": "email_received",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ],
           "legacy": {
             "kind": "messages",
             "items": [
@@ -5493,7 +5609,22 @@
           "link": "",
           "content_hash": "",
           "actions": [],
-          "ref_facts": [],
+          "ref_facts": [
+            {
+              "kind": "inbox_item",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ],
           "legacy": {
             "kind": "messages",
             "items": [
@@ -5784,7 +5915,22 @@
           "link": "",
           "content_hash": "",
           "actions": [],
-          "ref_facts": [],
+          "ref_facts": [
+            {
+              "kind": "inbox_item",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ],
           "legacy": {
             "kind": "messages",
             "items": [
@@ -6012,7 +6158,22 @@
           "link": "",
           "content_hash": "",
           "actions": [],
-          "ref_facts": [],
+          "ref_facts": [
+            {
+              "kind": "inbox_item",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ],
           "legacy": {
             "kind": "messages",
             "items": [
@@ -6572,7 +6733,22 @@
           "link": "",
           "content_hash": "",
           "actions": [],
-          "ref_facts": [],
+          "ref_facts": [
+            {
+              "kind": "inbox_item",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ],
           "legacy": {
             "kind": "messages",
             "items": [
@@ -6693,7 +6869,50 @@
           "link": "",
           "content_hash": "",
           "actions": [],
-          "ref_facts": [],
+          "ref_facts": [
+            {
+              "kind": "inbox_item",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            },
+            {
+              "kind": "inbox_item",
+              "id": 2,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            },
+            {
+              "kind": "inbox_item",
+              "id": 3,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ],
           "legacy": {
             "kind": "messages",
             "items": [
@@ -6800,7 +7019,22 @@
               "link": "",
               "content_hash": "",
               "actions": [],
-              "ref_facts": [],
+              "ref_facts": [
+                {
+                  "kind": "inbox_item",
+                  "id": 1,
+                  "open": true,
+                  "waits": true,
+                  "reply": false,
+                  "reply_waiting": false,
+                  "link": "",
+                  "trigger_type": "mention",
+                  "custom": false,
+                  "linked_target_id": 0,
+                  "idea_kind": "",
+                  "idea_status": ""
+                }
+              ],
               "legacy": {
                 "kind": "messages",
                 "items": [
@@ -6920,7 +7154,50 @@
           "link": "",
           "content_hash": "",
           "actions": [],
-          "ref_facts": [],
+          "ref_facts": [
+            {
+              "kind": "inbox_item",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            },
+            {
+              "kind": "inbox_item",
+              "id": 2,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            },
+            {
+              "kind": "inbox_item",
+              "id": 3,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ],
           "legacy": {
             "kind": "messages",
             "items": [
@@ -7027,7 +7304,36 @@
               "link": "",
               "content_hash": "",
               "actions": [],
-              "ref_facts": [],
+              "ref_facts": [
+                {
+                  "kind": "inbox_item",
+                  "id": 1,
+                  "open": true,
+                  "waits": true,
+                  "reply": false,
+                  "reply_waiting": false,
+                  "link": "",
+                  "trigger_type": "mention",
+                  "custom": false,
+                  "linked_target_id": 0,
+                  "idea_kind": "",
+                  "idea_status": ""
+                },
+                {
+                  "kind": "inbox_item",
+                  "id": 3,
+                  "open": true,
+                  "waits": true,
+                  "reply": false,
+                  "reply_waiting": false,
+                  "link": "",
+                  "trigger_type": "mention",
+                  "custom": false,
+                  "linked_target_id": 0,
+                  "idea_kind": "",
+                  "idea_status": ""
+                }
+              ],
               "legacy": {
                 "kind": "messages",
                 "items": [
@@ -9432,6 +9738,233 @@
           "content_hash": "h1",
           "actions": [],
           "ref_facts": []
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_proposal_not_listed",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (1, 'digest', 'personal', '/tmp/acme/automations/digest.md', 'Acme digest', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'New mail', 'Two threads need you.', 'medium', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z')",
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (1, 'apply_track_action', 0, '{\"text\":\"Call Vasya\",\"reason\":\"r\"}', 'r', 'inbox', 1, 'automation_output', '1:0:abc', 'turn-1', 'pending', '', '', '2026-09-04T10:00:00Z', '', '', '')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "o1",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "New mail",
+          "source_line": "Acme digest",
+          "preview": "Two threads need you.",
+          "stamp": "2026-10-01T09:00:05Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Acme digest",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "",
+          "body": "Two threads need you.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": []
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_proposal_listed",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (1, 'create_target', 0, '{\"text\":\"Call Vasya\",\"reason\":\"r\"}', 'r', 'main', 1, 'automation_output', '1:0:abc', 'turn-1', 'pending', '', '', '2026-09-04T10:00:00Z', '', '', '')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 1
+        }
+      ],
+      "cards": [
+        {
+          "id": "a1",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_target",
+            "title": "Create a target",
+            "summary": "Call Vasya",
+            "args_sha256": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+            "status": "pending",
+            "error": "",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "waiting",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_proposal_inbox_target_button",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (1, 'create_target', 0, '{\"text\":\"Call Vasya\",\"reason\":\"r\"}', 'r', 'inbox', 1, 'automation_output', '1:0:abc', 'turn-1', 'pending', '', '', '2026-09-04T10:00:00Z', '', '', '')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 1
+        }
+      ],
+      "cards": [
+        {
+          "id": "a1",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_target",
+            "title": "Create a target",
+            "summary": "Call Vasya",
+            "args_sha256": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+            "status": "pending",
+            "error": "",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "waiting",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
         }
       ]
     },

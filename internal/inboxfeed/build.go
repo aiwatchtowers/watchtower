@@ -167,6 +167,14 @@ func read(ctx context.Context, tx *sql.Tx, now time.Time, disabled []string) (*s
 		}
 		return !s.waitingForMe.hides(o.AutomationID)
 	})
+	if s.legacy, err = readLegacy(ctx, tx, now, off, s.waitingForMe.standIn); err != nil {
+		return nil, err
+	}
+	// The Messages card's items carry their facts too (Reply, an open
+	// Reply, shown, waits), as an artifact's rows do.
+	for _, m := range s.legacy.messages {
+		refs = append(refs, ref{Kind: api.RefInboxItem, ID: m.ID})
+	}
 	if s.refState, err = readRefState(ctx, tx, refs, now); err != nil {
 		return nil, err
 	}
@@ -177,9 +185,6 @@ func read(ctx context.Context, tx *sql.Tx, now time.Time, disabled []string) (*s
 		return nil, err
 	}
 	if err := readApprovalExtras(ctx, tx, s); err != nil {
-		return nil, err
-	}
-	if s.legacy, err = readLegacy(ctx, tx, now, off, s.waitingForMe.standIn); err != nil {
 		return nil, err
 	}
 	legacy, err := legacyCounts(ctx, tx, t, now, s.waitingForMe.standIn, len(s.notices))
