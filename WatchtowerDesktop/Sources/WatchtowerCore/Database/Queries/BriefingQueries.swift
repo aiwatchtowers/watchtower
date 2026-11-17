@@ -108,29 +108,6 @@ package enum BriefingQueries {
             """) ?? 0
     }
 
-    package static func markRead(_ db: Database, id: Int) throws {
-        try db.execute(
-            sql: """
-                UPDATE briefings SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                WHERE id = ? AND read_at IS NULL
-                """,
-            arguments: [id]
-        )
-    }
-
-    /// Marks multiple briefings read in one write. No-op on empty input.
-    package static func markRead(_ db: Database, ids: [Int]) throws {
-        guard !ids.isEmpty else { return }
-        let placeholders = ids.map { _ in "?" }.joined(separator: ",")
-        try db.execute(
-            sql: """
-                UPDATE briefings SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                WHERE id IN (\(placeholders)) AND read_at IS NULL
-                """,
-            arguments: StatementArguments(ids)
-        )
-    }
-
     package static func unreadCount(_ db: Database) throws -> Int {
         try Int.fetchOne(
             db,

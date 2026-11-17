@@ -26,18 +26,14 @@ package enum InboxSelection: Hashable, Sendable {
 ///
 /// Composes `AgentActionFeed` rather than reimplementing its CLI plumbing —
 /// approve/reject/retry route through it, so `Registry.Apply`'s exactly-once
-/// claim and the envelope-error surfacing stay in one place. Reminder
-/// done/snooze are direct GRDB writes (Swift-owned, no daemon contention,
-/// the `inbox_feedback` dual-path precedent), so they need no CLI round trip;
-/// so are an output's opening, Done and Dismiss, the only automation columns
-/// Swift writes (`read_at`/`done_at`/`dismissed_at`, spec §9.6, ask #475).
-/// They await the writer off the main thread (board #670): one write per card
-/// at a time, and the card leaves the strip only once its write landed.
-/// The other kinds' writes: opening a day card marks its briefing read,
-/// opening a message its `read_at`; a track's Done and Stop watching are
-/// GRDB writes (a custom track's through `CustomTrackControlling`); a
-/// message's Done / Hide / Snooze run `watchtower inbox …` (Go owns those
-/// rows). A row already gone at the press is quiet: it leaves on the refresh.
+/// claim and the envelope-error surfacing stay in one place. Every other
+/// press is one `inbox.act` call (`InboxTowerWrites`, #1170): a reminder's
+/// Done/Snooze, an output's opening, Done and Dismiss, a day card's and a
+/// message's read mark, a track's Done, Stop watching and Restore, a
+/// message's Done / Hide / Snooze. Go writes the rows; the Desktop writes
+/// none of the Inbox's tables. One press per card at a time, and the card
+/// leaves the strip only once its write landed. A row already gone at the
+/// press is quiet: it leaves on the refresh.
 @MainActor
 @Observable
 package final class ActionStripViewModel {
@@ -114,7 +110,6 @@ package final class ActionStripViewModel {
     private let dbPool: DatabasePool
     /// nil = the installed CLI, found at press time.
     private let cliRunner: CLIRunnerProtocol?
-    private let customTrackControls: any CustomTrackControlling
     private let defaults: UserDefaults
     /// The moment the list is read and laid out at (Today, Earlier, due
     /// reminders); the design shots fix it.
@@ -137,13 +132,11 @@ package final class ActionStripViewModel {
     /// needs to render one of these rows the way a chat surface does.
     package let actionFeed: AgentActionFeed
 
-    /// `customTrackControls` nil = C1's direct writes (`DirectCustomTrackControls`).
     /// `findCLI` is how the folder menu (and so the rows' writes) finds the
     /// binary when `cliRunner` is nil; tests pass `{ nil }` for a missing one.
     package init(
         dbPool: DatabasePool,
         cliRunner: CLIRunnerProtocol? = nil,
-        customTrackControls: (any CustomTrackControlling)? = nil,
         defaults: UserDefaults = .standard,
         automationsWake: (() async throws -> Void)? = nil,
         clock: @escaping @Sendable () -> Date = { Date() },
@@ -152,8 +145,6 @@ package final class ActionStripViewModel {
         self.dbPool = dbPool
         self.clock = clock
         self.cliRunner = cliRunner
-        self.customTrackControls = customTrackControls ?? DirectCustomTrackControls(
-            dbPool: dbPool, scanService: TrackScanService(runner: cliRunner ?? InstalledCLIRunner()))
         self.defaults = defaults
         self.actionFeed = AgentActionFeed(dbPool: dbPool, cliRunner: cliRunner, automationsWake: automationsWake)
         self.folderMenu = InboxFolderMenuModel(
@@ -385,8 +376,9 @@ package final class ActionStripViewModel {
         towerFeed.map { InboxRootModel(feed: $0, platform: .mac).countBadge }
     }
 
-    /// The tower's writer: with one (the app), every Inbox write is one
-    /// `inbox.act` call; without one (tests) the local writers run.
+    /// The tower's writer: every Inbox write is one `inbox.act` call. Without
+    /// one (a test that never presses) a press fails with the daemon's
+    /// sentence; the Desktop writes none of the Inbox's tables itself.
     @ObservationIgnored package private(set) var towerWrites: InboxTowerWrites?
 
     /// Writes the Inbox through the tower from now on, the approvals'
@@ -422,7 +414,8 @@ package final class ActionStripViewModel {
 
     /// One `inbox.act` write per card at a time, then a read. A failure stays
     /// on its row (`press`) with **Retry**, which re-sends the same request;
-    /// a record gone meanwhile leaves quietly. Nil when no tower writes.
+    /// a record gone meanwhile leaves quietly. Nil when a press on the card
+    /// was already under way.
     @discardableResult
     private func towerWrite(
         _ key: CardKey,
@@ -431,12 +424,13 @@ package final class ActionStripViewModel {
         verb: ActVerb,
         params: ActParams
     ) async -> InboxTowerWrites.Outcome? {
-        guard let towerWrites else { return nil }
+        let towerWrites = towerWrites
         return await pendingWrites.run(key) {
             lastError = nil
             let item: InboxSelection? = if press != nil, case let .card(item) = key { item } else { nil }
             if let item { rowErrors[item] = nil }
-            let outcome = await towerWrites.act(target: target, verb: verb, params: params)
+            let outcome = await towerWrites?.act(target: target, verb: verb, params: params)
+                ?? .failed(TowerText.daemonDown)
             await refresh()
             if case let .failed(sentence) = outcome {
                 let gone = item.map { !isOpenRecord($0) } ?? false
@@ -843,44 +837,17 @@ package final class ActionStripViewModel {
         pendingWrites.isPending(CardKey.card(item))
     }
 
-    /// Done on a reminder: a direct GRDB write (STRIP-02), then `inbox
-    /// approvals changed` so Needs approval's recipe redraws (STRIP-03) —
-    /// after the press settles, so the CLI process never holds the row busy.
+    /// Done on a reminder: `inbox.act ref` (STRIP-02); Go runs the
+    /// reminder's approval hook (`inbox approvals changed`) in the same call.
     package func markReminderDone(_ id: Int64) async {
-        if towerWrites != nil {
-            // Go runs the reminder's approval hook in the same call.
-            await towerWrite(.card(.reminder(id)), press: .done, target: "r\(id)", verb: .ref,
-                             params: ActParams(refKind: .reminder, refID: id, refVerb: .done))
-            return
-        }
-        guard await write(.card(.reminder(id)), { try ReminderQueries.markDone($0, id: id) }, press: .done)
-        else { return }
-        await reminderChanged(id)
+        await towerWrite(.card(.reminder(id)), press: .done, target: "r\(id)", verb: .ref,
+                         params: ActParams(refKind: .reminder, refID: id, refVerb: .done))
     }
 
     /// Snooze on a reminder (Snooze 1h is the only one the cards offer).
     package func snoozeReminder(_ id: Int64, until: String) async {
-        if towerWrites != nil {
-            await towerWrite(.card(.reminder(id)), press: .snoozeHour, target: "r\(id)", verb: .ref,
-                             params: ActParams(refKind: .reminder, refID: id, refVerb: .snooze, until: until))
-            return
-        }
-        // Labeled: `change` before it also takes a closure.
-        // swiftlint:disable trailing_closure
-        let snoozed = await write(.card(.reminder(id)), { try ReminderQueries.snooze($0, id: id, until: until) },
-                                  press: .snoozeHour, onFailure: { error in
-            // A reminder deleted elsewhere leaves the strip; `refresh` clears
-            // `lastError`, so the reason is set after it.
-            if error is RowNotFoundError { await self.refresh() }
-        })
-        // swiftlint:enable trailing_closure
-        if snoozed { await reminderChanged(id) }
-    }
-
-    /// `watchtower inbox approvals changed --ref reminder:<id>` through the
-    /// one helper Home shares (`ReminderApprovalHook`): logged, never shown.
-    private func reminderChanged(_ id: Int64) async {
-        await ReminderApprovalHook.changed(id, runner: cliRunner ?? ProcessCLIRunner.makeDefault())
+        await towerWrite(.card(.reminder(id)), press: .snoozeHour, target: "r\(id)", verb: .ref,
+                         params: ActParams(refKind: .reminder, refID: id, refVerb: .snooze, until: until))
     }
 
     /// Shows `item` in the reading pane. Opening an unread card writes its
@@ -891,17 +858,11 @@ package final class ActionStripViewModel {
     /// for it, and a Done or Dismiss pressed meanwhile still lands.
     package func select(_ item: InboxSelection?) async {
         selection = item
-        if towerWrites != nil {
-            guard let item, let opening = towerOpening(item) else { return }
-            await towerWrite(.opening(item), target: opening.target, verb: .read, params: opening.params)
-            return
-        }
-        guard let item, let change = openingWrite(item) else { return }
-        await write(.opening(item), change)
+        guard let item, let opening = towerOpening(item) else { return }
+        await towerWrite(.opening(item), target: opening.target, verb: .read, params: opening.params)
     }
 
-    /// `openingWrite` through the tower: `inbox.act read` on the card drawn,
-    /// only while it is unread.
+    /// The opening's `inbox.act read` on the card drawn, only while it is unread.
     private func towerOpening(_ item: InboxSelection) -> (target: String, params: ActParams)? {
         switch item {
         case .output(let id):
@@ -918,78 +879,27 @@ package final class ActionStripViewModel {
         }
     }
 
-    private func openingWrite(_ item: InboxSelection) -> (@Sendable (Database) throws -> Void)? {
-        switch item {
-        case .output(let id):
-            guard let card = outputRows.first(where: { $0.id == id }), card.isUnread else { return nil }
-            let now = Date()
-            let hash = card.contentHash
-            // A card rewritten under the view stays unread: the mark is for
-            // the version drawn, and the refresh after the write shows the new one.
-            return { _ = try AutomationQueries.markOutputOpened($0, id: id, contentHash: hash, now: now) }
-        case .day(let date):
-            guard let briefing = feed.days.first(where: { $0.date == date })?.briefing, !briefing.isRead else { return nil }
-            let id = briefing.id
-            return { try BriefingQueries.markRead($0, id: id) }
-        case .message(let id):
-            guard feed.messages.first(where: { $0.item.id == id })?.item.isUnread == true else { return nil }
-            return { try InboxQueries.markRead($0, id: id) }
-        case .proposal, .reminder, .track, .idea, .builtinNotice:
-            return nil
-        }
-    }
-
     // MARK: - Tracks
 
     /// Done on a track card (R4): the track read (TRACKS-04, with its digests)
-    /// and every event of it read, in one write.
+    /// and every event of it read, in one write (`inbox.act ref`).
     package func markTrackDone(_ id: Int) async {
-        if towerWrites != nil {
-            await trackRef(id, .done, press: .done)
-            return
-        }
-        await write(.card(.track(id)), { db in
-            try TrackQueries.markRead(db, id: id)
-            try TrackEventQueries.markAllRead(db, trackId: id)
-        }, press: .done)
+        await trackRef(id, .done, press: .done)
     }
 
     /// Stop watching (R4): an auto track is dismissed (TRACKS-07); a custom
-    /// track goes through the seam, which also turns its collection off. A
-    /// track deleted meanwhile is quiet.
+    /// track's collection goes off too, through its recipe when one is bound
+    /// (Go, in the same write). A track deleted meanwhile is quiet.
     package func stopWatching(_ track: Track) async {
-        let id = track.id
-        if towerWrites != nil {
-            // Go stops a custom track's collection too.
-            await trackRef(id, .stop, press: .stopWatching)
-            return
-        }
-        guard track.isCustom else {
-            await write(.card(.track(id)), { db in
-                do { try TrackQueries.dismiss(db, id: id) } catch is RowNotFoundError {}
-            }, press: .stopWatching)
-            return
-        }
-        await throughSeam(track, press: .stopWatching) { try await $0.stopWatching(track) }
+        await trackRef(track.id, .stop, press: .stopWatching)
     }
 
     /// Restore on a stopped card (the undo of Stop watching, TRACKS-07's
-    /// `RestoreTrack`): an auto track is restored; a custom track goes
-    /// through the seam, which also resumes its collection. The card moves
-    /// from the Stopped fold back to the tracks. A track deleted meanwhile is quiet.
+    /// `RestoreTrack`): the track restored and a custom track's collection
+    /// back on (Go). The card moves from the Stopped fold back to the
+    /// tracks. A track deleted meanwhile is quiet.
     package func restoreTrack(_ track: Track) async {
-        let id = track.id
-        if towerWrites != nil {
-            await trackRef(id, .restore, press: nil)
-            return
-        }
-        guard track.isCustom else {
-            await write(.card(.track(id))) { db in
-                do { try TrackQueries.restore(db, id: id) } catch is RowNotFoundError {}
-            }
-            return
-        }
-        await throughSeam(track) { try await $0.resumeWatching(track) }
+        await trackRef(track.id, .restore, press: nil)
     }
 
     private func trackRef(_ id: Int, _ verb: RefVerb, press: InboxRowPress?) async {
@@ -997,50 +907,22 @@ package final class ActionStripViewModel {
                          params: ActParams(refKind: .track, refID: Int64(id), refVerb: verb))
     }
 
-    /// One seam call per card at a time, then a read; a vanished row is quiet.
-    private func throughSeam(
-        _ track: Track,
-        press: InboxRowPress? = nil,
-        _ call: @escaping (any CustomTrackControlling) async throws -> Void
-    ) async {
-        let controls = customTrackControls
-        let item = InboxSelection.track(track.id)
-        await pendingWrites.run(CardKey.card(item)) {
-            lastError = nil
-            if press != nil { rowErrors[item] = nil }
-            do {
-                try await call(controls)
-                await refresh()
-            } catch is RowNotFoundError {
-                await refresh()
-            } catch {
-                lastError = error.localizedDescription
-                if let press { rowErrors[item] = InboxRowFailure(message: error.localizedDescription, press: press) }
-            }
-        }
-    }
-
     // MARK: - Messages
 
     /// Done on a message card: `watchtower inbox resolve <id>`.
     package func messageDone(_ id: Int) async {
-        if towerWrites != nil { return await messageRef(id, .resolve, press: .done) }
-        await runInboxCLI(id, ["inbox", "resolve", "\(id)"], press: .done)
+        await messageRef(id, .resolve, press: .done)
     }
 
     /// Hide on a message card: `watchtower inbox dismiss <id>`.
     package func hideMessage(_ id: Int) async {
-        if towerWrites != nil { return await messageRef(id, .dismiss, press: .hide) }
-        await runInboxCLI(id, ["inbox", "dismiss", "\(id)"], press: .hide)
+        await messageRef(id, .dismiss, press: .hide)
     }
 
     /// Snooze on a message card: `watchtower inbox snooze <id> <duration>`, `duration` "1d", "3d" or "1w".
     package func snoozeMessage(_ id: Int, duration: String) async {
-        if towerWrites != nil {
-            guard let until = Self.snoozeDate(duration, now: clock()) else { return }
-            return await messageRef(id, .snooze, press: .snooze(duration: duration), until: until)
-        }
-        await runInboxCLI(id, ["inbox", "snooze", "\(id)", duration], press: .snooze(duration: duration))
+        guard let until = Self.snoozeDate(duration, now: clock()) else { return }
+        await messageRef(id, .snooze, press: .snooze(duration: duration), until: until)
     }
 
     private func messageRef(_ id: Int, _ verb: RefVerb, press: InboxRowPress, until: String? = nil) async {
@@ -1066,31 +948,6 @@ package final class ActionStripViewModel {
         formatter.timeZone = calendar.timeZone
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: date)
-    }
-
-    /// Go owns `inbox_items`' status, so the buttons run the CLI. Its
-    /// resolve / dismiss / snooze never check the row they changed: a row
-    /// already resolved elsewhere exits 0, and the card leaves on the refresh.
-    private func runInboxCLI(_ id: Int, _ args: [String], press: InboxRowPress) async {
-        let runner = cliRunner
-        let item = InboxSelection.message(id)
-        await pendingWrites.run(CardKey.card(item)) {
-            lastError = nil
-            rowErrors[item] = nil
-            guard let runner = runner ?? ProcessCLIRunner.makeDefault() else {
-                lastError = HomeFeedActionError.cliUnavailable.localizedDescription
-                rowErrors[item] = InboxRowFailure(message: lastError ?? "", press: press)
-                return
-            }
-            do {
-                _ = try await runner.run(args: args, timeout: HomeFeedActionError.cliTimeout)
-                await refresh()
-            } catch {
-                await refresh()
-                lastError = error.localizedDescription
-                rowErrors[item] = InboxRowFailure(message: error.localizedDescription, press: press)
-            }
-        }
     }
 
     // MARK: - Reply from a row
@@ -1224,18 +1081,14 @@ package final class ActionStripViewModel {
     /// rewritten under the view (its hash moved) changes nothing and is
     /// read again, so the new version shows; a failure keeps it and says why.
     package func markOutputDone(_ id: Int64) async {
-        let now = Date()
         let hash = drawnHash(id)
-        if towerWrites != nil { return await closeOutput(id, .done, hash: hash) }
-        await guardedWrite(.output(id)) { try AutomationQueries.markOutputDone($0, id: id, contentHash: hash, now: now) }
+        await closeOutput(id, .done, hash: hash)
     }
 
     /// Dismiss on an output card: writes `dismissed_at` only, at the version drawn.
     package func dismissOutput(_ id: Int64) async {
-        let now = Date()
         let hash = drawnHash(id)
-        if towerWrites != nil { return await closeOutput(id, .dismiss, hash: hash) }
-        await guardedWrite(.output(id)) { try AutomationQueries.dismissOutput($0, id: id, contentHash: hash, now: now) }
+        await closeOutput(id, .dismiss, hash: hash)
     }
 
     /// Done or Dismiss through the tower, at the version drawn: the card is
@@ -1249,22 +1102,6 @@ package final class ActionStripViewModel {
     /// before the blocks migration, or one no longer listed) otherwise.
     private func drawnHash(_ id: Int64) -> String {
         outputRows.first { $0.id == id }?.contentHash ?? ""
-    }
-
-    /// A read-state write that may change nothing: the card is deselected
-    /// only when its row changed; either way the list is read again, so a
-    /// card rewritten meanwhile shows as the database has it.
-    private func guardedWrite(_ item: InboxSelection, _ change: @escaping @Sendable (Database) throws -> Bool) async {
-        let pool = dbPool
-        await pendingWrites.run(CardKey.card(item)) {
-            lastError = nil
-            do {
-                if try await pool.write(change) { deselect(item) }
-                await refresh()
-            } catch {
-                lastError = error.localizedDescription
-            }
-        }
     }
 
     /// A Reply button: `watchtower automations reply` records the press and
@@ -1341,37 +1178,6 @@ package final class ActionStripViewModel {
         case targetPress(String)
         /// The card's read mark on opening.
         case opening(InboxSelection)
-    }
-
-    /// One write per card: a second press while it waits does nothing.
-    /// `press` is a row's native press: its failure is also kept on the row
-    /// (`rowErrors`), except a vanished record's, which leaves quietly.
-    /// True when the write landed (false too for a press that did not run).
-    @discardableResult
-    private func write(
-        _ key: CardKey,
-        _ change: @escaping @Sendable (Database) throws -> Void,
-        press: InboxRowPress? = nil,
-        onFailure: (Error) async -> Void = { _ in }
-    ) async -> Bool {
-        let pool = dbPool
-        return await pendingWrites.run(key) {
-            lastError = nil
-            let item: InboxSelection? = if press != nil, case let .card(item) = key { item } else { nil }
-            if let item { rowErrors[item] = nil }
-            do {
-                try await pool.write(change)
-                await refresh()
-                return true
-            } catch {
-                await onFailure(error)
-                lastError = error.localizedDescription
-                if let item, let press, !(error is RowNotFoundError) {
-                    rowErrors[item] = InboxRowFailure(message: error.localizedDescription, press: press)
-                }
-                return false
-            }
-        } ?? false
     }
 
     /// A row's press whose write lives outside the strip (an idea verdict

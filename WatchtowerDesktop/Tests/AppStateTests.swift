@@ -935,8 +935,11 @@ final class AppStateTests: XCTestCase {
         let daemon = FakeDaemon()
         daemon.running = true
         appState.daemonControlOverride = daemon
+        let wipe = FakeCLIRunner()
+        appState.wipeLLMRunnerOverride = wipe
 
         try await appState.resetLLMData(workspaceDir: dir)
+        XCTAssertEqual(wipe.invocations, [["db", "wipe-llm"]], "the wipe is Go's verb")
 
         XCTAssertEqual(daemon.stops, 1)
         XCTAssertEqual(daemon.restarts, 1)

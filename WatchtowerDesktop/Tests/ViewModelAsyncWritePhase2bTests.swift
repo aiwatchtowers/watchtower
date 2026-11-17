@@ -48,7 +48,7 @@ final class ViewModelAsyncWritePhase2bTests: XCTestCase {
     /// and the list shows it only once it landed.
     func testATargetWriteWhileTheWriterIsBusyChangesNothingUntilItLands() async throws {
         let target = try makeTarget()
-        let vm = TargetsViewModel(dbManager: dbManager)
+        let vm = TargetsViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
         let held = HeldWriter(dbManager.dbPool)
         defer { held.release() }
@@ -75,7 +75,7 @@ final class ViewModelAsyncWritePhase2bTests: XCTestCase {
             try db.execute(sql: "UPDATE targets SET sub_items = ? WHERE id = ?",
                            arguments: [#"[{"text":"one","done":false},{"text":"two","done":true}]"#, shown.id])
         }
-        let vm = TargetsViewModel(dbManager: dbManager)
+        let vm = TargetsViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
 
         let wrote = await vm.toggleSubItem(shown, index: 0)
 
@@ -92,7 +92,7 @@ final class ViewModelAsyncWritePhase2bTests: XCTestCase {
             try db.execute(sql: "UPDATE targets SET sub_items = ? WHERE id = ?",
                            arguments: [#"[{"text":"two","done":false}]"#, shown.id])
         }
-        let vm = TargetsViewModel(dbManager: dbManager)
+        let vm = TargetsViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
 
         let wrote = await vm.removeSubItem(shown, index: 0)
 
@@ -109,7 +109,7 @@ final class ViewModelAsyncWritePhase2bTests: XCTestCase {
             try ChatConversationQueries.create(db, title: "Task", contextType: "target",
                                                contextID: String(target.id)).id
         }
-        let chat = TargetChatViewModel(target: target, viewModel: TargetsViewModel(dbManager: dbManager),
+        let chat = TargetChatViewModel(target: target, viewModel: TargetsViewModel(dbManager: dbManager, tower: dbManager.fakeTower),
                                        dbManager: dbManager, conversationID: conversationID,
                                        aiService: MockClaudeService())
         defer { chat.stop() }
@@ -140,7 +140,7 @@ final class ViewModelAsyncWritePhase2bTests: XCTestCase {
     /// landed, and a `+` meanwhile opens no second tab.
     func testTheFirstTabShowsOnceItsRowLandsAndOpensOnce() async throws {
         let target = try makeTarget()
-        let targets = TargetsViewModel(dbManager: dbManager)
+        let targets = TargetsViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         let held = HeldWriter(dbManager.dbPool)
         defer { held.release() }
 
@@ -183,7 +183,7 @@ final class ViewModelAsyncWritePhase2bTests: XCTestCase {
     /// behind is saved once the writer is free.
     func testAPanelMoveWithABusyWriterMovesAtOnceAndSavesAfter() async throws {
         let (pid, taskA, taskB) = try seedBoard()
-        let vm = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: pid, defaults: defaults)
+        let vm = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: pid, defaults: defaults, tower: dbManager.fakeTower)
         vm.load()
         vm.select(taskA)
         vm.beginDescriptionEdit(taskA)
@@ -205,7 +205,7 @@ final class ViewModelAsyncWritePhase2bTests: XCTestCase {
     /// description just stored, and saves cleanly afterwards.
     func testTextTypedWhileADescriptionSaveWaitsStays() async throws {
         let (pid, taskA, _) = try seedBoard()
-        let vm = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: pid, defaults: defaults)
+        let vm = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: pid, defaults: defaults, tower: dbManager.fakeTower)
         vm.load()
         vm.select(taskA)
         vm.beginDescriptionEdit(taskA)
@@ -233,7 +233,7 @@ final class ViewModelAsyncWritePhase2bTests: XCTestCase {
     /// composer keeps text typed meanwhile.
     func testACommentSendsOnceAndKeepsTextTypedMeanwhile() async throws {
         let (pid, taskA, _) = try seedBoard()
-        let vm = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: pid, defaults: defaults)
+        let vm = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: pid, defaults: defaults, tower: dbManager.fakeTower)
         vm.load()
         vm.select(taskA)
         vm.commentDraft = "Use the v2 endpoint"
@@ -260,7 +260,7 @@ final class ViewModelAsyncWritePhase2bTests: XCTestCase {
     /// land, in order: the field never waits for the first (F1).
     func testTwoChecklistAddsWhileTheWriterIsBusyBothLand() async throws {
         let target = try makeTarget()
-        let vm = TargetsViewModel(dbManager: dbManager)
+        let vm = TargetsViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         let held = HeldWriter(dbManager.dbPool)
         defer { held.release() }
 
@@ -281,7 +281,7 @@ final class ViewModelAsyncWritePhase2bTests: XCTestCase {
     /// queued) lands on that row where it is now, not on its old slot.
     func testAChecklistToggleAfterAQueuedRemoveFindsItsRow() async throws {
         let shown = try makeTarget(subItems: #"[{"text":"one","done":false},{"text":"two","done":false}]"#)
-        let vm = TargetsViewModel(dbManager: dbManager)
+        let vm = TargetsViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
 
         let removed = await vm.removeSubItem(shown, index: 0)
         let toggled = await vm.toggleSubItem(shown, index: 1)
@@ -297,7 +297,7 @@ final class ViewModelAsyncWritePhase2bTests: XCTestCase {
     /// earlier write changed the list: its edit is refused, never guessed.
     func testAChecklistToggleOfADuplicateAfterAQueuedRemoveIsRefused() async throws {
         let shown = try makeTarget(subItems: #"[{"text":"dup","done":false},{"text":"dup","done":false}]"#)
-        let vm = TargetsViewModel(dbManager: dbManager)
+        let vm = TargetsViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
 
         let removed = await vm.removeSubItem(shown, index: 0)
         let toggled = await vm.toggleSubItem(shown, index: 1)
@@ -319,7 +319,7 @@ final class ViewModelAsyncWritePhase2bTests: XCTestCase {
     /// wins, it is not dropped as a no-op against the board read before (F3).
     func testTheLastStatusPickWinsWhileAMoveWaits() async throws {
         let (pid, taskA, _) = try seedBoard()
-        let vm = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: pid, defaults: defaults)
+        let vm = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: pid, defaults: defaults, tower: dbManager.fakeTower)
         vm.load()
         let held = HeldWriter(dbManager.dbPool)
         defer { held.release() }
@@ -337,7 +337,7 @@ final class ViewModelAsyncWritePhase2bTests: XCTestCase {
     /// and a panel close meanwhile loses nothing (F4).
     func testASaveAskedForWhileOneWaitsFollowsItWithTheLatestDraft() async throws {
         let (pid, taskA, _) = try seedBoard()
-        let vm = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: pid, defaults: defaults)
+        let vm = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: pid, defaults: defaults, tower: dbManager.fakeTower)
         vm.load()
         vm.select(taskA)
         vm.beginDescriptionEdit(taskA)
@@ -373,7 +373,7 @@ final class ViewModelAsyncWritePhase2bTests: XCTestCase {
                                     conversationID: id, aiService: MockClaudeService())
             }
         }
-        let targets = TargetsViewModel(dbManager: dbManager)
+        let targets = TargetsViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         let busy = center.container(for: target, viewModel: targets, dbManager: dbManager)
         let ready = await busy.readyChat()
         let chat = try XCTUnwrap(ready)

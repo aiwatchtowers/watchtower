@@ -20,7 +20,7 @@ final class InboxIdeaPaneTests: XCTestCase {
     override func setUp() async throws {
         (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
         cli = FakeCLIRunner()
-        ideas = IdeasViewModel(dbManager: dbManager, cliRunner: cli)
+        ideas = IdeasViewModel(dbManager: dbManager, cliRunner: cli, tower: dbManager.fakeTower)
     }
 
     override func tearDown() async throws {

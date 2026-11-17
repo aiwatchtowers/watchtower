@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import WatchtowerCore
+import WatchtowerInterface
 import WatchtowerTestSupport
 
 /// `automation_outputs` with `kind='inbox'` are the strip's third source
@@ -40,89 +41,6 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         XCTAssertNil(vm.lastError)
     }
 
-    func testDoneWritesOnlyDoneAt() async throws {
-        let (pool, path) = try TestDatabase.createPool()
-        defer { TestDatabase.cleanup(path: path) }
-        // Output 1, unread; Go's next feed once it is done.
-        let tower = try FeedCaseTransport.seeded("desktop_output_done", pool: pool)
-        let id: Int64 = 1
-        let before = try outputRow(pool, id)
-        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await vm.follow(tower)
-
-        await vm.markOutputDone(id)
-
-        let fetched = try outputRow(pool, id)
-        let after = try XCTUnwrap(fetched)
-        XCTAssertNotNil(after["done_at"] as String?)
-        XCTAssertNil(after["read_at"] as String?)
-        XCTAssertNil(after["dismissed_at"] as String?)
-        for column in after.columnNames where column != "done_at" {
-            XCTAssertEqual(after[column] as DatabaseValue, before?[column] as DatabaseValue?, column)
-        }
-        XCTAssertTrue(vm.outputRows.isEmpty)
-        XCTAssertNil(vm.lastError)
-    }
-
-    func testDismissWritesOnlyDismissedAt() async throws {
-        let (pool, path) = try TestDatabase.createPool()
-        defer { TestDatabase.cleanup(path: path) }
-        // Output 1, unread; Go's next feed once it is dismissed.
-        let tower = try FeedCaseTransport.seeded("desktop_output_dismissed", pool: pool)
-        let id: Int64 = 1
-        let before = try outputRow(pool, id)
-        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await vm.follow(tower)
-
-        await vm.dismissOutput(id)
-
-        let fetched = try outputRow(pool, id)
-        let after = try XCTUnwrap(fetched)
-        XCTAssertNotNil(after["dismissed_at"] as String?)
-        XCTAssertNil(after["read_at"] as String?)
-        XCTAssertNil(after["done_at"] as String?)
-        for column in after.columnNames where column != "dismissed_at" {
-            XCTAssertEqual(after[column] as DatabaseValue, before?[column] as DatabaseValue?, column)
-        }
-        XCTAssertTrue(vm.outputRows.isEmpty)
-        XCTAssertNil(vm.lastError)
-    }
-
-    func testOpeningWritesOnlyReadAt() async throws {
-        let (pool, path) = try TestDatabase.createPool()
-        defer { TestDatabase.cleanup(path: path) }
-        // Output 1, unread; Go's next feed once it is read.
-        let tower = try FeedCaseTransport.seeded("desktop_output_opened", pool: pool)
-        let id: Int64 = 1
-        let before = try outputRow(pool, id)
-        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await vm.follow(tower)
-        let badgeBefore = await tower.badge() ?? -1
-
-        await vm.select(.output(id))
-
-        let fetched = try outputRow(pool, id)
-        let after = try XCTUnwrap(fetched)
-        XCTAssertNotNil(after["read_at"] as String?)
-        XCTAssertNil(after["done_at"] as String?)
-        XCTAssertNil(after["dismissed_at"] as String?)
-        for column in after.columnNames where column != "read_at" {
-            XCTAssertEqual(after[column] as DatabaseValue, before?[column] as DatabaseValue?, column)
-        }
-        XCTAssertEqual(vm.selection, .output(id))
-        XCTAssertEqual(vm.outputRows.map(\.id), [id])
-        XCTAssertEqual(vm.outputRows.first?.isUnread, false)
-        XCTAssertNil(vm.lastError)
-        let badgeAfter = await tower.badge() ?? -1
-        XCTAssertEqual(badgeAfter, badgeBefore - 1, "an opened plain artifact leaves the badge (inbox builder B)")
-
-        await vm.select(nil)
-        await vm.select(.output(id))
-
-        let again = try outputRow(pool, id)
-        XCTAssertEqual(again, after, "opening a read card writes nothing")
-    }
-
     func testDoneAndDismissClearTheirSelection() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
@@ -131,7 +49,7 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         let seed = Seed(automationID: 1, runID: 1)
         let (first, second): (Int64, Int64) = (1, 2)
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await vm.follow(tower)
+        await vm.followWriting(tower)
 
         await vm.select(.output(first))
         await vm.markOutputDone(second)
@@ -149,8 +67,8 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         XCTAssertTrue(vm.outputRows.isEmpty)
     }
 
-    /// Opening a card writes `read_at` under its own key: a Done pressed
-    /// while that write still waits for the writer lands, it is not dropped.
+    /// Opening a card has a key of its own: a Done pressed while the
+    /// opening's `inbox.act read` is under way is sent too, never dropped.
     func testDoneWhileOpeningLands() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
@@ -158,32 +76,13 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         let tower = try FeedCaseTransport.seeded("desktop_output_done", pool: pool)
         let id: Int64 = 1
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await vm.follow(tower)
-        // Hold the writer, so the opening write waits for it.
-        let started = DispatchSemaphore(value: 0)
-        let release = DispatchSemaphore(value: 0)
-        let holder = Task.detached {
-            try await pool.write { _ in
-                started.signal()
-                release.wait()
-            }
-        }
-        await Task.detached { started.wait() }.value
+        await vm.followWriting(tower)
 
-        // The opening waits on the writer (its selection is set just before).
-        let opening = Task { await vm.select(.output(id)) }
-        await untilObserved { vm.selection == .output(id) }
-        // Without its own key the Done would return here at once, dropped;
-        // with it, the Done waits on the writer too.
-        let done = Task { await vm.markOutputDone(id) }
-        await untilObserved { vm.isWriting(output: id) }
-        release.signal()
-        try await holder.value
-        await opening.value
-        await done.value
+        async let opening: Void = vm.select(.output(id))
+        async let done: Void = vm.markOutputDone(id)
+        _ = await (opening, done)
 
-        let row = try XCTUnwrap(outputRow(pool, id))
-        XCTAssertNotNil(row["done_at"] as String?, "the Done press was dropped")
+        XCTAssertEqual(Set(tower.acts.map(\.verb)), [.read, .done], "the Done press was dropped")
         XCTAssertTrue(vm.outputRows.isEmpty)
         XCTAssertNil(vm.selection)
         XCTAssertNil(vm.lastError)
@@ -212,30 +111,6 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         XCTAssertNil(cards[ids.disabled]?.pressedRunID)
         XCTAssertEqual(cards[ids.disabled]?.recipeState, .disabled)
         XCTAssertEqual(cards[ids.unconfirmed]?.recipeState, .needsConfirmation)
-    }
-
-    func testFailedWriteKeepsCard() async throws {
-        let (pool, path) = try TestDatabase.createPool()
-        defer { TestDatabase.cleanup(path: path) }
-        // Output 1, unread.
-        let tower = try FeedCaseTransport.seeded("desktop_output_done", pool: pool)
-        let id: Int64 = 1
-        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await vm.follow(tower)
-        try await pool.write { db in
-            try db.execute(sql: """
-                CREATE TRIGGER refuse_output_update BEFORE UPDATE ON automation_outputs
-                BEGIN SELECT RAISE(ABORT, 'disk said no'); END
-                """)
-        }
-
-        await vm.markOutputDone(id)
-        XCTAssertEqual(vm.outputRows.map(\.id), [id])
-        XCTAssertNotNil(vm.lastError)
-
-        await vm.dismissOutput(id)
-        XCTAssertEqual(vm.outputRows.map(\.id), [id])
-        XCTAssertNotNil(vm.lastError)
     }
 
     func testRefreshIsAPureRead() async throws {
@@ -276,7 +151,9 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         let seed = Seed(automationID: 1, runID: 1)
         let id: Int64 = 1
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await vm.follow(tower)
+        await vm.followWriting(tower)
+        // Go's guard: the drawn hash no longer matches, nothing is written.
+        tower.actAnswer = ActResult(already: true)
         XCTAssertEqual(vm.outputRows.first?.contentHash, "h1")
         try await pool.write { db in
             let run = try TestDatabase.insertAutomationRun(db, automationID: seed.automationID)
@@ -315,7 +192,8 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         }
     }
 
-    /// With the drawn hash the same writes land once, as before.
+    /// With the drawn hash the opening and Done are sent at it; the card
+    /// leaves once Go's Done landed.
     func testDoneWithTheDrawnHashMarksOnce() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
@@ -323,13 +201,13 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         let tower = try FeedCaseTransport.seeded("desktop_output_living_done", pool: pool)
         let id: Int64 = 1
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await vm.follow(tower)
+        await vm.followWriting(tower)
         await vm.select(.output(id))
-        XCTAssertNotNil(try XCTUnwrap(outputRow(pool, id))["read_at"] as String?)
 
         await vm.markOutputDone(id)
 
-        XCTAssertNotNil(try XCTUnwrap(outputRow(pool, id))["done_at"] as String?)
+        XCTAssertEqual(tower.acts.map(\.verb), [.read, .done])
+        XCTAssertEqual(tower.acts.map(\.params.contentHash), ["h1", "h1"])
         XCTAssertTrue(vm.outputRows.isEmpty)
         XCTAssertNil(vm.selection)
     }

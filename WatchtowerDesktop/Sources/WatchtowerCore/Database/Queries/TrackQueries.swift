@@ -98,94 +98,13 @@ package enum TrackQueries {
 
     // MARK: - Mark read
 
-    /// Mark a track as read: set read_at=now, has_updates=0, and cascade-mark related digests.
-    /// Best-effort, unchecked: a track deleted meanwhile has nothing left to
-    /// read, so a zero-row write is the desired end state, not a failure.
-    package static func markRead(_ db: Database, id: Int) throws {
-        try db.execute(sql: """
-            UPDATE tracks SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), has_updates = 0
-            WHERE id = ?
-            """, arguments: [id])
-
-        // Cascade: mark related digests read via related_digest_ids JSON
-        let json = try String.fetchOne(
-            db, sql: "SELECT related_digest_ids FROM tracks WHERE id = ?", arguments: [id]
-        )
-        guard let json, !json.isEmpty, json != "[]",
-              let data = json.data(using: .utf8),
-              let digestIDs = try? JSONDecoder().decode([Int].self, from: data)
-        else { return }
-        for digestID in digestIDs where digestID > 0 {
-            try DigestQueries.markDigestRead(db, id: digestID)
-            try DigestQueries.markAllDecisionsRead(db, digestID: digestID)
-        }
-    }
-
-    /// Marks multiple tracks read in one write, cascading to related digests per track.
-    package static func markRead(_ db: Database, ids: [Int]) throws {
-        for id in ids {
-            try markRead(db, id: id)
-        }
-    }
-
     // MARK: - Priority
-
-    package static func updatePriority(_ db: Database, id: Int, priority: String) throws {
-        try db.execute(
-            sql: "UPDATE tracks SET priority = ? WHERE id = ?",
-            arguments: [priority, id]
-        )
-        // Before the feedback row: a vanished track must not leave a correction behind.
-        try db.requireUpdated("track", id: id)
-        try FeedbackQueries.addFeedback(
-            db,
-            entityType: "track",
-            entityID: "\(id)",
-            rating: -1,
-            comment: "priority corrected to \(priority)"
-        )
-    }
 
     // MARK: - Ownership
 
-    package static func updateOwnership(_ db: Database, id: Int, ownership: String) throws {
-        try db.execute(
-            sql: "UPDATE tracks SET ownership = ? WHERE id = ?",
-            arguments: [ownership, id]
-        )
-        try db.requireUpdated("track", id: id)
-    }
-
     // MARK: - Sub-items
 
-    package static func updateSubItems(_ db: Database, id: Int, subItems: [TrackSubItem]) throws {
-        let encoder = JSONEncoder()
-        let data = try encoder.encode(subItems)
-        let json = String(data: data, encoding: .utf8) ?? "[]"
-        try db.execute(
-            sql: "UPDATE tracks SET sub_items = ? WHERE id = ?",
-            arguments: [json, id]
-        )
-        try db.requireUpdated("track", id: id)
-    }
-
     // MARK: - Dismiss / Restore
-
-    package static func dismiss(_ db: Database, id: Int) throws {
-        try db.execute(
-            sql: "UPDATE tracks SET dismissed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
-            arguments: [id]
-        )
-        try db.requireUpdated("track", id: id)
-    }
-
-    package static func restore(_ db: Database, id: Int) throws {
-        try db.execute(
-            sql: "UPDATE tracks SET dismissed_at = '' WHERE id = ?",
-            arguments: [id]
-        )
-        try db.requireUpdated("track", id: id)
-    }
 
     // MARK: - Custom tracks
 
@@ -214,29 +133,8 @@ package enum TrackQueries {
             """, arguments: [targetID])
     }
 
-    package static func setEnabled(_ db: Database, id: Int, enabled: Bool) throws {
-        try db.execute(sql: """
-            UPDATE tracks SET enabled = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?
-            """, arguments: [enabled, id])
-        try db.requireUpdated("track", id: id)
-    }
-
-    /// Edits a custom track's watch instruction in place.
-    package static func updateInstruction(_ db: Database, id: Int, instruction: String) throws {
-        try db.execute(sql: """
-            UPDATE tracks SET instruction = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-            WHERE id = ? AND origin = 'custom'
-            """, arguments: [instruction, id])
-        try db.requireUpdated("track", id: id)
-    }
-
     package static func fetchLastRunAt(_ db: Database, id: Int) throws -> String {
         try String.fetchOne(db, sql: "SELECT last_run_at FROM tracks WHERE id = ?", arguments: [id]) ?? ""
     }
 
-    /// Permanently deletes a track and cascades its track_events (FK ON DELETE
-    /// CASCADE). Used for user-created custom tracks; auto tracks use dismiss.
-    package static func delete(_ db: Database, id: Int) throws {
-        try db.execute(sql: "DELETE FROM tracks WHERE id = ?", arguments: [id])
-    }
 }

@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 @testable import WatchtowerCore
+import WatchtowerInterface
 import WatchtowerTestSupport
 
 /// The Inbox view model over every kind (C1 Task 5): one pure read
@@ -152,44 +153,6 @@ final class ActionStripAllKindsTests: XCTestCase {
 
     // MARK: - Opening
 
-    func testOpeningTheDayCardMarksTheBriefingRead() async throws {
-        let date = Self.caseDay
-        // Briefings 1 (2026-01-01) and 2 (the case's day).
-        let tower = try tower("desktop_kinds_two_briefings")
-        let id = 2
-        let other = try row("briefings", id - 1)
-        let before = try row("briefings", id)
-        let vm = makeVM()
-        await vm.follow(tower)
-
-        await vm.select(.day(date))
-
-        let after = try row("briefings", id)
-        XCTAssertNotNil(after["read_at"] as String?)
-        assertOnlyChanged("read_at", before: before, after: after)
-        XCTAssertEqual(try row("briefings", id - 1), other)
-        XCTAssertEqual(vm.selection, .day(date))
-        XCTAssertEqual(vm.feed.days.first { $0.date == date }?.isUnread, false)
-        XCTAssertNil(vm.lastError)
-    }
-
-    func testOpeningAMessageWritesOnlyReadAt() async throws {
-        let tower = try tower("desktop_kinds_one_message")
-        let id = 1
-        let before = try row("inbox_items", id)
-        let vm = makeVM()
-        await vm.follow(tower)
-
-        await vm.select(.message(id))
-
-        let after = try row("inbox_items", id)
-        XCTAssertNotNil(after["read_at"] as String?)
-        XCTAssertNotEqual(after["read_at"] as String?, "")
-        assertOnlyChanged("read_at", before: before, after: after)
-        XCTAssertEqual(vm.feed.messages.map(\.item.isUnread), [false])
-        XCTAssertNil(vm.lastError)
-    }
-
     func testOpeningATrackWritesNothing() async throws {
         // Track 1 with an unread event, idea 1.
         let tower = try tower("desktop_kinds_track_and_idea")
@@ -207,50 +170,14 @@ final class ActionStripAllKindsTests: XCTestCase {
         XCTAssertEqual(vm.selection, .idea(idea.id))
     }
 
-    func testOpeningAnAlreadyReadCardWritesNothing() async throws {
-        let date = Self.caseDay
-        // The day's briefing and message 1, both read already.
-        let tower = try tower("desktop_kinds_read_briefing_and_message")
-        let id = 1
-        let tables = ["briefings", "inbox_items"]
-        let before = try dump(tables)
-        let vm = makeVM()
-        await vm.follow(tower)
-
-        await vm.select(.day(date))
-        await vm.select(.message(id))
-
-        XCTAssertEqual(try dump(tables), before)
-        XCTAssertNil(vm.lastError)
-    }
-
     // MARK: - Tracks
-
-    func testTrackDoneMarksTrackAndEventsRead() async throws {
-        // Tracks 1 (two unread events) and 2 (one); Go's next feed once 1 is done.
-        let tower = try tower("desktop_kinds_two_tracks_with_updates")
-        let (id, other) = (1, 2)
-        let vm = makeVM()
-        await vm.follow(tower)
-
-        await vm.markTrackDone(id)
-
-        let after = try row("tracks", id)
-        XCTAssertEqual(after["has_updates"] as Int?, 0)
-        XCTAssertNotNil(after["read_at"] as String?)
-        XCTAssertEqual(try unreadEvents(id), 0)
-        XCTAssertEqual(try unreadEvents(other), 1)
-        XCTAssertEqual(try row("tracks", other)["has_updates"] as Int?, 1)
-        XCTAssertEqual(vm.feed.tracks.first { $0.track.id == id }?.isUnread, false)
-        XCTAssertNil(vm.lastError)
-    }
 
     func testStopWatchingACustomTrackPausesIt() async throws {
         // Custom track 1 (collecting) and auto track 2; Go's feeds once each is stopped.
         let tower = try tower("desktop_kinds_custom_and_auto_track")
         let (custom, auto) = (1, 2)
         let vm = makeVM()
-        await vm.follow(tower)
+        await vm.followWriting(tower)
         let cards = vm.feed.tracks.map(\.track)
         let customTrack = try XCTUnwrap(cards.first { $0.id == custom })
         let autoTrack = try XCTUnwrap(cards.first { $0.id == auto })
@@ -259,13 +186,15 @@ final class ActionStripAllKindsTests: XCTestCase {
 
         await vm.stopWatching(customTrack)
         await vm.stopWatching(autoTrack)
+        // Go's writes, which the test's database never sees on its own.
+        try tower.write("custom_stopped")
+        try tower.write("auto_stopped")
+        await vm.refresh()
 
-        let customRow = try row("tracks", custom)
-        XCTAssertNotEqual(customRow["dismissed_at"] as String?, "")
-        XCTAssertEqual(customRow["enabled"] as Int?, 0)
-        let autoRow = try row("tracks", auto)
-        XCTAssertNotEqual(autoRow["dismissed_at"] as String?, "")
-        XCTAssertEqual(autoRow["enabled"] as Int?, 1)
+        // One `inbox.act ref stop` each; Go turns the custom track's collection off.
+        XCTAssertEqual(tower.acts.map(\.params.refID), [Int64(custom), Int64(auto)])
+        XCTAssertEqual(tower.acts.map(\.params.refVerb), [.stop, .stop])
+        XCTAssertEqual(tower.acts.map(\.params.refKind), [.track, .track])
         XCTAssertTrue(vm.feed.tracks.isEmpty)
         XCTAssertNil(vm.lastError)
     }
@@ -355,35 +284,37 @@ final class ActionStripAllKindsTests: XCTestCase {
 
     // MARK: - Messages
 
-    func testMessageButtonsRunTheInboxCLI() async throws {
+    func testMessageButtonsSendInboxAct() async throws {
         let tower = try tower("desktop_kinds_one_message")
         let id = 1
         let runner = FakeCLIRunner()
         let vm = makeVM(runner)
-        await vm.follow(tower)
+        await vm.followWriting(tower)
 
         await vm.messageDone(id)
         await vm.hideMessage(id)
         await vm.snoozeMessage(id, duration: "3d")
 
-        XCTAssertEqual(runner.invocations, [
-            ["inbox", "resolve", "\(id)"],
-            ["inbox", "dismiss", "\(id)"],
-            ["inbox", "snooze", "\(id)", "3d"]
-        ])
+        XCTAssertEqual(tower.acts.map(\.target), ["messages", "messages", "messages"])
+        XCTAssertEqual(tower.acts.map(\.params.refVerb), [.resolve, .dismiss, .snooze])
+        XCTAssertEqual(tower.acts.map(\.params.refID), [Int64(id), Int64(id), Int64(id)])
+        XCTAssertNotNil(tower.acts.last?.params.until, "a snooze names its end")
+        XCTAssertTrue(runner.invocations.isEmpty, "no CLI: the tower writes")
         XCTAssertNil(vm.lastError)
         XCTAssertFalse(vm.isWriting(.message(id)))
     }
 
-    func testAMessageCLIFailureSaysWhy() async throws {
+    func testAMessageWriteFailureStaysOnItsRow() async throws {
         let tower = try tower("desktop_kinds_one_message")
         let id = 1
-        let vm = makeVM(FakeCLIRunner(error: CLIRunnerError.binaryNotFound))
-        await vm.follow(tower)
+        let vm = makeVM()
+        await vm.followWriting(tower)
+        let sentence = "Couldn't mark it done: the database is busy."
+        tower.actRefusal = sentence
 
         await vm.messageDone(id)
 
-        XCTAssertEqual(vm.lastError, CLIRunnerError.binaryNotFound.localizedDescription)
+        XCTAssertEqual(vm.rowErrors[.message(id)], InboxRowFailure(message: sentence, press: .done))
         XCTAssertEqual(vm.feed.messages.map(\.item.id), [id])
     }
 
@@ -483,13 +414,14 @@ final class ActionStripAllKindsTests: XCTestCase {
         let tower = try tower("desktop_kinds_one_message")
         let id = 1
         let vm = makeVM()
-        await vm.follow(tower)
+        await vm.followWriting(tower)
 
         await vm.open(folder: nil, select: .card(.message(id)))
 
         XCTAssertEqual(vm.legacyList, .messages)
         XCTAssertEqual(vm.selection, .message(id))
-        XCTAssertNotNil(try row("inbox_items", id)["read_at"] as String?)
+        XCTAssertEqual(tower.acts.map(\.verb), [.read], "its read mark is Go's write")
+        XCTAssertEqual(tower.acts.first?.params.refID, Int64(id))
     }
 
     /// A route to a message no longer listed (resolved meanwhile) selects

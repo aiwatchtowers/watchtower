@@ -119,3 +119,73 @@ func TestWipeLLMData_OneTransaction(t *testing.T) {
 		}
 	}
 }
+
+// TestWipeLLMDataPreservesProjectTargets (PROJ-02, moved from the Desktop's
+// DatabaseManagerTests with its name and assertions when the Desktop's Wipe
+// LLM Data began running `watchtower db wipe-llm`, #1170 Task 12): project
+// targets are source_type='chat', which the wipe deletes; a project board is
+// durable work state (only a project delete removes it), so the wipe spares
+// it — and its comments, which would cascade with it.
+func TestWipeLLMDataPreservesProjectTargets(t *testing.T) {
+	d := openTestDB(t)
+	res, err := d.Exec(`INSERT INTO projects (name, folder_path) VALUES ('acme', '/tmp/acme')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	insert := func(text string) int64 {
+		res, err := d.Exec(`INSERT INTO targets (text, level, period_start, period_end, source_type)
+			VALUES (?, 'week', '2026-04-20', '2026-04-26', 'chat')`, text)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	board := insert("Board task")
+	if _, err := d.Exec(`UPDATE targets SET project_id = ? WHERE id = ?`, projectID, board); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`INSERT INTO project_comments (project_id, target_id, author, body) VALUES (?, ?, 'agent', 'q')`,
+		projectID, board); err != nil {
+		t.Fatal(err)
+	}
+	insert("Chat suggestion")
+
+	if err := d.WipeLLMData(); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := d.Query(`SELECT text FROM targets ORDER BY text`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var texts []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		texts = append(texts, s)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(texts) != "[Board task]" {
+		t.Errorf("targets %v, want [Board task]", texts)
+	}
+	var comments int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM project_comments`).Scan(&comments); err != nil {
+		t.Fatal(err)
+	}
+	if comments != 1 {
+		t.Errorf("%d project comments, want 1", comments)
+	}
+}

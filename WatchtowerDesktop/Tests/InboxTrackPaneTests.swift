@@ -106,7 +106,7 @@ final class InboxTrackPaneTests: XCTestCase {
         let auto = try track(custom: false)
         var pressed: [String] = []
         let pane = InboxTrackPane(
-            card: card(auto), tracks: TracksViewModel(dbManager: manager), controls: RecordingCustomTrackControls(),
+            card: card(auto), tracks: TracksViewModel(dbManager: manager, tower: manager.fakeTower), controls: RecordingCustomTrackControls(),
             onDone: { pressed.append("done") }, onStopWatching: { pressed.append("stop") }, onRestore: {},
             onCommand: { _ in }, workbenches: []
         ).environment(AppState.isolated())
@@ -131,7 +131,7 @@ final class InboxTrackPaneTests: XCTestCase {
     /// are not pushed below the fold by it.
     func testChatStartsFolded() throws {
         let pane = InboxTrackPane(
-            card: card(try track(custom: false)), tracks: TracksViewModel(dbManager: manager),
+            card: card(try track(custom: false)), tracks: TracksViewModel(dbManager: manager, tower: manager.fakeTower),
             controls: RecordingCustomTrackControls(), onDone: {}, onStopWatching: {}, onRestore: {},
             onCommand: { _ in }, workbenches: []
         ).environment(AppState.isolated())
@@ -236,15 +236,7 @@ final class InboxTrackPaneTests: XCTestCase {
         try activity().inspect().find(button: "Scan from date").tap()
         await waitUntil { fake.calls.count == 4 }
 
-        let suite = "InboxTrackPaneTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let strip = ActionStripViewModel(dbPool: manager.dbPool, cliRunner: FakeCLIRunner(), customTrackControls: fake,
-                                         defaults: defaults)
-        await strip.stopWatching(custom)
-        await strip.restoreTrack(custom)
-
-        XCTAssertEqual(fake.calls.count, 6)
+        XCTAssertEqual(fake.calls.count, 4)
         XCTAssertEqual(Array(fake.calls.prefix(3)), [
             .saveInstruction(trackID: custom.id, text: "watch the refund owner"),
             .setCollecting(trackID: custom.id, on: false),
@@ -255,9 +247,6 @@ final class InboxTrackPaneTests: XCTestCase {
         }
         XCTAssertEqual(trackID, custom.id)
         XCTAssertEqual(from.timeIntervalSince1970, weekAgo.timeIntervalSince1970, accuracy: 60)
-        XCTAssertEqual(Array(fake.calls.suffix(2)), [
-            .stopWatching(trackID: custom.id), .resumeWatching(trackID: custom.id)
-        ])
         // The card reflects the writes the seam accepted, and the database is
         // untouched: nothing but the seam wrote.
         XCTAssertEqual(state.value.instruction, "watch the refund owner")
@@ -394,7 +383,7 @@ final class InboxTrackPaneTests: XCTestCase {
 
         let custom = try track(custom: true)
         let pane = InboxTrackPane(
-            card: card(custom), tracks: TracksViewModel(dbManager: manager), controls: RecordingCustomTrackControls(),
+            card: card(custom), tracks: TracksViewModel(dbManager: manager, tower: manager.fakeTower), controls: RecordingCustomTrackControls(),
             onDone: {}, onStopWatching: {}, onRestore: {}, onCommand: { _ in }, workbenches: []
         ).environment(AppState.isolated())
         // The pane renders; the source scan above is the real guard.
@@ -408,7 +397,9 @@ final class InboxTrackPaneTests: XCTestCase {
     func testAStoppedCardRestores() throws {
         for custom in [false, true] {
             let stopped = try track(custom: custom)
-            try manager.dbPool.write { db in try TrackQueries.dismiss(db, id: stopped.id) }
+            try manager.dbPool.write { db in
+                try db.execute(sql: "UPDATE tracks SET dismissed_at = '2026-11-16T09:00:00Z' WHERE id = ?", arguments: [stopped.id])
+            }
             let fetched = try manager.dbPool.read { db in try TrackQueries.fetchByID(db, id: stopped.id) }
             let track = try XCTUnwrap(fetched)
             XCTAssertTrue(track.isDismissed)
@@ -443,7 +434,7 @@ final class InboxTrackPaneTests: XCTestCase {
     private func recipeControls(_ runner: FakeCLIRunner) -> RecipeCustomTrackControls {
         RecipeCustomTrackControls(
             cli: AutomationsCLI(runner: runner),
-            direct: DirectCustomTrackControls(dbPool: manager.dbPool, scanService: TrackScanService(runner: runner)))
+            direct: DirectCustomTrackControls(tower: FakeScreenTower(), scanService: TrackScanService(runner: runner)))
     }
 
     private func watch(_ track: Track, runner: FakeCLIRunner) -> WatchTrackControls {
@@ -590,26 +581,6 @@ final class InboxTrackPaneTests: XCTestCase {
         XCTAssertNoThrow(try refusedRow.inspect().find(text: refusal))
     }
 
-    /// Stop watching (⋯) of a bound track through the Inbox: the recipe off
-    /// (`automations disable`) and the track dismissed; `tracks.enabled` is
-    /// the SQL trigger's, never written from Swift.
-    func testStopWatchingBoundDisablesRecipe() async throws {
-        let bound = try bind(try track(custom: true), to: 42)
-        let runner = FakeCLIRunner()
-        let suite = "InboxTrackPaneTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let strip = ActionStripViewModel(dbPool: manager.dbPool, cliRunner: FakeCLIRunner(),
-                                         customTrackControls: recipeControls(runner), defaults: defaults)
-
-        await strip.stopWatching(bound)
-
-        XCTAssertNil(strip.lastError)
-        XCTAssertEqual(runner.invocations, [["automations", "disable", "42"]])
-        let row = try trackRow(bound.id)
-        XCTAssertNotEqual(row["dismissed_at"] as String?, "")
-        XCTAssertEqual(row["enabled"] as Int?, 1)
-    }
 }
 
 /// `RecordingCustomTrackControls` with its calls on Observation, so a test

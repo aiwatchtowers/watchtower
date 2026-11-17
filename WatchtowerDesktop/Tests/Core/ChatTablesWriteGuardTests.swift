@@ -22,14 +22,6 @@ final class ChatTablesWriteGuardTests: XCTestCase {
         pattern: #"\b(?:"# + recordTypes.joined(separator: "|")
             + #")\b[^\n;]*?\.(?:insert|update|save|delete|upsert|updateAll|deleteAll|insertAndFetch)\s*\(\s*db\b"#)
 
-    /// Left for #1170 Task 12: `IdeaQueries.delete` deletes an idea's Discuss
-    /// chat with it until Go's `ideas.delete` takes it over; exactly these
-    /// two statements are allowed until then.
-    static let allowed: Set<String> = [
-        "IdeaQueries.swift: DELETE FROM chat_messages WHERE conversation_id = ?",
-        "IdeaQueries.swift: DELETE FROM chat_conversations WHERE id = ?"
-    ]
-
     /// The writes `text` holds: "file: statement" (from the verb to its
     /// line's end, quotes and arguments dropped) and "file:line".
     static func writes(in text: String, file: String) -> [(key: String, at: String)] {
@@ -55,20 +47,14 @@ final class ChatTablesWriteGuardTests: XCTestCase {
         let sources = tests.deletingLastPathComponent().appendingPathComponent("Sources")
         let walker = try XCTUnwrap(FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil))
         var offenders: [String] = []
-        var allowedSeen: Set<String> = []
         for case let url as URL in walker where url.pathExtension == "swift" {
             let text = try String(contentsOf: url, encoding: .utf8)
             for write in Self.writes(in: text, file: url.lastPathComponent) {
-                if Self.allowed.contains(write.key) {
-                    allowedSeen.insert(write.key)
-                } else {
-                    offenders.append("\(write.at) \(write.key)")
-                }
+                offenders.append("\(write.at) \(write.key)")
             }
         }
         XCTAssertTrue(offenders.isEmpty, "Swift writes a chat table (send a chat.* command instead):\n"
                       + offenders.sorted().joined(separator: "\n"))
-        XCTAssertTrue(allowedSeen.isSubset(of: Self.allowed))
     }
 
     /// Pins the matcher on every form it must catch, and on look-alikes it must not.

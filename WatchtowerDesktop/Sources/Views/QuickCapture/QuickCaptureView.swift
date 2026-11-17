@@ -1,6 +1,6 @@
 import SwiftUI
-import GRDB
 import WatchtowerCore
+import WatchtowerInterface
 
 /// The window's rendering state, derived from `DictationCenter`'s (shared,
 /// app-wide) phase plus this VM's own local outcome — a pure function so the
@@ -147,29 +147,31 @@ final class QuickCaptureViewModel {
     /// Inserts the cleaned result as a manual, owner-authored idea. A nil or
     /// empty result (nothing dictated, or a cleanup that came back empty)
     /// inserts nothing and surfaces an error instead.
-    func save(dbPool: DatabasePool) async {
+    func save(tower: (any TowerSending)?) async {
         guard let result else {
             error = "Nothing was dictated."
             return
         }
-        await insertIdea(text: result.text, title: result.title, dbPool: dbPool)
+        await insertIdea(text: result.text, title: result.title, tower: tower)
     }
 
     /// Saves whatever was transcribed before a cleanup (or later) failure —
     /// the "never lose the speech" fallback for the `.failed` state, using
     /// `center.lastRaw` since no `DictationCleanResult` was ever produced.
-    func saveRaw(dbPool: DatabasePool) async {
+    func saveRaw(tower: (any TowerSending)?) async {
         guard let raw = center?.lastRaw else {
             error = "Nothing was dictated."
             return
         }
-        await insertIdea(text: raw, title: nil, dbPool: dbPool)
+        await insertIdea(text: raw, title: nil, tower: tower)
     }
 
-    /// The write runs off the main thread (a database busy with the daemon
-    /// never freezes the window); a second Save while one is pending is
-    /// ignored, so one dictation saves one idea.
-    private func insertIdea(text: String, title: String?, dbPool: DatabasePool) async {
+    /// Go writes the idea (`ideas.create`, #1170 Task 12); a second Save
+    /// while one is pending is ignored, so one dictation saves one idea. The
+    /// press's key is the idea's text: Save again after a failure with no
+    /// answer re-sends the same request_id, so a first send that landed is
+    /// answered from the ledger instead of saving the idea twice.
+    private func insertIdea(text: String, title: String?, tower: (any TowerSending)?) async {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             error = "Nothing was dictated."
             return
@@ -179,9 +181,12 @@ final class QuickCaptureViewModel {
         defer { isSaving = false }
         let finalTitle = title ?? String(text.prefix(80))
         do {
-            savedIdeaID = try await dbPool.write { db in
-                try IdeaQueries.createManual(db, kind: "idea", title: finalTitle, essence: text)
+            guard let tower else { throw TowerWriteError(TowerText.daemonDown) }
+            let created: CreatedResult = try await tower.perform(.ideasCreate, key: "quick-capture|\(finalTitle)|\(text)") {
+                IdeaCreateRequest(requestID: $0, kind: "idea", title: finalTitle, essence: text)
             }
+            error = nil
+            savedIdeaID = created.id
         } catch {
             self.error = "Failed to save idea: \(error.localizedDescription)"
         }
@@ -424,18 +429,18 @@ struct QuickCaptureView: View {
     }
 
     private func save() {
-        guard let dbPool = appState.databaseManager?.dbPool else {
+        guard appState.databaseManager != nil else {
             viewModel.error = "No database available."
             return
         }
-        Task { await viewModel.save(dbPool: dbPool) }
+        Task { await viewModel.save(tower: appState.screenTower) }
     }
 
     private func saveRaw() {
-        guard let dbPool = appState.databaseManager?.dbPool else {
+        guard appState.databaseManager != nil else {
             viewModel.error = "No database available."
             return
         }
-        Task { await viewModel.saveRaw(dbPool: dbPool) }
+        Task { await viewModel.saveRaw(tower: appState.screenTower) }
     }
 }

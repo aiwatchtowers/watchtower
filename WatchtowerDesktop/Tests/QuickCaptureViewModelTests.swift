@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 import WatchtowerCore
+import WatchtowerInterface
 import WatchtowerTestSupport
 @testable import WatchtowerDesktop
 
@@ -36,96 +37,84 @@ final class QuickCaptureViewModelTests: MeetingRecorderTestCase {
 
     // MARK: - save()
 
-    func testSaveHappyPathInsertsIdeaAndMention() async throws {
+    /// The `ideas.create` calls `tower` got, as (kind, title, essence).
+    private func creates(_ tower: FakeScreenTower) -> [[String]] {
+        tower.calls(.ideasCreate).map { call in
+            ["kind", "title", "essence"].map { call.params[$0] as? String ?? "" }
+        }
+    }
+
+    func testSaveHappyPathSendsIdeasCreate() async throws {
         let vm = QuickCaptureViewModel()
         vm.result = DictationCleanResult(title: "Ship a weekly digest", text: "we should ship a weekly digest email")
+        let tower = FakeScreenTower()
+        tower.next(.ideasCreate, .ok(#"{"id":5}"#))
 
-        await vm.save(dbPool: dbManager.dbPool)
+        await vm.save(tower: tower)
 
-        let ideaID = try XCTUnwrap(vm.savedIdeaID)
+        XCTAssertEqual(vm.savedIdeaID, 5)
         XCTAssertNil(vm.error)
-        let idea = try await dbManager.dbPool.read { try IdeaQueries.fetchOne($0, id: Int(ideaID)) }
-        XCTAssertEqual(idea?.title, "Ship a weekly digest")
-        XCTAssertEqual(idea?.essence, "we should ship a weekly digest email")
-        XCTAssertEqual(idea?.statusRaw, "active")
-        XCTAssertEqual(idea?.source, "owner")
-
-        let mentions = try await dbManager.dbPool.read { try IdeaQueries.fetchMentions($0, ideaID: Int(ideaID)) }
-        XCTAssertEqual(mentions.map(\.quote), ["we should ship a weekly digest email"])
+        XCTAssertEqual(creates(tower), [["idea", "Ship a weekly digest", "we should ship a weekly digest email"]])
+        let ideas = try await dbManager.dbPool.read { try IdeaQueries.fetchList($0, kind: nil, limit: 10) }
+        XCTAssertTrue(ideas.isEmpty, "Go writes the idea; the Mac writes nothing")
     }
 
-    func testSaveWithEmptyResultInsertsNothingAndSetsError() async throws {
+    func testSaveWithEmptyResultSendsNothingAndSetsError() async throws {
         let vm = QuickCaptureViewModel()
         vm.result = DictationCleanResult(title: nil, text: "")
+        let tower = FakeScreenTower()
 
-        await vm.save(dbPool: dbManager.dbPool)
+        await vm.save(tower: tower)
 
         XCTAssertNil(vm.savedIdeaID)
         XCTAssertNotNil(vm.error)
-        let ideas = try await dbManager.dbPool.read { try IdeaQueries.fetchList($0, kind: nil, limit: 10) }
-        XCTAssertTrue(ideas.isEmpty)
+        XCTAssertTrue(tower.calls.isEmpty)
     }
 
-    func testSaveWithNoResultYetSetsErrorWithoutInserting() async throws {
+    func testSaveWithNoResultYetSetsErrorWithoutSending() async throws {
         let vm = QuickCaptureViewModel()
+        let tower = FakeScreenTower()
 
-        await vm.save(dbPool: dbManager.dbPool)
+        await vm.save(tower: tower)
 
         XCTAssertNil(vm.savedIdeaID)
         XCTAssertNotNil(vm.error)
-        let ideas = try await dbManager.dbPool.read { try IdeaQueries.fetchList($0, kind: nil, limit: 10) }
-        XCTAssertTrue(ideas.isEmpty)
+        XCTAssertTrue(tower.calls.isEmpty)
     }
 
     func testSaveFallsBackToTextPrefixWhenCleanupReturnedNoTitle() async throws {
         let vm = QuickCaptureViewModel()
         let longText = String(repeating: "a", count: 120)
         vm.result = DictationCleanResult(title: nil, text: longText)
+        let tower = FakeScreenTower()
+        tower.next(.ideasCreate, .ok(#"{"id":1}"#))
 
-        await vm.save(dbPool: dbManager.dbPool)
+        await vm.save(tower: tower)
 
-        let ideaID = try XCTUnwrap(vm.savedIdeaID)
-        let idea = try await dbManager.dbPool.read { try IdeaQueries.fetchOne($0, id: Int(ideaID)) }
-        XCTAssertEqual(idea?.title, String(longText.prefix(80)))
-        XCTAssertEqual(idea?.essence, longText)
+        XCTAssertEqual(creates(tower), [["idea", String(longText.prefix(80)), longText]])
     }
 
-    /// Board #590: while another process holds the write lock, the save waits
-    /// on the writer queue, not on the main thread — the main actor keeps
-    /// running — and a second Save pressed meanwhile adds no second idea.
-    func testSaveWaitsForALockedDatabaseOffTheMainThread() async throws {
-        let (seedPool, path) = try TestDatabase.createPool()
-        try seedPool.close()
-        defer { TestDatabase.cleanup(path: path) }
-        let manager = try DatabaseManager(path: path)
-        var holderConfig = Configuration()
-        holderConfig.allowsUnsafeTransactions = true
-        let holder = try DatabaseQueue(path: path, configuration: holderConfig)
-        try await holder.writeWithoutTransaction { try $0.execute(sql: "BEGIN IMMEDIATE") }
-
+    /// While the tower has not answered, the main actor keeps running, and a
+    /// second Save pressed meanwhile sends no second idea.
+    func testASecondSaveWhileOneIsPendingSendsNothing() async throws {
         let vm = QuickCaptureViewModel()
-        vm.result = DictationCleanResult(title: "Locked", text: "saved while the daemon writes")
-        let first = Task { await vm.save(dbPool: manager.dbPool) }
-        let second = Task { await vm.save(dbPool: manager.dbPool) }
+        vm.result = DictationCleanResult(title: "Pending", text: "saved while the daemon writes")
+        let tower = FakeScreenTower()
+        tower.next(.ideasCreate, .ok(#"{"id":9}"#))
+        let (gate, open) = AsyncStream<Void>.makeStream()
+        tower.onOK = { _, _ in for await _ in gate { return } }
+        let first = Task { await vm.save(tower: tower) }
 
-        // The write is now in flight behind the held lock. This line runs on
-        // the main actor; a write blocking the main thread would hold it back
-        // for the whole 5 s busy wait, then fail — `isSaving` would be false
-        // and `error` set by the time it ran.
         await untilObserved { vm.isSaving }
-        XCTAssertTrue(vm.isSaving, "the main actor kept running while the write waited")
-        XCTAssertNil(vm.error, "the write is still waiting, not failed")
-        XCTAssertNil(vm.savedIdeaID, "nothing lands before the lock is released")
-
-        try await holder.writeWithoutTransaction { try $0.execute(sql: "ROLLBACK") }
+        await vm.save(tower: tower)
+        XCTAssertNil(vm.savedIdeaID, "nothing landed before the answer")
+        open.yield()
         await first.value
-        await second.value
 
         XCTAssertNil(vm.error)
-        XCTAssertNotNil(vm.savedIdeaID)
+        XCTAssertEqual(vm.savedIdeaID, 9)
         XCTAssertFalse(vm.isSaving)
-        let count = try await manager.dbPool.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM ideas") }
-        XCTAssertEqual(count, 1, "the second Save during the pending write added nothing")
+        XCTAssertEqual(tower.calls(.ideasCreate).count, 1, "the second Save during the pending one sent nothing")
     }
 
     // MARK: - saveRaw() (M2 fix round: the failed-state "never lose the speech" fallback)
@@ -153,21 +142,24 @@ final class QuickCaptureViewModelTests: MeetingRecorderTestCase {
             return false
         }
 
-        await vm.saveRaw(dbPool: dbManager.dbPool)
+        let tower = FakeScreenTower()
+        tower.next(.ideasCreate, .ok(#"{"id":3}"#))
+        await vm.saveRaw(tower: tower)
 
-        let ideaID = try XCTUnwrap(vm.savedIdeaID)
-        let idea = try await dbManager.dbPool.read { try IdeaQueries.fetchOne($0, id: Int(ideaID)) }
-        XCTAssertEqual(idea?.essence, "said something before it failed")
-        XCTAssertEqual(idea?.title, String("said something before it failed".prefix(80)))
+        XCTAssertEqual(vm.savedIdeaID, 3)
+        XCTAssertEqual(creates(tower), [["idea", String("said something before it failed".prefix(80)),
+                                         "said something before it failed"]])
     }
 
     func testSaveRawWithNothingCapturedSetsErrorWithoutInserting() async throws {
         let vm = QuickCaptureViewModel()
 
-        await vm.saveRaw(dbPool: dbManager.dbPool)
+        let tower = FakeScreenTower()
+        await vm.saveRaw(tower: tower)
 
         XCTAssertNil(vm.savedIdeaID)
         XCTAssertNotNil(vm.error)
+        XCTAssertTrue(tower.calls.isEmpty)
     }
 
     // MARK: - M1 fix-round regression: ownership gate on stop()/cancel()

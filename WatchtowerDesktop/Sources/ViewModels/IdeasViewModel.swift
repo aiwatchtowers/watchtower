@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import WatchtowerCore
+import WatchtowerInterface
 
 /// Drives the Ideas & Decisions registry: a review queue (freshly proposed or
 /// explicitly flagged ideas) plus a filterable browsable registry of everything
@@ -53,8 +54,8 @@ final class IdeasViewModel {
     private let registryLimit = 200
 
     private let dbManager: DatabaseManager
-    /// Every write of this view model, in order (board #670).
-    @ObservationIgnored private let writes = SerialWrites()
+    /// The presses through the tower and each idea row's state.
+    let presses: TowerPresses
     /// One pending create or conversion (board #670).
     let pendingWrites = PendingWrites()
     /// SB4: retained so cancelBackfill() has something to cancel — started
@@ -82,9 +83,11 @@ final class IdeasViewModel {
         return reviewItems.first { $0.id == id } ?? registryItems.first { $0.id == id }
     }
 
-    init(dbManager: DatabaseManager, cliRunner: CLIRunnerProtocol? = nil) {
+    init(dbManager: DatabaseManager, cliRunner: CLIRunnerProtocol? = nil, tower: (any TowerSending)? = nil) {
         self.dbManager = dbManager
         self.cliRunner = cliRunner
+        presses = TowerPresses(tower: tower)
+        presses.reread = { [weak self] in self?.load() }
     }
 
     func select(_ id: Int?) {
@@ -159,60 +162,86 @@ final class IdeasViewModel {
 
     // MARK: - Actions
 
-    // The verdicts return whether the write landed (a failure's reason is
-    // in `errorMessage`): the Inbox's row actions keep it on the row.
+    // Every write is an `ideas.*` tower command (#1170 Task 12): Go writes
+    // the row, and the idea's row carries the press's state (`presses`).
+    // The verdicts return whether the write landed: the Inbox's row actions
+    // keep a failure on the row (`pressFailure`).
+
+    /// The row key of `idea`'s presses.
+    static func row(_ id: Int) -> String { "idea:\(id)" }
 
     @discardableResult
     func approve(_ idea: Idea) async -> Bool {
-        await write("approve idea") { db in try IdeaQueries.setStatus(db, id: idea.id, status: "active") }
+        await setStatus(idea, "active", label: TowerPressText.approving)
     }
 
     @discardableResult
     func reject(_ idea: Idea) async -> Bool {
-        await write("reject idea") { db in try IdeaQueries.setStatus(db, id: idea.id, status: "rejected") }
+        await setStatus(idea, "rejected", label: TowerPressText.rejecting)
     }
 
     @discardableResult
     func activate(_ idea: Idea) async -> Bool {
-        await write("activate idea") { db in try IdeaQueries.setStatus(db, id: idea.id, status: "active") }
+        await setStatus(idea, "active", label: TowerPressText.updating)
     }
 
     @discardableResult
     func notNow(_ idea: Idea, until: String = "") async -> Bool {
-        await write("snooze idea") { db in try IdeaQueries.snooze(db, id: idea.id, until: until.isEmpty ? nil : until) }
+        let until: String? = until.isEmpty ? nil : until
+        return await press(.ideasSnooze, idea.id, label: TowerPressText.snoozing, variant: until ?? "") {
+            IdeaSnoozeRequest(requestID: $0, id: Int64(idea.id), until: until)
+        }
     }
 
     @discardableResult
     func drop(_ idea: Idea) async -> Bool {
-        await write("drop idea") { db in try IdeaQueries.setStatus(db, id: idea.id, status: "dropped") }
+        await setStatus(idea, "dropped", label: TowerPressText.updating)
     }
 
     func merge(_ idea: Idea, into targetID: Int) async {
-        await write("merge idea") { db in try IdeaQueries.merge(db, id: idea.id, into: targetID) }
+        await press(.ideasMerge, idea.id, label: TowerPressText.updating, variant: "\(targetID)") {
+            IdeaMergeRequest(requestID: $0, id: Int64(idea.id), into: Int64(targetID))
+        }
     }
 
     /// A decision's Supersede (no replacing idea named).
     func supersede(_ idea: Idea) async {
-        await write("supersede decision") { db in try IdeaQueries.supersede(db, id: idea.id, by: nil) }
+        await press(.ideasSupersede, idea.id, label: TowerPressText.updating) {
+            IdeaSupersedeRequest(requestID: $0, id: Int64(idea.id), by: nil)
+        }
     }
 
     /// A decision's Reverse.
     func reverse(_ idea: Idea) async {
-        await write("reverse decision") { db in try IdeaQueries.setStatus(db, id: idea.id, status: "reversed") }
+        await setStatus(idea, "reversed", label: TowerPressText.updating)
     }
 
-    /// Hard delete — the row, its mentions, and its Discuss chat. The reload's
-    /// `reconcileSelection()` moves the selection off the vanished id.
+    /// Hard delete — the row, its mentions, and its Discuss chat (Go's
+    /// `ideas.delete`). The reload's `reconcileSelection()` moves the
+    /// selection off the vanished id.
     @discardableResult
     func deleteIdea(_ idea: Idea) async -> Bool {
-        await write("delete idea") { db in try IdeaQueries.delete(db, id: idea.id) }
+        await press(.ideasDelete, idea.id, label: TowerPressText.deleting) {
+            ScreenIDRequest(requestID: $0, id: Int64(idea.id))
+        }
     }
 
     /// Returns whether the rating landed, so the view can keep the owner's
     /// typed comment on screen when it did not (clear-only-on-success).
     @discardableResult
     func setRating(_ idea: Idea, rating: Int, comment: String = "") async -> Bool {
-        await write("set rating") { db in try IdeaQueries.setRating(db, id: idea.id, rating: rating, comment: comment) }
+        await press(.ideasRating, idea.id, label: TowerPressText.saving, variant: "\(rating)|\(comment)") {
+            IdeaRatingRequest(requestID: $0, id: Int64(idea.id), rating: rating, comment: comment)
+        }
+    }
+
+    /// The failure `idea`'s last press left on its row, nil when it landed.
+    func pressFailure(_ idea: Idea) -> String? {
+        switch presses.state(Self.row(idea.id)) {
+        case .refused(let sentence): sentence
+        case .unknown: TowerText.didntConfirmMac
+        case .busy, nil: nil
+        }
     }
 
     /// One create at a time (board #670): a second press while the first
@@ -225,31 +254,35 @@ final class IdeasViewModel {
         return created.flatMap { $0 }
     }
 
+    /// The row key of a create.
+    static let createRow = "idea:new"
+
     private func insertManual(kind: String, title: String, essence: String) async -> Int? {
-        do {
-            let newID = try await chained { db in
-                try IdeaQueries.createManual(db, kind: kind, title: title, essence: essence)
-            }
-            // Show what was just created: switch to its segment and select it. The Decisions ledger creates through this same VM
-            // and has no segment here, so a decision leaves the tab as it was.
-            if kind == "idea" || kind == "note" {
-                kindMode = kind
-                selectedID = Int(newID)
-            }
-            load()
-            return Int(newID)
-        } catch {
-            errorMessage = "Failed to create idea: \(error.localizedDescription)"
+        let created: CreatedResult? = await presses.send(
+            .ideasCreate, row: Self.createRow, label: TowerPressText.saving, variant: "\(kind)|\(title)|\(essence)"
+        ) { IdeaCreateRequest(requestID: $0, kind: kind, title: title, essence: essence) }
+        guard let created else {
+            errorMessage = pressFailure(row: Self.createRow).map { "Failed to create idea: \($0)" }
             return nil
         }
+        // Show what was just created: switch to its segment and select it. The Decisions ledger creates through this same VM
+        // and has no segment here, so a decision leaves the tab as it was.
+        if kind == "idea" || kind == "note" {
+            kindMode = kind
+            selectedID = Int(created.id)
+        }
+        load()
+        return Int(created.id)
     }
 
-    /// Converts an idea into a Target: creates the target from the idea's
-    /// title/essence (`source_type: "idea"`), marks the idea converted with a
-    /// link back to it, and returns the new target id so the caller can
-    /// navigate via `AppState.navigateToTarget`.
-    /// One conversion per idea at a time: a second press while the first
-    /// waits does nothing (nil), so no second target is made.
+    /// Converts an idea into a Target (`ideas.converted`): Go creates the
+    /// target from the idea's title/essence (`source_type: "idea"`) and marks
+    /// the idea converted with a link back to it in one write, and returns
+    /// the new target id so the caller can navigate via
+    /// `AppState.navigateToTarget`. One conversion per idea at a time: a
+    /// second press while the first waits does nothing (nil), and a second
+    /// conversion of a converted idea answers its target, so no second
+    /// target is made.
     @discardableResult
     func convertToTarget(_ idea: Idea) async -> Int? {
         let converted = await pendingWrites.run("convert:\(idea.id)") { await convert(idea) }
@@ -257,46 +290,36 @@ final class IdeasViewModel {
     }
 
     private func convert(_ idea: Idea) async -> Int? {
-        do {
-            let today = Self.dateFormatter.string(from: Date())
-            let newTargetID = try await chained { db -> Int in
-                let targetID = try TargetQueries.create(
-                    db,
-                    text: idea.title,
-                    intent: idea.essence,
-                    level: "day",
-                    periodStart: today,
-                    periodEnd: today,
-                    sourceType: "idea",
-                    sourceID: String(idea.id)
-                )
-                try IdeaQueries.markConverted(db, id: idea.id, targetID: Int64(targetID))
-                return targetID
-            }
-            load()
-            return newTargetID
-        } catch {
-            if error is RowNotFoundError { load() }
-            errorMessage = "Failed to convert idea to target: \(error.localizedDescription)"
-            return nil
+        let today = Self.dateFormatter.string(from: Date())
+        let result: IdeaConvertResult? = await presses.send(
+            .ideasConverted, row: Self.row(idea.id), label: TowerPressText.converting
+        ) { IdeaConvertedRequest(requestID: $0, id: Int64(idea.id), today: today) }
+        return result.map { Int($0.targetID) }
+    }
+
+    private func setStatus(_ idea: Idea, _ status: String, label: String) async -> Bool {
+        await press(.ideasStatus, idea.id, label: label, variant: status) {
+            IdeaStatusRequest(requestID: $0, id: Int64(idea.id), status: status)
         }
     }
 
-    /// Shared write-then-reload helper for the simple status-flip actions above.
-    /// Returns whether the write succeeded, so callers that clear owner-typed
-    /// input can gate on it.
+    /// One press on idea `id`'s row; whether it landed.
     @discardableResult
-    private func write(_ label: String, _ body: @escaping @Sendable (Database) throws -> Void) async -> Bool {
-        do {
-            try await chained(body)
-            load()
-            return true
-        } catch {
-            // A vanished idea leaves the lists instead of failing on every retry.
-            if error is RowNotFoundError { load() }
-            errorMessage = "Failed to \(label): \(error.localizedDescription)"
-            return false
-        }
+    private func press<Params: Encodable & Sendable>(
+        _ command: TowerCommand,
+        _ id: Int,
+        label: String,
+        variant: String = "",
+        _ params: @escaping (String) -> Params
+    ) async -> Bool {
+        let result: ActResult? = await presses.send(command, row: Self.row(id), label: label, variant: variant,
+                                                    params: params)
+        return result != nil
+    }
+
+    private func pressFailure(row: String) -> String? {
+        if case .refused(let sentence) = presses.state(row) { return sentence }
+        return nil
     }
 
     // MARK: - Find-ideas backfill
@@ -437,11 +460,6 @@ final class IdeasViewModel {
         return try? JSONDecoder().decode(IdeasDisabledEnvelope.self, from: Data(lastLine.utf8))
     }
 
-    /// A database write in this view model's chain (board #670): it starts
-    /// only once every write asked for before it finished.
-    private func chained<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
-        try await writes.runThrowing { try await self.dbManager.dbPool.write(body) }
-    }
 }
 
 /// Mirrors `backfillEnvelope` in `cmd/ideas.go` — `ideas mine --from`'s final

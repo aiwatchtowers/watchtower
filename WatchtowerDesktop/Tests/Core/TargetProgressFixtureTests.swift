@@ -69,7 +69,11 @@ final class TargetProgressFixtureTests: XCTestCase {
         case "recompute":
             try TargetQueries.recomputeParentProgress(db, parentID: try XCTUnwrap(op.id))
         case "status":
-            try TargetQueries.updateStatus(db, id: try XCTUnwrap(op.id), status: try XCTUnwrap(op.status))
+            // The status is Go's write (`targets.set_status`); its progress
+            // half is the shared rule this fixture pins on both sides.
+            let (id, status) = (try XCTUnwrap(op.id), try XCTUnwrap(op.status))
+            try db.execute(sql: "UPDATE targets SET status = ? WHERE id = ?", arguments: [status, id])
+            try TargetQueries.applyStatusProgress(db, id: id, status: status)
         case "delete":
             try TargetQueries.delete(db, id: try XCTUnwrap(op.id))
         case "reparent":

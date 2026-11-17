@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerInterface
 
 /// What one owner board write changed (mobile POC spec §6.3): the target it
 /// named and the parents the PROJ-05 rollup moved in the same write. Both
@@ -13,32 +14,24 @@ package struct WorkbenchOwnerWrite: Equatable, Sendable {
 
     /// Every target to report, the named one first.
     package var touched: [Int64] { [target] + rolledUp }
+
+    package init(target: Int64, rolledUp: [Int64]) {
+        self.target = target
+        self.rolledUp = rolledUp
+    }
+
+    /// A status or card move Go wrote on `target` (`targets.set_status` /
+    /// `targets.set_column`): the parents its rollup moved are Go's `rolled_up`.
+    package init(_ result: TargetStatusResult, target: Int64) {
+        self.init(target: target, rolledUp: result.rolledUp.sorted())
+    }
 }
 
-/// The owner's board writes, shared by the Desktop board
-/// (`WorkbenchBoardViewModel`) and the mobile hub's board handlers, so a
-/// phone edit runs the very code a Desktop edit runs (spec §6.3, I-2). Each
-/// runs inside the caller's write transaction; the caller decides what may
-/// be written (the board's guards, the hub's stale-view and scope checks).
+/// The owner's board writes the Desktop still makes in Swift. A status or a
+/// card move is Go's (`targets.set_status` / `targets.set_column`, #1170
+/// Task 12). Each runs inside the caller's write transaction; the caller
+/// decides what may be written (the board's guards).
 package enum WorkbenchOwnerWrites {
-    /// A status claimed by the owner (`TargetQueries.updateStatus`, PROJ-06),
-    /// with the parents the rollup moved (PROJ-05).
-    package static func setStatus(_ db: Database, targetID: Int64, status: String) throws -> WorkbenchOwnerWrite {
-        let rolledUp = try WorkbenchQueries.updateTargetStatus(db, targetID: targetID, status: status)
-        return WorkbenchOwnerWrite(target: targetID, rolledUp: rolledUp)
-    }
-
-    /// A card dragged to board column `columnID` of `status` (nil = the
-    /// status's first column, PROJ-19): status and column in one UPDATE,
-    /// claimed by the owner, with the parents the rollup moved. A move
-    /// between columns of one status writes no status history.
-    package static func moveToColumn(
-        _ db: Database, targetID: Int64, status: String, columnID: Int64?
-    ) throws -> WorkbenchOwnerWrite {
-        let rolledUp = try WorkbenchQueries.updateTargetColumn(db, targetID: targetID, status: status, columnID: columnID)
-        return WorkbenchOwnerWrite(target: targetID, rolledUp: rolledUp)
-    }
-
     package static func setPriority(_ db: Database, targetID: Int64, priority: String) throws -> WorkbenchOwnerWrite {
         try TargetQueries.updatePriority(db, id: Int(targetID), priority: priority)
         return WorkbenchOwnerWrite(target: targetID, rolledUp: [])

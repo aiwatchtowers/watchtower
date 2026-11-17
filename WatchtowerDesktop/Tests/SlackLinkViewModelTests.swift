@@ -46,7 +46,7 @@ final class SlackLinkViewModelTests: XCTestCase {
             return second
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         XCTAssertEqual(vm.slackChannelURL(channelID: "\(second):C0456")?.absoluteString,
@@ -63,7 +63,7 @@ final class SlackLinkViewModelTests: XCTestCase {
             return second
         }
 
-        let vm = TracksViewModel(dbManager: dbManager)
+        let vm = TracksViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         XCTAssertEqual(vm.slackChannelURL(channelID: "\(second):C0456")?.absoluteString,

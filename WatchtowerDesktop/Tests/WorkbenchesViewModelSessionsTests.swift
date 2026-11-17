@@ -88,6 +88,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         }
         vm.now = { [weak self] in self?.clock ?? Date() }
         vm.resolveAgentHome = { _ in URL(fileURLWithPath: "/Users/example/.codex") } // no login shell in tests
+        vm.tower = FakeScreenTower.applying(pool) // Work on It's status write is Go's `targets.work_on`
         return vm
     }
 

@@ -2,6 +2,7 @@ import Foundation
 import GRDB
 import Observation
 import WatchtowerCore
+import WatchtowerInterface
 
 /// What the chat shows under an owner message that said "решили: …" /
 /// "decided: …" or "факт: …" / "fact: …" (`KnowledgePrefix`).
@@ -19,10 +20,9 @@ enum ChatKnowledgeMark: Equatable {
 }
 
 /// Saved in place: an owner chat message behind a knowledge prefix is written
-/// at once as an active registry item (`IdeaQueries.createFromChat`, Swift is
-/// the registry's writer here, as for the owner-create sheet), and the chat
-/// shows the outcome under the message. The write runs off the send path, so
-/// a busy database never delays the turn.
+/// at once as an active registry item (Go's `ideas.create_from_chat`, #1170
+/// Task 12), and the chat shows the outcome under the message. The write
+/// runs off the send path, so a busy database never delays the turn.
 @MainActor
 @Observable
 final class ChatKnowledgeCenter {
@@ -38,8 +38,13 @@ final class ChatKnowledgeCenter {
     /// Writes still running, by a token; each removes itself when done.
     @ObservationIgnored private var tasks: [UUID: Task<Void, Never>] = [:]
 
-    init(dbPool: DatabasePool) {
+    /// Where the item's create and Undo go: the chat's tower when the write
+    /// runs (nil: they fail with the daemon's sentence).
+    @ObservationIgnored private let tower: () -> (any TowerSending)?
+
+    init(dbPool: DatabasePool, tower: @escaping () -> (any TowerSending)?) {
         self.dbPool = dbPool
+        self.tower = tower
     }
 
     func mark(for messageID: Int64) -> ChatKnowledgeMark? { marks[messageID] }
@@ -52,18 +57,17 @@ final class ChatKnowledgeCenter {
             marks[messageID] = .empty
             return
         }
-        let dbPool = dbPool
+        let tower = tower()
         let token = UUID()
         tasks[token] = Task { [weak self] in
             let result: Result<(Int64, String), Error>
             do {
-                result = .success(try await dbPool.write { db -> (Int64, String) in
-                    let id = try IdeaQueries.createFromChat(
-                        db, kind: parsed.kind, body: parsed.body, conversationID: conversationID, messageID: messageID)
-                    let stamp = try String.fetchOne(db, sql: "SELECT updated_at FROM ideas WHERE id = ?",
-                                                    arguments: [id]) ?? ""
-                    return (id, stamp)
-                })
+                guard let tower else { throw TowerWriteError(TowerText.daemonDown) }
+                let created: CreatedResult = try await tower.perform(.ideasCreateFromChat) {
+                    IdeaFromChatRequest(requestID: $0, conversationID: conversationID, messageID: messageID,
+                                        kind: parsed.kind, body: parsed.body)
+                }
+                result = .success((created.id, created.updatedAt ?? ""))
             } catch {
                 result = .failure(error)
             }
@@ -95,9 +99,11 @@ final class ChatKnowledgeCenter {
               undoing.insert(messageID).inserted else { return }
         defer { undoing.remove(messageID) }
         do {
-            let deleted = try await dbPool.write { db in
-                try IdeaQueries.undoChatIdea(db, id: ideaID, createdUpdatedAt: stamp)
+            guard let tower = tower() else { throw TowerWriteError(TowerText.daemonDown) }
+            let undone: UndoChatResult = try await tower.perform(.ideasUndoChat) {
+                IdeaUndoChatRequest(requestID: $0, id: ideaID, createdUpdatedAt: stamp)
             }
+            let deleted = undone.undone
             marks[messageID] = deleted ? .undone : .changed(ideaID: ideaID)
             if deleted { stamps[messageID] = nil }
         } catch {

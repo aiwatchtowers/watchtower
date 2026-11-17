@@ -35,7 +35,7 @@ final class WorkbenchesViewModelBoardColumnsTests: XCTestCase {
     }
 
     private func boardVM(_ pid: Int64) -> WorkbenchBoardViewModel {
-        let vm = WorkbenchBoardViewModel(dbPool: pool, projectID: pid, defaults: defaults)
+        let vm = WorkbenchBoardViewModel(dbPool: pool, projectID: pid, defaults: defaults, tower: FakeScreenTower.applying(pool))
         vm.load()
         return vm
     }

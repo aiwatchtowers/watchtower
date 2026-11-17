@@ -38,7 +38,7 @@ final class DecisionLedgerTests: XCTestCase {
             try TestDatabase.insertIdea(db, kind: "idea", title: "An idea")
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         XCTAssertEqual(vm.ledgerDecisions.map(\.title), ["Newer", "Older"])
@@ -57,7 +57,7 @@ final class DecisionLedgerTests: XCTestCase {
             )
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         // "No mention yet" sorts by its updated_at (2026-07), ahead of the
@@ -72,7 +72,7 @@ final class DecisionLedgerTests: XCTestCase {
             try TestDatabase.insertIdea(db, kind: "decision", title: "Newer", lastMentionAt: "2026-06-01T00:00:00Z")
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
         XCTAssertEqual(vm.ledgerDecisions.map(\.title), ["Newer", "Older"])
 
@@ -96,7 +96,7 @@ final class DecisionLedgerTests: XCTestCase {
             )
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         XCTAssertEqual(vm.unreadDecisionCount, 2)
@@ -108,7 +108,7 @@ final class DecisionLedgerTests: XCTestCase {
             try TestDatabase.insertIdea(db, kind: "decision", title: "Unseen", seenAt: nil)
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
         XCTAssertEqual(vm.unreadDecisionCount, 1)
 
@@ -126,7 +126,7 @@ final class DecisionLedgerTests: XCTestCase {
             try TestDatabase.insertIdea(db, kind: "decision", title: "C", seenAt: "2026-01-01T00:00:00Z")
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
         XCTAssertEqual(vm.unreadDecisionCount, 2)
 
@@ -149,7 +149,7 @@ final class DecisionLedgerTests: XCTestCase {
             return id
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         XCTAssertEqual(Set(vm.decisionMentionSources[Int(ideaID)] ?? []), ["slack", "jira"])
@@ -163,7 +163,7 @@ final class DecisionLedgerTests: XCTestCase {
             return id
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
         XCTAssertEqual(vm.decisionMentionSources[Int(ideaID)], ["meeting"])
 
@@ -184,7 +184,7 @@ final class DecisionLedgerTests: XCTestCase {
             return (old, new)
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         await vm.supersede(id: Int(ids.old), by: Int(ids.new))
@@ -200,7 +200,7 @@ final class DecisionLedgerTests: XCTestCase {
             try TestDatabase.insertIdea(db, kind: "decision", title: "Old plan", status: "active")
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
         await vm.supersede(id: Int(ideaID))
 
@@ -215,7 +215,7 @@ final class DecisionLedgerTests: XCTestCase {
             try TestDatabase.insertIdea(db, kind: "decision", title: "A call", status: "active")
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
         await vm.reverse(id: Int(ideaID))
 
@@ -231,7 +231,7 @@ final class DecisionLedgerTests: XCTestCase {
             try TestDatabase.insertIdea(db, kind: "decision", title: "A call")
         }
 
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
 
         let ok = await vm.setRating(id: Int(ideaID), rating: 1, comment: "Good call")

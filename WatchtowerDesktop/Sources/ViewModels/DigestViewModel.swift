@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import WatchtowerCore
+import WatchtowerInterface
 
 /// One row of the Digests segment's cross-source feed: a Slack channel/daily/
 /// weekly digest, a Gmail/Jira stream digest (Task 9), or a meeting recording
@@ -141,8 +142,13 @@ final class DigestViewModel {
     /// safety net the Inbox poll is (`ActionStripViewModel`).
     private let decisionsPollInterval: Duration = .seconds(30)
 
-    init(dbManager: DatabaseManager) {
+    /// The presses through the tower and each row's state.
+    let presses: TowerPresses
+
+    init(dbManager: DatabaseManager, tower: (any TowerSending)? = nil) {
         self.dbManager = dbManager
+        presses = TowerPresses(tower: tower)
+        presses.reread = { [weak self] in self?.reloadLedger() }
     }
 
     /// Start observing the digests table for live updates.
@@ -341,27 +347,19 @@ final class DigestViewModel {
 
     // MARK: - Read tracking (digests)
 
+    // Every read mark and ledger verdict is a tower command (#1170 Task 12):
+    // Go writes it (a digest's read cascades to its decisions), the row
+    // keeps the press's state (`presses`), and the screen re-reads the slice
+    // after the answer.
+
+    /// The row keys of the presses.
+    static func digestRow(_ id: Int) -> String { "digest:\(id)" }
+    static func streamRow(_ id: Int) -> String { "stream:\(id)" }
+    static func decisionRow(_ id: Int) -> String { "decision:\(id)" }
+    static let allDecisionsRow = "decisions"
+
     func markDigestRead(_ digestID: Int) async {
-        do {
-            try await chained { db in
-                try DigestQueries.markDigestRead(db, id: digestID)
-                // Cascade: mark all decisions embedded in this digest's raw JSON
-                // read. Vestigial for the ledger (which tracks seen_at on the
-                // ideas table instead) but harmless — decision_reads has no
-                // remaining reader; kept for the digest-detail legacy section's
-                // dual path and any other cascade caller (TrackQueries).
-                try DigestQueries.markAllDecisionsRead(db, digestID: digestID)
-            }
-            if let idx = digests.firstIndex(where: { $0.id == digestID && !$0.isRead }) {
-                unreadDigestCount = max(0, unreadDigestCount - 1)
-                if let updated = digestByID(digestID) {
-                    digests[idx] = updated
-                }
-            }
-        } catch {
-            // Non-critical — just log
-            print("Failed to mark digest read: \(error)")
-        }
+        await markDigestsRead([digestID])
     }
 
     // MARK: - Read tracking (stream digests)
@@ -371,12 +369,11 @@ final class DigestViewModel {
     /// precedent) and reloads just the stream slice so the feed entry's
     /// `isRead` and the segment's unread count update immediately.
     func markStreamRead(id: Int) async {
-        do {
-            try await chained { db in try StreamDigestQueries.markRead(db, id: id) }
-            reloadStreams()
-        } catch {
-            errorMessage = "Failed to mark stream digest read: \(error.localizedDescription)"
+        let result: ActResult? = await presses.send(.digestsStreamRead, row: Self.streamRow(id),
+                                                    label: TowerPressText.marking) {
+            ScreenIDRequest(requestID: $0, id: Int64(id))
         }
+        if result != nil { reloadStreams() }
     }
 
     /// Re-reads just the stream digests — cheaper than a full `load()` after
@@ -396,24 +393,20 @@ final class DigestViewModel {
     // MARK: - Batch operations
 
     func markDigestsRead(_ ids: Set<Int>) async {
-        do {
-            try await chained { db in
-                for id in ids {
-                    try DigestQueries.markDigestRead(db, id: id)
-                    // Cascade: mark all decisions in each digest as read
-                    try DigestQueries.markAllDecisionsRead(db, digestID: id)
+        let sorted = ids.sorted()
+        guard !sorted.isEmpty else { return }
+        let row = sorted.count == 1 ? Self.digestRow(sorted[0]) : "digests:" + sorted.map(String.init).joined(separator: ",")
+        let result: ActResult? = await presses.send(.digestsRead, row: row, label: TowerPressText.marking) {
+            ScreenIDsRequest(requestID: $0, iDs: sorted.map(Int64.init))
+        }
+        guard result != nil else { return }
+        for id in sorted {
+            if let idx = digests.firstIndex(where: { $0.id == id && !$0.isRead }) {
+                if let updated = digestByID(id) {
+                    digests[idx] = updated
                 }
+                unreadDigestCount = max(0, unreadDigestCount - 1)
             }
-            for id in ids {
-                if let idx = digests.firstIndex(where: { $0.id == id && !$0.isRead }) {
-                    if let updated = digestByID(id) {
-                        digests[idx] = updated
-                    }
-                    unreadDigestCount = max(0, unreadDigestCount - 1)
-                }
-            }
-        } catch {
-            print("Failed to mark digests read: \(error)")
         }
     }
 
@@ -434,39 +427,28 @@ final class DigestViewModel {
     /// Marks a single decision seen and reloads the ledger, so the row state
     /// and unread badge update immediately.
     func markDecisionSeen(id: Int) async {
-        do {
-            try await chained { db in try IdeaQueries.markDecisionSeen(db, id: id) }
-            reloadLedger()
-        } catch {
-            errorMessage = "Failed to mark decision seen: \(error.localizedDescription)"
+        await ledgerPress(.ideasDecisionSeen, row: Self.decisionRow(id), label: TowerPressText.marking) {
+            ScreenIDRequest(requestID: $0, id: Int64(id))
         }
     }
 
     /// Stamps every not-yet-seen decision as seen.
     func markAllDecisionsSeen() async {
-        do {
-            try await chained { db in try IdeaQueries.markAllDecisionsSeen(db) }
-            reloadLedger()
-        } catch {
-            errorMessage = "Failed to mark decisions seen: \(error.localizedDescription)"
+        await ledgerPress(.ideasDecisionsSeenAll, row: Self.allDecisionsRow, label: TowerPressText.marking) {
+            DecisionsSeenAllRequest(requestID: $0)
         }
     }
 
     func supersede(id: Int, by newID: Int? = nil) async {
-        do {
-            try await chained { db in try IdeaQueries.supersede(db, id: id, by: newID) }
-            reloadLedger()
-        } catch {
-            reportLedgerWriteFailure("supersede decision", error)
+        await ledgerPress(.ideasSupersede, row: Self.decisionRow(id), label: TowerPressText.updating,
+                          variant: newID.map(String.init) ?? "") {
+            IdeaSupersedeRequest(requestID: $0, id: Int64(id), by: newID.map(Int64.init))
         }
     }
 
     func reverse(id: Int) async {
-        do {
-            try await chained { db in try IdeaQueries.setStatus(db, id: id, status: "reversed") }
-            reloadLedger()
-        } catch {
-            reportLedgerWriteFailure("reverse decision", error)
+        await ledgerPress(.ideasStatus, row: Self.decisionRow(id), label: TowerPressText.updating, variant: "reversed") {
+            IdeaStatusRequest(requestID: $0, id: Int64(id), status: "reversed")
         }
     }
 
@@ -475,21 +457,25 @@ final class DigestViewModel {
     /// the IdeaDetailPane precedent).
     @discardableResult
     func setRating(id: Int, rating: Int, comment: String = "") async -> Bool {
-        do {
-            try await chained { db in try IdeaQueries.setRating(db, id: id, rating: rating, comment: comment) }
-            reloadLedger()
-            return true
-        } catch {
-            reportLedgerWriteFailure("set rating", error)
-            return false
+        await ledgerPress(.ideasRating, row: Self.decisionRow(id), label: TowerPressText.saving,
+                          variant: "\(rating)|\(comment)") {
+            IdeaRatingRequest(requestID: $0, id: Int64(id), rating: rating, comment: comment)
         }
     }
 
-    /// A decision deleted elsewhere reloads the ledger first (which clears
-    /// `errorMessage` on success), then names the failure.
-    private func reportLedgerWriteFailure(_ what: String, _ error: Error) {
-        if error is RowNotFoundError { reloadLedger() }
-        errorMessage = "Failed to \(what): \(error.localizedDescription)"
+    /// One ledger press: the ledger re-reads after the answer (the presses'
+    /// `reread`), and a refusal says why in `errorMessage` after it.
+    @discardableResult
+    private func ledgerPress<Params: Encodable & Sendable>(
+        _ command: TowerCommand,
+        row: String,
+        label: String,
+        variant: String = "",
+        _ params: @escaping (String) -> Params
+    ) async -> Bool {
+        let result: ActResult? = await presses.send(command, row: row, label: label, variant: variant, params: params)
+        if result == nil, case .refused(let sentence) = presses.state(row) { errorMessage = sentence }
+        return result != nil
     }
 
     /// Re-reads just the decisions ledger — cheaper than a full `load()`

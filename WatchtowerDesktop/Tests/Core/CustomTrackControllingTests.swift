@@ -1,12 +1,12 @@
 import XCTest
 import GRDB
 @testable import WatchtowerCore
+import WatchtowerInterface
 import WatchtowerTestSupport
 
 /// The seam for a custom track's card controls and Stop watching (C1
-/// Task 9, R4): C1's direct implementation writes the `tracks` row and runs
-/// the scan CLI; the Inbox view model sends a custom track's Stop watching
-/// through whatever implementation it was given.
+/// Task 9, R4): the direct implementation sends the `tracks.*` tower
+/// commands and runs the scan CLI; C3's drives a bound track's recipe.
 @MainActor
 final class CustomTrackControllingTests: XCTestCase {
     private var pool: DatabasePool!
@@ -39,52 +39,55 @@ final class CustomTrackControllingTests: XCTestCase {
         try XCTUnwrap(pool.read { db in try Row.fetchOne(db, sql: "SELECT * FROM tracks WHERE id = ?", arguments: [id]) })
     }
 
-    func testDirectControlsWriteTheTrackRow() async throws {
+    /// The calls `tower` got, as "command id[:value]".
+    private func sent(_ tower: FakeScreenTower) -> [String] {
+        tower.calls.map { call in
+            let id = (call.params["id"] as? Int).map(String.init)
+                ?? (call.params["ids"] as? [Int]).map { $0.map(String.init).joined(separator: ",") } ?? ""
+            let value = call.params["instruction"] ?? call.params["enabled"]
+            return "\(call.command.rawValue) \(id)" + (value.map { ":\($0)" } ?? "")
+        }
+    }
+
+    /// The unbound controls send the `tracks.*` commands (Go writes the row,
+    /// #1170 Task 12) and run the scan CLI; Swift writes nothing.
+    func testDirectControlsSendTheTrackCommands() async throws {
         let track = try customTrack()
+        let before = try row(track.id)
         let runner = FakeCLIRunner(stdout: Data("[]".utf8))
-        let controls = DirectCustomTrackControls(dbPool: pool, scanService: TrackScanService(runner: runner))
+        let tower = FakeScreenTower()
+        let controls = DirectCustomTrackControls(tower: tower, scanService: TrackScanService(runner: runner))
 
         try await controls.saveInstruction(track, text: "watch the refund owner")
-        XCTAssertEqual(try row(track.id)["instruction"] as String?, "watch the refund owner")
-
         try await controls.setCollecting(track, on: false)
-        XCTAssertEqual(try row(track.id)["enabled"] as Int?, 0)
         try await controls.setCollecting(track, on: true)
-        XCTAssertEqual(try row(track.id)["enabled"] as Int?, 1)
-
         let from = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-01T00:00:00Z"))
         try await controls.scan(track, from: from)
         try await controls.scan(track, from: nil)
+        try await controls.stopWatching(track)
+        try await controls.resumeWatching(track)
+        try await controls.delete(track)
+
+        XCTAssertEqual(sent(tower), [
+            "tracks.instruction \(track.id):watch the refund owner",
+            "tracks.enabled \(track.id):0",
+            "tracks.enabled \(track.id):1",
+            "tracks.stop \(track.id)",
+            "tracks.restore \(track.id)",
+            "tracks.delete \(track.id)"
+        ])
         XCTAssertEqual(runner.invocations, [
             ["tracks", "scan", "\(track.id)", "--since", "2026-10-01T00:00:00Z"],
             ["tracks", "scan", "\(track.id)"]
         ])
-
-        try await controls.stopWatching(track)
-        let stopped = try row(track.id)
-        XCTAssertFalse(((stopped["dismissed_at"] as String?) ?? "").isEmpty)
-        XCTAssertEqual(stopped["enabled"] as Int?, 0)
-
-        try await controls.resumeWatching(track)
-        let resumed = try row(track.id)
-        XCTAssertEqual(resumed["dismissed_at"] as String?, "")
-        XCTAssertEqual(resumed["enabled"] as Int?, 1)
-
-        try await pool.write { db in
-            try db.execute(sql: "INSERT INTO track_events (track_id, summary) VALUES (?, 'e')", arguments: [track.id])
-        }
-        try await controls.delete(track)
-        let left = try await pool.read { db in
-            [try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tracks WHERE id = ?", arguments: [track.id]),
-             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM track_events WHERE track_id = ?", arguments: [track.id])]
-        }
-        XCTAssertEqual(left, [0, 0], "the track and its events are gone")
+        XCTAssertEqual(try row(track.id), before, "the Mac wrote nothing itself")
     }
 
-    /// C3's controls: a bound track drives its watch recipe through the
-    /// CLI and never writes `tracks.enabled` or `tracks.instruction` from
-    /// Swift (the CLI and the SQL trigger mirror them); an unbound track
-    /// stops through C1's direct controls and refuses the rest.
+    /// C3's controls: a bound track drives its watch recipe through the CLI
+    /// (instruction, collecting, scans, the recipe's delete); Stop watching,
+    /// its undo and the track's delete are the tower's, which turns the
+    /// recipe off and on in the same write. An unbound track goes through the
+    /// direct controls throughout.
     func testRecipeControlsDriveTheRecipe() async throws {
         let track = try customTrack()
         try await pool.write { db in
@@ -94,9 +97,9 @@ final class CustomTrackControllingTests: XCTestCase {
         let bound = try XCTUnwrap(fetched)
         XCTAssertEqual(bound.automationID, 42)
         let runner = FakeCLIRunner(stdout: Data(#"{"run_id":3,"coalesced":false,"daemon_running":true}"#.utf8))
-        let cli = AutomationsCLI(runner: runner)
-        let direct = DirectCustomTrackControls(dbPool: pool, scanService: TrackScanService(runner: runner))
-        let controls = RecipeCustomTrackControls(cli: cli, direct: direct)
+        let tower = FakeScreenTower()
+        let direct = DirectCustomTrackControls(tower: tower, scanService: TrackScanService(runner: runner))
+        let controls = RecipeCustomTrackControls(cli: AutomationsCLI(runner: runner), direct: direct)
 
         try await controls.saveInstruction(bound, text: "watch the refund owner")
         try await controls.setCollecting(bound, on: false)
@@ -104,26 +107,12 @@ final class CustomTrackControllingTests: XCTestCase {
         let from = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-01T00:00:00Z"))
         try await controls.scan(bound, from: from)
         try await controls.scan(bound, from: nil)
-        let untouched = try row(track.id)
-        XCTAssertEqual(untouched["instruction"] as String?, "old")
-        XCTAssertEqual(untouched["enabled"] as Int?, 1)
-
         try await controls.stopWatching(bound)
-        let stopped = try row(track.id)
-        XCTAssertFalse(((stopped["dismissed_at"] as String?) ?? "").isEmpty)
-        XCTAssertEqual(stopped["enabled"] as Int?, 1, "the recipe's disable mirrors it, not Swift")
-
         try await controls.resumeWatching(bound)
-        XCTAssertEqual(try row(track.id)["dismissed_at"] as String?, "")
-
         try await controls.delete(bound)
-        let left = try await pool.read { db in
-            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tracks WHERE id = ?", arguments: [track.id])
-        }
-        XCTAssertEqual(left, 0)
 
         let calls = runner.invocations
-        XCTAssertEqual(calls.count, 8)
+        XCTAssertEqual(calls.count, 6)
         XCTAssertEqual(Array(calls[0].prefix(4)), ["tracks", "instruction", "\(track.id)", "--text-file"])
         XCTAssertEqual(runner.textFileContents, ["watch the refund owner"])
         XCTAssertEqual(Array(calls.dropFirst()), [
@@ -131,34 +120,29 @@ final class CustomTrackControllingTests: XCTestCase {
             ["automations", "enable", "42"],
             ["automations", "run", "42", "--since", "2026-10-01T00:00:00Z", "--json"],
             ["automations", "run", "42", "--json"],
-            ["automations", "disable", "42"],
-            ["automations", "enable", "42"],
             ["automations", "delete", "42"]
         ])
+        XCTAssertEqual(sent(tower), ["tracks.stop \(track.id)", "tracks.restore \(track.id)", "tracks.delete \(track.id)"])
 
-        // Unbound (a legacy custom track before its move): C1's direct controls throughout.
+        // Unbound (a legacy custom track before its move): the direct controls throughout.
         let unbound = try customTrack()
         XCTAssertNil(unbound.automationID)
         let scans = FakeCLIRunner(stdout: Data("[]".utf8))
+        let legacyTower = FakeScreenTower()
         let legacy = RecipeCustomTrackControls(
             cli: AutomationsCLI(runner: runner),
-            direct: DirectCustomTrackControls(dbPool: pool, scanService: TrackScanService(runner: scans)))
+            direct: DirectCustomTrackControls(tower: legacyTower, scanService: TrackScanService(runner: scans)))
         let before = runner.invocations.count
         try await legacy.saveInstruction(unbound, text: "watch the refund window")
-        XCTAssertEqual(try row(unbound.id)["instruction"] as String?, "watch the refund window")
         try await legacy.setCollecting(unbound, on: false)
-        XCTAssertEqual(try row(unbound.id)["enabled"] as Int?, 0)
-        try await legacy.setCollecting(unbound, on: true)
         try await legacy.scan(unbound, from: nil)
-        try await legacy.scan(unbound, from: from)
-        XCTAssertEqual(scans.invocations, [
-            ["tracks", "scan", "\(unbound.id)"],
-            ["tracks", "scan", "\(unbound.id)", "--since", "2026-10-01T00:00:00Z"]
-        ])
         try await legacy.stopWatching(unbound)
-        let stoppedUnbound = try row(unbound.id)
-        XCTAssertEqual(stoppedUnbound["enabled"] as Int?, 0)
-        XCTAssertFalse(((stoppedUnbound["dismissed_at"] as String?) ?? "").isEmpty)
+        XCTAssertEqual(sent(legacyTower), [
+            "tracks.instruction \(unbound.id):watch the refund window",
+            "tracks.enabled \(unbound.id):0",
+            "tracks.stop \(unbound.id)"
+        ])
+        XCTAssertEqual(scans.invocations, [["tracks", "scan", "\(unbound.id)"]])
         XCTAssertEqual(runner.invocations.count, before, "no recipe verb for an unbound track")
     }
 
@@ -172,101 +156,65 @@ final class CustomTrackControllingTests: XCTestCase {
         }
         let fetched = try await pool.read { db in try TrackQueries.fetchByID(db, id: track.id) }
         let bound = try XCTUnwrap(fetched)
-        let pool = try XCTUnwrap(pool)
-        let count = {
-            try await pool.read { db in
-                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tracks WHERE id = ?", arguments: [track.id])
-            }
-        }
         let busy = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "automation 42 is running\n"))
+        let busyTower = FakeScreenTower()
         let refused = RecipeCustomTrackControls(
             cli: AutomationsCLI(runner: busy),
-            direct: DirectCustomTrackControls(dbPool: pool, scanService: TrackScanService(runner: busy)))
+            direct: DirectCustomTrackControls(tower: busyTower, scanService: TrackScanService(runner: busy)))
         do {
             try await refused.delete(bound)
             XCTFail("another refusal is thrown")
         } catch {}
-        let kept = try await count()
-        XCTAssertEqual(kept, 1)
+        XCTAssertTrue(busyTower.calls.isEmpty, "the track is not touched")
 
         let gone = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(
             code: 1, stderr: "automation 42: automation not found\n"))
+        let tower = FakeScreenTower()
         let controls = RecipeCustomTrackControls(
             cli: AutomationsCLI(runner: gone),
-            direct: DirectCustomTrackControls(dbPool: pool, scanService: TrackScanService(runner: gone)))
+            direct: DirectCustomTrackControls(tower: tower, scanService: TrackScanService(runner: gone)))
         try await controls.delete(bound)
         XCTAssertEqual(gone.invocations, [["automations", "delete", "42"]])
-        let left = try await count()
-        XCTAssertEqual(left, 0)
+        XCTAssertEqual(sent(tower), ["tracks.delete \(track.id)"])
     }
 
-    /// A row deleted elsewhere is a `RowNotFoundError`, which the card and
-    /// the view model treat as "the watch is gone".
+    /// A track deleted elsewhere is Go's `not_found`, which the card treats
+    /// as "the watch is gone" (`TowerWriteError.isGone`); the daemon down is
+    /// its sentence, not gone.
     func testDirectControlsOnADeletedTrackSayItIsGone() async throws {
         let track = try customTrack()
-        try await pool.write { db in try db.execute(sql: "DELETE FROM tracks") }
-        let controls = DirectCustomTrackControls(dbPool: pool, scanService: TrackScanService(runner: FakeCLIRunner()))
+        let tower = FakeScreenTower()
+        tower.next(.tracksInstruction, .refused("Couldn't save the instruction: it's no longer on the Mac."))
+        tower.next(.tracksInstruction, .failed(TowerText.daemonDown))
+        let controls = DirectCustomTrackControls(tower: tower, scanService: TrackScanService(runner: FakeCLIRunner()))
 
         do {
             try await controls.saveInstruction(track, text: "x")
-            XCTFail("expected RowNotFoundError")
+            XCTFail("expected a refusal")
         } catch {
-            XCTAssertTrue(error is RowNotFoundError, "\(error)")
+            XCTAssertEqual((error as? TowerWriteError)?.isGone, true, "\(error)")
+        }
+        do {
+            try await controls.saveInstruction(track, text: "x")
+            XCTFail("expected a failure")
+        } catch {
+            XCTAssertEqual(error as? TowerWriteError, TowerWriteError(TowerText.daemonDown))
+            XCTAssertEqual((error as? TowerWriteError)?.isGone, false)
         }
     }
 
-    /// The Inbox view model's Stop watching: a custom track goes through the
-    /// seam once and nothing else writes it; an auto track is dismissed
-    /// directly and never reaches the seam.
-    func testStopWatchingSendsOnlyACustomTrackThroughTheSeam() async throws {
-        // Custom track 1 ("Watch the launch", collecting) and auto track 2 ("Extracted").
-        let tower = try FeedCaseTransport.seeded("desktop_tracks_custom_and_auto", pool: pool)
-        let custom = try track(1)
-        let auto = 2
-        let suite = "CustomTrackControllingTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let fake = RecordingCustomTrackControls()
-        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), customTrackControls: fake,
-                                      defaults: defaults)
-        await vm.follow(tower)
-        let autoTrack = try XCTUnwrap(vm.feed.tracks.map(\.track).first { $0.id == auto })
-
-        await vm.stopWatching(custom)
-        await vm.stopWatching(autoTrack)
-
-        XCTAssertEqual(fake.calls, [.stopWatching(trackID: custom.id)])
-        // The fake wrote nothing: the custom row is untouched.
-        XCTAssertEqual(try row(custom.id)["enabled"] as Int?, 1)
-        XCTAssertFalse(((try row(auto)["dismissed_at"] as String?) ?? "").isEmpty)
-        XCTAssertNil(vm.lastError)
-    }
-
-    /// A stopped track is read into the Stopped fold only; Restore brings it
-    /// back — a custom one through the seam (resume), an auto one directly.
-    func testRestoreUndoesStopWatching() async throws {
-        // Tracks 1 (custom) and 2 (auto), both stopped; Go's next feed once 2 is restored.
-        let tower = try FeedCaseTransport.seeded("desktop_tracks_both_stopped", pool: pool)
-        let custom = try track(1)
-        let auto = 2
-        let suite = "CustomTrackControllingTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let fake = RecordingCustomTrackControls()
-        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), customTrackControls: fake,
-                                      defaults: defaults)
-        await vm.follow(tower)
-        XCTAssertTrue(vm.feed.tracks.isEmpty)
-        XCTAssertEqual(Set(vm.feed.stoppedTracks.map(\.track.id)), [custom.id, auto])
-        let stoppedCustom = try XCTUnwrap(vm.feed.stoppedTracks.map(\.track).first { $0.id == custom.id })
-        let stoppedAuto = try XCTUnwrap(vm.feed.stoppedTracks.map(\.track).first { $0.id == auto })
-
-        await vm.restoreTrack(stoppedCustom)
-        await vm.restoreTrack(stoppedAuto)
-
-        XCTAssertEqual(fake.calls, [.resumeWatching(trackID: custom.id)])
-        XCTAssertEqual(try row(auto)["dismissed_at"] as String?, "")
-        XCTAssertEqual(vm.feed.tracks.map(\.track.id), [auto])
-        XCTAssertNil(vm.lastError)
+    /// Made without the app's tower, every write fails with the daemon's
+    /// sentence and writes nothing.
+    func testDirectControlsWithoutATowerFailWithTheDaemonsSentence() async throws {
+        let track = try customTrack()
+        let before = try row(track.id)
+        let controls = DirectCustomTrackControls(tower: nil, scanService: TrackScanService(runner: FakeCLIRunner()))
+        do {
+            try await controls.stopWatching(track)
+            XCTFail("expected a failure")
+        } catch {
+            XCTAssertEqual(error as? TowerWriteError, TowerWriteError(TowerText.daemonDown))
+        }
+        XCTAssertEqual(try row(track.id), before)
     }
 }

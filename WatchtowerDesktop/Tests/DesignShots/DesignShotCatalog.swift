@@ -81,6 +81,10 @@ enum DesignShotCatalog {
             DesignShot(name: "chat-rows", size: NSSize(width: 560, height: 280)) {
                 AnyView(DesignShotFixtures.chatRows().padding(12).shotFrame().detailBackground())
             },
+            // #1170 Task 12, mockup §8: a press through the tower on another screen.
+            DesignShot(name: "ideas-row-states", size: NSSize(width: 620, height: 0)) {
+                AnyView(DesignShotFixtures.ideasRowStates().shotFrame())
+            },
             DesignShot(name: "chat-knowledge-marks", size: NSSize(width: 560, height: 260)) {
                 AnyView(DesignShotFixtures.chatKnowledgeMarks().padding(12).shotFrame().detailBackground())
             },
@@ -686,6 +690,7 @@ enum DesignShotFixtures {
         ProjectPageShotFixtures.cleanUp()
         ClosedAsksShotFixtures.cleanUp()
         IPhoneChatShotFixtures.cleanUp()
+        cleanUpIdeaRows()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil
         UserDefaults().removePersistentDomain(forName: defaultsSuite)
@@ -765,7 +770,7 @@ enum DesignShotFixtures {
                                                                     status: "in_progress", priority: "high")
                 return (pid, parent)
             }
-            let vm = WorkbenchBoardViewModel(dbPool: pool, projectID: pid)
+            let vm = WorkbenchBoardViewModel(dbPool: pool, projectID: pid, tower: FakeScreenTower.applying(pool))
             vm.load()
             return AnyView(WorkbenchNewTargetSheet(
                 request: WorkbenchNewTargetRequest(parentID: Int(parent)), vm: vm, workbenchName: "acme"

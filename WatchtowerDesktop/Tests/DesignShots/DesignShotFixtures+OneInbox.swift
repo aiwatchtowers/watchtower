@@ -113,7 +113,7 @@ enum OneInboxShotFixtures {
             let card = try XCTUnwrap(manager.dbPool.read { db in
                 try BriefingQueries.fetchDayCards(db, limit: 1).first
             })
-            let plan = DayPlanViewModel(databasePool: manager.dbPool, cliRunner: FakeCLIRunner())
+            let plan = DayPlanViewModel(databasePool: manager.dbPool, cliRunner: FakeCLIRunner(), tower: manager.fakeTower)
             // In the reading pane's column, which scrolls and pads the card.
             return AnyView(InboxCardColumn { dayPane(card, manager: manager, plan: plan, row: nil) }
                 .frame(width: 420)
@@ -135,17 +135,16 @@ enum OneInboxShotFixtures {
             let defaults = UserDefaults(suiteName: defaultsSuite) ?? .standard
             defaults.removePersistentDomain(forName: defaultsSuite)
             let clock = now
-            let controls = RecordingCustomTrackControls()
             // Labeled: a trailing closure would bind to `automationsWake`.
             // swiftlint:disable trailing_closure
             let vm = ActionStripViewModel(dbPool: manager.dbPool, cliRunner: FakeCLIRunner(),
-                                          customTrackControls: controls, defaults: defaults, clock: { clock })
+                                          defaults: defaults, clock: { clock })
             // swiftlint:enable trailing_closure
             vm.showsStopped = scene.showsStopped
             await InboxShotFeed.listed(vm, tower) {
                 await vm.open(folder: nil, select: scene.chatDecision ? .card(.idea(seeded.chatDecision)) : scene.route(seeded))
             }
-            let plan = DayPlanViewModel(databasePool: manager.dbPool, cliRunner: FakeCLIRunner())
+            let plan = DayPlanViewModel(databasePool: manager.dbPool, cliRunner: FakeCLIRunner(), tower: manager.fakeTower)
             let ideas = IdeasViewModel(dbManager: manager, cliRunner: FakeCLIRunner())
             let appState = AppState()
             appState.databaseManager = manager
@@ -162,7 +161,7 @@ enum OneInboxShotFixtures {
                     return pane
                 },
                 onRetryBuiltin: { _ in },
-                tracks: TracksViewModel(dbManager: manager),
+                tracks: TracksViewModel(dbManager: manager, tower: manager.fakeTower),
                 trackControls: RecordingCustomTrackControls(),
                 now: now,
                 aux: scene.aux,

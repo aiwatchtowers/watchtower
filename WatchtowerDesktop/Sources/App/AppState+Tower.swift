@@ -29,6 +29,13 @@ extension AppState {
         )
     }
 
+    /// The tower the other screens write through (#1170 Task 12). Nil in a
+    /// test run, which never reaches a daemon: a press there fails at once
+    /// with the daemon's sentence instead of waiting out the client's retries.
+    var screenTower: (any TowerSending)? {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil ? towerClient : nil
+    }
+
     /// The Inbox reads its lists, counts and badge from the daemon's
     /// `inbox.feed` (the whole tree, no limit, no clip) and sends every
     /// write as `inbox.act`. Only the app does

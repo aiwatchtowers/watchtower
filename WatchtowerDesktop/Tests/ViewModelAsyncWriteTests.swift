@@ -82,7 +82,7 @@ final class ViewModelAsyncWriteTests: XCTestCase {
             try TestDatabase.insertWorkspace(db)
             return try TestDatabase.insertTrack(db, text: "two items", subItems: items)
         }
-        let vm = TracksViewModel(dbManager: dbManager)
+        let vm = TracksViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
         let shown = try XCTUnwrap((vm.updatedTracks + vm.allTracks).first { Int64($0.id) == id })
         try await dbManager.dbPool.write { db in
@@ -115,7 +115,7 @@ final class ViewModelAsyncWriteTests: XCTestCase {
         try await dbManager.dbPool.write { db in
             _ = try TestDatabase.insertGoogleAccount(db, email: "me@example.com")
         }
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
         let held = HeldWriter(dbManager.dbPool)
         defer { held.release() }
@@ -143,7 +143,7 @@ final class ViewModelAsyncWriteTests: XCTestCase {
                 BEGIN SELECT RAISE(ABORT, 'refused'); END
                 """)
         }
-        let vm = DigestViewModel(dbManager: dbManager)
+        let vm = DigestViewModel(dbManager: dbManager, tower: dbManager.fakeTower)
         vm.load()
         await vm.toggleStarredChannel("1:C1")
         XCTAssertFalse(vm.isChannelStarred("1:C1"))

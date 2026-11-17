@@ -3,6 +3,7 @@ import GRDB
 import SwiftUI
 import ViewInspector
 @testable import WatchtowerDesktop
+import WatchtowerInterface
 @testable import WatchtowerCore
 import WatchtowerTestSupport
 
@@ -109,7 +110,7 @@ final class InboxMessagePaneTests: XCTestCase {
 
     /// Done, Hide and a Snooze choice on the shown message run
     /// `watchtower inbox resolve|dismiss|snooze` for that row (R5).
-    func testDoneHideAndSnoozeRouteToTheInboxCLI() async throws {
+    func testDoneHideAndSnoozeRouteToInboxAct() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
         // Message 1: "Review please".
@@ -120,32 +121,30 @@ final class InboxMessagePaneTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         let runner = FakeCLIRunner()
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner, defaults: defaults)
-        await vm.follow(tower)
+        await vm.followWriting(tower)
         vm.openLegacy(.messages)
         vm.selection = .message(Int(id))
         let sut = InboxSplitView(
             vm: vm, proposalCard: card,
             onCardAction: { _ in }, emptyList: { EmptyView() })
 
-        let presses: [(press: () throws -> Void, args: [String])] = [
-            ({ try sut.inspect().find(button: "Done").tap() }, ["inbox", "resolve", "\(id)"]),
-            ({ try sut.inspect().find(button: "Hide").tap() }, ["inbox", "dismiss", "\(id)"]),
-            ({ try sut.inspect().find(ViewType.Menu.self).find(button: "Next week").tap() },
-             ["inbox", "snooze", "\(id)", "1w"])
+        let presses: [(press: () throws -> Void, verb: RefVerb)] = [
+            ({ try sut.inspect().find(button: "Done").tap() }, .resolve),
+            ({ try sut.inspect().find(button: "Hide").tap() }, .dismiss),
+            ({ try sut.inspect().find(ViewType.Menu.self).find(button: "Next week").tap() }, .snooze)
         ]
         for (index, step) in presses.enumerated() {
-            let ran = expectation(description: step.args.joined(separator: " "))
-            runner.onRun = { _ in ran.fulfill() }
             try step.press()
-            await fulfillment(of: [ran], timeout: 5)
-            XCTAssertEqual(runner.invocations.count, index + 1)
-            XCTAssertEqual(runner.invocations.last, step.args)
-            // The card's buttons wait for its press; the next press comes after.
-            for _ in 0..<500 where vm.isWriting(.message(Int(id))) {
-                try await Task.sleep(for: .milliseconds(10))
+            // Bounded: the press runs in a Task; the card's buttons wait for it.
+            for _ in 0..<100_000 where tower.acts.count <= index || vm.isWriting(.message(Int(id))) {
+                await Task.yield()
             }
+            XCTAssertEqual(tower.acts.count, index + 1)
+            XCTAssertEqual(tower.acts.last?.params.refVerb, step.verb)
+            XCTAssertEqual(tower.acts.last?.params.refID, id)
             XCTAssertFalse(vm.isWriting(.message(Int(id))))
         }
+        XCTAssertTrue(runner.invocations.isEmpty, "no CLI: the tower writes")
     }
 
     private func card(_ action: AgentAction) -> AgentActionCardView {
