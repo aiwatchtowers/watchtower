@@ -1,5 +1,5 @@
 import XCTest
-@testable import WatchtowerCore
+@testable import ChatWire
 
 /// The word-level diff behind the `edit_confluence_page` card (spec
 /// 2026-09-30 §6): deleted words struck through, inserted words added, and

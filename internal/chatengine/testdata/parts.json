@@ -226,18 +226,36 @@
         "title": "Send slack message",
         "args_display": "{\n  \"channel\": \"#general\",\n  \"text\": \"hi\"\n}",
         "args_sha256": "abc123",
-        "status": "pending"
+        "status": "pending",
+        "external": true,
+        "error": "Slack refused the first try",
+        "result": {
+          "label": "ACME-1",
+          "url": "https://example.com/acme-1",
+          "warning": "mirror failed"
+        },
+        "turn_id": "t1",
+        "args_complete": true
       }
     ],
     "part": {
       "kind": "approval",
       "payload": {
+        "args_complete": true,
         "args_display": "{\n  \"channel\": \"#general\",\n  \"text\": \"hi\"\n}",
         "args_sha256": "abc123",
+        "error": "Slack refused the first try",
+        "external": true,
         "id": 9,
+        "result": {
+          "label": "ACME-1",
+          "url": "https://example.com/acme-1",
+          "warning": "mirror failed"
+        },
         "status": "pending",
         "title": "Send slack message",
-        "tool": "send_slack_message"
+        "tool": "send_slack_message",
+        "turn_id": "t1"
       },
       "fallback": {
         "text": "Send a Slack message to #general — waiting for your approval",

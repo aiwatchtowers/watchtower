@@ -801,16 +801,6 @@ final class ChatViewModel {
         conversation.focusMessageID = messageID
     }
 
-    /// The turn of a reply, read from its approval parts' actions; nil when it has none.
-    func turnID(ofApprovalsIn message: ChatFeed.Message) -> String? {
-        let ids = Set(message.resolvedParts.compactMap { part -> Int64? in
-            guard part.kind == ChatPartKind.approval, case .object(let object)? = part.payload,
-                  case .integer(let id)? = object["id"] else { return nil }
-            return id
-        })
-        return actionFeed.rows.first { ids.contains($0.id) && !$0.turnID.isEmpty }?.turnID
-    }
-
     /// The proposals of a turn that stored no message (an interrupted turn): no approval part shows them.
     var unattachedActions: [AgentAction] {
         AgentActionFeed.unattached(rows: actionFeed.rows, messageTurnIDs: messageTurnIDs)

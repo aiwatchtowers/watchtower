@@ -6,8 +6,9 @@ import WatchtowerChatText
 import WatchtowerCore
 
 /// The centered thread column (spec §3.1, max ~760 pt) on ChatUI's shared feed: the engine's messages, each part
-/// drawn by its registered view, with the Mac's own pieces injected — the agent-action card shared with the Inbox
-/// (approvals stay on `actions approve|reject`, D12), the inspector for artifacts and sources, and link handling.
+/// drawn by its registered view, with the Mac's own pieces injected — the approval card's services on the
+/// conversation's action feed (approvals stay on `actions approve|reject`, D12), the inspector for artifacts and
+/// sources, and link handling.
 struct ChatThreadView: View {
     @Bindable var chatVM: ChatViewModel
     @Environment(AppState.self) private var appState
@@ -40,21 +41,11 @@ struct ChatThreadView: View {
         return context
     }
 
-    /// Under a reply: "Approve all" when its turn has two or more cards to approve, and the reviewed actions.
+    /// Under a reply: the actions under review ("Review actions" on a reply stopped by the quota). **Approve all** is
+    /// ChatUI's own (`ChatApprovalServices.approveAll`).
     private func messageAccessory(_ message: ChatFeed.Message) -> AnyView? {
-        let turn = chatVM.turnID(ofApprovalsIn: message)
-        let bulk = turn.map { chatVM.actionFeed.bulkApprovable(forTurn: $0) } ?? []
-        let reviewed = chatVM.reviewedMessageID == message.id
-        guard bulk.count >= 2 || reviewed else { return nil }
-        return AnyView(VStack(alignment: .leading, spacing: Spacing.regular) {
-            if bulk.count >= 2, let turn {
-                Button("Approve all") { Task { await chatVM.actionFeed.approveAllPending(forTurn: turn) } }
-                    .font(.caption)
-            }
-            if reviewed {
-                ChatActionReviewView(actions: chatVM.actionFeed.rows.filter { chatVM.reviewedActionIDs.contains($0.id) })
-            }
-        })
+        guard chatVM.reviewedMessageID == message.id else { return nil }
+        return AnyView(ChatActionReviewView(actions: chatVM.actionFeed.rows.filter { chatVM.reviewedActionIDs.contains($0.id) }))
     }
 
     /// Proposals of a turn that stored no message (it was interrupted): reachable only here.
@@ -63,7 +54,9 @@ struct ChatThreadView: View {
         guard !orphans.isEmpty else { return nil }
         return AnyView(VStack(alignment: .leading, spacing: Spacing.regular) {
             Text("Proposals from an interrupted turn").font(.caption).foregroundStyle(.secondary)
-            ForEach(orphans) { action in agentActionCard(action) }
+            ForEach(orphans) { action in
+                ChatUI.AgentActionCard(action: action, services: approvals, outlined: chatVM.isAwaited(action))
+            }
         })
     }
 
@@ -79,21 +72,8 @@ struct ChatThreadView: View {
                 let replyID = chatVM.messages.last { $0.role == "assistant" }?.id ?? 0
                 chatVM.openSources(messageID: replyID, sources: sources)
             },
-            decide: { payload, decision in
-                let feed = chatVM.actionFeed
-                switch decision {
-                case .approve:
-                    let shown = feed.rows.first { $0.id == payload.id }?.argsJSON ?? ""
-                    Task { await feed.approve(payload.id, shownArgs: shown) }
-                case .reject:
-                    Task { await feed.reject(payload.id) }
-                }
-            },
-            approvalCard: { payload in
-                guard let action = chatVM.actionFeed.rows.first(where: { $0.id == payload.id }) else { return nil }
-                return AnyView(agentActionCard(action))
-            },
-            reviewActions: { id in Task { await chatVM.reviewActions(messageID: id) } }
+            reviewActions: { id in Task { await chatVM.reviewActions(messageID: id) } },
+            approvals: approvals
         )
     }
 
@@ -111,28 +91,13 @@ struct ChatThreadView: View {
         if prompt.sendsImmediately { Task { await chatVM.sendDraft() } }
     }
 
-    /// The Mac's own card (Slack editing and workspace pick, reconnect, the automation editor), shared with the
-    /// Inbox; a card the running turn waits on (or one under review) is outlined.
-    private func agentActionCard(_ action: AgentAction) -> some View {
-        let feed = chatVM.actionFeed
-        let awaited = chatVM.isAwaited(action)
-        return AgentActionCardView(
-            action: action,
-            inFlight: feed.inFlight.contains(action.id),
-            onApprove: { Task { await feed.approve(action.id, shownArgs: action.argsJSON) } },
-            onReject: { Task { await feed.reject(action.id) } },
-            onRetry: { Task { await feed.retry(action.id) } },
-            gestureError: feed.rowErrors[action.id],
-            onApproveEdited: { patch in Task { await feed.approve(action.id, shownArgs: action.argsJSON, patch: patch) } },
-            onReconnectSlack: { id in await appState.reconnectSlack(accountID: id) },
-            onDismiss: { Task { await feed.dismiss(action.id) } },
-            sessionHoldsCall: chatVM.holdsSessionCall(action)
-        )
-        .overlay {
-            if awaited {
-                RoundedRectangle(cornerRadius: Radius.container).strokeBorder(Tone.warning, lineWidth: Stroke.selection)
-            }
-        }
+    /// The approval cards' services: the conversation's action feed (the CLI with owner-confirm), Reconnect Slack, and
+    /// the session calls this chat's running turn holds; a card under review is marked like an awaited one.
+    var approvals: ChatApprovalServices {
+        let chatVM = chatVM
+        return .mac(feed: chatVM.actionFeed, highlighted: { chatVM.reviewedActionIDs.contains($0.id) },
+                    reconnectSlack: { id in await appState.reconnectSlack(accountID: id) },
+                    sessionHolds: chatVM.holdsSessionCall)
     }
 }
 

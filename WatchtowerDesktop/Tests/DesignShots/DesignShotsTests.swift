@@ -66,6 +66,14 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("workchat-activity-") })
     }
 
+    /// The approval card's shots alone (#1822 T15): every card state, the chat's, and the older approval shots.
+    func testApprovalCardShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter {
+            $0.name.hasPrefix("approval-") || $0.name.hasPrefix("inbox-b-approvals-")
+                || ApprovalCardShotFixtures.comparedNames.contains($0.name)
+        })
+    }
+
     func testChatMarkdownShotsRender() throws {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("chat-markdown-") })
     }

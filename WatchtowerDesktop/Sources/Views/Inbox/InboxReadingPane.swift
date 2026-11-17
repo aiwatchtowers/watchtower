@@ -1,3 +1,4 @@
+import ChatWire
 import SwiftUI
 import WatchtowerCore
 import ChatUI
@@ -7,7 +8,7 @@ import ChatUI
 /// "Updated …" on a living card), its title, its body — markdown under the
 /// chat's link rules, or its blocks (`InboxCardLayout`) — and its buttons; a reminder its note, its Slack message and Done / Snooze 1h; a
 /// pending `save_automation` proposal its summary (`SaveAutomationProposalPane`),
-/// any other proposal its `AgentActionCardView`; a message its
+/// any other proposal its `MacAgentActionCard`; a message its
 /// `InboxMessagePane`. The day, track and idea cards come from `dayCard`,
 /// `trackCard` and `ideaCard` (Tasks 8–10); `InboxCardPlaceholder` shows a
 /// card's title and source line until then. The track card lays out its
@@ -30,7 +31,7 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     /// A reminder's Snooze 1h ("1h"), a message's Snooze choice ("1d", "3d", "1w").
     let onSnooze: (String) -> Void
     /// A proposal's card; nil (tests) leaves the pane empty for proposals.
-    let proposalCard: ((AgentAction) -> AgentActionCardView)?
+    let proposalCard: ((AgentAction) -> MacAgentActionCard)?
     /// A pending `save_automation` proposal's pane; nil shows its card.
     let saveProposal: ((AgentAction) -> SaveAutomationProposalPane)?
     /// A built-in notice's **Retry** (its built-in id); nil hides it.
@@ -66,7 +67,7 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
         onDone: @escaping () -> Void = {},
         onDismiss: @escaping () -> Void = {},
         onSnooze: @escaping (String) -> Void = { _ in },
-        proposalCard: ((AgentAction) -> AgentActionCardView)? = nil,
+        proposalCard: ((AgentAction) -> MacAgentActionCard)? = nil,
         saveProposal: ((AgentAction) -> SaveAutomationProposalPane)? = nil,
         onRetryBuiltin: ((String) -> Void)? = nil,
         workbenches: [Workbench] = [],
@@ -327,7 +328,7 @@ where DayCard == InboxCardPlaceholder, TrackCard == InboxCardColumn<InboxCardPla
         onDone: @escaping () -> Void = {},
         onDismiss: @escaping () -> Void = {},
         onSnooze: @escaping (String) -> Void = { _ in },
-        proposalCard: ((AgentAction) -> AgentActionCardView)? = nil,
+        proposalCard: ((AgentAction) -> MacAgentActionCard)? = nil,
         saveProposal: ((AgentAction) -> SaveAutomationProposalPane)? = nil,
         onRetryBuiltin: ((String) -> Void)? = nil,
         workbenches: [Workbench] = [],

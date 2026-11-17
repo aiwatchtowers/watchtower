@@ -334,7 +334,7 @@ func encodeChatFeed(p chatengine.Feed) ([]byte, error) {
 		for _, m := range p.Messages {
 			turns[m.TurnID()] = true
 		}
-		p.Actions = slices.DeleteFunc(slices.Clone(p.Actions), func(a chatengine.FeedAction) bool { return !turns[a.TurnID()] })
+		p.Actions = slices.DeleteFunc(slices.Clone(p.Actions), func(a chatengine.FeedAction) bool { return !turns[a.TurnID] })
 	}
 	b, err := wire.Marshal(p)
 	if err != nil || len(b) <= MaxChatFeedBytes {

@@ -266,8 +266,8 @@ final class ScreenshotTourTests: XCTestCase {
     /// conversation frames, on the composer alone over its page.
     private func captureComposerFrames(host: ScreenshotHost, list: ChatList) async throws -> [ScreenshotHost.IndexRow] {
         func composer(_ prepare: (ChatsCenter, ChatComposerModel) -> Void) -> AnyView {
-            let center = ChatsCenter(sender: ChatSender { _, _ in "" }) { _ in }
-            center.apply(ChatsSnapshot(list: list))
+            // A suspending sleep: a sleep that returns at once turns the client's feed loop into a busy loop.
+            let center = Self.chatCenter(list)
             let route = ChatRoute(id: DemoSeed.Chat.Feeds.roadmap)
             let (conversation, model) = center.conversation(route)
             conversation.reachability = .connected
@@ -325,6 +325,11 @@ final class ScreenshotTourTests: XCTestCase {
         let frames: [(String, String, AnyView)] = [
             ("iphone-chat-question-card", "QuestionPartView", AnyView(UnifiedChatParts.questionCard)),
             ("iphone-chat-approval-slack", "ApprovalPartView", AnyView(UnifiedChatParts.slackApproval)),
+            ("iphone-chat-approval-jira", "AgentActionCard", AnyView(UnifiedChatParts.jiraApproval)),
+            ("iphone-chat-approval-confluence", "AgentActionCard", AnyView(UnifiedChatParts.confluenceApproval)),
+            ("iphone-chat-approval-connector", "AgentActionCard", AnyView(UnifiedChatParts.connectorApproval)),
+            ("iphone-chat-approval-settled", "AgentActionCard", AnyView(UnifiedChatParts.settledApproval)),
+            ("iphone-chat-approval-no-permission", "AgentActionCard", AnyView(UnifiedChatParts.noPermissionApproval)),
             ("chat-part-fallback", "FallbackPartView", AnyView(UnifiedChatParts.fallback))
         ]
         var rows: [ScreenshotHost.IndexRow] = []
@@ -408,8 +413,13 @@ final class ScreenshotTourTests: XCTestCase {
     }
 
     /// A chat center showing `list` and `searches`, its sends going nowhere.
+    /// A center whose timers never fire during the tour. Its sleep must suspend: `RelayChatClient`'s feed repeat loop
+    /// runs on the main actor, and a sleep that returns at once turns it into a busy loop that starves every later
+    /// frame (the C2 conversations hung on it, #1822 T15).
     private static func chatCenter(
-        _ list: ChatList?, searches: [String: ChatSearch] = [:], sleep: @escaping @Sendable (Duration) async throws -> Void = { _ in }
+        _ list: ChatList?,
+        searches: [String: ChatSearch] = [:],
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { _ in try await Task.sleep(for: .seconds(86_400)) }
     ) -> ChatsCenter {
         let center = ChatsCenter(sender: ChatSender { _, _ in "" }, sleep: sleep)
         center.apply(ChatsSnapshot(list: list, searches: searches))
@@ -1826,15 +1836,67 @@ private enum UnifiedChatParts {
     }
 
     static var slackApproval: some View {
-        let action = ChatFeed.Action(
+        approval(ChatFeed.Action(
             id: 31, tool: "send_slack_message", title: "Send a Slack message to #general",
-            argsDisplay: ##"{"channel": "#general", "text": "The release is out."}"##, argsSHA256: "abc123", status: "pending"
-        )
-        let message = ChatFeed.Message(
-            id: 1, role: "assistant", text: "I drafted the announcement.", createdAt: Date(timeIntervalSince1970: 1_800_000_000)
-        )
+            argsDisplay: ##"{"target": {"account_id": 1, "label": "#general", "workspace": "acme"}, "text": "The release is out."}"##,
+            argsSHA256: "abc123", status: "pending", external: true, argsComplete: true
+        ), text: "I drafted the announcement.")
+    }
+
+    // The approval card's per-tool bodies on the phone (#1822 T15): the content the shared card gains, for T16's review.
+
+    static var jiraApproval: some View {
+        approval(ChatFeed.Action(
+            id: 32, tool: "create_jira_issue", title: "Create a Jira issue",
+            argsDisplay: #"{"project_key": "ACME", "issue_type": "Task", "summary": "Pin the rollout window", "labels": ["release"]}"#,
+            argsSHA256: "b2", status: "pending", external: true, argsComplete: true
+        ), text: "I drafted the follow-up issue.")
+    }
+
+    static var confluenceApproval: some View {
+        approval(ChatFeed.Action(
+            id: 33, tool: "edit_confluence_page", title: "Edit a Confluence page",
+            argsDisplay: #"{"base_version": 7, "title": "Rollout plan", "url": "https://example.atlassian.net/wiki/x/98765", "#
+                + #""changes": [{"kind": "replace_text", "locator": "text in Plan", "before": "Ships on Friday.", "#
+                + #""after": "Ships on Monday.", "removed": []}]}"#,
+            argsSHA256: "c3", status: "pending", external: true, argsComplete: true
+        ), text: "I fixed the rollout day.")
+    }
+
+    static var connectorApproval: some View {
+        approval(ChatFeed.Action(
+            id: 34, tool: "claude_ai_connector_call", title: "Run a claude.ai connector",
+            argsDisplay: #"{"server": "Linear", "tool": "create_issue", "input": {"team": "ACME", "title": "Pin the rollout window"}}"#,
+            argsSHA256: "d4", status: "pending", external: true, argsComplete: true
+        ), text: "I can file it in Linear.", holds: true)
+    }
+
+    static var settledApproval: some View {
+        approval(ChatFeed.Action(
+            id: 35, tool: "create_jira_issue", title: "Create a Jira issue",
+            argsDisplay: #"{"project_key": "ACME", "issue_type": "Task", "summary": "Pin the rollout window"}"#,
+            argsSHA256: "b2", status: "applied", external: true,
+            result: ["url": "https://example.atlassian.net/browse/ACME-12", "key": "ACME-12"], argsComplete: true
+        ), text: "Filed.")
+    }
+
+    static var noPermissionApproval: some View {
+        approval(ChatFeed.Action(
+            id: 36, tool: "create_jira_issue", title: "Create a Jira issue",
+            argsDisplay: #"{"project_key": "ACME", "issue_type": "Task", "summary": "Pin the rollout window"}"#,
+            argsSHA256: "b2", status: "pending", external: true, argsComplete: true
+        ), text: "I drafted the follow-up issue.", state: ChatApprovalState(
+            showsButtons: false, canAnswer: false, line: ChatText.approveElsewhere(.mac)
+        ))
+    }
+
+    private static func approval(
+        _ action: ChatFeed.Action, text: String, state: ChatApprovalState? = nil, holds: Bool = false
+    ) -> some View {
+        let message = ChatFeed.Message(id: 1, role: "assistant", text: text, createdAt: Date(timeIntervalSince1970: 1_800_000_000))
+        let actions = ChatPartActions(approvals: ChatApprovalServices(state: { _ in state }, sessionHoldsCall: { _ in holds }))
         return page {
-            ChatFeedView(messages: [message], context: ChatFeedContext(actions: [action]))
+            ChatFeedView(messages: [message], context: ChatFeedContext(actions: [action], partActions: actions))
         }
     }
 

@@ -1,6 +1,6 @@
 {
   "actions": [
-    {"args_display": "{\n  \"text\": \"The rollout moved to Friday.\"\n}", "args_sha256": "5f1d0c0ffee5f1d0c0ffee5f1d0c0ffee5f1d0c0ffee5f1d0c0ffee5f1d0c0ff", "id": 7, "reason": "Tell the team about the new date", "status": "pending", "title": "Send slack message", "tool": "send_slack_message"}
+    {"args_display": "{\n  \"text\": \"The rollout moved to Friday.\"\n}", "args_sha256": "5f1d0c0ffee5f1d0c0ffee5f1d0c0ffee5f1d0c0ffee5f1d0c0ffee5f1d0c0ff", "args_complete": true, "external": false, "id": 7, "reason": "Tell the team about the new date", "status": "pending", "title": "Send slack message", "tool": "send_slack_message", "turn_id": "turn-2"}
   ],
   "artifacts": [
     {"content": "# Rollout plan\n\nFriday, 10:00.", "content_cut": false, "key": "rollout-plan", "kind": "document", "title": "Rollout plan", "version": 2},
