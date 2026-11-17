@@ -25,10 +25,10 @@ const (
 	// HiddenPerCategory is how many of a category's newest decisions are
 	// hidden and re-decided; a category with fewer is not measured.
 	HiddenPerCategory = 30
-	// StrongAgreement is the least agreement of a strong category.
-	StrongAgreement = 0.80
-	// StrongMaxWrongHigh is the most wrong-while-high of a strong category.
-	StrongMaxWrongHigh = 0.05
+	// StrongMaxBad is the largest share of bad decisions of a strong
+	// category; a strong category also has no bad decision taken at high
+	// confidence (ask #1423).
+	StrongMaxBad = 0.05
 )
 
 // Backtest row statuses and verdicts.
@@ -55,7 +55,8 @@ func BacktestStampPath(workspaceDir string, workbenchID int64) string {
 var backtestClock = time.Now
 
 // Backtest re-decides each category's newest 30 owner decisions with the
-// twin, hidden from it, and stores how often it agreed (spec §9). Nothing the
+// twin, hidden from it, and stores how the judge graded its decisions (spec
+// §9, ask #1423): same as the owner's, acceptable, or bad. Nothing the
 // twin sees postdates an item: retrieval is cut at the item's own time with
 // every hidden decision excluded, and the profile and instructions are cut at
 // the category's oldest hidden decision — the profile is rebuilt from the 60
@@ -67,10 +68,12 @@ var backtestClock = time.Now
 // undone hunk (only ever "undid hunk") and the git items (a merge is only
 // ever "merged", a rewrite only ever "rewrote") are not measured in phase 1;
 // they stay retrievable for the other items. Items with fixed options (asks with
-// options, permissions, review lessons) agree on an exact match; the rest go
-// to the judge with the situation. A reply the twin cannot get right
-// (ErrBadReply) is a disagreement; a failed call, or a judge reply that
-// cannot be read, is tried once more and then fails the run. The run holds
+// options, permissions, review lessons) are same on an exact match; every
+// other item, a different fixed option included, goes to the judge with the
+// situation. An ask with several questions is graded per question, each one
+// scored decision. A reply the twin cannot get right (ErrBadReply) is bad;
+// a failed call, or a judge reply that cannot be read, is tried once more
+// and then fails the run. The run holds
 // LockPath (ErrBusy when held), closes any running row left by a dead
 // process, writes a row per finished category and progress after each item;
 // an error leaves the row failed with its message and the finished rows
@@ -176,29 +179,43 @@ func (bt backtestRun) category(c string, k int) (db.WatchmanBacktestRow, error) 
 	}
 	instr := renderInstructions(instructions.Texts{Global: g})
 	opts := make([][]string, len(hidden))
+	asked := make([]askedQuestions, len(hidden))
 	for i, p := range hidden {
 		if opts[i], err = backtestOptions(bt.d, p); err != nil {
 			return row, err
 		}
+		if asked[i], err = backtestQuestions(bt.d, p); err != nil {
+			return row, err
+		}
 	}
 	row.Baseline = baseline(hidden, opts)
+	recPicks := 0
 	for i, p := range hidden {
-		agree, high, err := bt.item(c, p, opts[i], exclude, profile, instr, &row)
+		grades, high, err := bt.item(c, p, opts[i], asked[i].questions, exclude, profile, instr, &row)
 		if err != nil {
 			return row, err
 		}
-		row.Total++
-		switch {
-		case agree:
-			row.Agree++
-		case high:
-			row.WrongHigh++
+		for _, g := range grades {
+			row.Total++
+			switch g {
+			case GradeSame:
+				row.Agree++
+			case GradeAcceptable:
+				row.Acceptable++
+			default:
+				row.Bad++
+				if high {
+					row.WrongHigh++
+				}
+			}
 		}
+		recPicks += asked[i].recommendedPicks
 		if err := bt.d.SetWatchmanBacktestProgress(bt.id,
 			fmt.Sprintf("%s, %d of %d · %d of %d categories done", c, i+1, len(hidden), k, len(Categories))); err != nil {
 			return row, err
 		}
 	}
+	row.RecBaseline = float64(recPicks) / float64(row.Total)
 	row.Status = rowStatus(row)
 	return row, nil
 }
@@ -231,10 +248,14 @@ func (bt backtestRun) retryOnce(call func() error) error {
 	return call()
 }
 
-// item re-decides one hidden precedent and scores it.
-func (bt backtestRun) item(c string, p db.WatchmanPrecedent, opts []string, exclude []int64, profile, instr string, row *db.WatchmanBacktestRow) (agree, high bool, err error) {
+// item re-decides one hidden precedent and grades it: one grade per
+// question (questions nil: one), and whether the twin was sure (confidence
+// high).
+func (bt backtestRun) item(c string, p db.WatchmanPrecedent, opts, questions []string, exclude []int64, profile, instr string,
+	row *db.WatchmanBacktestRow) (grades []string, high bool, err error) {
+	n := max(1, len(questions))
 	var dec Decision
-	bad := false
+	unusable := false
 	err = bt.retryOnce(func() error {
 		var err error
 		dec, err = Decide(bt.ctx, bt.d, bt.gen, bt.store, Item{
@@ -242,30 +263,35 @@ func (bt backtestRun) item(c string, p db.WatchmanPrecedent, opts []string, excl
 			DecidedBefore: p.DecidedAt, Exclude: exclude, Profile: profile, Instructions: instr,
 		})
 		row.CostUSD += usageCost(dec.Usage)
-		if bad = errors.Is(err, ErrBadReply); bad {
+		if unusable = errors.Is(err, ErrBadReply); unusable {
 			return nil // the model's answer, not a failed call: scored below, not retried
 		}
 		return err
 	})
 	switch {
 	case err != nil:
-		return false, false, err
-	case bad:
-		return false, false, nil // the twin gave no usable decision: not the owner's
-	case len(opts) > 0:
-		return dec.Choice == p.Choice, dec.Confidence == "high", nil
+		return nil, false, err
+	case unusable:
+		// The twin gave no usable decision: bad, with no confidence to be sure of.
+		return slices.Repeat([]string{GradeBad}, n), false, nil
+	case len(opts) > 0 && dec.Choice == p.Choice:
+		return []string{GradeSame}, dec.Confidence == "high", nil
 	}
-	var same bool
+	var got []string
 	err = bt.retryOnce(func() error {
-		s, usage, err := bt.judge.Same(bt.ctx, p.Situation, ownerAnswer(p), twinAnswer(dec))
+		g, usage, err := bt.judge.Grade(bt.ctx, JudgeInput{Situation: p.Situation, Owner: ownerAnswer(p), Twin: twinAnswer(dec),
+			Questions: questions})
 		row.CostUSD += usageCost(usage)
-		same = s
+		got = g
 		return err
 	})
 	if err != nil {
-		return false, false, err
+		return nil, false, err
 	}
-	return same, dec.Confidence == "high", nil
+	// A grade the judge left out is bad; an extra one is ignored.
+	grades = slices.Repeat([]string{GradeBad}, n)
+	copy(grades, got)
+	return grades, dec.Confidence == "high", nil
 }
 
 // backtestOptions returns the options the owner chose among, when the
@@ -334,6 +360,70 @@ func askOptions(d *db.DB, p db.WatchmanPrecedent) ([]string, error) {
 	return out, nil
 }
 
+// askedQuestions is how a hidden item is scored as questions: questions
+// lists an ask's questions when it has several (each graded on its own; nil
+// is one decision), recommendedPicks counts the scored decisions where the
+// owner picked an option the agent marked recommended.
+type askedQuestions struct {
+	questions        []string
+	recommendedPicks int
+}
+
+// backtestQuestions reads the question ask behind p; any other item is one
+// decision with no recommended option.
+func backtestQuestions(d *db.DB, p db.WatchmanPrecedent) (askedQuestions, error) {
+	if p.Source != SourceAsk {
+		return askedQuestions{}, nil
+	}
+	id, err := strconv.ParseInt(p.SourceKey, 10, 64)
+	if err != nil {
+		return askedQuestions{}, nil //nolint:nilerr // not an ask id: one decision
+	}
+	a, err := d.GetOwnerAsk(p.WorkbenchID, id)
+	if errors.Is(err, db.ErrAskNotFound) {
+		return askedQuestions{}, nil // the ask is gone: one decision
+	}
+	if err != nil {
+		return askedQuestions{}, err
+	}
+	if a.Kind == asks.KindReview || a.Kind == asks.KindCheck {
+		return askedQuestions{}, nil
+	}
+	var payload asks.Payload
+	if err := json.Unmarshal([]byte(a.Payload), &payload); err != nil {
+		return askedQuestions{}, nil //nolint:nilerr // the source already skipped an unreadable payload
+	}
+	answer, err := asks.ParseAnswer([]byte(a.Answer))
+	if err != nil {
+		return askedQuestions{}, nil //nolint:nilerr // likewise an unreadable answer
+	}
+	picked := map[string][]string{}
+	for _, qa := range answer.Answers {
+		picked[qa.ID] = qa.Labels
+	}
+	var out askedQuestions
+	for _, q := range payload.Questions {
+		if len(payload.Questions) > 1 {
+			out.questions = append(out.questions, q.Question)
+		}
+		if pickedRecommended(q, picked[q.ID]) {
+			out.recommendedPicks++
+		}
+	}
+	return out, nil
+}
+
+// pickedRecommended reports whether labels hold an option of q the agent
+// marked recommended.
+func pickedRecommended(q asks.Question, labels []string) bool {
+	for _, o := range q.Options {
+		if o.Recommended && slices.ContainsFunc(labels, func(l string) bool { return strings.TrimSpace(l) == strings.TrimSpace(o.Label) }) {
+			return true
+		}
+	}
+	return false
+}
+
 // ownerAnswer and twinAnswer are the two texts the judge compares.
 // An empty choice leaves its line out.
 func ownerAnswer(p db.WatchmanPrecedent) string {
@@ -341,7 +431,8 @@ func ownerAnswer(p db.WatchmanPrecedent) string {
 }
 
 func twinAnswer(dec Decision) string {
-	return joinNonEmpty("\n", wordsLine("Choice: ", dec.Choice), wordsLine("Reasoning: ", dec.Rationale))
+	return joinNonEmpty("\n", wordsLine("Choice: ", dec.Choice), wordsLine("Reasoning: ", dec.Rationale),
+		wordsLine("Confidence: ", dec.Confidence))
 }
 
 func wordsLine(head, s string) string {
@@ -373,23 +464,23 @@ func baseline(hidden []db.WatchmanPrecedent, opts [][]string) float64 {
 	return float64(top) / float64(len(hidden))
 }
 
-// rowStatus applies the bars to a measured row: strong needs the agreement
-// and wrong-while-high bars and an agreement above the base rate (a twin
-// that always gives the owner's usual answer is not strong).
+// rowStatus applies the bar to a measured row (ask #1423): strong when at
+// most StrongMaxBad of its decisions are bad and none of them was taken at
+// high confidence. Agreement and the base rates are reported, not gated on:
+// a different but reasonable decision is no failure.
 func rowStatus(r db.WatchmanBacktestRow) string {
 	if r.Total < HiddenPerCategory {
 		return BacktestNotMeasured
 	}
-	agreement := float64(r.Agree) / float64(r.Total)
-	wrongHigh := float64(r.WrongHigh) / float64(r.Total)
-	if agreement >= StrongAgreement && wrongHigh <= StrongMaxWrongHigh && agreement > r.Baseline {
+	if float64(r.Bad)/float64(r.Total) <= StrongMaxBad && r.WrongHigh == 0 {
 		return BacktestStrong
 	}
 	return BacktestWeak
 }
 
-// Verdict is the phase-1 exit (spec §9): go when at least 3 categories are
-// strong and permission or review_code is one of them, else stop.
+// Verdict is the phase-1 exit (spec §9, ask #1422): go when at least 3
+// categories are strong and permission, design or scope is one of them,
+// else stop.
 func Verdict(rows []db.WatchmanBacktestRow) string {
 	strong, key := 0, false
 	for _, r := range rows {
@@ -397,7 +488,8 @@ func Verdict(rows []db.WatchmanBacktestRow) string {
 			continue
 		}
 		strong++
-		if r.Category == CategoryPermission || r.Category == CategoryReviewCode {
+		switch r.Category {
+		case CategoryPermission, CategoryDesign, CategoryScope:
 			key = true
 		}
 	}

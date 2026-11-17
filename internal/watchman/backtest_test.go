@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -82,27 +83,34 @@ func (g *btGen) Generate(ctx context.Context, system, user, _ string) (string, *
 	return "", u, "", fmt.Errorf("unexpected source %q", src)
 }
 
+// btJudge grades through grade (nil: "same" for every question) and
+// records every input. Each call reports a cost of 0.001.
 type btJudge struct {
-	same       func(owner, twin string) bool
-	err        func(call int) error // nil = never fails
-	calls      int
-	situations []string
+	grade  func(in JudgeInput) []string
+	err    func(call int) error // nil = never fails
+	calls  int
+	inputs []JudgeInput
 }
 
-func (j *btJudge) Same(_ context.Context, situation, owner, twin string) (bool, *digest.Usage, error) {
+func (j *btJudge) Grade(_ context.Context, in JudgeInput) ([]string, *digest.Usage, error) {
 	j.calls++
-	j.situations = append(j.situations, situation)
+	j.inputs = append(j.inputs, in)
 	cost := 0.001
 	u := &digest.Usage{Tokens: llmusage.Tokens{ReportedCostUSD: &cost}}
 	if j.err != nil {
 		if err := j.err(j.calls); err != nil {
-			return false, u, err
+			return nil, u, err
 		}
 	}
-	if j.same == nil {
-		return true, u, nil
+	if j.grade == nil {
+		return slices.Repeat([]string{GradeSame}, max(1, len(in.Questions))), u, nil
 	}
-	return j.same(owner, twin), u, nil
+	return j.grade(in), u, nil
+}
+
+// gradeAll is a judge grade func giving g to every question.
+func gradeAll(g string) func(JudgeInput) []string {
+	return func(in JudgeInput) []string { return slices.Repeat([]string{g}, max(1, len(in.Questions))) }
 }
 
 func btDB(t *testing.T) (*db.DB, int64) {
@@ -253,37 +261,27 @@ func TestBacktest_EmptyCategoryNotMeasured(t *testing.T) {
 
 func TestBacktest_StrongWeakBars(t *testing.T) {
 	for _, tc := range []struct {
-		total, agree, wrongHigh int
-		want                    string
+		total, bad, wrongHigh int
+		want                  string
 	}{
-		{30, 24, 1, BacktestStrong}, // exactly 80 %
-		{30, 23, 0, BacktestWeak},
-		{30, 30, 0, BacktestStrong},
-		{30, 25, 2, BacktestWeak},   // 6.7 % wrong-while-high
-		{40, 32, 2, BacktestStrong}, // exactly 5 %
-		{40, 32, 3, BacktestWeak},
-		{29, 29, 0, BacktestNotMeasured},
+		{30, 0, 0, BacktestStrong},
+		{30, 1, 0, BacktestStrong}, // 3.3 % bad
+		{40, 2, 0, BacktestStrong}, // exactly 5 %
+		{40, 3, 0, BacktestWeak},
+		{30, 2, 0, BacktestWeak}, // 6.7 % bad
+		{40, 1, 1, BacktestWeak}, // one bad while sure
+		{29, 0, 0, BacktestNotMeasured},
 	} {
-		got := rowStatus(db.WatchmanBacktestRow{Total: tc.total, Agree: tc.agree, WrongHigh: tc.wrongHigh})
+		got := rowStatus(db.WatchmanBacktestRow{Total: tc.total, Bad: tc.bad, WrongHigh: tc.wrongHigh})
 		assert.Equal(t, tc.want, got, "%+v", tc)
 	}
-	// Strong also needs an agreement above the base rate.
-	for _, tc := range []struct {
-		agree    int
-		baseline float64
-		want     string
-	}{
-		{30, 1, BacktestWeak},
-		{24, 0.8, BacktestWeak}, // exactly the base rate
-		{25, 0.8, BacktestStrong},
-		{24, 0.5, BacktestStrong},
-	} {
-		got := rowStatus(db.WatchmanBacktestRow{Total: 30, Agree: tc.agree, Baseline: tc.baseline})
-		assert.Equal(t, tc.want, got, "%+v", tc)
-	}
+	// Agreement and the base rates no longer gate: a twin that never
+	// matches the owner but is never bad is strong.
+	assert.Equal(t, BacktestStrong, rowStatus(db.WatchmanBacktestRow{Total: 30, Acceptable: 30, Baseline: 1, RecBaseline: 1}))
 
 	// End to end: the owner allowed half and denied half; 6 of 30 are
-	// decided wrong, one of them with high confidence.
+	// decided differently, which the judge grades (the high-confidence one
+	// acceptable, one bad).
 	d, wb := btDB(t)
 	ps := btAdd(t, d, wb, SourcePermission, CategoryPermission, 40, btT0, "allow")
 	owner := map[string]string{}
@@ -299,6 +297,7 @@ func TestBacktest_StrongWeakBars(t *testing.T) {
 	for i, p := range ps[34:] { // six of the hidden ones
 		wrong[p.Situation] = map[bool]string{true: "high", false: "low"}[i == 0]
 	}
+	badOne := ps[35].Situation
 	gen := &btGen{decide: func(in decideInput) (string, string, error) {
 		require.Equal(t, []string{"allow", "deny"}, in.Options)
 		other := map[string]string{"allow": "deny", "deny": "allow"}
@@ -307,23 +306,57 @@ func TestBacktest_StrongWeakBars(t *testing.T) {
 		}
 		return owner[in.Situation], "high", nil
 	}}
-	judge := &btJudge{}
+	judge := &btJudge{grade: func(in JudgeInput) []string {
+		if in.Situation == badOne {
+			return []string{GradeBad}
+		}
+		return []string{GradeAcceptable}
+	}}
 	_, err := Backtest(context.Background(), d, gen, judge, nil, wb, btT0.Add(1000*time.Hour))
 	require.NoError(t, err)
-	require.Zero(t, judge.calls, "options are an exact match, no judge")
+	require.Equal(t, 6, judge.calls, "an exact match needs no judge; a different option goes to it")
+	for _, in := range judge.inputs {
+		require.Empty(t, in.Questions)
+		require.Contains(t, in.Twin, "Confidence: ")
+	}
 	_, rows := btRows(t, d, wb)
 	r := rows[CategoryPermission]
 	require.Equal(t, 30, r.Total)
 	require.Equal(t, 24, r.Agree)
-	require.Equal(t, 1, r.WrongHigh)
+	require.Equal(t, 5, r.Acceptable)
+	require.Equal(t, 1, r.Bad)
+	require.Zero(t, r.WrongHigh, "the bad one was not sure")
 	require.InDelta(t, 0.5, r.Baseline, 1e-9)
+	require.Zero(t, r.RecBaseline, "a permission has no recommended option")
 	require.Equal(t, BacktestStrong, r.Status)
-	require.InDelta(t, 0.31, r.CostUSD, 1e-9) // one profile call + 30 decide calls at 0.01
+	require.InDelta(t, 0.316, r.CostUSD, 1e-9) // one profile call + 30 decide calls at 0.01 + 6 judge calls at 0.001
 }
 
-// TestBacktest_AlwaysAllowNotStrong: an owner who always allowed is matched
-// by a twin that always allows, which proves nothing: the base rate is 100 %.
-func TestBacktest_AlwaysAllowNotStrong(t *testing.T) {
+// TestBacktest_FixedOptionMismatchAcceptable: a different option the judge
+// finds reasonable counts acceptable, not agree.
+func TestBacktest_FixedOptionMismatchAcceptable(t *testing.T) {
+	d, wb := btDB(t)
+	btAdd(t, d, wb, SourcePermission, CategoryPermission, 30, btT0, "allow")
+	gen := &btGen{decide: func(decideInput) (string, string, error) { return "deny", "high", nil }}
+	judge := &btJudge{grade: gradeAll(GradeAcceptable)}
+	_, err := Backtest(context.Background(), d, gen, judge, nil, wb, btT0.Add(1000*time.Hour))
+	require.NoError(t, err)
+	require.Equal(t, 30, judge.calls)
+	require.Equal(t, "Choice: allow\nOwner's words: words permission", judge.inputs[0].Owner)
+	require.Equal(t, "Choice: deny\nReasoning: because\nConfidence: high", judge.inputs[0].Twin)
+	_, rows := btRows(t, d, wb)
+	r := rows[CategoryPermission]
+	require.Equal(t, 30, r.Acceptable)
+	require.Zero(t, r.Agree)
+	require.Zero(t, r.Bad)
+	require.Zero(t, r.WrongHigh)
+	require.Equal(t, BacktestStrong, r.Status)
+}
+
+// TestBacktest_BaseRateKeptNotGating: an owner who always allowed, matched
+// by a twin that always allows, is strong now (ask #1423); the base rate is
+// still stored.
+func TestBacktest_BaseRateKeptNotGating(t *testing.T) {
 	d, wb := btDB(t)
 	btAdd(t, d, wb, SourcePermission, CategoryPermission, 30, btT0, "allow")
 	gen := &btGen{decide: func(decideInput) (string, string, error) { return "allow", "high", nil }}
@@ -333,7 +366,7 @@ func TestBacktest_AlwaysAllowNotStrong(t *testing.T) {
 	r := rows[CategoryPermission]
 	require.Equal(t, 30, r.Agree)
 	require.InDelta(t, 1.0, r.Baseline, 1e-9)
-	require.Equal(t, BacktestWeak, r.Status)
+	require.Equal(t, BacktestStrong, r.Status)
 }
 
 func TestVerdict_GoStop(t *testing.T) {
@@ -343,14 +376,17 @@ func TestVerdict_GoStop(t *testing.T) {
 		want string
 	}{
 		"none": {nil, VerdictStop},
-		"three strong with permission": {[]db.WatchmanBacktestRow{row("design", BacktestStrong), row("tests", BacktestStrong),
+		"three strong with permission": {[]db.WatchmanBacktestRow{row("ux_text", BacktestStrong), row("tests", BacktestStrong),
 			row("permission", BacktestStrong)}, VerdictGo},
-		"three strong with review_code": {[]db.WatchmanBacktestRow{row("design", BacktestStrong), row("tests", BacktestStrong),
+		"three strong with design": {[]db.WatchmanBacktestRow{row("design", BacktestStrong), row("tests", BacktestStrong),
 			row("review_code", BacktestStrong), row("permission", BacktestWeak)}, VerdictGo},
-		"three strong without permission or review_code": {[]db.WatchmanBacktestRow{row("design", BacktestStrong),
-			row("tests", BacktestStrong), row("scope", BacktestStrong), row("permission", BacktestWeak)}, VerdictStop},
+		"three strong with scope": {[]db.WatchmanBacktestRow{row("scope", BacktestStrong), row("tests", BacktestStrong),
+			row("finish", BacktestStrong)}, VerdictGo},
+		"three strong without permission, design or scope": {[]db.WatchmanBacktestRow{row("ux_text", BacktestStrong),
+			row("tests", BacktestStrong), row("review_code", BacktestStrong), row("permission", BacktestWeak),
+			row("design", BacktestNotMeasured)}, VerdictStop},
 		"two strong incl. permission": {[]db.WatchmanBacktestRow{row("permission", BacktestStrong),
-			row("review_code", BacktestStrong), row("tests", BacktestNotMeasured)}, VerdictStop},
+			row("design", BacktestStrong), row("tests", BacktestNotMeasured)}, VerdictStop},
 	} {
 		assert.Equal(t, tc.want, Verdict(tc.rows), name)
 	}
@@ -411,19 +447,121 @@ func TestBacktest_FailureKeepsPartialRows(t *testing.T) {
 	require.Nil(t, done)
 }
 
-// TestBacktest_BadTwinReplyIsDisagreement: a reply the twin cannot get
-// right is scored, not skipped and not fatal.
-func TestBacktest_BadTwinReplyIsDisagreement(t *testing.T) {
+// TestBacktest_BadTwinReplyIsBad: a reply the twin cannot get right is
+// scored bad (not skipped, not fatal, not "bad while sure": it has no
+// usable confidence), with no judge call.
+func TestBacktest_BadTwinReplyIsBad(t *testing.T) {
 	d, wb := btDB(t)
 	btAdd(t, d, wb, SourcePermission, CategoryPermission, 30, btT0, "allow")
 	gen := &btGen{decide: func(in decideInput) (string, string, error) { return "maybe", "high", nil }}
-	_, err := Backtest(context.Background(), d, gen, &btJudge{}, nil, wb, btT0.Add(100*time.Hour))
+	judge := &btJudge{}
+	_, err := Backtest(context.Background(), d, gen, judge, nil, wb, btT0.Add(100*time.Hour))
 	require.NoError(t, err)
+	require.Zero(t, judge.calls)
 	_, rows := btRows(t, d, wb)
 	r := rows[CategoryPermission]
 	require.Equal(t, 30, r.Total)
+	require.Equal(t, 30, r.Bad)
 	require.Zero(t, r.Agree)
 	require.Zero(t, r.WrongHigh, "no usable confidence")
+	require.Equal(t, BacktestWeak, r.Status)
+}
+
+// btAddAsks seeds n answered question asks (payload, answer(i)) one hour
+// apart from start and stores them as precedents of category through the
+// real ask source mapping.
+func btAddAsks(t *testing.T, d *db.DB, wb int64, category string, n int, start time.Time, payload string, answer func(i int) string) {
+	t.Helper()
+	for i := range n {
+		seedAsk(t, d, askSeed{wb: wb, payload: payload, answer: answer(i), answeredAt: start.Add(time.Duration(i) * time.Hour)})
+	}
+	rows, err := d.AnsweredOwnerAsks(wb, nil, false, n+1)
+	require.NoError(t, err)
+	require.Len(t, rows, n)
+	ps := make([]db.WatchmanPrecedent, 0, n)
+	for _, r := range rows {
+		p, ok, err := askPrecedent(wb, r)
+		require.NoError(t, err)
+		require.True(t, ok)
+		p.Category = category
+		ps = append(ps, p)
+	}
+	tx, err := d.Begin()
+	require.NoError(t, err)
+	require.NoError(t, d.UpsertWatchmanPrecedents(tx, ps))
+	require.NoError(t, tx.Commit())
+}
+
+const twoQuestionPayload = `{"focus":[],"questions":[` +
+	`{"id":"q1","question":"Which cache should the importer use?","options":[{"label":"sqlite","recommended":true},{"label":"redis"}]},` +
+	`{"id":"q2","question":"Ship it today?","options":[{"label":"yes","recommended":true},{"label":"no"}]}],"checklist":[]}`
+
+func twoQuestionAnswer(int) string {
+	return `{"answers":[{"id":"q1","labels":["sqlite"],"other":""},{"id":"q2","labels":["no"],"other":""}],` +
+		`"checklist":[],"comments":[],"note":"","verdict":""}`
+}
+
+// TestBacktest_MultiQuestionGradedPerQuestion: an ask with two questions is
+// two scored decisions; a grade the judge leaves out is bad, an extra one
+// is ignored; the recommended pick is counted per question.
+func TestBacktest_MultiQuestionGradedPerQuestion(t *testing.T) {
+	for name, tc := range map[string]struct {
+		grades             []string
+		agree, accept, bad int
+		wrongHigh          int
+	}{
+		"missing grade is bad": {[]string{GradeSame}, 30, 0, 30, 30},
+		"extra grade ignored":  {[]string{GradeSame, GradeAcceptable, GradeBad}, 30, 30, 0, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d, wb := btDB(t)
+			btAddAsks(t, d, wb, CategoryDesign, 30, btT0, twoQuestionPayload, twoQuestionAnswer)
+			gen := &btGen{decide: func(in decideInput) (string, string, error) {
+				require.Empty(t, in.Options, "several questions are a free answer")
+				return "sqlite, and ship it", "high", nil
+			}}
+			judge := &btJudge{grade: func(JudgeInput) []string { return tc.grades }}
+			_, err := Backtest(context.Background(), d, gen, judge, nil, wb, btT0.Add(1000*time.Hour))
+			require.NoError(t, err)
+			require.Equal(t, 30, judge.calls)
+			require.Equal(t, []string{"Which cache should the importer use?", "Ship it today?"}, judge.inputs[0].Questions)
+			_, rows := btRows(t, d, wb)
+			r := rows[CategoryDesign]
+			require.Equal(t, 60, r.Total)
+			require.Equal(t, tc.agree, r.Agree)
+			require.Equal(t, tc.accept, r.Acceptable)
+			require.Equal(t, tc.bad, r.Bad)
+			require.Equal(t, tc.wrongHigh, r.WrongHigh)
+			require.InDelta(t, 0.5, r.RecBaseline, 1e-9, "the owner took the recommended option on q1, not on q2")
+		})
+	}
+}
+
+// TestBacktest_RecommendedPickSingleQuestion: rec_baseline over single
+// question asks; the exact matches skip the judge.
+func TestBacktest_RecommendedPickSingleQuestion(t *testing.T) {
+	d, wb := btDB(t)
+	btAddAsks(t, d, wb, CategoryScope, 30, btT0, questionPayload, func(i int) string {
+		if i%3 == 0 {
+			return questionAnswer("redis", "")
+		}
+		return questionAnswer("sqlite", "")
+	})
+	gen := &btGen{decide: func(in decideInput) (string, string, error) {
+		require.Equal(t, []string{"sqlite", "redis"}, in.Options)
+		return "sqlite", "medium", nil
+	}}
+	judge := &btJudge{grade: gradeAll(GradeBad)}
+	_, err := Backtest(context.Background(), d, gen, judge, nil, wb, btT0.Add(1000*time.Hour))
+	require.NoError(t, err)
+	require.Equal(t, 10, judge.calls)
+	_, rows := btRows(t, d, wb)
+	r := rows[CategoryScope]
+	require.Equal(t, 30, r.Total)
+	require.Equal(t, 20, r.Agree)
+	require.Equal(t, 10, r.Bad)
+	require.Zero(t, r.WrongHigh)
+	require.InDelta(t, 20.0/30, r.RecBaseline, 1e-9)
 	require.Equal(t, BacktestWeak, r.Status)
 }
 
@@ -471,6 +609,7 @@ func TestBacktest_AskOptions(t *testing.T) {
 	require.Equal(t, "Choice: comment\nOwner's words: add a nil check",
 		ownerAnswer(db.WatchmanPrecedent{Choice: "comment", OwnerWords: "add a nil check"}))
 	require.Equal(t, "Choice: approve", twinAnswer(Decision{Choice: "approve"}))
+	require.Equal(t, "Choice: approve\nConfidence: high", twinAnswer(Decision{Choice: "approve", Confidence: "high"}))
 	require.Equal(t, "Owner's words: add a nil check", ownerAnswer(db.WatchmanPrecedent{OwnerWords: "add a nil check"}),
 		"an empty choice leaves its line out")
 	require.Equal(t, "Reasoning: r", twinAnswer(Decision{Rationale: "r"}))
@@ -497,22 +636,35 @@ func TestBacktest_BusyLock(t *testing.T) {
 }
 
 func TestLLMJudge_ParsesReply(t *testing.T) {
-	gen := &decideGen{out: "```json\n{\"same\": false}\n```"}
-	same, usage, err := NewLLMJudge(gen, nil).Same(context.Background(), "Which cache?", "Choice: a", "Choice: b")
+	gen := &decideGen{out: "```json\n{\"grades\":[{\"q\":\"\",\"grade\":\"acceptable\",\"why\":\"also fine\"}]}\n```"}
+	in := JudgeInput{Situation: "Which cache?", Owner: "Choice: a", Twin: "Choice: b\nConfidence: high"}
+	grades, usage, err := NewLLMJudge(gen, nil).Grade(context.Background(), in)
 	require.NoError(t, err)
-	require.False(t, same)
+	require.Equal(t, []string{GradeAcceptable}, grades)
 	require.NotNil(t, usage)
 	require.Equal(t, prompts.WatchmanJudge, gen.source)
 	require.Equal(t, prompts.Defaults[prompts.WatchmanJudge], gen.system)
 	require.Contains(t, gen.user, "=== DATA ===\n<data>\n")
 	require.Contains(t, gen.user, `"situation":"Which cache?"`)
-	gen.out = `{"same": true}`
-	same, _, err = NewLLMJudge(gen, nil).Same(context.Background(), "s", "a", "a")
+	require.Contains(t, gen.user, `"questions":[]`)
+
+	gen.out = `{"grades":[{"q":"A?","grade":"same","why":"x"},{"q":"B?","grade":"bad","why":"y"}]}`
+	in.Questions = []string{"A?", "B?"}
+	grades, _, err = NewLLMJudge(gen, nil).Grade(context.Background(), in)
 	require.NoError(t, err)
-	require.True(t, same)
-	for _, bad := range []string{"same", `{"verdict": "same"}`} {
+	require.Equal(t, []string{GradeSame, GradeBad}, grades)
+	require.Contains(t, gen.user, `"questions":["A?","B?"]`)
+
+	// A short list is returned as it is: the backtest counts the missing
+	// grades bad.
+	gen.out = `{"grades":[{"q":"A?","grade":"same","why":"x"}]}`
+	grades, _, err = NewLLMJudge(gen, nil).Grade(context.Background(), in)
+	require.NoError(t, err)
+	require.Equal(t, []string{GradeSame}, grades)
+
+	for _, bad := range []string{"same", `{"same": true}`, `{"grades":[{"q":"","grade":"close","why":""}]}`} {
 		gen.out = bad
-		_, usage, err = NewLLMJudge(gen, nil).Same(context.Background(), "s", "a", "b")
+		_, usage, err = NewLLMJudge(gen, nil).Grade(context.Background(), in)
 		require.Error(t, err, bad)
 		require.NotNil(t, usage)
 	}
@@ -611,17 +763,18 @@ func TestBacktest_RetriesOnceThenFails(t *testing.T) {
 	_, err = Backtest(context.Background(), d, &btGen{}, judge, nil, wb, btT0.Add(100*time.Hour))
 	require.NoError(t, err)
 	require.Equal(t, 31, judge.calls)
-	require.Equal(t, judge.situations[0], judge.situations[1], "the judge sees the hidden item's situation")
-	require.Contains(t, judge.situations[0], "importer cache case tests")
+	require.Equal(t, judge.inputs[0], judge.inputs[1], "the retry asks the same")
+	require.Contains(t, judge.inputs[0].Situation, "importer cache case tests", "the judge sees the hidden item's situation")
 
 	d, wb = btDB(t)
 	btAdd(t, d, wb, "turn", CategoryTests, 30, btT0, "add a test")
-	judge = &btJudge{err: func(int) error { return errors.New("watchman judge: the reply has no \"same\"") }}
+	judge = &btJudge{err: func(int) error { return errors.New("watchman judge: the reply is not a JSON object") }}
 	_, err = Backtest(context.Background(), d, &btGen{}, judge, nil, wb, btT0.Add(100*time.Hour))
-	require.ErrorContains(t, err, "no \"same\"")
+	require.ErrorContains(t, err, "not a JSON object")
 	require.Equal(t, 2, judge.calls)
-	b, _ := btRows(t, d, wb)
+	b, rows := btRows(t, d, wb)
 	require.Equal(t, "failed", b.Status)
+	require.NotContains(t, rows, CategoryTests, "the category's row is not written")
 }
 
 func TestBacktest_FinishedAtFromClock(t *testing.T) {

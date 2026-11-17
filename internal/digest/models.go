@@ -45,10 +45,7 @@ func TierForSource(source string) Tier {
 		// watchman.label: up to 20 past owner decisions to one of eight fixed
 		// categories each, a JSON array Go validates (the twin watchman.decide
 		// stays strong)
-		"watchman.label",
-		// watchman.judge: the backtest's same/different rating of two short
-		// free-text decisions, one JSON boolean Go validates
-		"watchman.judge":
+		"watchman.label":
 		return TierLight
 	default:
 		// Strong by absence, among others: coach.propose (the agent coach's
