@@ -19,11 +19,16 @@ final class ChatTurnLeaseTests: XCTestCase {
     private var defaults: UserDefaults!
     private var defaultsSuite: String!
     /// The lease clock, fixed per test at the wall time the sessions (and
-    /// the fake tower) stamp their own leases with.
-    private let now = Date()
+    /// the fake tower) stamp their own leases with. Set in `setUp`, never at
+    /// init: XCTest makes every test's instance when the run starts, and the
+    /// sessions stamp `Date()` — a clock frozen at init drifts past the
+    /// lease's 60 s staleness in a long CI shard, so a "fresh" hub lease
+    /// reads as stale to them (PR #952 CI).
+    private var now = Date()
     private var nowMS: Int64 { ChatLease.milliseconds(now) }
 
     override func setUpWithError() throws {
+        now = Date()
         ProviderCatalogFixture.seedShared()
         (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
         defaultsSuite = "ChatTurnLeaseTests.\(UUID().uuidString)"
