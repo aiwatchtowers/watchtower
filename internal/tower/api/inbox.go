@@ -214,6 +214,16 @@ type RefFacts struct {
 	Reply        bool   `json:"reply"`
 	ReplyWaiting bool   `json:"reply_waiting"`
 	Link         string `json:"link"`
+	// The facts the Mac's row buttons read (InboxRowActionsContent.Kind);
+	// "", false or 0 on the other kinds. TriggerType is an inbox item's
+	// trigger (its Open in … label); Custom a custom track (Delete… and Go to
+	// Target in place of Make a Task) and LinkedTargetID its target; IdeaKind
+	// (idea, note, decision) and IdeaStatus an idea's (ideaButtons).
+	TriggerType    string `json:"trigger_type"`
+	Custom         bool   `json:"custom"`
+	LinkedTargetID int64  `json:"linked_target_id"`
+	IdeaKind       string `json:"idea_kind"`
+	IdeaStatus     string `json:"idea_status"`
 }
 
 // Approval is an approval card's proposal.

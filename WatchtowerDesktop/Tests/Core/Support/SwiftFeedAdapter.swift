@@ -233,19 +233,33 @@ enum SwiftFeedAdapter {
         for ref in refs where seen.insert(ref).inserted {
             var facts = RefFacts(
                 kind: RefKind(rawValue: ref.kind.rawValue), id: ref.id, open: context.snapshot.refState.isShown(ref),
-                waits: context.snapshot.refState.waits(ref), reply: false, replyWaiting: false, link: "")
+                waits: context.snapshot.refState.waits(ref), reply: false, replyWaiting: false, link: "",
+                triggerType: "", custom: false, linkedTargetID: 0, ideaKind: "", ideaStatus: "")
             switch ref.kind {
             case .inboxItem:
                 if let item = try InboxQueries.fetchByID(context.db, id: Int(ref.id)) {
                     facts.reply = InboxReplyPolicy.tool(for: item) != nil
                     facts.link = item.permalink
+                    facts.triggerType = item.triggerType
                 }
                 facts.replyWaiting = context.feed.proposals.contains { InboxReplyPolicy.isOpenReply($0, itemID: Int(ref.id)) }
             case .reminder:
                 let message = try String.fetchOne(
                     context.db, sql: "SELECT message_ref FROM reminders WHERE id = ?", arguments: [ref.id]) ?? ""
                 facts.link = SlackMessageRef.url(message)?.absoluteString ?? ""
-            case .track, .idea, .action:
+            case .track:
+                // InboxRefHooks' `.track(custom:linkedTargetID:)`.
+                if let track = try TrackQueries.fetchByID(context.db, id: Int(ref.id)) {
+                    facts.custom = track.isCustom
+                    facts.linkedTargetID = Int64(track.linkedTargetID ?? 0)
+                }
+            case .idea:
+                // InboxRefHooks' `.idea(kind:status:awaitsVerdict:)`.
+                if let idea = try IdeaQueries.fetchOne(context.db, id: Int(ref.id)) {
+                    facts.ideaKind = idea.kind.rawValue
+                    facts.ideaStatus = idea.status.rawValue
+                }
+            case .action:
                 break
             }
             out.append(facts)
@@ -325,7 +339,8 @@ enum SwiftFeedAdapter {
                 living: false, unread: row.unread, priority: "medium", pinned: false, blocks: "", body: "",
                 bodyClipped: false, link: "", contentHash: "", actions: [],
                 refFacts: [RefFacts(kind: .reminder, id: reminder.id, open: true, waits: true, reply: false,
-                                    replyWaiting: false, link: SlackMessageRef.url(reminder.messageRef)?.absoluteString ?? "")])
+                                    replyWaiting: false, link: SlackMessageRef.url(reminder.messageRef)?.absoluteString ?? "",
+                                    triggerType: "", custom: false, linkedTargetID: 0, ideaKind: "", ideaStatus: "")])
         }
     }
 
