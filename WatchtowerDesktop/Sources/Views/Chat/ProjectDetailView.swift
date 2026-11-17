@@ -19,7 +19,6 @@ struct ProjectDetailView: View {
     @State private var vm: ProjectDetailViewModel
     @Bindable var chatVM: ChatViewModel
     let dbPool: DatabasePool
-    let modelSuggestions: [String]
     let maxComposerHeight: CGFloat
     let onOpenChat: (Int64) -> Void
     let onDeleted: (Int64) -> Void
@@ -38,7 +37,6 @@ struct ProjectDetailView: View {
         projectID: Int64,
         chatVM: ChatViewModel,
         dbPool: DatabasePool,
-        modelSuggestions: [String],
         maxComposerHeight: CGFloat,
         onOpenChat: @escaping (Int64) -> Void,
         onDeleted: @escaping (Int64) -> Void,
@@ -48,7 +46,6 @@ struct ProjectDetailView: View {
         _vm = State(initialValue: ProjectDetailViewModel(projectID: projectID, dbPool: dbPool, client: chatVM.client))
         self.chatVM = chatVM
         self.dbPool = dbPool
-        self.modelSuggestions = modelSuggestions
         self.maxComposerHeight = maxComposerHeight
         self.onOpenChat = onOpenChat
         self.onDeleted = onDeleted
@@ -143,7 +140,6 @@ struct ProjectDetailView: View {
             VStack(alignment: .leading, spacing: Spacing.small) {
                 MainChatComposer(
                     chatVM: chatVM,
-                    modelSuggestions: modelSuggestions,
                     maxHeight: maxComposerHeight,
                     placeholder: composerPlaceholder
                 )

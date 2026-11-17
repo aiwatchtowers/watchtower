@@ -39,16 +39,20 @@ func RegistryChatModels() []ChatModel { return chatengine.RegistryChatModels() }
 type ChatGrant func() (bool, error)
 
 // ChatListOptions wires the chat_list source. Grant is required; Models nil
-// is RegistryChatModels.
+// is RegistryChatModels; Routing nil leaves the record's `routing` out
+// (otherwise it is read on every build, so the status is never older than
+// the record).
 type ChatListOptions struct {
-	Grant  ChatGrant
-	Models func() []ChatModel
+	Grant   ChatGrant
+	Models  func() []ChatModel
+	Routing func(context.Context) *chatengine.RoutingCatalog
 }
 
 // ChatListSource is the `chat_list` slice, one record `chat_list-main`: the
 // main chat's conversations (up to 200, not archived; titles and project
 // names clipped at 200 characters, within MaxChatFeedBytes), its projects
-// and the composer's models (iPhone chat spec §4.6), read from the daemon's
+// and the composer's models (iPhone chat spec §4.6) and routing catalog
+// (unified chat T17), read from the daemon's
 // chat engine. It is rebuilt on every change the engine reports (OnChange)
 // or the agent_actions table sees, not urgent, and published only while a phone holds
 // the chat grant. A failed read publishes the list with `error` and nothing
@@ -94,6 +98,8 @@ func (s *ChatListSource) Items(ctx context.Context) ([]hubslices.Item, error) {
 		code := chatListReadFailed
 		payload = chatengine.List{Conversations: []chatengine.ListConversation{}, Projects: []chatengine.ListProject{},
 			Models: []ChatModel{}, Error: &code}
+	} else if s.o.Routing != nil {
+		payload.Routing = s.o.Routing(ctx)
 	}
 	b, err := encodeChatList(payload)
 	if err != nil {

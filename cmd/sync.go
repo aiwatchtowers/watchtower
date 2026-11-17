@@ -47,6 +47,8 @@ import (
 	"watchtower/internal/platform"
 	"watchtower/internal/powerstate"
 	"watchtower/internal/prompts"
+	"watchtower/internal/providerhealth"
+	"watchtower/internal/providerrouting"
 	"watchtower/internal/skills"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/sync"
@@ -1213,6 +1215,24 @@ func chatStartClass(err error) string {
 	return "error"
 }
 
+// chatRoutingCatalog reads the phone's routing pill catalog over the current
+// AI config (re-read, so a Settings change shows on the next chat_list; the
+// daemon's cfg when the file cannot be read) and the installation's provider
+// health, as `ai routing-status` does.
+func chatRoutingCatalog(cfg *config.Config) func(context.Context) *chatengine.RoutingCatalog {
+	return func(ctx context.Context) *chatengine.RoutingCatalog {
+		cur := cfg
+		if c, err := config.Load(flagConfig); err == nil {
+			if flagWorkspace != "" {
+				c.ActiveWorkspace = flagWorkspace
+			}
+			cur = c
+		}
+		health, _ := providerhealth.Installation() // nil: the status read fails, the catalog says so
+		return chatengine.ReadRoutingCatalog(ctx, cur, &providerrouting.Router{Health: health})
+	}
+}
+
 // startGoHub starts the Go hub beside the daemon when hub.Resolve says so
 // and logs whether it did; the returned func stops it and waits. Its cycle
 // tick is the daemon's poll interval; eng is the daemon's chat engine (nil =
@@ -1232,6 +1252,7 @@ func startGoHub(ctx context.Context, cfg *config.Config, database *db.DB, eng *c
 	// approvals through the same registry as `watchtower actions approve`.
 	o.ChatTools = buildToolRegistry(cfg, database)
 	o.ChatEngine = eng
+	o.ChatRouting = chatRoutingCatalog(cfg)
 	ctx, cancel := context.WithCancel(ctx)
 	interval := cfg.Sync.PollInterval
 	if interval < time.Minute {

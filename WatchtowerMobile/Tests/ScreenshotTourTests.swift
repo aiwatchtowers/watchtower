@@ -240,7 +240,7 @@ final class ScreenshotTourTests: XCTestCase {
             deviceID: DemoSeed.device.deviceID, hubID: DemoSeed.hubID, name: DemoSeed.device.name, scope: .private, linked: true,
             typingAllowed: true, startSessionsAllowed: true, permissionsAllowed: true, chatAllowed: true
         )
-        rows += try await captureComposerFrames(host: host, list: list)
+        rows += try await captureComposerFrames(host: host, list: list) + captureRoutingFrames(host: host, list: list)
         rows += try await captureConversations(host: host, list: list, heartbeat: on, relay: relay, grant: approving, now: now)
         rows += try await captureUnifiedChatMocks(host: host)
 
@@ -274,10 +274,11 @@ final class ScreenshotTourTests: XCTestCase {
             prepare(center, model)
             let files = ChatConversationView.draftFiles(center.drafts.draft(route.id).attachments, center: center,
                                                         conversation: route.id)
+            let routing = center.routing(model)
             return AnyView(VStack(spacing: 0) {
                 Spacer()
                 ChatComposerView(model: model, field: ChatComposerFieldConfig(placeholder: model.placeholder),
-                                 onAttach: {}, shellFiles: files)
+                                 onAttach: {}, routing: routing, shellFiles: files)
             }
             .background(PhoneSurface.page)
             .environment(\.chatUIStyle, PhoneChatStyle()))
@@ -313,6 +314,75 @@ final class ScreenshotTourTests: XCTestCase {
             rows.append(ScreenshotHost.IndexRow(
                 number: name, view: "ChatComposerView", source: "WatchtowerChat/Sources/ChatUI/Composer",
                 reached: "ChatUI composer, phone style, light/dark/narrow"
+            ))
+        }
+        return rows
+    }
+
+    /// The routing pill shared with the Mac (#1822 T17, ask #1418): its labels and menu are the Mac's, a saved chat's
+    /// pill stays editable between turns, and the fallback card, the capability line and the routing error come from
+    /// the list's `routing` (an older daemon's list has none: the model choice only). On the composer alone.
+    private func captureRoutingFrames(host: ScreenshotHost, list: ChatList) async throws -> [ScreenshotHost.IndexRow] {
+        func routingList(preferred state: String, error: String? = nil) throws -> ChatList {
+            let status = error == nil ? try ChatRoutingStatus.parse(Data("""
+                {"preferred_provider":"claude","enabled":true,"revision":"demo",
+                 "providers":[{"provider":"claude","state":"\(state)","next_probe_at":"2026-01-02T14:30:00Z"}]}
+                """.utf8)) : nil
+            let routing = ChatList.Routing(providers: [
+                .init(id: "claude", displayName: "Claude", reservePeer: "codex", images: true, pdfs: true, readFolder: true,
+                      claudeAITools: true),
+                .init(id: "codex", displayName: "Codex", reservePeer: "claude", images: true, readFolder: true)
+            ], status: status, error: error)
+            return ChatList(conversations: list.conversations, projects: list.projects, models: list.models, routing: routing)
+        }
+        func frame(
+            _ list: ChatList,
+            saved: Bool = true,
+            actual: String = "",
+            reason: String = "",
+            reachability: ChatReachability = .connected,
+            prepare: (ChatRoutingModel) -> Void = { _ in }
+        ) -> AnyView {
+            let center = Self.chatCenter(list)
+            let route = saved ? ChatRoute(id: DemoSeed.Chat.Feeds.roadmap) : .new
+            let (conversation, model) = center.conversation(route)
+            if saved {
+                conversation.store.apply(.snapshot(ChatFeed(
+                    conversation: ChatFeed.Conversation(id: route.id, title: "Q3 roadmap", actualProvider: actual,
+                                                        actualModel: actual.isEmpty ? "" : "gpt-5.6-sol", routingReason: reason),
+                    messages: [ChatFeed.Message(id: 1, role: "user", text: "Summarise the Q3 roadmap", createdAt: Date())]
+                )))
+            }
+            conversation.reachability = reachability
+            let routing = center.routing(model)
+            prepare(routing)
+            return AnyView(VStack(spacing: 0) {
+                Spacer()
+                ChatComposerView(model: model, field: ChatComposerFieldConfig(placeholder: model.placeholder),
+                                 onAttach: {}, routing: routing)
+            }
+            .background(PhoneSurface.page)
+            .environment(\.chatUIStyle, PhoneChatStyle()))
+        }
+        let frames: [(String, AnyView)] = [
+            ("iphone-chat-routing-new-chat", frame(try routingList(preferred: "available"), saved: false)),
+            ("iphone-chat-routing-saved", frame(try routingList(preferred: "available")) { $0.selectModel("opus") }),
+            ("iphone-chat-routing-fallback", frame(try routingList(preferred: "quota_wait"), actual: "codex", reason: "quota_exhausted")),
+            ("iphone-chat-routing-recovered", frame(try routingList(preferred: "available"), actual: "codex", reason: "quota_exhausted")),
+            ("iphone-chat-routing-unsupported", frame(try routingList(preferred: "available"), actual: "claude",
+                                                      reason: "required_capability_missing")),
+            ("iphone-chat-routing-missing-caps", frame(try routingList(preferred: "available")) { $0.selectProvider("codex") }),
+            ("iphone-chat-routing-status-error", frame(try routingList(preferred: "available", error: "Couldn't read provider availability"))),
+            ("iphone-chat-routing-offline", frame(try routingList(preferred: "available"), actual: "codex", reason: "quota_exhausted",
+                                                  reachability: .unavailable)),
+            ("iphone-chat-routing-no-catalog", frame(list, actual: "claude"))
+        ]
+        var rows: [ScreenshotHost.IndexRow] = []
+        for (name, frame) in frames {
+            try await host.captureThree(name, frame)
+            rows.append(ScreenshotHost.IndexRow(
+                number: name, view: "ChatRoutingAccessory", source: "WatchtowerChat/Sources/ChatUI/Composer/Routing",
+                reached: "ChatUI routing pill, phone style, light/dark/narrow"
             ))
         }
         return rows

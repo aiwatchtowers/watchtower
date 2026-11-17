@@ -33,7 +33,6 @@ enum ProjectPageShotFixtures {
                     projectID: fixture.projectID,
                     chatVM: fixture.chatVM,
                     dbPool: fixture.manager.dbPool,
-                    modelSuggestions: [],
                     maxComposerHeight: 200,
                     onOpenChat: { _ in }, onDeleted: { _ in }
                 )

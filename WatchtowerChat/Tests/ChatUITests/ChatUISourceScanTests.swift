@@ -107,12 +107,17 @@ final class ChatUISourceScanTests: XCTestCase {
     func testChat05ComposerOnlyEditsItsBindingAndCallsClosures() throws {
         let composer = try swiftFiles(under: ChatUIFixtures.chatUISources.appendingPathComponent("Composer")).map(relative)
         XCTAssertTrue(composer.contains("Composer/ChatComposerField.swift"))
+        // The routing pill and its accessory (#1822 T17): they set a binding and call the routing model's closures.
+        XCTAssertTrue(composer.contains("Composer/Routing/ChatRoutingAccessory.swift"))
+        XCTAssertTrue(composer.contains("Composer/Routing/ChatRoutingPill.swift"))
         let files = composer + [
             "Platform/macOS/ChatComposerTextInput.swift",
             "Platform/macOS/ComposerFileInput.swift",
             "Platform/macOS/LongPasteOffer.swift",
+            "Platform/macOS/AppActivation.swift",
             "Platform/iOS/ComposerTextField.swift",
-            "Platform/iOS/PhoneComposerFileInput.swift"
+            "Platform/iOS/PhoneComposerFileInput.swift",
+            "Platform/iOS/PhoneAppActivation.swift"
         ]
         for file in files {
             let text = try String(contentsOf: ChatUIFixtures.chatUISources.appendingPathComponent(file), encoding: .utf8)

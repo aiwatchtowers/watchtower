@@ -129,7 +129,7 @@ enum UnifiedChatShotFixtures {
                 Text(feed.conversation.title).font(.headline)
                 ChatUI.ChatFeedView(messages: vm.messages,
                                     context: vm.conversation.feedContext(composer: vm.composer, partActions: ChatPartActions()))
-                MainChatComposer(chatVM: vm, modelSuggestions: [], maxHeight: 120)
+                MainChatComposer(chatVM: vm, maxHeight: 120)
             }
             .padding(Spacing.large)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

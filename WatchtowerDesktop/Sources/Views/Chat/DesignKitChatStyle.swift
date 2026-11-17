@@ -1,5 +1,6 @@
 import AppKit
 import ChatUI
+import ChatWire
 import DesignKit
 import SwiftUI
 import WatchtowerChatText
@@ -138,8 +139,8 @@ struct DesignKitChatStyle: ChatUIStyle {
     func errorCard(_ content: ChatErrorCardContent) -> AnyView? {
         guard look == .embedded else { return nil }
         if content.code == "quota_exhausted" {
-            return AnyView(ChatRoutingStatusView(preview: ProviderFallbackPreview(state: .stopped),
-                                                 onAction: content.reviewActions))
+            return routingStatusCard(ProviderFallbackPreview(state: .stopped).copy, actionEnabled: true,
+                                     onAction: content.reviewActions)
         }
         return AnyView(
             HStack(spacing: Spacing.regular) {
@@ -388,6 +389,25 @@ extension DesignKitChatStyle {
             .overlay(RoundedRectangle(cornerRadius: Radius.row).strokeBorder(Color(.separatorColor)))
             .padding(.horizontal, Spacing.medium)
         )
+    }
+}
+
+// MARK: - The routing pill (#1822 T17): the Mac's look from before the pill moved into ChatUI, on every look.
+
+extension DesignKitChatStyle {
+    /// The borderless menu's label, in caption (the pill's look as `ChatModelPicker` drew it).
+    func routingPillLabel(_ label: String, enabled: Bool) -> AnyView {
+        AnyView(Text(label).font(.caption))
+    }
+
+    /// A secondary caption, or a warning one (a notice, the routing error).
+    func routingCaption(_ text: String, warning: Bool) -> AnyView {
+        AnyView(Text(text).font(.caption).foregroundStyle(warning ? Tone.warning : .secondary))
+    }
+
+    /// The Settings card the provider fallback shares (`ProviderFallbackStatus`).
+    func routingStatusCard(_ copy: ProviderFallbackPreview.Copy, actionEnabled: Bool, onAction: (() -> Void)?) -> AnyView {
+        AnyView(ProviderFallbackStatus(copy: copy, actionEnabled: actionEnabled, onAction: onAction))
     }
 }
 

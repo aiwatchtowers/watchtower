@@ -9,7 +9,6 @@ struct ChatLandingView: View {
     @Bindable var chatVM: ChatViewModel
     let recents: [ChatList.Conversation]
     let ownerName: String
-    let modelSuggestions: [String]
     let maxComposerHeight: CGFloat
     let onOpen: (Int64) -> Void
 
@@ -19,7 +18,6 @@ struct ChatLandingView: View {
                 ChatEmptyState(ownerName: ownerName, onPrompt: usePrompt)
                 MainChatComposer(
                     chatVM: chatVM,
-                    modelSuggestions: modelSuggestions,
                     maxHeight: maxComposerHeight
                 )
                 if let error = chatVM.errorMessage {

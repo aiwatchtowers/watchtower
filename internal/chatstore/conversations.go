@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"watchtower/internal/db"
 )
 
 // ErrProjectGone refuses a new conversation in a chat project that does not
@@ -78,6 +80,39 @@ func (s *Store) Rename(ctx context.Context, conv int64, title string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE chat_conversations SET title = ?, title_source = 'user', updated_at = ? WHERE id = ? AND context_type IS NULL`,
 		title, seconds(s.now()), conv)
 	return requireConversation(res, err)
+}
+
+// UsePreferred is the chat's "Use preferred" (main's
+// ChatConversationQueries.setRouting with automatic): the chat routes
+// preferred + reserve again, and the sticky reserve (the actual pair and
+// its reason) is cleared, so the next turn starts on the preferred
+// provider. The caller holds the conversation's turn lock and retires the
+// idle session afterwards. ErrBusy while chat_turn_leases holds a live turn
+// of conv (an older app's turn, in the one release that keeps the lease);
+// ErrConversationGone when absent or not a main chat.
+func (s *Store) UsePreferred(ctx context.Context, conv int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("writing a chat: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var live int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM chat_turn_leases WHERE conversation_id = ? AND heartbeat_at_ms >= ?`,
+		conv, s.now().UnixMilli()-db.ChatLeaseStaleMS).Scan(&live); err != nil {
+		return fmt.Errorf("writing a chat: %w", err)
+	}
+	if live > 0 {
+		return ErrBusy
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE chat_conversations SET routing_mode = 'preferred_reserve', provider = NULL, model = NULL,
+		actual_provider = '', actual_model = '', routing_reason = '' WHERE id = ? AND context_type IS NULL`, conv)
+	if err := requireConversation(res, err); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("writing a chat: %w", err)
+	}
+	return nil
 }
 
 // Delete is ChatConversationQueries.delete: the row and, by cascade, its

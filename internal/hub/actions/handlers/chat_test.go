@@ -35,6 +35,18 @@ type fakeChatRunner struct {
 	keys    []string
 	cancels []string
 	cancel  bool
+	// manages are the chat_manage requests the handler passed on;
+	// manageErr (nil = the engine's answer) refuses them.
+	manages   []chatengine.ManageRequest
+	manageErr error
+}
+
+func (f *fakeChatRunner) Manage(ctx context.Context, req chatengine.ManageRequest) error {
+	f.manages = append(f.manages, req)
+	if f.manageErr != nil {
+		return f.manageErr
+	}
+	return f.Engine.Manage(ctx, req)
 }
 
 func (f *fakeChatRunner) Turn(ctx context.Context, req chatengine.TurnRequest) (chatstore.Started, error) {
@@ -392,6 +404,29 @@ func TestChatManage_RenameSetsUserTitle(t *testing.T) {
 	// discard (the Mac's untouched landing draft) is chat.sock only: the relay never deletes a chat by it.
 	wantOutcome(t, c.run("chat_manage", map[string]any{"conversation_id": conv, "op": "discard"}), wire.StatusFailed, reasonInvalidParams)
 	wantOutcome(t, c.run("chat_manage", map[string]any{"conversation_id": 9999, "op": "pin"}), wire.StatusFailed, reasonNotFound)
+}
+
+// TestChatManage_UsePreferredAllowed: the relay's chat_manage passes
+// use_preferred to the engine, which clears the sticky reserve; a running
+// turn's busy comes back as conversation_busy, the refusal the phone maps.
+func TestChatManage_UsePreferredAllowed(t *testing.T) {
+	c := newChatEnv(t, false)
+	conv := c.conversation()
+	if _, err := c.db.Exec(`UPDATE chat_conversations SET actual_provider = 'codex', actual_model = 'gpt-x',
+		routing_reason = 'quota_exhausted' WHERE id = ?`, conv); err != nil {
+		t.Fatal(err)
+	}
+	wantOutcome(t, c.run("chat_manage", map[string]any{"conversation_id": conv, "op": "use_preferred"}), wire.StatusApplied, "")
+	if len(c.runner.manages) != 1 || c.runner.manages[0].Op != chatengine.ManageUsePreferred {
+		t.Fatalf("engine got %+v", c.runner.manages)
+	}
+	if got := c.scalar(`SELECT routing_mode || '/' || actual_provider || '/' || routing_reason FROM chat_conversations WHERE id = ?`, conv); got != "preferred_reserve//" {
+		t.Fatalf("row %q", got)
+	}
+	c.runner.manageErr = chatstore.ErrBusy
+	wantOutcome(t, c.run("chat_manage", map[string]any{"conversation_id": conv, "op": "use_preferred"}), wire.StatusFailed, reasonConversationBusy)
+	c.runner.manageErr = nil
+	wantOutcome(t, c.run("chat_manage", map[string]any{"conversation_id": 9999, "op": "use_preferred"}), wire.StatusFailed, reasonNotFound)
 }
 
 func TestChatManage_DeleteRemovesAttachmentFolder(t *testing.T) {

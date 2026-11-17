@@ -119,7 +119,7 @@ final class ChatViewModelShellTests: XCTestCase {
         var created: Int64?
         vm.onConversationCreated = { created = $0 }
         vm.showLanding(inProject: 5)
-        vm.switchProvider(.codex)
+        vm.routing.selectProvider("codex")
         vm.composer.draft = "Start the brief"
         await vm.sendDraft()
         guard case let .new(projectID, routing)? = client.ops.first else { return XCTFail("no chat_new first") }
@@ -129,6 +129,27 @@ final class ChatViewModelShellTests: XCTestCase {
         XCTAssertEqual(created, 9)
         XCTAssertEqual(vm.conversationID, 9)
         XCTAssertFalse(vm.isOnLanding)
+    }
+
+    /// The Mac behaves as on main (#1822 T17 fix round, I1 and I2): on a chat stuck on the reserve, "Preferred +
+    /// reserve · Auto model" clears the stickiness (`chat_manage use_preferred`), and the attach gating follows a pick
+    /// at once (Only Claude on an automatic chat sitting on Codex takes PDFs again).
+    func testTheAutoPickClearsAStickyReserveAndThePickMovesTheAttachGating() async throws {
+        ProviderCatalogFixture.seedShared()
+        await vm.refreshRoutingStatus()
+        vm.select(conversationID: 4)
+        vm.conversation.store.apply(.snapshot(ChatFeed(
+            conversation: ChatFeed.Conversation(id: 4, title: "Plan", actualProvider: "codex", actualModel: "gpt-x",
+                                                routingReason: "quota_exhausted"),
+            messages: [ChatFeed.Message(id: 1, role: "user", text: "Hi", createdAt: Date())]
+        )))
+        vm.conversation.reachability = .connected
+        XCTAssertEqual(vm.pdfUnavailableReason, "PDFs need a provider that reads them.", "on the reserve: its row")
+        vm.routing.selectProvider("claude")
+        XCTAssertNil(vm.pdfUnavailableReason, "Only Claude picked: Claude's row")
+        vm.routing.pick(try XCTUnwrap(vm.routing.menu.first?.items.first))
+        await vm.routing.writesSettled()
+        XCTAssertTrue(client.ops.contains(.manage(conversationID: 4, op: .usePreferred, title: nil, projectID: nil)))
     }
 
     /// The picked mentions still in the text and the `/` skill go in the turn's compose.
@@ -266,7 +287,7 @@ final class ChatViewModelKeptBehaviourTests: XCTestCase {
     /// the landing unsent discards the draft; a sent draft is never discarded.
     func testTheLandingWarmsItsChatOnTheFirstKeystrokeAndDiscardsItIfLeft() async throws {
         vm.showLanding(inProject: 3)
-        vm.switchProvider(.codex)
+        vm.routing.selectProvider("codex")
         vm.composer.draft = "S"
         await vm.draftStarted()
         await vm.engineCallsSettled()

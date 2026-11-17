@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"testing"
 
@@ -17,6 +18,7 @@ import (
 type relayOps struct {
 	Relay      map[string]string `json:"relay"`
 	NotOnRelay []string          `json:"not_on_relay"`
+	ManageOps  []string          `json:"chat_manage_ops"`
 }
 
 // chatAttachmentUpload is the relay's carrier of the engine's attach: a
@@ -97,5 +99,31 @@ func TestChatRelayOps_TurnParamsReachTheEngine(t *testing.T) {
 	}
 	if got.ScreenContext != "<screen>Home</screen>" || got.ClientKey != "K-9" || got.Compose == nil || got.Routing == nil {
 		t.Fatalf("a turn field was dropped on the relay: %+v", got)
+	}
+}
+
+// TestChatRelayOps_ManageOpsOnTheRelay: the hub's chat_manage takes exactly
+// the listed ops from the phone (use_preferred among them, unified chat
+// T17); the chat.sock-only ops are refused invalid_params.
+func TestChatRelayOps_ManageOpsOnTheRelay(t *testing.T) {
+	c := newChatEnv(t, false)
+	ops := readRelayOps(t)
+	if !slices.Contains(ops.ManageOps, chatengine.ManageUsePreferred) {
+		t.Fatalf("chat_manage_ops %v lacks use_preferred", ops.ManageOps)
+	}
+	for _, op := range ops.ManageOps {
+		if op == chatengine.ManageDelete {
+			continue // applied by TestChatManage_DeleteRemovesAttachmentFolder; it would remove the chat here
+		}
+		params := map[string]any{"conversation_id": c.conversation(), "op": op, "title": "x"}
+		if out := c.run("chat_manage", params); out.Status != wire.StatusApplied {
+			t.Errorf("%s: %s %s", op, out.Status, out.Reason)
+		}
+	}
+	for _, op := range []string{chatengine.ManageMove, chatengine.ManageArchive, chatengine.ManageDiscard} {
+		if slices.Contains(ops.ManageOps, op) {
+			t.Errorf("%s is chat.sock only", op)
+		}
+		wantOutcome(t, c.run("chat_manage", map[string]any{"conversation_id": c.conversation(), "op": op}), wire.StatusFailed, reasonInvalidParams)
 	}
 }

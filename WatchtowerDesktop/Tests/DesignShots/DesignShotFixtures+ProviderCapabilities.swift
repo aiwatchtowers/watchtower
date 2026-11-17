@@ -1,4 +1,5 @@
 import ChatUI
+import ChatWire
 import SwiftUI
 @testable import WatchtowerDesktop
 import WatchtowerCore
@@ -15,7 +16,7 @@ enum ProviderCapabilitiesShotFixtures {
                                         usage: "totals", turnCap: "native")
         let presentation = ChatRoutingPresentation(
             pair: nil, automatic: true, actualProvider: "ollama", actualModel: "llama3.1", reason: nil,
-            health: nil, busy: false, actualDisplayName: "Ollama / Local", capabilities: caps)
+            health: nil, busy: false, actualDisplayName: "Ollama / Local", capabilities: caps.chatCaps)
         return AnyView(VStack(alignment: .leading, spacing: Spacing.small) {
             if let actual = presentation.actual { Text(actual).font(.caption).foregroundStyle(.secondary) }
             if let missing = presentation.missingCapabilities {

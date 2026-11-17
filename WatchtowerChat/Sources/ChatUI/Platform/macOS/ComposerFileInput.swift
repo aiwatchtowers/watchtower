@@ -25,6 +25,9 @@ enum ComposerMetrics {
     static let noticeAsStatus = true
     /// The routing accessory sits under the field.
     static let accessoryAboveField = false
+    /// The routing accessory's inset and the gap under its pill.
+    static let routingInset: CGFloat = Spacing.large
+    static let routingBottom: CGFloat = Spacing.compact
 }
 
 enum ComposerPlatform {
@@ -85,6 +88,13 @@ extension View {
     /// Dropped file URLs go to `accept` (false: not taken).
     func composerFileDrop(enabled: Bool, accept: @escaping ([URL]) -> Bool) -> some View {
         dropDestination(for: URL.self) { urls, _ in accept(urls) }
+    }
+}
+
+extension View {
+    /// The routing pill's menu: the Mac's borderless button, sized to its label.
+    func routingPillMenuStyle() -> some View {
+        menuStyle(.borderlessButton).fixedSize()
     }
 }
 #endif

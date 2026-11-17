@@ -1,53 +1,63 @@
+import Foundation
+
 /// Shared provider-fallback presentation copy for runtime and approved catalog
-/// scenes. This model performs no selection, settings writes or model calls.
+/// scenes (the Mac's Settings and the chat's fallback card on the Mac and the phone). This model performs no selection, settings writes or model calls.
 /// The pair it names is the catalog's (`AIModelCatalog.fallbackPair`, the Go
 /// table's `reserve_peer`), never a Swift copy of the rule (LLMTRANSPORT-01).
-package struct ProviderFallbackPreview {
+public struct ProviderFallbackPreview: Sendable {
     /// One side of the fallback pair: its provider id and display name.
-    package struct Provider: Equatable, Sendable {
-        package let id: String
-        package let name: String
-        package init(id: String, name: String) {
+    public struct Provider: Equatable, Sendable {
+        public let id: String
+        public let name: String
+        public init(id: String, name: String) {
             self.id = id
             self.name = name
         }
     }
 
     /// The preferred provider and the reserve it pairs with.
-    package struct Pair: Equatable, Sendable {
-        package let preferred: Provider
-        package let reserve: Provider
-        package init(preferred: Provider, reserve: Provider) {
+    public struct Pair: Equatable, Sendable {
+        public let preferred: Provider
+        public let reserve: Provider
+        public init(preferred: Provider, reserve: Provider) {
             self.preferred = preferred
             self.reserve = reserve
         }
         /// The same pair seen from the reserve's side.
-        package var reversed: Self { .init(preferred: reserve, reserve: preferred) }
+        public var reversed: Self { .init(preferred: reserve, reserve: preferred) }
     }
 
-    package enum State: String, CaseIterable {
+    public enum State: String, CaseIterable, Sendable {
         case empty, checking, notInstalled, notVerified, connectionNetworkError, connectionError, ready, applying, applyError
         case fallback, bothLimited, probing, recovered, stopped, pinned, unsupported, policy
     }
 
-    package enum Emphasis { case neutral, success, warning, error }
-    package struct Copy {
-        package let title: String
-        package let detail: String
-        package let action: String?
-        package let emphasis: Emphasis
-        package var busy = false
+    public enum Emphasis: Sendable { case neutral, success, warning, error }
+    public struct Copy: Equatable, Sendable {
+        public let title: String
+        public let detail: String
+        public let action: String?
+        public let emphasis: Emphasis
+        public var busy = false
+
+        public init(title: String, detail: String, action: String?, emphasis: Emphasis, busy: Bool = false) {
+            self.title = title
+            self.detail = detail
+            self.action = action
+            self.emphasis = emphasis
+            self.busy = busy
+        }
     }
 
-    package let preferred: Provider
-    package let reserve: Provider
-    package let state: State
-    package let nextCheck: String?
-    package var chatTitle: String
-    package var modelDescription: String
-    package var observedProvider: String?
-    package var observedModel: String?
-    package init(
+    public let preferred: Provider
+    public let reserve: Provider
+    public let state: State
+    public let nextCheck: String?
+    public var chatTitle: String
+    public var modelDescription: String
+    public var observedProvider: String?
+    public var observedModel: String?
+    public init(
         pair: Pair,
         state: State,
         nextCheck: String? = nil,
@@ -66,33 +76,33 @@ package struct ProviderFallbackPreview {
 
     /// The copy of a state that names no provider (stopped, applying, the
     /// connection label): no pair is needed to say it.
-    package init(state: State) {
+    public init(state: State) {
         let unnamed = Provider(id: "", name: "")
         self.init(pair: .init(preferred: unnamed, reserve: unnamed), state: state)
     }
 
-    package var isChat: Bool { [.recovered, .stopped, .pinned, .unsupported].contains(state) }
-    package var pageTitle: String { isChat ? "AI Chat" : "AI providers" }
-    package var pageSubtitle: String {
+    public var isChat: Bool { [.recovered, .stopped, .pinned, .unsupported].contains(state) }
+    public var pageTitle: String { isChat ? "AI Chat" : "AI providers" }
+    public var pageSubtitle: String {
         isChat ? chatTitle : "Settings · System · AI"
     }
-    package static let preferredLabel = "Preferred provider"
-    package static let reserveLabel = "Reserve provider"
-    package static let modelsLabel = "Models"
-    package static let automaticLabel = "Use reserve when limits are reached"
-    package static let scope = "Applies to Watchtower AI. Workbench sessions keep their own agent."
-    package static let recovery = "Background tasks return after the preferred provider is available. Existing chats keep their current provider."
-    package static let reviewEmpty = "No actions were recorded. Check any external tools before sending a new message."
-    package static let chatPolicyLabel = "Provider choice"
-    package static let chatPolicyAutomatic = "Preferred + reserve"
-    package static let automaticChoice = chatPolicyAutomatic + " · Auto model"
-    package static func pinnedChoice(provider: String, model: String? = nil) -> String {
+    public static let preferredLabel = "Preferred provider"
+    public static let reserveLabel = "Reserve provider"
+    public static let modelsLabel = "Models"
+    public static let automaticLabel = "Use reserve when limits are reached"
+    public static let scope = "Applies to Watchtower AI. Workbench sessions keep their own agent."
+    public static let recovery = "Background tasks return after the preferred provider is available. Existing chats keep their current provider."
+    public static let reviewEmpty = "No actions were recorded. Check any external tools before sending a new message."
+    public static let chatPolicyLabel = "Provider choice"
+    public static let chatPolicyAutomatic = "Preferred + reserve"
+    public static let automaticChoice = chatPolicyAutomatic + " · Auto model"
+    public static func pinnedChoice(provider: String, model: String? = nil) -> String {
         "Only " + provider + (model.map { " · " + ($0.isEmpty ? "Auto" : $0) } ?? "")
     }
-    package var chatPolicyValue: String {
+    public var chatPolicyValue: String {
         state == .pinned ? "Only \(preferred.name) · explicit model" : Self.chatPolicyAutomatic
     }
-    package var connectionLabel: String {
+    public var connectionLabel: String {
         switch state {
         case .empty: "Not connected"
         case .checking: "Checking…"
@@ -102,16 +112,16 @@ package struct ProviderFallbackPreview {
         default: "Connected"
         }
     }
-    package var enabled: Bool {
+    public var enabled: Bool {
         ![.empty, .checking, .notInstalled, .notVerified, .connectionNetworkError, .connectionError].contains(state)
     }
-    package var actualProvider: String {
+    public var actualProvider: String {
         observedProvider ?? ([.fallback, .recovered].contains(state) ? reserve.name : preferred.name)
     }
-    package var actualLabel: String { "Current provider: \(actualProvider)" + (observedModel.map { " · " + $0 } ?? "") }
+    public var actualLabel: String { "Current provider: \(actualProvider)" + (observedModel.map { " · " + $0 } ?? "") }
 
     private var checkDetail: String { nextCheck.map { " Next recovery check: " + $0 + "." } ?? "" }
-    package var copy: Copy {
+    public var copy: Copy {
         let p = preferred.name, r = reserve.name
         switch state {
         case .empty:

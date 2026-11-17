@@ -116,21 +116,10 @@ struct CodeQuestionPopover: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 8)
-            ChatModelPicker(
-                provider: session.choice.provider,
-                model: session.choice.model,
-                suggestions: questions.modelSuggestions(session.choice.provider),
-                onSelectProvider: { provider in
-                    Task { await questions.setModelChoice(session.choice.switching(to: provider), workbenchID: workbenchID) }
-                },
-                onSelectModel: { model in
-                    Task {
-                        await questions.setModelChoice(.init(provider: session.choice.provider, model: model),
-                                                       workbenchID: workbenchID)
-                    }
-                }
-            )
-            .disabled(busy)
+            CodeQuestionModelPill(choice: session.choice, suggestions: questions.modelSuggestions(session.choice.provider),
+                                  enabled: !busy) { choice in
+                Task { await questions.setModelChoice(choice, workbenchID: workbenchID) }
+            }
         }
         .padding(.horizontal, 12)
         .padding(.top, 10)

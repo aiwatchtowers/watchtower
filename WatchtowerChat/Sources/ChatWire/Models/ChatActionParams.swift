@@ -204,6 +204,9 @@ public enum ChatManageOp: String, Codable, Hashable, Sendable {
     /// Deletes the chat only while it is an untouched draft — no message, no attachment (the Mac's landing draft
     /// left without a send; chat.sock only).
     case discard
+    /// The fallback card's **Use preferred** between turns: the chat routes preferred + reserve again, its sticky
+    /// reserve cleared and its idle session retired (refused busy while a turn runs).
+    case usePreferred = "use_preferred"
 }
 
 /// `chat_manage`. `title` goes with `rename` only.

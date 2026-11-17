@@ -378,7 +378,7 @@ func (e *Engine) NewConversation(ctx context.Context, projectID *int64, r *chats
 // ManageRequest is one Chats-panel write.
 type ManageRequest struct {
 	Conversation int64
-	Op           string // pin|unpin|rename|delete|move|archive|discard
+	Op           string // pin|unpin|rename|delete|move|archive|discard|use_preferred
 	Title        string
 	ProjectID    *int64
 }
@@ -393,6 +393,10 @@ const (
 	// ManageArchive hides the chat from the list, its messages kept (the
 	// Mac's Archive; chat.sock only).
 	ManageArchive = "archive"
+	// ManageUsePreferred is the fallback card's "Use preferred" between
+	// turns: the chat routes preferred + reserve again with the sticky
+	// reserve cleared, and its idle session is retired.
+	ManageUsePreferred = "use_preferred"
 )
 
 // Manage applies a Chats-panel write. delete cancels the conversation's
@@ -412,6 +416,8 @@ func (e *Engine) Manage(ctx context.Context, r ManageRequest) error {
 		err = e.store.Archive(ctx, r.Conversation)
 	case ManageDiscard:
 		err = e.discard(ctx, r.Conversation)
+	case ManageUsePreferred:
+		err = e.usePreferred(ctx, r.Conversation)
 	default:
 		return chatstore.ErrInvalid
 	}
@@ -441,6 +447,49 @@ func (e *Engine) delete(ctx context.Context, conv int64) error {
 			log.Printf("chatengine: chat %d deleted, its attachment folder was not removed (%s)", conv, errClass(err))
 		}
 	}
+	return nil
+}
+
+// usePreferred writes conv back to preferred + reserve under the
+// conversation's turn lock, then retires its idle session so the next
+// turn's session reads the new row. A turn starting or running refuses it
+// with ErrBusy and nothing is written.
+func (e *Engine) usePreferred(ctx context.Context, conv int64) error {
+	ts := &turnState{done: make(chan struct{})}
+	e.mu.Lock()
+	if e.closed {
+		e.mu.Unlock()
+		return ErrClosed
+	}
+	if e.turns[conv] != nil || e.holding(conv) != nil {
+		e.mu.Unlock()
+		return chatstore.ErrBusy
+	}
+	e.turns[conv] = ts
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		delete(e.turns, conv)
+		e.mu.Unlock()
+		close(ts.done)
+	}()
+	if err := e.store.UsePreferred(ctx, conv); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	for _, s := range e.sessions {
+		if s.conv == conv && s.turn == nil && !s.closing && !s.dropped {
+			s.retire = true
+			// Its reported route is the old one: the feed shows the row now.
+			s.readyLive = nil
+			if s.phase == phasePending {
+				s.dropped = true // a warm session not launched yet never launches
+			}
+			s.poke()
+		}
+	}
+	e.admit()
+	e.mu.Unlock()
 	return nil
 }
 

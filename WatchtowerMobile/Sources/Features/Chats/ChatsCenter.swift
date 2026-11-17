@@ -224,6 +224,8 @@ final class ChatsCenter {
     @ObservationIgnored private var replica: ReplicaStore?
     @ObservationIgnored private var relayClient: RelayChatClient?
     @ObservationIgnored private var chatList: ChatListModel?
+    /// The open screens' routing pills (held weakly), so every list update reaches their catalog.
+    @ObservationIgnored private var routings: [WeakRouting] = []
     @ObservationIgnored private var reachability: (@MainActor () -> Bool)?
     /// The copy's writes, one after another: an older snapshot never overwrites a newer one.
     @ObservationIgnored private var copyWrites: Task<Void, Never>?
@@ -285,7 +287,7 @@ final class ChatsCenter {
         if route.isNew { client.follow(conversation) }
         let composer = ChatComposerModel(conversation: conversation)
         if let list = snapshot.list {
-            composer.newChatChoices = ChatNewChatChoices(models: list.models, projects: list.projects)
+            composer.newChatChoices = ChatNewChatChoices(projects: list.projects)
         }
         let draft = drafts.draft(route.id)
         composer.draft = draft.text
@@ -294,6 +296,17 @@ final class ChatsCenter {
         composer.routing = draft.routing
         composer.projectID = draft.projectID
         return (conversation, composer)
+    }
+
+    /// The routing pill of a conversation screen's composer (the Mac's pill, ask #1418): its catalog is the list's
+    /// `models[]` and `routing`, refreshed on every list update; nil without a list (no pill). **Use preferred** goes
+    /// through the hub's `chat_manage`.
+    func routing(_ composer: ChatComposerModel) -> ChatRoutingModel {
+        let routing = ChatRoutingModel(client: client) { composer }
+        routing.catalog = snapshot.list.map(ChatRoutingCatalog.init(list:))
+        routings.removeAll { $0.model == nil }
+        routings.append(WeakRouting(model: routing))
+        return routing
     }
 
     /// The composer's text and quotes, kept per conversation while the screen is away; the notice a relaunch left goes
@@ -385,6 +398,11 @@ final class ChatsCenter {
         guard value != snapshot else { return }
         let previous = snapshot
         snapshot = value
+        if value.list != previous.list {
+            let catalog = value.list.map(ChatRoutingCatalog.init(list:))
+            routings.removeAll { $0.model == nil }
+            for routing in routings { routing.model?.catalog = catalog }
+        }
         saveToCopy(value, previous: previous)
         sending.receive(failures: value.failures)
         sending.settle(feeds: value.feeds)
@@ -471,4 +489,9 @@ private struct SleepClock: ChatUIClock {
     func sleep(for duration: Duration) async throws {
         try await sleep(duration)
     }
+}
+
+/// A conversation screen's routing pill, held weakly by the center.
+private struct WeakRouting {
+    weak var model: ChatRoutingModel?
 }

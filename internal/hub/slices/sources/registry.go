@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"watchtower/internal/agentkind"
+	"watchtower/internal/chatengine"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions/handlers"
 	"watchtower/internal/hub/platform"
@@ -64,10 +65,12 @@ type Config struct {
 	// what the chat handlers write and the chat sources publish; ChatEngine
 	// (nil = chat off: the chat sources publish nothing) is the daemon's
 	// chat engine they read; ChatModels (nil = RegistryChatModels) is the
-	// composer's model list.
+	// composer's model list; ChatRouting (nil = no `routing` on chat_list)
+	// reads the routing pill's catalog.
 	ChatWatches *ChatWatches
 	ChatEngine  ChatReader
 	ChatModels  func() []ChatModel
+	ChatRouting func(context.Context) *chatengine.RoutingCatalog
 }
 
 // Set is the hub's sources and what the runtime must start and tell.
@@ -233,7 +236,7 @@ func All(c Config) (*Set, error) {
 		feed := ChatFeedOptions{Watches: watches, Grant: c.Store.AnyChatPhone, Now: now}
 		set.ChatWatches = watches
 		set.Sources = append(set.Sources,
-			ChatList(c.ChatEngine, ChatListOptions{Grant: c.Store.AnyChatPhone, Models: c.ChatModels}),
+			ChatList(c.ChatEngine, ChatListOptions{Grant: c.Store.AnyChatPhone, Models: c.ChatModels, Routing: c.ChatRouting}),
 			ChatFeed(c.ChatEngine, feed), ChatPage(c.ChatEngine, feed), ChatSearch(c.ChatEngine, feed))
 	}
 	return set, nil

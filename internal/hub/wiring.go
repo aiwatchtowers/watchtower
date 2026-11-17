@@ -240,6 +240,7 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 		RunnerGap:      o.runnerGap,
 		Now:            o.Clock,
 		ChatEngine:     chatReader,
+		ChatRouting:    o.ChatRouting,
 	})
 	if err != nil {
 		w.close()

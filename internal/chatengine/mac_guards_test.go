@@ -122,10 +122,18 @@ func TestChatengine_ArchiveHidesFromList(t *testing.T) {
 // docs/inventory/chat.md).
 func TestChat01_RegenerateAndEditRowsBeforeTheTurnIsSent(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		g := newRig(t, fakeOpts{})
+		// Each turn waits for finish: the session is handed the turn before
+		// Turn returns, so an answer that ended at once would race the reads.
+		g := newRig(t, fakeOpts{block: true})
 		c := newConversation(t, g.d)
+		finish := func() {
+			synctest.Wait()
+			p := procOf(t, g, c)
+			p[len(p)-1].finish()
+			synctest.Wait()
+		}
 		first := g.send(t, c, "q", nil)
-		synctest.Wait()
+		finish()
 
 		regen, err := g.r.Turn(context.Background(), TurnRequest{StartRequest: chatstore.StartRequest{ConversationID: c,
 			Mode: chatstore.ModeRegenerate, MessageID: first.AssistantMessageID}})
@@ -136,6 +144,7 @@ func TestChat01_RegenerateAndEditRowsBeforeTheTurnIsSent(t *testing.T) {
 		assert.Equal(t, first.UserMessageID, regen.UserMessageID, "a regenerate reuses the owner row")
 		synctest.Wait()
 		assert.Equal(t, regen.TurnID, lastTurnID(t, g))
+		finish()
 
 		edit, err := g.r.Turn(context.Background(), TurnRequest{StartRequest: chatstore.StartRequest{ConversationID: c,
 			Mode: chatstore.ModeEdit, MessageID: first.UserMessageID, Text: "q2"}})
@@ -146,6 +155,7 @@ func TestChat01_RegenerateAndEditRowsBeforeTheTurnIsSent(t *testing.T) {
 		assert.Equal(t, edit.TurnID, turnIDOf(t, g, edit.AssistantMessageID))
 		synctest.Wait()
 		assert.Equal(t, edit.TurnID, lastTurnID(t, g))
+		finish()
 	})
 }
 

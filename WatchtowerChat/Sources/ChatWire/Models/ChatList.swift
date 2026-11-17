@@ -133,17 +133,98 @@ public struct ChatList: Decodable, Hashable, Sendable {
         }
     }
 
+    /// The routing pill's catalog beside `models` (#1822 T17): the providers the policy allows with their fallback
+    /// peers and capability rows, the routing status (`ai routing-status`'s DTO) and a fixed error when it could not be
+    /// read. An older daemon sends none (D22).
+    public struct Routing: Hashable, Sendable, Decodable {
+        public struct Provider: Hashable, Sendable, Decodable {
+            public let id: String
+            public let displayName: String
+            public let reservePeer: String?
+            public let images: Bool
+            public let pdfs: Bool
+            public let readFolder: Bool
+            public let claudeAITools: Bool
+
+            public init(
+                id: String,
+                displayName: String,
+                reservePeer: String? = nil,
+                images: Bool = false,
+                pdfs: Bool = false,
+                readFolder: Bool = false,
+                claudeAITools: Bool = false
+            ) {
+                self.id = id
+                self.displayName = displayName
+                self.reservePeer = reservePeer
+                self.images = images
+                self.pdfs = pdfs
+                self.readFolder = readFolder
+                self.claudeAITools = claudeAITools
+            }
+
+            public init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                id = try c.decode(String.self, forKey: .id)
+                displayName = try c.decodeIfPresent(String.self, forKey: .displayName) ?? id
+                reservePeer = try c.decodeIfPresent(String.self, forKey: .reservePeer).flatMap { $0.isEmpty ? nil : $0 }
+                images = try c.decodeIfPresent(Bool.self, forKey: .images) ?? false
+                pdfs = try c.decodeIfPresent(Bool.self, forKey: .pdfs) ?? false
+                readFolder = try c.decodeIfPresent(Bool.self, forKey: .readFolder) ?? false
+                claudeAITools = try c.decodeIfPresent(Bool.self, forKey: .claudeAITools) ?? false
+            }
+
+            enum CodingKeys: String, CodingKey {
+                case id, displayName, reservePeer, images, pdfs, readFolder
+                // `claude_ai_tools`, as the wire decoder's snake_case conversion spells it.
+                case claudeAITools = "claudeAiTools"
+            }
+        }
+
+        public let providers: [Provider]
+        public let status: ChatRoutingStatus?
+        public let error: String?
+
+        public init(providers: [Provider], status: ChatRoutingStatus? = nil, error: String? = nil) {
+            self.providers = providers
+            self.status = status
+            self.error = error
+        }
+
+        /// An unreadable status is no status (the card is left out), never an unreadable list.
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            providers = try c.decodeIfPresent([Provider].self, forKey: .providers) ?? []
+            status = try? c.decodeIfPresent(ChatRoutingStatus.self, forKey: .status)
+            error = try c.decodeIfPresent(String.self, forKey: .error).flatMap { $0.isEmpty ? nil : $0 }
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case providers, status, error
+        }
+    }
+
     public let conversations: [Conversation]
     public let projects: [Project]
     public let models: [Model]
+    /// Nil from an older daemon, or when its `routing` could not be decoded.
+    public let routing: Routing?
     /// Set when the Mac could not read its chats ("Couldn't load chats");
     /// the lists are then empty.
     public let error: String?
 
-    public init(conversations: [Conversation], projects: [Project] = [], models: [Model] = [], error: String? = nil) {
+    public init(
+        conversations: [Conversation],
+        projects: [Project] = [],
+        models: [Model] = [],
+        routing: Routing? = nil,
+        error: String? = nil
+    ) {
         self.conversations = conversations
         self.projects = projects
         self.models = models
+        self.routing = routing
         self.error = error
     }
 
@@ -152,10 +233,11 @@ public struct ChatList: Decodable, Hashable, Sendable {
         conversations = try c.decodeIfPresent([Conversation].self, forKey: .conversations) ?? []
         projects = try c.decodeIfPresent([Project].self, forKey: .projects) ?? []
         models = try c.decodeIfPresent([Model].self, forKey: .models) ?? []
+        routing = try? c.decodeIfPresent(Routing.self, forKey: .routing)
         error = try c.decodeIfPresent(String.self, forKey: .error)
     }
 
     enum CodingKeys: String, CodingKey {
-        case conversations, projects, models, error
+        case conversations, projects, models, routing, error
     }
 }

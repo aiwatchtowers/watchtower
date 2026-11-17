@@ -27,6 +27,7 @@ struct ChatConversationView: View {
     private let route: ChatRoute
     @State private var conversation: ChatConversationModel
     @State private var composer: ChatComposerModel
+    @State private var routing: ChatRoutingModel
     @State private var artifact: ChatArtifactContent?
     @State private var sources: [ChatSource]?
     @State private var attachNotice: String?
@@ -43,6 +44,7 @@ struct ChatConversationView: View {
         let (conversation, composer) = center.conversation(route)
         _conversation = State(initialValue: conversation)
         _composer = State(initialValue: composer)
+        _routing = State(initialValue: center.routing(composer))
     }
 
     var body: some View {
@@ -119,7 +121,7 @@ struct ChatConversationView: View {
         let hold = center.hold(conversation.conversationID, composerSending: composer.isSending, host: inputs.host)
         ChatUI.ChatConversationView(
             conversation: conversation, composer: composer, partActions: partActions(inputs), onAttach: { attaching = true },
-            composerFiles: draftFiles, focusMessageID: route.messageID
+            composerFiles: draftFiles, focusMessageID: route.messageID, routing: routing
         )
         .environment(\.chatUIStyle, Self.style)
         .environment(\.chatHostText, .phone(inputs.heartbeat?.macName ?? ""))

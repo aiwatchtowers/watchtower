@@ -116,7 +116,10 @@ type List struct {
 	Conversations []ListConversation `json:"conversations"`
 	Projects      []ListProject      `json:"projects"`
 	Models        []ChatModel        `json:"models"`
-	Error         *string            `json:"error,omitempty"`
+	// Routing is the routing pill's catalog (the hub's chat_list fills it;
+	// nil leaves the key out, as an older daemon sends).
+	Routing *RoutingCatalog `json:"routing,omitempty"`
+	Error   *string         `json:"error,omitempty"`
 }
 
 // chatListRows is the Chats panel's read (ChatHistoryQueries.panelRows)
