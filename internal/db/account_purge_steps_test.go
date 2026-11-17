@@ -609,12 +609,29 @@ func TestPurgeSteps_ParentWaitsForItsKnowledge(t *testing.T) {
 	if left["stream_digests"] != 1 || left["ext_sources"] != 2 || left["kb_documents"] != 2 || left["kb_dirty"] != 1 {
 		t.Fatalf("left = %v", left)
 	}
+	// SQLite names a subquery's table by its alias in the plan: each guard
+	// alias must be a SEARCH on its key range, never a SCAN.
+	guards := map[string][]string{"stream_digests": {"k"}, "ext_sources": {"k", "m", "l"}}
 	for _, st := range steps {
-		if st.Table != "stream_digests" && st.Table != "ext_sources" {
+		aliases, ok := guards[st.Table]
+		if !ok {
 			continue
 		}
 		plan := explainDetails(t, d, st.SQL, append(append([]any{}, st.Args...), 500)...)
-		for _, detail := range strings.Split(plan, "\n") {
+		lines := strings.Split(plan, "\n")
+		for _, alias := range aliases {
+			searched := false
+			for _, detail := range lines {
+				if strings.HasPrefix(detail, "SCAN "+alias+" ") || detail == "SCAN "+alias {
+					t.Errorf("step %q scans %s: %s", st.Name, alias, detail)
+				}
+				searched = searched || strings.HasPrefix(detail, "SEARCH "+alias+" USING ")
+			}
+			if !searched {
+				t.Errorf("step %q: guard %s is no index search:\n%s", st.Name, alias, plan)
+			}
+		}
+		for _, detail := range lines {
 			for _, table := range []string{"kb_documents", "kb_dirty", "doc_links"} {
 				if strings.HasPrefix(detail, "SCAN "+table) {
 					t.Errorf("step %q scans %s: %s", st.Name, table, detail)
@@ -635,5 +652,42 @@ func TestStartAccountPurge_ZeroLeaseSameSecondRefused(t *testing.T) {
 	)
 	if got, err := d.StartAccountPurge(1, time.Now(), true); err != nil || got {
 		t.Fatalf("start = %v, %v; want false on a tie", got, err)
+	}
+}
+
+// Fix round 3: a stream digest's pending knowledge marks go before its
+// documents, through a key range, and only its own.
+func TestPurgeSteps_StreamDigestMarksGo(t *testing.T) {
+	d := OpenTestDB(t)
+	mustExecAll(t, d,
+		`INSERT INTO jira_accounts (id, cloud_id) VALUES (1, 'c1')`,
+		`INSERT INTO stream_digests (id, source, account_id, period_from, period_to) VALUES (7, 'jira', 1, 'a', 'b'), (70, 'jira', 2, 'a', 'b')`,
+		`INSERT INTO kb_dirty (source, key) VALUES ('stream_digest', 'stream_digest:7:0'), ('stream_digest', 'stream_digest:70:0')`,
+	)
+	steps, err := d.PurgeSteps("jira", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marks, docs := -1, -1
+	for i, st := range steps {
+		switch st.Name {
+		case "stream digest marks":
+			marks = i
+		case "stream digest documents":
+			docs = i
+		}
+	}
+	if marks < 0 || docs < 0 || marks > docs {
+		t.Fatalf("marks step %d must come before the documents step %d", marks, docs)
+	}
+	drainPurge(t, d, "jira", 1, 500)
+	if n := count(t, d, `SELECT count(*) FROM kb_dirty WHERE key = 'stream_digest:7:0'`); n != 0 {
+		t.Fatalf("digest 7's mark left: %d", n)
+	}
+	if n := count(t, d, `SELECT count(*) FROM kb_dirty WHERE key = 'stream_digest:70:0'`); n != 1 {
+		t.Fatal("another account's mark must stay")
+	}
+	if n := count(t, d, `SELECT count(*) FROM stream_digests WHERE id = 7`); n != 0 {
+		t.Fatal("digest 7 must go")
 	}
 }

@@ -113,11 +113,14 @@ func (s *purgeSteps) knowledge(kind, prefix string) {
 }
 
 // streamDigests adds the steps for one account's stream digests of kind
-// (gmail | jira | linear): each digest's knowledge documents as a key range
-// (ids read by PurgeSteps outside any transaction), then the digests.
+// (gmail | jira | linear): each digest's pending knowledge marks, then its
+// knowledge documents, as key ranges (ids read by PurgeSteps outside any
+// transaction) — the marks first, so a re-render cannot bring a document
+// back after its step —, then the digests.
 func (s *purgeSteps) streamDigests(kind string, accountID int64, ids []int64) {
 	for _, id := range ids {
 		lo, hi := prefixRange(fmt.Sprintf("stream_digest:%d:", id))
+		s.del("stream digest marks", "kb_dirty", `source = 'stream_digest' AND key >= ? AND key < ?`, lo, hi)
 		s.del("stream digest documents", "kb_documents", `id >= ? AND id < ?`, lo, hi)
 	}
 	if kind == "gmail" || kind == "jira" {
@@ -450,11 +453,13 @@ UNION ALL SELECT 'linear', id, status, access_ok_at, revoked_at FROM linear_acco
 // leaseCutoff (purge.Cutoff: now − Lease, or now for a removed Slack
 // account's zero lease) in its lease scope — its own for a removed account,
 // every live account of its source otherwise (purge.Plan's deadlines) — and,
-// with requireRemoved, the account still removed and no access confirmed
-// at or after the row was scheduled (second precision: a tie keeps the data) (an "add again" after the re-plan wins, and so
-// does an add-and-remove-again since the scheduling). The clocks are fixed-width RFC 3339 UTC, so text order is time
-// order. A row cancelled since the caller read it, already running, or whose
-// account no longer qualifies is left as it is (false).
+// with requireRemoved, the account still removed and no access confirmed at
+// or after the row was scheduled — an "add again" after the re-plan wins, and
+// so does an add-and-remove-again since the scheduling; the clocks have
+// second precision, and a tie keeps the data. The clocks are fixed-width
+// RFC 3339 UTC, so text order is time order. A row cancelled since the
+// caller read it, already running, or whose account no longer qualifies is
+// left as it is (false).
 func (db *DB) StartAccountPurge(id int64, leaseCutoff time.Time, requireRemoved bool) (bool, error) {
 	res, err := db.Exec(`UPDATE account_purges AS p SET state = 'running', started_at = `+nowSQL+`
 		WHERE p.id = ?1 AND p.state = 'scheduled' AND EXISTS (
