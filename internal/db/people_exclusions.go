@@ -9,6 +9,10 @@ import (
 // that names no Slack user.
 var ErrPersonNotFound = errors.New("user not found")
 
+// ErrPersonExcluded is returned by UpsertPeopleCard for a person the owner
+// stopped cards for: nothing is written.
+var ErrPersonExcluded = errors.New("the owner stopped cards for this person")
+
 // ExcludePerson stops people cards for a Slack user (Stop card for this
 // person, spec 2026-11-17 §5.3, A14): it records the namespaced id in
 // people_card_exclusions and deletes the person's cards in the same

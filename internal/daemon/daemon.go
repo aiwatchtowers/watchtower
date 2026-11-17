@@ -1899,6 +1899,13 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 	if has, err := d.peoplePipe.HasData(ctx); err != nil {
 		d.logger.Printf("people: data check failed, running anyway: %v", err)
 	} else if !has {
+		// No Slack owner makes no cards, never cards for everyone (A13):
+		// say why, once a day.
+		if known, err := d.peoplePipe.OwnerKnown(); err != nil {
+			d.logger.Printf("people: owner check failed: %v", err)
+		} else if !known {
+			d.logSkipOnce(now, "people", "no Slack account with a known user, so no people cards (people cards are made only for the people you work with)")
+		}
 		// Current source eligibility can remove all input from an old window.
 		// Drop that empty descriptor without claiming success for newer data.
 		if err := d.peoplePipe.AcknowledgeWindow(ctx); err != nil {

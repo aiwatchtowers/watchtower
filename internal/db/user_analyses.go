@@ -316,19 +316,13 @@ func (db *DB) ComputeUserStats(userID string, from, to float64) (*UserStats, err
 // account's namespaced owner id (SlackOwnersByAccount); a person qualifies
 // only through the owner of the same account (InteractionPartners), and each
 // owner qualifies for their own card. An account missing from owners makes
-// no cards; an empty map returns nothing, never everyone. Returns only users
-// with at least minMessages.
+// no cards; an empty map returns nothing, never everyone. The window is
+// [from, to), the partners' window too. Returns only users with at least
+// minMessages.
 func (db *DB) ComputeAllUserStats(from, to float64, minMessages int, owners map[int64]string) ([]UserStats, error) {
-	qualified := make(map[string]bool)
-	for acct, owner := range owners {
-		partners, err := db.InteractionPartners(acct, owner, from, to)
-		if err != nil {
-			return nil, err
-		}
-		qualified[owner] = true
-		for _, p := range partners {
-			qualified[p] = true
-		}
+	qualified, err := db.PeopleCardCandidates(from, to, owners)
+	if err != nil {
+		return nil, err
 	}
 	if len(qualified) == 0 {
 		return nil, nil
@@ -343,7 +337,7 @@ func (db *DB) ComputeAllUserStats(from, to float64, minMessages int, owners map[
 		FROM messages m
 		JOIN users u ON u.id = m.user_id
 		JOIN channels c ON c.id = m.channel_id
-		WHERE m.ts_unix >= ? AND m.ts_unix <= ?
+		WHERE m.ts_unix >= ? AND m.ts_unix < ?
 			AND m.is_deleted = 0 AND m.text != ''
 			AND m.user_id != ''
 			AND u.is_bot = 0 AND u.is_deleted = 0
@@ -381,7 +375,7 @@ func (db *DB) ComputeAllUserStats(from, to float64, minMessages int, owners map[
 		SELECT m.user_id, COUNT(*) FROM messages m
 		JOIN users u ON u.id = m.user_id
 		JOIN channels c ON c.id = m.channel_id
-		WHERE m.ts_unix >= ? AND m.ts_unix <= ?
+		WHERE m.ts_unix >= ? AND m.ts_unix < ?
 			AND m.reply_count > 0 AND m.thread_ts IS NULL
 			AND m.user_id != '' AND u.is_bot = 0 AND u.is_deleted = 0
 			AND c.type NOT IN ('dm', 'group_dm')
@@ -409,7 +403,7 @@ func (db *DB) ComputeAllUserStats(from, to float64, minMessages int, owners map[
 		SELECT m.user_id, COUNT(DISTINCT m.thread_ts) FROM messages m
 		JOIN users u ON u.id = m.user_id
 		JOIN channels c ON c.id = m.channel_id
-		WHERE m.ts_unix >= ? AND m.ts_unix <= ?
+		WHERE m.ts_unix >= ? AND m.ts_unix < ?
 			AND m.thread_ts IS NOT NULL
 			AND m.user_id != '' AND u.is_bot = 0 AND u.is_deleted = 0
 			AND c.type NOT IN ('dm', 'group_dm')
@@ -440,7 +434,7 @@ func (db *DB) ComputeAllUserStats(from, to float64, minMessages int, owners map[
 		FROM messages m
 		JOIN users u ON u.id = m.user_id
 		JOIN channels c ON c.id = m.channel_id
-		WHERE m.ts_unix >= ? AND m.ts_unix <= ?
+		WHERE m.ts_unix >= ? AND m.ts_unix < ?
 			AND m.user_id != '' AND u.is_bot = 0 AND u.is_deleted = 0
 			AND c.type NOT IN ('dm', 'group_dm')
 		GROUP BY m.user_id, hour

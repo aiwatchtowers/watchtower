@@ -30,6 +30,7 @@ func TestMigration_PeopleSurveillanceCleared(t *testing.T) {
 		`INSERT INTO people_card_summaries (period_from, period_to, summary, attention) VALUES (100, 200, 'kept', '["y"]')`,
 		`INSERT INTO user_analyses (user_id, period_from, period_to) VALUES ('1:UP1', 100, 200)`,
 		`INSERT INTO user_interactions (user_a, user_b, period_from, period_to) VALUES ('1:UOWN', '1:UP1', 100, 200)`,
+		`INSERT INTO feedback (entity_type, entity_id, rating) VALUES ('user_analysis', '1', 1), ('digest', '7', 1)`,
 	} {
 		_, err := raw.Exec(q)
 		require.NoError(t, err, q)
@@ -40,7 +41,7 @@ func TestMigration_PeopleSurveillanceCleared(t *testing.T) {
 	type state struct {
 		hours, flags, summary, attention, summarySummary string
 		volume, avgLen                                   float64
-		analyses, interactions                           int
+		analyses, interactions, analysisFeedback, other  int
 	}
 	read := func() state {
 		var s state
@@ -49,10 +50,12 @@ func TestMigration_PeopleSurveillanceCleared(t *testing.T) {
 		require.NoError(t, raw.QueryRow(`SELECT attention, summary FROM people_card_summaries`).Scan(&s.attention, &s.summarySummary))
 		require.NoError(t, raw.QueryRow(`SELECT COUNT(*) FROM user_analyses`).Scan(&s.analyses))
 		require.NoError(t, raw.QueryRow(`SELECT COUNT(*) FROM user_interactions`).Scan(&s.interactions))
+		require.NoError(t, raw.QueryRow(`SELECT COUNT(*) FROM feedback WHERE entity_type = 'user_analysis'`).Scan(&s.analysisFeedback))
+		require.NoError(t, raw.QueryRow(`SELECT COUNT(*) FROM feedback WHERE entity_type != 'user_analysis'`).Scan(&s.other))
 		return s
 	}
 	got := read()
-	assert.Equal(t, state{hours: "{}", flags: "[]", summary: "kept", attention: "[]", summarySummary: "kept"}, got)
+	assert.Equal(t, state{hours: "{}", flags: "[]", summary: "kept", attention: "[]", summarySummary: "kept", other: 1}, got)
 
 	var emoji int
 	require.NoError(t, raw.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('slack_accounts') WHERE name = 'emoji_scope_missing'`).Scan(&emoji))
@@ -89,6 +92,6 @@ func policyHygieneUpStatements(t *testing.T) []string {
 			stmts = append(stmts, s)
 		}
 	}
-	require.GreaterOrEqual(t, len(stmts), 6)
+	require.GreaterOrEqual(t, len(stmts), 7)
 	return stmts
 }

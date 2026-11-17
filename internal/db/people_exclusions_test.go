@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -179,4 +180,126 @@ func TestPeopleExclude_DeletesCardsAndRoundTrips(t *testing.T) {
 	assert.True(t, errors.Is(d.ExcludePerson("1:UNOPE"), ErrPersonNotFound))
 	assert.True(t, errors.Is(d.IncludePerson("1:UNOPE"), ErrPersonNotFound))
 	assert.Equal(t, 0, count(t, d, `SELECT COUNT(*) FROM people_card_exclusions`))
+}
+
+// TestInteractionPartners_QueryPlan: every branch of the partner query is
+// bounded by the window — no branch range-scans the owner's or the account's
+// whole history through idx_messages_user_id, and none scans messages.
+func TestInteractionPartners_QueryPlan(t *testing.T) {
+	d := openTestDB(t)
+	plan := explainDetails(t, d, interactionPartnersSQL,
+		sql.Named("owner", "1:UOWN"), sql.Named("from", 1.0), sql.Named("to", 2.0),
+		sql.Named("lo", "1:"), sql.Named("hi", "1;"), sql.Named("raw", "UOWN"), sql.Named("rawAt", 3))
+	assert.NotContains(t, plan, "idx_messages_user_id")
+	// The only scans are of own, the owner's materialized window messages.
+	for _, line := range strings.Split(plan, "\n") {
+		if strings.HasPrefix(line, "SCAN ") && line != "SCAN o" {
+			t.Errorf("unbounded scan: %q\n%s", line, plan)
+		}
+	}
+	assert.Contains(t, plan, "MATERIALIZE own")
+	assert.Contains(t, plan, "idx_messages_thread (channel_id=? AND thread_ts=?)")
+	assert.Contains(t, plan, "idx_messages_channel_ts_unix (channel_id=? AND ts_unix>? AND ts_unix<?)")
+}
+
+// postAt adds a message at a given unix second (outside the fixture's
+// in-window clock).
+func (f *peopleFixture) postAt(sec int, channel, user, text, threadTS string) string {
+	f.ts++
+	ts := fmt.Sprintf("%d.%06d", sec, f.ts)
+	m := Message{ChannelID: channel, TS: ts, UserID: user, Text: text}
+	if threadTS != "" {
+		m.ThreadTS = sql.NullString{String: threadTS, Valid: true}
+	}
+	require.NoError(f.t, f.d.UpsertMessage(m))
+	return ts
+}
+
+// TestPeopleCards_GroupDMAndThirdThread: a group DM both posted in counts,
+// and so does a thread someone else started that both replied in.
+func TestPeopleCards_GroupDMAndThirdThread(t *testing.T) {
+	d := openTestDB(t)
+	f := &peopleFixture{t: t, d: d}
+	f.users("1:UOWN", "1:UP1", "1:UP2", "1:UP3")
+	f.channel("1:CGEN", "public")
+	f.channel("1:GDM", "group_dm")
+	for _, u := range []string{"1:UOWN", "1:UP1", "1:UP2", "1:UP3"} {
+		f.post("1:CGEN", u, "status update", "")
+	}
+	f.post("1:GDM", "1:UOWN", "group ping", "")
+	f.post("1:GDM", "1:UP1", "group pong", "")
+	parent := f.post("1:CGEN", "1:UP3", "a third person's thread", "")
+	f.post("1:CGEN", "1:UOWN", "reply", parent)
+	f.post("1:CGEN", "1:UP2", "reply too", parent)
+
+	stats, err := d.ComputeAllUserStats(1000000, 2000000, 1, map[int64]string{1: "1:UOWN"})
+	require.NoError(t, err)
+	// UP3 started the thread the owner replied in: a partner as well.
+	assert.Equal(t, []string{"1:UOWN", "1:UP1", "1:UP2", "1:UP3"}, statIDs(stats))
+}
+
+// TestPeopleCards_InteractionOutsideWindowDoesNotCount: each branch's
+// interaction happening before the window (or at its end, which is open)
+// does not make a partner.
+func TestPeopleCards_InteractionOutsideWindowDoesNotCount(t *testing.T) {
+	d := openTestDB(t)
+	f := &peopleFixture{t: t, d: d}
+	f.users("1:UOWN", "1:UDM", "1:UTH", "1:UMEN")
+	f.channel("1:CGEN", "public")
+	f.channel("1:DDM", "dm")
+	for _, u := range []string{"1:UOWN", "1:UDM", "1:UTH", "1:UMEN"} {
+		f.post("1:CGEN", u, "status update", "")
+	}
+	// DM: the owner's half is before the window.
+	f.postAt(900000, "1:DDM", "1:UOWN", "old ping", "")
+	f.post("1:DDM", "1:UDM", "pong", "")
+	// Thread: the partner's reply lands at the window's open end.
+	parent := f.post("1:CGEN", "1:UOWN", "thread", "")
+	f.postAt(2000000, "1:CGEN", "1:UTH", "late reply", parent)
+	// The owner mentioned UMEN before the window.
+	f.postAt(900000, "1:CGEN", "1:UOWN", "cc <@UMEN>", "")
+
+	stats, err := d.ComputeAllUserStats(1000000, 2000000, 1, map[int64]string{1: "1:UOWN"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"1:UOWN"}, statIDs(stats))
+}
+
+// TestUpsertPeopleCard_RefusesExcluded: the exclusion check is inside the
+// write, so a card generated for a person excluded meanwhile is not stored.
+func TestUpsertPeopleCard_RefusesExcluded(t *testing.T) {
+	d := openTestDB(t)
+	require.NoError(t, d.UpsertUser(User{ID: "1:UP1", Name: "dana"}))
+	require.NoError(t, d.ExcludePerson("1:UP1"))
+	_, err := d.UpsertPeopleCard(PeopleCard{UserID: "1:UP1", PeriodFrom: 1, PeriodTo: 2, Summary: "s"})
+	require.ErrorIs(t, err, ErrPersonExcluded)
+	assert.Equal(t, 0, count(t, d, `SELECT COUNT(*) FROM people_cards`))
+}
+
+// TestPruneNonPartnerPeopleCards: cards of people who are not partners in the
+// window go, in every window up to it, in the owned account only; the
+// owner's and partners' cards and other accounts' cards stay.
+func TestPruneNonPartnerPeopleCards(t *testing.T) {
+	d := openTestDB(t)
+	f := &peopleFixture{t: t, d: d}
+	f.users("1:UOWN", "1:UP1", "1:UGONE", "2:UX")
+	f.channel("1:CGEN", "public")
+	f.post("1:CGEN", "1:UP1", "hi <@UOWN>", "")
+	for _, id := range []string{"1:UOWN", "1:UP1", "1:UGONE", "2:UX"} {
+		for _, w := range [][2]float64{{0, 1000000}, {1000000, 2000000}} {
+			_, err := d.UpsertPeopleCard(PeopleCard{UserID: id, PeriodFrom: w[0], PeriodTo: w[1], Summary: "s"})
+			require.NoError(t, err)
+		}
+	}
+	// A card of a later window than the one pruned stays.
+	_, err := d.UpsertPeopleCard(PeopleCard{UserID: "1:UGONE", PeriodFrom: 2000000, PeriodTo: 3000000, Summary: "s"})
+	require.NoError(t, err)
+
+	n, err := d.PruneNonPartnerPeopleCards(1000000, 2000000, map[int64]string{1: "1:UOWN"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), n)
+	assert.Equal(t, 1, count(t, d, `SELECT COUNT(*) FROM people_cards WHERE user_id = '1:UGONE'`))
+	assert.Equal(t, 1, count(t, d, `SELECT COUNT(*) FROM people_cards WHERE user_id = '1:UGONE' AND period_from = 2000000`))
+	for _, id := range []string{"1:UOWN", "1:UP1", "2:UX"} {
+		assert.Equal(t, 2, count(t, d, `SELECT COUNT(*) FROM people_cards WHERE user_id = ?`, id), id)
+	}
 }

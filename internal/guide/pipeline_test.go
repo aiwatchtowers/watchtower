@@ -663,3 +663,72 @@ func TestPeopleExclude_BlocksFutureCards(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, card)
 }
+
+// excludingGenerator excludes a person while the run is generating, the race
+// between `people exclude` and an in-flight run.
+type excludingGenerator struct {
+	mockGenerator
+	database *db.DB
+	userID   string
+}
+
+func (g *excludingGenerator) Generate(ctx context.Context, a, b, c string) (string, *digest.Usage, string, error) {
+	if g.calls.Load() == 0 {
+		if err := g.database.ExcludePerson(g.userID); err != nil {
+			return "", nil, "", err
+		}
+	}
+	return g.mockGenerator.Generate(ctx, a, b, c)
+}
+
+// TestPeopleExclude_DuringRunWritesNoCard: exclude lands between the stats
+// and the card write → the run succeeds and stores no card for the person.
+func TestPeopleExclude_DuringRunWritesNoCard(t *testing.T) {
+	database := testDB(t)
+	from, to := (&Pipeline{}).currentWindow()
+	seedOutcomeUser(t, database, from)
+	seedOutcomeSituation(t, database, from, to)
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	gen := &excludingGenerator{mockGenerator: mockGenerator{response: outcomeBatchReply}, database: database, userID: "1:U1"}
+	pipe := New(database, cfg, gen, testLogger())
+	pipe.ForceRegenerate = true
+
+	_, err := pipe.RunForWindow(context.Background(), from, to)
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), gen.calls.Load())
+	card, err := database.GetLatestPeopleCard("1:U1")
+	require.NoError(t, err)
+	assert.Nil(t, card)
+}
+
+// TestPeopleCards_RunPrunesNonPartnerCards: a card made before the upgrade
+// for someone the owner does not work with goes on the next run; the owned
+// account's partners keep theirs, another account is not touched.
+func TestPeopleCards_RunPrunesNonPartnerCards(t *testing.T) {
+	database := testDB(t)
+	from, to := (&Pipeline{}).currentWindow()
+	seedOutcomeUser(t, database, from)
+	seedOutcomeSituation(t, database, from, to)
+	for _, id := range []string{"1:UREADONLY", "2:UOTHER"} {
+		seedUser(t, database, id, id)
+		_, err := database.UpsertPeopleCard(db.PeopleCard{UserID: id, PeriodFrom: from - 7*86400, PeriodTo: from, Summary: "old"})
+		require.NoError(t, err)
+	}
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	pipe := New(database, cfg, &mockGenerator{response: outcomeBatchReply}, testLogger())
+	pipe.ForceRegenerate = true
+
+	_, err := pipe.RunForWindow(context.Background(), from, to)
+	require.NoError(t, err)
+	gone, err := database.GetLatestPeopleCard("1:UREADONLY")
+	require.NoError(t, err)
+	assert.Nil(t, gone)
+	other, err := database.GetLatestPeopleCard("2:UOTHER")
+	require.NoError(t, err)
+	assert.NotNil(t, other, "account 2 has no owner here and is not touched")
+	kept, err := database.GetLatestPeopleCard("1:U1")
+	require.NoError(t, err)
+	assert.NotNil(t, kept)
+}

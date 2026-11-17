@@ -8,19 +8,23 @@ import (
 	"strings"
 )
 
-// UpsertPeopleCard inserts or replaces a people card.
+// UpsertPeopleCard inserts or replaces a people card. A person in
+// people_card_exclusions gets no card: ErrPersonExcluded, nothing written.
 func (db *DB) UpsertPeopleCard(card PeopleCard) (int64, error) {
 	if card.Status == "" {
 		card.Status = "active"
 	}
-	_, err := db.Exec(`INSERT INTO people_cards
+	// The exclusion check is inside the write, so a person excluded while a
+	// run is generating their card never gets it (ExcludePerson, A14).
+	res, err := db.Exec(`INSERT INTO people_cards
 		(user_id, period_from, period_to,
 		 message_count, channels_active, threads_initiated, threads_replied,
 		 avg_message_length, active_hours_json, volume_change_pct,
 		 summary, communication_style, decision_role, red_flags, highlights, accomplishments,
 		 communication_guide, decision_style, tactics, relationship_context, status,
 		 model, input_tokens, output_tokens, cost_usd, prompt_version)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		WHERE NOT EXISTS (SELECT 1 FROM people_card_exclusions WHERE user_id = ?)
 		ON CONFLICT(user_id, period_from, period_to) DO UPDATE SET
 			message_count = excluded.message_count,
 			channels_active = excluded.channels_active,
@@ -52,9 +56,15 @@ func (db *DB) UpsertPeopleCard(card PeopleCard) (int64, error) {
 		card.Summary, card.CommunicationStyle, card.DecisionRole,
 		card.RedFlags, card.Highlights, card.Accomplishments,
 		card.CommunicationGuide, card.DecisionStyle, card.Tactics, card.RelationshipContext, card.Status,
-		card.Model, card.InputTokens, card.OutputTokens, card.CostUSD, card.PromptVersion)
+		card.Model, card.InputTokens, card.OutputTokens, card.CostUSD, card.PromptVersion,
+		card.UserID)
 	if err != nil {
 		return 0, fmt.Errorf("upserting people card: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return 0, fmt.Errorf("upserting people card: %w", err)
+	} else if n == 0 {
+		return 0, fmt.Errorf("%w: %s", ErrPersonExcluded, card.UserID)
 	}
 	var id int64
 	err = db.QueryRow(`SELECT id FROM people_cards WHERE user_id = ? AND period_from = ? AND period_to = ?`,

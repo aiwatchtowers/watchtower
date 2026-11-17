@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strconv"
 
@@ -29,35 +30,42 @@ func (db *DB) SlackOwnersByAccount() (map[int64]string, error) {
 // interactionPartnersSQL lists who interacted directly with the owner in
 // [from, to) within one account (spec 2026-11-17 §5.3, A13): someone who
 // posted in a DM or group DM the owner posted in, in a thread the owner
-// posted in (as its parent or a reply), who mentioned the owner, or whom
-// the owner mentioned. Each branch starts from the owner's few messages or
-// one pass over the window, so it stays index-backed (user_id, ts_unix,
-// (channel_id, thread_ts), the primary key).
+// posted in (as its parent, a reply, or both replying in a third thread),
+// who mentioned the owner, or whom the owner mentioned.
+//
+// Every branch is bounded by the window (TestInteractionPartners_QueryPlan):
+// own is the owner's window messages, materialized once and read through
+// idx_messages_ts_unix (the unary + keeps the planner off the owner's whole
+// history in idx_messages_user_id); the DM branch seeks
+// idx_messages_channel_ts_unix per DM channel; the thread branches seek
+// idx_messages_thread and the primary key per owner message; the mention
+// branch is one pass over the window's messages; the owner-mentions branch
+// starts from own and seeks the users primary key.
 const interactionPartnersSQL = `
-WITH own AS (
-	SELECT channel_id, ts, thread_ts, text FROM messages
-	WHERE user_id = :owner AND ts_unix >= :from AND ts_unix < :to AND is_deleted = 0
+WITH own AS MATERIALIZED (
+	SELECT channel_id, ts, thread_ts, text FROM messages INDEXED BY idx_messages_ts_unix
+	WHERE ts_unix >= :from AND ts_unix < :to AND +user_id = :owner AND is_deleted = 0
 )
-SELECT p.user_id FROM messages p
+SELECT p.user_id FROM messages p INDEXED BY idx_messages_channel_ts_unix
 	WHERE p.channel_id IN (SELECT o.channel_id FROM own o JOIN channels c ON c.id = o.channel_id
 		WHERE c.type IN ('dm', 'group_dm'))
 		AND p.ts_unix >= :from AND p.ts_unix < :to AND p.is_deleted = 0
 UNION
-SELECT p.user_id FROM own o JOIN messages p
+SELECT p.user_id FROM own o CROSS JOIN messages p INDEXED BY idx_messages_thread
 	ON p.channel_id = o.channel_id AND p.thread_ts = COALESCE(o.thread_ts, o.ts)
 	WHERE p.ts_unix >= :from AND p.ts_unix < :to AND p.is_deleted = 0
 UNION
-SELECT p.user_id FROM own o JOIN messages p
+SELECT p.user_id FROM own o CROSS JOIN messages p
 	ON p.channel_id = o.channel_id AND p.ts = o.thread_ts
 	WHERE p.ts_unix >= :from AND p.ts_unix < :to AND p.is_deleted = 0
 UNION
-SELECT p.user_id FROM messages p
+SELECT p.user_id FROM messages p INDEXED BY idx_messages_ts_unix
 	WHERE p.ts_unix >= :from AND p.ts_unix < :to AND p.is_deleted = 0
-		AND p.user_id >= :lo AND p.user_id < :hi
+		AND +p.user_id >= :lo AND +p.user_id < :hi
 		AND (instr(p.text, '<@' || :raw || '>') > 0 OR instr(p.text, '<@' || :raw || '|') > 0)
 UNION
-SELECT u.id FROM own o JOIN users u ON u.id >= :lo AND u.id < :hi
-	WHERE instr(o.text, '<@') > 0
+SELECT u.id FROM own o CROSS JOIN users u
+	WHERE instr(o.text, '<@') > 0 AND u.id >= :lo AND u.id < :hi
 		AND (instr(o.text, '<@' || substr(u.id, :rawAt) || '>') > 0
 			OR instr(o.text, '<@' || substr(u.id, :rawAt) || '|') > 0)`
 
@@ -92,4 +100,58 @@ func (db *DB) InteractionPartners(accountID int64, owner string, from, to float6
 		}
 	}
 	return out, rows.Err()
+}
+
+// PeopleCardCandidates is who may have a card for [from, to): each owner in
+// owners and that owner's interaction partners (A13).
+func (db *DB) PeopleCardCandidates(from, to float64, owners map[int64]string) (map[string]bool, error) {
+	out := make(map[string]bool)
+	for acct, owner := range owners {
+		partners, err := db.InteractionPartners(acct, owner, from, to)
+		if err != nil {
+			return nil, err
+		}
+		out[owner] = true
+		for _, p := range partners {
+			out[p] = true
+		}
+	}
+	return out, nil
+}
+
+// PruneNonPartnerPeopleCards deletes, in each account of owners, the cards of
+// windows ending at or before to for people who are neither the owner nor an
+// interaction partner in [from, to) (A13): cards made before the upgrade for
+// everyone with enough messages, and cards of people the owner no longer
+// works with. Accounts outside owners are not touched. Returns the number of
+// cards deleted.
+func (db *DB) PruneNonPartnerPeopleCards(from, to float64, owners map[int64]string) (int64, error) {
+	keep, err := db.PeopleCardCandidates(from, to, owners)
+	if err != nil {
+		return 0, err
+	}
+	ids := make([]string, 0, len(keep))
+	for id := range keep {
+		ids = append(ids, id)
+	}
+	keepJSON, err := json.Marshal(ids)
+	if err != nil {
+		return 0, fmt.Errorf("encoding card candidates: %w", err)
+	}
+	var total int64
+	for acct := range owners {
+		lo, hi := prefixRange(strconv.FormatInt(acct, 10) + ":")
+		res, err := db.Exec(`DELETE FROM people_cards
+			WHERE user_id >= ? AND user_id < ? AND period_to <= ?
+				AND user_id NOT IN (SELECT value FROM json_each(?))`, lo, hi, to, string(keepJSON))
+		if err != nil {
+			return total, fmt.Errorf("pruning people cards of account %d: %w", acct, err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return total, fmt.Errorf("pruning people cards of account %d: %w", acct, err)
+		}
+		total += n
+	}
+	return total, nil
 }

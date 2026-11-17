@@ -234,28 +234,33 @@ func (p *Pipeline) HasData(contexts ...context.Context) (bool, error) {
 
 // cardStats is who may get a card in [from, to): the users the owner works
 // with directly (db.ComputeAllUserStats over SlackOwnersByAccount), minus the
-// people the owner stopped cards for. noOwner reports that no Slack account
-// has a known owner, so nobody gets a card (spec 2026-11-17 §5.3, A13, A14).
-func (p *Pipeline) cardStats(from, to float64) (stats []db.UserStats, noOwner bool, err error) {
-	owners, err := p.db.SlackOwnersByAccount()
-	if err != nil {
-		return nil, false, err
-	}
-	if len(owners) == 0 {
-		return nil, true, nil
+// people the owner stopped cards for. owners is SlackOwnersByAccount; empty
+// means no Slack account has a known owner, so nobody gets a card (spec
+// 2026-11-17 §5.3, A13, A14).
+func (p *Pipeline) cardStats(from, to float64) (stats []db.UserStats, owners map[int64]string, err error) {
+	owners, err = p.db.SlackOwnersByAccount()
+	if err != nil || len(owners) == 0 {
+		return nil, owners, err
 	}
 	stats, err = p.db.ComputeAllUserStats(from, to, DefaultMinMessages, owners)
 	if err != nil {
-		return nil, false, fmt.Errorf("computing user stats: %w", err)
+		return nil, owners, fmt.Errorf("computing user stats: %w", err)
 	}
 	excluded, err := p.db.PeopleExclusions()
 	if err != nil {
-		return nil, false, err
+		return nil, owners, err
 	}
 	if len(excluded) == 0 {
-		return stats, false, nil
+		return stats, owners, nil
 	}
-	return withoutCovered(stats, excluded), false, nil
+	return withoutCovered(stats, excluded), owners, nil
+}
+
+// OwnerKnown reports whether some Slack account has a known owner; without
+// one the pipeline makes no cards (the daemon logs why).
+func (p *Pipeline) OwnerKnown() (bool, error) {
+	owners, err := p.db.SlackOwnersByAccount()
+	return len(owners) > 0, err
 }
 
 // RunForWindow executes the people card pipeline for a specific time window.
@@ -285,16 +290,26 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 	p.progress(0, 0, "Computing user statistics...")
 
 	t1 := time.Now()
-	allStats, noOwner, err := p.cardStats(from, to)
+	allStats, owners, err := p.cardStats(from, to)
 	p.logger.Printf("people: ComputeAllUserStats took %s (%d users)", time.Since(t1).Round(time.Millisecond), len(allStats))
 	if err != nil {
 		return 0, err
 	}
-	if noOwner {
+	if len(owners) == 0 {
 		p.progress(0, 0, "No owner identity: connect Slack to make people cards")
 		p.logger.Println("people: no owner identity (no Slack account with a known user); no cards")
 		p.lastOutcome = OutcomeNoOwner
 		return 0, nil
+	}
+	// Cards of people the owner does not work with in this window go, in the
+	// owned accounts only: pre-upgrade cards made for everyone, and people
+	// no longer worked with (A13).
+	pruned, err := p.db.PruneNonPartnerPeopleCards(from, to, owners)
+	if err != nil {
+		return 0, err
+	}
+	if pruned > 0 {
+		p.logger.Printf("people: removed %d card(s) of people not worked with directly", pruned)
 	}
 	if len(allStats) == 0 {
 		p.progress(0, 0, "No active users with enough messages")
@@ -302,9 +317,9 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 		p.lastOutcome = OutcomeNoData
 		return 0, nil
 	}
-	// todo is who still needs a card; team norms stay computed over the whole
-	// active population (allStats), or a resumed window would compare its
-	// remaining users against themselves.
+	// todo is who still needs a card; team norms stay computed over every
+	// card candidate of the window (allStats), or a resumed window would
+	// compare its remaining users against themselves.
 	todo := allStats
 	if len(covered) > 0 {
 		todo = withoutCovered(allStats, covered)
@@ -739,7 +754,18 @@ func (p *Pipeline) processUser(ctx context.Context, stats db.UserStats, from, to
 		card.CostUSD = 0
 	}
 
-	_, err = p.db.UpsertPeopleCard(card)
+	return p.storeCard(card)
+}
+
+// storeCard writes a card. A person the owner stopped cards for while this
+// run was generating is skipped, not a failure: the write refuses them
+// atomically (db.ErrPersonExcluded).
+func (p *Pipeline) storeCard(card db.PeopleCard) error {
+	_, err := p.db.UpsertPeopleCard(card)
+	if errors.Is(err, db.ErrPersonExcluded) {
+		p.logger.Printf("people: %s was excluded during the run; no card", card.UserID)
+		return nil
+	}
 	return err
 }
 
@@ -764,8 +790,7 @@ func (p *Pipeline) createInsufficientCard(stats db.UserStats, from, to float64) 
 		Status:           "insufficient_data",
 		Model:            "auto",
 	}
-	_, err := p.db.UpsertPeopleCard(card)
-	return err
+	return p.storeCard(card)
 }
 
 // storeBatchCard converts a BatchCardResult to a db.PeopleCard and stores it.
@@ -802,8 +827,7 @@ func (p *Pipeline) storeBatchCard(ctx context.Context, stats db.UserStats, resul
 		OutputTokens:       outTok,
 		CostUSD:            0,
 	}
-	_, err := p.db.UpsertPeopleCard(card)
-	return err
+	return p.storeCard(card)
 }
 
 // generateBatchCards runs a single AI call for multiple low-data users.

@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -385,4 +387,25 @@ func TestShouldRunDayPlan_FreshBudgetExhaustedFalse(t *testing.T) {
 	}
 
 	assert.False(t, d.shouldRunDayPlan(now, firstRunOwner))
+}
+
+// TestDaemon_PeopleNoOwnerSaysWhy: active users but no Slack account with a
+// known user → no run, no AI call, and one log line naming the reason, once
+// a day.
+func TestDaemon_PeopleNoOwnerSaysWhy(t *testing.T) {
+	d, database := firstRunTestSetup(t)
+	var logs bytes.Buffer
+	d.SetLogger(log.New(&logs, "", 0))
+	gen := attachPeoplePipeline(d, database)
+	seedFirstRunMessages(t, database)
+	seedFirstRunSituation(t, database)
+	_, err := database.Exec(`UPDATE slack_accounts SET current_user_id = ''`)
+	require.NoError(t, err)
+
+	d.phasePeopleCards(context.Background())
+	d.phasePeopleCards(context.Background())
+
+	assert.Equal(t, 0, peopleRunCount(t, database))
+	assert.Equal(t, 0, gen.calls)
+	assert.Equal(t, 1, strings.Count(logs.String(), "people skipped: no Slack account with a known user"), logs.String())
 }

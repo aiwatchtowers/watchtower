@@ -19,9 +19,10 @@ ALTER TABLE slack_accounts ADD COLUMN emoji_scope_missing INTEGER NOT NULL DEFAU
 -- Old profiling data does not outlive the change (A15): the dropped people
 -- card fields go back to their defaults (the columns stay), Team Summary's
 -- attention list empties, and the legacy tables nothing writes any more lose
--- their rows.
+-- their rows, with the feedback on the old analyses.
 UPDATE people_cards SET active_hours_json = '{}', volume_change_pct = 0, avg_message_length = 0, red_flags = '[]';
 UPDATE people_card_summaries SET attention = '[]';
+DELETE FROM feedback WHERE entity_type = 'user_analysis';
 DELETE FROM user_analyses;
 DELETE FROM user_interactions;
 
