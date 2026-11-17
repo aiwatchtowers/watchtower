@@ -4,7 +4,7 @@ import WatchtowerCore
 /// `watchtower briefing generate` for the Inbox's day card (**Make today's
 /// brief**). AppState-owned, so a run in flight — and its failure — survive
 /// leaving the Inbox. The day card reads its briefing through the Inbox's own
-/// read (`InboxFeedQueries`), so this view model reads no briefings.
+/// read (`InboxRecords`), so this view model reads no briefings.
 @MainActor
 @Observable
 final class BriefingViewModel {

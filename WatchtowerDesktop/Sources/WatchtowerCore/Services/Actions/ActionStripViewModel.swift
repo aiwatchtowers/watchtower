@@ -18,7 +18,7 @@ package enum InboxSelection: Hashable, Sendable {
 /// The Inbox — every kind of card (C1 §5): pending agent-action proposals,
 /// due reminders and open automation inbox outputs (STRIP-01 amended, spec
 /// §14.4), the day cards, tracks, ideas and open messages, read as one
-/// `InboxFeedQueries.read`. AppState-owned so it
+/// `InboxRecords.read` (the records the tower's feed names). AppState-owned so it
 /// survives navigation away from the Dashboard (the `SlackAccountsViewModel`
 /// house pattern): `refresh()` on appear / after a mutation, not live GRDB
 /// observation — cross-process daemon/CLI writes don't fire `ValueObservation`
@@ -54,9 +54,9 @@ package final class ActionStripViewModel {
     package var showsStopped = false {
         didSet { rebuildSections() }
     }
-    /// How many dates the read takes; `showOlderDays()` adds a page (a
-    /// route to an old day reads pages until the day is there).
-    package var dayLimit = ActionStripViewModel.dayPage
+    /// Days a route opened that the feed does not list (a day read
+    /// already): their records are read too, so the pane can show them.
+    private var routedDays: Set<String> = []
     /// Action id → "⚙ <automation> · run #<n>" for the rows an automation
     /// run proposed (`context_type='automation_run'`).
     package private(set) var actionLabels: [Int64: String] = [:]
@@ -126,7 +126,6 @@ package final class ActionStripViewModel {
     /// The folder the owner last picked in the menu, remembered per viewer;
     /// one that no longer exists opens the root.
     package static let folderKey = "inbox.folder"
-    package static let dayPage = 30
     /// The safety-net poll while on screen (board #731): daemon and CLI
     /// writes come from other processes, which GRDB observation cannot see.
     private static let pollInterval: Duration = .seconds(30)
@@ -155,48 +154,6 @@ package final class ActionStripViewModel {
         self.actionFeed = AgentActionFeed(dbPool: dbPool, cliRunner: cliRunner, automationsWake: automationsWake)
         self.folderMenu = InboxFolderMenuModel(
             dbPool: dbPool, runner: { cliRunner ?? findCLI() }, clock: clock)
-    }
-
-    /// The Inbox sidebar badge: the sum of the counts of every folder the
-    /// menu shows (inbox builder B, `InboxFolderCounts`). It keeps every
-    /// term of the 2026-10-18 badge as a folder's legacy count — Needs
-    /// approval: proposals awaiting the owner, due reminders, built-in
-    /// upgrade notices (C2); the root: ideas awaiting a verdict, unread
-    /// Messages (while that entry stands in for Waiting for me) and 1 when
-    /// the latest briefing is unread — and adds the automation artifacts:
-    /// 1 per unread one, or its rows that wait on the owner. Track cards
-    /// stay unread dots only. Each source tolerates a schema that predates
-    /// it (its table missing counts 0); any other read error is thrown,
-    /// never folded into 0. `disabledFeatures` as in
-    /// `InboxFolderMenuSnapshot.read` (attention detection off counts no
-    /// Waiting for me and no Messages stand-in).
-    nonisolated package static func badgeCount(
-        _ db: Database, nowUTC: String, disabledFeatures: Set<String> = []
-    ) throws -> Int {
-        let snapshot = try InboxFolderMenuSnapshot.read(db, nowUTC: nowUTC, disabledFeatures: disabledFeatures)
-        return InboxFolderCounts.badge(counts: snapshot.counts, tree: snapshot.tree)
-    }
-
-    /// The badge's terms from before the folders, by the folder that shows
-    /// them now: Needs approval (the root on a database without it) and the
-    /// root.
-    nonisolated package static func legacyCounts(
-        _ db: Database,
-        nowUTC: String,
-        tree: InboxFolderTree,
-        messagesStandIn: Bool
-    ) throws -> [Int64: Int] {
-        let approvals = try zeroIfTableMissing { try AgentActionQueries.awaitingOwnerCount(db) }
-            + zeroIfTableMissing { try ReminderQueries.dueCount(db, nowUTC: nowUTC) }
-            + zeroIfTableMissing { try BuiltinUpgradeNotice.load(db).count }
-        let messages = messagesStandIn
-            ? try zeroIfTableMissing { try InboxQueries.unreadOpenMessageCount(db, nowUTC: nowUTC) } : 0
-        let root = try zeroIfTableMissing { try IdeaQueries.countForReview(db) }
-            + messages
-            + zeroIfTableMissing { try BriefingQueries.latestUnreadCount(db) }
-        var out: [Int64: Int] = [tree.root.id: root]
-        out[tree.approvals?.id ?? tree.root.id, default: 0] += approvals
-        return out
     }
 
     /// `count()`, or 0 when its table does not exist yet (an older schema).
@@ -264,7 +221,8 @@ package final class ActionStripViewModel {
         lastError = nil
         let now = clock()
         let nowUTC = AutomationDates.format(now)
-        let dayLimit = dayLimit
+        let ids = towerFeed.map(InboxRecords.IDs.init(feed:)) ?? InboxRecords.IDs()
+        let routedDays = routedDays
         let disabledFeatures = disabledFeatures
         do {
             // The feed, the labels and the folders in one read: the folder
@@ -272,8 +230,8 @@ package final class ActionStripViewModel {
             // moment as the cards (the render-time check, spec "What 'open'
             // means").
             let snapshot = try await dbPool.read { db in
-                let feed = try InboxFeedQueries.read(
-                    db, nowUTC: nowUTC, dayLimit: dayLimit, disabledFeatures: disabledFeatures)
+                let feed = try InboxRecords.read(
+                    db, ids: ids, extraDates: routedDays, disabledFeatures: disabledFeatures, now: now)
                 let runLabels = try AutomationQueries.runLabels(
                     db, runIDs: feed.proposals.compactMap(Self.automationRunID))
                 let buttons = try AgentActionQueries.newestButtonProposals(
@@ -331,12 +289,13 @@ package final class ActionStripViewModel {
     /// The selected folder's entries, from the last read: the tower's feed
     /// decides them when one is wired (`towerFeed`), else the local builder.
     package var folderEntries: [InboxFolderEntry] {
-        if let listed = towerListed { return listed.map(\.entry) }
-        guard hasRead, let folder = folderMenu.tree.folder(folderMenu.selectedFolderID) else { return [] }
-        return InboxFolderEntries.build(folder: folder, entryInputs)
+        towerListed?.map(\.entry) ?? []
     }
 
     // MARK: - The tower (mobile Inbox spec §5.1)
+
+    /// The pool the panes' records are read from (tests list its rows).
+    package var databasePool: DatabasePool { dbPool }
 
     /// The tower's last feed: with one, the folders' lists, their order,
     /// counts, row texts, ref states and the badge are Go's
@@ -446,14 +405,6 @@ package final class ActionStripViewModel {
             selectedDay: entrySelection.flatMap(Self.dayOfEntry), now: clock())
     }
 
-    /// What the selected folder's entries are composed from.
-    package var entryInputs: InboxFolderEntries.Inputs {
-        InboxFolderEntries.Inputs(
-            feed: feed, folders: folderMenu.snapshot,
-            approvalsOn: !disabledFeatures.contains(Self.approvalsFeatureID),
-            selectedDay: entrySelection.flatMap(Self.dayOfEntry), now: clock())
-    }
-
     /// The date of a day entry's id (`day:<yyyy-MM-dd>`), else nil.
     private static func dayOfEntry(_ id: String) -> String? {
         id.hasPrefix("day:") ? String(id.dropFirst("day:".count)) : nil
@@ -462,8 +413,7 @@ package final class ActionStripViewModel {
     /// The selected folder's list column.
     package var folderList: InboxFolderListContent {
         let folder = folderMenu.tree.folder(folderMenu.selectedFolderID) ?? folderMenu.tree.root
-        let inputs = entryInputs
-        let rows = towerListed.map { $0.map(\.row) } ?? folderEntries.map { InboxFolderEntries.row($0, inputs) }
+        let rows = towerListed?.map(\.row) ?? []
         return InboxFolderListContent(
             folderKind: folder.kind, folderTitle: folder.title, rows: rows, selection: entrySelection)
     }
@@ -595,7 +545,7 @@ package final class ActionStripViewModel {
         }
     }
 
-    /// The open legacy list as `InboxListBuilder` laid it out; empty while
+    /// The open legacy list as the feed lists it (`InboxTowerEntries.sections`); empty while
     /// none is open. Rebuilt on each read and when the list or its Stopped
     /// fold changes.
     package private(set) var sections: [InboxSection] = []
@@ -605,13 +555,10 @@ package final class ActionStripViewModel {
             sections = []
             return
         }
-        if let towerFeed {
-            sections = InboxTowerEntries.sections(
-                legacyList, feed: towerFeed, records: feed, now: clock(), calendar: .current, showsStopped: showsStopped)
-            return
-        }
-        sections = InboxListBuilder.sections(
-            feed, list: legacyList, now: clock(), calendar: .current, showsStopped: showsStopped)
+        sections = towerFeed.map {
+            InboxTowerEntries.sections(
+                legacyList, feed: $0, records: feed, now: clock(), calendar: .current, showsStopped: showsStopped)
+        } ?? []
     }
 
     /// The selected card left the list (resolved elsewhere, auto-resolved,
@@ -697,23 +644,21 @@ package final class ActionStripViewModel {
             showLegacy(.messages)
             await select(isListed(item) ? item : nil)
         case .day(let date):
-            // Stops on a failed read and on a page that added no date.
-            while lastError == nil, !feed.days.contains(where: { $0.date == date }), feed.hasOlderDays,
-                  let oldest = feed.days.last?.date, date < oldest {
-                let before = feed.days.count
-                await showOlderDays().value
-                if feed.days.count == before { break }
+            // A day the feed does not list (read, not today) still opens:
+            // its record is read by date, and the selected day stays listed.
+            if !feed.days.contains(where: { $0.date == date }) {
+                routedDays.insert(date)
+                await refresh()
             }
-            // A day read but not listed (read, not today) still opens: the
-            // selected day stays listed (`Inputs.selectedDay`).
             show(tree.root.id, "day:\(date)")
             if entrySelection != nil { await select(item) }
         case .output(let id):
-            if folderMenu.snapshot.approvalArtifacts.values.contains(where: { $0.id == id }) {
-                show((tree.approvals ?? tree.root).id, nil)
+            let folder = towerFeed?.cards.first { $0.id == "o\(id)" }?.folderID ?? tree.root.id
+            if folder == tree.approvals?.id {
+                // The recipe's card for an approval is drawn only through its approval.
+                show(folder, nil)
                 return
             }
-            let folder = folderMenu.snapshot.cards.first { $0.value.contains { $0.id == id } }?.key ?? tree.root.id
             show(folder, "artifact:\(id)")
             if entrySelection != nil { await select(item) }
         case let .proposal(id):
@@ -777,13 +722,6 @@ package final class ActionStripViewModel {
 
     private func isListed(_ item: InboxSelection) -> Bool {
         sections.contains { $0.items.contains { $0.id == item } }
-    }
-
-    /// The read takes one more page of dates; the returned refresh can be awaited.
-    @discardableResult
-    package func showOlderDays() -> Task<Void, Never> {
-        dayLimit += Self.dayPage
-        return Task { await refresh() }
     }
 
     // MARK: - Polling (board #731)

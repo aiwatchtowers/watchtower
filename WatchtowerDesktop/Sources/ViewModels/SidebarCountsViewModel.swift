@@ -244,13 +244,9 @@ final class SidebarCountsViewModel {
                 // pre-catchup_recaps schema like the reads below it.
                 let hasWaitingRecap = (try? CatchUpQueries.hasUnacknowledgedReady(db)) ?? false
                 let waitingRecap = hasWaitingRecap ? 1 : 0
-                // The Inbox badge: the visible folders' counts summed,
-                // user-independent and tolerant of a schema predating any of
-                // its sources (a missing table counts 0; any other read error
-                // fails the fetch).
-                let nowUTC = ISO8601DateFormatter().string(from: Date())
-                let stripCount = try ActionStripViewModel.badgeCount(
-                    db, nowUTC: nowUTC, disabledFeatures: disabledFeatures)
+                // The Inbox badge is the tower's (`towerInboxBadge`, after
+                // this read): no Swift code counts the Inbox (spec §4.1).
+                let stripCount = 0
                 // Memory disputes, tolerant of a pre-memory schema.
                 let disputed = (try? MemoryQueries.fetchDisputedCount(db)) ?? 0
                 // Digests-tab feed counts, tolerant of a pre-stream/ideas schema.

@@ -223,7 +223,7 @@ final class CustomTrackControllingTests: XCTestCase {
         let fake = RecordingCustomTrackControls()
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), customTrackControls: fake,
                                       defaults: defaults)
-        await vm.refresh()
+        await vm.refreshListingEverything()
         let autoTrack = try XCTUnwrap(vm.feed.tracks.map(\.track).first { $0.id == auto })
 
         await vm.stopWatching(custom)
@@ -252,7 +252,7 @@ final class CustomTrackControllingTests: XCTestCase {
         let fake = RecordingCustomTrackControls()
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), customTrackControls: fake,
                                       defaults: defaults)
-        await vm.refresh()
+        await vm.refreshListingEverything()
         XCTAssertTrue(vm.feed.tracks.isEmpty)
         XCTAssertEqual(Set(vm.feed.stoppedTracks.map(\.track.id)), [custom.id, auto])
         let stoppedCustom = try XCTUnwrap(vm.feed.stoppedTracks.map(\.track).first { $0.id == custom.id })

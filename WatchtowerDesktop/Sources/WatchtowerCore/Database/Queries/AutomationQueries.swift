@@ -145,7 +145,8 @@ package enum AutomationQueries {
         since: Date? = nil,
         limit: Int? = nil,
         includeRead: Bool = false,
-        excludingAutomation: Int64? = nil
+        excludingAutomation: Int64? = nil,
+        ids: [Int64]? = nil
     ) throws -> [AutomationOutputCard] {
         // needs_confirmation and runnable are `Automation.needsConfirmation`
         // and `Automation.isRunnable` (Go `Runnable()`), in SQL.
@@ -161,9 +162,10 @@ package enum AutomationQueries {
                 (a.parse_error = '' AND a.enabled AND a.removed_at IS NULL AND a.confirmed_hash != ''
                     AND a.confirmed_hash = a.approval_hash) AS runnable
             FROM automation_outputs o JOIN automations a ON a.id = o.automation_id
-            WHERE \(includeRead ? openInbox : unreadInbox)
+            WHERE \(ids.map { "o.id IN (" + $0.map { _ in "?" }.joined(separator: ",") + ")" }
+                ?? (includeRead ? openInbox : unreadInbox))
             """
-        var arguments = StatementArguments()
+        var arguments = StatementArguments(ids ?? [])
         if let since {
             sql += " AND o.changed_at >= ?"
             arguments += [AutomationDates.format(since)]

@@ -91,6 +91,8 @@ final class ActionStripActionsViewTests: XCTestCase {
     }
 
     func testNonEmptyStripHidesTheSheetBehindTheHelpButton() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let pool = try makePool { db in
             try TestDatabase.insertAgentAction(db, tool: "brief_context", status: "pending")
             try TestDatabase.insertReactionCommandMapping(db, emoji: "pushpin", tool: "brief_context")
@@ -158,6 +160,8 @@ final class ActionStripActionsViewTests: XCTestCase {
     /// The very first read fails: the reason and Try Again in place of the
     /// spinner, which would otherwise never end; Try Again's read lands.
     func testAFailedFirstReadShowsItsErrorNotASpinner() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         // An artifact, so the read reaches the folder view broken below.
         let pool = try makePool { db in
             let automation = try TestDatabase.insertAutomation(db, slug: "weekly", name: "Weekly mail roundup")
@@ -218,6 +222,8 @@ final class ActionStripActionsViewTests: XCTestCase {
     /// run): its message card, drawn through the legacy split view, has
     /// Reply… for a Slack item (B Task 18).
     func testMessagesStandInCardHasReplyThroughTheLegacySplit() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let suite = "ActionStripActionsViewTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }

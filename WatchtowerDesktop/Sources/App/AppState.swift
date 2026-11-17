@@ -1634,14 +1634,14 @@ final class AppState {
 
     /// Not marked `private` (mirrors `initSecretaryProfile` below), leaving the
     /// same XCTest entry point open for `ideasViewModel`. The Inbox's idea
-    /// pane uses only its actions (the list is `InboxFeedQueries`'), so it
+    /// pane uses only its actions (the list is the tower feed's), so it
     /// observes and polls nothing.
     func initIdeas(dbManager: DatabaseManager) {
         ideasViewModel = IdeasViewModel(dbManager: dbManager)
     }
 
     /// The Inbox's track pane uses its actions and its Slack links and
-    /// names, read once here (the list is `InboxFeedQueries`'); a write
+    /// names, read once here (the list is the tower feed's); a write
     /// through it reads them again.
     func initTracks(dbManager: DatabaseManager) {
         let vm = TracksViewModel(dbManager: dbManager)

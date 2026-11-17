@@ -38,7 +38,7 @@ final class InboxReplyPressTests: XCTestCase {
         let before = try dump(pool)
         let runner = FakeCLIRunner(stdout: Data(#"{"run_id":7,"daemon_running":true}"#.utf8))
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
-        await vm.refresh()
+        await vm.refreshListingEverything()
 
         await vm.pressReply(outputID: id, action: 1, contentHash: "h1")
 
@@ -58,7 +58,7 @@ final class InboxReplyPressTests: XCTestCase {
         runner.blockUntilCancelled = true
         runner.returnDataOnCancelInsteadOfThrowing = true
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
-        await vm.refresh()
+        await vm.refreshListingEverything()
 
         let first = Task { await vm.pressReply(outputID: id, action: 1, contentHash: "h1") }
         await runner.untilInvocations(1)
@@ -79,7 +79,7 @@ final class InboxReplyPressTests: XCTestCase {
         let id = try await seed(pool)
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: Sent — run #7\n"))
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
-        await vm.refresh()
+        await vm.refreshListingEverything()
 
         await vm.pressReply(outputID: id, action: 1, contentHash: "h1")
 
@@ -96,7 +96,7 @@ final class InboxReplyPressTests: XCTestCase {
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(
             code: 1, stderr: "Error: This card changed — look again\n"))
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
-        await vm.refresh()
+        await vm.refreshListingEverything()
 
         await vm.pressReply(outputID: id, action: 1, contentHash: "stale")
 
@@ -112,7 +112,7 @@ final class InboxReplyPressTests: XCTestCase {
         let id = try await seed(pool)
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: Sent — run #7\n"))
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
-        await vm.refresh()
+        await vm.refreshListingEverything()
 
         await vm.pressReply(outputID: id, action: 1, contentHash: "h1")
 

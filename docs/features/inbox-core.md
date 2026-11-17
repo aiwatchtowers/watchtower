@@ -137,15 +137,13 @@ The switch the Mac reads (its feature list) and the one Go reads (`config.yaml` 
 
 ## The parity fixture
 
-`internal/inboxfeed/testdata/inbox_feed_cases.json` is a list of cases. Each case has `{name, now, seed: [SQL], opts: FeedRequest, expect: Feed}` with `built_at` blank, and its seed runs on a fresh migrated file. Two tests run it:
+`internal/inboxfeed/testdata/inbox_feed_cases.json` is a list of cases. Each case has `{name, now, seed: [SQL], opts: FeedRequest, expect: Feed}` with `built_at` blank, and its seed runs on a fresh migrated file.
 
-- Go runs it in `TestInboxFeedCases`; `go test ./internal/inboxfeed/ -run TestInboxFeedCases -update` rewrites the expects.
-- The Mac runs it in `WatchtowerDesktop/Tests/Core/InboxFeedParityTests.swift`. That test seeds a `TestDatabase` with the migration's root and Needs approval rows, runs today's Swift builders at `now` in UTC, maps them through `Tests/Core/Support/SwiftFeedAdapter.swift` and compares the result with `expect`:
-  - The fields Swift does not compute are listed in `SwiftFeedAdapter.goOnlyFields`, each with a reason, and blanked on both sides.
-  - The fields the adapter derives from Swift data with a Swift builder's own rule (pin, stamp, the source line without its time, a notice's id) are listed in `restatedFields` and compared.
-  - A case's `disabled_features` reach the Go `Options` and the Swift readers alike.
-  - Every entry is mapped, the approvals and legacy entries included; the native approval's text is compared by the app target's `ApprovalTextParityTests` over `testdata/approval_text_cases.json`, and the target button states over `testdata/target_button_cases.json` (Go: `TestApprovalText_SharedCases`, `TestTargetState_SharedCases`).
-  - A limited case checks that the Go cards are the Swift cards in order with the cut ones out, and that `more` counts the cut.
+- Go runs it in `TestInboxFeedCases`; `go test ./internal/inboxfeed/ -run TestInboxFeedCases -update` rewrites the expects. It is the Go golden of the Inbox's rules.
+- The Swift half (`InboxFeedParityTests` over the Swift builders through `SwiftFeedAdapter`) ran until the Mac switched to the feed. It was deleted with the builders in Task 11d-a.
+- The Desktop's tests read canned feeds. A test whose subject is a press or a pane hands the view model a feed that names its seeded records (`Tests/Support/TestInboxFeeds`).
+- A case marked `"desktop": true` is a test-only scenario. The Go golden test regenerates it like any other case, and the Desktop's tests seed its SQL and serve its `expect`. 11d-c and 11e add them.
+- The native approval's text and the target button states stay pinned by `testdata/approval_text_cases.json` and `testdata/target_button_cases.json` (Go: `TestApprovalText_SharedCases`, `TestTargetState_SharedCases`).
 
 `testdata/save_automation_summary_cases.json` is run the same way, by `TestSaveAutomationSummary_SharedCases` and `testSaveAutomationSummaryMatchesGo`.
 

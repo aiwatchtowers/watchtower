@@ -245,7 +245,7 @@ struct InboxSplitView<EmptyList: View>: View {
         in sections: [InboxSection],
         _ write: @escaping @MainActor (InboxSelection) async -> Void
     ) {
-        let next = InboxListBuilder.selection(after: id, in: sections)
+        let next = InboxSection.selection(after: id, in: sections)
         Task {
             await write(id)
             // The refresh after the write may already have moved the

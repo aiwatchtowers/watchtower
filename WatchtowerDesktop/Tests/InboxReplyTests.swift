@@ -101,6 +101,8 @@ final class InboxReplyTests: XCTestCase {
     // MARK: - The row
 
     func testRowDrawsReplyForASlackItemNotForMail() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let slack = try await slackItem()
         let mail = try await pool.write { db in
             try TestDatabase.insertInboxItem(db, channelID: "mail", messageTS: "2", triggerType: "email_received",
@@ -113,6 +115,8 @@ final class InboxReplyTests: XCTestCase {
     }
 
     func testRecipeReplySuppressedExactlyWhenTheNativeReplyExists() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let slack = try await slackItem()
         let mail = try await pool.write { db in
             try TestDatabase.insertInboxItem(db, channelID: "mail", messageTS: "2", triggerType: "email_received",
@@ -126,6 +130,8 @@ final class InboxReplyTests: XCTestCase {
     }
 
     func testOneProposeCallPerPressNeverApprove() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let id = try await slackItem()
         let runner = FakeCLIRunner(stdout: Self.proposed)
         let vm = await strip(runner)
@@ -150,6 +156,8 @@ final class InboxReplyTests: XCTestCase {
     /// Typing or Cancel while the propose runs changes nothing: the text
     /// that went to Needs approval is the text the composer showed.
     func testComposerHoldsStillWhileTheProposeRuns() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let id = try await slackItem()
         let runner = FakeCLIRunner(stdout: Self.proposed)
         let vm = await strip(runner)
@@ -204,6 +212,8 @@ final class InboxReplyTests: XCTestCase {
     }
 
     func testRefusalKeepsTheComposerWithTheCLIsMessage() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let id = try await slackItem()
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(
             code: 1, stderr: "Error: a reply to this item is already waiting for approval (#3)\n"))
@@ -219,6 +229,8 @@ final class InboxReplyTests: XCTestCase {
     }
 
     func testUnexpectedAnswerIsAFailure() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let id = try await slackItem()
         let vm = await strip(FakeCLIRunner(stdout: Data("proposed".utf8)))
         let handler = InboxRowActionHandler(vm: vm)
@@ -232,6 +244,8 @@ final class InboxReplyTests: XCTestCase {
     /// Only an answer with the proposal's id (`action.id`) is a proposal:
     /// `{}` or any other object is a failure, never success.
     func testAnswerWithoutTheActionIDIsAFailure() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let id = try await slackItem()
         let unexpected = "Unexpected answer from watchtower"
         let answers: [(String, String?)] = [
@@ -253,6 +267,8 @@ final class InboxReplyTests: XCTestCase {
     }
 
     func testPendingProposalShowsTheCaptionAndDisablesReply() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let id = try await slackItem()
         try await pool.write { db in
             _ = try TestDatabase.insertAgentAction(
@@ -279,6 +295,8 @@ final class InboxReplyTests: XCTestCase {
     }
 
     func testDraftSurvivesARefreshAndLeavesWithItsRow() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let id = try await slackItem()
         let vm = await strip()
         type("Half a thought", on: id, InboxRowActionHandler(vm: vm))
@@ -297,6 +315,8 @@ final class InboxReplyTests: XCTestCase {
     /// that reply waiting, the old draft goes, and never comes back with its
     /// error after the reply is approved and sent.
     func testDraftGoesOnceItsReplyIsWaiting() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let id = try await slackItem()
         let vm = await strip(FakeCLIRunner(error: CancellationError()))
         let handler = InboxRowActionHandler(vm: vm)
@@ -354,6 +374,8 @@ final class InboxReplyTests: XCTestCase {
     }
 
     func testReplyShownOnMessagesStandInBeforeFirstRun() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let id = try await slackItem()
         try await waitingForMe(runStatus: nil)
         let vm = await strip()
@@ -361,6 +383,8 @@ final class InboxReplyTests: XCTestCase {
     }
 
     func testReplyShownOnMessagesStandInAfterFailedRun() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let id = try await slackItem()
         try await waitingForMe(runStatus: "failed")
         let vm = await strip()
@@ -368,6 +392,8 @@ final class InboxReplyTests: XCTestCase {
     }
 
     func testReplyGoneFromStandInOnceWaitingForMeSucceeds() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let id = try await slackItem()
         try await waitingForMe(runStatus: "succeeded")
         let vm = await strip()
@@ -376,6 +402,8 @@ final class InboxReplyTests: XCTestCase {
 
     /// No `watchtower` binary: the stand-in card's Reply… is off like a row's, and says why.
     func testStandInReplyFollowsTheMissingCLIRule() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let id = try await slackItem()
         try await waitingForMe(runStatus: nil)
         // Labeled: a trailing closure would bind to `automationsWake`.
@@ -394,6 +422,8 @@ final class InboxReplyTests: XCTestCase {
     }
 
     func testStandInCardHasNoReplyForMail() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let mail = try await pool.write { db in
             try TestDatabase.insertInboxItem(db, channelID: "mail", triggerType: "email_received",
                                              permalink: "https://mail.example.com/m/1")

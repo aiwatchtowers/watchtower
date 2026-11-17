@@ -149,6 +149,8 @@ let package = Package(
             dependencies: [
                 "WatchtowerCore",
                 .product(name: "GRDB", package: "GRDB.swift"),
+                // TestInboxFeeds: the canned tower feeds the Inbox's tests read.
+                .product(name: "WatchtowerInterface", package: "WatchtowerInterface"),
             ],
             path: "Tests/Support"
         ),
@@ -158,7 +160,7 @@ let package = Package(
                 "WatchtowerCore",
                 "WatchtowerTestSupport",
                 .product(name: "GRDB", package: "GRDB.swift"),
-                // InboxFeedParityTests maps the Swift builders to the generated Feed.
+                // The Inbox's tests read canned tower feeds (TestInboxFeeds, ScriptedFeedTransport).
                 .product(name: "WatchtowerInterface", package: "WatchtowerInterface"),
             ],
             path: "Tests/Core",

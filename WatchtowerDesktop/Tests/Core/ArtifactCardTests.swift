@@ -215,7 +215,9 @@ final class ArtifactCardTests: XCTestCase {
         }
         XCTAssertEqual(try queue.read { db in try AutomationQueries.artifactPeople(db) }, ["acme:U1": "Colleague A"])
         let snapshot = try queue.read { db in
-            try InboxFeedQueries.read(db, nowUTC: "2026-10-16T12:00:00Z", dayLimit: 1)
+            var ids = InboxRecords.IDs()
+            ids.outputs = Set(try Int64.fetchAll(db, sql: "SELECT id FROM automation_outputs"))
+            return try InboxRecords.read(db, ids: ids, now: Date())
         }
         XCTAssertEqual(snapshot.outputs.count, 2)
         XCTAssertEqual(snapshot.outputs.first?.id, healthy)

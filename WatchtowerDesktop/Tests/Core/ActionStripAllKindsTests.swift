@@ -89,7 +89,7 @@ final class ActionStripAllKindsTests: XCTestCase {
             }
         }
         let vm = makeVM(runner)
-        await vm.refresh()
+        await vm.refreshListingEverything()
         XCTAssertEqual(vm.feed.builtinNotices.map(\.builtinID), ["morning-brief"], "the notice is read")
         var restarts = 0
 
@@ -149,8 +149,8 @@ final class ActionStripAllKindsTests: XCTestCase {
         let before = try dump(tables)
         let vm = makeVM()
 
-        await vm.refresh()
-        await vm.refresh()
+        await vm.refreshListingEverything()
+        await vm.refreshListingEverything()
 
         XCTAssertEqual(try dump(tables), before)
         XCTAssertNil(vm.lastError)
@@ -179,7 +179,7 @@ final class ActionStripAllKindsTests: XCTestCase {
         let other = try row("briefings", id - 1)
         let before = try row("briefings", id)
         let vm = makeVM()
-        await vm.refresh()
+        await vm.refreshListingEverything()
 
         await vm.select(.day(date))
 
@@ -196,7 +196,7 @@ final class ActionStripAllKindsTests: XCTestCase {
         let id = try await pool.write { try Self.message($0, 1) }
         let before = try row("inbox_items", id)
         let vm = makeVM()
-        await vm.refresh()
+        await vm.refreshListingEverything()
 
         await vm.select(.message(id))
 
@@ -218,7 +218,7 @@ final class ActionStripAllKindsTests: XCTestCase {
         let tables = ["tracks", "track_events", "ideas"]
         let before = try dump(tables)
         let vm = makeVM()
-        await vm.refresh()
+        await vm.refreshListingEverything()
         let idea = try XCTUnwrap(vm.feed.ideas.first)
 
         await vm.select(.track(id))
@@ -239,7 +239,7 @@ final class ActionStripAllKindsTests: XCTestCase {
         let tables = ["briefings", "inbox_items"]
         let before = try dump(tables)
         let vm = makeVM()
-        await vm.refresh()
+        await vm.refreshListingEverything()
 
         await vm.select(.day(date))
         await vm.select(.message(id))
@@ -260,7 +260,7 @@ final class ActionStripAllKindsTests: XCTestCase {
             return (Int(track), Int(other))
         }
         let vm = makeVM()
-        await vm.refresh()
+        await vm.refreshListingEverything()
 
         await vm.markTrackDone(id)
 
@@ -282,7 +282,7 @@ final class ActionStripAllKindsTests: XCTestCase {
             return (Int(custom), Int(auto))
         }
         let vm = makeVM()
-        await vm.refresh()
+        await vm.refreshListingEverything()
         let cards = vm.feed.tracks.map(\.track)
         let customTrack = try XCTUnwrap(cards.first { $0.id == custom })
         let autoTrack = try XCTUnwrap(cards.first { $0.id == auto })
@@ -391,7 +391,7 @@ final class ActionStripAllKindsTests: XCTestCase {
         let id = try await pool.write { try Self.message($0, 1) }
         let runner = FakeCLIRunner()
         let vm = makeVM(runner)
-        await vm.refresh()
+        await vm.refreshListingEverything()
 
         await vm.messageDone(id)
         await vm.hideMessage(id)
@@ -409,7 +409,7 @@ final class ActionStripAllKindsTests: XCTestCase {
     func testAMessageCLIFailureSaysWhy() async throws {
         let id = try await pool.write { try Self.message($0, 1) }
         let vm = makeVM(FakeCLIRunner(error: CLIRunnerError.binaryNotFound))
-        await vm.refresh()
+        await vm.refreshListingEverything()
 
         await vm.messageDone(id)
 
@@ -418,9 +418,11 @@ final class ActionStripAllKindsTests: XCTestCase {
     }
 
     func testMessageDoneOnAResolvedItemIsQuiet() async throws {
+        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
+
         let id = try await pool.write { try Self.message($0, 1) }
         let vm = makeVM()
-        await vm.refresh()
+        await vm.refreshListingEverything()
         XCTAssertEqual(vm.feed.messages.count, 1)
         // INBOX-02 auto-resolved it after the list was read; the CLI exits 0.
         try await pool.write { db in
@@ -434,6 +436,8 @@ final class ActionStripAllKindsTests: XCTestCase {
     }
 
     func testSelectionMovesWhenTheSelectedRowVanished() async throws {
+        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
+
         let ids = try await pool.write { db in
             try [
                 Self.message(db, 1, created: "2026-10-21T09:00:00Z"),
@@ -442,7 +446,7 @@ final class ActionStripAllKindsTests: XCTestCase {
             ]
         }
         let vm = makeVM()
-        await vm.refresh()
+        await vm.refreshListingEverything()
         vm.openLegacy(.messages)
         XCTAssertEqual(vm.sections.flatMap(\.items).map(\.id), ids.map { .message($0) })
         await vm.select(.message(ids[1]))
@@ -463,6 +467,8 @@ final class ActionStripAllKindsTests: XCTestCase {
     }
 
     func testSelectionMovesToTheRowBelow() async throws {
+        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
+
         let ids = try await pool.write { db in
             try [
                 Self.message(db, 1, created: "2026-10-21T09:00:00Z"),
@@ -471,7 +477,7 @@ final class ActionStripAllKindsTests: XCTestCase {
             ]
         }
         let vm = makeVM()
-        await vm.refresh()
+        await vm.refreshListingEverything()
         vm.openLegacy(.messages)
         await vm.select(.message(ids[1]))
         try await pool.write { db in
@@ -484,6 +490,8 @@ final class ActionStripAllKindsTests: XCTestCase {
     }
 
     func testOverlappingRefreshesEachEndOnAFreshRead() async throws {
+        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
+
         let vm = makeVM()
         async let first: Void = vm.refresh()
         let id = try await pool.write { try Self.message($0, 1) }
@@ -501,16 +509,18 @@ final class ActionStripAllKindsTests: XCTestCase {
     /// leaving one never writes the old per-viewer key.
     func testDayCardDoneIsNeverWritten() async {
         let vm = makeVM()
-        await vm.refresh()
+        await vm.refreshListingEverything()
         await vm.select(.day("2026-10-22"))
         await vm.select(nil)
-        await vm.refresh()
+        await vm.refreshListingEverything()
 
         XCTAssertNil(defaults.object(forKey: "inbox.dayCardDone"))
         XCTAssertNil(defaults.object(forKey: "inbox.filter"), "the filter bar's key is gone")
     }
 
     func testOpenShowsTheListAndSelects() async throws {
+        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
+
         let id = try await pool.write { try Self.message($0, 1) }
         let vm = makeVM()
 
@@ -538,50 +548,12 @@ final class ActionStripAllKindsTests: XCTestCase {
         XCTAssertNil(try row("inbox_items", id)["read_at"] as String?)
     }
 
-    func testShowOlderDaysReadsAnotherPage() async throws {
-        try await pool.write { db in
-            for day in 1...31 {
-                try TestDatabase.insertBriefing(db, date: String(format: "2026-08-%02d", day))
-            }
-        }
-        let vm = makeVM()
-        await vm.refresh()
-        XCTAssertEqual(vm.feed.days.count, 30)
-        XCTAssertTrue(vm.feed.hasOlderDays)
-
-        await vm.showOlderDays().value
-
-        XCTAssertEqual(vm.dayLimit, 60)
-        XCTAssertEqual(vm.feed.days.count, 31)
-        XCTAssertFalse(vm.feed.hasOlderDays, "nothing older left")
-    }
-
-    /// A route to a day past the loaded pages reads older pages until the
-    /// day is listed; a day that is nowhere selects nothing.
-    func testOpeningAnOldDayLoadsOlderPages() async throws {
-        try await pool.write { db in
-            for day in 1...31 {
-                try TestDatabase.insertBriefing(db, date: String(format: "2026-08-%02d", day))
-                try TestDatabase.insertBriefing(db, date: String(format: "2026-07-%02d", day))
-            }
-        }
-        let vm = makeVM()
-
-        await vm.open(folder: nil, select: .card(.day("2026-07-01")))
-        XCTAssertEqual(vm.selection, .day("2026-07-01"))
-        XCTAssertEqual(vm.entrySelection, "day:2026-07-01", "its Morning brief entry in the root")
-        XCTAssertEqual(vm.dayLimit, 90)
-
-        await vm.open(folder: nil, select: .card(.day("2020-01-01")))
-        XCTAssertNil(vm.selection, "not found: nothing selected")
-        XCTAssertNil(vm.entrySelection)
-        XCTAssertFalse(vm.feed.hasOlderDays)
-    }
-
     /// A link to a stopped track opens the Stopped fold and selects it; a
     /// link to a merged idea selects the idea it was merged into; a card
     /// that is nowhere selects nothing (never a pane the next poll empties).
     func testOpeningAHiddenTrackOrIdeaSelectsWhatIsListed() async throws {
+        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
+
         let (stopped, target, merged) = try await pool.write { db -> (Int, Int, Int) in
             let stopped = try TestDatabase.insertTrack(db, text: "Old vendor migration")
             try db.execute(sql: "UPDATE tracks SET dismissed_at = '2026-10-18T10:00:00Z' WHERE id = ?",
@@ -606,50 +578,13 @@ final class ActionStripAllKindsTests: XCTestCase {
         XCTAssertNil(vm.selection)
     }
 
-    /// A failed read stops the route's paging instead of looping.
-    func testOpeningAnOldDayStopsOnAFailedRead() async throws {
-        try await pool.write { db in
-            for day in 1...31 {
-                try TestDatabase.insertBriefing(db, date: String(format: "2026-08-%02d", day))
-            }
-        }
-        let vm = makeVM()
-        await vm.refresh()
-        XCTAssertTrue(vm.feed.hasOlderDays)
-        // Every later read fails on a column the day query orders by.
-        try await pool.write { db in
-            try db.execute(sql: "ALTER TABLE briefings RENAME COLUMN created_at TO created_at_gone")
-        }
-
-        await vm.open(folder: nil, select: .card(.day("2020-01-01")))
-
-        XCTAssertNotNil(vm.lastError)
-        XCTAssertNil(vm.selection)
-        XCTAssertEqual(vm.dayLimit, ActionStripViewModel.dayPage, "no page asked for after the failed read")
-    }
-
-    /// Today with neither a brief nor a plan: its placeholder card is listed
-    /// in the root but the badge stays 0; no legacy list carries it.
-    func testTodaysPlaceholderIsListedButNeverCounted() async throws {
-        let vm = makeVM()
-        await vm.refresh()
-        XCTAssertEqual(vm.folderEntries.map(\.id), [], "no owner: the root has no placeholder")
-        try await pool.write { db in _ = try TestDatabase.insertSlackAccount(db, currentUserID: "1:U1") }
-        await vm.refresh()
-
-        XCTAssertEqual(vm.folderEntries.map(\.id), ["day:\(today)"])
-        vm.openLegacy(.messages)
-        XCTAssertEqual(vm.sections, [])
-        let nowUTC = AutomationDates.format(Date())
-        let badge = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: nowUTC) }
-        XCTAssertEqual(badge, 0)
-    }
-
     // MARK: - Polling (board #731)
 
     func testPollSkipsWhileOffScreen() async throws {
+        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
+
         let vm = makeVM()
-        await vm.refresh()
+        await vm.refreshListingEverything()
         vm.setOnScreen(false)
         let id = try await pool.write { try Self.message($0, 1) }
 

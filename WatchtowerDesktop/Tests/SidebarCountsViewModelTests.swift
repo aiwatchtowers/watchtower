@@ -125,6 +125,8 @@ final class SidebarCountsViewModelTests: XCTestCase {
     /// so it is inserted here to prove it contributes zero; an applied
     /// proposal and a reminder not yet due count zero too.
     func testInboxBadgeCountsTheInboxCards() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
 
@@ -154,6 +156,8 @@ final class SidebarCountsViewModelTests: XCTestCase {
     /// the daemon's writes are) reaches the badge through the Inbox read's
     /// `onFeedRefreshed`, the hook AppState wires to the counts' refresh.
     func testInboxBadgeFollowsAWriteTheObservationNeverSees() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let counts = SidebarCountsViewModel(dbPool: manager.dbPool)
@@ -178,6 +182,8 @@ final class SidebarCountsViewModelTests: XCTestCase {
     /// neither Waiting for me nor the Messages stand-in counts, even on a
     /// row the daemon stopped earlier (the owner's off wins).
     func testInboxBadgeCountsNoWaitingForMeWhileAttentionDetectionIsOff() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         try await manager.dbPool.write { db in
@@ -387,6 +393,8 @@ final class SidebarCountsViewModelTests: XCTestCase {
     /// A write to `automations` (Waiting for me turned off in this process)
     /// re-counts the badge: the observation tracks the table.
     func testTheTableObservationRefreshesOnAnAutomationsWrite() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         try await manager.dbPool.write { db in

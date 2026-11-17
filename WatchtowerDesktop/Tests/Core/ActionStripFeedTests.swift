@@ -162,6 +162,7 @@ final class ActionStripFeedTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), defaults: defaults)
         await vm.refresh()
+        await vm.refreshListingEverything()
         let client = TowerClient(transport: transport, clock: ContinuousClock(), restartDaemon: nil, startDaemon: nil)
         vm.attachWrites(InboxTowerWrites(client: client))
         return vm

@@ -23,6 +23,17 @@ package enum TrackQueries {
         // Stopped fold, so the owner can restore one; newest stop first.
         let filter = stopped ? "t.dismissed_at != ''" : "t.dismissed_at = ''"
         let order = stopped ? "t.dismissed_at DESC, t.id DESC" : "t.has_updates DESC, t.updated_at DESC, t.id DESC"
+        return try inboxCards(db, filter: filter, order: order)
+    }
+
+    /// The tracks `ids` as the Inbox draws them, whatever their state (the
+    /// tower's feed decides which are listed).
+    package static func fetchInboxCards(_ db: Database, ids: [Int64]) throws -> [InboxTrackCard] {
+        guard !ids.isEmpty else { return [] }
+        return try inboxCards(db, filter: "t.id IN (\(ids.map(String.init).joined(separator: ",")))", order: "t.id")
+    }
+
+    private static func inboxCards(_ db: Database, filter: String, order: String) throws -> [InboxTrackCard] {
         let rows = try Row.fetchAll(db, sql: """
             SELECT t.*,
                    (SELECT MAX(e.created_at) FROM track_events e WHERE e.track_id = t.id) AS last_event_at,

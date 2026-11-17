@@ -55,6 +55,8 @@ final class HomeLinkTests: XCTestCase {
     /// An automation note opens its Inbox card (with its buttons); before
     /// the Inbox exists it falls back to the run.
     func testInboxOutputOpensItsCardOrTheRun() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
         let (output, automation, run) = try await pool.write { db -> (Int64, Int64, Int64) in

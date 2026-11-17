@@ -48,23 +48,6 @@ final class InboxFeedQueriesTests: XCTestCase {
         XCTAssertEqual(page.map(\.date), ["2026-10-21"])
     }
 
-    /// The read says whether a date exists past the page (the Day filter's Show older).
-    func testReadTellsWhetherOlderDaysExist() throws {
-        let queue = try TestDatabase.create()
-        try queue.write { db in
-            for day in ["2026-10-20", "2026-10-21", "2026-10-22"] {
-                try TestDatabase.insertBriefing(db, date: day)
-            }
-        }
-        let nowUTC = "2026-10-22T08:00:00Z"
-        let page = try queue.read { try InboxFeedQueries.read($0, nowUTC: nowUTC, dayLimit: 2) }
-        XCTAssertEqual(page.days.map(\.date), ["2026-10-22", "2026-10-21"])
-        XCTAssertTrue(page.hasOlderDays)
-        let all = try queue.read { try InboxFeedQueries.read($0, nowUTC: nowUTC, dayLimit: 3) }
-        XCTAssertEqual(all.days.count, 3)
-        XCTAssertFalse(all.hasOlderDays)
-    }
-
     func testMessagesReadIsCappedAndOnePerRow() throws {
         let queue = try TestDatabase.create()
         try queue.write { db in
@@ -172,44 +155,6 @@ final class InboxFeedQueriesTests: XCTestCase {
         XCTAssertEqual(titles, ["N", "I", "D", "R"])
     }
 
-    func testBadgeCountsDecisionsUnreadMessagesLatestUnreadDayAndDueReminders() async throws {
-        let (pool, path) = try TestDatabase.createPool()
-        defer { TestDatabase.cleanup(path: path) }
-        try await pool.write { db in
-            try TestDatabase.insertAgentAction(db, status: "pending")
-            try TestDatabase.insertIdea(db, kind: "idea", status: "proposed")
-            try TestDatabase.insertIdea(db, kind: "decision", status: "proposed")
-            _ = try self.message(db, 1)
-            _ = try self.message(db, 2)
-            _ = try self.message(db, 3, readAt: "2026-10-22T07:30:00Z")
-            try TestDatabase.insertBriefing(db, date: "2026-10-20")
-            try TestDatabase.insertBriefing(db, date: "2026-10-21")
-            try db.execute(sql: "UPDATE briefings SET created_at = date || 'T05:00:00Z'")
-            try db.execute(sql: """
-                INSERT INTO reminders (message_ref, note, remind_at, status)
-                VALUES ('C1@1','call back','2000-01-01T00:00:00Z','pending')
-                """)
-            let automation = try TestDatabase.insertAutomation(db, slug: "s", name: "S")
-            let run = try TestDatabase.insertAutomationRun(db, automationID: automation)
-            for _ in 0..<3 { _ = try TestDatabase.insertAutomationOutput(db, automationID: automation, runID: run) }
-            _ = try TestDatabase.insertTrack(db)
-            _ = try TestDatabase.insertTrack(db)
-            try db.execute(sql: "UPDATE tracks SET read_at = NULL, has_updates = 1")
-        }
-        let badge = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: self.now) }
-        // 1 proposal + 1 proposed idea (a decision never counts) + 2 unread messages
-        // + the latest briefing + 1 due reminder; track cards are dots only.
-        XCTAssertEqual(badge, 9, "+ 3 unread automation artifacts (inbox builder B's folder sum)")
-
-        // + a built-in's failed move (C2); a move that is done counts nothing.
-        try await pool.write { db in
-            try self.builtinMigration(db, "morning-brief", status: "failed")
-            try self.builtinMigration(db, "done-one", status: "done")
-        }
-        let withNotice = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: self.now) }
-        XCTAssertEqual(withNotice, 10)
-    }
-
     private func builtinMigration(_ db: Database, _ id: String, status: String) throws {
         try db.execute(sql: """
             INSERT INTO builtin_migrations (builtin_id, status, error, attempts, updated_at)
@@ -217,62 +162,4 @@ final class InboxFeedQueriesTests: XCTestCase {
             """, arguments: [id, status, status == "failed" ? "config unreadable" : ""])
     }
 
-    func testReadFillsBuiltinNoticesInTheSameRead() async throws {
-        let (pool, path) = try TestDatabase.createPool()
-        defer { TestDatabase.cleanup(path: path) }
-        try await pool.write { db in
-            try self.builtinMigration(db, "morning-brief", status: "failed")
-            try self.builtinMigration(db, "done-one", status: "done")
-        }
-        let snapshot = try await pool.read { try InboxFeedQueries.read($0, nowUTC: self.now, dayLimit: 30) }
-        XCTAssertEqual(snapshot.builtinNotices.map(\.builtinID), ["morning-brief"])
-        XCTAssertEqual(snapshot.builtinNotices.first?.error, "config unreadable")
-
-        try await pool.write { db in try db.execute(sql: "DROP TABLE builtin_migrations") }
-        let older = try await pool.read { try InboxFeedQueries.read($0, nowUTC: self.now, dayLimit: 30) }
-        XCTAssertEqual(older.builtinNotices, [], "a schema before the table has none")
-    }
-
-    func testBadgeOnASchemaWithoutTheNewTables() async throws {
-        let (pool, path) = try TestDatabase.createPool()
-        defer { TestDatabase.cleanup(path: path) }
-        try await pool.write { db in
-            try TestDatabase.insertAgentAction(db, status: "pending")
-            try TestDatabase.insertBriefing(db, date: "2026-10-21")
-            try db.execute(sql: "DROP TABLE inbox_items")
-            try db.execute(sql: "DROP TABLE ideas")
-            try db.execute(sql: "DROP TABLE tracks")
-        }
-        let badge = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: self.now) }
-        XCTAssertEqual(badge, 2, "the proposal and the unread briefing; the missing tables count 0")
-        let snapshot = try await pool.read {
-            try InboxFeedQueries.read($0, nowUTC: self.now, dayLimit: 30)
-        }
-        XCTAssertEqual(snapshot.proposals.count, 1)
-        XCTAssertEqual(snapshot.days.count, 1)
-        XCTAssertTrue(snapshot.messages.isEmpty)
-        XCTAssertTrue(snapshot.tracks.isEmpty)
-        XCTAssertTrue(snapshot.ideas.isEmpty)
-    }
-
-    func testReadAssemblesEverySource() throws {
-        let queue = try TestDatabase.create()
-        try queue.write { db in
-            try TestDatabase.insertAgentAction(db, status: "pending")
-            try TestDatabase.insertIdea(db, kind: "idea")
-            _ = try self.message(db, 1)
-            try TestDatabase.insertBriefing(db, date: "2026-10-22")
-            _ = try TestDatabase.insertTrack(db)
-            try db.execute(sql: """
-                INSERT INTO reminders (message_ref, note, remind_at, status) VALUES ('C1@1','x','2000-01-01T00:00:00Z','pending')
-                """)
-        }
-        let snapshot = try queue.read { try InboxFeedQueries.read($0, nowUTC: now, dayLimit: 30) }
-        XCTAssertEqual(snapshot.proposals.count, 1)
-        XCTAssertEqual(snapshot.ideas.count, 1)
-        XCTAssertEqual(snapshot.messages.count, 1)
-        XCTAssertEqual(snapshot.days.count, 1)
-        XCTAssertEqual(snapshot.tracks.count, 1)
-        XCTAssertEqual(snapshot.reminders.count, 1)
-    }
 }

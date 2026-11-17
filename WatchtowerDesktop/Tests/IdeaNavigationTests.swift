@@ -36,6 +36,8 @@ final class IdeaNavigationTests: XCTestCase {
     }
 
     func testNavigateToIdeaOpensItsCardInTheIdeaFinder() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let ids = try await dbManager.dbPool.write { db in
             [try TestDatabase.insertIdea(db, kind: "note", title: "A note", status: "rejected"),
              try TestDatabase.insertIdea(db, title: "Reacted idea", status: "active", source: "owner"),

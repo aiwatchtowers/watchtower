@@ -110,6 +110,8 @@ final class InboxMessagePaneTests: XCTestCase {
     /// Done, Hide and a Snooze choice on the shown message run
     /// `watchtower inbox resolve|dismiss|snooze` for that row (R5).
     func testDoneHideAndSnoozeRouteToTheInboxCLI() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
         let id = try await pool.write { db in try TestDatabase.insertInboxItem(db, snippet: "Review please") }

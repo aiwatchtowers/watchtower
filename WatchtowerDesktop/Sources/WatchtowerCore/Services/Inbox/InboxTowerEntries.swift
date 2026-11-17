@@ -92,17 +92,12 @@ package enum InboxTowerEntries {
         return sections
     }
 
-    /// The folder menu's read with Go's numbers in place of the Swift
-    /// ones: each folder's count, each folder's artifacts in the feed's
-    /// order, each card's ref rows and which of them are shown and waiting
-    /// (`ref_facts`). The tree (the owner's arrangement) and the records
-    /// stay the read's.
+    /// The folder menu's read with Go's numbers laid over it: each folder's
+    /// count and artifact count, each card's ref rows and which of them are
+    /// shown and waiting (`ref_facts`). The tree (the owner's arrangement)
+    /// and the built-ins' states stay the read's.
     package static func folders(_ read: InboxFolderMenuSnapshot, feed: Feed) -> InboxFolderMenuSnapshot {
-        let records = Dictionary(
-            (read.cards.values.flatMap { $0 } + read.approvalArtifacts.values).map { ($0.id, $0) }
-        ) { first, _ in first }
         let approvalsFolder = feed.folders.first { $0.kind == .approvals }?.id
-        var cards: [Int64: [AutomationOutputCard]] = [:]
         var artifacts: [Int64: Int] = [:]
         var refs: [Int64: [InboxRef]] = [:]
         var shown: Set<InboxRef> = []
@@ -118,16 +113,13 @@ package enum InboxTowerEntries {
             refs[id] = card.refFacts.compactMap { fact in
                 InboxRef.Kind(rawValue: fact.kind.rawValue).map { InboxRef(kind: $0, id: fact.id) }
             }
-            guard card.folderID != approvalsFolder, let record = records[id] else { continue }
-            cards[card.folderID, default: []].append(record)
-            artifacts[card.folderID, default: 0] += 1
+            if card.folderID != approvalsFolder { artifacts[card.folderID, default: 0] += 1 }
         }
         let counts = Dictionary(feed.folders.map { ($0.id, $0.count) }) { first, _ in first }
         return InboxFolderMenuSnapshot(
-            tree: read.tree, counts: counts, artifacts: artifacts, cards: cards, refs: refs,
+            tree: read.tree, counts: counts, artifacts: artifacts, refs: refs,
             refState: InboxRefState(shown: shown, waiting: waiting), waitingForMe: read.waitingForMe,
-            needsApproval: read.needsApproval, approvalArtifacts: read.approvalArtifacts,
-            openActions: read.openActions, ideaFinderPresent: read.ideaFinderPresent)
+            needsApproval: read.needsApproval, ideaFinderPresent: read.ideaFinderPresent)
     }
 
     // MARK: - Matching a card to its record

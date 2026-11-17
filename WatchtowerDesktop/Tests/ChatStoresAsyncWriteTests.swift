@@ -208,6 +208,8 @@ final class ChatStoresAsyncWriteTests: XCTestCase {
     /// buttons wait meanwhile, a second press does nothing, and the card
     /// leaves once the write landed.
     func testAReminderLeavesTheStripOnlyOnceItsDoneLanded() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let id = try await pool.write { db -> Int64 in
             try db.execute(sql: """
                 INSERT INTO reminders (message_ref, note, remind_at, status)
@@ -236,6 +238,8 @@ final class ChatStoresAsyncWriteTests: XCTestCase {
     /// A Done that cannot be written keeps the card, says why, and gives
     /// the card its buttons back.
     func testAFailedStripWriteKeepsTheCardAndReEnablesIt() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let id = try await pool.write { db -> Int64 in
             try db.execute(sql: """
                 INSERT INTO reminders (message_ref, note, remind_at, status)

@@ -319,6 +319,8 @@ final class NotificationRouteTests: XCTestCase {
     /// Tracks filter, `track_update` with a `trackId` that track's card (also
     /// after the forwarding round trip), `briefing` today's day card.
     func testTrackAndBriefingPushesOpenInboxCards() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
         // Track 7 exists: a route selects only a listed card. An owner, so

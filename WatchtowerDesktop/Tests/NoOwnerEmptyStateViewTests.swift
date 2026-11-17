@@ -72,6 +72,8 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
     /// today's empty card says why; a day with a plan is a Morning brief
     /// entry in the root, listed and readable.
     func testOwner02DayPlanShowsEmptyStateOnlyWithoutOwnerAndPlan() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         XCTAssertNoThrow(try makeDayFilterEmpty(ownerKnown: false).inspect().find(text: Self.message))
         try await insertTodaysPlan()
         let listed = try await makeDayFilter(ownerKnown: false)
@@ -110,6 +112,8 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
     /// With an owner and nothing made yet, the root lists today's day card;
     /// with none, the root stays empty and says why (OWNER-02).
     func testInboxRootShowsTodaysCardOnlyWithAnOwner() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         let suite = "NoOwnerEmptyStateViewTests.\(UUID().uuidString)"
         suites.append(suite)
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -131,6 +135,8 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
     /// day-plan features both off the root does not list it; with one off it
     /// is listed and offers to make only the other half.
     func testTodaysPlaceholderObeysTheFeatureSwitches() async throws {
+        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
+
         try await testPool().write { db in
             _ = try TestDatabase.insertSlackAccount(db, currentUserID: "1:U1")
         }

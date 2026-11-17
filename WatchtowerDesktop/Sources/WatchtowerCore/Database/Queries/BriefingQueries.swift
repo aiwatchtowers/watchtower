@@ -46,6 +46,12 @@ package enum BriefingQueries {
                 SELECT date AS date FROM briefings UNION SELECT plan_date AS date FROM day_plans
             ) ORDER BY date DESC LIMIT ? OFFSET ?
             """, arguments: [limit, offset])
+        return try fetchDayCards(db, dates: dates)
+    }
+
+    /// The day cards of `dates` (a date with neither a briefing nor a plan
+    /// has a card with neither), in the order given.
+    package static func fetchDayCards(_ db: Database, dates: [String]) throws -> [InboxDayCard] {
         guard !dates.isEmpty else { return [] }
         let marks = dates.map { _ in "?" }.joined(separator: ",")
         let dateArgs = StatementArguments(dates)
