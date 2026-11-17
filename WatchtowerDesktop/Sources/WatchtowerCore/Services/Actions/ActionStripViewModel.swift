@@ -1007,16 +1007,18 @@ package final class ActionStripViewModel {
     /// keeps the composer open with the CLI's message; never retried.
     package func proposeReply(_ itemID: Int, text: String, host: String) async {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !body.isEmpty, replyDrafts[itemID] != nil,
-              let item = feed.messages.first(where: { $0.item.id == itemID })?.item,
+        guard !body.isEmpty, replyDrafts[itemID] != nil else { return }
+        // The tower path first: Go decides whether the row has a reply and
+        // builds its tool and args, so Swift's policy copy never gates it.
+        if towerWrites != nil { return await towerProposeReply(itemID, text: body) }
+        // The no-tower test path (`towerWrites`): the CLI verb Go runs.
+        guard let item = feed.messages.first(where: { $0.item.id == itemID })?.item,
               let tool = InboxReplyPolicy.tool(for: item) else { return }
         guard let args = InboxReplyPolicy.args(for: item, text: body, host: host) else {
             // The args could not be encoded (not expected): say so on the draft, never a silent no-op.
             replyDrafts[itemID]?.error = Self.replyNotBuilt
             return
         }
-        if towerWrites != nil { return await towerProposeReply(itemID, text: body) }
-        // The no-tower test path (`towerWrites`): the CLI verb Go runs.
         let runner = cliRunner
         let sent = replyDrafts[itemID]?.text
         await pendingWrites.run(CardKey.card(.message(itemID))) {

@@ -266,6 +266,22 @@ final class ActionStripFeedTests: XCTestCase {
         return vm
     }
 
+    /// Propose Reply through the tower is Go's to decide: a row Swift's
+    /// `InboxReplyPolicy` copy knows nothing of (not in the local feed, so
+    /// no tool) still sends `reply_propose`, and Go builds the tool.
+    func testTowerReplyIsNotGatedBySwiftsPolicyCopy() async throws {
+        let transport = ScriptedFeedTransport()
+        let vm = try await writing(transport, listing: nil)
+        vm.startReply(42)
+        await vm.proposeReply(42, text: "  On it  ", host: "Waiting for me")
+
+        let act = try XCTUnwrap(transport.acts.last, "the press reached the tower")
+        XCTAssertEqual(act.verb, .replyPropose)
+        XCTAssertEqual(act.target, "messages")
+        XCTAssertEqual(act.params.text, "On it")
+        XCTAssertEqual(act.params.refID, 42)
+    }
+
     func testDoneSendsInboxActWithTheContentHash() async throws {
         // Mail summary's output 1, drawn at h-drawn.
         let id: Int64 = 1
