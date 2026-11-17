@@ -33,7 +33,15 @@ enum InboxActSettlement: Equatable, Sendable {
             return .notDelivered(sentence: InboxPhoneText.notDelivered(hub: hubName))
         }
         let sentence = row.errorMessage.flatMap { $0.isEmpty ? nil : $0 } ?? InboxPhoneText.refusedFallback
-        return .refused(code: code(row.reason), sentence: sentence)
+        return .refused(code: code(row.reason, result: row.result), sentence: sentence)
+    }
+
+    /// The tower's own refusal code: go-hub `inbox_act` puts it in the echo's result (`{"code": …}`), so the phone
+    /// carries the same `Refusal` as the Mac (`args_changed` and `reply_waiting` stay apart). An echo without one —
+    /// a grant refusal before the tower ran, an older hub — falls back to its reason.
+    static func code(_ reason: ActionReason?, result: [String: JSONValue]?) -> RefusalCode {
+        if case let .string(raw)? = result?["code"], !raw.isEmpty { return RefusalCode(rawValue: raw) }
+        return code(reason)
     }
 
     /// The hub's echo reason back to the tower's code (go-hub `inbox_act`: `not_found`; `changed`, `args_changed` and
