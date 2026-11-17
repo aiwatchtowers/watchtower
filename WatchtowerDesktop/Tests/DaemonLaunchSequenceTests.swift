@@ -93,9 +93,14 @@ final class DaemonLaunchSequenceTests: XCTestCase {
         XCTAssertEqual(daemon.startNoSync, [true])
     }
 
+    /// Two Retries before the start completes queue one start: the second
+    /// joins the first. The daemon dies right after starting, so a second
+    /// queued item would find it down and start again — only the join
+    /// keeps the count at one.
     func testTowerRetryAfterDownEnqueuesADaemonStart() async throws {
         let (appState, daemon) = makeAppState(open: try opensTheTestDatabase())
         appState.needsOnboarding = true
+        daemon.diesAfterStart = true
         daemon.holdStart = true
 
         let first = Task { await appState.startDaemonForTower() }
@@ -104,14 +109,18 @@ final class DaemonLaunchSequenceTests: XCTestCase {
         await Task.yield()
         XCTAssertEqual(daemon.starts, 1)
 
+        // Nothing parks after this: a second queued start (no join) would
+        // run at once and be counted, not hang.
+        daemon.holdStart = false
         daemon.releaseStart()
         await first.value
         await second.value
+        await appState.daemonStartChain?.value
         XCTAssertEqual(daemon.startNoSync, [true], "one start, never a second while one is queued")
 
-        // The daemon is up now: a later Retry starts nothing.
+        // Once it has run, a new Retry queues a new start.
         await appState.startDaemonForTower()
-        XCTAssertEqual(daemon.starts, 1)
+        XCTAssertEqual(daemon.starts, 2)
     }
 
     /// "Run setup again" re-enters onboarding with a syncing daemon: a start
