@@ -17,7 +17,7 @@
 **Spec:** `docs/superpowers/specs/2026-11-16-unified-chat-design.md` (approved, ask #1378; decisions in asks #1363 and #1371). Builds on `docs/features/iphone-chat.md` and `docs/inventory/chat.md`.
 
 **Branching and execution:**
-- The umbrella branch is `feature/unified-chat`. Each task is one implementer agent working in its own worktree on `feature/unified-chat-tN-<slug>`, branched from the umbrella. Its PR goes **into `feature/unified-chat`**, never into `main`. The umbrella PR into `main` stays a draft until T11 is merged.
+- The umbrella branch is `feature/unified-chat`. Each task is one implementer agent working in its own worktree on `feature/unified-chat-tN-<slug>`, branched from the umbrella. Its PR goes **into `feature/unified-chat`**, never into `main`. The umbrella PR into `main` stays a draft until T11 and the addendum's T16 (ask #1409) are merged.
 - `Depends on` lists the task PRs that must be merged into the umbrella before a lane is branched. Tasks with no dependency between them run in parallel lanes.
 - Lane setup for Swift work: copy the main worktree's `WatchtowerDesktop/.build`, then delete its path-bound `ModuleCache`. Phone lanes use their own `-derivedDataPath` per worktree.
 
@@ -35,6 +35,7 @@
   - B (packages): T6, T7.
   - C (apps): T8, T9, T10b, T12.
   - D (docs): T11.
+  - E (addendum, ask #1409): T13, T14, T15, T16 — the Mac composer and approval cards move into `ChatUI`.
   - T0 runs first, beside T1.
 - **Controller step after T0:** run `make desktop-shots DESKTOP_SHOTS=build/unified-chat-before` and `make mobile-shots SHOTS_ONLY=chat SHOTS_DIR=build/unified-chat-before-phone`. Keep both sets locally as the comparison baseline; they are gitignored. File the owner a **review** ask with the new-state PNGs (§10). **T7 is not dispatched until the owner answers.**
 - Every brief carries the review checklist: `docs/review/review-rules.md`, §§ 7–9 and "Swift / Desktop conventions". The implementer self-reviews against it before hand-back.
@@ -134,6 +135,8 @@
 - **Schema:** one migration, `00194_chat_client_key.sql` (T1). T1 runs `go test ./internal/db -run 'TestSchemaGolden|TestDesktopTestSchema'` (regenerated with `-update`) and `go test ./internal/db`; any later task touching `internal/db` runs them too.
 
 ---
+
+> **Addendum (ask #1409).** The umbrella's final review (finding I3) found the Mac's composer (`Views/Chat/ChatComposerView`, `ChatComposerBar`, `ChatComposerField`, `AttachmentChipsView`, `MentionPicker`, `QuoteBatchView`) and approval cards (`Views/Chat/AgentActionCardView*`) still in the app beside `ChatUI`'s own. That breaks G3, §6.1 and §6.4: a composer or approval-card feature written once reaches one device only. In ask #1409 the owner decided they move into `ChatUI` **in this branch, before it merges to main**. Tasks T13–T16 below do it, in phase E, after T12 and T11. They follow T12's approach: one implementation in `ChatUI`; the Mac's look comes through `ChatUIStyle` hooks (`DesignKitChatStyle`); Mac-only capabilities come as injected services or `Platform/macOS` parts; no view is kept twice. T13 and T14 run in parallel lanes. T15 follows T14 and may run beside T13. T16 runs last.
 
 ### Task T0: Design shots for the new states (§10)
 
@@ -1083,26 +1086,583 @@
 
 ---
 
+## Addendum tasks (ask #1409): the composer and the approval cards in `ChatUI`
+
+**Why.** Spec G3, §6.1 and §6.4 put the composer and the per-connector approval cards in `ChatUI`. After T12 the Mac still draws its own, so a feature written once reaches one device only.
+
+**Lanes and order.**
+- **T13 ∥ T14.** Two parallel lanes in their own worktrees. T13 is the composer: Swift, Desktop and phone. T14 is the approval data: Go plus `ChatWire`.
+- **T15 after T14.** It may run beside T13.
+  - Both T13 and T15 add lines to the same few files: `Style/ChatUIStyle.swift`, `Views/Chat/DesignKitChatStyle.swift`, `Features/Chats/PhoneChatStyle.swift`, `DesignShotCatalog.swift`, `ScreenshotTourTests.swift` and `ChatUISourceScanTests.swift`.
+  - The second of the two to merge rebases on the umbrella and resolves these additive conflicts. No other file is shared.
+- **T16 after T13, T14 and T15.**
+- **Phone lanes** use their own `-derivedDataPath`, as the plan header says.
+
+**Rules for every addendum task** (on top of the Global Constraints):
+- **One view.**
+  - Each composer piece and each approval-card piece exists once, in `ChatUI`.
+  - The Mac's look comes through `ChatUIStyle` hooks implemented by `DesignKitChatStyle`.
+  - The phone's look comes through the same hooks implemented by `PhoneChatStyle`. Each hook's phone implementation draws exactly what the phone draws today.
+  - No `#if os(...)` outside `Platform/`. No Desktop copy kept "for safety" (anti-goal 2).
+- **Where the Mac-only input lives.**
+  - **`ChatUI/Platform/macOS`:**
+    - NSTextView key handling: Enter, Shift+Enter, Esc, ↑ in an empty field, and the picker keys;
+    - paste classification and the long-paste offer;
+    - the file drop and the open panel;
+    - the connector-input JSON editor.
+    - `ExpandingTextInput`, `PastingTextView` and `PastedContent` are already there.
+  - **Injected by the Mac app** (`ChatUI` cannot import them):
+    - dictation (`DictationCenter` and the FluidAudio ML stack);
+    - the routing accessory (`AIProvider`, `ProviderFallbackPreview`);
+    - Reconnect Slack (`AppState.reconnectSlack`);
+    - in-app navigation (`AgentActionDestination` → `AppState`);
+    - the `save_automation` card body (`SaveAutomationCardModel`);
+    - the Inbox target-button row (`ArtifactTargetButtonState`).
+- **Mac look and behaviour as today (spec §2).**
+  - Before a task changes a view, its first commit adds design shots of every state of that view, rendered with today's views. These are the base shots.
+  - After the change, the same shot names render the `ChatUI` views. These are the HEAD shots.
+  - Every pair is compared by eye, side by side. The task report lists each name as "same" or names the difference.
+  - Any Mac difference is either fixed through a hook, or listed for the owner's review ask (T16 Step 1). Nothing is accepted silently.
+- **Phone look kept.**
+  - A phone frame that exists today renders the same at HEAD.
+  - A state the phone gains through the shared view gets a new frame. Examples: comments on quotes, removable mention chips, the richer approval cards.
+  - The new frames go to the owner in the same review ask. The owner's answer may hide an element on the phone through a `PhoneChatStyle` hook.
+- **Copy.**
+  - Every user-facing string in `ChatUI` outside `Platform/macOS` must pass `TowerWordGuardTests` ("say tower", #1783). Copy that names the host goes through `ChatHostText`.
+  - A Mac-only line lives in `Platform/macOS` or is passed in by the Mac app.
+- **CHAT-05.** Every new file under `Composer/` and `Parts/` is covered by the `ChatUISourceScanTests` enumeration. It has no `URLSession`, no `send(` to a client, no `enqueue`, and no script message handler. Links only open or copy, through `ChatPartActions.openURL`.
+- **Guards are never weakened.**
+  - A Desktop test whose view moves keeps its class name, its test names and its assertions. Only its subject changes: the `ChatUI` view, through the Mac adapter.
+  - A pure-logic test moves (`git mv`) to the package that now holds the logic, with its assertions unchanged.
+  - Any change that would relax a guard stops the task, and the owner is asked.
+
+### Task T13: The composer in `ChatUI` — every Mac surface and the phone
+
+**Depends on:** T12 merged (the umbrella at or after `39ed511`). Runs in parallel with T14.
+
+**Behaviours the Mac has today that must survive** (each one names the test that pins it after the move):
+
+| # | Behaviour (today's source) | Pinned by |
+|---|---|---|
+| C1 | Enter sends; Shift+Enter adds a line (`ExpandingTextInput`) | `ChatComposerFieldViewTests` (kept, subject switched) |
+| C2 | Esc stops the turn. Main chat: `chatVM.stop()`. Embedded: `onEscape`, else `engine.stop()`. Workchat: Esc in an empty field while the agent works is Stop. | `ChatComposerFieldViewTests`, `WorkchatComposerTests.testEscapeInEmptyFieldWhileWorkingStops` (new) |
+| C3 | ↑ in an empty field edits the last owner message, never while a turn runs | `ChatComposerModelPickerTests.testArrowUpEditsLastOwnerMessageOnlyWhenIdle` (new) |
+| C4 | The round Send ↔ Stop button. Stop is live only when `onStop` is non-nil; the labels "Send" and "Stop"; Send is off when `sendBlocked` (unreachable or gone) | `ChatComposerFieldViewTests` |
+| C5 | Send is enabled by text, or by attachments alone, or by pending quotes alone (`hasPendingContent`) | `ChatComposerFieldViewTests` |
+| C6 | The field grows to `maxHeight`: about 40 % of the window in the main chat, 120 in Discuss, `density.composerMaxHeight` in embedded chats. Each surface has its own placeholder. | shots `composer-main-*`, `composer-embedded-*` |
+| C7 | Dictation: the mic button and the highlight of the field being dictated into, per `dictationTargetID` (`"chat.workspace"`, each embedded surface's id); the dictation hotkey writes into the focused target | `DictationButtonTests`, `DictationHighlightTests` (kept); `ChatComposerFieldViewTests.testDictationHookGetsTargetIDAndText` (new) |
+| C8 | The paperclip's help and the open panel follow the provider's capabilities (U1): text only; images and text; or everything | `ChatComposerFieldAttachmentTests` (kept) |
+| C9 | Dropping file URLs attaches them. A kind the provider refuses is not added, and its reason shows. Non-file URLs are ignored. | `ChatComposerFieldAttachmentTests` |
+| C10 | ⌘V of image or PDF data, or of Finder files, attaches. A refused kind shows its reason. A long text paste is inserted, then offered as a file (`LongPasteOffer`); the offer goes away once that text is edited. | `ChatComposerFieldAttachmentTests`, `PastedContentTests` |
+| C11 | Attachment chips: a type icon (photo, doc.richtext, doc.text), the name truncated in the middle, and a remove button that is off while removing. Files being imported show with progress. "Sending once the files are attached…" shows while Send waits for them. | `ChatComposerFieldAttachmentTests`, shot `composer-main-attachments-importing` |
+| C12 | The attachment error line (red) and the refused-kind notice (secondary) | `ChatComposerFieldAttachmentTests` |
+| C13 | The status line above the field: queued with Cancel (embedded); "Applying the reply's changes…" (embedded); the "elsewhere" line; an error with the warning triangle. The main chat's error is `composer.notice ?? conversation.notice`. | `EmbeddedChatViewTests` (composer cases kept) |
+| C14 | The state line (starting / unavailable + Retry / stopped + Start) above the composer | `testDaemonUnreachableKeepsDraftAndShowsRetry` (kept); shots `chat-daemon-*` |
+| C15 | The `@` and `/` pickers. The list sits over the field. Up, Down, Enter, Tab and Esc go to the picker first. A mouse pick resolves the trigger at the last caret. The selected row is highlighted. A result that arrives after the text moved on is dropped. Esc suppresses the picker until the trigger changes. | `ComposerPickerModelTests` (moved, assertions kept) |
+| C16 | Mention and skill chips with remove. On send, only the mentions still in the text go along (`MentionTokenizer.liveMentions`). | `ComposerPickerModelTests`, `testSendCarriesOnlyLiveMentionsAndSkill` (new) |
+| C17 | The quote batch: each quote in two italic lines, with an editable comment and a remove button. The whole batch goes as one message. | `QuoteBatchViewTests` (kept, subject switched) |
+| C18 | The routing accessory: the actual model, the missing capabilities, the fallback preview with its action, the routing error, and the model pill (off while busy). It refreshes on a chat change, on app activation and at a turn's end. | shots `other-provider`, `other-provider-failed`, `chat-composer-ollama-capabilities` |
+| C19 | The first keystroke warms the session or makes the landing draft (`draftStarted`) | `ChatMacShellModelTests` (kept) |
+| C20 | Focus requests (⌘N, a quote added, the ⌘/ panel's `autoFocus`) put the caret at the end | `ChatComposerFieldViewTests` |
+| C21 | CHAT-01: the text stays until `.applied`. A refusal shows the notice and keeps the text. Text typed meanwhile stays (`remainder`). | `testChat01DraftStaysUntilApplied`, `testRefusedSendRestoresDraft`, `testBusyEchoReturnsTextToComposer` (kept) |
+| C22 | Workchat: the hold caption, the stop error, the placeholder "Message the agent… (/ for commands)", and attachments to its own store with paste and drop | `WorkchatComposerTests` (kept), shot `workchat-hold-caption` |
+| C23 | The ⌘/ help panel sends `screen_context`; the stored text is the typed text only | `ChatViewModelShellTests.testHelpPanelSendsScreenContext` (kept) |
+| C24 | The spec review thread, the target brief and the project page use the same field | shots `spec-review-thread-replying`, `composer-target-brief`, `chat-project-page-*` |
+
+**Writers of the same data** (unchanged by this task; the shared view writes nothing itself — it edits a binding and calls closures):
+- **Main-chat draft text:**
+  - `ChatComposerModel.draft`, in memory, on both devices;
+  - the phone's `ChatsCenter.drafts` (kept on the phone) and its `chat_outgoing` send ledger;
+  - the Mac's landing-draft id in `UserDefaults`.
+- **The owner row** (`chat_messages`): the engine only (CHAT-01).
+- **`chat_attachments`:** the engine only, through `attach` (the Mac by path, a paste through a 0600 temp file; the phone by sealed upload) and `attach_discard` (remove chip).
+- **Embedded-chat draft:**
+  - `EmbeddedChatEngine.draft`;
+  - a queued message is kept in `chat_queued_drafts` (the Desktop's `EmbeddedChatStore`).
+- **Workchat draft and files:** `WorkchatModel` and its own attachment store.
+- **The spec review thread, the target brief and the help panel:** each its own model.
+- **Dictation:** writes only into the bound text, through the Mac's `DictationCenter`.
+
+**Failure paths and their tests:**
+
+| Failure | Behaviour | Test |
+|---|---|---|
+| The host goes away mid-send (`chat.sock` drops before the echo) | Text, quotes, attachment chips and mention/skill chips stay. The resend after reconnect carries the same `client_key`. | `testHostGoneMidSendKeepsDraftQuotesAndChips` (new), `testDroppedEchoResendsWithSameKeyNoDuplicate` (kept) |
+| A lost answer, then Send pressed again while the draft is unchanged (final-review M1) | The same `client_key` again: answered with the first turn, never a second turn | `testLostEchoResendReusesKeyWhileDraftUnchanged` (new) |
+| A lost answer, then the draft edited before Send | A new key: it is a new message | `testEditedDraftAfterLostEchoGetsNewKey` (new) |
+| An import still running when Send is pressed, and the import is refused (the provider, a missing file, or the host gone) | Send goes on with what was attached. A refused import shows its reason and its chip goes away. If the send itself is refused, the text stays. | `testSendWaitingForImportProceedsWhenImportFails` (new) |
+| The chat is unreachable or stopped | Send is off, the draft is kept, and the state line shows | `testDaemonUnreachableKeepsDraftAndShowsRetry`, `testStoppedOnPurposeShowsStartAndDoesNotStartDaemon` (kept) |
+| The conversation is deleted on the other device while text is typed | The "gone" state; the draft is kept; Send is off | `testConversationDeletedElsewhereShowsGoneAndKeepsDraft` (kept) |
+| A picker result arrives after the text moved on | Dropped; the list follows the current text | `ComposerPickerModelTests.testStaleSearchResultIsDropped` (new, beside the moved tests) |
+| A dropped or pasted kind the provider refuses | Not added; the reason shows | `ChatComposerFieldAttachmentTests` (kept) |
+| A queued embedded message is cancelled | Its text comes back into the field | `EmbeddedChatEngineTests`, `EmbeddedChatViewTests` (kept) |
+
+**Files:**
+- Create in `WatchtowerChat/Sources/ChatUI/`:
+  - `Composer/ChatComposerField.swift`: the one input row every surface uses. It holds no model, only a `ChatComposerFieldConfig` and closures, and the platform part draws the text view.
+  - `Composer/ChatComposerBar.swift` and `ChatComposerStatus`: the status line plus the field plus the accessory.
+  - `Composer/AttachmentChipsView.swift`: the chips plus `AttachmentProgress`.
+  - `Composer/QuoteBatchView.swift`.
+  - `Composer/ComposerPickerList.swift`: today's `MentionPicker.swift` (`MentionPicker`, `SkillPicker`) and the Mac's `ComposerPickerList` become one list, plus `ComposerChipsRow`.
+  - `Composer/ComposerAttachmentRules.swift`: the pure U1 refusal rules, `kind(_:)`, `refusal(of:attach:pdf:)` and the paperclip help, moved from the Desktop's `ChatComposerFieldContent`.
+  - `Models/ComposerPickerModel.swift`: moved from `WatchtowerCore/Services/Chat/`. It now works on `ChatEntityHit` and `ChatCompose.Mention` instead of Core's `MentionCandidate`.
+  - `Style/ChatComposerServices.swift`: the environment value for the Mac-injected capabilities.
+  - `Platform/macOS/ComposerFileInput.swift`: the drop destination and `NSOpenPanel`.
+  - `Platform/iOS/ComposerFileInput.swift`: an empty modifier, so the shared view needs no `#if`. The phone's picker stays in its shell, through `onAttach`.
+- Modify:
+  - `Composer/ChatComposerView.swift`: the main-chat composer is rebuilt on the pieces above. It takes the Mac's behaviours C3, C14–C18, C21 and an `accessory` slot.
+  - `Models/ChatComposerModel.swift`:
+    - owns a `ComposerPickerModel`;
+    - reuses the unanswered send's `client_key` while the draft is unchanged (M1);
+    - `search(entities:)` and `skillHits` feed the picker model.
+  - `Platform/macOS/ChatComposerField.swift` → `git mv` to `Platform/macOS/ChatComposerTextInput.swift`, so the basename does not clash with the shared `Composer/ChatComposerField.swift`. This file is the NSTextView part that spec §6.1 calls `ChatComposerField`. `ChatComposerTextInput` takes the C1–C3, C10, C15 and C20 parameters.
+  - `Platform/iOS/ComposerTextField.swift`.
+  - `Style/ChatUIStyle.swift`: the composer hooks below.
+  - `WatchtowerChat/Tests/ChatUITests/ChatUISourceScanTests.swift`: `Composer/` is enumerated.
+- Modify (Mac):
+  - `Views/Chat/DesignKitChatStyle.swift`: the composer hooks with today's Mac look.
+  - `Views/Chat/{ChatView,ChatLandingView,ProjectDetailView,HelpChatPanel}.swift`;
+  - `Views/Chat/Embedded/EmbeddedChatView.swift` (`EmbeddedChatComposer`);
+  - `Views/Workbench/WorkchatComposer.swift`;
+  - `Views/Workbench/Asks/SpecReview/SpecReviewThreadView.swift`;
+  - `Views/Targets/TargetDetailView.swift`;
+  - `ViewModels/ChatViewModel.swift`: the picker moves into `ChatComposerModel`. `chatVM.picker` goes; `sendDraft` reads the model's picker.
+  - `App/` or the root view that sets `.environment(\.chatComposerServices, …)` with dictation.
+- Create (Mac): `Views/Chat/ChatComposerAccessory.swift`. It is today's `routingState` plus `ChatModelPicker`, moved out of the deleted `ChatComposerView.swift`. `ChatModelPicker` stays the Mac's: `CodeQuestionPopover` and `QuestionsView` use it too.
+- Modify (phone):
+  - `Features/Chats/PhoneChatStyle.swift`: the composer hooks with today's phone look.
+  - `Features/Chats/ChatConversationView.swift`: the attachment pills become `AttachmentChipsView` chips with the phone's upload state. The `accessory` pills are removed.
+- Delete (Mac): `Views/Chat/{ChatComposerView,ChatComposerBar,ChatComposerField,AttachmentChipsView,MentionPicker,QuoteBatchView}.swift` and `WatchtowerCore/Services/Chat/ComposerPickerModel.swift`. `MentionCandidate` goes too once nothing uses it; grep first.
+- Tests:
+  - move `Tests/Core/ComposerPickerModelTests.swift` → `WatchtowerChat/Tests/ChatUITests/ComposerPickerModelTests.swift` (`git mv`; the assertions are kept, the types are adapted);
+  - keep `ChatComposerFieldViewTests`, `ChatComposerFieldAttachmentTests`, `QuoteBatchViewTests`, `WorkchatComposerTests` and `EmbeddedChatViewTests` in `WatchtowerDesktop/Tests`, inspecting the `ChatUI` views (the `ChatUIMacRowTests` precedent);
+  - create `WatchtowerChat/Tests/ChatUITests/ChatComposerModelPickerTests.swift`.
+- Shots:
+  - `Tests/DesignShots/DesignShotFixtures+Composer.swift` (new) and `DesignShotCatalog.swift`;
+  - `WatchtowerMobile/Tests/ScreenshotTourTests.swift` (new phone frames).
+
+**Interfaces:**
+- Consumes:
+  - T7's `ChatComposerModel`, `ChatConversationModel`, `ChatStateLine`, `ChatUIStyle` and `ChatHostText`;
+  - `WatchtowerChatText`'s `MentionTokenizer` (`ComposerPickerKey`, `ComposerKeyResult`) and `ChatQuoteDraft`;
+  - `ChatWire`'s `ChatEntityHit`, `ChatSkill`, `ChatCompose.Mention` and `ChatAttachmentLimits`.
+- Produces (`ChatUI`, public):
+  ```swift
+  public struct ChatComposerFieldConfig {
+      public var placeholder: String
+      public var maxHeight: CGFloat = 120
+      public var dictationTargetID: String?          // nil: no mic
+      public var attachUnavailableReason: String?    // U1
+      public var pdfUnavailableReason: String?
+      public var hasPendingContent = false
+      public var autoFocus = false
+      public var focusRequest: UUID?
+      public var sendBlocked = false
+  }
+  public struct ChatComposerField: View {
+      public init(text: Binding<String>, isStreaming: Bool, config: ChatComposerFieldConfig,
+                  onSend: @escaping () -> Void, onStop: (() -> Void)? = nil,
+                  onEscape: (() -> Void)? = nil, onArrowUpWhenEmpty: (() -> Void)? = nil,
+                  attachments: [ChatComposerAttachment] = [], attachmentProgress: AttachmentProgress = .init(),
+                  attachmentError: String? = nil,
+                  onAttachFiles: (([URL]) -> Void)? = nil,              // nil: no paperclip, no drop
+                  onPasteData: ((Data, String) async -> Bool)? = nil,   // nil: ⌘V inserts text
+                  onRemoveAttachment: ((Int64) -> Void)? = nil,
+                  onRetryAttachment: ((Int64) -> Void)? = nil,          // the phone's refused upload
+                  onCursorChange: ((String, Int) -> Void)? = nil,
+                  onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)? = nil)
+  }
+  public enum ChatComposerStatus: Equatable { case queued, error(String), finishing, elsewhere(String) }
+  public struct ChatComposerBar<Accessory: View>: View {
+      public init(status: ChatComposerStatus?, onCancelQueued: @escaping () -> Void = {},
+                  input: ChatComposerField, @ViewBuilder accessory: () -> Accessory)
+  }
+  public struct AttachmentProgress: Equatable {
+      public var importing: [String]; public var removing: Set<Int64>; public var sendWaits: Bool
+      public var failed: Set<Int64>                                     // the phone's refused uploads (Retry)
+  }
+  public struct ChatComposerServices {                                  // environment \.chatComposerServices
+      /// Wraps the field with the Mac's dictation (button + highlight); nil draws the field alone.
+      public var dictation: ((_ field: AnyView, _ text: Binding<String>, _ targetID: String) -> AnyView)?
+  }
+  // ChatUIStyle, new hooks (defaults = the phone's look today):
+  //   func composerFieldBackground(_ field: AnyView) -> AnyView
+  //   func sendStopButton(isStreaming: Bool, active: Bool, action: @escaping () -> Void) -> AnyView
+  //   func attachmentChip(_ chip: ChatAttachmentChipContent) -> AnyView
+  //   func composerChip(_ chip: ChatComposerChipContent) -> AnyView      // mention / skill, with remove
+  //   func quoteRow(_ quote: ChatQuoteDraft, comment: Binding<String>, onRemove: @escaping () -> Void) -> AnyView
+  //   func pickerList(_ rows: [ComposerPickerItem], selected: Int, onPick: @escaping (Int) -> Void) -> AnyView
+  public struct ChatComposerView: View {
+      public init(model: ChatComposerModel, field: ChatComposerFieldConfig,
+                  onAttach: (() -> Void)? = nil, accessory: AnyView? = nil,
+                  onAttachFiles: (([URL]) -> Void)? = nil, onPasteData: ((Data, String) async -> Bool)? = nil)
+  }
+  // ChatComposerModel gains: public let picker: ComposerPickerModel; public func beginEditingLast();
+  // the unanswered send's client_key is reused while draft, quotes, attachments, mentions and skill are unchanged.
+  ```
+
+- [ ] **Step 1: Base shots** (first commit, no view change). Add `DesignShotFixtures+Composer.swift`, which renders today's Desktop views under these names, light and dark:
+  - `composer-main-empty`, `composer-main-typing`, `composer-main-streaming`, `composer-main-narrow`;
+  - `composer-main-attachments`, `composer-main-attachments-importing`, `composer-main-attachment-error`, `composer-main-refused-kind`;
+  - `composer-main-long-paste`, `composer-main-quotes`;
+  - `composer-main-mention-picker`, `composer-main-skill-picker`, `composer-main-chips`;
+  - `composer-main-notice`, `composer-main-editing`, `composer-main-dictation-active`;
+  - `composer-embedded-queued`, `composer-embedded-finishing`, `composer-embedded-error`;
+  - `composer-help-panel`, `composer-target-brief`, `composer-workchat-attachments`.
+
+  Then render `make desktop-shots DESKTOP_SHOTS=build/t13-base` and `make mobile-shots SHOTS_ONLY=chat SHOTS_DIR=build/t13-base-phone`. The existing `chat-daemon-*`, `other-provider*`, `chat-composer-ollama-capabilities`, `workchat-hold-caption`, `spec-review-thread-replying`, `chat-project-page-*`, `embedded-chat-*` and phone `C2a`–`C2i`, `C3a` are in the base set too. Commit: `test(shots): composer base shots before the ChatUI move (#1822 T13)`.
+- [ ] **Step 2: Failing tests.**
+  - `ChatComposerModelPickerTests` (ChatUI, `FakeChatClient`, no clock waits):
+    - `testArrowUpEditsLastOwnerMessageOnlyWhenIdle`: with a turn running, `beginEditingLast()` leaves `editing == nil` and the draft unchanged; when idle, `editing` is the last owner message's id and the draft is its body.
+    - `testSendCarriesOnlyLiveMentionsAndSkill`: pick two mentions and delete one's `@Label` from the text, then send → `compose.mentions` holds the remaining one; `compose.skill` is the picked skill; after `.applied` the picker's mentions and skill are empty.
+    - `testPickerKeysGoToPickerFirst`: picker open, `.down` then `.enter` → `consumed == true` and the second row is inserted; picker closed → `.enter` is not consumed.
+    - `testHostGoneMidSendKeepsDraftQuotesAndChips`: the client throws a connection error on `send` → the draft, the quotes, the attachments, `picker.mentions` and `picker.skill` are unchanged, and `notice` is set.
+    - `testLostEchoResendReusesKeyWhileDraftUnchanged`: the first send throws after it went out, the second `send()` with the same draft → both recorded `chat_turn` ops have the same `clientKey`.
+    - `testEditedDraftAfterLostEchoGetsNewKey`: as above, but the draft is edited in between → the keys differ.
+    - `testSendWaitingForImportProceedsWhenImportFails`: an `attach` is pending, `send()` waits (`isWaitingForAttachments == true`); the `attach` echo is `.refused` → the send goes on with `attachmentIDs == []`; `importing` is empty; `notice` names the refused file.
+  - `ComposerPickerModelTests` (moved): every existing test passes on the ChatUI types. New `testStaleSearchResultIsDropped`: a search answering after the text changed leaves `items` as the newer search set them.
+  - Desktop (ViewInspector over `ChatUI.ChatComposerField`, `ChatUI.QuoteBatchView` and `ChatUI.ChatComposerBar`):
+    - `ChatComposerFieldViewTests`, `ChatComposerFieldAttachmentTests`, `QuoteBatchViewTests`, `EmbeddedChatViewTests` and `WorkchatComposerTests` switch their subject. Each keeps its test names and assertions.
+    - New `ChatComposerFieldViewTests.testDictationHookGetsTargetIDAndText`: a `ChatComposerServices.dictation` stub receives `"chat.workspace"`, and its binding writes into the draft. With `dictationTargetID == nil` it is never called.
+    - New `WorkchatComposerTests.testEscapeInEmptyFieldWhileWorkingStops`: the stop closure fires once; with text in the field it does not fire.
+  - Phone (`make mobile-test`):
+    - `ChatSendTests`, `ChatSendRecoveryTests`, `ChatApprovalWiringTests` and `ChatAttachmentAndCopyTests` are unchanged;
+    - new `ChatAttachmentAndCopyTests.testDraftFilesRenderAsSharedChipsWithUploadState`: an uploading file → a chip with progress and remove off; a failed one → Retry calls `center.retryAttachment`.
+- [ ] **Step 3: Run them.** `make chat-test FILTER='ChatComposerModelPickerTests|ComposerPickerModelTests'` and `make test-swift FILTER='ChatComposerField|QuoteBatchView|WorkchatComposer|EmbeddedChatView'`. Expected: FAIL.
+- [ ] **Step 4: Implement.**
+  - Build the `ChatUI` pieces. Rebuild `ChatComposerView` on them.
+  - Add the hooks to `DesignKitChatStyle`, drawing today's Mac look: the 18 pt rounded field on `textBackgroundColor`, the 24 pt round Send/Stop button, the capsule chips, the accent mention chips, the `controlBackgroundColor` quote rows and the bordered picker list.
+  - Add the hooks to `PhoneChatStyle`, drawing today's phone look.
+  - Switch every Mac surface named in Files and the phone conversation screen. Set `\.chatComposerServices` at the app root with the `DictationButton` + `dictationHighlight` closure.
+  - Delete the Desktop files.
+- [ ] **Step 5: HEAD shots and comparison.**
+  - Run `make desktop-shots DESKTOP_SHOTS=build/t13-head` and `make mobile-shots SHOTS_ONLY=chat SHOTS_DIR=build/t13-head-phone`.
+  - Compare each name with its base.
+    - Expected: every Mac name is the same.
+    - Every existing phone frame is the same.
+    - The new phone frames `iphone-chat-composer-quotes`, `iphone-chat-composer-mentions` and `iphone-chat-composer-attachments` (add them in `testTheChatShots`) show the states the phone gains. They go to T16's review ask.
+  - Fix any Mac difference through its hook before hand-back.
+- [ ] **Step 6: Run the tests and the guards.**
+  - `make chat-test`
+  - `make chattext-test`
+  - `make test-swift FILTER='Chat|Composer|QuoteBatch|Workchat|Embedded|Dictation|PastedContent|HelpChat|TargetComposer|SpecReview|PublicAPISurface|ArtifactChat05|LIVE01'`
+  - `make kit-test FILTER=SeamBoundaryTests`
+  - `make mobile-test MOBILE_FILTER='TowerTextTests|TowerWordGuardTests|ChatSendTests|ChatSendRecoveryTests|ChatApprovalWiringTests|ChatAttachmentAndCopyTests|RelayChatClientTests|ChatsGateModelTests'`
+  - `make lint-swift`
+  - `bash scripts/tests/test-kit-lint-guard.sh`
+  - CHAT-01/05/06 Swift guards are inside `make chat-test`: `ChatConversationModelTests`, `ChatUISourceScanTests` and `ChatPartRegistryTests`.
+  - No Go changes; `make lint-diff` stays clean.
+- [ ] **Step 7: Inventory.** In `docs/inventory/chat.md`:
+  - a changelog line: the composer moved to `ChatUI`, no guard relaxed or renamed, `ComposerPickerModelTests` moved with its assertions, the CHAT-05 scan covers `Composer/`;
+  - CHAT-01's guard list gains `testHostGoneMidSendKeepsDraftQuotesAndChips` and `testLostEchoResendReusesKeyWhileDraftUnchanged`.
+- [ ] **Step 8: Commit.** `refactor(chat): one composer in ChatUI for the Mac and the iPhone (#1822 T13, ask #1409)`
+
+---
+
+### Task T14: Approval data on both devices (Go payload + one action model in `ChatWire`)
+
+**Depends on:** T12 merged. Runs in parallel with T13.
+
+**Why:** the Mac card reads the whole `agent_actions` row. The phone's `approval` part carries only `id`, `tool`, `title`, `args_display`, `args_sha256`, `status` and `reason`. One card needs one action model, and the phone's payload needs the fields the card reads. The per-tool logic is Foundation-only and lives in Core today (`SlackSendProposal`, `ConnectorCallProposal`, `ReactionToolCatalog`, `AgentActionDestination`, the summary lines). It moves to `ChatWire`, which Core and `ChatUI` both import, so the tool names and the summaries exist once.
+
+**Writers of the same data** (`agent_actions`), all unchanged:
+- **Proposals:** `Registry.Propose`, called by `ai session` / MCP chat tools, automation runs and reactions.
+- **Status transitions:** `Registry` only.
+  - The Mac goes through `watchtower actions approve|reject|apply|dismiss` (`AgentActionFeed`, owner-confirm, AGENT-07), from chat cards, the Inbox, the target chat, the automation editor and Inbox row actions.
+  - The phone goes through the hub's `chat_action_answer` (`Registry.ApproveSeen` with the shown `args_sha256`, or `Reject`).
+  - A session-applied call is run and finished by its own chat session.
+- **The engine** only reads `agent_actions` into the feed. The card writes nothing.
+
+**Files:**
+- Modify (Go):
+  - `internal/chatengine/feed.go`:
+    - `FeedAction` gains `External bool \`json:"external"\``, `Error string \`json:"error,omitempty"\``, `Result map[string]string \`json:"result,omitempty"\``, `TurnID string \`json:"turn_id,omitempty"\`` (today unexported `turnID`) and `ArgsComplete bool \`json:"args_complete"\``.
+    - `chatFeedActionsTx` reads `external`, `error` and `result_json`.
+    - The result is cut down to the keys the card shows: `url`, `label`, `key`, `target_id`, `board_name`, `version` and `warning`, each value clipped to 512 bytes.
+  - `internal/chatengine/parts.go`: `approvalPart` copies the new fields into the payload; the fallback text is unchanged.
+  - `internal/chatengine/testdata/parts.json`: the `approval` sample carries the new fields.
+- Create (Swift, `WatchtowerChat/Sources/ChatWire/Actions/`):
+  - `ChatAgentAction.swift`: one action model for both devices.
+  - Moved from `WatchtowerCore/Services/Actions/` (`git mv`, `package` → `public`, `AgentAction` → `ChatAgentAction`): `SlackSendProposal.swift`, `ConnectorCallProposal.swift`, `AgentActionDestination.swift` (+ `SlackMessageRef`), `ActionToolCatalog.swift` (the `ReactionToolInfo` table and `title(for:)`, from `ReactionToolCatalog.swift`), `ActionSummaryLines.swift` (`summaryLines(for:)` and its Jira, Linear, wave-two, dismiss-tracks, Slack and Confluence helpers, out of `AgentActionCardView*.swift`), `ConfluenceEditProposal.swift` (the `ConfluenceEdit` model and `ConfluenceEditMemo`) and `DecodeCounter.swift`.
+- Modify (Core):
+  - `WatchtowerCore/Models/AgentAction.swift` becomes `package typealias AgentAction = ChatAgentAction` plus `extension ChatAgentAction: FetchableRecord { init(row:) }`, so one model is used;
+  - `ReactionToolCatalog.swift` keeps `ReactionDictionaryTools` and reads the titles from `ActionToolCatalog` (no copy);
+  - every Core caller compiles on the moved types: `AgentActionFeed`, `AgentActionQueries`, `WorkbenchQueries+Activity`, `AppState+Chat` and `InboxRowActionsView`.
+- Tests:
+  - `git mv` `Tests/Core/{SlackSendProposalTests,ConnectorCallProposalTests,AgentActionDestinationTests,AgentActionCardLabelTests}.swift` to `WatchtowerChat/Tests/ChatWireTests/`, assertions unchanged;
+  - `ReactionToolCatalogTests` stays in Core (it pins the facade);
+  - create `WatchtowerChat/Tests/ChatWireTests/ChatAgentActionTests.swift`.
+
+**Interfaces:**
+- Produces (`ChatWire`, public):
+  ```swift
+  public struct ChatAgentAction: Identifiable, Equatable, Sendable {
+      public let id: Int64, tool: String, external: Bool, argsJSON: String, argsSHA256: String
+      public let argsComplete: Bool        // false: args_display was clipped; editors and the Confluence diff are off
+      public let reason: String, surface: String, conversationID: Int64, contextType: String, contextID: String
+      public let turnID: String, status: String, trustAtCreate: String, resultJSON: String, error: String
+      public let createdAt: String, decidedAt: String, appliedAt: String, dismissedAt: String
+      public init(payload: ChatApprovalPayload)     // the phone, and a Mac card whose row is not loaded yet
+      // isPending, isTerminal, isExecuting, canRetry, isSessionApplied, args, result, argString, resultString,
+      // resultWebURL, destination, sourceMessageURL: moved with their bodies unchanged
+  }
+  ```
+  `ChatApprovalPayload` gains `external`, `error`, `result`, `turnID` and `argsComplete`, decoded with defaults, so a payload without them, from a daemon one version behind, still decodes (D22).
+
+- [ ] **Step 1: Failing Go tests** (`internal/chatengine`).
+  - `TestChatengine_FeedActionCarriesCardFields`: a row with `external=1`, `error='boom'`, `result_json` `{"url":"https://example.com/acme-1","label":"ACME-1","warning":"mirror failed"}` and a turn id → `External`, `Error`, `Result["url"]`, `Result["label"]`, `Result["warning"]` and `TurnID` are set.
+  - `TestChatengine_FeedActionResultKeepsOnlyCardKeys`: `result_json` with an extra `token` key and a 4 KB `label` → no `token`; `label` is at most 512 bytes.
+  - `TestChatengine_FeedActionArgsCompleteFalseWhenClipped`: args over `maxActionArgsBytes` → `ArgsComplete == false`; small args → `true`.
+  - `TestCHAT06_EveryPartKindHasFallback` and `TestChat05_FallbackActionsOnlyOpenCopyOrFixedTurn` (kept) pass on the new `parts.json`.
+- [ ] **Step 2: Failing Swift tests.**
+  - `ChatAgentActionTests.testFromPayloadMapsEveryField`: every payload field → its property; absent new fields → `external == false`, `error == ""`, `resultJSON == ""`, `argsComplete == false`.
+  - `ChatAgentActionTests.testClippedArgsYieldNoEditableProposal`: `argsComplete == false` and a Slack tool → `SlackSendProposal(action:)` is still read for display, but `editable == false`.
+  - `ChatPartPayloadsTests.testApprovalPayloadDecodesCardFields` (ChatUI, new file): the `parts.json` approval sample decodes every new field.
+  - `AgentActionChatMappingTests.testRowInitReadsEveryColumn` (Desktop Core, a GRDB row fixture): every column → `ChatAgentAction`.
+  - The moved tests pass unchanged.
+- [ ] **Step 3: Run them.** `go test ./internal/chatengine -run 'FeedAction|CHAT06|Chat05'`, `make chat-test FILTER='ChatAgentActionTests|ChatPartPayloadsTests'` and `make test-swift FILTER=AgentActionChatMappingTests`. Expected: FAIL.
+- [ ] **Step 4: Implement** the Go fields, the payload and the Swift move.
+- [ ] **Step 5: Run the tests and the guards.**
+  - `go test ./internal/chatengine ./internal/chatstore -run 'Chat|CHAT|LIVE01|Lease|Feed|Parts'`
+  - `go test ./internal/hub/... -run 'Chat|Contract|Fixture'`: the feed record still fits its cap with the new fields; `TestChatActionAnswer_*` is unchanged.
+  - `make lint-diff`
+  - `make chat-test`
+  - `make test-swift FILTER='AgentAction|SlackSend|ConnectorCall|ReactionToolCatalog|SaveAutomation|Approval01|NeedsApproval|InboxRefStateApprovals|PublicAPISurface'`
+  - `make kit-test FILTER=SeamBoundaryTests`
+  - `make mobile-test MOBILE_FILTER='ChatApprovalWiringTests|RelayChatClientTests|ChatWireKitConformancesTests'`
+  - `make lint-swift`
+- [ ] **Step 6: Inventory.**
+  - `docs/inventory/README.md`: the Agent actions row names `WatchtowerChat/Sources/ChatWire/Actions/` beside `WatchtowerCore/Services/Actions/`.
+  - `docs/inventory/agent-actions.md` changelog: the action model and the per-tool card logic moved to `ChatWire`. AGENT-01..07 are unchanged; `testApprovePinsTheShownArgsDigest` stays in `AgentActionFeedTests`.
+- [ ] **Step 7: Commit.** `feat(chat): one agent-action model in ChatWire; the approval part carries the card's fields (#1822 T14, ask #1409)`
+
+---
+
+### Task T15: The approval card in `ChatUI` — chat, Inbox, target chat, automation editor and the phone
+
+**Depends on:** T14. It may run beside T13 (see "Lanes and order").
+
+**Behaviours the Mac card has today that must survive** (`AgentActionCardView*.swift`, `ChatThreadView.agentActionCard`). The guard of each:
+
+| # | Behaviour | Pinned by |
+|---|---|---|
+| A1 | The title from the one tool-name catalog. The header icon: external vs checklist. The status label: "Awaiting your approval", "Approved", "Executing…", "Done", "Rejected", "Failed", and the session-call labels. | `AgentActionCardViewTests` (kept), `AgentActionCardLabelTests` (moved in T14) |
+| A2 | The context label (an automation run): a link when it can be opened, else plain text | `AgentActionCardViewTests` |
+| A3 | The per-tool body: the `save_automation` details (a Mac hook); a connector call with Edit Input / Revert (JSON editor); the Slack recipient line and text; the pending Slack editor with the workspace pick; the summary lines (target, Jira create and the four Jira writes, Linear, wave-two, dismiss tracks); else the raw args | `AgentActionCardViewTests`, `SaveAutomationCardModelTests`, `ConnectorCallProposalTests`, `SlackSendProposalTests` |
+| A4 | The Confluence edit: the diff of its changes, decoded once (a render never re-decodes, `argsDecodes`); applied → "Saved as version N"; the version-checked retry note | `AgentActionCardViewConfluenceTests`, `…ConfluencePreviewTests`, `…ConfluenceLinkTests` (kept) |
+| A5 | The proposal's reason (italic), the row's error unless the status label already says it, and the failed-external retry note | `AgentActionCardViewTests` |
+| A6 | The outcome: an http/https result link only; "Task #N created"; "Board X connected"; the orange warning | `AgentActionCardViewTests`, `AgentActionDestinationTests` |
+| A7 | In-app **Open →** (`onOpen`), and **Slack message ↗** for a reaction's source | `AgentActionDestinationTests`, `InboxReadingPaneTests` |
+| A8 | The gesture error (red, selectable). It is hidden once the row is terminal or when the row's own error says the same; the `tracks start` failure is kept. After a failed approve, Approve becomes Retry. | `AgentActionCardViewTests`, `testGestureErrorHiddenOnceRowSettles` (new) |
+| A9 | Reconnect Slack, on a token without the send grant: progress, then the result line | `AgentActionCardViewTests` |
+| A10 | The decision row. Executing → spinner (none for a session call whose session is gone). Pending → Approve, or "Approve & send" (off until the text and the pick are valid), or the connector's plain or edited Approve, or the unreadable-connector note; plus Reject. Settled → Retry (`offersRetry`), or Dismiss with its note. In flight → spinner and the row off. | `AgentActionCardViewTests`, `AgentActionFeedTests` |
+| A11 | The Inbox target button: stuck → "Didn't finish" + Try again; creating → progress | `AgentActionCardStuckTargetTests` (kept), shot `approval-card-target-stuck` |
+| A12 | A session call whose chat session ended: "Chat session ended", no Approve | `ConnectorCallProposalTests`, `AgentActionCardViewTests` |
+| A13 | Approve pins the args shown (`--args-sha256`, AGENT-07). Edits go as `--patch`. An edit that cannot be encoded is reported, never dropped. | `AgentActionFeedTests.testApprovePinsTheShownArgsDigest` (kept), `testApproveWithChangedArgsShowsRefusalOnRow` (kept) |
+| A14 | In the chat: a card the running turn waits on is outlined; **Approve all** under a reply with two or more bulk-approvable cards; cards of an interrupted turn in the feed footer; the reviewed actions under a quota-stopped reply | `ChatUIMacRowTests` (new cases below), `testApproveAllPendingForTurn` (kept) |
+| A15 | The look: an accent 0.06 background, radius 10, padding 10 | shots below |
+| P1–P5 | The phone: buttons only with the `permissions` grant, else the "approve elsewhere" line with the host's name; the answer-in-flight line; "The action changed — look again"; off while offline; the settled outcome; orange only while waiting | `ChatApprovalWiringTests` (kept), shots `C2c`, `iphone-chat-approval-slack` |
+
+**Placement:**
+- In `ChatUI`, shared:
+  - the card, its header, body, outcome, links, gesture-error rule and decision row;
+  - the Slack recipient line, the Slack editor and the workspace pick;
+  - the Confluence diff;
+  - the awaited outline;
+  - **Approve all**.
+- In `ChatUI/Platform/macOS`: the connector input's `PlainJSONEditor` (NSTextView). On iOS the connector input is read-only text.
+- Injected by the Mac (`ChatApprovalServices`): Reconnect Slack, in-app Open, the `save_automation` body, the Inbox target-button row, Dismiss, Retry/apply, the reviewed-actions accessory, and the decision itself (CLI `actions …`).
+- The phone injects only the decision (hub `chat_action_answer`) and its state line.
+- **A capability that is nil hides its control:**
+  - `approveEdited` is nil on the phone, because the relay answer has no patch. So the Slack editor, the workspace pick and Edit Input do not show on the phone (see open question 1).
+  - `approveAll`, `dismiss` and `retry` are nil on the phone (v1 limit, T16).
+
+**Writers:** as in T14. The card calls only the injected `decide`/`retry`/`dismiss`/`approveAll` closures. On the Mac they are `AgentActionFeed` (the CLI with owner-confirm); on the phone, `RelayChatClient.decide` (`chat_action_answer`). There is no new writer, and no approval verb on `chat.sock` (D12).
+
+**Failure paths and their tests:**
+
+| Failure | Behaviour | Test |
+|---|---|---|
+| A lost answer on the Mac (the CLI died, the owner-confirm window was denied or timed out) | `AgentActionFeed.rowErrors` → the gesture error and Retry on the card; the row observation shows the real status, and the error hides once the row settles | `testGestureErrorHiddenOnceRowSettles` (new, Desktop), `AgentActionFeedTests` (kept) |
+| A lost answer on the phone (the relay dropped after the answer went) | "answer on its way" until the feed shows the row's status; a repeated approve is answered "Already approved", never run twice | `ChatApprovalWiringTests` (kept), `TestChatActionAnswer_RepeatedApproveAnswersAlreadyApproved` (add in `internal/hub/actions/handlers` if absent) |
+| The host goes away while a card is shown: the Mac's `chat.sock` drops | The Mac card stays live: Mac approvals go through the CLI, not `chat.sock` (D12) | `testMacApprovalLiveWhileChatUnreachable` (new, `ChatUIMacRowTests`) |
+| The host goes away on the phone (offline) | Buttons off, the card kept, the line shown | `ChatApprovalWiringTests` (kept), `testApprovalOfflineDisablesButtonsKeepsCard` (new, ChatUI) |
+| The args changed after they were shown | The approve is refused by the digest: the Mac shows the refusal on the row, the phone "The action changed — look again" | `testApproveWithChangedArgsShowsRefusalOnRow` (kept), `ChatApprovalWiringTests` (kept) |
+| The row settles elsewhere while the Slack text is being edited | The editor goes away with the pending state, and the edits are dropped; no approve with stale args | `testSlackEditDroppedWhenRowSettlesElsewhere` (new, Desktop) |
+| An approval part whose Mac row is not loaded yet (or is gone) | The card is drawn from the payload (`ChatAgentAction(payload:)`) with the decision row from the services; the card never disappears | `testApprovalPartWithoutMacRowDrawsFromPayload` (new, `ChatUIMacRowTests`) |
+| Clipped args on the phone (`argsComplete == false`) | No editor and no Confluence diff; the summary lines or raw args are shown; Approve still pins `args_sha256` | `testClippedArgsHideEditorsAndDiff` (new, ChatUI) |
+| Reconnect Slack fails | "Reconnect failed: …" on the card | `AgentActionCardViewTests` (kept) |
+
+**Files:**
+- Create in `WatchtowerChat/Sources/ChatUI/Parts/Approval/`:
+  - `AgentActionCard.swift`: header, body, reason, outcome, links, errors, retry note;
+  - `AgentActionCard+Decision.swift`;
+  - `AgentActionCard+Slack.swift`: `SlackRecipientLine`, `SlackSendEditor`;
+  - `AgentActionCard+Confluence.swift`: `ConfluenceEditChangesView`;
+  - `AgentActionCard+Connector.swift`: `ConnectorCallDetails`;
+  - `ApprovalServices.swift`;
+  - `ApproveAllRow.swift`.
+- Create: `ChatUI/Platform/macOS/ConnectorInputEditor.swift` and `ChatUI/Platform/iOS/ConnectorInputEditor.swift` (read-only).
+- Modify:
+  - `Parts/ApprovalPartView.swift`: it draws `AgentActionCard` from `services.resolve(payload) ?? ChatAgentAction(payload:)`;
+  - delete `Parts/ApprovalPartView+{Slack,Confluence,Connector,Decision}.swift`, absorbed into the card. Their ChatUI tests (`ChatUIPhoneParityTests` and others) move to `AgentActionCardModelTests` with their assertions kept;
+  - `Registry/ChatPartContext.swift`: `ChatPartActions.decide`, `approvalCard` and `approvalState` are replaced by `approvals: ChatApprovalServices`;
+  - `Feed/ChatFeedView.swift` and `Feed/ChatFeedLayout.swift`: the awaited outline from `turnID == runningTurnID`, and **Approve all** under a reply;
+  - `Style/ChatUIStyle.swift`: `func approvalCard(_ content: AnyView, outlined: Bool) -> AnyView`; the default is the phone's card look.
+- Modify (Mac):
+  - `Views/Chat/DesignKitChatStyle.swift`: `approvalCard` with A15's look;
+  - `Views/Chat/ChatThreadView.swift`: the services from `chatVM.actionFeed`; `messageAccessory` keeps only the reviewed actions;
+  - `Views/Inbox/ActionStripView.swift`, `Views/Targets/TargetChatView.swift` (both cards) and `Views/Automations/AutomationEditorPanel.swift`: each draws `MacAgentActionCard`.
+- Create (Mac): `Views/Actions/MacAgentActionCard.swift`. A thin adapter with no layout of its own: `AgentAction` + `AgentActionFeed` + `AppState` → `ChatUI.AgentActionCard` with `ChatApprovalServices`. It keeps today's `AgentActionCardView` parameters, so the call sites change only their type name.
+- Delete (Mac): `Views/Chat/AgentActionCardView{,+Confluence,+Connector,+Decision,+Slack}.swift`. `SaveAutomationCardDetails` moves to `Views/Automations/SaveAutomationCardDetails.swift` (the injected body).
+- Modify (phone):
+  - `Features/Chats/ChatConversationView.swift`: `approvals: ChatApprovalServices` from `RelayChatClient` and `ChatApprovalCardModel.state`;
+  - `PhoneChatStyle.swift`: `approvalCard` with today's phone card.
+- Tests:
+  - the Desktop `AgentActionCardView*Tests`, `AgentActionCardStuckTargetTests`, `InboxReadingPaneTests` and `InboxMessagePaneTests` switch their subject to `MacAgentActionCard`. Test names and assertions are kept.
+  - new cases in `ChatUIMacRowTests`;
+  - new `WatchtowerChat/Tests/ChatUITests/AgentActionCardModelTests.swift`.
+- Shots: `Tests/DesignShots/DesignShotFixtures+ApprovalCards.swift` (new) and `ScreenshotTourTests.swift`.
+
+**Interfaces:**
+- Consumes: T14's `ChatAgentAction` and the moved proposals; T7's `ChatPartContext` and `ChatHostText`.
+- Produces (`ChatUI`, public):
+  ```swift
+  public enum ChatApprovalAnswer: Equatable, Sendable { case approve(patch: String?), reject }
+  public struct ChatApprovalServices {
+      public var resolve: ((ChatApprovalPayload) -> ChatAgentAction?)?     // Mac: the feed's row; nil: from the payload
+      public var decide: (ChatAgentAction, ChatApprovalAnswer) -> Void     // gets the snapshot it showed (A13)
+      public var state: ((ChatAgentAction) -> ChatApprovalState?)?         // in flight, gesture error, grant, line
+      public var approveEdited: Bool = false                               // the Slack editor and Edit Input
+      public var retry: ((ChatAgentAction) -> Void)?
+      public var dismiss: ((ChatAgentAction) -> Void)?
+      public var approveAll: ((_ turnID: String) -> Void)?
+      public var reconnectSlack: ((Int64) async -> String?)?
+      public var openDestination: ((AgentActionDestination) -> Void)?
+      public var sessionHoldsCall: ((ChatAgentAction) -> Bool)?
+      public var details: ((ChatAgentAction) -> AnyView?)?                 // Mac: save_automation
+      public var decisionOverride: ((ChatAgentAction) -> AnyView?)?        // Mac: the Inbox target-button row
+  }
+  public struct AgentActionCard: View {
+      public init(action: ChatAgentAction, services: ChatApprovalServices, contextLabel: String? = nil,
+                  onOpenContext: (() -> Void)? = nil, outlined: Bool = false, offersRetry: Bool = true)
+  }
+  // ChatApprovalState gains: public let inFlight: Bool; public let gestureError: String?; public let approveFailed: Bool
+  ```
+
+- [ ] **Step 1: Base shots** (first commit, no view change). Add `DesignShotFixtures+ApprovalCards.swift`, which renders today's `AgentActionCardView` under these names:
+  - `approval-plain-pending`, `approval-jira-pending`, `approval-linear-pending`;
+  - `approval-slack-pending-edit`, `approval-slack-workspace-pick`, `approval-slack-reconnect`;
+  - `approval-confluence-diff`, `approval-confluence-applied`;
+  - `approval-connector-pending`, `approval-connector-editing`, `approval-connector-session-ended`, `approval-connector-dismiss`;
+  - `approval-executing`, `approval-in-flight`, `approval-applied-link-warning`, `approval-failed-retry-note`, `approval-gesture-error`, `approval-rejected`;
+  - `approval-context-label`, `approval-save-automation`;
+  - `approval-chat-awaited-outline`, `approval-chat-approve-all`, `approval-chat-interrupted-turn`.
+
+  The existing `approval-card-target-stuck`, `inbox-chat-decision-card`, `inbox-b-approvals-*`, `needs-approval`, `automation-editor-review` and phone `C2c` and `iphone-chat-approval-slack` are in the base set. Render `make desktop-shots DESKTOP_SHOTS=build/t15-base` and `make mobile-shots SHOTS_ONLY=chat SHOTS_DIR=build/t15-base-phone`. Commit: `test(shots): approval card base shots before the ChatUI move (#1822 T15)`.
+- [ ] **Step 2: Failing tests.**
+  - `AgentActionCardModelTests` (ChatUI, pure: the card's decisions are computed in static functions, the `pendingApproval`/`settledOffer`/`targetRow` precedent):
+    - `testApprovalOfflineDisablesButtonsKeepsCard`: state `canAnswer == false` → the decision is `.disabled`, the body is unchanged.
+    - `testClippedArgsHideEditorsAndDiff`: `argsComplete == false` → `editsSlack == false`, `confluenceEdit == nil`, `connectorEditable == false`.
+    - `testApproveCarriesTheShownSnapshot`: `decide` receives the exact `ChatAgentAction` the card was built with (its `argsJSON` and `argsSHA256`).
+    - `testNilCapabilityHidesItsControl`: `approveEdited == false`, `retry == nil`, `dismiss == nil` and `reconnectSlack == nil` → no editor, no Retry, no Dismiss and no Reconnect, on a row that would offer each.
+    - `testAwaitedOutlineFollowsRunningTurn`: pending and `turnID == runningTurnID` → outlined; otherwise not.
+  - Desktop (`ChatUIMacRowTests`, ViewInspector):
+    - `testMacApprovalLiveWhileChatUnreachable`: reachability `.unavailable` → Approve on a pending card is enabled and calls `AgentActionFeed.approve`.
+    - `testApprovalPartWithoutMacRowDrawsFromPayload`: no feed row for the payload's id → the card shows the payload's title and status.
+    - `testApproveAllShowsForTwoBulkApprovable`: one card → no button; two → **Approve all** calls `approveAllPending(forTurn:)`.
+  - Desktop (`AgentActionCardViewTests`, subject `MacAgentActionCard`):
+    - `testGestureErrorHiddenOnceRowSettles`: a gesture error, then the row is `applied` → no error line.
+    - `testSlackEditDroppedWhenRowSettlesElsewhere`: the text is edited, then the row is `rejected` → no editor; `onApproveEdited` was never called.
+  - The existing card tests switch their subject (Step 4), with assertions unchanged.
+- [ ] **Step 3: Run them.** `make chat-test FILTER=AgentActionCardModelTests` and `make test-swift FILTER='ChatUIMacRowTests|AgentActionCardViewTests'`. Expected: FAIL.
+- [ ] **Step 4: Implement.**
+  - Port the card's layout from `AgentActionCardView*.swift` into `Parts/Approval/`, unchanged except for the services.
+  - Draw its frame through `style.approvalCard`.
+  - Write `MacAgentActionCard` and switch the four Mac surfaces and the chat thread.
+  - Wire the phone's services.
+  - Delete the Desktop card files and the four `ApprovalPartView+*` files.
+- [ ] **Step 5: HEAD shots and comparison.**
+  - Run `make desktop-shots DESKTOP_SHOTS=build/t15-head` and `make mobile-shots SHOTS_ONLY=chat SHOTS_DIR=build/t15-head-phone`.
+  - Expected:
+    - every Mac name is the same, in the chat and in the Inbox, the target chat and the automation editor;
+    - `C2c` and `iphone-chat-approval-slack` keep their frame and colours;
+    - the content the phone gains (summary lines, outcome, links) shows in the new frames `iphone-chat-approval-jira`, `iphone-chat-approval-confluence`, `iphone-chat-approval-connector`, `iphone-chat-approval-settled` and `iphone-chat-approval-no-permission`. They go to T16's review ask.
+  - Fix any Mac difference through its hook before hand-back.
+- [ ] **Step 6: Run the tests and the guards.**
+  - `make chat-test`
+  - `make chattext-test`
+  - `make test-swift FILTER='AgentAction|ChatUIMacRow|Inbox|NeedsApproval|Approval01|InboxRefStateApprovals|TargetChat|AutomationEditor|SaveAutomation|SlackSend|ConnectorCall|ArtifactChat05|LIVE01|PublicAPISurface'`
+  - `make kit-test FILTER=SeamBoundaryTests`
+  - `make mobile-test MOBILE_FILTER='TowerTextTests|TowerWordGuardTests|ChatApprovalWiringTests|ChatSendTests|RelayChatClientTests|ChatsGateModelTests'`
+  - `go test ./internal/hub/actions/... -run 'ChatActionAnswer'` and `go test ./cmd/... -run 'Actions|Agent07'` (AGENT-07 unchanged)
+  - `make lint-swift`
+  - `make lint-diff`
+  - `bash scripts/tests/test-kit-lint-guard.sh`
+- [ ] **Step 7: Inventory.**
+  - `docs/inventory/README.md`: the Agent actions row names `WatchtowerChat/Sources/ChatUI/Parts/Approval/` instead of `Views/Chat/AgentActionCardView.swift`.
+  - `docs/inventory/agent-actions.md`, `reaction-commands.md` and `inbox-folders.md`: their `AgentActionCardView` mentions name `MacAgentActionCard` / `ChatUI.AgentActionCard`. No contract text changes.
+  - `docs/inventory/chat.md` changelog:
+    - the approval card moved to `ChatUI` for both devices, no guard relaxed or renamed;
+    - the CHAT-05 scan covers `Parts/Approval/`;
+    - the phone gains read-only per-connector bodies; editing stays Mac-only (relay has no patch).
+- [ ] **Step 8: Commit.** `refactor(chat): one approval card in ChatUI for the chat, the Inbox and the iPhone (#1822 T15, ask #1409)`
+
+---
+
+### Task T16: Docs, inventory close-out, guide, and the owner's review of the new states
+
+**Depends on:** T13, T14, T15.
+
+**Files:**
+- Modify:
+  - `docs/features/unified-chat.md`:
+    - Architecture: the composer and the approval card live in `ChatUI`, and the Mac injects dictation, routing, Reconnect Slack, Open, the `save_automation` body and the Inbox target row;
+    - the I3 item is gone from the open items;
+    - v1 limits: the phone has no Slack edit, no workspace pick, no connector-input edit, no Approve all, no Dismiss and no Retry (no relay verb); clipped args show no Confluence diff on the phone; the Mac's routing pill stays a Mac accessory.
+  - `docs/features/README.md`: the unified-chat summary.
+  - `docs/features/agent-actions.md`, `slack-send.md`, `voice-dictation.md` and `chat-redesign.md`: the file paths of the card, the composer and the dictation hook. Grep each for `AgentActionCardView`, `ChatComposerField` and `ChatComposerBar`.
+  - `docs/guide/features/iphone-chat.md`: the phone's approval cards show the connector's details; quotes take a comment; mentions show as chips. Keep the 8 KB cap.
+  - `docs/guide/features/ai-chat.md`: only if a Mac-visible change was accepted in Step 1.
+  - `docs/inventory/chat.md`: one closing changelog line for the addendum, with the guard moves of T13 and T15.
+  - The plan's Spec coverage rows, if a task moved a promise.
+
+- [ ] **Step 1: Owner review ask (controller).**
+  - File one **review** ask with the PNGs of every phone frame T13 and T15 added (`iphone-chat-composer-*`, `iphone-chat-approval-*`).
+  - Add any Mac pair a task reported as different, with the base and HEAD side by side: `composer-main-editing` (the editing and over-limit lines that `ChatUI`'s composer shows), and anything else listed.
+  - The umbrella PR stays a draft until the owner answers.
+  - An element the owner rejects is hidden through its `PhoneChatStyle` or `DesignKitChatStyle` hook in a follow-up commit on this task's branch, and its shot is re-rendered.
+- [ ] **Step 2: Write the docs** above.
+- [ ] **Step 3: Verify.**
+  - `go test ./docs/guide` (the 8 KB cap)
+  - `bash scripts/leak-check.sh`, if run locally
+  - `grep -rn 'AgentActionCardView\|ChatComposerField(\|ChatComposerBar(' WatchtowerDesktop/Sources docs/inventory`: no hits except the adapter's history notes.
+  - Controller phase gate for phase E: `make test`, `make test-swift`, `make lint-all`, `go test ./cmd/...` and `make mobile-test`.
+- [ ] **Step 4: Commit.** `docs: unified chat addendum — composer and approval cards in ChatUI (#1822 T16, ask #1409)`
+
+---
+
 ## Spec coverage
 
 | Spec | Tasks |
 |---|---|
 | §2 G1/D2/D3 | T1, T4, T8 |
 | §2 G2/D4 | T4, T6 |
-| §2 G3/D8–D10 | T6, T7 |
+| §2 G3/D8–D10 | T6, T7, T13, T15 |
 | §2 G4 | T3, T7 |
 | §2 G5/CHAT-06 | T3, T7 |
 | §2 G6 | T1 |
-| §2 non-goals (embedded rendering) | T12 |
+| §2 non-goals (embedded rendering) | T12, T13 (embedded, Workchat, spec review and target brief composers) |
+| §2 anti-goals (no second path; Mac polish kept) | T13, T15 (base/HEAD shots of every composer and card state) |
 | D5 | T1, T5, T8 |
 | D6 | T1 |
 | D7/D22 | T6 |
 | D11/D13 | T8, T10a, T10b |
-| D12 | T4 (no approval op), T5 (relay approval kept) |
+| D12 | T4 (no approval op), T5 (relay approval kept), T14, T15 (one card; the Mac still decides through `actions approve\|reject`, the phone through `chat_action_answer`) |
 | D14 | T3, T12 |
 | D15/D21 | T3, T5 |
 | D17 | T4 |
-| D18 | T7 |
+| D18 | T7, T13, T15 |
 | D19 | T7, T8 |
 | D20 | T4 |
 | D23 | T10a |
@@ -1111,11 +1671,13 @@
 | §5.2 | T1, T2, T10a (`chat_shutdown`) |
 | §5.3 | T3, T6 |
 | §5.4 | T1, T5, T6 |
-| §6.1 | T6, T7 |
+| §6.1 | T6, T7, T13 (composer, `ChatComposerField` in `Platform/macOS`), T15 (approval card with the per-connector bodies) |
 | §6.2 | T8 |
-| §6.3/§6.4 | T5, T9 |
+| §6.3/§6.4 | T5, T9, T13 (the shared composer and pickers on the phone), T14, T15 (per-connector approval cards on the phone) |
 | §7 | T4, T10a, T10b |
-| §8 rows | the named tests in T1, T2, T3, T4, T7, T8, T10a, T10b, T12 |
-| §9 | T1, T3, T5, T7, T8, T10a, T11 |
-| §10 | T0, T8, T9, T12 |
-| §12 | T11 |
+| §8 rows | the named tests in T1, T2, T3, T4, T7, T8, T10a, T10b, T12, T13, T15 |
+| §9 | T1, T3, T5, T7, T8, T10a, T11, T14 (writers of `agent_actions` unchanged), T16 |
+| §10 | T0, T8, T9, T12, T13, T15, T16 (review ask) |
+| §12 | T11, T16 |
+| Final review I3 (ask #1409: composer and approval cards into `ChatUI` before main) | T13, T14, T15, T16 |
+| Final review M1 (a new `client_key` on every Send press) | T13 |
