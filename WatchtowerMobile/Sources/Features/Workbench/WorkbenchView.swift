@@ -113,6 +113,8 @@ struct WorkbenchView: View {
 
     private func content(_ menu: WorkbenchMenuModel, now: Date) -> some View {
         VStack(spacing: Spacing.regular) {
+            // How old the data is when the tower's updates stopped (#1873); nothing while fresh.
+            ReplicaFreshnessLine(now: now, inset: Spacing.large)
             HStack(spacing: Spacing.regular) {
                 if let branch = menu.branch {
                     Pill(text: branch, style: .neutral, monospaced: true)

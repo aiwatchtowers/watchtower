@@ -262,7 +262,7 @@ Record name `<kind>-<id>` (`heartbeat` alone has no id). Every published record 
 
 | Kind | Id | Window and caps | Payload (Kit mirror; fixture) | Urgent | Go hub |
 |---|---|---|---|---|---|
-| `heartbeat` | — | one record; restamped every 15 min and at once when accounts or `sharing` change; the phone calls a hub offline after 35 min | `updated_at, app_version, hub_id, mac_name ≤ 60, flavor (default\|corp), last_publish_at?, last_relay_at?, relay_backlog, accounts[≤ 20]{kind, label ≤ 80, status}, enabled_at, owner_user, sharing (available\|none\|unavailable), capabilities?, hub_kind? (mac\|server; absent = mac, #1783)` | — | yes |
+| `heartbeat` | — | one record; restamped every 15 min and at once when accounts, `sharing` or `stuck_since` change; the phone calls a hub offline after 35 min | `updated_at, app_version, hub_id, mac_name ≤ 60, flavor (default\|corp), last_publish_at?, last_relay_at?, relay_backlog, accounts[≤ 20]{kind, label ≤ 80, status}, enabled_at, owner_user, sharing (available\|none\|unavailable), capabilities?, hub_kind? (mac\|server; absent = mac, #1783), stuck_since? (Unix s: the oldest kind not going through whole first failed; absent = all go, #1873)` | — | yes |
 | `device_grant` | device_id | §5.4; keybox class | `DeviceGrant` + keys; `hub_contract_cases.json` | yes | yes |
 | `workbench` | workbench id | ≤ 100 by latest session activity | `Workbench`; `workbench/workbench.json` (incl. `automations ≤ 50`) | — | yes |
 | `workbench_target` | target id | per workbench ≤ 2000 open + ≤ 500 archived within 90 days; `session_ids ≤ 20` | `WorkbenchTarget`; `workbench_target.json` | — | yes |

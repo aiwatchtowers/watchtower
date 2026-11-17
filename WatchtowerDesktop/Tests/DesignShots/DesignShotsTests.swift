@@ -285,3 +285,10 @@ private actor ShotGate {
         waiters = []
     }
 }
+
+extension DesignShotsTests {
+    /// The auto-cleanup states only (board #1716), for iterating on them.
+    func testAutoCleanupShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("auto-cleanup-") })
+    }
+}

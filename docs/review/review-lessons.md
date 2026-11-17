@@ -2921,6 +2921,14 @@ Entry format:
 - rule-gap (candidate, dim 7, second sighting after test/no-wallclock-go): *a test driving a real subprocess keeps a hang guard (≥ 1 min) that fails the test or fires the production kill, because `go test -timeout` skips `t.Cleanup`.* Worth promoting into §7.
 - outcome: TBD
 
+## 2026-11-11 — PR #778 umbrella gate/1716 (77ba36e80: auto cleanup on session delete — `delete_requested_at` rows hidden by `NotDeletingSQL`, command ledger rows from PostToolUse Bash, scratchpad adoption, background `workbench cleanup --apply` per deleted row, Clean / Not fully cleaned outcome; 111 files +7606/−1166; panel: prosecutor (7) + codex (1, = F2) + style-guardian substitute; pr-review-toolkit specialists unavailable; judge verified by reading, no runs) — verdict: changes-needed
+
+- contested: F1 (`catchSessionInIt` counts the planned session's own `agent_cwd` row). Raised major, held **blocker**: the background apply passes no caller session and removes only the deleted id from `--live-session`, but `AllSessionActivity` still returns that row with a recent `agent_state_at` and no `finished_at` (only `finish_session` sets it). A placed session deleted within 24 h of its last hook keeps its own worktree as `session_in_it` → **Not fully cleaned**. That is the feature's main path. The same shape existed in main's manual Delete and Clean Up, but there it was a visible plan the owner could read; here it becomes a sticky row mark. **When a once-manual flow is automated, re-check every catch that keys off "some session is in it" against the session being cleaned itself; removing the id from `live` is not enough when a second signal (stamp recency) reads the same row.** [6]
+- contested: F2 / codex P1 (a failed `git checkout -b X` in a chain still records X as named). Spec §2a accepts parsing chains on a successful Bash call and relies on the birth rule; the residual (X created by someone else after this session started, then clean and pushed/merged) is narrow and recoverable. Held minor, owner decision under Needs human. [2/6]
+- false-positive: none dismissed outright. F6 (automation step readers filter deleting rows against spec §4) is a spec-drift doc fix: the owner approved it in the plan review. [5]
+- miss: codex found only the ledger trust point; only the prosecutor traced the plan's activity map back to the row being deleted.
+- weak-dimension: 7. No test seeds the planned session's own activity (`TestProj18_SessionInTheWorktreeKeepsIt` has "another" cases and the caller only), and new Swift tests add 50 ms sleeps for negative assertions on the same day as the no-wall-clock sweep.
+- rule-gap (candidate, dim 7): *a fail-closed catch table that distinguishes "another session" from "the caller" gets a third case for "the session being planned, not the caller", seeded with live-looking stamps.*
 ## 2026-11-11 — feature/1517-tuning-chat umbrella → main (PR #726, tuning chat, 240 files; panel: prosecutor (3) + style-guardian substitute (8); codex timed out, pr-review-toolkit specialists unavailable; judge verified by reading, no runs) — verdict: changes-needed
 
 - contested: whether an unbounded, argument-less `list_coach_proposals` is a real defect or a future concern — settled major: it is `CompanyData`, so `CallRead`'s 256 KB response cap refuses it with "narrow the request" while the tool has no argument to narrow, and skill before/after texts reach 20 000 runes each, so two or three skill proposals cross the cap; the surface contract tells the model to call it before every proposal [6]
@@ -3124,6 +3132,17 @@ Entry format:
 - rule-gap (candidate, dim 7): *a name-keyed guard allowlist scanned across packages qualifies new entries by package/file; a bare generic name is the tell.*
 - outcome: TBD
 
+## 2026-11-16 — feature/1716-auto-cleanup (PR #778, 94b194ccf: auto cleanup on session delete — background `workbench cleanup --apply` per deleted row behind a per-workbench slot, `SessionAutoCleanupOutcome`, Not fully cleaned marks, subagent/scratchpad/HEAD-log ownership, migrations 00192/00193; 120 files +8335/−1164; panel: prosecutor (9) + codex (1, output truncated); pr-review-toolkit specialists unavailable; judge verified by reading, no runs) — verdict: changes-needed
+
+- contested: F1, the placed natural-exit cleanup marking its row busy before `applyCleanup` now waits on the slot behind background cleanups (up to 10 min each). The comment names the slot wait as deliberate, but it moved a wait that used to happen before the busy mark to after it, so Delete and quick delete silently no-op on that row for the whole queue. Held major; plain fix (mark busy once the slot is held). [8]
+- contested: F3, deleted rows counting as "a session in it" for each other. Real and cheap to fix, but the fix widens spec §3's own-row exemption to every deleted row, so it went to the owner, not a plain fix. [6]
+- false-positive: F5 (the extra clear-delete write on every Resume) is documented and deliberate: it covers a deleting row this launch did not mark, and the write is an idempotent UPDATE. F9 (`narrowWidth = 230`) is a named layout breakpoint, not a raw spacing value that the Design kit rule covers. [4/Design kit]
+- miss: codex alone caught `group()` returning `.removed` on `done` before reading `error`. Go's `dropBranchConfig` sets Done=true together with an Error, and spec §3's table says "an item with error = could not". The prosecutor checked the reason codes Go↔fixture↔Swift (30) but not the done/error combinations the Go producer emits. [6]
+- weak-dimension: 6. A pure outcome table was tested on hand-built items in the shapes the author expected, not on every (done, error, action, reason) combination the Go applier can produce.
+- rule-gap (candidate, dim 6/7): *a Swift classifier over a Go result item checks every field the spec's table names (error before done), and its test covers each state combination the Go writer can emit, including done-with-error.*
+- rule-gap (candidate, dim 8): *when a wait moves from before a busy mark to after it (here: the slot wait inside the apply), list what the busy mark refuses and how long it can now last.*
+- outcome: TBD
+
 ## 2026-11-16 — fix/chat-reads-own-history (7f45b32ac: `get_chat_history`, `list_chat_artifacts`, `get_chat_artifact` on main/target/automation_editor over `Binding.ConversationID`, the replay's omitted line names them; 8 files +440; panel: prosecutor (12) + codex (1) + all three pr-review-toolkit specialists; judge verified by reading and ran the new `internal/tools` tests green; a concurrent fix lane's uncommitted edit was in the tree at judging) — verdict: changes-needed
 
 - contested: F1, `meta_json` missing from the artifact tools. Partly mitigated, because the stored assistant text keeps the original `:::artifact` fence with its attributes, so `get_chat_history` can recover them. Held major anyway: the tool the description points to for revisions returns the latest version without to/cc/subject/channel/start/end, so a same-key re-emit drops them. [6]
@@ -3132,4 +3151,22 @@ Entry format:
 - miss: the AGENT-06 guard ran its new calls against an unseeded conversation 7, so it exercised only the empty path. Once a fix made a missing conversation an error, the guard went red (`chat conversation 7 no longer exists`). A guard call list that names an id should seed that id. [7]
 - weak-dimension: 7. The registration and surface wiring in `buildToolRegistry` had no cmd-level pin even though `TestAutomationEditorSurface_MountsOnlyDraftSaveAndReads` already lists editor tools by name.
 - rule-gap (candidate, dim 9): *a read tool with rune or char caps must keep its worst-case JSON encoding (6-byte escapes) under `MaxReadResultBytes`, or cap on encoded bytes.*
+- outcome: TBD
+
+## 2026-11-16 — fix/1872-hub-publish-failures (48f8e6da7: relay UNSPECIFIED "internal error" → `relay.ErrRelayInternal` (ErrUnavailable, not cycle-wide, pusher settles in_flight), non-200 without a protocol error is no answer, `relay.CodeClass` log fallback in four errClass tables; 16 files +357; panel: prosecutor (9) + codex (0); pr-review-toolkit specialists unavailable; judge verified by reading the HEAD diff and ran `go test ./internal/hub/...` green) — verdict: approve
+
+- contested: F7, `actions` gaining a production import of the concrete relay package for a log class. Dismissed: hub, slices and alerts already import it in production on main, and the use is log-only, so no seam is lost for mocking. F6 (four copied fallbacks and four copied tests) held as a nit: each package owns a private errClass by house pattern. [1/9]
+- false-positive: none dismissed outright; F3–F5, F8 and F9 were real and small, and all landed. [—]
+- miss: F1 and F2 came from the prosecutor alone. Mapping a new error to an existing sentinel (ErrUnavailable) silently inherits every policy that keys off the sentinel (`cycleWide`, the pusher's retry `classify`). Codex returned nothing. [8]
+- weak-dimension: 8. Widening what maps onto a shared sentinel needs a grep of every `errors.Is(err, <sentinel>)` consumer, not just the classifier the ticket names.
+- rule-gap (candidate, dim 8): *when a new error is wrapped as an existing transport sentinel, list every `errors.Is` consumer of that sentinel and state per consumer whether the inherited policy (cycle stop, retry, resend) is right for it. A non-idempotent op (push send) is the tell.*
+- outcome: TBD
+
+## 2026-11-16 — fix/1873-hub-publish-visibility (fce141b23: heartbeat `stuck_since` from `Publisher.StuckSince`, `logreason` content-free reasons and a line limiter on three hub failure lines, `hub status` relay note, phone `ReplicaFreshness` line on Now/Workbench; 30 files +1259/−22; panel: prosecutor (8) + codex (1, fixed in-branch by fce141b23); pr-review-toolkit specialists unavailable; judge verified by reading and ran the new slices/logreason/wire/cmd hub-status tests green, no mechanical revert) — verdict: approve
+
+- contested: F1, the publish-cycle limiter keyed on the whole line, kind list included. Real: per-kind backoff retries a different subset each cycle, so an outage logs one line per distinct subset. But go-hub.md documents "a different line logs at once", and the old code logged every cycle with no limit. Held minor, not major; the fix is to key on the reason and keep the kind list out of the key. [6]
+- false-positive: none dismissed outright. F3 (package-level limiters) went down to a nit: no test asserts those lines, and the hub runs one runtime per process. [7]
+- miss: codex alone caught the refused individual delete clearing `stuck_since`. The prosecutor read `noteKindOutcome`'s inputs (Failed, Skipped) but not every path in `deleteGone` that leaves a record on the phone. [6]
+- weak-dimension: 7. The new stuck predicate has three inputs (Failed, Skipped, errEpochMoved). Tests cover a refused save, a skipped record and a refused delete, but not a failed source or the epoch exclusion.
+- rule-gap (candidate, dim 9): *a rate limiter keyed on a formatted log line keeps per-cycle variable parts (counts, kind lists, ids) out of the key, or the limit silently stops holding.*
 - outcome: TBD

@@ -2756,6 +2756,7 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     agent_watch_issue TEXT CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), -- why the session host's codex rollout watch cannot read a working codex row's rollout (00175, Go only); NULL = watched; the next hook event clears it
     agent_watch_issue_at TEXT, -- when that issue was written, agent_state_at format; NULL with agent_watch_issue
     start_notice      TEXT, -- Go's start (`workbench session start`): the owner's line about the place (worktree warnings, "Started in the folder: …", the setup command that did not run, a failed move); NULL/'' = nothing to say (00179)
+    delete_requested_at TEXT, -- the owner confirmed the delete and its background cleanup has not finished (Desktop only, 00192); NULL = not deleting
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 );
@@ -2972,6 +2973,14 @@ CREATE TABLE IF NOT EXISTS terminal_session_agent_sessions (
     agent_session_id    TEXT NOT NULL,
     first_seen_at       TEXT NOT NULL, -- UTC ISO-8601 seconds
     PRIMARY KEY (terminal_session_id, agent_session_id)
+);
+
+-- Every agent session id a deleted terminal session had (00193), written by a
+-- BEFORE DELETE trigger on terminal_sessions; no foreign key, it outlives the
+-- row. A tombstoned uuid counts as shared for the cleanup's subagent and scratchpad rules.
+CREATE TABLE IF NOT EXISTS agent_session_tombstones (
+    agent_session_id TEXT PRIMARY KEY,
+    deleted_at       TEXT NOT NULL -- UTC ISO-8601 seconds
 );
 
 -- Go-only cache of a workbench's PR/branch state for session reports (00101).
@@ -3845,7 +3854,7 @@ CREATE TABLE IF NOT EXISTS chat_turn_leases (
     cancel_requested_at_ms INTEGER                               -- set by the other side's Stop
 );
 
--- Tower request ledger (00192). Go-written by internal/tower: the request ledger, exactly-once writes for the socket and the hub. Rows older than the hub ledger window (8 days) are pruned by the daemon.
+-- Tower request ledger (00194). Go-written by internal/tower: the request ledger, exactly-once writes for the socket and the hub. Rows older than the hub ledger window (8 days) are pruned by the daemon.
 CREATE TABLE IF NOT EXISTS tower_requests (
     request_id  TEXT PRIMARY KEY,                                  -- the client's UUID, kept across retries of one press
     command     TEXT NOT NULL,                                     -- the tower command name (domain.verb)

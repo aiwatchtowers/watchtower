@@ -245,7 +245,7 @@ func TestHubContractFixture_RecordingSwitch(t *testing.T) {
 	require.ElementsMatch(t, []string{"capabilities_on", "capabilities_off", "capabilities_absent",
 		"capabilities_unknown_value", "unknown_capability_key",
 		"hub_kind_mac", "hub_kind_server", "hub_kind_unknown_value", "chat_on", "chat_off_desktop_too_old",
-		"inbox_on", "inbox_policy_off"}, names(f.Heartbeat))
+		"inbox_on", "inbox_policy_off", "stuck_since"}, names(f.Heartbeat))
 	require.ElementsMatch(t, []string{"failed_not_supported", "failed_expired", "received",
 		"failed_legacy_no_reason"}, names(f.UploadEcho))
 	for _, c := range f.Heartbeat {
@@ -257,6 +257,13 @@ func TestHubContractFixture_RecordingSwitch(t *testing.T) {
 			require.Equal(t, compact(t, c.Expect), string(out), "Go writes the fixture's heartbeat bytes")
 			require.Equal(t, c.Kit["recordings_offered"], recordingsOffered(hb))
 			require.Equal(t, c.Kit["is_mac"], isMac(hb))
+			// #1873: stuck_since is absent unless a kind is stuck.
+			if want, ok := c.Kit["stuck_since"].(float64); ok {
+				require.NotNil(t, hb.StuckSince)
+				require.Equal(t, int64(want), hb.StuckSince.Unix())
+			} else {
+				require.Nil(t, hb.StuckSince)
+			}
 			if want, ok := c.Kit["chat"]; ok {
 				// iPhone chat §4.8: the phone shows chat only on an explicit "on".
 				require.NotNil(t, hb.Capabilities)

@@ -12,7 +12,7 @@ Spec: `docs/superpowers/specs/2026-11-15-mobile-inbox-design.md` §2.1 (#1170). 
 
 ## Ledger
 
-`tower_requests` (migration 00192): `request_id` PK, `command`, `state` `begun`|`done`, `result_json`, `refusal_json` (a non-idempotent refusal on a `done` row), `at` (UTC `%Y-%m-%dT%H:%M:%SZ`). Written only by `internal/tower`. Every write command embeds `api.WriteParams` (`request_id`, a UUID the client makes once per press and keeps across its retries).
+`tower_requests` (migration 00194): `request_id` PK, `command`, `state` `begun`|`done`, `result_json`, `refusal_json` (a non-idempotent refusal on a `done` row), `at` (UTC `%Y-%m-%dT%H:%M:%SZ`). Written only by `internal/tower`. Every write command embeds `api.WriteParams` (`request_id`, a UUID the client makes once per press and keeps across its retries).
 
 - **A repeat of a `done` id** answers the stored result, byte for byte, without running the handler.
 - **Guarded (idempotent) commands** write their `done` row inside the same transaction as their write (`Ctx.Write`), so `done` exists exactly when the write committed. A guarded command calls `Write` once, and `fn`'s result is the command's response. A handler that never calls `Write` gets its `done` row after it returns. A fault or a refusal rolls back and leaves no row, so a resend may succeed. A `begun` row of a guarded command is re-run. A duplicate that committed first wins: the later write rolls back and answers the first result (`FinishTowerRequestTx` never overwrites a `done` row).

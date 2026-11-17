@@ -255,6 +255,9 @@ type TerminalSessionActivity struct {
 	AgentStateAt string // agent_state_at
 	LastActiveAt string // last_active_at
 	Finished     bool   // finished_at is set
+	// DeleteRequested is delete_requested_at set: the row is being deleted
+	// (board #1716); the read stays unfiltered, the catches decide.
+	DeleteRequested bool
 }
 
 // ListTerminalSessionActivity is every terminal session of every workbench
@@ -266,7 +269,8 @@ func (db *DB) ListTerminalSessionActivity(ctx context.Context) ([]TerminalSessio
 	}
 	defer func() { _ = tx.Rollback() }()
 	rows, err := tx.QueryContext(ctx, `SELECT id, COALESCE(project_id, 0), title, COALESCE(agent_cwd, ''),
-		COALESCE(agent_state_at, ''), last_active_at, finished_at IS NOT NULL
+		COALESCE(agent_state_at, ''), last_active_at, finished_at IS NOT NULL,
+		delete_requested_at IS NOT NULL
 		FROM terminal_sessions ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("reading terminal session activity: %w", err)
@@ -276,7 +280,7 @@ func (db *DB) ListTerminalSessionActivity(ctx context.Context) ([]TerminalSessio
 	for rows.Next() {
 		var a TerminalSessionActivity
 		if err := rows.Scan(&a.ID, &a.WorkbenchID, &a.Title, &a.AgentCwd, &a.AgentStateAt,
-			&a.LastActiveAt, &a.Finished); err != nil {
+			&a.LastActiveAt, &a.Finished, &a.DeleteRequested); err != nil {
 			return nil, fmt.Errorf("reading terminal session activity: %w", err)
 		}
 		out = append(out, a)

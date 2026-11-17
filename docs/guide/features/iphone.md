@@ -4,13 +4,13 @@ The Watchtower iPhone app is a window onto your tower: your Mac or server runnin
 
 ## Why use it
 
-You step away while a Workbench session waits on a question. The phone shows an orange card; a few taps answer it and the session goes on. Its **Record** button sends a meeting's audio to your Mac for the transcript and recap.
+You step away while a Workbench session waits on a question. The phone shows an orange card; a few taps answer it and the session goes on. **Record** sends a meeting's audio to your Mac for the transcript and recap.
 
 ## How it works
 
-The Mac is the **hub**. With **Mobile sync** on, it publishes asks, Workbench boards and sessions, calendar and recaps into your iCloud. The phone reads them and sends requests back; the Mac applies them when awake. Hubs with ordered delivery apply changes in order; see [not delivered](iphone-not-delivered.md).
+The Mac is the **hub**. With **Mobile sync** on, it puts asks, Workbench boards and sessions, calendar and recaps into your iCloud. The phone reads them and sends requests back; the Mac applies them when awake. Hubs with ordered delivery apply changes in order; see [not delivered](iphone-not-delivered.md).
 
-Everything is sealed with keys exchanged at linking, so iCloud holds only ciphertext. The phone never gets terminal output or a raw transcript, except a session's chat (below).
+Everything is sealed with keys exchanged at linking; iCloud holds only ciphertext. The phone never gets terminal output or a raw transcript; a session's chat is the exception (below).
 
 An ask answered on the phone waits as **Waiting for your tower** while it sleeps. A Mac checks for requests every 30 seconds and writes a heartbeat every 15 minutes.
 
@@ -24,7 +24,7 @@ Settings → **Mobile** on the Mac lists each phone with how it syncs and who sw
 
 iCloud keeps a Development and a Production environment; records saved in one never reach the other. The downloaded (Developer ID) Mac app and a TestFlight or App Store phone build are both Production and pair.
 
-A phone run from Xcode is Development and pairs only with a Development Mac. A mixed pair fails silently: the phone never sees the Mac.
+A phone run from Xcode is Development and pairs only with a Development Mac. A mixed pair fails silently.
 
 A Mac build without iCloud signing shows **Needs a signed build** and can't use iCloud. An unsigned phone build is a demo.
 
@@ -78,7 +78,8 @@ since: 0.24.0
 
 - **Now** shows your tower's status, then **Waiting for you**, **Working**, **Ended** and the next meeting (see [Now and sessions](iphone-workbench.md#now-and-sessions)). The gear opens Settings.
 - **Inbox** is the Mac's Inbox; the orange badge counts what waits on you. Swipe a row for **Done**, **Snooze** or **Hide**, or hold it. See [Inbox](inbox.md).
-- **Workbench** lists your workbenches as cards. Open one for **Sessions** (split like Now) or **Board** (targets with status, priority and comments). A group's done sub-targets stay hidden until you tap **Show done (N)** (remembered).
+- **Workbench** lists your workbenches as cards. Open one for **Sessions** (split like Now) or **Board** (targets with status, priority and comments). A group's done sub-targets hide behind **Show done (N)** (remembered).
+- **Chats** holds your AI chats; without Relay it says why it can't chat ([iPhone: AI chat](iphone-chat.md)).
 - **Calendar** shows your tower's events with prep and **Record**, kept 30 minutes past an unrecorded event's end. **Recordings** has **Record a voice note**.
 
 Asks come in three kinds: a question, a review (hold a paragraph to comment; **Request changes** needs a comment or a note) and a check (**Works**, **Doesn't work** or **Didn't check** per step).
@@ -114,7 +115,7 @@ Three switches under Settings → **Workbench** on the phone:
 - **Type into sessions from this phone** lets you send a line to a running session. The Mac must also approve: the phone row on the Mac shows **Asks to type into sessions**, and **Allow…** grants it. **Revoke** takes it back.
 - **Answer permission prompts from this phone** answers permission prompts (off by default: approvals wait at the Mac). The Mac's row shows **Asks to answer permission prompts**, with its own **Allow…**.
 
-Without the typing switch, a running session's bottom bar says so, with **Turn On** right there. A server tower has no Settings window: the phone shows the `watchtower hub allow` command to run on it instead.
+Without the typing switch, a running session's bottom bar says so, with **Turn On**. A server tower has no Settings window: the phone shows the `watchtower hub allow` command to run there.
 
 ### Start a target's session
 <!-- learn
@@ -132,7 +133,7 @@ From a target, the sheet shows its intent and a ready brief: press **Start sessi
 ### Read your timings
 <!-- learn: none -->
 
-Settings → **Diagnostics** shows "Action → result on screen · 7 days": your action count, how long results took (p50, p90) and the "Tower's answer" part, measured on this iPhone and sent nowhere. "Timings need an updated Watchtower on your tower." means no tower can be timed yet. **Battery** is here too.
+Settings → **Diagnostics** shows "Action → result on screen · 7 days": your action count, how long results took (p50, p90) and the "Tower's answer" part, measured on this iPhone, sent nowhere. "Timings need an updated Watchtower on your tower." means no tower can be timed yet. **Battery** is here too.
 
 ### Link another tower, or unlink
 <!-- learn
@@ -160,7 +161,7 @@ On the Mac, **Remove…** next to a phone unlinks it. On the phone, that Mac's h
 
 ## When it's empty or wrong
 
-- **The tower doesn't show up on the phone.** On a Mac, check that Watchtower is open, **Mobile sync** is on, the Mac is awake, the build is signed and iCloud is on; then the environment pairing above.
+- **The tower doesn't show up on the phone.** Check that Watchtower is open, **Mobile sync** is on, the Mac is awake, the build is signed and iCloud is on; then the pairing above.
 - **"This code expired" or "This code can't be used".** Press **New code** on the Mac and scan again. A code works for one phone.
 - **"Sign in to iCloud on this iPhone to use Watchtower".** The phone and the Mac both need an iCloud account ("Mobile isn't available on this Mac: iCloud is off.").
 - **Another Apple ID won't link.** "This tower can't share with another Apple ID right now" means the Mac's share failed. Show a new code.
@@ -168,7 +169,7 @@ On the Mac, **Remove…** next to a phone unlinks it. On the phone, that Mac's h
 - **"<tower> removed this phone".** It removed the link and freezes: its data stays readable but nothing new arrives. **Forget** deletes the data and clears the row.
 - **"Your Mac has not allowed this phone to start sessions"** under **Start session**. Allow it on the Mac as above (a server tower names its `watchtower hub allow` commands).
 - **"<hub> works over Relay only".** Relay isn't in the current version of Watchtower for iPhone. That hub (a Linux box or a Mac without the Watchtower app) links only over Relay. Link it from its Mac app, if it has one.
-- **Nothing updates.** Mobile stops when you quit Watchtower. Closing the window is fine.
+- **Nothing updates.** Mobile stops when you quit Watchtower, not when you close its window.
 
 Not syncing? See [The iPhone is not syncing](../troubleshooting/iphone-not-syncing.md).
 
@@ -176,6 +177,6 @@ Not syncing? See [The iPhone is not syncing](../troubleshooting/iphone-not-synci
 
 - [iPhone: permission prompts and interrupts](iphone-agent-prompts.md)
 - [iPhone: work alerts](iphone-alerts.md)
-- [Menu bar and updates](menu-bar-and-updates.md) for keeping the Mac side awake and running.
+- [Menu bar and updates](menu-bar-and-updates.md) keeps the Mac side running.
 
 For developers: [docs/features/mobile-companion.md](../../features/mobile-companion.md)

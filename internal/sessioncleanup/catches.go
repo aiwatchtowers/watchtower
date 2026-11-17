@@ -191,7 +191,14 @@ func procLabel(p Proc) string {
 
 // catchSessionInIt is W6: the caller works inside, or another session whose
 // agent works inside is live or reported within inUseWindow and is not
-// finished.
+// finished. A session being deleted (delete_requested_at set) whose
+// terminal is not live never counts — the planned row or any other (spec
+// 2026-11-10 §3, ask #1389): a delete never sets finished_at, so its last
+// report stays fresh, yet its terminal is closed and it works there no
+// more; two deleted rows of one worktree would otherwise keep each other.
+// A live terminal still counts, deleting or not, and a row not being
+// deleted — the planned one included, in a Clean Up screen plan or a
+// headless --session N — keeps W6 as before.
 func catchSessionInIt(_ context.Context, b *builder, w worktree) (string, string, error) {
 	reason, detail := "", ""
 	for _, a := range b.activity {
@@ -200,6 +207,9 @@ func catchSessionInIt(_ context.Context, b *builder, w worktree) (string, string
 		}
 		if b.req.CallerSessionID != 0 && a.ID == b.req.CallerSessionID {
 			return ReasonYouAreInIt, "", nil
+		}
+		if a.DeleteRequested && !b.live[a.ID] {
+			continue
 		}
 		if b.live[a.ID] || (!a.Finished && !a.ReportedAt.IsZero() && b.now.Sub(a.ReportedAt) <= inUseWindow) {
 			reason, detail = ReasonSessionInIt, a.Title
@@ -305,12 +315,17 @@ func catchCheckedOut(_ context.Context, b *builder, br branchRef) (string, strin
 }
 
 // catchOwnBranch is B3: observed by the session and born after it, or the
-// placed row's own worktree_branch (owned by record, spec 2026-10-14 §9).
+// placed row's own worktree_branch (owned by record, spec 2026-10-14 §9). A
+// §2c candidate another worktree's unreadable HEAD log left undecided is
+// created_unknown (auto cleanup spec 2026-11-10 §2c).
 func catchOwnBranch(_ context.Context, b *builder, br branchRef) (string, string, error) {
 	if b.seen.placedBranch != "" && br.Name == b.seen.placedBranch { // observePlacement set it only when born no later than the row
 		return "", "", nil
 	}
 	if !b.seen.branches[br.Name] {
+		if b.seen.unknown[br.Name] {
+			return ReasonCreatedUnknown, "", nil
+		}
 		return ReasonNotThisSession, "", nil
 	}
 	birth, known := b.repo.branchBirth(br.Name)

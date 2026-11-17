@@ -56,10 +56,13 @@ type OwnerHint struct {
 	Unknown    bool   `json:"unknown,omitempty"`
 }
 
-// Plan is what an evaluation found. Items is never nil.
+// Plan is what an evaluation found. Items and Notes are never nil.
 type Plan struct {
 	Items         []Item `json:"items"`
 	DefaultBranch string `json:"default_branch"`
+	// Notes are what the plan could not read but did not fail on (auto
+	// cleanup spec 2026-11-10 §2a): NoteSubagentRecordsUnreadable. Never nil.
+	Notes []string `json:"notes"`
 }
 
 // reasonPhrases are the summary's words for the reason codes; a code

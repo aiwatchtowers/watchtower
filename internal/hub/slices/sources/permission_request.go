@@ -146,12 +146,13 @@ func pendingRequests(ctx context.Context, tx *sql.Tx, live Liveness, now time.Ti
 	for _, r := range refs {
 		published[r.id] = true
 	}
+	//nolint:gosec // G202: the concatenations are package constants (db.NotDeletingSQL and the like); every value is a bound arg.
 	rows, err := tx.QueryContext(ctx, `
 SELECT r.id, r.terminal_session_id, r.workbench_id, r.tool_name, r.summary, r.summary_clipped,
        r.created_at, s.project_id
 FROM permission_requests r
 JOIN terminal_sessions s ON s.id = r.terminal_session_id
-WHERE r.status = 'pending' AND s.kind = 'claude'
+WHERE r.status = 'pending' AND s.kind = 'claude' AND s.`+db.NotDeletingSQL+`
 ORDER BY r.id`)
 	if err != nil {
 		return nil, fmt.Errorf("reading permission requests: %w", err)

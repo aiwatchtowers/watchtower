@@ -28,6 +28,9 @@ type fixture struct {
 	// birth reads a worktree's birth; nil = stampBirth, so the catches
 	// after ownership run on every platform (the real birth is darwin-only).
 	birth func(adminDir string) (time.Time, bool)
+	// projects is the Claude Code projects directory the plan reads: an
+	// empty one under base, never the developer's.
+	projects string
 }
 
 // stampBirth stands in for the filesystem birth time: a fixture's admin dir
@@ -51,7 +54,11 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &fixture{t: t, base: base, repo: filepath.Join(base, "repo"), procs: &fakeProcs{}}
+	f := &fixture{t: t, base: base, repo: filepath.Join(base, "repo"), procs: &fakeProcs{},
+		projects: filepath.Join(base, "claude-projects")}
+	if err := os.MkdirAll(f.projects, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	gitIn(t, base, "init", "-q", "--bare", "-b", "main", "remote.git")
 	gitIn(t, base, "init", "-q", "-b", "main", "repo")
 	f.commit(f.repo, "README.md", "hello\n")
@@ -130,7 +137,9 @@ func (f *fixture) deps() Deps {
 	if birth == nil {
 		birth = stampBirth
 	}
-	return Deps{Git: g, DB: f.store, Procs: f.procs, Home: f.home, WorktreeBirth: birth}
+	projects := f.projects
+	return Deps{Git: g, DB: f.store, Procs: f.procs, Home: f.home, WorktreeBirth: birth,
+		ClaudeProjects: func() string { return projects }}
 }
 
 func (f *fixture) plan(r Request) Plan {
@@ -187,6 +196,12 @@ type fakeStore struct {
 	extraFolders   []string
 	activity       []SessionActivity
 	rootOwners     map[string][]int64
+	// agentIDs are the session's agent session ids; uuidOwners the rows
+	// holding each uuid (absent = none, which adopts nothing); idsErr and
+	// ownersErr fail those reads.
+	agentIDs          []db.AgentSessionID
+	uuidOwners        map[string][]int64
+	idsErr, ownersErr error
 }
 
 func (s *fakeStore) CleanupSession(_ context.Context, id int64) (SessionInfo, error) {
@@ -202,6 +217,23 @@ func (s *fakeStore) SessionWorktrees(context.Context, int64) ([]db.SessionWorktr
 
 func (s *fakeStore) SessionTargetBranches(context.Context, int64) ([]string, error) {
 	return s.targetBranches, nil
+}
+
+func (s *fakeStore) AgentSessionIDs(context.Context, int64) ([]db.AgentSessionID, error) {
+	return s.agentIDs, s.idsErr
+}
+
+func (s *fakeStore) AgentSessionIDOwners(_ context.Context, uuids []string) (map[string][]int64, error) {
+	if s.ownersErr != nil {
+		return nil, s.ownersErr
+	}
+	out := map[string][]int64{}
+	for _, u := range uuids {
+		if o, ok := s.uuidOwners[u]; ok {
+			out[u] = o
+		}
+	}
+	return out, nil
 }
 
 func (s *fakeStore) WorkbenchFolder(_ context.Context, id int64) (string, error) {
