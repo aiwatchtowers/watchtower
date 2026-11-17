@@ -146,6 +146,7 @@ The code paths that change together, in one task (H1):
 - `internal/purge/run.go` `start`: re-plans with the same rules, and passes the row's own cutoff (`purge.Cutoff(account, rule, now)`: `now − Lease` today, `now` for a zero-lease removed account).
 - `internal/db/account_purge_steps.go` `StartAccountPurge(id, cutoff, requireRemoved bool)`: a zero-lease row starts only while the account is still `removed` (an "add again" between the re-plan and the start must win), checked in the same conditional `UPDATE`.
 - `cmd/accounts.go` `accounts purges --json`: `enabled_by` already says `default`; no new key. The Desktop's footnote (`AccountPurgeStatus.footnote`) picks its text from `enabled`/`enabled_by` (§8).
+- The Desktop's second reader of the default: `PrivacySettings` (`WatchtowerDesktop/Sources/Views/Settings/PrivacySettings.swift`) shows `policy ?? config.purgeRevokedData ?? accountPurgeCenter.status.enabled ?? false`. With the key absent and the CLI's status not loaded yet (or failed), it would show **off** while the daemon deletes. The fallback moves into one WatchtowerCore function, `AccountPurgeStatus.shownValue(policy:setting:status:)`, whose last step is `AccountPurgeStatus.buildDefault` (`true`, the same as Go's `default` fallback), and the caption then reads "On by default". Go and Swift read one shared fixture, `internal/purge/testdata/default_cases.json` (policy, setting, build default, CLI status → shown value and origin), run by Go `TestPurge01_DefaultSharedFixture` (against `purge.Enabled`) and Swift `AccountPurgeDefaultFixtureTests` (against `shownValue`), the `policy_cases.json` pattern (POLICY-02).
 
 Tests: `TestPurgeRules_Table` (every row of the table above), `TestPlan_DefaultOriginHoldsLiveLeaseButSchedulesRemovedSlack`, `TestRun_ZeroLeaseRowStartsAfterReplan`, `TestStartAccountPurge_ZeroLeaseNeedsRemovedStill`, `TestPurge01_PolicyForbiddenSourceHoldsLease` (unchanged, must still pass).
 
@@ -297,7 +298,7 @@ Every string below lives in a model with a test; views only render it. The mocku
 
 | Screen | States (shot name `slack-ph-…`) | Copy model |
 |---|---|---|
-| Settings → System → Privacy | on by default (`privacyDefault`, `-narrow`), on by the setting or the corp build (`privacyOnAll`), off by the owner (`privacyOff`), set by policy (`privacyPolicy`), FileVault off (`privacyFileVault`) | `AccountPurgeStatus.footnote`, `FileVaultNotice` |
+| Settings → System → Privacy (reader: `PrivacySettings` through `AccountPurgeStatus.shownValue`, which falls back to on, §2) | on by default; also the state while the CLI's status is missing (`privacyDefault`, `-narrow`), on by the setting or the corp build (`privacyOnAll`), off by the owner (`privacyOff`), set by policy (`privacyPolicy`), FileVault off (`privacyFileVault`) | `AccountPurgeStatus.footnote`, `FileVaultNotice` |
 | Connections → Slack | FileVault off (`slackFileVault`); a removed workspace's 72 h line with **Add again** (`slackRemoved`, `-narrow`) | `FileVaultNotice`, `AccountPurgeNoticePolicy` (zero-lease line: no "not reached since") |
 | Slack Remove dialog | purge on (`removeOn`), purge off (`removeOff`); both say the sign-out reaches every Mac (A3) | `AccountPurgeStatus.removeDialogMessage` (Slack variant) |
 | Set up for my company | the disclosure block before the token paste (`setupDisclosure`; screens spec frame `slack-fl-setup-empty`) | `SlackDisclosureCopy.setup` |
@@ -313,6 +314,7 @@ Every string below lives in a model with a test; views only render it. The mocku
 | Path | Failure | Behaviour | Test |
 |---|---|---|---|
 | Default-on purge | the owner turned it off earlier (key present) | the setting wins; nothing scheduled | `TestPurge01_EnabledOrder` (extended: absent → on, origin `default`) |
+| Default-on purge | the Desktop opens Privacy before `accounts purges --json` answered, or it failed | the switch shows on with "On by default" (shared default), never off | `AccountPurgeDefaultFixtureTests` |
 | Default-on purge | a disabled live account, origin `default` | no lease row | `TestPlan_DefaultOriginHoldsLiveLeaseButSchedulesRemovedSlack` |
 | Removed account | re-added before due | cancelled (existing rule) | `TestPurgePolicy_RemovedSlackZeroLease` |
 | Removed account | re-added between the re-plan and the start | the start's conditional `UPDATE` needs the account still `removed`; nothing deleted | `TestStartAccountPurge_ZeroLeaseNeedsRemovedStill` |
@@ -364,6 +366,7 @@ Every string below lives in a model with a test; views only render it. The mocku
 | The admin and every user see the disclosure before connecting | H4 | `SlackDisclosureCopyTests` |
 | FileVault off is said where Slack data is stored | H4 | `FileVaultStatusTests`, `FileVaultNoticeTests` |
 | The privacy policy states every item of §7 | H5 (site repo) | a checklist in the PR of that repo |
+| Go and the Desktop show the same default; the switch never shows off while the daemon deletes | H1 | `TestPurge01_DefaultSharedFixture`, `AccountPurgeDefaultFixtureTests` |
 | The purge decides per account; a zero-lease row survives the re-plan and needs the account still removed | H1 | `TestPurgeRules_Table`, `TestPlan_DefaultOriginHoldsLiveLeaseButSchedulesRemovedSlack`, `TestRun_ZeroLeaseRowStartsAfterReplan`, `TestStartAccountPurge_ZeroLeaseNeedsRemovedStill` |
 | `get_person` and the developer skill name no dropped field | H3 | `TestGetPerson_OutputHasNoSurveillanceFields`, `TestDevpackSkills_NoDroppedPeopleFields` (scan of the embedded skills) |
 
