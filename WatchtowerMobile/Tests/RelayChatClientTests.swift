@@ -265,6 +265,47 @@ final class RelayChatClientTests: XCTestCase {
         XCTAssertTrue(recorder.sent.isEmpty, "nothing reaches the hub")
     }
 
+    /// A full turn round trip (final re-review n1): every key `ChatTurnRequest` puts on chat.sock reaches the relay's
+    /// `chat_turn` params with its value, through both hand copies (`RelayChatClient.turn` → the coordinator's
+    /// `Request` → `ChatTurnParams`), but the Mac-only ones the phone never sends. A field either copy drops fails here.
+    func testAFullTurnReachesTheRelayWithEveryField() async throws {
+        let client = center().client
+        client.setGate(Self.ready)
+        let request = ChatTurnRequest(
+            conversationID: 7, mode: .edit, messageID: 3, text: "Summarise it for @Alice", attachmentIDs: [11, 12],
+            routing: ChatRouting(mode: "pinned", provider: "claude", model: "opus"),
+            compose: ChatCompose(skill: "weekly-report", mentions: [.init(kind: "person", id: "U0001", label: "Alice")]),
+            screenContext: "<screen/>", artifactCommentIDs: [5], clientKey: "6F9619FF-8B86-4011-B42D-00C04FC96500"
+        )
+        let turn = Task { try await client.send(.turn(request)) }
+        defer { turn.cancel() }
+        try await poll({ self.recorder.sent.contains { $0.kind == ChatTurnParams.actionKind } }, "turn sent")
+        let sent = try XCTUnwrap(recorder.sent.first { $0.kind == ChatTurnParams.actionKind }).params
+        let wire = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: ChatWireCoder.makeEncoder().encode(request)) as? [String: Any]
+        )
+        let macOnly: Set = ["screen_context", "artifact_comment_ids"]
+        XCTAssertEqual(Set(sent.keys), Set(wire.keys).subtracting(macOnly), "the relay turn's keys")
+        for (key, value) in wire where !macOnly.contains(key) {
+            let got = try XCTUnwrap(sent[key], key)
+            XCTAssertEqual(Self.foundation(got) as? NSObject, value as? NSObject, key)
+        }
+    }
+
+    /// A recorded param as JSONSerialization reads the same JSON.
+    private static func foundation(_ value: JSONValue) -> Any {
+        switch value {
+        case .null: NSNull()
+        case let .integer(number): NSNumber(value: number)
+        case let .double(number): NSNumber(value: number)
+        case let .string(text): text
+        case let .blob(data): data
+        case let .bool(flag): NSNumber(value: flag)
+        case let .array(items): items.map(foundation)
+        case let .object(fields): fields.mapValues(foundation)
+        }
+    }
+
     /// The relay refuses a watched chat's feed request `not_found` once it is deleted elsewhere: the feed is gone.
     func testFeedRequestRefusedNotFoundIsGone() async throws {
         let center = center()
