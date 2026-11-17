@@ -1,4 +1,5 @@
 import AppKit
+import ChatWire
 import GRDB
 import SwiftUI
 import XCTest
@@ -876,8 +877,8 @@ enum DesignShotFixtures {
                 }
             }
             return AnyView(VStack(alignment: .leading, spacing: 12) {
-                ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                    ChatMessageRow(item: item, isLast: index == items.count - 1, isEditing: false, actions: ChatRowActions())
+                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                    ChatUIShotRow.row(item)
                 }
                 HStack {
                     Spacer()
@@ -898,7 +899,8 @@ enum DesignShotFixtures {
             (.undone, "decision"), (.failed("database is locked"), "decision")
         ]
         return AnyView(VStack(alignment: .trailing, spacing: 12) {
-            UserMessageBubble(text: "decided: release acme on Tuesdays from next week")
+            ChatUIShotRow.message(ChatFeed.Message(id: 1, role: "user", text: "decided: release acme on Tuesdays from next week",
+                                                   createdAt: .distantPast))
             ChatKnowledgeMarkLine(mark: .saved(kind: "decision", ideaID: 1), prefixKind: "decision",
                                   undo: {}, openInInbox: { _ in })
             ForEach(Array(marks.enumerated()), id: \.offset) { _, entry in

@@ -164,12 +164,33 @@ public struct ChatFeed: Decodable, Hashable, Sendable {
         public let outcome: Outcome
         public let summary: String
         public let sources: [Source]
+        /// When the call started and ended — set by the Mac's embedded chats, whose steps carry their times (the
+        /// "Worked for 12s" header); the engine's wire sends none.
+        public let startedAt: Date?
+        public let endedAt: Date?
+        /// The call's arguments, and whether it waits for the owner's approval — also only from the Mac's embedded
+        /// chats, whose step lines name the call from its arguments (`ChatUIStyle.stepLine`).
+        public let argsJSON: String?
+        public let isWaiting: Bool
 
-        public init(name: String, outcome: Outcome = .running, summary: String = "", sources: [Source] = []) {
+        public init(
+            name: String,
+            outcome: Outcome = .running,
+            summary: String = "",
+            sources: [Source] = [],
+            startedAt: Date? = nil,
+            endedAt: Date? = nil,
+            argsJSON: String? = nil,
+            isWaiting: Bool = false
+        ) {
             self.name = name
             self.outcome = outcome
             self.summary = summary
             self.sources = sources
+            self.startedAt = startedAt
+            self.endedAt = endedAt
+            self.argsJSON = argsJSON
+            self.isWaiting = isWaiting
         }
 
         public init(from decoder: Decoder) throws {
@@ -182,10 +203,16 @@ public struct ChatFeed: Decodable, Hashable, Sendable {
             }
             summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
             sources = try c.decodeIfPresent([Source].self, forKey: .sources) ?? []
+            startedAt = try c.decodeIfPresent(Date.self, forKey: .startedAt)
+            endedAt = try c.decodeIfPresent(Date.self, forKey: .endedAt)
+            argsJSON = try c.decodeIfPresent(String.self, forKey: .argsJSON)
+            isWaiting = try c.decodeIfPresent(Bool.self, forKey: .isWaiting) ?? false
         }
 
         enum CodingKeys: String, CodingKey {
-            case name, ok, summary, sources
+            case name, ok, summary, sources, startedAt, endedAt
+            case argsJSON = "argsJson"
+            case isWaiting = "waiting"
         }
     }
 

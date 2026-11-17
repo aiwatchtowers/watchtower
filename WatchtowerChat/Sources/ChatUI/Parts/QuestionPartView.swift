@@ -2,6 +2,34 @@ import SwiftUI
 import WatchtowerChatText
 import WatchtowerDesign
 
+/// An owner ask's card (the Mac's ask drawer): its picks are the ask's draft (or a closed ask's answer) and the drawer's
+/// answer bar sends them, so the card has no footer of its own. The hooks bring the drawer's keyboard in.
+public struct ChatQuestionDraft {
+    public var picks: Binding<[String: ChatQuestionAnswer.Entry]>
+    /// The picks take input (an open ask, no answer being written).
+    public var editable: Bool
+    /// A question's "Other…" field (the drawer's editor, its keys and focus); nil draws the style's field.
+    public var otherField: ((ChatQuestion, Binding<String>) -> AnyView)?
+    /// Wraps one question (the drawer's keyboard cursor and its scroll id).
+    public var decorate: ((ChatQuestion, AnyView) -> AnyView)?
+    /// The help of the option at this index (the digit that picks it).
+    public var optionHelp: ((Int) -> String)?
+
+    public init(
+        picks: Binding<[String: ChatQuestionAnswer.Entry]>,
+        editable: Bool,
+        otherField: ((ChatQuestion, Binding<String>) -> AnyView)? = nil,
+        decorate: ((ChatQuestion, AnyView) -> AnyView)? = nil,
+        optionHelp: ((Int) -> String)? = nil
+    ) {
+        self.picks = picks
+        self.editable = editable
+        self.otherField = otherField
+        self.decorate = decorate
+        self.optionHelp = optionHelp
+    }
+}
+
 /// A structured question card (the client-derived `question` part, D14): the owner picks options, may type an answer
 /// of their own, and the answers go back as their next message (`ChatQuestionAnswer.format`). An answered card reads
 /// its selections from that message. Public: embedded chats and the owner-ask drawer draw it too (ruling F19).
@@ -14,7 +42,8 @@ public struct QuestionPartView: View {
     let card: ChatQuestionCard
     let answerText: String?
     let onAnswer: ((String) -> Void)?
-    @State private var picks: [String: ChatQuestionAnswer.Entry] = [:]
+    let draft: ChatQuestionDraft?
+    @State private var ownPicks: [String: ChatQuestionAnswer.Entry] = [:]
     @Environment(\.chatUIStyle) private var style
 
     /// `answerText` is the owner's message right after the reply (nil while unanswered); `onAnswer` nil makes the
@@ -23,13 +52,33 @@ public struct QuestionPartView: View {
         self.card = card
         self.answerText = answerText
         self.onAnswer = onAnswer
+        draft = nil
+    }
+
+    /// An owner ask's card: the picks are the draft's, and the drawer's bar sends them.
+    public init(card: ChatQuestionCard, draft: ChatQuestionDraft) {
+        self.card = card
+        answerText = nil
+        onAnswer = nil
+        self.draft = draft
+    }
+
+    private var picks: [String: ChatQuestionAnswer.Entry] { draft?.picks.wrappedValue ?? ownPicks }
+
+    private func setPick(_ entry: ChatQuestionAnswer.Entry, for question: ChatQuestion) {
+        if let draft {
+            draft.picks.wrappedValue[question.id] = entry
+        } else {
+            ownPicks[question.id] = entry
+        }
     }
 
     private var answered: [String: ChatQuestionAnswer.Entry]? {
-        answerText.map { ChatQuestionAnswer.selections(in: $0, for: card) }
+        guard draft == nil else { return nil }
+        return answerText.map { ChatQuestionAnswer.selections(in: $0, for: card) }
     }
 
-    private var interactive: Bool { answerText == nil && onAnswer != nil }
+    private var interactive: Bool { draft.map(\.editable) ?? (answerText == nil && onAnswer != nil) }
 
     /// Every question has a pick or an answer of its own.
     static func isComplete(_ card: ChatQuestionCard, picks: [String: ChatQuestionAnswer.Entry]) -> Bool {
@@ -37,45 +86,63 @@ public struct QuestionPartView: View {
     }
 
     public var body: some View {
-        style.card {
+        style.questionCard(AnyView(
             VStack(alignment: .leading, spacing: Spacing.medium) {
                 ForEach(card.questions) { question in
                     questionView(question)
                 }
                 footer
             }
-        }
+        ))
         .accessibilityIdentifier("chat.question")
     }
 
+    @ViewBuilder
     private func questionView(_ question: ChatQuestion) -> some View {
+        if let decorate = draft?.decorate {
+            decorate(question, AnyView(questionBody(question)))
+        } else {
+            questionBody(question)
+        }
+    }
+
+    private func questionBody(_ question: ChatQuestion) -> some View {
         let entry = answered?[question.id] ?? picks[question.id] ?? .init()
         return VStack(alignment: .leading, spacing: Spacing.compact) {
-            Text(Self.inline(question.question)).font(.callout.weight(.semibold))
-            ForEach(question.options, id: \.label) { option in
+            QuestionMarkdown(text: question.question).font(.callout.weight(.semibold))
+            ForEach(Array(question.options.enumerated()), id: \.element.label) { index, option in
                 optionRow(option, in: question, selected: entry.labels.contains(option.label))
+                    .help(draft?.optionHelp?(index) ?? "")
             }
             if interactive {
-                TextField(Self.otherPlaceholder, text: otherBinding(question), axis: .vertical)
-                    .lineLimit(1...4)
-                    .font(.callout)
+                if let otherField = draft?.otherField {
+                    otherField(question, otherBinding(question))
+                } else {
+                    style.questionOtherField(text: otherBinding(question), placeholder: Self.otherPlaceholder,
+                                             onSubmit: draft == nil && onAnswer != nil && Self.isComplete(card, picks: picks)
+                                                 ? send : nil)
+                }
             } else if let other = entry.other, !other.isEmpty {
-                Text("Other: \(other)").font(.callout).foregroundStyle(.secondary)
+                QuestionMarkdown(text: "Other: \(other)", lineBreaks: true).font(.callout).foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func send() {
+        onAnswer?(ChatQuestionAnswer.format(card, answers: picks))
     }
 
     private func optionRow(_ option: ChatQuestionOption, in question: ChatQuestion, selected: Bool) -> some View {
         let icon = Self.icon(multi: question.multi, selected: selected)
         return VStack(alignment: .leading, spacing: Spacing.tight) {
             Button {
-                picks[question.id] = (picks[question.id] ?? .init()).toggling(option.label, multi: question.multi)
+                setPick((picks[question.id] ?? .init()).toggling(option.label, multi: question.multi), for: question)
             } label: {
                 HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
                     Image(systemName: icon).foregroundStyle(selected ? Color.accentColor : Color.secondary)
-                    Text(Self.inline(option.label))
+                    Text(Self.optionLabel(option.label))
                     if option.recommended {
-                        style.chip(Self.recommendedLabel)
+                        style.recommendedMark(Self.recommendedLabel)
                     }
                     Spacer(minLength: 0)
                 }
@@ -83,10 +150,11 @@ public struct QuestionPartView: View {
             }
             .buttonStyle(.plain)
             .disabled(!interactive)
+            .accessibilityLabel(Self.accessibilityLabel(option, includesRecommended: Self.readsRecommended))
             if !option.description.isEmpty {
                 HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
                     Image(systemName: icon).hidden().accessibilityHidden(true)
-                    Text(Self.inline(option.description)).font(.caption).foregroundStyle(.secondary)
+                    QuestionMarkdown(text: option.description).font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
@@ -109,7 +177,7 @@ public struct QuestionPartView: View {
                 var entry = picks[question.id] ?? .init()
                 entry.other = text
                 if !question.multi && !text.isEmpty { entry.labels = [] }
-                picks[question.id] = entry
+                setPick(entry, for: question)
             }
         )
     }
@@ -117,6 +185,13 @@ public struct QuestionPartView: View {
     static func icon(multi: Bool, selected: Bool) -> String {
         if multi { return selected ? "checkmark.square.fill" : "square" }
         return selected ? "largecircle.fill.circle" : "circle"
+    }
+
+    /// What VoiceOver reads for an option: its label without markup, and on the phone its "Recommended" mark (the Mac's
+    /// card read the label alone).
+    static func accessibilityLabel(_ option: ChatQuestionOption, includesRecommended: Bool) -> String {
+        let label = String(optionLabel(option.label).characters)
+        return includesRecommended && option.recommended ? "\(label), \(recommendedLabel)" : label
     }
 
     /// Inline Markdown (bold, code, links) of a label; plain text when it does not parse.

@@ -1,4 +1,5 @@
 import AppKit
+import ChatWire
 import SwiftUI
 import XCTest
 @testable import WatchtowerDesktop
@@ -95,7 +96,7 @@ final class TextRenderingBenchmarkTests: XCTestCase {
         print("BENCH streamed delta, 10k-char message: before \(median(before)), after \(median(after))")
     }
 
-    /// The streamed row parses its text in `AssistantMessageBody.body` and
+    /// The streamed row parses its text in ChatUI's `ChatMessageParts` and
     /// again in `ChatViewModel.updateLiveArtifacts` per published delta; the
     /// second parse (and every finished row's re-parse on a scroll rebuild)
     /// is now a cache hit — read from the cache itself, not timed.
@@ -119,7 +120,9 @@ final class TextRenderingBenchmarkTests: XCTestCase {
             let base = Self.markdown(chars: length, seed: length)
             let samples = streamSamples(base: base, deltas: 6) { text in
                 _ = ArtifactParser.parse(text, final: false) // updateLiveArtifacts
-                return AssistantMessageBody(text: text, steps: [], isRunning: true)
+                return ChatUIShotRow.message(ChatFeed.Message(id: 1, role: "assistant", text: text,
+                                                              status: EmbeddedChatFeedAdapter.pendingStatus,
+                                                              createdAt: .distantPast))
             }
             print("BENCH streamed answer frame @\(length) chars: median \(median(samples))")
         }
@@ -135,7 +138,8 @@ final class TextRenderingBenchmarkTests: XCTestCase {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
                     ForEach(0..<count, id: \.self) { index in
-                        AssistantMessageBody(text: answers[index], steps: [], isRunning: false)
+                        ChatUIShotRow.message(ChatFeed.Message(id: Int64(index), role: "assistant", text: answers[index],
+                                                               createdAt: .distantPast))
                     }
                 }
             }

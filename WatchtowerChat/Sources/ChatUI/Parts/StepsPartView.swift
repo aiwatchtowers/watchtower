@@ -12,18 +12,29 @@ struct StepsPartView: View {
     @State private var expanded: Bool? // swiftlint:disable:this discouraged_optional_boolean
 
     private var running: Bool { !context.isFinal }
+    @Environment(\.chatUIStyle) private var style
+
+    static func line(_ step: ChatStepsPayload.Step) -> ChatStepLine {
+        ChatStepLine(name: step.name, outcome: step.outcome, summary: step.summary, argsJSON: step.argsJSON,
+                     isWaiting: step.isWaiting)
+    }
 
     var body: some View {
         if !payload.steps.isEmpty {
             DisclosureGroup(isExpanded: Binding(get: { expanded ?? running }, set: { expanded = $0 })) {
                 VStack(alignment: .leading, spacing: Spacing.small) {
                     ForEach(Array((running ? payload.steps.reversed() : payload.steps).enumerated()), id: \.offset) { _, step in
-                        StepLine(step: step, turnRunning: running)
+                        if let line = style.stepLine(Self.line(step), turnRunning: running) {
+                            line
+                        } else {
+                            StepLine(step: step, turnRunning: running)
+                        }
                     }
                 }
                 .padding(.top, Spacing.small)
+                .modifier(LeadingWhenStyled(styled: payload.steps.first.flatMap { style.stepLine(Self.line($0), turnRunning: running) } != nil))
             } label: {
-                Text(Self.header(count: payload.steps.count, running: running))
+                Text(Self.header(count: payload.steps.count, running: running, steps: payload.steps))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -31,10 +42,15 @@ struct StepsPartView: View {
         }
     }
 
-    /// The wire carries no step times, so the header counts steps only ("Worked · 3 steps").
-    static func header(count: Int, running: Bool) -> String {
-        let steps = count == 1 ? "1 step" : "\(count) steps"
-        return running ? "Working… · \(steps)" : "Worked · \(steps)"
+    /// The engine's wire carries no step times, so the header counts steps only ("Worked · 3 steps"); steps that
+    /// carry them (the Mac's embedded chats) say how long the turn worked ("Worked for 12s · 3 steps").
+    static func header(count: Int, running: Bool, steps: [ChatStepsPayload.Step] = []) -> String {
+        if !running, let start = steps.compactMap(\.startedAt).min() {
+            let end = steps.compactMap(\.endedAt).max() ?? start
+            return StepsSummary.header(stepCount: count, elapsed: end.timeIntervalSince(start), running: false)
+        }
+        let label = count == 1 ? "1 step" : "\(count) steps"
+        return running ? "Working… · \(label)" : "Worked · \(label)"
     }
 }
 
@@ -63,6 +79,20 @@ private struct StepLine: View {
                 // The turn ended while this tool was in flight.
                 Image(systemName: "stop.circle").foregroundStyle(.secondary).font(.caption)
             }
+        }
+    }
+}
+
+/// The app's step lines sit at the leading edge, as the Mac's steps block drew them; ChatUI's own lines keep their
+/// layout.
+private struct LeadingWhenStyled: ViewModifier {
+    let styled: Bool
+
+    func body(content: Content) -> some View {
+        if styled {
+            content.frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            content
         }
     }
 }

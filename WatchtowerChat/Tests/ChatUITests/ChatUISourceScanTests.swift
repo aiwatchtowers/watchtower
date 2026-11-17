@@ -56,6 +56,10 @@ final class ChatUISourceScanTests: XCTestCase {
             "Parts/FallbackPartView.swift",
             "Parts/ArtifactPartView.swift",
             "Parts/PublishedLinkPartView.swift",
+            // The row every chat draws (main, embedded, Workchat, phone) and the question card that posts the owner's
+            // picked answers through the screen (unified chat T12).
+            "Feed/ChatMessageRow.swift",
+            "Parts/QuestionPartView.swift",
             "Artifacts/ArtifactViewer.swift",
             "Platform/macOS/ArtifactPrinter.swift",
             "Platform/macOS/SandboxedHTMLGlue.swift",

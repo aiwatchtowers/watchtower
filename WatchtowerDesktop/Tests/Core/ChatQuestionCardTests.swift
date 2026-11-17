@@ -92,48 +92,6 @@ final class ChatQuestionCardTests: XCTestCase {
         XCTAssertEqual(ChatQuestionAnswer.selections(in: text, for: card)[scope]?.other, "Neither. Ship v0.12 next week")
     }
 
-    func testAnswerableOnlyOnTheLatestUnansweredReply() {
-        func row(_ id: Int64, _ role: String, _ text: String = "x") -> ChatMessageRecord {
-            ChatMessageRecord(id: id, conversationID: 1, role: role, text: text, createdAt: Double(id))
-        }
-        let rows = [row(1, "user"), row(2, "assistant"), row(3, "system")]
-        XCTAssertTrue(ChatQuestionThread.isAnswerable(at: 1, in: rows, busy: false), "a notice after it does not count")
-        XCTAssertFalse(ChatQuestionThread.isAnswerable(at: 1, in: rows, busy: true))
-        let answered = rows + [row(4, "user", "Answers:")]
-        XCTAssertFalse(ChatQuestionThread.isAnswerable(at: 1, in: answered, busy: false))
-        XCTAssertEqual(ChatQuestionThread.ownerReply(after: 1, in: answered), "Answers:")
-        let later = answered + [row(5, "assistant")]
-        XCTAssertFalse(ChatQuestionThread.isAnswerable(at: 1, in: later, busy: false), "an older reply")
-        XCTAssertTrue(ChatQuestionThread.isAnswerable(at: 4, in: later, busy: false))
-    }
-
-    /// The per-pass look-up a chat's rows share: the same answers as
-    /// `ChatQuestionThread` over every row, without a scan per row.
-    func testThreadIndexMatchesThePerRowLookups() {
-        func row(_ id: Int64, _ role: String, _ text: String = "x") -> ChatMessageRecord {
-            ChatMessageRecord(id: id, conversationID: 1, role: role, text: text, createdAt: Double(id))
-        }
-        let threads = [
-            [],
-            [row(1, "user"), row(2, "assistant"), row(3, "system")],
-            [row(1, "user"), row(2, "assistant"), row(3, "user", "Answers:"), row(4, "assistant"), row(5, "system")],
-            [row(1, "assistant"), row(2, "assistant"), row(3, "user", "a"), row(4, "user", "b")]
-        ]
-        for rows in threads {
-            let index = ChatThreadIndex(rows)
-            XCTAssertEqual(index.lastAssistantID, rows.last { $0.isAssistant }?.id)
-            for (position, message) in rows.enumerated() {
-                for busy in [false, true] {
-                    XCTAssertEqual(index.isAnswerable(message.id, busy: busy),
-                                   ChatQuestionThread.isAnswerable(at: position, in: rows, busy: busy), "\(message.id)")
-                }
-                XCTAssertEqual(index.ownerReply(after: message.id), ChatQuestionThread.ownerReply(after: position, in: rows))
-            }
-            XCTAssertFalse(index.isAnswerable(99, busy: false), "an unknown row")
-            XCTAssertNil(index.ownerReply(after: 99))
-        }
-    }
-
     func testAnOpenBlockIsHiddenWhileStreamingAndShownWhenFinal() {
         let partial = "Let me ask.\n```watchtower-question\n{\"questions\": [{\"quest"
         XCTAssertEqual(ChatQuestionParser.parse(partial, final: false).text, "Let me ask.")

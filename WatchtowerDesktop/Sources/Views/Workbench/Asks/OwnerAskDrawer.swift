@@ -269,21 +269,53 @@ struct OwnerAskDrawer: View {
             focusAction: focusAction
         )
         if !ask.payload.questions.isEmpty {
-            ChatQuestionCardView(
-                card: ChatQuestionCard(questions: ask.payload.questions),
-                answerText: nil,
-                onAnswer: nil,
-                draftPicks: picksBinding,
-                editable: editable,
-                // Under the spec review screen a field's ⌘↩ never answers
-                // the ask (spec 2026-10-28 §5): only the key catcher does,
-                // with no field focused.
-                onKey: SpecReviewPresentation.fieldAnswersAsk(screenUp: showsSpecReview) ? pressAnswerKey : nil,
-                keyboardStop: keys.shownStop,
-                fieldFocus: fieldFocus,
-                onLeaveField: leaveField
-            )
+            QuestionPartView(card: ChatQuestionCard(questions: ask.payload.questions), draft: questionDraft)
+                .environment(\.chatUIStyle, DesignKitChatStyle(look: .ask))
         }
+    }
+
+    /// Under the spec review screen a field's ⌘↩ never answers the ask (spec 2026-10-28 §5): only the key catcher
+    /// does, with no field focused.
+    private var questionDraft: ChatQuestionDraft {
+        Self.questionDraft(
+            picks: picksBinding, editable: editable,
+            onKey: SpecReviewPresentation.fieldAnswersAsk(screenUp: showsSpecReview) ? pressAnswerKey : nil,
+            fieldFocus: fieldFocus, stop: keys.shownStop, onLeaveField: leaveField
+        )
+    }
+
+    /// The ask's questions on ChatUI's card: the picks are the ask's draft (or its answer) and the answer bar sends
+    /// them. An Other… field is the multi-line editor about three lines tall, whose ⌘↩ (⌘⇧↩) presses the ask's answer
+    /// buttons and Esc leaves it; the question under the keyboard cursor is outlined, and an option names its digit
+    /// (board #412).
+    static func questionDraft(
+        picks: Binding<[String: ChatQuestionAnswer.Entry]>,
+        editable: Bool,
+        onKey: ((Bool) -> Void)?,
+        fieldFocus: OwnerAskFieldFocus?,
+        stop: OwnerAskKeyStop?,
+        onLeaveField: (() -> Void)?
+    ) -> ChatQuestionDraft {
+        ChatQuestionDraft(
+            picks: picks,
+            editable: editable,
+            otherField: { question, text in
+                AnyView(CommentTextEditor(
+                    text: text, placeholder: QuestionPartView.otherPlaceholder,
+                    minHeight: CommentTextEditor.formMinHeight, maxHeight: CommentTextEditor.formMaxHeight,
+                    onSubmit: onKey.map { onKey in { onKey(false) } },
+                    onShiftSubmit: onKey.map { onKey in { onKey(true) } },
+                    onCancel: onLeaveField,
+                    focusRequest: OwnerAskFieldFocus.request(fieldFocus, for: .question(question.id))
+                ))
+            },
+            decorate: { question, body in
+                AnyView(body.ownerAskKeyCursor(stop == .question(question.id)).id(OwnerAskKeyStop.question(question.id)))
+            },
+            optionHelp: { index in
+                editable && index < 9 ? "Press \(index + 1) to pick (Tab moves between questions)" : ""
+            }
+        )
     }
 
     private var hasTopSections: Bool {

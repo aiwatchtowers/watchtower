@@ -1,3 +1,4 @@
+import ChatWire
 import SwiftUI
 @testable import WatchtowerDesktop
 import WatchtowerCore
@@ -79,14 +80,15 @@ enum ChatMarkdownShotFixtures {
         let message = ChatMessageRecord(id: 2, conversationID: 1, role: "assistant", text: text, createdAt: 0,
                                         turnID: "t1")
         let item = ChatThreadItem(message: message, steps: [], siblingIndex: 1, siblingCount: 1)
-        return AnyView(ChatMessageRow(item: item, isLast: true, isEditing: false, actions: ChatRowActions())
+        return AnyView(ChatUIShotRow.row(item)
             .environment(\.markdownNavScreens, ["inbox"])
             .frame(width: width, alignment: .topLeading)
             .padding(12))
     }
 
     static func streaming(width: CGFloat, text: String = answer) -> AnyView {
-        AnyView(AssistantMessageBody(text: text, steps: [], isRunning: true)
+        AnyView(ChatUIShotRow.message(ChatFeed.Message(id: 2, role: "assistant", text: text,
+                                                       status: EmbeddedChatFeedAdapter.pendingStatus, createdAt: .distantPast))
             .environment(\.markdownNavScreens, ["inbox"])
             .frame(width: width, alignment: .topLeading)
             .padding(12))

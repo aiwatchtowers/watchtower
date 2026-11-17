@@ -12,7 +12,7 @@ struct SourcesPartView: View {
     var body: some View {
         let sources = payload.sources.map(ChatSource.init(wire:))
         let summary = ChatSourceGrouping.summary(sources)
-        if !summary.kinds.isEmpty {
+        if !summary.kinds.isEmpty, context.actions.showsSources {
             Button { context.actions.openSources(sources) } label: {
                 HStack(spacing: Spacing.compact) {
                     HStack(spacing: Spacing.tight) {
@@ -65,4 +65,9 @@ extension ChatSource {
         self.init(kind: source.kind, title: source.title, url: source.url, ref: source.ref, group: source.group,
                   snippet: source.snippet, date: source.date)
     }
+}
+
+extension ChatSource {
+    /// The SF Symbol of a source kind, as the sources pill shows it (the Mac's sources panel too).
+    public static func icon(forKind kind: String) -> String { SourcesPartView.icon(kind) }
 }
