@@ -136,7 +136,7 @@ func BuildParts(m FeedMessage, conv FeedConversation, actions []FeedAction) []Pa
 		}
 	}
 	for _, a := range actions {
-		if a.turnID == m.turnID && m.turnID != "" {
+		if a.TurnID == m.turnID && m.turnID != "" {
 			parts = append(parts, approvalPart(a))
 		}
 	}
@@ -287,10 +287,19 @@ func sourcesPart(steps []FeedStep) *Part {
 func approvalPart(a FeedAction) Part {
 	payload := map[string]any{
 		"id": a.ID, "tool": a.Tool, "title": a.Title, "args_display": a.ArgsDisplay,
-		"args_sha256": a.ArgsSHA256, "status": a.Status,
+		"args_sha256": a.ArgsSHA256, "status": a.Status, "external": a.External, "args_complete": a.ArgsComplete,
 	}
 	if a.Reason != nil {
 		payload["reason"] = *a.Reason
+	}
+	if a.Error != "" {
+		payload["error"] = a.Error
+	}
+	if len(a.Result) > 0 {
+		payload["result"] = a.Result
+	}
+	if a.TurnID != "" {
+		payload["turn_id"] = a.TurnID
 	}
 	var tail string
 	switch a.Status {

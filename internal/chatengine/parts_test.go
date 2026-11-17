@@ -42,7 +42,7 @@ func loadPartsCases(t *testing.T) []partsCase {
 	for i := range cases {
 		cases[i].Message.turnID = cases[i].TurnID
 		for j := range cases[i].Actions {
-			cases[i].Actions[j].turnID = cases[i].TurnID
+			cases[i].Actions[j].TurnID = cases[i].TurnID
 		}
 	}
 	return cases
@@ -115,7 +115,7 @@ func TestCHAT06_EveryPartKindHasFallback(t *testing.T) {
 
 func TestParts_ApprovalFallbackText(t *testing.T) {
 	a := FeedAction{ID: 1, Tool: "send_slack_message", Title: "Send slack message", Status: "pending",
-		ArgsDisplay: `{"channel":"#general","text":"hi"}`, turnID: "t1"}
+		ArgsDisplay: `{"channel":"#general","text":"hi"}`, TurnID: "t1"}
 	m := FeedMessage{ID: 2, Role: "assistant", turnID: "t1"}
 	var found *Part
 	for _, p := range BuildParts(m, FeedConversation{}, []FeedAction{a}) {
