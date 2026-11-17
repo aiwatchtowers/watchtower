@@ -77,13 +77,13 @@ final class FileVaultStatusTests: XCTestCase {
             usleep(1000)
         }
         XCTAssertGreaterThan(pid, 0, "the child never started")
-        addTeardownBlock { if pid > 0 { _ = killpg(pid, SIGKILL) } }
         task.cancel()
         // A regression (cancel not reaching the child) fails here instead of hanging.
         let outcome = await withTaskGroup(of: Result<String, Error>?.self) { group in
             group.addTask { await task.result }
             group.addTask {
-                try? await Task.sleep(for: .seconds(30))
+                // Cancelled (the read ended in time): nothing to kill.
+                do { try await Task.sleep(for: .seconds(30)) } catch { return nil }
                 if pid > 0 { _ = killpg(pid, SIGKILL) }
                 return nil
             }
