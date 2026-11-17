@@ -85,12 +85,12 @@ func TestStartAccountPurge_OnlyFromScheduled(t *testing.T) {
 		(1, 'slack', 1, 'revoked', '2026-01-01T00:00:00Z', 'scheduled'),
 		(2, 'slack', 2, 'revoked', '2026-01-01T00:00:00Z', 'cancelled')`)
 	for id, want := range map[int64]bool{1: true, 2: false} {
-		got, err := d.StartAccountPurge(id, time.Now())
+		got, err := d.StartAccountPurge(id, time.Now(), false)
 		if err != nil || got != want {
 			t.Fatalf("start %d = %v, %v; want %v", id, got, err, want)
 		}
 	}
-	if got, err := d.StartAccountPurge(1, time.Now()); err != nil || got {
+	if got, err := d.StartAccountPurge(1, time.Now(), false); err != nil || got {
 		t.Fatalf("a running row is not started again: %v %v", got, err)
 	}
 	if state, _, _, _ := ledgerState(t, d, 2); state != "cancelled" {
@@ -207,7 +207,7 @@ func TestAccountPurgeRunning_OnlyARunningRow(t *testing.T) {
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("open rows = %+v, %v", rows, err)
 	}
-	if ok, err := d.StartAccountPurge(rows[0].ID, time.Now()); err != nil || !ok {
+	if ok, err := d.StartAccountPurge(rows[0].ID, time.Now(), false); err != nil || !ok {
 		t.Fatalf("start: %v %v", ok, err)
 	}
 	if !running("slack", 1) {
@@ -252,7 +252,7 @@ func TestStartAccountPurge_AccountMustStillQualify(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, err := d.StartAccountPurge(1, cut)
+			got, err := d.StartAccountPurge(1, cut, false)
 			if err != nil || got != c.want {
 				t.Fatalf("start = %v, %v; want %v", got, err, c.want)
 			}
@@ -268,7 +268,7 @@ func TestStartAccountPurge_AccountMustStillQualify(t *testing.T) {
 	t.Run("no account row", func(t *testing.T) {
 		d := OpenTestDB(t)
 		mustExecAll(t, d, `INSERT INTO account_purges (id, source, account_id, reason, due_at) VALUES (1, 'jira', 9, 'revoked', '2026-01-01T00:00:00Z')`)
-		if got, err := d.StartAccountPurge(1, time.Now()); err != nil || got {
+		if got, err := d.StartAccountPurge(1, time.Now(), false); err != nil || got {
 			t.Fatalf("start = %v, %v; want false", got, err)
 		}
 	})

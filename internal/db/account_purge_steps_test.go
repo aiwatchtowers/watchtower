@@ -380,7 +380,7 @@ func TestFinishAccountPurge_MarksPurged(t *testing.T) {
 		`INSERT INTO linear_accounts (id, org_id, status, error, moved_watermark) VALUES (1, 'o1', 'revoked', 'gone', 'w')`,
 		`INSERT INTO account_purges (id, source, account_id, reason, due_at) VALUES (1, 'linear', 1, 'revoked', '2026-01-01T00:00:00Z')`,
 	)
-	if started, err := d.StartAccountPurge(1, time.Now()); err != nil || !started {
+	if started, err := d.StartAccountPurge(1, time.Now(), false); err != nil || !started {
 		t.Fatal(started, err)
 	}
 	if err := d.AddPurgeRows(1, 7); err != nil {
@@ -445,5 +445,249 @@ func TestPurge02_KnowledgeStepsUseKeyRanges(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TestStartAccountPurge_ZeroLeaseNeedsRemovedStill (#1769, A2): a removed
+// Slack account's zero-lease row starts (cutoff now, requireRemoved) only
+// while the account is still removed — an "add again" after the re-plan wins
+// and leaves the row scheduled, nothing deleted.
+func TestStartAccountPurge_ZeroLeaseNeedsRemovedStill(t *testing.T) {
+	d := OpenTestDB(t)
+	okAt := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	mustExecAll(t, d,
+		`INSERT INTO slack_accounts (id, team_id, status, access_ok_at) VALUES (1, 'T1', 'removed', '`+okAt+`')`,
+		`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', '1.0', '1:U1', 'hi')`,
+		`INSERT INTO account_purges (id, source, account_id, reason, due_at) VALUES (1, 'slack', 1, 'lease', '2026-01-01T00:00:00Z')`,
+		`UPDATE slack_accounts SET status = 'ok' WHERE id = 1`, // added again
+	)
+	if got, err := d.StartAccountPurge(1, time.Now(), true); err != nil || got {
+		t.Fatalf("start after add again = %v, %v; want false", got, err)
+	}
+	if state, _, _, _ := ledgerState(t, d, 1); state != "scheduled" {
+		t.Fatalf("state = %s, want scheduled", state)
+	}
+	if n := count(t, d, `SELECT count(*) FROM messages`); n != 1 {
+		t.Fatalf("messages = %d, want 1", n)
+	}
+	mustExecAll(t, d, `UPDATE slack_accounts SET status = 'removed' WHERE id = 1`)
+	if got, err := d.StartAccountPurge(1, time.Now(), true); err != nil || !got {
+		t.Fatalf("start while removed = %v, %v; want true", got, err)
+	}
+}
+
+// TestPurgeLeft_CountsWhatTheStepsMatch (#1769, A4): before a purge the count
+// form names the account's tables, after a complete drain it is empty for
+// every source, and another account's rows never count.
+func TestPurgeLeft_CountsWhatTheStepsMatch(t *testing.T) {
+	ctx := context.Background()
+	left := func(d *DB, source string, id int64) map[string]int64 {
+		t.Helper()
+		steps, err := d.PurgeSteps(source, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := d.PurgeLeft(ctx, steps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	d := OpenTestDB(t)
+	seedSlackIsolation(t, d)
+	mustExecAll(t, d,
+		`INSERT INTO calendar_calendars (id, name, account_id) VALUES ('cal1', 'Work', 1)`,
+		`INSERT INTO calendar_events (id, calendar_id, start_time, end_time) VALUES
+			('ev-kept', 'cal1', '2026-01-01T10:00:00Z', '2026-01-01T11:00:00Z'),
+			('ev-gone', 'cal1', '2026-01-02T10:00:00Z', '2026-01-02T11:00:00Z')`,
+		`INSERT INTO meeting_transcripts (title, transcript_text, event_id) VALUES ('standup', 'text', 'ev-kept')`,
+	)
+	if got := left(d, "slack", 1); got["messages"] != 2 || got["users"] != 1 {
+		t.Fatalf("before: %v; want messages=2, users=1", got)
+	}
+	trackers := OpenTestDB(t)
+	seedTrackerIsolation(t, trackers)
+	for _, c := range []struct {
+		d      *DB
+		source string
+	}{{d, "slack"}, {d, "google"}, {trackers, "jira"}, {trackers, "linear"}} {
+		// The list the purge ran, read before its deletes (stream digest
+		// and Confluence space ids included).
+		steps, err := c.d.PurgeSteps(c.source, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		drainPurge(t, c.d, c.source, 1, 500)
+		got, err := c.d.PurgeLeft(ctx, steps)
+		if err != nil || len(got) != 0 {
+			t.Fatalf("%s after drain: %v %v; want nothing left", c.source, got, err)
+		}
+	}
+	if got := left(d, "slack", 10); got["messages"] != 2 {
+		t.Fatalf("slack account 10: %v; want its messages counted", got)
+	}
+	if got := left(trackers, "jira", 10); got["jira_issues"] != 2 {
+		t.Fatalf("jira account 10: %v; want its issues counted", got)
+	}
+	// A cancelled context stops the count.
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	steps, err := d.PurgeSteps("slack", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.PurgeLeft(cancelled, steps); err == nil {
+		t.Fatal("a cancelled context must stop the count")
+	}
+}
+
+// A zero-lease row scheduled before the account's latest confirmed access
+// (added back and removed again) does not start (#1769 fix round 1, F1).
+func TestStartAccountPurge_ZeroLeaseStaleAfterReadd(t *testing.T) {
+	d := OpenTestDB(t)
+	now := time.Now().UTC()
+	mustExecAll(t, d,
+		`INSERT INTO slack_accounts (id, team_id, status, access_ok_at) VALUES (1, 'T1', 'removed', '`+now.Add(-time.Hour).Format(time.RFC3339)+`')`,
+		`INSERT INTO account_purges (id, source, account_id, reason, due_at, scheduled_at) VALUES (1, 'slack', 1, 'lease', '2026-01-01T00:00:00Z', '`+
+			now.Add(-2*time.Hour).Format(time.RFC3339)+`')`,
+	)
+	if got, err := d.StartAccountPurge(1, now, true); err != nil || got {
+		t.Fatalf("start of a row older than the access = %v, %v; want false", got, err)
+	}
+	mustExecAll(t, d, `UPDATE account_purges SET scheduled_at = '`+now.Add(-30*time.Minute).Format(time.RFC3339)+`'`)
+	if got, err := d.StartAccountPurge(1, now, true); err != nil || !got {
+		t.Fatalf("start of a row newer than the access = %v, %v; want true", got, err)
+	}
+}
+
+// Fix round 2 (R1): the stream digest and Confluence space steps delete a
+// parent only while none of its knowledge rows is left (one statement, so
+// the check and the delete cannot be split), through key ranges.
+func TestPurgeSteps_ParentWaitsForItsKnowledge(t *testing.T) {
+	d := OpenTestDB(t)
+	mustExecAll(t, d,
+		`INSERT INTO jira_accounts (id, cloud_id) VALUES (1, 'c1')`,
+		`INSERT INTO ext_sources (id, provider, jira_account_id, container_key) VALUES (5, 'confluence', 1, 'ENG'), (6, 'confluence', 1, 'OPS')`,
+		`INSERT INTO stream_digests (id, source, account_id, period_from, period_to) VALUES (7, 'jira', 1, 'a', 'b'), (8, 'jira', 1, 'a', 'b')`,
+	)
+	steps, err := d.PurgeSteps("jira", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, st := range steps {
+		for {
+			n, err := d.RunPurgeStep(context.Background(), st, 500)
+			if err != nil {
+				t.Fatalf("%s: %v", st.Name, err)
+			}
+			if n == 0 {
+				break
+			}
+		}
+		switch st.Name {
+		case "stream digest documents":
+			mustExecAll(t, d, `INSERT OR IGNORE INTO kb_documents (id, source) VALUES ('stream_digest:7:3', 'stream_digest')`)
+		case "knowledge documents confluence:5:":
+			mustExecAll(t, d, `INSERT OR IGNORE INTO kb_documents (id, source) VALUES ('confluence:5:p9', 'confluence')`)
+		case "knowledge marks confluence:6:":
+			mustExecAll(t, d, `INSERT OR IGNORE INTO kb_dirty (source, key) VALUES ('confluence', 'confluence:6:p9')`)
+		}
+	}
+	if n := count(t, d, `SELECT count(*) FROM stream_digests`); n != 1 {
+		t.Fatalf("stream digests left = %d; want digest 7 (a document left) only", n)
+	}
+	if n := count(t, d, `SELECT count(*) FROM stream_digests WHERE id = 7`); n != 1 {
+		t.Fatal("digest 7 must stay")
+	}
+	if n := count(t, d, `SELECT count(*) FROM ext_sources`); n != 2 {
+		t.Fatalf("spaces left = %d; want both (a document / a mark left)", n)
+	}
+	left, err := d.PurgeLeft(context.Background(), steps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if left["stream_digests"] != 1 || left["ext_sources"] != 2 || left["kb_documents"] != 2 || left["kb_dirty"] != 1 {
+		t.Fatalf("left = %v", left)
+	}
+	// SQLite names a subquery's table by its alias in the plan: each guard
+	// alias must be a SEARCH on its key range, never a SCAN.
+	guards := map[string][]string{"stream_digests": {"k"}, "ext_sources": {"k", "m", "l"}}
+	for _, st := range steps {
+		aliases, ok := guards[st.Table]
+		if !ok {
+			continue
+		}
+		plan := explainDetails(t, d, st.SQL, append(append([]any{}, st.Args...), 500)...)
+		lines := strings.Split(plan, "\n")
+		for _, alias := range aliases {
+			searched := false
+			for _, detail := range lines {
+				if strings.HasPrefix(detail, "SCAN "+alias+" ") || detail == "SCAN "+alias {
+					t.Errorf("step %q scans %s: %s", st.Name, alias, detail)
+				}
+				searched = searched || strings.HasPrefix(detail, "SEARCH "+alias+" USING ")
+			}
+			if !searched {
+				t.Errorf("step %q: guard %s is no index search:\n%s", st.Name, alias, plan)
+			}
+		}
+		for _, detail := range lines {
+			for _, table := range []string{"kb_documents", "kb_dirty", "doc_links"} {
+				if strings.HasPrefix(detail, "SCAN "+table) {
+					t.Errorf("step %q scans %s: %s", st.Name, table, detail)
+				}
+			}
+		}
+	}
+}
+
+// Fix round 2 (R2): access stamped in the second the zero-lease row was
+// scheduled refuses the start.
+func TestStartAccountPurge_ZeroLeaseSameSecondRefused(t *testing.T) {
+	d := OpenTestDB(t)
+	at := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+	mustExecAll(t, d,
+		`INSERT INTO slack_accounts (id, team_id, status, access_ok_at) VALUES (1, 'T1', 'removed', '`+at+`')`,
+		`INSERT INTO account_purges (id, source, account_id, reason, due_at, scheduled_at) VALUES (1, 'slack', 1, 'lease', '2026-01-01T00:00:00Z', '`+at+`')`,
+	)
+	if got, err := d.StartAccountPurge(1, time.Now(), true); err != nil || got {
+		t.Fatalf("start = %v, %v; want false on a tie", got, err)
+	}
+}
+
+// Fix round 3: a stream digest's pending knowledge marks go before its
+// documents, through a key range, and only its own.
+func TestPurgeSteps_StreamDigestMarksGo(t *testing.T) {
+	d := OpenTestDB(t)
+	mustExecAll(t, d,
+		`INSERT INTO jira_accounts (id, cloud_id) VALUES (1, 'c1')`,
+		`INSERT INTO stream_digests (id, source, account_id, period_from, period_to) VALUES (7, 'jira', 1, 'a', 'b'), (70, 'jira', 2, 'a', 'b')`,
+		`INSERT INTO kb_dirty (source, key) VALUES ('stream_digest', 'stream_digest:7:0'), ('stream_digest', 'stream_digest:70:0')`,
+	)
+	steps, err := d.PurgeSteps("jira", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marks, docs := -1, -1
+	for i, st := range steps {
+		switch st.Name {
+		case "stream digest marks":
+			marks = i
+		case "stream digest documents":
+			docs = i
+		}
+	}
+	if marks < 0 || docs < 0 || marks > docs {
+		t.Fatalf("marks step %d must come before the documents step %d", marks, docs)
+	}
+	drainPurge(t, d, "jira", 1, 500)
+	if n := count(t, d, `SELECT count(*) FROM kb_dirty WHERE key = 'stream_digest:7:0'`); n != 0 {
+		t.Fatalf("digest 7's mark left: %d", n)
+	}
+	if n := count(t, d, `SELECT count(*) FROM kb_dirty WHERE key = 'stream_digest:70:0'`); n != 1 {
+		t.Fatal("another account's mark must stay")
+	}
+	if n := count(t, d, `SELECT count(*) FROM stream_digests WHERE id = 7`); n != 0 {
+		t.Fatal("digest 7 must go")
 	}
 }

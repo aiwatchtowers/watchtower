@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -11,11 +12,14 @@ import (
 // PURGE-02). SQL deletes (or updates) at most `limit` rows of Table per run:
 // the limit is bound as its last parameter, after Args. Every step is
 // idempotent — its predicate reads the current state — so a purge that
-// stopped half-way simply runs its list again from the top.
+// stopped half-way simply runs its list again from the top. Count is the
+// step's count form (#1769, A4): the same predicate as SELECT count(*), with
+// Args alone — PurgeLeft runs it after the last step.
 type PurgeStep struct {
 	Name  string
 	Table string // the driving table, the one the limit applies to
 	SQL   string
+	Count string
 	Args  []any
 }
 
@@ -58,8 +62,19 @@ func (s *purgeSteps) del(name, table, where string, args ...any) {
 		Name:  name,
 		Table: table,
 		SQL:   `DELETE FROM ` + table + ` WHERE rowid IN (SELECT rowid FROM ` + table + ` WHERE ` + where + ` LIMIT ?)`,
+		Count: `SELECT count(*) FROM ` + table + ` WHERE ` + where,
 		Args:  args,
 	})
+}
+
+// delParent is del for a parent row whose knowledge rows are keyed by its id
+// (#1769): the DELETE also needs guard (written against table, no
+// parameters) — none of its knowledge rows left —, while the count form
+// counts every parent row matching where, so a parent kept by a leftover is
+// reported too.
+func (s *purgeSteps) delParent(name, table, where, guard string, args ...any) {
+	s.del(name, table, `(`+where+`) AND `+guard, args...)
+	(*s)[len(*s)-1].Count = `SELECT count(*) FROM ` + table + ` WHERE ` + where
 }
 
 // inbox adds the inbox steps for the items matching scope (written against
@@ -98,17 +113,26 @@ func (s *purgeSteps) knowledge(kind, prefix string) {
 }
 
 // streamDigests adds the steps for one account's stream digests of kind
-// (gmail | jira | linear): each digest's knowledge documents as a key range
-// (ids read by PurgeSteps outside any transaction), then the digests.
+// (gmail | jira | linear): each digest's pending knowledge marks, then its
+// knowledge documents, as key ranges (ids read by PurgeSteps outside any
+// transaction) — the marks first, so a re-render cannot bring a document
+// back after its step —, then the digests.
 func (s *purgeSteps) streamDigests(kind string, accountID int64, ids []int64) {
 	for _, id := range ids {
 		lo, hi := prefixRange(fmt.Sprintf("stream_digest:%d:", id))
+		s.del("stream digest marks", "kb_dirty", `source = 'stream_digest' AND key >= ? AND key < ?`, lo, hi)
 		s.del("stream digest documents", "kb_documents", `id >= ? AND id < ?`, lo, hi)
 	}
 	if kind == "gmail" || kind == "jira" {
 		s.del("extraction receipts", "ideas_extraction_windows", `source = ? AND account_id = ?`, kind, accountID)
 	}
-	s.del("stream digests", "stream_digests", `source = ? AND account_id = ?`, kind, accountID)
+	// A digest goes only while none of its knowledge documents is left, in
+	// the same statement: a purge resumed after this step re-reads the ids
+	// above from the digests still here, so a leftover can never lose the
+	// id its verify count needs (#1769).
+	s.delParent("stream digests", "stream_digests", `source = ? AND account_id = ?`, `NOT EXISTS (
+		SELECT 1 FROM kb_documents k WHERE k.id >= 'stream_digest:' || stream_digests.id || ':'
+		                               AND k.id <  'stream_digest:' || stream_digests.id || ';')`, kind, accountID)
 }
 
 // extSpace is one Confluence space (ext_sources row) of a Jira account.
@@ -299,7 +323,8 @@ func googleSteps(s *purgeSteps, id int64, digests []int64) {
 		Table: "calendar_calendars",
 		SQL: `UPDATE calendar_calendars SET account_id = NULL, is_selected = 0
 			WHERE rowid IN (SELECT rowid FROM calendar_calendars WHERE account_id = ? LIMIT ?)`,
-		Args: []any{id},
+		Count: `SELECT count(*) FROM calendar_calendars WHERE account_id = ?`,
+		Args:  []any{id},
 	})
 
 	s.streamDigests("gmail", id, digests)
@@ -334,7 +359,15 @@ func jiraSteps(s *purgeSteps, id int64, digests []int64, spaces []extSpace) {
 	for _, sp := range spaces {
 		s.knowledge(sp.provider, fmt.Sprintf("%s:%d:", sp.provider, sp.id))
 	}
-	s.del("confluence spaces", "ext_sources", `jira_account_id = ?`, id)
+	// A space goes only while none of its knowledge rows is left (see
+	// streamDigests).
+	spacePrefix := `ext_sources.provider || ':' || ext_sources.id`
+	s.delParent("confluence spaces", "ext_sources", `jira_account_id = ?`, `
+		NOT EXISTS (SELECT 1 FROM kb_documents k WHERE k.id >= `+spacePrefix+` || ':' AND k.id < `+spacePrefix+` || ';')
+		AND NOT EXISTS (SELECT 1 FROM kb_dirty m WHERE m.source = ext_sources.provider
+		                AND m.key >= `+spacePrefix+` || ':' AND m.key < `+spacePrefix+` || ';')
+		AND NOT EXISTS (SELECT 1 FROM doc_links l WHERE l.from_kind = ext_sources.provider
+		                AND l.from_ref >= `+spacePrefix+` || ':' AND l.from_ref < `+spacePrefix+` || ';')`, id)
 
 	s.streamDigests("jira", id, digests)
 	s.knowledge("jira", fmt.Sprintf("jira:%d:", id))
@@ -378,6 +411,31 @@ func (db *DB) RunPurgeStep(ctx context.Context, step PurgeStep, limit int) (int6
 	return n, nil
 }
 
+// PurgeLeft counts, per driving table, the rows steps still match (#1769,
+// A4): each step's count form, in one read-only transaction under ctx. steps
+// is the list the purge ran, read before its deletes, so the ids its
+// knowledge steps carry (stream digests, Confluence spaces) are the original
+// ones. Only tables with rows left are in the map; an empty map is a complete
+// purge.
+func (db *DB) PurgeLeft(ctx context.Context, steps []PurgeStep) (map[string]int64, error) {
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("purge verify: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // read only: nothing to commit
+	left := map[string]int64{}
+	for _, step := range steps {
+		var n int64
+		if err := tx.QueryRowContext(ctx, step.Count, step.Args...).Scan(&n); err != nil {
+			return nil, fmt.Errorf("purge verify %s: %w", step.Name, err)
+		}
+		if n > 0 {
+			left[step.Table] += n
+		}
+	}
+	return left, nil
+}
+
 // purgeAccountFactsSQL is every account of the four sources with the facts
 // the purge start guard reads.
 const purgeAccountFactsSQL = `
@@ -392,24 +450,30 @@ UNION ALL SELECT 'linear', id, status, access_ok_at, revoked_at FROM linear_acco
 // purge: a revoked row needs the account still revoked with no access_ok_at
 // newer than its revoked_at (an empty time on either side is no proof); a
 // lease row needs a non-purged account with no access_ok_at newer than
-// leaseCutoff (now − Lease) in its lease scope — its own for a removed
-// account, every live account of its source otherwise (purge.Plan's
-// deadlines). The clocks are fixed-width RFC 3339 UTC, so text order is time
-// order. A row cancelled since the caller read it, already running, or whose
-// account no longer qualifies is left as it is (false).
-func (db *DB) StartAccountPurge(id int64, leaseCutoff time.Time) (bool, error) {
+// leaseCutoff (purge.Cutoff: now − Lease, or now for a removed Slack
+// account's zero lease) in its lease scope — its own for a removed account,
+// every live account of its source otherwise (purge.Plan's deadlines) — and,
+// with requireRemoved, the account still removed and no access confirmed at
+// or after the row was scheduled — an "add again" after the re-plan wins, and
+// so does an add-and-remove-again since the scheduling; the clocks have
+// second precision, and a tie keeps the data. The clocks are fixed-width
+// RFC 3339 UTC, so text order is time order. A row cancelled since the
+// caller read it, already running, or whose account no longer qualifies is
+// left as it is (false).
+func (db *DB) StartAccountPurge(id int64, leaseCutoff time.Time, requireRemoved bool) (bool, error) {
 	res, err := db.Exec(`UPDATE account_purges AS p SET state = 'running', started_at = `+nowSQL+`
 		WHERE p.id = ?1 AND p.state = 'scheduled' AND EXISTS (
 			SELECT 1 FROM (`+purgeAccountFactsSQL+`) a
 			WHERE a.source = p.source AND a.id = p.account_id AND (
 				(p.reason = 'revoked' AND a.status = 'revoked'
 					AND (a.access_ok_at = '' OR a.revoked_at = '' OR a.access_ok_at <= a.revoked_at))
-				OR (p.reason = 'lease' AND a.status != 'purged' AND NOT EXISTS (
+				OR (p.reason = 'lease' AND a.status != 'purged'
+					AND (NOT ?3 OR (a.status = 'removed' AND a.access_ok_at < p.scheduled_at)) AND NOT EXISTS (
 					SELECT 1 FROM (`+purgeAccountFactsSQL+`) b
 					WHERE b.source = a.source AND b.access_ok_at > ?2
 						AND CASE WHEN a.status = 'removed' THEN b.id = a.id
 						         ELSE b.status NOT IN ('removed', 'purged') END))))`,
-		id, leaseCutoff.UTC().Format(time.RFC3339))
+		id, leaseCutoff.UTC().Format(time.RFC3339), requireRemoved)
 	if err != nil {
 		return false, fmt.Errorf("starting account purge %d: %w", id, err)
 	}
