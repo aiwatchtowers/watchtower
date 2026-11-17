@@ -31,7 +31,12 @@ final class PeopleViewModel {
     /// Why the last read of the cards failed; the list shows it with Retry.
     /// Only a successful read clears it, never a write (star, connections),
     /// whose errors go to `errorMessage`.
-    private(set) var loadError: String?
+    var loadError: String? { fullLoadError ?? windowLoadError }
+    /// A failed `load()` (cards, profile, stars, stopped people); only a
+    /// successful `load()` clears it.
+    private var fullLoadError: String?
+    /// A failed `loadWindow(at:)`; a successful window read or `load()` clears it.
+    private var windowLoadError: String?
     private let dbManager: DatabaseManager
     @ObservationIgnored private let cliRunner: (any CLIRunnerProtocol)?
     private var observationTask: Task<Void, Never>?
@@ -131,10 +136,11 @@ final class PeopleViewModel {
             interactions = result.7
             stoppedPeopleIDs = result.8
             selectedWindow = result.9
-            loadError = nil
+            fullLoadError = nil
+            windowLoadError = nil
         } catch {
             cards = []
-            loadError = error.localizedDescription
+            fullLoadError = error.localizedDescription
         }
         isLoading = false
     }
@@ -162,9 +168,9 @@ final class PeopleViewModel {
             cards = result.0
             cardSummary = result.1
             interactions = result.2
-            loadError = nil
+            windowLoadError = nil
         } catch {
-            loadError = error.localizedDescription
+            windowLoadError = error.localizedDescription
         }
     }
 

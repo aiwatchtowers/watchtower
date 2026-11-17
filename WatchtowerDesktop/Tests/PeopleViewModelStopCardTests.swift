@@ -207,6 +207,35 @@ final class PeopleViewModelStopCardTests: XCTestCase {
         XCTAssertEqual(vm.loadError, loadError, "a write failure does not replace the load error")
     }
 
+    /// A successful window read does not clear a failed full load's error:
+    /// the profile, stars and stopped people are still stale.
+    func testWindowReadKeepsFullLoadError() async throws {
+        let vm = PeopleViewModel(dbManager: dbManager, cliRunner: nil)
+        vm.load()
+        XCTAssertEqual(vm.availableWindows.count, 1)
+
+        try await dbManager.dbPool.write { db in try db.execute(sql: "DROP TABLE people_card_exclusions") }
+        vm.load()
+        let fullError = try XCTUnwrap(vm.loadError)
+
+        vm.loadWindow(at: 0)
+        XCTAssertEqual(vm.loadError, fullError, "only a successful load() clears it")
+        XCTAssertNotNil(vm.cardFor(userID: "1:UDANA"), "the window read itself worked")
+    }
+
+    /// A window read's own failure clears on its next success.
+    func testWindowReadClearsItsOwnError() async throws {
+        let vm = PeopleViewModel(dbManager: dbManager, cliRunner: nil)
+        vm.load()
+        try await dbManager.dbPool.write { db in try db.execute(sql: "ALTER TABLE people_cards RENAME TO people_cards_away") }
+        vm.loadWindow(at: 0)
+        XCTAssertNotNil(vm.loadError)
+
+        try await dbManager.dbPool.write { db in try db.execute(sql: "ALTER TABLE people_cards_away RENAME TO people_cards") }
+        vm.loadWindow(at: 0)
+        XCTAssertNil(vm.loadError)
+    }
+
     /// Stopping a card while an older window is shown keeps that window.
     func testStopCardKeepsSelectedWindow() async throws {
         try await dbManager.dbPool.write { db in

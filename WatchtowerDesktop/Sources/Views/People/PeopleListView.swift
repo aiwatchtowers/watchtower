@@ -123,6 +123,10 @@ struct PeopleListView: View {
             windowPicker(vm)
             statsAndSearch(vm)
             Divider()
+            // A write's failure (star, connections) shows whatever the list holds.
+            if let error = vm.errorMessage {
+                WriteErrorBanner(message: error) { vm.errorMessage = nil }
+            }
             if vm.cards.isEmpty, vm.stoppedPeopleIDs.isEmpty, let error = vm.loadError {
                 ErrorView(title: "Error", message: error, actionTitle: PeopleCardCopy.retry) { vm.load() }
             } else if vm.cards.isEmpty, vm.stoppedPeopleIDs.isEmpty {
@@ -136,9 +140,6 @@ struct PeopleListView: View {
                             .buttonStyle(.kitSecondary)
                             .padding(.trailing, Spacing.medium)
                     }
-                }
-                if let error = vm.errorMessage {
-                    WriteErrorBanner(message: error) { vm.errorMessage = nil }
                 }
                 userListScrollView(vm)
             }
