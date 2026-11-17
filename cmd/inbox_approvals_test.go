@@ -155,16 +155,20 @@ func TestApprovalHook_DaemonThatCannotWakeIsNotLogged(t *testing.T) {
 	assert.Equal(t, []string{"approval hook: waking the daemon: boom"}, lines)
 }
 
-// The approval writers are called only from internal/tools (the registry) and
+// The approval writers are called only from internal/tools (the registry),
 // cmd/actions.go (its direct transitions on the handle it built a registry
-// on), so installApprovalHook in buildToolRegistry covers every cmd process
-// that changes an approval. A new caller elsewhere must install the hook.
+// on) and inbox.act's own writes in internal/inboxfeed (whose deps,
+// towerActDeps in cmd/sync.go, build the registry with buildToolRegistry on
+// the tower's handle — TestTowerActDeps_ApprovalWritersFireTheHook), so
+// installApprovalHook in buildToolRegistry covers every cmd process that
+// changes an approval. A new caller elsewhere must install the hook.
 func TestApprovalWriters_CalledOnlyThroughTheRegistry(t *testing.T) {
 	writers := map[string]bool{"InsertAgentAction": true, "InsertInboxButtonProposal": true,
 		"TransitionAgentAction": true, "DismissAgentAction": true, "ApproveAgentActionWithArgs": true,
 		"InsertReminder": true, "MarkReminderDone": true, "SnoozeReminder": true}
 	allowed := func(path string) bool {
-		return strings.HasPrefix(path, "internal/db/") || strings.HasPrefix(path, "internal/tools/") || path == "cmd/actions.go"
+		return strings.HasPrefix(path, "internal/db/") || strings.HasPrefix(path, "internal/tools/") || path == "cmd/actions.go" ||
+			path == "internal/inboxfeed/act.go" || path == "internal/inboxfeed/act_approval.go"
 	}
 	var callers []string
 	for _, root := range []string{"../cmd", "../internal"} {
@@ -190,5 +194,7 @@ func TestApprovalWriters_CalledOnlyThroughTheRegistry(t *testing.T) {
 		}))
 	}
 	assert.Contains(t, callers, "cmd/actions.go")
+	assert.Contains(t, callers, "internal/inboxfeed/act.go")
+	assert.Contains(t, callers, "internal/inboxfeed/act_approval.go")
 	assert.Contains(t, callers, "internal/tools/registry.go")
 }

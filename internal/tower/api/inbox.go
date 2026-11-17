@@ -122,6 +122,10 @@ type Card struct {
 	Body   string `json:"body"`
 	// BodyClipped is set when FeedRequest.Clip cut Body.
 	BodyClipped bool `json:"body_clipped"`
+	// Link is the card's own link (automation_outputs.link), the Mac's
+	// common-row Open; "" for none and for every card that is not an
+	// artifact.
+	Link string `json:"link"`
 	// ContentHash is the version drawn (an output's content hash, a native
 	// approval's args SHA-256): every guarded write carries it back.
 	ContentHash string       `json:"content_hash"`
@@ -159,10 +163,25 @@ func (ActionState) EnumValues() []string {
 
 // CardAction is one button of a card.
 type CardAction struct {
-	Index int         `json:"index"`
-	Kind  string      `json:"kind"`
+	// Index is the press address: the position in the card's flattened
+	// action list (its own actions, then its blocks' in document order).
+	Index int    `json:"index"`
+	Kind  string `json:"kind"`
+	// Label is the label the Mac draws ("Sent — run #N" on a pressed Reply).
 	Label string      `json:"label"`
 	State ActionState `json:"state"`
+	// Detail is the button's own state where State is coarser: a Reply's
+	// (ready, sent, needs_confirmation, off, unreadable, removed) or a
+	// target's (idle, waiting, creating, stuck, failed, created); "" for
+	// the other kinds.
+	Detail string `json:"detail"`
+	// Note is the line the Mac draws with it: a Reply's caption ("Needs
+	// confirmation", "Off", …) or a failed target's message; "" for none.
+	Note string `json:"note"`
+	// Until is when Detail stops holding by time alone (RFC 3339 UTC): a
+	// creating target reads as stuck from then on, with no write to wake a
+	// watch, so a client compares it with its own clock; "" otherwise.
+	Until string `json:"until"`
 }
 
 // RefKind is the kind of record a list row's ref points at.
@@ -195,6 +214,16 @@ type RefFacts struct {
 	Reply        bool   `json:"reply"`
 	ReplyWaiting bool   `json:"reply_waiting"`
 	Link         string `json:"link"`
+	// The facts the Mac's row buttons read (InboxRowActionsContent.Kind);
+	// "", false or 0 on the other kinds. TriggerType is an inbox item's
+	// trigger (its Open in … label); Custom a custom track (Delete… and Go to
+	// Target in place of Make a Task) and LinkedTargetID its target; IdeaKind
+	// (idea, note, decision) and IdeaStatus an idea's (ideaButtons).
+	TriggerType    string `json:"trigger_type"`
+	Custom         bool   `json:"custom"`
+	LinkedTargetID int64  `json:"linked_target_id"`
+	IdeaKind       string `json:"idea_kind"`
+	IdeaStatus     string `json:"idea_status"`
 }
 
 // Approval is an approval card's proposal.
@@ -209,6 +238,53 @@ type Approval struct {
 	Reason     string `json:"reason"`
 	// EditOnMac is set for a tool whose args the Mac's Edit… changes.
 	EditOnMac bool `json:"edit_on_mac"`
+	// Target is an Inbox target button's state on its newest proposal (a
+	// create_target row of an automation_output context): the
+	// CardAction.Detail values of a target (idle, waiting, creating, stuck,
+	// failed, created); "" on any other row. The Mac draws it in place of
+	// the decision row (AgentActionCardView.targetRow): stuck, or failed on
+	// a row that is not itself failed, offers Try again; creating shows
+	// progress; anything else keeps the decision row.
+	Target     string `json:"target"`
+	TargetNote string `json:"target_note"`
+	// TargetUntil is when a creating Target reads as stuck (RFC 3339 UTC),
+	// as CardAction.Until; "" otherwise.
+	TargetUntil string `json:"target_until"`
+	// Superseded: an older proposal of an Inbox button whose newest row is
+	// another one; it offers no Retry (the CLI refuses it).
+	Superseded bool `json:"superseded"`
+	// Disclosure is the title of the recipe disclosure a save_automation
+	// past pending draws ("Show the whole recipe (N lines)", "Show
+	// changes", "No change to the recipe text"); "" for none.
+	Disclosure string `json:"disclosure"`
+	// RecipeText is a new recipe's whole text behind the disclosure; ""
+	// for an edit.
+	RecipeText string `json:"recipe_text"`
+	// Diff is an edit's line diff against the saved recipe; empty for a
+	// new recipe and for an unchanged one.
+	Diff []DiffLine `json:"diff"`
+	// RecipeClipped is set when FeedRequest.Clip cut RecipeText or Diff to
+	// ClipBytes.
+	RecipeClipped bool `json:"recipe_clipped"`
+}
+
+// DiffKind is one diff line's kind.
+type DiffKind string
+
+// The diff line kinds.
+const (
+	DiffSame    DiffKind = "same"
+	DiffAdded   DiffKind = "added"
+	DiffRemoved DiffKind = "removed"
+)
+
+// EnumValues lists every DiffKind.
+func (DiffKind) EnumValues() []string { return []string{"same", "added", "removed"} }
+
+// DiffLine is one line of a recipe diff (OwnerAskSnapshotDiff.Line).
+type DiffLine struct {
+	Kind DiffKind `json:"kind"`
+	Text string   `json:"text"`
 }
 
 // LegacyKind is a legacy root entry's kind.
@@ -232,17 +308,44 @@ func (LegacyKind) EnumValues() []string {
 type LegacySection struct {
 	Kind  LegacyKind   `json:"kind"`
 	Items []LegacyItem `json:"items"`
+	// Attention is a Morning brief day's attention list (the briefing's
+	// attention items, in order); empty for the other kinds.
+	Attention []LegacyAttention `json:"attention"`
 }
 
-// LegacyItem is one row of a legacy entry.
+// LegacyAttention is one attention item of a Morning brief (the briefing's
+// AttentionItem).
+type LegacyAttention struct {
+	Text       string `json:"text"`
+	Reason     string `json:"reason"`
+	Priority   string `json:"priority"`
+	SourceType string `json:"source_type"`
+	SourceID   string `json:"source_id"`
+}
+
+// LegacyItem is one row of a legacy entry, with the words the Mac's list
+// row draws (InboxListRow.content).
 type LegacyItem struct {
-	RefKind  RefKind `json:"ref_kind"`
-	ID       int64   `json:"id"`
-	Title    string  `json:"title"`
-	Subtitle string  `json:"subtitle"`
-	Stamp    string  `json:"stamp"`
-	Unread   bool    `json:"unread"`
-	Stopped  bool    `json:"stopped"`
+	RefKind RefKind `json:"ref_kind"`
+	ID      int64   `json:"id"`
+	Title   string  `json:"title"`
+	// Subtitle is the row's source line without its time (the screen
+	// models add it from Stamp).
+	Subtitle string `json:"subtitle"`
+	// Preview is the row's second line ("2 new", an idea's essence, a
+	// message's why-it-matters).
+	Preview string `json:"preview"`
+	// Stamp is the row's time (a plan item's start; "" for a backlog item).
+	Stamp string `json:"stamp"`
+	// End is a plan item's end (RFC 3339 UTC; "" when it has none): the Mac
+	// draws a time block as its start–end range.
+	End    string `json:"end"`
+	Unread bool   `json:"unread"`
+	// High: the row is high priority.
+	High    bool `json:"high"`
+	Stopped bool `json:"stopped"`
+	// Done: a plan item is done.
+	Done bool `json:"done"`
 	// Date is a Morning brief's day (yyyy-MM-dd); "" otherwise.
 	Date string `json:"date"`
 }
@@ -324,12 +427,19 @@ type ActRequest struct {
 
 // ActParams are a verb's parameters; each verb reads its own.
 type ActParams struct {
-	ContentHash  string          `json:"content_hash,omitempty"`
-	Index        *int            `json:"index,omitempty"`
-	Text         string          `json:"text,omitempty"`
-	RefKind      RefKind         `json:"ref_kind,omitempty"`
-	RefID        int64           `json:"ref_id,omitempty"`
-	RefVerb      RefVerb         `json:"ref_verb,omitempty"`
+	ContentHash string `json:"content_hash,omitempty"`
+	Index       *int   `json:"index,omitempty"`
+	// ActionKind is a pressed button's kind as drawn (CardAction.Kind:
+	// "reply" or "target"): the hub grant a press needs is decided from it,
+	// and a press whose button is another kind is refused changed.
+	ActionKind string  `json:"action_kind,omitempty"`
+	Text       string  `json:"text,omitempty"`
+	RefKind    RefKind `json:"ref_kind,omitempty"`
+	RefID      int64   `json:"ref_id,omitempty"`
+	RefVerb    RefVerb `json:"ref_verb,omitempty"`
+	// EventID is the track event a track's make_task applies (ref_id is
+	// the track, as for every track verb).
+	EventID      int64           `json:"event_id,omitempty"`
 	Until        string          `json:"until,omitempty"`
 	ApprovalVerb ApprovalVerb    `json:"approval_verb,omitempty"`
 	ArgsSHA256   string          `json:"args_sha256,omitempty"`
@@ -345,4 +455,7 @@ type ActResult struct {
 	Status string `json:"status,omitempty"`
 	Error  string `json:"error,omitempty"`
 	RunID  int64  `json:"run_id,omitempty"`
+	// Note is a line for the owner about what was not done here, such as
+	// a watch that starts only from the Mac.
+	Note string `json:"note,omitempty"`
 }

@@ -94,8 +94,9 @@ enum DemoSeed {
             ownerUser: ownerUser,
             sharing: .none,
             hubKind: hub.kind,
-            // The primary Mac hosts chat (iPhone chat spec D4); the second is an older hub that does not.
-            capabilities: hub.hubID == primary.hubID ? Chat.capabilities : nil
+            // The primary Mac hosts chat (iPhone chat spec D4) and publishes the Inbox (mobile Inbox spec §6); the second
+            // is an older hub that does neither.
+            capabilities: hub.hubID == primary.hubID ? Inbox.capabilities : nil
         )
         // Linked, typing allowed: with the phone's toggle on, the workchat
         // shows its composer.
@@ -122,6 +123,7 @@ enum DemoSeed {
             + (try sessionChatRecords(now: now))
             + (try calendarRecords(now: now))
             + (try Chat.records(now: now))
+            + (try Inbox.records(now: now))
     }
 }
 

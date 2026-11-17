@@ -7,8 +7,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// peerPID is the pid of the process serving the socket (LOCAL_PEERPID).
-func peerPID(conn net.Conn) (int, error) {
+// PeerPID is the pid of the process at the other end of a unix socket
+// (LOCAL_PEERPID): the Desktop serving owner-confirm.sock, or a tower
+// socket client (internal/tower).
+func PeerPID(conn net.Conn) (int, error) {
 	uc, ok := conn.(*net.UnixConn)
 	if !ok {
 		return 0, errors.New("not a unix socket")

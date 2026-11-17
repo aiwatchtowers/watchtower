@@ -87,3 +87,19 @@ func Clip(body string, maxBytes int) (out string, clipped bool) {
 	}
 	return body[:end], true
 }
+
+// clipRecipe clips an approval's recipe disclosure as Clip clips a body: a
+// new recipe's text to ClipBytes on a rune boundary, an edit's diff to the
+// lines whose texts fit in ClipBytes together (the rest dropped); clipped
+// reports whether either was cut.
+func clipRecipe(text string, diff []api.DiffLine) (string, []api.DiffLine, bool) {
+	text, clipped := Clip(text, ClipBytes)
+	size := 0
+	for i, l := range diff {
+		size += len(l.Text)
+		if size > ClipBytes {
+			return text, diff[:i], true
+		}
+	}
+	return text, diff, clipped
+}

@@ -546,7 +546,8 @@ func (h *hubRuntime) heartbeat(st *state.Store, name string) slices.HeartbeatFac
 			defer h.mu.Unlock()
 			return h.lastRelay, !h.lastRelay.IsZero()
 		},
-		Chat: h.chatAvailable,
+		Chat:  h.chatAvailable,
+		Inbox: h.inboxAvailable(),
 		Recordings: func() bool {
 			on, _, err := st.Recordings()
 			if err != nil {

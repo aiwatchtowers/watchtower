@@ -13,4 +13,9 @@ var ChangeTables = []string{
 	// db.OpenInboxClause drops an open Jira item whose issue was deleted at
 	// the source: a deletion changes the counts.
 	"jira_issues",
+	// A target button's task, a save_automation's workbench name, a
+	// message's sender and channel.
+	"targets", "projects", "users", "channels",
+	// The owner (db.OwnerKnownTx): today's placeholder day card waits for one.
+	"slack_accounts", "google_accounts", "jira_accounts", "linear_accounts", "email_accounts",
 }

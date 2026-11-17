@@ -120,29 +120,99 @@ struct PhoneArtifactRowView: View {
     let onRef: (ArtifactRef) -> Void
     let onAction: (Int) -> Void
     @Environment(\.openURL) private var openURL
+    @Environment(\.phoneArtifactInputs) private var inputs
 
     var body: some View {
+        if case let .ref(ref) = row.press {
+            let actions = inputs.refRow(ref)
+            if !actions.hidden {
+                refRow(ref, actions)
+            }
+        } else {
+            plain
+        }
+    }
+
+    private var plain: some View {
         VStack(alignment: .leading, spacing: Spacing.compact) {
             switch row.press {
-            case let .ref(ref):
-                Button { onRef(ref) } label: { line(chevron: true) }.buttonStyle(.plain)
             case let .link(url):
-                Button { openURL(url) } label: { line(chevron: false) }
+                Button { openURL(url) } label: { line(chevron: false, trailingText: nil) }
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(.isLink)
-            case .none:
-                line(chevron: false)
+            case .ref, .none:
+                line(chevron: false, trailingText: nil)
             }
-            if !row.buttons.isEmpty {
-                PhoneArtifactButtons(buttons: row.buttons, onAction: onAction)
-                    .padding(.leading, PhoneMetrics.iconColumn + Spacing.cozy)
-            }
+            rowButtons
         }
         .padding(RowInsets.flat)
         .frame(minHeight: PhoneMetrics.minTouch)
     }
 
-    private func line(chevron: Bool) -> some View {
+    /// A ref row: its swipes and context menu from the host, dimmed with a spinner while a press runs, its
+    /// refusal and Retry under it.
+    @ViewBuilder
+    private func refRow(_ ref: ArtifactRef, _ actions: PhoneRefRowActions) -> some View {
+        if actions.inline.isEmpty {
+            refRowBody(ref, actions)
+        } else {
+            refRowBody(ref, actions)
+                .card(.waiting, padding: EdgeInsets(top: Spacing.compact, leading: 0, bottom: Spacing.cozy, trailing: 0))
+                .padding(.horizontal, Spacing.small)
+        }
+    }
+
+    private func refRowBody(_ ref: ArtifactRef, _ actions: PhoneRefRowActions) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.compact) {
+            SwipeRow(leading: actions.leading, trailing: actions.trailing, revealed: actions.revealed) {
+                Button { onRef(ref) } label: {
+                    line(chevron: actions.busyLabel == nil, trailingText: actions.trailingText, busy: actions.busyLabel != nil)
+                        .padding(RowInsets.flat)
+                        .frame(minHeight: PhoneMetrics.minTouch)
+                }
+                .buttonStyle(.plain)
+                .contextMenu { PhoneMenuItems(entries: actions.menu) }
+                .opacity(actions.busyLabel == nil ? 1 : PhoneOpacity.busy)
+            }
+            if let busy = actions.busyLabel {
+                Text(busy).font(TypeScale.meta).foregroundStyle(.secondary).padding(.leading, Self.textInset)
+            }
+            if let error = actions.error {
+                VStack(alignment: .leading, spacing: Spacing.compact) {
+                    Text(error).font(TypeScale.meta).foregroundStyle(PhoneTone.red.color)
+                    if let retry = actions.retry {
+                        Button(retry.title, action: retry.action).buttonStyle(PhoneArtifactButtonStyle(primary: false))
+                    }
+                }
+                .padding(.leading, Self.textInset)
+                .padding(.trailing, RowInsets.flat.trailing)
+            }
+            rowButtons.padding(.horizontal, RowInsets.flat.leading)
+            if !actions.inline.isEmpty {
+                FlowRow(spacing: Spacing.regular, lineSpacing: Spacing.regular) {
+                    ForEach(Array(actions.inline.enumerated()), id: \.offset) { offset, entry in
+                        Button(entry.title, action: entry.action)
+                            .buttonStyle(PhoneArtifactButtonStyle(primary: offset == 0))
+                            .disabled(!entry.enabled || actions.busyLabel != nil)
+                    }
+                }
+                .padding(.leading, Self.textInset)
+                .padding(.trailing, RowInsets.flat.trailing)
+            }
+        }
+    }
+
+    /// The row text's leading edge: the inset and the icon column.
+    static var textInset: CGFloat { RowInsets.flat.leading + PhoneMetrics.iconColumn + Spacing.cozy }
+
+    @ViewBuilder private var rowButtons: some View {
+        if !row.buttons.isEmpty {
+            PhoneArtifactButtons(buttons: row.buttons, onAction: onAction)
+                .padding(.leading, PhoneMetrics.iconColumn + Spacing.cozy)
+        }
+    }
+
+    private func line(chevron: Bool, trailingText: String?, busy: Bool = false) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: Spacing.cozy) {
             Group {
                 if let tone = row.tone {
@@ -169,6 +239,12 @@ struct PhoneArtifactRowView: View {
             Spacer(minLength: Spacing.regular)
             if let badge = row.badge {
                 Pill(text: badge.text, tone: PhoneTone.artifact(badge.tone))
+            }
+            if let trailingText {
+                Text(trailingText).font(TypeScale.time).foregroundStyle(.secondary)
+            }
+            if busy {
+                ProgressView().controlSize(.small)
             }
             if chevron {
                 Image(systemName: "chevron.right")
@@ -346,12 +422,31 @@ struct PhoneArtifactLink: View {
 struct PhoneArtifactButtons: View {
     let buttons: [PhoneArtifactButton]
     let onAction: (Int) -> Void
+    @Environment(\.phoneArtifactInputs) private var inputs
 
     var body: some View {
-        FlowRow(spacing: Spacing.regular, lineSpacing: Spacing.regular) {
-            ForEach(Array(buttons.enumerated()), id: \.offset) { _, button in
-                Button(button.label) { onAction(button.index) }
-                    .buttonStyle(PhoneArtifactButtonStyle(primary: button.primary))
+        let states = buttons.map { inputs.buttonState($0.index) }
+        VStack(alignment: .leading, spacing: Spacing.compact) {
+            FlowRow(spacing: Spacing.regular, lineSpacing: Spacing.regular) {
+                ForEach(Array(buttons.enumerated()), id: \.offset) { offset, button in
+                    let state = states[offset]
+                    Button { onAction(button.index) } label: {
+                        if let busy = state.busyLabel {
+                            HStack(spacing: Spacing.compact) {
+                                ProgressView().controlSize(.mini)
+                                Text(busy)
+                            }
+                        } else {
+                            Text(state.label ?? button.label)
+                        }
+                    }
+                    .buttonStyle(PhoneArtifactButtonStyle(primary: button.primary && state.enabled))
+                    .disabled(!state.enabled || state.busyLabel != nil)
+                    .opacity(state.enabled ? 1 : PhoneOpacity.disabled)
+                }
+            }
+            ForEach(Array(states.compactMap(\.note).enumerated()), id: \.offset) { _, note in
+                Text(note).font(TypeScale.meta).foregroundStyle(.secondary)
             }
         }
     }

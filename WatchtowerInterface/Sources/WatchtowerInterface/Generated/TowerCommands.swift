@@ -4,6 +4,8 @@ import Foundation
 
 /// Every registered tower command.
 public enum TowerCommand: String, CaseIterable, Sendable {
+    case briefingRead = "briefing.read"
+    case catchupAcknowledge = "catchup.acknowledge"
     case chatArchive = "chat.archive"
     case chatArtifactKeep = "chat.artifact.keep"
     case chatArtifactSaveEdit = "chat.artifact.save_edit"
@@ -45,17 +47,63 @@ public enum TowerCommand: String, CaseIterable, Sendable {
     case chatSetRouting = "chat.set_routing"
     case chatSetTitle = "chat.set_title"
     case chatStop = "chat.stop"
+    case dayplanAdd = "dayplan.add"
+    case dayplanDelete = "dayplan.delete"
+    case dayplanDone = "dayplan.done"
+    case dayplanPending = "dayplan.pending"
+    case dayplanReorder = "dayplan.reorder"
+    case digestsDecisionRead = "digests.decision_read"
+    case digestsDecisionsReadAll = "digests.decisions_read_all"
+    case digestsRead = "digests.read"
+    case digestsStreamRead = "digests.stream_read"
+    case ideasConverted = "ideas.converted"
+    case ideasCreate = "ideas.create"
+    case ideasCreateFromChat = "ideas.create_from_chat"
+    case ideasDecisionSeen = "ideas.decision_seen"
+    case ideasDecisionsSeenAll = "ideas.decisions_seen_all"
+    case ideasDelete = "ideas.delete"
+    case ideasMerge = "ideas.merge"
+    case ideasRating = "ideas.rating"
+    case ideasSnooze = "ideas.snooze"
+    case ideasStatus = "ideas.status"
+    case ideasSupersede = "ideas.supersede"
+    case ideasUndoChat = "ideas.undo_chat"
+    case inboxAct = "inbox.act"
     case inboxFeed = "inbox.feed"
     case inboxWatch = "inbox.watch"
+    case inboxItemsRead = "inbox_items.read"
     case meetingsDelete = "meetings.delete"
+    case outputsDismiss = "outputs.dismiss"
+    case outputsDone = "outputs.done"
+    case outputsRead = "outputs.read"
+    case remindersDone = "reminders.done"
+    case remindersSnooze = "reminders.snooze"
     case syncPause = "sync.pause"
     case syncResume = "sync.resume"
+    case targetsSetColumn = "targets.set_column"
+    case targetsSetStatus = "targets.set_status"
+    case targetsSnooze = "targets.snooze"
+    case targetsWorkOn = "targets.work_on"
     case towerHello = "tower.hello"
     case towerPing = "tower.ping"
+    case tracksDelete = "tracks.delete"
+    case tracksDone = "tracks.done"
+    case tracksEnabled = "tracks.enabled"
+    case tracksEventStatus = "tracks.event_status"
+    case tracksEventsRead = "tracks.events_read"
+    case tracksInstruction = "tracks.instruction"
+    case tracksOwnership = "tracks.ownership"
+    case tracksPriority = "tracks.priority"
+    case tracksRead = "tracks.read"
+    case tracksRestore = "tracks.restore"
+    case tracksStop = "tracks.stop"
+    case tracksSubItems = "tracks.sub_items"
 
     /// True for a read: it carries no request_id and is never ledgered.
     public var isRead: Bool {
         switch self {
+        case .briefingRead: false
+        case .catchupAcknowledge: false
         case .chatArchive: false
         case .chatArtifactKeep: false
         case .chatArtifactSaveEdit: false
@@ -97,13 +145,57 @@ public enum TowerCommand: String, CaseIterable, Sendable {
         case .chatSetRouting: false
         case .chatSetTitle: false
         case .chatStop: false
+        case .dayplanAdd: false
+        case .dayplanDelete: false
+        case .dayplanDone: false
+        case .dayplanPending: false
+        case .dayplanReorder: false
+        case .digestsDecisionRead: false
+        case .digestsDecisionsReadAll: false
+        case .digestsRead: false
+        case .digestsStreamRead: false
+        case .ideasConverted: false
+        case .ideasCreate: false
+        case .ideasCreateFromChat: false
+        case .ideasDecisionSeen: false
+        case .ideasDecisionsSeenAll: false
+        case .ideasDelete: false
+        case .ideasMerge: false
+        case .ideasRating: false
+        case .ideasSnooze: false
+        case .ideasStatus: false
+        case .ideasSupersede: false
+        case .ideasUndoChat: false
+        case .inboxAct: false
         case .inboxFeed: true
         case .inboxWatch: false
+        case .inboxItemsRead: false
         case .meetingsDelete: false
+        case .outputsDismiss: false
+        case .outputsDone: false
+        case .outputsRead: false
+        case .remindersDone: false
+        case .remindersSnooze: false
         case .syncPause: false
         case .syncResume: false
+        case .targetsSetColumn: false
+        case .targetsSetStatus: false
+        case .targetsSnooze: false
+        case .targetsWorkOn: false
         case .towerHello: true
         case .towerPing: true
+        case .tracksDelete: false
+        case .tracksDone: false
+        case .tracksEnabled: false
+        case .tracksEventStatus: false
+        case .tracksEventsRead: false
+        case .tracksInstruction: false
+        case .tracksOwnership: false
+        case .tracksPriority: false
+        case .tracksRead: false
+        case .tracksRestore: false
+        case .tracksStop: false
+        case .tracksSubItems: false
         }
     }
 }
