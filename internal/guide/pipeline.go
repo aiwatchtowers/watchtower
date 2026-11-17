@@ -301,10 +301,10 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 		p.lastOutcome = OutcomeNoOwner
 		return 0, nil
 	}
-	// Cards of people the owner does not work with in this window go, in the
-	// owned accounts only: pre-upgrade cards made for everyone, and people
-	// no longer worked with (A13).
-	pruned, err := p.db.PruneNonPartnerPeopleCards(from, to, owners)
+	// Cards whose person was not a partner of the owner in the card's own
+	// window go, in the owned accounts only: the pre-upgrade cards made for
+	// everyone (A13).
+	pruned, err := p.db.PruneNonPartnerPeopleCards(to, owners)
 	if err != nil {
 		return 0, err
 	}

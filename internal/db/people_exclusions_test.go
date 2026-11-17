@@ -275,31 +275,38 @@ func TestUpsertPeopleCard_RefusesExcluded(t *testing.T) {
 	assert.Equal(t, 0, count(t, d, `SELECT COUNT(*) FROM people_cards`))
 }
 
-// TestPruneNonPartnerPeopleCards: cards of people who are not partners in the
-// window go, in every window up to it, in the owned account only; the
-// owner's and partners' cards and other accounts' cards stay.
+// TestPruneNonPartnerPeopleCards: each card is checked against its own
+// window. A partner in week 1 who is silent in week 2 keeps the week-1 card;
+// a non-partner's (pre-upgrade) card in its own window goes; the owner's
+// cards, a later window than the pruned bound and other accounts stay.
 func TestPruneNonPartnerPeopleCards(t *testing.T) {
 	d := openTestDB(t)
 	f := &peopleFixture{t: t, d: d}
 	f.users("1:UOWN", "1:UP1", "1:UGONE", "2:UX")
 	f.channel("1:CGEN", "public")
-	f.post("1:CGEN", "1:UP1", "hi <@UOWN>", "")
-	for _, id := range []string{"1:UOWN", "1:UP1", "1:UGONE", "2:UX"} {
-		for _, w := range [][2]float64{{0, 1000000}, {1000000, 2000000}} {
-			_, err := d.UpsertPeopleCard(PeopleCard{UserID: id, PeriodFrom: w[0], PeriodTo: w[1], Summary: "s"})
-			require.NoError(t, err)
-		}
+	f.post("1:CGEN", "1:UP1", "hi <@UOWN>", "") // week 1 only
+	week1, week2, week3 := [2]float64{1000000, 2000000}, [2]float64{2000000, 3000000}, [2]float64{3000000, 4000000}
+	card := func(id string, w [2]float64) {
+		_, err := d.UpsertPeopleCard(PeopleCard{UserID: id, PeriodFrom: w[0], PeriodTo: w[1], Summary: "s"})
+		require.NoError(t, err)
 	}
-	// A card of a later window than the one pruned stays.
-	_, err := d.UpsertPeopleCard(PeopleCard{UserID: "1:UGONE", PeriodFrom: 2000000, PeriodTo: 3000000, Summary: "s"})
-	require.NoError(t, err)
+	card("1:UOWN", week1)
+	card("1:UOWN", week2)
+	card("1:UP1", week1)
+	card("1:UGONE", week1)
+	card("1:UGONE", week3) // after the bound: not checked
+	card("2:UX", week1)
 
-	n, err := d.PruneNonPartnerPeopleCards(1000000, 2000000, map[int64]string{1: "1:UOWN"})
+	n, err := d.PruneNonPartnerPeopleCards(week2[1], map[int64]string{1: "1:UOWN"})
 	require.NoError(t, err)
-	assert.Equal(t, int64(2), n)
-	assert.Equal(t, 1, count(t, d, `SELECT COUNT(*) FROM people_cards WHERE user_id = '1:UGONE'`))
-	assert.Equal(t, 1, count(t, d, `SELECT COUNT(*) FROM people_cards WHERE user_id = '1:UGONE' AND period_from = 2000000`))
-	for _, id := range []string{"1:UOWN", "1:UP1", "2:UX"} {
-		assert.Equal(t, 2, count(t, d, `SELECT COUNT(*) FROM people_cards WHERE user_id = ?`, id), id)
+	assert.Equal(t, int64(1), n)
+	has := func(id string, w [2]float64) bool {
+		return count(t, d, `SELECT COUNT(*) FROM people_cards WHERE user_id = ? AND period_from = ? AND period_to = ?`, id, w[0], w[1]) == 1
 	}
+	assert.True(t, has("1:UP1", week1), "a week-1 partner keeps the week-1 card although silent in week 2")
+	assert.False(t, has("1:UGONE", week1), "a non-partner's card in its own window goes")
+	assert.True(t, has("1:UGONE", week3), "a window after the bound is not checked")
+	assert.True(t, has("1:UOWN", week1))
+	assert.True(t, has("1:UOWN", week2))
+	assert.True(t, has("2:UX", week1), "another account is not touched")
 }

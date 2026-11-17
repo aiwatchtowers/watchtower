@@ -119,39 +119,63 @@ func (db *DB) PeopleCardCandidates(from, to float64, owners map[int64]string) (m
 	return out, nil
 }
 
-// PruneNonPartnerPeopleCards deletes, in each account of owners, the cards of
-// windows ending at or before to for people who are neither the owner nor an
-// interaction partner in [from, to) (A13): cards made before the upgrade for
-// everyone with enough messages, and cards of people the owner no longer
-// works with. Accounts outside owners are not touched. Returns the number of
-// cards deleted.
-func (db *DB) PruneNonPartnerPeopleCards(from, to float64, owners map[int64]string) (int64, error) {
-	keep, err := db.PeopleCardCandidates(from, to, owners)
-	if err != nil {
-		return 0, err
-	}
-	ids := make([]string, 0, len(keep))
-	for id := range keep {
-		ids = append(ids, id)
-	}
-	keepJSON, err := json.Marshal(ids)
-	if err != nil {
-		return 0, fmt.Errorf("encoding card candidates: %w", err)
-	}
+// PruneNonPartnerPeopleCards deletes, in each account of owners, every card
+// of a window ending at or before to whose person was neither the owner nor
+// an interaction partner of the owner in that card's own window (A13): the
+// cards made before the upgrade for everyone with enough messages. A card
+// whose own window passes the check stays, so a partner who was quiet later
+// keeps their earlier cards. Each distinct stored window is checked with the
+// window-bounded partner query. Accounts outside owners are not touched.
+// Returns the number of cards deleted.
+func (db *DB) PruneNonPartnerPeopleCards(to float64, owners map[int64]string) (int64, error) {
 	var total int64
-	for acct := range owners {
+	for acct, owner := range owners {
 		lo, hi := prefixRange(strconv.FormatInt(acct, 10) + ":")
-		res, err := db.Exec(`DELETE FROM people_cards
-			WHERE user_id >= ? AND user_id < ? AND period_to <= ?
-				AND user_id NOT IN (SELECT value FROM json_each(?))`, lo, hi, to, string(keepJSON))
+		windows, err := db.peopleCardWindows(lo, hi, to)
 		if err != nil {
-			return total, fmt.Errorf("pruning people cards of account %d: %w", acct, err)
+			return total, err
 		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return total, fmt.Errorf("pruning people cards of account %d: %w", acct, err)
+		for _, w := range windows {
+			partners, err := db.InteractionPartners(acct, owner, w[0], w[1])
+			if err != nil {
+				return total, err
+			}
+			keepJSON, err := json.Marshal(append(partners, owner))
+			if err != nil {
+				return total, fmt.Errorf("encoding card candidates: %w", err)
+			}
+			res, err := db.Exec(`DELETE FROM people_cards
+				WHERE user_id >= ? AND user_id < ? AND period_from = ? AND period_to = ?
+					AND user_id NOT IN (SELECT value FROM json_each(?))`, lo, hi, w[0], w[1], string(keepJSON))
+			if err != nil {
+				return total, fmt.Errorf("pruning people cards of account %d: %w", acct, err)
+			}
+			n, err := res.RowsAffected()
+			if err != nil {
+				return total, fmt.Errorf("pruning people cards of account %d: %w", acct, err)
+			}
+			total += n
 		}
-		total += n
 	}
 	return total, nil
+}
+
+// peopleCardWindows lists the distinct [period_from, period_to) windows of
+// the cards in the namespace [lo, hi) that end at or before to.
+func (db *DB) peopleCardWindows(lo, hi string, to float64) ([][2]float64, error) {
+	rows, err := db.Query(`SELECT DISTINCT period_from, period_to FROM people_cards
+		WHERE user_id >= ? AND user_id < ? AND period_to <= ? ORDER BY period_from`, lo, hi, to)
+	if err != nil {
+		return nil, fmt.Errorf("listing people card windows: %w", err)
+	}
+	defer rows.Close()
+	var out [][2]float64
+	for rows.Next() {
+		var w [2]float64
+		if err := rows.Scan(&w[0], &w[1]); err != nil {
+			return nil, fmt.Errorf("scanning people card window: %w", err)
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
 }
