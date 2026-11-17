@@ -55,15 +55,19 @@ func LaunchWatchmanBacktest(exe string, workbenchID int64, workspace, configPath
 func init() {
 	backtest := &cobra.Command{
 		Use:   "backtest",
-		Short: "Measure how often Watchman decides like you: re-decide your newest 30 decisions per category, hidden from it",
+		Short: "Measure whether Watchman decides no worse than you: re-decide your newest 30 decisions per category, hidden from it",
 		Long: "For each category Watchman hides your newest 30 decisions and decides them again from what came before. " +
-			"A category is strong at 80 % agreement or more with at most 5 % wrong answers it was sure of, " +
-			"and agreeing more often than always giving your most common answer would (the base rate); " +
-			"fewer than 30 decisions is not measured (no AI call). The verdict is go when 3 categories are strong, " +
-			"permission or review_code among them. Review approvals, hunk undos, merges and your own rewrites are not " +
+			"A judge reads each of its decisions next to yours and the situation and grades it: same as yours, " +
+			"acceptable (a different path you could live with) or bad (you would have had to undo it); " +
+			"an ask with several questions counts each question. " +
+			"A category is strong when at most 5 % of its decisions are bad and none of the bad ones was taken " +
+			"while Watchman was sure; matching you exactly is not required. " +
+			"Fewer than 30 decisions is not measured (no AI call). The verdict is go when 3 categories are strong, " +
+			"permission, design or scope among them. Also shown: how often you picked the option the agent " +
+			"recommended. Review approvals, hunk undos, merges and your own rewrites are not " +
 			"measured in phase 1; review_code is measured on your review comments only. " +
-			"Each decision is one strong-model call (plus a light-model judge for free answers), so a full run costs " +
-			"real money (the cost shown is an estimate); the daemon reruns it weekly in the background.",
+			"Each decision is one strong-model call, plus a strong-model judge call unless it picked exactly your option, " +
+			"so a full run costs real money (the cost shown is an estimate); the daemon reruns it weekly in the background.",
 		Args: cobra.NoArgs,
 		RunE: runWatchmanBacktest,
 	}
@@ -90,13 +94,16 @@ type watchmanBacktestJSON struct {
 }
 
 type watchmanBacktestRowJSON struct {
-	Category  string  `json:"category"`
-	Total     int     `json:"total"`
-	Agree     int     `json:"agree"`
-	WrongHigh int     `json:"wrong_high"`
-	CostUSD   float64 `json:"cost_usd"`
-	Baseline  float64 `json:"baseline"`
-	Status    string  `json:"status"`
+	Category    string  `json:"category"`
+	Total       int     `json:"total"`
+	Agree       int     `json:"agree"`
+	Acceptable  int     `json:"acceptable"`
+	Bad         int     `json:"bad"`
+	WrongHigh   int     `json:"wrong_high"` // bad while sure
+	CostUSD     float64 `json:"cost_usd"`
+	Baseline    float64 `json:"baseline"`
+	RecBaseline float64 `json:"rec_baseline"`
+	Status      string  `json:"status"`
 }
 
 // watchmanBacktestNotMeasuredNote names what the phase-1 backtest leaves out
@@ -152,7 +159,8 @@ func runWatchmanBacktest(cmd *cobra.Command, _ []string) error {
 		CostUSD: b.CostUSD, Categories: []watchmanBacktestRowJSON{}, Error: b.Error}
 	for _, r := range rows {
 		res.Categories = append(res.Categories, watchmanBacktestRowJSON{Category: r.Category, Total: r.Total, Agree: r.Agree,
-			WrongHigh: r.WrongHigh, CostUSD: r.CostUSD, Baseline: r.Baseline, Status: r.Status})
+			Acceptable: r.Acceptable, Bad: r.Bad, WrongHigh: r.WrongHigh, CostUSD: r.CostUSD, Baseline: r.Baseline,
+			RecBaseline: r.RecBaseline, Status: r.Status})
 	}
 	if runErr == nil {
 		// The daemon's weekly launch reads this stamp: a finished run, manual
@@ -174,8 +182,8 @@ func runWatchmanBacktest(cmd *cobra.Command, _ []string) error {
 		case watchman.BacktestNotMeasured:
 			fmt.Fprintf(out, "%-12s not measured (%d of %d decisions)\n", r.Category, r.Total, watchman.HiddenPerCategory)
 		default:
-			fmt.Fprintf(out, "%-12s %s: %d of %d agree (base rate %.0f %%), %d wrong while sure (~$%.2f)\n",
-				r.Category, r.Status, r.Agree, r.Total, r.Baseline*100, r.WrongHigh, r.CostUSD)
+			fmt.Fprintf(out, "%-12s %s: %d same / %d acceptable / %d bad (%d bad while sure) · recommended-pick %.0f %% (~$%.2f)\n",
+				r.Category, r.Status, r.Agree, r.Acceptable, r.Bad, r.WrongHigh, r.RecBaseline*100, r.CostUSD)
 		}
 	}
 	fmt.Fprintln(out, watchmanBacktestNotMeasuredNote)

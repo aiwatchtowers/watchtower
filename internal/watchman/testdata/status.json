@@ -75,10 +75,13 @@
             "category": "permission",
             "total": 30,
             "agree": 26,
-            "wrong_high": 1,
+            "acceptable": 3,
+            "bad": 1,
+            "wrong_high": 0,
             "status": "strong",
             "cost_usd": 0.75,
-            "baseline": 0.6
+            "baseline": 0.6,
+            "rec_baseline": 0.7
           }
         ]
       },

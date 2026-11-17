@@ -101,7 +101,8 @@ func TestWatchmanBacktest_JSONKeysPinned(t *testing.T) {
 	for k := range raw.Categories[0] {
 		keys = append(keys, k)
 	}
-	assert.ElementsMatch(t, []string{"category", "total", "agree", "wrong_high", "cost_usd", "baseline", "status"}, keys)
+	assert.ElementsMatch(t, []string{"category", "total", "agree", "acceptable", "bad", "wrong_high", "cost_usd", "baseline",
+		"rec_baseline", "status"}, keys)
 	var r watchmanBacktestJSON
 	require.NoError(t, json.Unmarshal([]byte(out), &r))
 	assert.True(t, r.OK)
@@ -124,7 +125,7 @@ func TestWatchmanBacktest_JSONKeysPinned(t *testing.T) {
 
 	out, err = runWatchmanBacktestCmd(t, wb)
 	require.NoError(t, err)
-	assert.Contains(t, out, "permission   strong: 30 of 30 agree (base rate 67 %), 0 wrong while sure (~$0.00)")
+	assert.Contains(t, out, "permission   strong: 30 same / 0 acceptable / 0 bad (0 bad while sure) · recommended-pick 0 % (~$0.00)")
 	assert.Contains(t, out, "Review approvals, hunk undos, merges and your own rewrites are not measured in phase 1")
 	assert.Contains(t, out, "review_code is measured on your review comments only")
 	assert.Contains(t, out, "Verdict: stop (cost ~$0.00, an estimate")
