@@ -13284,5 +13284,1864 @@
       ]
     },
     "desktop": true
+  },
+  {
+    "name": "desktop_rows_empty",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": []
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_rows_item_without_permalink",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, thread_ts, sender_user_id, trigger_type, snippet, permalink, status, priority, ai_reason, resolved_reason, snooze_until, item_class, card_status, why_matters, thread_digest, draft_reply, created_at, updated_at) VALUES (1, 'C001', '1700000000.000100', '', 'U002', 'mention', 'Hey, can you review this?', '', 'pending', 'medium', '', '', '', 'actionable', 'none', '', '', '', '2026-10-21T07:00:00Z', '2026-10-21T07:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "messages",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Messages",
+          "source_line": "Mentions, DMs and replies",
+          "preview": "1 waiting",
+          "stamp": "2026-10-21T07:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [
+            {
+              "kind": "inbox_item",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ],
+          "legacy": {
+            "kind": "messages",
+            "items": [
+              {
+                "ref_kind": "inbox_item",
+                "id": 1,
+                "title": "Hey, can you review this?",
+                "subtitle": "Message",
+                "preview": "",
+                "stamp": "2026-10-21T07:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_rows_auto_and_custom_track",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO targets (id, text, period_start, period_end) VALUES (4, 'Ship acme 2.0', '2026-11-01', '2026-11-30')",
+      "INSERT INTO tracks (id, text, context, category, ownership, priority, tags, channel_ids, source_refs, has_updates, participants, requester_name, blocking, decision_summary, decision_options, sub_items, related_digest_ids, model, assignee_user_id, owner_user_id, requester_user_id, created_at, updated_at) VALUES (1, 'Release checklist', 'Discussed in standup', 'task', 'mine', 'medium', '[]', '[\"C001\"]', '[]', 1, '[]', '', '', '', '[]', '[]', '[]', 'haiku', '', '', '', '2026-11-16T08:00:00Z', '2026-11-16T08:00:00Z')",
+      "INSERT INTO tracks (id, text, context, category, ownership, priority, tags, channel_ids, source_refs, has_updates, participants, requester_name, blocking, decision_summary, decision_options, sub_items, related_digest_ids, model, assignee_user_id, owner_user_id, requester_user_id, created_at, updated_at, origin, linked_target_id) VALUES (2, 'Finance refund', 'Discussed in standup', 'task', 'mine', 'medium', '[]', '[\"C001\"]', '[]', 1, '[]', '', '', '', '[]', '[]', '[]', 'haiku', '', '', '', '2026-11-16T08:00:00Z', '2026-11-16T08:00:00Z', 'custom', 4)"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "tracks",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Track my threads",
+          "source_line": "",
+          "preview": "2 unread",
+          "stamp": "2026-11-16T08:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "tracks",
+            "items": [
+              {
+                "ref_kind": "track",
+                "id": 1,
+                "title": "Release checklist",
+                "subtitle": "Track",
+                "preview": "",
+                "stamp": "2026-11-16T08:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              },
+              {
+                "ref_kind": "track",
+                "id": 2,
+                "title": "Finance refund",
+                "subtitle": "Track",
+                "preview": "",
+                "stamp": "2026-11-16T08:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_rows_idea_refs",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (1, 'digest', 'personal', '/tmp/acme/automations/digest.md', 'Acme digest', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO ideas (id, kind, title, essence, status, source, snooze_until, needs_review, review_reason, owner_rating, rating_comment, last_mention_at, created_at, updated_at, chat_born) VALUES (1, 'idea', 'Ship a weekly digest email', '', 'proposed', 'mined', '', 0, '', 0, '', '', '2026-11-10T09:00:00Z', '2026-11-10T09:00:00Z', 0)",
+      "INSERT INTO ideas (id, kind, title, essence, status, source, snooze_until, needs_review, review_reason, owner_rating, rating_comment, last_mention_at, created_at, updated_at, chat_born) VALUES (2, 'idea', 'Ship a weekly digest email', '', 'active', 'mined', '', 0, '', 0, '', '', '2026-11-10T09:00:00Z', '2026-11-10T09:00:00Z', 0)",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, blocks_json, actions_json, content_hash, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'Weekly', 'Two threads need you.', 'medium', '2026-11-16T09:00:00Z', '{\"v\":1,\"blocks\":[{\"type\":\"list\",\"rows\":[{\"title\":\"Row 0\",\"ref\":{\"kind\":\"idea\",\"id\":1}},{\"title\":\"Row 1\",\"ref\":{\"kind\":\"idea\",\"id\":2}}]}]}', '[]', 'c1', '2026-11-16T09:00:00Z', '2026-11-16T09:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 2,
+          "waiting": 1
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "o1",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "Weekly",
+          "source_line": "Acme digest",
+          "preview": "Two threads need you.",
+          "stamp": "2026-11-16T09:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Acme digest",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "{\"v\":1,\"blocks\":[{\"type\":\"list\",\"rows\":[{\"title\":\"Row 0\",\"ref\":{\"kind\":\"idea\",\"id\":1}},{\"title\":\"Row 1\",\"ref\":{\"kind\":\"idea\",\"id\":2}}]}]}",
+          "body": "Two threads need you.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "c1",
+          "actions": [],
+          "ref_facts": [
+            {
+              "kind": "idea",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "idea",
+              "idea_status": "proposed"
+            },
+            {
+              "kind": "idea",
+              "id": 2,
+              "open": true,
+              "waits": false,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "idea",
+              "idea_status": "active"
+            }
+          ]
+        },
+        {
+          "id": "ideas",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Idea finder",
+          "source_line": "",
+          "preview": "1 to judge",
+          "stamp": "2026-11-10T09:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "ideas",
+            "items": [
+              {
+                "ref_kind": "idea",
+                "id": 1,
+                "title": "Ship a weekly digest email",
+                "subtitle": "Idea · proposed",
+                "preview": "",
+                "stamp": "2026-11-10T09:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              },
+              {
+                "ref_kind": "idea",
+                "id": 2,
+                "title": "Ship a weekly digest email",
+                "subtitle": "Idea · active",
+                "preview": "",
+                "stamp": "2026-11-10T09:00:00Z",
+                "end": "",
+                "unread": false,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_rows_action_kinds",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (1, 'create_target', 0, '{\"text\":\"Call colleague A\"}', 'r', 'main', 1, '', '', 'turn-1', 'pending', '', '', '2026-09-04T10:00:00Z', '', '', '')",
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (2, 'create_target', 0, '{\"text\":\"Call colleague A\"}', 'r', 'main', 1, '', '', 'turn-1', 'failed', '', 'archived', '2026-09-04T10:00:00Z', '', '', '')",
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (3, 'create_jira_issue', 0, '{\"project_key\":\"ACME\",\"issue_type\":\"Task\",\"summary\":\"Fix the link\"}', 'r', 'main', 1, '', '', 'turn-1', 'pending', '', '', '2026-09-04T10:00:00Z', '', '', '')",
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (4, 'claude_ai_connector_call', 0, '{}', 'r', 'main', 1, '', '', 'turn-1', 'pending', '', '', '2026-09-04T10:00:00Z', '', '', '')",
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (5, 'save_automation', 0, '{\"path\":\"a.md\"}', 'r', 'main', 1, '', '', 'turn-1', 'pending', '', '', '2026-09-04T10:00:00Z', '', '', '')",
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (6, 'claude_ai_connector_call', 0, '{\"server\":\"claude.ai Gmail\",\"tool\":\"send\",\"input\":{\"to\":\"a@example.com\"}}', 'r', 'main', 1, '', '', 'turn-1', 'pending', '', '', '2026-09-04T10:00:00Z', '', '', '')",
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (7, 'claude_ai_connector_call', 0, '{\"server\":\"claude.ai Gmail\",\"tool\":\"send\",\"input\":{\"to\":\"a@example.com\"}}', 'r', 'main', 1, '', '', 'turn-1', 'failed', '', 'session ended while the call ran; outcome unknown', '2026-09-04T10:00:00Z', '', '', '')",
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (8, 'send_slack_message', 0, '{\"text\":\"On it\",\"candidates\":[{\"account_id\":1,\"workspace\":\"acme\",\"label\":\"#general\"},{\"account_id\":2,\"workspace\":\"acme-eu\",\"label\":\"#general\"}]}', 'r', 'main', 1, '', '', 'turn-1', 'pending', '', '', '2026-09-04T10:00:00Z', '', '', '')",
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (9, 'send_slack_message', 0, '{\"text\":\"On it\",\"target\":{\"account_id\":1,\"workspace\":\"acme\",\"label\":\"#general\"}}', 'r', 'main', 1, '', '', 'turn-1', 'pending', '', '', '2026-09-04T10:00:00Z', '', '', '')",
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (10, 'edit_confluence_page', 0, '{}', 'r', 'main', 1, '', '', 'turn-1', 'pending', '', '', '2026-09-04T10:00:00Z', '', '', '')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 10,
+          "waiting": 10
+        }
+      ],
+      "cards": [
+        {
+          "id": "a1",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "e781da988585a51da8fb1a1eba725699ee232d219c9063d5ca1b73784b97cf1b",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_target",
+            "title": "Create a target",
+            "summary": "Call colleague A",
+            "args_sha256": "e781da988585a51da8fb1a1eba725699ee232d219c9063d5ca1b73784b97cf1b",
+            "status": "pending",
+            "error": "",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        },
+        {
+          "id": "a2",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "e781da988585a51da8fb1a1eba725699ee232d219c9063d5ca1b73784b97cf1b",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_target",
+            "title": "Create a target",
+            "summary": "Call colleague A",
+            "args_sha256": "e781da988585a51da8fb1a1eba725699ee232d219c9063d5ca1b73784b97cf1b",
+            "status": "failed",
+            "error": "archived",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        },
+        {
+          "id": "a3",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "cffade74aa77c1c40346d82180f0c73c2925355b57bde52a85c21e91a47d0151",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_jira_issue",
+            "title": "Create a Jira issue",
+            "summary": "Project: ACME · Task\nSummary: Fix the link",
+            "args_sha256": "cffade74aa77c1c40346d82180f0c73c2925355b57bde52a85c21e91a47d0151",
+            "status": "pending",
+            "error": "",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        },
+        {
+          "id": "a4",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "claude_ai_connector_call",
+            "title": "Use a claude.ai connector",
+            "summary": "{}",
+            "args_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "status": "pending",
+            "error": "",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        },
+        {
+          "id": "a5",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "53b47fcff2dd067afca96b187a50ff069df044d37f4ab45ab37a806bfd5cb815",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "save_automation",
+            "title": "Save automation ",
+            "summary": "For: Personal\nWhen: —\nIt may: Nothing",
+            "args_sha256": "53b47fcff2dd067afca96b187a50ff069df044d37f4ab45ab37a806bfd5cb815",
+            "status": "pending",
+            "error": "",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": true,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        },
+        {
+          "id": "a6",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "38b9158bb6e724fdd423fbf79c6407f400165f337e121e1f29d6d302174fbd7c",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "claude_ai_connector_call",
+            "title": "Use a claude.ai connector",
+            "summary": "Connector: claude.ai Gmail\nTool: send\n{\n  \"to\": \"a@example.com\"\n}",
+            "args_sha256": "38b9158bb6e724fdd423fbf79c6407f400165f337e121e1f29d6d302174fbd7c",
+            "status": "pending",
+            "error": "",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": true,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        },
+        {
+          "id": "a7",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "38b9158bb6e724fdd423fbf79c6407f400165f337e121e1f29d6d302174fbd7c",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "claude_ai_connector_call",
+            "title": "Use a claude.ai connector",
+            "summary": "Connector: claude.ai Gmail\nTool: send\n{\n  \"to\": \"a@example.com\"\n}",
+            "args_sha256": "38b9158bb6e724fdd423fbf79c6407f400165f337e121e1f29d6d302174fbd7c",
+            "status": "failed",
+            "error": "session ended while the call ran; outcome unknown",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        },
+        {
+          "id": "a8",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "cc6846c9b4bd4f652c18903c56a06da41a2bd386c1dfc6469994cd2b3ba2ce3b",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "send_slack_message",
+            "title": "Send to Slack",
+            "summary": "To: #general — exists in 2 workspaces, choose one\nOn it",
+            "args_sha256": "cc6846c9b4bd4f652c18903c56a06da41a2bd386c1dfc6469994cd2b3ba2ce3b",
+            "status": "pending",
+            "error": "",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": true,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        },
+        {
+          "id": "a9",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "c0b229c7419651be734d8c83543042e135ac8f85d5d608cf74220fd639426b13",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "send_slack_message",
+            "title": "Send to Slack",
+            "summary": "To: #general in acme\nOn it",
+            "args_sha256": "c0b229c7419651be734d8c83543042e135ac8f85d5d608cf74220fd639426b13",
+            "status": "pending",
+            "error": "",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": true,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        },
+        {
+          "id": "a10",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "edit_confluence_page",
+            "title": "Edit a Confluence page",
+            "summary": "Unreadable Confluence edit proposal",
+            "args_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "status": "pending",
+            "error": "",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_rows_superseded_button",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (1, 'create_target', 0, '{\"text\":\"Call Vasya\",\"reason\":\"r\"}', 'r', 'inbox', 1, 'automation_output', '5:0:0123456789abcdef', 'turn-1', 'failed', '', 'archived', '2026-11-06T09:00:00Z', '2026-11-06T09:01:00Z', '', '')",
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (2, 'create_target', 0, '{\"text\":\"Call Vasya\",\"reason\":\"r\"}', 'r', 'inbox', 1, 'automation_output', '5:0:0123456789abcdef', 'turn-1', 'pending', '', '', '2026-11-06T09:05:00Z', '', '', '')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 2,
+          "waiting": 2
+        }
+      ],
+      "cards": [
+        {
+          "id": "a1",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-11-06T09:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_target",
+            "title": "Create a target",
+            "summary": "Call Vasya",
+            "args_sha256": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+            "status": "failed",
+            "error": "archived",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": true,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        },
+        {
+          "id": "a2",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-11-06T09:05:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_target",
+            "title": "Create a target",
+            "summary": "Call Vasya",
+            "args_sha256": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+            "status": "pending",
+            "error": "",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "waiting",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_target_button_output",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (1, 'digest', 'personal', '/tmp/acme/automations/digest.md', 'Acme digest', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, blocks_json, actions_json, content_hash, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'Weekly', 'Two threads need you.', 'medium', '2026-11-16T09:00:00Z', '', '[{\"label\":\"Make a task\",\"kind\":\"target\",\"target\":{\"title\":\"Sign off\"}}]', 'c1', '2026-11-16T09:00:00Z', '2026-11-16T09:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "o1",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "Weekly",
+          "source_line": "Acme digest",
+          "preview": "Two threads need you.",
+          "stamp": "2026-11-16T09:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Acme digest",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "",
+          "body": "Two threads need you.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "c1",
+          "actions": [
+            {
+              "index": 0,
+              "kind": "target",
+              "label": "Make a task",
+              "state": "enabled",
+              "detail": "idle",
+              "note": "",
+              "until": ""
+            }
+          ],
+          "ref_facts": []
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_target_button_newest_rows",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (1, 'digest', 'personal', '/tmp/acme/automations/digest.md', 'Acme digest', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, blocks_json, actions_json, content_hash, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'Weekly', 'Two threads need you.', 'medium', '2026-11-16T09:00:00Z', '', '[{\"label\":\"Make a task\",\"kind\":\"target\",\"target\":{\"title\":\"Sign off\"}}]', 'c1', '2026-11-16T09:00:00Z', '2026-11-16T09:00:00Z')",
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (1, 'create_target', 0, '{\"text\":\"Sign off\",\"reason\":\"r\"}', 'r', 'inbox', 1, 'automation_output', '1:0:78467113208dbfff', 'turn-1', 'failed', '', '', '2026-11-06T09:00:00Z', '2026-11-06T09:01:00Z', '', '')",
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (2, 'create_target', 0, '{\"text\":\"Sign off\",\"reason\":\"r\"}', 'r', 'inbox', 1, 'automation_output', '1:0:78467113208dbfff', 'turn-1', 'pending', '', '', '2026-11-06T09:05:00Z', '', '', '')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 2,
+          "waiting": 2
+        }
+      ],
+      "cards": [
+        {
+          "id": "o1",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "Weekly",
+          "source_line": "Acme digest",
+          "preview": "Two threads need you.",
+          "stamp": "2026-11-16T09:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Acme digest",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "",
+          "body": "Two threads need you.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "c1",
+          "actions": [
+            {
+              "index": 0,
+              "kind": "target",
+              "label": "Make a task",
+              "state": "pressed",
+              "detail": "waiting",
+              "note": "",
+              "until": ""
+            }
+          ],
+          "ref_facts": []
+        },
+        {
+          "id": "a1",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-11-06T09:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "c8df937ea5eb112e4a8f4867ff3ef5afd8b78abd7528026e078ef769b812188f",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_target",
+            "title": "Create a target",
+            "summary": "Sign off",
+            "args_sha256": "c8df937ea5eb112e4a8f4867ff3ef5afd8b78abd7528026e078ef769b812188f",
+            "status": "failed",
+            "error": "",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": true,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        },
+        {
+          "id": "a2",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-11-06T09:05:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "c8df937ea5eb112e4a8f4867ff3ef5afd8b78abd7528026e078ef769b812188f",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_target",
+            "title": "Create a target",
+            "summary": "Sign off",
+            "args_sha256": "c8df937ea5eb112e4a8f4867ff3ef5afd8b78abd7528026e078ef769b812188f",
+            "status": "pending",
+            "error": "",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "waiting",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_target_button_failed",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (1, 'digest', 'personal', '/tmp/acme/automations/digest.md', 'Acme digest', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, blocks_json, actions_json, content_hash, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'Weekly', 'Two threads need you.', 'medium', '2026-11-16T09:00:00Z', '', '[{\"label\":\"Make a task\",\"kind\":\"target\",\"target\":{\"title\":\"Sign off\"}}]', 'c1', '2026-11-16T09:00:00Z', '2026-11-16T09:00:00Z')",
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (1, 'create_target', 0, '{\"text\":\"Sign off\",\"reason\":\"r\"}', 'r', 'inbox', 1, 'automation_output', '1:0:78467113208dbfff', 'turn-1', 'failed', '', 'parent_id: task #3 is closed', '2026-11-06T09:00:00Z', '2026-11-06T09:01:00Z', '', '')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 1
+        }
+      ],
+      "cards": [
+        {
+          "id": "o1",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "Weekly",
+          "source_line": "Acme digest",
+          "preview": "Two threads need you.",
+          "stamp": "2026-11-16T09:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Acme digest",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "",
+          "body": "Two threads need you.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "c1",
+          "actions": [
+            {
+              "index": 0,
+              "kind": "target",
+              "label": "Make a task",
+              "state": "enabled",
+              "detail": "failed",
+              "note": "parent_id: task #3 is closed",
+              "until": ""
+            }
+          ],
+          "ref_facts": []
+        },
+        {
+          "id": "a1",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-11-06T09:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "c8df937ea5eb112e4a8f4867ff3ef5afd8b78abd7528026e078ef769b812188f",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_target",
+            "title": "Create a target",
+            "summary": "Sign off",
+            "args_sha256": "c8df937ea5eb112e4a8f4867ff3ef5afd8b78abd7528026e078ef769b812188f",
+            "status": "failed",
+            "error": "parent_id: task #3 is closed",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "failed",
+            "target_note": "parent_id: task #3 is closed",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_target_orphan_output_deleted",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (1, 'create_target', 0, '{\"text\":\"Call Vasya\",\"reason\":\"r\"}', 'r', 'inbox', 1, 'automation_output', '1:0:0123456789abcdef', 'turn-1', 'pending', '', '', '2026-09-04T10:00:00Z', '', '', '')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 1
+        }
+      ],
+      "cards": [
+        {
+          "id": "a1",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_target",
+            "title": "Create a target",
+            "summary": "Call Vasya",
+            "args_sha256": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+            "status": "pending",
+            "error": "",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "waiting",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_target_orphan_hash_changed",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (1, 'digest', 'personal', '/tmp/acme/automations/digest.md', 'Acme digest', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, blocks_json, actions_json, content_hash, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'Weekly', 'Two threads need you.', 'medium', '2026-11-16T09:00:00Z', '', '[]', 'c1', '2026-11-16T09:00:00Z', '2026-11-16T09:00:00Z')",
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (1, 'create_target', 0, '{\"text\":\"Call Vasya\",\"reason\":\"r\"}', 'r', 'inbox', 1, 'automation_output', '1:0:0123456789abcdef', 'turn-1', 'pending', '', '', '2026-09-04T10:00:00Z', '', '', '')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 1
+        }
+      ],
+      "cards": [
+        {
+          "id": "o1",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "Weekly",
+          "source_line": "Acme digest",
+          "preview": "Two threads need you.",
+          "stamp": "2026-11-16T09:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Acme digest",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "",
+          "body": "Two threads need you.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "c1",
+          "actions": [],
+          "ref_facts": []
+        },
+        {
+          "id": "a1",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_target",
+            "title": "Create a target",
+            "summary": "Call Vasya",
+            "args_sha256": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+            "status": "pending",
+            "error": "",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "waiting",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_folder_pane_target_pending",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO inbox_folders (id, kind, parent_id, slug, title, icon, position, hidden) VALUES (3, 'owner', 1, 'release', 'Release', '', 1, 0)",
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (1, 'checklist', 'personal', '/tmp/acme/automations/checklist.md', 'Checklist', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]')",
+      "INSERT INTO inbox_folder_routes (automation_id, folder_id) VALUES (1, 3)",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, blocks_json, actions_json, content_hash, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'Release checklist', 'Before the release.', 'medium', '2026-11-16T09:00:00Z', '{\"v\":1,\"blocks\":[{\"type\":\"actions\",\"actions\":[{\"label\":\"Make a task\",\"kind\":\"target\",\"target\":{\"title\":\"Sign off\"}}]}]}', '[]', 'c1', '2026-11-16T09:00:00Z', '2026-11-16T09:00:00Z')",
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (1, 'create_target', 0, '{\"text\":\"Sign off\",\"reason\":\"r\"}', 'r', 'inbox', 1, 'automation_output', '1:0:78467113208dbfff', 'turn-1', 'pending', '', '', '2026-11-06T09:00:00Z', '', '', '')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 1
+        },
+        {
+          "id": 3,
+          "kind": "owner",
+          "slug": "release",
+          "title": "Release",
+          "icon": "",
+          "parent_id": 1,
+          "position": 1,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "a1",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-11-06T09:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "c8df937ea5eb112e4a8f4867ff3ef5afd8b78abd7528026e078ef769b812188f",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_target",
+            "title": "Create a target",
+            "summary": "Sign off",
+            "args_sha256": "c8df937ea5eb112e4a8f4867ff3ef5afd8b78abd7528026e078ef769b812188f",
+            "status": "pending",
+            "error": "",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "waiting",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        },
+        {
+          "id": "o1",
+          "folder_id": 3,
+          "card_kind": "artifact",
+          "title": "Release checklist",
+          "source_line": "Checklist",
+          "preview": "Before the release.",
+          "stamp": "2026-11-16T09:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Checklist",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "{\"v\":1,\"blocks\":[{\"type\":\"actions\",\"actions\":[{\"label\":\"Make a task\",\"kind\":\"target\",\"target\":{\"title\":\"Sign off\"}}]}]}",
+          "body": "Before the release.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "c1",
+          "actions": [
+            {
+              "index": 0,
+              "kind": "target",
+              "label": "Make a task",
+              "state": "pressed",
+              "detail": "waiting",
+              "note": "",
+              "until": ""
+            }
+          ],
+          "ref_facts": []
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_folder_pane_target_applied",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO inbox_folders (id, kind, parent_id, slug, title, icon, position, hidden) VALUES (3, 'owner', 1, 'release', 'Release', '', 1, 0)",
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (1, 'checklist', 'personal', '/tmp/acme/automations/checklist.md', 'Checklist', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]')",
+      "INSERT INTO inbox_folder_routes (automation_id, folder_id) VALUES (1, 3)",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, blocks_json, actions_json, content_hash, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'Release checklist', 'Before the release.', 'medium', '2026-11-16T09:00:00Z', '{\"v\":1,\"blocks\":[{\"type\":\"actions\",\"actions\":[{\"label\":\"Make a task\",\"kind\":\"target\",\"target\":{\"title\":\"Sign off\"}}]}]}', '[]', 'c1', '2026-11-16T09:00:00Z', '2026-11-16T09:00:00Z')",
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (1, 'create_target', 0, '{\"text\":\"Sign off\",\"reason\":\"r\"}', 'r', 'inbox', 1, 'automation_output', '1:0:78467113208dbfff', 'turn-1', 'applied', '{\"target_id\":1}', '', '2026-11-06T09:00:00Z', '2026-11-06T10:00:00Z', '', '')",
+      "INSERT INTO targets (id, text, period_start, period_end, source_type, source_id) VALUES (1, 'Sign off', '2026-11-01', '2026-11-30', 'chat', 'action:1')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 3,
+          "kind": "owner",
+          "slug": "release",
+          "title": "Release",
+          "icon": "",
+          "parent_id": 1,
+          "position": 1,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "o1",
+          "folder_id": 3,
+          "card_kind": "artifact",
+          "title": "Release checklist",
+          "source_line": "Checklist",
+          "preview": "Before the release.",
+          "stamp": "2026-11-16T09:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Checklist",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "{\"v\":1,\"blocks\":[{\"type\":\"actions\",\"actions\":[{\"label\":\"Make a task\",\"kind\":\"target\",\"target\":{\"title\":\"Sign off\"}}]}]}",
+          "body": "Before the release.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "c1",
+          "actions": [
+            {
+              "index": 0,
+              "kind": "target",
+              "label": "Make a task",
+              "state": "pressed",
+              "detail": "created",
+              "note": "",
+              "until": ""
+            }
+          ],
+          "ref_facts": []
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_folder_pane_reply_row",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO inbox_folders (id, kind, parent_id, slug, title, icon, position, hidden) VALUES (3, 'owner', 1, 'release', 'Release', '', 1, 0)",
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (1, 'checklist', 'personal', '/tmp/acme/automations/checklist.md', 'Checklist', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]')",
+      "INSERT INTO inbox_folder_routes (automation_id, folder_id) VALUES (1, 3)",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO inbox_items (id, channel_id, message_ts, thread_ts, sender_user_id, trigger_type, snippet, permalink, status, priority, ai_reason, resolved_reason, snooze_until, item_class, card_status, why_matters, thread_digest, draft_reply, created_at, updated_at) VALUES (1, '1:C001', '1700000000.000100', '', 'U002', 'mention', 'Hey, can you review this?', 'https://acme.slack.com/archives/C001/p1700000000000100', 'pending', 'medium', '', '', '', 'actionable', 'none', '', '', '', '2026-10-21T07:00:00Z', '2026-10-21T07:00:00Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, blocks_json, actions_json, content_hash, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'Release checklist', 'Before the release.', 'medium', '2026-11-16T09:00:00Z', '{\"v\":1,\"blocks\":[{\"type\":\"list\",\"rows\":[{\"title\":\"colleague A\",\"ref\":{\"kind\":\"inbox_item\",\"id\":1}}]}]}', '[]', 'c1', '2026-11-16T09:00:00Z', '2026-11-16T09:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 3,
+          "kind": "owner",
+          "slug": "release",
+          "title": "Release",
+          "icon": "",
+          "parent_id": 1,
+          "position": 1,
+          "hidden": false,
+          "count": 1,
+          "waiting": 1
+        }
+      ],
+      "cards": [
+        {
+          "id": "messages",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Messages",
+          "source_line": "Mentions, DMs and replies",
+          "preview": "1 waiting",
+          "stamp": "2026-10-21T07:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [
+            {
+              "kind": "inbox_item",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": true,
+              "reply_waiting": false,
+              "link": "https://acme.slack.com/archives/C001/p1700000000000100",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ],
+          "legacy": {
+            "kind": "messages",
+            "items": [
+              {
+                "ref_kind": "inbox_item",
+                "id": 1,
+                "title": "Hey, can you review this?",
+                "subtitle": "Message",
+                "preview": "",
+                "stamp": "2026-10-21T07:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        },
+        {
+          "id": "o1",
+          "folder_id": 3,
+          "card_kind": "artifact",
+          "title": "Release checklist",
+          "source_line": "Checklist",
+          "preview": "Before the release.",
+          "stamp": "2026-11-16T09:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Checklist",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "{\"v\":1,\"blocks\":[{\"type\":\"list\",\"rows\":[{\"title\":\"colleague A\",\"ref\":{\"kind\":\"inbox_item\",\"id\":1}}]}]}",
+          "body": "Before the release.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "c1",
+          "actions": [],
+          "ref_facts": [
+            {
+              "kind": "inbox_item",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": true,
+              "reply_waiting": false,
+              "link": "https://acme.slack.com/archives/C001/p1700000000000100",
+              "trigger_type": "mention",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ]
+        }
+      ]
+    },
+    "desktop": true
   }
 ]

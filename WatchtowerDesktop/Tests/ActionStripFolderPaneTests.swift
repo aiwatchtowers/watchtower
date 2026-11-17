@@ -30,59 +30,32 @@ final class ActionStripFolderPaneTests: XCTestCase {
         let vm: ActionStripViewModel
         let runner: FakeCLIRunner
         let card: AutomationOutputCard
-        let folder: Int64
     }
 
-    /// Lists the fixture's artifact in its folder as the tower would, its
-    /// buttons and rows in the state Go gives them (`actions`, `refs`).
-    private func list(_ fx: Fixture, actions: [CardAction] = [], refs: [RefFacts] = []) async throws {
-        let feed = try TestInboxFeeds.feed(fx.pool)
-        await fx.vm.showFeed(TestInboxFeeds.adding(
-            [TestInboxFeeds.artifact(fx.card.id, folder: fx.folder, actions: actions, refs: refs)], to: feed))
-    }
+    /// The owner folder `release` (3) the automation routes to.
+    private static let release: Int64 = 3
 
-    private static let target = #"{"label":"Make a task","kind":"target","target":{"title":"Sign off"}}"#
-
-    /// The root, Needs approval and an owner folder `release` that one
-    /// automation routes to; its artifact carries `blocks`. The folder is
-    /// selected and the artifact opened.
-    private func fixture(title: String = "Release checklist", blocks: String) async throws -> Fixture {
+    /// Go's case `name`: the root, Needs approval and the owner folder
+    /// `release` that automation 1 routes to, with its artifact 1 ("Release
+    /// checklist"), listed by the fake tower. The folder is selected and the
+    /// artifact opened.
+    private func fixture(_ name: String) async throws -> Fixture {
         let (pool, path) = try TestDatabase.createPool()
         paths.append(path)
-        let release = try await pool.write { db -> Int64 in
-            try db.execute(sql: "INSERT INTO inbox_folders (kind, parent_id, slug, title, position) "
-                + "VALUES ('root', NULL, 'inbox', 'Inbox', 0)")
-            let root = db.lastInsertedRowID
-            try db.execute(sql: "INSERT INTO inbox_folders (kind, parent_id, slug, title, position) "
-                + "VALUES ('approvals', ?, 'needs-approval', 'Needs approval', 0)", arguments: [root])
-            try db.execute(sql: "INSERT INTO inbox_folders (kind, parent_id, slug, title, position) "
-                + "VALUES ('owner', ?, 'release', 'Release', 1)", arguments: [root])
-            let release = db.lastInsertedRowID
-            try db.execute(sql: "INSERT INTO inbox_folder_state (id, revision) VALUES (1, 1)")
-            let automation = try TestDatabase.insertAutomation(db, slug: "checklist", name: "Checklist")
-            try db.execute(sql: "INSERT INTO inbox_folder_routes (automation_id, folder_id) VALUES (?, ?)",
-                           arguments: [automation, release])
-            let run = try TestDatabase.insertAutomationRun(db, automationID: automation)
-            _ = try TestDatabase.insertAutomationOutput(
-                db, automationID: automation, runID: run, title: title, blocksJSON: blocks)
-            return release
-        }
-        let outputID = try await pool.read { db in
-            try XCTUnwrap(Int64.fetchOne(db, sql: "SELECT MAX(id) FROM automation_outputs"))
-        }
+        let tower = try FeedCaseTransport.seeded(name, pool: pool)
         let suite = "ActionStripFolderPaneTests.\(UUID().uuidString)"
         suites.append(suite)
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         let runner = FakeCLIRunner()
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner, defaults: defaults)
-        let feed = try TestInboxFeeds.feed(pool)
-        await vm.showFeed(TestInboxFeeds.adding([TestInboxFeeds.artifact(outputID, folder: release)], to: feed))
-        vm.selectFolder(release)
+        await vm.follow(tower)
+        vm.selectFolder(Self.release)
         guard case let .artifact(card)? = vm.folderEntries.first else {
-            throw XCTSkip("the routed artifact is not listed: \(vm.folderEntries.map(\.id))")
+            XCTFail("the routed artifact is not listed: \(vm.folderEntries.map(\.id))")
+            throw CancellationError()
         }
         await vm.selectEntry(vm.folderEntries[0].id)
-        return Fixture(pool: pool, vm: vm, runner: runner, card: card, folder: release)
+        return Fixture(pool: pool, vm: vm, runner: runner, card: card)
     }
 
     private func view(_ vm: ActionStripViewModel, menu: InboxArtifactMenuModel? = nil) -> ActionStripActionsView {
@@ -93,41 +66,19 @@ final class ActionStripFolderPaneTests: XCTestCase {
         return view
     }
 
-    /// The button's context as the pane draws it (`InboxTargetPress.contextID`).
-    private func context(_ card: AutomationOutputCard) throws -> String {
-        guard case let .target(target)? = InboxCardLayout.of(card).pressable.first?.kind else {
-            throw XCTSkip("no target button drawn")
-        }
-        return InboxTargetPress.contextID(outputID: card.id, index: 0, hash: target.hash)
-    }
-
-    /// The artifact's target button with a proposal in `status`; the feed
-    /// draws it as Go would (`detail`).
-    private func targetFixture(status: String, detail: String, applied: Bool = false) async throws -> Fixture {
-        let fx = try await fixture(blocks: #"{"v":1,"blocks":[{"type":"actions","actions":[\#(Self.target)]}]}"#)
-        let context = try context(fx.card)
-        try await fx.pool.write { db in
-            let id = try TestDatabase.insertAgentAction(
-                db, surface: "inbox", contextType: "automation_output", contextID: context, status: status,
-                resultJSON: applied ? #"{"target_id":1}"# : "", decidedAt: applied ? "2026-11-06T10:00:00Z" : "")
-            if applied { _ = try TestDatabase.insertTarget(db, sourceType: "chat", sourceID: "action:\(id)") }
-        }
-        try await list(fx, actions: [CardAction(index: 0, kind: "target", label: "Make a task", state: .pressed,
-                                                detail: detail, note: "", until: "")])
-        return fx
-    }
-
     // MARK: - The target button
 
     func testPendingTargetProposalShowsWaitingInAFolder() async throws {
-        let fx = try await targetFixture(status: "pending", detail: "waiting")
+        // Artifact 1's target button with its proposal pending: Go says waiting.
+        let fx = try await fixture("desktop_folder_pane_target_pending")
         let button = try view(fx.vm).inspect().find(ArtifactTargetButton.self)
         XCTAssertNoThrow(try button.find(text: "Waiting for approval"))
         XCTAssertThrowsError(try button.find(text: "Make a task"), "not idle")
     }
 
     func testAppliedTargetProposalWithItsTaskShowsTaskCreatedInAFolder() async throws {
-        let fx = try await targetFixture(status: "applied", detail: "created", applied: true)
+        // Its proposal applied and the task there: Go says created.
+        let fx = try await fixture("desktop_folder_pane_target_applied")
         let button = try view(fx.vm).inspect().find(ArtifactTargetButton.self)
         XCTAssertNoThrow(try button.find(text: "Task created"))
     }
@@ -137,21 +88,10 @@ final class ActionStripFolderPaneTests: XCTestCase {
     /// One artifact through the folder pane: its list row's native actions,
     /// its ⋯, and a Reply whose reason names the artifact.
     func testFolderPaneDrawsRowActionsMenuAndReplyHost() async throws {
-        var fx = try await fixture(blocks: "")
-        let item = try await fx.pool.write { db in
-            try TestDatabase.insertInboxItem(db, channelID: "1:C001", triggerType: "mention",
-                                             permalink: "https://acme.slack.com/archives/C001/p1700000000000100")
-        }
-        let blocks = #"{"v":1,"blocks":[{"type":"list","rows":[{"title":"colleague A","ref":{"kind":"inbox_item","id":\#(item)}}]}]}"#
-        try await fx.pool.write { db in
-            try db.execute(sql: "UPDATE automation_outputs SET blocks_json = ? WHERE id = ?",
-                           arguments: [blocks, fx.card.id])
-        }
-        // Go's facts of the row: a Slack mention with its permalink has Reply….
-        try await list(fx, refs: [TestInboxFeeds.facts(.inboxItem, item, reply: true)])
-        await fx.vm.selectEntry(fx.vm.folderEntries[0].id)
-        guard case let .artifact(card)? = fx.vm.selectedEntry else { return XCTFail("the artifact is selected") }
-        fx = Fixture(pool: fx.pool, vm: fx.vm, runner: fx.runner, card: card, folder: fx.folder)
+        // Artifact 1's list row is item 1, a Slack mention with its
+        // permalink: Go's facts of the row give it Reply….
+        let fx = try await fixture("desktop_folder_pane_reply_row")
+        let item: Int64 = 1
 
         let menu = InboxArtifactMenuModel(folderMenu: fx.vm.folderMenu, hooks: .init(
             automations: { nil }, setBuiltinEnabled: { _, _ in nil }, openEditor: { _, _ in },

@@ -41,55 +41,6 @@ package enum TestInboxFeeds {
         return Feed(v: 1, builtAt: "2026-11-16T12:00:00Z", folders: folders, cards: cards)
     }
 
-    /// A feed listing the Inbox records `pool` holds that are still open
-    /// by their own row (an output neither done nor dismissed, a pending
-    /// reminder, an unresolved message, an undecided proposal, a failed
-    /// built-in move): a press or pane test's stand-in for the tower's read.
-    /// Not the Inbox's rules (Go's, tested there): coarse row states only,
-    /// so a written row leaves on the next listing. Being replaced by Go's
-    /// `"desktop": true` cases (`FeedCaseTransport`); its last callers are the
-    /// button-state tests of 11d-b, converted after the merge, then it goes. Outputs go to their
-    /// folder (`inbox_artifact_folders`), tracks (dismissed ones in the
-    /// Stopped fold), ideas, messages, day cards and thread briefs to the
-    /// root; proposals, reminders and notices to Needs approval.
-    package static func everything(_ pool: DatabasePool) throws -> Feed {
-        func ids(_ db: Database, _ sql: String) -> [Int64] {
-            (try? Int64.fetchAll(db, sql: sql)) ?? []
-        }
-        let read = try pool.read { db in
-            (outputs: ids(db, "SELECT id FROM automation_outputs WHERE kind = 'inbox' AND done_at IS NULL AND dismissed_at IS NULL ORDER BY id"),
-             folders: Dictionary((try? Row.fetchAll(db, sql: "SELECT output_id, folder_id FROM inbox_artifact_folders"))?
-                .map { (($0["output_id"] as Int64?) ?? 0, ($0["folder_id"] as Int64?) ?? 0) } ?? []) { first, _ in first },
-             actions: ids(db, """
-                SELECT id FROM agent_actions
-                WHERE tool != 'brief_context' AND status IN ('pending','approved','failed','executing') ORDER BY id
-                """),
-             briefs: ids(db, "SELECT id FROM agent_actions WHERE tool = 'brief_context' AND status = 'applied' ORDER BY id"),
-             reminders: ids(db, "SELECT id FROM reminders WHERE status = 'pending' ORDER BY id"),
-             notices: ids(db, "SELECT rowid FROM builtin_migrations WHERE status = 'failed' ORDER BY rowid"),
-             tracks: ids(db, "SELECT id FROM tracks WHERE dismissed_at = '' ORDER BY id"),
-             stopped: ids(db, "SELECT id FROM tracks WHERE dismissed_at != '' ORDER BY id"),
-             ideas: ids(db, "SELECT id FROM ideas WHERE status != 'merged' ORDER BY id"),
-             messages: ids(db, "SELECT id FROM inbox_items WHERE status NOT IN ('resolved','dismissed') ORDER BY id"),
-             dates: (try? String.fetchAll(db, sql: "SELECT DISTINCT date FROM briefings ORDER BY date DESC")) ?? [])
-        }
-        var root: [Entry] = read.dates.map { .day($0) } + read.briefs.map { .brief($0) }
-        if !read.tracks.isEmpty || !read.stopped.isEmpty { root.append(.tracks(read.tracks, stopped: read.stopped)) }
-        if !read.ideas.isEmpty { root.append(.ideas(read.ideas)) }
-        if !read.messages.isEmpty { root.append(.messages(read.messages)) }
-        let approvals: [Entry] = read.notices.map { .notice($0) } + read.actions.map { .action($0) }
-            + read.reminders.map { .reminder($0) }
-        var result = try feed(pool, root: root, approvals: approvals)
-        let rootID = result.folders.first { $0.kind == .root }?.id ?? 0
-        let outputs = read.outputs.reversed().map { id in card(.output(id), folder: read.folders[id] ?? rootID) }
-        result.cards = outputs + result.cards
-        for index in result.folders.indices {
-            let folderID = result.folders[index].id
-            result.folders[index].count += outputs.filter { $0.folderID == folderID }.count
-        }
-        return result
-    }
-
     /// A ref row's facts: shown, and waiting when `waits`.
     package static func ref(_ kind: RefKind, _ id: Int64, waits: Bool = true, reply: Bool = false) -> RefFacts {
         RefFacts(kind: kind, id: id, open: true, waits: waits, reply: reply, replyWaiting: false, link: "",
@@ -146,14 +97,6 @@ package enum TestInboxFeeds {
 }
 
 package extension ActionStripViewModel {
-    /// Lists every Inbox record the pool holds (`TestInboxFeeds.everything`)
-    /// and reads them: a press or pane test's stand-in for the tower's read.
-    @MainActor
-    func refreshListingEverything() async {
-        if let feed = try? TestInboxFeeds.everything(databasePool) { receiveTowerFeed(feed) }
-        await refresh()
-    }
-
     /// Lists `feed` (as the tower would) and reads its records.
     @MainActor
     func showFeed(_ feed: Feed) async {

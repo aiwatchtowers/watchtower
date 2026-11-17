@@ -340,11 +340,11 @@ package final class ActionStripViewModel {
     }
 
     /// What the feed says about a row's record (`Card.ref_facts`): the facts
-    /// of the artifacts' rows, which are the only rows Go sends them for.
+    /// Go sends for an artifact's rows and for the Messages card's items.
     package func refFacts(_ ref: InboxRef) -> RefFacts? {
         guard let towerFeed else { return nil }
         let kind = RefKind(rawValue: ref.kind.rawValue)
-        for card in towerFeed.cards where card.cardKind == .artifact {
+        for card in towerFeed.cards where card.cardKind == .artifact || card.legacy?.kind == .messages {
             if let facts = card.refFacts.first(where: { $0.kind == kind && $0.id == ref.id }) { return facts }
         }
         return nil
@@ -1071,17 +1071,15 @@ package final class ActionStripViewModel {
     }
 
     /// Item `itemID` has a Reply open (pending, approved or executing): one
-    /// reply per item at a time. Go's `reply_waiting` for a row on an
-    /// artifact; the Messages stand-in card is a legacy card, which the feed
-    /// sends without ref facts, so there the open proposals are looked at.
+    /// reply per item at a time. Go's `reply_waiting`; false when the feed
+    /// has no facts for it.
     package func replyWaiting(_ itemID: Int) -> Bool {
-        if let facts = refFacts(InboxRef(kind: .inboxItem, id: Int64(itemID))) { return facts.replyWaiting }
-        return feed.proposals.contains { InboxReplyPolicy.isOpenReply($0, itemID: itemID) }
+        refFacts(InboxRef(kind: .inboxItem, id: Int64(itemID)))?.replyWaiting ?? false
     }
 
-    /// Whether item `itemID`'s row on an artifact has **Reply…**: Go's
-    /// `reply` (a Slack, Jira or Linear item with its place); false when
-    /// the feed has no facts for it.
+    /// Whether item `itemID`'s row has **Reply…**: Go's `reply` (a Slack,
+    /// Jira or Linear item with its place); false when the feed has no
+    /// facts for it.
     package func canReply(_ itemID: Int64) -> Bool {
         refFacts(InboxRef(kind: .inboxItem, id: itemID))?.reply ?? false
     }

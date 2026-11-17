@@ -109,11 +109,10 @@ struct InboxRefHooks {
     /// Waiting for me (before its first run, after a failed run): the same
     /// Reply… as a row, for an item with a write path, off with the
     /// footer's line while the CLI is missing. Nil otherwise — today's card.
-    /// The feed sends the Messages legacy card without ref facts, so the
-    /// write path is still told here (`InboxReplyPolicy.tool`).
+    /// Whether the item has a write path is Go's (`reply` on the Messages
+    /// card's item).
     func messageReply(_ row: HomeFeedInboxRow) -> InboxRowActionsContent? {
-        guard vm.folderMenu.snapshot.waitingForMe.messagesStandIn,
-              InboxReplyPolicy.tool(for: row.item) != nil else { return nil }
+        guard vm.folderMenu.snapshot.waitingForMe.messagesStandIn, vm.canReply(Int64(row.item.id)) else { return nil }
         let id = row.item.id
         return InboxRowActionsContent(
             kind: .inboxItem(openLabel: nil, openEnabled: false, canReply: true, showsHandToAgent: true),

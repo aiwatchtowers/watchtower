@@ -16,19 +16,22 @@ final class InboxTargetButtonFactsTests: XCTestCase {
         let path: String
         let outputID: Int64
         let context: String
+        let tower: FeedCaseTransport
     }
 
-    private func fixture() async throws -> Fixture {
+    /// Go's case `name` (default: automation 1's artifact 1 with one target
+    /// button, listed), seeded into a fresh pool.
+    private func fixture(_ name: String = "desktop_target_button_output") async throws -> Fixture {
         let (pool, path) = try TestDatabase.createPool()
-        let outputID = try await pool.write { db in
-            let automationID = try TestDatabase.insertAutomation(db, slug: "digest", name: "Acme digest")
-            let runID = try TestDatabase.insertAutomationRun(db, automationID: automationID)
-            return try TestDatabase.insertAutomationOutput(
-                db, automationID: automationID, runID: runID,
-                actionsJSON: #"[{"label":"Make a task","kind":"target","target":{"title":"Sign off"}}]"#)
-        }
+        let tower = try FeedCaseTransport.seeded(name, pool: pool)
+        let outputID: Int64 = 1
         return Fixture(pool: pool, path: path, outputID: outputID,
-                       context: context.replacingOccurrences(of: "OUT", with: String(outputID)))
+                       context: context.replacingOccurrences(of: "OUT", with: String(outputID)), tower: tower)
+    }
+
+    /// Lists the case through its tower the first time, then reads again.
+    private func list(_ vm: ActionStripViewModel, _ fx: Fixture) async {
+        if vm.feedLoader == nil { await vm.follow(fx.tower) } else { await vm.refresh() }
     }
 
     @discardableResult
@@ -102,7 +105,7 @@ final class InboxTargetButtonFactsTests: XCTestCase {
             _ = try TestDatabase.insertTarget(db, sourceType: "chat", sourceID: "action:\(id)")
         }
         let vm = ActionStripViewModel(dbPool: fx.pool, cliRunner: FakeCLIRunner())
-        await vm.refreshListingEverything()
+        await list(vm, fx)
 
         let facts = vm.targetButton(contextID: fx.context, action: nil)
         XCTAssertEqual(facts.proposalID, id)
@@ -120,7 +123,7 @@ final class InboxTargetButtonFactsTests: XCTestCase {
         defer { TestDatabase.cleanup(path: fx.path) }
         let runner = FakeCLIRunner(stdout: Data(#"{"ok":true}"#.utf8))
         let vm = ActionStripViewModel(dbPool: fx.pool, cliRunner: runner)
-        await vm.refreshListingEverything()
+        await list(vm, fx)
 
         await vm.proposeTarget(press(fx))
 
@@ -134,7 +137,7 @@ final class InboxTargetButtonFactsTests: XCTestCase {
         defer { TestDatabase.cleanup(path: fx.path) }
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: parent_id: task #3 is closed\n"))
         let vm = ActionStripViewModel(dbPool: fx.pool, cliRunner: runner)
-        await vm.refreshListingEverything()
+        await list(vm, fx)
 
         // Exit 1: kept for the button, as stderr's own text; no Inbox banner.
         await vm.proposeTarget(press(fx))
@@ -144,7 +147,7 @@ final class InboxTargetButtonFactsTests: XCTestCase {
         // Navigating away and back (off screen, another card, a read) keeps it.
         vm.setOnScreen(false)
         await vm.select(.output(fx.outputID))
-        await vm.refreshListingEverything()
+        await list(vm, fx)
         vm.setOnScreen(true)
         await vm.onScreenRefresh?.value
         XCTAssertEqual(vm.targetButton(contextID: fx.context, action: nil).pressError, "parent_id: task #3 is closed")
@@ -164,7 +167,7 @@ final class InboxTargetButtonFactsTests: XCTestCase {
         await vm.proposeTarget(press(fx))
         XCTAssertEqual(vm.targetButton(contextID: fx.context, action: nil).pressError, "busy")
         try await proposal(fx, status: "pending")
-        await vm.refreshListingEverything()
+        await list(vm, fx)
         XCTAssertNil(vm.targetButton(contextID: fx.context, action: nil).pressError)
     }
 
@@ -185,9 +188,9 @@ final class InboxTargetButtonFactsTests: XCTestCase {
         try await proposal(fx, status: "rejected")
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "busy"))
         let vm = ActionStripViewModel(dbPool: fx.pool, cliRunner: runner)
-        await vm.refreshListingEverything()
+        await list(vm, fx)
         await vm.proposeTarget(press(fx))
-        await vm.refreshListingEverything()
+        await list(vm, fx)
         XCTAssertEqual(vm.targetButton(contextID: fx.context, action: nil).pressError, "busy")
     }
 
@@ -205,7 +208,7 @@ final class InboxTargetButtonFactsTests: XCTestCase {
             }
         }
         let vm = ActionStripViewModel(dbPool: fx.pool, cliRunner: runner)
-        await vm.refreshListingEverything()
+        await list(vm, fx)
 
         await vm.proposeTarget(press(fx))
 
@@ -222,7 +225,7 @@ final class InboxTargetButtonFactsTests: XCTestCase {
         runner.blockUntilCancelled = true
         runner.returnDataOnCancelInsteadOfThrowing = true
         let vm = ActionStripViewModel(dbPool: fx.pool, cliRunner: runner)
-        await vm.refreshListingEverything()
+        await list(vm, fx)
 
         let first = Task { await vm.proposeTarget(press(fx)) }
         await runner.untilInvocations(1)
@@ -244,7 +247,7 @@ final class InboxTargetButtonFactsTests: XCTestCase {
 
         for (status, extra) in [("approved", [String]()), ("executing", ["--force"]), ("failed", [])] {
             let id = try await proposal(fx, status: status, context: "\(fx.outputID):0:\(status)")
-            await vm.refreshListingEverything()
+            await list(vm, fx)
             await vm.tryAgainTarget(id)
             XCTAssertEqual(runner.invocations.last, ["actions", "apply", String(id)] + extra + ["--json"], status)
         }
@@ -259,7 +262,7 @@ final class InboxTargetButtonFactsTests: XCTestCase {
         let id = try await proposal(fx, status: "failed")
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 3, stderr: "A newer proposal for this button is open (#9)"))
         let vm = ActionStripViewModel(dbPool: fx.pool, cliRunner: runner)
-        await vm.refreshListingEverything()
+        await list(vm, fx)
         await vm.tryAgainTarget(id)
         XCTAssertNil(vm.actionFeed.rowErrors[id])
         XCTAssertNil(vm.targetButton(contextID: fx.context, action: nil).applyError)
@@ -273,7 +276,7 @@ final class InboxTargetButtonFactsTests: XCTestCase {
         let id = try await proposal(fx, status: "executing")
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "database is locked"))
         let vm = ActionStripViewModel(dbPool: fx.pool, cliRunner: runner)
-        await vm.refreshListingEverything()
+        await list(vm, fx)
         let running = Task { await vm.tryAgainTarget(id) }
         vm.setOnScreen(false)
         await running.value
@@ -285,16 +288,12 @@ final class InboxTargetButtonFactsTests: XCTestCase {
     /// Which row is its button's newest is Go's (`Approval.target`,
     /// `Approval.superseded`): an older row is never offered Try again.
     func testOnlyTheNewestRowIsTheButtons() async throws {
-        let fx = try await fixture()
+        // Artifact 1's button: its failed row 1, then its pending row 2.
+        let fx = try await fixture("desktop_target_button_newest_rows")
         defer { TestDatabase.cleanup(path: fx.path) }
-        let older = try await proposal(fx, status: "failed")
-        let newer = try await proposal(fx, status: "pending")
+        let (older, newer): (Int64, Int64) = (1, 2)
         let vm = ActionStripViewModel(dbPool: fx.pool, cliRunner: FakeCLIRunner())
-        let feed = try TestInboxFeeds.everything(fx.pool)
-        await vm.showFeed(TestInboxFeeds.adding([
-            TestInboxFeeds.approvalCard(older, TestInboxFeeds.approval(title: "Create task", superseded: true)),
-            TestInboxFeeds.approvalCard(newer, TestInboxFeeds.approval(title: "Create task", target: "waiting"))
-        ], to: feed))
+        await list(vm, fx)
         let rows = try await fx.pool.read { db in
             (try AgentActionQueries.fetch(db, id: older), try AgentActionQueries.fetch(db, id: newer))
         }
@@ -310,14 +309,14 @@ final class InboxTargetButtonFactsTests: XCTestCase {
 
     /// The button's state is the feed's action at its press index.
     func testButtonStateIsTheFeedsAction() async throws {
-        let fx = try await fixture()
+        // Artifact 1's button (its Go hash) with failed row 1.
+        let fx = try await fixture("desktop_target_button_failed")
         defer { TestDatabase.cleanup(path: fx.path) }
-        let id = try await proposal(fx, status: "failed")
+        let id: Int64 = 1
         let vm = ActionStripViewModel(dbPool: fx.pool, cliRunner: FakeCLIRunner())
-        await vm.refreshListingEverything()
-        let action = CardAction(index: 0, kind: "target", label: "Make a task", state: .enabled, detail: "failed",
-                                note: "parent_id: task #3 is closed", until: "")
-        let button = vm.targetButton(contextID: fx.context, action: action)
+        await list(vm, fx)
+        let action = try XCTUnwrap(vm.feedCard("o1")?.actions.first)
+        let button = vm.targetButton(contextID: "1:0:78467113208dbfff", action: action)
         XCTAssertEqual(button.detail, "failed")
         XCTAssertEqual(button.note, "parent_id: task #3 is closed")
         XCTAssertEqual(button.proposalID, id, "Try again applies the newest row")
@@ -341,22 +340,15 @@ final class InboxTargetOrphanedProposalTests: XCTestCase {
     private func check(deleteOutput: Bool) async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let (outputID, proposalID, approvals) = try await pool.write { db -> (Int64, Int64, Int64) in
-            let seed = try InboxFolderFixtures.seed(db)
-            let automationID = try TestDatabase.insertAutomation(db, slug: "digest", name: "Acme digest")
-            let runID = try TestDatabase.insertAutomationRun(db, automationID: automationID)
-            let output = try TestDatabase.insertAutomationOutput(db, automationID: automationID, runID: runID)
-            let proposal = try TestDatabase.insertAgentAction(
-                db, surface: "inbox", contextType: "automation_output", contextID: "\(output):0:0123456789abcdef")
-            if deleteOutput {
-                try db.execute(sql: "DELETE FROM automation_outputs WHERE id = ?", arguments: [output])
-            }
-            return (output, proposal, seed.approvals)
-        }
+        // Proposal 1 for artifact 1's button 1:0:0123456789abcdef; the
+        // artifact gone, or still there with its button drawn under another hash.
+        let tower = try FeedCaseTransport.seeded(
+            deleteOutput ? "desktop_target_orphan_output_deleted" : "desktop_target_orphan_hash_changed", pool: pool)
+        let (outputID, proposalID, approvals): (Int64, Int64, Int64) = (1, 1, 2)
         let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"applied_ok":true,"error":""}"#.utf8))
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner, defaults: defaults)
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
         vm.selectFolder(approvals)
         XCTAssertTrue(vm.folderEntries.contains { $0.id == "approval:action:\(proposalID)" },
                       "the open approval stays on screen")
