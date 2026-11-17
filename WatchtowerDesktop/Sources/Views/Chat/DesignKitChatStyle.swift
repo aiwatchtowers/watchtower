@@ -223,11 +223,13 @@ extension View {
 }
 
 extension ChatHostText {
-    /// The Mac's own lines: the chat runs on this Mac (#1783 is the phone's rule).
+    /// The Mac's own lines: the chat runs on this Mac (#1783 is the phone's rule). A Slack send still waiting for a
+    /// workspace shows `chooseSlackWorkspace` only on a Mac surface without the picker (the target chat, the automation
+    /// editor), so it names where the pick is: the row's card in Inbox › Needs approval (unified chat T16).
     static let mac = ChatHostText(
         messageCut: "This message is cut here; the whole text is on your Mac.",
         artifactCut: "This artifact is cut here; the whole text is on your Mac.",
-        chooseSlackWorkspace: "Choose a workspace on the Mac before approving"
+        chooseSlackWorkspace: "Choose a workspace in Inbox › Needs approval before approving"
     )
 }
 
