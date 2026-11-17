@@ -24,7 +24,7 @@ final class AgentActionCardViewConfluencePreviewTests: XCTestCase {
     /// Deleted words struck through in red, inserted words in green, the
     /// unchanged words plain.
     func testConfluenceDiffStylesRemovedAndAddedWords() {
-        let text = AgentActionCardView.diffText(before: "Ships on Friday.", after: "Ships on Monday.")
+        let text = MacAgentActionCard.diffText(before: "Ships on Friday.", after: "Ships on Monday.")
         let runs = text.runs.map { run in
             (String(text[run.range].characters), run.swiftUI.strikethroughStyle != nil, run.swiftUI.foregroundColor)
         }
@@ -48,13 +48,13 @@ final class AgentActionCardViewConfluencePreviewTests: XCTestCase {
         let memo = ConfluenceEditMemo.shared
         let start = memo.builds
 
-        let first = AgentActionCardView.confluenceEdit(for: action)
+        let first = MacAgentActionCard.confluenceEdit(for: action)
         XCTAssertEqual(memo.builds, start + 1)
-        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        let view = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
         _ = try view.inspect().find(text: "text in Plan")
         _ = try view.inspect().find(text: "Section: Risks")
-        _ = AgentActionCardView.summaryLines(for: action)
-        XCTAssertEqual(AgentActionCardView.confluenceEdit(for: action), first)
+        _ = MacAgentActionCard.summaryLines(for: action)
+        XCTAssertEqual(MacAgentActionCard.confluenceEdit(for: action), first)
         XCTAssertEqual(memo.builds, start + 1, "renders and lookups reuse the built preview")
 
         let changedArgs = args.replacingOccurrences(of: unique, with: unique + " v2")
@@ -62,7 +62,7 @@ final class AgentActionCardViewConfluencePreviewTests: XCTestCase {
             try TestDatabase.insertAgentAction(db, tool: "edit_confluence_page", external: true, argsJSON: changedArgs)
         }
         XCTAssertEqual(changed.id, action.id, "same row id, different args")
-        XCTAssertEqual(AgentActionCardView.confluenceEdit(for: changed)?.title, unique + " v2")
+        XCTAssertEqual(MacAgentActionCard.confluenceEdit(for: changed)?.title, unique + " v2")
         XCTAssertEqual(memo.builds, start + 2, "different args never reuse a stale preview")
 
         // Another workspace's row: same id, same args length, different page
@@ -73,7 +73,7 @@ final class AgentActionCardViewConfluencePreviewTests: XCTestCase {
             try TestDatabase.insertAgentAction(db, tool: "edit_confluence_page", external: true, argsJSON: sameLength)
         }
         XCTAssertEqual(other.id, action.id)
-        XCTAssertEqual(AgentActionCardView.confluenceEdit(for: other)?.baseVersion, "8")
+        XCTAssertEqual(MacAgentActionCard.confluenceEdit(for: other)?.baseVersion, "8")
         XCTAssertEqual(memo.builds, start + 3, "same id and length, different content: rebuilt")
     }
 
@@ -81,7 +81,7 @@ final class AgentActionCardViewConfluencePreviewTests: XCTestCase {
     /// section-sized diff stays readable; the changed words are never cut.
     func testConfluenceDiffShortensLongUnchangedText() {
         let head = String(repeating: "word ", count: 200)
-        let text = AgentActionCardView.diffText(before: head + "old", after: head + "new")
+        let text = MacAgentActionCard.diffText(before: head + "old", after: head + "new")
         let plain = String(text.characters)
         XCTAssertTrue(plain.contains(" … "))
         XCTAssertLessThan(plain.count, head.count)
@@ -99,14 +99,14 @@ final class AgentActionCardViewConfluencePreviewTests: XCTestCase {
             try TestDatabase.insertAgentAction(db, tool: "edit_confluence_page", external: true, argsJSON: args)
         }
         let beforeBuild = AgentAction.argsDecodes.count
-        _ = AgentActionCardView.summaryLines(for: action) // builds the memoized preview
+        _ = MacAgentActionCard.summaryLines(for: action) // builds the memoized preview
         let start = AgentAction.argsDecodes.count
         XCTAssertEqual(start - beforeBuild, 1, "building the preview decodes the args once")
         for _ in 0..<50 {
-            _ = AgentActionCardView.summaryLines(for: action)
-            _ = AgentActionCardView.canApprove(action)
+            _ = MacAgentActionCard.summaryLines(for: action)
+            _ = MacAgentActionCard.canApprove(action)
         }
-        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        let view = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
         XCTAssertNoThrow(try view.inspect().find(button: "Approve"))
         XCTAssertEqual(AgentAction.argsDecodes.count, start, "no args decode per render")
     }

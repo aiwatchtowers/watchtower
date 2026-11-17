@@ -12588,7 +12588,7 @@
       "ruleName": "kit_no_color_opacity",
       "location": {
         "line": 576,
-        "file": "Sources/Views/Chat/AgentActionCardView.swift",
+        "file": "Sources/Views/Automations/SaveAutomationCardDetails.swift",
         "character": 33
       },
       "severity": "error",

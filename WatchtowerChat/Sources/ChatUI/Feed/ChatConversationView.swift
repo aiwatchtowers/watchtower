@@ -87,7 +87,8 @@ extension ChatConversationModel {
             notice: nil,
             partActions: actions,
             rowActions: rowActions,
-            focusMessageID: conversation.focusMessageID
+            focusMessageID: conversation.focusMessageID,
+            runningTurnID: conversation.runningTurnID
         )
     }
 }

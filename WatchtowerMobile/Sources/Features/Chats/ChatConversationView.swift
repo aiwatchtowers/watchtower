@@ -237,10 +237,20 @@ struct ChatConversationView: View {
             copy: { UIPasteboard.general.string = $0 },
             openArtifact: { artifact = $0 },
             openSources: { sources = $0 },
-            decide: { payload, decision in
-                Task { await client.decide(payload, decision, permissions: permissions) }
+            approvals: approvals(client: client, permissions: permissions, host: host)
+        )
+    }
+
+    /// The approval card's services on the phone (ask #1411): the hub's `chat_action_answer` and the card's state line
+    /// only — no editing (the relay answer has no patch), no Approve all, Dismiss or Retry.
+    private func approvals(client: RelayChatClient, permissions: Bool, host: TowerHost) -> ChatApprovalServices {
+        let conversation = conversation
+        return ChatApprovalServices(
+            decide: { action, answer in
+                Task { await client.decide(action, answer == .reject ? .reject : .approve, permissions: permissions) }
             },
-            approvalState: { payload in client.approvalCard(payload, permissions: permissions, host: host).state }
+            state: { action in client.approvalCard(action, permissions: permissions, host: host).state },
+            sessionHoldsCall: { ConnectorCallProposal.sessionHolds($0, runningTurnID: conversation.runningTurnID) }
         )
     }
 

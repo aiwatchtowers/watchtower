@@ -133,8 +133,8 @@ enum AutomationShotFixtures {
                 "status": "pending", "turn_id": "t1"
             ]))
             let sessions = AutomationDraftPanelModel.dryRunSessions(in: [try cacheLine()])
-            return AnyView(AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {},
-                                               onRetry: {}, latestDraftText: recipe, draftSessions: sessions))
+            return AnyView(MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {},
+                                              onRetry: {}, latestDraftText: recipe, draftSessions: sessions))
         } catch {
             return failure(error)
         }

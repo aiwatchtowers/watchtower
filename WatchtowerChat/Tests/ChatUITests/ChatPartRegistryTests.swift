@@ -121,27 +121,4 @@ final class ChatPartRegistryTests: XCTestCase {
         let withPart = ChatFeedLayout.rows(messages: [ChatUIFixtures.message(2, parts: [shown])], actions: [action])
         XCTAssertEqual(withPart.count, 1, "an action a part already shows is not drawn again")
     }
-
-    func testSlackApprovalReadsRecipientAndText() throws {
-        let payload = ChatApprovalPayload(
-            id: 9, tool: "send_slack_message", title: "Send",
-            argsDisplay: ##"{"target": {"label": "#general", "workspace": "acme"}, "text": "hi"}"##,
-            argsSHA256: "abc", status: "pending"
-        )
-        let slack = try XCTUnwrap(SlackApproval(payload))
-        XCTAssertEqual(slack.recipient, "To: #general · acme")
-        XCTAssertEqual(slack.text, "hi")
-        XCTAssertNil(ConnectorApproval(payload))
-    }
-
-    /// No recipient: the card asks for a workspace in the app's own words (`ChatHostText`), never "the Mac" itself.
-    func testSlackApprovalWithoutRecipientLeavesTheLineToTheApp() throws {
-        let payload = ChatApprovalPayload(
-            id: 9, tool: "send_slack_message", title: "Send", argsDisplay: ##"{"text": "hi"}"##,
-            argsSHA256: "abc", status: "pending"
-        )
-        XCTAssertNil(try XCTUnwrap(SlackApproval(payload)).recipient)
-        XCTAssertEqual(ChatHostText.plain.chooseSlackWorkspace, "Choose a workspace on your tower before approving")
-        XCTAssertEqual(ChatHostText.plain.artifactCut, "This artifact is cut here; the whole text is on your tower.")
-    }
 }

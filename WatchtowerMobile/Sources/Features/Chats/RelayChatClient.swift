@@ -468,20 +468,25 @@ final class RelayChatClient: ChatClient {
     /// answer is on its way, never without the `permissions` grant (the card has no buttons then), never while the hub
     /// is away. A stale hash comes back as "The action changed — look again".
     func decide(_ payload: ChatApprovalPayload, _ decision: ChatApprovalDecision, permissions: Bool) async {
-        guard permissions, isConnected, payload.status == "pending", !answering.contains(payload.id) else { return }
-        answering.insert(payload.id)
-        approvalFailures[payload.id] = nil
-        defer { answering.remove(payload.id) }
+        await decide(ChatAgentAction(payload: payload), decision, permissions: permissions)
+    }
+
+    /// The shared card's answer: the action it showed, pinned to the digest the hub sent (AGENT-07).
+    func decide(_ action: ChatAgentAction, _ decision: ChatApprovalDecision, permissions: Bool) async {
+        guard permissions, isConnected, action.status == "pending", !answering.contains(action.id) else { return }
+        answering.insert(action.id)
+        approvalFailures[action.id] = nil
+        defer { answering.remove(action.id) }
         let params = ChatActionAnswerParams(
-            actionID: payload.id, decision: decision == .approve ? .approve : .reject, argsSHA256: payload.argsSHA256
+            actionID: action.id, decision: decision == .approve ? .approve : .reject, argsSHA256: action.argsSHA256
         )
         switch await sender.request(params) {
         case .applied:
             break
         case let .failed(failure):
-            approvalFailures[payload.id] = failure
+            approvalFailures[action.id] = failure
         case .lost:
-            approvalFailures[payload.id] = ChatActionFailure(reason: nil, message: ChatSendCoordinator.couldNotSend)
+            approvalFailures[action.id] = ChatActionFailure(reason: nil, message: ChatSendCoordinator.couldNotSend)
         }
     }
 
@@ -491,6 +496,14 @@ final class RelayChatClient: ChatClient {
             payload: payload, permissions: permissions, online: isConnected, inFlight: answering.contains(payload.id),
             failure: approvalFailures[payload.id], host: host
         )
+    }
+
+    /// The shared card's state for the action it shows (its id and status are all the state reads).
+    func approvalCard(_ action: ChatAgentAction, permissions: Bool, host: TowerHost) -> ChatApprovalCardModel {
+        approvalCard(ChatApprovalPayload(id: action.id, tool: action.tool, title: "", argsDisplay: action.argsJSON,
+                                         argsSHA256: action.argsSHA256, status: action.status, turnID: action.turnID,
+                                         argsComplete: action.argsComplete),
+                     permissions: permissions, host: host)
     }
 
     // MARK: - Echo mapping

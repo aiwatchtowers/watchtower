@@ -40,6 +40,29 @@ public protocol ChatUIStyle {
     /// A chat list row drawn by the app (the Mac's Chats panel keeps the row it had, spec §2 "a move, not a
     /// redesign"); nil draws ChatUI's own row.
     func listRow(_ content: ChatListRowContent) -> AnyView?
+
+    // MARK: The approval card (unified chat T15)
+
+    /// An approval card's frame; `outlined` marks the card the running turn waits on. The default is the phone's card.
+    func approvalCard(_ content: AnyView, outlined: Bool) -> AnyView
+    /// An approval card's header line: the tool's title and the status.
+    func approvalHeader(_ header: ChatApprovalHeader) -> AnyView
+    /// A decision button (Approve, Reject); `prominent` for the one that approves.
+    func approvalButton(_ title: String, prominent: Bool, action: @escaping () -> Void) -> AnyView
+    /// A Slack proposal's message text, shown read-only.
+    func approvalSlackText(_ text: String) -> AnyView
+}
+
+/// What an approval card's header shows (`ChatUIStyle.approvalHeader`).
+public struct ChatApprovalHeader {
+    public let title: String
+    public let status: String
+    /// The proposal writes outside Watchtower (Jira, Slack…): the Mac's external icon.
+    public let external: Bool
+    /// Waiting for the owner (orange on the phone), done, failed, or neither.
+    public let kind: Kind
+
+    public enum Kind: Equatable, Sendable { case waiting, done, failed, neutral }
 }
 
 /// One tool step as `ChatUIStyle.stepLine` gets it. `argsJSON` and `isWaiting` are set only by a client that has them.
@@ -110,6 +133,46 @@ extension ChatUIStyle {
     public func stepLine(_ step: ChatStepLine, turnRunning: Bool) -> AnyView? { nil }
 
     public func listRow(_ content: ChatListRowContent) -> AnyView? { nil }
+
+    public func approvalCard(_ content: AnyView, outlined: Bool) -> AnyView {
+        AnyView(card { content }.overlay {
+            if outlined {
+                RoundedRectangle(cornerRadius: Radius.container).strokeBorder(Tone.warning, lineWidth: Stroke.selection)
+            }
+        })
+    }
+
+    public func approvalHeader(_ header: ChatApprovalHeader) -> AnyView {
+        let tone: Color = switch header.kind {
+        case .waiting: Tone.warning
+        case .done: Tone.success
+        case .failed: Tone.error
+        case .neutral: .secondary
+        }
+        return AnyView(HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+            Text(header.title).font(.callout.weight(.semibold)).lineLimit(2)
+            Spacer(minLength: Spacing.regular)
+            Text(header.status)
+                .font(.caption)
+                .foregroundStyle(tone)
+                .accessibilityIdentifier("agentAction.status")
+        })
+    }
+
+    public func approvalButton(_ title: String, prominent: Bool, action: @escaping () -> Void) -> AnyView {
+        prominent ? primaryButton(title, action: action) : secondaryButton(title, action: action)
+    }
+
+    public func approvalSlackText(_ text: String) -> AnyView {
+        AnyView(
+            Text(text)
+                .font(.callout)
+                .padding(Spacing.regular)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Fill.rest, in: RoundedRectangle(cornerRadius: Radius.control))
+                .textSelection(.enabled)
+        )
+    }
 }
 
 /// The default style: borderless controls on the shared tokens, no app look.

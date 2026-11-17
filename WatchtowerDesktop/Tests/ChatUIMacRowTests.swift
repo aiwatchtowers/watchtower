@@ -6,6 +6,7 @@ import ViewInspector
 import WatchtowerChatText
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerTestSupport
 import XCTest
 
 /// ChatUI's row and parts as the Mac's embedded chats and Workchat draw them (unified chat T12): the error card, the
@@ -255,5 +256,86 @@ final class ChatUIMacRowTests: XCTestCase {
         for other in ["https://example.com/x", "http://claude.ai/artifact/abc", "file:///tmp/x.html"] {
             XCTAssertThrowsError(try row(reply("Done", steps: steps(other))).inspect().find(button: "Open in Browser"), other)
         }
+    }
+
+    // MARK: - The approval card (unified chat T15)
+
+    private func approvalChat(actions: Int, runner: FakeCLIRunner) throws -> (ChatViewModel, String) {
+        let (pool, path) = try TestDatabase.createPool()
+        try pool.write { db in
+            for _ in 0..<actions {
+                _ = try TestDatabase.insertAgentAction(db, tool: "create_jira_issue", external: true,
+                                                       argsJSON: #"{"project_key":"ACME","summary":"x"}"#,
+                                                       conversationID: 7, turnID: "t1")
+            }
+        }
+        let vm = ChatViewModel(client: RecordingChatClient(), dbPool: pool, cliRunner: runner)
+        vm.select(conversationID: 7)
+        vm.actionFeed.start(conversationID: 7)
+        vm.actionFeed.refresh()
+        return (vm, path)
+    }
+
+    private func approvalReply(_ ids: [Int64]) -> ChatFeed.Message {
+        let parts = ids.map { id in
+            ChatPart(kind: ChatPartKind.approval, payload: .object([
+                "id": .integer(id), "tool": .string("create_jira_issue"), "status": .string("pending"),
+                "args_display": .string("{}"), "args_sha256": .string("p1n"), "turn_id": .string("t1")
+            ]), fallback: ChatPartFallback(text: "An action waits for your approval"))
+        }
+        return ChatFeed.Message(id: 4, role: "assistant", text: "", createdAt: .distantPast, parts: parts)
+    }
+
+    private func approvalFeed(_ message: ChatFeed.Message, services: ChatApprovalServices) -> some View {
+        ChatUI.ChatFeedRows(messages: [message], context: ChatFeedContext(partActions: ChatPartActions(approvals: services)))
+            .macChatStyle(hooks: ChatMacArtifactHooks())
+    }
+
+    /// The Mac approves through `watchtower actions` (D12), never `chat.sock`: with the chat's socket unreachable, a
+    /// pending card's Approve is live and runs the CLI with the shown args' digest.
+    func testMacApprovalLiveWhileChatUnreachable() async throws {
+        let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"applied_ok":true,"error":""}"#.utf8))
+        let (vm, path) = try approvalChat(actions: 1, runner: runner)
+        defer { TestDatabase.cleanup(path: path) }
+        vm.conversation.reachability = .unavailable
+        let action = try XCTUnwrap(vm.actionFeed.rows.first)
+        let services = ChatThreadView(chatVM: vm, ownerName: "Alex").approvals
+        let card = ChatUI.AgentActionCard(action: action, services: services)
+            .environment(\.chatUIStyle, DesignKitChatStyle())
+        let approve = try card.inspect().find(button: "Approve")
+        XCTAssertFalse(approve.isDisabled())
+        try approve.tap()
+        for _ in 0..<1000 where runner.invocations.isEmpty { await Task.yield() }
+        XCTAssertEqual(runner.invocations.first,
+                       ["actions", "approve", String(action.id), "--args-sha256", ChatAgentAction.digest(of: action.argsJSON),
+                        "--json"])
+    }
+
+    /// An approval part whose row the Mac has not loaded (or no longer has) is drawn from the payload, with the
+    /// decision row from the services: the card never disappears.
+    func testApprovalPartWithoutMacRowDrawsFromPayload() throws {
+        let runner = FakeCLIRunner()
+        let (vm, path) = try approvalChat(actions: 0, runner: runner)
+        defer { TestDatabase.cleanup(path: path) }
+        let services = ChatThreadView(chatVM: vm, ownerName: "Alex").approvals
+        let feed = approvalFeed(approvalReply([99]), services: services)
+        XCTAssertNoThrow(try feed.inspect().find(text: "Create a Jira issue"))
+        XCTAssertNoThrow(try feed.inspect().find(text: "Awaiting your approval"))
+        XCTAssertNoThrow(try feed.inspect().find(button: "Approve"))
+        XCTAssertNoThrow(try feed.inspect().find(button: "Reject"))
+    }
+
+    /// **Approve all** shows under a reply with two or more bulk-approvable cards, and approves the turn's rows.
+    func testApproveAllShowsForTwoBulkApprovable() async throws {
+        let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"applied_ok":true,"error":""}"#.utf8))
+        let (vm, path) = try approvalChat(actions: 2, runner: runner)
+        defer { TestDatabase.cleanup(path: path) }
+        let services = ChatThreadView(chatVM: vm, ownerName: "Alex").approvals
+        let ids = vm.actionFeed.rows.map(\.id)
+        XCTAssertEqual(ids.count, 2)
+        XCTAssertThrowsError(try approvalFeed(approvalReply([ids[0]]), services: services).inspect().find(button: "Approve all"))
+        try approvalFeed(approvalReply(ids), services: services).inspect().find(button: "Approve all").tap()
+        for _ in 0..<1000 where runner.invocations.count < 2 { await Task.yield() }
+        XCTAssertEqual(runner.invocations.map { $0.prefix(3) }, ids.map { ["actions", "approve", String($0)] })
     }
 }

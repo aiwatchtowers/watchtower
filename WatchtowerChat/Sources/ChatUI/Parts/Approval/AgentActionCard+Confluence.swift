@@ -1,40 +1,21 @@
 import ChatWire
 import SwiftUI
-import WatchtowerCore
+import WatchtowerDesign
 
-/// The `edit_confluence_page` proposal on the agent-action card (spec
-/// 2026-09-30 §6): the page, then each pinned change as its locator and a
-/// word-level diff of the text before → after, plus the rich elements (mention
-/// markers) the change removes. Everything comes from the args Normalize
-/// pinned at propose time (`internal/tools/confluence_page_edit.go`), which is
-/// exactly what Approve writes — the card never recomputes the edit.
-extension AgentActionCardView {
-    static let confluenceEditTool = ConfluenceEdit.tool
-
-    /// The pinned edit, memoized per row version (`ChatWire.ConfluenceEdit`).
-    static func confluenceEdit(for action: AgentAction) -> ConfluenceEdit? {
-        ConfluenceEdit.proposal(for: action)
-    }
-
-    static func canApprove(_ action: AgentAction) -> Bool {
-        ConfluenceEdit.canApprove(action)
-    }
-
-    static func retryNote(for action: AgentAction) -> String {
-        ConfluenceEdit.retryNote(for: action)
-    }
-
-    // MARK: - Diff rendering
-
+/// The `edit_confluence_page` proposal on the card (spec 2026-09-30 §6): the page, then each pinned change as its
+/// locator and a word-level diff of the text before → after, plus the rich elements (mention markers) the change
+/// removes. Everything comes from the args Normalize pinned at propose time, which is exactly what Approve writes — the
+/// card never recomputes the edit. The diff segments are memoized per row version (`ConfluenceEdit`); a render only
+/// styles them.
+extension AgentActionCard {
     /// Unchanged text longer than this is shortened to its head and tail.
     static let unchangedRunLimit = 240
     private static let unchangedKeep = 100
 
-    /// Before → after as one styled text: removed words struck through in
-    /// red, added words underlined in green (colour is never the only cue),
-    /// unchanged text plain (a long unchanged stretch shortened around " … "
-    /// — changed words are never cut).
-    static func diffText(before: String, after: String) -> AttributedString {
+    /// Before → after as one styled text: removed words struck through in red, added words underlined in green (colour
+    /// is never the only cue), unchanged text plain (a long unchanged stretch shortened around " … " — changed words
+    /// are never cut).
+    public static func diffText(before: String, after: String) -> AttributedString {
         diffText(WordDiff.diff(before: before, after: after))
     }
 
@@ -71,7 +52,7 @@ struct ConfluenceEditChangesView: View {
     let edit: ConfluenceEdit
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: Spacing.compact) {
             if let url = edit.pageURL {
                 Link("Open “\(edit.title)” in Confluence ↗", destination: url)
                     .font(.callout)
@@ -82,11 +63,11 @@ struct ConfluenceEditChangesView: View {
                     .foregroundStyle(.orange)
             }
             ForEach(Array(edit.changes.enumerated()), id: \.offset) { _, change in
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: Spacing.tight) {
                     Text(change.heading)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
-                    Text(AgentActionCardView.diffText(change.segments))
+                    Text(AgentActionCard.diffText(change.segments))
                         .font(.callout)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)

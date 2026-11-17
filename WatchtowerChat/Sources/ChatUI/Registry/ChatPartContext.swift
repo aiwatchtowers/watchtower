@@ -3,28 +3,6 @@ import Foundation
 import SwiftUI
 import WatchtowerChatText
 
-/// The owner's answer to an approval card.
-public enum ChatApprovalDecision: Sendable, Equatable {
-    case approve
-    case reject
-}
-
-/// How an approval card's decision row stands, as the screen knows it: whether Approve and Reject show at all (the
-/// device may answer), whether they are live (no answer on its way, the chat reachable), and the line under them (where
-/// to approve instead, the answer on its way, a refusal). Nil from `ChatPartActions.approvalState` keeps the default:
-/// buttons on a pending action.
-public struct ChatApprovalState: Equatable, Sendable {
-    public let showsButtons: Bool
-    public let canAnswer: Bool
-    public let line: String?
-
-    public init(showsButtons: Bool, canAnswer: Bool, line: String?) {
-        self.showsButtons = showsButtons
-        self.canAnswer = canAnswer
-        self.line = line
-    }
-}
-
 /// What a part view may do. Every effect goes back to the screen that owns the conversation; a part view never talks
 /// to the engine itself. CHAT-05: nothing here sends content on its own — `sendFixedText` posts an owner text the owner
 /// pressed (a fallback's `chat_turn`, a question card's answers), and links only open or copy.
@@ -41,17 +19,11 @@ public struct ChatPartActions {
     public var openArtifact: (ChatArtifactContent) -> Void
     /// Opens the sources list of a reply.
     public var openSources: ([ChatSource]) -> Void
-    /// Approve or reject an agent action: the Mac through `actions approve|reject` (D12), the phone through the hub.
-    public var decide: (ChatApprovalPayload, ChatApprovalDecision) -> Void
-    /// The Mac's own agent-action card (Slack editing, reconnect, the automation editor), shared with its Inbox. Nil
-    /// on the phone and in tests: the shared approval card draws the action.
-    public var approvalCard: ((ChatApprovalPayload) -> AnyView?)?
+    /// What an approval card may do (`AgentActionCard`): the Mac's `actions approve|reject` (D12), the phone's hub.
+    public var approvals: ChatApprovalServices
     /// The Mac's "Review actions" on a reply stopped by the subscription quota: shows the reply's actions; nil hides
     /// the button.
     public var reviewActions: ((Int64) -> Void)?
-    /// The decision row's state for a pending action (the phone: its `permissions` grant, an answer in flight, a
-    /// refusal). Nil keeps Approve and Reject live.
-    public var approvalState: ((ChatApprovalPayload) -> ChatApprovalState?)?
     /// Whether an error card of the reply with this id offers Retry; nil offers it wherever the error is retryable.
     /// An embedded chat retries only its last failed reply while nothing runs.
     public var canRetry: ((Int64) -> Bool)?
@@ -68,10 +40,8 @@ public struct ChatPartActions {
         continueStopped: @escaping (Int64) -> Void = { _ in },
         openArtifact: @escaping (ChatArtifactContent) -> Void = { _ in },
         openSources: @escaping ([ChatSource]) -> Void = { _ in },
-        decide: @escaping (ChatApprovalPayload, ChatApprovalDecision) -> Void = { _, _ in },
-        approvalCard: ((ChatApprovalPayload) -> AnyView?)? = nil,
         reviewActions: ((Int64) -> Void)? = nil,
-        approvalState: ((ChatApprovalPayload) -> ChatApprovalState?)? = nil
+        approvals: ChatApprovalServices = ChatApprovalServices()
     ) {
         self.sendFixedText = sendFixedText
         self.openURL = openURL
@@ -80,10 +50,8 @@ public struct ChatPartActions {
         self.continueStopped = continueStopped
         self.openArtifact = openArtifact
         self.openSources = openSources
-        self.decide = decide
-        self.approvalCard = approvalCard
+        self.approvals = approvals
         self.reviewActions = reviewActions
-        self.approvalState = approvalState
     }
 }
 
@@ -99,6 +67,8 @@ public struct ChatPartContext {
     public var isAnswerable: Bool
     /// The owner's message right after this reply: an answered card reads its selections from it.
     public var answerText: String?
+    /// The turn running now: an approval card it waits on is outlined.
+    public var runningTurnID: String?
     public var actions: ChatPartActions
 
     public init(
@@ -107,6 +77,7 @@ public struct ChatPartContext {
         artifacts: [ChatFeed.Artifact] = [],
         isAnswerable: Bool = false,
         answerText: String? = nil,
+        runningTurnID: String? = nil,
         actions: ChatPartActions = ChatPartActions()
     ) {
         self.message = message
@@ -114,6 +85,7 @@ public struct ChatPartContext {
         self.artifacts = artifacts
         self.isAnswerable = isAnswerable
         self.answerText = answerText
+        self.runningTurnID = runningTurnID
         self.actions = actions
     }
 

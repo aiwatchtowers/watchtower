@@ -14,7 +14,7 @@ import WatchtowerTestSupport
 @MainActor
 enum ApprovalCardShotFixtures {
     /// The card every shot draws: the Mac's card on its own row.
-    private typealias Card = AgentActionCardView
+    private typealias Card = MacAgentActionCard
 
     private static var chats: [ChatViewModel] = []
     private static var poolPaths: [String] = []
@@ -98,9 +98,15 @@ enum ApprovalCardShotFixtures {
     // MARK: - Cards
 
     private static func card(
-        _ action: AgentAction, editable: Bool = false, holds: Bool = false, inFlight: Bool = false,
-        gestureError: AgentActionFeed.RowError? = nil, reconnect: Bool = false, dismiss: Bool = false,
-        open: Bool = false, context: String? = nil
+        _ action: AgentAction,
+        editable: Bool = false,
+        holds: Bool = false,
+        inFlight: Bool = false,
+        gestureError: AgentActionFeed.RowError? = nil,
+        reconnect: Bool = false,
+        dismiss: Bool = false,
+        open: Bool = false,
+        context: String? = nil
     ) -> AnyView {
         AnyView(Card(
             action: action, inFlight: inFlight, onApprove: {}, onReject: {}, onRetry: {}, gestureError: gestureError,
@@ -123,8 +129,14 @@ enum ApprovalCardShotFixtures {
     }
 
     private static func row(
-        tool: String, external: Bool = false, args: String, status: String = "pending", result: String = "",
-        error: String = "", turn: String = "t1", id: Int64 = 41
+        tool: String,
+        external: Bool = false,
+        args: String,
+        status: String = "pending",
+        result: String = "",
+        error: String = "",
+        turn: String = "t1",
+        id: Int64 = 41
     ) -> AgentAction {
         AgentAction(row: Row([
             "id": id, "tool": tool, "external": external, "args_json": args, "status": status, "surface": "main",
