@@ -227,8 +227,8 @@ final class RelayChatClientTests: XCTestCase {
     /// is refused `unreachable`), an op not on the relay is answered on the phone and never reaches the hub. One sample
     /// per op: a new engine op fails here until the phone maps it.
     func testRelayOpsContract() async throws {
-        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent().appendingPathComponent("internal/chatengine/testdata/relay_ops.json")
+        let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let fixture = repo.appendingPathComponent("internal/chatengine/testdata/relay_ops.json")
         let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as? [String: Any])
         let relay = try XCTUnwrap(json["relay"] as? [String: String])
         let notOnRelay = Set(try XCTUnwrap(json["not_on_relay"] as? [String]))

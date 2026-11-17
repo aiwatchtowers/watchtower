@@ -24,7 +24,7 @@ public struct ChatHostText: Equatable, Sendable {
         )
     }
 
-    public static let plain = ChatHostText(hostName: "your tower")
+    public static let plain = Self(hostName: "your tower")
 }
 
 private struct ChatHostTextKey: EnvironmentKey {

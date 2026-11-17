@@ -124,16 +124,16 @@ final class TowerWordGuardTests: XCTestCase {
         let sources = Self.tests.deletingLastPathComponent().appendingPathComponent("Sources")
         let files = try swiftFiles(sources)
         XCTAssertGreaterThan(files.count, 50, "Sources is out of reach: \(sources.path)")
-        let found = try macLiterals(files, root: sources, skip: { Self.allowedFiles.contains($0) })
+        let found = try macLiterals(files, root: sources) { Self.allowedFiles.contains($0) }
         XCTAssertEqual(found, [], "Say tower or the hub's name (TowerText); a Mac-only instruction goes in TowerText.swift")
     }
 
     func testNoMacInTheSharedChatViewsThePhoneDraws() throws {
-        let chatUI = Self.tests.deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("WatchtowerChat/Sources/ChatUI")
+        let repo = Self.tests.deletingLastPathComponent().deletingLastPathComponent()
+        let chatUI = repo.appendingPathComponent("WatchtowerChat/Sources/ChatUI")
         let files = try swiftFiles(chatUI)
         XCTAssertGreaterThan(files.count, 30, "ChatUI is out of reach: \(chatUI.path)")
-        let found = try macLiterals(files, root: chatUI, skip: { $0.hasPrefix(Self.chatUIMacOnly) })
+        let found = try macLiterals(files, root: chatUI) { $0.hasPrefix(Self.chatUIMacOnly) }
         XCTAssertEqual(found, [], "Say tower or the hub's name: a line that names the machine goes through ChatHostText")
     }
 
