@@ -28,7 +28,7 @@
 
 **Note (2026-10-21, board #601):** revocation is not removal; SLACK-01 is unchanged and `slack remove` stays soft. A removed account's data, kept by the remove, is deleted by an enabled lease purge 30 days after its last confirmed access, after a 72 h notice (PURGE-01, `docs/inventory/account-purge.md`); with the purge off it is kept for good.
 
-**Note (2026-11-17, #1769, ask #1412):** the data is still kept at once; with the purge on (the default) it is deleted 72 h after the first purge pass that follows the remove (a removed Slack account has a zero lease, PURGE-01). `slack remove` first revokes the account's token at Slack (`auth.revoke`, 10 s), which also signs out every other place using that sign-in; a failed revoke prints "Slack did not confirm the token was revoked; it will expire" and the remove goes on (token file deleted, row `removed`). Guards: `cmd/slack_remove_test.go` `TestSlackRemove_RevokesBeforeDelete`, `TestSlackRemove_RevokeFailureStillRemoves`.
+**Note (2026-11-17, #1769, ask #1412):** the data is still kept at once; with the purge on (the default) it is deleted 72 h after the first purge pass that follows the remove (a removed Slack account has a zero lease, PURGE-01). `slack remove` first revokes the account's token at Slack (`auth.revoke`, 10 s), which also signs out every other place using that sign-in; a failed revoke prints "Slack did not confirm the token was revoked; it may stay valid until a workspace admin removes the app" and the remove goes on (token file deleted, row `removed`). Guards: `cmd/slack_remove_test.go` `TestSlackRemove_RevokesBeforeDelete`, `TestSlackRemove_RevokeFailureStillRemoves`.
 
 **Locked since:** 2026-10-01
 
