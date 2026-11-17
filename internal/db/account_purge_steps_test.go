@@ -559,3 +559,81 @@ func TestStartAccountPurge_ZeroLeaseStaleAfterReadd(t *testing.T) {
 		t.Fatalf("start of a row newer than the access = %v, %v; want true", got, err)
 	}
 }
+
+// Fix round 2 (R1): the stream digest and Confluence space steps delete a
+// parent only while none of its knowledge rows is left (one statement, so
+// the check and the delete cannot be split), through key ranges.
+func TestPurgeSteps_ParentWaitsForItsKnowledge(t *testing.T) {
+	d := OpenTestDB(t)
+	mustExecAll(t, d,
+		`INSERT INTO jira_accounts (id, cloud_id) VALUES (1, 'c1')`,
+		`INSERT INTO ext_sources (id, provider, jira_account_id, container_key) VALUES (5, 'confluence', 1, 'ENG'), (6, 'confluence', 1, 'OPS')`,
+		`INSERT INTO stream_digests (id, source, account_id, period_from, period_to) VALUES (7, 'jira', 1, 'a', 'b'), (8, 'jira', 1, 'a', 'b')`,
+	)
+	steps, err := d.PurgeSteps("jira", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, st := range steps {
+		for {
+			n, err := d.RunPurgeStep(context.Background(), st, 500)
+			if err != nil {
+				t.Fatalf("%s: %v", st.Name, err)
+			}
+			if n == 0 {
+				break
+			}
+		}
+		switch st.Name {
+		case "stream digest documents":
+			mustExecAll(t, d, `INSERT OR IGNORE INTO kb_documents (id, source) VALUES ('stream_digest:7:3', 'stream_digest')`)
+		case "knowledge documents confluence:5:":
+			mustExecAll(t, d, `INSERT OR IGNORE INTO kb_documents (id, source) VALUES ('confluence:5:p9', 'confluence')`)
+		case "knowledge marks confluence:6:":
+			mustExecAll(t, d, `INSERT OR IGNORE INTO kb_dirty (source, key) VALUES ('confluence', 'confluence:6:p9')`)
+		}
+	}
+	if n := count(t, d, `SELECT count(*) FROM stream_digests`); n != 1 {
+		t.Fatalf("stream digests left = %d; want digest 7 (a document left) only", n)
+	}
+	if n := count(t, d, `SELECT count(*) FROM stream_digests WHERE id = 7`); n != 1 {
+		t.Fatal("digest 7 must stay")
+	}
+	if n := count(t, d, `SELECT count(*) FROM ext_sources`); n != 2 {
+		t.Fatalf("spaces left = %d; want both (a document / a mark left)", n)
+	}
+	left, err := d.PurgeLeft(context.Background(), steps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if left["stream_digests"] != 1 || left["ext_sources"] != 2 || left["kb_documents"] != 2 || left["kb_dirty"] != 1 {
+		t.Fatalf("left = %v", left)
+	}
+	for _, st := range steps {
+		if st.Table != "stream_digests" && st.Table != "ext_sources" {
+			continue
+		}
+		plan := explainDetails(t, d, st.SQL, append(append([]any{}, st.Args...), 500)...)
+		for _, detail := range strings.Split(plan, "\n") {
+			for _, table := range []string{"kb_documents", "kb_dirty", "doc_links"} {
+				if strings.HasPrefix(detail, "SCAN "+table) {
+					t.Errorf("step %q scans %s: %s", st.Name, table, detail)
+				}
+			}
+		}
+	}
+}
+
+// Fix round 2 (R2): access stamped in the second the zero-lease row was
+// scheduled refuses the start.
+func TestStartAccountPurge_ZeroLeaseSameSecondRefused(t *testing.T) {
+	d := OpenTestDB(t)
+	at := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+	mustExecAll(t, d,
+		`INSERT INTO slack_accounts (id, team_id, status, access_ok_at) VALUES (1, 'T1', 'removed', '`+at+`')`,
+		`INSERT INTO account_purges (id, source, account_id, reason, due_at, scheduled_at) VALUES (1, 'slack', 1, 'lease', '2026-01-01T00:00:00Z', '`+at+`')`,
+	)
+	if got, err := d.StartAccountPurge(1, time.Now(), true); err != nil || got {
+		t.Fatalf("start = %v, %v; want false on a tie", got, err)
+	}
+}

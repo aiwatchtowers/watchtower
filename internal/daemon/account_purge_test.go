@@ -336,3 +336,23 @@ func TestRefreshPurgeHold_VerifyFailureHolds(t *testing.T) {
 	d.refreshPurgeHold()
 	assert.False(t, d.purgeHeld("linear", id), "access after the failure releases it")
 }
+
+// Fix round 2 (R3, R4): the verify hold covers only accounts that do not
+// sync anyway, and none with the purge off.
+func TestRefreshPurgeHold_VerifyHoldOnlyRevokedOrRemovedAndOn(t *testing.T) {
+	d, database := newLinearTestDaemon(t)
+	id := seedRevokedLinear(t, database, time.Hour)
+	_, err := database.Exec(`INSERT INTO account_purges (source, account_id, reason, due_at, state, finished_at, error)
+		VALUES ('linear', ?, 'revoked', '2026-01-01T00:00:00Z', 'failed', '2026-01-04T00:00:00Z', 'left: linear_teams=1')`, id)
+	require.NoError(t, err)
+	setPurge(d, false)
+	d.refreshPurgeHold()
+	assert.False(t, d.purgeHeld("linear", id), "purge off: no verify hold")
+	setPurge(d, true)
+	d.refreshPurgeHold()
+	assert.True(t, d.purgeHeld("linear", id), "purge on: a revoked account is held")
+	_, err = database.Exec(`UPDATE linear_accounts SET status = 'error' WHERE id = ?`, id)
+	require.NoError(t, err)
+	d.refreshPurgeHold()
+	assert.False(t, d.purgeHeld("linear", id), "a live account keeps syncing after a verify failure")
+}

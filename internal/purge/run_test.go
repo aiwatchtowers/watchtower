@@ -672,3 +672,51 @@ func TestRun_ReaddAndRemoveAgainNotPurged(t *testing.T) {
 		t.Fatalf("data must stay: %d %v", n, err)
 	}
 }
+
+// Fix round 2 (R1): a parent row (stream digest, Confluence space) is
+// deleted only while none of its knowledge rows is left, so a purge spanning
+// cycles never loses the ids its verify needs: a knowledge document that
+// keeps coming back after its step holds its digest, and the resumed run
+// fails with both counted.
+func TestPurgeRun_ParentKeptWhileKnowledgeLeftAcrossCycles(t *testing.T) {
+	d := openPurgeDB(t)
+	execAll(t, d,
+		`INSERT INTO jira_accounts (id, cloud_id, status) VALUES (1, 'c1', 'revoked')`,
+		`INSERT INTO stream_digests (id, source, account_id, period_from, period_to) VALUES (5, 'jira', 1, 'a', 'b')`,
+		`INSERT INTO kb_documents (id, source) VALUES ('stream_digest:5:0', 'stream_digest')`,
+	)
+	p := scheduledRow(t, d, "jira", 1)
+	fake := time.Now()
+	clock = func() time.Time { return fake }
+	t.Cleanup(func() { clock = time.Now })
+	paused := false
+	afterStep = func(st db.PurgeStep) {
+		switch st.Name {
+		case "stream digest documents":
+			execAll(t, d, `INSERT OR IGNORE INTO kb_documents (id, source) VALUES ('stream_digest:5:9', 'stream_digest')`)
+		case "stream digests":
+			if !paused { // the first cycle's budget runs out right after the parent step
+				paused = true
+				fake = fake.Add(time.Hour)
+			}
+		}
+	}
+	t.Cleanup(func() { afterStep = func(db.PurgeStep) {} })
+	done, err := Run(context.Background(), d, t.TempDir(), p, setting(true), time.Minute)
+	if done || err != nil || !paused {
+		t.Fatalf("first cycle = %v, %v (paused %v); want a pause after the parent step", done, err, paused)
+	}
+	var digests int
+	if err := d.QueryRow(`SELECT count(*) FROM stream_digests WHERE id = 5`).Scan(&digests); err != nil || digests != 1 {
+		t.Fatalf("the digest with a knowledge document left must stay: %d %v", digests, err)
+	}
+	open, _ := d.ListAccountPurges(true)
+	done, err = Run(context.Background(), d, t.TempDir(), open[0], setting(true), time.Minute)
+	if done || err == nil {
+		t.Fatalf("resumed Run = %v, %v; want a verify failure", done, err)
+	}
+	all, _ := d.ListAccountPurges(false)
+	if all[0].State != "failed" || !strings.Contains(all[0].Error, "kb_documents=1") || !strings.Contains(all[0].Error, "stream_digests=1") {
+		t.Fatalf("row = %+v; want failed with kb_documents=1 and stream_digests=1", all[0])
+	}
+}

@@ -28,6 +28,9 @@ var ErrNoLongerDue = errors.New("the purge is no longer due")
 // land an access proof there.
 var afterReplan = func() {}
 
+// afterStep runs after each step of Run has drained; tests land a row there.
+var afterStep = func(db.PurgeStep) {}
+
 // afterSteps runs between Run's last step and its verify count; tests land a
 // left-behind row there.
 var afterSteps = func() {}
@@ -84,6 +87,7 @@ func Run(ctx context.Context, d *db.DB, workspaceDir string, p db.AccountPurge,
 				return false, fail(d, p.ID, err)
 			}
 			if n == 0 {
+				afterStep(step)
 				break
 			}
 			if err := d.AddPurgeRows(p.ID, n); err != nil {

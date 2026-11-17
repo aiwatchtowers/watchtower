@@ -92,9 +92,10 @@ func (d *Daemon) applyPurgeSchedule(rules func(db.PurgeAccount) purge.Rule, leas
 }
 
 // refreshPurgeHold rebuilds the set of accounts the sync phases skip: status
-// purged, a purge running, or a purge that failed its verify count with rows
-// left (purge.VerifyHeld, until access is confirmed again); a purge failed by
-// its chunks releases its account. A failed
+// purged, a purge running, or — with the purge on — a revoked or removed
+// account whose purge failed its verify count with rows left
+// (purge.VerifyHeld, until a Re-login or an add-back confirms access); a
+// purge failed by its chunks, or a live account's, releases its account. A failed
 // read keeps the previous set.
 func (d *Daemon) refreshPurgeHold() {
 	if d.db == nil {
@@ -111,9 +112,10 @@ func (d *Daemon) refreshPurgeHold() {
 		return
 	}
 	verifyHeld := purge.VerifyHeld(accounts, ledger)
+	on, _ := purge.Enabled(d.config)
 	hold := map[purgeKey]bool{}
 	for _, a := range accounts {
-		if a.Status == "purged" || verifyHeld(a.Source, a.ID) {
+		if a.Status == "purged" || (on && verifyHeld(a.Source, a.ID)) {
 			hold[purgeKey{a.Source, a.ID}] = true
 		}
 	}

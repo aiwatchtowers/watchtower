@@ -67,6 +67,16 @@ func (s *purgeSteps) del(name, table, where string, args ...any) {
 	})
 }
 
+// delParent is del for a parent row whose knowledge rows are keyed by its id
+// (#1769): the DELETE also needs guard (written against table, no
+// parameters) — none of its knowledge rows left —, while the count form
+// counts every parent row matching where, so a parent kept by a leftover is
+// reported too.
+func (s *purgeSteps) delParent(name, table, where, guard string, args ...any) {
+	s.del(name, table, `(`+where+`) AND `+guard, args...)
+	(*s)[len(*s)-1].Count = `SELECT count(*) FROM ` + table + ` WHERE ` + where
+}
+
 // inbox adds the inbox steps for the items matching scope (written against
 // alias i of inbox_items): feedback on the situations whose every signal is
 // such an item, those situations, feedback on the items, then the items
@@ -113,7 +123,13 @@ func (s *purgeSteps) streamDigests(kind string, accountID int64, ids []int64) {
 	if kind == "gmail" || kind == "jira" {
 		s.del("extraction receipts", "ideas_extraction_windows", `source = ? AND account_id = ?`, kind, accountID)
 	}
-	s.del("stream digests", "stream_digests", `source = ? AND account_id = ?`, kind, accountID)
+	// A digest goes only while none of its knowledge documents is left, in
+	// the same statement: a purge resumed after this step re-reads the ids
+	// above from the digests still here, so a leftover can never lose the
+	// id its verify count needs (#1769).
+	s.delParent("stream digests", "stream_digests", `source = ? AND account_id = ?`, `NOT EXISTS (
+		SELECT 1 FROM kb_documents k WHERE k.id >= 'stream_digest:' || stream_digests.id || ':'
+		                               AND k.id <  'stream_digest:' || stream_digests.id || ';')`, kind, accountID)
 }
 
 // extSpace is one Confluence space (ext_sources row) of a Jira account.
@@ -340,7 +356,15 @@ func jiraSteps(s *purgeSteps, id int64, digests []int64, spaces []extSpace) {
 	for _, sp := range spaces {
 		s.knowledge(sp.provider, fmt.Sprintf("%s:%d:", sp.provider, sp.id))
 	}
-	s.del("confluence spaces", "ext_sources", `jira_account_id = ?`, id)
+	// A space goes only while none of its knowledge rows is left (see
+	// streamDigests).
+	spacePrefix := `ext_sources.provider || ':' || ext_sources.id`
+	s.delParent("confluence spaces", "ext_sources", `jira_account_id = ?`, `
+		NOT EXISTS (SELECT 1 FROM kb_documents k WHERE k.id >= `+spacePrefix+` || ':' AND k.id < `+spacePrefix+` || ';')
+		AND NOT EXISTS (SELECT 1 FROM kb_dirty m WHERE m.source = ext_sources.provider
+		                AND m.key >= `+spacePrefix+` || ':' AND m.key < `+spacePrefix+` || ';')
+		AND NOT EXISTS (SELECT 1 FROM doc_links l WHERE l.from_kind = ext_sources.provider
+		                AND l.from_ref >= `+spacePrefix+` || ':' AND l.from_ref < `+spacePrefix+` || ';')`, id)
 
 	s.streamDigests("jira", id, digests)
 	s.knowledge("jira", fmt.Sprintf("jira:%d:", id))
@@ -427,7 +451,7 @@ UNION ALL SELECT 'linear', id, status, access_ok_at, revoked_at FROM linear_acco
 // account's zero lease) in its lease scope — its own for a removed account,
 // every live account of its source otherwise (purge.Plan's deadlines) — and,
 // with requireRemoved, the account still removed and no access confirmed
-// after the row was scheduled (an "add again" after the re-plan wins, and so
+// at or after the row was scheduled (second precision: a tie keeps the data) (an "add again" after the re-plan wins, and so
 // does an add-and-remove-again since the scheduling). The clocks are fixed-width RFC 3339 UTC, so text order is time
 // order. A row cancelled since the caller read it, already running, or whose
 // account no longer qualifies is left as it is (false).
@@ -439,7 +463,7 @@ func (db *DB) StartAccountPurge(id int64, leaseCutoff time.Time, requireRemoved 
 				(p.reason = 'revoked' AND a.status = 'revoked'
 					AND (a.access_ok_at = '' OR a.revoked_at = '' OR a.access_ok_at <= a.revoked_at))
 				OR (p.reason = 'lease' AND a.status != 'purged'
-					AND (NOT ?3 OR (a.status = 'removed' AND a.access_ok_at <= p.scheduled_at)) AND NOT EXISTS (
+					AND (NOT ?3 OR (a.status = 'removed' AND a.access_ok_at < p.scheduled_at)) AND NOT EXISTS (
 					SELECT 1 FROM (`+purgeAccountFactsSQL+`) b
 					WHERE b.source = a.source AND b.access_ok_at > ?2
 						AND CASE WHEN a.status = 'removed' THEN b.id = a.id

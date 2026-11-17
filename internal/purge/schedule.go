@@ -223,24 +223,29 @@ func leaseDeadlines(accounts []db.PurgeAccount, rules func(db.PurgeAccount) Rule
 // whose due date then gives less than the full notice — the row is
 // cancelled and the next pass schedules a fresh one. An empty or unreadable
 // time on either side is no evidence: false.
+//
+// The clocks have second precision; a tie counts as access since.
 func accessSinceScheduled(a db.PurgeAccount, p db.AccountPurge) bool {
 	okAt, ok := parseTime(a.AccessOKAt)
 	if !ok {
 		return false
 	}
 	scheduledAt, ok := parseTime(p.ScheduledAt)
-	return ok && okAt.After(scheduledAt)
+	return ok && !okAt.Before(scheduledAt) // a same-second tie keeps the data
 }
 
 // VerifyHeld returns whether an account is held after a failed verify count
-// (#1769, spec §9 "the account stays held"): its newest ledger row is failed
-// with rows left (verifyLeftPrefix) and it has confirmed no access since
-// that row finished. Such an account is not scheduled again on its own — a
-// leftover the steps cannot delete would otherwise give a new notice every
-// 72 h forever — and the sync phases skip it; the failed row stays visible.
-// Access confirmed after the failure (a Re-login, or adding a removed
-// account back) releases it. A chunk failure (MaxChunkFailures) holds
-// nothing: its account is scheduled again with a new notice, as before.
+// (#1769, spec §9 "the account stays held"): an account that does not sync
+// anyway (revoked or removed) whose newest ledger row is failed with rows
+// left (verifyLeftPrefix) and which has confirmed no access since that row
+// finished (a same-second tie releases). Such an account is not scheduled
+// again on its own — a leftover the steps cannot delete would otherwise give
+// a new notice every 72 h forever — and the sync phases skip it; the failed
+// row stays visible. A Re-login or adding a removed account back confirms
+// access and releases it. A live account is never held: a verify failure of
+// its lease purge releases it like a chunk failure (MaxChunkFailures) does,
+// and it is scheduled again with a new notice. The caller applies the hold
+// only with the purge on.
 func VerifyHeld(accounts []db.PurgeAccount, rows []db.AccountPurge) func(source string, id int64) bool {
 	newest := map[accountKey]db.AccountPurge{}
 	for _, r := range rows {
@@ -253,12 +258,13 @@ func VerifyHeld(accounts []db.PurgeAccount, rows []db.AccountPurge) func(source 
 	for _, a := range accounts {
 		k := accountKey{a.Source, a.ID}
 		r, ok := newest[k]
-		if !ok || r.State != "failed" || !strings.HasPrefix(r.Error, verifyLeftPrefix) {
+		if !ok || (a.Status != "revoked" && a.Status != "removed") ||
+			r.State != "failed" || !strings.HasPrefix(r.Error, verifyLeftPrefix) {
 			continue
 		}
 		okAt, hasAccess := parseTime(a.AccessOKAt)
 		finishedAt, hasFinish := parseTime(r.FinishedAt)
-		if hasAccess && hasFinish && okAt.After(finishedAt) {
+		if hasAccess && hasFinish && !okAt.Before(finishedAt) {
 			continue
 		}
 		held[k] = true

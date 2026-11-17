@@ -584,3 +584,50 @@ func TestApply_VerifyFailedAccountNotRescheduled(t *testing.T) {
 		}
 	}
 }
+
+// Fix round 2 (R2): same-second clocks resolve toward not deleting — access
+// stamped in the second the row was scheduled cancels the zero-lease row,
+// and access in the second the verify failed releases the hold.
+func TestPurge_SameSecondTiesKeepData(t *testing.T) {
+	removed := []db.PurgeAccount{acct("slack", 1, "removed", t0)}
+	open := []db.AccountPurge{row(4, "slack", 1, ReasonLease, "scheduled", t0.Add(Grace))}
+	open[0].ScheduledAt = ts(t0)
+	if got := Plan(removed, open, setting(true), t0.Add(Grace)); len(got.Cancel) != 1 || len(got.Due) != 0 {
+		t.Fatalf("access in the scheduling second cancels, got %+v", got)
+	}
+	revoked := acct("slack", 1, "revoked", t0)
+	failed := []db.AccountPurge{{ID: 1, Source: "slack", AccountID: 1, State: "failed", FinishedAt: ts(t0), Error: "left: messages=1"}}
+	if VerifyHeld([]db.PurgeAccount{revoked}, failed)("slack", 1) {
+		t.Fatal("access in the failure's second releases the hold")
+	}
+}
+
+// Fix round 2 (R3): only an account that does not sync anyway (revoked,
+// removed) is verify-held; a live account under a lease purge whose verify
+// failed is released and scheduled again under its lease with a new notice.
+func TestPurge_VerifyHoldOnlyRevokedOrRemoved(t *testing.T) {
+	stale := t0.Add(-40 * 24 * time.Hour)
+	failed := func(id int64) db.AccountPurge {
+		return db.AccountPurge{ID: id, Source: "jira", AccountID: id, Reason: ReasonLease, State: "failed",
+			FinishedAt: ts(t0.Add(-time.Hour)), Error: "left: jira_issues=1"}
+	}
+	accounts := []db.PurgeAccount{
+		acct("jira", 1, "ok", stale), acct("jira", 2, "error", stale),
+		acct("jira", 3, "revoked", stale), acct("jira", 4, "removed", stale),
+	}
+	ledger := []db.AccountPurge{failed(1), failed(2), failed(3), failed(4)}
+	held := VerifyHeld(accounts, ledger)
+	for id, want := range map[int64]bool{1: false, 2: false, 3: true, 4: true} {
+		if held("jira", id) != want {
+			t.Errorf("jira %d held = %v, want %v", id, !want, want)
+		}
+	}
+	got := Plan(accounts, nil, holdRules(setting(true), held), t0)
+	scheduled := map[int64]bool{}
+	for _, s := range got.Schedule {
+		scheduled[s.AccountID] = true
+	}
+	if !scheduled[1] || !scheduled[2] || scheduled[3] || scheduled[4] {
+		t.Fatalf("live accounts rescheduled under their lease, held ones not, got %+v", got.Schedule)
+	}
+}
