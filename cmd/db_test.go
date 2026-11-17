@@ -128,3 +128,30 @@ func TestDBMigrate_NeverCompacts(t *testing.T) {
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM db_maintenance WHERE key = 'compacted_at'`).Scan(&recorded))
 	assert.Zero(t, recorded, "db migrate recorded a compaction")
 }
+
+// TestDbWipeLLM: `db wipe-llm` deletes the AI-made rows of the workspace's
+// database and keeps the raw ones (the full table list is db's
+// TestWipeLLMData_LeavesTheFixtureRows).
+func TestDbWipeLLM(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	cfg, err := workspaceConfigFromFlags()
+	require.NoError(t, err)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	_, err = database.Exec(`INSERT INTO tracks (id, text) VALUES (1, 'T')`)
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+
+	dbWipeLLMCmd.SetOut(&strings.Builder{})
+	require.NoError(t, dbWipeLLMCmd.RunE(dbWipeLLMCmd, nil))
+
+	database, err = db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	defer database.Close()
+	var tracks, channels int
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM tracks`).Scan(&tracks))
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM channels`).Scan(&channels))
+	assert.Equal(t, 0, tracks)
+	assert.Equal(t, 2, channels)
+}

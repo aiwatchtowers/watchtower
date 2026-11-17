@@ -28,6 +28,7 @@ func RegisterAll(r *tower.Registry, d Deps) {
 	tower.RegisterPause(r)
 	inboxfeed.Register(r, d.DisabledFeatures)
 	inboxfeed.RegisterAct(r, d.Act)
+	inboxfeed.RegisterScreens(r, d.Act)
 	// Stage 3: the conversation-level chat writes (chat.*).
 	chatstore.RegisterCommands(r)
 }

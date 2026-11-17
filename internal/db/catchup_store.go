@@ -151,6 +151,12 @@ func (db *DB) LastAcknowledgedCatchupTo() (float64, error) {
 // `to`; a `period_to <= to` ack would cite such a digest in the recap and then
 // leave it unread forever, so the badge would lie.
 func (db *DB) AcknowledgeCatchupWindow(id int64, from, to float64) error {
+	return db.WithTx(func(tx *sql.Tx) error { return acknowledgeCatchupWindowTx(tx, id, from, to) })
+}
+
+// acknowledgeCatchupWindowTx is AcknowledgeCatchupWindow in the caller's
+// transaction (AcknowledgeCatchupTx, the tower's catchup.acknowledge).
+func acknowledgeCatchupWindowTx(tx *sql.Tx, id int64, from, to float64) error {
 	fromISO := time.Unix(int64(from), 0).UTC().Format("2006-01-02T15:04:05Z")
 	toISO := time.Unix(int64(to), 0).UTC().Format("2006-01-02T15:04:05Z")
 	fromDate := time.Unix(int64(from), 0).Local().Format("2006-01-02")
@@ -159,11 +165,6 @@ func (db *DB) AcknowledgeCatchupWindow(id int64, from, to float64) error {
 	// `yesterday` preset) covers the previous day, and the briefing dated the new
 	// day must stay unread.
 	toDate := time.Unix(int64(to)-1, 0).Local().Format("2006-01-02")
-	tx, err := db.Begin()
-	if err != nil {
-		return fmt.Errorf("acknowledging catchup %d: %w", id, err)
-	}
-	defer func() { _ = tx.Rollback() }()
 	now := `strftime('%Y-%m-%dT%H:%M:%SZ','now')`
 	stmts := []struct {
 		q    string
@@ -180,6 +181,9 @@ func (db *DB) AcknowledgeCatchupWindow(id int64, from, to float64) error {
 		if _, err := tx.Exec(s.q, s.args...); err != nil {
 			return fmt.Errorf("acknowledging catchup %d: %w", id, err)
 		}
+		if err := fault("catchup.ack"); err != nil {
+			return err
+		}
 	}
-	return tx.Commit()
+	return nil
 }

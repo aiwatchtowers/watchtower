@@ -165,6 +165,9 @@ var displayOnlyReadersAt = map[string]string{
 	"hub/chat_turn_watch.go:assistantStatus": "the chat_answer push reads one turn row's status, no text",
 	"hub/chat_turn_watch.go:desktopLeases":   "the chat_answer push: lease ids of main chats, no text",
 	"hub/chat_turn_watch.go:pendingActions":  "the chat_answer push: pending action ids of main chats, no text",
+	// The tower's ideas.delete (plan Task 9): IdeaQueries.delete's Go twin.
+	"db/screen_writes.go:DeleteIdeaTx": "deletes a deleted idea's Discuss chat by id; reads no text",
+	"inboxfeed/screens.go:tablesIdeas": "the ideas commands' ChangeTables, table names only",
 	// internal/chatstore: the hub's chat turn store, the Swift write path's
 	// twin. It writes the chat rows and reads its own tree for the next turn;
 	// stepStarted and markIfUsedTx write the mark itself (LIVE-01 mechanism).
