@@ -18,7 +18,7 @@ Before a 1:1, a hard thread or a first message to someone new, a card gives you 
 
 **It depends on Digests.** People Cards read what [Digests](digests.md) record, so both **People Cards** and **Slack Digests** must be on. A run with no data (no digests yet, or nobody active) writes no run record and does not use up the day, so cards appear in the first cycle that has material. After 3 failed AI attempts in a day it waits until tomorrow.
 
-**Older cards were cleaned up.** The first run after this change deleted the cards of people you do not work with directly, once; the cards that stay lost their activity-hours and volume fields.
+**Older cards were cleaned up.** Cards of people you do not work with directly are deleted once, and a card never holds activity hours or message volume.
 
 **Bots and deleted accounts get no card.** Only accounts Slack itself flags as bots are excluded. A user you mute or hand-mark as a bot in [Statistics](statistics.md) still gets a card, although a muted user's messages are not read when digests are written.
 

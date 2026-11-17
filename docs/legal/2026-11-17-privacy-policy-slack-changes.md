@@ -2,6 +2,11 @@
 
 The live policy is the site's page `public/privacy/index.html` in the site's own repository (`https://aiwatchtowers.com/privacy/`). Nothing here is applied in this repository: the owner pastes each block below into the section it names, replaces the old sentence where one is given, and deploys the site. The behaviour described is what Watchtower does after #1769 (spec `docs/superpowers/specs/2026-11-17-slack-policy-hygiene-design.md`, section 7).
 
+## Check before pasting
+
+- The provider setting names quoted in item 3 are still what the providers show: Claude "Help improve Claude" and ChatGPT "Improve the model for everyone".
+- The provider names and the "Use reserve when limits are reached" wording match the app's Settings → System → AI.
+
 ## 1. New section "Slack", after "What we collect"
 
 Old text: none (new section).
@@ -17,7 +22,7 @@ New text:
 > - read your reactions: for reaction commands;
 > - read the workspace's name and custom emoji: to show them.
 >
-> Watchtower has no server and sends this data to no one but the AI provider you choose (see "AI providers").
+> Watchtower has no server and sends this data to no one but the AI provider you choose, and to your own Claude or ChatGPT account if you turn its Slack connector on (see "AI providers" and "Live Slack").
 
 ## 2. "Where your data lives"
 
@@ -37,7 +42,7 @@ Old text: the sentence "Watchtower requests only the permissions it needs to fun
 
 New text:
 
-> To write summaries and answer your questions, Watchtower sends the message text the feature needs to the AI provider you choose: Anthropic (Claude), OpenAI (Codex), or a local model you run yourself (Ollama), which keeps it on your Mac. The text goes under your own account with that provider, and that provider's own terms govern how long it keeps it and where. Watchtower never trains a model on your data. Whether a provider may train on what it receives is a setting in your account with that provider (Claude: "Help improve Claude"; ChatGPT: "Improve the model for everyone"); turn it off there. Watchtower cannot read that setting. AI output can be inaccurate.
+> To write summaries and answer your questions, Watchtower sends the message text the feature needs to the AI provider you choose: Anthropic (Claude), OpenAI (Codex), or a model you run yourself (Ollama), which is on your Mac unless you point Watchtower at another server, in which case the data goes where you point it. When image description is on, images shared in Slack are downloaded and sent to the model as well. If you turn on **Use reserve when limits are reached**, a request can go to the other provider (Claude or Codex) when the first one's limit is reached. The text goes under your own account with that provider, and that provider's own terms govern how long it keeps it and where. Watchtower never trains a model on your data. Whether a provider may train on what it receives is a setting in your account with that provider (Claude: "Help improve Claude"; ChatGPT: "Improve the model for everyone"); turn it off there. Watchtower cannot read that setting. AI output can be inaccurate.
 
 ## 4. No AI training, for the desktop app
 
@@ -77,7 +82,9 @@ Old text: the sentence about how stored data is protected, if it names an encryp
 
 New text (until database encryption ships):
 
-> Watchtower's files on your Mac are protected at rest by macOS FileVault; Watchtower shows whether it is on. When database encryption ships, change this sentence to: "The database is encrypted with a key held in this Mac's Keychain."
+> Watchtower's files on your Mac are protected at rest by macOS FileVault when it is on, and Watchtower says so when it is off.
+
+When database encryption ships, replace the sentence with: "The database is encrypted with a key held in this Mac's Keychain." (not for pasting now).
 
 ## 9. People insights
 
@@ -93,7 +100,7 @@ Old text: none.
 
 New text, two list items:
 
-> - Remove a Slack workspace in Watchtower to delete its data (72 hours after the next sync, after a notice).
+> - Remove a Slack workspace in Watchtower and, while **Delete an account's data when its access ends** is on (the default), its data is deleted: the deletion is scheduled with at least 72 hours' notice from Watchtower's next pass.
 > - **Reset All Data…** in Settings → System deletes everything Watchtower keeps on your Mac.
 
 ## 11. "Last updated" and the release note
