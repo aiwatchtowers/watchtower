@@ -9,7 +9,7 @@
 - **Port 18551 has one owner at a time.** While the Desktop runs, its long-lived child `watchtower slack connect serve` holds 127.0.0.1:18551, answers `/slack/connect` and `/callback`, and talks to the Desktop in JSON lines over stdin/stdout. Without the Desktop, `watchtower slack connect --team --client` binds it one-shot. The child exits on stdin EOF, so it dies with the app.
 - **The link's first hop never redirects.** `/slack/connect` answers at once with a page "Switch to Watchtower to confirm"; the Desktop comes forward with the confirm sheet; on **Connect** the child opens Slack's authorize URL in the browser. Pasted links, codes, MDM rows and Reconnect skip the confirm and start at the same "open the browser" step, so there is one flow.
 - **Setup is three CLI verbs** (`slack app create|link|status --json`, config token on stdin, one JSON line per step) run by `SlackAppSetupModel` on `AppState`; the admin's own connect is the ordinary connect flow.
-- **Shared-app detection is build-aware and Go-only** (`shared_app` in `slack accounts --json`); Swift only reads the flag. A release guard in `scripts/build-app.sh` makes every public release able to recognise shared-app accounts.
+- **Shared-app detection is Go-only and the same in every build** (`shared_app` in `slack accounts --json`); Swift only reads the flag. Each build profile names its own baked client id as retired (`RETIRED_SLACK_CLIENT_ID`): the public build's shared app and the corp build's baked company app alike (ask #1414: «корп как все»). A release guard in `scripts/build-app.sh` makes every release, public or corp, able to recognise them.
 - **Screens** follow the approved screens spec: `SlackModePresentation`, `SlackAppSetupModel`, `SlackConnectFlowModel` own every string; views lay them out with the design kit; colors only through `Tone`.
 
 **Tech Stack:** Go 1.26 (cobra, `database/sql` on the in-repo SQLCipher driver, goose SQL migrations, `net/http` loopback server, `testing/synctest`, `golang.org/x/sys/unix` flock as `internal/db` already uses), SwiftUI + GRDB (WatchtowerCore, design kit), bash release scripts.
@@ -38,7 +38,7 @@
 2. The `client_secret` of `apps.manifest.create` never lands in a file, the DB, a log line or stdout — `TestAppSetup_SecretNeverStored` greps the workspace dir, the DB dump and captured output (Task 9).
 3. A second `slack app create` after a create that was cut off (Mac closed) never creates a second app — `TestAppSetup_ResumeAfterCreate` (Task 9).
 4. Two processes refresh the same rotated token: only one calls Slack, the other re-reads the file; the old refresh token is never used twice — `TestSlackRefresh_LockRace` (Task 8).
-5. A public build without `RETIRED_SLACK_CLIENT_ID` never calls a workspace-app account "shared"; a corp build never shows the banner — `TestSlackAccountSharedApp_*` (Task 3).
+5. A build without `RETIRED_SLACK_CLIENT_ID` never calls a workspace-app account "shared"; the corp build is not special — its baked id counts as retired — `TestSlackAccountSharedApp_*` (Task 3).
 6. Moving a shared-app account to Full: the new row is `ok` before the old one is soft-removed (SLACK-01 path), and a failure in between leaves the old account syncing — `TestSlackLinkConnect_MoveFromSharedApp*` (Task 7).
 7. Team in the link ≠ team Slack returns: nothing stored, the row is rolled back — `TestSlackLinkConnect_TeamMismatch` (Task 7).
 
@@ -57,7 +57,22 @@
 | Q9 | Token rotation: `expires_in` of the access token, `refresh_token` present for the user token, refresh with `grant_type=refresh_token` + `client_id` and no secret, does the refresh token rotate, refresh token lifetime, error codes for an expired / reused refresh token | _pending_ | Task 16: the refresher's thresholds (Task 8 defaults: refresh when the access token has < 1 h left; Re-login on `invalid_refresh_token`) |
 | Q10 | Rate tier of `conversations.history` for the internal workspace app (expected Tier 3, not the non-Marketplace Tier 1) | _pending_ | feature note only |
 
-## Decisions made by the agent (not yet approved by the owner)
+## Owner rulings in ask #1414
+
+- **Move off the shared app:** «Новая строка, как в спеке» — a new account row, the old one soft-removed (spec §6, D11); history stays under the old account and follows PURGE-01. Closed.
+- **Contracts:** «Одобряю» — SLACKFULL-01/02, `SlackApps` in POLICY-01/02, the `slack accounts --json` document.
+- **Corp:** «Убираем, корп как все» — no corp-build-only rule anywhere. The corp build's baked client id is a retired shared app too: its accounts get the chip, banner and tag, its profile sets `RETIRED_SLACK_CLIENT_ID` to its own baked id, the release guard covers it, and Task 18 drops the baked id from the corp profile as well. This supersedes ask #1315 decisions #19, #24, #27 and the corp wording of ask #1337 (adaptive sync plan). Lines of the specs it changes (to be edited in Task 17):
+  - screens spec §1.1 table, row **Shared app**: "**public build only**" → every build;
+  - screens spec §1.1 "Which account is on the shared app (build-aware)": the **Public build** bullet becomes the rule for every build; the **Corp build** bullet (`shared_app` always false) is dropped; the guard paragraph's "stops a **public release**" → every release, and "A corp profile and `--dev` builds are not checked" → only `--dev` is not checked; the test list loses "corp → passes"; the test `TestSlackAccountSharedApp_CorpBuildNever` is dropped;
+  - screens spec §4.2 last paragraph: "Scope: **public build only, after T9** … The corp build keeps its baked company app and keeps **Add Slack Account**" → every build, after T9;
+  - screens spec §10 row "Every public release can recognise shared-app accounts (corp never shows the banner)" → "Every release recognises shared-app accounts";
+  - screens spec §11 approved decisions #19, #24, #27: "public build only" / "corp build never" / "a public release" → every build;
+  - parent spec §5.4 "The corp build keeps its baked credentials until its admin moves to the key; nothing changes for it on day one" → the corp build follows the same retirement as the public one;
+  - parent spec §6 "The public build stops baking `DefaultClientID`/`DefaultClientSecret`" → every build stops baking them.
+- **Agent decisions A1–A16:** «Принять все».
+- **Consequence (not yet confirmed by the owner):** once plan B ships, corp-build accounts show **Shared app** and the banner right away (before Task 18), and moving them to Full means creating a second Watchtower app in the company workspace through **Set up for my company**; the old baked company app stays in the workspace until its admin deletes it.
+
+## Decisions made by the agent (approved in ask #1414)
 
 | # | Decision | Recommendation |
 |---|---|---|
@@ -66,25 +81,25 @@
 | A3 | Without the Desktop, `slack connect --team T --client C` binds 18551 one-shot; with the Desktop running it fails with "port 18551 is busy (is Watchtower open? connect from Connections → Slack)" | accept |
 | A4 | The admin's own connect in setup is the ordinary connect flow, started by `SlackAppSetupModel` (skip-confirm) after `slack app create`; `app create` itself never binds 18551 | accept |
 | A5 | The setup record is a DB table `slack_app_setups` (one row per team), "connected" is derived from an `ok` `slack_accounts` row with that client id, never stored | accept |
-| A6 | Connecting a team that already has a live account: same client id → re-consent that row (Reconnect); a different client id (shared app, a baked corp app, another workspace app) → new row, then soft-remove every other live row of that team (`removeSlackAccount`, SLACK-01), only after the new row is `ok` | accept; see Concern C1 about history |
+| A6 | Connecting a team that already has a live account: same client id → re-consent that row (Reconnect); a different client id (a retired shared app, another workspace app) → new row, then soft-remove every other live row of that team (`removeSlackAccount`, SLACK-01), only after the new row is `ok` | accepted (history: owner chose the spec's new row, ask #1414) |
 | A7 | Reconnect of a workspace-app account in the Desktop goes through the connect flow (`start` with the account id, skip-confirm); `slack accounts --json` says per account `relogin: "builtin" \| "connect"` | accept |
-| A8 | `slack accounts --json` gains top-level `builtin_app` (a baked or env client id **and** secret exist). The Desktop shows **Add Slack Account** only when it is true, **Connect another workspace…** otherwise. This gives ask #1315 #19 (public after T9 loses the sheet, corp keeps it) without Swift knowing the build flavor | accept |
+| A8 | `slack accounts --json` gains top-level `builtin_app` (a baked or env client id **and** secret exist). The Desktop shows **Add Slack Account** only when it is true, **Connect another workspace…** otherwise. After T9 no build bakes a Slack app, so the sheet goes everywhere (ask #1414 supersedes #1315 #19's corp exception); Swift never needs the build flavor | accept |
 | A9 | If the spike says Slack is strict about the redirect port (Q4), the manifest registers `http://127.0.0.1:18551/callback` only and a paste with 18551 busy shows "free port 18551 or quit the app holding it" (no way around it). If Slack accepts any loopback port, a paste or MDM connect while 18551 is busy uses an ephemeral callback port | decide after the spike; the screens spec's port-busy line promises the paste works, which holds only in the second case |
 | A10 | The Desktop restarts the listener child once on an unexpected exit, then only when Connections → Slack opens (the same rule as the port-busy retry) | accept |
 | A11 | Manifest user scopes = today's `auth.UserScopes` minus the write scopes no code calls (`channels:write`, `groups:write`, `im:write`, `mpim:write` if the grep in Task 9 finds no caller), `chat:write` kept; pinned by `TestManifest_Scopes` | accept |
 | A12 | Token refresh is a pre-use check in every token reader (`slackauth.LoadFresh`) plus the daemon's per-cycle call, not a separate timer | accept |
 | A13 | The onboarding Slack step follows `builtin_app` too: false → its Slack card opens a sheet with the connect section (link/code field, MDM rows, **Set up for my company**) instead of `AddSlackAccountView` (not covered by the screens spec) | accept |
 | A14 | The legacy **Workspace** block (`auth login`, account #1) routes its Reconnect through the same per-account rule as A7 | accept |
-| A15 | After retirement (Task 18) the `retired-slack-id-check` also refuses a public release that still sets `WATCHTOWER_OAUTH_CLIENT_SECRET`, or sets `WATCHTOWER_OAUTH_CLIENT_ID` equal to `RETIRED_SLACK_CLIENT_ID` | accept (keeps the retirement from being undone by a stale profile) |
+| A15 | After retirement (Task 18) the `retired-slack-id-check` also refuses any release (public or corp) that still sets `WATCHTOWER_OAUTH_CLIENT_SECRET`, or sets `WATCHTOWER_OAUTH_CLIENT_ID` equal to `RETIRED_SLACK_CLIENT_ID` | accept (keeps the retirement from being undone by a stale profile) |
 | A16 | New inventory entries SLACKFULL-01 (nothing connects without the owner's press), SLACKFULL-02 (no Slack client secret or config token is stored, logged or in argv) | accept |
 
-## Contract changes needing approval
+## Contract changes (approved in ask #1414)
 
 - **New contracts:** SLACKFULL-01 and SLACKFULL-02 (A16) in `docs/inventory/slack-accounts.md`.
 - **POLICY-01/02:** new key `SlackApps` (approved in the spec, D4). Its fail-closed value is "no organization rows" (an empty list), problems reported like the other list keys; `policy show --json` gains `keys.SlackApps` (the pinned document grows one key).
 - **SLACK-01:** unchanged; the move from the shared app (A6) is a new caller of `removeSlackAccount`.
 - **`slack accounts`** gains `--json` (new document: `builtin_app`, `accounts[]` with `id`, `team_id`, `client_id`, `shared_app`, `relogin`).
-- **Spec deviation:** none intended; A9 may narrow the screens spec's "port busy → paste works" (depends on the spike).
+- **Spec deviation:** the corp rules listed under "Owner rulings in ask #1414" (edited in Task 17); A9 may narrow the screens spec's "port busy → paste works" (depends on the spike).
 
 ## Writers of the same data
 
@@ -192,11 +207,11 @@ CREATE TABLE slack_app_setups (
 
 **Interfaces:**
 - Produces:
-  - `func SharedApp(a db.SlackAccount, flavor, retiredID string, logOnce func()) bool` — corp (`wire.FlavorOf(flavor) == corp`) → false; public → `a.ClientID == retiredID && retiredID != ""` or `a.ClientID == ""`; when `retiredID == ""` only the empty-id rule, and `logOnce` fires (the caller wraps it in `sync.Once`; text "slack: RetiredSharedClientID not set; shared-app detection limited to accounts without a client id").
+  - `func SharedApp(a db.SlackAccount, retiredID string, logOnce func()) bool` — the same in every build (no flavor input, ask #1414): `a.ClientID == retiredID && retiredID != ""` or `a.ClientID == ""`; when `retiredID == ""` only the empty-id rule, and `logOnce` fires (the caller wraps it in `sync.Once`; text "slack: RetiredSharedClientID not set; shared-app detection limited to accounts without a client id").
   - `slack accounts --json` → `{"builtin_app": bool, "accounts": [{"id", "team_id", "team_name", "label", "status", "enabled", "client_id", "shared_app", "relogin": "builtin"|"connect"}]}`; `relogin` = `connect` when `client_id != ""` and differs from the builtin id, else `builtin`. Removed rows are listed (the Desktop filters), `shared_app` is false for them.
-- [ ] **Step 1: Failing tests:** `TestSlackAccountSharedApp_PublicBuild` (retired id and empty → true; a workspace app → false), `TestSlackAccountSharedApp_CorpBuildNever` (empty and baked → false), `TestSlackAccountSharedApp_EmptyRetiredIDFallsBack` (only empty `client_id`; one log line over two calls), `TestSlackAccountsJSON_Shape` (golden keys), `TestSlackAccountsJSON_BuiltinApp` (env id+secret → true; none → false), `TestSlackAccountsJSON_Relogin`.
+- [ ] **Step 1: Failing tests:** `TestSlackAccountSharedApp_EveryBuild` (retired id and empty → true; a workspace app → false; the result does not change with `cmd.BuildFlavor` set to `""` or a corp value), `TestSlackAccountSharedApp_EmptyRetiredIDFallsBack` (only empty `client_id`; one log line over two calls), `TestSlackAccountsJSON_Shape` (golden keys), `TestSlackAccountsJSON_BuiltinApp` (env id+secret → true; none → false), `TestSlackAccountsJSON_Relogin`.
 - [ ] **Step 2: Run, expect FAIL:** `go test ./internal/slackmode ./cmd -run 'SharedApp|SlackAccountsJSON'`.
-- [ ] **Step 3: Implement.** `cmd.BuildFlavor` is the flavor input.
+- [ ] **Step 3: Implement.** No flavor check anywhere on this path.
 - [ ] **Step 4: Run, expect PASS;** `make lint-diff`.
 - [ ] **Step 5: Commit** `feat(slack): build-aware shared-app flag in slack accounts --json (#1709)`.
 
@@ -209,11 +224,11 @@ CREATE TABLE slack_app_setups (
 - Create: `scripts/tests/test-build-app-retired-slack-id.sh` (extracts the block verbatim like `test-build-app-bridge.sh`)
 - Modify: `Makefile` `test-scripts` (runs the new test)
 
-- [ ] **Step 1: Failing test script** asserting: public release (flavor `""`/`dev`, not `--dev`, `NOTARIZE_PROFILE` set) + empty `RETIRED_SLACK_CLIENT_ID` → exit 1 with "ERROR: a public release must set RETIRED_SLACK_CLIENT_ID (recognises accounts on the retired shared Slack app)"; public release + set → passes; corp flavor → passes; `--dev` → passes; public non-release (no `NOTARIZE_PROFILE`) → passes.
+- [ ] **Step 1: Failing test script** asserting: a release (not `--dev`, `NOTARIZE_PROFILE` set; any flavor, public or corp) + empty `RETIRED_SLACK_CLIENT_ID` → exit 1 with "ERROR: a release must set RETIRED_SLACK_CLIENT_ID (recognises accounts on the retired Slack app this build used to bake)"; public release + set → passes; corp release + empty → exit 1; corp release + set → passes; `--dev` → passes; non-release (no `NOTARIZE_PROFILE`) → passes.
 - [ ] **Step 2: Run, expect FAIL:** `bash scripts/tests/test-build-app-retired-slack-id.sh`.
 - [ ] **Step 3: Implement** the block before anything is built.
 - [ ] **Step 4: Run, expect PASS:** the script and `make test-scripts`.
-- [ ] **Step 5: Commit** `build: a public release must recognise the retired shared Slack app (#1709)`.
+- [ ] **Step 5: Commit** `build: every release must recognise its retired Slack app (#1709)`.
 
 ### Task 5: MDM key `SlackApps`
 
@@ -311,7 +326,7 @@ Rules: absent key → nil (no rows). Wrong type (not an array) → `[]` + `wrong
 
 **Interfaces:**
 - `func Lock(workspaceDir string, accountID int64) (unlock func(), err error)` — flock on `slack_token_<id>.lock` (blocking with ctx; tests use two goroutines, no sleeps).
-- `func LoadFresh(ctx context.Context, workspaceDir string, database *db.DB, accountID int64, refresh Refresher, now func() time.Time) (*slack.Token, error)` — a token without `RefreshToken` is returned as is (no rotation: shared app, corp baked app, old rows). With one: if `ExpiresAt - now >= refreshAhead` → as is; else take the lock, **re-read the file**, check again, refresh (`Refresher(ctx, clientID, refreshToken)`), save atomically, update `refresh_token_expires_at`, unlock. `invalid_refresh_token`/`token_revoked` → `SetSlackAccountAuthState(id, "error", "Sign in again: the Slack sign-in expired")` (the existing Re-login state) and `ErrReloginNeeded`.
+- `func LoadFresh(ctx context.Context, workspaceDir string, database *db.DB, accountID int64, refresh Refresher, now func() time.Time) (*slack.Token, error)` — a token without `RefreshToken` is returned as is (no rotation: a retired baked app, old rows). With one: if `ExpiresAt - now >= refreshAhead` → as is; else take the lock, **re-read the file**, check again, refresh (`Refresher(ctx, clientID, refreshToken)`), save atomically, update `refresh_token_expires_at`, unlock. `invalid_refresh_token`/`token_revoked` → `SetSlackAccountAuthState(id, "error", "Sign in again: the Slack sign-in expired")` (the existing Re-login state) and `ErrReloginNeeded`.
 - `var refreshAhead = time.Hour` (Task 16 sets it from Q9).
 - [ ] **Step 1: Failing tests:** `TestSlackRefresh_NoRotationUntouched`, `TestSlackRefresh_RefreshesWhenDue` (fake clock), `TestSlackRefresh_LockRace` (two goroutines due at once; the fake refresher counts one call and refuses the old refresh token on a second use; both return the new access token), `TestSlackRefresh_Expired` (refresher → `invalid_refresh_token` → row `error` with the Re-login text), `TestSlackRefresh_NoSecretInForm` (the real refresher's form), `TestSlackRefresh_CrashBeforeSaveKeepsOldFile` (refresher ok, save fails → the old file intact, error returned).
 - [ ] **Step 2: Run, expect FAIL:** `go test ./internal/slackauth`.
@@ -469,24 +484,25 @@ Rules: absent key → nil (no rows). Wrong type (not an array) → `[]` + `wrong
 **Files:**
 - Modify: `docs/guide/concepts/sources-and-accounts.md` (Full, Live, setup, the link, the code, MDM, the banner; 8 KB cap)
 - Modify: `docs/features/slack-multi-account.md` (client id per account, shared-app retirement, `slack accounts --json`, refresh), `docs/features/slack-live.md` (the screens; "Full comes in plan B" → done), `docs/features/connections-tab.md` (the pane), `docs/features/mdm-policy.md` (`SlackApps` row), `docs/features/README.md` summaries
+- Modify: `docs/superpowers/specs/2026-11-15-slack-full-live-screens-design.md` and `docs/superpowers/specs/2026-11-14-slack-full-and-live-design.md` — the lines listed under "Owner rulings in ask #1414", each marked "superseded by ask #1414"
 - Create: `docs/features/slack-full.md` (the entry into Full: listener, CLI verbs and JSON lines, setup record, refresh, port, A1–A16 as shipped, v1 limits); add it to `CLAUDE.md`'s Feature Notes list and to `docs/features/README.md`
 - Modify: `docs/inventory/slack-accounts.md` (SLACKFULL-01, SLACKFULL-02 once approved; SLACK-01 note about the move), `docs/inventory/policy.md` (`SlackApps`), `docs/inventory/README.md` (module map gains `internal/slackconnect`, `internal/slackapp`, `internal/slackauth`, `cmd/slack_connect.go`, `cmd/slack_app.go`)
 
 - [ ] **Step 1:** Write; `go test ./docs/guide`.
 - [ ] **Step 2: Commit** `docs: Slack Full entry, shared-app retirement (#1709)`.
 
-### Task 18: Retire the shared app in the public build ("T9")
+### Task 18: Retire the baked Slack app in every build ("T9")
 
-**Depends on:** Task 15, Task 16, Task 17 merged to main and a public release with them out; the owner's go (ask)
+**Depends on:** Task 15, Task 16, Task 17 merged to main and a release with them out; the owner's go (ask)
 
 **Files:**
-- Modify: `scripts/build-app.sh` `retired-slack-id-check` (A15: a public release refuses a set `WATCHTOWER_OAUTH_CLIENT_SECRET` or `WATCHTOWER_OAUTH_CLIENT_ID == RETIRED_SLACK_CLIENT_ID`), `scripts/tests/test-build-app-retired-slack-id.sh` (two more cases)
-- Owner action (not in the repo): the public build profile drops `WATCHTOWER_OAUTH_CLIENT_ID`/`_SECRET` for Slack and sets `RETIRED_SLACK_CLIENT_ID`
+- Modify: `scripts/build-app.sh` `retired-slack-id-check` (A15: any release, public or corp, refuses a set `WATCHTOWER_OAUTH_CLIENT_SECRET` or `WATCHTOWER_OAUTH_CLIENT_ID == RETIRED_SLACK_CLIENT_ID`), `scripts/tests/test-build-app-retired-slack-id.sh` (four more cases: public and corp × secret set / id equal to the retired one)
+- Owner action (not in the repo): the public **and** the corp build profiles drop `WATCHTOWER_OAUTH_CLIENT_ID`/`_SECRET` for Slack and set `RETIRED_SLACK_CLIENT_ID` to the id each used to bake
 
 - [ ] **Step 1: Failing cases** in the script test; run, FAIL.
 - [ ] **Step 2: Implement;** run, PASS; `make test-scripts`.
 - [ ] **Step 3: Check** with a `make app` built from the new profile (not a release): `slack accounts --json` → `builtin_app: false`; the pane shows **Connect another workspace…**, no **Add Slack Account**; onboarding's Slack card opens the connect section; a shared-app account still syncs and shows the banner.
-- [ ] **Step 4: Commit** `build: the public build no longer bakes the shared Slack app (#1709, #1767)`.
+- [ ] **Step 4: Commit** `build: no build bakes a Slack app any more (#1709, #1767)`.
 
 ---
 
@@ -514,7 +530,7 @@ Rules: absent key → nil (no rows). Wrong type (not an array) → `[]` + `wrong
 | Tokens | refresh races login / another refresh | flock; holder wins; waiter re-reads | `TestSlackRefresh_LockRace` |
 | Tokens | refresh token expired (offline past its life) | Re-login state | `TestSlackRefresh_Expired` |
 | Tokens | crash between refresh and save | old file intact; next use refreshes again (or Re-login if the old refresh token was consumed) | `TestSlackRefresh_CrashBeforeSaveKeepsOldFile` |
-| Build | public release without `RETIRED_SLACK_CLIENT_ID` | refused before building; at run time empty id narrows detection and logs once | `test-build-app-retired-slack-id.sh`, `TestSlackAccountSharedApp_EmptyRetiredIDFallsBack` |
+| Build | a release (public or corp) without `RETIRED_SLACK_CLIENT_ID` | refused before building; at run time empty id narrows detection and logs once | `test-build-app-retired-slack-id.sh`, `TestSlackAccountSharedApp_EmptyRetiredIDFallsBack` |
 | Shared app | `slack accounts --json` read fails | last flags kept; no banner on a first failed read | `testFlagsReadFailureKeepsLast` |
 | MDM | malformed `SlackApps` | no organization rows, problem reported | `TestPolicy01_WrongTypesFailClosed`, fixture cases |
 
@@ -535,9 +551,9 @@ Rules: absent key → nil (no rows). Wrong type (not an array) → `[]` + `wrong
 | Waiting for approval shown when Slack says so (§5.1 step 5, screens §3.4) | 9, 13, 16 | `testApprovalRowOnlyWhenRecordSaysSo`, spike Q5 |
 | Shared-app accounts keep working, banner offers Full or Live (§6, D11) | 3, 15 | `TestSlackAccountSharedApp_*` (the parent's `TestSharedAppBanner`), `testSharedAppBanner`, `testSharedAppIsNotAttention` |
 | Moving to Full adds a row and soft-removes the old (§6, SLACK-01) | 7 | `TestSlackLinkConnect_MoveFromSharedApp*`, `TestSlack01_*` unchanged |
-| Every public release recognises shared-app accounts (screens §1.1) | 4 | `test-build-app-retired-slack-id.sh` |
-| The public build stops baking the shared app (§6) | 18 | `test-build-app-retired-slack-id.sh` (A15 cases) |
-| A second workspace connects in Full; corp keeps Add Slack Account (screens §4.2, #1315 #19) | 14, 15 | `testFullFoldsConnectSection`, `testAddAccountFollowsBuiltinApp` |
+| Every release, corp included, recognises its retired app's accounts (screens §1.1 as changed by ask #1414) | 3, 4 | `TestSlackAccountSharedApp_EveryBuild`, `test-build-app-retired-slack-id.sh` |
+| No build bakes a Slack app any more (§6, ask #1414) | 18 | `test-build-app-retired-slack-id.sh` (A15 cases) |
+| A second workspace connects in Full; Add Slack Account only while a build still bakes an app (screens §4.2 as changed by ask #1414) | 14, 15 | `testFullFoldsConnectSection`, `testAddAccountFollowsBuiltinApp` |
 | Mode pane, Live rows with age, every block state (screens §1) | 11 | `SlackModePresentationTests`, `SlackLiveStatusCenterTests` |
 | `needsFullSlack` on Slack-dependent screens, sidebar, Knowledge note, phone (screens §2) | 12 | `FeatureReadinessTests.testNeedsFullSlack*`, `SidebarVisibilityTests`, `TestDBAccounts_LiveOnlySlackRow`, `AccountStatusStyleTests.testLiveOnly` |
 | Every new screen rendered from the real views (screens §8, §10) | 11–15 | `DesignShotsTests.testSlackFullLiveShotsRender` |
