@@ -69,4 +69,36 @@ final class HeldWriterTests: XCTestCase {
         defer { second.release() }
         XCTAssertTrue(second.isHolding)
     }
+    /// A writer that cannot be taken (a closed pool) fails by name, drops
+    /// its claim at once and counts as released: its later release() cannot
+    /// clear a claim another helper made on the same pool meanwhile.
+    func testAFailedHoldDropsItsClaimAndItsReleaseClearsNoOtherClaim() throws {
+        let (closed, closedPath) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: closedPath) }
+        try closed.close()
+        var failures: [String] = []
+        let failed = HeldWriter(closed) { message, _, _ in failures.append(message) }
+        XCTAssertFalse(failed.isHolding)
+        XCTAssertEqual(failures.count, 1)
+        XCTAssertTrue(failures.first?.contains("could not take the writer") ?? false, "\(failures)")
+        XCTAssertFalse(HeldWriter.isClaimed(closed), "the failed hold dropped its claim")
+
+        HeldWriter.claimForTest(closed) // another helper's claim
+        defer { HeldWriter.unclaimForTest(closed) }
+        failed.release()
+        XCTAssertTrue(HeldWriter.isClaimed(closed), "the failed helper's release clears no other claim")
+    }
+
+    /// A helper dropped without release() frees the writer and its claim.
+    func testADroppedHelperReleasesItsWriterAndClaim() async throws {
+        do {
+            let dropped = HeldWriter(pool)
+            XCTAssertTrue(dropped.isHolding)
+        }
+        XCTAssertFalse(HeldWriter.isClaimed(pool))
+        let written = await boundedValue(Task { () -> Bool in
+            (try? await self.pool.write { db in try db.execute(sql: "CREATE TABLE IF NOT EXISTS dropped_probe (id INTEGER)") }) != nil
+        })
+        XCTAssertEqual(written, true, "the writer is free again")
+    }
 }

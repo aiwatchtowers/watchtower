@@ -58,13 +58,36 @@ final class HeldWriter: @unchecked Sendable {
         }
         entered.wait() // the writer queue is taken (or the write failed): the detached write's own signal, no clock
         if let error = failure.get() {
+            // Never held: the claim goes now and the helper counts as
+            // released, so a later release() or deinit cannot clear the
+            // claim of another helper that holds this pool by then.
             isHolding = false
+            released = true
             Self.heldPools.update { held in held.remove(id) }
             fail("HeldWriter could not take the writer: \(error)", file, line)
         } else {
             isHolding = true
         }
     }
+
+    /// Whether a live helper claims `pool` (HeldWriterTests).
+    static func isClaimed(_ pool: DatabasePool) -> Bool {
+        heldPools.get().contains(ObjectIdentifier(pool))
+    }
+
+    /// Claims `pool` as a live helper would (HeldWriterTests: another
+    /// helper's claim that a refused or failed one must not clear).
+    static func claimForTest(_ pool: DatabasePool) {
+        heldPools.update { held in held.insert(ObjectIdentifier(pool)) }
+    }
+
+    static func unclaimForTest(_ pool: DatabasePool) {
+        heldPools.update { held in held.remove(ObjectIdentifier(pool)) }
+    }
+
+    /// A helper dropped without `release()` still frees the writer and its
+    /// claim, so a later pool at the same address is never refused.
+    deinit { release() }
 
     func release() {
         lock.lock()
