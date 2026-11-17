@@ -1863,13 +1863,10 @@ func (d *Daemon) prunePreUpgradePeopleCards(ctx context.Context) {
 	if d.db == nil || d.peoplePruneDone {
 		return
 	}
-	n, done, err := d.db.PrunePreUpgradePeopleCards(ctx)
-	if n > 0 {
-		d.logger.Printf("people: removed %d card(s) of people not worked with directly", n)
-	}
+	done, err := guide.PrunePreUpgradeCards(ctx, d.db, d.logger)
 	if err != nil {
 		if !isBenignShutdownErr(ctx, err) {
-			d.logger.Printf("people: pruning cards of non-partners: %v", err)
+			d.logger.Printf("people: %v", err)
 		}
 		return
 	}

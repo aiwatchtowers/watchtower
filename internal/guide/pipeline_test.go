@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -670,11 +671,14 @@ type excludingGenerator struct {
 	mockGenerator
 	database *db.DB
 	userID   string
+	after    func() // instead of excluding userID, when set
 }
 
 func (g *excludingGenerator) Generate(ctx context.Context, a, b, c string) (string, *digest.Usage, string, error) {
 	if g.calls.Load() == 0 {
-		if err := g.database.ExcludePerson(g.userID); err != nil {
+		if g.after != nil {
+			g.after()
+		} else if err := g.database.ExcludePerson(g.userID); err != nil {
 			return "", nil, "", err
 		}
 	}
@@ -724,6 +728,66 @@ func TestPeopleExclude_DuringRunCountsOnlyWrittenCards(t *testing.T) {
 	assert.Equal(t, OutcomeGenerated, pipe.LastOutcome())
 	assert.Equal(t, "active", cardStatus(t, database, "1:U1"))
 	card, err := database.GetLatestPeopleCard("1:U2")
+	require.NoError(t, err)
+	assert.Nil(t, card)
+}
+
+// TestPeopleExclude_DuringRunLowDataPathsAreSkips: in the low-data batch
+// phase, a person excluded mid-run is a skip on the whole-batch error path
+// and on the AI-omitted path alike: an all-excluded batch ends with no data,
+// never a failure, and progress still reaches the total.
+func TestPeopleExclude_DuringRunLowDataPathsAreSkips(t *testing.T) {
+	for name, gen := range map[string]struct {
+		response string
+		err      error
+	}{
+		"batch error": {err: errors.New("model failed")},
+		"AI omitted":  {response: `[]`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			database := testDB(t)
+			from, to := seedLowDataUsers(t, database)
+			cfg := testConfig()
+			cfg.AI.Workers = 1
+			g := &excludingGenerator{mockGenerator: mockGenerator{response: gen.response, err: gen.err}, database: database}
+			g.after = func() {
+				require.NoError(t, database.ExcludePerson("1:U1"))
+				require.NoError(t, database.ExcludePerson("1:U2"))
+			}
+			pipe := New(database, cfg, g, testLogger())
+			pipe.ForceRegenerate = true
+			var lastDone, lastTotal int
+			pipe.OnProgress = func(done, total int, _ string) {
+				if total > 0 {
+					lastDone, lastTotal = done, total
+				}
+			}
+
+			n, err := pipe.RunForWindow(context.Background(), from, to)
+			require.NoError(t, err)
+			assert.Equal(t, 0, n)
+			assert.Equal(t, OutcomeNoData, pipe.LastOutcome())
+			assert.Equal(t, 2, lastTotal)
+			assert.Equal(t, lastTotal, lastDone, "progress reaches the total")
+			cards, err := database.GetPeopleCardsForWindow(from, to)
+			require.NoError(t, err)
+			assert.Empty(t, cards)
+		})
+	}
+}
+
+// TestPrunePreUpgradeCards_Helper: the shared entry-point helper prunes a
+// non-partner card and reports done.
+func TestPrunePreUpgradeCards_Helper(t *testing.T) {
+	database := testDB(t)
+	_, err := database.Exec(`INSERT INTO slack_accounts (id, current_user_id) VALUES (1, '1:UOWNER')`)
+	require.NoError(t, err)
+	_, err = database.UpsertPeopleCard(db.PeopleCard{UserID: "1:UREADONLY", PeriodFrom: 1, PeriodTo: 2, Summary: "old"})
+	require.NoError(t, err)
+	done, err := PrunePreUpgradeCards(context.Background(), database, testLogger())
+	require.NoError(t, err)
+	assert.True(t, done)
+	card, err := database.GetLatestPeopleCard("1:UREADONLY")
 	require.NoError(t, err)
 	assert.Nil(t, card)
 }

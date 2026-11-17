@@ -419,10 +419,8 @@ func runPeopleGenerate(cmd *cobra.Command, args []string) error {
 		cfg.AI.Workers = peopleFlagWorkers
 	}
 	// The one-time upgrade pass deleting cards of non-partners (A13).
-	if n, _, err := database.PrunePreUpgradePeopleCards(cmdContext(cmd)); err != nil {
-		return fmt.Errorf("pruning people cards of non-partners: %w", err)
-	} else if n > 0 {
-		logger.Printf("people: removed %d card(s) of people not worked with directly", n)
+	if _, err := guide.PrunePreUpgradeCards(cmdContext(cmd), database, logger); err != nil {
+		return err
 	}
 	gen, savePool := cliPooledGenerator(cfg)
 	defer savePool()
