@@ -10,16 +10,16 @@ import Foundation
 /// longest-common-subsequence over tokens, bounded by `maxCells` — a middle
 /// too large for the table is shown as "all of this replaced by all of
 /// that", which is still exact, never slow.
-package enum WordDiff {
-    package enum Kind: Sendable {
+public enum WordDiff {
+    public enum Kind: Sendable {
         case same, removed, added
     }
 
-    package struct Segment: Equatable, Sendable {
-        package let kind: Kind
-        package let text: String
+    public struct Segment: Equatable, Sendable {
+        public let kind: Kind
+        public let text: String
 
-        package init(kind: Kind, text: String) {
+        public init(kind: Kind, text: String) {
             self.kind = kind
             self.text = text
         }
@@ -28,9 +28,9 @@ package enum WordDiff {
     /// The LCS table's cell budget (tokens × tokens of the changed middle).
     /// With `UInt16` cells this is 8 MB at most; the smaller side is then at
     /// most 2 000 tokens, so an LCS length always fits the cell type.
-    package static let maxCells = 4_000_000
+    public static let maxCells = 4_000_000
 
-    package static func diff(before: String, after: String) -> [Segment] {
+    public static func diff(before: String, after: String) -> [Segment] {
         let old = tokens(before)
         let new = tokens(after)
         var prefix = 0

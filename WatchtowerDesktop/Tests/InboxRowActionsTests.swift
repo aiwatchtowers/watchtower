@@ -1,3 +1,4 @@
+import ChatWire
 import XCTest
 import GRDB
 @testable import WatchtowerDesktop

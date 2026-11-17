@@ -363,6 +363,12 @@ public struct ChatFeed: Decodable, Hashable, Sendable {
         public let argsSHA256: String
         public let status: String
         public let reason: String?
+        /// The approval card's fields (`ChatApprovalPayload`), absent from an engine one version behind.
+        public let external: Bool
+        public let error: String
+        public let result: [String: String]
+        public let turnID: String
+        public let argsComplete: Bool
 
         public init(
             id: Int64,
@@ -371,7 +377,12 @@ public struct ChatFeed: Decodable, Hashable, Sendable {
             argsDisplay: String,
             argsSHA256: String,
             status: String,
-            reason: String? = nil
+            reason: String? = nil,
+            external: Bool = false,
+            error: String = "",
+            result: [String: String] = [:],
+            turnID: String = "",
+            argsComplete: Bool = false
         ) {
             self.id = id
             self.tool = tool
@@ -380,6 +391,11 @@ public struct ChatFeed: Decodable, Hashable, Sendable {
             self.argsSHA256 = argsSHA256
             self.status = status
             self.reason = reason
+            self.external = external
+            self.error = error
+            self.result = result
+            self.turnID = turnID
+            self.argsComplete = argsComplete
         }
 
         public init(from decoder: Decoder) throws {
@@ -391,13 +407,19 @@ public struct ChatFeed: Decodable, Hashable, Sendable {
             argsSHA256 = try c.decodeIfPresent(String.self, forKey: .argsSHA256) ?? ""
             status = try c.decode(String.self, forKey: .status)
             reason = try c.decodeIfPresent(String.self, forKey: .reason)
+            external = try c.decodeIfPresent(Bool.self, forKey: .external) ?? false
+            error = try c.decodeIfPresent(String.self, forKey: .error) ?? ""
+            result = try c.decodeIfPresent([String: String].self, forKey: .result) ?? [:]
+            turnID = try c.decodeIfPresent(String.self, forKey: .turnID) ?? ""
+            argsComplete = try c.decodeIfPresent(Bool.self, forKey: .argsComplete) ?? false
         }
 
-        // convertFromSnakeCase maps "args_sha256" -> "argsSha256".
+        // convertFromSnakeCase maps "args_sha256" -> "argsSha256", "turn_id" -> "turnId".
         enum CodingKeys: String, CodingKey {
             case id, tool, title, argsDisplay
             case argsSHA256 = "argsSha256"
-            case status, reason
+            case status, reason, external, error, result, argsComplete
+            case turnID = "turnId"
         }
     }
 

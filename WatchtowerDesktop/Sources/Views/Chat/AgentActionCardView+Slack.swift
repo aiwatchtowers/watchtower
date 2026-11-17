@@ -1,3 +1,4 @@
+import ChatWire
 import SwiftUI
 import WatchtowerCore
 
@@ -7,13 +8,6 @@ import WatchtowerCore
 /// workspaces, a picker that must be set before Approve. The edits travel as
 /// `actions approve --patch`, so Go saves them with the approval in one write.
 extension AgentActionCardView {
-    static func slackSummaryLines(for action: AgentAction) -> [String]? {
-        guard let proposal = SlackSendProposal(action: action) else { return nil }
-        // The text-only summary (cheat sheet, tests); the card itself shows
-        // the recipient with `SlackRecipientLine`.
-        return [proposal.recipientLine, proposal.text]
-    }
-
     static func slackRetryNote() -> String {
         "Retrying first checks whether the message already reached Slack and posts it only if it did not."
     }
