@@ -4613,5 +4613,2581 @@
         }
       ]
     }
+  },
+  {
+    "name": "desktop_strip_reminder_done",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO reminders (id, message_ref, note, remind_at, status, created_at) VALUES (1, 'C1@1', 'call back', '2000-01-01T00:00:00Z', 'pending', '2026-11-16T08:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 1
+        }
+      ],
+      "cards": [
+        {
+          "id": "r1",
+          "folder_id": 2,
+          "card_kind": "reminder",
+          "title": "call back",
+          "source_line": "Reminder",
+          "preview": "",
+          "stamp": "2000-01-01T00:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [
+            {
+              "kind": "reminder",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "https://slack.com/archives/C1/p1",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ]
+        }
+      ]
+    },
+    "desktop": true,
+    "steps": [
+      {
+        "name": "done",
+        "act": {
+          "target": "r1",
+          "verb": "ref",
+          "params": {
+            "ref_kind": "reminder",
+            "ref_id": 1,
+            "ref_verb": "done"
+          },
+          "request_id": "00000000-0000-4000-8000-000000900001"
+        },
+        "when": "SELECT status = 'done' FROM reminders WHERE id = 1",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            }
+          ],
+          "cards": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "desktop_strip_reminder_snoozed",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO reminders (id, message_ref, note, remind_at, status, created_at) VALUES (1, 'C1@1', 'call back', '2000-01-01T00:00:00Z', 'pending', '2026-11-16T08:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 1
+        }
+      ],
+      "cards": [
+        {
+          "id": "r1",
+          "folder_id": 2,
+          "card_kind": "reminder",
+          "title": "call back",
+          "source_line": "Reminder",
+          "preview": "",
+          "stamp": "2000-01-01T00:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [
+            {
+              "kind": "reminder",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "https://slack.com/archives/C1/p1",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ]
+        }
+      ]
+    },
+    "desktop": true,
+    "steps": [
+      {
+        "name": "snoozed",
+        "act": {
+          "target": "r1",
+          "verb": "ref",
+          "params": {
+            "ref_kind": "reminder",
+            "ref_id": 1,
+            "ref_verb": "snooze",
+            "until": "2999-01-01T00:00:00Z"
+          },
+          "request_id": "00000000-0000-4000-8000-000000900002"
+        },
+        "when": "SELECT remind_at = '2999-01-01T00:00:00Z' FROM reminders WHERE id = 1",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            }
+          ],
+          "cards": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "desktop_strip_action_applied",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (1, 'create_target', 0, '{\"text\":\"Call Vasya\",\"reason\":\"r\"}', 'r', 'main', 1, '', '', 'turn-1', 'pending', '', '', '2026-09-04T10:00:00Z', '', '', '')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 1
+        }
+      ],
+      "cards": [
+        {
+          "id": "a1",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_target",
+            "title": "Create a target",
+            "summary": "Call Vasya",
+            "args_sha256": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+            "status": "pending",
+            "error": "",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        }
+      ]
+    },
+    "desktop": true,
+    "steps": [
+      {
+        "name": "applied",
+        "sql": [
+          "UPDATE agent_actions SET status = 'applied' WHERE id = 1"
+        ],
+        "when": "SELECT status = 'applied' FROM agent_actions WHERE id = 1",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            }
+          ],
+          "cards": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "desktop_strip_unknown_outcome_dismissed",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (1, 'claude_ai_connector_call', 1, '{\"text\":\"Call Vasya\",\"reason\":\"r\"}', 'r', 'main', 1, '', '', 'turn-1', 'failed', '', 'session ended while the call ran; outcome unknown', '2026-09-04T10:00:00Z', '', '', '')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 1
+        }
+      ],
+      "cards": [
+        {
+          "id": "a1",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "claude_ai_connector_call",
+            "title": "Use a claude.ai connector",
+            "summary": "{\"text\":\"Call Vasya\",\"reason\":\"r\"}",
+            "args_sha256": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+            "status": "failed",
+            "error": "session ended while the call ran; outcome unknown",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        }
+      ]
+    },
+    "desktop": true,
+    "steps": [
+      {
+        "name": "dismissed",
+        "sql": [
+          "UPDATE agent_actions SET dismissed_at = '2026-01-02T00:00:00Z' WHERE id = 1"
+        ],
+        "when": "SELECT dismissed_at != '' FROM agent_actions WHERE id = 1",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            }
+          ],
+          "cards": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "desktop_strip_action_and_reminder",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (1, 'create_target', 0, '{\"text\":\"Call Vasya\",\"reason\":\"r\"}', 'r', 'main', 1, '', '', 'a', 'pending', '', '', '2026-09-04T10:00:00Z', '', '', '')",
+      "INSERT INTO reminders (id, message_ref, note, remind_at, status, created_at) VALUES (1, 'C1@1', 'call back', '2000-01-01T00:00:00Z', 'pending', '2026-11-16T08:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 2,
+          "waiting": 2
+        }
+      ],
+      "cards": [
+        {
+          "id": "a1",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "Assistant proposal",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_target",
+            "title": "Create a target",
+            "summary": "Call Vasya",
+            "args_sha256": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+            "status": "pending",
+            "error": "",
+            "proposer": "",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        },
+        {
+          "id": "r1",
+          "folder_id": 2,
+          "card_kind": "reminder",
+          "title": "call back",
+          "source_line": "Reminder",
+          "preview": "",
+          "stamp": "2000-01-01T00:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [
+            {
+              "kind": "reminder",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "https://slack.com/archives/C1/p1",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ]
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_kinds_builtin_retry",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO builtin_migrations (builtin_id, status, error, attempts, updated_at) VALUES ('morning-brief', 'failed', 'config unreadable', 1, '2026-10-22T07:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "n1",
+          "folder_id": 2,
+          "card_kind": "notice",
+          "title": "Couldn't move Morning brief to Automations",
+          "source_line": "",
+          "preview": "",
+          "stamp": "2026-10-22T07:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "config unreadable",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": []
+        }
+      ]
+    },
+    "desktop": true,
+    "steps": [
+      {
+        "name": "moved",
+        "sql": [
+          "UPDATE builtin_migrations SET status = 'done', error = ''"
+        ],
+        "when": "SELECT status = 'done' FROM builtin_migrations WHERE builtin_id = 'morning-brief'",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            }
+          ],
+          "cards": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "desktop_kinds_every_source",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO automations (id, slug, scope, path, name, trigger_kind, trigger_spec, approval_hash, confirmed_hash, enabled, permissions_json, outputs_json) VALUES (1, 'mail-summary', 'personal', '/tmp/acme/automations/mail-summary.md', 'Mail summary', 'manual', '{\"manual\":true}', 'h1', 'h1', 1, '[]', '[]')",
+      "INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at, started_at) VALUES (1, 1, 'manual', 'succeeded', '2026-10-01T09:00:00Z', '2026-10-01T09:00:01Z')",
+      "INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body, priority, created_at, written_at, changed_at) VALUES (1, 1, 1, 'inbox', 'New mail', 'Two threads need you.', 'medium', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z', '2026-10-01T09:00:05Z')",
+      "INSERT INTO agent_actions (id, tool, external, args_json, reason, surface, conversation_id, context_type, context_id, turn_id, status, result_json, error, created_at, decided_at, applied_at, dismissed_at) VALUES (1, 'create_target', 0, '{\"text\":\"Call Vasya\",\"reason\":\"r\"}', 'r', 'automation', 0, 'automation_run', '1', 'turn-1', 'pending', '', '', '2026-09-04T10:00:00Z', '', '', '')",
+      "INSERT INTO reminders (id, message_ref, note, remind_at, status, created_at) VALUES (1, 'C1@1', 'call back', '2000-01-01T00:00:00Z', 'pending', '2026-11-16T08:00:00Z')",
+      "INSERT INTO briefings (id, user_id, date, role, attention, your_day, what_happened, team_pulse, coaching, model, read_at, created_at) VALUES (1, 'U001', '2026-11-16', 'engineer', '[]', '[]', '[]', '[]', '[]', 'haiku', NULL, '2026-11-16T08:00:00Z')",
+      "INSERT INTO day_plans (id, user_id, plan_date, status, has_conflicts, generated_at, regenerate_count, created_at, updated_at) VALUES (1, 'U001', '2026-11-16', 'active', 0, '2026-04-23T08:00:00Z', 0, '2026-11-16T08:00:00Z', '2026-11-16T08:00:00Z')",
+      "INSERT INTO day_plan_items (id, day_plan_id, kind, source_type, title, priority, status, order_index, created_at, updated_at) VALUES (1, 1, 'timeblock', 'manual', 'A', 'medium', 'pending', 0, '2026-11-16T08:00:00Z', '2026-11-16T08:00:00Z')",
+      "INSERT INTO tracks (id, text, context, category, ownership, priority, tags, channel_ids, source_refs, has_updates, participants, requester_name, blocking, decision_summary, decision_options, sub_items, related_digest_ids, model, assignee_user_id, owner_user_id, requester_user_id, created_at, updated_at) VALUES (1, 'Fix the bug', 'Discussed in standup', 'task', 'mine', 'medium', '[]', '[\"C001\"]', '[]', 1, '[]', '', '', '', '[]', '[]', '[]', 'haiku', '', '', '', '2026-11-16T08:00:00Z', '2026-11-16T08:00:00Z')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (1, 1, 's', '2026-11-16T08:00:00Z')",
+      "INSERT INTO ideas (id, kind, title, essence, status, source, snooze_until, needs_review, review_reason, owner_rating, rating_comment, last_mention_at, created_at, updated_at, chat_born) VALUES (1, 'idea', 'Ship a weekly digest email', '', 'proposed', 'mined', '', 0, '', 0, '', '', '2026-11-10T09:00:00Z', '2026-11-10T09:00:00Z', 0)",
+      "INSERT INTO inbox_items (id, channel_id, message_ts, thread_ts, sender_user_id, trigger_type, snippet, permalink, status, priority, ai_reason, resolved_reason, snooze_until, item_class, card_status, why_matters, thread_digest, draft_reply, created_at, updated_at) VALUES (1, 'C001', '17000000001.000100', '', 'U002', 'mention', 'Hey, can you review this?', '', 'pending', 'medium', '', '', '', 'actionable', 'none', '', '', '', '2026-10-21T07:00:00Z', '2026-10-21T07:00:00Z')",
+      "INSERT INTO builtin_migrations (builtin_id, status, error, attempts, updated_at) VALUES ('morning-brief', 'failed', 'config unreadable', 1, '2026-10-22T07:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 4,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 3,
+          "waiting": 2
+        }
+      ],
+      "cards": [
+        {
+          "id": "brief-2026-11-16",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Morning brief",
+          "source_line": "Your day · Mon 16 Nov",
+          "preview": "today",
+          "stamp": "2026-11-16T08:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "morning_brief",
+            "items": [
+              {
+                "ref_kind": "plan_item",
+                "id": 1,
+                "title": "A",
+                "subtitle": "",
+                "preview": "",
+                "stamp": "",
+                "end": "",
+                "unread": false,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": "2026-11-16"
+              }
+            ],
+            "attention": []
+          }
+        },
+        {
+          "id": "tracks",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Track my threads",
+          "source_line": "",
+          "preview": "1 unread",
+          "stamp": "2026-11-16T08:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "tracks",
+            "items": [
+              {
+                "ref_kind": "track",
+                "id": 1,
+                "title": "Fix the bug",
+                "subtitle": "Track",
+                "preview": "1 new",
+                "stamp": "2026-11-16T08:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        },
+        {
+          "id": "ideas",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Idea finder",
+          "source_line": "",
+          "preview": "1 to judge",
+          "stamp": "2026-11-10T09:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "ideas",
+            "items": [
+              {
+                "ref_kind": "idea",
+                "id": 1,
+                "title": "Ship a weekly digest email",
+                "subtitle": "Idea · proposed",
+                "preview": "",
+                "stamp": "2026-11-10T09:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        },
+        {
+          "id": "messages",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Messages",
+          "source_line": "Mentions, DMs and replies",
+          "preview": "1 waiting",
+          "stamp": "2026-10-21T07:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "messages",
+            "items": [
+              {
+                "ref_kind": "inbox_item",
+                "id": 1,
+                "title": "Hey, can you review this?",
+                "subtitle": "Message",
+                "preview": "",
+                "stamp": "2026-10-21T07:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        },
+        {
+          "id": "o1",
+          "folder_id": 1,
+          "card_kind": "artifact",
+          "title": "New mail",
+          "source_line": "Mail summary",
+          "preview": "Two threads need you.",
+          "stamp": "2026-10-01T09:00:05Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "automation": {
+            "id": 1,
+            "name": "Mail summary",
+            "builtin_id": "",
+            "run_id": 1
+          },
+          "blocks": "",
+          "body": "Two threads need you.",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": []
+        },
+        {
+          "id": "n1",
+          "folder_id": 2,
+          "card_kind": "notice",
+          "title": "Couldn't move Morning brief to Automations",
+          "source_line": "",
+          "preview": "",
+          "stamp": "2026-10-22T07:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "config unreadable",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": []
+        },
+        {
+          "id": "a1",
+          "folder_id": 2,
+          "card_kind": "approval_native",
+          "title": "r",
+          "source_line": "⚙ Mail summary · run #1",
+          "preview": "",
+          "stamp": "2026-09-04T10:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+          "actions": [],
+          "ref_facts": [],
+          "approval": {
+            "tool": "create_target",
+            "title": "Create a target",
+            "summary": "Call Vasya",
+            "args_sha256": "ae3502b2c65f899b87e330edd820df7aa85833a72544f9208cc8ffee35fe7e91",
+            "status": "pending",
+            "error": "",
+            "proposer": "⚙ Mail summary · run #1",
+            "reason": "r",
+            "edit_on_mac": false,
+            "target": "",
+            "target_note": "",
+            "target_until": "",
+            "superseded": false,
+            "disclosure": "",
+            "recipe_text": "",
+            "diff": [],
+            "recipe_clipped": false
+          }
+        },
+        {
+          "id": "r1",
+          "folder_id": 2,
+          "card_kind": "reminder",
+          "title": "call back",
+          "source_line": "Reminder",
+          "preview": "",
+          "stamp": "2000-01-01T00:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [
+            {
+              "kind": "reminder",
+              "id": 1,
+              "open": true,
+              "waits": true,
+              "reply": false,
+              "reply_waiting": false,
+              "link": "https://slack.com/archives/C1/p1",
+              "trigger_type": "",
+              "custom": false,
+              "linked_target_id": 0,
+              "idea_kind": "",
+              "idea_status": ""
+            }
+          ]
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_kinds_two_briefings",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO briefings (id, user_id, date, role, attention, your_day, what_happened, team_pulse, coaching, model, read_at, created_at) VALUES (1, 'U001', '2026-01-01', 'engineer', '[]', '[]', '[]', '[]', '[]', 'haiku', NULL, '2026-11-16T08:00:00Z')",
+      "INSERT INTO briefings (id, user_id, date, role, attention, your_day, what_happened, team_pulse, coaching, model, read_at, created_at) VALUES (2, 'U001', '2026-11-16', 'engineer', '[]', '[]', '[]', '[]', '[]', 'haiku', NULL, '2026-11-16T08:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "brief-2026-11-16",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Morning brief",
+          "source_line": "Your day · Mon 16 Nov",
+          "preview": "today",
+          "stamp": "2026-11-16T08:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "morning_brief",
+            "items": [],
+            "attention": []
+          }
+        },
+        {
+          "id": "brief-2026-01-01",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Morning brief",
+          "source_line": "Your day · Thu 1 Jan",
+          "preview": "",
+          "stamp": "2026-11-16T08:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "morning_brief",
+            "items": [],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_kinds_one_message",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, thread_ts, sender_user_id, trigger_type, snippet, permalink, status, priority, ai_reason, resolved_reason, snooze_until, item_class, card_status, why_matters, thread_digest, draft_reply, created_at, updated_at) VALUES (1, 'C001', '17000000001.000100', '', 'U002', 'mention', 'Hey, can you review this?', '', 'pending', 'medium', '', '', '', 'actionable', 'none', '', '', '', '2026-10-21T07:00:00Z', '2026-10-21T07:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "messages",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Messages",
+          "source_line": "Mentions, DMs and replies",
+          "preview": "1 waiting",
+          "stamp": "2026-10-21T07:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "messages",
+            "items": [
+              {
+                "ref_kind": "inbox_item",
+                "id": 1,
+                "title": "Hey, can you review this?",
+                "subtitle": "Message",
+                "preview": "",
+                "stamp": "2026-10-21T07:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_kinds_track_and_idea",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO tracks (id, text, context, category, ownership, priority, tags, channel_ids, source_refs, has_updates, participants, requester_name, blocking, decision_summary, decision_options, sub_items, related_digest_ids, model, assignee_user_id, owner_user_id, requester_user_id, created_at, updated_at) VALUES (1, 'Fix the bug', 'Discussed in standup', 'task', 'mine', 'medium', '[]', '[\"C001\"]', '[]', 1, '[]', '', '', '', '[]', '[]', '[]', 'haiku', '', '', '', '2026-11-16T08:00:00Z', '2026-11-16T08:00:00Z')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (1, 1, 's', '2026-11-16T08:00:00Z')",
+      "INSERT INTO ideas (id, kind, title, essence, status, source, snooze_until, needs_review, review_reason, owner_rating, rating_comment, last_mention_at, created_at, updated_at, chat_born) VALUES (1, 'idea', 'Ship a weekly digest email', '', 'proposed', 'mined', '', 0, '', 0, '', '', '2026-11-10T09:00:00Z', '2026-11-10T09:00:00Z', 0)"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "tracks",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Track my threads",
+          "source_line": "",
+          "preview": "1 unread",
+          "stamp": "2026-11-16T08:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "tracks",
+            "items": [
+              {
+                "ref_kind": "track",
+                "id": 1,
+                "title": "Fix the bug",
+                "subtitle": "Track",
+                "preview": "1 new",
+                "stamp": "2026-11-16T08:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        },
+        {
+          "id": "ideas",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Idea finder",
+          "source_line": "",
+          "preview": "1 to judge",
+          "stamp": "2026-11-10T09:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "ideas",
+            "items": [
+              {
+                "ref_kind": "idea",
+                "id": 1,
+                "title": "Ship a weekly digest email",
+                "subtitle": "Idea · proposed",
+                "preview": "",
+                "stamp": "2026-11-10T09:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_kinds_read_briefing_and_message",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO briefings (id, user_id, date, role, attention, your_day, what_happened, team_pulse, coaching, model, read_at, created_at) VALUES (1, 'U001', '2026-11-16', 'engineer', '[]', '[]', '[]', '[]', '[]', 'haiku', '2026-10-01T00:00:00Z', '2026-11-16T08:00:00Z')",
+      "INSERT INTO inbox_items (id, channel_id, message_ts, thread_ts, sender_user_id, trigger_type, snippet, permalink, status, priority, ai_reason, resolved_reason, snooze_until, item_class, card_status, why_matters, thread_digest, draft_reply, created_at, updated_at, read_at) VALUES (1, 'C001', '17000000001.000100', '', 'U002', 'mention', 'Hey, can you review this?', '', 'pending', 'medium', '', '', '', 'actionable', 'none', '', '', '', '2026-10-21T07:00:00Z', '2026-10-21T07:00:00Z', '2026-10-01T00:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "brief-2026-11-16",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Morning brief",
+          "source_line": "Your day · Mon 16 Nov",
+          "preview": "today",
+          "stamp": "2026-11-16T08:00:00Z",
+          "living": false,
+          "unread": false,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "morning_brief",
+            "items": [],
+            "attention": []
+          }
+        },
+        {
+          "id": "messages",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Messages",
+          "source_line": "Mentions, DMs and replies",
+          "preview": "1 waiting",
+          "stamp": "2026-10-21T07:00:00Z",
+          "living": false,
+          "unread": false,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "messages",
+            "items": [
+              {
+                "ref_kind": "inbox_item",
+                "id": 1,
+                "title": "Hey, can you review this?",
+                "subtitle": "Message",
+                "preview": "",
+                "stamp": "2026-10-21T07:00:00Z",
+                "end": "",
+                "unread": false,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_kinds_two_tracks_with_updates",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO tracks (id, text, context, category, ownership, priority, tags, channel_ids, source_refs, has_updates, participants, requester_name, blocking, decision_summary, decision_options, sub_items, related_digest_ids, model, assignee_user_id, owner_user_id, requester_user_id, created_at, updated_at) VALUES (1, 'Fix the bug', 'Discussed in standup', 'task', 'mine', 'medium', '[]', '[\"C001\"]', '[]', 1, '[]', '', '', '', '[]', '[]', '[]', 'haiku', '', '', '', '2026-11-16T08:00:00Z', '2026-11-16T08:00:00Z')",
+      "INSERT INTO tracks (id, text, context, category, ownership, priority, tags, channel_ids, source_refs, has_updates, participants, requester_name, blocking, decision_summary, decision_options, sub_items, related_digest_ids, model, assignee_user_id, owner_user_id, requester_user_id, created_at, updated_at) VALUES (2, 'Fix the bug', 'Discussed in standup', 'task', 'mine', 'medium', '[]', '[\"C001\"]', '[]', 1, '[]', '', '', '', '[]', '[]', '[]', 'haiku', '', '', '', '2026-11-16T08:00:00Z', '2026-11-16T08:00:00Z')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (1, 1, 's', '2026-11-16T08:00:00Z')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (2, 1, 's', '2026-11-16T08:00:00Z')",
+      "INSERT INTO track_events (id, track_id, summary, created_at) VALUES (3, 2, 's', '2026-11-16T08:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "tracks",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Track my threads",
+          "source_line": "",
+          "preview": "2 unread",
+          "stamp": "2026-11-16T08:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "tracks",
+            "items": [
+              {
+                "ref_kind": "track",
+                "id": 1,
+                "title": "Fix the bug",
+                "subtitle": "Track",
+                "preview": "2 new",
+                "stamp": "2026-11-16T08:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              },
+              {
+                "ref_kind": "track",
+                "id": 2,
+                "title": "Fix the bug",
+                "subtitle": "Track",
+                "preview": "1 new",
+                "stamp": "2026-11-16T08:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true,
+    "steps": [
+      {
+        "name": "done",
+        "act": {
+          "target": "tracks",
+          "verb": "ref",
+          "params": {
+            "ref_kind": "track",
+            "ref_id": 1,
+            "ref_verb": "done"
+          },
+          "request_id": "00000000-0000-4000-8000-000000900003"
+        },
+        "when": "SELECT has_updates = 0 FROM tracks WHERE id = 1",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            }
+          ],
+          "cards": [
+            {
+              "id": "tracks",
+              "folder_id": 1,
+              "card_kind": "legacy",
+              "title": "Track my threads",
+              "source_line": "",
+              "preview": "1 unread",
+              "stamp": "2026-11-16T08:00:00Z",
+              "living": false,
+              "unread": true,
+              "priority": "medium",
+              "pinned": false,
+              "blocks": "",
+              "body": "",
+              "body_clipped": false,
+              "link": "",
+              "content_hash": "",
+              "actions": [],
+              "ref_facts": [],
+              "legacy": {
+                "kind": "tracks",
+                "items": [
+                  {
+                    "ref_kind": "track",
+                    "id": 1,
+                    "title": "Fix the bug",
+                    "subtitle": "Track",
+                    "preview": "",
+                    "stamp": "2026-11-16T08:00:00Z",
+                    "end": "",
+                    "unread": false,
+                    "high": false,
+                    "stopped": false,
+                    "done": false,
+                    "date": ""
+                  },
+                  {
+                    "ref_kind": "track",
+                    "id": 2,
+                    "title": "Fix the bug",
+                    "subtitle": "Track",
+                    "preview": "1 new",
+                    "stamp": "2026-11-16T08:00:00Z",
+                    "end": "",
+                    "unread": true,
+                    "high": false,
+                    "stopped": false,
+                    "done": false,
+                    "date": ""
+                  }
+                ],
+                "attention": []
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "desktop_kinds_custom_and_auto_track",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO tracks (id, text, context, category, ownership, priority, tags, channel_ids, source_refs, has_updates, participants, requester_name, blocking, decision_summary, decision_options, sub_items, related_digest_ids, model, assignee_user_id, owner_user_id, requester_user_id, created_at, updated_at, origin, enabled) VALUES (1, 'Watch the launch', 'Discussed in standup', 'task', 'mine', 'medium', '[]', '[\"C001\"]', '[]', 0, '[]', '', '', '', '[]', '[]', '[]', 'haiku', '', '', '', '2026-11-16T08:00:00Z', '2026-11-16T08:00:00Z', 'custom', 1)",
+      "INSERT INTO tracks (id, text, context, category, ownership, priority, tags, channel_ids, source_refs, has_updates, participants, requester_name, blocking, decision_summary, decision_options, sub_items, related_digest_ids, model, assignee_user_id, owner_user_id, requester_user_id, created_at, updated_at) VALUES (2, 'Fix the bug', 'Discussed in standup', 'task', 'mine', 'medium', '[]', '[\"C001\"]', '[]', 0, '[]', '', '', '', '[]', '[]', '[]', 'haiku', '', '', '', '2026-11-16T08:00:00Z', '2026-11-16T08:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "tracks",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Track my threads",
+          "source_line": "",
+          "preview": "2 unread",
+          "stamp": "2026-11-16T08:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "tracks",
+            "items": [
+              {
+                "ref_kind": "track",
+                "id": 1,
+                "title": "Watch the launch",
+                "subtitle": "Track",
+                "preview": "",
+                "stamp": "2026-11-16T08:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              },
+              {
+                "ref_kind": "track",
+                "id": 2,
+                "title": "Fix the bug",
+                "subtitle": "Track",
+                "preview": "",
+                "stamp": "2026-11-16T08:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true,
+    "steps": [
+      {
+        "name": "custom_stopped",
+        "sql": [
+          "UPDATE tracks SET dismissed_at = '2026-11-16T12:00:00Z', enabled = 0 WHERE id = 1"
+        ],
+        "when": "SELECT dismissed_at != '' FROM tracks WHERE id = 1",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            }
+          ],
+          "cards": [
+            {
+              "id": "tracks",
+              "folder_id": 1,
+              "card_kind": "legacy",
+              "title": "Track my threads",
+              "source_line": "",
+              "preview": "1 unread",
+              "stamp": "2026-11-16T08:00:00Z",
+              "living": false,
+              "unread": true,
+              "priority": "medium",
+              "pinned": false,
+              "blocks": "",
+              "body": "",
+              "body_clipped": false,
+              "link": "",
+              "content_hash": "",
+              "actions": [],
+              "ref_facts": [],
+              "legacy": {
+                "kind": "tracks",
+                "items": [
+                  {
+                    "ref_kind": "track",
+                    "id": 2,
+                    "title": "Fix the bug",
+                    "subtitle": "Track",
+                    "preview": "",
+                    "stamp": "2026-11-16T08:00:00Z",
+                    "end": "",
+                    "unread": true,
+                    "high": false,
+                    "stopped": false,
+                    "done": false,
+                    "date": ""
+                  },
+                  {
+                    "ref_kind": "track",
+                    "id": 1,
+                    "title": "Watch the launch",
+                    "subtitle": "Track",
+                    "preview": "",
+                    "stamp": "2026-11-16T08:00:00Z",
+                    "end": "",
+                    "unread": true,
+                    "high": false,
+                    "stopped": true,
+                    "done": false,
+                    "date": ""
+                  }
+                ],
+                "attention": []
+              }
+            }
+          ]
+        }
+      },
+      {
+        "name": "auto_stopped",
+        "sql": [
+          "UPDATE tracks SET dismissed_at = '2026-11-16T12:00:00Z' WHERE id = 2"
+        ],
+        "when": "SELECT dismissed_at != '' FROM tracks WHERE id = 2",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            }
+          ],
+          "cards": [
+            {
+              "id": "tracks",
+              "folder_id": 1,
+              "card_kind": "legacy",
+              "title": "Track my threads",
+              "source_line": "",
+              "preview": "",
+              "stamp": "2026-11-16T08:00:00Z",
+              "living": false,
+              "unread": false,
+              "priority": "medium",
+              "pinned": false,
+              "blocks": "",
+              "body": "",
+              "body_clipped": false,
+              "link": "",
+              "content_hash": "",
+              "actions": [],
+              "ref_facts": [],
+              "legacy": {
+                "kind": "tracks",
+                "items": [
+                  {
+                    "ref_kind": "track",
+                    "id": 2,
+                    "title": "Fix the bug",
+                    "subtitle": "Track",
+                    "preview": "",
+                    "stamp": "2026-11-16T08:00:00Z",
+                    "end": "",
+                    "unread": true,
+                    "high": false,
+                    "stopped": true,
+                    "done": false,
+                    "date": ""
+                  },
+                  {
+                    "ref_kind": "track",
+                    "id": 1,
+                    "title": "Watch the launch",
+                    "subtitle": "Track",
+                    "preview": "",
+                    "stamp": "2026-11-16T08:00:00Z",
+                    "end": "",
+                    "unread": true,
+                    "high": false,
+                    "stopped": true,
+                    "done": false,
+                    "date": ""
+                  }
+                ],
+                "attention": []
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "desktop_kinds_message_resolved_elsewhere",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, thread_ts, sender_user_id, trigger_type, snippet, permalink, status, priority, ai_reason, resolved_reason, snooze_until, item_class, card_status, why_matters, thread_digest, draft_reply, created_at, updated_at) VALUES (1, 'C001', '17000000001.000100', '', 'U002', 'mention', 'Hey, can you review this?', '', 'pending', 'medium', '', '', '', 'actionable', 'none', '', '', '', '2026-10-21T07:00:00Z', '2026-10-21T07:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "messages",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Messages",
+          "source_line": "Mentions, DMs and replies",
+          "preview": "1 waiting",
+          "stamp": "2026-10-21T07:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "messages",
+            "items": [
+              {
+                "ref_kind": "inbox_item",
+                "id": 1,
+                "title": "Hey, can you review this?",
+                "subtitle": "Message",
+                "preview": "",
+                "stamp": "2026-10-21T07:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true,
+    "steps": [
+      {
+        "name": "resolved",
+        "sql": [
+          "UPDATE inbox_items SET status = 'resolved' WHERE id = 1"
+        ],
+        "when": "SELECT status = 'resolved' FROM inbox_items WHERE id = 1",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            }
+          ],
+          "cards": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "desktop_kinds_selected_message_vanishes",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, thread_ts, sender_user_id, trigger_type, snippet, permalink, status, priority, ai_reason, resolved_reason, snooze_until, item_class, card_status, why_matters, thread_digest, draft_reply, created_at, updated_at) VALUES (1, 'C001', '17000000001.000100', '', 'U002', 'mention', 'Hey, can you review this?', '', 'pending', 'medium', '', '', '', 'actionable', 'none', '', '', '', '2026-10-21T09:00:00Z', '2026-10-21T09:00:00Z')",
+      "INSERT INTO inbox_items (id, channel_id, message_ts, thread_ts, sender_user_id, trigger_type, snippet, permalink, status, priority, ai_reason, resolved_reason, snooze_until, item_class, card_status, why_matters, thread_digest, draft_reply, created_at, updated_at) VALUES (2, 'C001', '17000000002.000100', '', 'U002', 'mention', 'Hey, can you review this?', '', 'pending', 'medium', '', '', '', 'actionable', 'none', '', '', '', '2026-10-21T08:00:00Z', '2026-10-21T08:00:00Z')",
+      "INSERT INTO inbox_items (id, channel_id, message_ts, thread_ts, sender_user_id, trigger_type, snippet, permalink, status, priority, ai_reason, resolved_reason, snooze_until, item_class, card_status, why_matters, thread_digest, draft_reply, created_at, updated_at) VALUES (3, 'C001', '17000000003.000100', '', 'U002', 'mention', 'Hey, can you review this?', '', 'pending', 'medium', '', '', '', 'actionable', 'none', '', '', '', '2026-10-21T07:00:00Z', '2026-10-21T07:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 3,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "messages",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Messages",
+          "source_line": "Mentions, DMs and replies",
+          "preview": "3 waiting",
+          "stamp": "2026-10-21T09:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "messages",
+            "items": [
+              {
+                "ref_kind": "inbox_item",
+                "id": 1,
+                "title": "Hey, can you review this?",
+                "subtitle": "Message",
+                "preview": "",
+                "stamp": "2026-10-21T09:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              },
+              {
+                "ref_kind": "inbox_item",
+                "id": 2,
+                "title": "Hey, can you review this?",
+                "subtitle": "Message",
+                "preview": "",
+                "stamp": "2026-10-21T08:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              },
+              {
+                "ref_kind": "inbox_item",
+                "id": 3,
+                "title": "Hey, can you review this?",
+                "subtitle": "Message",
+                "preview": "",
+                "stamp": "2026-10-21T07:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true,
+    "steps": [
+      {
+        "name": "second_and_third_resolved",
+        "sql": [
+          "UPDATE inbox_items SET status = 'resolved' WHERE id IN (2, 3)"
+        ],
+        "when": "SELECT COUNT(*) = 2 FROM inbox_items WHERE id IN (2, 3) AND status = 'resolved'",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 1,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            }
+          ],
+          "cards": [
+            {
+              "id": "messages",
+              "folder_id": 1,
+              "card_kind": "legacy",
+              "title": "Messages",
+              "source_line": "Mentions, DMs and replies",
+              "preview": "1 waiting",
+              "stamp": "2026-10-21T09:00:00Z",
+              "living": false,
+              "unread": true,
+              "priority": "medium",
+              "pinned": false,
+              "blocks": "",
+              "body": "",
+              "body_clipped": false,
+              "link": "",
+              "content_hash": "",
+              "actions": [],
+              "ref_facts": [],
+              "legacy": {
+                "kind": "messages",
+                "items": [
+                  {
+                    "ref_kind": "inbox_item",
+                    "id": 1,
+                    "title": "Hey, can you review this?",
+                    "subtitle": "Message",
+                    "preview": "",
+                    "stamp": "2026-10-21T09:00:00Z",
+                    "end": "",
+                    "unread": true,
+                    "high": false,
+                    "stopped": false,
+                    "done": false,
+                    "date": ""
+                  }
+                ],
+                "attention": []
+              }
+            }
+          ]
+        }
+      },
+      {
+        "name": "first_resolved",
+        "sql": [
+          "UPDATE inbox_items SET status = 'resolved' WHERE id = 1"
+        ],
+        "when": "SELECT status = 'resolved' FROM inbox_items WHERE id = 1",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            }
+          ],
+          "cards": []
+        }
+      }
+    ]
+  },
+  {
+    "name": "desktop_kinds_selected_message_resolved",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO inbox_items (id, channel_id, message_ts, thread_ts, sender_user_id, trigger_type, snippet, permalink, status, priority, ai_reason, resolved_reason, snooze_until, item_class, card_status, why_matters, thread_digest, draft_reply, created_at, updated_at) VALUES (1, 'C001', '17000000001.000100', '', 'U002', 'mention', 'Hey, can you review this?', '', 'pending', 'medium', '', '', '', 'actionable', 'none', '', '', '', '2026-10-21T09:00:00Z', '2026-10-21T09:00:00Z')",
+      "INSERT INTO inbox_items (id, channel_id, message_ts, thread_ts, sender_user_id, trigger_type, snippet, permalink, status, priority, ai_reason, resolved_reason, snooze_until, item_class, card_status, why_matters, thread_digest, draft_reply, created_at, updated_at) VALUES (2, 'C001', '17000000002.000100', '', 'U002', 'mention', 'Hey, can you review this?', '', 'pending', 'medium', '', '', '', 'actionable', 'none', '', '', '', '2026-10-21T08:00:00Z', '2026-10-21T08:00:00Z')",
+      "INSERT INTO inbox_items (id, channel_id, message_ts, thread_ts, sender_user_id, trigger_type, snippet, permalink, status, priority, ai_reason, resolved_reason, snooze_until, item_class, card_status, why_matters, thread_digest, draft_reply, created_at, updated_at) VALUES (3, 'C001', '17000000003.000100', '', 'U002', 'mention', 'Hey, can you review this?', '', 'pending', 'medium', '', '', '', 'actionable', 'none', '', '', '', '2026-10-21T07:00:00Z', '2026-10-21T07:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 3,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "messages",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Messages",
+          "source_line": "Mentions, DMs and replies",
+          "preview": "3 waiting",
+          "stamp": "2026-10-21T09:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "messages",
+            "items": [
+              {
+                "ref_kind": "inbox_item",
+                "id": 1,
+                "title": "Hey, can you review this?",
+                "subtitle": "Message",
+                "preview": "",
+                "stamp": "2026-10-21T09:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              },
+              {
+                "ref_kind": "inbox_item",
+                "id": 2,
+                "title": "Hey, can you review this?",
+                "subtitle": "Message",
+                "preview": "",
+                "stamp": "2026-10-21T08:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              },
+              {
+                "ref_kind": "inbox_item",
+                "id": 3,
+                "title": "Hey, can you review this?",
+                "subtitle": "Message",
+                "preview": "",
+                "stamp": "2026-10-21T07:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true,
+    "steps": [
+      {
+        "name": "second_resolved",
+        "sql": [
+          "UPDATE inbox_items SET status = 'resolved' WHERE id = 2"
+        ],
+        "when": "SELECT status = 'resolved' FROM inbox_items WHERE id = 2",
+        "expect": {
+          "v": 1,
+          "built_at": "",
+          "folders": [
+            {
+              "id": 1,
+              "kind": "root",
+              "slug": "inbox",
+              "title": "Inbox",
+              "icon": "",
+              "position": 0,
+              "hidden": false,
+              "count": 2,
+              "waiting": 0
+            },
+            {
+              "id": 2,
+              "kind": "approvals",
+              "slug": "needs-approval",
+              "title": "Needs approval",
+              "icon": "",
+              "parent_id": 1,
+              "position": 0,
+              "hidden": false,
+              "count": 0,
+              "waiting": 0
+            }
+          ],
+          "cards": [
+            {
+              "id": "messages",
+              "folder_id": 1,
+              "card_kind": "legacy",
+              "title": "Messages",
+              "source_line": "Mentions, DMs and replies",
+              "preview": "2 waiting",
+              "stamp": "2026-10-21T09:00:00Z",
+              "living": false,
+              "unread": true,
+              "priority": "medium",
+              "pinned": false,
+              "blocks": "",
+              "body": "",
+              "body_clipped": false,
+              "link": "",
+              "content_hash": "",
+              "actions": [],
+              "ref_facts": [],
+              "legacy": {
+                "kind": "messages",
+                "items": [
+                  {
+                    "ref_kind": "inbox_item",
+                    "id": 1,
+                    "title": "Hey, can you review this?",
+                    "subtitle": "Message",
+                    "preview": "",
+                    "stamp": "2026-10-21T09:00:00Z",
+                    "end": "",
+                    "unread": true,
+                    "high": false,
+                    "stopped": false,
+                    "done": false,
+                    "date": ""
+                  },
+                  {
+                    "ref_kind": "inbox_item",
+                    "id": 3,
+                    "title": "Hey, can you review this?",
+                    "subtitle": "Message",
+                    "preview": "",
+                    "stamp": "2026-10-21T07:00:00Z",
+                    "end": "",
+                    "unread": true,
+                    "high": false,
+                    "stopped": false,
+                    "done": false,
+                    "date": ""
+                  }
+                ],
+                "attention": []
+              }
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "name": "desktop_kinds_stopped_track_and_merged_idea",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT INTO tracks (id, text, context, category, ownership, priority, tags, channel_ids, source_refs, has_updates, participants, requester_name, blocking, decision_summary, decision_options, sub_items, related_digest_ids, model, assignee_user_id, owner_user_id, requester_user_id, created_at, updated_at, dismissed_at) VALUES (1, 'Old vendor migration', 'Discussed in standup', 'task', 'mine', 'medium', '[]', '[\"C001\"]', '[]', 0, '[]', '', '', '', '[]', '[]', '[]', 'haiku', '', '', '', '2026-11-16T08:00:00Z', '2026-11-16T08:00:00Z', '2026-10-18T10:00:00Z')",
+      "INSERT INTO ideas (id, kind, title, essence, status, source, snooze_until, needs_review, review_reason, owner_rating, rating_comment, last_mention_at, created_at, updated_at, chat_born) VALUES (1, 'idea', 'Weekly digest', '', 'proposed', 'mined', '', 0, '', 0, '', '', '2026-11-10T09:00:00Z', '2026-11-10T09:00:00Z', 0)",
+      "INSERT INTO ideas (id, kind, title, essence, status, source, snooze_until, needs_review, review_reason, owner_rating, rating_comment, last_mention_at, created_at, updated_at, chat_born, merged_into_id) VALUES (2, 'idea', 'Friday email', '', 'merged', 'mined', '', 0, '', 0, '', '', '2026-11-10T09:00:00Z', '2026-11-10T09:00:00Z', 0, 1)"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "tracks",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Track my threads",
+          "source_line": "",
+          "preview": "",
+          "stamp": "2026-11-16T08:00:00Z",
+          "living": false,
+          "unread": false,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "tracks",
+            "items": [
+              {
+                "ref_kind": "track",
+                "id": 1,
+                "title": "Old vendor migration",
+                "subtitle": "Track",
+                "preview": "",
+                "stamp": "2026-11-16T08:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": true,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        },
+        {
+          "id": "ideas",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Idea finder",
+          "source_line": "",
+          "preview": "1 to judge",
+          "stamp": "2026-11-10T09:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "ideas",
+            "items": [
+              {
+                "ref_kind": "idea",
+                "id": 1,
+                "title": "Weekly digest",
+                "subtitle": "Idea · proposed",
+                "preview": "",
+                "stamp": "2026-11-10T09:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true
   }
 ]

@@ -15,16 +15,11 @@ final class ActionStripViewModelTests: XCTestCase {
     func testRefreshPopulatesActionAndReminderRows() async throws {
         let (pool, path) = try makePool()
         defer { TestDatabase.cleanup(path: path) }
-        try await pool.write { db in
-            try TestDatabase.insertAgentAction(db, conversationID: 1, turnID: "a", status: "pending")
-            try db.execute(sql: """
-                INSERT INTO reminders (message_ref, note, remind_at, status)
-                VALUES ('C1@1','call back','2000-01-01T00:00:00Z','pending')
-                """)
-        }
+        // A pending action (turn "a") and a due reminder.
+        let tower = try FeedCaseTransport.seeded("desktop_strip_action_and_reminder", pool: pool)
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
 
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
 
         XCTAssertEqual(vm.actionRows.map(\.turnID), ["a"])
         XCTAssertEqual(vm.reminderRows.map(\.messageRef), ["C1@1"])
@@ -32,19 +27,13 @@ final class ActionStripViewModelTests: XCTestCase {
     }
 
     func testMarkReminderDoneDropsItOnNextRefresh() async throws {
-        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
-
         let (pool, path) = try makePool()
         defer { TestDatabase.cleanup(path: path) }
-        let id = try await pool.write { db -> Int64 in
-            try db.execute(sql: """
-                INSERT INTO reminders (message_ref, note, remind_at, status)
-                VALUES ('C1@1','call back','2000-01-01T00:00:00Z','pending')
-                """)
-            return db.lastInsertedRowID
-        }
+        // One due reminder, id 1; Go's next feed once it is done.
+        let tower = try FeedCaseTransport.seeded("desktop_strip_reminder_done", pool: pool)
+        let id: Int64 = 1
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
         XCTAssertEqual(vm.reminderRows.map(\.id), [id])
 
         await vm.markReminderDone(id)
@@ -54,19 +43,13 @@ final class ActionStripViewModelTests: XCTestCase {
     }
 
     func testSnoozeReminderMovesItOutOfTheDueWindow() async throws {
-        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
-
         let (pool, path) = try makePool()
         defer { TestDatabase.cleanup(path: path) }
-        let id = try await pool.write { db -> Int64 in
-            try db.execute(sql: """
-                INSERT INTO reminders (message_ref, note, remind_at, status)
-                VALUES ('C1@1','call back','2000-01-01T00:00:00Z','pending')
-                """)
-            return db.lastInsertedRowID
-        }
+        // One due reminder, id 1; Go's next feed once it is snoozed to 2999.
+        let tower = try FeedCaseTransport.seeded("desktop_strip_reminder_snoozed", pool: pool)
+        let id: Int64 = 1
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
         XCTAssertEqual(vm.reminderRows.map(\.id), [id])
 
         await vm.snoozeReminder(id, until: "2999-01-01T00:00:00Z")
@@ -78,14 +61,14 @@ final class ActionStripViewModelTests: XCTestCase {
     /// The CLI writes on its OWN connection (`AgentActionFeedTests.testApproveRefreshesRowsAfterCLI`'s
     /// precedent) — a second pool stands in for it, since the fake runner never touches the DB.
     func testApproveDelegatesToTheComposedAgentActionFeed() async throws {
-        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
-
         let (pool, path) = try makePool()
         defer { TestDatabase.cleanup(path: path) }
-        let id = try await pool.write { db in try TestDatabase.insertAgentAction(db, conversationID: 1, status: "pending") }
+        // One pending action, id 1; Go's next feed once it is applied.
+        let tower = try FeedCaseTransport.seeded("desktop_strip_action_applied", pool: pool)
+        let id: Int64 = 1
         let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"applied_ok":true,"error":""}"#.utf8))
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
         XCTAssertEqual(vm.actionRows.map(\.status), ["pending"])
 
         let otherPool = try DatabasePool(path: path)
@@ -103,17 +86,14 @@ final class ActionStripViewModelTests: XCTestCase {
     /// the composed feed's CLI too (STRIP-03), and the dismissed row leaves
     /// the strip's waiting group on the re-read.
     func testDismissDelegatesToTheComposedAgentActionFeed() async throws {
-        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
-
         let (pool, path) = try makePool()
         defer { TestDatabase.cleanup(path: path) }
-        let id = try await pool.write { db in
-            try TestDatabase.insertAgentAction(db, tool: ConnectorCallProposal.tool, external: true, status: "failed",
-                                               error: ConnectorCallProposal.sessionEndedWhileRunning)
-        }
+        // A connector call that failed with an unknown outcome, id 1; Go's next feed once it is dismissed.
+        let tower = try FeedCaseTransport.seeded("desktop_strip_unknown_outcome_dismissed", pool: pool)
+        let id: Int64 = 1
         let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"error":""}"#.utf8))
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
         XCTAssertEqual(vm.actionRows.map(\.id), [id], "an undismissed unknown outcome waits on the strip")
 
         let otherPool = try DatabasePool(path: path)
@@ -136,11 +116,13 @@ final class ActionStripViewModelTests: XCTestCase {
     func testApproveClearsAPriorErrorOnSubsequentSuccess() async throws {
         let (pool, path) = try makePool()
         defer { TestDatabase.cleanup(path: path) }
-        let id = try await pool.write { db in try TestDatabase.insertAgentAction(db, conversationID: 1, status: "pending") }
+        // One pending action, id 1.
+        let tower = try FeedCaseTransport.seeded("desktop_strip_action_applied", pool: pool)
+        let id: Int64 = 1
         struct Boom: LocalizedError { var errorDescription: String? { "boom" } }
         let runner = FakeCLIRunner(error: Boom())
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
 
         await vm.approve(id, shownArgs: "{}")
         XCTAssertEqual(vm.actionFeed.rowErrors[id]?.message, "boom", "a failed CLI call must surface on the row's card")
@@ -170,7 +152,7 @@ final class ActionStripViewModelTests: XCTestCase {
         }
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
 
-        await vm.refreshListingEverything()
+        await vm.refresh()
 
         XCTAssertEqual(vm.lastReactionCheck, "2026-09-25T09:00:04Z")
         XCTAssertNil(vm.lastError)
@@ -181,7 +163,7 @@ final class ActionStripViewModelTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
 
-        await vm.refreshListingEverything()
+        await vm.refresh()
 
         XCTAssertNil(vm.lastReactionCheck)
     }
