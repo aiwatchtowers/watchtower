@@ -12,7 +12,9 @@ enum PlanLimitsNoTokenMockCopy {
     /// `unsupported_cli` for Claude: the installed Claude Code does not answer
     /// the usage request.
     static let cliOutdated = "Update Claude Code to read plan limits, then retry."
-    /// `no_credentials` for Claude: Claude Code is signed out, or signed in with
-    /// an API key (no plan limits apply).
+    /// `no_credentials` for Claude: Claude Code is signed out.
     static let notSignedIn = "Sign in to Claude Code with your Claude plan, then retry."
+    /// `unsupported_auth` for Claude: the child's environment carries an API
+    /// key or a cloud-provider switch, so plan limits do not apply.
+    static let apiKey = "Claude Code is using an API key here, so plan limits don't apply."
 }

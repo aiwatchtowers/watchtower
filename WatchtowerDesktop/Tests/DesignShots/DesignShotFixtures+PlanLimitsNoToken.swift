@@ -14,7 +14,7 @@ import SwiftUI
 @MainActor
 enum PlanLimitsNoTokenShotFixtures {
     enum Frame: String, CaseIterable {
-        case cliMissing, cliOutdated, notSignedIn, readFailed
+        case cliMissing, cliOutdated, notSignedIn, apiKey, readFailed
     }
 
     static let now = PlansShotFixtures.now
@@ -25,6 +25,7 @@ enum PlanLimitsNoTokenShotFixtures {
         case .cliMissing: "cli_missing"
         case .cliOutdated: "unsupported_cli"
         case .notSignedIn: "no_credentials"
+        case .apiKey: "unsupported_auth"
         case .readFailed: "network"
         }
     }
@@ -35,6 +36,7 @@ enum PlanLimitsNoTokenShotFixtures {
         case .cliMissing: PlanLimitsNoTokenMockCopy.cliMissing
         case .cliOutdated: PlanLimitsNoTokenMockCopy.cliOutdated
         case .notSignedIn: PlanLimitsNoTokenMockCopy.notSignedIn
+        case .apiKey: PlanLimitsNoTokenMockCopy.apiKey
         case .readFailed: nil
         }
     }
@@ -44,7 +46,8 @@ enum PlanLimitsNoTokenShotFixtures {
     static func claudeStatus(_ frame: Frame) -> PlanUsageStatus {
         let good = PlansShotFixtures.snapshot(.claude)
         let failed = frame == .readFailed
-        return PlanUsageStatus(state: failed ? "error" : "unavailable", reason: reason(frame), plan: good.plan,
+        return PlanUsageStatus(state: failed ? "error" : "unavailable", reason: reason(frame),
+                               plan: [.notSignedIn, .apiKey].contains(frame) ? "" : good.plan,
                                fetchedAt: good.fetchedAt.map { $0.addingTimeInterval(failed ? -1080 : 0) },
                                lastError: "", limits: good.limits, breakdown: good.breakdown, provider: .claude,
                                identityKnown: true, plot: good.plot, history: good.history,

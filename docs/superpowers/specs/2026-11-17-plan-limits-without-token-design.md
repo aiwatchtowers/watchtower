@@ -9,6 +9,8 @@ The Claude half of **Usage → Plans**, the menu-bar counters, Home's plan numbe
 
 After this change Watchtower asks the installed, unmodified `claude` command for its own usage numbers. Claude Code reads its credentials and calls its endpoint itself; Watchtower only sees the answer.
 
+**One visible feature can be lost.** The "Claude usage by surface" block (Claude Code / Chats / Cowork shares under Additional limits) comes from a field the `get_usage` answer passes through today but its schema does not describe. If a Claude Code release stops passing it, the block disappears until Claude Code exposes it again; everything else on the screen keeps working. The owner decides whether that is acceptable (A4; the group goal is «без потери функционала»).
+
 No production code changes with this spec. The mockups are design-only SwiftUI scenes in the DesignShots test target.
 
 ## Context (recon, 2026-11-17)
@@ -45,12 +47,15 @@ Checked against the installed Claude Code 2.1.326 (`claude --help`, the CLI's bu
 |---|---|---|
 | `bin` not found | `cli_missing` | `unavailable` |
 | `control_response` error with `error_code:"unsupported_request"` or text starting "Unsupported control request subtype", or the CLI rejects the flags (exits before answering with no `control_response`, exit code ≠ 0 and stdout empty) | `unsupported_cli` | `unavailable` |
-| `rate_limits_available:false` (signed out, API key, cloud provider, missing scope) | `no_credentials` | `unavailable` |
+| `rate_limits_available:false` and the child's environment has a nonempty `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX` or `CLAUDE_CODE_USE_FOUNDRY` | `unsupported_auth` | `unavailable` |
+| `rate_limits_available:false` otherwise (signed out, missing scope, an `apiKeyHelper` in settings) | `no_credentials` | `unavailable` |
 | `rate_limits_available:true`, `rate_limits:null` (Claude Code could not read its endpoint) | `network` | `error`, last numbers kept |
 | Any other `control_response` error, or exit after starting with output | `network` | `error`, last numbers kept |
 | Malformed JSON in the answer, no usable window | `parse` | `error`, last numbers kept |
 | 20 s budget spent | `timeout` | `error`, last numbers kept |
 | Caller cancelled | `cancelled` | nothing written |
+
+**API key in the environment (A5).** The child inherits the same environment as Watchtower's own Claude children, so when an API key or a cloud-provider switch is set there, Watchtower's AI calls bill that key and plan limits really do not apply to them. The reader does **not** strip these variables: a gauge that showed the subscription while Watchtower's calls bill an API key would be wrong, and changing which account Watchtower's AI calls use is out of scope. Instead the reader checks only whether those variable *names* are present and nonempty in the child environment it built (`os.LookupEnv`-style over the env slice; the value is never copied, stored, logged or compared) and reports the distinct `unsupported_auth` state: "Claude Code is using an API key here, so plan limits don't apply." An `apiKeyHelper` configured in Claude Code's settings is not detected (reading Claude Code's settings is out of bounds) and shows the sign-in state.
 
 ## 2. Mapping to limits
 
@@ -63,7 +68,7 @@ Only the schema-described fields are read. Keys and labels stay the ones stored 
 | `model_scoped[]` (`display_name`) | `weekly_scoped:<slug(display_name)>` | Weekly · <display_name> | weekly |
 | `seven_day_opus` / `seven_day_sonnet`, only when `model_scoped` is absent | `weekly_scoped:opus` / `weekly_scoped:sonnet` | Weekly · Opus / Sonnet | weekly |
 
-A window that is `null`, or has a `null` `utilization`, is absent (not 0 %). `utilization` is clamped to 0–100; `resets_at` (ISO 8601) is parsed as today's `parseReset`; a `null` reset means the window has not started. `subscription_type` becomes the stored `plan`. `seven_day_breakdown` (the surface rows) is not in the schema; it is read only when present, with the shape today's parser accepts, and the "Claude usage by surface" block hides when it is absent (A4). `seven_day_oauth_apps`, `extra_usage` and the other buckets are ignored, as today. `Severity` stays empty (nothing displays it).
+A window that is `null`, or has a `null` `utilization`, is absent (not 0 %). `utilization` is clamped to 0–100; `resets_at` (ISO 8601) is parsed as today's `parseReset`; a `null` reset means the window has not started. `subscription_type` becomes the stored `plan` on every answer, so a signed-out or API-key answer (`null`) clears the plan label rather than keeping the old one. `seven_day_breakdown` (the surface rows) is not in the schema; it is read only when present, with the shape today's parser accepts, and the "Claude usage by surface" block hides when it is absent (A4). `seven_day_oauth_apps`, `extra_usage` and the other buckets are ignored, as today. `Severity` stays empty (nothing displays it).
 
 The parser lives next to today's `parse` in `internal/planusage/parse.go` (`parseClaudeUsage(snapshot) (Usage, error)`); `rawResponse`'s `limits[]` path is deleted with the HTTP client.
 
@@ -71,7 +76,8 @@ The parser lives next to today's `parse` in `internal/planusage/parse.go` (`pars
 
 `planusage.Poller` becomes `{Store, Read func(context.Context) (claude.UsageSnapshot, error), Now, Logger}` — `Creds`, `Client`, `CredentialLoader`, `Fetcher`, `Credentials`, `CredentialSource`, `ErrNoCredentials`, `HTTPError`, `Client`, `NewClient`, `usageURL`, `redact` and `decodeCredentials` are deleted. `PollOnce` keeps its shape: read the previous status, call `Read`, on success store samples then status with the projection and plot (unchanged `storeUsage`), on failure store the state from §1's table.
 
-- `cli_missing`, `unsupported_cli`, `no_credentials`: no backoff (next poll in 5 min), failure count reset, as Codex does today.
+- `cli_missing`, `unsupported_cli`, `no_credentials`, `unsupported_auth`: no backoff (next poll in 5 min), failure count reset, as Codex does today.
+- **Log noise.** These four codes are *quiet steady states*: `Provider.Run` logs one of them only when the provider's code changes (from success, from another code, or between two quiet codes), not on every 5-minute poll; it remembers the last logged code per provider and forgets it on a success. `network`, `parse`, `timeout`, `storage` and every other code keep today's log line on every failed poll; `busy` and `feature_disabled` stay unlogged. The rule lives in `Provider.Run`, so Codex gets the same quieting. Test: `TestProviderRun_QuietStatesLogOncePerChange` (a scripted poll sequence `cli_missing ×3 → no_credentials ×2 → ok → no_credentials → network ×2` gives exactly the lines `cli_missing`, `no_credentials`, `no_credentials`, `network`, `network`; the scheduler's `After` is faked, no wall-clock wait).
 - `network`, `parse`, `timeout`: backoff 5 → 10 → 20 → 30 min, last good numbers kept, `last_error` holds the fixed code text only.
 - The `Provider.Poll` wrapper in `cmd/plan_usage_daemon.go` loses its `stale/token_expired` → `no_credentials` special case; `ErrorCode` gains `*claude.UsageError` and loses `ErrNoCredentials` / `HTTPError`.
 - Nothing new writes `stale` or `token_expired`. Readers keep accepting them (old rows, a downgrade): `safeStoredReason` still maps `token_expired` / `http_401` to `no_credentials`, and the Desktop still words them.
@@ -107,10 +113,12 @@ New PLANUSAGE-02 guard: `internal/planusage/poller_test.go::TestPlanUsage02_Chil
 | `cli_missing` | Install Claude Code, then retry. | Install Codex, then retry. |
 | `unsupported_cli` | Update Claude Code to read plan limits, then retry. | Update Codex to read subscription limits, then retry. |
 | `no_credentials` (also `token_expired`, `http_401` from old rows) | Sign in to Claude Code with your Claude plan, then retry. | Open Codex and sign in, then retry. |
+| `unsupported_auth` | Claude Code is using an API key here, so plan limits don't apply. | Sign in to Codex with a ChatGPT account, then retry. |
 | `network`, `parse`, `timeout`, … | unchanged | unchanged |
 
 - The same text reaches the card summary, the popup row and the empty state through the existing `PlansMenuPresentation` / `PlansPopupPresentation` paths; no view changes. Tones stay `PlanUsageTone` → `Tone` (`.warning` for a provider message), no new colour.
 - The legacy `PlanUsagePresentation.banner` keeps its `stale` text for old rows; nothing new reaches it.
+- The "Claude usage by surface" block keeps its existing rule (`PlansScreenPresentation.hasDetails`, the `details` view): shown when the stored `breakdown` has rows, hidden when it is empty. New tests pin both directions: `PlansScreenPresentationTests.testSurfaceBreakdownShowsWhenPresentAndHidesWhenAbsent` (Swift) and `TestParseClaudeUsage_BreakdownOptional` (Go: an answer with `seven_day_breakdown` stores the rows, one without stores `[]`).
 - No new screen, control or setting.
 
 ## 8. Storage and migration
@@ -135,7 +143,10 @@ Follow-up (proposed target, A7): **Codex plan limits without app-server, if need
 |---|---|---|
 | `claude` not installed | `unavailable/cli_missing`, Install Claude Code message, retried every 5 min | `TestReadUsage_CLIMissing`, `TestPollOnce_CLIMissingIsUnavailable` |
 | Older Claude Code without `get_usage` | `unavailable/unsupported_cli`, Update message | `TestReadUsage_UnsupportedRequest` (fake answers `error_code:"unsupported_request"`), `TestReadUsage_FlagsRejected` (fake exits 1 at once) |
-| Signed out, API key, cloud provider | `unavailable/no_credentials`, Sign in message; numbers hidden by the existing state gate | `TestReadUsage_RateLimitsUnavailable` |
+| Signed out | `unavailable/no_credentials`, Sign in message; numbers hidden by the existing state gate | `TestReadUsage_RateLimitsUnavailable` |
+| API key or cloud provider set in the environment | `unavailable/unsupported_auth`, "using an API key" message; the variable's value never read into storage, logs or errors | `TestReadUsage_APIKeyEnvIsUnsupportedAuth` (fake CLI answers `available:false`; env has the name with a marker value; the marker appears nowhere in the result, status row or log) |
+| Quiet steady states repeat every 5 min | logged once per change | `TestProviderRun_QuietStatesLogOncePerChange` |
+| Surface rows absent from the answer | block hidden; present → shown | `TestParseClaudeUsage_BreakdownOptional`, `testSurfaceBreakdownShowsWhenPresentAndHidesWhenAbsent` |
 | Claude Code cannot reach its endpoint | `error/network`, backoff, last numbers kept, forecast hidden by the 15 min gate | `TestReadUsage_RateLimitsNull`, `TestPollOnce_BackoffKeepsLastNumbers` (ported) |
 | Shape changed (the request is experimental) | `error/parse`, last numbers kept; absent windows are absent, never 0 % | `TestParseClaudeUsage_Malformed`, `TestParseClaudeUsage_NullWindowIsAbsent` |
 | CLI hangs / never answers | 20 s budget, `error/timeout`, group killed and reaped | `TestReadUsage_TimeoutReapsGroup` (synctest/fake clock, no wall-clock wait) |
@@ -167,13 +178,14 @@ The Changelog gets one entry naming the approving ask.
 
 ## 14. Mockups
 
-Design-only scenes in `DesignShotCatalog` (`PlanLimitsNoTokenShotFixtures`, `WatchtowerDesktop/Tests/DesignShots/DesignShotFixtures+PlanLimitsNoToken.swift`), built from the production `PlansProviderCard`, `PlansChartCard`, `PlansScreenPresentation` and `PlansPopupPresentation` on `PlansShotFixtures` snapshots. Only the Claude message comes from `PlanLimitsNoTokenMockCopy` (pinned by `PlanLimitsNoTokenMockCopyTests`, which also checks Codex's wording stays production's and that every frame has both shots). Rendered by `DesignShotsTests.testPlanLimitsNoTokenShotsRender`, light and dark, under `docs/design/mockups/plan-limits-no-token/`. The ok state is unchanged: see the production catalog `docs/design/shots/plans/`. In the three `unavailable` frames the Claude card and its chart card both carry the message (production behaviour for a provider without visible numbers); Codex is the production filled snapshot.
+Design-only scenes in `DesignShotCatalog` (`PlanLimitsNoTokenShotFixtures`, `WatchtowerDesktop/Tests/DesignShots/DesignShotFixtures+PlanLimitsNoToken.swift`), built from the production `PlansProviderCard`, `PlansChartCard`, `PlansScreenPresentation` and `PlansPopupPresentation` on `PlansShotFixtures` snapshots. Only the Claude message comes from `PlanLimitsNoTokenMockCopy` (pinned by `PlanLimitsNoTokenMockCopyTests`, which also checks Codex's wording stays production's and that every frame has both shots). Rendered by `DesignShotsTests.testPlanLimitsNoTokenShotsRender`, light and dark, under `docs/design/mockups/plan-limits-no-token/`. The PNGs live on branch `feature/1885-plan-limits-no-token` next to this spec; a checkout of another branch does not have the folder. The ok state is unchanged: see the production catalog `docs/design/shots/plans/`. In the four `unavailable` frames the Claude card and its chart card both carry the message (production behaviour for a provider without visible numbers); Codex is the production filled snapshot.
 
 | Screen shot | Menu shot | State |
 |---|---|---|
 | [`plan-limits-nt-cliMissing`](../../design/mockups/plan-limits-no-token/plan-limits-nt-cliMissing-light.png) | [`plan-limits-nt-menu-cliMissing`](../../design/mockups/plan-limits-no-token/plan-limits-nt-menu-cliMissing-light.png) | `claude` not installed |
 | [`plan-limits-nt-cliOutdated`](../../design/mockups/plan-limits-no-token/plan-limits-nt-cliOutdated-light.png) | [`plan-limits-nt-menu-cliOutdated`](../../design/mockups/plan-limits-no-token/plan-limits-nt-menu-cliOutdated-light.png) | Claude Code too old for `get_usage` |
-| [`plan-limits-nt-notSignedIn`](../../design/mockups/plan-limits-no-token/plan-limits-nt-notSignedIn-light.png) | [`plan-limits-nt-menu-notSignedIn`](../../design/mockups/plan-limits-no-token/plan-limits-nt-menu-notSignedIn-light.png) | signed out or API key: no plan limits |
+| [`plan-limits-nt-notSignedIn`](../../design/mockups/plan-limits-no-token/plan-limits-nt-notSignedIn-light.png) | [`plan-limits-nt-menu-notSignedIn`](../../design/mockups/plan-limits-no-token/plan-limits-nt-menu-notSignedIn-light.png) | signed out: no plan limits |
+| [`plan-limits-nt-apiKey`](../../design/mockups/plan-limits-no-token/plan-limits-nt-apiKey-light.png) | [`plan-limits-nt-menu-apiKey`](../../design/mockups/plan-limits-no-token/plan-limits-nt-menu-apiKey-light.png) | API key in the environment: plan limits don't apply |
 | [`plan-limits-nt-readFailed`](../../design/mockups/plan-limits-no-token/plan-limits-nt-readFailed-light.png) | [`plan-limits-nt-menu-readFailed`](../../design/mockups/plan-limits-no-token/plan-limits-nt-menu-readFailed-light.png) | the read failed: last numbers kept, production wording |
 
 ## 15. Docs updated with the implementation
@@ -193,6 +205,9 @@ Design-only scenes in `DesignShotCatalog` (`PlanLimitsNoTokenShotFixtures`, `Wat
 | Child output never stored | Poller + reader | `TestPlanUsage02_ChildOutputNeverPersisted` |
 | Ledger stays complete | `knownNonLLMExec` entry | `TestLLMUSAGE01_LeavesRecord` |
 | Per-provider wording | `PlansPresentation.errorText` | `PlansPresentationTests` (each code × provider) |
+| API key in the environment is its own state | reader env check | `TestReadUsage_APIKeyEnvIsUnsupportedAuth` |
+| Quiet states log once per change | `Provider.Run` | `TestProviderRun_QuietStatesLogOncePerChange` |
+| Surface block shows/hides with its data | parser + presentation | `TestParseClaudeUsage_BreakdownOptional`, `testSurfaceBreakdownShowsWhenPresentAndHidesWhenAbsent` |
 | Mockups match the spec | — | `PlanLimitsNoTokenMockCopyTests` |
 
 ## 17. Decisions
@@ -210,8 +225,9 @@ Design-only scenes in `DesignShotCatalog` (`PlanLimitsNoTokenShotFixtures`, `Wat
 - **A1. The source is Claude Code's `get_usage` control request, polled every 5 min whether or not Claude is running.** Recommendation: accept — it is the only source with every window, it is meant for a usage meter, and idle polling still catches claude.ai and other-device use. — решил агент
 - **A2. No second writer from `rate_limit_event`.** The gauge has one writer; passive events stay routing's evidence only. Recommendation: accept — simpler, and the event's per-window data is `@internal`. — решил агент
 - **A3. The usage child runs with `--setting-sources project --strict-mcp-config --no-session-persistence` in a neutral folder**, so the owner's hooks, MCP servers and transcripts are untouched by a read every 5 minutes. Recommendation: accept. — решил агент
-- **A4. Read only schema-described fields; the surface breakdown is shown only when the answer happens to carry it.** Recommendation: accept — the request is experimental, so leaning on undocumented fields would break first. — решил агент
-- **A5. One "not signed in with a plan" state** for signed out, API key and cloud-provider sign-ins (the answer does not tell them apart). Recommendation: accept. — решил агент
+- **A4. Read only schema-described fields; the surface breakdown is shown only when the answer happens to carry it.** This is a possible visible loss (Goal): today the answer carries the rows, so nothing changes on the first day, but a Claude Code release may drop them and the "Claude usage by surface" block then disappears. Alternatives: accept the possible loss (recommended — no compliant source for the rows exists besides this pass-through), or drop the block now so it never vanishes unannounced. Recommendation: accept the possible loss. — решил агент, **owner decision**
+- **A5. API key in the environment is its own state, not stripped.** When the child's environment carries `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` or a cloud-provider switch, the card says "Claude Code is using an API key here, so plan limits don't apply" (`unsupported_auth`) instead of "Sign in". Stripping was rejected: Watchtower's AI calls inherit the same environment and bill that key, so a gauge showing the subscription would misreport what those calls draw from, and changing their billing is out of scope. Only the variable names are checked. Recommendation: accept. — решил агент (review round 1, ask #1444)
+- **A8. The usage read is exempt from the background-AI consent (#1886).** The consent spec (`2026-11-17-background-ai-consent-design.md`, owner ask #1415 «Да, один раз в онбординге») gates *model calls* the daemon starts on its own. `get_usage` starts no model turn, records no `llm_calls` row and is `CostNone`, so it keeps running while background AI is paused. For transparency, the consent spec's list of background `claude` launches names it ("plan-limit read, every 5 min, no model call"). Recommendation: accept, and add that line to the consent spec. — решил агент, **owner decision**
 - **A6. PLANUSAGE-01/02 rewritten as in §13** (old guards deleted with their code, stronger new guards). Recommendation: approve — needed because the old contracts describe a token that no longer exists. — решил агент, **needs owner approval**
 - **A7. Codex app-server read unchanged now; follow-up target "Codex plan limits without app-server" with the rollout-file alternative, triggered by OpenAI's answer or a paid tier.** Recommendation: accept and file the target. — решил агент
 

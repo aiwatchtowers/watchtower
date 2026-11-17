@@ -11,10 +11,13 @@ final class PlanLimitsNoTokenMockCopyTests: XCTestCase {
         XCTAssertEqual(Copy.cliMissing, "Install Claude Code, then retry.")
         XCTAssertEqual(Copy.cliOutdated, "Update Claude Code to read plan limits, then retry.")
         XCTAssertEqual(Copy.notSignedIn, "Sign in to Claude Code with your Claude plan, then retry.")
-        for text in [Copy.cliMissing, Copy.cliOutdated, Copy.notSignedIn] {
+        XCTAssertEqual(Copy.apiKey, "Claude Code is using an API key here, so plan limits don't apply.")
+        XCTAssertNotEqual(Copy.apiKey, Copy.notSignedIn, "an API key is not a sign-in problem")
+        for text in [Copy.cliMissing, Copy.cliOutdated, Copy.notSignedIn, Copy.apiKey] {
             XCTAssertTrue(text.contains("Claude Code"))
             XCTAssertFalse(text.localizedCaseInsensitiveContains("keychain"), "the copy never mentions credentials")
             XCTAssertFalse(text.localizedCaseInsensitiveContains("token"), "the copy never mentions credentials")
+            XCTAssertFalse(text.contains("ANTHROPIC_"), "the copy never names or quotes environment values")
         }
     }
 
