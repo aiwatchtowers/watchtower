@@ -53,8 +53,12 @@ public struct ChatFeedContext {
     public var rowActions: ChatRowActions
     /// What the app draws under a message (the Mac's "Approve all" and action review); nil draws nothing.
     public var messageAccessory: ((ChatFeed.Message) -> AnyView?)?
+    /// What the app draws over a message (a subagent run's "Task" and "Report" headings); nil draws nothing.
+    public var messageHeader: ((ChatFeed.Message) -> AnyView?)?
     /// What the app draws after the last message (the Mac's cards of an interrupted turn).
     public var footer: AnyView?
+    /// What the app draws before the first message (the tuning chat's figures line); nil draws nothing.
+    public var header: AnyView?
     /// A message to scroll to once it is loaded (a search hit); nil follows the newest message.
     public var focusMessageID: Int64?
     /// The line under a message, after its actions (the Mac's embedded chats: "model · time"; Workchat: the time and
@@ -201,7 +205,13 @@ public struct ChatFeedRows: View {
         if context.hasEarlier {
             SystemRow(kind: .earlier(onLoad: context.rowActions.loadEarlier))
         }
+        if let header = context.header {
+            header
+        }
         ForEach(rows) { row in
+            if case let .message(message, _) = row, let heading = context.messageHeader?(message) {
+                heading
+            }
             rowView(row).id(row.id)
             if case let .message(message, _) = row, let accessory = context.messageAccessory?(message) {
                 accessory
@@ -245,20 +255,10 @@ public struct ChatFeedRows: View {
             message: message,
             provider: context.provider,
             artifacts: context.artifacts,
-            isAnswerable: isAnswerable(message.id),
-            answerText: ownerReply(after: message.id),
+            isAnswerable: ChatFeedLayout.isAnswerable(message.id, in: messages, isTurnRunning: context.isTurnRunning),
+            answerText: ChatFeedLayout.ownerReply(after: message.id, in: messages),
             actions: context.partActions
         )
-    }
-
-    private func isAnswerable(_ id: Int64) -> Bool {
-        guard !context.isTurnRunning, messages.last(where: { $0.role == "assistant" })?.id == id else { return false }
-        return ownerReply(after: id) == nil
-    }
-
-    private func ownerReply(after id: Int64) -> String? {
-        guard let index = messages.firstIndex(where: { $0.id == id }) else { return nil }
-        return messages[(index + 1)...].first { $0.role == "user" }?.text
     }
 
     private static let placeholder = ChatFeed.Message(id: 0, role: "assistant", text: "", createdAt: .distantPast)

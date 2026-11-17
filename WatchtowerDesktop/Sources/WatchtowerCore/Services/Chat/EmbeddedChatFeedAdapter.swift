@@ -6,7 +6,8 @@ import WatchtowerChatText
 /// (`EmbeddedChatEngine`, `ai query --events v2`) and only their drawing moves onto ChatUI. The adapter builds no
 /// parts: it maps the text, status, steps, sources, attachments and error field by field and leaves `parts` nil, so
 /// `ChatFeed.Message.resolvedParts` builds them from those fields and ChatUI derives the artifacts and the question card
-/// from the text with the shared parsers (D14, D22).
+/// from the text with the shared parsers (D14, D22). The branch position is left out: an embedded chat shows its
+/// active path and has no branch switcher.
 package enum EmbeddedChatFeedAdapter {
     /// `rows` in order; the row `live` streams into shows the live turn's text and steps, `pending` while it runs.
     @MainActor
@@ -34,7 +35,6 @@ package enum EmbeddedChatFeedAdapter {
             errorCode: record.errorCode,
             errorMessage: record.errorMessage,
             createdAt: record.createdDate,
-            siblings: ChatFeed.Siblings(index: item.siblingIndex, count: item.siblingCount),
             attachments: item.attachments.map { ChatFeed.Attachment(id: $0.id, name: $0.name, mime: $0.mime, size: $0.size) },
             steps: steps.map(step)
         )

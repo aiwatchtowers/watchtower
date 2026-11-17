@@ -1,4 +1,5 @@
 import AppKit
+import ChatUI
 import DesignKit
 import SwiftUI
 import WatchtowerCore
@@ -151,8 +152,11 @@ private struct RuntimeProviderChatShot: View {
                                         text: "The draft was saved before the limit was reached.", createdAt: 0,
                                         status: "partial", provider: pair.preferred.id, errorCode: "quota_exhausted")
         let item = ChatThreadItem(message: message, steps: [], siblingIndex: 1, siblingCount: 1)
-        return ChatMessageRow(item: item, isLast: true, isEditing: false,
-                              actions: ChatRowActions(regenerate: nil, retry: nil, reviewActions: { _ in }, continueStopped: nil))
+        var rowActions = ChatRowActions()
+        rowActions.allowsRegenerate = false
+        var partActions = ChatPartActions()
+        partActions.reviewActions = { _ in }
+        return ChatUIShotRow.row(item, rowActions: rowActions, partActions: partActions)
     }
 }
 

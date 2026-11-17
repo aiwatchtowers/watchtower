@@ -1,12 +1,56 @@
-import SwiftUI
-import WatchtowerCore
-import WatchtowerChatText
 import ChatUI
+import ChatWire
+import SwiftUI
+import WatchtowerChatText
+import WatchtowerCore
 
-/// One message of the session chat, shared by the pane and the subagent
-/// view. `Equatable` on its data only + `.equatable()` at the call site (the
-/// `ChatMessageRow` pattern): an unchanged row never re-renders its markdown.
-/// The closures are rebuilt per render and stay out of `==`.
+/// Workchat's feed on ChatUI (unified chat spec §9.2), shared by the pane and the subagent view: the owner's lines and
+/// the agent's text are ChatUI's rows (`WorkchatFeedAdapter`), with their time and "via Watchtower" as the caption;
+/// the `system` lines — Watchtower's own, the brief, notices, separators and subagent cards — are `SessionChatRow`.
+@MainActor
+struct WorkchatFeed {
+    let entries: [SessionFeedEntry]
+    let markdown: SessionFeedMarkdownCache
+    let expandedEvents: Set<String>
+    let onOpenSubagent: (SessionFeedSubagent) -> Void
+    let onToggle: (String) -> Void
+
+    var messages: [ChatFeed.Message] { WorkchatFeedAdapter.messages(entries) }
+
+    /// The entry behind each message id.
+    var entriesByMessage: [Int64: SessionFeedEntry] {
+        Dictionary(entries.map { (WorkchatFeedAdapter.messageID($0.id), $0) }) { _, last in last }
+    }
+
+    func context() -> ChatFeedContext {
+        let byID = entriesByMessage
+        var rowActions = ChatRowActions()
+        rowActions.copy = { text in
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+        }
+        rowActions.allowsEdit = false
+        rowActions.allowsRegenerate = false
+        var context = ChatFeedContext(rowActions: rowActions)
+        context.compact = true
+        context.caption = { message in byID[message.id].flatMap(WorkchatFeedAdapter.caption) }
+        let (markdown, expanded, open, toggle) = (markdown, expandedEvents, onOpenSubagent, onToggle)
+        context.systemRow = { message in
+            guard let entry = byID[message.id] else { return AnyView(EmptyView()) }
+            return AnyView(
+                SessionChatRow(entry: entry, blocks: markdown.blocks(for: entry), expanded: expanded.contains(entry.id),
+                               onOpenSubagent: { entry.subagent.map(open) }, onToggle: { toggle(entry.id) })
+                    .equatable()
+            )
+        }
+        return context
+    }
+}
+
+/// A `system` line of the session chat (Watchtower's own line, the brief, a
+/// notice, a separator, a subagent card). `Equatable` on its data only +
+/// `.equatable()` at the call site: an unchanged row never re-renders its
+/// markdown. The closures are rebuilt per render and stay out of `==`.
 struct SessionChatRow: View, Equatable {
     let entry: SessionFeedEntry
     /// The parsed text, from the pane's `SessionFeedMarkdownCache`.
@@ -28,20 +72,8 @@ struct SessionChatRow: View, Equatable {
 
     var body: some View {
         switch entry.kind {
-        case "owner":
-            ownerBubble(label: nil, title: nil, caption: nil)
-        case "ask_answer":
-            ownerBubble(label: entry.askID.map { "Ask #\($0)" } ?? "Ask", title: entry.title, caption: "via Watchtower")
         case "watchtower":
-            ownerBubble(label: nil, title: nil, caption: "via Watchtower")
-        case "agent":
-            HStack {
-                VStack(alignment: .leading, spacing: Spacing.tight) {
-                    markdown
-                    timeCaption
-                }
-                Spacer(minLength: 48)
-            }
+            watchtowerBubble
         case "brief":
             DisclosureGroup {
                 markdown.padding(.top, Spacing.small)
@@ -95,36 +127,23 @@ struct SessionChatRow: View, Equatable {
         .frame(maxWidth: .infinity)
     }
 
-    private func ownerBubble(label: String?, title: String?, caption: String?) -> some View {
+    /// A line Watchtower wrote to the agent for the owner: on the owner's side, marked "via Watchtower".
+    private var watchtowerBubble: some View {
         HStack {
             Spacer(minLength: 48)
             VStack(alignment: .trailing, spacing: Spacing.tight) {
-                VStack(alignment: .leading, spacing: Spacing.small) {
-                    if let label {
-                        Text(label).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    }
-                    if let title, !title.isEmpty {
-                        Text(title).font(.callout.weight(.semibold))
-                    }
-                    markdown
-                }
-                .padding(.horizontal, Spacing.cozy)
-                .padding(.vertical, Spacing.compact)
-                .background(Color.accentColor.opacity(ChipTint.fillOpacity), in: RoundedRectangle(cornerRadius: Radius.container, style: .continuous))
+                markdown
+                    .padding(.horizontal, Spacing.cozy)
+                    .padding(.vertical, Spacing.compact)
+                    .background(Color.accentColor.opacity(ChipTint.fillOpacity),
+                                in: RoundedRectangle(cornerRadius: Radius.container, style: .continuous))
                 HStack(spacing: Spacing.compact) {
-                    if let caption { Text(caption) }
+                    Text("via Watchtower")
                     if let at = entry.at { Text(at, format: .dateTime.hour().minute()) }
                 }
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
             }
-        }
-    }
-
-    @ViewBuilder
-    private var timeCaption: some View {
-        if let at = entry.at {
-            Text(at, format: .dateTime.hour().minute()).font(.caption2).foregroundStyle(.tertiary)
         }
     }
 

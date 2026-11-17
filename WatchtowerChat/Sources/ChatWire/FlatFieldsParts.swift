@@ -46,7 +46,7 @@ extension ChatFeed.Message {
     private var sourcesPart: ChatPart? {
         var seen = Set<String>()
         var list: [ChatFeed.Source] = []
-        for source in steps.flatMap(\.sources) where source.kind != "published" {
+        for source in steps.flatMap(\.sources) where source.kind != Self.publishedKind {
             if seen.insert([source.kind, source.ref, source.url ?? ""].joined(separator: "\u{0}")).inserted {
                 list.append(source)
             }

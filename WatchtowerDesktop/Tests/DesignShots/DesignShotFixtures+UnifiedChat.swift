@@ -127,7 +127,7 @@ enum UnifiedChatShotFixtures {
         ], lease: ChatFeed.Lease(owner: "hub", turnID: "hub-turn"), reachability: .connected, draft: "")
     }
 
-    // MARK: - Baselines of today's real views
+    // MARK: - The embedded surfaces on ChatUI (T12; same names as the T0 baselines)
 
     private static let targetRows: [(String, String)] = [
         ("user", "What is blocking the login redirect fix?"),
@@ -202,6 +202,30 @@ enum UnifiedChatShotFixtures {
         } catch {
             return DesignShotFixtures.failure(error)
         }
+    }
+}
+
+/// One stored row drawn by ChatUI's row, as the embedded chats draw it (the Mac's kit style, no artifact hooks).
+@MainActor
+enum ChatUIShotRow {
+    static func row(
+        _ item: ChatThreadItem,
+        rowActions: ChatRowActions = ChatRowActions(),
+        partActions: ChatPartActions = ChatPartActions()
+    ) -> some View {
+        message(EmbeddedChatFeedAdapter.messages(rows: [item], live: nil)[0], rowActions: rowActions,
+                partActions: partActions)
+    }
+
+    static func message(
+        _ message: ChatFeed.Message,
+        rowActions: ChatRowActions = ChatRowActions(),
+        partActions: ChatPartActions = ChatPartActions()
+    ) -> some View {
+        ChatUI.ChatMessageRow(message: message, parts: ChatMessageParts.parts(for: message),
+                              context: ChatPartContext(message: message, actions: partActions), rowActions: rowActions,
+                              isTurnRunning: message.status == EmbeddedChatFeedAdapter.pendingStatus)
+            .macChatStyle(hooks: ChatMacArtifactHooks())
     }
 }
 

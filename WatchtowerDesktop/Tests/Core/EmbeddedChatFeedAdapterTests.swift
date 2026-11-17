@@ -8,8 +8,12 @@ import XCTest
 @MainActor
 final class EmbeddedChatFeedAdapterTests: XCTestCase {
     private func record(
-        _ id: Int64, role: String, text: String, status: String = "complete",
-        errorCode: String? = nil, errorMessage: String? = nil
+        _ id: Int64,
+        role: String,
+        text: String,
+        status: String = "complete",
+        errorCode: String? = nil,
+        errorMessage: String? = nil
     ) -> ChatMessageRecord {
         ChatMessageRecord(id: id, conversationID: 7, role: role, text: text, createdAt: 1_700_000_000 + Double(id),
                           turnID: "t\(id)", status: status, model: "opus", errorCode: errorCode, errorMessage: errorMessage)
@@ -47,8 +51,7 @@ final class EmbeddedChatFeedAdapterTests: XCTestCase {
         XCTAssertEqual(messages.map(\.status), ["complete", "complete", "error"])
         XCTAssertEqual(messages[0].createdAt, Date(timeIntervalSince1970: 1_700_000_001))
         XCTAssertEqual(messages[0].attachments, [ChatFeed.Attachment(id: 9, name: "plan.pdf", mime: "application/pdf", size: 2048)])
-        XCTAssertEqual(messages[1].siblings.index, 2)
-        XCTAssertEqual(messages[1].siblings.count, 3)
+        XCTAssertEqual(messages[1].siblings.count, 1, "no branch switcher in an embedded chat")
         XCTAssertEqual(messages[1].steps, [ChatFeed.Step(
             name: "search_messages", outcome: .succeeded, summary: "Found 3 messages",
             sources: [ChatFeed.Source(kind: "slack", title: "#payments", url: "https://example.com/p1", ref: "C1")]

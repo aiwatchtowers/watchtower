@@ -103,3 +103,8 @@ private struct ArtifactTable: View {
         }
     }
 }
+
+extension ArtifactViewer {
+    /// The SF Symbol of an artifact kind, as its card in the feed shows it (the Mac's artifact panel header too).
+    public static func icon(for kind: String) -> String { ArtifactPartView.icon(for: kind) }
+}

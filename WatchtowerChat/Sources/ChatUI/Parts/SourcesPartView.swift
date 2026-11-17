@@ -66,3 +66,8 @@ extension ChatSource {
                   snippet: source.snippet, date: source.date)
     }
 }
+
+extension ChatSource {
+    /// The SF Symbol of a source kind, as the sources pill shows it (the Mac's sources panel too).
+    public static func icon(forKind kind: String) -> String { SourcesPartView.icon(kind) }
+}

@@ -1,3 +1,4 @@
+import ChatWire
 import XCTest
 import SwiftUI
 import ViewInspector
@@ -64,9 +65,45 @@ final class SessionChatViewTests: XCTestCase {
         XCTAssertFalse(SessionChatRow.lineBreaks(forKind: "event"))
     }
 
+    /// The agent's text is ChatUI's answer row (unified chat T12): its Markdown is the finished answer's text run.
     func testAgentRowRendersMarkdownBlocks() throws {
         let entry = SessionFeedEntry(id: "a2", kind: "agent", text: "# Title\n\nPlain words")
-        let row = SessionChatRow(entry: entry, blocks: MarkdownDocument.parse(entry.text))
-        XCTAssertNoThrow(try row.inspect().find(MarkdownBlocksView.self))
+        let message = try XCTUnwrap(WorkchatFeedAdapter.messages([entry]).first)
+        let row = ChatUI.ChatMessageRow(message: message, parts: ChatMessageParts.parts(for: message),
+                                        context: ChatPartContext(message: message), rowActions: ChatRowActions(),
+                                        isTurnRunning: false)
+        XCTAssertNoThrow(try row.inspect().find(NativeMarkdownView.self))
+    }
+
+    /// Workchat's `system` lines are the Mac's own rows: Watchtower's line on the owner's side marked "via
+    /// Watchtower", a subagent card that opens the run, a notice that unfolds; the owner's line is ChatUI's with its
+    /// time and the ask it answered as the caption.
+    func testWorkchatFeedDrawsSystemLinesAndCaptions() throws {
+        let at = Date(timeIntervalSince1970: 1_700_000_000)
+        let subagent = SessionFeedSubagent(toolUseID: "tu1", type: "Explore", description: "Map the repo", status: "running")
+        let entries = [
+            SessionFeedEntry(id: "w", kind: "watchtower", at: at, text: "Rebase on main"),
+            SessionFeedEntry(id: "s", kind: "subagent", subagent: subagent),
+            SessionFeedEntry(id: "e", kind: "event", text: "Body", title: "Task finished", eventType: "task"),
+            SessionFeedEntry(id: "a", kind: "ask_answer", at: at, text: "Yes", askID: 12, title: "Ship it?")
+        ]
+        var opened: [String] = []
+        var toggled: [String] = []
+        let feed = WorkchatFeed(entries: entries, markdown: SessionFeedMarkdownCache(), expandedEvents: [],
+                                onOpenSubagent: { opened.append($0.toolUseID) }, onToggle: { toggled.append($0) })
+        let context = feed.context()
+        let messages = feed.messages
+        let systemRow = try XCTUnwrap(context.systemRow)
+
+        XCTAssertNoThrow(try systemRow(messages[0]).inspect().find(text: "via Watchtower"))
+        XCTAssertNoThrow(try systemRow(messages[0]).inspect().find(text: "Rebase on main"))
+        try systemRow(messages[1]).inspect().find(ViewType.Button.self).tap()
+        XCTAssertEqual(opened, ["tu1"])
+        try systemRow(messages[2]).inspect().find(ViewType.Button.self).tap()
+        XCTAssertEqual(toggled, ["e"])
+        XCTAssertEqual(messages[3].role, "user")
+        XCTAssertEqual(context.caption?(messages[3]), WorkchatFeedAdapter.caption(entries[3]))
+        XCTAssertFalse(context.rowActions.allowsEdit)
+        XCTAssertFalse(context.rowActions.allowsRegenerate)
     }
 }

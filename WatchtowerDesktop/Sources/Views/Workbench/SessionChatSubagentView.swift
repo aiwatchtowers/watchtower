@@ -1,3 +1,5 @@
+import ChatUI
+import ChatWire
 import SwiftUI
 import WatchtowerCore
 
@@ -92,32 +94,32 @@ struct SessionChatSubagentView: View {
             Text("Nothing recorded for this subagent").foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: Spacing.cozy) {
-                    if let error {
-                        Text(error).font(.caption).foregroundStyle(.orange)
-                    }
-                    ForEach(Array(entries.enumerated()), id: \.element.id) { index, item in
-                        if let heading = heading(index) {
-                            Text(heading).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                        }
-                        SessionChatRow(entry: item, blocks: markdown.blocks(for: item),
-                                       expanded: expandedEvents.contains(item.id),
-                                       onOpenSubagent: { item.subagent.map(onOpenSubagent) },
-                                       onToggle: { toggleEvent(item.id) })
-                            .equatable()
-                    }
-                }
-                .padding(Spacing.medium)
+            run
+        }
+    }
+
+    /// The run on ChatUI's feed (`WorkchatFeed`): "Task" over the task given, "Report" over the report, a read error
+    /// over the entries still shown.
+    private var run: some View {
+        let feed = WorkchatFeed(entries: entries, markdown: markdown, expandedEvents: expandedEvents,
+                                onOpenSubagent: onOpenSubagent, onToggle: toggleEvent)
+        let byID = feed.entriesByMessage
+        var context = feed.context()
+        context.follow = ChatFeedFollow(conversationID: nil)
+        context.header = error.map { error in AnyView(Text(error).font(.caption).foregroundStyle(Tone.warning)) }
+        context.messageHeader = { message in
+            byID[message.id].flatMap(heading).map { title in
+                AnyView(Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary))
             }
         }
+        return ChatUI.ChatFeedView(messages: feed.messages, context: context)
+            .macChatStyle(hooks: .app)
     }
 
     /// The first owner line is the task given; the last agent line of a run
     /// with more than one is its report.
-    private func heading(_ index: Int) -> String? {
-        let item = entries[index]
-        if index == 0, item.kind == "owner" { return "Task" }
+    private func heading(_ item: SessionFeedEntry) -> String? {
+        if item.kind == "owner", entries.first?.id == item.id { return "Task" }
         let agents = entries.filter { $0.kind == "agent" }
         if agents.count > 1, item.id == agents.last?.id { return "Report" }
         return nil

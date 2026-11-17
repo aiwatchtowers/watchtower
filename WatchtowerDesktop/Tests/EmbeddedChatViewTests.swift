@@ -1,6 +1,7 @@
 import XCTest
 import SwiftUI
 import ViewInspector
+import ChatUI
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerTestSupport
@@ -123,6 +124,60 @@ final class EmbeddedChatViewTests: XCTestCase {
         XCTAssertTrue(done)
         XCTAssertNoThrow(try EmbeddedChatRows(engine: engine).inspect().find(text: "Couldn't read the action"),
                          "a postTurn failure shows under its message")
+    }
+
+    /// An engine over stored rows (the memory store), as a reopened chat shows them.
+    private func engine(rows: [(String, String)], finalizeLast status: String? = nil) async throws -> EmbeddedChatEngine {
+        let store = MemoryEmbeddedChatStore()
+        for (role, text) in rows { _ = try await store.append(role: role, text: text) }
+        if let status {
+            let ids = try await store.beginTurn(ownerText: nil, turnID: "t", provider: nil)
+            try await store.finalize(messageID: ids.assistantID, text: "Half an answer", status: status, errorCode: nil,
+                                     errorMessage: nil)
+        }
+        let spec = ChatSurfaceSpec(
+            key: EmbeddedChatKey(contextType: "test", contextID: UUID().uuidString, conversationID: nil),
+            persistence: .memory, toolAccess: .draftOnly, ownerInstructions: false, systemPrompt: { "S" }, emptyHint: "")
+        return EmbeddedChatEngine(spec: spec, store: store, aiService: ai, gate: gate)
+    }
+
+    /// The rows are ChatUI's (unified chat T12): an artifact block and a question block in a stored reply become the
+    /// shared artifact card and question card, and answering the card is an ordinary owner turn.
+    func testEmbeddedArtifactsAndQuestionsComeFromSharedParser() async throws {
+        let reply = """
+        Here is the plan.
+        :::artifact key="plan" kind="document" title="Rollout plan"
+        # Plan
+        :::
+        ```watchtower-question
+        {"questions":[{"id":"q","question":"Ship it?","options":[{"label":"Yes"},{"label":"No"}]}]}
+        ```
+        """
+        let engine = try await engine(rows: [("user", "Plan the rollout"), ("assistant", reply)])
+        let rows = try EmbeddedChatRows(engine: engine).inspect()
+        XCTAssertNoThrow(try rows.find(text: "Rollout plan"), "the artifact card")
+        XCTAssertNoThrow(try rows.find(QuestionPartView.self), "the question card")
+        XCTAssertThrowsError(try rows.find(text: "Ship it?\n- Yes\n- No"), "the block is not shown as text")
+
+        XCTAssertTrue(try rows.find(button: QuestionPartView.sendLabel).isDisabled(), "answerable, nothing picked yet")
+
+        let feed = EmbeddedChatFeed(engine: engine, density: .compact, accessory: { _ in EmptyView() }, openArtifact: { _ in })
+        feed.context(follows: false).partActions.sendFixedText("Ship it?\n- Yes")
+        await engine.finished()
+        XCTAssertEqual(ai.calls.count, 1, "the answers are the owner's next turn")
+        XCTAssertTrue(engine.isStreaming)
+    }
+
+    /// Copy only: an embedded chat's rows offer no Edit or Regenerate, and a stored reply that ended part-way says
+    /// Stopped with no Continue.
+    func testEmbeddedRowsOfferCopyOnlyAndAStoppedReplyHasNoContinue() async throws {
+        let engine = try await engine(rows: [("user", "Hi"), ("assistant", "Hello")], finalizeLast: "partial")
+        let rows = try EmbeddedChatRows(engine: engine).inspect()
+        XCTAssertFalse(try rows.findAll(ViewType.Button.self) { (try? $0.labelView().text().string()) == "Copy" }.isEmpty)
+        XCTAssertThrowsError(try rows.find(button: "Regenerate"))
+        XCTAssertThrowsError(try rows.find(button: "Edit"))
+        XCTAssertNoThrow(try rows.find(text: "Stopped"))
+        XCTAssertThrowsError(try rows.find(button: "Continue"))
     }
 
     func testComposerShowsAnErrorStatus() throws {

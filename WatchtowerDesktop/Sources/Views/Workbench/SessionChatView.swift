@@ -1,3 +1,5 @@
+import ChatUI
+import ChatWire
 import SwiftUI
 import WatchtowerCore
 import WatchtowerChatText
@@ -25,10 +27,8 @@ struct SessionChatView: View {
     @State private var markdown = SessionFeedMarkdownCache()
     @State private var window = SessionFeedWindow()
     @State private var expandedEvents: Set<String> = []
-    @State private var follow = ChatFollowTrackerBox()
-    @State private var loadingRowVisible = false
-    private static var bottomID: String { "session-chat-bottom" }
-    private static var scrollSpace: String { "session-chat-scroll" }
+    /// The entry that was at the top before "Load earlier messages": the feed keeps it in view.
+    @State private var earlierAnchor: Int64?
 
     init(
         vm: WorkbenchesViewModel,
@@ -312,132 +312,57 @@ struct SessionChatView: View {
         }
     }
 
-    /// The newest `window` of entries; the owner scrolling to the top grows
-    /// it, and following the bottom works as in AI Chat (`ChatFollowTracker`).
+    /// The newest `window` of entries on ChatUI's feed (`WorkchatFeed`); "Load earlier messages" grows it, and the
+    /// feed follows the bottom as in AI Chat. The lines on their way, the permission card and the open asks follow
+    /// the entries.
     private var feed: some View {
-        ScrollViewReader { proxy in
-            GeometryReader { viewport in
-                ScrollView {
-                    LazyVStack(spacing: Spacing.cozy) {
-                        if window.hasEarlier(total: store.entries.count) {
-                            loadingRow
-                                .onAppear {
-                                    loadingRowVisible = true
-                                    if !loadEarlier(proxy: proxy) { fillIfShort(follow.tracker.lastMetrics) }
-                                }
-                                .onDisappear { loadingRowVisible = false }
-                        }
-                        ForEach(store.entries[window.range(total: store.entries.count)]) { entry in
-                            row(entry).id(entry.id)
-                        }
-                        if let workchat {
-                            ForEach(workchat.outgoing) { line in
-                                WorkchatOutgoingBubble(
-                                    line: line,
-                                    working: working,
-                                    holdsUntilIdle: workchat.holdsUntilIdle,
-                                    onCancel: { workchat.cancel(line.id) },
-                                    onShowTerminal: showInTerminal
-                                )
-                                .id(line.id)
-                            }
-                            if let permission {
-                                WorkchatPermissionCard(model: workchat, prompt: permission, onShowTerminal: showInTerminal)
-                                    .id("permission-\(permission.id)")
-                            }
-                        }
-                        ForEach(openAsks) { ask in
-                            WorkchatAskCard(ask: ask) { vm.asks.openDrawer(ask) }
-                                .id("ask-\(ask.id)")
-                        }
-                        // The bottom margin: scrolling to it lands at the
-                        // content's true bottom (the `ChatFeedView` rule).
-                        Color.clear.frame(height: 14).id(Self.bottomID)
-                    }
-                    .padding([.top, .horizontal], Spacing.medium)
-                    .background(
-                        GeometryReader { geo in
-                            Color.clear.preference(key: ChatContentFramePreferenceKey.self,
-                                                   value: geo.frame(in: .named(Self.scrollSpace)))
-                        }
-                    )
-                }
-                .coordinateSpace(name: Self.scrollSpace)
-                .defaultScrollAnchor(.bottom)
-                .onPreferenceChange(ChatContentFramePreferenceKey.self) { frame in
-                    guard let frame else { return }
-                    measure(.init(contentTop: frame.minY, contentHeight: frame.height,
-                                  viewportHeight: viewport.size.height), proxy: proxy)
-                }
-                // A height-only resize leaves the content frame unchanged in
-                // the scroll space (the `ChatFeedView` rule).
-                .onChange(of: viewport.size.height) { _, height in
-                    guard let last = follow.tracker.lastMetrics else { return }
-                    measure(.init(contentTop: last.contentTop, contentHeight: last.contentHeight,
-                                  viewportHeight: height), proxy: proxy)
-                }
+        let total = store.entries.count
+        let shown = Array(store.entries[window.range(total: total)])
+        let workchatFeed = WorkchatFeed(entries: shown, markdown: markdown, expandedEvents: expandedEvents,
+                                        onOpenSubagent: { path.push($0) }, onToggle: toggleEvent)
+        var context = workchatFeed.context()
+        context.hasEarlier = window.hasEarlier(total: total)
+        context.rowActions.loadEarlier = loadEarlier
+        context.focusMessageID = earlierAnchor
+        context.follow = ChatFeedFollow(conversationID: sessionID)
+        context.footer = AnyView(pending)
+        return ChatUI.ChatFeedView(messages: workchatFeed.messages, context: context)
+            .macChatStyle(hooks: .app)
+    }
+
+    /// After the entries: the lines on their way, the permission card and this session's open asks.
+    @ViewBuilder private var pending: some View {
+        if let workchat {
+            ForEach(workchat.outgoing) { line in
+                WorkchatOutgoingBubble(
+                    line: line,
+                    working: working,
+                    holdsUntilIdle: workchat.holdsUntilIdle,
+                    onCancel: { workchat.cancel(line.id) },
+                    onShowTerminal: showInTerminal
+                )
+                .id(line.id)
+            }
+            if let permission {
+                WorkchatPermissionCard(model: workchat, prompt: permission, onShowTerminal: showInTerminal)
+                    .id("permission-\(permission.id)")
             }
         }
-    }
-
-    private func row(_ entry: SessionFeedEntry) -> some View {
-        SessionChatRow(entry: entry, blocks: markdown.blocks(for: entry),
-                       expanded: expandedEvents.contains(entry.id),
-                       onOpenSubagent: { entry.subagent.map { path.push($0) } },
-                       onToggle: { toggleEvent(entry.id) })
-            .equatable()
-    }
-
-    private var loadingRow: some View {
-        HStack(spacing: Spacing.compact) {
-            ProgressView().controlSize(.mini)
-            Text("Loading earlier messages…")
+        ForEach(openAsks) { ask in
+            WorkchatAskCard(ask: ask) { vm.asks.openDrawer(ask) }
+                .id("ask-\(ask.id)")
         }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .frame(maxWidth: .infinity)
     }
 
     private func toggleEvent(_ id: String) {
         if expandedEvents.contains(id) { expandedEvents.remove(id) } else { expandedEvents.insert(id) }
     }
 
-    /// Grows the window by one step and keeps the entry that was at the top
-    /// on screen. Only while the owner reads older text: a following view
-    /// stays at the bottom (the loading row can lay out at open).
-    /// Returns whether the window grew.
-    @discardableResult
-    private func loadEarlier(proxy: ScrollViewProxy) -> Bool {
-        guard !window.following, let anchor = window.grow(entries: store.entries) else { return false }
-        // After the grown rows lay out.
-        DispatchQueue.main.async { proxy.scrollTo(anchor, anchor: .top) }
-        return true
-    }
-
-    /// Feeds one content measurement to the tracker, mirrors its follow bit
-    /// into the window, and pulls a following view down when content grew.
-    private func measure(_ current: ChatAutoScrollPolicy.Metrics, proxy: ScrollViewProxy) {
-        guard current.viewportHeight > 0 else { return }
-        let pull = follow.tracker.observeMeasurement(current)
-        let following = follow.tracker.following
-        if following != window.following {
-            window.setFollowing(following, total: store.entries.count)
-            // The loading row appeared before this scroll registered.
-            if !following && loadingRowVisible { loadEarlier(proxy: proxy) }
-        }
-        if pull { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
-        fillIfShort(current)
-    }
-
-    /// Content shorter than the viewport keeps the loading row on screen, so
-    /// its `onAppear` never fires again: grow from the measure path instead.
-    /// Nothing scrolls, so no anchor is kept.
-    private func fillIfShort(_ metrics: ChatAutoScrollPolicy.Metrics?) {
-        guard let metrics,
-              window.needsFill(total: store.entries.count, contentHeight: Double(metrics.contentHeight),
-                               viewportHeight: Double(metrics.viewportHeight))
-        else { return }
-        _ = window.grow(entries: store.entries)
+    /// Grows the window by one step and keeps the entry that was at the top on screen; the window stops following
+    /// the newest entries, so what the owner reads stays put.
+    private func loadEarlier() {
+        window.setFollowing(false, total: store.entries.count)
+        earlierAnchor = window.grow(entries: store.entries).map(WorkchatFeedAdapter.messageID)
     }
 
     @ViewBuilder

@@ -100,6 +100,41 @@ final class ChatPartsTests: XCTestCase {
         XCTAssertEqual(cut.resolvedParts[1].fallback.text, "Something went wrong while answering.\nThe session ended.")
     }
 
+    /// A published claude.ai page is a `published_link` card (Go `publishedLinkParts`), never a source: each permitted
+    /// URL once, before the error; any other URL is no card.
+    func testFlatFieldsBuildPublishedLinksAsGoDoes() throws {
+        func page(_ url: String, _ title: String = "Plan") -> ChatFeed.Source {
+            ChatFeed.Source(kind: "claude_ai_published", title: title, url: url)
+        }
+        let steps = [
+            ChatFeed.Step(name: "Artifact", outcome: .succeeded, summary: "Published", sources: [
+                page("https://claude.ai/public/artifacts/abc"), page("https://claude.ai/public/artifacts/abc", "Again"),
+                page("https://example.com/x"), page("http://claude.ai/artifact/abc"), page("https://claude.ai/"),
+                page("https://user@claude.ai/p"), page("https://claude.ai:8443/p"), page("https://claude.ai/p2", "  ") // leak-check:allow (a URL with credentials, refused)
+            ]),
+            ChatFeed.Step(name: "search_messages", outcome: .succeeded, summary: "1 result", sources: [
+                ChatFeed.Source(kind: "slack", title: "#payments", url: "https://example.com/p1", ref: "C1")
+            ])
+        ]
+        let message = ChatFeed.Message(id: 1, role: "assistant", text: "Done", status: "error", errorCode: "auth",
+                                       createdAt: .distantPast, steps: steps)
+
+        XCTAssertEqual(message.resolvedParts.map(\.kind), [
+            ChatPartKind.text, ChatPartKind.steps, ChatPartKind.sources, ChatPartKind.publishedLink,
+            ChatPartKind.publishedLink, ChatPartKind.error
+        ])
+        let links = message.resolvedParts.filter { $0.kind == ChatPartKind.publishedLink }
+        XCTAssertEqual(links.map(\.payload), [
+            .object(["title": .string("Plan"), "url": .string("https://claude.ai/public/artifacts/abc")]),
+            .object(["title": .string("https://claude.ai/p2"), "url": .string("https://claude.ai/p2")])
+        ])
+        XCTAssertEqual(links[0].fallback.text, "Published on claude.ai: Plan")
+        XCTAssertEqual(links[0].fallback.actions,
+                       [ChatPartFallback.Action(label: "Open", action: "open_url", url: "https://claude.ai/public/artifacts/abc")])
+        XCTAssertEqual(message.resolvedParts[2].fallback.text, "Sources:\n- #payments (https://example.com/p1)",
+                       "a published page is not a source")
+    }
+
     /// The Kit's `chat_feed.json`, its `parts` removed when asked (a Mac one version behind).
     private func feedFixture(strippingParts: Bool) throws -> ChatFeed {
         var data = try Data(contentsOf: ChatWireFixtures.kitFixture("workbench/chat_feed.json"))

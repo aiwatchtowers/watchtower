@@ -65,7 +65,7 @@ struct ArtifactPanelView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Image(systemName: ArtifactCardView.icon(for: model.displayed?.kind ?? "document"))
+            Image(systemName: ArtifactViewer.icon(for: model.displayed?.kind ?? "document"))
             Text(model.displayed?.title ?? model.key)
                 .font(.headline)
                 .lineLimit(1)
