@@ -63,14 +63,19 @@ func unknown(resp api.Response) api.Response {
 	return resp
 }
 
+// FaultSentence is the refusal sentence of a fault when Options.Sentence is
+// nil: a fixed sentence, so an error's own text (paths, SQL) never reaches a
+// client.
+const FaultSentence = "Watchtower couldn't do that. Try again."
+
 // fail answers a refusal as is and any other error as unsupported, worded by
-// Options.Sentence (default: the error's text).
+// Options.Sentence (default: FaultSentence).
 func (t *Tower) fail(resp api.Response, command string, err error) api.Response {
 	var r *RefusalError
 	if errors.As(err, &r) {
 		return refused(resp, r.Code, r.Sentence)
 	}
-	sentence := err.Error()
+	sentence := FaultSentence
 	if t.opts.Sentence != nil {
 		sentence = t.opts.Sentence(command, err)
 	}

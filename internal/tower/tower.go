@@ -50,7 +50,8 @@ type Options struct {
 	// peer as the Desktop, so the owner gestures are refused over the socket.
 	VerifyDesktop func(ctx context.Context, pid int) error
 	// Sentence words a handler's fault (not a refusal) for the refusal shown
-	// to the owner; nil means the error's text.
+	// to the owner; nil means a fixed sentence (FaultSentence), never the
+	// error's own text.
 	Sentence func(command string, err error) string
 }
 
