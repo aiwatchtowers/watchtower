@@ -25,26 +25,26 @@ No production code changes with this spec. The mockups are design-only SwiftUI s
 |---|---|---|
 | D1 | One consent screen. A fresh install answers it as onboarding's last step; an existing install answers it once, in a sheet, after the upgrade. | ask #1415 |
 | D2 | Background AI = model calls started by a timer, a sync cycle or an event, in any process: the daemon's AI phases, the history backfill's AI pass, automation runs triggered by `schedule`, `catch_up`, `event` or `sync` (and every process they start), and the spec-review sweep's relaunches. Everything the owner starts with a gesture (a click, a typed command or message, Run now, an Inbox button, a reply) is never gated. | решил агент |
-| D3 | A Slack reaction from the owner's dictionary is a gesture: reaction commands run while background AI is paused. Automations that *listen* to reactions (`slack.reaction_added` event recipes) are automations and wait. | pending ask #1445 (agent proposal) |
-| D4 | An automation run is held only when its manifest grants AI (`llm:*`, `agent:run`, `session:start`, or a `builtin:` primitive that calls a model). A recipe that only runs `shell()`, `mcp()` or registry reads keeps running, and so do the mechanical built-ins (Waiting for me, Needs approval). | pending ask #1445 (agent proposal) |
-| D5 | Until an existing install answers, background AI is **paused** (not kept running). Sync keeps running. The sheet appears at the first launch after the upgrade, so the gap is normally minutes. | pending ask #1445 (agent proposal) |
+| D3 | A Slack reaction from the owner's dictionary is a gesture: reaction commands run while background AI is paused. Automations that *listen* to reactions (`slack.reaction_added` event recipes) are automations and wait. | pending ask #1452 (agent proposal) |
+| D4 | An automation run is held only when its manifest grants AI (`llm:*`, `agent:run`, `session:start`, or a `builtin:` primitive that calls a model). A recipe that only runs `shell()`, `mcp()` or registry reads keeps running, and so do the mechanical built-ins (Waiting for me, Needs approval). | pending ask #1452 (agent proposal) |
+| D5 | Until an existing install answers, background AI is **paused** (not kept running). Sync keeps running. The sheet appears at the first launch after the upgrade, so the gap is normally minutes. | pending ask #1452 (agent proposal) |
 | D6 | The answer is stored in `config.yaml` as `ai.background_runs: allowed \| paused` (absent = not answered). It is per Mac user, not per workspace. Its only writer is `watchtower ai background allow\|pause`. No consent date is stored. | решил агент |
-| D7 | MDM key `AllowBackgroundAI` (boolean). `true` = the organization consents for an owner who has not answered (no prompt); the owner can still pause. `false` = forbidden: paused, the switch locked, `allow` refused. Wrong type = `false` (POLICY-01). | pending ask #1445 (agent proposal) |
+| D7 | MDM key `AllowBackgroundAI` (boolean). `true` = the organization consents for an owner who has not answered (no prompt); the owner can still pause. `false` = forbidden: paused, the switch locked, `allow` refused. Wrong type = `false` (POLICY-01). | pending ask #1452 (agent proposal) |
 | D8 | The onboarding step comes last (Goals · Connect · Background AI), after the agent is picked and before the daemon starts. It is skipped when the answer is already decided (answered, or decided by policy), so a re-run never asks again. | решил агент |
 | D9 | Every path that turns background AI on goes through the one consent screen (the Settings switch, the Home card, the empty-state button all open it). Pausing is one click with no confirmation. | решил агент |
-| D10 | **Not now** is an answer (`paused`). Watchtower never asks again by itself; Home, the empty states and Automations offer **Allow background AI…**. | pending ask #1445 (agent proposal) |
+| D10 | **Not now** is an answer (`paused`). Watchtower never asks again by itself; Home, the empty states and Automations offer **Allow background AI…**. | pending ask #1452 (agent proposal) |
 | D11 | Allowing again resumes like a daemon that was stopped: no fast-forward, the pipelines process what accumulated within their existing windows. Automations never catch up a paused window. | решил агент |
-| D12 | Pausing stops every background **unit** that has not started yet (a cycle's AI phase, an automation run, a backfill chunk, a reviewer relaunch). A unit already started when the owner pauses finishes within its existing budget; nothing is killed and nothing is left half-done. The history backfill holds (no fetch, rows untouched). | решил агент |
+| D12 | Pausing stops every background **unit** that has not started yet (a cycle's AI phase, an automation run, a backfill chunk, a reviewer relaunch). A unit already started when the owner pauses finishes within its existing budget; nothing is killed and nothing is left half-done. The history backfill holds (no fetch, rows untouched). | pending ask #1452 (agent proposal) |
 | D13 | One switch for every provider, Ollama included; the screen names the configured agent. | решил агент |
 | D14 | `watchtower ai background allow` shows the consent text and asks y/N on a terminal; `--yes` skips the question (the Desktop passes it after its own screen). Non-interactive without `--yes` is refused. | решил агент |
-| D15 | Readiness gets one new state, `backgroundAIPaused(managed:)`, placed after `needsDigests` and before `daemonStopped`. Home folds every AI feature card into one "Background AI is paused" card. | решил агент |
+| D15 | Readiness gets one new state, `backgroundAIPaused(managed:)`, placed after `needsDigests` and before `daemonStopped`. Home shows one "Background AI is paused" card above the feed, outside the hideable Getting ready zone, which leaves out the paused features' cards. | решил агент |
 | D16 | No telemetry: the answer and the pause are local only; a log line in `watchtower.log` is the only trace. | решил агент |
-| D17 | The plan-limit read (the plan-usage poller) is exempt: it is no AI run. Today it reads the plan's limits; with #1885 it launches the `claude` CLI with `get_usage` every 5 minutes. That starts no model turn, writes no `llm_calls` row and spends no usage. It keeps running while background AI is paused. Same exemption as #1885's A8. | pending asks #1443 and #1448 (agent proposal) |
-| D18 | The gate is not tied to the daemon: every model call carries an **origin** (`owner` or `background`), and the leaf wrappers in every Watchtower process refuse a `background` call without consent. The daemon, the processes it or a background automation run starts, and the spec-review sweep's relaunch are `background`; everything else defaults to `owner` (§4.3). | решил агент |
-| D19 | The phone gets one line on Home while the Mac's background AI is paused or forbidden, from a new optional `background_ai` key in the hub heartbeat. The phone cannot allow it; the line says to allow it on the Mac. | решил агент |
-| D20 | A spec review's first reviewer launch, made when the agent in the owner's own session files the ask, is part of that session (owner origin). The daemon sweep's relaunch of a queued review is background and waits while paused; the row stays queued and no attempt is spent. | решил агент |
+| D17 | The plan-limit read (the plan-usage poller) is exempt: it is no AI run. Today it reads the plan's limits; with #1885 it launches the `claude` CLI with `get_usage` every 5 minutes. That starts no model turn, writes no `llm_calls` row and spends no usage. It keeps running while background AI is paused. Same exemption as #1885's A8. | pending ask #1452 (agent proposal) |
+| D18 | The gate is not tied to the daemon: every model call carries an **origin** (`owner` or `background`), and the leaf wrappers in every Watchtower process refuse a `background` call without consent. The daemon, the processes it or a background automation run starts, and the spec-review sweep's relaunch are `background`; everything else defaults to `owner` (§4.3). | pending ask #1452 (agent proposal) |
+| D19 | The phone gets one line on Home while the Mac's background AI is paused or forbidden, from a new optional `background_ai` key in the hub heartbeat. The phone cannot allow it; the line says to allow it on the Mac. | pending ask #1452 (agent proposal) |
+| D20 | A spec review's first reviewer launch, made when the agent in the owner's own session files the ask, is part of that session (owner origin). The daemon sweep's relaunch of a queued review is background and waits while paused; the row stays queued and no attempt is spent. | pending ask #1452 (agent proposal) |
 
-D3, D4, D5, D7 and D10 are pending in owner ask #1445, D17 in asks #1443 and #1448 (#1885's A8). The remaining agent decisions are listed in §14.
+D3, D4, D5, D7, D10, D12 and D17–D20 are pending in owner ask #1452 (it replaced ask #1445). The remaining agent decisions are listed in §14.
 
 ## 1. Context (recon, 2026-11-17)
 
@@ -83,7 +83,7 @@ D3, D4, D5, D7 and D10 are pending in owner ask #1445, D17 in asks #1443 and #14
 
 ### 2.2 Never gated
 
-- **Sync and the mechanical phases:** the mechanical built-ins Waiting for me (`builtin:attention.waiting`) and Needs approval (`builtin:approvals.list`), account purge, every source sync, the reaction poll, the automation event flush (it only queues; the bus drops AI recipes while paused, §4.2), agent analytics, unsnooze, approval sweep, transcript audio cleanup, the knowledge index (mechanical, KB-02), the messages search rebuild, the Inbox (mechanical, attention detection), the spec-review sweep's repairs (failing dead or overdue reviews, the author-loop and question sweeps; only its relaunch is gated), the LLM ledger import. The plan-limit read is exempt by decision D17 (pending asks #1443 and #1448).
+- **Sync and the mechanical phases:** the mechanical built-ins Waiting for me (`builtin:attention.waiting`) and Needs approval (`builtin:approvals.list`), account purge, every source sync, the reaction poll, the automation event flush (it only queues; the bus drops AI recipes while paused, §4.2), agent analytics, unsnooze, approval sweep, transcript audio cleanup, the knowledge index (mechanical, KB-02), the messages search rebuild, the Inbox (mechanical, attention detection), the spec-review sweep's repairs (failing dead or overdue reviews, the author-loop and question sweeps; only its relaunch is gated), the LLM ledger import. The plan-limit read is exempt by decision D17 (pending ask #1452).
 - **Owner gestures:** every chat (main, embedded, target, tuning, spec-review Discuss, Reviewer), Catch-Up, the workbench terminals and sessions the owner starts or answers, every CLI command typed by the owner (`watchtower sync`, `digest generate`, `briefing generate`, `coach run`, …, including when the Desktop runs it for a button), automation runs triggered by `manual`, `button`, `dry_run` or `reply`, reaction commands (D3), dictation clean-up, meeting notes and recaps after a recording the owner made (on the Mac or the phone), chat and terminal titles of the owner's own sessions, the first reviewer launch of a spec review filed from the owner's session (D20), meeting prep opened by the owner, and the Go hub's work for the phone (phone chats and recordings are the owner's gestures).
 - **A session an automation starts** (`session()`) is held with its run: the run itself never starts while paused.
 
@@ -102,7 +102,7 @@ The gate must not depend on which process makes the call (D18). Recon of every n
   - the daemon's AI phases (through the generator leaves): gated;
   - `agent()` children of background automation runs: gated;
   - the reviewer process of a sweep relaunch, which starts the reviewer agent: gated (D20);
-  - **the plan-limit read** (`claude` with `get_usage` every 5 minutes after #1885; no model turn, no `llm_calls` row): **exempt**, D17, pending asks #1443 and #1448;
+  - **the plan-limit read** (`claude` with `get_usage` every 5 minutes after #1885; no model turn, no `llm_calls` row): **exempt**, D17, pending ask #1452;
   - the Codex rate-limit read through `codex app-server` (`account/rateLimits/read`, no model turn): exempt on the same grounds, under the same decision.
 
 So today every background start is the daemon or something the daemon started. The origin model of §4.3 still puts the check in the leaf of every process, so a future timer outside the daemon only has to declare its origin, and the guard tests of §12 make that mandatory for the daemon's own spawns.
@@ -140,7 +140,7 @@ Shared fixture: `internal/aiconsent/testdata/consent_cases.json`, run by `TestBG
 
 ### 4.1 The daemon cycle
 
-`runSync` reads `aiconsent.Current()` once when the pipeline section starts and passes the decision to one helper, `d.aiPhase(name, fn)`, that wraps every phase marked "phase gate" in §2.1 (the slot phases gate per built-in, §4.2). Paused → the phase returns before any nil check, lock, `pipeline_runs` row or `automation_runs` row (the FEAT-01 position), and the daemon logs one line per state change:
+One helper, `d.aiPhase(name, fn)`, wraps every phase marked "phase gate" in §2.1 (the slot phases gate per built-in in `RunSlot`, §4.2, which reads the state the same way). It reads `aiconsent.Current()` **before each phase**. That is cheap: a `stat` of `config.yaml` per read, a re-parse only when its mtime changed, and the policy's 30 s cache. A pause written mid-cycle therefore lets the running phase finish (D12) and skips the next AI phase. The parallel group (Track my threads and People cards) reads once, when the group starts. Paused → the phase returns before any nil check, lock, `pipeline_runs` row or `automation_runs` row (the FEAT-01 position), and the daemon logs one line per state change:
 
 `background AI: paused (not answered yet) — sync keeps running; allow it in Watchtower or with "watchtower ai background allow"` (reason `owner`: "paused by you"; `organization`: "turned off by your organization").
 
@@ -252,14 +252,14 @@ New `Readiness` case `backgroundAIPaused(managed: Bool)` for the AI features onl
 
 ### 6.3 Home
 
-While paused, `GettingReadyPolicy` replaces the cards of every feature in `backgroundAIPaused` with one card (and keeps the zone open while any is waiting):
+While background AI is paused or forbidden, Home shows **one card at the top of the feed column, outside `GettingReadyPolicy`'s hideable Getting ready zone**, drawn by `HomeContent` from `AppState.backgroundAI` (not a Getting ready card). **Hide** on the Getting ready zone therefore never removes it (D10). The Getting ready zone leaves out the cards of features in `backgroundAIPaused`, because the one card speaks for them, and the zone keeps its other cards and its Hide as today.
 
 | Mockup | Title | Body | Action |
 |---|---|---|---|
 | `ai-consent-home-paused` | "Background AI is paused" | "Digests, briefings, tracks, people cards, memory and automations wait. Slack, mail, calendar and Jira keep syncing." | "Allow background AI…" |
 | `ai-consent-home-org` | "Background AI is off" + Managed badge | "Your organization turned it off. Chats, Catch-Up and anything you start yourself still work." | none |
 
-**Re-entry after Not now (D10).** The Home card stays on Home for as long as background AI is paused by the owner or not answered. It is drawn above the feed and is not part of the hideable Getting ready zone, so **Hide** does not remove it. Settings → AI keeps the switch, every AI empty state keeps its line and button, the Automations tab keeps its notice, and the phone keeps its line (§6.5). Each of these opens the one consent screen. That is enough to come back without being nagged: no sheet, notification or alert appears again by itself.
+**Re-entry after Not now (D10).** The Home card stays for as long as background AI is paused by the owner or not answered (above). Settings → AI keeps the switch, every AI empty state keeps its line and button, the Automations tab keeps its notice, and the phone keeps its line (§6.5). Each of these opens the one consent screen. That is enough to come back without being nagged: no sheet, notification or alert appears again by itself.
 
 ### 6.4 Automations
 
@@ -274,7 +274,7 @@ No tray or notification change: the sheet is the one prompt.
 
 ### 6.5 Phone
 
-The phone's Home and feeds show what the Mac produced, so while paused they go stale and look broken. The hub heartbeat (`HeartbeatPayload`, `internal/hub/slices/heartbeat.go`) gains one optional, additive key, `background_ai`: `allowed`, `paused` (owner or not answered) or `organization`. It is absent from an older hub, and the phone then shows nothing. The hub reads `aiconsent.Current()` when it writes the heartbeat (every 900 s and on publish), so the line follows within one heartbeat.
+The phone's Home and feeds show what the Mac produced, so while paused they go stale and look broken. The hub heartbeat gains one optional, additive key, `background_ai`. It is defined in the wire type `wire.Heartbeat` (`internal/hub/wire/payloads.go`, pinned by `internal/hub/wire/contract_test.go`) and its Kit twin `HeartbeatPayload`, and written by `internal/hub/slices/heartbeat.go`. Its values are `allowed`, `paused` (owner or not answered) or `organization`. It is absent from an older hub, and the phone then shows nothing. The hub reads `aiconsent.Current()` when it writes the heartbeat (every 900 s and on publish), so the line follows within one heartbeat.
 
 | Mockup | Line (phone Home, above the feed) |
 |---|---|
@@ -348,7 +348,7 @@ Nothing new in the database; no migration.
 **Go**
 
 - `internal/aiconsent`: `TestBGAI03_SharedFixture` (the table of §3.2), `TestCurrent_UnreadableConfigIsPaused`, `TestCurrent_RereadsOnlyOnMtimeChange`, `TestCheck_NoopOutsideTheDaemon`, `TestCheck_OwnerStartedPasses`.
-- `internal/daemon` (cycle): `TestBGAI01_PausedCycleMakesNoModelCall` — every feature on, Slack/mail/Jira fakes with data, a counting generator, consent paused: zero model calls, no AI `pipeline_runs` or `automation_runs` rows, every sync phase ran, the backfill row untouched; then allowed: the same cycle calls the model. `TestBGAI01_PauseMidCycleSkipsWithoutErrorRow`. `TestDaemon_ReactionCommandsRunWhilePaused` (D3).
+- `internal/daemon` (cycle): `TestBGAI01_PauseMidCycleFinishesPhaseSkipsNext` (a fake phase writes `paused` mid-way: that phase's calls all run, the next AI phase writes no `pipeline_runs` row and makes no call, the sync phases of the next cycle still run), `TestBGAI01_PausedCycleMakesNoModelCall` — every feature on, Slack/mail/Jira fakes with data, a counting generator, consent paused: zero model calls, no AI `pipeline_runs` or `automation_runs` rows, every sync phase ran, the backfill row untouched; then allowed: the same cycle calls the model. `TestBGAI01_PauseMidCycleSkipsWithoutErrorRow`. `TestDaemon_ReactionCommandsRunWhilePaused` (D3).
 - `internal/automations/builtin`: `TestBuiltin_EveryPrimitiveDeclaresAI`, `TestRunner_PausedSkipsAIBuiltinWritesNothing`, `TestRunner_MechanicalBuiltinRunsWhilePaused` (Waiting for me, Needs approval).
 - `internal/automations`: `TestScheduler_PausedAdvancesWithoutRun`, `TestScheduler_AllowAfterPauseDoesNotCatchUp`, `TestScheduler_NonAIRecipeRunsWhilePaused` (D4), `TestBus_PausedSkipsAIRecipes`, `TestExecutor_PausedCancelsBackgroundAIRun`, `TestBGAI02_ManualRunWhilePaused` (and `button`, `dry_run`, `reply`).
 - `internal/aiconsent`: `TestOrigin_ContextBeatsProcess`, `TestOrigin_EnvMarksBackground`, `TestOrigin_AutomationMarkerTakesRunTrigger` (a `manual` run's marker → owner, a `schedule` run's → background), `TestCheck_AdmittedBackgroundPasses`.
@@ -360,11 +360,11 @@ Nothing new in the database; no migration.
 
 - `BackgroundAIConsentTests.sharedFixture` (the Go fixture), `BackgroundAIConsentCopyTests` (the strings above, agent and reserve variants, poll and backfill numbers), `BackgroundAIConsentModelTests` (allow/pause call the CLI with the right args, error and saving states, the sheet's close only after success).
 - `FeatureReadinessTests`: `testBackgroundAIPausedOnlyForAIFeatures`, `testContentWinsOverPaused`, `testPausedBeforeDaemonStopped`, `testManagedPausedHasNoButton`.
-- `GettingReadyPolicyTests.testPausedFoldsAIFeatureCardsIntoOne`.
+- `GettingReadyPolicyTests.testPausedLeavesAIFeatureCardsOut`; `HomeContentTests.testPausedCardSurvivesHidingGettingReady`.
 - `OnboardingStateMachineV2Tests`: `testConsentStepSkippedWhenDecided`, `testParkedOnConnectResumesThroughConsent`, `testUnknownRawValueStillStartsAtGoals`.
 - `BackgroundAIConsentPromptTests.testShownOnceUntilAnsweredAfterOnboarding`.
 - `ConfigServiceTests.testSaveKeepsBackgroundRunsKey`.
-- Kit: `HeartbeatPayloadTests.testBackgroundAIKeyIsOptional` (absent and unknown → nil), `BackgroundAIConsentCopyTests` for the phone lines; Go `internal/hub/slices`: `TestHeartbeat_CarriesBackgroundAI`.
+- Kit: `HeartbeatPayloadTests.testBackgroundAIKeyIsOptional` (absent and unknown → nil), `BackgroundAIConsentCopyTests` for the phone lines; Go `internal/hub/wire/contract_test.go` gains the key (optional, omitted when empty), and `internal/hub/slices`: `TestHeartbeat_CarriesBackgroundAI`.
 - Mockups: `DesignShotsTests.testBackgroundAIConsentShotsRender`; the implementation adds live-view shots of the real step, sheet and Settings section beside the mockups (the `onboarding-step-live-*` pattern).
 
 ## 13. Contracts touched (for owner approval)
@@ -385,15 +385,12 @@ Nothing new in the database; no migration.
 
 ## 14. Owner decisions still open
 
-**Already with the owner:** D3, D4, D5, D7, D10 in ask #1445; D17 (the plan-limit read is exempt) in asks #1443 and #1448.
+**With the owner in ask #1452** (it replaced ask #1445): D3, D4, D5, D7, D10, D12 and D17–D20.
 
-**Still needing the owner beyond those asks.** These are agent decisions that change what the owner sees or what a contract says. My recommendation is in bold.
+**Still needing the owner beyond ask #1452:**
 
-1. D12 — a unit already started when the owner pauses finishes (pause applies to the next unit), so BGAI-01 reads "no background unit starts without consent". **Yes.** Alternative: cancel at the next `llm()` call, which leaves half-done runs.
-2. D18/D20 — the origin model: the gate works in every process by origin, and the spec-review sweep's relaunch counts as background while the first launch from the owner's session does not. **Yes.**
-3. D19 — the phone line through a new optional heartbeat key. **Yes.**
-4. The POLICY-03 amendment that D7 needs (the first key that grants). It goes with ask #1445's D7 answer.
-5. The new inventory file (BGAI-01..03) and the AUTO-10 amendment (§13).
+1. The POLICY-03 amendment that D7 needs: `AllowBackgroundAI = true` would be the first policy key that grants instead of only restricting. **Approve with D7.**
+2. The new inventory file (BGAI-01..03) and the AUTO-10 amendment (§13). **Approve.**
 
 The other agent decisions (D2, D6, D8, D9, D11, D13–D16) are implementation shape; they stand unless the owner objects in the spec review.
 

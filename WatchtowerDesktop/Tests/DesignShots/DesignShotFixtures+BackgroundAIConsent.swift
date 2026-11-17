@@ -41,10 +41,10 @@ enum BackgroundAIConsentShotFixtures {
             }
         } + [
             DesignShot(name: "ai-consent-home-paused", size: NSSize(width: 420, height: 0)) {
-                AnyView(HomeCardMock(organization: false))
+                AnyView(HomeColumnMock(organization: false))
             },
             DesignShot(name: "ai-consent-home-org", size: NSSize(width: 420, height: 0)) {
-                AnyView(HomeCardMock(organization: true))
+                AnyView(HomeColumnMock(organization: true))
             },
             DesignShot(name: "ai-consent-empty-paused", size: NSSize(width: 720, height: 360)) {
                 AnyView(EmptyStateMock(organization: false))
@@ -293,7 +293,38 @@ private struct HomeCardMock: View {
         .padding(Spacing.medium)
         .frame(maxWidth: .infinity, alignment: .leading)
         .card()
+    }
+}
+
+/// Home's feed column: the card first, outside the hideable Getting ready
+/// zone below it (whose Hide never removes the card). Sample rows only.
+private struct HomeColumnMock: View {
+    let organization: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.large) {
+            HomeCardMock(organization: organization)
+            VStack(alignment: .leading, spacing: Spacing.regular) {
+                HStack {
+                    SectionHeader(title: "Getting ready", systemImage: "hourglass")
+                    Spacer()
+                    Button("Hide") {}.buttonStyle(.kitQuiet).controlSize(.small)
+                }
+                HStack {
+                    Text("Slack sync").font(.body)
+                    Spacer()
+                    Text("Within ~15 min").font(.caption).foregroundStyle(.secondary)
+                }
+                .padding(Spacing.medium)
+                .card()
+            }
+            VStack(alignment: .leading, spacing: Spacing.small) {
+                SectionHeader(title: "Today", systemImage: "calendar")
+                Text("Standup with acme · 10:00").font(.body)
+            }
+        }
         .padding(Spacing.page)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .detailBackground()
     }
 }
