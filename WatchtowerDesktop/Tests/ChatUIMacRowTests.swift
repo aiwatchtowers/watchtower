@@ -191,7 +191,7 @@ final class ChatUIMacRowTests: XCTestCase {
         XCTAssertNoThrow(try row(cut).inspect().find(text: ChatHostText.plain.messageCut), "ChatUI's own line names no Mac")
         XCTAssertFalse(ChatHostText.plain.messageCut.contains("Mac"))
         XCTAssertEqual(ChatHostText.mac.artifactCut, "This artifact is cut here; the whole text is on your Mac.")
-        XCTAssertEqual(ChatHostText.mac.chooseSlackWorkspace, "Choose a workspace on the Mac before approving")
+        XCTAssertEqual(ChatHostText.mac.chooseSlackWorkspace, "Choose a workspace in Inbox › Needs approval before approving")
     }
 
     /// The Chats panel's row says what it said before the unified chat (final re-review I5): the waiting tool by its

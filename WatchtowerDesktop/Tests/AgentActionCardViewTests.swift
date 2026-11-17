@@ -416,6 +416,25 @@ final class AgentActionCardViewTests: XCTestCase {
         XCTAssertTrue(try picker.inspect().find(button: "Approve & send").isDisabled(), "no workspace picked yet")
     }
 
+    /// A Slack send still waiting for a workspace, on a Mac surface without the picker (the target chat, the automation
+    /// editor: no `onApproveEdited`), says where the pick is — not "on the Mac", where the owner already is — and
+    /// offers no Approve (unified chat T16 carry).
+    func testSlackPickLineOnAMacSurfaceWithoutThePickerPointsToTheInbox() throws {
+        let candidates = ##"{"text":"hi","candidates":["## +
+            ##"{"account_id":1,"workspace":"A","channel_id":"C1","label":"#g"},"## +
+            ##"{"account_id":2,"workspace":"B","channel_id":"C2","label":"#g"}]}"##
+        let ambiguous = try row { db in
+            try TestDatabase.insertAgentAction(db, tool: "send_slack_message", external: true, argsJSON: candidates)
+        }
+        let card = MacAgentActionCard(action: ambiguous, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        XCTAssertNoThrow(try card.inspect().find(text: "Choose a workspace in Inbox › Needs approval before approving"))
+        // swiftlint:disable:next trailing_closure
+        XCTAssertThrowsError(try card.inspect().find(textWhere: { text, _ in text.contains("on the Mac") }))
+        XCTAssertThrowsError(try card.inspect().find(button: "Approve"))
+        XCTAssertThrowsError(try card.inspect().find(button: "Approve & send"))
+        XCTAssertNoThrow(try card.inspect().find(button: "Reject"))
+    }
+
     /// A DM's pinned identity is its own secondary Text, apart from the
     /// free-text label, on the To line and on each picker row (target 227).
     func testSlackDMIdentityIsShownApartFromTheLabel() throws {
