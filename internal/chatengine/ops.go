@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"watchtower/internal/chatstore"
@@ -30,6 +31,19 @@ func (e *Engine) Register(op string, h OpHandler) {
 	e.opsMu.Lock()
 	e.ops[op] = h
 	e.opsMu.Unlock()
+}
+
+// Ops is the names of the registered operations, sorted (the relay's op
+// contract, testdata/relay_ops.json, is checked against it).
+func (e *Engine) Ops() []string {
+	e.opsMu.RLock()
+	defer e.opsMu.RUnlock()
+	names := make([]string, 0, len(e.ops))
+	for op := range e.ops {
+		names = append(names, op)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // Do runs op with its JSON params for c and returns its JSON result.
@@ -152,6 +166,31 @@ func (e *Engine) opNew(ctx context.Context, params json.RawMessage, _ Client) (a
 }
 
 func (e *Engine) opTurn(ctx context.Context, params json.RawMessage, _ Client) (any, error) {
+	req, err := DecodeTurn(params)
+	if err != nil {
+		return nil, err
+	}
+	st, err := e.Turn(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"user_message_id": st.UserMessageID, "assistant_message_id": st.AssistantMessageID,
+		"turn_id": st.TurnID}, nil
+}
+
+// turnModes are the chat_turn modes the store starts.
+var turnModes = map[string]bool{
+	chatstore.ModeSend: true, chatstore.ModeRegenerate: true, chatstore.ModeEdit: true,
+	chatstore.ModeRetry: true, chatstore.ModeContinue: true,
+}
+
+// DecodeTurn reads chat_turn's params, as chat.sock and the relay's
+// chat_turn action both carry them (spec §5.2): the one decoder of a turn, so
+// a field the engine learns reaches the phone as well as the Mac (final
+// review I2). A conversation id, a known mode, the routing and the compose
+// are checked here, before the engine; an error wraps errBadParams
+// (ErrorCode "invalid"). The relay keeps only its own caps (the text length).
+func DecodeTurn(params json.RawMessage) (TurnRequest, error) {
 	var p struct {
 		ConversationID int64          `json:"conversation_id"`
 		Mode           string         `json:"mode"`
@@ -165,20 +204,22 @@ func (e *Engine) opTurn(ctx context.Context, params json.RawMessage, _ Client) (
 		CommentIDs     []int64        `json:"artifact_comment_ids"`
 	}
 	if err := decode(params, &p); err != nil {
-		return nil, err
+		return TurnRequest{}, err
 	}
 	routing, ok := p.Routing.routing()
-	if !ok {
-		return nil, errBadParams
+	switch {
+	case p.ConversationID <= 0:
+		return TurnRequest{}, fmt.Errorf("%w: no conversation_id", errBadParams)
+	case !turnModes[p.Mode]:
+		return TurnRequest{}, fmt.Errorf("%w: unknown mode", errBadParams)
+	case !ok:
+		return TurnRequest{}, fmt.Errorf("%w: routing", errBadParams)
+	case !p.Compose.Valid():
+		return TurnRequest{}, fmt.Errorf("%w: compose", errBadParams)
 	}
-	st, err := e.Turn(ctx, TurnRequest{StartRequest: chatstore.StartRequest{ConversationID: p.ConversationID, Mode: p.Mode,
+	return TurnRequest{StartRequest: chatstore.StartRequest{ConversationID: p.ConversationID, Mode: p.Mode,
 		MessageID: p.MessageID, Text: p.Text, AttachmentIDs: p.AttachmentIDs, Routing: routing, Compose: p.Compose,
-		ArtifactCommentIDs: p.CommentIDs}, ClientKey: p.ClientKey, ScreenContext: p.ScreenContext})
-	if err != nil {
-		return nil, err
-	}
-	return map[string]any{"user_message_id": st.UserMessageID, "assistant_message_id": st.AssistantMessageID,
-		"turn_id": st.TurnID}, nil
+		ArtifactCommentIDs: p.CommentIDs, ClientKey: p.ClientKey}, ClientKey: p.ClientKey, ScreenContext: p.ScreenContext}, nil
 }
 
 func (e *Engine) opCancel(_ context.Context, params json.RawMessage, _ Client) (any, error) {

@@ -222,6 +222,49 @@ final class RelayChatClientTests: XCTestCase {
         XCTAssertEqual(onTower, .refused(code: "unsupported", message: "This works in Watchtower on your tower."))
     }
 
+    /// The relay op contract (final review I2), `internal/chatengine/testdata/relay_ops.json`, which Go checks against
+    /// the engine's ops and the hub's chat kinds: an op on the relay goes to the hub (here, with no hub reachable, it
+    /// is refused `unreachable`), an op not on the relay is answered on the phone and never reaches the hub. One sample
+    /// per op: a new engine op fails here until the phone maps it.
+    func testRelayOpsContract() async throws {
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("internal/chatengine/testdata/relay_ops.json")
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as? [String: Any])
+        let relay = try XCTUnwrap(json["relay"] as? [String: String])
+        let notOnRelay = Set(try XCTUnwrap(json["not_on_relay"] as? [String]))
+        let upload = ChatSealedUpload(uploadID: "u", name: "a.txt", mime: "text/plain", size: 1, file: URL(fileURLWithPath: "/dev/null"))
+        let samples: [ChatOperation] = [
+            .new(projectID: nil, routing: ChatRouting(mode: "auto")),
+            .turn(ChatTurnRequest(conversationID: 7, mode: .send, text: "hi", clientKey: "k")),
+            .cancel(conversationID: 7, turnID: "T"),
+            .page(conversationID: 7, beforeMessageID: 3),
+            .search(query: "acme"),
+            .read(conversationID: 7, messageID: 3),
+            .branchSelect(messageID: 3),
+            .manage(conversationID: 7, op: .rename, title: "x", projectID: nil),
+            .entitySearch(query: "al", kinds: []),
+            .skillsList,
+            .attach(conversationID: 7, source: .sealedUpload(upload)),
+            .project(ChatProjectRequest(op: .create, name: "acme")),
+            .artifact(ChatArtifactRequest(op: .keep, key: "r", version: 1)),
+            .attachDiscard(conversationID: 7, attachmentID: 4),
+            .warm(conversationID: 7, routing: nil),
+            .retireSessions,
+            .shutdown
+        ]
+        XCTAssertEqual(Set(samples.map(\.wireOp)), Set(relay.keys).union(notOnRelay), "one sample per engine op")
+        let client = center().client // never connected: an op the phone sends is refused unreachable
+        for op in samples {
+            let echo = try await client.send(op)
+            if relay[op.wireOp] != nil {
+                guard case .refused(code: "unreachable", _) = echo else { return XCTFail("\(op.wireOp) is on the relay: \(echo)") }
+            } else {
+                if case .refused(code: "unreachable", _) = echo { XCTFail("\(op.wireOp) is answered on the phone") }
+            }
+        }
+        XCTAssertTrue(recorder.sent.isEmpty, "nothing reaches the hub")
+    }
+
     /// The relay refuses a watched chat's feed request `not_found` once it is deleted elsewhere: the feed is gone.
     func testFeedRequestRefusedNotFoundIsGone() async throws {
         let center = center()

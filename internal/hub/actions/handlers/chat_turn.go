@@ -48,8 +48,9 @@ func (h *Handlers) chatNew(ctx context.Context, r actions.Request) actions.Outco
 	})
 }
 
-// chatTurn is `chat_turn` (params {conversation_id, mode send|regenerate|
-// edit, message_id?, text, attachment_ids, routing?, client_key?, compose?}):
+// chatTurn is `chat_turn` (params as chat.sock's chat_turn, read by
+// chatengine.DecodeTurn: {conversation_id, mode, message_id?, text,
+// attachment_ids, routing?, client_key?, compose?, …}):
 // a turn the daemon's engine runs (chatengine.Engine). client_key is the
 // phone's id of the send: a resend under a new action id with the same key
 // is answered with the first turn, never a second one (the engine's
@@ -66,7 +67,7 @@ func (h *Handlers) chatTurn(ctx context.Context, r actions.Request) actions.Outc
 		if refused != nil {
 			return *refused
 		}
-		st, err := c.Engine.Turn(ctx, chatengine.TurnRequest{StartRequest: req, ClientKey: req.ClientKey})
+		st, err := c.Engine.Turn(ctx, req)
 		switch {
 		case errors.Is(err, chatstore.ErrBusy):
 			return failed(reasonConversationBusy, chatBusyMessage)
@@ -77,7 +78,7 @@ func (h *Handlers) chatTurn(ctx context.Context, r actions.Request) actions.Outc
 		case errors.Is(err, chatstore.ErrAttachmentMissing):
 			return failed(reasonAttachmentMissing, chatAttachmentGone)
 		case errors.Is(err, chatstore.ErrInvalid):
-			return failed(reasonInvalidParams, "Your Mac can't send this message as it is")
+			return failed(reasonInvalidParams, chatTurnInvalidMessage)
 		case errors.Is(err, chatengine.ErrClosed):
 			return failed(reasonNotSupported, chatHubStoppingMessage)
 		case err != nil:
@@ -90,55 +91,26 @@ func (h *Handlers) chatTurn(ctx context.Context, r actions.Request) actions.Outc
 	})
 }
 
-// chatTurnRequest reads a chat_turn's params. The text cap (MaxChatText,
+// chatTurnRequest reads a chat_turn's params with the engine's own decoder
+// (chatengine.DecodeTurn, the one chat.sock uses), so every field the engine
+// knows reaches it from the phone too. Only the text cap (MaxChatText,
 // counted in runes) is the hub's own, from the protocol (iPhone chat spec
 // §4.5): the Mac has no such cap and the store does not check one.
-func chatTurnRequest(r actions.Request) (chatstore.StartRequest, *actions.Outcome) {
-	bad := func(msg string) (chatstore.StartRequest, *actions.Outcome) {
+func chatTurnRequest(r actions.Request) (chatengine.TurnRequest, *actions.Outcome) {
+	bad := func(msg string) (chatengine.TurnRequest, *actions.Outcome) {
 		o := failed(reasonInvalidParams, msg)
-		return chatstore.StartRequest{}, &o
+		return chatengine.TurnRequest{}, &o
 	}
-	conv, ok := intParam(r, "conversation_id")
-	if !ok || conv <= 0 {
-		return bad("chat_turn needs a conversation_id")
+	params, err := json.Marshal(r.Action.Params)
+	if err != nil {
+		return bad(chatTurnInvalidMessage)
 	}
-	mode, _ := stringParam(r, "mode")
-	switch mode {
-	case chatstore.ModeSend, chatstore.ModeRegenerate, chatstore.ModeEdit:
-	default:
-		return bad("mode must be send, regenerate or edit")
-	}
-	req := chatstore.StartRequest{ConversationID: conv, Mode: mode}
-	if !isNull(r, "message_id") {
-		if req.MessageID, ok = intParam(r, "message_id"); !ok {
-			return bad("message_id must be a number")
-		}
-	}
-	if !isNull(r, "text") {
-		if req.Text, ok = stringParam(r, "text"); !ok {
-			return bad("text must be a text")
-		}
+	req, err := chatengine.DecodeTurn(params)
+	if err != nil {
+		return bad(chatTurnInvalidMessage)
 	}
 	if utf8.RuneCountInString(req.Text) > MaxChatText {
 		return bad(chatTextTooLongMessage)
-	}
-	if req.AttachmentIDs, ok = int64sParam(r, "attachment_ids"); !ok {
-		return bad("attachment_ids must be a list of numbers")
-	}
-	if req.Routing, ok = chatRouting(r); !ok {
-		return bad("routing must be {mode: auto} or {mode: pinned, provider, model?}")
-	}
-	if !isNull(r, "client_key") {
-		if req.ClientKey, ok = stringParam(r, "client_key"); !ok {
-			return bad("client_key must be a text")
-		}
-	}
-	if !isNull(r, "compose") {
-		var c chatstore.Compose
-		if err := json.Unmarshal(r.Action.Params["compose"], &c); err != nil || !c.Valid() {
-			return bad("compose must be {skill?, mentions, quotes} as the Mac's composer makes it")
-		}
-		req.Compose = &c
 	}
 	return req, nil
 }

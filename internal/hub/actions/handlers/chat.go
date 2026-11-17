@@ -53,6 +53,7 @@ const (
 	chatActionGoneMessage   = "This action no longer exists on your Mac"
 	chatTurnEndedMessage    = "This answer has already ended"
 	chatTextTooLongMessage  = "This message is over 32,000 characters"
+	chatTurnInvalidMessage  = "Your Mac can't send this message as it is"
 	chatHubStoppingMessage  = "Your Mac is stopping chat right now — try again in a moment"
 	chatWriteFailedMessage  = "Your Mac could not save this"
 	chatReadFailedMessage   = "Your Mac could not read this"

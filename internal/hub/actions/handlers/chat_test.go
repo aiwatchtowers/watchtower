@@ -31,6 +31,7 @@ type fakeChatRunner struct {
 	*chatengine.Engine
 	store   *chatstore.Store
 	runs    []chatstore.StartRequest
+	turns   []chatengine.TurnRequest
 	keys    []string
 	cancels []string
 	cancel  bool
@@ -38,6 +39,7 @@ type fakeChatRunner struct {
 
 func (f *fakeChatRunner) Turn(ctx context.Context, req chatengine.TurnRequest) (chatstore.Started, error) {
 	f.runs = append(f.runs, req.StartRequest)
+	f.turns = append(f.turns, req)
 	f.keys = append(f.keys, req.ClientKey)
 	return f.store.Start(ctx, req.StartRequest)
 }
