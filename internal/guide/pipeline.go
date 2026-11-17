@@ -90,6 +90,7 @@ const (
 	OutcomeCovered                     // every active user already has a card for the window
 	OutcomeNoData                      // no active users with enough messages, or no situations yet
 	OutcomeDeferred                    // provider wait; required cards remain unfinished
+	OutcomeNoOwner                     // no Slack account has a known owner: no cards, never everyone (A13)
 )
 
 // ProgressFunc is called during generation to report progress.
@@ -224,11 +225,57 @@ func (p *Pipeline) HasData(contexts ...context.Context) (bool, error) {
 			return false, nil
 		}
 	}
-	stats, err := p.db.ComputeAllUserStats(from, to, DefaultMinMessages)
+	stats, _, err := p.cardStats(from, to)
 	if err != nil {
-		return false, fmt.Errorf("computing user stats: %w", err)
+		return false, err
 	}
 	return len(stats) > 0, nil
+}
+
+// PrunePreUpgradeCards runs the one-time pass deleting stored people cards
+// of non-partners (db.PrunePreUpgradePeopleCards, A13) and logs what it
+// removed. Every people entry point (the daemon, `people generate`, `sync`)
+// calls it before generating; it is a no-op once done.
+func PrunePreUpgradeCards(ctx context.Context, database *db.DB, logger *log.Logger) (done bool, err error) {
+	n, done, err := database.PrunePreUpgradePeopleCards(ctx)
+	if n > 0 {
+		logger.Printf("people: removed %d card(s) of people not worked with directly", n)
+	}
+	if err != nil {
+		return false, fmt.Errorf("pruning people cards of non-partners: %w", err)
+	}
+	return done, nil
+}
+
+// cardStats is who may get a card in [from, to): the users the owner works
+// with directly (db.ComputeAllUserStats over SlackOwnersByAccount), minus the
+// people the owner stopped cards for. owners is SlackOwnersByAccount; empty
+// means no Slack account has a known owner, so nobody gets a card (spec
+// 2026-11-17 §5.3, A13, A14).
+func (p *Pipeline) cardStats(from, to float64) (stats []db.UserStats, owners map[int64]string, err error) {
+	owners, err = p.db.SlackOwnersByAccount()
+	if err != nil || len(owners) == 0 {
+		return nil, owners, err
+	}
+	stats, err = p.db.ComputeAllUserStats(from, to, DefaultMinMessages, owners)
+	if err != nil {
+		return nil, owners, fmt.Errorf("computing user stats: %w", err)
+	}
+	excluded, err := p.db.PeopleExclusions()
+	if err != nil {
+		return nil, owners, err
+	}
+	if len(excluded) == 0 {
+		return stats, owners, nil
+	}
+	return withoutCovered(stats, excluded), owners, nil
+}
+
+// OwnerKnown reports whether some Slack account has a known owner; without
+// one the pipeline makes no cards (the daemon logs why).
+func (p *Pipeline) OwnerKnown() (bool, error) {
+	owners, err := p.db.SlackOwnersByAccount()
+	return len(owners) > 0, err
 }
 
 // RunForWindow executes the people card pipeline for a specific time window.
@@ -258,10 +305,16 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 	p.progress(0, 0, "Computing user statistics...")
 
 	t1 := time.Now()
-	allStats, err := p.db.ComputeAllUserStats(from, to, DefaultMinMessages)
+	allStats, owners, err := p.cardStats(from, to)
 	p.logger.Printf("people: ComputeAllUserStats took %s (%d users)", time.Since(t1).Round(time.Millisecond), len(allStats))
 	if err != nil {
-		return 0, fmt.Errorf("computing user stats: %w", err)
+		return 0, err
+	}
+	if len(owners) == 0 {
+		p.progress(0, 0, "No owner identity: connect Slack to make people cards")
+		p.logger.Println("people: no owner identity (no Slack account with a known user); no cards")
+		p.lastOutcome = OutcomeNoOwner
+		return 0, nil
 	}
 	if len(allStats) == 0 {
 		p.progress(0, 0, "No active users with enough messages")
@@ -269,9 +322,9 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 		p.lastOutcome = OutcomeNoData
 		return 0, nil
 	}
-	// todo is who still needs a card; team norms stay computed over the whole
-	// active population (allStats), or a resumed window would compare its
-	// remaining users against themselves.
+	// todo is who still needs a card; team norms stay computed over every
+	// card candidate of the window (allStats), or a resumed window would
+	// compare its remaining users against themselves.
 	todo := allStats
 	if len(covered) > 0 {
 		todo = withoutCovered(allStats, covered)
@@ -346,6 +399,16 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 	// card fell back (batch error, user missing from the reply, store error) —
 	// so a run in which the AI produced nothing is not reported as a success.
 	var aiCards, aiFailures int
+	// skipped counts people excluded mid-run: no card, not a failure, and not
+	// counted as completed.
+	var skipped int
+	skip := func(userID string) {
+		skipped++
+		// A skip is no step: the previous card's metrics must not be
+		// recorded for it by an OnProgress consumer.
+		p.clearLastStep()
+		p.progress(int(completed.Load())+skipped, totalUsers, fmt.Sprintf("@%s skipped (excluded)", p.userName(userID)))
+	}
 	var materialErr error
 
 	// Phase 1: Batch processing for low-data users (fast, cheap).
@@ -365,15 +428,24 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 				}
 				// Fallback: create insufficient_data cards for the whole batch.
 				p.logger.Printf("people: batch error, falling back to insufficient_data: %v", err)
-				aiFailures += len(batch)
-				materialErr = errors.Join(materialErr, err)
+				batchFailed := false
 				for _, entry := range batch {
-					if ferr := p.createInsufficientCard(entry.stats, from, to); ferr != nil {
+					ferr := p.createInsufficientCard(entry.stats, from, to)
+					if errors.Is(ferr, errCardSkipped) {
+						skip(entry.stats.UserID)
+						continue
+					}
+					aiFailures++
+					if !batchFailed {
+						batchFailed = true
+						materialErr = errors.Join(materialErr, err)
+					}
+					if ferr != nil {
 						materialErr = errors.Join(materialErr, ferr)
 						p.logger.Printf("people: fallback card error for %s: %v", entry.stats.UserID, ferr)
 					}
 					newVal := int(completed.Add(1))
-					p.progress(newVal, totalUsers, fmt.Sprintf("@%s done (insufficient)", p.userName(entry.stats.UserID)))
+					p.progress(newVal+skipped, totalUsers, fmt.Sprintf("@%s done (insufficient)", p.userName(entry.stats.UserID)))
 				}
 				continue
 			}
@@ -385,15 +457,25 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 
 			for _, entry := range batch {
 				result, ok := lookup(entry.stats.UserID)
-				if !ok {
+				var serr error
+				if ok {
+					serr = p.storeBatchCard(ctx, entry.stats, result, from, to, pv, inTokPer, outTokPer)
+				} else {
 					// AI didn't return this user — fallback to insufficient_data.
+					serr = p.createInsufficientCard(entry.stats, from, to)
+				}
+				if errors.Is(serr, errCardSkipped) {
+					skip(entry.stats.UserID)
+					continue
+				}
+				if !ok {
 					aiFailures++
 					materialErr = errors.Join(materialErr, errors.New("people batch omitted a required user"))
-					if ferr := p.createInsufficientCard(entry.stats, from, to); ferr != nil {
-						materialErr = errors.Join(materialErr, ferr)
-						p.logger.Printf("people: batch missing user %s, fallback error: %v", entry.stats.UserID, ferr)
+					if serr != nil {
+						materialErr = errors.Join(materialErr, serr)
+						p.logger.Printf("people: batch missing user %s, fallback error: %v", entry.stats.UserID, serr)
 					}
-				} else if serr := p.storeBatchCard(ctx, entry.stats, result, from, to, pv, inTokPer, outTokPer); serr != nil {
+				} else if serr != nil {
 					aiFailures++
 					materialErr = errors.Join(materialErr, serr)
 					p.logger.Printf("people: store batch card error for %s: %v", entry.stats.UserID, serr)
@@ -410,7 +492,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 				p.LastStepOutputTokens = outTokPer
 
 				newVal := int(completed.Add(1))
-				p.progress(newVal, totalUsers, fmt.Sprintf("@%s done (batch)", p.userName(entry.stats.UserID)))
+				p.progress(newVal+skipped, totalUsers, fmt.Sprintf("@%s done (batch)", p.userName(entry.stats.UserID)))
 			}
 		}
 	}
@@ -453,7 +535,10 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 				// Fallback: try individual processing for this batch.
 				p.logger.Printf("people: full-data batch error, falling back to individual: %v", err)
 				for _, entry := range batch {
-					if ferr := p.processUser(ctx, entry.stats, from, to, entry.situations, teamNorms); ferr != nil {
+					if ferr := p.processUser(ctx, entry.stats, from, to, entry.situations, teamNorms); errors.Is(ferr, errCardSkipped) {
+						skip(entry.stats.UserID)
+						continue
+					} else if ferr != nil {
 						if deferred := p.deferredCardError(ferr, materialErr, aiFailures, false); deferred != nil {
 							return int(completed.Load()), deferred
 						}
@@ -464,7 +549,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 						aiCards++
 					}
 					newVal := int(completed.Add(1))
-					p.progress(newVal, totalUsers, fmt.Sprintf("@%s done (fallback)", p.userName(entry.stats.UserID)))
+					p.progress(newVal+skipped, totalUsers, fmt.Sprintf("@%s done (fallback)", p.userName(entry.stats.UserID)))
 				}
 				continue
 			}
@@ -475,9 +560,19 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 
 			for _, entry := range batch {
 				result, ok := lookup(entry.stats.UserID)
-				if !ok {
+				var serr error
+				if ok {
+					serr = p.storeBatchCard(ctx, entry.stats, result, from, to, pv, inTokPer, outTokPer)
+				} else {
 					// AI didn't return this user — fallback to individual.
-					if ferr := p.processUser(ctx, entry.stats, from, to, entry.situations, teamNorms); ferr != nil {
+					serr = p.processUser(ctx, entry.stats, from, to, entry.situations, teamNorms)
+				}
+				if errors.Is(serr, errCardSkipped) {
+					skip(entry.stats.UserID)
+					continue
+				}
+				if !ok {
+					if ferr := serr; ferr != nil {
 						if deferred := p.deferredCardError(ferr, materialErr, aiFailures, false); deferred != nil {
 							return int(completed.Load()), deferred
 						}
@@ -487,7 +582,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 					} else {
 						aiCards++
 					}
-				} else if serr := p.storeBatchCard(ctx, entry.stats, result, from, to, pv, inTokPer, outTokPer); serr != nil {
+				} else if serr != nil {
 					aiFailures++
 					materialErr = errors.Join(materialErr, serr)
 					p.logger.Printf("people: store batch card error for %s: %v", entry.stats.UserID, serr)
@@ -503,7 +598,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 				p.LastStepOutputTokens = outTokPer
 
 				newVal := int(completed.Add(1))
-				p.progress(newVal, totalUsers, fmt.Sprintf("@%s done (batch)", p.userName(entry.stats.UserID)))
+				p.progress(newVal+skipped, totalUsers, fmt.Sprintf("@%s done (batch)", p.userName(entry.stats.UserID)))
 			}
 		}
 	}
@@ -518,11 +613,21 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 	if aiCards == 0 && aiFailures > 0 {
 		return total, fmt.Errorf("no people card produced by AI: all %d user(s) fell back", aiFailures)
 	}
-	p.progress(total, totalUsers, fmt.Sprintf("Complete: %d people cards generated", total))
+	if skipped > 0 {
+		p.logger.Printf("people: %d user(s) excluded during the run; no card", skipped)
+	}
+	if total == 0 && skipped > 0 {
+		// Everyone left was excluded meanwhile: nothing was made, so the run
+		// is not a success to stamp; the next run finds no one to do.
+		p.progress(skipped, totalUsers, "No cards: everyone left was excluded")
+		p.lastOutcome = OutcomeNoData
+		return 0, nil
+	}
+	p.progress(total+skipped, totalUsers, fmt.Sprintf("Complete: %d people cards generated", total))
 	p.logger.Printf("people: completed %d user cards (%d from AI, %d fell back)", total, aiCards, aiFailures)
 
 	if total > 0 {
-		p.progress(total, totalUsers, "Generating team summary...")
+		p.progress(total+skipped, totalUsers, "Generating team summary...")
 		if err := p.generateTeamSummary(ctx, from, to); err != nil {
 			p.logger.Printf("people: team summary error: %v", err)
 		}
@@ -583,7 +688,8 @@ func (p *Pipeline) coveredUsers(from, to float64) (map[string]bool, error) {
 	return covered, nil
 }
 
-// withoutCovered drops the users that already have an AI card for the window.
+// withoutCovered drops the users named in covered: those that already have an
+// AI card for the window, or the people the owner stopped cards for.
 func withoutCovered(stats []db.UserStats, covered map[string]bool) []db.UserStats {
 	out := stats[:0:0]
 	for _, s := range stats {
@@ -705,7 +811,22 @@ func (p *Pipeline) processUser(ctx context.Context, stats db.UserStats, from, to
 		card.CostUSD = 0
 	}
 
-	_, err = p.db.UpsertPeopleCard(card)
+	return p.storeCard(card)
+}
+
+// errCardSkipped marks a card not written because the owner stopped cards
+// for the person while this run was generating it: neither a card made nor
+// a failure.
+var errCardSkipped = errors.New("person excluded during the run; no card")
+
+// storeCard writes a card. The write refuses an excluded person atomically
+// (db.ErrPersonExcluded), which storeCard reports as errCardSkipped.
+func (p *Pipeline) storeCard(card db.PeopleCard) error {
+	_, err := p.db.UpsertPeopleCard(card)
+	if errors.Is(err, db.ErrPersonExcluded) {
+		p.logger.Printf("people: %s was excluded during the run; no card", card.UserID)
+		return fmt.Errorf("%s: %w", card.UserID, errCardSkipped)
+	}
 	return err
 }
 
@@ -730,8 +851,7 @@ func (p *Pipeline) createInsufficientCard(stats db.UserStats, from, to float64) 
 		Status:           "insufficient_data",
 		Model:            "auto",
 	}
-	_, err := p.db.UpsertPeopleCard(card)
-	return err
+	return p.storeCard(card)
 }
 
 // storeBatchCard converts a BatchCardResult to a db.PeopleCard and stores it.
@@ -768,8 +888,7 @@ func (p *Pipeline) storeBatchCard(ctx context.Context, stats db.UserStats, resul
 		OutputTokens:       outTok,
 		CostUSD:            0,
 	}
-	_, err := p.db.UpsertPeopleCard(card)
-	return err
+	return p.storeCard(card)
 }
 
 // generateBatchCards runs a single AI call for multiple low-data users.
@@ -1258,6 +1377,17 @@ func (p *Pipeline) userName(id string) string {
 		}
 	}
 	return id
+}
+
+// clearLastStep zeroes the LastStep* metrics, so a progress event that is no
+// AI step (a skipped person) records none.
+func (p *Pipeline) clearLastStep() {
+	p.LastStepMessageCount = 0
+	p.LastStepPeriodFrom = time.Time{}
+	p.LastStepPeriodTo = time.Time{}
+	p.LastStepDurationSeconds = 0
+	p.LastStepInputTokens = 0
+	p.LastStepOutputTokens = 0
 }
 
 func (p *Pipeline) progress(completed, total int, status string) {

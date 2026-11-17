@@ -85,6 +85,7 @@ var slackNamespacedTables = []string{
 	"messages", "reactions", "files", "inbox_items", "inbox_learned_rules", "digests", "tracks",
 	"user_analyses", "people_cards", "user_interactions", "issue_slack_links", "sync_state",
 	"watch_list", "channel_settings", "users", "channels", "kb_documents", "kb_dirty", "doc_links",
+	"people_card_exclusions",
 }
 
 // purgeSourceOf maps an account table to its purge source.

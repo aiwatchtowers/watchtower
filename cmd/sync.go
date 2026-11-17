@@ -1673,6 +1673,10 @@ func runPostSyncPipelines(ctx context.Context, database *db.DB, cfg *config.Conf
 	// People cards (REDUCE phase: reads signals from channel digests)
 	{
 		peopleSpinner := ui.NewSpinner(out, "Generating people cards...")
+		// The one-time upgrade pass deleting cards of non-partners (A13).
+		if _, err := guide.PrunePreUpgradeCards(ctx, database, logger); err != nil {
+			logger.Printf("%v", err)
+		}
 		peoplePipe := guide.New(database, cfg, gen, logger)
 		peoplePipe.SetPromptStore(prompts.New(database, nil))
 		peoplePipe.OnProgress = func(done, total int, status string) {

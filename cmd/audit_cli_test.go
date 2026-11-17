@@ -349,7 +349,9 @@ var cliNoContentCommands = map[string]bool{
 	"outlook login":                    true,
 	"outlook logout":                   true,
 	"outlook rename":                   true,
+	"people exclude":                   true, // prints the person's id only
 	"people generate":                  true,
+	"people include":                   true, // prints the person's id only
 	"policy show":                      true, // the organization policy: settings, no company content
 	"profile":                          true,
 	"project":                          true,
