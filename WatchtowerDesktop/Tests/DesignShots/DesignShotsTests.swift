@@ -85,6 +85,10 @@ final class DesignShotsTests: XCTestCase {
     }
 
     /// The Slack Full / Live screens spec's mockups (#1779).
+    func testBackgroundAIConsentShotsRender() throws {
+        try renderShots(BackgroundAIConsentShotFixtures.shots)
+    }
+
     func testSlackFullLiveShotsRender() throws {
         try renderShots(SlackFullLiveShotFixtures.shots)
     }
