@@ -67,6 +67,10 @@ type Folder struct {
 	// (unless the owner shows hidden folders) and the badge; which ancestor
 	// hid it is found by walking parent_id.
 	Hidden bool `json:"hidden"`
+	// OwnHidden is the folder's own flag: set where the owner hid this
+	// folder itself, whatever its ancestors are (the Mac's Show Hidden
+	// Folders draws each such folder as hidden).
+	OwnHidden bool `json:"own_hidden"`
 	// Count is the folder's own count (not its children's).
 	Count int `json:"count"`
 	// Waiting is the part of Count that waits on the owner.

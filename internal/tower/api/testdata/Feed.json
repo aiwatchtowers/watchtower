@@ -10,6 +10,7 @@
       "icon": "",
       "position": 0,
       "hidden": false,
+      "own_hidden": false,
       "count": 3,
       "waiting": 1
     },
@@ -22,6 +23,7 @@
       "parent_id": 1,
       "position": 0,
       "hidden": false,
+      "own_hidden": false,
       "count": 1,
       "waiting": 1
     },
@@ -34,6 +36,7 @@
       "parent_id": 1,
       "position": 1,
       "hidden": true,
+      "own_hidden": true,
       "count": 0,
       "waiting": 0
     }

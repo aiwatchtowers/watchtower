@@ -1406,7 +1406,6 @@ package final class ActionStripViewModel {
         }
     }
 
-    /// The last read still lists `item`'s record.
     /// The last read holds `item`'s record and Go has not closed it: a row
     /// whose ref facts say closed (a record read by id for an artifact's
     /// row) is gone for its failures too.

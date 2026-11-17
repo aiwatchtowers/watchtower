@@ -31,7 +31,7 @@ final class ActionStripFeedTests: XCTestCase {
         hidden: Bool = false
     ) -> Folder {
         Folder(id: id, kind: kind, slug: "f\(id)", title: "Folder \(id)", icon: "", parentID: parent, position: Int(id),
-               hidden: hidden, count: count, waiting: 0)
+               hidden: hidden, ownHidden: hidden, count: count, waiting: 0)
     }
 
     private func artifact(

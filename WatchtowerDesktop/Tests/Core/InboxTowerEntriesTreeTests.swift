@@ -6,9 +6,11 @@ import WatchtowerInterface
 /// a folder the feed lists shows, one only the local tree has does not, and
 /// a folder is drawn hidden only where its own flag hid it.
 final class InboxTowerEntriesTreeTests: XCTestCase {
-    private func folder(_ id: Int64, _ kind: FolderKind, parent: Int64?, slug: String, hidden: Bool = false) -> Folder {
+    private func folder(
+        _ id: Int64, _ kind: FolderKind, parent: Int64?, slug: String, hidden: Bool = false, own: Bool = false
+    ) -> Folder {
         Folder(id: id, kind: kind, slug: slug, title: slug.capitalized, icon: "", parentID: parent, position: Int(id),
-               hidden: hidden, count: 0, waiting: 0)
+               hidden: hidden, ownHidden: own, count: 0, waiting: 0)
     }
 
     func testTheMenuFoldersAreTheFeeds() {
@@ -19,15 +21,17 @@ final class InboxTowerEntriesTreeTests: XCTestCase {
         let feed = Feed(v: 1, builtAt: "", folders: [
             folder(1, .root, parent: nil, slug: "inbox"),
             folder(2, .approvals, parent: 1, slug: "needs-approval"),
-            folder(3, .owner, parent: 1, slug: "release", hidden: true),
-            folder(4, .owner, parent: 3, slug: "blockers", hidden: true)
+            folder(3, .owner, parent: 1, slug: "release", hidden: true, own: true),
+            folder(4, .owner, parent: 3, slug: "blockers", hidden: true),
+            // Hidden by its own flag under a hidden parent: still drawn hidden.
+            folder(5, .owner, parent: 3, slug: "old", hidden: true, own: true)
         ], cards: [])
 
         let tree = InboxTowerEntries.tree(local, feed: feed)
 
-        XCTAssertEqual(tree.folders.map(\.id), [1, 2, 3, 4], "Go's folders in Go's order; the local-only one is gone")
-        XCTAssertEqual(tree.folders.map(\.hidden), [false, false, true, false],
-                       "hidden where its own flag hid it; the child is hidden through its parent")
+        XCTAssertEqual(tree.folders.map(\.id), [1, 2, 3, 4, 5], "Go's folders in Go's order; the local-only one is gone")
+        XCTAssertEqual(tree.folders.map(\.hidden), [false, false, true, false, true],
+                       "hidden where its own flag hid it, under a hidden parent too; 4 is hidden only through it")
         XCTAssertEqual(tree.approvals?.id, 2)
         XCTAssertEqual(tree.revision, 7, "the CLI's revision stays the local read's")
         XCTAssertEqual(tree.routes, [3: 9])

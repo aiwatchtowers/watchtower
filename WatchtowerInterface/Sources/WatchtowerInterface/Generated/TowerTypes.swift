@@ -1944,6 +1944,7 @@ public struct Folder: Codable, Hashable, Sendable {
     public var parentID: Int64?
     public var position: Int
     public var hidden: Bool
+    public var ownHidden: Bool
     public var count: Int
     public var waiting: Int
 
@@ -1956,6 +1957,7 @@ public struct Folder: Codable, Hashable, Sendable {
         parentID: Int64? = nil,
         position: Int,
         hidden: Bool,
+        ownHidden: Bool,
         count: Int,
         waiting: Int
     ) {
@@ -1967,6 +1969,7 @@ public struct Folder: Codable, Hashable, Sendable {
         self.parentID = parentID
         self.position = position
         self.hidden = hidden
+        self.ownHidden = ownHidden
         self.count = count
         self.waiting = waiting
     }
@@ -1980,6 +1983,7 @@ public struct Folder: Codable, Hashable, Sendable {
         case parentID = "parent_id"
         case position
         case hidden
+        case ownHidden = "own_hidden"
         case count
         case waiting
     }

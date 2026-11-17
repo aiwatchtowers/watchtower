@@ -89,19 +89,18 @@ package enum InboxTowerEntries {
     /// and the built-ins' states stay the read's.
     /// The menu's folders as Go lists them (`Feed.folders`, in pre-order):
     /// which folders show, their order and which are hidden come from the
-    /// feed, never from the local read. A folder is drawn hidden only where
-    /// its own flag hid it (Go sends the effective value, an ancestor's
-    /// included). The local read keeps what the feed does not carry: the
-    /// revision every CLI edit sends back and the routes.
+    /// feed, never from the local read. A folder is drawn hidden where its
+    /// own flag hid it (`Folder.own_hidden`, beside the effective `hidden`),
+    /// as the local tree drew it. The local read keeps what the feed does not
+    /// carry: the revision every CLI edit sends back and the routes.
     package static func tree(_ local: InboxFolderTree, feed: Feed) -> InboxFolderTree {
         guard !feed.folders.isEmpty else { return local }
-        let hidden = Dictionary(feed.folders.map { ($0.id, $0.hidden) }) { first, _ in first }
         let folders = feed.folders.map { folder in
             InboxFolder(
                 id: folder.id, kind: InboxFolder.Kind(rawValue: folder.kind.rawValue) ?? .owner,
                 parentID: folder.parentID, slug: folder.slug, title: folder.title, icon: folder.icon,
                 position: folder.position,
-                hidden: folder.hidden && !(folder.parentID.flatMap { hidden[$0] } ?? false))
+                hidden: folder.ownHidden)
         }
         return InboxFolderTree(revision: local.revision, folders: folders, routes: local.routes)
     }

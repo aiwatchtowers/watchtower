@@ -93,12 +93,14 @@ final class SidebarCountsViewModel {
 
     /// Loads the counts once and updates the published properties.
     /// Awaiting this guarantees the sidebar badges reflect real DB state before the splash screen hides.
+    /// The Inbox badge's first tower read is awaited too, so it is right
+    /// before the splash hides when the daemon answers; a link that fails
+    /// ends that wait with the failure (the badge keeps its last value).
+    /// Only this first load waits: `refresh()` and the observation loop
+    /// never await the tower.
     func loadInitial() async {
         apply(await fetch())
-        // Off this path: a tower that is down or restarting answers only
-        // when it comes back or fails (up to 15 s), and must hold back
-        // neither the other badges nor whoever awaits this.
-        requestTowerBadge()
+        await requestTowerBadge()?.value
     }
 
     /// Reads the tower's Inbox badge in its own task; the latest request
@@ -137,7 +139,11 @@ final class SidebarCountsViewModel {
     /// The daemon's automation inbox outputs arrive the same way: the
     /// Automations poll asks for a refresh when their unread count moves.
     func refresh() async {
-        await loadInitial()
+        apply(await fetch())
+        // Off this path: a tower that is down or restarting answers only
+        // when it comes back or fails (up to 15 s), and must hold back
+        // neither the other badges nor whoever awaits this.
+        requestTowerBadge()
     }
 
     /// Begins observing the source tables and refreshes counts on each change.

@@ -204,8 +204,26 @@ final class SidebarCountsViewModelTests: XCTestCase {
     }
 
     /// A tower that never answers (the daemon down, its 15 s failure not yet
-    /// due) holds back neither `loadInitial` nor the other badges: a write
+    /// due) holds back neither `refresh()` nor the other badges: a write
     /// still moves Catch-Up while the Inbox badge's read waits.
+    /// The first load waits for the tower's badge, so the Inbox badge is
+    /// right before the splash hides when the daemon answers; a read that
+    /// ends without a badge (the link failed) ends the wait and keeps the
+    /// last value.
+    func testTheFirstLoadWaitsForTheTowersBadge() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
+        vm.towerInboxBadge = { 7 }
+        await vm.loadInitial()
+        XCTAssertEqual(vm.inboxStripCount, 7, "set when loadInitial returns")
+
+        let failed = SidebarCountsViewModel(dbPool: manager.dbPool)
+        failed.towerInboxBadge = { nil }
+        await failed.loadInitial()
+        XCTAssertEqual(failed.inboxStripCount, 0, "a failed link ends the wait; the badge keeps its value")
+    }
+
     func testATowerThatNeverAnswersHoldsBackNoOtherBadge() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
@@ -216,7 +234,7 @@ final class SidebarCountsViewModelTests: XCTestCase {
             await gate.wait()
             return 9
         }
-        await vm.loadInitial() // returns while the badge's read waits
+        await vm.refresh() // returns while the badge's read waits
         vm.startObserving()
         defer { vm.stopObserving() }
         try await manager.dbPool.write { try Self.insertRecap($0, status: "ready") }

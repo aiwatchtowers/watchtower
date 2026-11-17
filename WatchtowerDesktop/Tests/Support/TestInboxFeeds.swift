@@ -35,6 +35,7 @@ package enum TestInboxFeeds {
             Folder(
                 id: folder.id, kind: FolderKind(rawValue: folder.kind.rawValue), slug: folder.slug, title: folder.title,
                 icon: folder.icon, parentID: folder.parentID, position: folder.position, hidden: folder.hidden,
+                ownHidden: folder.hidden,
                 count: cards.filter { $0.folderID == folder.id && ($0.unread || $0.folderID == approvalsID) }.count,
                 waiting: 0)
         }

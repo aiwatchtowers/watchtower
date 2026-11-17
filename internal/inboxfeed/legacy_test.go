@@ -220,3 +220,24 @@ func TestLegacy_MessagesItemsCarryRefFacts(t *testing.T) {
 		t.Fatalf("facts %v, want %v (items in order 1, 2, 3)", got, want)
 	}
 }
+
+// A folder hidden by its own flag under a hidden parent: Hidden is the
+// effective value (an ancestor's included), OwnHidden the folder's own, so
+// the Mac's Show Hidden Folders draws exactly the folders the owner hid.
+func TestFolders_OwnHiddenBesideTheEffectiveFlag(t *testing.T) {
+	feed := buildFeed(t, []string{
+		"INSERT INTO inbox_folders (id, kind, parent_id, slug, title, icon, position, hidden) VALUES (3, 'owner', 1, 'old', 'Old', '', 1, 1)",
+		"INSERT INTO inbox_folders (id, kind, parent_id, slug, title, icon, position, hidden) VALUES (4, 'owner', 3, 'older', 'Older', '', 0, 1)",
+		"INSERT INTO inbox_folders (id, kind, parent_id, slug, title, icon, position, hidden) VALUES (5, 'owner', 3, 'kept', 'Kept', '', 1, 0)",
+	}, Options{})
+	got := map[int64][2]bool{}
+	for _, f := range feed.Folders {
+		got[f.ID] = [2]bool{f.Hidden, f.OwnHidden}
+	}
+	want := map[int64][2]bool{1: {false, false}, 2: {false, false}, 3: {true, true}, 4: {true, true}, 5: {true, false}}
+	for id, w := range want {
+		if got[id] != w {
+			t.Errorf("folder %d hidden/own %v, want %v", id, got[id], w)
+		}
+	}
+}
