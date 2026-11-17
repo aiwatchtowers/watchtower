@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"watchtower/internal/oauthpage"
+	"watchtower/internal/slackmanifest"
 
 	"github.com/slack-go/slack"
 )
@@ -50,19 +51,9 @@ var (
 	DefaultClientSecret string
 )
 
-// UserScopes are the Slack user token scopes required by Watchtower.
-var UserScopes = []string{
-	"channels:history", "channels:read", "channels:write",
-	"groups:history", "groups:read", "groups:write",
-	"im:history", "im:read", "im:write",
-	"mpim:history", "mpim:read", "mpim:write",
-	"search:read",
-	"users:read", "users:read.email",
-	"files:read", "reactions:read", "team:read",
-	// Sending from the assistant (send_slack_message, behind the owner's
-	// Approve). Accounts connected before it was asked for re-consent.
-	"chat:write",
-}
+// UserScopes are the Slack user token scopes required by Watchtower — the
+// app manifest's (internal/slackmanifest), its single source.
+var UserScopes = slackmanifest.UserScopes()
 
 // slackHTTPClient makes the code exchange. Its timeout bounds the call on its
 // own: a stalled oauth.v2.access must not hang the CLI the Desktop is waiting
