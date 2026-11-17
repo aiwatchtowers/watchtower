@@ -53,6 +53,7 @@ const (
 	chatActionGoneMessage   = "This action no longer exists on your Mac"
 	chatTurnEndedMessage    = "This answer has already ended"
 	chatTextTooLongMessage  = "This message is over 32,000 characters"
+	chatTurnInvalidMessage  = "Your Mac can't send this message as it is"
 	chatHubStoppingMessage  = "Your Mac is stopping chat right now — try again in a moment"
 	chatWriteFailedMessage  = "Your Mac could not save this"
 	chatReadFailedMessage   = "Your Mac could not read this"
@@ -231,19 +232,6 @@ func (h *Handlers) askedAt(r actions.Request) time.Time {
 		return at
 	}
 	return now
-}
-
-// int64sParam is params[name] when it is a JSON array of integers (missing
-// or null = none).
-func int64sParam(r actions.Request, name string) ([]int64, bool) {
-	if isNull(r, name) {
-		return nil, true
-	}
-	var v []int64
-	if err := json.Unmarshal(r.Action.Params[name], &v); err != nil {
-		return nil, false
-	}
-	return v, true
 }
 
 // chatRouting is params.routing: {mode auto|pinned, provider?, model?};

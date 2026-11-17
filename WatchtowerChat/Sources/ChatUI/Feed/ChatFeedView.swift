@@ -140,6 +140,8 @@ public struct ChatFeedFollow {
 public struct ChatFeedView: View {
     let messages: [ChatFeed.Message]
     let context: ChatFeedContext
+    /// The messages' parts from the last pass: a streaming update re-derives only the message it changed.
+    @State private var partsCache = ChatMessagePartsCache()
 
     public init(messages: [ChatFeed.Message], context: ChatFeedContext) {
         self.messages = messages
@@ -147,7 +149,7 @@ public struct ChatFeedView: View {
     }
 
     public var body: some View {
-        let rows = ChatFeedLayout.rows(messages: messages, actions: context.actions)
+        let rows = ChatFeedLayout.rows(messages: messages, actions: context.actions, cache: partsCache)
         Group {
             if let follow = context.follow {
                 ChatFollowingScroll(rows: rows, messages: messages, context: context, follow: follow)
@@ -209,19 +211,26 @@ struct ChatFeedColumn<Content: View>: View {
 /// The feed's rows with no scroll of their own: for a chat that sits inside its pane's own scroll view (an idea's
 /// Discuss section, the tuning panel). `ChatFeedView` draws the same rows in its scroll view.
 public struct ChatFeedRows: View {
-    let rows: [ChatFeedLayout.Row]
+    /// The rows `ChatFeedView` already built; nil builds them here, over this view's own parts cache.
+    private let builtRows: [ChatFeedLayout.Row]?
     let messages: [ChatFeed.Message]
     let context: ChatFeedContext
+    @State private var partsCache = ChatMessagePartsCache()
 
     public init(messages: [ChatFeed.Message], context: ChatFeedContext) {
-        self.init(rows: ChatFeedLayout.rows(messages: messages, actions: context.actions), messages: messages,
-                  context: context)
+        self.builtRows = nil
+        self.messages = messages
+        self.context = context
     }
 
     init(rows: [ChatFeedLayout.Row], messages: [ChatFeed.Message], context: ChatFeedContext) {
-        self.rows = rows
+        self.builtRows = rows
         self.messages = messages
         self.context = context
+    }
+
+    private var rows: [ChatFeedLayout.Row] {
+        builtRows ?? ChatFeedLayout.rows(messages: messages, actions: context.actions, cache: partsCache)
     }
 
     public var body: some View {

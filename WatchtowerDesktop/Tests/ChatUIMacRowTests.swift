@@ -181,6 +181,36 @@ final class ChatUIMacRowTests: XCTestCase {
         XCTAssertThrowsError(try row(message).inspect().find(EmbeddedStepRow.self), "the default style keeps ChatUI's line")
     }
 
+    /// The Mac keeps its own line for a cut reply (#1783 is the phone's rule: ChatUI names no machine itself).
+    func testACutReplySaysTheMacOnTheMac() throws {
+        let cut = ChatFeed.Message(id: 4, role: "assistant", text: "body", textCut: true, status: "complete",
+                                   createdAt: .distantPast)
+        let mac = row(cut).environment(\.chatHostText, .mac)
+        XCTAssertNoThrow(try mac.inspect().find(text: "This message is cut here; the whole text is on your Mac."))
+        XCTAssertNoThrow(try row(cut).inspect().find(text: ChatHostText.plain.messageCut), "ChatUI's own line names no Mac")
+        XCTAssertFalse(ChatHostText.plain.messageCut.contains("Mac"))
+        XCTAssertEqual(ChatHostText.mac.artifactCut, "This artifact is cut here; the whole text is on your Mac.")
+        XCTAssertEqual(ChatHostText.mac.chooseSlackWorkspace, "Choose a workspace on the Mac before approving")
+    }
+
+    /// The Chats panel's row says what it said before the unified chat (final re-review I5): the waiting tool by its
+    /// card title, the age from the last answer (not a later rename), the title bold while an answer is unread.
+    func testSidebarRowNamesTheToolAndAgesFromTheLastAnswer() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let waiting = ChatList.Conversation(id: 1, title: "Send it", updatedAt: now.addingTimeInterval(-60), state: .waiting,
+                                            lastAnswerAt: now.addingTimeInterval(-120), pendingTool: "send_slack_message",
+                                            unread: true)
+        let title = try XCTUnwrap(ReactionToolCatalog.info(for: "send_slack_message")?.title)
+        let row = ChatSidebarRow(content: ChatSidebarRow.content(waiting, now: now, showsProject: true))
+        XCTAssertNoThrow(try row.inspect().find(text: "Waiting for approval: \(title)"))
+        let renamed = ChatList.Conversation(id: 2, title: "Plan", updatedAt: now.addingTimeInterval(-60), state: .read,
+                                            lastLine: "Done.", lastAnswerAt: now.addingTimeInterval(-3 * 86_400))
+        let content = ChatSidebarRow.content(renamed, now: now, showsProject: true)
+        XCTAssertEqual(content.age, "3d", "the age counts from the last answer")
+        XCTAssertTrue(ChatSidebarRow.content(waiting, now: now, showsProject: true).unread)
+        XCTAssertFalse(content.unread)
+    }
+
     // MARK: - Artifacts, steps, sources, published pages
 
     func testArtifactCardShowsWritingThenOpens() throws {

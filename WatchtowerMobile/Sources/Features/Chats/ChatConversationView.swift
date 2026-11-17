@@ -57,6 +57,7 @@ struct ChatConversationView: View {
                     ArtifactViewer(artifact: artifact, openURL: { openURL($0) }, copy: { UIPasteboard.general.string = $0 })
                         .padding(Spacing.large)
                         .environment(\.chatUIStyle, Self.style)
+                        .environment(\.chatHostText, .phone(hubName))
                 }
                 .navigationTitle(artifact.title)
                 .navigationBarTitleDisplayMode(.inline)
@@ -103,6 +104,9 @@ struct ChatConversationView: View {
         return center.snapshot.list?.conversations.first { $0.id == id }?.title ?? ""
     }
 
+    /// The tower's name for the artifact sheet's lines (the screen reads it from its gate inputs).
+    private var hubName: String { (shot?.heartbeat ?? env.workbenchReplica.snapshot.heartbeat)?.macName ?? "" }
+
     /// The alert routing's screen: a saved conversation on the hub on screen.
     private var alertScreen: AlertDestination? {
         guard let id = conversation.conversationID, let hubID = env.activeHubID else { return nil }
@@ -118,6 +122,7 @@ struct ChatConversationView: View {
             composerAccessory: pills, focusMessageID: route.messageID
         )
         .environment(\.chatUIStyle, Self.style)
+        .environment(\.chatHostText, .phone(inputs.heartbeat?.macName ?? ""))
         .overlay(alignment: .center) {
             if conversation.messages.isEmpty { placeholder(inputs.host, online: gate.online) }
         }

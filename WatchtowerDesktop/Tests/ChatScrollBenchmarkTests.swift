@@ -1,4 +1,5 @@
 import AppKit
+import ChatWire
 import SwiftUI
 import XCTest
 @testable import WatchtowerDesktop
@@ -104,6 +105,29 @@ final class ChatScrollBenchmarkTests: XCTestCase {
         let clock = ContinuousClock()
         let samples = (0..<15).map { _ in clock.measure { for item in items { _ = item.stepDisplays } } }
         print("BENCH stepDisplays, 100 rows: median \(median(samples))")
+    }
+
+    /// A streamed `message_upsert` over the last 60 messages (final review I4): the feed body pass's row build with
+    /// every message derived again (no cache, as before) and with the feed's parts cache (only the streamed one).
+    func testStreamedUpdateRowBuild() {
+        let messages = Array(EmbeddedChatFeedAdapter.messages(rows: Self.thread(), live: nil).suffix(60))
+        let last = messages[messages.count - 1]
+        let cache = ChatMessagePartsCache()
+        _ = ChatFeedLayout.rows(messages: messages, actions: [], cache: cache)
+        let clock = ContinuousClock()
+        var every: [Duration] = []
+        var cached: [Duration] = []
+        for tick in 0..<30 {
+            var streamed = messages
+            streamed[streamed.count - 1] = ChatFeed.Message(
+                id: last.id, role: last.role, text: last.text + String(repeating: " more", count: tick + 1),
+                status: "pending", createdAt: last.createdAt, steps: last.steps
+            )
+            every.append(clock.measure { _ = ChatFeedLayout.rows(messages: streamed, actions: []) })
+            cached.append(clock.measure { _ = ChatFeedLayout.rows(messages: streamed, actions: [], cache: cache) })
+        }
+        print("BENCH streamed update row build, 60 messages: every message median \(median(every)), " +
+              "parts cache median \(median(cached))")
     }
 
     /// The thread's rows in a `LazyVStack` (no feed), scrolled in a real

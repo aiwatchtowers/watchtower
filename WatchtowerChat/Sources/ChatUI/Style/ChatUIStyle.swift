@@ -37,6 +37,9 @@ public protocol ChatUIStyle {
     /// One tool step's line drawn by the app (the Mac's embedded chats name the call from its arguments); nil draws
     /// ChatUI's own line.
     func stepLine(_ step: ChatStepLine, turnRunning: Bool) -> AnyView?
+    /// A chat list row drawn by the app (the Mac's Chats panel keeps the row it had, spec §2 "a move, not a
+    /// redesign"); nil draws ChatUI's own row.
+    func listRow(_ content: ChatListRowContent) -> AnyView?
 }
 
 /// One tool step as `ChatUIStyle.stepLine` gets it. `argsJSON` and `isWaiting` are set only by a client that has them.
@@ -105,6 +108,8 @@ extension ChatUIStyle {
     public var stepsFirst: Bool { false }
 
     public func stepLine(_ step: ChatStepLine, turnRunning: Bool) -> AnyView? { nil }
+
+    public func listRow(_ content: ChatListRowContent) -> AnyView? { nil }
 }
 
 /// The default style: borderless controls on the shared tokens, no app look.

@@ -61,6 +61,9 @@ final class ChatUISourceScanTests: XCTestCase {
             "Feed/ChatMessageRow.swift",
             "Parts/QuestionPartView.swift",
             "Artifacts/ArtifactViewer.swift",
+            // The phone's artifact viewer controls and the sources list (final review M2).
+            "Platform/iOS/ArtifactViewerParts.swift",
+            "Parts/SourcesPartView.swift",
             "Platform/macOS/ArtifactPrinter.swift",
             "Platform/macOS/SandboxedHTMLGlue.swift",
             "Platform/macOS/PresentWindow.swift",

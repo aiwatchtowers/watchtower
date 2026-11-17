@@ -3,6 +3,7 @@ package sources
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -187,6 +188,43 @@ func TestChatList_StatePrecedence(t *testing.T) {
 		if states[k] != v {
 			t.Errorf("%s: state %s, want %s", k, states[k], v)
 		}
+	}
+}
+
+// The panel's words beside the state (final re-review I5): the oldest
+// pending approval's tool, the last answer's time (not updated_at, which a
+// rename or a turn start moves) and unread whatever the state shows first.
+func TestChatList_CarriesPendingToolLastAnswerAndUnread(t *testing.T) {
+	d := openDB(t)
+	s := chatSeed{t, d}
+	waiting := s.conversation("waiting", 50, "")
+	s.message(waiting, 0, "assistant", "a", "complete", "turn-a", 10)
+	execID(t, d, `INSERT INTO agent_actions (tool, args_json, reason, surface, conversation_id, turn_id, status, created_at)
+		VALUES ('create_jira_issue', '{}', '', 'main', ?, 'turn-a', 'pending', '2000-01-02')`, waiting)
+	execID(t, d, `INSERT INTO agent_actions (tool, args_json, reason, surface, conversation_id, turn_id, status, created_at)
+		VALUES ('send_slack_message', '{}', '', 'main', ?, 'turn-a', 'pending', '2000-01-01')`, waiting)
+	read := s.conversation("read", 40, "read_at = 30")
+	s.message(read, 0, "assistant", "a", "complete", "turn-b", 20)
+	never := s.conversation("no answer", 30, "")
+	s.message(never, 0, "user", "q", "complete", "turn-c", 10)
+
+	got := chatRecords(t, ChatList(chatReaderOf(d, nil), ChatListOptions{Grant: chatGranted, Models: func() []ChatModel { return nil }}))[ChatListID]
+	rows := map[string]map[string]any{}
+	for _, c := range got["conversations"].([]any) {
+		m := c.(map[string]any)
+		rows[m["title"].(string)] = m
+	}
+	w := rows["waiting"]
+	if w["state"] != ChatStateWaiting || w["pending_tool"] != "send_slack_message" || w["unread"] != true || fmt.Sprint(w["last_answer_at"]) != "10" {
+		t.Errorf("waiting row %v", w)
+	}
+	r := rows["read"]
+	if fmt.Sprint(r["last_answer_at"]) != "20" || r["unread"] != nil || r["pending_tool"] != nil {
+		t.Errorf("read row %v", r)
+	}
+	n := rows["no answer"]
+	if n["last_answer_at"] != nil || n["unread"] != nil {
+		t.Errorf("unanswered row %v", n)
 	}
 }
 

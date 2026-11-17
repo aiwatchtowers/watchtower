@@ -33,4 +33,27 @@ final class ChatFeedLayoutTests: XCTestCase {
         XCTAssertEqual(QuestionPartView.accessibilityLabel(ChatQuestionOption(label: "Cookie"), includesRecommended: true),
                        "Cookie")
     }
+
+    /// The feed's parts cache (final review I4): a streaming update re-derives only the message it changed; the rows
+    /// are the same as without the cache, and a message gone from the feed leaves it.
+    func testPartsCacheReDerivesOnlyTheChangedMessage() {
+        let cache = ChatMessagePartsCache()
+        var messages = (1...60).map { message(Int64($0), $0.isMultiple(of: 2) ? "assistant" : "user", "Answer \($0)") }
+        let first = ChatFeedLayout.rows(messages: messages, actions: [], cache: cache)
+        XCTAssertEqual(first, ChatFeedLayout.rows(messages: messages, actions: []))
+        XCTAssertEqual(cache.derivedCount, 60)
+
+        XCTAssertEqual(ChatFeedLayout.rows(messages: messages, actions: [], cache: cache), first, "a pass with no change")
+        XCTAssertEqual(cache.derivedCount, 60, "nothing derived again")
+
+        messages[59] = ChatFeed.Message(id: 60, role: "assistant", text: "Answer 60, longer now", status: "pending",
+                                        createdAt: messages[59].createdAt)
+        let streamed = ChatFeedLayout.rows(messages: messages, actions: [], cache: cache)
+        XCTAssertEqual(cache.derivedCount, 61, "only the streamed message")
+        XCTAssertEqual(streamed, ChatFeedLayout.rows(messages: messages, actions: []))
+
+        _ = ChatFeedLayout.rows(messages: Array(messages.dropFirst()), actions: [], cache: cache)
+        _ = ChatFeedLayout.rows(messages: messages, actions: [], cache: cache)
+        XCTAssertEqual(cache.derivedCount, 62, "a message that left the feed is derived again when it comes back")
+    }
 }

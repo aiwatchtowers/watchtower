@@ -14,6 +14,7 @@ extension View {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(text, forType: .string)
                 })
+                .environment(\.chatHostText, .mac)
                 Divider()
                 HStack {
                     Spacer()

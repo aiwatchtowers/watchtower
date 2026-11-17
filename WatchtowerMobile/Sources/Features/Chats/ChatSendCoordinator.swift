@@ -308,7 +308,7 @@ final class ChatSendCoordinator {
         }
         let turn = ChatTurnParams(
             conversationID: conversation, mode: request.mode, messageID: request.messageID, text: request.text,
-            attachmentIDs: request.attachmentIDs + uploaded, routing: nil, clientKey: clientKey, compose: request.compose
+            attachmentIDs: request.attachmentIDs + uploaded, routing: request.routing, clientKey: clientKey, compose: request.compose
         )
         switch await run(turn, record: &record, \.turnActionID) {
         case let .applied(result):

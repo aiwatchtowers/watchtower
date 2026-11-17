@@ -127,6 +127,11 @@ struct DesignKitChatStyle: ChatUIStyle {
         return AnyView(EmbeddedStepRow(step, turnRunning: turnRunning))
     }
 
+    /// The Chats panel keeps the row it had before the unified chat (spec §2, final review I5).
+    func listRow(_ content: ChatListRowContent) -> AnyView? {
+        AnyView(ChatSidebarRow(content: content))
+    }
+
     /// The embedded chats' error line: the reason and its detail on a red tint, Retry on the right; a reply stopped by
     /// the subscription quota is the provider-fallback card with "Review actions".
     func errorCard(_ content: ChatErrorCardContent) -> AnyView? {
@@ -163,8 +168,18 @@ extension View {
     /// The shared chat views with the Mac's controls and artifact presentation.
     func macChatStyle(hooks: ChatMacArtifactHooks, look: DesignKitChatStyle.Look = .standard) -> some View {
         environment(\.chatUIStyle, DesignKitChatStyle(look: look))
+            .environment(\.chatHostText, .mac)
             .environment(\.chatMacArtifactHooks, hooks)
     }
+}
+
+extension ChatHostText {
+    /// The Mac's own lines: the chat runs on this Mac (#1783 is the phone's rule).
+    static let mac = ChatHostText(
+        messageCut: "This message is cut here; the whole text is on your Mac.",
+        artifactCut: "This artifact is cut here; the whole text is on your Mac.",
+        chooseSlackWorkspace: "Choose a workspace on the Mac before approving"
+    )
 }
 
 extension ChatMacArtifactHooks {

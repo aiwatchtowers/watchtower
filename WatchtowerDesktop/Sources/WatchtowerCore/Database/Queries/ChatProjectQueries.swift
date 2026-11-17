@@ -9,8 +9,8 @@ import GRDB
 /// Every write that changes what that prompt or those attachments hold
 /// (instructions, sources, files, delete — a rename, cosmetic, does not)
 /// also drops the project's stored
-/// Claude sessions in the same transaction (`dropSessions`), as
-/// `ChatConversationQueries.setProject` does on a move: a `--resume`d
+/// Claude sessions in the same transaction (`dropSessions`), as the
+/// engine's move of a chat between projects does: a `--resume`d
 /// session keeps the prompt it was started with, so it would never see the
 /// edit. The caller retires the warm processes (`ChatSessionPool`).
 package enum ChatProjectQueries {

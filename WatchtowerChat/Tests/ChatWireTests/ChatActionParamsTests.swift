@@ -99,4 +99,31 @@ final class ChatActionParamsTests: XCTestCase {
         XCTAssertFalse(ChatLimits.textFits(String(repeating: "a", count: 32001)))
         XCTAssertFalse(ChatLimits.textFits(String(repeating: family, count: 4572))) // 4572 × 7 = 32004, 4572 Characters
     }
+
+    /// The relay's `chat_turn` carries what chat.sock's does (final review I2; Go reads both with
+    /// `chatengine.DecodeTurn`): every key a `ChatTurnRequest` puts on the wire is a `ChatTurnParams` key too, except
+    /// the Mac-only ones named here (in-app help's screen and artifact comments, which the phone never sends). A new
+    /// turn field fails here until the relay carries it or it is named Mac-only.
+    func testRelayTurnParamsCarryEveryChatSockTurnKey() throws {
+        let routing = ChatRouting(mode: "pinned", provider: "claude", model: "opus")
+        let compose = ChatCompose(skill: "weekly-report", mentions: [.init(kind: "person", id: "U0001", label: "Alice")])
+        let request = ChatTurnRequest(
+            conversationID: 7, mode: .edit, messageID: 3, text: "hi", attachmentIDs: [1], routing: routing, compose: compose,
+            screenContext: "<screen/>", artifactCommentIDs: [2], clientKey: "k", projectID: 9,
+            draft: ChatTurnDraft(text: "hi")
+        )
+        let params = ChatTurnParams(
+            conversationID: 7, mode: .edit, messageID: 3, text: "hi", attachmentIDs: [1], routing: routing, clientKey: "k",
+            compose: compose
+        )
+        let macOnly: Set = ["screen_context", "artifact_comment_ids"]
+        let encoder = ChatWireCoder.makeEncoder()
+        func keys<T: Encodable>(_ value: T) throws -> Set<String> {
+            let object = try JSONSerialization.jsonObject(with: try encoder.encode(value)) as? [String: Any]
+            return Set(try XCTUnwrap(object).keys)
+        }
+        let socket = try keys(request)
+        XCTAssertTrue(macOnly.isSubset(of: socket), "a Mac-only key left chat.sock's turn: update the list")
+        XCTAssertEqual(try keys(params), socket.subtracting(macOnly))
+    }
 }
