@@ -43,6 +43,7 @@ public enum TowerCommand: String, CaseIterable, Sendable {
     case chatSetRouting = "chat.set_routing"
     case chatSetTitle = "chat.set_title"
     case chatStop = "chat.stop"
+    case inboxAct = "inbox.act"
     case inboxFeed = "inbox.feed"
     case inboxWatch = "inbox.watch"
     case meetingsDelete = "meetings.delete"
@@ -93,6 +94,7 @@ public enum TowerCommand: String, CaseIterable, Sendable {
         case .chatSetRouting: false
         case .chatSetTitle: false
         case .chatStop: false
+        case .inboxAct: false
         case .inboxFeed: true
         case .inboxWatch: false
         case .meetingsDelete: false

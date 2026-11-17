@@ -417,12 +417,19 @@ type ActRequest struct {
 
 // ActParams are a verb's parameters; each verb reads its own.
 type ActParams struct {
-	ContentHash  string          `json:"content_hash,omitempty"`
-	Index        *int            `json:"index,omitempty"`
-	Text         string          `json:"text,omitempty"`
-	RefKind      RefKind         `json:"ref_kind,omitempty"`
-	RefID        int64           `json:"ref_id,omitempty"`
-	RefVerb      RefVerb         `json:"ref_verb,omitempty"`
+	ContentHash string `json:"content_hash,omitempty"`
+	Index       *int   `json:"index,omitempty"`
+	// ActionKind is a pressed button's kind as drawn (CardAction.Kind:
+	// "reply" or "target"): the hub grant a press needs is decided from it,
+	// and a press whose button is another kind is refused changed.
+	ActionKind string  `json:"action_kind,omitempty"`
+	Text       string  `json:"text,omitempty"`
+	RefKind    RefKind `json:"ref_kind,omitempty"`
+	RefID      int64   `json:"ref_id,omitempty"`
+	RefVerb    RefVerb `json:"ref_verb,omitempty"`
+	// EventID is the track event a track's make_task applies (ref_id is
+	// the track, as for every track verb).
+	EventID      int64           `json:"event_id,omitempty"`
 	Until        string          `json:"until,omitempty"`
 	ApprovalVerb ApprovalVerb    `json:"approval_verb,omitempty"`
 	ArgsSHA256   string          `json:"args_sha256,omitempty"`
@@ -438,4 +445,7 @@ type ActResult struct {
 	Status string `json:"status,omitempty"`
 	Error  string `json:"error,omitempty"`
 	RunID  int64  `json:"run_id,omitempty"`
+	// Note is a line for the owner about what was not done here, such as
+	// a watch that starts only from the Mac.
+	Note string `json:"note,omitempty"`
 }

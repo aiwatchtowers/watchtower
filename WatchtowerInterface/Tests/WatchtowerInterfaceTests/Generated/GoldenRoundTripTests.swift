@@ -18,6 +18,14 @@ final class GoldenRoundTripTests: XCTestCase {
         .deletingLastPathComponent()  // the repository
         .appendingPathComponent("internal/tower/api/testdata")
 
+    func testActRequestRoundTrip() throws {
+        try assertRoundTrip(ActRequest.self, golden: "ActRequest")
+    }
+
+    func testActResultRoundTrip() throws {
+        try assertRoundTrip(ActResult.self, golden: "ActResult")
+    }
+
     func testChangedEventRoundTrip() throws {
         try assertRoundTrip(ChangedEvent.self, golden: "ChangedEvent")
     }
@@ -239,7 +247,7 @@ final class GoldenRoundTripTests: XCTestCase {
     }
 
     func testUnknownEnumValueSurvives() throws {
-        let decoded = try JSONDecoder().decode(ActionState.self, from: Data(#""zz_future""#.utf8))
+        let decoded = try JSONDecoder().decode(ActVerb.self, from: Data(#""zz_future""#.utf8))
         XCTAssertEqual(decoded, .unknown("zz_future"))
         XCTAssertEqual(try JSONEncoder().encode(decoded), Data(#""zz_future""#.utf8))
     }

@@ -52,7 +52,7 @@ func runAutomationsReply(cmd *cobra.Command, _ []string) error {
 	if reason := notRunnableReason(a); reason != "" {
 		return fmt.Errorf("automation %d cannot run: %s", a.ID, reason)
 	}
-	if err := requireInboxReply(database, a); err != nil {
+	if err := automations.RequireInboxReply(database, a); err != nil {
 		return err
 	}
 	if err := confirmWithOwner(replyVerb, inboxReplyConfirmDetail(database, o.ID, index)); err != nil {
@@ -125,26 +125,4 @@ func flattenedCardActions(o *db.AutomationOutput) ([]db.InboxAction, error) {
 		return nil, fmt.Errorf("inbox card %d: %w", o.ID, err)
 	}
 	return actions, nil
-}
-
-// requireInboxReply refuses a press when a's confirmed recipe does not hold
-// inbox:reply: a press runs the confirmed text, and the executor would fail
-// a reply run of a snapshot without it.
-func requireInboxReply(database *db.DB, a *db.Automation) error {
-	noReply := fmt.Errorf("automation %d no longer reacts to its Inbox buttons (inbox:reply)", a.ID)
-	r, err := automations.ConfirmedRecipe(database, a)
-	if err != nil {
-		return err
-	}
-	if r == nil {
-		return noReply
-	}
-	m, err := automations.ParseManifest(r.Permissions, r.Outputs, r.Scope)
-	if err != nil {
-		return fmt.Errorf("automation %d: the confirmed permission manifest does not parse: %w", a.ID, err)
-	}
-	if _, err := m.AllowInboxReply(); err != nil {
-		return noReply
-	}
-	return nil
 }

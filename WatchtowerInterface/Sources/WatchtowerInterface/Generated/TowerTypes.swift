@@ -2,6 +2,178 @@
 
 import Foundation
 
+public struct ActParams: Codable, Hashable, Sendable {
+    public var contentHash: String?
+    public var index: Int?
+    public var actionKind: String?
+    public var text: String?
+    public var refKind: RefKind?
+    public var refID: Int64?
+    public var refVerb: RefVerb?
+    public var eventID: Int64?
+    public var until: String?
+    public var approvalVerb: ApprovalVerb?
+    public var argsSHA256: String?
+    public var patch: RawJSON?
+
+    public init(
+        contentHash: String? = nil,
+        index: Int? = nil,
+        actionKind: String? = nil,
+        text: String? = nil,
+        refKind: RefKind? = nil,
+        refID: Int64? = nil,
+        refVerb: RefVerb? = nil,
+        eventID: Int64? = nil,
+        until: String? = nil,
+        approvalVerb: ApprovalVerb? = nil,
+        argsSHA256: String? = nil,
+        patch: RawJSON? = nil
+    ) {
+        self.contentHash = contentHash
+        self.index = index
+        self.actionKind = actionKind
+        self.text = text
+        self.refKind = refKind
+        self.refID = refID
+        self.refVerb = refVerb
+        self.eventID = eventID
+        self.until = until
+        self.approvalVerb = approvalVerb
+        self.argsSHA256 = argsSHA256
+        self.patch = patch
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case contentHash = "content_hash"
+        case index
+        case actionKind = "action_kind"
+        case text
+        case refKind = "ref_kind"
+        case refID = "ref_id"
+        case refVerb = "ref_verb"
+        case eventID = "event_id"
+        case until
+        case approvalVerb = "approval_verb"
+        case argsSHA256 = "args_sha256"
+        case patch
+    }
+}
+
+public struct ActRequest: Codable, Hashable, Sendable {
+    public var requestID: String
+    public var target: String
+    public var verb: ActVerb
+    public var params: ActParams
+
+    public init(
+        requestID: String,
+        target: String,
+        verb: ActVerb,
+        params: ActParams
+    ) {
+        self.requestID = requestID
+        self.target = target
+        self.verb = verb
+        self.params = params
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case target
+        case verb
+        case params
+    }
+}
+
+public struct ActResult: Codable, Hashable, Sendable {
+    public var already: Bool?
+    public var status: String?
+    public var error: String?
+    public var runID: Int64?
+    public var note: String?
+
+    public init(
+        already: Bool? = nil,
+        status: String? = nil,
+        error: String? = nil,
+        runID: Int64? = nil,
+        note: String? = nil
+    ) {
+        self.already = already
+        self.status = status
+        self.error = error
+        self.runID = runID
+        self.note = note
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case already
+        case status
+        case error
+        case runID = "run_id"
+        case note
+    }
+}
+
+public enum ActVerb: Codable, Hashable, Sendable {
+    case read
+    case done
+    case dismiss
+    case press
+    case runNow
+    case ref
+    case replyPropose
+    case approval
+    /// A value this build does not know (sent by a newer Watchtower).
+    case unknown(String)
+
+    public init(rawValue: String) {
+        switch rawValue {
+        case "read": self = .read
+        case "done": self = .done
+        case "dismiss": self = .dismiss
+        case "press": self = .press
+        case "run_now": self = .runNow
+        case "ref": self = .ref
+        case "reply_propose": self = .replyPropose
+        case "approval": self = .approval
+        default: self = .unknown(rawValue)
+        }
+    }
+
+    public var rawValue: String {
+        switch self {
+        case .read: "read"
+        case .done: "done"
+        case .dismiss: "dismiss"
+        case .press: "press"
+        case .runNow: "run_now"
+        case .ref: "ref"
+        case .replyPropose: "reply_propose"
+        case .approval: "approval"
+        case .unknown(let value): value
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        self.init(rawValue: try decoder.singleValueContainer().decode(String.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.rawValue == rhs.rawValue
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(rawValue)
+    }
+}
+
 public enum ActionState: Codable, Hashable, Sendable {
     case enabled
     case disabled
@@ -144,6 +316,52 @@ public struct Approval: Codable, Hashable, Sendable {
         self.recipeText = try container.decode(String.self, forKey: .recipeText)
         self.diff = try container.decodeIfPresent([DiffLine].self, forKey: .diff) ?? []
         self.recipeClipped = try container.decode(Bool.self, forKey: .recipeClipped)
+    }
+}
+
+public enum ApprovalVerb: Codable, Hashable, Sendable {
+    case approve
+    case reject
+    case retry
+    case dismiss
+    /// A value this build does not know (sent by a newer Watchtower).
+    case unknown(String)
+
+    public init(rawValue: String) {
+        switch rawValue {
+        case "approve": self = .approve
+        case "reject": self = .reject
+        case "retry": self = .retry
+        case "dismiss": self = .dismiss
+        default: self = .unknown(rawValue)
+        }
+    }
+
+    public var rawValue: String {
+        switch self {
+        case .approve: "approve"
+        case .reject: "reject"
+        case .retry: "retry"
+        case .dismiss: "dismiss"
+        case .unknown(let value): value
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        self.init(rawValue: try decoder.singleValueContainer().decode(String.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.rawValue == rhs.rawValue
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(rawValue)
     }
 }
 
@@ -2012,6 +2230,76 @@ public enum RefKind: Codable, Hashable, Sendable {
         case .reminder: "reminder"
         case .action: "action"
         case .planItem: "plan_item"
+        case .unknown(let value): value
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        self.init(rawValue: try decoder.singleValueContainer().decode(String.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.rawValue == rhs.rawValue
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(rawValue)
+    }
+}
+
+public enum RefVerb: Codable, Hashable, Sendable {
+    case resolve
+    case dismiss
+    case snooze
+    case done
+    case stop
+    case restore
+    case makeTask
+    case approve
+    case reject
+    case notNow
+    case check
+    case uncheck
+    /// A value this build does not know (sent by a newer Watchtower).
+    case unknown(String)
+
+    public init(rawValue: String) {
+        switch rawValue {
+        case "resolve": self = .resolve
+        case "dismiss": self = .dismiss
+        case "snooze": self = .snooze
+        case "done": self = .done
+        case "stop": self = .stop
+        case "restore": self = .restore
+        case "make_task": self = .makeTask
+        case "approve": self = .approve
+        case "reject": self = .reject
+        case "not_now": self = .notNow
+        case "check": self = .check
+        case "uncheck": self = .uncheck
+        default: self = .unknown(rawValue)
+        }
+    }
+
+    public var rawValue: String {
+        switch self {
+        case .resolve: "resolve"
+        case .dismiss: "dismiss"
+        case .snooze: "snooze"
+        case .done: "done"
+        case .stop: "stop"
+        case .restore: "restore"
+        case .makeTask: "make_task"
+        case .approve: "approve"
+        case .reject: "reject"
+        case .notNow: "not_now"
+        case .check: "check"
+        case .uncheck: "uncheck"
         case .unknown(let value): value
         }
     }

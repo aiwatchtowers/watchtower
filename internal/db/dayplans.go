@@ -396,13 +396,9 @@ func (db *DB) GetDayPlanItems(planID int64) ([]DayPlanItem, error) {
 }
 
 // UpdateItemStatus sets the status of a single day plan item.
+// A missing item is no error here, as before SetPlanItemStatusTx existed.
 func (db *DB) UpdateItemStatus(itemID int64, status string) error {
-	_, err := db.Exec(`UPDATE day_plan_items SET status = ?,
-		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, status, itemID)
-	if err != nil {
-		return fmt.Errorf("updating item %d status: %w", itemID, err)
-	}
-	return nil
+	return ignoreNoRow(db.WithTx(func(tx *sql.Tx) error { return SetPlanItemStatusTx(tx, itemID, status, false) }))
 }
 
 // UpdateItemOrder transactionally sets order_index for each item id.

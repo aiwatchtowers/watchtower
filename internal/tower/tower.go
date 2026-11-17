@@ -6,6 +6,7 @@
 package tower
 
 import (
+	"context"
 	"time"
 
 	"watchtower/internal/db"
@@ -15,6 +16,11 @@ import (
 type Origin struct {
 	Transport string // "socket" | "hub"
 	Device    string
+	// Desktop reports whether the caller is the signed Watchtower Desktop
+	// (nil error), checked once per socket connection: the owner gestures
+	// of AGENT-07 run over the socket only for it. nil (the hub, a test
+	// without it) means no Desktop is known.
+	Desktop func(ctx context.Context) error
 }
 
 // Options configure a Tower.
@@ -39,6 +45,10 @@ type Options struct {
 	// Changes is the change watch a Watch command streams from (watch.go);
 	// New wires Changed to also publish into it. nil refuses Watch commands.
 	Changes *Changes
+	// VerifyDesktop checks that the socket peer pid is the signed Watchtower
+	// Desktop (the daemon passes ownerconfirm.VerifyDesktop); nil trusts no
+	// peer as the Desktop, so the owner gestures are refused over the socket.
+	VerifyDesktop func(ctx context.Context, pid int) error
 	// Sentence words a handler's fault (not a refusal) for the refusal shown
 	// to the owner; nil means the error's text.
 	Sentence func(command string, err error) string
