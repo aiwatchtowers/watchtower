@@ -33,7 +33,7 @@ func startRunningPurge(t *testing.T, database *db.DB, source string, id int64) {
 	require.NoError(t, err)
 	for _, r := range rows {
 		if r.Source == source && r.AccountID == id {
-			started, err := database.StartAccountPurge(r.ID, time.Now().Add(time.Hour))
+			started, err := database.StartAccountPurge(r.ID, time.Now().Add(time.Hour), false)
 			require.NoError(t, err)
 			require.True(t, started)
 		}

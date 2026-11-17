@@ -5,6 +5,8 @@ import (
 	"errors"
 	"time"
 
+	"watchtower/internal/db"
+	"watchtower/internal/policy"
 	"watchtower/internal/purge"
 )
 
@@ -32,15 +34,15 @@ func (d *Daemon) phaseAccountPurge(ctx context.Context) {
 	if d.db == nil || ctx.Err() != nil {
 		return
 	}
-	on, _ := purge.Enabled(d.config)
-	actions := d.applyPurgeSchedule(on, false)
+	rules := d.purgeRules()
+	actions := d.applyPurgeSchedule(rules, false)
 	deadline := time.Now().Add(purgeCycleBudget)
 	for _, p := range actions.Due {
 		remaining := time.Until(deadline)
 		if remaining <= 0 || ctx.Err() != nil {
 			break
 		}
-		done, err := purge.Run(ctx, d.db, d.config.WorkspaceDir(), p, remaining)
+		done, err := purge.Run(ctx, d.db, d.config.WorkspaceDir(), p, rules, remaining)
 		switch {
 		case errors.Is(err, purge.ErrNoLongerDue):
 			d.logger.Printf("account purge: %s account %d not started: no longer due", p.Source, p.AccountID)
@@ -62,13 +64,20 @@ func (d *Daemon) phaseAccountPurgeLeases(ctx context.Context) {
 	if d.db == nil || ctx.Err() != nil {
 		return
 	}
-	on, _ := purge.Enabled(d.config)
-	d.applyPurgeSchedule(on, true)
+	d.applyPurgeSchedule(d.purgeRules(), true)
+}
+
+// purgeRules is the per-account purge rule of this pass (#1769, A21): the
+// switch and its origin from purge.Enabled, the source hold from the live
+// policy (POLICY-03).
+func (d *Daemon) purgeRules() func(db.PurgeAccount) purge.Rule {
+	on, origin := purge.Enabled(d.config)
+	return purge.Rules(on, origin, policy.SourceAllowed)
 }
 
 // applyPurgeSchedule runs one scheduling pass and logs what it wrote.
-func (d *Daemon) applyPurgeSchedule(on, leases bool) purge.Actions {
-	actions, err := purge.Apply(d.db, on, leases, time.Now())
+func (d *Daemon) applyPurgeSchedule(rules func(db.PurgeAccount) purge.Rule, leases bool) purge.Actions {
+	actions, err := purge.Apply(d.db, rules, leases, time.Now())
 	if err != nil {
 		d.logger.Printf("account purge: scheduling: %v", err)
 	}
