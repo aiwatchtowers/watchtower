@@ -1,38 +1,32 @@
 #if os(iOS)
 import SwiftUI
+import WatchtowerChatText
 import WatchtowerDesign
 
-/// The phone's composer field: a growing text field; the caret is taken as the end of the text (the `@` picker reads
-/// the query before it).
+/// The phone's text field in the shared composer field: it grows with its text; the caret is taken as the end of
+/// the text (the `@`/`/` picker reads the query before it). Return adds a line; Send sends.
 struct ChatComposerTextInput: View {
     @Binding var text: String
-    @Binding var cursor: Int
+    @Binding var height: CGFloat
     let placeholder: String
+    var maxHeight: CGFloat
+    var onEscape: (() -> Void)?
+    var onArrowUpWhenEmpty: (() -> Void)?
+    var onPasteData: ((Data, String) async -> Bool)?
+    var onAttachFiles: (([URL]) -> Void)?
+    var onLongTextPaste: ((LongPaste) -> Void)?
+    var onCursorChange: ((String, Int) -> Void)?
+    var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
+    var autoFocus: Bool
+    var focusRequest: UUID?
     let onSubmit: () -> Void
 
     var body: some View {
         TextField(placeholder, text: $text, axis: .vertical)
             .lineLimit(1...6)
             .font(.body)
-            .padding(.horizontal, Spacing.medium)
-            .padding(.vertical, Spacing.regular)
-            .background(Fill.rest, in: RoundedRectangle(cornerRadius: Radius.bubble))
-            .onChange(of: text) { _, new in cursor = new.utf16.count }
+            .onChange(of: text) { _, new in onCursorChange?(new, new.utf16.count) }
             .accessibilityIdentifier("chat.composer.field")
-    }
-}
-#endif
-
-#if os(iOS)
-/// The phone has no composer shortcuts (a hardware keyboard's Return sends through the field).
-struct ChatComposerShortcuts: View {
-    let canSend: Bool
-    let canStop: Bool
-    let onSend: () -> Void
-    let onStop: () -> Void
-
-    var body: some View {
-        EmptyView()
     }
 }
 #endif

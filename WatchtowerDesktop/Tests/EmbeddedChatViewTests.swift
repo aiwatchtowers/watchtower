@@ -183,7 +183,8 @@ final class EmbeddedChatViewTests: XCTestCase {
 
     func testComposerShowsAnErrorStatus() throws {
         let bar = ChatComposerBar(status: .error("Couldn't send: disk full"),
-                                  input: ChatComposerField(text: .constant(""), isStreaming: false) {})
+                                  input: ChatComposerField(text: .constant(""), isStreaming: false,
+                                                           config: ChatComposerFieldConfig(placeholder: "Ask…")) {})
         XCTAssertNoThrow(try bar.inspect().find(text: "Couldn't send: disk full"))
     }
 }

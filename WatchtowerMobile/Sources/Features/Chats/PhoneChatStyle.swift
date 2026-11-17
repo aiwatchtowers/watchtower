@@ -28,6 +28,31 @@ struct PhoneChatStyle: ChatUIStyle {
                 .background(Fill.card, in: Capsule())
         )
     }
+
+    /// A file waiting in the composer (mockup 2b's pill): its upload in flight, Retry on a refused upload, remove.
+    func attachmentChip(_ chip: ChatAttachmentChipContent) -> AnyView {
+        AnyView(
+            HStack(spacing: Spacing.small) {
+                if !chip.icon.isEmpty { Image(systemName: chip.icon) }
+                Text(chip.name).lineLimit(1)
+                switch chip.state {
+                case .importing: ProgressView().controlSize(.mini)
+                case .failed: if let retry = chip.onRetry { Button(ChatsGateModel.retry, action: retry) }
+                case .attached: EmptyView()
+                }
+                if let remove = chip.onRemove {
+                    Button(action: remove) { Image(systemName: "xmark") }
+                        .disabled(chip.removeDisabled)
+                        .accessibilityLabel(ChatConversationView.removeFileLabel)
+                }
+            }
+            .font(TypeScale.pill)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, Spacing.regular)
+            .padding(.vertical, Spacing.small)
+            .background(Fill.card, in: Capsule())
+        )
+    }
 }
 
 extension ChatHostText {

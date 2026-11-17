@@ -49,9 +49,8 @@ enum AIProvider: String, CaseIterable, Identifiable {
 /// The main AI Chat's window shell (unified chat spec §6.2): the chat itself runs in the daemon's engine and reaches
 /// the app over chat.sock (`SocketChatClient`); its feed, list, composer and turn operations are ChatUI's models
 /// (`ChatConversationModel`, `ChatComposerModel`, `ChatListModel`). What stays here is the window: which chat, the
-/// landing or a project page is shown, the inspector (artifact panel, sources), the provider pill, the `@`/`/`
-/// picker's keyboard state and the ⌘/ panel's screen context. Nothing here writes a chat row (D3): every write is an
-/// engine operation.
+/// landing or a project page is shown, the inspector (artifact panel, sources), the provider pill and the ⌘/ panel's
+/// screen context. Nothing here writes a chat row (D3): every write is an engine operation.
 @MainActor
 @Observable
 final class ChatViewModel {
@@ -60,8 +59,6 @@ final class ChatViewModel {
     /// The conversation on screen (nil id: the landing or a project page, whose first send creates one).
     private(set) var conversation: ChatConversationModel
     private(set) var composer: ChatComposerModel
-    /// The Mac composer's `@` and `/` picker (its keyboard rows), searching through the engine.
-    let picker: ComposerPickerModel
     /// The open chat's agent actions (approvals stay on the Mac's `actions approve|reject`, D12).
     let actionFeed: AgentActionFeed
     @ObservationIgnored let artifactWriter: ChatArtifactWriter
@@ -188,17 +185,6 @@ final class ChatViewModel {
         composer = ChatComposerModel(conversation: conversation)
         actionFeed = AgentActionFeed(dbPool: dbPool, cliRunner: cliRunner)
         artifactWriter = ChatArtifactWriter(client: client)
-        picker = ComposerPickerModel(
-            searchMentions: { query in
-                guard case .applied(.entities(let hits))? = try? await client.send(.entitySearch(query: query, kinds: []))
-                else { return [] }
-                return hits.compactMap(MentionCandidate.init(hit:))
-            },
-            skills: {
-                guard case .applied(.skills(let skills))? = try? await client.send(.skillsList) else { return [] }
-                return skills
-            }
-        )
         wire(conversation)
     }
 
@@ -476,19 +462,15 @@ final class ChatViewModel {
 
     // MARK: - Turns
 
-    /// Sends the composer: the picked mentions still in the text and the `/` skill ride along; the ⌘/ panel's
+    /// Sends the composer (its model sends the picked mentions still in the text and the `/` skill); the ⌘/ panel's
     /// `screen` is prefixed to the provider text only and never stored.
     func sendDraft(screen: ScreenContext? = nil) async {
         let wasLanding = isOnLanding
-        composer.mentions = MentionTokenizer.liveMentions(text: composer.draft, mentions: picker.mentions)
-            .map(\.composeMention)
-        composer.skill = picker.skill
         if conversationID == nil { composer.routing = routingRequest }
         let before = conversation
         let sent = await composer.send(screenContext: screen?.block)
         guard sent else { return }
         if conversationID == landingDraftID { landingDraftID = nil }
-        picker.reset()
         dismissedArtifactKeys = []
         if wasLanding, before === conversation, let id = conversationID {
             // The landing's first send made the chat: it is the one on screen now.
@@ -509,10 +491,7 @@ final class ChatViewModel {
 
     /// ↑ in an empty field: edits the last owner message.
     func beginEditingLast() {
-        guard !conversation.isTurnRunning, let last = conversation.messages.last(where: { $0.role == "user" }) else {
-            return
-        }
-        composer.beginEditing(last)
+        composer.beginEditingLast()
     }
 
     func requestComposerFocus() {
@@ -796,7 +775,6 @@ final class ChatViewModel {
         composer.routing = id == nil ? routing : nil
         wire(next)
         next.start()
-        picker.reset()
         artifactPanel = nil
         sourcesPanel = nil
         dismissedArtifactKeys = []

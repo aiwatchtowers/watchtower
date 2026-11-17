@@ -2,6 +2,7 @@ import AppKit
 import ChatUI
 import DesignKit
 import SwiftUI
+import WatchtowerChatText
 import WatchtowerCore
 
 /// The Mac's controls for the shared chat views (unified chat spec §14, D18): ChatUI draws its buttons, cards and
@@ -245,5 +246,189 @@ extension ChatMacArtifactHooks {
                 HTMLPreviewWindow.show(.page(artifact.content), title: artifact.title, fullScreen: false)
             }
         )
+    }
+}
+
+// MARK: - The composer (#1822 T13): the Mac's look from before the composer moved into ChatUI, on every look.
+
+extension DesignKitChatStyle {
+    /// The Mac composer's own values with no kit token (kept from before the move, so it looks the same).
+    private static let importingChipOpacity = 0.08
+    private static let pickerSelectedOpacity = 0.18
+    private static let composerChipVertical: CGFloat = 3
+    private static let pickerRowVertical: CGFloat = 5
+
+    func composerFieldBackground(_ field: AnyView) -> AnyView {
+        AnyView(
+            field
+                .padding(.horizontal, Spacing.regular)
+                .padding(.vertical, Spacing.compact)
+                .background(RoundedRectangle(cornerRadius: Radius.pill).fill(Color(.textBackgroundColor)))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Radius.pill)
+                        .strokeBorder(Color(.separatorColor).opacity(ChipTint.strokeOpacity), lineWidth: Stroke.hairline)
+                )
+        )
+    }
+
+    func sendStopButton(isStreaming: Bool, active: Bool, action: @escaping () -> Void) -> AnyView {
+        AnyView(
+            Button(action: action) {
+                Image(systemName: isStreaming ? "stop.circle.fill" : "arrow.up.circle.fill")
+                    .font(.system(size: IconSize.composerLarge))
+                    .foregroundStyle(active ? Color.accentColor : Color(.tertiaryLabelColor))
+            }
+            .buttonStyle(.borderless)
+            .disabled(!active)
+            .accessibilityLabel(isStreaming ? "Stop" : "Send")
+        )
+    }
+
+    func attachmentChip(_ chip: ChatAttachmentChipContent) -> AnyView {
+        guard chip.state != .importing else {
+            // A file being stored (board #670): shown at once, with progress.
+            return AnyView(
+                HStack(spacing: Spacing.small) {
+                    ProgressView().controlSize(.mini)
+                    Text(chip.name).lineLimit(1).truncationMode(.middle)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, Spacing.regular)
+                .padding(.vertical, Spacing.small)
+                .background(Color.secondary.opacity(Self.importingChipOpacity), in: Capsule())
+            )
+        }
+        return AnyView(
+            HStack(spacing: Spacing.small) {
+                Image(systemName: chip.icon)
+                Text(chip.name)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let retry = chip.onRetry {
+                    Button("Retry", action: retry).buttonStyle(.borderless)
+                }
+                if let remove = chip.onRemove {
+                    Button(action: remove) {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Remove \(chip.name)")
+                    .help("Remove \(chip.name)")
+                    .disabled(chip.removeDisabled)
+                }
+            }
+            .font(.caption)
+            .padding(.horizontal, Spacing.regular)
+            .padding(.vertical, Spacing.small)
+            .background(Color.secondary.opacity(Fill.selectedOpacity), in: Capsule())
+        )
+    }
+
+    func composerChip(_ chip: ChatComposerChipContent) -> AnyView {
+        AnyView(
+            HStack(spacing: Spacing.small) {
+                Image(systemName: chip.icon)
+                Text(chip.title).lineLimit(1)
+                Button(action: chip.onRemove) { Image(systemName: "xmark") }
+                    .buttonStyle(.borderless)
+                    .help("Remove \(chip.title)")
+                    .accessibilityLabel("Remove \(chip.title)")
+            }
+            .font(.caption)
+            .padding(.horizontal, Spacing.regular)
+            .padding(.vertical, Self.composerChipVertical)
+            .background(Capsule().fill(Fill.selected))
+        )
+    }
+
+    func quoteRow(_ quote: ChatQuoteDraft, comment: Binding<String>, onRemove: @escaping () -> Void) -> AnyView {
+        AnyView(
+            HStack(alignment: .top, spacing: Spacing.regular) {
+                VStack(alignment: .leading, spacing: Spacing.small) {
+                    Text("\u{201C}\(quote.quote)\u{201D}")
+                        .font(.caption)
+                        .italic()
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    TextField("Comment (optional)", text: comment)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.callout)
+                }
+                Button(action: onRemove) { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.borderless)
+                    .help("Remove quote")
+                    .accessibilityLabel("Remove quote")
+            }
+            .padding(Spacing.regular)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: Radius.row))
+        )
+    }
+
+    func pickerList(_ rows: [ComposerPickerItem], selected: Int, onPick: @escaping (Int) -> Void) -> AnyView {
+        AnyView(
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                    Button { onPick(index) } label: {
+                        HStack(spacing: Spacing.regular) {
+                            Image(systemName: row.icon).frame(width: 18)
+                            Text(row.title).lineLimit(1)
+                            Text(row.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, Spacing.cozy)
+                        .padding(.vertical, Self.pickerRowVertical)
+                        .background(index == selected ? Color.accentColor.opacity(Self.pickerSelectedOpacity) : .clear)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .background(RoundedRectangle(cornerRadius: Radius.row).fill(Color(.windowBackgroundColor)))
+            .overlay(RoundedRectangle(cornerRadius: Radius.row).strokeBorder(Color(.separatorColor)))
+            .padding(.horizontal, Spacing.medium)
+        )
+    }
+}
+
+extension ChatComposerServices {
+    /// The Mac's dictation around a composer field: the highlight of the field being dictated into and the mic
+    /// button, both on the environment's `DictationCenter` (none in tests and previews: the field alone).
+    static let mac = mac(center: nil)
+
+    /// The same with an explicit center (tests: ViewInspector cannot resolve the environment's center there).
+    static func mac(center: DictationCenter?) -> ChatComposerServices {
+        ChatComposerServices { field, text, targetID in
+            AnyView(MacDictatedField(field: field, text: text, targetID: targetID, explicitCenter: center))
+        }
+    }
+}
+
+/// The field with the dictation highlight, then the mic button.
+private struct MacDictatedField: View {
+    let field: AnyView
+    @Binding var text: String
+    let targetID: String
+    let explicitCenter: DictationCenter?
+    @Environment(\.dictationCenter) private var environmentCenter
+
+    private var center: DictationCenter? { explicitCenter ?? environmentCenter }
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: Spacing.compact) {
+            field.dictationHighlight(targetID: targetID, center: center, cornerRadius: Radius.pill)
+            if let center {
+                DictationButton(text: $text, mode: .chat, targetID: targetID, center: center)
+            }
+        }
+    }
+}
+
+extension View {
+    /// A composer with the Mac's look and dictation, on any surface (the shared field reads both from the
+    /// environment).
+    func macComposerStyle() -> some View {
+        environment(\.chatUIStyle, DesignKitChatStyle())
+            .environment(\.chatComposerServices, .mac)
     }
 }

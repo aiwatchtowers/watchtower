@@ -296,16 +296,24 @@ struct EmbeddedChatComposer: View {
             input: ChatComposerField(
                 text: $engine.draft,
                 isStreaming: engine.isBusy,
+                config: ChatComposerFieldConfig(
+                    placeholder: placeholder,
+                    maxHeight: density.composerMaxHeight,
+                    dictationTargetID: dictationTargetID,
+                    autoFocus: autoFocus
+                ),
                 onSend: { engine.sendDraft() },
                 // Nothing stops a turn whose rows or end are being written.
                 onStop: engine.isFinishing || engine.isStarting ? nil : { engine.stop() },
-                placeholder: placeholder,
-                dictationTargetID: dictationTargetID,
-                maxHeight: density.composerMaxHeight,
-                onEscape: { if let onEscape { onEscape() } else { engine.stop() } },
-                autoFocus: autoFocus
+                onEscape: escape
             )
         )
+        .macComposerStyle()
+    }
+
+    /// Esc: the surface's own (close the ⌘/ panel), else Stop.
+    private func escape() {
+        if let onEscape { onEscape() } else { engine.stop() }
     }
 
     private var status: ChatComposerStatus? {

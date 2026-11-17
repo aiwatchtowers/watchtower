@@ -14,6 +14,8 @@ public final class ChatConversationModel {
     public static let couldNotSend = "Couldn't send that. Try again."
     public static let reconnectingLine = "Reconnecting…"
     public static let unreachableSendLine = "Couldn't reach Watchtower to send that. Your text is kept."
+    /// The refusal a send gets when the chat stayed unreachable past the patience (the engine may have taken it).
+    static let unreachableCode = "unreachable"
     /// How long a send whose answer was lost waits for the chat to come back before it gives up (D11's window).
     public static let reconnectPatience: Duration = .seconds(10)
 
@@ -256,7 +258,7 @@ public final class ChatConversationModel {
                 }
                 switch await waitForReconnect() {
                 case .reconnected: continue
-                case .timedOut: return .refused(code: "unreachable", message: Self.unreachableSendLine)
+                case .timedOut: return .refused(code: Self.unreachableCode, message: Self.unreachableSendLine)
                 case .stopped: return nil
                 }
             } catch {

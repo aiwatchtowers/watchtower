@@ -141,7 +141,7 @@ struct ProjectDetailView: View {
     private var mainColumn: some View {
         VStack(alignment: .leading, spacing: Spacing.page) {
             VStack(alignment: .leading, spacing: Spacing.small) {
-                ChatComposerView(
+                MainChatComposer(
                     chatVM: chatVM,
                     modelSuggestions: modelSuggestions,
                     maxHeight: maxComposerHeight,

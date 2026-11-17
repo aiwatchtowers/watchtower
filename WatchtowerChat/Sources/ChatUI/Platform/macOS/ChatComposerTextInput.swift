@@ -4,35 +4,54 @@ import SwiftUI
 import WatchtowerChatText
 import WatchtowerDesign
 
-/// The Mac's composer field in the shared composer (unified chat spec D10): the native text view (Enter sends,
-/// Shift+Enter a new line, ⌘V of an image, a PDF or a long text offered as an attachment), growing with its text.
+/// The Mac's text view in the shared composer field (unified chat spec §6.1, D10): Enter sends, Shift+Enter a new
+/// line, Esc and ↑ in an empty field go to their closures, ⌘V of an image, a PDF, Finder files or a long text is
+/// offered as an attachment, and the `@`/`/` picker gets its keys first. It grows with its text up to `maxHeight`.
 struct ChatComposerTextInput: View {
     @Binding var text: String
-    @Binding var cursor: Int
+    @Binding var height: CGFloat
     let placeholder: String
+    var maxHeight: CGFloat
+    var onEscape: (() -> Void)?
+    var onArrowUpWhenEmpty: (() -> Void)?
+    var onPasteData: ((Data, String) async -> Bool)?
+    var onAttachFiles: (([URL]) -> Void)?
+    var onLongTextPaste: ((LongPaste) -> Void)?
+    var onCursorChange: ((String, Int) -> Void)?
+    var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
+    var autoFocus: Bool
+    var focusRequest: UUID?
     let onSubmit: () -> Void
-    @State private var height: CGFloat = 20
+
+    /// The placeholder sits over the text view's first glyph (its line padding plus a point).
+    private static let placeholderLeading: CGFloat = 5
 
     var body: some View {
         ZStack(alignment: .topLeading) {
             if text.isEmpty {
                 Text(placeholder)
-                    .foregroundStyle(.tertiary)
-                    .padding(.leading, Spacing.small)
+                    .foregroundStyle(.placeholder)
+                    .padding(.leading, Self.placeholderLeading)
+                    .padding(.top, Spacing.small)
                     .allowsHitTesting(false)
             }
             ExpandingTextInput(
                 text: $text,
                 height: $height,
-                onCursorChange: { _, caret in cursor = caret },
-                autoFocus: true,
+                maxHeight: maxHeight,
+                onEscape: onEscape,
+                onArrowUpWhenEmpty: onArrowUpWhenEmpty,
+                onPasteData: onPasteData,
+                onAttachFiles: onAttachFiles,
+                onLongTextPaste: onLongTextPaste,
+                onCursorChange: onCursorChange,
+                onPickerKey: onPickerKey,
+                autoFocus: autoFocus,
+                focusRequest: focusRequest,
                 onSubmit: onSubmit
             )
             .frame(height: height)
         }
-        .padding(.horizontal, Spacing.regular)
-        .padding(.vertical, Spacing.compact)
-        .background(Fill.rest, in: RoundedRectangle(cornerRadius: Radius.bubble))
         .accessibilityIdentifier("chat.composer.field")
     }
 }

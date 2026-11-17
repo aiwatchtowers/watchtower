@@ -240,6 +240,7 @@ final class ScreenshotTourTests: XCTestCase {
             deviceID: DemoSeed.device.deviceID, hubID: DemoSeed.hubID, name: DemoSeed.device.name, scope: .private, linked: true,
             typingAllowed: true, startSessionsAllowed: true, permissionsAllowed: true, chatAllowed: true
         )
+        rows += try await captureComposerFrames(host: host, list: list)
         rows += try await captureConversations(host: host, list: list, heartbeat: on, relay: relay, grant: approving, now: now)
         rows += try await captureUnifiedChatMocks(host: host)
 
@@ -257,6 +258,63 @@ final class ScreenshotTourTests: XCTestCase {
                 mac: .asleep(lastSeen: stale)
             )
         )
+        return rows
+    }
+
+    /// The composer states the phone gains from the shared composer (#1822 T13): the quote batch with its comments,
+    /// the picked mention and skill chips, and the draft's files as shared chips with their upload state. Before the
+    /// conversation frames, on the composer alone over its page.
+    private func captureComposerFrames(host: ScreenshotHost, list: ChatList) async throws -> [ScreenshotHost.IndexRow] {
+        func composer(_ prepare: (ChatsCenter, ChatComposerModel) -> Void) -> AnyView {
+            // A suspending sleep: a sleep that returns at once turns the client's feed loop into a busy loop.
+            let center = Self.chatCenter(list)
+            let route = ChatRoute(id: DemoSeed.Chat.Feeds.roadmap)
+            let (conversation, model) = center.conversation(route)
+            conversation.reachability = .connected
+            prepare(center, model)
+            let files = ChatConversationView.draftFiles(center.drafts.draft(route.id).attachments, center: center,
+                                                        conversation: route.id)
+            return AnyView(VStack(spacing: 0) {
+                Spacer()
+                ChatComposerView(model: model, field: ChatComposerFieldConfig(placeholder: model.placeholder),
+                                 onAttach: {}, shellFiles: files)
+            }
+            .background(PhoneSurface.page)
+            .environment(\.chatUIStyle, PhoneChatStyle()))
+        }
+        let frames: [(String, AnyView)] = [
+            ("iphone-chat-composer-quotes", composer { _, model in
+                model.addQuote("The rollout starts with the internal group next Tuesday.")
+                model.addQuote("The staging check was never run.")
+                model.quotes[0].comment = "Which group exactly?"
+            }),
+            ("iphone-chat-composer-mentions", composer { _, model in
+                model.skill = "release-notes"
+                model.mentions = [ChatCompose.Mention(kind: "person", id: "1:U1", label: "Anna Lee"),
+                                  ChatCompose.Mention(kind: "jira", id: "PAY-12", label: "PAY-12")]
+                model.draft = "Ask @Anna Lee about @PAY-12"
+            }),
+            ("iphone-chat-composer-attachments", composer { center, model in
+                let key = DemoSeed.Chat.Feeds.roadmap
+                _ = center.attach(data: Data("notes".utf8), fileName: "meeting-notes.md", conversation: key)
+                _ = center.attach(data: Data("log".utf8), fileName: "build.log", conversation: key)
+                _ = center.attach(data: Data("plan".utf8), fileName: "q3-plan.txt", conversation: key)
+                center.drafts.update(key) { draft in
+                    draft.attachments[1].state = .uploading
+                    draft.attachments[2].state = .failed("refused")
+                }
+                model.hasShellAttachments = true
+                model.draft = "What do these say?"
+            })
+        ]
+        var rows: [ScreenshotHost.IndexRow] = []
+        for (name, frame) in frames {
+            try await host.captureThree(name, frame)
+            rows.append(ScreenshotHost.IndexRow(
+                number: name, view: "ChatComposerView", source: "WatchtowerChat/Sources/ChatUI/Composer",
+                reached: "ChatUI composer, phone style, light/dark/narrow"
+            ))
+        }
         return rows
     }
 

@@ -119,7 +119,7 @@ struct ChatConversationView: View {
         let hold = center.hold(conversation.conversationID, composerSending: composer.isSending, host: inputs.host)
         ChatUI.ChatConversationView(
             conversation: conversation, composer: composer, partActions: partActions(inputs), onAttach: { attaching = true },
-            composerAccessory: pills, focusMessageID: route.messageID
+            composerFiles: draftFiles, focusMessageID: route.messageID
         )
         .environment(\.chatUIStyle, Self.style)
         .environment(\.chatHostText, .phone(inputs.heartbeat?.macName ?? ""))
@@ -198,34 +198,35 @@ struct ChatConversationView: View {
     /// Files wait in the draft: a saved chat may send them with no text.
     private var hasFiles: Bool { !center.drafts.draft(conversation.conversationID ?? 0).attachments.isEmpty }
 
-    /// The files waiting to go with the next send (mockup 2b's pills): their upload state, Retry on a refused one.
-    private var pills: AnyView? {
+    /// The files waiting to go with the next send (mockup 2b's pills), as the shared composer's chips.
+    private var draftFiles: ChatComposerShellFiles? {
         let key = conversation.conversationID ?? 0
-        let files = center.drafts.draft(key).attachments
+        return Self.draftFiles(center.drafts.draft(key).attachments, center: center, conversation: key)
+    }
+
+    /// The draft's files as the shared chips: their upload state (an upload in flight shows progress and cannot be
+    /// removed), Retry on a refused one. A chip's id is the file's place in the draft. Nil without files.
+    static func draftFiles(_ files: [ComposerAttachment], center: ChatsCenter, conversation key: Int64) -> ChatComposerShellFiles? {
         guard !files.isEmpty else { return nil }
-        return AnyView(ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Spacing.small) {
-                ForEach(files) { file in
-                    HStack(spacing: Spacing.small) {
-                        Image(systemName: file.isImage ? "photo" : "doc")
-                        Text(file.name).lineLimit(1)
-                        switch file.state {
-                        case .uploading: ProgressView().controlSize(.mini)
-                        case .failed: Button(ChatsGateModel.retry) { center.retryAttachment(file.id, conversation: key) }
-                        case .ready, .uploaded: EmptyView()
-                        }
-                        Button { center.removeAttachment(file.id, conversation: key) } label: { Image(systemName: "xmark") }
-                            .disabled(file.state == .uploading)
-                            .accessibilityLabel(Self.removeFileLabel)
-                    }
-                    .font(TypeScale.pill)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, Spacing.regular)
-                    .padding(.vertical, Spacing.small)
-                    .background(Fill.card, in: Capsule())
-                }
+        var uploading: Set<Int64> = []
+        var failed: Set<Int64> = []
+        for (index, file) in files.enumerated() {
+            switch file.state {
+            case .uploading: uploading.insert(Int64(index))
+            case .failed: failed.insert(Int64(index))
+            case .ready, .uploaded: break
             }
-        })
+        }
+        let chips = files.enumerated().map { index, file in
+            ChatComposerAttachment(id: Int64(index), name: file.name, mime: file.mime, size: file.size)
+        }
+        let fileID: (Int64) -> String? = { index in files.indices.contains(Int(index)) ? files[Int(index)].id : nil }
+        return ChatComposerShellFiles(
+            attachments: chips,
+            progress: AttachmentProgress(failed: failed, uploading: uploading),
+            onRemove: { index in if let id = fileID(index) { center.removeAttachment(id, conversation: key) } },
+            onRetry: { index in if let id = fileID(index) { center.retryAttachment(id, conversation: key) } }
+        )
     }
 
     private func partActions(_ inputs: ChatsGateInputs) -> ChatPartActions {

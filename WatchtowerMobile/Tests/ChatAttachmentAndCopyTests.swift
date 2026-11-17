@@ -69,6 +69,37 @@ final class ChatAttachmentPickerTests: XCTestCase {
     }
 }
 
+/// The draft's files as the shared composer's chips (#1822 T13): the upload state and Retry come through
+/// `ChatComposerShellFiles`.
+@MainActor
+final class ChatDraftFileChipTests: XCTestCase {
+    func testDraftFilesRenderAsSharedChipsWithUploadState() throws {
+        let center = ChatsCenter(sender: ChatSender { _, _ in "" }) { _ in }
+        XCTAssertNil(center.attach(data: Data("notes".utf8), fileName: "notes.md", conversation: 7))
+        XCTAssertNil(center.attach(data: Data("log".utf8), fileName: "build.log", conversation: 7))
+        center.drafts.update(7) { draft in
+            draft.attachments[0].state = .uploading
+            draft.attachments[1].state = .failed("refused")
+        }
+        let failedID = center.drafts.draft(7).attachments[1].id
+        let files = try XCTUnwrap(ChatConversationView.draftFiles(center.drafts.draft(7).attachments, center: center,
+                                                                  conversation: 7))
+        XCTAssertEqual(files.attachments.map(\.name), ["notes.md", "build.log"])
+        XCTAssertEqual(files.progress.uploading, [0], "an upload in flight shows progress")
+        XCTAssertEqual(files.progress.failed, [1])
+        let chips = AttachmentChipsView(attachments: files.attachments, onRemove: files.onRemove, onRetry: files.onRetry,
+                                        progress: files.progress).chips
+        XCTAssertEqual(chips.map(\.state), [.importing, .failed])
+        XCTAssertTrue(chips[0].removeDisabled, "an uploading file cannot be removed")
+        XCTAssertNil(chips[0].onRetry)
+        chips[1].onRetry?()
+        let retried = center.drafts.draft(7).attachments[1]
+        XCTAssertNotEqual(retried.id, failedID, "Retry is the center's: a fresh upload id")
+        XCTAssertEqual(retried.state, .ready)
+        XCTAssertNil(ChatConversationView.draftFiles([], center: center, conversation: 7))
+    }
+}
+
 /// The offline copy (spec §6.4, D10): kept across a relaunch, within its budget evicted by last opened, deleted
 /// with the hub link; the prefetch takes the 20 most recent chats, one at a time, once per chat per hour, in the
 /// foreground and while the hub answers.

@@ -140,14 +140,14 @@ final class ChatViewModelShellTests: XCTestCase {
             if case .turn = op { return .applied(.turn(ChatTurnStarted(userMessageID: 1, assistantMessageID: 2, turnID: "t"))) }
             return nil
         }
-        vm.picker.update(text: "look at @PA", cursor: 11)
-        await vm.picker.searchSettled()
-        let edit = try XCTUnwrap(vm.picker.accept(index: 0, text: "look at @PA", cursor: 11))
+        vm.composer.picker.update(text: "look at @PA", cursor: 11)
+        await vm.composer.picker.searchSettled()
+        let edit = try XCTUnwrap(vm.composer.picker.accept(index: 0, text: "look at @PA", cursor: 11))
         vm.composer.draft = edit.text
         await vm.sendDraft()
         let compose = try XCTUnwrap(client.turns.last?.compose)
         XCTAssertEqual(compose.mentions, [ChatCompose.Mention(kind: "jira", id: "PAY-1", label: "PAY-1")])
-        XCTAssertTrue(vm.picker.mentions.isEmpty, "sent: the picker starts over")
+        XCTAssertTrue(vm.composer.picker.mentions.isEmpty, "sent: the picker starts over")
     }
 
     /// Switching chats keeps each chat's draft for it.

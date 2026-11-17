@@ -56,7 +56,9 @@ Added guards: `TestChat01Go_OwnerRowBeforeTurn`, `TestChatstore_StopKeepsPartial
 `TestChatstore_MatchesSwiftFixture` (`internal/chatstore`; its regenerate, edit and legacy-question cases);
 `testChat01DraftStaysUntilApplied`, `testRefusedSendRestoresDraft`, `testBusyEchoReturnsTextToComposer`,
 `testDroppedEchoResendsWithSameKeyNoDuplicate`
-(`WatchtowerChat/Tests/ChatUITests/ChatConversationModelTests.swift`)
+(`WatchtowerChat/Tests/ChatUITests/ChatConversationModelTests.swift`);
+`testHostGoneMidSendKeepsDraftQuotesAndChips`, `testLostEchoResendReusesKeyWhileDraftUnchanged`
+(`WatchtowerChat/Tests/ChatUITests/ChatComposerModelPickerTests.swift`)
 
 ## CHAT-02 — no silent tool activity
 
@@ -286,7 +288,8 @@ child is never started without it.
 `testChat05FallbackAndArtifactActionsOnlyOpenOrCopy`
 (`WatchtowerChat/Tests/ChatUITests/ChatUISourceScanTests.swift`, the source scan of
 `ChatUI`'s fallback, artifact, published-link and html surfaces and the fallback
-action shapes)
+action shapes) and `testChat05ComposerOnlyEditsItsBindingAndCallsClosures` (the same scan over
+every file under `Composer/` and the platform composer files)
 
 ## CHAT-06 — every message part has a fallback
 
@@ -373,6 +376,7 @@ reason, and `testReaderList` over the Swift sources, which is file-level: a Swif
 
 ## Changelog
 
+- 2026-11-17 (unified chat T13, board #1822, owner decision ask #1409): the composer moved into `ChatUI` for every Mac surface and the iPhone (`ChatComposerField`, `ChatComposerBar`, `ChatComposerView`, `QuoteBatchView`, `AttachmentChipsView`, `ComposerPickerList`; the Mac's look comes through `DesignKitChatStyle`'s composer hooks and its dictation through `ChatComposerServices`). **No guard relaxed or renamed.** `ComposerPickerModelTests` moved from `WatchtowerDesktop/Tests/Core` to `WatchtowerChat/Tests/ChatUITests` with its assertions (the picker works on ChatWire's `ChatEntityHit` and `ChatCompose.Mention`; Core's `MentionCandidate` is gone and its four `MentionTokenizerTests` cases moved beside it with the same checks). **CHAT-01** gains `testHostGoneMidSendKeepsDraftQuotesAndChips` and `testLostEchoResendReusesKeyWhileDraftUnchanged`: an unanswered send's `client_key` is reused while the draft, quotes, attachments, mentions and skill are unchanged (final review M1), so a resend after "Couldn't reach Watchtower" is answered with the first turn. **CHAT-05**: the new `ChatUISourceScanTests.testChat05ComposerOnlyEditsItsBindingAndCallsClosures` enumerates `Composer/` and the platform composer files with the same forbidden list (only `ChatComposerView` may call its model's `send()`). `ChatComposerFieldViewTests`, `ChatComposerFieldAttachmentTests`, `QuoteBatchViewTests`, `EmbeddedChatViewTests` and `WorkchatComposerTests` inspect the ChatUI views with their names and assertions unchanged.
 - 2026-11-17 (unified chat final review fixes, board #1822): strengthening only, **no guard relaxed or renamed**. **CHAT-05**: `ChatUISourceScanTests.testChat05FallbackAndArtifactActionsOnlyOpenOrCopy` also scans `Platform/iOS/ArtifactViewerParts.swift` and `Parts/SourcesPartView.swift` (same forbidden list, same assertions; both were clean). **LIVE-01**: the dead Swift writers `LiveSlackMark.markIfSlackStep`/`markIfUsed`/`isSlackConnectorStep` are deleted (their guards moved to Go in T8); `LiveSlack01GuardTests` is unchanged and passes, `LiveSlackMark.swift` stays in its `checked` list as the reader of the mark. `ChatConversationQueries.setProject` left Core for the tests' fixture writers (`Tests/Support/ChatFixtureWriters.swift`; the app moves chats through the engine). The relay's `chat_turn` reads its params with the engine's decoder (`chatengine.DecodeTurn`), pinned with the relay op list by `TestChatRelayOps_*` and `RelayChatClientTests.testRelayOpsContract`; see the feature note.
 
 - 2026-11-17 (unified chat T11, board #1822, owner approval ask #1371; spec `docs/superpowers/specs/2026-11-16-unified-chat-design.md` §9.2, feature note `docs/features/unified-chat.md`): final text of the unified-chat amendments, **no guard relaxed or renamed**. **CHAT-01** and **CHAT-03** Observables now name the engine (`chatengine.MaxLive`, `chatengine.IdleTTL`, the composer keeps its text until the echo is `applied`, `client_key`, a turn survives a daemon restart, quit/wipe/Slack disconnect/`sync stop` end the chat before the daemon stops); **CHAT-05** gains one amendment naming ChatUI's single source scan (`ChatUISourceScanTests.testChat05FallbackAndArtifactActionsOnlyOpenOrCopy`, which covers `Feed/ChatMessageRow.swift` and `Parts/QuestionPartView.swift` since T12); **CHAT-06** is unchanged. Guard mapping: every Swift CHAT-01..04 guard the Swift turn path carried has a home in the T8 table below, and every guard named in the four Guard blocks was checked to exist. The engine ops added during the build (`chat_manage` `archive` and `discard`, `chat_warm`, `chat_sessions_retire`, `attach_discard`, the relay `chat_turn` `compose` and `client_key`, `watchtower chat shutdown --socket-timeout`) write no row beyond the engine's own writers and are listed in the feature note. Known v1 limits are recorded there: a same-user process that keeps `chat.sock`'s fd across an exec after the greeting (the `ownerconfirm` threat model), a resent turn after a restart lacking the first send's actions-outcome block and `screen_context`, the quit worst-case bounds, a cancelled quit after a successful wipe keeping daemon starts blocked, and the relay's `unsupported` ops. An account removal that purges data runs in the daemon, so the app has no stop to hook there.
