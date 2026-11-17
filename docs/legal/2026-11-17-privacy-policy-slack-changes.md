@@ -22,7 +22,7 @@ New text:
 > - read your reactions: for reaction commands;
 > - read the workspace's name and custom emoji: to show them.
 >
-> Watchtower has no server; what it sends goes only to the AI providers described in "AI providers" (including the reserve provider when that setting is on). Separately, a Claude or ChatGPT Slack connector you turn on reads Slack directly (see "Live Slack").
+> Watchtower has no server; what it sends for AI processing goes only to the AI providers described in "AI providers" (including the reserve provider when that setting is on). The optional Mobile sync copies selected data to your own iCloud (see the Mobile section). Separately, a Claude or ChatGPT Slack connector you turn on reads Slack directly (see "Live Slack").
 
 ## 2. "Where your data lives"
 
