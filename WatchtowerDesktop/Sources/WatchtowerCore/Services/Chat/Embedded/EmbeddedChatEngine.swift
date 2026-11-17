@@ -181,6 +181,10 @@ package final class EmbeddedChatEngine {
         /// The banner shown when the turn began: a completed turn clears it.
         let bannerAtBegin: String?
         var stopRequested = false
+        /// The turn's process sent a `save_error`: its banner stays past the
+        /// turn's end even when the sentence equals `bannerAtBegin` (the same
+        /// failure on two turns in a row).
+        var raisedSaveError = false
         var failure: EmbeddedChatErrorClassifier.Failure?
         /// The reply's text when its latest tool step started: what follows
         /// it is `ChatPostTurnInput.finalText`.
@@ -544,6 +548,7 @@ package final class EmbeddedChatEngine {
                     // past the turn's end (raised while it ran).
                     log("save_error: \(sentence)")
                     bannerError = sentence
+                    running?.raisedSaveError = true
                     continue
                 }
                 if case let .routing(provider, model, _) = event {
@@ -727,7 +732,9 @@ package final class EmbeddedChatEngine {
         switch outcome {
         case .completed:
             lastTurnFailed = false
-            if bannerError == nil, earlierBanner != current.bannerAtBegin { bannerError = earlierBanner }
+            if bannerError == nil, current.raisedSaveError || earlierBanner != current.bannerAtBegin {
+                bannerError = earlierBanner
+            }
             startFollowUps()
         case .stopped:
             // Its prompt (follow-ups included) reached the provider already.
