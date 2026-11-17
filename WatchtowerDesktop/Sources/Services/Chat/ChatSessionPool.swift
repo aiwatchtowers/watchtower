@@ -27,12 +27,20 @@ final class ChatSessionPool {
     @ObservationIgnored var onTurnFinished: ((Int64) -> Void)?
     /// Same subscriber: a turn of that conversation waits on an approval card.
     @ObservationIgnored var onActionAwaited: ((Int64) -> Void)?
+    /// A session died with a started turn it never let go of: the main
+    /// `ChatViewModel` sends `chat.recover` (spec §9; the next launch's
+    /// `chat.release_launches` covers a failed call).
+    @ObservationIgnored var onTurnLost: ((_ conversationID: Int64, _ turnID: String) -> Void)?
 
     @ObservationIgnored private let dbPool: DatabasePool
     @ObservationIgnored private let processFactory: ProcessFactory
     @ObservationIgnored private let clock: () -> Date
     @ObservationIgnored private let closeGrace: Duration
     @ObservationIgnored private let killAfter: Duration
+    /// The app launch's id: every session claims its turns' lease as it.
+    @ObservationIgnored private let leaseOwnerID: String
+    @ObservationIgnored private let startedTimeout: Duration
+    @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
     @ObservationIgnored private var policyTask: Task<Void, Never>?
     /// Pending conversation ids, oldest request first.
     @ObservationIgnored private var queue: [Int64] = []
@@ -48,13 +56,19 @@ final class ChatSessionPool {
         processFactory: @escaping ProcessFactory = { try FoundationChatSessionProcess.launch(arguments: $0) },
         clock: @escaping () -> Date = Date.init,
         closeGrace: Duration = .seconds(2),
-        killAfter: Duration = ChatSessionClient.defaultKillAfter
+        killAfter: Duration = ChatSessionClient.defaultKillAfter,
+        leaseOwnerID: String = ChatLease.desktopLaunchID,
+        startedTimeout: Duration = ChatSessionClient.defaultStartedTimeout,
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         self.dbPool = dbPool
         self.processFactory = processFactory
         self.clock = clock
         self.closeGrace = closeGrace
         self.killAfter = killAfter
+        self.leaseOwnerID = leaseOwnerID
+        self.startedTimeout = startedTimeout
+        self.sleep = sleep
     }
 
     func client(for conversationID: Int64?) -> ChatSessionClient? {
@@ -88,16 +102,21 @@ final class ChatSessionPool {
             return existing
         }
         if let stale = clients.removeValue(forKey: conversationID) { retire(stale) }
-        let arguments = ChatSessionClient.arguments(for: config, dbPath: dbPool.path)
+        let arguments = ChatSessionClient.arguments(for: config, dbPath: dbPool.path, leaseOwnerID: leaseOwnerID)
         let factory = processFactory
-        let client = ChatSessionClient(config: config, spawn: { try factory(arguments) },
-                                       store: ChatTurnStore(dbPool: dbPool), clock: clock, launchImmediately: false)
+        let client = ChatSessionClient(config: config, spawn: { try factory(arguments) }, clock: clock,
+                                       launchImmediately: false, startedTimeout: startedTimeout, sleep: sleep)
         client.onTurnFinished = { [weak self] id in
             self?.onTurnFinished?(id)
             self?.admit()
         }
+        client.onTurnLost = { [weak self] id, turnID in self?.onTurnLost?(id, turnID) }
         client.onActionAwaited = { [weak self] in self?.onActionAwaited?(conversationID) }
         client.onEnded = { [weak self] in self?.admit() }
+        client.onStopWhileHeld = { [weak self, weak client] in
+            guard let self, let client else { return }
+            self.launchStopped(client)
+        }
         clients[conversationID] = client
         queue.removeAll { $0 == conversationID }
         queue.append(conversationID)
@@ -115,16 +134,14 @@ final class ChatSessionPool {
         if let client = clients.removeValue(forKey: conversationID) { retire(client) }
     }
 
-    /// Explicit between-turn routing change: stop late metadata, await ONLY
-    /// this host's tracked retirement and writes, then the caller may reset sticky state.
+    /// Explicit between-turn routing change: await ONLY this host's tracked
+    /// retirement (its process, and so its writes, gone), then the caller
+    /// may reset sticky state.
     func closeIdleAndWait(conversationID: Int64) async -> Bool {
         guard clients[conversationID]?.isBusy != true else { return false }
-        let driver = clients[conversationID]?.driver
-        driver?.stopRecordingSession()
         close(conversationID: conversationID)
         let tasks = retirements.values.filter { $0.conversationID == conversationID }.map(\.task)
         for task in tasks { await task.value }
-        await driver?.writesSettled()
         return true
     }
 
@@ -152,13 +169,10 @@ final class ChatSessionPool {
             guard let held else { continue }
             var fresh = client.config
             if deleted { fresh.projectID = nil }
-            let command = held.command
             NSLog("ChatSessionPool: re-sending held turn %@ of conversation %lld on a fresh session (project %@)",
-                  command.turnID, id, fresh.projectID.map(String.init) ?? "none")
-            let replayed = ChatTurnCommand(turnID: command.turnID, text: command.text,
-                                           attachments: command.attachments, replay: true)
-            session(for: id, config: fresh)
-                .startTurn(ChatTurnRequest(command: replayed, assistantMessageID: held.assistantMessageID))
+                  held.command.turnID, id, fresh.projectID.map(String.init) ?? "none")
+            // Nothing of it was written: the fresh session writes its rows.
+            session(for: id, config: fresh).begin(held)
         }
     }
 
@@ -185,7 +199,7 @@ final class ChatSessionPool {
         for (id, client) in clients where !client.isPending && (client.config.automatic
             || Self.mayLoadClaudeAITools(client)) {
             if client.isBusy {
-                client.retireAfterTurn(keepingSessionID: true)
+                client.retireAfterTurn()
             } else {
                 close(conversationID: id)
             }
@@ -197,7 +211,7 @@ final class ChatSessionPool {
     func retireRoutingSessions() {
         for (id, client) in clients where !client.isPending {
             if client.isBusy {
-                client.retireAfterTurn(keepingSessionID: true)
+                client.retireAfterTurn()
             } else {
                 close(conversationID: id)
             }
@@ -260,6 +274,18 @@ final class ChatSessionPool {
     }
 
     // MARK: - Private
+
+    /// A held turn the owner stopped: launched past the slot limit, so the
+    /// session writes the turn and stops it at once (the transcript keeps the
+    /// owner's message, as for any Stop). The client retires after that turn.
+    /// Admission still waits for the login environment (`admissionOpen`);
+    /// the stop then applies at that launch.
+    private func launchStopped(_ client: ChatSessionClient) {
+        guard admissionOpen, client.isPending, clients[client.conversationID] === client,
+              !retirements.values.contains(where: { $0.conversationID == client.conversationID }) else { return }
+        queue.removeAll { $0 == client.conversationID }
+        client.launch()
+    }
 
     /// Launches queued sessions, oldest first, while the policy grants slots.
     private func admit() {

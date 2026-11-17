@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import WatchtowerInterface
 
 /// Where an embedded chat keeps its rows. Every write throws — a failure is
 /// shown to the owner, never swallowed — and is `async`: a database store
@@ -32,9 +33,15 @@ package protocol EmbeddedChatStore: AnyObject {
     /// The `sqlite` path handed to `ai query --db-path`; nil for a chat that
     /// reads no workspace data.
     var dbPath: String? { get }
+    /// The turn's process saves the turn (`ai query --persist`, mobile Inbox
+    /// spec §8): the engine never calls `beginTurn` and no step, progress,
+    /// actual or usage write — the process writes them; `finalize` and
+    /// `append` record what the Mac makes of the reply afterwards.
+    var persistedConversationID: Int64? { get }
 }
 
 extension EmbeddedChatStore {
+    package var persistedConversationID: Int64? { nil }
     package func actions(turnID: String) throws -> [AgentAction] { [] }
     package func saveActual(messageID: Int64, provider: String, model: String) async throws {}
     // A store that keeps no steps or usage (the memory store: its steps are
@@ -45,33 +52,27 @@ extension EmbeddedChatStore {
     package func steps(messageIDs: [Int64]) throws -> [Int64: [ChatTurnStep]] { [:] }
 }
 
-/// The existing `chat_messages`/`chat_conversations` columns, unchanged.
+/// A database chat: its turns are saved by their own `ai query --persist`
+/// process; the Mac's own writes after a turn (the shown reply, a failure,
+/// a notice) go through `chat.reply.finish` and `chat.message.append`.
 @MainActor
 package final class DatabaseEmbeddedChatStore: EmbeddedChatStore {
     private let dbPool: DatabasePool
     private let conversationID: Int64
-    private let clock: () -> Date
+    private let writes: ChatWrites
 
-    package init(dbPool: DatabasePool, conversationID: Int64, clock: @escaping () -> Date = Date.init) {
+    package init(dbPool: DatabasePool, writes: ChatWrites, conversationID: Int64) {
         self.dbPool = dbPool
+        self.writes = writes
         self.conversationID = conversationID
-        self.clock = clock
     }
 
     package var dbPath: String? { dbPool.path }
+    package var persistedConversationID: Int64? { conversationID }
 
     package func actions(turnID: String) throws -> [AgentAction] {
         try dbPool.read { db in
             try AgentActionQueries.fetchByConversation(db, conversationID: conversationID).filter { $0.turnID == turnID }
-        }
-    }
-
-    package func saveActual(messageID: Int64, provider: String, model: String) async throws {
-        guard !provider.isEmpty else { return }
-        let conversationID = conversationID
-        try await dbPool.write { db in
-            try db.execute(sql: "UPDATE chat_messages SET provider = ?, model = ? WHERE id = ? AND conversation_id = ?",
-                           arguments: [provider, model, messageID, conversationID])
         }
     }
 
@@ -84,71 +85,36 @@ package final class DatabaseEmbeddedChatStore: EmbeddedChatStore {
     }
 
     /// The conversation of one embedded chat context (a track, an idea, a
-    /// recording), created with `title` on first use. Reads first; the
-    /// create awaits the writer off the main thread (board #670).
+    /// recording), created with `title` on first use (`chat.new` with a
+    /// reused context: Go finds or creates it). Reads first.
     package nonisolated static func conversationID(
-        dbPool: DatabasePool, contextType: String, contextID: String, title: String
+        dbPool: DatabasePool, writes: ChatWrites, contextType: String, contextID: String, title: String
     ) async throws -> Int64 {
         if let existing = try await dbPool.read({ db in
             try ChatConversationQueries.fetchByContext(db, type: contextType, id: contextID)
         }) {
             return existing.id
         }
-        return try await dbPool.write { db in
-            // Re-checked inside the write: another screen may have created it.
-            if let existing = try ChatConversationQueries.fetchByContext(db, type: contextType, id: contextID) {
-                return existing.id
-            }
-            return try ChatConversationQueries.create(db, title: title, contextType: contextType, contextID: contextID).id
+        let created: ChatNewResponse = try await writes.perform(.chatNew) {
+            ChatNewRequest(requestID: $0, context: ChatContext(type: contextType, id: contextID, title: title, reuse: true))
         }
+        return created.conversationID
     }
 
     /// A new automation's draft chat becomes the saved automation's chat
-    /// (spec 2026-10-24 §4, ask #528): one write moves the `automation_draft`
-    /// conversation to `toContextType`/`contextID`. A conversation the target
-    /// context already has wins when it holds messages (false: nothing moves,
-    /// nothing is merged or deleted); an empty one is deleted first, in the
-    /// same transaction. True when the row moved.
+    /// (spec 2026-10-24 §4, ask #528): `chat.context` moves the
+    /// `automation_draft` conversation to `toContextType`/`contextID`. A
+    /// conversation the target context already has wins when it holds
+    /// messages (false: nothing moves); an empty one is deleted first. True
+    /// when the row moved.
     package nonisolated static func rekeyConversation(
-        dbPool: DatabasePool, conversationID: Int64, toContextType: String, contextID: String
+        writes: ChatWrites, conversationID: Int64, toContextType: String, contextID: String
     ) async throws -> Bool {
-        let now = Date().timeIntervalSince1970
-        return try await dbPool.write { db in
-            guard try ChatConversationQueries.fetchByID(db, id: conversationID)?.contextType
-                == AutomationDraftRows.contextType else { return false }
-            if let existing = try ChatConversationQueries.fetchByContext(db, type: toContextType, id: contextID) {
-                let hasMessages = try Bool.fetchOne(db, sql: """
-                    SELECT EXISTS (SELECT 1 FROM chat_messages WHERE conversation_id = ?)
-                    """, arguments: [existing.id]) ?? false
-                if hasMessages { return false }
-                try ChatConversationQueries.delete(db, id: existing.id)
-            }
-            try db.execute(sql: """
-                UPDATE chat_conversations SET context_type = ?, context_id = ?, updated_at = ?
-                WHERE id = ? AND context_type = 'automation_draft'
-                """, arguments: [toContextType, contextID, now, conversationID])
-            return db.changesCount > 0
+        let moved: ChatChanged = try await writes.perform(.chatContext) {
+            ChatContextRequest(requestID: $0, conversationID: conversationID, contextType: toContextType,
+                               contextID: contextID)
         }
-    }
-
-    package func stepStarted(messageID: Int64, seq: Int, start: ChatToolStart, at date: Date) async throws {
-        try await dbPool.write { db in
-            try ChatStepQueries.upsertStart(db, messageID: messageID, seq: seq, toolID: start.id, name: start.name,
-                                            argsJSON: start.argsJSON, startedAt: date.timeIntervalSince1970)
-        }
-    }
-
-    package func stepFinished(messageID: Int64, end: ChatToolEnd, at date: Date) async throws {
-        try await dbPool.write { db in
-            try ChatStepQueries.finish(db, messageID: messageID, toolID: end.id, ok: end.ok, summary: end.summary,
-                                       sourcesJSON: ChatSource.encodeList(end.sources), endedAt: date.timeIntervalSince1970)
-        }
-    }
-
-    package func saveUsage(messageID: Int64, usage: ChatUsage) async throws {
-        try await dbPool.write { db in
-            try ChatMessageQueries.saveEmbeddedUsage(db, messageID: messageID, usage: usage)
-        }
+        return moved.changed
     }
 
     package func steps(messageIDs: [Int64]) throws -> [Int64: [ChatTurnStep]] {
@@ -163,34 +129,36 @@ package final class DatabaseEmbeddedChatStore: EmbeddedChatStore {
         }
     }
 
+    /// Never called: the turn's process writes its rows.
     package func beginTurn(ownerText: String?, turnID: String, provider: String?) async throws -> (ownerID: Int64?, assistantID: Int64) {
-        let id = conversationID
-        let now = clock().timeIntervalSince1970
-        return try await dbPool.write { db in
-            try ChatMessageQueries.beginEmbeddedTurn(db, conversationID: id, ownerText: ownerText, turnID: turnID,
-                                                     provider: provider, now: now)
-        }
+        throw ChatWriteError(sentence: "This chat's turns are saved by their own process.")
     }
 
-    package func saveProgress(messageID: Int64, text: String) async throws {
-        try await dbPool.write { db in try ChatMessageQueries.saveEmbeddedProgress(db, messageID: messageID, text: text) }
-    }
+    /// The process flushes the streamed text itself.
+    package func saveProgress(messageID: Int64, text: String) async throws {}
 
     package func finalize(messageID: Int64, text: String, status: String, errorCode: String?, errorMessage: String?) async throws {
         let id = conversationID
-        try await dbPool.write { db in
-            try ChatMessageQueries.finalizeEmbedded(db, messageID: messageID, text: text, status: status,
-                                                    errorCode: errorCode, errorMessage: errorMessage)
-            if status == "complete" { try ChatConversationQueries.touch(db, id: id) }
+        do {
+            let _: ChatDone = try await writes.perform(.chatReplyFinish) {
+                ChatReplyFinishRequest(requestID: $0, conversationID: id, messageID: messageID, text: text,
+                                       status: status, errorCode: errorCode, errorMessage: errorMessage)
+            }
+        } catch let error as ChatWriteError where error.isGone {
+            throw ChatContextGoneError()
         }
     }
 
     @discardableResult
     package func append(role: String, text: String) async throws -> Int64 {
         let id = conversationID
-        return try await dbPool.write { db in
-            try ChatMessageQueries.requireConversation(db, id: id)
-            return try ChatMessageQueries.insert(db, conversationID: id, role: role, text: text)
+        do {
+            let added: ChatMessageAppendResponse = try await writes.perform(.chatMessageAppend) {
+                ChatMessageAppendRequest(requestID: $0, conversationID: id, role: role, text: text)
+            }
+            return added.messageID
+        } catch let error as ChatWriteError where error.isGone {
+            throw ChatContextGoneError()
         }
     }
 }

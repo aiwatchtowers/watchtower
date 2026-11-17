@@ -247,3 +247,45 @@ func TestLease_FreshList(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []int64{b}, fresh, "a heartbeat over 60 s old is stale")
 }
+
+// TestReleaseDesktopLeasesExcept: the launch cleanup frees every desktop
+// lease of another launch and marks its turn's partial reply session_lost;
+// this launch's lease and every hub lease (even one whose id equals an old
+// launch id) stay, their turns untouched.
+func TestReleaseDesktopLeasesExcept(t *testing.T) {
+	d := openTestDB(t)
+	old, other, now, hub := seedLeaseConversation(t, d), seedLeaseConversation(t, d), seedLeaseConversation(t, d), seedLeaseConversation(t, d)
+	for _, l := range []ChatLease{
+		{ConversationID: old, Owner: ChatLeaseDesktop, OwnerID: "launch-1", TurnID: "t-old"},
+		{ConversationID: other, Owner: ChatLeaseDesktop, OwnerID: "launch-2", TurnID: "t-other"},
+		{ConversationID: now, Owner: ChatLeaseDesktop, OwnerID: "launch-3", TurnID: "t-now"},
+		{ConversationID: hub, Owner: ChatLeaseHub, OwnerID: "launch-1", TurnID: "t-hub"},
+	} {
+		l.StartedAtMS, l.HeartbeatAtMS = 1, 1
+		require.True(t, claimChatLease(t, d, l, 1))
+		_, err := d.Exec(`INSERT INTO chat_messages (conversation_id, role, text, status, turn_id, created_at)
+VALUES (?, 'assistant', 'x', 'partial', ?, 1)`, l.ConversationID, l.TurnID)
+		require.NoError(t, err)
+	}
+	released, err := d.ReleaseDesktopLeasesExcept("launch-3")
+	require.NoError(t, err)
+	var convs []int64
+	for _, l := range released {
+		convs = append(convs, l.ConversationID)
+	}
+	require.Equal(t, []int64{old, other}, convs)
+	for conv, want := range map[int64]struct {
+		lease bool
+		code  string
+	}{old: {false, "session_lost"}, other: {false, "session_lost"}, now: {true, ""}, hub: {true, ""}} {
+		l, err := d.GetChatLease(conv)
+		require.NoError(t, err)
+		require.Equal(t, want.lease, l != nil, "lease of %d", conv)
+		var code sql.NullString
+		require.NoError(t, d.QueryRow(`SELECT error_code FROM chat_messages WHERE conversation_id = ?`, conv).Scan(&code))
+		require.Equal(t, want.code, code.String, "reply of %d", conv)
+	}
+	again, err := d.ReleaseDesktopLeasesExcept("launch-3")
+	require.NoError(t, err)
+	require.Empty(t, again)
+}

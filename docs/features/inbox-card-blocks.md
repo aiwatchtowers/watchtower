@@ -26,7 +26,7 @@ Columns on `automation_outputs` (no new table, no rebuild): `blocks_json` (`''` 
 
 **Living rule** (`commitRunTx`, in the run's one finish transaction): a new key inserts; an existing key keeps `id`/`created_at` and takes the new content, `run_id` and `written_at`. Only when `content_hash` differs it also moves `changed_at` and clears `read_at`, `done_at`, `dismissed_at` and the press (`pressed_*`). A same-hash rewrite moves only `written_at`, so it is never news: not in the unread count, not in Home, not in any notice. Readers order by `changed_at`; a living card's source line is "Updated … ago" from `written_at` (`InboxCardTexts`).
 
-**Read-state writers** are Desktop-only and mark only the drawn version: `AutomationQueries.markOutputOpened` / `markOutputDone` / `dismissOutput(…, contentHash:, now:)` add `content_hash = ?` to their `WHERE` and return `false` on no change; the caller re-reads, never clears optimistically.
+**Read-state writers** mark only the drawn version. Since #1170 stage 1 their Go twins (`db.MarkOutputReadTx`/`MarkOutputDoneTx`/`DismissOutputTx`, `internal/db/inbox_writes.go`) serve `inbox.act` for the phone and the Mac, and `inbox_writes.json` holds the two to the same rows until the Swift ones go ([inbox-core.md](inbox-core.md) "Writes"). The Swift ones: `AutomationQueries.markOutputOpened` / `markOutputDone` / `dismissOutput(…, contentHash:, now:)` add `content_hash = ?` to their `WHERE` and return `false` on no change; the caller re-reads, never clears optimistically.
 
 ## Press address and Reply on a changed card
 

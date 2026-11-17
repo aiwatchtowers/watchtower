@@ -17,6 +17,8 @@ final class ChatSessionPoolTests: XCTestCase {
     override func setUpWithError() throws {
         ProviderCatalogFixture.seedShared() // retiring follows the claude_ai_tools row
         (dbPool, path) = try TestDatabase.createPool()
+        // The conversations 1…6 the sessions write into (`--persist`).
+        try dbPool.write { d in for _ in 1...6 { try TestDatabase.insertChatConversation(d) } }
         fakes = []
         maxAlive = 0
         let clock = ChatTestClock()
@@ -45,16 +47,9 @@ final class ChatSessionPoolTests: XCTestCase {
         ChatSessionConfig(conversationID: id, provider: provider, model: nil)
     }
 
-    private func assistantRow() throws -> Int64 {
-        try dbPool.write { d in
-            try ChatTreeQueries.insertAssistant(d, conversationID: TestDatabase.insertChatConversation(d),
-                                                parentID: nil, turnID: "t", provider: "claude", model: "").id
-        }
-    }
-
-    private func turn(_ id: String, row: Int64) -> ChatTurnRequest {
-        ChatTurnRequest(command: ChatTurnCommand(turnID: id, text: "q", attachments: [], replay: false),
-                        assistantMessageID: row)
+    private func turn(_ id: String) -> ChatTurnCommand {
+        ChatTurnCommand(turnID: id, text: "q", attachments: [], replay: false,
+                        start: ChatTurnStart(mode: .send, titleText: "q"))
     }
 
     /// Board #592: while the login environment resolves, a requested session
@@ -95,15 +90,14 @@ final class ChatSessionPoolTests: XCTestCase {
         var busy: [ChatSessionClient] = []
         for id: Int64 in 1...3 {
             let client = pool.session(for: id, config: config(id))
-            client.startTurn(turn("t\(id)", row: try assistantRow()))
+            client.send(turn("t\(id)"))
             busy.append(client)
             clock.advance(1)
         }
         let fourth = pool.session(for: 4, config: config(4))
         XCTAssertTrue(fourth.isPending)
         XCTAssertTrue(fourth.isAlive, "a queued session is usable: its turn waits")
-        let fourthRow = try assistantRow()
-        fourth.startTurn(turn("t4", row: fourthRow))
+        fourth.send(turn("t4"))
         XCTAssertEqual(fakes.count, 3)
         XCTAssertTrue(busy.allSatisfy(\.isBusy), "no running turn was cut")
         pool.tick()
@@ -115,35 +109,60 @@ final class ChatSessionPoolTests: XCTestCase {
         XCTAssertTrue(fakes[1].terminated, "the session that went idle made room")
         XCTAssertFalse(fakes[0].terminated)
         XCTAssertFalse(fakes[2].terminated)
+        await untilTurn { !self.fakes[3].turns.isEmpty }
         XCTAssertEqual(fakes[3].turns.map(\.turnID), ["t4"], "the held turn goes out at launch")
         XCTAssertLessThanOrEqual(maxAlive, ChatSessionPolicy.maxLive)
     }
 
-    /// Stopping the held turn of a queued session ends that session: a freed
-    /// slot launches nothing for it, and the next request gets a new one.
-    func testStoppingAHeldTurnNeverLaunchesTheQueuedSession() async throws {
+    /// Stopping the held turn of a queued session launches it at once, past
+    /// the slot limit: the session writes the turn and stops it at its
+    /// `started` (the owner's message stays, with a `partial` reply), then
+    /// goes; the next request gets a new session.
+    func testStoppingAHeldTurnLaunchesItToSaveTheStoppedTurn() async throws {
         for id: Int64 in 1...3 {
-            pool.session(for: id, config: config(id)).startTurn(turn("t\(id)", row: try assistantRow()))
+            pool.session(for: id, config: config(id)).send(turn("t\(id)"))
             clock.advance(1)
         }
         let fourth = pool.session(for: 4, config: config(4))
-        let row = try assistantRow()
-        fourth.startTurn(turn("t4", row: row))
+        fourth.send(turn("t4"))
+        await untilTurn { fourth.isBusy }
+        XCTAssertTrue(fourth.isPending)
         fourth.cancel()
-        await fourth.driver.writesSettled()
-        XCTAssertFalse(fourth.isBusy)
-        XCTAssertFalse(fourth.isAlive)
-        let status = try await dbPool.read { try String.fetchOne($0, sql: "SELECT status FROM chat_messages WHERE id = ?", arguments: [row]) }
-        XCTAssertEqual(status, "partial", "the stopped turn keeps its row (CHAT-01)")
-
-        fakes[1].emit(.turnDone(turnID: "t2", status: .complete, sessionID: nil))
-        pool.tick()
-        XCTAssertFalse(fourth.isPending, "admission dropped it rather than launching it")
-        XCTAssertEqual(fakes.count, 3, "no process for a session whose only turn was stopped")
+        XCTAssertFalse(fourth.isPending, "launched now, not when a slot frees")
+        XCTAssertEqual(fakes.count, 4)
+        await untilTurn { self.fakes[3].sent.contains(.cancel) }
+        fakes[3].emit(.turnDone(turnID: "t4", status: .interrupted, sessionID: nil))
+        await untilTurn { !fourth.isBusy }
+        let statuses = try await dbPool.read {
+            try String.fetchAll($0, sql: "SELECT status FROM chat_messages WHERE conversation_id = 4 ORDER BY id")
+        }
+        XCTAssertEqual(statuses, ["complete", "partial"])
+        XCTAssertFalse(fourth.isAlive, "the extra process goes after its stopped turn")
 
         let again = pool.session(for: 4, config: config(4))
         XCTAssertTrue(again.isAlive)
         XCTAssertFalse(again === fourth)
+    }
+
+    /// `abandon` (quit, eviction) of a queued session's held turn ends it
+    /// unsent: a freed slot launches nothing for it.
+    func testAbandoningAHeldTurnNeverLaunchesTheQueuedSession() async throws {
+        for id: Int64 in 1...3 {
+            pool.session(for: id, config: config(id)).send(turn("t\(id)"))
+            clock.advance(1)
+        }
+        let fourth = pool.session(for: 4, config: config(4))
+        fourth.send(turn("t4"))
+        fourth.abandon()
+        XCTAssertFalse(fourth.isBusy)
+        XCTAssertFalse(fourth.isAlive)
+        let rows = try await dbPool.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM chat_messages WHERE conversation_id = 4") }
+        XCTAssertEqual(rows, 0, "a held turn never reached its session: nothing was written")
+
+        fakes[1].emit(.turnDone(turnID: "t2", status: .complete, sessionID: nil))
+        pool.tick()
+        XCTAssertFalse(fourth.isPending, "admission dropped it rather than launching it")
+        XCTAssertEqual(fakes.count, 3, "no process for an abandoned session")
     }
 
     /// A chat project's prompt changed: its idle sessions close at once, a
@@ -155,7 +174,7 @@ final class ChatSessionPoolTests: XCTestCase {
         let idle = pool.session(for: 1, config: projectConfig(1, 7))
         let busy = pool.session(for: 2, config: projectConfig(2, 7))
         let other = pool.session(for: 3, config: projectConfig(3, nil))
-        busy.startTurn(turn("t2", row: try assistantRow()))
+        busy.send(turn("t2"))
 
         pool.retireSessions(projectID: 7, deleted: false)
         XCTAssertNil(pool.client(for: 1))
@@ -167,7 +186,8 @@ final class ChatSessionPoolTests: XCTestCase {
         fakes[1].emit(.turnDone(turnID: "t2", status: .complete, sessionID: "sess-late"))
         let ended = await waitForCondition { !busy.isBusy }
         XCTAssertTrue(ended)
-        XCTAssertNil(busy.driver.sessionID, "the stale session's id is never recorded")
+        // The stale session's id: Go records it only while the chat is still in
+        // the project it was spawned for (`Turn.recordSession`), and it is never read (#604 G11).
         XCTAssertFalse(busy.isAlive, "the stale session is replaced on the next request")
         pool.tick()
         let reaped = await waitForCondition { self.fakes[1].terminated }
@@ -183,7 +203,7 @@ final class ChatSessionPoolTests: XCTestCase {
     func testChatPoolRetireIdleKeepsBusySessions() async throws {
         let idle = pool.session(for: 1, config: config(1))
         let busy = pool.session(for: 2, config: config(2))
-        busy.startTurn(turn("t2", row: try assistantRow()))
+        busy.send(turn("t2"))
 
         pool.retireIdleSessions()
         XCTAssertNil(pool.client(for: 1))
@@ -218,10 +238,10 @@ final class ChatSessionPoolTests: XCTestCase {
     /// launches, so it is left alone and keeps its held turn.
     func testChatPoolRetireIdleLeavesPendingSessions() async throws {
         for id: Int64 in 1...3 {
-            pool.session(for: id, config: config(id)).startTurn(turn("t\(id)", row: try assistantRow()))
+            pool.session(for: id, config: config(id)).send(turn("t\(id)"))
         }
         let fourth = pool.session(for: 4, config: config(4))
-        fourth.startTurn(turn("t4", row: try assistantRow()))
+        fourth.send(turn("t4"))
         XCTAssertTrue(fourth.isPending)
 
         pool.retireIdleSessions()
@@ -232,6 +252,7 @@ final class ChatSessionPoolTests: XCTestCase {
         fakes[1].emit(.turnDone(turnID: "t2", status: .complete, sessionID: nil))
         let launched = await waitForCondition { self.fakes.count == 4 && !fourth.isPending }
         XCTAssertTrue(launched)
+        await untilTurn { !self.fakes[3].turns.isEmpty }
         XCTAssertEqual(fakes[3].turns.map(\.turnID), ["t4"])
         XCTAssertTrue(fourth.isAlive, "the launched session is not retired")
         XCTAssertLessThanOrEqual(maxAlive, ChatSessionPolicy.maxLive)
@@ -243,13 +264,12 @@ final class ChatSessionPoolTests: XCTestCase {
     /// left "Stopped".
     func testRetireSessionsResendsAPendingSessionsHeldTurnFresh() async throws {
         for id: Int64 in 1...3 {
-            pool.session(for: id, config: config(id)).startTurn(turn("t\(id)", row: try assistantRow()))
+            pool.session(for: id, config: config(id)).send(turn("t\(id)"))
             clock.advance(1)
         }
         let stale = ChatSessionConfig(conversationID: 4, provider: "claude", model: nil, projectID: 7)
         let queued = pool.session(for: 4, config: stale)
-        let row = try assistantRow()
-        queued.startTurn(turn("t4", row: row))
+        queued.send(turn("t4"))
         XCTAssertTrue(queued.isPending)
 
         pool.retireSessions(projectID: 7, deleted: false)
@@ -258,8 +278,8 @@ final class ChatSessionPoolTests: XCTestCase {
         XCTAssertFalse(queued.isAlive)
         XCTAssertTrue(replacement.isBusy, "the held turn is still running, on the replacement")
         XCTAssertEqual(replacement.config.projectID, 7)
-        let status = try await dbPool.read { try String.fetchOne($0, sql: "SELECT status FROM chat_messages WHERE id = ?", arguments: [row]) }
-        XCTAssertEqual(status, "partial", "the row is untouched until the turn runs")
+        let rows = try await dbPool.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM chat_messages WHERE conversation_id = 4") }
+        XCTAssertEqual(rows, 0, "nothing is written until the turn runs")
 
         fakes[0].emit(.turnDone(turnID: "t1", status: .complete, sessionID: nil))
         let launched = await waitForCondition { self.fakes.count == 4 && !replacement.isPending }
@@ -267,8 +287,10 @@ final class ChatSessionPoolTests: XCTestCase {
         let fake = fakes[3]
         XCTAssertNil(fake.argument(after: "--resume"), "never the old session")
         XCTAssertEqual(fake.argument(after: "--project-id"), "7")
+        await untilTurn { !fake.turns.isEmpty }
         XCTAssertEqual(fake.turns.map(\.turnID), ["t4"])
-        XCTAssertEqual(fake.turns.first?.replay, true, "the fresh session replays the history")
+        // Whether it replays is the fresh session's own continuity (Go's
+        // `ChatContinuity`: a chat with history replays it).
         XCTAssertLessThanOrEqual(maxAlive, ChatSessionPolicy.maxLive)
     }
 
@@ -280,7 +302,7 @@ final class ChatSessionPoolTests: XCTestCase {
         changed.model = "other-model"
         // Pending behind its predecessor's retirement, holding its turn.
         let queued = pool.session(for: 4, config: changed)
-        queued.startTurn(turn("t4", row: try assistantRow()))
+        queued.send(turn("t4"))
         XCTAssertTrue(queued.isPending)
         XCTAssertFalse(launchedFirst.isAlive)
 
@@ -291,6 +313,7 @@ final class ChatSessionPoolTests: XCTestCase {
         XCTAssertTrue(launched)
         XCTAssertNil(fakes[1].argument(after: "--project-id"))
         XCTAssertNil(fakes[1].argument(after: "--resume"))
+        await untilTurn { !self.fakes[1].turns.isEmpty }
         XCTAssertEqual(fakes[1].turns.map(\.turnID), ["t4"])
     }
 
@@ -305,9 +328,9 @@ final class ChatSessionPoolTests: XCTestCase {
         // Waits for the first process's retirement, which cannot finish while
         // this test never yields; everything behind it waits in the queue.
         let blocked = pool.session(for: 4, config: changed)
-        blocked.startTurn(turn("t4", row: try assistantRow()))
+        blocked.send(turn("t4"))
         let behind = pool.session(for: 5, config: ChatSessionConfig(conversationID: 5, provider: "claude", model: nil, projectID: 7))
-        behind.startTurn(turn("t5", row: try assistantRow()))
+        behind.send(turn("t5"))
         XCTAssertTrue(blocked.isPending)
         XCTAssertTrue(behind.isPending)
 
@@ -319,8 +342,10 @@ final class ChatSessionPoolTests: XCTestCase {
         }
         for fake in fakes.dropFirst() {
             XCTAssertNil(fake.argument(after: "--resume"), "no stale session is ever launched")
-            XCTAssertTrue([["t4"], ["t5"]].contains(fake.turns.map(\.turnID)))
-            XCTAssertEqual(fake.turns.first?.replay, true)
+            let sent = fake.sent.compactMap { command -> String? in
+                if case let .turn(turn) = command { turn.turnID } else { nil }
+            }
+            XCTAssertTrue([["t4"], ["t5"]].contains(sent))
         }
     }
 
@@ -330,7 +355,7 @@ final class ChatSessionPoolTests: XCTestCase {
     /// BEHAVIOR CHAT-03 — see docs/inventory/chat.md
     func testChat03RetiringABusySessionNeverLetsTheQueuedFourthOverlap() async throws {
         for id: Int64 in 1...3 {
-            pool.session(for: id, config: config(id)).startTurn(turn("t\(id)", row: try assistantRow()))
+            pool.session(for: id, config: config(id)).send(turn("t\(id)"))
             clock.advance(1)
         }
         let fourth = pool.session(for: 4, config: config(4))
@@ -391,22 +416,17 @@ final class ChatSessionPoolTests: XCTestCase {
     /// replacement spawns, so they never overlap and the old one's late
     /// `session_id` can never land after the new one's.
     func testConfigChangeReplacementWaitsForThePredecessorToExit() async throws {
-        let (conv, row) = try await dbPool.write { d in
-            let conv = try TestDatabase.insertChatConversation(d)
-            let asst = try ChatTreeQueries.insertAssistant(d, conversationID: conv, parentID: nil, turnID: "t",
-                                                           provider: "claude", model: "")
-            return (conv, asst.id)
-        }
+        let conv: Int64 = 1
         let old = pool.session(for: conv, config: config(conv))
-        old.startTurn(turn("t", row: row))
+        old.send(turn("t"))
+        await untilTurn { old.liveTurn != nil }
         fakes[0].emit(.textDelta(turnID: "t", text: "half"))
         _ = await waitForCondition { old.liveTurn?.fullText == "half" }
 
         let replacement = pool.session(for: conv, config: config(conv, provider: "codex"))
         XCTAssertTrue(replacement.isPending)
         XCTAssertEqual(fakes.count, 1, "no overlap: the replacement waits for the old process")
-        await old.driver.writesSettled()
-        XCTAssertFalse(old.isBusy, "the old turn was kept as partial")
+        await untilTurn { !old.isBusy }
         fakes[0].emit(.sessionReady(sessionID: "old-session", provider: "claude", model: ""))
 
         let spawned = await waitForCondition { self.fakes.count == 2 }
@@ -416,12 +436,8 @@ final class ChatSessionPoolTests: XCTestCase {
         fakes[1].emit(.sessionReady(sessionID: "new-session", provider: "codex", model: ""))
         let ready = await waitForCondition { replacement.driver.sessionID == "new-session" }
         XCTAssertTrue(ready)
-        // `sessionID` is set at once; its database write is queued — wait for it.
-        await replacement.driver.writesSettled()
-        let stored = try await dbPool.read { d in try ChatConversationQueries.fetchByID(d, id: conv)?.sessionID }
-        XCTAssertEqual(stored, "new-session")
         let text = try await dbPool.read { d in
-            try ChatMessageRecord.fetchOne(d, sql: "SELECT * FROM chat_messages WHERE id = ?", arguments: [row])
+            try ChatMessageRecord.fetchOne(d, sql: "SELECT * FROM chat_messages WHERE turn_id = 't' AND role = 'assistant'")
         }
         XCTAssertEqual(text?.text, "half")
         XCTAssertEqual(text?.status, "partial")
@@ -450,15 +466,10 @@ final class ChatSessionPoolTests: XCTestCase {
     /// SIGTERM, and a turn still streaming keeps its text as `partial`.
     /// BEHAVIOR CHAT-03 — see docs/inventory/chat.md
     func testChat03CloseAllClosesEverySessionAndKeepsPartialText() async throws {
-        let (conv, asst) = try await dbPool.write { d in
-            let conv = try TestDatabase.insertChatConversation(d)
-            let asst = try ChatTreeQueries.insertAssistant(d, conversationID: conv, parentID: nil, turnID: "t",
-                                                           provider: "claude", model: "")
-            return (conv, asst.id)
-        }
+        let conv: Int64 = 1
         let busy = pool.session(for: conv, config: config(conv))
-        _ = pool.session(for: conv + 100, config: config(conv + 100))
-        busy.startTurn(turn("t", row: asst))
+        _ = pool.session(for: 2, config: config(2))
+        busy.send(turn("t"))
         fakes[0].emit(.textDelta(turnID: "t", text: "Hel"))
         _ = await waitForCondition { busy.liveTurn?.fullText == "Hel" }
 
@@ -467,7 +478,7 @@ final class ChatSessionPoolTests: XCTestCase {
         XCTAssertTrue(pool.clients.isEmpty)
         XCTAssertTrue(fakes.allSatisfy { $0.sent.contains(.close) && $0.terminated })
         let fetched = try await dbPool.read { d in
-            try ChatMessageRecord.fetchOne(d, sql: "SELECT * FROM chat_messages WHERE id = ?", arguments: [asst])
+            try ChatMessageRecord.fetchOne(d, sql: "SELECT * FROM chat_messages WHERE turn_id = 't' AND role = 'assistant'")
         }
         let row = try XCTUnwrap(fetched)
         XCTAssertEqual(row.text, "Hel")
@@ -486,12 +497,8 @@ final class ChatSessionPoolTests: XCTestCase {
     func testTurnFinishedIsForwarded() async throws {
         var finished: [Int64] = []
         pool.onTurnFinished = { finished.append($0) }
-        let asst = try await dbPool.write { d in
-            try ChatTreeQueries.insertAssistant(d, conversationID: TestDatabase.insertChatConversation(d),
-                                                parentID: nil, turnID: "t", provider: "claude", model: "").id
-        }
         let client = pool.session(for: 1, config: config(1))
-        client.startTurn(turn("t", row: asst))
+        client.send(turn("t"))
         fakes[0].emit(.turnDone(turnID: "t", status: .complete, sessionID: nil))
         let forwarded = await waitForCondition { finished == [1] }
         XCTAssertTrue(forwarded)
@@ -503,7 +510,8 @@ final class ChatSessionPoolTests: XCTestCase {
         XCTAssertNil(pool.runningTurnID(conversationID: 1), "no session")
         let client = pool.session(for: 1, config: config(1))
         XCTAssertNil(pool.runningTurnID(conversationID: 1), "an idle session runs no turn")
-        client.startTurn(turn("t1", row: try assistantRow()))
+        client.send(turn("t1"))
+        await untilTurn { client.liveTurn != nil }
         XCTAssertEqual(pool.runningTurnID(conversationID: 1), "t1")
         XCTAssertNil(pool.runningTurnID(conversationID: 2), "another conversation's session")
         fakes[0].emit(.turnDone(turnID: "t1", status: .complete, sessionID: nil))
@@ -513,7 +521,8 @@ final class ChatSessionPoolTests: XCTestCase {
         // (board #670): startTurn ignores a busy client.
         let settled = await waitForCondition { !client.isBusy }
         XCTAssertTrue(settled)
-        client.startTurn(turn("t2", row: try assistantRow()))
+        client.send(turn("t2"))
+        await untilTurn { client.liveTurn != nil }
         XCTAssertEqual(pool.runningTurnID(conversationID: 1), "t2")
         let row = { (turnID: String) in
             AgentAction(row: ["id": 1, "tool": ConnectorCallProposal.tool, "conversation_id": 1, "turn_id": turnID])
@@ -530,12 +539,12 @@ extension ChatSessionPoolTests {
     func testRoutingRevisionRetiresBothProvidersAfterTurnAndPreservesFIFO() async throws {
         for id: Int64 in 1...3 {
             pool.session(for: id, config: config(id, provider: "codex"))
-                .startTurn(turn("t\(id)", row: try assistantRow()))
+                .send(turn("t\(id)"))
         }
         let fourth = pool.session(for: 4, config: config(4, provider: "codex"))
-        fourth.startTurn(turn("t4", row: try assistantRow()))
+        fourth.send(turn("t4"))
         let fifth = pool.session(for: 5, config: config(5))
-        fifth.startTurn(turn("t5", row: try assistantRow()))
+        fifth.send(turn("t5"))
         pool.retireRoutingSessions()
         XCTAssertTrue(fourth.isPending)
         XCTAssertTrue(fifth.isPending)
@@ -547,5 +556,13 @@ extension ChatSessionPoolTests {
         XCTAssertTrue(fifth.isPending, "pending FIFO order survives revision publication")
         XCTAssertLessThanOrEqual(maxAlive, ChatSessionPolicy.maxLive)
         XCTAssertEqual(fakes[0].turns.count, 1, "the started turn was never replayed")
+    }
+}
+
+extension ChatSessionClient {
+    /// Sends `command` without waiting for its `started` (the start's
+    /// outcome is not what these tests look at).
+    func send(_ command: ChatTurnCommand) {
+        begin(PendingChatStart(command: command))
     }
 }

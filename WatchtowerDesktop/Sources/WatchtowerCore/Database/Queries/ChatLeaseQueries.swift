@@ -80,48 +80,6 @@ package struct ChatBusyError: LocalizedError, Equatable {
 /// The SQL of `chat_turn_leases`, the same operations as Go's
 /// `internal/db/chat_lease.go`.
 package enum ChatLeaseQueries {
-    /// Takes the conversation's lease inside the caller's write transaction
-    /// (`BEGIN IMMEDIATE`, so the first commit wins). Succeeds only when the
-    /// row is absent or its heartbeat is older than `staleAfterMS` at
-    /// `nowMS`; a taken-over row starts fresh (its cancel request is
-    /// dropped). False: refused, the caller rolls back.
-    package static func claim(_ db: Database, _ lease: ChatLease, nowMS: Int64) throws -> Bool {
-        try db.execute(sql: """
-            INSERT INTO chat_turn_leases
-              (conversation_id, owner, owner_id, turn_id, started_at_ms, heartbeat_at_ms, cancel_requested_at_ms)
-            VALUES (?, ?, ?, ?, ?, ?, NULL)
-            ON CONFLICT(conversation_id) DO UPDATE SET
-              owner = excluded.owner, owner_id = excluded.owner_id, turn_id = excluded.turn_id,
-              started_at_ms = excluded.started_at_ms, heartbeat_at_ms = excluded.heartbeat_at_ms,
-              cancel_requested_at_ms = NULL
-            WHERE chat_turn_leases.heartbeat_at_ms < ? - ?
-            """, arguments: [lease.conversationID, lease.owner.rawValue, lease.ownerID, lease.turnID,
-                             lease.startedAtMS, lease.heartbeatAtMS, nowMS, ChatLease.staleAfterMS])
-        return db.changesCount == 1
-    }
-
-    /// Refreshes `turnID`'s lease; false: the row is gone or another turn's
-    /// (the conversation was deleted, or the lease was taken over).
-    package static func heartbeat(_ db: Database, conversationID: Int64, turnID: String, nowMS: Int64) throws -> Bool {
-        try db.execute(sql: "UPDATE chat_turn_leases SET heartbeat_at_ms = ? WHERE conversation_id = ? AND turn_id = ?",
-                       arguments: [nowMS, conversationID, turnID])
-        return db.changesCount == 1
-    }
-
-    /// The other side's Stop: marks `turnID`'s lease cancel-requested;
-    /// false: no such lease (the turn already ended).
-    package static func requestCancel(_ db: Database, conversationID: Int64, turnID: String, nowMS: Int64) throws -> Bool {
-        try db.execute(sql: "UPDATE chat_turn_leases SET cancel_requested_at_ms = ? WHERE conversation_id = ? AND turn_id = ?",
-                       arguments: [nowMS, conversationID, turnID])
-        return db.changesCount == 1
-    }
-
-    /// Deletes `turnID`'s lease inside the finalize transaction; another
-    /// turn's lease is left alone.
-    package static func release(_ db: Database, conversationID: Int64, turnID: String) throws {
-        try db.execute(sql: "DELETE FROM chat_turn_leases WHERE conversation_id = ? AND turn_id = ?",
-                       arguments: [conversationID, turnID])
-    }
 
     /// The conversation's lease, or nil.
     package static func fetch(_ db: Database, conversationID: Int64) throws -> ChatLease? {
@@ -129,20 +87,4 @@ package enum ChatLeaseQueries {
                                arguments: [conversationID])
     }
 
-    /// Deletes every lease one owner process holds; returns how many.
-    @discardableResult
-    package static func releaseOwned(_ db: Database, owner: ChatLease.Owner, ownerID: String) throws -> Int {
-        try db.execute(sql: "DELETE FROM chat_turn_leases WHERE owner = ? AND owner_id = ?",
-                       arguments: [owner.rawValue, ownerID])
-        return db.changesCount
-    }
-
-    /// At launch: the Desktop leases an earlier launch left behind (a
-    /// crash), i.e. `owner = 'desktop'` held by any launch but this one.
-    @discardableResult
-    package static func releaseEarlierDesktopLaunches(_ db: Database, currentLaunchID: String) throws -> Int {
-        try db.execute(sql: "DELETE FROM chat_turn_leases WHERE owner = 'desktop' AND owner_id <> ?",
-                       arguments: [currentLaunchID])
-        return db.changesCount
-    }
 }

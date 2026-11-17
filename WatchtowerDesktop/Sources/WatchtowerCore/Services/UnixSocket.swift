@@ -19,7 +19,10 @@ enum UnixSocket {
         case io(Int32)
     }
 
-    /// A connected stream socket at `path`, with `SO_NOSIGPIPE` set.
+    /// A connected stream socket at `path`, with `SO_NOSIGPIPE` and
+    /// `FD_CLOEXEC` set: a process the app spawns never inherits the
+    /// connection (the daemon trusts a tower connection as the signed
+    /// Desktop's, checked per peer pid, AGENT-07).
     static func connect(_ path: String) throws -> Int32 {
         var addr = sockaddr_un()
         let bytes = Array(path.utf8)
@@ -30,6 +33,11 @@ enum UnixSocket {
         }
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw Failure.io(errno) }
+        guard fcntl(fd, F_SETFD, FD_CLOEXEC) == 0 else {
+            let err = errno
+            close(fd)
+            throw Failure.io(err)
+        }
         var on: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
         let result = withUnsafePointer(to: &addr) {

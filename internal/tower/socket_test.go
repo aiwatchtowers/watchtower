@@ -4,11 +4,14 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"watchtower/internal/tower/api"
@@ -137,14 +140,27 @@ func TestSocket_IsPrivateAndChecksPeer(t *testing.T) {
 		t.Fatalf("the owner's ping: %+v", r)
 	}
 
-	// Another user's connection is closed without an answer.
+	// Another user's connection is closed without an answer and its request
+	// never runs. The server may close before the write lands, so the write
+	// can fail (EPIPE/ECONNRESET): either way the read ends in an error.
 	setPeerUID(t, func(net.Conn) (int, error) { return os.Getuid() + 1, nil })
 	foreign := filepath.Join(dir, "foreign.sock")
 	serve(t, foreign, f)
 	c := dialTower(t, foreign)
-	c.send("p2", "tower.ping", nil)
+	raw, err := json.Marshal(api.Request{V: api.EnvelopeVersion, ID: "w-foreign", Command: "test.guarded",
+		Params: json.RawMessage(`{"request_id":"foreign-1","note":"foreign"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = c.c.Write(append(raw, '\n')) // fails when the refusal closed it first
 	if b, err := c.line(); err == nil {
 		t.Fatalf("another user's connection was answered: %s", b)
+	}
+	if n := f.rows(); n != 0 {
+		t.Fatalf("another user's write ran: %d rows", n)
+	}
+	if row := f.ledger("foreign-1"); row != nil {
+		t.Fatalf("another user's write reached the ledger: %+v", row)
 	}
 }
 
@@ -316,4 +332,122 @@ func TestSocketPath_LongWorkspaceFallsBackAndWritesThePathFile(t *testing.T) {
 func itoa(n int) string {
 	b, _ := json.Marshal(n)
 	return string(b)
+}
+
+type desktopResult struct {
+	Desktop bool `json:"desktop"`
+}
+
+// TestSocket_DesktopIsTheSignedPeerCheckedOncePerConnection: a socket call's
+// Origin.Desktop checks the connection's peer pid with
+// Options.VerifyDesktop once per connection; a tower without VerifyDesktop
+// trusts no peer as the Desktop.
+func TestSocket_DesktopIsTheSignedPeerCheckedOncePerConnection(t *testing.T) {
+	oldPID := peerPID
+	peerPID = func(net.Conn) (int, error) { return 4242, nil }
+	t.Cleanup(func() { peerPID = oldPID })
+	register := func(r *Registry) {
+		Register(r, "test.desktop", func(ctx context.Context, c *Ctx, _ struct{}) (desktopResult, error) {
+			return desktopResult{Desktop: c.Origin.Desktop != nil && c.Origin.Desktop(ctx) == nil}, nil
+		}, Spec{Read: true})
+	}
+	for _, tc := range []struct {
+		name   string
+		verify func(context.Context, int) error
+		want   bool
+	}{
+		{"signed", func(_ context.Context, pid int) error {
+			if pid != 4242 {
+				return errors.New("wrong pid")
+			}
+			return nil
+		}, true},
+		{"unsigned", func(context.Context, int) error { return errors.New("not the Desktop") }, false},
+		{"no check", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			f := newFixtureWith(t, func(r *Registry, o *Options) {
+				register(r)
+				if tc.verify != nil {
+					o.VerifyDesktop = func(ctx context.Context, pid int) error { calls++; return tc.verify(ctx, pid) }
+				}
+			})
+			path := filepath.Join(shortDir(t), "t.sock")
+			serve(t, path, f)
+			c := dialTower(t, path)
+			for i := range 2 {
+				c.send(itoa(i), "test.desktop", nil)
+				resp := c.response()
+				var got desktopResult
+				if err := json.Unmarshal(resp.Result, &got); err != nil {
+					t.Fatalf("%s: %+v", err, resp)
+				}
+				if got.Desktop != tc.want {
+					t.Errorf("call %d: desktop %v, want %v", i, got.Desktop, tc.want)
+				}
+			}
+			if tc.verify != nil && calls != 1 {
+				t.Errorf("%d signature checks for one connection, want 1", calls)
+			}
+		})
+	}
+}
+
+// TestSocket_DesktopRechecksANewPeerPidAndNeverKeepsACancelledCheck: the
+// peer pid is read on every gesture, so a verified connection handed to
+// another process (an inherited descriptor) is checked again and refused
+// for an unsigned pid; a check cut short by its context is not kept.
+func TestSocket_DesktopRechecksANewPeerPidAndNeverKeepsACancelledCheck(t *testing.T) {
+	var pid atomic.Int64
+	pid.Store(4242)
+	oldPID := peerPID
+	peerPID = func(net.Conn) (int, error) { return int(pid.Load()), nil }
+	t.Cleanup(func() { peerPID = oldPID })
+	var checks atomic.Int64
+	cancelFirst := atomic.Bool{}
+	cancelFirst.Store(true)
+	f := newFixtureWith(t, func(r *Registry, o *Options) {
+		Register(r, "test.desktop", func(ctx context.Context, c *Ctx, _ struct{}) (desktopResult, error) {
+			return desktopResult{Desktop: c.Origin.Desktop(ctx) == nil}, nil
+		}, Spec{Read: true})
+		o.VerifyDesktop = func(_ context.Context, p int) error {
+			checks.Add(1)
+			if cancelFirst.Swap(false) {
+				return fmt.Errorf("codesign: %w", context.Canceled)
+			}
+			if p != 4242 {
+				return errors.New("not the Desktop")
+			}
+			return nil
+		}
+	})
+	path := filepath.Join(shortDir(t), "t.sock")
+	serve(t, path, f)
+	c := dialTower(t, path)
+	desktop := func(id string) bool {
+		c.send(id, "test.desktop", nil)
+		var got desktopResult
+		if err := json.Unmarshal(c.response().Result, &got); err != nil {
+			t.Fatal(err)
+		}
+		return got.Desktop
+	}
+	if desktop("1") {
+		t.Fatal("a cancelled check passed")
+	}
+	if !desktop("2") {
+		t.Fatal("the cancelled check was kept: the signed Desktop is refused")
+	}
+	pid.Store(99)
+	if desktop("3") {
+		t.Error("the connection's new, unsigned peer pid passed on the old verdict")
+	}
+	pid.Store(4242)
+	if !desktop("4") {
+		t.Error("the signed Desktop is refused after its pid came back")
+	}
+	if n := checks.Load(); n != 3 {
+		t.Errorf("%d signature checks, want 3 (cancelled, 4242, 99)", n)
+	}
 }

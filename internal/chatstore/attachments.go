@@ -206,29 +206,13 @@ func RemoveConversationFiles(root string, conv int64) error {
 // row cannot be written. ErrConversationGone when the conversation does not
 // exist or is not a main chat (spec §1).
 func SaveAttachment(ctx context.Context, d *db.DB, root string, conv int64, name string, kind AttachmentKind, data []byte, now float64) (int64, error) {
-	sum := sha256.Sum256(data)
-	sha := hex.EncodeToString(sum[:])
-	var existing sql.NullString
-	err := d.QueryRowContext(ctx, `SELECT path FROM chat_attachments WHERE conversation_id = ? AND sha256 = ? ORDER BY id LIMIT 1`,
-		conv, sha).Scan(&existing)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return 0, fmt.Errorf("reading chat attachments: %w", err)
-	}
-	path, fresh := "", false
-	if existing.Valid {
-		if _, err := os.Stat(existing.String); err == nil {
-			path = existing.String
-		}
-	}
-	if path == "" {
-		if path, err = writeAttachmentFile(root, conv, kind.FileExtension(name), data); err != nil {
-			return 0, err
-		}
-		fresh = true
+	f, err := prepareAttachmentFile(ctx, d, root, attachmentOwner{id: conv}, kind.FileExtension(name), data)
+	if err != nil {
+		return 0, err
 	}
 	res, err := d.ExecContext(ctx, `INSERT INTO chat_attachments (conversation_id, project_id, name, mime, size, path, sha256, created_at)
 		SELECT id, NULL, ?, ?, ?, ?, ?, ? FROM chat_conversations WHERE id = ? AND context_type IS NULL`,
-		name, kind.Mime, len(data), path, sha, now, conv)
+		name, kind.Mime, len(data), f.path, f.sha, now, conv)
 	if err == nil {
 		var n int64
 		if n, err = res.RowsAffected(); err == nil && n == 0 {
@@ -236,9 +220,7 @@ func SaveAttachment(ctx context.Context, d *db.DB, root string, conv int64, name
 		}
 	}
 	if err != nil {
-		if fresh {
-			_ = os.Remove(path)
-		}
+		f.discard()
 		if errors.Is(err, ErrConversationGone) {
 			return 0, err
 		}
@@ -247,11 +229,67 @@ func SaveAttachment(ctx context.Context, d *db.DB, root string, conv int64, name
 	return res.LastInsertId()
 }
 
-func writeAttachmentFile(root string, conv int64, ext string, data []byte) (string, error) {
+// attachmentOwner is ChatAttachmentOwner: a conversation, or a project.
+type attachmentOwner struct {
+	projectID bool
+	id        int64
+}
+
+func (o attachmentOwner) project() bool { return o.projectID }
+
+// dir is ChatAttachmentOwner.directoryName.
+func (o attachmentOwner) dir() string {
+	if o.projectID {
+		return "projects/" + strconv.FormatInt(o.id, 10)
+	}
+	return ConversationDir(o.id)
+}
+
+// attachmentFile is a stored file a new chat_attachments row will point at.
+type attachmentFile struct {
+	path, sha string
+	fresh     bool // written now: removed again when its row is not written
+}
+
+func (f attachmentFile) discard() {
+	if f.fresh {
+		_ = os.Remove(f.path)
+	}
+}
+
+// prepareAttachmentFile is ChatAttachmentStore.store up to the row: a file
+// of the same owner with the same sha256 still on disk is reused, else the
+// bytes go 0600 under <root>/<owner dir>/ (0700).
+func prepareAttachmentFile(ctx context.Context, d *db.DB, root string, o attachmentOwner, ext string, data []byte) (attachmentFile, error) {
+	sum := sha256.Sum256(data)
+	f := attachmentFile{sha: hex.EncodeToString(sum[:])}
+	existingPath := `SELECT path FROM chat_attachments WHERE conversation_id = ? AND sha256 = ? ORDER BY id LIMIT 1`
+	if o.projectID {
+		existingPath = `SELECT path FROM chat_attachments WHERE project_id = ? AND sha256 = ? ORDER BY id LIMIT 1`
+	}
+	var existing sql.NullString
+	err := d.QueryRowContext(ctx, existingPath, o.id, f.sha).Scan(&existing)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return f, fmt.Errorf("reading chat attachments: %w", err)
+	}
+	if existing.Valid {
+		if _, err := os.Stat(existing.String); err == nil {
+			f.path = existing.String
+			return f, nil
+		}
+	}
+	if f.path, err = writeAttachmentFile(root, o.dir(), ext, data); err != nil {
+		return f, err
+	}
+	f.fresh = true
+	return f, nil
+}
+
+func writeAttachmentFile(root, ownerDir, ext string, data []byte) (string, error) {
 	if root == "" {
 		return "", errors.New("chatstore: no attachments folder")
 	}
-	dir := filepath.Join(root, filepath.FromSlash(ConversationDir(conv)))
+	dir := filepath.Join(root, filepath.FromSlash(ownerDir))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("creating the attachments folder: %w", err)
 	}

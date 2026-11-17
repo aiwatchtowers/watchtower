@@ -19,6 +19,7 @@ import (
 
 	"watchtower/internal/fsutil"
 	"watchtower/internal/hub/platform"
+	"watchtower/internal/ownerconfirm"
 	"watchtower/internal/tower/api"
 )
 
@@ -51,6 +52,10 @@ var peerUID = func(c net.Conn) (int, error) {
 	}
 	return platform.PeerUID(uc)
 }
+
+// peerPID is the pid at the other end of a connection (LOCAL_PEERPID,
+// ownerconfirm's own read); a test replaces it.
+var peerPID = ownerconfirm.PeerPID
 
 // SocketPath is where the daemon of workspace serves the tower:
 // <workspace>/tower.sock when that fits sun_path (SunPathMax), else
@@ -271,6 +276,7 @@ func readFrame(r *bufio.Reader) ([]byte, error) {
 func (s *server) serveConn(c net.Conn) {
 	defer func() { _ = c.Close() }()
 	w := &frameWriter{c: c}
+	origin := Origin{Transport: "socket", Desktop: s.desktopCheck(c)}
 	var (
 		calls   sync.WaitGroup
 		watches []func()
@@ -317,8 +323,46 @@ func (s *server) serveConn(c net.Conn) {
 		go func() {
 			defer calls.Done()
 			defer func() { <-slots }()
-			w.write(s.t.Call(s.ctx, req, Origin{Transport: "socket"}))
+			w.write(s.t.Call(s.ctx, req, origin))
 		}()
+	}
+}
+
+// errNoDesktopCheck: the tower has no VerifyDesktop, so no peer is the
+// Desktop.
+var errNoDesktopCheck = errors.New("tower: this tower checks no Desktop signature")
+
+// desktopCheck is the connection's Origin.Desktop. Each owner gesture
+// reads the peer pid again (peerPID): on macOS LOCAL_PEERPID names the last
+// process that used the socket, so a connection handed to another process
+// (an inherited descriptor) is seen. The verdict is kept per pid, so the
+// signed Desktop is checked once and a new pid is checked again; a check
+// cut short by its context (cancelled, timed out) is not kept.
+func (s *server) desktopCheck(c net.Conn) func(context.Context) error {
+	var (
+		mu       sync.Mutex
+		verdicts = map[int]error{}
+	)
+	return func(ctx context.Context) error {
+		verify := s.t.opts.VerifyDesktop
+		if verify == nil {
+			return errNoDesktopCheck
+		}
+		pid, err := peerPID(c)
+		if err != nil {
+			return err
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if v, ok := verdicts[pid]; ok {
+			return v
+		}
+		err = verify(ctx, pid)
+		if err != nil && (ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+			return err
+		}
+		verdicts[pid] = err
+		return err
 	}
 }
 

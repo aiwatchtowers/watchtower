@@ -159,6 +159,52 @@ final class ChatLandingViewModelTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(fakes.last).turns.count, 1)
     }
 
+    /// The landing leaves at Send, not at `started`: while the session
+    /// writes the turn the chat shows the owner's message and offers Stop
+    /// (review I1 — before, the landing sat blank with an empty composer).
+    func testTheLandingLeavesAtSendAndShowsTheMessageWhileItIsWritten() async throws {
+        let vm = makeViewModel()
+        await vm.draftStarted()
+        let fake = try XCTUnwrap(fakes.last)
+        fake.holdsStarts = true
+        vm.draft = "hello"
+        let sending = Task { await vm.sendDraft() }
+        await untilTurn { !fake.sent.isEmpty }
+        XCTAssertFalse(vm.isOnLanding, "the chat is on screen at once")
+        XCTAssertEqual(vm.pendingOwnerText, "hello")
+        XCTAssertTrue(vm.canStop)
+        fake.releaseStarts()
+        await sending.value
+        XCTAssertNil(vm.pendingOwnerText)
+        XCTAssertEqual(vm.thread.first?.message.text, "hello")
+    }
+
+    /// A landing's first send that fails (fix round 2): nothing was written,
+    /// so the owner is back on the landing with the text, and the empty
+    /// chat is the landing's untouched draft again — discarded on leave,
+    /// never left in the history (as before the send left the landing at
+    /// Send).
+    func testAFailedFirstSendGoesBackToTheLandingWithItsText() async throws {
+        let other = try await answeredConversation(makeViewModel())
+        let vm = makeViewModel()
+        await vm.draftStarted()
+        let draftID = try XCTUnwrap(vm.conversationID)
+        let fake = try XCTUnwrap(fakes.last)
+        fake.holdsStarts = true
+        vm.draft = "hello"
+        let sending = Task { await vm.sendDraft() }
+        await untilTurn { !fake.sent.isEmpty }
+        XCTAssertFalse(vm.isOnLanding, "the chat showed at Send")
+        fake.exit(status: 9) // the session dies before `started`
+        await sending.value
+        XCTAssertTrue(vm.isOnLanding, "back on the landing")
+        XCTAssertEqual(vm.draft, "hello", "with the text")
+        XCTAssertEqual(vm.landingDraftID, draftID, "the empty chat is the landing's draft again")
+        vm.select(conversationID: other)
+        await vm.writesSettled()
+        XCTAssertFalse(try rowExists(draftID), "discarded on leave, not left in the history")
+    }
+
     func testSendingFromTheLandingWithoutAKeystrokeStillStartsAChat() async throws {
         let vm = makeViewModel()
         let sent = await vm.send(text: "What mattered yesterday?")

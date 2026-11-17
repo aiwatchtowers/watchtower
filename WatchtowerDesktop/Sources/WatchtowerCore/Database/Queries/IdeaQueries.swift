@@ -440,10 +440,11 @@ package enum IdeaQueries {
 
         for doomedID in doomed {
             if let conversation = try ChatConversationQueries.fetchByContext(db, type: "idea", id: String(doomedID)) {
-                // Mirrors ChatMessageQueries.deleteByConversation, which lives
-                // in the app target and isn't reachable from Core.
+                // Left for #1170 Task 12: the last Swift chat write — Go's
+                // `ideas.delete` takes it over and this goes;
+                // `ChatTablesWriteGuardTests` excludes exactly these two.
                 try db.execute(sql: "DELETE FROM chat_messages WHERE conversation_id = ?", arguments: [conversation.id])
-                try ChatConversationQueries.delete(db, id: conversation.id)
+                try db.execute(sql: "DELETE FROM chat_conversations WHERE id = ?", arguments: [conversation.id])
             }
             // Explicit, though the FK is ON DELETE CASCADE — independent of
             // the connection's foreign_keys pragma.

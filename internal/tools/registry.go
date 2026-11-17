@@ -293,7 +293,12 @@ var (
 	// ErrSurfaceNotOffered: a trust setting names a surface the tool is not on.
 	ErrSurfaceNotOffered = errors.New("tool is not offered on that surface")
 	ErrBadTransition     = errors.New("action is not in an applicable state")
-	ErrNotFound          = errors.New("action not found")
+	// ErrArgsChanged is an approve of args the approver was not shown: the
+	// row's args are not the ones seen (ApproveSeen's SHA-256 pin), or another
+	// edit landed after this approve read them. Always returned wrapped
+	// together with ErrBadTransition, so older callers still see that.
+	ErrArgsChanged = errors.New("the proposal changed since it was shown")
+	ErrNotFound    = errors.New("action not found")
 	// ErrAutomationRunGone: an automation run's write whose run no longer
 	// exists — refused (fail closed, automationWorkbench), since the run may
 	// have been a workbench one whose workbench is gone.
@@ -632,7 +637,8 @@ func (r *Registry) ApproveSeen(ctx context.Context, id int64, patch json.RawMess
 		return false, err
 	}
 	if seenArgsSHA256 != "" && !strings.EqualFold(seenArgsSHA256, ArgsSHA256(row.ArgsJSON)) {
-		return false, fmt.Errorf("%w: #%d changed since it was shown; reload it and approve again", ErrBadTransition, id)
+		return false, fmt.Errorf("%w: %w: #%d changed since it was shown; reload it and approve again",
+			ErrBadTransition, ErrArgsChanged, id)
 	}
 	t, known := r.Get(row.Tool)
 	hasPatch := len(bytes.TrimSpace(patch)) > 0
@@ -691,7 +697,8 @@ func (r *Registry) approveWithArgs(row *db.AgentAction, args json.RawMessage) (b
 		return false, fmt.Errorf("re-reading action #%d after a lost approve: %w", row.ID, err)
 	}
 	if cur != nil && cur.Status == "pending" {
-		return false, fmt.Errorf("%w: #%d was edited elsewhere; reload it and approve again", ErrBadTransition, row.ID)
+		return false, fmt.Errorf("%w: %w: #%d was edited elsewhere; reload it and approve again",
+			ErrBadTransition, ErrArgsChanged, row.ID)
 	}
 	return false, nil
 }

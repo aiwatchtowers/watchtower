@@ -160,6 +160,10 @@ func (d *Daemon) wakeAutomationExecutor() {
 	}
 }
 
+// WakeAutomations is wakeAutomationExecutor for the daemon's tower commands
+// (inbox.act's reply press, Run Now and reminder hook).
+func (d *Daemon) WakeAutomations() { d.wakeAutomationExecutor() }
+
 // installApprovalHook sets the database's approval hook to builtin.Fire with
 // the in-process executor wake, replacing a hook a tool registry built during
 // wiring may have set (cmd's SIGUSR2 wake, which would signal this process).

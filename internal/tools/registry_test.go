@@ -951,3 +951,42 @@ func TestPropose_RefusesToolNotOnTheCallingSurface(t *testing.T) {
 		Binding{Surface: "reaction"})
 	require.NoError(t, err)
 }
+
+// TestApproveSeen_ArgsChangedIsBothErrors: an approve of args the owner was
+// not shown is ErrArgsChanged (inbox.act answers args_changed) and still
+// ErrBadTransition for the older callers — the pinned digest that no longer
+// matches, and the rewrite that lands between the approve's read and its
+// update.
+func TestApproveSeen_ArgsChangedIsBothErrors(t *testing.T) {
+	ctx := context.Background()
+	d := openDB(t)
+	var executed []Call
+	reg := New(d)
+	tool := editableEchoTool(t, &executed)
+	rewrite := ""
+	inner := tool.Ready
+	tool.Ready = func(args json.RawMessage) error {
+		if rewrite != "" {
+			_, err := d.Exec(`UPDATE agent_actions SET args_json = ? WHERE tool = 'echo' AND status = 'pending'`, rewrite)
+			require.NoError(t, err)
+		}
+		return inner(args)
+	}
+	require.NoError(t, reg.Register(tool))
+	shown := `{"text":"shown","reason":"r"}`
+	id := proposeEcho(t, reg, shown)
+	_, err := d.Exec(`UPDATE agent_actions SET args_json = '{"text":"swapped","reason":"r"}' WHERE id = ?`, id)
+	require.NoError(t, err)
+
+	_, err = reg.ApproveSeen(ctx, id, nil, ArgsSHA256(shown))
+	require.ErrorIs(t, err, ErrArgsChanged)
+	require.ErrorIs(t, err, ErrBadTransition)
+
+	rewrite = `{"text":"late","reason":"r"}`
+	_, err = reg.ApproveSeen(ctx, id, nil, "")
+	require.ErrorIs(t, err, ErrArgsChanged)
+	require.ErrorIs(t, err, ErrBadTransition)
+	row, err := d.GetAgentAction(id)
+	require.NoError(t, err)
+	assert.Equal(t, "pending", row.Status)
+}

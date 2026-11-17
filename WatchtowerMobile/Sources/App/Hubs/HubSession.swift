@@ -197,6 +197,8 @@ final class HubSession {
     /// This hub's AI chats (iPhone chat spec §6): the chat records, the chat sender, the list's search and row
     /// actions.
     let chats: ChatsCenter
+    /// This hub's Inbox (mobile Inbox spec §7): the tab's tower client over the replica and the outbox.
+    let inbox: InboxCenter
     /// The chat uploads waiting for their echo (the Kit's uploader keeps no ledger).
     @ObservationIgnored let chatUploads: ChatUploadLedger
     /// Takes settled work alerts out of Notification Center after each successful fetch or engine apply.
@@ -557,6 +559,7 @@ final class HubSession {
         sessionStarts = SessionStarter.sending(through: outbox, store: store)
         sessionInputs = SessionInputSender.sending(through: outbox, store: store)
         (chats, chatUploads) = Self.makeChats(outbox: outbox, secure: secure, hubID: hubID, copyPath: chatCopyPath)
+        inbox = InboxCenter(transport: HubTransport(store: store, outbox: outbox))
         // An `applied` echo clears the queued row; hydrating right behind it
         // (from what the same fetch buffered) lands the Mac's authoritative
         // change at the same moment.
@@ -590,9 +593,7 @@ final class HubSession {
             hubID: hubID, route: route, link: link, keys: sealed.hasDeviceKeys ? keys : nil, store: store, defaults: defaults,
             posting: alertPosting)
         workbenchReplica.start(store: store) { [weak self] in self?.typingState ?? (nil, false) }
-        calendarReplica.start(store: store)
-        chats.start(store: store)
-        phoneRecordings.start(store: store)
+        startReplicaModels()
         observeOutboxBacklog()
 
         startBoot(startWork, notifications: notifications)
@@ -863,7 +864,7 @@ final class HubSession {
         await outbox.setAppliedObserver(
             Self.appliedObserver(
                 askAnswerer: askAnswerer, sessionStarts: sessionStarts, sessionInputs: sessionInputs, boardWriter: boardWriter,
-                chats: chats
+                chats: chats, inbox: inbox
             )
         )
         // The chats' prefetch asks this session whether the hub answers, never a screen.
@@ -975,15 +976,17 @@ final class HubSession {
         sessionStarts: SessionStarter,
         sessionInputs: SessionInputSender? = nil,
         boardWriter: BoardWriter? = nil,
-        chats: ChatsCenter? = nil
+        chats: ChatsCenter? = nil,
+        inbox: InboxCenter? = nil
     ) -> @Sendable (ActionRequestPayload) -> Void {
-        { [weak askAnswerer, weak sessionStarts, weak sessionInputs, weak boardWriter, weak chats] action in
+        { [weak askAnswerer, weak sessionStarts, weak sessionInputs, weak boardWriter, weak chats, weak inbox] action in
             Task { @MainActor in
                 askAnswerer?.receiveApplied(action)
                 sessionStarts?.receiveApplied(action)
                 sessionInputs?.receiveApplied(action)
                 boardWriter?.receiveApplied(action)
                 chats?.receiveApplied(action)
+                inbox?.receiveApplied(action)
             }
         }
     }
@@ -1936,6 +1939,7 @@ final class HubSession {
     /// Stops the loop for good (tests' teardown; the app never stops).
     func stop() {
         stopped = true
+        inbox.stop()
         unlockObserver = nil
         transportStartTask?.cancel()
         finishBootWork()

@@ -1,0 +1,2149 @@
+{
+  "_doc": "One case per chat.* command (internal/chatstore/commands.go), run by Go TestChatWritesCases and by the Swift ChatWritesFixtureTests against the Swift writer each case names in `swift`, until Task 18 deletes the Swift writers. Each side runs `seed` on a fresh database, calls its writer with `params` (Go adds request_id), and must leave exactly `check`'s rows. `refusal` and `result` are the Go command's answer (Swift writers throw or return false there). Time columns written from the clock are checked as `> 1000`.",
+  "cases": [
+    {
+      "name": "new_main_chat",
+      "command": "chat.new",
+      "swift": "ChatConversationQueries.create",
+      "seed": [],
+      "params": {},
+      "result": {
+        "conversation_id": 1
+      },
+      "check": [
+        {
+          "sql": "SELECT id, title, context_type, project_id, routing_mode, title_source, created_at > 1000, updated_at > 1000 FROM chat_conversations",
+          "rows": [
+            [
+              1,
+              "",
+              null,
+              null,
+              "preferred_reserve",
+              "prefix",
+              1,
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "new_main_chat_in_a_project_with_a_pinned_model",
+      "command": "chat.new",
+      "swift": "ChatConversationQueries.create+setRouting",
+      "seed": [
+        "INSERT INTO chat_projects (id, name, created_at, updated_at) VALUES (5, 'Alpha', 1, 1)"
+      ],
+      "params": {
+        "project_id": 5,
+        "routing": {
+          "automatic": false,
+          "provider": "codex",
+          "model": "gpt-x"
+        }
+      },
+      "result": {
+        "conversation_id": 1
+      },
+      "check": [
+        {
+          "sql": "SELECT project_id, routing_mode, provider, model, actual_provider FROM chat_conversations",
+          "rows": [
+            [
+              5,
+              "pinned",
+              "codex",
+              "gpt-x",
+              ""
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "new_main_chat_in_a_gone_project_is_refused",
+      "command": "chat.new",
+      "swift": "ChatConversationQueries.create",
+      "seed": [],
+      "params": {
+        "project_id": 99
+      },
+      "refusal": "not_found",
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_conversations",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "new_embedded_chat",
+      "command": "chat.new",
+      "swift": "ChatConversationQueries.create",
+      "seed": [],
+      "params": {
+        "context": {
+          "type": "target",
+          "id": "7",
+          "title": "Plan"
+        }
+      },
+      "result": {
+        "conversation_id": 1
+      },
+      "check": [
+        {
+          "sql": "SELECT title, context_type, context_id, project_id, routing_mode FROM chat_conversations",
+          "rows": [
+            [
+              "Plan",
+              "target",
+              "7",
+              null,
+              "preferred_reserve"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "new_embedded_chat_reuses_the_contexts_chat",
+      "command": "chat.new",
+      "swift": "DatabaseEmbeddedChatStore.conversationID",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (3, 'Track', 'track', '9', 1, 1)"
+      ],
+      "params": {
+        "context": {
+          "type": "track",
+          "id": "9",
+          "title": "Other",
+          "reuse": true
+        }
+      },
+      "result": {
+        "conversation_id": 3
+      },
+      "check": [
+        {
+          "sql": "SELECT id, title FROM chat_conversations",
+          "rows": [
+            [
+              3,
+              "Track"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "new_code_question_records_its_model",
+      "command": "chat.new",
+      "swift": "ChatConversationQueries.create+setProviderModel",
+      "seed": [],
+      "params": {
+        "context": {
+          "type": "code_question",
+          "id": "1:a.go:3",
+          "title": "a.go:3"
+        },
+        "routing": {
+          "automatic": false,
+          "provider": "codex",
+          "model": "gpt-x"
+        }
+      },
+      "result": {
+        "conversation_id": 1
+      },
+      "check": [
+        {
+          "sql": "SELECT title, context_type, context_id, provider, model, routing_mode FROM chat_conversations",
+          "rows": [
+            [
+              "a.go:3",
+              "code_question",
+              "1:a.go:3",
+              "codex",
+              "gpt-x",
+              "preferred_reserve"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "pin",
+      "command": "chat.pin",
+      "swift": "ChatConversationQueries.pin",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'A', 1, 1)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "pinned": true
+      },
+      "check": [
+        {
+          "sql": "SELECT pinned, updated_at FROM chat_conversations",
+          "rows": [
+            [
+              1,
+              1.0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "pin_a_gone_chat_is_refused",
+      "command": "chat.pin",
+      "swift": "ChatConversationQueries.pin",
+      "seed": [],
+      "params": {
+        "conversation_id": 4,
+        "pinned": true
+      },
+      "refusal": "not_found",
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_conversations",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rename",
+      "command": "chat.rename",
+      "swift": "ChatConversationQueries.rename",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'A', 1, 1)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "title": "Budget"
+      },
+      "check": [
+        {
+          "sql": "SELECT title, title_source, updated_at > 1000 FROM chat_conversations",
+          "rows": [
+            [
+              "Budget",
+              "user",
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "set_title_of_an_embedded_chat",
+      "command": "chat.set_title",
+      "swift": "ChatConversationQueries.updateTitle",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, 'Chat', 'target', '7', 1, 1)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "title": "Scope"
+      },
+      "check": [
+        {
+          "sql": "SELECT title, title_source, updated_at > 1000 FROM chat_conversations",
+          "rows": [
+            [
+              "Scope",
+              "prefix",
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "set_title_if_empty_writes_an_empty_title",
+      "command": "chat.set_title",
+      "swift": "TuningChatSurface.setTitleIfEmpty",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, '', 'analytics_tuning', '2', 1, 1)",
+        "INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (1, 'user', 'Why so slow', 2)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "title": "Why so slow",
+        "if_empty": true
+      },
+      "check": [
+        {
+          "sql": "SELECT title, updated_at FROM chat_conversations",
+          "rows": [
+            [
+              "Why so slow",
+              1.0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "set_title_if_empty_keeps_a_title",
+      "command": "chat.set_title",
+      "swift": "TuningChatSurface.setTitleIfEmpty",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, 'Kept', 'analytics_tuning', '2', 1, 1)",
+        "INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (1, 'user', 'Why so slow', 2)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "title": "Why so slow",
+        "if_empty": true
+      },
+      "check": [
+        {
+          "sql": "SELECT title FROM chat_conversations",
+          "rows": [
+            [
+              "Kept"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "delete_a_main_chat_and_its_rows",
+      "command": "chat.delete",
+      "swift": "ChatConversationQueries.delete",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'A', 1, 1)",
+        "INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (1, 'user', 'hi', 2)"
+      ],
+      "params": {
+        "conversation_id": 1
+      },
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_conversations",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT COUNT(*) FROM chat_messages",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "delete_a_code_question",
+      "command": "chat.delete",
+      "swift": "CodeQuestionList.delete",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (2, 'q', 'code_question', '1:a.go:3', 1, 1)",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (3, 't', 'target', '7', 1, 1)"
+      ],
+      "params": {
+        "conversation_id": 2,
+        "context_type": "code_question"
+      },
+      "check": [
+        {
+          "sql": "SELECT id FROM chat_conversations",
+          "rows": [
+            [
+              3
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "delete_untouched_landing_draft",
+      "command": "chat.delete_untouched",
+      "swift": "ChatConversationQueries.deleteIfUntouched",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (4, '', 100, 100)"
+      ],
+      "params": {
+        "conversation_id": 4,
+        "created_at": 100
+      },
+      "result": {
+        "changed": true
+      },
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_conversations",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "delete_untouched_keeps_a_chat_with_a_message",
+      "command": "chat.delete_untouched",
+      "swift": "ChatConversationQueries.deleteIfUntouched",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (4, '', 100, 100)",
+        "INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (4, 'user', 'hi', 101)"
+      ],
+      "params": {
+        "conversation_id": 4,
+        "created_at": 100
+      },
+      "result": {
+        "changed": false
+      },
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_conversations",
+          "rows": [
+            [
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "archive",
+      "command": "chat.archive",
+      "swift": "ChatConversationQueries.archive",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'A', 1, 1)"
+      ],
+      "params": {
+        "conversation_id": 1
+      },
+      "check": [
+        {
+          "sql": "SELECT archived_at > 1000, updated_at FROM chat_conversations",
+          "rows": [
+            [
+              1,
+              1.0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "branch_shows_the_newest_leaf_under_the_message",
+      "command": "chat.branch",
+      "swift": "ChatTreeQueries.selectSibling",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at, active_leaf_message_id) VALUES (1, 'A', 1, 1, 3)",
+        "INSERT INTO chat_messages (id, conversation_id, role, text, created_at) VALUES (1, 1, 'user', 'q', 2)",
+        "INSERT INTO chat_messages (id, conversation_id, parent_id, role, text, created_at) VALUES (2, 1, 1, 'assistant', 'a1', 3)",
+        "INSERT INTO chat_messages (id, conversation_id, parent_id, role, text, created_at) VALUES (3, 1, 1, 'assistant', 'a2', 4)",
+        "INSERT INTO chat_messages (id, conversation_id, parent_id, role, text, created_at) VALUES (4, 1, 2, 'user', 'q2', 5)"
+      ],
+      "params": {
+        "message_id": 2
+      },
+      "check": [
+        {
+          "sql": "SELECT active_leaf_message_id FROM chat_conversations",
+          "rows": [
+            [
+              4
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "read_marks_through_the_last_complete_answer",
+      "command": "chat.read",
+      "swift": "ChatConversationQueries.markRead",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at, active_leaf_message_id) VALUES (1, 'A', 1, 1, 2)",
+        "INSERT INTO chat_messages (id, conversation_id, role, text, created_at) VALUES (1, 1, 'user', 'q', 40)",
+        "INSERT INTO chat_messages (id, conversation_id, parent_id, role, text, created_at) VALUES (2, 1, 1, 'assistant', 'a', 50)"
+      ],
+      "params": {
+        "conversation_id": 1
+      },
+      "check": [
+        {
+          "sql": "SELECT read_at, updated_at FROM chat_conversations",
+          "rows": [
+            [
+              50.0,
+              1.0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "attach_a_file_to_a_chat",
+      "command": "chat.attach",
+      "swift": "ChatAttachmentStore.importData",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'A', 1, 1)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "name": "notes.txt",
+        "data_base64": "aGVsbG8K"
+      },
+      "result": {
+        "attachment_id": 1,
+        "mime": "text/plain",
+        "size": 6
+      },
+      "check": [
+        {
+          "sql": "SELECT conversation_id, project_id, message_id, name, mime, size, sha256, instr(path, '/conversations/1/') > 0, created_at > 1000 FROM chat_attachments",
+          "rows": [
+            [
+              1,
+              null,
+              null,
+              "notes.txt",
+              "text/plain",
+              6,
+              "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+              1,
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "attach_a_file_to_a_project_drops_its_sessions",
+      "command": "chat.attach",
+      "swift": "ChatAttachmentStore.importData",
+      "seed": [
+        "INSERT INTO chat_projects (id, name, created_at, updated_at) VALUES (5, 'Alpha', 1, 1)",
+        "INSERT INTO chat_conversations (id, title, project_id, session_id, created_at, updated_at) VALUES (1, 'A', 5, 's1', 1, 1)"
+      ],
+      "params": {
+        "project_id": 5,
+        "name": "notes.txt",
+        "data_base64": "aGVsbG8K"
+      },
+      "check": [
+        {
+          "sql": "SELECT conversation_id, project_id, name, size, instr(path, '/projects/5/') > 0 FROM chat_attachments",
+          "rows": [
+            [
+              null,
+              5,
+              "notes.txt",
+              6,
+              1
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT session_id FROM chat_conversations",
+          "rows": [
+            [
+              null
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "attach_link_never_steals_a_linked_row",
+      "command": "chat.attach_link",
+      "swift": "ChatAttachmentQueries.link",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'A', 1, 1)",
+        "INSERT INTO chat_messages (id, conversation_id, role, text, created_at) VALUES (1, 1, 'user', 'q', 2)",
+        "INSERT INTO chat_messages (id, conversation_id, role, text, created_at) VALUES (2, 1, 'user', 'q2', 3)",
+        "INSERT INTO chat_attachments (id, conversation_id, message_id, name, mime, size, path, sha256, created_at) VALUES (1, 1, NULL, 'a', 'text/plain', 1, '/x/a', 'h1', 1)",
+        "INSERT INTO chat_attachments (id, conversation_id, message_id, name, mime, size, path, sha256, created_at) VALUES (2, 1, 1, 'b', 'text/plain', 1, '/x/b', 'h2', 1)"
+      ],
+      "params": {
+        "attachment_ids": [
+          1,
+          2
+        ],
+        "message_id": 2
+      },
+      "check": [
+        {
+          "sql": "SELECT id, message_id FROM chat_attachments ORDER BY id",
+          "rows": [
+            [
+              1,
+              2
+            ],
+            [
+              2,
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "attach_delete",
+      "command": "chat.attach_delete",
+      "swift": "ChatAttachmentStore.discard",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'A', 1, 1)",
+        "INSERT INTO chat_attachments (id, conversation_id, name, mime, size, path, sha256, created_at) VALUES (1, 1, 'a', 'text/plain', 1, '/nonexistent/a.txt', 'h1', 1)"
+      ],
+      "params": {
+        "attachment_id": 1
+      },
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_attachments",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "set_project_moves_the_chat_and_drops_its_session",
+      "command": "chat.set_project",
+      "swift": "ChatConversationQueries.setProject",
+      "seed": [
+        "INSERT INTO chat_projects (id, name, created_at, updated_at) VALUES (5, 'Alpha', 1, 1)",
+        "INSERT INTO chat_conversations (id, title, session_id, created_at, updated_at) VALUES (1, 'A', 's1', 1, 1)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "project_id": 5
+      },
+      "check": [
+        {
+          "sql": "SELECT project_id, session_id FROM chat_conversations",
+          "rows": [
+            [
+              5,
+              null
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "set_project_to_the_same_project_changes_nothing",
+      "command": "chat.set_project",
+      "swift": "ChatConversationQueries.setProject",
+      "seed": [
+        "INSERT INTO chat_projects (id, name, created_at, updated_at) VALUES (5, 'Alpha', 1, 1)",
+        "INSERT INTO chat_conversations (id, title, project_id, session_id, created_at, updated_at) VALUES (1, 'A', 5, 's1', 1, 1)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "project_id": 5
+      },
+      "check": [
+        {
+          "sql": "SELECT project_id, session_id FROM chat_conversations",
+          "rows": [
+            [
+              5,
+              "s1"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "set_routing_pinned",
+      "command": "chat.set_routing",
+      "swift": "ChatConversationQueries.setRouting",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at, actual_provider, actual_model, routing_reason) VALUES (1, 'A', 1, 1, 'claude', 'm', 'quota')"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "routing": {
+          "automatic": false,
+          "provider": "codex",
+          "model": "gpt-x"
+        }
+      },
+      "check": [
+        {
+          "sql": "SELECT routing_mode, provider, model, actual_provider, actual_model, routing_reason FROM chat_conversations",
+          "rows": [
+            [
+              "pinned",
+              "codex",
+              "gpt-x",
+              "",
+              "",
+              ""
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "set_routing_automatic_clears_the_pin",
+      "command": "chat.set_routing",
+      "swift": "ChatConversationQueries.setRouting",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at, routing_mode, provider, model) VALUES (1, 'A', 1, 1, 'pinned', 'codex', 'gpt-x')"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "routing": {
+          "automatic": true
+        }
+      },
+      "check": [
+        {
+          "sql": "SELECT routing_mode, provider, model FROM chat_conversations",
+          "rows": [
+            [
+              "preferred_reserve",
+              null,
+              null
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "set_routing_to_an_unknown_provider_is_refused",
+      "command": "chat.set_routing",
+      "swift": "ChatConversationQueries.setRouting",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'A', 1, 1)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "routing": {
+          "automatic": false,
+          "provider": "acme"
+        }
+      },
+      "refusal": "unsupported",
+      "check": [
+        {
+          "sql": "SELECT routing_mode, provider FROM chat_conversations",
+          "rows": [
+            [
+              "preferred_reserve",
+              null
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "set_model_of_a_code_question",
+      "command": "chat.set_model",
+      "swift": "ChatConversationQueries.setProviderModel",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, 'q', 'code_question', '1:a.go:3', 1, 1)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "provider": "claude"
+      },
+      "check": [
+        {
+          "sql": "SELECT provider, model, routing_mode FROM chat_conversations",
+          "rows": [
+            [
+              "claude",
+              null,
+              "preferred_reserve"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "context_moves_a_draft_chat_over_an_empty_one",
+      "command": "chat.context",
+      "swift": "DatabaseEmbeddedChatStore.rekeyConversation",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, 'Draft', 'automation_draft', 'd1', 1, 1)",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (2, 'Old', 'automation', '9', 1, 1)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "context_type": "automation",
+        "context_id": "9"
+      },
+      "result": {
+        "changed": true
+      },
+      "check": [
+        {
+          "sql": "SELECT id, context_type, context_id, updated_at > 1000 FROM chat_conversations",
+          "rows": [
+            [
+              1,
+              "automation",
+              "9",
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "context_keeps_a_target_chat_with_messages",
+      "command": "chat.context",
+      "swift": "DatabaseEmbeddedChatStore.rekeyConversation",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, 'Draft', 'automation_draft', 'd1', 1, 1)",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (2, 'Old', 'automation', '9', 1, 1)",
+        "INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (2, 'user', 'hi', 2)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "context_type": "automation",
+        "context_id": "9"
+      },
+      "result": {
+        "changed": false
+      },
+      "check": [
+        {
+          "sql": "SELECT id, context_type, context_id FROM chat_conversations ORDER BY id",
+          "rows": [
+            [
+              1,
+              "automation_draft",
+              "d1"
+            ],
+            [
+              2,
+              "automation",
+              "9"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "reviewer_thread_is_made_on_first_use",
+      "command": "chat.reviewer_thread",
+      "swift": "ReviewerThreadQueries.ensure",
+      "seed": [
+        "INSERT INTO projects (id, name, folder_path) VALUES (1, 'W', '/example/w')"
+      ],
+      "params": {
+        "project_id": 1,
+        "branch": "main"
+      },
+      "result": {
+        "conversation_id": 1
+      },
+      "check": [
+        {
+          "sql": "SELECT id, title, context_type, context_id FROM chat_conversations",
+          "rows": [
+            [
+              1,
+              "Reviewer: main",
+              "review_reviewer",
+              "1:main"
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT project_id, branch, conversation_id FROM review_reviewer_threads",
+          "rows": [
+            [
+              1,
+              "main",
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "reviewer_thread_is_reused",
+      "command": "chat.reviewer_thread",
+      "swift": "ReviewerThreadQueries.ensure",
+      "seed": [
+        "INSERT INTO projects (id, name, folder_path) VALUES (1, 'W', '/example/w')",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (4, 'Reviewer: main', 'review_reviewer', '1:main', 1, 1)",
+        "INSERT INTO review_reviewer_threads (project_id, branch, conversation_id) VALUES (1, 'main', 4)"
+      ],
+      "params": {
+        "project_id": 1,
+        "branch": "main"
+      },
+      "result": {
+        "conversation_id": 4
+      },
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_conversations",
+          "rows": [
+            [
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "code_question_delete_empty",
+      "command": "chat.code_question.delete_empty",
+      "swift": "CodeQuestionList.deleteEmpty",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, 'a', 'code_question', '1:a.go:3', 10, 10)",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (2, 'b', 'code_question', '10:b.go:3', 10, 10)",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (3, 'c', 'code_question', '1:c.go:3', 10, 10)",
+        "INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (3, 'user', 'hi', 11)",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (4, 'd', 'code_question', '1:d.go:3', 500, 500)",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (5, 'e', 'code_question', '1:e.go:3', 10, 10)"
+      ],
+      "params": {
+        "workbench_id": 1,
+        "created_before": 100,
+        "keeping": [
+          5
+        ]
+      },
+      "result": {
+        "count": 1
+      },
+      "check": [
+        {
+          "sql": "SELECT id FROM chat_conversations ORDER BY id",
+          "rows": [
+            [
+              2
+            ],
+            [
+              3
+            ],
+            [
+              4
+            ],
+            [
+              5
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "stop_requests_the_turns_cancel",
+      "command": "chat.stop",
+      "swift": "ChatLeaseQueries.requestCancel",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'A', 1, 1)",
+        "INSERT INTO chat_turn_leases (conversation_id, owner, owner_id, turn_id, started_at_ms, heartbeat_at_ms) VALUES (1, 'hub', 'H', 'T1', 5, 5)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "turn_id": "T1"
+      },
+      "result": {
+        "changed": true
+      },
+      "check": [
+        {
+          "sql": "SELECT turn_id, cancel_requested_at_ms > 1000 FROM chat_turn_leases",
+          "rows": [
+            [
+              "T1",
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "recover_releases_the_turns_lease_only_lease_rows_only_session_lost_is_go_only",
+      "command": "chat.recover",
+      "swift": "ChatLeaseQueries.release",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'A', 1, 1)",
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (2, 'B', 1, 1)",
+        "INSERT INTO chat_turn_leases (conversation_id, owner, owner_id, turn_id, started_at_ms, heartbeat_at_ms) VALUES (1, 'desktop', 'L1', 'T1', 5, 5)",
+        "INSERT INTO chat_turn_leases (conversation_id, owner, owner_id, turn_id, started_at_ms, heartbeat_at_ms) VALUES (2, 'desktop', 'L1', 'T2', 5, 5)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "turn_id": "T1"
+      },
+      "result": {
+        "marked": 0,
+        "released": true
+      },
+      "check": [
+        {
+          "sql": "SELECT conversation_id, turn_id FROM chat_turn_leases",
+          "rows": [
+            [
+              2,
+              "T2"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "release_launches_keeps_this_launch_and_hub_leases_lease_rows_only_session_lost_is_go_only",
+      "command": "chat.release_launches",
+      "swift": "ChatLeaseQueries.releaseEarlierDesktopLaunches",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'A', 1, 1)",
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (2, 'B', 1, 1)",
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (3, 'C', 1, 1)",
+        "INSERT INTO chat_turn_leases (conversation_id, owner, owner_id, turn_id, started_at_ms, heartbeat_at_ms) VALUES (1, 'desktop', 'L-old', 'T1', 5, 5)",
+        "INSERT INTO chat_turn_leases (conversation_id, owner, owner_id, turn_id, started_at_ms, heartbeat_at_ms) VALUES (2, 'desktop', 'L-now', 'T2', 5, 5)",
+        "INSERT INTO chat_turn_leases (conversation_id, owner, owner_id, turn_id, started_at_ms, heartbeat_at_ms) VALUES (3, 'hub', 'H', 'T3', 5, 5)"
+      ],
+      "params": {
+        "keep": "L-now"
+      },
+      "result": {
+        "released": 1
+      },
+      "check": [
+        {
+          "sql": "SELECT conversation_id, owner, owner_id FROM chat_turn_leases ORDER BY conversation_id",
+          "rows": [
+            [
+              2,
+              "desktop",
+              "L-now"
+            ],
+            [
+              3,
+              "hub",
+              "H"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "project_create_trims_the_name",
+      "command": "chat.project.create",
+      "swift": "ChatProjectQueries.create",
+      "seed": [],
+      "params": {
+        "name": "  Alpha  "
+      },
+      "result": {
+        "project_id": 1,
+        "name": "Alpha"
+      },
+      "check": [
+        {
+          "sql": "SELECT id, name, instructions, archived_at, created_at > 1000, updated_at > 1000 FROM chat_projects",
+          "rows": [
+            [
+              1,
+              "Alpha",
+              "",
+              null,
+              1,
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "project_create_with_a_blank_name",
+      "command": "chat.project.create",
+      "swift": "ChatProjectQueries.create",
+      "seed": [],
+      "params": {
+        "name": " "
+      },
+      "result": {
+        "project_id": 1,
+        "name": "New project"
+      },
+      "check": [
+        {
+          "sql": "SELECT name FROM chat_projects",
+          "rows": [
+            [
+              "New project"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "project_rename",
+      "command": "chat.project.rename",
+      "swift": "ChatProjectQueries.rename",
+      "seed": [
+        "INSERT INTO chat_projects (id, name, created_at, updated_at) VALUES (5, 'Alpha', 1, 1)",
+        "INSERT INTO chat_conversations (id, title, project_id, session_id, created_at, updated_at) VALUES (1, 'A', 5, 's1', 1, 1)"
+      ],
+      "params": {
+        "project_id": 5,
+        "name": " Beta "
+      },
+      "check": [
+        {
+          "sql": "SELECT name, updated_at > 1000 FROM chat_projects",
+          "rows": [
+            [
+              "Beta",
+              1
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT session_id FROM chat_conversations",
+          "rows": [
+            [
+              "s1"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "project_rename_to_blank_is_ignored",
+      "command": "chat.project.rename",
+      "swift": "ChatProjectQueries.rename",
+      "seed": [
+        "INSERT INTO chat_projects (id, name, created_at, updated_at) VALUES (5, 'Alpha', 1, 1)"
+      ],
+      "params": {
+        "project_id": 5,
+        "name": "  "
+      },
+      "check": [
+        {
+          "sql": "SELECT name, updated_at FROM chat_projects",
+          "rows": [
+            [
+              "Alpha",
+              1.0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "project_rename_a_gone_project_is_refused",
+      "command": "chat.project.rename",
+      "swift": "ChatProjectQueries.rename",
+      "seed": [],
+      "params": {
+        "project_id": 5,
+        "name": "Beta"
+      },
+      "refusal": "not_found",
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_projects",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "project_instructions_drop_sessions",
+      "command": "chat.project.instructions",
+      "swift": "ChatProjectQueries.updateInstructions",
+      "seed": [
+        "INSERT INTO chat_projects (id, name, created_at, updated_at) VALUES (5, 'Alpha', 1, 1)",
+        "INSERT INTO chat_conversations (id, title, project_id, session_id, created_at, updated_at) VALUES (1, 'A', 5, 's1', 1, 1)",
+        "INSERT INTO chat_conversations (id, title, session_id, created_at, updated_at) VALUES (2, 'B', 's2', 1, 1)"
+      ],
+      "params": {
+        "project_id": 5,
+        "instructions": "Be brief."
+      },
+      "check": [
+        {
+          "sql": "SELECT instructions, updated_at > 1000 FROM chat_projects",
+          "rows": [
+            [
+              "Be brief.",
+              1
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT id, session_id FROM chat_conversations ORDER BY id",
+          "rows": [
+            [
+              1,
+              null
+            ],
+            [
+              2,
+              "s2"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "project_archive",
+      "command": "chat.project.archive",
+      "swift": "ChatProjectQueries.archive",
+      "seed": [
+        "INSERT INTO chat_projects (id, name, created_at, updated_at) VALUES (5, 'Alpha', 1, 1)"
+      ],
+      "params": {
+        "project_id": 5
+      },
+      "check": [
+        {
+          "sql": "SELECT archived_at > 1000, updated_at > 1000 FROM chat_projects",
+          "rows": [
+            [
+              1,
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "project_delete_detaches_its_chats",
+      "command": "chat.project.delete",
+      "swift": "ChatProjectQueries.delete",
+      "seed": [
+        "INSERT INTO chat_projects (id, name, created_at, updated_at) VALUES (5, 'Alpha', 1, 1)",
+        "INSERT INTO chat_conversations (id, title, project_id, session_id, created_at, updated_at) VALUES (1, 'A', 5, 's1', 1, 1)",
+        "INSERT INTO chat_project_sources (project_id, kind, ref, label) VALUES (5, 'track', '3', 'T')",
+        "INSERT INTO chat_attachments (id, project_id, name, mime, size, path, sha256, created_at) VALUES (1, 5, 'a', 'text/plain', 1, '/nonexistent/a.txt', 'h1', 1)"
+      ],
+      "params": {
+        "project_id": 5
+      },
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_projects",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT id, project_id, session_id FROM chat_conversations",
+          "rows": [
+            [
+              1,
+              null,
+              null
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT (SELECT COUNT(*) FROM chat_project_sources) + (SELECT COUNT(*) FROM chat_attachments)",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "project_add_source",
+      "command": "chat.project.add_source",
+      "swift": "ChatProjectQueries.addSource",
+      "seed": [
+        "INSERT INTO chat_projects (id, name, created_at, updated_at) VALUES (5, 'Alpha', 1, 1)",
+        "INSERT INTO chat_conversations (id, title, project_id, session_id, created_at, updated_at) VALUES (1, 'A', 5, 's1', 1, 1)"
+      ],
+      "params": {
+        "project_id": 5,
+        "kind": "jira_project",
+        "ref": "ACME",
+        "label": "Acme"
+      },
+      "result": {
+        "changed": true
+      },
+      "check": [
+        {
+          "sql": "SELECT project_id, kind, ref, label FROM chat_project_sources",
+          "rows": [
+            [
+              5,
+              "jira_project",
+              "ACME",
+              "Acme"
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT updated_at > 1000 FROM chat_projects",
+          "rows": [
+            [
+              1
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT session_id FROM chat_conversations",
+          "rows": [
+            [
+              null
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "project_add_source_twice_writes_nothing",
+      "command": "chat.project.add_source",
+      "swift": "ChatProjectQueries.addSource",
+      "seed": [
+        "INSERT INTO chat_projects (id, name, created_at, updated_at) VALUES (5, 'Alpha', 1, 1)",
+        "INSERT INTO chat_project_sources (project_id, kind, ref, label) VALUES (5, 'jira_project', 'ACME', 'Acme')",
+        "INSERT INTO chat_conversations (id, title, project_id, session_id, created_at, updated_at) VALUES (1, 'A', 5, 's1', 1, 1)"
+      ],
+      "params": {
+        "project_id": 5,
+        "kind": "jira_project",
+        "ref": "ACME",
+        "label": "Other"
+      },
+      "result": {
+        "changed": false
+      },
+      "check": [
+        {
+          "sql": "SELECT label FROM chat_project_sources",
+          "rows": [
+            [
+              "Acme"
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT updated_at FROM chat_projects",
+          "rows": [
+            [
+              1.0
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT session_id FROM chat_conversations",
+          "rows": [
+            [
+              "s1"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "project_remove_source",
+      "command": "chat.project.remove_source",
+      "swift": "ChatProjectQueries.removeSource",
+      "seed": [
+        "INSERT INTO chat_projects (id, name, created_at, updated_at) VALUES (5, 'Alpha', 1, 1)",
+        "INSERT INTO chat_project_sources (id, project_id, kind, ref, label) VALUES (8, 5, 'track', '3', 'T')",
+        "INSERT INTO chat_conversations (id, title, project_id, session_id, created_at, updated_at) VALUES (1, 'A', 5, 's1', 1, 1)"
+      ],
+      "params": {
+        "source_id": 8
+      },
+      "result": {
+        "changed": true
+      },
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_project_sources",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT session_id FROM chat_conversations",
+          "rows": [
+            [
+              null
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "project_remove_file_never_touches_a_chats_attachment",
+      "command": "chat.project.remove_file",
+      "swift": "ChatProjectQueries.removeFile",
+      "seed": [
+        "INSERT INTO chat_projects (id, name, created_at, updated_at) VALUES (5, 'Alpha', 1, 1)",
+        "INSERT INTO chat_conversations (id, title, project_id, session_id, created_at, updated_at) VALUES (1, 'A', 5, 's1', 1, 1)",
+        "INSERT INTO chat_attachments (id, project_id, name, mime, size, path, sha256, created_at) VALUES (1, 5, 'a', 'text/plain', 1, '/nonexistent/a.txt', 'h1', 1)",
+        "INSERT INTO chat_attachments (id, conversation_id, name, mime, size, path, sha256, created_at) VALUES (2, 1, 'b', 'text/plain', 1, '/nonexistent/b.txt', 'h2', 1)"
+      ],
+      "params": {
+        "attachment_id": 1
+      },
+      "result": {
+        "changed": true
+      },
+      "check": [
+        {
+          "sql": "SELECT id FROM chat_attachments",
+          "rows": [
+            [
+              2
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT session_id FROM chat_conversations",
+          "rows": [
+            [
+              null
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "comment_add_trims_the_body",
+      "command": "chat.comment.add",
+      "swift": "ArtifactCommentQueries.add",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'A', 1, 1)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "artifact_key": "plan",
+        "version": 2,
+        "anchor": {
+          "quote": "the date",
+          "prefix": "Set ",
+          "suffix": ".",
+          "heading": "Dates"
+        },
+        "body": "  Move it  "
+      },
+      "result": {
+        "comment_id": 1
+      },
+      "check": [
+        {
+          "sql": "SELECT conversation_id, artifact_key, artifact_version, body, anchor_quote, anchor_prefix, anchor_suffix, anchor_heading, status, sent_at, created_at > 1000 FROM chat_artifact_comments",
+          "rows": [
+            [
+              1,
+              "plan",
+              2,
+              "Move it",
+              "the date",
+              "Set ",
+              ".",
+              "Dates",
+              "open",
+              null,
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "comment_add_with_an_empty_body_is_refused",
+      "command": "chat.comment.add",
+      "swift": "ArtifactCommentQueries.add",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'A', 1, 1)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "artifact_key": "plan",
+        "version": 2,
+        "anchor": {
+          "quote": "the date",
+          "prefix": "",
+          "suffix": "",
+          "heading": ""
+        },
+        "body": "  "
+      },
+      "refusal": "unsupported",
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_artifact_comments",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "comment_delete_unsent_keeps_a_sent_comment",
+      "command": "chat.comment.delete_unsent",
+      "swift": "ArtifactCommentQueries.deleteUnsent",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'A', 1, 1)",
+        "INSERT INTO chat_artifact_comments (id, conversation_id, artifact_key, artifact_version, body, anchor_quote, status, sent_at, created_at) VALUES (1, 1, 'plan', 1, 'b', 'q', 'sent', 2, 1)"
+      ],
+      "params": {
+        "comment_id": 1
+      },
+      "result": {
+        "changed": false
+      },
+      "check": [
+        {
+          "sql": "SELECT id, status FROM chat_artifact_comments",
+          "rows": [
+            [
+              1,
+              "sent"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "comment_delete_unsent",
+      "command": "chat.comment.delete_unsent",
+      "swift": "ArtifactCommentQueries.deleteUnsent",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'A', 1, 1)",
+        "INSERT INTO chat_artifact_comments (id, conversation_id, artifact_key, artifact_version, body, anchor_quote, created_at) VALUES (1, 1, 'plan', 1, 'b', 'q', 1)"
+      ],
+      "params": {
+        "comment_id": 1
+      },
+      "result": {
+        "changed": true
+      },
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_artifact_comments",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "comment_resolve",
+      "command": "chat.comment.resolve",
+      "swift": "ArtifactCommentQueries.resolve",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'A', 1, 1)",
+        "INSERT INTO chat_artifact_comments (id, conversation_id, artifact_key, artifact_version, body, anchor_quote, status, sent_at, created_at) VALUES (1, 1, 'plan', 1, 'b', 'q', 'sent', 2, 1)",
+        "INSERT INTO chat_artifact_comments (id, conversation_id, artifact_key, artifact_version, body, anchor_quote, created_at) VALUES (2, 1, 'plan', 1, 'b', 'q', 1)"
+      ],
+      "params": {
+        "comment_id": 1
+      },
+      "result": {
+        "changed": true
+      },
+      "check": [
+        {
+          "sql": "SELECT id, status FROM chat_artifact_comments ORDER BY id",
+          "rows": [
+            [
+              1,
+              "resolved"
+            ],
+            [
+              2,
+              "open"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "comment_mark_sent_only_open_ones",
+      "command": "chat.comment.mark_sent",
+      "swift": "ArtifactCommentQueries.markSent",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'A', 1, 1)",
+        "INSERT INTO chat_artifact_comments (id, conversation_id, artifact_key, artifact_version, body, anchor_quote, created_at) VALUES (1, 1, 'plan', 1, 'b', 'q', 1)",
+        "INSERT INTO chat_artifact_comments (id, conversation_id, artifact_key, artifact_version, body, anchor_quote, status, created_at) VALUES (2, 1, 'plan', 1, 'b', 'q', 'resolved', 1)",
+        "INSERT INTO chat_artifact_comments (id, conversation_id, artifact_key, artifact_version, body, anchor_quote, created_at) VALUES (3, 1, 'plan', 1, 'b', 'q', 1)"
+      ],
+      "params": {
+        "comment_ids": [
+          1,
+          2
+        ],
+        "sent_at": 77
+      },
+      "result": {
+        "count": 1
+      },
+      "check": [
+        {
+          "sql": "SELECT id, status, sent_at FROM chat_artifact_comments ORDER BY id",
+          "rows": [
+            [
+              1,
+              "sent",
+              77.0
+            ],
+            [
+              2,
+              "resolved",
+              null
+            ],
+            [
+              3,
+              "open",
+              null
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "comment_apply_a_reanchor_plan",
+      "command": "chat.comment.apply",
+      "swift": "ArtifactCommentQueries.apply",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'A', 1, 1)",
+        "INSERT INTO chat_artifact_comments (id, conversation_id, artifact_key, artifact_version, body, anchor_quote, created_at) VALUES (1, 1, 'plan', 1, 'b', 'q', 1)",
+        "INSERT INTO chat_artifact_comments (id, conversation_id, artifact_key, artifact_version, body, anchor_quote, status, sent_at, created_at) VALUES (2, 1, 'plan', 1, 'b', 'q', 'sent', 2, 1)",
+        "INSERT INTO chat_artifact_comments (id, conversation_id, artifact_key, artifact_version, body, anchor_quote, status, created_at) VALUES (3, 1, 'plan', 1, 'b', 'q', 'resolved', 1)"
+      ],
+      "params": {
+        "moved": [
+          1,
+          3
+        ],
+        "lost": [
+          2
+        ],
+        "version": 3
+      },
+      "check": [
+        {
+          "sql": "SELECT id, artifact_version, status FROM chat_artifact_comments ORDER BY id",
+          "rows": [
+            [
+              1,
+              3,
+              "open"
+            ],
+            [
+              2,
+              1,
+              "outdated"
+            ],
+            [
+              3,
+              1,
+              "resolved"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "draft_save_replaces_the_surfaces_text",
+      "command": "chat.draft.save",
+      "swift": "QueuedDraftQueries.save",
+      "seed": [
+        "INSERT INTO chat_queued_drafts (surface_key, text, at) VALUES ('track:3', 'old', 1)"
+      ],
+      "params": {
+        "surface_key": "track:3",
+        "text": "new"
+      },
+      "check": [
+        {
+          "sql": "SELECT surface_key, text, at > 1000 FROM chat_queued_drafts",
+          "rows": [
+            [
+              "track:3",
+              "new",
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "draft_clear",
+      "command": "chat.draft.clear",
+      "swift": "QueuedDraftQueries.clear",
+      "seed": [
+        "INSERT INTO chat_queued_drafts (surface_key, text, at) VALUES ('track:3', 'old', 1)"
+      ],
+      "params": {
+        "surface_key": "track:3"
+      },
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_queued_drafts",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "artifact_keep_updates_the_kept_version",
+      "command": "chat.artifact.keep",
+      "swift": "ChatArtifactQueries.keep",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'A', 1, 1)",
+        "INSERT INTO chat_knowledge_artifacts (conversation_id, artifact_key, version, kept_at) VALUES (1, 'plan', 1, '2026-01-01T00:00:00Z')"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "artifact_key": "plan",
+        "version": 2
+      },
+      "check": [
+        {
+          "sql": "SELECT artifact_key, version, kept_at > '2026-01-01T00:00:00Z' FROM chat_knowledge_artifacts",
+          "rows": [
+            [
+              "plan",
+              2,
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "artifact_keep_in_a_live_slack_chat_is_refused",
+      "command": "chat.artifact.keep",
+      "swift": "ChatArtifactQueries.keep",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at, live_slack_since) VALUES (1, 'A', 1, 1, 7)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "artifact_key": "plan",
+        "version": 2
+      },
+      "refusal": "not_permitted",
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_knowledge_artifacts",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "artifact_unkeep",
+      "command": "chat.artifact.unkeep",
+      "swift": "ChatArtifactQueries.unkeep",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'A', 1, 1)",
+        "INSERT INTO chat_knowledge_artifacts (conversation_id, artifact_key, version, kept_at) VALUES (1, 'plan', 1, '2026-01-01T00:00:00Z')"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "artifact_key": "plan"
+      },
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_knowledge_artifacts",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "artifact_save_edit_is_the_next_version",
+      "command": "chat.artifact.save_edit",
+      "swift": "ChatArtifactQueries.saveVersion",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (1, 'A', 1, 1)",
+        "INSERT INTO chat_messages (id, conversation_id, role, text, created_at) VALUES (1, 1, 'assistant', 'x', 2)",
+        "INSERT INTO chat_artifacts (conversation_id, message_id, artifact_key, version, kind, title, content, edited, created_at) VALUES (1, 1, 'plan', 1, 'document', 'Plan', 'v1', 0, 2)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "message_id": 1,
+        "artifact_key": "plan",
+        "kind": "document",
+        "title": "Plan",
+        "content": "v2",
+        "meta": {
+          "lang": "en"
+        }
+      },
+      "result": {
+        "version": 2
+      },
+      "check": [
+        {
+          "sql": "SELECT version, message_id, content, meta_json, edited, created_at > 1000 FROM chat_artifacts ORDER BY version",
+          "rows": [
+            [
+              1,
+              1,
+              "v1",
+              "{}",
+              0,
+              0
+            ],
+            [
+              2,
+              1,
+              "v2",
+              "{\"lang\":\"en\"}",
+              1,
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "meetings_delete_takes_the_recordings_meeting_chat",
+      "command": "meetings.delete",
+      "swift": "MeetingTranscriptQueries.delete",
+      "seed": [
+        "INSERT INTO meeting_transcripts (id, title, audio_path, transcript_text, private) VALUES (1, 'Sync', '/nonexistent/a.m4a', 'hello', 0)",
+        "INSERT INTO meeting_transcripts (id, title, audio_path, transcript_text, private) VALUES (2, 'Sync', NULL, 'hello', 0)",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (10, 'M', 'meeting', '1', 1, 5)",
+        "INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (10, 'user', 'hi', 2)",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (11, 'M', 'meeting', '2', 1, 5)",
+        "INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (11, 'user', 'hi', 2)",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (12, 'M', 'target', '1', 1, 5)",
+        "INSERT INTO meeting_recaps (id, transcript_id, source_text, recap_json) VALUES (1, 1, 's', '{}')"
+      ],
+      "params": {
+        "transcript_id": 1
+      },
+      "result": {
+        "deleted": true
+      },
+      "check": [
+        {
+          "sql": "SELECT id FROM meeting_transcripts",
+          "rows": [
+            [
+              2
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT id FROM chat_conversations ORDER BY id",
+          "rows": [
+            [
+              11
+            ],
+            [
+              12
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT conversation_id FROM chat_messages",
+          "rows": [
+            [
+              11
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT id, transcript_id FROM meeting_recaps",
+          "rows": [
+            [
+              1,
+              null
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "meetings_delete_takes_only_the_newest_meeting_chat",
+      "command": "meetings.delete",
+      "swift": "MeetingTranscriptQueries.delete",
+      "seed": [
+        "INSERT INTO meeting_transcripts (id, title, audio_path, transcript_text, private) VALUES (1, 'Sync', NULL, 'hello', 0)",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (10, 'M', 'meeting', '1', 1, 5)",
+        "INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (10, 'user', 'hi', 2)",
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (11, 'M', 'meeting', '1', 1, 9)",
+        "INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (11, 'user', 'hi', 2)"
+      ],
+      "params": {
+        "transcript_id": 1
+      },
+      "result": {
+        "deleted": true
+      },
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM meeting_transcripts",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT id FROM chat_conversations",
+          "rows": [
+            [
+              10
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT conversation_id FROM chat_messages",
+          "rows": [
+            [
+              10
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "meetings_delete_of_a_private_recording_takes_its_recap",
+      "command": "meetings.delete",
+      "swift": "MeetingTranscriptQueries.delete",
+      "seed": [
+        "INSERT INTO meeting_transcripts (id, title, audio_path, transcript_text, private) VALUES (1, 'Sync', NULL, 'hello', 1)",
+        "INSERT INTO meeting_recaps (id, transcript_id, source_text, recap_json) VALUES (1, 1, 's', '{}')"
+      ],
+      "params": {
+        "transcript_id": 1
+      },
+      "result": {
+        "deleted": true
+      },
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM meeting_recaps",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "meetings_delete_of_a_gone_recording_changes_nothing",
+      "command": "meetings.delete",
+      "swift": "MeetingTranscriptQueries.delete",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (10, 'M', 'meeting', '1', 1, 5)"
+      ],
+      "params": {
+        "transcript_id": 1
+      },
+      "result": {
+        "deleted": false
+      },
+      "check": [
+        {
+          "sql": "SELECT id FROM chat_conversations",
+          "rows": [
+            [
+              10
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "message_append_a_notice",
+      "command": "chat.message.append",
+      "swift": "ChatMessageQueries.insert",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, 'Chat', 'target', '7', 1, 1)"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "role": "system",
+        "text": "Saved the automation."
+      },
+      "result": {
+        "message_id": 1
+      },
+      "check": [
+        {
+          "sql": "SELECT conversation_id, role, text, turn_id, status, created_at > 1000 FROM chat_messages",
+          "rows": [
+            [
+              1,
+              "system",
+              "Saved the automation.",
+              "",
+              "complete",
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "message_append_to_a_gone_chat_is_refused",
+      "command": "chat.message.append",
+      "swift": "ChatMessageQueries.insert",
+      "seed": [],
+      "params": {
+        "conversation_id": 3,
+        "role": "system",
+        "text": "x"
+      },
+      "refusal": "not_found",
+      "check": [
+        {
+          "sql": "SELECT COUNT(*) FROM chat_messages",
+          "rows": [
+            [
+              0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "reply_finish_with_the_surface_text",
+      "command": "chat.reply.finish",
+      "swift": "ChatMessageQueries.finalizeEmbedded",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, 'Chat', 'target', '7', 1, 1)",
+        "INSERT INTO chat_messages (id, conversation_id, role, text, created_at, turn_id, status) VALUES (5, 1, 'assistant', 'raw reply', 2, 't1', 'complete')"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "message_id": 5,
+        "text": "Shown reply",
+        "status": "complete"
+      },
+      "check": [
+        {
+          "sql": "SELECT text, status, error_code, error_message FROM chat_messages",
+          "rows": [
+            [
+              "Shown reply",
+              "complete",
+              null,
+              null
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT updated_at > 1000 FROM chat_conversations",
+          "rows": [
+            [
+              1
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "reply_finish_as_an_error",
+      "command": "chat.reply.finish",
+      "swift": "ChatMessageQueries.finalizeEmbedded",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, 'Chat', 'target', '7', 1, 1)",
+        "INSERT INTO chat_messages (id, conversation_id, role, text, created_at, turn_id, status) VALUES (5, 1, 'assistant', 'raw reply', 2, 't1', 'complete')"
+      ],
+      "params": {
+        "conversation_id": 1,
+        "message_id": 5,
+        "text": "raw reply",
+        "status": "error",
+        "error_code": "internal",
+        "error_message": "The assistant returned no text."
+      },
+      "check": [
+        {
+          "sql": "SELECT text, status, error_code, error_message FROM chat_messages",
+          "rows": [
+            [
+              "raw reply",
+              "error",
+              "internal",
+              "The assistant returned no text."
+            ]
+          ]
+        },
+        {
+          "sql": "SELECT updated_at FROM chat_conversations",
+          "rows": [
+            [
+              1.0
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "name": "reply_finish_of_another_chats_message_is_refused",
+      "command": "chat.reply.finish",
+      "swift": "ChatMessageQueries.finalizeEmbedded",
+      "seed": [
+        "INSERT INTO chat_conversations (id, title, context_type, context_id, created_at, updated_at) VALUES (1, 'Chat', 'target', '7', 1, 1)",
+        "INSERT INTO chat_messages (id, conversation_id, role, text, created_at, turn_id, status) VALUES (5, 1, 'assistant', 'raw reply', 2, 't1', 'complete')"
+      ],
+      "params": {
+        "conversation_id": 2,
+        "message_id": 5,
+        "text": "x",
+        "status": "complete"
+      },
+      "refusal": "not_found",
+      "check": [
+        {
+          "sql": "SELECT text, status FROM chat_messages",
+          "rows": [
+            [
+              "raw reply",
+              "complete"
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

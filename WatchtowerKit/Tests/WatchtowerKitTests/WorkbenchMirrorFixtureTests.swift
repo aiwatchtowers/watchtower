@@ -56,7 +56,7 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
 
     func testWorkbenchActionKindsAreFrozen() {
         XCTAssertEqual(
-            ActionKind.allCases.suffix(26).map(\.rawValue),
+            ActionKind.allCases.dropLast().suffix(26).map(\.rawValue),
             [
                 "ask_answer", "board_target_status", "board_target_priority", "board_comment_add",
                 "board_comment_reply", "board_target_create", "session_start", "session_input",

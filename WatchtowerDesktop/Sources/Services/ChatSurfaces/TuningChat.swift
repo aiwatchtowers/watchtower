@@ -3,6 +3,7 @@ import GRDB
 import Observation
 import os
 import WatchtowerCore
+import WatchtowerInterface
 
 private let tuningChatLog = Logger(subsystem: Constants.bundleID, category: "tuning-chat")
 
@@ -35,6 +36,7 @@ final class TuningChat {
     private(set) var loadError: String?
 
     @ObservationIgnored private let dbPool: DatabasePool
+    @ObservationIgnored private let writes: ChatWrites
     @ObservationIgnored private let center: EmbeddedChatCenter
     @ObservationIgnored private let coach: CoachCenter?
     @ObservationIgnored private let decideTools: @MainActor () -> Bool
@@ -46,6 +48,7 @@ final class TuningChat {
         workbenchID: Int64,
         conversationID: Int64,
         dbPool: DatabasePool,
+        writes: ChatWrites,
         center: EmbeddedChatCenter,
         coach: CoachCenter?,
         decideTools: @escaping @MainActor () -> Bool = { TuningChatSurface.toolsAvailable(provider: nil) },
@@ -54,6 +57,7 @@ final class TuningChat {
         self.workbenchID = workbenchID
         self.conversationID = conversationID
         self.dbPool = dbPool
+        self.writes = writes
         self.center = center
         self.coach = coach
         self.decideTools = decideTools
@@ -100,7 +104,7 @@ final class TuningChat {
     /// **New**: another conversation for the workbench, shown at once.
     func startNew() async {
         do {
-            let id = try await TuningChatSurface.newConversation(dbPool: dbPool, workbenchID: workbenchID)
+            let id = try await TuningChatSurface.newConversation(writes: writes, workbenchID: workbenchID)
             switchTo(id)
         } catch {
             loadError = TuningChatTexts.newChatFailed(error.localizedDescription)
@@ -194,7 +198,7 @@ final class TuningChat {
     /// Every panel on the engine hears its turn end: the engine has one
     /// `onTurnFinished`, so it goes to the engine's `TuningTurnFanOut`.
     private func attach(_ engine: EmbeddedChatEngine) {
-        TuningTurnFanOut.of(engine, dbPool: dbPool, conversationID: conversationID).add(self)
+        TuningTurnFanOut.of(engine, dbPool: dbPool, writes: writes, conversationID: conversationID).add(self)
     }
 
     /// A turn of `conversationID` ended (its title is already written):
@@ -212,6 +216,7 @@ private final class TuningTurnFanOut {
     private static let byEngine = NSMapTable<EmbeddedChatEngine, TuningTurnFanOut>.weakToStrongObjects()
 
     private let dbPool: DatabasePool
+    private let writes: ChatWrites
     private let conversationID: Int64
     private var panels: [WeakPanel] = []
 
@@ -219,14 +224,17 @@ private final class TuningTurnFanOut {
         weak var chat: TuningChat?
     }
 
-    private init(dbPool: DatabasePool, conversationID: Int64) {
+    private init(dbPool: DatabasePool, writes: ChatWrites, conversationID: Int64) {
         self.dbPool = dbPool
+        self.writes = writes
         self.conversationID = conversationID
     }
 
-    static func of(_ engine: EmbeddedChatEngine, dbPool: DatabasePool, conversationID: Int64) -> TuningTurnFanOut {
+    static func of(
+        _ engine: EmbeddedChatEngine, dbPool: DatabasePool, writes: ChatWrites, conversationID: Int64
+    ) -> TuningTurnFanOut {
         if let existing = byEngine.object(forKey: engine) { return existing }
-        let fanOut = TuningTurnFanOut(dbPool: dbPool, conversationID: conversationID)
+        let fanOut = TuningTurnFanOut(dbPool: dbPool, writes: writes, conversationID: conversationID)
         byEngine.setObject(fanOut, forKey: engine)
         engine.onTurnFinished = { _ in Task { await fanOut.turnFinished() } }
         return fanOut
@@ -253,9 +261,7 @@ private final class TuningTurnFanOut {
     private func turnFinished() async {
         let conversationID = self.conversationID
         do {
-            try await dbPool.write { db in
-                try TuningChatSurface.setTitleIfEmpty(db, conversationID: conversationID)
-            }
+            try await TuningChatSurface.setTitleIfEmpty(dbPool: dbPool, writes: writes, conversationID: conversationID)
         } catch {
             // Cosmetic: the chat stays untitled until a later turn titles it.
             tuningChatLog.error(

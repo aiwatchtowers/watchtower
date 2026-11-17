@@ -309,14 +309,14 @@ final class ChatViewModelTests: XCTestCase {
         let created = await vm.newConversation()
         let convID = try XCTUnwrap(created)
         let fake = try lastFake()
-        fake.sendError = CocoaError(.fileWriteUnknown)
         let sent = await vm.send(text: "q")
         XCTAssertTrue(sent)
+        // The provider fails the turn: the session records it as an `error` row.
+        fake.emit(.error(ChatSessionError(turnID: "turn-1", code: .providerUnavailable, message: "down", retryable: true)))
         let failed = await waitForCondition { vm.thread.last?.message.status == "error" }
         XCTAssertTrue(failed)
         XCTAssertEqual(vm.thread.map(\.message.role), ["user", "assistant"])
 
-        fake.sendError = nil
         var atSend: [ChatMessageRecord] = []
         fake.onSend = { [weak self] command in
             if case .turn = command { atSend = self?.activePath(convID) ?? [] }
@@ -453,20 +453,23 @@ final class ChatViewModelTests: XCTestCase {
         }
         XCTAssertEqual(fakes.count, 3)
         _ = await vm.newConversation()
-        let sent2 = await vm.send(text: "q4")
-        XCTAssertTrue(sent2)
+        let sending = Task { await vm.send(text: "q4") }
+        await waitForCondition { vm.isWaitingForSession }
         XCTAssertEqual(fakes.count, 3, "a busy session is never evicted")
-        XCTAssertTrue(vm.isWaitingForSession)
-        XCTAssertTrue(vm.isStreaming, "a held turn counts as running: no second send")
+        XCTAssertTrue(vm.isBusy, "a held turn takes no second send")
 
         fakes[0].emit(.turnDone(turnID: "turn-1", status: .complete, sessionID: nil))
+        let sent2 = await sending.value
+        XCTAssertTrue(sent2)
         let launched = await waitForCondition { self.fakes.count == 4 && self.fakes[3].turns.count == 1 }
         XCTAssertTrue(launched)
         XCTAssertEqual(fakes[3].turns.first?.turnID, "turn-4")
         XCTAssertFalse(vm.isWaitingForSession)
     }
 
-    /// Stopping a held turn keeps its owner message answered (`partial`).
+    /// Stopping a held turn keeps its owner message answered (`partial`):
+    /// the session launches for it at once, writes the turn and stops it at
+    /// its `started` — the transcript is that of any Stop.
     func testStoppingAHeldTurnLeavesAPartialReply() async throws {
         let vm = try makeViewModel()
         for index in 1...3 {
@@ -475,36 +478,51 @@ final class ChatViewModelTests: XCTestCase {
         }
         let created = await vm.newConversation()
         let waiting = try XCTUnwrap(created)
-        await vm.send(text: "q4")
-        XCTAssertTrue(vm.isWaitingForSession)
+        let sending = Task { await vm.send(text: "q4") }
+        await waitForCondition { vm.isWaitingForSession }
         vm.stop()
-        await vm.writesSettled()
-        XCTAssertFalse(vm.isStreaming)
+        await waitForCondition { self.fakes.count == 4 && self.fakes[3].sent.contains(.cancel) }
+        let sent = await sending.value
+        XCTAssertTrue(sent, "the message stays in the transcript, not back in the composer")
+        XCTAssertEqual(fakes[3].sent.filter { $0 == .cancel }.count, 1, "stopped at its started")
+        fakes[3].emit(.turnDone(turnID: "turn-4", status: .interrupted, sessionID: nil))
+        await waitForCondition { !vm.isBusy }
         XCTAssertFalse(vm.isWaitingForSession)
+        XCTAssertNil(vm.errorMessage, "a Stop is not an error")
+        await waitForCondition { self.activePath(waiting).map(\.status) == ["complete", "partial"] }
         XCTAssertEqual(activePath(waiting).map(\.status), ["complete", "partial"])
+        XCTAssertEqual(activePath(waiting).filter(\.isUser).map(\.text), ["q4"])
     }
 
-    /// A held turn stopped before launch never reached the provider: the
-    /// next send must replay, or the stopped question is silently lost.
+    /// The process a held Stop launched goes after its turn: the next send
+    /// gets a new session, which replays the history with the stopped q4,
+    /// so the stopped question is never silently lost.
     func testSendAfterStoppingAHeldTurnReplays() async throws {
         let vm = try makeViewModel()
         for index in 1...3 {
             _ = await vm.newConversation()
             await vm.send(text: "q\(index)")
         }
-        _ = await vm.newConversation()
-        await vm.send(text: "q4")
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
+        let stopped = Task { await vm.send(text: "q4") }
+        await waitForCondition { vm.isWaitingForSession }
         vm.stop()
-        await vm.writesSettled()
-        let sentResult = await vm.send(text: "q5")
-        XCTAssertTrue(sentResult)
-        XCTAssertTrue(vm.isWaitingForSession)
+        await waitForCondition { self.fakes.count == 4 && self.fakes[3].sent.contains(.cancel) }
+        _ = await stopped.value
+        fakes[3].emit(.turnDone(turnID: "turn-4", status: .interrupted, sessionID: nil))
+        await waitForCondition { !vm.isBusy }
 
+        let sending = Task { await vm.send(text: "q5") }
+        await waitForCondition { vm.isWaitingForSession }
         fakes[0].emit(.turnDone(turnID: "turn-1", status: .complete, sessionID: nil))
-        let launched = await waitForCondition { self.fakes.count == 4 && self.fakes[3].turns.count == 1 }
+        let sentResult = await sending.value
+        XCTAssertTrue(sentResult)
+        let launched = await waitForCondition { self.fakes.count == 5 && self.fakes[4].turns.count == 1 }
         XCTAssertTrue(launched)
-        XCTAssertEqual(fakes[3].turns.first?.turnID, "turn-5")
-        XCTAssertEqual(fakes[3].turns.first?.replay, true, "the stopped q4 was never sent")
+        XCTAssertEqual(fakes[4].turns.first?.turnID, "turn-5")
+        XCTAssertEqual(fakes[4].turns.first?.replay, true, "the new session replays the stopped q4")
+        XCTAssertEqual(activePath(convID).filter(\.isUser).map(\.text), ["q4", "q5"])
     }
 
     // MARK: - Render isolation (skeleton Review Focus #5)
@@ -803,14 +821,15 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(try lastFake().turns.last?.text, expected)
     }
 
-    /// A remember message hands the owner's typed words to the remember hook:
-    /// never the skill line or the REFERENCED line the stored text carries.
+    /// A remember message's started turn hands the owner's typed words to
+    /// the marks: never the skill line or the REFERENCED line the stored text
+    /// carries (Go ran the command in the start).
     func testRememberHookGetsTheOwnersWordsOnly() async throws {
         let vm = try makeViewModel()
         let created = await vm.newConversation()
         let convID = try XCTUnwrap(created)
         var stored: [(String, Int64, Int64)] = []
-        vm.onOwnerMessageStored = { stored.append(($0, $1, $2)) }
+        vm.onOwnerMessageStarted = { started, text in stored.append((text, started.conversationID, started.ownerMessageID)) }
         let pay = MentionCandidate(kind: .jira, ref: "PAY-1", label: "PAY-1", detail: "")
         let sent = await vm.send(text: "remember: cite @PAY-1 by key", mentions: [pay], skill: "status-update")
         XCTAssertTrue(sent)
@@ -934,28 +953,6 @@ final class ChatViewModelTests: XCTestCase {
         await vm.send(text: "for PAY", attachments: [], mentions: [], skill: "status-update")
         XCTAssertEqual(try lastStoredUserText(vm),
                        "Use skill status-update: load it with load_skill first.\n\nfor PAY")
-    }
-
-    /// Ported from the old outcomes test: codex never emits a session id, so
-    /// the floor is the previous owner message, not the session.
-    func testOutcomesOfProposalsPrefixTheNextTurn() async throws {
-        let vm = try makeViewModel()
-        let created = await vm.newConversation()
-        let convID = try XCTUnwrap(created)
-        await vm.send(text: "first")
-        try await complete(vm, turn: "turn-1", text: "a")
-        let applied = AgentActionFeed.timestampString(Date().addingTimeInterval(60))
-        _ = try await dbManager.dbPool.write { d in
-            try TestDatabase.insertAgentAction(d, conversationID: convID, status: "applied",
-                                               resultJSON: #"{"target_id":5}"#, appliedAt: applied)
-        }
-        _ = await waitForCondition { vm.actionFeed.rows.count == 1 }
-        await vm.send(text: "second")
-        let text = try XCTUnwrap(lastFake().turns.last?.text)
-        XCTAssertTrue(text.hasPrefix("=== ACTIONS SINCE YOUR LAST MESSAGE ==="))
-        XCTAssertTrue(text.contains("create_target: applied"))
-        XCTAssertTrue(text.hasSuffix("second"))
-        XCTAssertEqual(activePath(convID).last { $0.isUser }?.text, "second", "the block is sent, never stored")
     }
 
     func testSelectRestoresTheConversationsProviderAndModel() throws {
@@ -1331,8 +1328,8 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(second.turns.last?.replay, true, "the fresh session replays the history")
     }
 
-    /// An edit while a turn streams never cuts it, but its session id is not
-    /// recorded at `turn_done` and the process is not reused afterwards.
+    /// An edit while a turn streams never cuts it, and the process is not
+    /// reused afterwards.
     func testProjectEditDuringAStreamingTurnIgnoresTheLateSessionID() async throws {
         let vm = try makeViewModel()
         let projectResult = await vm.createProject(name: "P")
@@ -1351,8 +1348,9 @@ final class ChatViewModelTests: XCTestCase {
         first.emit(.turnDone(turnID: "turn-1", status: .complete, sessionID: "sess-late"))
         let done = await waitForCondition { !vm.isBusy && vm.thread.last?.message.status == "complete" }
         XCTAssertTrue(done)
-        let stored = try await dbManager.dbPool.read { d in try ChatConversationQueries.fetchByID(d, id: convID) }
-        XCTAssertNil(stored?.sessionID, "the stale session id is not recorded")
+        // Its session id is the session's to record (Go's `Turn.recordSession`);
+        // no session resumes a stored one (#604 G11), so it changes nothing.
+        _ = convID
 
         await vm.send(text: "q2")
         let launched = await waitForCondition { self.fakes.count == 2 && self.fakes[1].turns.count == 1 }
@@ -1786,52 +1784,6 @@ extension ChatViewModelTests {
         }
     }
 
-    func testEagerActualWriteFailureShowsInExistingPersistenceStripAndClearsAfterRepair() async throws {
-        let id = try await dbManager.dbPool.write { db in
-            let id = try TestDatabase.insertChatConversation(db, provider: "claude")
-            try db.execute(sql: """
-                CREATE TRIGGER fail_initial_actual BEFORE UPDATE OF actual_provider ON chat_conversations
-                BEGIN SELECT RAISE(ABORT, 'actual metadata blocked'); END
-                """)
-            return id
-        }
-        let vm = try makeViewModel()
-        vm.select(conversationID: id)
-        let fake = try lastFake()
-        let driver = try XCTUnwrap(pool.client(for: id)?.driver)
-        let metadata = ChatRoutingMetadata(preferredProvider: "claude", mode: "pinned", reason: "explicit_pin")
-        fake.emit(.sessionReady(sessionID: nil, provider: "claude", model: "resolved-model", routing: metadata))
-        let observed = await waitForCondition { driver.actualProvider == "claude" }
-        XCTAssertTrue(observed)
-        await driver.writesSettled()
-        XCTAssertNil(vm.liveTurn)
-        XCTAssertTrue(vm.sessionPersistenceError?.contains("actual metadata blocked") == true)
-        XCTAssertNotNil(driver.actualPersistenceError as? DatabaseError, "retain the real SQLite cause")
-        try renderEagerPersistenceFailureIfRequested(vm)
-        try await dbManager.dbPool.write { try $0.execute(sql: "DROP TRIGGER fail_initial_actual") }
-        fake.emit(.sessionReady(sessionID: nil, provider: "claude", model: "repaired-model", routing: metadata))
-        let retried = await waitForCondition { driver.actualModel == "repaired-model" }
-        XCTAssertTrue(retried)
-        await driver.writesSettled()
-        XCTAssertNil(vm.sessionPersistenceError)
-        XCTAssertNil(driver.actualPersistenceError)
-    }
-
-    private func renderEagerPersistenceFailureIfRequested(_ vm: ChatViewModel) throws {
-        guard let path = ProcessInfo.processInfo.environment["DESKTOP_SHOTS_DIR"] else { return }
-        let directory = URL(fileURLWithPath: path, isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let view = ChatErrorStrip(chatVM: vm).padding(Spacing.page).frame(width: 360).detailBackground()
-        let height = ViewRenderProbe.fittingHeight(view, width: 360)
-        let probe = ViewRenderProbe(size: NSSize(width: 360, height: height))
-        for (suffix, name) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
-            let appearance = try XCTUnwrap(NSAppearance(named: name))
-            try probe.png(view, appearance).write(to: directory.appendingPathComponent("provider-chat-storage-error-\(suffix).png"))
-        }
-    }
-}
-
-extension ChatViewModelTests {
     func testNewAutomaticContextReadsCurrentPreferenceWithoutChangingBusyHost() async throws {
         var preferred = AIProvider.claude
         let vm = ChatViewModel(dbManager: dbManager, pool: pool, provider: .claude,
@@ -1942,4 +1894,205 @@ extension ChatViewModelTests {
         XCTAssertTrue(vm.automaticRouting)
         XCTAssertNil(vm.attachUnavailableReason, "Ollama is not Claude's reserve: Claude's row")
     }
+}
+
+// MARK: - The session's `started` (mobile Inbox spec §8)
+
+extension ChatViewModelTests {
+    /// The owner's message shows at once from the draft, before the session
+    /// wrote it; the stored row replaces it at `started`.
+    func testBubbleShowsBeforeStarted() async throws {
+        let vm = try makeViewModel()
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
+        let fake = try lastFake()
+        fake.holdsStarts = true
+        vm.draft = "hello"
+        let sending = Task { await vm.sendDraft() }
+        await untilTurn { !fake.sent.isEmpty }
+        XCTAssertEqual(vm.pendingOwnerText, "hello")
+        XCTAssertEqual(vm.draft, "")
+        XCTAssertTrue(activePath(convID).isEmpty, "nothing is written before started")
+        fake.releaseStarts()
+        await sending.value
+        XCTAssertNil(vm.pendingOwnerText)
+        XCTAssertEqual(vm.thread.first?.message.text, "hello")
+        XCTAssertEqual(vm.draft, "")
+    }
+
+    /// A reply the session could not save is said under the thread, as the
+    /// Mac's own writer said it (review I5): the reply on disk may be stale.
+    /// The next turn starts clean.
+    func testAFailedReplySaveIsShownUnderTheThread() async throws {
+        let vm = try makeViewModel()
+        _ = await vm.newConversation()
+        await vm.send(text: "q")
+        let fake = try lastFake()
+        fake.emit(.textDelta(turnID: "turn-1", text: "a"))
+        fake.emit(.turnDone(turnID: "turn-1", status: .complete, sessionID: nil))
+        fake.emit(.saveError(turnID: "turn-1", message: "Couldn't finalize the reply: disk full"))
+        await waitForCondition { vm.sessionPersistenceError != nil }
+        XCTAssertEqual(vm.sessionPersistenceError, "Couldn't finalize the reply: disk full")
+        await waitForCondition { !vm.isBusy }
+        await vm.send(text: "again")
+        XCTAssertNil(vm.sessionPersistenceError, "the next turn starts clean")
+    }
+
+    /// A turn held for a free session (review I1, ask #1361): Stop is
+    /// offered on it, and every other chat stays usable — only the held
+    /// chat's composer waits.
+    func testAHeldTurnOffersStopAndLeavesOtherChatsUsable() async throws {
+        let vm = try makeViewModel()
+        for index in 1...3 {
+            _ = await vm.newConversation()
+            await vm.send(text: "q\(index)")
+        }
+        let created = await vm.newConversation()
+        let held = try XCTUnwrap(created)
+        let sending = Task { await vm.send(text: "q4") }
+        await waitForCondition { vm.isWaitingForSession }
+        XCTAssertTrue(vm.isBusy, "the held chat's composer waits")
+        XCTAssertTrue(vm.canStop, "Stop is offered on a held turn")
+        XCTAssertEqual(vm.pendingOwnerText, "q4")
+
+        let other = await vm.newConversation()
+        XCTAssertNotNil(other)
+        XCTAssertFalse(vm.isBusy, "another chat is not blocked by the held turn")
+        XCTAssertTrue(vm.canStop)
+
+        vm.select(conversationID: held)
+        fakes[0].emit(.turnDone(turnID: "turn-1", status: .complete, sessionID: nil))
+        let sent = await sending.value
+        XCTAssertTrue(sent)
+    }
+
+    /// The owner's pending message belongs to its chat (review I2): another
+    /// chat shown meanwhile has no bubble, its own chat shows it again, and
+    /// once it started no chat keeps a ghost bubble.
+    func testThePendingMessageStaysWithItsChat() async throws {
+        let vm = try makeViewModel()
+        let first = await vm.newConversation()
+        let chatA = try XCTUnwrap(first)
+        let fake = try lastFake()
+        fake.holdsStarts = true
+        let sending = Task { await vm.send(text: "for A") }
+        await untilTurn { !fake.sent.isEmpty }
+        XCTAssertEqual(vm.pendingOwnerText, "for A")
+
+        let second = await vm.newConversation()
+        let chatB = try XCTUnwrap(second)
+        XCTAssertNil(vm.pendingOwnerText, "chat B shows no bubble of chat A")
+        vm.select(conversationID: chatA)
+        XCTAssertEqual(vm.pendingOwnerText, "for A")
+        vm.select(conversationID: chatB)
+
+        fake.releaseStarts()
+        let sent = await sending.value
+        XCTAssertTrue(sent)
+        XCTAssertNil(vm.pendingOwnerText)
+        vm.select(conversationID: chatA)
+        XCTAssertNil(vm.pendingOwnerText, "the stored row replaced it")
+        XCTAssertEqual(activePath(chatA).filter(\.isUser).map(\.text), ["for A"])
+    }
+
+    /// The session dies before `started`: nothing was written, the draft
+    /// comes back and the session-ended message shows.
+    func testKillBeforeStartedReturnsTheDraft() async throws {
+        let vm = try makeViewModel()
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
+        let fake = try lastFake()
+        fake.holdsStarts = true
+        vm.draft = "hello"
+        let sending = Task { await vm.sendDraft() }
+        await untilTurn { !fake.sent.isEmpty }
+        fake.exit(status: 9)
+        await sending.value
+        XCTAssertEqual(vm.draft, "hello")
+        XCTAssertNil(vm.pendingOwnerText)
+        XCTAssertEqual(vm.errorMessage, ChatSessionClient.exitMessage(status: 9, stderrTail: ""))
+        XCTAssertTrue(activePath(convID).isEmpty)
+    }
+
+    /// The session dies after `started`: `chat.recover` marks its reply
+    /// `session_lost` and frees the lease, so the next send goes out.
+    func testKillAfterStartedCallsRecover() async throws {
+        let vm = try makeViewModel()
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
+        _ = await vm.send(text: "q")
+        let fake = try lastFake()
+        fake.emit(.textDelta(turnID: "turn-1", text: "half"))
+        await untilTurn { vm.liveTurn?.fullText == "half" }
+        fake.exit(status: 9)
+        let db = dbManager.dbPool
+        await untilTurn {
+            (try? db.read { try ChatLeaseQueries.fetch($0, conversationID: convID) }) == .some(nil)
+        }
+        XCTAssertEqual(try lastAssistant(convID)?.errorCode, "session_lost")
+        XCTAssertEqual(try lastAssistant(convID)?.status, "partial")
+        let again = await vm.send(text: "again")
+        XCTAssertTrue(again)
+    }
+
+    /// No `started` within `startedTimeout` (a manual clock): the start gives
+    /// up, the draft comes back with the session-ended line, and the silent
+    /// process is retired.
+    func testSilentProcessGivesUpAfterTenSeconds() async throws {
+        XCTAssertEqual(ChatViewModel.startedTimeout, .seconds(10))
+        let gate = SleepGate()
+        let waited = DurationBox()
+        var silent: FakeChatSessionProcess?
+        let factory: ChatSessionPool.ProcessFactory = { args in
+            let fake = FakeChatSessionProcess(arguments: args)
+            fake.holdsStarts = true
+            silent = fake
+            return fake
+        }
+        let sleep: @Sendable (Duration) async throws -> Void = { duration in
+            waited.value = duration
+            try await gate.wait()
+        }
+        let silentPool = ChatSessionPool(dbPool: dbManager.dbPool, processFactory: factory,
+                                         closeGrace: .milliseconds(20), sleep: sleep)
+        let vm = ChatViewModel(dbManager: dbManager, pool: silentPool, defaults: defaults)
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
+        vm.draft = "hello"
+        let sending = Task { await vm.sendDraft() }
+        await gate.untilWaiting()
+        XCTAssertEqual(waited.value, ChatViewModel.startedTimeout)
+        gate.open()
+        await sending.value
+        XCTAssertEqual(vm.draft, "hello")
+        XCTAssertEqual(vm.errorMessage, ChatSessionClient.silentMessage)
+        XCTAssertTrue(activePath(convID).isEmpty)
+        let fake = try XCTUnwrap(silent)
+        await untilTurn { fake.terminated }
+        await silentPool.closeAll()
+    }
+
+    /// The phone's turn holds the chat: `refused`, the draft stays, the
+    /// composer shows the phone's line.
+    func testRefusedConversationBusyRestoresTheDraftWithTheHolderLine() async throws {
+        let vm = try makeViewModel()
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
+        let nowMS = ChatLease.milliseconds(Date())
+        _ = try await dbManager.dbPool.write { db in
+            try ChatLeaseQueries.claim(db, ChatLease(conversationID: convID, owner: .hub, ownerID: "hub-1", turnID: "p1",
+                                                     startedAtMS: nowMS, heartbeatAtMS: nowMS), nowMS: nowMS)
+        }
+        vm.draft = "hello"
+        await vm.sendDraft()
+        XCTAssertEqual(vm.draft, "hello")
+        XCTAssertEqual(vm.foreignTurn.line, "Answering from your iPhone — you can watch here")
+        XCTAssertTrue(activePath(convID).isEmpty)
+        XCTAssertTrue(try lastFake().turns.isEmpty)
+    }
+}
+
+/// A value a `@Sendable` closure records.
+final class DurationBox: @unchecked Sendable {
+    var value: Duration?
 }

@@ -96,6 +96,7 @@ final class SpecReviewModel {
 
     @ObservationIgnored let ask: OwnerAsk
     @ObservationIgnored let dbPool: DatabasePool
+    @ObservationIgnored private let chatWrites: ChatWrites
     @ObservationIgnored let cli: WorkbenchCLI
     @ObservationIgnored private let asks: OwnerAsksViewModel
     /// The app's embedded chats; nil: this screen has no Discuss threads.
@@ -123,6 +124,7 @@ final class SpecReviewModel {
         cli: WorkbenchCLI,
         asks: OwnerAsksViewModel,
         chats: EmbeddedChatCenter? = nil,
+        chatWrites: ChatWrites = .notReady,
         threadCenter: SpecReviewThreadCenter? = nil,
         pollInterval: Duration = .seconds(3),
         sleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
@@ -132,6 +134,7 @@ final class SpecReviewModel {
         self.ask = ask
         self.rootAskID = ask.id
         self.dbPool = dbPool
+        self.chatWrites = chatWrites
         self.cli = cli
         self.asks = asks
         self.chats = chats
@@ -748,7 +751,8 @@ extension SpecReviewModel {
                 }
             } else {
                 conversationID = try await SpecReviewThreadSurface.conversationID(
-                    workbenchID: workbenchID, rootAskID: rootAskID, itemKey: key, title: threadTitle(key), dbPool: dbPool)
+                    workbenchID: workbenchID, rootAskID: rootAskID, itemKey: key, title: threadTitle(key), dbPool: dbPool,
+                    writes: chatWrites)
             }
             let data = orphaned ? "" : try await cli.specReviewThreadContext(askID: askID, itemKey: key)
             let sessionID = ask.sessionID

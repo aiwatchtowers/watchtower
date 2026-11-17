@@ -93,6 +93,10 @@ func TestPause_FileIsAtomicAndSurvivesARestart(t *testing.T) {
 	}
 }
 
+// TestPause_ServesInboxWhilePaused: with the pause file present, tower.ping
+// and a read keep answering ok across a restart. Its inbox.feed half is
+// TestPause_ServesInboxFeedWhilePaused (pause_inbox_test.go, the external
+// test package: inboxfeed imports tower).
 func TestPause_ServesInboxWhilePaused(t *testing.T) {
 	ws := t.TempDir()
 	if err := SetPaused(ws, true); err != nil {
