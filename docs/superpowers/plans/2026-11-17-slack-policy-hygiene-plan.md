@@ -27,15 +27,15 @@
 
 ## Decisions taken in this plan
 
-Approved decisions come from the spec (P1–P10, A1–A24). The plan adds these; A25–A27 go to the owner in one ask (owner ask #1428):
+Approved decisions come from the spec (P1–P10, A1–A24). The plan adds these; A25–A27 are approved in owner ask #1428 («Принять все»):
 
-| # | Decision | Recommendation / consequence |
-|---|---|---|
-| A25 | A failed `auth.revoke` on `slack remove` does not stop the remove: the token file is deleted, the row is `removed`, and the CLI prints the warning | Recommend. Consequence: the token stays valid at Slack until it expires (a rotating Full token: its refresh token's 30 days; a legacy token: never) or the admin removes the app; nobody on this Mac holds it any more |
-| A26 | The emoji skip for a **legacy** token (no recorded grant) is persisted as `slack_accounts.emoji_scope_missing` (in Task 6's migration, no migration of its own); a token with a recorded grant decides by the grant alone, so a re-login (which always records the grant) makes the flag irrelevant and nobody has to clear it | Recommend: a restart does not call `emoji.list` and log `missing_scope` again |
-| A27 | The gallery template `team-performance-report` becomes `team-week-summary` ("Team week summary"): what moved, where work is stuck, decisions; no red flags, no "who may be overloaded", no one-on-one list. A template is a gallery file, not a built-in automation (BUILTIN contracts in `docs/inventory/automations.md` cover `builtin:` recipes only), so the rename changes no inventory contract. A copy the owner already installed keeps its name and file; `list_people` no longer returns `RedFlags`, so it reads an empty value | Recommend, follows P8 («резать всё») |
-| — | The dead config key `analysis.legacy_mode` is removed (Task 6) | Part of approved A15's cleanup |
-| — | Manifest single source: the JSON moves to `internal/slackmanifest/`; plan B's `internal/slackapp.BuildManifest`/`MergeManifest` take the scope list and descriptions from `slackmanifest.UserScopes()`/`Description()` instead of their own | Implements approved A10; matching line goes into plan B Task 9 |
+| # | Decision | Recommendation / consequence | Source |
+|---|---|---|---|
+| A25 | A failed `auth.revoke` on `slack remove` does not stop the remove: the token file is deleted, the row is `removed`, and the CLI prints the warning | Recommend. Consequence: the token stays valid at Slack until it expires (a rotating Full token: its refresh token's 30 days; a legacy token: never) or the admin removes the app; nobody on this Mac holds it any more | ask #1428 |
+| A26 | The emoji skip for a **legacy** token (no recorded grant) is persisted as `slack_accounts.emoji_scope_missing` (in Task 6's migration, no migration of its own); a token with a recorded grant decides by the grant alone, so a re-login (which always records the grant) makes the flag irrelevant and nobody has to clear it | Recommend: a restart does not call `emoji.list` and log `missing_scope` again | ask #1428 |
+| A27 | The gallery template `team-performance-report` becomes `team-week-summary` ("Team week summary"): what moved, where work is stuck, decisions; no red flags, no "who may be overloaded", no one-on-one list. A template is a gallery file, not a built-in automation (BUILTIN contracts in `docs/inventory/automations.md` cover `builtin:` recipes only), so the rename changes no inventory contract. A copy the owner already installed keeps its name and file; `list_people` no longer returns `RedFlags`, so it reads an empty value | Recommend, follows P8 («резать всё») | ask #1428 |
+| — | The dead config key `analysis.legacy_mode` is removed (Task 6) | Part of approved A15's cleanup | spec A15 (ask #1412) |
+| — | Manifest single source: the JSON moves to `internal/slackmanifest/`; plan B's `internal/slackapp.BuildManifest`/`MergeManifest` take the scope list and descriptions from `slackmanifest.UserScopes()`/`Description()` instead of their own | Implements approved A10; matching line goes into plan B Task 9 | spec A10 (ask #1412) |
 
 ## Review Focus
 
