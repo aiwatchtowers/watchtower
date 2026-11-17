@@ -123,23 +123,22 @@ struct PeopleListView: View {
             windowPicker(vm)
             statsAndSearch(vm)
             Divider()
-            if vm.cards.isEmpty, vm.stoppedPeopleIDs.isEmpty, let error = vm.errorMessage {
+            if vm.cards.isEmpty, vm.stoppedPeopleIDs.isEmpty, let error = vm.loadError {
                 ErrorView(title: "Error", message: error, actionTitle: PeopleCardCopy.retry) { vm.load() }
             } else if vm.cards.isEmpty, vm.stoppedPeopleIDs.isEmpty {
                 Self.emptyState(context: appState.emptyStateContext)
             } else {
-                if let error = vm.errorMessage {
-                    if vm.loadFailed {
-                        // The stopped rows stay reachable; the reload is one press away.
-                        HStack(spacing: Spacing.regular) {
-                            WriteErrorBanner(message: error, onClose: nil)
-                            Button(PeopleCardCopy.retry) { vm.load() }
-                                .buttonStyle(.kitSecondary)
-                                .padding(.trailing, Spacing.medium)
-                        }
-                    } else {
-                        WriteErrorBanner(message: error) { vm.errorMessage = nil }
+                if let error = vm.loadError {
+                    // The rows stay reachable; the reload is one press away.
+                    HStack(spacing: Spacing.regular) {
+                        WriteErrorBanner(message: error, onClose: nil)
+                        Button(PeopleCardCopy.retry) { vm.load() }
+                            .buttonStyle(.kitSecondary)
+                            .padding(.trailing, Spacing.medium)
                     }
+                }
+                if let error = vm.errorMessage {
+                    WriteErrorBanner(message: error) { vm.errorMessage = nil }
                 }
                 userListScrollView(vm)
             }

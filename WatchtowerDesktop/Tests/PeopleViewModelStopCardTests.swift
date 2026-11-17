@@ -185,15 +185,26 @@ final class PeopleViewModelStopCardTests: XCTestCase {
         }
         let vm = PeopleViewModel(dbManager: dbManager, cliRunner: nil)
         vm.load()
-        XCTAssertFalse(vm.loadFailed)
+        XCTAssertNil(vm.loadError)
 
         try await dbManager.dbPool.write { db in try db.execute(sql: "DROP TABLE people_cards") }
         vm.load()
 
-        XCTAssertTrue(vm.loadFailed)
-        XCTAssertNotNil(vm.errorMessage)
+        let loadError = try XCTUnwrap(vm.loadError)
         XCTAssertTrue(vm.cards.isEmpty)
         XCTAssertEqual(vm.stoppedPeople, ["1:ULEE"], "the stopped rows stay reachable")
+
+        // A write's success or failure does not touch the load error, so
+        // Retry stays while the cards are unloaded.
+        await vm.toggleStarredPerson("1:ULEE")
+        XCTAssertNil(vm.errorMessage, "the star write succeeded")
+        XCTAssertTrue(vm.isPersonStarred("1:ULEE"))
+        XCTAssertEqual(vm.loadError, loadError)
+
+        try await dbManager.dbPool.write { db in try db.execute(sql: "DROP TABLE user_profile") }
+        await vm.toggleStarredPerson("1:ULEE")
+        XCTAssertNotNil(vm.errorMessage, "the star write failed")
+        XCTAssertEqual(vm.loadError, loadError, "a write failure does not replace the load error")
     }
 
     /// Stopping a card while an older window is shown keeps that window.
