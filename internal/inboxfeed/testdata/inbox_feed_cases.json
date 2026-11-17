@@ -12363,5 +12363,335 @@
         }
       }
     ]
+  },
+  {
+    "name": "desktop_route_owner_only",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT OR IGNORE INTO slack_accounts (id, team_id, team_name, team_domain, label, current_user_id, status, error, enabled, search_last_date, created_at) VALUES (1, '', '', '', '', '1:U1', 'ok', '', 1, '', '2026-01-01T00:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "brief-2026-11-16",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Morning brief",
+          "source_line": "Your day · Mon 16 Nov",
+          "preview": "today",
+          "stamp": "2026-11-16T00:00:00Z",
+          "living": false,
+          "unread": false,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "morning_brief",
+            "items": [],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_route_navigate_helpers",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT OR IGNORE INTO slack_accounts (id, team_id, team_name, team_domain, label, current_user_id, status, error, enabled, search_last_date, created_at) VALUES (1, '', '', '', '', '1:U1', 'ok', '', 1, '', '2026-01-01T00:00:00Z')",
+      "INSERT INTO day_plans (id, user_id, plan_date, status, has_conflicts, generated_at, regenerate_count, created_at, updated_at) VALUES (1, 'U001', '2026-10-19', 'active', 0, '2026-04-23T08:00:00Z', 0, '2026-11-16T08:00:00Z', '2026-11-16T08:00:00Z')",
+      "INSERT INTO briefings (id, user_id, date, role, attention, your_day, what_happened, team_pulse, coaching, model, read_at, created_at) VALUES (1, 'U001', '2026-10-20', 'engineer', '[]', '[]', '[]', '[]', '[]', 'haiku', NULL, '2026-11-16T08:00:00Z')",
+      "INSERT INTO ideas (id, kind, title, essence, status, source, snooze_until, needs_review, review_reason, owner_rating, rating_comment, last_mention_at, created_at, updated_at, chat_born) VALUES (5, 'idea', 'A shared glossary', '', 'proposed', 'mined', '', 0, '', 0, '', '', '2026-11-10T09:00:00Z', '2026-11-10T09:00:00Z', 0)",
+      "INSERT INTO tracks (id, text, context, category, ownership, priority, tags, channel_ids, source_refs, has_updates, participants, requester_name, blocking, decision_summary, decision_options, sub_items, related_digest_ids, model, assignee_user_id, owner_user_id, requester_user_id, created_at, updated_at) VALUES (7, 'Launch', 'Discussed in standup', 'task', 'mine', 'medium', '[]', '[\"C001\"]', '[]', 0, '[]', '', '', '', '[]', '[]', '[]', 'haiku', '', '', '', '2026-11-16T08:00:00Z', '2026-11-16T08:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 2,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "brief-2026-10-20",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Morning brief",
+          "source_line": "Your day · Tue 20 Oct",
+          "preview": "",
+          "stamp": "2026-11-16T08:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "morning_brief",
+            "items": [],
+            "attention": []
+          }
+        },
+        {
+          "id": "tracks",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Track my threads",
+          "source_line": "",
+          "preview": "1 unread",
+          "stamp": "2026-11-16T08:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "tracks",
+            "items": [
+              {
+                "ref_kind": "track",
+                "id": 7,
+                "title": "Launch",
+                "subtitle": "Track",
+                "preview": "",
+                "stamp": "2026-11-16T08:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        },
+        {
+          "id": "brief-2026-11-16",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Morning brief",
+          "source_line": "Your day · Mon 16 Nov",
+          "preview": "today",
+          "stamp": "2026-11-16T00:00:00Z",
+          "living": false,
+          "unread": false,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "morning_brief",
+            "items": [],
+            "attention": []
+          }
+        },
+        {
+          "id": "ideas",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Idea finder",
+          "source_line": "",
+          "preview": "1 to judge",
+          "stamp": "2026-11-10T09:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "ideas",
+            "items": [
+              {
+                "ref_kind": "idea",
+                "id": 5,
+                "title": "A shared glossary",
+                "subtitle": "Idea · proposed",
+                "preview": "",
+                "stamp": "2026-11-10T09:00:00Z",
+                "end": "",
+                "unread": true,
+                "high": false,
+                "stopped": false,
+                "done": false,
+                "date": ""
+              }
+            ],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true
+  },
+  {
+    "name": "desktop_route_home_brief",
+    "now": "2026-11-16T12:00:00Z",
+    "seed": [
+      "INSERT OR IGNORE INTO slack_accounts (id, team_id, team_name, team_domain, label, current_user_id, status, error, enabled, search_last_date, created_at) VALUES (1, '', '', '', '', '1:U1', 'ok', '', 1, '', '2026-01-01T00:00:00Z')",
+      "INSERT INTO briefings (id, user_id, date, role, attention, your_day, what_happened, team_pulse, coaching, model, read_at, created_at) VALUES (1, 'U001', '2026-10-21', 'engineer', '[]', '[]', '[]', '[]', '[]', 'haiku', NULL, '2026-11-16T08:00:00Z')"
+    ],
+    "opts": {},
+    "expect": {
+      "v": 1,
+      "built_at": "",
+      "folders": [
+        {
+          "id": 1,
+          "kind": "root",
+          "slug": "inbox",
+          "title": "Inbox",
+          "icon": "",
+          "position": 0,
+          "hidden": false,
+          "count": 1,
+          "waiting": 0
+        },
+        {
+          "id": 2,
+          "kind": "approvals",
+          "slug": "needs-approval",
+          "title": "Needs approval",
+          "icon": "",
+          "parent_id": 1,
+          "position": 0,
+          "hidden": false,
+          "count": 0,
+          "waiting": 0
+        }
+      ],
+      "cards": [
+        {
+          "id": "brief-2026-10-21",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Morning brief",
+          "source_line": "Your day · Wed 21 Oct",
+          "preview": "",
+          "stamp": "2026-11-16T08:00:00Z",
+          "living": false,
+          "unread": true,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "morning_brief",
+            "items": [],
+            "attention": []
+          }
+        },
+        {
+          "id": "brief-2026-11-16",
+          "folder_id": 1,
+          "card_kind": "legacy",
+          "title": "Morning brief",
+          "source_line": "Your day · Mon 16 Nov",
+          "preview": "today",
+          "stamp": "2026-11-16T00:00:00Z",
+          "living": false,
+          "unread": false,
+          "priority": "medium",
+          "pinned": false,
+          "blocks": "",
+          "body": "",
+          "body_clipped": false,
+          "link": "",
+          "content_hash": "",
+          "actions": [],
+          "ref_facts": [],
+          "legacy": {
+            "kind": "morning_brief",
+            "items": [],
+            "attention": []
+          }
+        }
+      ]
+    },
+    "desktop": true
   }
 ]
