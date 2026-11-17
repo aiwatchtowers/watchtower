@@ -12,7 +12,7 @@ public struct ConfluenceEdit: Equatable, Sendable {
     /// edit on the phone, as the args carry the whole new page.
     public static let clippedNote = "This page edit is too long to show in full here."
     /// Whether a clipped edit, whose diff this device cannot show, may still be approved (pinned to the args digest,
-    /// today's phone behaviour). Rule F7 ("never approve a page the owner never saw") is the owner's call here.
+    /// today's phone behaviour). The owner kept it against rule F7 ("never approve a page the owner never saw"): ask #1420.
     public static let allowsApproveWhenClipped = true
 
     public struct Change: Equatable, Sendable {

@@ -3,7 +3,8 @@
 import PackageDescription
 
 // The chat shared by the Mac and the iPhone (unified chat spec §6.1, D8):
-// - ChatWire: Foundation only — the chat wire models (moved out of the mobile
+// - ChatWire: Foundation (plus CryptoKit for the approval card's args digest,
+//   unified chat T15) — the chat wire models (moved out of the mobile
 //   Kit), the operations, the `ChatClient` protocol, the feed and list stores
 //   and the flat-fields → parts adapter. It imports nothing of ours, so
 //   WatchtowerCore (which stays Kit-free) and the phone both link it.

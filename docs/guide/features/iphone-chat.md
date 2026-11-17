@@ -35,14 +35,19 @@ Opening a chat loads its newest 60 messages; **Load earlier messages** brings ol
 ### Ask something
 <!-- learn: none -->
 
-**✎** starts a chat. Above the field, the model and project chips can be changed until the first message. **+** attaches a photo, a picture from your library or a file (images up to 5 MB, PDF up to 32 MB, text up to 256 KB, 30 MB per message; a large photo is made smaller first). Send becomes **Stop** while an answer runs, whoever runs it.
+**✎** starts a chat. Above the field, the project chip can be changed until the first message. **@** mentions a person, channel or issue and **/** picks a skill; both show as chips above the field. **+** attaches a photo, a picture from your library or a file (images up to 5 MB, PDF up to 32 MB, text up to 256 KB, 30 MB per message; a large photo is made smaller first). Send becomes **Stop** while an answer runs, whoever runs it.
 
-Touch and hold your own message for **Edit**. On the last answer, **Regenerate** and the **‹ 1/2 ›** arrows move between versions. Touch and hold a finished answer for **Ask about this**, choose a passage in the sheet, and it rides along with your next message. Nothing is sent or queued while the Mac is offline: the field and buttons turn off, and your text stays in the field.
+Touch and hold your own message for **Edit**. On the last answer, **Regenerate** and the **‹ 1/2 ›** arrows move between versions. Touch and hold a finished answer for **Ask about this**, choose a passage in the sheet, and it waits above the field with a **Comment (optional)** line, then rides along with your next message. Nothing is sent or queued while the Mac is offline: the field and buttons turn off, and your text stays in the field.
+
+### Choose the model
+<!-- learn: none -->
+
+The model pill above the field works as on the Mac, and you can change it between answers in any chat. **Preferred + reserve · Auto** lets your tower move to the reserve provider when the preferred one reaches its limit; **Only Claude · <model>** keeps the chat on one provider. A chat that moved shows **Current provider:** above the pill and a card saying why; once the preferred provider can be tried, the card offers **Use Claude** (your preferred provider's name) for the next answer. The list holds the models your Mac knows, and availability updates when your chats change.
 
 ### Approve what the assistant wants to do
 <!-- learn: none -->
 
-When the assistant proposes a write (a Slack message, a Jira comment), the answer shows an orange card with what it will do, **Approve** and **Reject**. Approving needs the permission to **Answer permission prompts from this phone** on the Mac; without it the card says **Approve on the Mac**. If the action changed since the phone showed it, you see **The action changed — look again** and decide again. The card is the one the Mac shows: who a Slack message goes to, a Jira issue's fields, the changes to a Confluence page, and the result once it ran. Editing the text first, **Approve all**, **Retry** and **Dismiss** stay on the Mac.
+When the assistant proposes a write (a Slack message, a Jira comment), the answer shows an orange card with what it will do, **Approve** and **Reject**. Approving needs the permission to **Answer permission prompts from this phone** on the Mac; without it the card says **Approve on the Mac**. If the action changed since the phone showed it, you see **The action changed — look again** and decide again. The card is the one the Mac shows: who a Slack message goes to, a Jira issue's fields, the changes to a Confluence page, a connector's input, and the result once it ran. A Slack message with no workspace chosen yet says **Choose a workspace on** your Mac and offers only Reject. A Confluence edit too long for the phone says so; approving it runs exactly what your Mac stored. Editing first, choosing a workspace, **Approve all**, **Retry** and **Dismiss** stay on the Mac.
 
 ### Artifacts and sources
 <!-- learn: none -->
