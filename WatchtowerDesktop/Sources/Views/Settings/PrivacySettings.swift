@@ -28,6 +28,7 @@ struct PrivacySettings: View {
             origin: AccountPurgeStatus.shownOrigin(policy: policy, setting: config.purgeRevokedData, status: status)
         )
         .task { await appState.accountPurgeCenter?.reloadStatus() }
+        Section { FileVaultLine() }
         OrganizationPolicySection(policy: appState.managedPolicy.policy)
     }
 }

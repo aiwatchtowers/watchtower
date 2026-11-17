@@ -45,6 +45,7 @@ struct SlackConnectionDetail: View {
     var body: some View {
         Form {
             workspaceSection
+            Section { FileVaultLine() }
             slackAccountsSection
             reactionDictionarySection
         }

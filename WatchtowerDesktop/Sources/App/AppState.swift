@@ -372,6 +372,8 @@ final class AppState {
     private(set) var planUsageCenter: PlanUsageCenter?
     /// The account purge ledger (board #601): red lines, Home banner, notices.
     var accountPurgeCenter: AccountPurgeCenter?
+    /// `fdesetup status`, read at launch and on activation (#1769); `.unknown` until read.
+    var fileVaultState: FileVaultState = .unknown
     /// The Slack Live probe's verdicts (Connections → Slack).
     var slackLiveStatusCenter: SlackLiveStatusCenter?
     /// The live workbench sessions' agent states (board #312), polled while
@@ -824,6 +826,7 @@ final class AppState {
         Constants.prewarmResolvedEnvironment()
         // Before anything a key decides starts (the mobile hub, the pickers).
         managedPolicy.start(activation: NSApplication.didBecomeActiveNotification)
+        watchFileVault()
         // Text older versions handed the CLI through temp files (now stdin).
         Task.detached(priority: .utility) {
             StaleTempSweep.run(in: FileManager.default.temporaryDirectory)

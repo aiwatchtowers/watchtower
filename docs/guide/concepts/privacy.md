@@ -46,7 +46,7 @@ Most of what Watchtower knows lives in the database; a few things are files besi
 
 - **Logs** name channels, people and meetings by id and record counts and errors, never message text, titles or AI answers. Log files from an earlier version may hold text until they rotate out.
 - **AI calls leave no session files.** Watchtower's own Claude and Codex calls write nothing to the agent's history folder; a chat picks up again from its saved messages. Workbench sessions are the agent's own and keep their history.
-- **Still files:** meeting recordings, chat attachments, target images, Memory's notes and sign-in files, readable only by your user. FileVault protects them at rest.
+- **Still files:** meeting recordings, chat attachments, target images, Memory's notes and sign-in files, readable only by your user. FileVault protects them at rest; when it is off, Settings → Privacy and Connections → Slack say so and open its settings.
 - **What you paste into a session's Workchat** is deleted when that session ends.
 
 ## What goes to your AI provider

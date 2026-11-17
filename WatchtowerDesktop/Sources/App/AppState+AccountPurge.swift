@@ -24,4 +24,16 @@ extension AppState {
         bringMainWindowForward(windows: windows, activate: activate)
         openConnections(ConnectionService(rawValue: source))
     }
+
+    /// FileVault's state now and on every activation (a user who turns it on
+    /// in System Settings comes back to the app).
+    func watchFileVault(status: FileVaultStatus = .live) {
+        Task { [weak self] in
+            self?.fileVaultState = await status.read()
+            for await _ in NotificationCenter.default.notifications(named: NSApplication.didBecomeActiveNotification) {
+                guard let self else { return }
+                self.fileVaultState = await status.read()
+            }
+        }
+    }
 }
