@@ -145,13 +145,14 @@ struct ChatSidebarView: View {
             .id("project-overview-\(projectID)")
     }
 
-    /// A chat's row (ChatUI's list row: its state dot, title, the line under it and its age). The ✕ shows while
-    /// the row is hovered or under the panel cursor, and only when the chat neither answers nor waits (spec §5.3).
+    /// A chat's row (ChatUI's list row, which the Mac's style draws as the panel's own row, `ChatSidebarRow`: its
+    /// state dot, title, the line under it and its age). The ✕ shows while the row is hovered or under the panel
+    /// cursor, and only when the chat neither answers nor waits (spec §5.3).
     private func chatRow(_ conv: ChatList.Conversation) -> some View {
         let hasCursor = hasKeyboard && historyVM.panelCursor == conv.id
         let quickDeletable = conv.state != .answering && conv.state != .waiting
-        return HStack(spacing: Spacing.small) {
-            ChatListRow(content: ChatListRowContent(conv, now: historyVM.now()))
+        return HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
+            ChatListRow(content: ChatSidebarRow.content(conv, now: historyVM.now(), showsProject: historyVM.level == .all))
             if quickDeletable, hasCursor || hoveredRow == conv.id {
                 ChatRowDeleteButton {
                     historyVM.requestPanelKeyboard()

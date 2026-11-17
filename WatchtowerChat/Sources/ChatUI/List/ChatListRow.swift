@@ -15,15 +15,23 @@ public struct ChatListRowContent: Equatable {
 
     public let id: Int64
     public let title: String
+    /// The chat has a title of its own (`title` is otherwise `untitled`).
+    public let hasTitle: Bool
     public let detail: String
     public let dot: Dot
-    public let project: String?
-    public let age: String
+    /// The project's name while the line is not a state; an app that lists one project's chats clears it.
+    public var project: String?
+    /// The last answer's first line, whatever the state ("" before any answer).
+    public let lastLine: String
+    /// `ChatAge`'s label; an app with its own age words sets it.
+    public var age: String
     public let pinned: Bool
 
     public init(_ conversation: ChatList.Conversation, now: Date, calendar: Calendar = .current) {
         id = conversation.id
-        title = conversation.title.isEmpty ? Self.untitled : conversation.title
+        hasTitle = !conversation.title.isEmpty
+        title = hasTitle ? conversation.title : Self.untitled
+        lastLine = conversation.lastLine
         pinned = conversation.pinned
         switch conversation.state {
         case .waiting: (detail, dot) = (Self.waitingLine, .waiting)
@@ -53,15 +61,28 @@ public enum ChatAge {
     }
 }
 
-/// A conversation in the list.
+/// A conversation in the list: the app's own row when its style draws one (`ChatUIStyle.listRow`, the Mac's Chats
+/// panel), else ChatUI's.
 public struct ChatListRow: View {
     let content: ChatListRowContent
+    @Environment(\.chatUIStyle) private var style
 
     public init(content: ChatListRowContent) {
         self.content = content
     }
 
     public var body: some View {
+        Group {
+            if let row = style.listRow(content) {
+                row
+            } else {
+                standardRow
+            }
+        }
+        .accessibilityIdentifier("chat.list.row.\(content.id)")
+    }
+
+    private var standardRow: some View {
         HStack(alignment: .top, spacing: Spacing.regular) {
             dot.frame(width: IconSize.stateDot, height: IconSize.stateDot).padding(.top, Spacing.compact)
             VStack(alignment: .leading, spacing: Spacing.tight) {
@@ -88,7 +109,6 @@ public struct ChatListRow: View {
         .padding(.vertical, Spacing.small)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("chat.list.row.\(content.id)")
     }
 
     @ViewBuilder private var dot: some View {

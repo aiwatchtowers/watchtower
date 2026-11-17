@@ -94,6 +94,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(UnifiedChatShotFixtures.shots)
     }
 
+    /// The Chats panel's rows (final review I5), for the before/after comparison with the pre-umbrella row.
+    func testChatSidebarShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("chat-sidebar-") })
+    }
+
     /// Every main-chat shot (`chat-*`), for the before/after comparison of the
     /// chat's move onto the engine (#1822 T8).
     func testChatShotsRender() throws {

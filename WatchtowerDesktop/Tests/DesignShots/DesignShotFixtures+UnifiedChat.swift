@@ -53,8 +53,49 @@ enum UnifiedChatShotFixtures {
             DesignShot(name: "embedded-chat-setup", size: NSSize(width: 460, height: 460)) {
                 embedded(contextType: "setup", hint: "Describe what you want to set up", rows: setupRows, footer: true)
             },
-            DesignShot(name: "owner-ask-question-card", size: NSSize(width: 440, height: 520)) { ownerAskQuestion() }
+            DesignShot(name: "owner-ask-question-card", size: NSSize(width: 440, height: 520)) { ownerAskQuestion() },
+            DesignShot(name: "chat-sidebar-rows", size: NSSize(width: 300, height: 300)) { sidebarRows() }
         ]
+    }
+
+    // MARK: - The Chats panel's rows (final review I5)
+
+    static let sidebarNow = Date(timeIntervalSince1970: 1_800_000_000)
+
+    /// The panel's chats at All chats: the selected tab (read, in a project), unread, answering, waiting for an
+    /// approval, and an untitled chat with no answer yet.
+    static var sidebarConversations: [ChatList.Conversation] {
+        let now = sidebarNow
+        return [
+            ChatList.Conversation(id: 1, title: "Q3 roadmap summary", updatedAt: now.addingTimeInterval(-2 * 3_600),
+                                  project: ChatList.Project(id: 4, name: "Acme launch"), state: .read,
+                                  lastLine: "Here is the plan for the quarter, in three steps."),
+            ChatList.Conversation(id: 2, title: "Weekly report", updatedAt: now.addingTimeInterval(-5 * 60), state: .unread,
+                                  lastLine: "The report is ready."),
+            ChatList.Conversation(id: 3, title: "Draft the release notes", updatedAt: now, state: .answering),
+            ChatList.Conversation(id: 4, title: "Send the update to #general", updatedAt: now.addingTimeInterval(-60),
+                                  state: .waiting, lastLine: "I drafted the message."),
+            ChatList.Conversation(id: 5, title: "", updatedAt: now.addingTimeInterval(-3 * 86_400), state: .read)
+        ]
+    }
+
+    /// The rows as `ChatSidebarView.chatRow` draws them: ChatUI's list row through the Mac's style, on the tabs.
+    private static func sidebarRows() -> AnyView {
+        AnyView(HStack(spacing: 0) {
+            List {
+                ForEach(Array(sidebarConversations.enumerated()), id: \.element.id) { index, conv in
+                    HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
+                        ChatListRow(content: ChatSidebarRow.content(conv, now: sidebarNow, showsProject: true))
+                    }
+                    .panelTab(isSelected: index == 0)
+                }
+            }
+            .clearPlainList()
+            .frame(width: 260)
+            .panelSurface()
+            Color.clear.detailBackground()
+        }
+        .macChatStyle(hooks: ChatMacArtifactHooks()))
     }
 
     // MARK: - The Mac's chat on ChatUI (§10)
