@@ -55,8 +55,8 @@ final class WatchmanMockCopyTests: XCTestCase {
 
     func testSettingsCopyMatchesTheBars() {
         XCTAssertEqual(Copy.sleepValue, "00:30–07:45")
-        XCTAssertTrue(Copy.barNote.contains("80 %"))
-        XCTAssertTrue(Copy.barNote.contains("5 %"))
+        XCTAssertTrue(Copy.barNote.contains("5 % or less of its decisions bad"))
+        XCTAssertTrue(Copy.barNote.contains("none bad while sure"))
         // The eight v1 categories of spec §8.2, in order.
         XCTAssertEqual(Copy.backtestRows.map(\.category),
                        ["design", "scope", "ux_text", "tests", "review_code", "review_doc", "permission", "finish"])

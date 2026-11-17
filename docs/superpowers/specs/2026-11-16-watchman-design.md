@@ -184,12 +184,14 @@ From the timestamps of the owner's own activity on the workbench (owner turns in
 
 ## 9. Calibration — proof before action
 
-Phase 1 ships **no acting at all**: only learning and a backtest (`watchtower watchman backtest [--json]`). For each category it hides the owner's most recent 30 decisions, rebuilds retrieval without them, asks the twin, and compares:
+Phase 1 ships **no acting at all**: only learning and a backtest (`watchtower watchman backtest [--json]`). For each category it hides the owner's most recent 30 decisions, rebuilds retrieval without them, asks the twin, and grades each decision. The target is **no worse than the owner**, not the same as the owner (asks #1422, #1423): the first real backtest showed the owner takes the agent's recommended option about three times in four, and his own departures are often taste rather than error, so exact agreement measured the wrong thing.
 
-- `agree` — same option (questions, permissions, approve vs request changes); for free-text answers and review comments, a light-tier judge rates "same decision / different".
-- Per category: agreement rate, how often `high` confidence was wrong, cost per decision.
+- A strong-tier judge (`watchman.judge`) reads the situation, the owner's answer (choice and words) and the twin's (choice, reasoning, confidence) and grades the twin's decision **same** (the owner's decision), **acceptable** (a different but reasonable path given the situation — the owner could live with it) or **bad** (the owner would have had to undo or correct it: it contradicts an explicit instruction or constraint in the situation, breaks scope, is unsafe, or ignores something the situation states).
+- A fixed-option item (a question with options, a permission, a review verdict or lesson) whose choice matches exactly is `same` without a judge call; a different option goes to the judge, since it can be acceptable. A twin reply that cannot be used is `bad`.
+- An ask with several questions is graded per question; each question is one scored decision. A grade the judge leaves out is `bad`, an extra one is ignored.
+- Per category: decisions graded same / acceptable / bad, **bad while sure** (bad at `high` confidence), cost, and two informational rates — the base rate (always giving the owner's most common choice) and the recommended pick (how often the owner took the option the agent marked recommended; a decision with no recommended option counts as a miss).
 
-The bar for a category to be "strong" (Away mode decides itself) is ≥ 80 % agreement and ≤ 5 % wrong-while-high; below it the category is "weak" (Away asks the phone, Sleep decides and marks every such entry unsure). The backtest reruns weekly and after each morning's feedback batch. **Phase 1 exit (go / stop):** go to phase 2 when at least 3 categories are strong and one of them is `permission` or `review_code` (the night's most frequent items); otherwise stop and bring the numbers to the owner before any acting code is written (2026-11-10 lesson: proof before spec for shaky ideas).
+A category is "strong" (Away mode decides itself) when at most 5 % of its decisions are bad **and** none of them is bad while sure; agreement does not gate. Below it the category is "weak" (Away asks the phone, Sleep decides and marks every such entry unsure); fewer than 30 hidden decisions is not measured. The backtest reruns weekly and after each morning's feedback batch. **Phase 1 exit (go / stop):** go to phase 2 when at least 3 categories are strong and one of them is `permission`, `design` or `scope`; otherwise stop and bring the numbers to the owner before any acting code is written (2026-11-10 lesson: proof before spec for shaky ideas).
 
 ## 10. Morning journal
 
@@ -220,7 +222,7 @@ Mockups: §11a. All copy in the view model, covered by tests; colours through `T
 
 ## 11. Settings → Watchman
 
-Sleep window (learned, editable), the owner's additional hard limits, per-category profile text (view / edit / unpin), last backtest table with the 80 % / 5 % bars, **Run backtest now**.
+Sleep window (learned, editable), the owner's additional hard limits, per-category profile text (view / edit / unpin), last backtest table with the bar of §9 (≤ 5 % bad, none bad while sure), **Run backtest now**.
 
 ## 11a. Mockups
 
@@ -285,7 +287,7 @@ After implementation the real screens are rendered with the same names and compa
 | D8 | Arming is explicit; mode is computed | decided by the agent |
 | D9 | Sleep test = button or ≥ 20 min away inside the learned window | decided by the agent |
 | D10 | Hard limits as a Go table; owner can only add | decided by the agent |
-| D11 | Phase 1 is learn + backtest only; bars 80 % / 5 % | decided by the agent |
+| D11 | Phase 1 is learn + backtest only; bars 80 % / 5 % (bars superseded by D31) | decided by the agent |
 | D12 | "Correct" instead of "undo" in the journal | ask #1373 |
 | D13 | Journal as an Inbox entry + Home row | decided by the agent |
 | D14 | Keep the Mac awake while armed through the existing hub keep-awake `Hold` (own reason) | decided by the agent (spec review) |
@@ -299,12 +301,14 @@ After implementation the real screens are rendered with the same names and compa
 | D22 | Contract changes PROJ-13/14/21, SPECREVIEW, REVIEW approved | ask #1373 |
 | D23 | Mode computed in Go only from `platform.Away` + presence + sleep request + window; nothing stored | decided by the agent (spec review) |
 | D24 | No per-night budget that stops work; cost shown, provider limits are the brake | decided by the agent (spec review) |
-| D25 | Phase 1 go/stop: ≥ 3 strong categories incl. `permission` or `review_code` | decided by the agent (spec review) |
+| D25 | Phase 1 go/stop: ≥ 3 strong categories incl. `permission` or `review_code` (superseded by D32) | decided by the agent (spec review) |
 | D26 | Correct… on an ended session starts a new, unarmed session with the correction | decided by the agent (spec review) |
 | D27 | Sleep window = medians of the longest nightly activity gap over 28 days; < 7 days → button only | decided by the agent (spec review) |
 | D28 | Mockups in the spec as DesignShots (§11a) | workbench rule |
 | D29 | The twin's spec verdict writes its marks in Go (`specreview.AnswerMarks`, dual path with `SpecReviewAnswer`) | decided by the agent (spec review) |
 | D30 | Worktree-only `core.hooksPath` to a directory proxying every git hook to the previous path; `pre-push` adds the armed check | decided by the agent (spec review) |
+| D31 | The backtest measures "no worse than the owner": a strong-tier judge grades each decision same / acceptable / bad (per question for multi-question asks); strong = ≤ 5 % bad and none bad while sure; agreement and the base rates are reported, not gated. Why: the first real backtest stopped on low agreement while the owner takes the recommended option about three times in four and his departures are often taste | ask #1423 |
+| D32 | Phase 1 go/stop: ≥ 3 strong categories incl. `permission`, `design` or `scope` | ask #1422 |
 
 ## 15. Left to the builder
 

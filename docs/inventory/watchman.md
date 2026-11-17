@@ -9,7 +9,7 @@
 > proposed change that would break a guard test or remove a contract must be
 > raised as a question before touching code.
 
-**Module:** `internal/watchman/` + `internal/db/watchman.go` + `internal/db/watchman_learn.go` + `internal/db/watchman_profile.go` + `internal/db/watchman_keys.go` + `internal/db/migrations/00194_watchman.sql` + `00195_watchman_skipped_keys.sql` + `internal/daemon/watchman.go` + `cmd/watchman*.go`
+**Module:** `internal/watchman/` + `internal/db/watchman.go` + `internal/db/watchman_learn.go` + `internal/db/watchman_profile.go` + `internal/db/watchman_keys.go` + `internal/db/migrations/00194_watchman.sql` + `00195_watchman_skipped_keys.sql` + `00196_watchman_judge_grades.sql` + `internal/daemon/watchman.go` + `cmd/watchman*.go`
 **Last full audit:** 2026-11-16 (created, phase 1)
 **Owner approval:** spec `docs/superpowers/specs/2026-11-16-watchman-design.md` (ask #1385); feature note `docs/features/watchman.md`.
 
@@ -48,3 +48,4 @@ WATCHMAN-01, -02, -04 and -05 of the spec arrive with phase 2; this file holds t
 
 - 2026-11-16 (phase 1, board #1823): file created with WATCHMAN-03 and WATCHMAN-06 (new, beyond the spec's five).
 - 2026-11-16 (final review fixes): WATCHMAN-03 tightened — git commits count only for the folder's `user.email`, automation-started sessions leave the turn source; guards added.
+- 2026-11-17 (Task 12, asks #1422/#1423): the backtest's metric changed (judge grades, strong = ≤ 5 % bad and none bad while sure, go needs `permission`, `design` or `scope`); WATCHMAN-03 and WATCHMAN-06 unchanged.

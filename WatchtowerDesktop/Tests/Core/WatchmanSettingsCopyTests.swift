@@ -20,7 +20,7 @@ final class WatchmanSettingsCopyTests: XCTestCase {
         XCTAssertEqual(Copy.sleepNotLearned, "Not learned yet: Watchman needs a week of your activity.")
         XCTAssertEqual(Copy.backtestTitle, "Backtest")
         XCTAssertEqual([Copy.columnCategory, Copy.columnAgreement, Copy.columnWrongHigh, Copy.columnRating],
-                       ["Category", "Agreement", "Wrong while sure", "Rating"])
+                       ["Category", "Agreement", "Bad while sure", "Rating"])
         XCTAssertEqual([Copy.strong, Copy.weak, Copy.notMeasured], ["Strong", "Weak", "Not measured"])
         XCTAssertEqual([Copy.runBacktest, Copy.runningButton], ["Run Backtest Now", "Running…"])
         XCTAssertTrue(Copy.neverRun.hasPrefix("Watchman hasn't checked itself yet."))
@@ -29,10 +29,11 @@ final class WatchmanSettingsCopyTests: XCTestCase {
                        ["design", "scope", "ux_text", "tests", "review_code", "review_doc", "permission", "finish"])
     }
 
-    /// The bars of spec §8.2: 80 % / 5 %, under 30 decisions not measured.
+    /// The bar of spec §9 (ask #1423): at most 5 % bad, none bad while sure;
+    /// under 30 decisions not measured.
     func testBarNoteNamesTheBars() {
-        XCTAssertEqual(Copy.barNote, "Strong: 80 % agreement or more, 5 % or less wrong while sure, and above the base rate "
-            + "(always giving your most common answer). "
+        XCTAssertEqual(Copy.barNote, "Strong: 5 % or less of its decisions bad (ones you would have had to undo) "
+            + "and none bad while sure; a different but reasonable decision does not count against it. "
             + "Below that Watchman marks every night decision unsure. Under 30 decisions: not measured.")
     }
 

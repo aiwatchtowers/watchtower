@@ -207,22 +207,23 @@ enum WatchmanMockCopy {
         + "decided again by Watchman."
     static let columnCategory = "Category"
     static let columnAgreement = "Agreement"
-    static let columnWrongHigh = "Wrong while sure"
+    static let columnWrongHigh = "Bad while sure"
     static let columnRating = "Rating"
     static let strong = "Strong"
     static let weak = "Weak"
     static let notMeasured = "Not measured"
     static let backtestRows: [BacktestRow] = [
-        BacktestRow(category: "design", agreement: "84 %", wrongHigh: "3 %", rating: strong),
-        BacktestRow(category: "scope", agreement: "81 %", wrongHigh: "4 %", rating: strong),
+        BacktestRow(category: "design", agreement: "84 %", wrongHigh: "0 %", rating: strong),
+        BacktestRow(category: "scope", agreement: "81 %", wrongHigh: "0 %", rating: strong),
         BacktestRow(category: "ux_text", agreement: "61 %", wrongHigh: "9 %", rating: weak),
-        BacktestRow(category: "tests", agreement: "88 %", wrongHigh: "2 %", rating: strong),
+        BacktestRow(category: "tests", agreement: "88 %", wrongHigh: "0 %", rating: strong),
         BacktestRow(category: "review_code", agreement: "79 %", wrongHigh: "6 %", rating: weak),
-        BacktestRow(category: "review_doc", agreement: "83 %", wrongHigh: "4 %", rating: strong),
+        BacktestRow(category: "review_doc", agreement: "83 %", wrongHigh: "0 %", rating: strong),
         BacktestRow(category: "permission", agreement: "96 %", wrongHigh: "0 %", rating: strong),
         BacktestRow(category: "finish", agreement: "—", wrongHigh: "—", rating: notMeasured)
     ]
-    static let barNote = "Strong: 80 % agreement or more and 5 % or less wrong while sure. "
+    static let barNote = "Strong: 5 % or less of its decisions bad (ones you would have had to undo) "
+        + "and none bad while sure; a different but reasonable decision does not count against it. "
         + "Below that Watchman marks every night decision unsure. Under 30 decisions: not measured."
     static let analyticsOffNote = "Agent analytics is off on acme-web, so your typed corrections there are not used."
     static let runBacktest = "Run Backtest Now"

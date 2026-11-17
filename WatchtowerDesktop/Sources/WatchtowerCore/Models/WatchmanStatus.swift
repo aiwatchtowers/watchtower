@@ -135,32 +135,53 @@ package struct WatchmanBacktest: Decodable, Equatable, Sendable {
     package var isFailed: Bool { status == "failed" || status == "interrupted" }
 }
 
+/// One category's backtest row: `total` scored decisions the judge graded
+/// same (`agree`), `acceptable` or `bad`; strong = at most 5 % bad and none
+/// bad while sure (ask #1423).
 package struct WatchmanBacktestCategory: Decodable, Equatable, Sendable {
     package let category: String
     package let total: Int
     package let agree: Int
+    package let acceptable: Int
+    package let bad: Int
+    /// Bad decisions taken while the twin's confidence was high.
     package let wrongHigh: Int
     package let costUSD: Double
     /// The share of the hidden decisions that always giving the owner's most
-    /// common choice would get right; strong needs an agreement above it.
+    /// common choice would get right (informational).
     package let baseline: Double
+    /// The share of the decisions where the owner picked the option the agent
+    /// recommended (informational).
+    package let recBaseline: Double
     /// `strong`, `weak` or `not_measured`.
     package let status: String
 
     enum CodingKeys: String, CodingKey {
-        case category, total, agree, status, baseline
-        case wrongHigh = "wrong_high", costUSD = "cost_usd"
+        case category, total, agree, acceptable, bad, status, baseline
+        case wrongHigh = "wrong_high", costUSD = "cost_usd", recBaseline = "rec_baseline"
     }
 
     package init(
-        category: String, total: Int, agree: Int, wrongHigh: Int, costUSD: Double, baseline: Double = 0, status: String
+        category: String,
+        total: Int,
+        agree: Int,
+        acceptable: Int = 0,
+        bad: Int = 0,
+        wrongHigh: Int,
+        costUSD: Double,
+        baseline: Double = 0,
+        recBaseline: Double = 0,
+        status: String
     ) {
         self.category = category
         self.total = total
         self.agree = agree
+        self.acceptable = acceptable
+        self.bad = bad
         self.wrongHigh = wrongHigh
         self.costUSD = costUSD
         self.baseline = baseline
+        self.recBaseline = recBaseline
         self.status = status
     }
 
@@ -169,9 +190,12 @@ package struct WatchmanBacktestCategory: Decodable, Equatable, Sendable {
         category = try container.decode(String.self, forKey: .category)
         total = try container.decode(Int.self, forKey: .total)
         agree = try container.decode(Int.self, forKey: .agree)
+        acceptable = try container.decodeIfPresent(Int.self, forKey: .acceptable) ?? 0
+        bad = try container.decodeIfPresent(Int.self, forKey: .bad) ?? 0
         wrongHigh = try container.decode(Int.self, forKey: .wrongHigh)
         costUSD = try container.decodeIfPresent(Double.self, forKey: .costUSD) ?? 0
         baseline = try container.decodeIfPresent(Double.self, forKey: .baseline) ?? 0
+        recBaseline = try container.decodeIfPresent(Double.self, forKey: .recBaseline) ?? 0
         status = try container.decode(String.self, forKey: .status)
     }
 }

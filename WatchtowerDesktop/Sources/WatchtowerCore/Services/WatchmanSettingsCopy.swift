@@ -71,14 +71,14 @@ package enum WatchmanSettingsCopy {
     package static let backtestTitle = "Backtest"
     package static let columnCategory = "Category"
     package static let columnAgreement = "Agreement"
-    package static let columnWrongHigh = "Wrong while sure"
+    package static let columnWrongHigh = "Bad while sure"
     package static let columnRating = "Rating"
     package static let strong = "Strong"
     package static let weak = "Weak"
     package static let notMeasured = "Not measured"
     package static let noValue = "—"
-    package static let barNote = "Strong: 80 % agreement or more, 5 % or less wrong while sure, and above the base rate "
-        + "(always giving your most common answer). "
+    package static let barNote = "Strong: 5 % or less of its decisions bad (ones you would have had to undo) "
+        + "and none bad while sure; a different but reasonable decision does not count against it. "
         + "Below that Watchman marks every night decision unsure. Under 30 decisions: not measured."
     package static let runBacktest = "Run Backtest Now"
     package static let runningButton = "Running…"
@@ -148,8 +148,8 @@ package enum WatchmanSettingsCopy {
     }
 
     /// "base rate 67 %" under a measured category: what always giving the
-    /// owner's most common answer would score (strong must beat it); nil
-    /// when the category is not measured.
+    /// owner's most common answer would score (informational); nil when the
+    /// category is not measured.
     package static func baseRate(_ row: WatchmanBacktestCategory) -> String? {
         measured(row) ? "base rate \(Int((row.baseline * 100).rounded())) %" : nil
     }

@@ -23,13 +23,13 @@ Each decision is filed under one of eight categories: design, scope, UX text, te
 
 Once a week the daemon turns each category's recent decisions into a short list of rules and works out your sleep window, the usual quiet stretch between 20:00 and 12:00 from your activity in the last 28 days (it needs seven active days).
 
-The backtest hides your 30 newest decisions of a category, rebuilds the rules from what came before, lets the stand-in decide each one using only older decisions, and compares. Review outcomes, undone hunks, merges and your rewrites are not tested yet, so code review is measured on your review comments only. Each category ends as one of three:
+The backtest hides your 30 newest decisions of a category, rebuilds the rules from what came before, lets the stand-in decide each one using only older decisions, and has a strong AI model grade each answer next to yours: the same as yours, acceptable (a different path you could live with) or bad (you would have had to undo it). An ask with several questions is graded per question. Review outcomes, undone hunks, merges and your rewrites are not tested yet, so code review is measured on your review comments only. Each category ends as one of three:
 
-- **Strong**: it matched you at least 80 % of the time, when it was sure ("high" confidence) it was wrong at most 5 % of the time, and it beat the base rate: how often always giving your most common answer would have matched.
-- **Weak**: it was measured and missed either bar.
+- **Strong**: at most 5 % of its decisions are bad, and none of the bad ones was taken while it was sure ("high" confidence). Matching you exactly is not required.
+- **Weak**: it was measured and missed that bar.
 - **Not measured**: fewer than 30 decisions, so no verdict is given and no model is called.
 
-The overall verdict is **go** when at least three categories are strong and one of them is permission or code review, otherwise **stop**. Go only means a later version may be planned. Nothing acts yet.
+The overall verdict is **go** when at least three categories are strong and one of them is permission, design or scope, otherwise **stop**. Go only means a later version may be planned. Nothing acts yet.
 
 ## Using it
 
