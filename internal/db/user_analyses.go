@@ -474,7 +474,7 @@ func (db *DB) ComputeAllUserStats(from, to float64, minMessages int, owners map[
 			SELECT m.user_id, COUNT(*) FROM messages m
 			JOIN users u ON u.id = m.user_id
 			JOIN channels c ON c.id = m.channel_id
-			WHERE m.ts_unix >= ? AND m.ts_unix <= ?
+			WHERE m.ts_unix >= ? AND m.ts_unix < ?
 				AND m.user_id != '' AND u.is_bot = 0 AND u.is_deleted = 0
 				AND c.type NOT IN ('dm', 'group_dm')
 			GROUP BY m.user_id`, prevFrom, prevTo)

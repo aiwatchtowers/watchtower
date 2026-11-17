@@ -694,41 +694,36 @@ func TestPeopleExclude_DuringRunWritesNoCard(t *testing.T) {
 	pipe := New(database, cfg, gen, testLogger())
 	pipe.ForceRegenerate = true
 
-	_, err := pipe.RunForWindow(context.Background(), from, to)
+	n, err := pipe.RunForWindow(context.Background(), from, to)
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), gen.calls.Load())
+	assert.Equal(t, 0, n, "a skipped person is not a generated card")
+	assert.Equal(t, OutcomeNoData, pipe.LastOutcome(), "nothing made: not a success to stamp")
 	card, err := database.GetLatestPeopleCard("1:U1")
 	require.NoError(t, err)
 	assert.Nil(t, card)
 }
 
-// TestPeopleCards_RunPrunesNonPartnerCards: a card made before the upgrade
-// for someone the owner does not work with goes on the next run; the owned
-// account's partners keep theirs, another account is not touched.
-func TestPeopleCards_RunPrunesNonPartnerCards(t *testing.T) {
+// TestPeopleExclude_DuringRunCountsOnlyWrittenCards: of two people, one is
+// excluded mid-run → the run reports one card, generated, and no failure.
+func TestPeopleExclude_DuringRunCountsOnlyWrittenCards(t *testing.T) {
 	database := testDB(t)
-	from, to := (&Pipeline{}).currentWindow()
-	seedOutcomeUser(t, database, from)
-	seedOutcomeSituation(t, database, from, to)
-	for _, id := range []string{"1:UREADONLY", "2:UOTHER"} {
-		seedUser(t, database, id, id)
-		_, err := database.UpsertPeopleCard(db.PeopleCard{UserID: id, PeriodFrom: from - 7*86400, PeriodTo: from, Summary: "old"})
-		require.NoError(t, err)
-	}
+	from, to := seedLowDataUsers(t, database)
 	cfg := testConfig()
 	cfg.AI.Workers = 1
-	pipe := New(database, cfg, &mockGenerator{response: outcomeBatchReply}, testLogger())
+	gen := &excludingGenerator{
+		mockGenerator: mockGenerator{response: batchCardJSON("1:U1", "1:U2")},
+		database:      database, userID: "1:U2",
+	}
+	pipe := New(database, cfg, gen, testLogger())
 	pipe.ForceRegenerate = true
 
-	_, err := pipe.RunForWindow(context.Background(), from, to)
+	n, err := pipe.RunForWindow(context.Background(), from, to)
 	require.NoError(t, err)
-	gone, err := database.GetLatestPeopleCard("1:UREADONLY")
+	assert.Equal(t, 1, n)
+	assert.Equal(t, OutcomeGenerated, pipe.LastOutcome())
+	assert.Equal(t, "active", cardStatus(t, database, "1:U1"))
+	card, err := database.GetLatestPeopleCard("1:U2")
 	require.NoError(t, err)
-	assert.Nil(t, gone)
-	other, err := database.GetLatestPeopleCard("2:UOTHER")
-	require.NoError(t, err)
-	assert.NotNil(t, other, "account 2 has no owner here and is not touched")
-	kept, err := database.GetLatestPeopleCard("1:U1")
-	require.NoError(t, err)
-	assert.NotNil(t, kept)
+	assert.Nil(t, card)
 }

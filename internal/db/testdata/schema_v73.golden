@@ -3091,7 +3091,7 @@ error TEXT NOT NULL DEFAULT '',
 enabled INTEGER NOT NULL DEFAULT 1,
 search_last_date TEXT NOT NULL DEFAULT '',
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at TEXT NOT NULL DEFAULT '', first_cycle_at TEXT NOT NULL DEFAULT '', emoji_scope_missing INTEGER NOT NULL DEFAULT 0)
+, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at TEXT NOT NULL DEFAULT '', first_cycle_at TEXT NOT NULL DEFAULT '', emoji_scope_missing INTEGER NOT NULL DEFAULT 0, people_prune_done_at TEXT NOT NULL DEFAULT '')
 
 table	slack_live_status
 CREATE TABLE slack_live_status (
@@ -6439,6 +6439,7 @@ GROUP BY up.ancestor
 16	revoked_at	TEXT	notnull=1	dflt=''	pk=0
 17	first_cycle_at	TEXT	notnull=1	dflt=''	pk=0
 18	emoji_scope_missing	INTEGER	notnull=1	dflt=0	pk=0
+19	people_prune_done_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## slack_live_status
 0	team_id	TEXT	notnull=1	dflt=NULL	pk=1

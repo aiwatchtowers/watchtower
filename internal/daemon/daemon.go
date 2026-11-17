@@ -171,20 +171,23 @@ type Daemon struct {
 	// (lastBriefing, the briefing/day-plan attempt counters, lastDayPlanDate,
 	// briefNoDataAt, mbOwner, mbNow): a primitive runs on the script's
 	// goroutine, which can outlive the slot when the executor abandons it.
-	mbMu                gosync.Mutex
-	briefNoDataAt       time.Time       // when a sync brief last found no data (the no-data backoff)
-	builtinsSwept       bool            // sweepBuiltinRuns succeeded this process
-	builtins            *builtin.Runner // the built-ins' slot runner (SetBuiltins); nil = legacy phases
-	builtinActive       map[string]bool // by built-in id: false = its producers run as legacy phases
-	mbOwner             db.Owner        // phaseMorningBrief's owner for this cycle (day-plan gate)
-	mbNow               time.Time       // phaseMorningBrief's clock while its slot runs; zero = time.Now
-	lastJira            time.Time
-	linearSyncers       []linearAccountSyncer
-	purgeHold           map[purgeKey]bool // accounts purged or being purged; refreshed by phaseAccountPurge, read by the sync phases
-	policySkipMu        gosync.Mutex
-	policySkipping      map[string]bool // sources the last check found forbidden by policy (sourceAllowed); logs once per change
-	lastLinear          time.Time
-	lastPeople          time.Time // when people cards last ran (once per day)
+	mbMu           gosync.Mutex
+	briefNoDataAt  time.Time       // when a sync brief last found no data (the no-data backoff)
+	builtinsSwept  bool            // sweepBuiltinRuns succeeded this process
+	builtins       *builtin.Runner // the built-ins' slot runner (SetBuiltins); nil = legacy phases
+	builtinActive  map[string]bool // by built-in id: false = its producers run as legacy phases
+	mbOwner        db.Owner        // phaseMorningBrief's owner for this cycle (day-plan gate)
+	mbNow          time.Time       // phaseMorningBrief's clock while its slot runs; zero = time.Now
+	lastJira       time.Time
+	linearSyncers  []linearAccountSyncer
+	purgeHold      map[purgeKey]bool // accounts purged or being purged; refreshed by phaseAccountPurge, read by the sync phases
+	policySkipMu   gosync.Mutex
+	policySkipping map[string]bool // sources the last check found forbidden by policy (sourceAllowed); logs once per change
+	lastLinear     time.Time
+	lastPeople     time.Time // when people cards last ran (once per day)
+	// peoplePruneDone memoizes a finished one-time people card prune
+	// (db.PrunePreUpgradePeopleCards) for this process.
+	peoplePruneDone     bool
 	lastBriefing        time.Time // when briefing last ran (once per day)
 	lastIdeas           time.Time // when the ideas registry last ran (throttled by ideas.mine_interval_hours); ideasMu
 	lastCoach           time.Time // when the agent coach last ran (weekly, no catch-up)
@@ -1853,6 +1856,26 @@ func (d *Daemon) runRollupPhase(ctx context.Context, now time.Time) {
 	}
 }
 
+// prunePreUpgradePeopleCards runs the one-time pass deleting people cards of
+// non-partners until it reports done (accounts without a known owner keep it
+// pending, so it retries each cycle; done accounts are skipped by the DB).
+func (d *Daemon) prunePreUpgradePeopleCards(ctx context.Context) {
+	if d.db == nil || d.peoplePruneDone {
+		return
+	}
+	n, done, err := d.db.PrunePreUpgradePeopleCards(ctx)
+	if n > 0 {
+		d.logger.Printf("people: removed %d card(s) of people not worked with directly", n)
+	}
+	if err != nil {
+		if !isBenignShutdownErr(ctx, err) {
+			d.logger.Printf("people: pruning cards of non-partners: %v", err)
+		}
+		return
+	}
+	d.peoplePruneDone = done
+}
+
 // phasePeopleCards (group B) generates per-user people cards from people_signals
 // produced by phaseChannelDigests. Throttled to once per 24h; a cycle with no
 // data yet (no active users or no situations, the fresh-install first cycle)
@@ -1864,6 +1887,9 @@ func (d *Daemon) runRollupPhase(ctx context.Context, now time.Time) {
 // throttle window instead of skipping outright. Dual path with the Desktop's
 // readiness "Needs Slack Digests" (ReadinessFeature.runsOnlyWithDigests, #575).
 func (d *Daemon) phasePeopleCards(ctx context.Context) {
+	// The one-time upgrade prune runs whatever the generation gates say:
+	// stored cards of non-partners must go even when no card is made (A13).
+	d.prunePreUpgradePeopleCards(ctx)
 	if !d.config.People.Enabled || !d.config.Digest.Enabled {
 		return
 	}

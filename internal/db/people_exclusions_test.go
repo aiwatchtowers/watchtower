@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -275,17 +276,19 @@ func TestUpsertPeopleCard_RefusesExcluded(t *testing.T) {
 	assert.Equal(t, 0, count(t, d, `SELECT COUNT(*) FROM people_cards`))
 }
 
-// TestPruneNonPartnerPeopleCards: each card is checked against its own
+// TestPrunePreUpgradePeopleCards: each card is checked against its own
 // window. A partner in week 1 who is silent in week 2 keeps the week-1 card;
 // a non-partner's (pre-upgrade) card in its own window goes; the owner's
-// cards, a later window than the pruned bound and other accounts stay.
-func TestPruneNonPartnerPeopleCards(t *testing.T) {
+// cards stay; an account without a known owner is untouched and stays
+// pending; a done account is never checked again.
+func TestPrunePreUpgradePeopleCards(t *testing.T) {
 	d := openTestDB(t)
 	f := &peopleFixture{t: t, d: d}
+	mustExecAll(t, d, `INSERT INTO slack_accounts (id, current_user_id) VALUES (1, '1:UOWN'), (2, '')`)
 	f.users("1:UOWN", "1:UP1", "1:UGONE", "2:UX")
 	f.channel("1:CGEN", "public")
 	f.post("1:CGEN", "1:UP1", "hi <@UOWN>", "") // week 1 only
-	week1, week2, week3 := [2]float64{1000000, 2000000}, [2]float64{2000000, 3000000}, [2]float64{3000000, 4000000}
+	week1, week2 := [2]float64{1000000, 2000000}, [2]float64{2000000, 3000000}
 	card := func(id string, w [2]float64) {
 		_, err := d.UpsertPeopleCard(PeopleCard{UserID: id, PeriodFrom: w[0], PeriodTo: w[1], Summary: "s"})
 		require.NoError(t, err)
@@ -294,19 +297,86 @@ func TestPruneNonPartnerPeopleCards(t *testing.T) {
 	card("1:UOWN", week2)
 	card("1:UP1", week1)
 	card("1:UGONE", week1)
-	card("1:UGONE", week3) // after the bound: not checked
+	card("1:UGONE", week2)
 	card("2:UX", week1)
-
-	n, err := d.PruneNonPartnerPeopleCards(week2[1], map[int64]string{1: "1:UOWN"})
-	require.NoError(t, err)
-	assert.Equal(t, int64(1), n)
 	has := func(id string, w [2]float64) bool {
 		return count(t, d, `SELECT COUNT(*) FROM people_cards WHERE user_id = ? AND period_from = ? AND period_to = ?`, id, w[0], w[1]) == 1
 	}
+
+	n, done, err := d.PrunePreUpgradePeopleCards(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), n)
+	assert.False(t, done, "account 2 has no owner yet")
 	assert.True(t, has("1:UP1", week1), "a week-1 partner keeps the week-1 card although silent in week 2")
 	assert.False(t, has("1:UGONE", week1), "a non-partner's card in its own window goes")
-	assert.True(t, has("1:UGONE", week3), "a window after the bound is not checked")
+	assert.False(t, has("1:UGONE", week2))
 	assert.True(t, has("1:UOWN", week1))
 	assert.True(t, has("1:UOWN", week2))
-	assert.True(t, has("2:UX", week1), "another account is not touched")
+	assert.True(t, has("2:UX", week1), "an account without an owner is not touched")
+	assert.NotEmpty(t, prunedAt(t, d, 1))
+	assert.Empty(t, prunedAt(t, d, 2))
+
+	// Account 1 is done: a card added later is not re-checked.
+	card("1:UGONE", week1)
+	n, done, err = d.PrunePreUpgradePeopleCards(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), n)
+	assert.False(t, done)
+	assert.True(t, has("1:UGONE", week1), "a done account is never pruned again")
+
+	// The owner of account 2 becomes known: its pass runs, then all is done.
+	mustExecAll(t, d, `UPDATE slack_accounts SET current_user_id = '2:UME' WHERE id = 2`)
+	n, done, err = d.PrunePreUpgradePeopleCards(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n)
+	assert.True(t, done)
+	assert.False(t, has("2:UX", week1))
+	n, done, err = d.PrunePreUpgradePeopleCards(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), n)
+	assert.True(t, done)
+}
+
+// TestPrunePreUpgradePeopleCards_InterruptedResumes: a pass stopped after
+// its first window (a crash leaves no marker) or by a cancelled context
+// resumes on the next call and ends where an uninterrupted pass would.
+func TestPrunePreUpgradePeopleCards_InterruptedResumes(t *testing.T) {
+	d := openTestDB(t)
+	mustExecAll(t, d, `INSERT INTO slack_accounts (id, current_user_id) VALUES (1, '1:UOWN')`)
+	for _, w := range [][2]float64{{1000000, 2000000}, {2000000, 3000000}} {
+		for _, id := range []string{"1:UOWN", "1:UGONE"} {
+			_, err := d.UpsertPeopleCard(PeopleCard{UserID: id, PeriodFrom: w[0], PeriodTo: w[1], Summary: "s"})
+			require.NoError(t, err)
+		}
+	}
+
+	// A crash after the first window: that window is pruned, no marker.
+	lo, hi := prefixRange("1:")
+	n, err := d.pruneCardWindow(1, "1:UOWN", lo, hi, [2]float64{1000000, 2000000})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), n)
+	assert.Empty(t, prunedAt(t, d, 1))
+
+	// A cancelled context stops before any window and leaves no marker.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, done, err := d.PrunePreUpgradePeopleCards(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.False(t, done)
+	assert.Empty(t, prunedAt(t, d, 1))
+
+	n, done, err = d.PrunePreUpgradePeopleCards(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n, "only the window the crash did not reach")
+	assert.True(t, done)
+	assert.NotEmpty(t, prunedAt(t, d, 1))
+	assert.Equal(t, 0, count(t, d, `SELECT COUNT(*) FROM people_cards WHERE user_id = '1:UGONE'`))
+	assert.Equal(t, 2, count(t, d, `SELECT COUNT(*) FROM people_cards WHERE user_id = '1:UOWN'`))
+}
+
+func prunedAt(t *testing.T, d *DB, acct int64) string {
+	t.Helper()
+	var at string
+	require.NoError(t, d.QueryRow(`SELECT people_prune_done_at FROM slack_accounts WHERE id = ?`, acct).Scan(&at))
+	return at
 }

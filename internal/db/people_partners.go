@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -119,52 +120,117 @@ func (db *DB) PeopleCardCandidates(from, to float64, owners map[int64]string) (m
 	return out, nil
 }
 
-// PruneNonPartnerPeopleCards deletes, in each account of owners, every card
-// of a window ending at or before to whose person was neither the owner nor
-// an interaction partner of the owner in that card's own window (A13): the
-// cards made before the upgrade for everyone with enough messages. A card
-// whose own window passes the check stays, so a partner who was quiet later
-// keeps their earlier cards. Each distinct stored window is checked with the
-// window-bounded partner query. Accounts outside owners are not touched.
-// Returns the number of cards deleted.
-func (db *DB) PruneNonPartnerPeopleCards(to float64, owners map[int64]string) (int64, error) {
-	var total int64
-	for acct, owner := range owners {
-		lo, hi := prefixRange(strconv.FormatInt(acct, 10) + ":")
-		windows, err := db.peopleCardWindows(lo, hi, to)
+// PrunePreUpgradePeopleCards is the one-time upgrade pass of A13: in every
+// live Slack account whose pass is not done yet and whose owner is known, it
+// deletes each card whose person was neither the owner nor an interaction
+// partner of the owner in that card's own window — the cards made before the
+// upgrade for everyone with enough messages. A card whose own window passes
+// the check stays. When an account's windows are all checked, its
+// people_prune_done_at is stamped and the account is never checked again
+// (new cards are limited to partners by ComputeAllUserStats). An account
+// without a known owner stays pending. The pass is idempotent: one
+// interrupted (ctx, a crash) resumes from the start of the account on the
+// next call. done reports that no live account is pending any more.
+func (db *DB) PrunePreUpgradePeopleCards(ctx context.Context) (pruned int64, done bool, err error) {
+	pending, err := db.peoplePrunePending()
+	if err != nil || len(pending) == 0 {
+		return 0, err == nil, err
+	}
+	owners, err := db.SlackOwnersByAccount()
+	if err != nil {
+		return 0, false, err
+	}
+	done = true
+	for _, acct := range pending {
+		owner, ok := owners[acct]
+		if !ok {
+			done = false
+			continue
+		}
+		n, err := db.pruneAccountPeopleCards(ctx, acct, owner)
+		pruned += n
 		if err != nil {
+			return pruned, false, err
+		}
+		if _, err := db.Exec(`UPDATE slack_accounts SET people_prune_done_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`, acct); err != nil {
+			return pruned, false, fmt.Errorf("marking people prune done for account %d: %w", acct, err)
+		}
+	}
+	return pruned, done, nil
+}
+
+// peoplePrunePending lists the live Slack accounts whose one-time people
+// card pass has not finished.
+func (db *DB) peoplePrunePending() ([]int64, error) {
+	rows, err := db.Query(`SELECT id FROM slack_accounts
+		WHERE people_prune_done_at = '' AND status NOT IN ('removed', 'purged') ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("listing pending people prune accounts: %w", err)
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning pending people prune account: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// pruneAccountPeopleCards checks every stored card window of one account
+// with the window-bounded partner query and deletes the window's cards of
+// non-partners. It stops between windows when ctx is done.
+func (db *DB) pruneAccountPeopleCards(ctx context.Context, acct int64, owner string) (int64, error) {
+	lo, hi := prefixRange(strconv.FormatInt(acct, 10) + ":")
+	windows, err := db.peopleCardWindows(lo, hi)
+	if err != nil {
+		return 0, err
+	}
+	var total int64
+	for _, w := range windows {
+		if err := ctx.Err(); err != nil {
 			return total, err
 		}
-		for _, w := range windows {
-			partners, err := db.InteractionPartners(acct, owner, w[0], w[1])
-			if err != nil {
-				return total, err
-			}
-			keepJSON, err := json.Marshal(append(partners, owner))
-			if err != nil {
-				return total, fmt.Errorf("encoding card candidates: %w", err)
-			}
-			res, err := db.Exec(`DELETE FROM people_cards
-				WHERE user_id >= ? AND user_id < ? AND period_from = ? AND period_to = ?
-					AND user_id NOT IN (SELECT value FROM json_each(?))`, lo, hi, w[0], w[1], string(keepJSON))
-			if err != nil {
-				return total, fmt.Errorf("pruning people cards of account %d: %w", acct, err)
-			}
-			n, err := res.RowsAffected()
-			if err != nil {
-				return total, fmt.Errorf("pruning people cards of account %d: %w", acct, err)
-			}
-			total += n
+		n, err := db.pruneCardWindow(acct, owner, lo, hi, w)
+		total += n
+		if err != nil {
+			return total, err
 		}
 	}
 	return total, nil
 }
 
+// pruneCardWindow deletes one stored window's cards, in the namespace
+// [lo, hi), of people who were neither the owner nor a partner in it.
+func (db *DB) pruneCardWindow(acct int64, owner, lo, hi string, w [2]float64) (int64, error) {
+	partners, err := db.InteractionPartners(acct, owner, w[0], w[1])
+	if err != nil {
+		return 0, err
+	}
+	keepJSON, err := json.Marshal(append(partners, owner))
+	if err != nil {
+		return 0, fmt.Errorf("encoding card candidates: %w", err)
+	}
+	res, err := db.Exec(`DELETE FROM people_cards
+		WHERE user_id >= ? AND user_id < ? AND period_from = ? AND period_to = ?
+			AND user_id NOT IN (SELECT value FROM json_each(?))`, lo, hi, w[0], w[1], string(keepJSON))
+	if err != nil {
+		return 0, fmt.Errorf("pruning people cards of account %d: %w", acct, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("pruning people cards of account %d: %w", acct, err)
+	}
+	return n, nil
+}
+
 // peopleCardWindows lists the distinct [period_from, period_to) windows of
-// the cards in the namespace [lo, hi) that end at or before to.
-func (db *DB) peopleCardWindows(lo, hi string, to float64) ([][2]float64, error) {
+// the cards in the namespace [lo, hi).
+func (db *DB) peopleCardWindows(lo, hi string) ([][2]float64, error) {
 	rows, err := db.Query(`SELECT DISTINCT period_from, period_to FROM people_cards
-		WHERE user_id >= ? AND user_id < ? AND period_to <= ? ORDER BY period_from`, lo, hi, to)
+		WHERE user_id >= ? AND user_id < ? ORDER BY period_from`, lo, hi)
 	if err != nil {
 		return nil, fmt.Errorf("listing people card windows: %w", err)
 	}

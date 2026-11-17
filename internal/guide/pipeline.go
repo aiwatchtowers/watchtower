@@ -301,16 +301,6 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 		p.lastOutcome = OutcomeNoOwner
 		return 0, nil
 	}
-	// Cards whose person was not a partner of the owner in the card's own
-	// window go, in the owned accounts only: the pre-upgrade cards made for
-	// everyone (A13).
-	pruned, err := p.db.PruneNonPartnerPeopleCards(to, owners)
-	if err != nil {
-		return 0, err
-	}
-	if pruned > 0 {
-		p.logger.Printf("people: removed %d card(s) of people not worked with directly", pruned)
-	}
 	if len(allStats) == 0 {
 		p.progress(0, 0, "No active users with enough messages")
 		p.logger.Println("people: no active users with enough messages")
@@ -394,6 +384,9 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 	// card fell back (batch error, user missing from the reply, store error) —
 	// so a run in which the AI produced nothing is not reported as a success.
 	var aiCards, aiFailures int
+	// skipped counts people excluded mid-run: no card, not a failure, and not
+	// counted as completed.
+	var skipped int
 	var materialErr error
 
 	// Phase 1: Batch processing for low-data users (fast, cheap).
@@ -416,7 +409,10 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 				aiFailures += len(batch)
 				materialErr = errors.Join(materialErr, err)
 				for _, entry := range batch {
-					if ferr := p.createInsufficientCard(entry.stats, from, to); ferr != nil {
+					if ferr := p.createInsufficientCard(entry.stats, from, to); errors.Is(ferr, errCardSkipped) {
+						skipped++
+						continue
+					} else if ferr != nil {
 						materialErr = errors.Join(materialErr, ferr)
 						p.logger.Printf("people: fallback card error for %s: %v", entry.stats.UserID, ferr)
 					}
@@ -433,15 +429,23 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 
 			for _, entry := range batch {
 				result, ok := lookup(entry.stats.UserID)
+				var serr error
+				if ok {
+					serr = p.storeBatchCard(ctx, entry.stats, result, from, to, pv, inTokPer, outTokPer)
+				}
+				if errors.Is(serr, errCardSkipped) {
+					skipped++
+					continue
+				}
 				if !ok {
 					// AI didn't return this user — fallback to insufficient_data.
 					aiFailures++
 					materialErr = errors.Join(materialErr, errors.New("people batch omitted a required user"))
-					if ferr := p.createInsufficientCard(entry.stats, from, to); ferr != nil {
+					if ferr := p.createInsufficientCard(entry.stats, from, to); ferr != nil && !errors.Is(ferr, errCardSkipped) {
 						materialErr = errors.Join(materialErr, ferr)
 						p.logger.Printf("people: batch missing user %s, fallback error: %v", entry.stats.UserID, ferr)
 					}
-				} else if serr := p.storeBatchCard(ctx, entry.stats, result, from, to, pv, inTokPer, outTokPer); serr != nil {
+				} else if serr != nil {
 					aiFailures++
 					materialErr = errors.Join(materialErr, serr)
 					p.logger.Printf("people: store batch card error for %s: %v", entry.stats.UserID, serr)
@@ -501,7 +505,10 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 				// Fallback: try individual processing for this batch.
 				p.logger.Printf("people: full-data batch error, falling back to individual: %v", err)
 				for _, entry := range batch {
-					if ferr := p.processUser(ctx, entry.stats, from, to, entry.situations, teamNorms); ferr != nil {
+					if ferr := p.processUser(ctx, entry.stats, from, to, entry.situations, teamNorms); errors.Is(ferr, errCardSkipped) {
+						skipped++
+						continue
+					} else if ferr != nil {
 						if deferred := p.deferredCardError(ferr, materialErr, aiFailures, false); deferred != nil {
 							return int(completed.Load()), deferred
 						}
@@ -523,9 +530,19 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 
 			for _, entry := range batch {
 				result, ok := lookup(entry.stats.UserID)
-				if !ok {
+				var serr error
+				if ok {
+					serr = p.storeBatchCard(ctx, entry.stats, result, from, to, pv, inTokPer, outTokPer)
+				} else {
 					// AI didn't return this user — fallback to individual.
-					if ferr := p.processUser(ctx, entry.stats, from, to, entry.situations, teamNorms); ferr != nil {
+					serr = p.processUser(ctx, entry.stats, from, to, entry.situations, teamNorms)
+				}
+				if errors.Is(serr, errCardSkipped) {
+					skipped++
+					continue
+				}
+				if !ok {
+					if ferr := serr; ferr != nil {
 						if deferred := p.deferredCardError(ferr, materialErr, aiFailures, false); deferred != nil {
 							return int(completed.Load()), deferred
 						}
@@ -535,7 +552,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 					} else {
 						aiCards++
 					}
-				} else if serr := p.storeBatchCard(ctx, entry.stats, result, from, to, pv, inTokPer, outTokPer); serr != nil {
+				} else if serr != nil {
 					aiFailures++
 					materialErr = errors.Join(materialErr, serr)
 					p.logger.Printf("people: store batch card error for %s: %v", entry.stats.UserID, serr)
@@ -565,6 +582,16 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 	}
 	if aiCards == 0 && aiFailures > 0 {
 		return total, fmt.Errorf("no people card produced by AI: all %d user(s) fell back", aiFailures)
+	}
+	if skipped > 0 {
+		p.logger.Printf("people: %d user(s) excluded during the run; no card", skipped)
+	}
+	if total == 0 && skipped > 0 {
+		// Everyone left was excluded meanwhile: nothing was made, so the run
+		// is not a success to stamp; the next run finds no one to do.
+		p.progress(0, totalUsers, "No cards: everyone left was excluded")
+		p.lastOutcome = OutcomeNoData
+		return 0, nil
 	}
 	p.progress(total, totalUsers, fmt.Sprintf("Complete: %d people cards generated", total))
 	p.logger.Printf("people: completed %d user cards (%d from AI, %d fell back)", total, aiCards, aiFailures)
@@ -757,14 +784,18 @@ func (p *Pipeline) processUser(ctx context.Context, stats db.UserStats, from, to
 	return p.storeCard(card)
 }
 
-// storeCard writes a card. A person the owner stopped cards for while this
-// run was generating is skipped, not a failure: the write refuses them
-// atomically (db.ErrPersonExcluded).
+// errCardSkipped marks a card not written because the owner stopped cards
+// for the person while this run was generating it: neither a card made nor
+// a failure.
+var errCardSkipped = errors.New("person excluded during the run; no card")
+
+// storeCard writes a card. The write refuses an excluded person atomically
+// (db.ErrPersonExcluded), which storeCard reports as errCardSkipped.
 func (p *Pipeline) storeCard(card db.PeopleCard) error {
 	_, err := p.db.UpsertPeopleCard(card)
 	if errors.Is(err, db.ErrPersonExcluded) {
 		p.logger.Printf("people: %s was excluded during the run; no card", card.UserID)
-		return nil
+		return fmt.Errorf("%s: %w", card.UserID, errCardSkipped)
 	}
 	return err
 }

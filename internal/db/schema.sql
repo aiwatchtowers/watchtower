@@ -1614,7 +1614,8 @@ CREATE TABLE IF NOT EXISTS slack_accounts (
     access_ok_at      TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last confirmed authenticated call; '' = unknown (see 00148)
     revoked_at        TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00148)
     first_cycle_at    TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the account's first sync attempt; older messages a sync stores keep their post time as synced_at (see 00190)
-    emoji_scope_missing INTEGER NOT NULL DEFAULT 0  -- 1 = a legacy token (no recorded grant) lacks emoji:read; the emoji sync skips the account until a re-login (see 00194)
+    emoji_scope_missing INTEGER NOT NULL DEFAULT 0,  -- 1 = a legacy token (no recorded grant) lacks emoji:read; the emoji sync skips the account until a re-login (see 00194)
+    people_prune_done_at TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC when the one-time pass deleting people cards of non-partners finished; '' = pending (see 00194)
 );
 
 -- Multi-account IMAP/Outlook email source: one row per connected mailbox

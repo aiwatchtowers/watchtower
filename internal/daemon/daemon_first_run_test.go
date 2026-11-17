@@ -409,3 +409,28 @@ func TestDaemon_PeopleNoOwnerSaysWhy(t *testing.T) {
 	assert.Equal(t, 0, gen.calls)
 	assert.Equal(t, 1, strings.Count(logs.String(), "people skipped: no Slack account with a known user"), logs.String())
 }
+
+// TestDaemon_PeoplePruneRunsWithoutData: the one-time prune of non-partner
+// cards runs even when the cycle makes no cards (no data, people off), and
+// once done it is not repeated.
+func TestDaemon_PeoplePruneRunsWithoutData(t *testing.T) {
+	d, database := firstRunTestSetup(t)
+	d.config.People.Enabled = false
+	_, err := database.Exec(`INSERT INTO slack_accounts (id, current_user_id) VALUES (1, '1:U1')`)
+	require.NoError(t, err)
+	_, err = database.UpsertPeopleCard(db.PeopleCard{UserID: "1:UREADONLY", PeriodFrom: 1, PeriodTo: 2, Summary: "old"})
+	require.NoError(t, err)
+
+	d.phasePeopleCards(context.Background())
+	card, err := database.GetLatestPeopleCard("1:UREADONLY")
+	require.NoError(t, err)
+	assert.Nil(t, card)
+	assert.True(t, d.peoplePruneDone)
+
+	_, err = database.UpsertPeopleCard(db.PeopleCard{UserID: "1:UREADONLY", PeriodFrom: 1, PeriodTo: 2, Summary: "later"})
+	require.NoError(t, err)
+	d.phasePeopleCards(context.Background())
+	card, err = database.GetLatestPeopleCard("1:UREADONLY")
+	require.NoError(t, err)
+	assert.NotNil(t, card, "the pass does not repeat")
+}

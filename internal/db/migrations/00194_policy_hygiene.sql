@@ -16,6 +16,12 @@ CREATE TABLE IF NOT EXISTS people_card_exclusions (
 -- re-login records a grant (A26).
 ALTER TABLE slack_accounts ADD COLUMN emoji_scope_missing INTEGER NOT NULL DEFAULT 0;
 
+-- people_prune_done_at: when the one-time pass that deletes this account's
+-- people cards made for non-partners finished (db.PrunePreUpgradePeopleCards,
+-- A13); '' = not yet (no owner known, or not run). New cards are limited to
+-- partners when they are made, so the pass never repeats.
+ALTER TABLE slack_accounts ADD COLUMN people_prune_done_at TEXT NOT NULL DEFAULT '';
+
 -- Old profiling data does not outlive the change (A15): the dropped people
 -- card fields go back to their defaults (the columns stay), Team Summary's
 -- attention list empties, and the legacy tables nothing writes any more lose
@@ -28,5 +34,6 @@ DELETE FROM user_interactions;
 
 -- +goose Down
 -- The cleared data is not restored.
+ALTER TABLE slack_accounts DROP COLUMN people_prune_done_at;
 ALTER TABLE slack_accounts DROP COLUMN emoji_scope_missing;
 DROP TABLE IF EXISTS people_card_exclusions;
