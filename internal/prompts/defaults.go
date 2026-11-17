@@ -180,7 +180,7 @@ var DefaultVersions = map[string]int{
 	CoachPropose:               2,  // v2: the exact allow-rule table, claude_md_user allowed (4000 ceiling), ROLLED BACK group (v1: agent coach — edits to the owner's setup from repeated signals, strong tier)
 	MediaDescribe:              1,  // v1: an attached image to a title, description, verbatim text and keys (strong tier, image input)
 	MediaSummarizeLink:         1,  // v1: a fetched public page to a title and a short summary (light tier)
-	WatchmanDecide:             1,  // v1: Watchman twin — decide one workbench item the way the owner would, from his precedents, profile and instructions (strong tier)
+	WatchmanDecide:             2,  // v2: a situation with several questions is answered per question, one "<question>: <answer>" line each; "(recommended)" is only the agent's suggestion (ask #1423); v1: Watchman twin — decide one workbench item the way the owner would, from his precedents, profile and instructions (strong tier)
 	WatchmanJudge:              3,  // v3: grades same/acceptable/bad per question, strong tier, sees the twin's confidence (ask #1423); v2: the situation is passed too; v1: same/different, light tier
 	WatchmanLabel:              1,  // v1: Watchman learning — put each of the owner's past decisions in one of the eight categories (light tier)
 	WatchmanProfile:            1,  // v1: Watchman profile — distil a category's past owner decisions into at most 20 rules (strong tier)
@@ -1933,6 +1933,8 @@ How to decide:
 - Precedents that match the situation closely weigh most; newer ones win over older ones when they disagree. The owner's own words explain why he chose.
 - The profile and the instructions are his general rules; a close precedent that contradicts them still shows what he does in practice.
 - When the options are given, "choice" is exactly one of them, copied verbatim. When they are not, "choice" is the short answer the owner would give, in his words and his language.
+- When the situation lists several questions (the options list is then empty), "choice" answers every question, in the order they are listed, one line per question as "<question>: <answer>". Leave none out.
+- An option marked "(recommended)" is only the agent's suggestion: choose it only when the owner would.
 - "confidence" is how sure you are that the owner would choose the same: "high" only when close precedents agree with each other and with the choice; "low" when there are no close precedents or they disagree.
 - "importance" is "high" when a wrong answer would be costly or hard to undo (data loss, a public or irreversible step, a direction for a lot of work), else "low".
 

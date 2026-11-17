@@ -202,6 +202,8 @@ func (bt backtestRun) category(c string, k int) (db.WatchmanBacktestRow, error) 
 				row.Agree++
 			case GradeAcceptable:
 				row.Acceptable++
+			case gradeOmitted:
+				row.Bad++ // not the twin's confidence at fault: never bad while sure
 			default:
 				row.Bad++
 				if high {
@@ -248,6 +250,10 @@ func (bt backtestRun) retryOnce(call func() error) error {
 	return call()
 }
 
+// gradeOmitted marks a question the judge left ungraded: counted bad, never
+// bad while sure (the twin's confidence did not cause it).
+const gradeOmitted = "omitted"
+
 // item re-decides one hidden precedent and grades it: one grade per
 // question (questions nil: one), and whether the twin was sure (confidence
 // high).
@@ -288,8 +294,9 @@ func (bt backtestRun) item(c string, p db.WatchmanPrecedent, opts, questions []s
 	if err != nil {
 		return nil, false, err
 	}
-	// A grade the judge left out is bad; an extra one is ignored.
-	grades = slices.Repeat([]string{GradeBad}, n)
+	// A grade the judge left out is bad (not bad while sure); an extra one
+	// is ignored.
+	grades = slices.Repeat([]string{gradeOmitted}, n)
 	copy(grades, got)
 	return grades, dec.Confidence == "high", nil
 }

@@ -49,8 +49,8 @@ type llmJudge struct {
 	store *prompts.Store
 }
 
-// Grade asks the model once. A reply that is not {"grades": [...]} with
-// known grades is an error (with the call's Usage): the backtest cannot
+// Grade asks the model once. A reply that is not {"grades": [...]} with at
+// least one grade, every one known, is an error (with the call's Usage): the backtest cannot
 // score the item, and guessing would bend the number. A list of the wrong
 // length is returned as it is; the backtest counts a missing grade bad.
 func (j llmJudge) Grade(ctx context.Context, in JudgeInput) ([]string, *digest.Usage, error) {
@@ -84,7 +84,7 @@ func (j llmJudge) Grade(ctx context.Context, in JudgeInput) ([]string, *digest.U
 	if err := json.Unmarshal([]byte(trimJSONFence(strings.TrimSpace(raw))), &r); err != nil {
 		return nil, usage, fmt.Errorf("watchman judge: the reply is not a JSON object: %w", err)
 	}
-	if r.Grades == nil {
+	if len(r.Grades) == 0 {
 		return nil, usage, fmt.Errorf("watchman judge: the reply has no \"grades\"")
 	}
 	out := make([]string, 0, len(r.Grades))

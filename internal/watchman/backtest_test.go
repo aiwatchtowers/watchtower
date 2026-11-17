@@ -510,8 +510,9 @@ func TestBacktest_MultiQuestionGradedPerQuestion(t *testing.T) {
 		agree, accept, bad int
 		wrongHigh          int
 	}{
-		"missing grade is bad": {[]string{GradeSame}, 30, 0, 30, 30},
-		"extra grade ignored":  {[]string{GradeSame, GradeAcceptable, GradeBad}, 30, 30, 0, 0},
+		"missing grade is bad, not bad while sure": {[]string{GradeSame}, 30, 0, 30, 0},
+		"given bad while sure":                     {[]string{GradeSame, GradeBad}, 30, 0, 30, 30},
+		"extra grade ignored":                      {[]string{GradeSame, GradeAcceptable, GradeBad}, 30, 30, 0, 0},
 	} {
 		t.Run(name, func(t *testing.T) {
 			d, wb := btDB(t)
@@ -662,7 +663,7 @@ func TestLLMJudge_ParsesReply(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{GradeSame}, grades)
 
-	for _, bad := range []string{"same", `{"same": true}`, `{"grades":[{"q":"","grade":"close","why":""}]}`} {
+	for _, bad := range []string{"same", `{"same": true}`, `{"grades":[]}`, `{"grades":[{"q":"","grade":"close","why":""}]}`} {
 		gen.out = bad
 		_, usage, err = NewLLMJudge(gen, nil).Grade(context.Background(), in)
 		require.Error(t, err, bad)
