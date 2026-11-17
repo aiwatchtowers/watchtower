@@ -324,8 +324,16 @@ func runSyncStopOpts(cfg *config.Config, force, internal bool) error {
 // through the engine on chat.sock, else (no daemon answers) directly, each
 // step on its own budget. An error means a session may still run.
 func shutdownChat(cfg *config.Config) error {
+	return shutdownChatWithin(cfg, chatShutdownBudget)
+}
+
+// shutdownChatWithin is shutdownChat with socketBudget for the chat.sock
+// step: the app, which has already asked the engine, passes a short one
+// (`chat shutdown --socket-timeout`) so the direct reap runs inside its
+// watchdog.
+func shutdownChatWithin(cfg *config.Config, socketBudget time.Duration) error {
 	ws, tmp := cfg.WorkspaceDir(), os.TempDir()
-	ctx, cancel := context.WithTimeout(context.Background(), chatShutdownBudget)
+	ctx, cancel := context.WithTimeout(context.Background(), socketBudget)
 	err := requestChatShutdown(ctx, chatengine.SocketPath(ws, tmp))
 	cancel()
 	if err == nil {

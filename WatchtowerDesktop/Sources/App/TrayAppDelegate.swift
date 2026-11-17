@@ -250,6 +250,8 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
             keepsSessions: plan.keepsSessions,
             confirmQuit: { plan.prompt.map { plan.choice(button: Self.runQuitAlert($0)) } ?? .cancel },
             shutdownChat: {
+                // First: no new turn and no daemon start from here on.
+                await app.beginStopForGood()
                 await app.observedProviderConnection?.cancelAndWait()
                 // An embedded chat's reply keeps all it streamed: its writes
                 // await the writer (board #670), so the quit waits for them.

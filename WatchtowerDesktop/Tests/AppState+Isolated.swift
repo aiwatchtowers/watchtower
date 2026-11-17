@@ -45,7 +45,7 @@ extension AppState {
         appState.modelCatalogLaunchOverride = {} // never runs the CLI
         appState.daemonStartQueue = DaemonStartQueue()
         appState.wireAppDatabaseOverride = { _ in }
-        appState.chatShutdownOverride = {} // never `watchtower chat shutdown` on this Mac
+        appState.chatShutdownCLI = {} // never `watchtower chat shutdown` on this Mac
         appState.readinessEnvironmentOverride = FakeReadinessEnvironment()
         appState.homeDefaultsOverride = defaults
         appState.compactionDBPathOverride = { "/isolated/watchtower.db" }

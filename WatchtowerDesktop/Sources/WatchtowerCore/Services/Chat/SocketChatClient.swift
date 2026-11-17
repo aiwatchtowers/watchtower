@@ -34,13 +34,26 @@ package enum ChatReachabilityPolicy {
     /// How long any request may wait for its answer; past it the connection is taken as dead and dropped (a send's
     /// answer is then lost, so the model resends with the same client key once the chat is back).
     package static let requestBound: Duration = .seconds(30)
-    /// How long the quit waits for `chat_shutdown` (longer than the engine's 2 s grace + 3 s kill).
-    package static let shutdownBound: Duration = .seconds(8)
+    /// The engine's own bound on `chat_shutdown` (`internal/chatengine/shutdown.go`, `shutdownBudget`): every
+    /// session's close, 2 s grace, SIGTERM, 3 s, SIGKILL, and the final writes.
+    package static let engineShutdownBudget: Duration = .seconds(10)
+    /// How long a stop waits for `chat_shutdown` once the engine answered `hello`: the engine's budget and a margin,
+    /// so a slow but working shutdown is never cut and then repeated by the CLI.
+    package static let shutdownBound: Duration = engineShutdownBudget + .seconds(1)
+    /// How long a stop waits for the engine to greet and answer `hello` when the client is not connected; past it the
+    /// stop goes straight to `watchtower chat shutdown`.
+    package static let shutdownGreetBound: Duration = .seconds(2)
 
     package static func backoff(attempt: Int) -> Duration {
         let doubled = firstBackoff * (1 << min(max(attempt, 0), 5))
         return min(doubled, maxBackoff)
     }
+}
+
+/// A stop that ends the chat (quit, the data wipe) has begun: the client refuses every operation but
+/// `chat_shutdown`, so no new turn starts behind it (`SocketChatClient.holdForStop`).
+package struct ChatClientStopping: ChatConnectionError, Equatable {
+    package init() {}
 }
 
 /// The connection dropped before the engine's answer arrived (`ChatConnectionError`): the operation may or may not
@@ -112,14 +125,23 @@ package final class SocketChatClient: ChatClient {
         Task { [core] in await core.ownerStart() }
     }
 
-    /// Ends every chat turn and session (`chat_shutdown`): the app's quit, wipe and compaction stops (T10b). False
-    /// when the engine could not be reached or refused it.
-    /// Bounded by `ChatReachabilityPolicy.shutdownBound`: a wedged engine never holds the quit.
+    /// Ends every chat turn and session (`chat_shutdown`): the app's quit, wipe and Slack disconnect stops. False
+    /// when the engine could not be reached or refused it, and the caller runs `watchtower chat shutdown`.
+    /// Not connected, it waits `shutdownGreetBound` for the engine to greet and answer `hello`; connected, it waits
+    /// `shutdownBound` (the engine's own budget and a margin) for the answer. A wedged engine never holds the quit.
     package func shutdown() async -> Bool {
+        guard await core.awaitConnected(within: ChatReachabilityPolicy.shutdownGreetBound) else { return false }
         guard case .applied? = try? await core.request(.shutdown, bound: ChatReachabilityPolicy.shutdownBound) else {
             return false
         }
         return true
+    }
+
+    /// A stop that ends the chat for good (quit, the data wipe) holds the client first: every operation but
+    /// `chat_shutdown` is refused (`ChatClientStopping`), and a lost connection never starts the daemon (the stop is
+    /// `--internal` and leaves no marker). `false` releases it (a wipe whose daemon did not stop).
+    package func holdForStop(_ held: Bool) async {
+        await core.hold(held)
     }
 
     /// Makes the next write fail as a half-open socket's does (a unix socket gives no such state to provoke in a
@@ -188,6 +210,10 @@ extension SocketChatClient {
         /// The answer deadline of each waiting request.
         private var deadlines: [String: Task<Void, Never>] = [:]
         private var retryWaiter: CheckedContinuation<Void, Never>?
+        /// `holdForStop`: no operation but `chat_shutdown`, no daemon start.
+        private var held = false
+        /// `awaitConnected` callers, answered on connect or at their deadline.
+        private var connectWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
 
         init(
             socketPath: String,
@@ -288,6 +314,33 @@ extension SocketChatClient {
             // Reported after every reconnect, even an unchanged one: a send waiting on a lost answer goes again.
             setState(.connected, always: true)
             for token in subscriptions.keys { subscribe(token) }
+            let waiters = connectWaiters
+            connectWaiters = [:]
+            waiters.values.forEach { $0.resume(returning: true) }
+        }
+
+        /// True once connected (at once when already), false when `bound` passes first or the client closes. A
+        /// reconnect waiting on its backoff tries at once.
+        func awaitConnected(within bound: Duration) async -> Bool {
+            if connected { return true }
+            guard !closed else { return false }
+            let token = UUID()
+            let clock = clock
+            let deadline = Task { [weak self] in
+                do { try await clock.sleep(for: bound) } catch { return }
+                await self?.connectWaitEnded(token)
+            }
+            defer { deadline.cancel() }
+            wake()
+            return await withCheckedContinuation { connectWaiters[token] = $0 }
+        }
+
+        private func connectWaitEnded(_ token: UUID) {
+            connectWaiters.removeValue(forKey: token)?.resume(returning: false)
+        }
+
+        func hold(_ held: Bool) {
+            self.held = held
         }
 
         /// The connection dropped: every waiting answer is lost, every subscription is shown stale until its fresh
@@ -313,6 +366,9 @@ extension SocketChatClient {
 
         /// The socket could not be reached (or the engine never answered hello).
         private func unreachable() {
+            // A stop that ends the chat is running: its `--internal` stop leaves no marker, and nothing may start
+            // the daemon behind it.
+            if held { return }
             let now = clock.now
             if outageStart == nil { outageStart = now }
             if !ownerStarted, FileManager.default.fileExists(atPath: markerPath) {
@@ -366,6 +422,9 @@ extension SocketChatClient {
             closed = true
             connection?.shutdown()
             wake()
+            let waiters = connectWaiters
+            connectWaiters = [:]
+            waiters.values.forEach { $0.resume(returning: false) }
         }
 
         private func wake() {
@@ -377,6 +436,7 @@ extension SocketChatClient {
         // MARK: Requests
 
         func request(_ op: ChatOperation, bound: Duration = ChatReachabilityPolicy.requestBound) async throws -> ChatEcho {
+            if held, op != .shutdown { throw ChatClientStopping() }
             guard connected, let connection else { throw ChatSocketDropped() }
             let params = try op.wireParams()
             let id = newID()

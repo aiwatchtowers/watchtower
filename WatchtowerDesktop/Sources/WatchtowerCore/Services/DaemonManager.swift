@@ -437,17 +437,21 @@ package final class DaemonManager {
         await runBounded(["sync", "stop", "--internal"], timeout: timeout, cliPath: cliPath, sleep: sleep)
     }
 
-    /// `watchtower chat shutdown` under the same watchdog: the chat's stop
-    /// when the engine cannot be asked (spec §7) — it asks `chat.sock`
-    /// itself, else cancels and closes each session over its own socket and
-    /// reaps the groups (2 s, then SIGTERM, SIGKILL 3 s later), so the
-    /// default bound leaves it room.
+    /// `watchtower chat shutdown` with a short `chat.sock` step: the app has
+    /// already asked the engine (or, at compaction, needs the sessions gone
+    /// whatever the engine does), so the direct reap — cancel and close over
+    /// each session socket, 2 s, SIGTERM, SIGKILL 3 s later — always runs
+    /// inside the watchdog: about 1 + 5 s of the 12.
+    package static let chatShutdownArguments = ["chat", "shutdown", "--socket-timeout", "1s"]
+
+    /// `chatShutdownArguments` under the same watchdog as the bounded stop:
+    /// the chat's stop when the engine could not end it (spec §7).
     package nonisolated static func chatShutdownBounded(
         timeout: Duration = .seconds(12),
         cliPath: String? = Constants.findCLIPath(),
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) async {
-        await runBounded(["chat", "shutdown"], timeout: timeout, cliPath: cliPath, sleep: sleep)
+        await runBounded(chatShutdownArguments, timeout: timeout, cliPath: cliPath, sleep: sleep)
     }
 
     nonisolated private static func runBounded(

@@ -130,6 +130,10 @@ extension AppState {
     /// `restartLoggingQueued` is exempt: they are built after the database
     /// opens.
     func daemonStartBlocked(_ caller: String) -> Bool {
+        if stoppingForGood {
+            NSLog("[Watchtower] %@ skipped: the app is quitting or wiping its data", caller)
+            return true
+        }
         guard launchDatabaseStepsRunning || databaseCompactionInProgress || quitDuringCompaction else { return false }
         NSLog("[Watchtower] %@ skipped: the launch's database steps are running", caller)
         if caller == "restartOnChain" || caller == "bringUpDaemonInBackground" {

@@ -327,3 +327,32 @@ func TestChatShutdown_ReportsSurvivingSessions(t *testing.T) {
 	require.Error(t, shutdownChat(cfg))
 	assert.Greater(t, budget, chatShutdownBudget-time.Second, "the direct reap gets its own budget")
 }
+
+// TestChatShutdown_SocketTimeoutBoundsTheSocketStep: the app's fallback
+// (`chat shutdown --socket-timeout 1s`, it has asked the engine itself)
+// waits on chat.sock only that long, and the direct reap still runs on its
+// own budget — inside the app's 12 s watchdog.
+func TestChatShutdown_SocketTimeoutBoundsTheSocketStep(t *testing.T) {
+	cfg, _ := syncStopTestConfig(t)
+	shortSocketTempDir(t)
+	prevReq, prevReap := requestChatShutdown, shutdownChatSessions
+	t.Cleanup(func() { requestChatShutdown, shutdownChatSessions = prevReq, prevReap })
+	var socketBudget time.Duration
+	requestChatShutdown = func(ctx context.Context, _ string) error {
+		dl, _ := ctx.Deadline()
+		socketBudget = time.Until(dl)
+		return errors.New("no answer")
+	}
+	reaped := false
+	shutdownChatSessions = func(context.Context, string, string) error {
+		reaped = true
+		return nil
+	}
+	require.NoError(t, shutdownChatWithin(cfg, time.Second))
+	assert.LessOrEqual(t, socketBudget, time.Second)
+	assert.True(t, reaped, "the direct reap runs after the short socket step")
+
+	flag := chatShutdownCmd.Flags().Lookup("socket-timeout")
+	require.NotNil(t, flag, "the app passes --socket-timeout")
+	assert.Equal(t, chatShutdownBudget.String(), flag.DefValue)
+}

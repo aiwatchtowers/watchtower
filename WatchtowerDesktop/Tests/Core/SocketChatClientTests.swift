@@ -217,6 +217,7 @@ final class ManualChatClientClock: ChatClientClock, @unchecked Sendable {
     private var offset: Duration = .zero
     private var sleepers: [(id: UUID, deadline: Duration, continuation: CheckedContinuation<Void, any Error>)] = []
     private var sleepWaiters: [CheckedContinuation<Void, Never>] = []
+    private var durationWaiters: [(duration: Duration, continuation: CheckedContinuation<Void, Never>)] = []
     private(set) var sleeps: [Duration] = []
 
     var now: ContinuousClock.Instant { lock.withLock { start + offset } }
@@ -231,8 +232,10 @@ final class ManualChatClientClock: ChatClientClock, @unchecked Sendable {
                     if Task.isCancelled { return ([], true) }
                     sleeps.append(duration)
                     sleepers.append((id, offset + duration, continuation))
+                    let slept = durationWaiters.filter { $0.duration == duration }.map(\.continuation)
+                    durationWaiters.removeAll { $0.duration == duration }
                     defer { sleepWaiters = [] }
-                    return (sleepWaiters, false)
+                    return (sleepWaiters + slept, false)
                 }
                 if cancelled { continuation.resume(throwing: CancellationError()) }
                 waiters.forEach { $0.resume() }
@@ -257,6 +260,18 @@ final class ManualChatClientClock: ChatClientClock, @unchecked Sendable {
             let now = lock.withLock { () -> Bool in
                 if !sleepers.isEmpty { return true }
                 sleepWaiters.append(continuation)
+                return false
+            }
+            if now { continuation.resume() }
+        }
+    }
+
+    /// Returns once someone has slept for `duration` on this clock.
+    func until(slept duration: Duration) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let now = lock.withLock { () -> Bool in
+                if sleeps.contains(duration) { return true }
+                durationWaiters.append((duration, continuation))
                 return false
             }
             if now { continuation.resume() }
@@ -470,6 +485,66 @@ final class SocketChatClientTests: XCTestCase {
             XCTAssertTrue(error is any ChatConnectionError)
         }
         XCTAssertTrue(clock.recordedSleeps.contains(ChatReachabilityPolicy.requestBound))
+    }
+
+    /// T10b I1: a socket that never greets holds a stop only `shutdownGreetBound`; then the stop goes to `watchtower
+    /// chat shutdown`, whose socket step is short so its direct reap runs inside the app's watchdog.
+    func testShutdownOfAHungSocketGivesUpAfterTheGreetBound() async throws {
+        server.silent = true
+        try server.listen()
+        let client = makeClient()
+        let stop = Task { await client.shutdown() }
+        await clock.until(slept: ChatReachabilityPolicy.shutdownGreetBound)
+        await clock.finishNextSleep()
+        let shut = await stop.value
+        XCTAssertFalse(shut, "the CLI fallback runs")
+        XCTAssertTrue(server.ops("chat_shutdown").isEmpty)
+        XCTAssertLessThan(ChatReachabilityPolicy.shutdownGreetBound, ChatReachabilityPolicy.handshakeBound)
+        XCTAssertEqual(DaemonManager.chatShutdownArguments, ["chat", "shutdown", "--socket-timeout", "1s"])
+    }
+
+    /// T10b I1: once the engine answered `hello`, a stop waits at least the engine's own `chat_shutdown` budget, so a
+    /// slow shutdown that works is never cut and repeated by the CLI.
+    func testShutdownOnceGreetedWaitsTheEnginesBudget() async throws {
+        server.unanswered = ["chat_shutdown"]
+        try server.listen()
+        let client = makeClient()
+        var states = client.reachability.makeAsyncIterator()
+        _ = await waitFor(.connected, on: &states)
+        let stop = Task { await client.shutdown() }
+        await server.until(op: "chat_shutdown", count: 1)
+        await clock.until(slept: ChatReachabilityPolicy.shutdownBound)
+        XCTAssertGreaterThanOrEqual(ChatReachabilityPolicy.shutdownBound, ChatReachabilityPolicy.engineShutdownBudget)
+        XCTAssertEqual(ChatReachabilityPolicy.engineShutdownBudget, .seconds(10))
+        XCTAssertFalse(clock.recordedSleeps.contains(ChatReachabilityPolicy.shutdownGreetBound), "connected: no wait")
+        await clock.finishNextSleep()
+        let shut = await stop.value
+        XCTAssertFalse(shut)
+    }
+
+    /// T10b I2: a stop that ends the chat for good holds the client: a turn sent after it began is refused (never
+    /// written), `chat_shutdown` still goes, and the connection lost to the daemon's `--internal` stop (no marker)
+    /// starts nothing.
+    func testHeldClientRefusesTurnsAndStartsNoDaemon() async throws {
+        try server.listen()
+        let client = makeClient()
+        var states = client.reachability.makeAsyncIterator()
+        _ = await waitFor(.connected, on: &states)
+        await client.holdForStop(true)
+        do {
+            _ = try await client.send(.turn(ChatTurnRequest(conversationID: 1, mode: .send, text: "x", clientKey: "k")))
+            XCTFail("a turn after the stop began must be refused")
+        } catch {
+            XCTAssertTrue(error is ChatClientStopping)
+        }
+        XCTAssertTrue(server.ops("chat_turn").isEmpty)
+        let shut = await client.shutdown()
+        XCTAssertTrue(shut)
+
+        server.stop()
+        for _ in 0..<8 { await clock.finishNextSleep() }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: markerPath))
+        XCTAssertEqual(starts.value, 0, "no daemon start behind the stop")
     }
 
     func testOperationAnswersEchoTheirResult() async throws {
