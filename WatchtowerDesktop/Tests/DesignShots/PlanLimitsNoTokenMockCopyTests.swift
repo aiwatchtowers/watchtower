@@ -21,6 +21,17 @@ final class PlanLimitsNoTokenMockCopyTests: XCTestCase {
         }
     }
 
+    func testCloudProviderVariantsNameTheProvider() {
+        typealias Copy = PlanLimitsNoTokenMockCopy
+        XCTAssertEqual(Copy.cloudProvider("Bedrock"), "Claude Code is using Bedrock here, so plan limits don't apply.")
+        XCTAssertEqual(Set(Copy.cloudProviders.keys), ["cloud_bedrock", "cloud_vertex", "cloud_foundry"])
+        for (code, name) in Copy.cloudProviders {
+            let text = Copy.cloudProvider(name)
+            XCTAssertTrue(text.contains(name), code)
+            XCTAssertNotEqual(text, Copy.apiKey, code)
+        }
+    }
+
     /// Codex keeps today's wording; a failed Claude read keeps production's.
     func testUnchangedCopyStaysProduction() {
         XCTAssertEqual(PlansPresentation.errorText("cli_missing", provider: .codex), "Install Codex, then retry.")

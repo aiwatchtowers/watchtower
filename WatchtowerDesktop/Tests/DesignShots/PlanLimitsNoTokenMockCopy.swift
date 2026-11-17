@@ -17,4 +17,10 @@ enum PlanLimitsNoTokenMockCopy {
     /// `unsupported_auth` for Claude: the child's environment carries an API
     /// key or a cloud-provider switch, so plan limits do not apply.
     static let apiKey = "Claude Code is using an API key here, so plan limits don't apply."
+    /// `cloud_bedrock` / `cloud_vertex` / `cloud_foundry` for Claude: a copy
+    /// variant of `apiKey` (same frame, no separate mockup).
+    static func cloudProvider(_ name: String) -> String {
+        "Claude Code is using \(name) here, so plan limits don't apply."
+    }
+    static let cloudProviders = ["cloud_bedrock": "Bedrock", "cloud_vertex": "Vertex", "cloud_foundry": "Foundry"]
 }
