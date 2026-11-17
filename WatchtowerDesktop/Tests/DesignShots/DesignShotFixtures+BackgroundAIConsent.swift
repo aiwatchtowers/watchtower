@@ -57,6 +57,12 @@ enum BackgroundAIConsentShotFixtures {
             },
             DesignShot(name: "ai-consent-automations-org", size: NSSize(width: 720, height: 0)) {
                 AnyView(AutomationsNoticeMock(organization: true))
+            },
+            DesignShot(name: "ai-consent-phone-paused", size: NSSize(width: 390, height: 0)) {
+                AnyView(PhoneHomeLineMock(organization: false))
+            },
+            DesignShot(name: "ai-consent-phone-org", size: NSSize(width: 390, height: 0)) {
+                AnyView(PhoneHomeLineMock(organization: true))
             }
         ]
     }
@@ -377,5 +383,37 @@ private struct AutomationsNoticeMock: View {
         .padding(Spacing.page)
         .frame(maxWidth: .infinity, alignment: .leading)
         .detailBackground()
+    }
+}
+
+// MARK: - The phone's Home line (a Mac-rendered approximation)
+
+private struct PhoneHomeLineMock: View {
+    let organization: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.medium) {
+            Text("Home").font(.largeTitle.weight(.bold))
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+                Image(systemName: "pause.circle")
+                    .foregroundStyle(organization ? Color.secondary : Tone.warning)
+                Text(organization ? Copy.phoneOrg : Copy.phonePaused)
+                    .font(.subheadline)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(Spacing.medium)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .card()
+            VStack(alignment: .leading, spacing: Spacing.small) {
+                Text("Morning brief").font(.headline)
+                Text("Yesterday, 08:00").font(.caption).foregroundStyle(.secondary)
+            }
+            .padding(Spacing.medium)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .card()
+        }
+        .padding(Spacing.large)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Surface.window)
     }
 }

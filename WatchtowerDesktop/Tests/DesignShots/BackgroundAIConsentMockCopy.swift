@@ -125,6 +125,12 @@ enum BackgroundAIConsentMockCopy {
 
     static let automationsNotice = "Background AI is paused: scheduled and event automations that use AI "
         + "wait. Run now still works."
+    // MARK: Phone (Home, from the heartbeat's `background_ai`)
+
+    static let phonePaused = "Digests and briefings aren't updating: background AI is paused on your Mac. "
+        + "Allow it in Watchtower on the Mac."
+    static let phoneOrg = "Digests and briefings aren't updating: your organization turned background AI off."
+
     /// The run-state chip of an automation held by the pause.
     static let automationWaitingChip = "Waiting"
     static let automationsOrgNotice = "Your organization turned background AI off: scheduled and event "

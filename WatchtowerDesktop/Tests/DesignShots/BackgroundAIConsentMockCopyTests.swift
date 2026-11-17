@@ -51,6 +51,12 @@ final class BackgroundAIConsentMockCopyTests: XCTestCase {
         XCTAssertTrue(Copy.automationsNotice.hasSuffix("Run now still works."))
     }
 
+    /// The phone explains the stale feed and points to the Mac.
+    func testPhoneLines() {
+        XCTAssertTrue(Copy.phonePaused.hasSuffix("Allow it in Watchtower on the Mac."))
+        XCTAssertTrue(Copy.phoneOrg.contains("your organization"))
+    }
+
     func testEveryFrameHasAShot() {
         let names = Set(BackgroundAIConsentShotFixtures.shots.map(\.name))
         for step in BackgroundAIConsentShotFixtures.Step.allCases {
