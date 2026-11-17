@@ -21,6 +21,9 @@ package enum StreamEvent {
     case usage(ChatUsage)
     /// `ai query --persist`: the turn's rows are on disk (no owner row: nil).
     case started(ownerID: Int64?, assistantID: Int64)
+    /// `ai query --persist`: a write of the turn's reply failed (`save_error`);
+    /// Go's sentence ("Couldn't save the reply: …"), shown as is.
+    case saveError(String)
     case done
 
     /// The pre-`.error` fold: an error line as visible `[Error] …` text. Kept

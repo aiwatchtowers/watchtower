@@ -1093,7 +1093,9 @@ final class ChatViewModel {
         }
         guard let left = leftLanding else { return started }
         if started {
-            onLandingTurnStarted?(id)
+            // Still the chat on screen: a start that answers after the owner
+            // opened another chat does not move the history selection.
+            if conversationID == id { onLandingTurnStarted?(id) }
         } else if conversationID == id, !isOnLanding {
             // The landing's first send failed: nothing was written, so the
             // owner is back on the landing with the text (the caller puts it

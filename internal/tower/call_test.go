@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -428,6 +429,28 @@ func TestCall_ChangedFiresAfterCommitOnly(t *testing.T) {
 	}
 	if len(f.changed) != 1 {
 		t.Fatalf("Changed fired on a rollback: %v", f.changed)
+	}
+}
+
+// A fault with no Options.Sentence answers a fixed sentence, never the
+// error's own text (which can carry paths or SQL).
+func TestCall_FaultWithoutSentenceNeverLeaksTheErrorText(t *testing.T) {
+	f := newFixture(t)
+	p := write("g1", "a")
+	p.Fail = true
+	r := f.call("test.guarded", p)
+	wantRefusal(t, r, api.CodeUnsupported)
+	if r.Refusal.Sentence != FaultSentence || strings.Contains(r.Refusal.Sentence, "fault after the insert") {
+		t.Fatalf("sentence = %q, want FaultSentence", r.Refusal.Sentence)
+	}
+	f.tower.opts.Sentence = func(string, error) string { return "worded" }
+	if r := f.call("test.guarded", write("g2", "b")); r.Status != api.StatusOK {
+		t.Fatalf("ok write: %+v", r)
+	}
+	p = write("g3", "c")
+	p.Fail = true
+	if r := f.call("test.guarded", p); r.Refusal == nil || r.Refusal.Sentence != "worded" {
+		t.Fatalf("with a Sentence: %+v", r)
 	}
 }
 

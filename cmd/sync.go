@@ -1050,9 +1050,13 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	// The tower, one for the socket and the hub: what the hub's approvals
 	// run in the background is waited for (at most towerBackgroundBudget)
 	// after the hub and the socket stopped, before the database closes.
+	// The tower's reads run on a read-only handle of their own, closed
+	// last (after the socket, the hub and the background runs stopped).
+	reads, closeReads := openTowerReads(ctx, database, logger)
+	defer closeReads()
 	bg := &towerBackground{}
 	defer bg.wait(towerBackgroundBudget)
-	tw := newDaemonTower(ws, database, noSync, commands.Deps{
+	tw := newDaemonTower(ws, database, reads, noSync, commands.Deps{
 		DisabledFeatures: towerDisabledFeatures(cfg, logger),
 		Act:              towerActDeps(cfg, database, d.WakeAutomations, bg.run),
 	}, logger)
@@ -1067,14 +1071,33 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	return d.Run(ctx)
 }
 
+// openTowerReads opens the tower's read handle (tower.OpenReads). A handle
+// that cannot be opened is logged and the daemon runs without it: reads then
+// fall back to the daemon's own pool (Options.ReadDB nil), as before the
+// handle existed — slower under load, never refused. The returned func
+// closes it.
+func openTowerReads(ctx context.Context, database *db.DB, logger *log.Logger) (*db.DB, func()) {
+	reads, err := tower.OpenReads(ctx, database)
+	if err != nil {
+		logger.Printf("tower: reads share the daemon's pool: %v", err)
+		return nil, func() {}
+	}
+	return reads, func() { _ = reads.Close() }
+}
+
 // newDaemonTower is the daemon's tower: every registered command, the change
 // watch and the pause, the Desktop's signature check for the owner's
 // gestures over the socket and the owner's sentences for faults. The socket
-// and the hub call the same tower.
-func newDaemonTower(ws string, database *db.DB, noSync bool, deps commands.Deps, logger *log.Logger) *tower.Tower {
+// and the hub call the same tower. Writes and the request ledger use
+// database — the daemon's one-connection pool, shared with the sync cycle,
+// automations, the plan poll and the hub; Spec.Read commands (inbox.feed for
+// the Mac and the hub's phone feed, tower.hello, tower.ping) use reads when
+// it is non-nil, so they never queue behind that pool.
+func newDaemonTower(ws string, database, reads *db.DB, noSync bool, deps commands.Deps, logger *log.Logger) *tower.Tower {
 	var reg tower.Registry
 	commands.RegisterAll(&reg, deps)
 	return tower.New(database, tower.Options{
+		ReadDB:    reads,
 		Registry:  &reg,
 		Build:     Version,
 		Workspace: ws,

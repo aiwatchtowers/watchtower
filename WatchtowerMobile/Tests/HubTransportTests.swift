@@ -106,10 +106,10 @@ final class HubTransportTests: XCTestCase {
         }
 
         // The replica's failed rows read as their settlements.
-        func row(_ reason: ActionReason?, message: String?, delivery: Delivery?) -> PendingAction {
+        func row(_ reason: ActionReason?, message: String?, delivery: Delivery?, result: [String: JSONValue]? = nil) -> PendingAction {
             PendingAction(
                 id: "x", action: ActionRequestPayload(id: "x", kind: .inboxAct, entityID: nil, params: [:], createdAt: now, deviceID: "phone"),
-                entityRecordName: nil, createdAt: now, state: .failed, errorMessage: message, reason: reason, result: nil, echoStatus: nil,
+                entityRecordName: nil, createdAt: now, state: .failed, errorMessage: message, reason: reason, result: result, echoStatus: nil,
                 actionSeq: nil, epoch: nil, delivery: delivery, undeliveredReason: nil
             )
         }
@@ -126,6 +126,15 @@ final class HubTransportTests: XCTestCase {
             InboxActSettlement.of(row(.notSupported, message: "", delivery: nil), hubName: "Acme Mac"),
             .refused(code: .unsupported, sentence: InboxPhoneText.refusedFallback)
         )
+        // The tower's own code rides in the echo's result: the phone keeps it as the Mac does.
+        for code in ["args_changed", "reply_waiting", "not_permitted"] {
+            XCTAssertEqual(
+                InboxActSettlement.of(row(.conflict, message: "Go's sentence.", delivery: nil, result: ["code": .string(code)]),
+                                      hubName: "Acme Mac"),
+                .refused(code: RefusalCode(rawValue: code), sentence: "Go's sentence."),
+                code
+            )
+        }
     }
 
     /// An outcome without its decoded result (the client re-reads it).

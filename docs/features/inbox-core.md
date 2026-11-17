@@ -167,7 +167,7 @@ Since Task 11d-b the Mac draws those facts from the feed's `Card` and no longer 
 - a pending `save_automation`'s pane draws `Approval.title` and the summary lines (`SaveAutomationProposalSummary`);
 - a row's Reply… (`reply`), its open reply (`reply_waiting`) and an idea's verdict buttons (`waits`) come from the ref facts Go sends on the artifact the row is on, or on the Messages card's items (the Messages stand-in's Reply…).
 
-`InboxReplyPolicy` is left only for the local reply writer, which Task 12 deletes. The press addresses (a button's newest proposal and its task) are still read by id.
+`InboxReplyPolicy` is left only for `ActionStripViewModel`'s no-tower test path (`towerWrites` nil); the tower path (`inbox.act reply_propose`) is chosen before it and never reads it — Go builds the reply's tool and args. The press addresses (a button's newest proposal and its task) are still read by id.
 
 `InboxCardNotice` is not ported, and its Swift copy was deleted in Task 11d-b: neither side posts a notice today.
 

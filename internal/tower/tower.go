@@ -50,8 +50,14 @@ type Options struct {
 	// peer as the Desktop, so the owner gestures are refused over the socket.
 	VerifyDesktop func(ctx context.Context, pid int) error
 	// Sentence words a handler's fault (not a refusal) for the refusal shown
-	// to the owner; nil means the error's text.
+	// to the owner; nil means a fixed sentence (FaultSentence), never the
+	// error's own text.
 	Sentence func(command string, err error) string
+	// ReadDB is the handle Spec.Read commands run on (reads.go: OpenReads, a
+	// read-only handle of its own, so a read never queues behind the
+	// daemon's one-connection pool); nil means the write handle. Writes and
+	// the ledger always use the write handle.
+	ReadDB *db.DB
 }
 
 // Tower runs commands against one database.

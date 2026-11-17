@@ -134,6 +134,39 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertNil(sessionID, "no session is resumed, so its id is not kept (#604 G11)")
     }
 
+    /// `ai query --persist` could not write the reply (`save_error`): the
+    /// embedded chat shows Go's sentence as the main chat does, and it stays
+    /// after the turn ends — the answer is not silently gone on reload.
+    func testAProcessSaveErrorIsShownAndOutlivesTheTurn() async throws {
+        let engine = makeEngine()
+        XCTAssertTrue(engine.send("Hi"))
+        await engine.finished()
+        ai.emit(.text("Answer."), .saveError("Couldn't save the reply: disk I/O error"))
+        expectTrue(await waitForCondition { engine.bannerError != nil })
+        XCTAssertEqual(engine.bannerError, "Couldn't save the reply: disk I/O error", "Go's sentence, no doubled prefix")
+        ai.emit(.done)
+        ai.finish()
+        expectTrue(await waitIdle(engine))
+        XCTAssertEqual(engine.bannerError, "Couldn't save the reply: disk I/O error", "raised while the turn ran: it stays")
+    }
+
+    /// The same save failure on two turns in a row: the second turn's
+    /// warning survives its end too (tracked per turn, not by its text).
+    func testTheSameSaveErrorOnTheNextTurnStillOutlivesIt() async throws {
+        let sentence = "Couldn't save the reply: disk I/O error"
+        let engine = makeEngine()
+        for turn in 1...2 {
+            XCTAssertTrue(engine.send("Hi \(turn)"))
+            await engine.finished()
+            ai.emit(.text("Answer."), .saveError(sentence))
+            expectTrue(await waitForCondition { [ai] in ai?.calls.count == turn && engine.bannerError == sentence })
+            ai.emit(.done)
+            ai.finish()
+            expectTrue(await waitIdle(engine))
+            XCTAssertEqual(engine.bannerError, sentence, "turn \(turn): raised while it ran, so it stays")
+        }
+    }
+
     /// `ai query --events v2` (claude and codex): a tool call is a step on the
     /// live row and in `chat_turn_steps` as it happens, the text streamed
     /// before it stays (no reset, CHAT-02), the usage lands on the reply,

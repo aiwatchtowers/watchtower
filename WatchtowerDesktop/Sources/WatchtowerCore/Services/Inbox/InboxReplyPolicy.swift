@@ -18,10 +18,12 @@ package struct InboxReplyDraft: Equatable, Sendable {
     }
 }
 
-/// Reply from a row (inbox builder B, asks #445 and #451): the local
-/// writer's tool and args for `watchtower actions propose` (no tower:
-/// tests; Task 12 deletes it). Which rows draw **Reply…**, and whether a
-/// reply already waits, are Go's ref facts (`reply`, `reply_waiting`).
+/// Reply from a row (inbox builder B, asks #445 and #451): the tool and
+/// args of the no-tower path (`ActionStripViewModel.towerWrites` nil, tests
+/// only) for `watchtower actions propose`. The tower path never reads it:
+/// Go builds the reply's tool and args (`inbox.act reply_propose`). Which
+/// rows draw **Reply…**, and whether a reply already waits, are Go's ref
+/// facts (`reply`, `reply_waiting`).
 package enum InboxReplyPolicy {
     /// The `context_type` a Reply proposal carries (Go `db.InboxItemContextType`).
     package static let contextType = "inbox_item"

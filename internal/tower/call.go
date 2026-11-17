@@ -29,6 +29,9 @@ func (t *Tower) Call(ctx context.Context, req api.Request, o Origin) api.Respons
 		return t.fail(resp, req.Command, err)
 	}
 	c := &Ctx{DB: t.db, Origin: o, Now: t.opts.Now, tower: t, command: req.Command, spec: cmd.Spec}
+	if cmd.Spec.Read && t.opts.ReadDB != nil {
+		c.DB = t.opts.ReadDB
+	}
 	if cmd.Spec.Read || cmd.Spec.Watch {
 		out, err := run(ctx, c)
 		if err != nil {
@@ -63,14 +66,19 @@ func unknown(resp api.Response) api.Response {
 	return resp
 }
 
+// FaultSentence is the refusal sentence of a fault when Options.Sentence is
+// nil: a fixed sentence, so an error's own text (paths, SQL) never reaches a
+// client.
+const FaultSentence = "Watchtower couldn't do that. Try again."
+
 // fail answers a refusal as is and any other error as unsupported, worded by
-// Options.Sentence (default: the error's text).
+// Options.Sentence (default: FaultSentence).
 func (t *Tower) fail(resp api.Response, command string, err error) api.Response {
 	var r *RefusalError
 	if errors.As(err, &r) {
 		return refused(resp, r.Code, r.Sentence)
 	}
-	sentence := err.Error()
+	sentence := FaultSentence
 	if t.opts.Sentence != nil {
 		sentence = t.opts.Sentence(command, err)
 	}

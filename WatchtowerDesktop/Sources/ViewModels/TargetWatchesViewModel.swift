@@ -212,7 +212,7 @@ final class TargetWatchesViewModel {
             let _: ActResult = try await send(.tracksEventStatus) {
                 TrackEventStatusRequest(requestID: $0, eventID: id, status: "dismissed")
             }
-        } catch { errorMessage = "Failed to dismiss: \(error.localizedDescription)" }
+        } catch { errorMessage = Self.failure("Failed to dismiss", error) }
         refreshEvents()
     }
 
@@ -238,7 +238,7 @@ final class TargetWatchesViewModel {
             let id = Int64(watch.id)
             let _: ActResult = try await send(.tracksEnabled) { TrackEnabledRequest(requestID: $0, id: id, enabled: on) }
         } catch {
-            errorMessage = "Failed to update the watch: \(error.localizedDescription)"
+            errorMessage = Self.failure("Failed to update the watch", error)
         }
         refreshWatches()
     }
@@ -248,10 +248,18 @@ final class TargetWatchesViewModel {
         do {
             let _: ActResult = try await send(.tracksDelete) { ScreenIDRequest(requestID: $0, id: id) }
         } catch {
-            errorMessage = "Failed to delete the watch: \(error.localizedDescription)"
+            errorMessage = Self.failure("Failed to delete the watch", error)
         }
         refreshWatches()
         refreshEvents()
+    }
+
+    /// A failed watch or event write as the tab shows it: the tower's own
+    /// sentence as is (Go already says what failed, so no second prefix),
+    /// any other error under `prefix`.
+    static func failure(_ prefix: String, _ error: Error) -> String {
+        if let tower = error as? TowerWriteError { return tower.sentence }
+        return "\(prefix): \(error.localizedDescription)"
     }
 
     /// One write in this view model's chain (board #670), through the tower.
