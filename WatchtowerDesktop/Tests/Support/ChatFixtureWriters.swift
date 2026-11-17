@@ -8,6 +8,22 @@ import WatchtowerCore
 // is an engine operation). Same names, so the tests' fixtures read as before.
 
 extension ChatConversationQueries {
+    /// Moves a conversation into (or out of) a project. An actual move also
+    /// clears the stored provider session: a `--resume`d Claude session keeps
+    /// the prompt it was started with, so it would never see the new
+    /// project's block or files — the next turn starts fresh and replays.
+    /// Moving to the project it is already in changes nothing — so zero rows
+    /// is a normal outcome here and the write stays unchecked.
+    package static func setProject(_ db: Database, id: Int64, projectID: Int64?) throws {
+        try db.execute(
+            sql: """
+                UPDATE chat_conversations SET project_id = ?, session_id = NULL
+                WHERE id = ? AND project_id IS NOT ?
+                """,
+            arguments: [projectID, id, projectID]
+        )
+    }
+
     package static func fetchAll(_ db: Database) throws -> [ChatConversation] {
         try ChatConversation.fetchAll(db, sql: """
             SELECT * FROM chat_conversations ORDER BY updated_at DESC
