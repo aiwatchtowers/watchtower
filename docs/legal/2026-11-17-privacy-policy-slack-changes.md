@@ -22,7 +22,7 @@ New text:
 > - read your reactions: for reaction commands;
 > - read the workspace's name and custom emoji: to show them.
 >
-> Watchtower has no server and sends this data to no one but the AI provider you choose, and to your own Claude or ChatGPT account if you turn its Slack connector on (see "AI providers" and "Live Slack").
+> Watchtower has no server; what it sends goes only to the AI providers described in "AI providers" (including the reserve provider when that setting is on). Separately, a Claude or ChatGPT Slack connector you turn on reads Slack directly (see "Live Slack").
 
 ## 2. "Where your data lives"
 
@@ -42,7 +42,7 @@ Old text: the sentence "Watchtower requests only the permissions it needs to fun
 
 New text:
 
-> To write summaries and answer your questions, Watchtower sends the message text the feature needs to the AI provider you choose: Anthropic (Claude), OpenAI (Codex), or a model you run yourself (Ollama), which is on your Mac unless you point Watchtower at another server, in which case the data goes where you point it. When image description is on, images shared in Slack are downloaded and sent to the model as well. If you turn on **Use reserve when limits are reached**, a request can go to the other provider (Claude or Codex) when the first one's limit is reached. The text goes under your own account with that provider, and that provider's own terms govern how long it keeps it and where. Watchtower never trains a model on your data. Whether a provider may train on what it receives is a setting in your account with that provider (Claude: "Help improve Claude"; ChatGPT: "Improve the model for everyone"); turn it off there. Watchtower cannot read that setting. AI output can be inaccurate.
+> To write summaries and answer your questions, Watchtower sends the message text the feature needs to the AI provider you choose: Anthropic (Claude), OpenAI (Codex), or a model you run yourself (Ollama), which is on your Mac unless you point Watchtower at another server, in which case the data goes where you point it. When Knowledge search is on and the provider can read images, images shared in Slack are downloaded and sent to the model as well. If you turn on **Use reserve when limits are reached**, a request can go to the other provider (Claude or Codex) when the first one's limit is reached. The text goes under your own account with that provider, and that provider's own terms govern how long it keeps it and where. Watchtower never trains a model on your data. Whether a provider may train on what it receives is a setting in your account with that provider (Claude: "Help improve Claude"; ChatGPT: "Improve the model for everyone"); turn it off there. Watchtower cannot read that setting. AI output can be inaccurate.
 
 ## 4. No AI training, for the desktop app
 
