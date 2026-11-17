@@ -19,11 +19,14 @@ public enum ChatFeedLayout {
     /// The row id of the message with this id (what a scroll targets).
     public static func rowID(_ messageID: Int64) -> String { "m\(messageID)" }
 
-    public static func rows(messages: [ChatFeed.Message], actions: [ChatFeed.Action]) -> [Row] {
+    /// With a `cache`, only the messages that changed since its last pass are derived again.
+    public static func rows(
+        messages: [ChatFeed.Message], actions: [ChatFeed.Action], cache: ChatMessagePartsCache? = nil
+    ) -> [Row] {
+        let derived = cache?.parts(for: messages) ?? messages.map(ChatMessageParts.parts(for:))
         var shown = Set<Int64>()
         var rows: [Row] = []
-        for message in messages {
-            let parts = ChatMessageParts.parts(for: message)
+        for (message, parts) in zip(messages, derived) {
             for part in parts where part.kind == ChatPartKind.approval {
                 if let payload = try? part.decodePayload(ChatApprovalPayload.self) { shown.insert(payload.id) }
             }
