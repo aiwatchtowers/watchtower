@@ -46,7 +46,9 @@ package enum TestInboxFeeds {
     /// reminder, an unresolved message, an undecided proposal, a failed
     /// built-in move): a press or pane test's stand-in for the tower's read.
     /// Not the Inbox's rules (Go's, tested there): coarse row states only,
-    /// so a written row leaves on the next listing. Outputs go to their
+    /// so a written row leaves on the next listing. Being replaced by Go's
+    /// `"desktop": true` cases (`FeedCaseTransport`); its last callers are the
+    /// button-state tests of 11d-b, converted after the merge, then it goes. Outputs go to their
     /// folder (`inbox_artifact_folders`), tracks (dismissed ones in the
     /// Stopped fold), ideas, messages, day cards and thread briefs to the
     /// root; proposals, reminders and notices to Needs approval.

@@ -319,17 +319,11 @@ final class NotificationRouteTests: XCTestCase {
     /// Tracks filter, `track_update` with a `trackId` that track's card (also
     /// after the forwarding round trip), `briefing` today's day card.
     func testTrackAndBriefingPushesOpenInboxCards() async throws {
-        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
-
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
         // Track 7 exists: a route selects only a listed card. An owner, so
         // the root lists today's day card (OWNER-02).
-        try await pool.write { db in
-            let track = try TestDatabase.insertTrack(db, text: "Launch")
-            try db.execute(sql: "UPDATE tracks SET id = 7 WHERE id = ?", arguments: [track])
-            _ = try TestDatabase.insertSlackAccount(db, currentUserID: "1:U1")
-        }
+        let tower = try FeedCaseTransport.seeded("desktop_notification_track_and_owner", pool: pool)
         let savedFolder = UserDefaults.standard.object(forKey: ActionStripViewModel.folderKey)
         defer { UserDefaults.standard.set(savedFolder, forKey: ActionStripViewModel.folderKey) }
         let today = AppState.inboxToday()
@@ -349,6 +343,7 @@ final class NotificationRouteTests: XCTestCase {
             UserDefaults.standard.removeObject(forKey: ActionStripViewModel.folderKey)
             let appState = AppState.isolated()
             appState.initActionStrip(dbPool: pool)
+            await appState.actionStripViewModel?.follow(tower)
             await NotificationDelegate.route(
                 actionID: UNNotificationDefaultActionIdentifier, userInfo: userInfo, appState: appState, forwarded: true)
             let vm = try XCTUnwrap(appState.actionStripViewModel)

@@ -157,25 +157,23 @@ final class ActionStripFeedTests: XCTestCase {
 
     // MARK: - Writes through inbox.act (Task 11c)
 
-    /// A VM over `pool` that reads and writes through `transport`.
-    private func writing(_ transport: ScriptedFeedTransport) async throws -> ActionStripViewModel {
+    /// A VM over `pool` listing Go's case `listing` (seeded into the pool;
+    /// nil: nothing listed) that writes through `transport`.
+    private func writing(_ transport: ScriptedFeedTransport, listing: String?) async throws -> ActionStripViewModel {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), defaults: defaults)
         await vm.refresh()
-        await vm.refreshListingEverything()
+        if let listing { await vm.follow(try FeedCaseTransport.seeded(listing, pool: XCTUnwrap(pool))) }
         let client = TowerClient(transport: transport, clock: ContinuousClock(), restartDaemon: nil, startDaemon: nil)
         vm.attachWrites(InboxTowerWrites(client: client))
         return vm
     }
 
     func testDoneSendsInboxActWithTheContentHash() async throws {
-        let id = try await pool.write { db -> Int64 in
-            let automation = try TestDatabase.insertAutomation(db, slug: "mail-summary", name: "Mail summary")
-            let run = try TestDatabase.insertAutomationRun(db, automationID: automation)
-            return try TestDatabase.insertAutomationOutput(db, automationID: automation, runID: run, contentHash: "h-drawn")
-        }
+        // Mail summary's output 1, drawn at h-drawn.
+        let id: Int64 = 1
         let transport = ScriptedFeedTransport()
-        let vm = try await writing(transport)
+        let vm = try await writing(transport, listing: "desktop_feedtest_drawn_output")
         let before = try await pool.read { db in try Row.fetchOne(db, sql: "SELECT * FROM automation_outputs") }
 
         await vm.markOutputDone(id)
@@ -191,9 +189,10 @@ final class ActionStripFeedTests: XCTestCase {
     }
 
     func testFailedActionKeepsTheRowWithTheSentenceAndRetry() async throws {
-        let id = try await pool.write { db in try TestDatabase.insertInboxItem(db) }
+        // Message 1.
+        let id: Int64 = 1
         let transport = ScriptedFeedTransport()
-        let vm = try await writing(transport)
+        let vm = try await writing(transport, listing: "desktop_kinds_one_message")
         let sentence = "Couldn't mark it done: the database is busy."
         transport.answerActs(refusal: Refusal(code: .changed, sentence: sentence))
 
@@ -216,7 +215,7 @@ final class ActionStripFeedTests: XCTestCase {
 
     func testAVanishedRecordLeavesQuietly() async throws {
         let transport = ScriptedFeedTransport()
-        let vm = try await writing(transport)
+        let vm = try await writing(transport, listing: nil)
         transport.answerActs(refusal: Refusal(code: .notFound, sentence: "Couldn't do that: it's no longer on the Mac."))
 
         await vm.messageDone(4242)
@@ -227,9 +226,10 @@ final class ActionStripFeedTests: XCTestCase {
 
     func testApproveSendsTheDrawnArgsAndEditsAndKeepsAToolFailureOnTheCard() async throws {
         let args = #"{"text":"Ship it","reason":"r"}"#
-        let id = try await pool.write { db in try TestDatabase.insertAgentAction(db, argsJSON: args) }
+        // Action 1 with `args`.
+        let id: Int64 = 1
         let transport = ScriptedFeedTransport()
-        let vm = try await writing(transport)
+        let vm = try await writing(transport, listing: "desktop_feedtest_action_ship_it")
         transport.answerActs(ActResult(status: "failed", error: "Slack said no"))
 
         await vm.approve(id, shownArgs: args, patch: #"{"text":"Ship it now"}"#)
@@ -250,13 +250,10 @@ final class ActionStripFeedTests: XCTestCase {
     }
 
     func testEveryPressNamesItsButtonKind() async throws {
-        let id = try await pool.write { db -> Int64 in
-            let automation = try TestDatabase.insertAutomation(db, slug: "triage", name: "Triage")
-            let run = try TestDatabase.insertAutomationRun(db, automationID: automation)
-            return try TestDatabase.insertAutomationOutput(db, automationID: automation, runID: run, contentHash: "h1")
-        }
+        // Triage's output 1, drawn at h1.
+        let id: Int64 = 1
         let transport = ScriptedFeedTransport()
-        let vm = try await writing(transport)
+        let vm = try await writing(transport, listing: "desktop_feedtest_triage_output")
 
         await vm.pressReply(outputID: id, action: 0, contentHash: "h1")
         let card = try XCTUnwrap(vm.outputRows.first { $0.id == id })

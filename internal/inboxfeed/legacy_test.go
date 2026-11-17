@@ -158,3 +158,42 @@ func TestLegacy_IdeaFinderAndThreadBriefsAndMessages(t *testing.T) {
 		t.Errorf("root %s", got)
 	}
 }
+
+// The Messages card's items carry their ref facts, in item order, as an
+// artifact's rows do: shown and waiting, Reply (a Slack mention with a
+// permalink has one, mail has none) and an open Reply (a pending
+// send_slack_message in the item's context). The Mac's Reply… reads them.
+func TestLegacy_MessagesItemsCarryRefFacts(t *testing.T) {
+	item := func(id int, trigger, permalink, created string) string {
+		return fmt.Sprintf("INSERT INTO inbox_items (id, channel_id, message_ts, sender_user_id, trigger_type, "+
+			"snippet, permalink, status, priority, created_at, updated_at) VALUES (%d, 'C1', '1700000000.00%04d', "+
+			"'U2', '%s', 'Can you look?', '%s', 'pending', 'medium', '%s', '%s')",
+			id, id, trigger, permalink, created, created)
+	}
+	feed := buildFeed(t, []string{
+		item(1, "mention", "https://example.slack.com/archives/C1/p1", "2026-11-16T09:00:00Z"),
+		item(2, "email_received", "", "2026-11-16T08:00:00Z"),
+		item(3, "dm", "https://example.slack.com/archives/C1/p3", "2026-11-16T07:00:00Z"),
+		"INSERT INTO agent_actions (id, tool, args_json, context_type, context_id, status) " +
+			`VALUES (1, 'send_slack_message', '{}', 'inbox_item', '3', 'pending')`,
+	}, Options{})
+	card := cardByID(t, feed, MessagesCardID)
+	if card.Legacy == nil || len(card.Legacy.Items) != 3 {
+		t.Fatalf("messages card items: %+v", card.Legacy)
+	}
+	type fact struct {
+		id                       int64
+		open, waits, reply, wait bool
+	}
+	var got []fact
+	for _, f := range card.RefFacts {
+		if f.Kind != api.RefInboxItem {
+			t.Fatalf("fact kind %s", f.Kind)
+		}
+		got = append(got, fact{f.ID, f.Open, f.Waits, f.Reply, f.ReplyWaiting})
+	}
+	want := []fact{{1, true, true, true, false}, {2, true, true, false, false}, {3, true, true, true, true}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("facts %v, want %v (items in order 1, 2, 3)", got, want)
+	}
+}

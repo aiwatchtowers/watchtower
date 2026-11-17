@@ -24,9 +24,17 @@ func TestInboxFeedCases(t *testing.T) {
 	for _, c := range cases {
 		names[c.Name] = true
 		t.Run(c.Name, func(t *testing.T) {
-			got := buildCase(t, c)
+			got, steps := buildSteps(t, c)
 			if g, w := canonical(t, got), canonical(t, c.Expect); g != w {
 				t.Fatalf("feed differs from the fixture\n got: %s\nwant: %s", g, w)
+			}
+			for i, s := range c.Steps {
+				if g, w := canonical(t, steps[i]), canonical(t, s.Expect); g != w {
+					t.Fatalf("step %s: feed differs from the fixture\n got: %s\nwant: %s", s.Name, g, w)
+				}
+			}
+			if len(c.Steps) > 0 && !c.Desktop {
+				t.Errorf("a case with steps is a Desktop scenario: mark it desktop")
 			}
 		})
 	}

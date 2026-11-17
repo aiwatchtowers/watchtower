@@ -446,7 +446,7 @@ func (s *snapshot) legacyCards(folder int64) []timedCard {
 		out = append(out, timedCard{at, c})
 	}
 	if s.waitingForMe.standIn && len(l.messages) > 0 {
-		c, at := messagesCard(l, folder)
+		c, at := messagesCard(l, folder, s.refState)
 		out = append(out, timedCard{at, c})
 	}
 	for _, b := range l.briefs {
@@ -595,7 +595,7 @@ func ideaSource(i idea) string {
 // messagesCard is the Messages entry: "N waiting", "Mentions, DMs and
 // replies", unread while one message is; its time the newest message's;
 // the messages newest first.
-func messagesCard(l legacy, folder int64) (api.Card, time.Time) {
+func messagesCard(l legacy, folder int64, st refState) (api.Card, time.Time) {
 	msgs := append([]message{}, l.messages...)
 	var at time.Time
 	unread := false
@@ -612,12 +612,17 @@ func messagesCard(l legacy, folder int64) (api.Card, time.Time) {
 		return msgs[i].ID < msgs[j].ID
 	})
 	items := make([]api.LegacyItem, 0, len(msgs))
+	refs := make([]ref, 0, len(msgs))
 	for _, m := range msgs {
 		items = append(items, api.LegacyItem{RefKind: api.RefInboxItem, ID: m.ID, Title: m.Title, Subtitle: m.Source,
 			Preview: m.WhyMatters, Stamp: formatStamp(m.Stamp), Unread: m.Unread, High: m.Priority == "high"})
+		refs = append(refs, ref{Kind: api.RefInboxItem, ID: m.ID})
 	}
-	return legacyCard(MessagesCardID, folder, "Messages", "Mentions, DMs and replies",
-		strconv.Itoa(len(msgs))+" waiting", at, unread, api.LegacySection{Kind: api.LegacyMessages, Items: items}), at
+	card := legacyCard(MessagesCardID, folder, "Messages", "Mentions, DMs and replies",
+		strconv.Itoa(len(msgs))+" waiting", at, unread, api.LegacySection{Kind: api.LegacyMessages, Items: items})
+	// Each item's facts, in item order: the Mac's Reply… reads them, as on an artifact's rows.
+	card.RefFacts = st.refFacts(refs)
+	return card, at
 }
 
 // threadBriefCard is one brief the `:brief:` reaction made in the last 24

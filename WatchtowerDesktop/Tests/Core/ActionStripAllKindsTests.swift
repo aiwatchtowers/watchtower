@@ -25,11 +25,17 @@ final class ActionStripAllKindsTests: XCTestCase {
         TestDatabase.cleanup(path: path)
     }
 
-    private var today: String { HomeFeedBuilder.dayString(Date(), calendar: .current) }
-
     private func makeVM(_ runner: CLIRunnerProtocol = FakeCLIRunner()) -> ActionStripViewModel {
         ActionStripViewModel(dbPool: pool, cliRunner: runner, defaults: defaults)
     }
+
+    /// The Go feed case `name` (`inbox_feed_cases.json`) seeded into the pool.
+    private func tower(_ name: String) throws -> FeedCaseTransport {
+        try FeedCaseTransport.seeded(name, pool: XCTUnwrap(pool))
+    }
+
+    /// The day the Go cases are built on (their `now`).
+    private static let caseDay = "2026-11-16"
 
     nonisolated private static func message(_ db: Database, _ n: Int, created: String = "2026-10-21T07:00:00Z") throws -> Int {
         let id = try TestDatabase.insertInboxItem(db, messageTS: "1700000\(String(format: "%04d", n)).000100")
@@ -74,12 +80,8 @@ final class ActionStripAllKindsTests: XCTestCase {
     /// landed, and the card leaves when the next read finds it done; the
     /// Desktop writes no row itself (STRIP-02).
     func testRetryBuiltinUpgradeRunsTheCLIRestartsAndRereads() async throws {
-        try await pool.write { db in
-            try db.execute(sql: """
-                INSERT INTO builtin_migrations (builtin_id, status, error, attempts, updated_at)
-                VALUES ('morning-brief', 'failed', 'config unreadable', 1, '2026-10-22T07:00:00Z')
-                """)
-        }
+        // morning-brief's move failed; Go's next feed once the CLI marks it done.
+        let tower = try tower("desktop_kinds_builtin_retry")
         let runner = FakeCLIRunner(stdout: Data(#"{"results":[{"builtin_id":"morning-brief","status":"done"}]}"#.utf8))
         let pool = try XCTUnwrap(pool)
         runner.onRun = { _ in
@@ -89,7 +91,7 @@ final class ActionStripAllKindsTests: XCTestCase {
             }
         }
         let vm = makeVM(runner)
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
         XCTAssertEqual(vm.feed.builtinNotices.map(\.builtinID), ["morning-brief"], "the notice is read")
         var restarts = 0
 
@@ -118,29 +120,10 @@ final class ActionStripAllKindsTests: XCTestCase {
     // MARK: - STRIP-02
 
     func testRefreshIsStillOnePureRead() async throws {
-        let date = today
-        try await pool.write { db in
-            let automationID = try TestDatabase.insertAutomation(db, slug: "mail-summary", name: "Mail summary")
-            let runID = try TestDatabase.insertAutomationRun(db, automationID: automationID)
-            try TestDatabase.insertAutomationOutput(db, automationID: automationID, runID: runID)
-            try TestDatabase.insertAgentAction(
-                db, surface: "automation", conversationID: 0, contextType: "automation_run", contextID: String(runID))
-            try db.execute(sql: """
-                INSERT INTO reminders (message_ref, note, remind_at, status)
-                VALUES ('C1@1','call back','2000-01-01T00:00:00Z','pending')
-                """)
-            try TestDatabase.insertBriefing(db, date: date)
-            let plan = try TestDatabase.insertDayPlan(db, planDate: date)
-            try TestDatabase.insertDayPlanItem(db, dayPlanID: plan, title: "A", status: "pending")
-            let track = try TestDatabase.insertTrack(db, hasUpdates: true)
-            try db.execute(sql: "INSERT INTO track_events (track_id, summary) VALUES (?, 's')", arguments: [track])
-            try TestDatabase.insertIdea(db, kind: "idea")
-            _ = try Self.message(db, 1)
-            try db.execute(sql: """
-                INSERT INTO builtin_migrations (builtin_id, status, error, attempts, updated_at)
-                VALUES ('morning-brief', 'failed', 'config unreadable', 1, '2026-10-22T07:00:00Z')
-                """)
-        }
+        let date = Self.caseDay
+        // An output, its run's proposal, a due reminder, the day's briefing and
+        // plan, a track with an event, an idea, a message and a failed move.
+        let tower = try tower("desktop_kinds_every_source")
         let tables = [
             "briefings", "day_plans", "day_plan_items", "tracks", "track_events", "ideas", "inbox_items",
             "agent_actions", "reminders", "automation_outputs", "automation_runs", "automations", "pipeline_runs",
@@ -149,8 +132,8 @@ final class ActionStripAllKindsTests: XCTestCase {
         let before = try dump(tables)
         let vm = makeVM()
 
-        await vm.refreshListingEverything()
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
+        await vm.refresh()
 
         XCTAssertEqual(try dump(tables), before)
         XCTAssertNil(vm.lastError)
@@ -170,16 +153,14 @@ final class ActionStripAllKindsTests: XCTestCase {
     // MARK: - Opening
 
     func testOpeningTheDayCardMarksTheBriefingRead() async throws {
-        let date = today
-        let id = try await pool.write { db -> Int in
-            try TestDatabase.insertBriefing(db, date: "2026-01-01")
-            try TestDatabase.insertBriefing(db, date: date)
-            return Int(db.lastInsertedRowID)
-        }
+        let date = Self.caseDay
+        // Briefings 1 (2026-01-01) and 2 (the case's day).
+        let tower = try tower("desktop_kinds_two_briefings")
+        let id = 2
         let other = try row("briefings", id - 1)
         let before = try row("briefings", id)
         let vm = makeVM()
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
 
         await vm.select(.day(date))
 
@@ -193,10 +174,11 @@ final class ActionStripAllKindsTests: XCTestCase {
     }
 
     func testOpeningAMessageWritesOnlyReadAt() async throws {
-        let id = try await pool.write { try Self.message($0, 1) }
+        let tower = try tower("desktop_kinds_one_message")
+        let id = 1
         let before = try row("inbox_items", id)
         let vm = makeVM()
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
 
         await vm.select(.message(id))
 
@@ -209,16 +191,13 @@ final class ActionStripAllKindsTests: XCTestCase {
     }
 
     func testOpeningATrackWritesNothing() async throws {
-        let id = try await pool.write { db -> Int in
-            let track = try TestDatabase.insertTrack(db, hasUpdates: true)
-            try db.execute(sql: "INSERT INTO track_events (track_id, summary) VALUES (?, 's')", arguments: [track])
-            try TestDatabase.insertIdea(db, kind: "idea")
-            return Int(track)
-        }
+        // Track 1 with an unread event, idea 1.
+        let tower = try tower("desktop_kinds_track_and_idea")
+        let id = 1
         let tables = ["tracks", "track_events", "ideas"]
         let before = try dump(tables)
         let vm = makeVM()
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
         let idea = try XCTUnwrap(vm.feed.ideas.first)
 
         await vm.select(.track(id))
@@ -229,17 +208,14 @@ final class ActionStripAllKindsTests: XCTestCase {
     }
 
     func testOpeningAnAlreadyReadCardWritesNothing() async throws {
-        let date = today
-        let id = try await pool.write { db -> Int in
-            try TestDatabase.insertBriefing(db, date: date, readAt: "2026-10-01T00:00:00Z")
-            let id = try Self.message(db, 1)
-            try db.execute(sql: "UPDATE inbox_items SET read_at = '2026-10-01T00:00:00Z' WHERE id = ?", arguments: [id])
-            return id
-        }
+        let date = Self.caseDay
+        // The day's briefing and message 1, both read already.
+        let tower = try tower("desktop_kinds_read_briefing_and_message")
+        let id = 1
         let tables = ["briefings", "inbox_items"]
         let before = try dump(tables)
         let vm = makeVM()
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
 
         await vm.select(.day(date))
         await vm.select(.message(id))
@@ -251,16 +227,11 @@ final class ActionStripAllKindsTests: XCTestCase {
     // MARK: - Tracks
 
     func testTrackDoneMarksTrackAndEventsRead() async throws {
-        let (id, other) = try await pool.write { db -> (Int, Int) in
-            let track = try TestDatabase.insertTrack(db, hasUpdates: true)
-            let other = try TestDatabase.insertTrack(db, hasUpdates: true)
-            for owner in [track, track, other] {
-                try db.execute(sql: "INSERT INTO track_events (track_id, summary) VALUES (?, 's')", arguments: [owner])
-            }
-            return (Int(track), Int(other))
-        }
+        // Tracks 1 (two unread events) and 2 (one); Go's next feed once 1 is done.
+        let tower = try tower("desktop_kinds_two_tracks_with_updates")
+        let (id, other) = (1, 2)
         let vm = makeVM()
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
 
         await vm.markTrackDone(id)
 
@@ -275,14 +246,11 @@ final class ActionStripAllKindsTests: XCTestCase {
     }
 
     func testStopWatchingACustomTrackPausesIt() async throws {
-        let (custom, auto) = try await pool.write { db -> (Int, Int) in
-            let custom = try TestDatabase.insertTrack(db, text: "Watch the launch")
-            try db.execute(sql: "UPDATE tracks SET origin = 'custom', enabled = 1 WHERE id = ?", arguments: [custom])
-            let auto = try TestDatabase.insertTrack(db)
-            return (Int(custom), Int(auto))
-        }
+        // Custom track 1 (collecting) and auto track 2; Go's feeds once each is stopped.
+        let tower = try tower("desktop_kinds_custom_and_auto_track")
+        let (custom, auto) = (1, 2)
         let vm = makeVM()
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
         let cards = vm.feed.tracks.map(\.track)
         let customTrack = try XCTUnwrap(cards.first { $0.id == custom })
         let autoTrack = try XCTUnwrap(cards.first { $0.id == auto })
@@ -388,10 +356,11 @@ final class ActionStripAllKindsTests: XCTestCase {
     // MARK: - Messages
 
     func testMessageButtonsRunTheInboxCLI() async throws {
-        let id = try await pool.write { try Self.message($0, 1) }
+        let tower = try tower("desktop_kinds_one_message")
+        let id = 1
         let runner = FakeCLIRunner()
         let vm = makeVM(runner)
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
 
         await vm.messageDone(id)
         await vm.hideMessage(id)
@@ -407,9 +376,10 @@ final class ActionStripAllKindsTests: XCTestCase {
     }
 
     func testAMessageCLIFailureSaysWhy() async throws {
-        let id = try await pool.write { try Self.message($0, 1) }
+        let tower = try tower("desktop_kinds_one_message")
+        let id = 1
         let vm = makeVM(FakeCLIRunner(error: CLIRunnerError.binaryNotFound))
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
 
         await vm.messageDone(id)
 
@@ -418,11 +388,11 @@ final class ActionStripAllKindsTests: XCTestCase {
     }
 
     func testMessageDoneOnAResolvedItemIsQuiet() async throws {
-        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
-
-        let id = try await pool.write { try Self.message($0, 1) }
+        // Message 1; Go's next feed once INBOX-02 resolved it.
+        let tower = try tower("desktop_kinds_message_resolved_elsewhere")
+        let id = 1
         let vm = makeVM()
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
         XCTAssertEqual(vm.feed.messages.count, 1)
         // INBOX-02 auto-resolved it after the list was read; the CLI exits 0.
         try await pool.write { db in
@@ -436,17 +406,11 @@ final class ActionStripAllKindsTests: XCTestCase {
     }
 
     func testSelectionMovesWhenTheSelectedRowVanished() async throws {
-        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
-
-        let ids = try await pool.write { db in
-            try [
-                Self.message(db, 1, created: "2026-10-21T09:00:00Z"),
-                Self.message(db, 2, created: "2026-10-21T08:00:00Z"),
-                Self.message(db, 3, created: "2026-10-21T07:00:00Z")
-            ]
-        }
+        // Messages 1–3, newest first; Go's feeds once 2 and 3, then 1, are resolved.
+        let tower = try tower("desktop_kinds_selected_message_vanishes")
+        let ids = [1, 2, 3]
         let vm = makeVM()
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
         vm.openLegacy(.messages)
         XCTAssertEqual(vm.sections.flatMap(\.items).map(\.id), ids.map { .message($0) })
         await vm.select(.message(ids[1]))
@@ -467,17 +431,11 @@ final class ActionStripAllKindsTests: XCTestCase {
     }
 
     func testSelectionMovesToTheRowBelow() async throws {
-        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
-
-        let ids = try await pool.write { db in
-            try [
-                Self.message(db, 1, created: "2026-10-21T09:00:00Z"),
-                Self.message(db, 2, created: "2026-10-21T08:00:00Z"),
-                Self.message(db, 3, created: "2026-10-21T07:00:00Z")
-            ]
-        }
+        // Messages 1–3, newest first; Go's feed once 2 is resolved.
+        let tower = try tower("desktop_kinds_selected_message_resolved")
+        let ids = [1, 2, 3]
         let vm = makeVM()
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
         vm.openLegacy(.messages)
         await vm.select(.message(ids[1]))
         try await pool.write { db in
@@ -490,9 +448,12 @@ final class ActionStripAllKindsTests: XCTestCase {
     }
 
     func testOverlappingRefreshesEachEndOnAFreshRead() async throws {
-        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
-
+        // The tower already lists message 1 (its read saw the write first);
+        // the panes' records read decides when its row shows.
+        let tower = try FeedCaseTransport("desktop_kinds_one_message", pool: XCTUnwrap(pool))
+        try tower.seedFolders()
         let vm = makeVM()
+        await vm.follow(tower)
         async let first: Void = vm.refresh()
         let id = try await pool.write { try Self.message($0, 1) }
         async let second: Void = vm.refresh()
@@ -509,20 +470,20 @@ final class ActionStripAllKindsTests: XCTestCase {
     /// leaving one never writes the old per-viewer key.
     func testDayCardDoneIsNeverWritten() async {
         let vm = makeVM()
-        await vm.refreshListingEverything()
+        await vm.refresh()
         await vm.select(.day("2026-10-22"))
         await vm.select(nil)
-        await vm.refreshListingEverything()
+        await vm.refresh()
 
         XCTAssertNil(defaults.object(forKey: "inbox.dayCardDone"))
         XCTAssertNil(defaults.object(forKey: "inbox.filter"), "the filter bar's key is gone")
     }
 
     func testOpenShowsTheListAndSelects() async throws {
-        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
-
-        let id = try await pool.write { try Self.message($0, 1) }
+        let tower = try tower("desktop_kinds_one_message")
+        let id = 1
         let vm = makeVM()
+        await vm.follow(tower)
 
         await vm.open(folder: nil, select: .card(.message(id)))
 
@@ -552,18 +513,11 @@ final class ActionStripAllKindsTests: XCTestCase {
     /// link to a merged idea selects the idea it was merged into; a card
     /// that is nowhere selects nothing (never a pane the next poll empties).
     func testOpeningAHiddenTrackOrIdeaSelectsWhatIsListed() async throws {
-        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
-
-        let (stopped, target, merged) = try await pool.write { db -> (Int, Int, Int) in
-            let stopped = try TestDatabase.insertTrack(db, text: "Old vendor migration")
-            try db.execute(sql: "UPDATE tracks SET dismissed_at = '2026-10-18T10:00:00Z' WHERE id = ?",
-                           arguments: [stopped])
-            let target = try TestDatabase.insertIdea(db, title: "Weekly digest")
-            let merged = try TestDatabase.insertIdea(db, title: "Friday email", status: "merged",
-                                                     mergedIntoID: Int(target))
-            return (Int(stopped), Int(target), Int(merged))
-        }
+        // Track 1 stopped; idea 2 merged into idea 1.
+        let tower = try tower("desktop_kinds_stopped_track_and_merged_idea")
+        let (stopped, target, merged) = (1, 1, 2)
         let vm = makeVM()
+        await vm.follow(tower)
 
         await vm.open(folder: nil, select: .card(.track(stopped)))
         XCTAssertTrue(vm.showsStopped, "the Stopped fold opens")
@@ -581,10 +535,11 @@ final class ActionStripAllKindsTests: XCTestCase {
     // MARK: - Polling (board #731)
 
     func testPollSkipsWhileOffScreen() async throws {
-        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
-
+        // The tower already lists message 1; the panes' records read decides when it shows.
+        let tower = try FeedCaseTransport("desktop_kinds_one_message", pool: XCTUnwrap(pool))
+        try tower.seedFolders()
         let vm = makeVM()
-        await vm.refreshListingEverything()
+        await vm.follow(tower)
         vm.setOnScreen(false)
         let id = try await pool.write { try Self.message($0, 1) }
 

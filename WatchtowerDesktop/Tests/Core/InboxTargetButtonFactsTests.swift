@@ -384,22 +384,15 @@ final class InboxTargetOrphanedProposalTests: XCTestCase {
 @MainActor
 final class InboxTargetOpenProposalTests: XCTestCase {
     func testOpenProposalNotListedKeepsTheSelection() async throws {
-        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
-
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let (outputID, proposalID) = try await pool.write { db -> (Int64, Int64) in
-            let automationID = try TestDatabase.insertAutomation(db, slug: "digest", name: "Acme digest")
-            let runID = try TestDatabase.insertAutomationRun(db, automationID: automationID)
-            let output = try TestDatabase.insertAutomationOutput(db, automationID: automationID, runID: runID)
-            // A row the strip never lists (the inbox surface's one-press
-            // tool, STRIP-01): openProposal finds it nowhere in the list.
-            let proposal = try TestDatabase.insertAgentAction(
-                db, tool: "apply_track_action", surface: "inbox", contextType: "automation_output",
-                contextID: "\(output):0:abc")
-            return (output, proposal)
-        }
+        // Acme digest's output 1, and proposal 1: a row the strip never lists
+        // (the inbox surface's one-press tool, STRIP-01): openProposal finds it
+        // nowhere in Go's list.
+        let tower = try FeedCaseTransport.seeded("desktop_proposal_not_listed", pool: pool)
+        let (outputID, proposalID): (Int64, Int64) = (1, 1)
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
+        await vm.follow(tower)
         await vm.open(folder: nil, select: .card(.output(outputID)))
         XCTAssertEqual(vm.selection, .output(outputID))
 
@@ -410,17 +403,13 @@ final class InboxTargetOpenProposalTests: XCTestCase {
     }
 
     func testOpenProposalListedOpensNeedsApproval() async throws {
-        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
-
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let (proposalID, approvals) = try await pool.write { db -> (Int64, Int64) in
-            let seed = try InboxFolderFixtures.seed(db)
-            let id = try TestDatabase.insertAgentAction(db, surface: "main", contextType: "automation_output",
-                                                        contextID: "1:0:abc")
-            return (id, seed.approvals)
-        }
+        // Proposal 1 of a card's button; Needs approval is folder 2.
+        let tower = try FeedCaseTransport.seeded("desktop_proposal_listed", pool: pool)
+        let (proposalID, approvals): (Int64, Int64) = (1, 2)
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
+        await vm.follow(tower)
         await vm.open(folder: nil, select: nil)
         await vm.openProposal(proposalID)
         // A proposal is drawn in Needs approval's stack (inbox builder B).
@@ -432,17 +421,13 @@ final class InboxTargetOpenProposalTests: XCTestCase {
     /// A card's target button proposal (create_target on the inbox surface)
     /// is an approval since the STRIP-01 narrowing: its click opens it.
     func testOpenProposalOfAnInboxTargetButtonOpensNeedsApproval() async throws {
-        throw XCTSkip("11d-c: needs a feed that follows writes; the listing is Go's (TestStrip0N_*)")
-
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let (proposalID, approvals) = try await pool.write { db -> (Int64, Int64) in
-            let seed = try InboxFolderFixtures.seed(db)
-            let id = try TestDatabase.insertAgentAction(db, surface: "inbox", contextType: "automation_output",
-                                                        contextID: "1:0:abc")
-            return (id, seed.approvals)
-        }
+        // Proposal 1 of an Inbox target button; Needs approval is folder 2.
+        let tower = try FeedCaseTransport.seeded("desktop_proposal_inbox_target_button", pool: pool)
+        let (proposalID, approvals): (Int64, Int64) = (1, 2)
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
+        await vm.follow(tower)
         await vm.open(folder: nil, select: nil)
         await vm.openProposal(proposalID)
         // A proposal is drawn in Needs approval's stack (inbox builder B).

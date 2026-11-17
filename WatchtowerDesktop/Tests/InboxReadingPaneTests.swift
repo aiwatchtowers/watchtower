@@ -360,18 +360,15 @@ final class InboxReadingPaneTests: XCTestCase {
     /// (b-01): its title and the `?`, which opens the cheat sheet in the
     /// reading pane; the header has no pop-up and no filter segments.
     func testHeaderShowsTheTitleAndTheCheatSheetButton() async throws {
-        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
-
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
         let suite = "InboxReadingPaneTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        try await pool.write { db in
-            _ = try TestDatabase.insertSlackAccount(db, currentUserID: "1:U1")
-        }
+        // The owner is known (a Slack account).
+        let tower = try FeedCaseTransport.seeded("desktop_owner_known", pool: pool)
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), defaults: defaults)
-        await vm.refresh()
+        await vm.follow(tower)
         let sut = ActionStripActionsView(
             vm: vm, cheatSheetRows: [], feature: .on(lastCheck: nil), isEnabling: false, featureError: nil,
             onEnable: {}, onOpenSettings: {}, onOpen: { _ in })

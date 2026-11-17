@@ -37,6 +37,23 @@ final class InboxRowActionsTests: XCTestCase {
         return vm
     }
 
+    /// A strip over Go's case `name` (seeded into the pool), following its
+    /// steps through the fake tower; `findCLI` as the app finds the binary.
+    private func listed(
+        _ name: String,
+        _ runner: FakeCLIRunner = FakeCLIRunner(),
+        findCLI: (@MainActor () -> (any CLIRunnerProtocol)?)? = nil
+    ) async throws -> ActionStripViewModel {
+        let tower = try FeedCaseTransport.seeded(name, pool: pool)
+        let vm = if let findCLI {
+            ActionStripViewModel(dbPool: pool, findCLI: findCLI)
+        } else {
+            ActionStripViewModel(dbPool: pool, cliRunner: runner)
+        }
+        await vm.follow(tower)
+        return vm
+    }
+
     private func hooks(_ vm: ActionStripViewModel) -> InboxRefHooks {
         InboxRefHooks(vm: vm, navScreens: [])
     }
@@ -281,17 +298,12 @@ final class InboxRowActionsTests: XCTestCase {
 
     /// No `watchtower` binary: a row's CLI presses are off and its footer says why (plan "Failure paths").
     func testMissingCLIDisablesRowWritesAndSaysWhy() async throws {
-        throw XCTSkip("11d-c: convert to a Go-written feed (no local list since 11d-a)")
-
-        let id = try await pool.write { db in
-            try TestDatabase.insertInboxItem(db, triggerType: "mention",
-                                             permalink: "https://acme.slack.com/archives/C001/p1700000000000100")
-        }
+        // Message 1: a Slack mention with a permalink.
+        let id: Int64 = 1
         let ref = InboxRef(kind: .inboxItem, id: Int64(id))
-        // Labeled: a trailing closure would bind to `automationsWake`.
+        // Labeled: the missing CLI reads as such.
         // swiftlint:disable:next trailing_closure
-        let vm = ActionStripViewModel(dbPool: pool, findCLI: { nil })
-        await vm.refresh()
+        let vm = try await listed("desktop_rows_slack_item", findCLI: { nil })
         let hooks = hooks(vm)
         let content = try XCTUnwrap(hooks.content(ref, .inbox))
         XCTAssertTrue(content.cliMissing)
@@ -307,7 +319,8 @@ final class InboxRowActionsTests: XCTestCase {
         XCTAssertEqual(InboxRowActionsContent.cliMissingMessage, "The watchtower CLI isn't available")
         XCTAssertFalse(hooks.content(ref, .preview)?.cliMissing ?? true,
                        "a preview draws everything disabled without the line")
-        let present = await strip()
+        let present = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
+        await present.follow(try FeedCaseTransport("desktop_rows_slack_item", pool: pool))
         XCTAssertFalse(self.hooks(present).content(ref, .inbox)?.cliMissing ?? true)
 
         let action = InboxRowActionsContent(kind: .action(summary: "Team: ACME", buttons: [.approve, .reject, .edit]),
@@ -322,13 +335,11 @@ final class InboxRowActionsTests: XCTestCase {
     /// database: they stay on without the CLI, and their rows carry no
     /// missing-CLI line. A custom track's Stop watching runs the CLI.
     func testMissingCLIKeepsDatabaseWritesOn() async throws {
-        throw XCTSkip("11d-c: convert to a Go-written feed (no local list since 11d-a)")
-
-        let id = try insertReminder()
-        // Labeled: a trailing closure would bind to `automationsWake`.
+        // Reminder 1, due; Go's next feed once it is done.
+        let id: Int64 = 1
+        // Labeled: the missing CLI reads as such.
         // swiftlint:disable:next trailing_closure
-        let vm = ActionStripViewModel(dbPool: pool, findCLI: { nil })
-        await vm.refresh()
+        let vm = try await listed("desktop_strip_reminder_done", findCLI: { nil })
         let hooks = hooks(vm)
         let reminder = try XCTUnwrap(hooks.content(InboxRef(kind: .reminder, id: id), .inbox))
         XCTAssertTrue(reminder.cliMissing)
@@ -531,31 +542,14 @@ final class InboxRowActionsTests: XCTestCase {
     }
 
     func testSuccessRemovesTheRow() async throws {
-        throw XCTSkip("11d-c: convert to a Go-written feed (no local list since 11d-a)")
-
-        let id = try insertReminder()
-        let output = try insertApprovalCard(refs: [InboxRef(kind: .reminder, id: id)])
-        let vm = await strip()
+        // Reminder 1, due, and Needs approval's card 1 with its row; Go's next feed once it is done.
+        let (id, output): (Int64, Int64) = (1, 1)
+        let vm = try await listed("desktop_rows_reminder_on_approval_card")
         let hooks = hooks(vm).hooks
         XCTAssertTrue(hooks.isOpen(ArtifactRef(kind: .reminder, id: id)), "card \(output)")
         await handler(vm).press(.done, on: InboxRef(kind: .reminder, id: id))
         XCTAssertFalse(self.hooks(vm).hooks.isOpen(ArtifactRef(kind: .reminder, id: id)))
         XCTAssertNil(vm.rowErrors[.reminder(id)])
-    }
-
-    /// A Needs approval card with one row per ref (the built-in's shape).
-    private func insertApprovalCard(refs: [InboxRef]) throws -> Int64 {
-        try pool.write { db in
-            let automation = try TestDatabase.insertAutomation(db, slug: "needs-approval", name: "Needs approval")
-            try db.execute(sql: "UPDATE automations SET origin = 'builtin', builtin_id = ? WHERE id = ?",
-                           arguments: [InboxFolderQueries.needsApprovalBuiltinID, automation])
-            let run = try TestDatabase.insertAutomationRun(db, automationID: automation)
-            let rows = refs.map { #"{"title":"Row","ref":{"kind":"\#($0.kind.rawValue)","id":\#($0.id)}}"# }
-            let blocks = #"{"v":1,"blocks":[{"type":"list","rows":[\#(rows.joined(separator: ","))]}]}"#
-            return try TestDatabase.insertAutomationOutput(
-                db, automationID: automation, runID: run, blocksJSON: blocks,
-                outputKey: "\(refs[0].kind.rawValue):\(refs[0].id)", contentHash: "h")
-        }
     }
 
     // MARK: - Busy
@@ -636,12 +630,10 @@ final class InboxRowActionsTests: XCTestCase {
     }
 
     func testFailedWriteKeepsRowAndRetryRepeatsPress_reminder() async throws {
-        throw XCTSkip("11d-c: convert to a Go-written feed (no local list since 11d-a)")
-
-        let id = try insertReminder()
+        // Reminder 1, due; Go's next feed once it is snoozed out of the due window.
+        let id: Int64 = 1
+        let vm = try await listed("desktop_rows_reminder_snoozed_an_hour")
         try failUpdates(on: "reminders")
-        let runner = FakeCLIRunner()
-        let vm = await strip(runner)
         let ref = InboxRef(kind: .reminder, id: id)
         await handler(vm).press(.snoozeHour, on: ref)
         XCTAssertEqual(vm.rowErrors[.reminder(id)]?.press, .snoozeHour)
@@ -756,11 +748,10 @@ final class InboxRowActionsTests: XCTestCase {
     }
 
     func testReminderFireFailureIgnored() async throws {
-        throw XCTSkip("11d-c: convert to a Go-written feed (no local list since 11d-a)")
-
-        let id = try insertReminder()
+        // Reminder 1, due; Go's next feed once it is done.
+        let id: Int64 = 1
         let runner = FakeCLIRunner(error: Failure())
-        let vm = await strip(runner)
+        let vm = try await listed("desktop_strip_reminder_done", runner)
         await handler(vm).press(.done, on: InboxRef(kind: .reminder, id: id))
         XCTAssertEqual(runner.invocations.count, 1)
         XCTAssertNil(vm.rowErrors[.reminder(id)])
