@@ -59,6 +59,7 @@ import (
 	"watchtower/internal/hub/switcher"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/cloudkit"
+	"watchtower/internal/hub/transport/relay"
 	"watchtower/internal/policy"
 	"watchtower/internal/sessionhost"
 	"watchtower/internal/sessionstart"
@@ -784,6 +785,7 @@ func errClass(err error) string {
 		class string
 	}{
 		{context.Canceled, "canceled"}, {context.DeadlineExceeded, "timeout"},
+		{relay.ErrRelayInternal, "relay_internal"},
 		{transport.ErrUnavailable, "unavailable"}, {transport.ErrForbidden, "forbidden"},
 		{transport.ErrEntitlementInactive, "entitlement_inactive"}, {transport.ErrRateLimited, "rate_limited"},
 		{transport.ErrTokenExpired, "token_expired"}, {transport.ErrUnsupportedVersion, "unsupported_version"},
@@ -796,6 +798,9 @@ func errClass(err error) string {
 		if errors.Is(err, c.err) {
 			return c.class
 		}
+	}
+	if c := relay.CodeClass(err); c != "" {
+		return c
 	}
 	return "other"
 }

@@ -564,6 +564,26 @@ func TestUnavailableRetriesOnTheNextConnect(t *testing.T) {
 	}
 }
 
+// The relay failing send_alert itself (UNSPECIFIED "internal error", #1872)
+// may come after the push was queued (the relay's catch around the op), so it
+// is in flight as a lost answer is: never resent, never settled failed.
+func TestRelayInternalErrorSettlesInFlightNoRetry(t *testing.T) {
+	r := newRig(t, "phone-a")
+	r.send.answer("relay-phone-a", relayErr(relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED, "internal error", nil))
+	r.start()
+	r.enqueue("ask-1")
+	if s := r.next(); s != (settled{"ask-1", "phone-a", "expired", "in_flight"}) {
+		t.Fatalf("settled %v; want expired (in_flight)", s)
+	}
+	r.p.Stop()
+	if n := r.send.count("relay-phone-a"); n != 1 {
+		t.Fatalf("send_alert %d times; want 1 (no retry)", n)
+	}
+	if len(r.clock.waits) != 0 {
+		t.Fatal("a retry was scheduled")
+	}
+}
+
 func TestRelayUnavailableRetriedAfterItsWait(t *testing.T) {
 	r := newRig(t, "phone-a")
 	r.send.answer("relay-phone-a", relayErr(relayv1.ErrorCode_ERROR_CODE_UNAVAILABLE, "", nil), nil)

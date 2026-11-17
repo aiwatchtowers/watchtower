@@ -521,6 +521,11 @@ func (p *Pusher) deliver(ctx context.Context, s *sender, it item) (string, strin
 				return finish(state.AlertExpired, state.ReasonInFlight)
 			}
 		}
+		if errors.Is(err, relay.ErrRelayInternal) {
+			// The relay's catch around the op: the push may already be
+			// queued, so it is in flight as a lost answer is (#1872).
+			return finish(state.AlertExpired, state.ReasonInFlight)
+		}
 		outcome, wait, onConnect := classify(err)
 		if wait == 0 {
 			o, r, changed := finish(outcome, "")
@@ -607,7 +612,8 @@ func (p *Pusher) refresh() {
 
 // classify maps a relay answer to its outcome class, or to a retry: the
 // wait, and whether a new connection ends it early. Only RATE_LIMITED,
-// TRAFFIC_LIMIT_EXCEEDED and the relay's own UNAVAILABLE are retried.
+// TRAFFIC_LIMIT_EXCEEDED and the relay's own UNAVAILABLE are retried (its
+// "internal error" never reaches here: it is settled in flight).
 func classify(err error) (outcome string, wait time.Duration, onConnect bool) {
 	switch {
 	case err == nil:
@@ -690,6 +696,7 @@ func errClass(err error) string {
 	}{
 		{secure.ErrAlertTooLarge, "too_large"},
 		{secure.ErrNameMismatch, "key_mismatch"},
+		{relay.ErrRelayInternal, "relay_internal"},
 		{transport.ErrUnavailable, "unavailable"},
 		{transport.ErrForbidden, "forbidden"},
 		{transport.ErrEntitlementInactive, "entitlement_inactive"},
@@ -700,6 +707,9 @@ func errClass(err error) string {
 		if errors.Is(err, c.err) {
 			return c.name
 		}
+	}
+	if c := relay.CodeClass(err); c != "" {
+		return c
 	}
 	return "error"
 }
