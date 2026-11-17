@@ -616,6 +616,7 @@ enum DesignShotCatalog {
             + SlackFullLiveShotFixtures.shots // Slack Full / Live screens spec (#1779), design only.
             + SlackAdaptiveSyncShotFixtures.shots // Adaptive Slack sync, Statistics → Channels (#1709).
             + IPhoneChatShotFixtures.shots // The iPhone chat's Mac side (#1791), mockups 4a/4b.
+            + PlanLimitsNoTokenShotFixtures.shots // Plan limits without a token spec (#1885), design only.
     }
 }
 
