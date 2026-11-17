@@ -57,8 +57,11 @@ final class PeopleRosterLoadTests: XCTestCase {
     /// (CI, `testRetryReloadsTheFailedAccount`, where Retry's run starts a
     /// turn later). The wait re-checks once per main-actor turn, bounded by
     /// a count of turns, so a run that never starts fails instead.
-    private func waitUntil(_ condition: @escaping @MainActor () -> Bool,
-                           file: StaticString = #filePath, line: UInt = #line) async {
+    private func waitUntil(
+        _ condition: @escaping @MainActor () -> Bool,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
         let held = await settles(condition)
         XCTAssertTrue(held, "the condition never held", file: file, line: line)
     }

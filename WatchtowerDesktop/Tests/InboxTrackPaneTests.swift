@@ -98,8 +98,11 @@ final class InboxTrackPaneTests: XCTestCase {
     /// bounded by a count of turns (`settles`): a condition over a fake's
     /// plain state is re-checked too, and one that never holds fails here
     /// instead of hanging the run.
-    private func waitUntil(_ condition: @escaping @MainActor () -> Bool,
-                           file: StaticString = #filePath, line: UInt = #line) async {
+    private func waitUntil(
+        _ condition: @escaping @MainActor () -> Bool,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
         let held = await settles(condition)
         XCTAssertTrue(held, "the condition never held", file: file, line: line)
     }
