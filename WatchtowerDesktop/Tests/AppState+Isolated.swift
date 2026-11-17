@@ -43,7 +43,8 @@ extension AppState {
         ) { managedPolicy } // never this Mac's managed preferences
         appState.daemonControlOverride = FakeDaemon()
         appState.modelCatalogLaunchOverride = {} // never runs the CLI
-        appState.wipeLLMRunnerOverride = FakeCLIRunner() // never wipes a real workspace
+        let wipe = FakeCLIRunner()
+        appState.findWipeLLMRunner = { wipe } // never wipes a real workspace
         appState.daemonStartQueue = DaemonStartQueue()
         appState.wireAppDatabaseOverride = { _ in }
         appState.readinessEnvironmentOverride = FakeReadinessEnvironment()

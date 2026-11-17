@@ -27,7 +27,7 @@ protocol HomeFeedPerforming {
 /// "Already gone" is quiet: Go's `ResolveInboxItem` / `DismissInboxItem`
 /// never check the rows they changed, so a missing or already closed item
 /// exits 0 and reads as success here; a reminder or target deleted elsewhere
-/// (refused `not_found`, "…: it's no longer on the Mac.") is success too,
+/// (refused `not_found`) is success too,
 /// since the row the owner wanted gone is gone. Every other failure is
 /// thrown with the tower's sentence.
 @MainActor
@@ -93,18 +93,16 @@ final class LiveHomeFeedPerformer: HomeFeedPerforming {
         return fmt.string(from: date)
     }
 
-    /// One press through the tower; nil when its record was gone and that is quiet.
+    /// One press through the tower (`TowerSending.perform` under the row's
+    /// key); nil when Go refused it `not_found` and that is quiet.
     private func send<Resp: Decodable & Sendable, Params: Encodable & Sendable>(
         _ command: TowerCommand, key: String, quietIfGone: Bool, _ params: (String) -> Params
     ) async throws -> Resp? {
         guard let tower else { throw TowerWriteError(TowerText.daemonDown) }
-        let outcome: TowerActOutcome<Resp> = await tower.act(command, key: key, params: params)
-        switch outcome {
-        case .ok(let response): return response
-        case .refused(let sentence) where quietIfGone && TowerWriteError(sentence).isGone: return nil
-        case .refused(let sentence): throw TowerWriteError(sentence)
-        case .unknown: throw TowerWriteError(TowerText.didntConfirmMac)
-        case .failed(let failure): throw TowerWriteError(failure.sentence)
+        do {
+            return try await tower.perform(command, key: key, params)
+        } catch let error as TowerWriteError where quietIfGone && error.isGone {
+            return nil
         }
     }
 

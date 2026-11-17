@@ -524,10 +524,15 @@ final class TargetsViewModel {
     /// The row key of target `id`'s status presses.
     static func row(_ id: Int) -> String { "target:\(id)" }
 
-    /// A status press in the chain: Go writes it, the row keeps its state
-    /// (`presses`), a failure also says why in `errorMessage`. The list
-    /// re-reads after an answer (Go's write is another process's), which
-    /// shows the parents the rollup moved too.
+    /// A status press: Go writes it, the row keeps its state (`presses`), a
+    /// failure also says why in `errorMessage`. The list re-reads after an
+    /// answer (Go's write is another process's), which shows the parents the
+    /// rollup moved too. It stays out of the local edits' chain (`writes`):
+    /// a press waiting out the daemon (up to the client's 15 s) never holds
+    /// a note or a tag edit of another target behind it. Presses on one
+    /// target still go in order (`TowerPresses` queues them per row); a
+    /// local edit and a status press touch other columns, so their order
+    /// does not matter.
     private func statusPress<Params: Encodable & Sendable>(
         _ command: TowerCommand,
         _ id: Int,
@@ -536,9 +541,7 @@ final class TargetsViewModel {
         _ params: @escaping (String) -> Params
     ) async -> TargetStatusResult? {
         let row = Self.row(id)
-        let result: TargetStatusResult? = await writes.run {
-            await self.presses.send(command, row: row, label: label, variant: variant, params: params)
-        }
+        let result: TargetStatusResult? = await presses.send(command, row: row, label: label, variant: variant, params: params)
         if result == nil, case .refused(let sentence) = presses.state(row) {
             errorMessage = sentence
         }

@@ -254,8 +254,8 @@ final class InboxCenter {
         switch outcome {
         case .ok:
             succeeded(probe)
-        case let .refused(sentence):
-            answer(key, probe, .refused(sentence))
+        case let .refused(refusal):
+            answer(key, probe, .refused(refusal.sentence))
         case .unknown:
             answer(key, probe, .unknown)
         case let .failed(failure) where failure.kind == .down:

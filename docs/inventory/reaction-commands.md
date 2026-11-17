@@ -284,8 +284,9 @@ not immediately.
 
 **Observable:** No code path from `remind_me`'s `Execute`
 (`internal/tools/remind.go`, which only calls `d.InsertReminder`) through
-Done/Snooze (`db.MarkReminderDone`/`SnoozeReminder`,
-`ReminderQueries.markDone`/`snooze`) ever calls a Slack API. A reminder is a
+Done/Snooze (`db.MarkReminderDone`/`SnoozeReminder`, which the Desktop
+reaches through the tower's `reminders.done`/`reminders.snooze`) ever calls a
+Slack API. A reminder is a
 Watchtower-local row; nothing is posted back to Slack when it is created,
 fires, is done, or is snoozed.
 

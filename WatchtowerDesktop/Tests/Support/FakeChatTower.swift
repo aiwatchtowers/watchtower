@@ -60,15 +60,15 @@ package final class FakeChatTower: ChatTowerSending, @unchecked Sendable {
             callsStorage.append(Call(command: command, params: object))
             return refusalsStorage[command]
         }
-        if let refused { return .refused(refused) }
+        if let refused { return .refused(WatchtowerInterface.Refusal(code: .unsupported, sentence: refused)) }
         await beforeApply?(command)
         do {
             let result = try await apply(command, data)
             return .ok(try JSONDecoder().decode(Resp.self, from: result))
         } catch let refusal as Refusal {
-            return .refused(refusal.sentence)
+            return .refused(WatchtowerInterface.Refusal(code: .notFound, sentence: refusal.sentence))
         } catch {
-            return .refused(error.localizedDescription)
+            return .refused(WatchtowerInterface.Refusal(code: .unsupported, sentence: error.localizedDescription))
         }
     }
 

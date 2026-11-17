@@ -376,9 +376,13 @@ package final class ActionStripViewModel {
         towerFeed.map { InboxRootModel(feed: $0, platform: .mac).countBadge }
     }
 
-    /// The tower's writer: every Inbox write is one `inbox.act` call. Without
-    /// one (a test that never presses) a press fails with the daemon's
-    /// sentence; the Desktop writes none of the Inbox's tables itself.
+    /// The tower's writer: every Inbox write is one `inbox.act` call; the
+    /// Desktop writes none of the Inbox's tables itself. The app always
+    /// attaches one (`attachTowerInbox`, outside XCTest). Without one — a
+    /// test only — three presses keep their `watchtower` CLI verb (Propose
+    /// Reply, a Reply button, a target button: each a verb Go runs, never a
+    /// Swift write), the path their AUTO-09 / reply-policy tests pin; any
+    /// other press fails with the daemon's sentence.
     @ObservationIgnored package private(set) var towerWrites: InboxTowerWrites?
 
     /// Writes the Inbox through the tower from now on, the approvals'
@@ -1012,6 +1016,7 @@ package final class ActionStripViewModel {
             return
         }
         if towerWrites != nil { return await towerProposeReply(itemID, text: body) }
+        // The no-tower test path (`towerWrites`): the CLI verb Go runs.
         let runner = cliRunner
         let sent = replyDrafts[itemID]?.text
         await pendingWrites.run(CardKey.card(.message(itemID))) {
@@ -1118,6 +1123,7 @@ package final class ActionStripViewModel {
                              params: ActParams(contentHash: contentHash, index: action, actionKind: InboxActionKind.reply))
             return
         }
+        // The no-tower test path (`towerWrites`): the CLI verb Go runs.
         let runner = cliRunner
         await pendingWrites.run(CardKey.card(.output(outputID))) {
             lastError = nil
@@ -1274,6 +1280,7 @@ package final class ActionStripViewModel {
     /// banner, the read draws it. Any other failure is kept for the button.
     package func proposeTarget(_ press: InboxTargetPress) async {
         if let towerWrites { return await towerProposeTarget(press, towerWrites) }
+        // The no-tower test path (`towerWrites`): the CLI verb Go runs.
         let runner = cliRunner
         let context = press.contextID
         await pendingWrites.run(CardKey.targetPress(context)) {

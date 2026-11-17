@@ -19,14 +19,6 @@ private enum Sentences {
     static let busy = "Couldn't change the status: the database is busy."
 }
 
-/// Yields until `condition` holds, at most a bounded number of turns (a
-/// view's button runs its press in a Task): true when it held.
-@MainActor
-private func settles(_ condition: () -> Bool) async -> Bool {
-    for _ in 0..<100_000 where !condition() { await Task.yield() }
-    return condition()
-}
-
 /// The request ids of `tower`'s calls of `command`.
 private func requestIDs(_ tower: FakeScreenTower, _ command: TowerCommand) -> [String] {
     tower.calls(command).map(\.requestID)
@@ -52,6 +44,51 @@ final class IdeasViewModelTowerTests: XCTestCase {
         let vm = IdeasViewModel(dbManager: manager)
         vm.load()
         return try XCTUnwrap(vm.reviewItems.first)
+    }
+
+    /// Two new ideas saved while the first waits share the create row; the
+    /// second goes after the first, never dropped.
+    func testTwoCreatesWhileTheFirstWaitsBothLand() async throws {
+        let tower = manager.fakeTower
+        let (gate, open) = AsyncStream<Void>.makeStream()
+        tower.onOK = { _, _ in for await _ in gate { return } }
+        let vm = IdeasViewModel(dbManager: manager, tower: tower)
+
+        let first = Task { await vm.createManual(kind: "idea", title: "One", essence: "first") }
+        let waiting = await settles { vm.presses.isBusy(IdeasViewModel.createRow) }
+        XCTAssertTrue(waiting)
+        let second = Task { await vm.createManual(kind: "idea", title: "Two", essence: "second") }
+        open.yield()
+        let one = await first.value
+        open.yield()
+        open.finish()
+        let two = await second.value
+
+        XCTAssertNotNil(one)
+        XCTAssertNotNil(two)
+        XCTAssertNotEqual(one, two)
+        XCTAssertEqual(tower.calls(.ideasCreate).count, 2)
+    }
+
+    /// The same idea pressed again while its create waits is a double press:
+    /// it does nothing.
+    func testTheSameCreatePressedTwiceWhileItWaitsMakesOneIdea() async throws {
+        let tower = manager.fakeTower
+        let (gate, open) = AsyncStream<Void>.makeStream()
+        tower.onOK = { _, _ in for await _ in gate { return } }
+        let vm = IdeasViewModel(dbManager: manager, tower: tower)
+
+        let first = Task { await vm.createManual(kind: "idea", title: "One", essence: "first") }
+        let waiting = await settles { vm.presses.isBusy(IdeasViewModel.createRow) }
+        XCTAssertTrue(waiting)
+        let again = await vm.createManual(kind: "idea", title: "One", essence: "first")
+        open.yield()
+        open.finish()
+        let one = await first.value
+
+        XCTAssertNil(again)
+        XCTAssertNotNil(one)
+        XCTAssertEqual(tower.calls(.ideasCreate).count, 1)
     }
 
     func testRefusalShowsTheSentenceAndRetry() async throws {
@@ -116,12 +153,21 @@ final class IdeasViewModelTowerTests: XCTestCase {
         vm.load()
         let row = IdeasViewModel.row(idea.id)
 
+        let screenRead = vm.presses.reread
+        var during: String?
+        vm.presses.reread = {
+            during = vm.pressFailure(idea)
+            await screenRead()
+        }
+
         await vm.approve(idea)
         await vm.presses.retry(row)
 
-        XCTAssertEqual(vm.presses.state(row), .unknown)
-        XCTAssertEqual(vm.pressFailure(idea), TowerText.didntConfirmMac)
-        XCTAssertEqual(tower.calls(.ideasStatus).count, 1)
+        XCTAssertEqual(during, TowerText.didntConfirmMac, "the row says so while the screen re-reads")
+        XCTAssertNil(vm.presses.state(row), "the re-read settled: the line clears")
+        XCTAssertNil(vm.pressFailure(idea))
+        XCTAssertEqual(vm.reviewItems.map(\.id), [idea.id], "the row shows what the re-read found")
+        XCTAssertEqual(tower.calls(.ideasStatus).count, 1, "never re-sent, not even by Retry")
     }
 
     /// Made without the app's tower (a test run), a press fails at once with
@@ -282,6 +328,29 @@ final class DayPlanViewModelTowerTests: XCTestCase {
         return (vm, try XCTUnwrap(vm.items.first))
     }
 
+    /// Presses on the plan itself (add, reorder) share its row; one made
+    /// while another waits goes after it, never dropped.
+    func testASecondPlanPressWhileTheFirstWaitsGoesAfterIt() async throws {
+        let tower = FakeScreenTower.applying(pool)
+        let (gate, open) = AsyncStream<Void>.makeStream()
+        tower.onOK = { _, _ in for await _ in gate { return } }
+        let (vm, _) = try await plan(tower)
+
+        let first = Task { await vm.addManual(kind: .backlog, title: "Stretch", startTime: nil, endTime: nil) }
+        let waiting = await settles { vm.presses.isBusy(DayPlanViewModel.planRow) }
+        XCTAssertTrue(waiting)
+        let second = Task { await vm.addManual(kind: .backlog, title: "Read", startTime: nil, endTime: nil) }
+        open.yield()
+        await first.value
+        open.yield()
+        open.finish()
+        await second.value
+
+        XCTAssertEqual(tower.calls(.dayplanAdd).count, 2)
+        XCTAssertEqual(Set(vm.items.map(\.title)), ["Drink water", "Stretch", "Read"])
+        XCTAssertNil(vm.generationError)
+    }
+
     func testRefusalShowsTheSentenceAndRetry() async throws {
         let tower = FakeScreenTower.applying(pool)
         let sentence = "Couldn't check it off: the database is busy."
@@ -395,7 +464,8 @@ final class CatchUpViewModelTowerTests: XCTestCase {
         tower.next(.catchupAcknowledge, .refused(sentence))
         let vm = CatchUpViewModel(dbPool: pool, tower: tower)
         vm.startObserving()
-        await untilObserved { vm.selected != nil }
+        let selected = await settles { vm.selected != nil }
+        XCTAssertTrue(selected)
         let row = CatchUpViewModel.row(try XCTUnwrap(vm.selected).id)
 
         await vm.acknowledge()
@@ -413,7 +483,8 @@ final class CatchUpViewModelTowerTests: XCTestCase {
     func testRefreshesAfterOK() async throws {
         let vm = CatchUpViewModel(dbPool: pool, tower: FakeScreenTower.applying(pool))
         vm.startObserving()
-        await untilObserved { vm.selected != nil }
+        let selected = await settles { vm.selected != nil }
+        XCTAssertTrue(selected)
 
         await vm.acknowledge()
 
@@ -500,6 +571,29 @@ final class TargetsViewModelTowerTests: XCTestCase {
         XCTAssertEqual(tower.calls(.targetsSetStatus).count, 2)
         let stored1 = try await manager.dbPool.read { try TargetQueries.fetchByID($0, id: target.id) }?.status
         XCTAssertEqual(stored1, "done")
+    }
+
+    /// A status press waiting on the daemon never holds a local edit of
+    /// another target behind it (the edit lands while the press waits).
+    func testAStatusPressWaitingOnTheDaemonDoesNotHoldOtherEdits() async throws {
+        let pressed = try target()
+        let edited = try target()
+        let tower = manager.fakeTower
+        let (gate, open) = AsyncStream<Void>.makeStream()
+        tower.onOK = { _, _ in for await _ in gate { return } }
+        let vm = TargetsViewModel(dbManager: manager, tower: tower)
+
+        let press = Task { await vm.markDone(pressed) }
+        let waiting = await settles { vm.presses.isBusy(TargetsViewModel.row(pressed.id)) }
+        XCTAssertTrue(waiting)
+        let wrote = await vm.updateProgress(edited, to: 0.4)
+
+        XCTAssertTrue(wrote, "the edit landed while the press waited")
+        XCTAssertTrue(vm.presses.isBusy(TargetsViewModel.row(pressed.id)))
+        open.yield()
+        open.finish()
+        let landed = await press.value
+        XCTAssertTrue(landed)
     }
 
     func testRefreshesAfterOK() async throws {

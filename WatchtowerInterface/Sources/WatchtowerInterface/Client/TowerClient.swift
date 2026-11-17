@@ -53,8 +53,8 @@ public enum TowerActionState: Equatable, Sendable {
 /// How a pressed action ended.
 public enum TowerActOutcome<Resp> {
     case ok(Resp)
-    /// Refused, with Go's sentence.
-    case refused(String)
+    /// Refused, with Go's code and sentence (`not_found`: what it named is gone).
+    case refused(Refusal)
     /// The tower cannot say whether it ran (a non-idempotent call that began).
     case unknown
     /// No answer: the tower stayed down (Retry re-sends the same request_id),
@@ -259,7 +259,7 @@ public actor TowerClient {
         let outcome: TowerActOutcome<Resp> = Self.outcome(exchange)
         switch outcome {
         case .ok, .failed: actionStates[key] = nil
-        case .refused(let sentence): actionStates[key] = .refused(sentence)
+        case .refused(let refusal): actionStates[key] = .refused(refusal.sentence)
         case .unknown:
             actionStates[key] = .unknown
             await refresh()
@@ -661,7 +661,7 @@ public actor TowerClient {
             case .unknownStatus, .unknown:
                 return .unknown
             case .refused:
-                return .refused(response.refusal?.sentence ?? TowerText.unreadableAnswer)
+                return .refused(response.refusal ?? Refusal(code: .unknown(""), sentence: TowerText.unreadableAnswer))
             case .ok:
                 switch decode(response) as Result<Resp, TowerFailure> {
                 case .success(let value): return .ok(value)

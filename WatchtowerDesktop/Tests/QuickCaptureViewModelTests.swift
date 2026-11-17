@@ -105,7 +105,8 @@ final class QuickCaptureViewModelTests: MeetingRecorderTestCase {
         tower.onOK = { _, _ in for await _ in gate { return } }
         let first = Task { await vm.save(tower: tower) }
 
-        await untilObserved { vm.isSaving }
+        let saving = await settles { vm.isSaving }
+        XCTAssertTrue(saving)
         await vm.save(tower: tower)
         XCTAssertNil(vm.savedIdeaID, "nothing landed before the answer")
         open.yield()

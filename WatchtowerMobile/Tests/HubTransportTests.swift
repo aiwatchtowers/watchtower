@@ -84,8 +84,10 @@ final class HubTransportTests: XCTestCase {
         let client = TowerClient(transport: hub.transport, clock: ContinuousClock(), restartDaemon: nil, startDaemon: nil)
         let cases: [(InboxActSettlement, TowerActOutcome<RawJSON>)] = [
             (.applied(result: Data(#"{"already":true}"#.utf8)), .ok(try RawJSON(data: Data(#"{"already":true}"#.utf8)))),
-            (.refused(code: .changed, sentence: "This card changed — look again."), .refused("This card changed — look again.")),
-            (.notDelivered(sentence: InboxPhoneText.notDelivered(hub: "Acme Mac")), .refused(InboxPhoneText.notDelivered(hub: "Acme Mac"))),
+            (.refused(code: .changed, sentence: "This card changed — look again."),
+             .refused(Refusal(code: .changed, sentence: "This card changed — look again."))),
+            (.notDelivered(sentence: InboxPhoneText.notDelivered(hub: "Acme Mac")),
+             .refused(Refusal(code: .unsupported, sentence: InboxPhoneText.notDelivered(hub: "Acme Mac")))),
             (.unknown, .unknown)
         ]
         for (offset, (settlement, expected)) in cases.enumerated() {
@@ -130,7 +132,7 @@ final class HubTransportTests: XCTestCase {
     private static func shape(_ outcome: TowerActOutcome<RawJSON>) -> String {
         switch outcome {
         case .ok: "ok"
-        case let .refused(sentence): "refused: \(sentence)"
+        case let .refused(refusal): "refused: \(refusal.sentence)"
         case .unknown: "unknown"
         case let .failed(failure): "failed: \(failure.sentence)"
         }

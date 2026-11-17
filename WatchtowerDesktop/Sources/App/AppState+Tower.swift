@@ -148,8 +148,8 @@ extension AppState {
             syncPaused = response.paused
             syncPauseError = nil
             return true
-        case .refused(let sentence):
-            syncPauseError = sentence
+        case .refused(let refusal):
+            syncPauseError = refusal.sentence
         case .failed(let failure):
             syncPauseError = failure.sentence
         case .unknown:

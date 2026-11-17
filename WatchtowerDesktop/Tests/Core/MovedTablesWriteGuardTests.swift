@@ -3,8 +3,15 @@ import XCTest
 /// Mobile Inbox spec §5.2 (stage 1, #1170 Task 12): the Inbox's and the
 /// other screens' tables are written only by Go — every Desktop press is a
 /// tower command (`TowerClient.act`). This scans every Swift source of the
-/// Desktop for a SQL write to a moved table, an `UPDATE targets` that sets
-/// `status`, and a GRDB record write on a moved table's record type.
+/// Desktop for a SQL write to a moved table (its name bare, quoted or
+/// schema-qualified), an `UPDATE targets` that sets `status` or builds its
+/// `SET` at run time, a GRDB write through a moved table's record type or
+/// `Table("<moved>")`, and a record type made persistable on a moved table
+/// (`databaseTableName`): the moved record types are `FetchableRecord` only,
+/// so an instance write (`idea.update(db)`) does not compile without one.
+/// Allowed by design: `INSERT INTO targets (… status …)`
+/// (`TargetQueries.create`) — a new target's first status is the creator's,
+/// not an owner status change (PROJ-06 records none for it).
 final class MovedTablesWriteGuardTests: XCTestCase {
     /// The tables only Go writes.
     static let movedTables = ["automation_outputs", "briefings", "inbox_items", "tracks", "track_events", "ideas",
@@ -21,9 +28,24 @@ final class MovedTablesWriteGuardTests: XCTestCase {
     /// One SQL write: `INSERT [OR …] INTO`, `REPLACE INTO`, `UPDATE` or
     /// `DELETE FROM` a moved table, any case, across line breaks.
     static let sqlWrite = try? NSRegularExpression(
-        pattern: #"\b(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE|DELETE\s+FROM)\s+(?:"#
-            + movedTables.joined(separator: "|") + #")\b"#,
+        pattern: #"\b(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE|DELETE\s+FROM)\s+(?:\w+\.)?(?:\\?["`\[])?(?:"#
+            + movedTables.joined(separator: "|") + #")(?![\w])"#,
         options: [.caseInsensitive])
+
+    /// An `UPDATE` whose table or `SET` clause is interpolated at run time
+    /// (`UPDATE \(table)`, `UPDATE targets SET \(columns)`): what it writes
+    /// cannot be read here, so it is refused outright.
+    static let runtimeWrite = try? NSRegularExpression(
+        pattern: #"\bUPDATE\s+\\\([^)]*\)\s+SET\b|\b(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|DELETE\s+FROM)\s+\\\("#
+            + #"|\bUPDATE\s+targets\s+SET\b(?:(?!\bWHERE\b)[^";])*?\\\("#,
+        options: [.caseInsensitive])
+
+    /// A query-interface write on `Table("<moved>")`, or a record type
+    /// mapped to a moved table.
+    static let tableWrite = try? NSRegularExpression(
+        pattern: #"\bTable(?:<[^>]*>)?\(\s*"(?:"# + movedTables.joined(separator: "|")
+            + #")"\s*\)[^\n;]*?\.(?:insert|update|save|delete|upsert|updateAll|deleteAll)\s*\("#
+            + #"|\bdatabaseTableName\b[^\n]*"(?:"# + movedTables.joined(separator: "|") + #")""#)
 
     /// An `UPDATE <table> SET …` naming a moved column before its `WHERE`
     /// (or the statement's end).
@@ -43,7 +65,7 @@ final class MovedTablesWriteGuardTests: XCTestCase {
     /// The writes `text` holds, as "file:line statement".
     static func writes(in text: String, file: String) -> [String] {
         let range = NSRange(text.startIndex..., in: text)
-        let regexes = ([sqlWrite, recordWrite] + columnWrites.map(Optional.some)).compactMap { $0 }
+        let regexes = ([sqlWrite, recordWrite, runtimeWrite, tableWrite] + columnWrites.map(Optional.some)).compactMap { $0 }
         var found: [String] = []
         for regex in regexes {
             for match in regex.matches(in: text, range: range) {
@@ -92,7 +114,16 @@ final class MovedTablesWriteGuardTests: XCTestCase {
             "try Reminder.deleteAll(db)",
             "try Track.filter(key: 1).updateAll(db, [])",
             "try DayPlanItem.save(db)",
-            "try record.save(db) // AutomationOutput\nAutomationOutput.update(db"
+            "try record.save(db) // AutomationOutput\nAutomationOutput.update(db",
+            #"try db.execute(sql: "UPDATE main.ideas SET title = ?")"#,
+            #"try db.execute(sql: "UPDATE \"ideas\" SET title = ?")"#,
+            #"try db.execute(sql: "DELETE FROM `tracks`")"#,
+            #"try db.execute(sql: "INSERT INTO [reminders] (a) VALUES (1)")"#,
+            #"try db.execute(sql: "UPDATE \(table) SET read_at = 1")"#,
+            #"try db.execute(sql: "UPDATE targets SET \(columns) WHERE id = ?")"#,
+            #"try Table("ideas").filter(key: 1).updateAll(db, [Column("status").set(to: "x")])"#,
+            #"try Table<Row>("inbox_items").deleteAll(db)"#,
+            #"static let databaseTableName = "ideas""#
         ]
         for sample in caught {
             XCTAssertFalse(Self.writes(in: sample, file: "X.swift").isEmpty, sample)
@@ -105,7 +136,13 @@ final class MovedTablesWriteGuardTests: XCTestCase {
             #"try db.execute(sql: "UPDATE ideas_archive SET x = 1")"#,
             #"try db.execute(sql: "UPDATE chat_messages SET text = ?")"#,
             "try Idea.fetchOne(db, sql: \"SELECT * FROM ideas\")",
-            "try IdeaMention.deleteAll(db)"
+            "try IdeaMention.deleteAll(db)",
+            #"Text("Update \(agent.productName) to sign in")"#,
+            #"try db.execute(sql: "UPDATE main.ideas_archive SET x = 1")"#,
+            #"try Table("ideas").fetchCount(db)"#,
+            #"static let databaseTableName = "idea_mentions""#,
+            #"try db.execute(sql: "UPDATE targets SET priority = ? WHERE id = \(id)")"#,
+            #"try db.execute(sql: "INSERT INTO targets (text, status) VALUES (?, 'todo')")"#
         ]
         for sample in ignored {
             XCTAssertTrue(Self.writes(in: sample, file: "X.swift").isEmpty, sample)

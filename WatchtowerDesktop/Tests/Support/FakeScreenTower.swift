@@ -13,7 +13,8 @@ import WatchtowerInterface
 package final class FakeScreenTower: TowerSending, @unchecked Sendable {
     package enum Answer: Sendable {
         case ok(String)
-        case refused(String)
+        /// Refused with Go's sentence and code (`.notFound`: what it named is gone).
+        case refused(String, code: RefusalCode = .changed)
         case failed(String)
         case unknown
     }
@@ -36,10 +37,14 @@ package final class FakeScreenTower: TowerSending, @unchecked Sendable {
     /// refused with its sentence.
     package var apply: (@Sendable (TowerCommand, Data) async throws -> Data?)?
 
-    /// A refusal `apply` throws: Go's sentence.
+    /// A refusal `apply` throws: Go's code and sentence.
     package struct Refused: Error {
         package let sentence: String
-        package init(_ sentence: String) { self.sentence = sentence }
+        package let code: RefusalCode
+        package init(_ sentence: String, code: RefusalCode = .changed) {
+            self.sentence = sentence
+            self.code = code
+        }
     }
 
     package init() {}
@@ -55,6 +60,15 @@ package final class FakeScreenTower: TowerSending, @unchecked Sendable {
     }
 
     package var calls: [Call] { lock.withLock { callsStorage } }
+
+    /// The commands `applying(_:)` was sent but does not model (each was
+    /// refused, never answered ok).
+    package var unmodelled: [TowerCommand] { lock.withLock { unmodelledStorage } }
+    private var unmodelledStorage: [TowerCommand] = []
+
+    func noteUnmodelled(_ command: TowerCommand) {
+        lock.withLock { unmodelledStorage.append(command) }
+    }
 
     package func calls(_ command: TowerCommand) -> [Call] {
         calls.filter { $0.command == command }
@@ -86,17 +100,17 @@ package final class FakeScreenTower: TowerSending, @unchecked Sendable {
             do {
                 if let applied = try await apply?(command, data) { body = applied }
             } catch let refused as Refused {
-                return .refused(refused.sentence)
+                return .refused(Refusal(code: refused.code, sentence: refused.sentence))
             } catch {
-                return .refused(error.localizedDescription)
+                return .refused(Refusal(code: .unsupported, sentence: error.localizedDescription))
             }
             guard let value = try? JSONDecoder().decode(Resp.self, from: body) else {
                 return .failed(TowerFailure(kind: .refused, sentence: TowerText.unreadableAnswer))
             }
             return .ok(value)
-        case .refused(let sentence):
+        case let .refused(sentence, code):
             lock.withLock { requestIDs[key] = nil }
-            return .refused(sentence)
+            return .refused(Refusal(code: code, sentence: sentence))
         case .failed(let sentence):
             return .failed(TowerFailure(kind: .down, sentence: sentence))
         case .unknown:

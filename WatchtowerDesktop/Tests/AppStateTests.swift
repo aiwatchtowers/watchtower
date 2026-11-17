@@ -936,7 +936,7 @@ final class AppStateTests: XCTestCase {
         daemon.running = true
         appState.daemonControlOverride = daemon
         let wipe = FakeCLIRunner()
-        appState.wipeLLMRunnerOverride = wipe
+        appState.findWipeLLMRunner = { wipe }
 
         try await appState.resetLLMData(workspaceDir: dir)
         XCTAssertEqual(wipe.invocations, [["db", "wipe-llm"]], "the wipe is Go's verb")
@@ -1070,6 +1070,8 @@ final class AppStateTests: XCTestCase {
         daemon.running = true
         daemon.stopTimesOut = true
         appState.daemonControlOverride = daemon
+        let wipe = FakeCLIRunner()
+        appState.findWipeLLMRunner = { wipe }
 
         do {
             try await appState.resetLLMData(workspaceDir: dir)
@@ -1078,8 +1080,61 @@ final class AppStateTests: XCTestCase {
             XCTAssertEqual(error as? DaemonRestartError, .stopTimedOut(pid: 4242), "the first error is reported")
         }
 
+        XCTAssertEqual(wipe.invocations, [], "the wipe never ran")
         XCTAssertEqual(daemon.stops, 1)
         XCTAssertEqual(daemon.restarts, 1)
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: dir)),
+                       Set(DaemonStampFiles.names + ["last_sync.json"]), "no stamp removed")
+    }
+
+    /// `db wipe-llm` exits non-zero (its transaction rolled back): the stamps
+    /// stay, the failure reaches Settings, and the daemon still restarts.
+    func testResetLLMDataReportsAFailedWipeAndStillRestarts() async throws {
+        let dir = try workspaceWithStamps()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let appState = AppState.isolated()
+        appState.databaseManager = dbManager
+        let daemon = FakeDaemon()
+        daemon.running = true
+        appState.daemonControlOverride = daemon
+        let wipe = FakeCLIRunner()
+        wipe.shouldThrow = CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: wiping LLM data: database is locked")
+        appState.findWipeLLMRunner = { wipe }
+
+        do {
+            try await appState.resetLLMData(workspaceDir: dir)
+            XCTFail("a failed wipe must reach the Settings error line")
+        } catch {
+            guard case .nonZeroExit(1, _)? = error as? CLIRunnerError else { return XCTFail("\(error)") }
+        }
+
+        XCTAssertEqual(wipe.invocations, [["db", "wipe-llm"]])
+        XCTAssertEqual(daemon.restarts, 1, "the reset never leaves the app without a daemon")
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: dir)),
+                       Set(DaemonStampFiles.names + ["last_sync.json"]), "no stamp removed after a failed wipe")
+    }
+
+    /// No CLI installed: nothing is wiped, `binaryNotFound` reaches Settings,
+    /// and the daemon still restarts.
+    func testResetLLMDataWithoutTheCLIWipesNothingAndStillRestarts() async throws {
+        let dir = try workspaceWithStamps()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let appState = AppState.isolated()
+        appState.databaseManager = dbManager
+        let daemon = FakeDaemon()
+        daemon.running = true
+        appState.daemonControlOverride = daemon
+        appState.findWipeLLMRunner = { nil }
+
+        do {
+            try await appState.resetLLMData(workspaceDir: dir)
+            XCTFail("a missing CLI must reach the Settings error line")
+        } catch {
+            guard case .binaryNotFound? = error as? CLIRunnerError else { return XCTFail("\(error)") }
+        }
+
+        XCTAssertEqual(daemon.stops, 1)
+        XCTAssertEqual(daemon.restarts, 1, "the reset never leaves the app without a daemon")
         XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: dir)),
                        Set(DaemonStampFiles.names + ["last_sync.json"]), "no stamp removed")
     }

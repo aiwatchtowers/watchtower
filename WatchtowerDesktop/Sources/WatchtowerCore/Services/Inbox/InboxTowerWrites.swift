@@ -31,7 +31,7 @@ package struct InboxTowerWrites: Sendable {
         case .ok(let result):
             if let error = result.error, !error.isEmpty { return .failed(error) }
             return .done(already: result.already == true)
-        case .refused(let sentence): return .failed(sentence)
+        case .refused(let refusal): return .failed(refusal.sentence)
         case .unknown: return .failed(TowerText.didntConfirmMac)
         case .failed(let failure): return .failed(failure.sentence)
         }

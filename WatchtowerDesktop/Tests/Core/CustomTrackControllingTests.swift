@@ -184,7 +184,7 @@ final class CustomTrackControllingTests: XCTestCase {
     func testDirectControlsOnADeletedTrackSayItIsGone() async throws {
         let track = try customTrack()
         let tower = FakeScreenTower()
-        tower.next(.tracksInstruction, .refused("Couldn't save the instruction: it's no longer on the Mac."))
+        tower.next(.tracksInstruction, .refused("Couldn't save the instruction: it's no longer on the Mac.", code: .notFound))
         tower.next(.tracksInstruction, .failed(TowerText.daemonDown))
         let controls = DirectCustomTrackControls(tower: tower, scanService: TrackScanService(runner: FakeCLIRunner()))
 

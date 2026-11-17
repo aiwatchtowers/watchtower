@@ -334,7 +334,7 @@ final class TowerClientTests: XCTestCase {
 
         let outcome = await pause(client)
 
-        XCTAssertEqual(outcome, .refused(sentence))
+        XCTAssertEqual(outcome, .refused(Refusal(code: .changed, sentence: sentence)), "the code travels with the sentence")
         let state = await client.actionState(key: "pause")
         XCTAssertEqual(state, .refused(sentence))
         let screen = await client.screenState

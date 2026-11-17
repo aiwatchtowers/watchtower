@@ -32,7 +32,7 @@ final class ViewModelAsyncWriteTests: XCTestCase {
         let pending = PendingWrites()
         let gate = AsyncGate()
         let first = Task { await pending.run("k") { await gate.wait(); return 1 } }
-        let entered = await eventually { pending.isPending("k") }
+        let entered = await settles { pending.isPending("k") }
         XCTAssertTrue(entered)
         let second = await pending.run("k") { 2 }
         XCTAssertNil(second, "a second run under the same key does nothing")
@@ -52,7 +52,7 @@ final class ViewModelAsyncWriteTests: XCTestCase {
         var order: [String] = []
         let slow = Task { await writes.run { await gate.wait(); order.append("first") } }
         let fast = Task { await writes.run { order.append("second") } }
-        let queued = await eventually { writes.depth == 2 }
+        let queued = await settles { writes.depth == 2 }
         XCTAssertTrue(queued)
         let early: Void? = await boundedValue(Task { () })
         XCTAssertNotNil(early)
@@ -120,7 +120,7 @@ final class ViewModelAsyncWriteTests: XCTestCase {
         let held = HeldWriter(dbManager.dbPool)
         defer { held.release() }
         let first = Task { await vm.toggleStarredChannel("1:C1") }
-        let pending = await eventually { vm.pendingWrites.isPending("star:1:C1") }
+        let pending = await settles { vm.pendingWrites.isPending("star:1:C1") }
         XCTAssertTrue(pending, "the main actor runs while the write waits")
         XCTAssertFalse(vm.isChannelStarred("1:C1"), "the star waits for its write")
         let second: Void? = await boundedValue(Task { await vm.toggleStarredChannel("1:C1") })
@@ -169,7 +169,7 @@ final class ViewModelAsyncWriteTests: XCTestCase {
         defer { held.release() }
         let older = Task { await vm.updateConnections(reports: [], peers: [], manager: "U-old") }
         let newer = Task { await vm.updateConnections(reports: [], peers: [], manager: "U-new") }
-        let queued = await eventually { vm.writes.depth == 2 }
+        let queued = await settles { vm.writes.depth == 2 }
         XCTAssertTrue(queued, "both saves wait in the chain, the newer behind the older")
         held.release()
         let olderDone: Void? = await boundedValue(older)
@@ -183,25 +183,29 @@ final class ViewModelAsyncWriteTests: XCTestCase {
         XCTAssertEqual(vm.currentProfile?.manager, "U-new")
     }
 
-    /// Convert to Target pressed twice while the writer is busy makes one
-    /// target.
+    /// Convert to Target pressed twice while the first is still with the
+    /// tower makes one target: the second press returns at once. Bounded:
+    /// every wait is a count of turns, so a regression fails, never hangs.
     func testConvertToTargetTwiceWhileTheWriterIsBusyMakesOneTarget() async throws {
         _ = try await dbManager.dbPool.write {
             try TestDatabase.insertIdea($0, title: "Adopt the flow", essence: "Cuts drop-off", status: "active")
         }
-        let vm = IdeasViewModel(dbManager: dbManager)
+        let tower = dbManager.fakeTower
+        let (gate, open) = AsyncStream<Void>.makeStream()
+        tower.onOK = { _, _ in for await _ in gate { return } }
+        let vm = IdeasViewModel(dbManager: dbManager, tower: tower)
         vm.load()
         let idea = try XCTUnwrap(vm.registryItems.first)
-        let held = HeldWriter(dbManager.dbPool)
-        defer { held.release() }
         let first = Task { await vm.convertToTarget(idea) }
-        let pending = await eventually { vm.pendingWrites.isPending("convert:\(idea.id)") }
+        let pending = await settles { vm.pendingWrites.isPending("convert:\(idea.id)") && !tower.calls.isEmpty }
         XCTAssertTrue(pending)
-        let second = await boundedValue(Task { await vm.convertToTarget(idea) })
-        XCTAssertEqual(second, .some(nil), "a second press returns at once and converts nothing")
-        held.release()
-        let created = await boundedValue(first)
-        XCTAssertNotNil(created.flatMap { $0 })
+        let second = await vm.convertToTarget(idea)
+        XCTAssertNil(second, "a second press returns at once and converts nothing")
+        open.yield()
+        open.finish()
+        let created = await first.value
+        XCTAssertNotNil(created)
+        XCTAssertEqual(tower.calls(.ideasConverted).count, 1)
         let targets = try await dbManager.dbPool.read {
             try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM targets WHERE source_type = 'idea'")
         }

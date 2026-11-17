@@ -244,11 +244,13 @@ final class IdeasViewModel {
         }
     }
 
-    /// One create at a time (board #670): a second press while the first
-    /// waits does nothing (nil).
+    /// A create (`ideas.create`). Creates share one row (`createRow`): one
+    /// made while another waits goes after it, so no new idea is dropped;
+    /// only the same idea pressed again while its create waits does nothing
+    /// (nil, board #670) — a double press, not a second idea.
     @discardableResult
     func createManual(kind: String, title: String, essence: String) async -> Int? {
-        let created = await pendingWrites.run("create") {
+        let created = await pendingWrites.run("create|\(kind)|\(title)|\(essence)") {
             await insertManual(kind: kind, title: title, essence: essence)
         }
         return created.flatMap { $0 }

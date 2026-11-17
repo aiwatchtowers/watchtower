@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"watchtower/internal/db"
 	"watchtower/internal/tower/api"
@@ -55,14 +56,16 @@ func TestStrip02_OutputWritesTouchOnlyTheirOwnColumn(t *testing.T) {
 	mark("outputs.dismiss", 3)
 	// Guarded: opening twice keeps the first stamp, and a done or dismissed
 	// card takes no further stamp — answered as a no-op (`already`) or
-	// refused as closed (`changed`), never written. The tower's clock is the
-	// same, so the stamps are compared by which column holds one.
+	// refused as closed (`changed`), never written. The second presses run
+	// on a tower whose clock is a minute later, so a second stamp would show
+	// by value (the stamps below must all be actNow's).
+	later := actNow.Add(time.Minute)
 	again := func(command string, id int64) {
 		b, err := json.Marshal(api.OutputMarkRequest{WriteParams: write(), ID: id, ContentHash: fmt.Sprintf("h%d", id)})
 		if err != nil {
 			t.Fatal(err)
 		}
-		resp := callScreen(screenTower(d, actNow, ActDeps{}), command, b, socket)
+		resp := callScreen(screenTower(d, later, ActDeps{}), command, b, socket)
 		switch {
 		case resp.Status == api.StatusOK:
 			if res := actResult(t, resp); !res.Already {
@@ -90,6 +93,9 @@ func TestStrip02_OutputWritesTouchOnlyTheirOwnColumn(t *testing.T) {
 		}
 	}
 	stamped := actNow.UTC().Format("2006-01-02T15:04:05Z")
+	if stamped == later.UTC().Format("2006-01-02T15:04:05Z") {
+		t.Fatal("the second clock must stamp another value")
+	}
 	var got [][3]string
 	for id := int64(1); id <= 3; id++ {
 		r := row(t, d, "automation_outputs", id)

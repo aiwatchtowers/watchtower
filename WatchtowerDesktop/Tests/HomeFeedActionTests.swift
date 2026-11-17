@@ -605,12 +605,27 @@ final class HomeFeedActionTests: XCTestCase {
     func testAReminderOrTargetGoneElsewhereIsQuiet() async throws {
         let tower = FakeScreenTower()
         for command in [TowerCommand.remindersSnooze, .targetsSetStatus, .targetsSnooze] {
-            tower.always(command, .refused("Couldn't do that: it's no longer on the Mac."))
+            tower.always(command, .refused("Couldn't do that: it's no longer on the Mac.", code: .notFound))
         }
         let performer = LiveHomeFeedPerformer(runner: nil, tower: tower)
         try await performer.perform(.hide, on: .reminder(999), contentHash: "", now: Date(), calendar: .current)
         try await performer.perform(.done, on: .target(999), contentHash: "", now: Date(), calendar: .current)
         try await performer.perform(.hide, on: .target(999), contentHash: "", now: Date(), calendar: .current)
+    }
+
+    /// Gone is Go's `not_found` code, not its words: the same sentence under
+    /// another code is a refusal the owner sees.
+    func testGoneIsTheNotFoundCodeNotTheSentence() async throws {
+        let tower = FakeScreenTower()
+        tower.always(.targetsSetStatus, .refused("Couldn't do that: it's no longer on the Mac.", code: .changed))
+        let performer = LiveHomeFeedPerformer(runner: nil, tower: tower)
+        do {
+            try await performer.perform(.done, on: .target(999), contentHash: "", now: Date(), calendar: .current)
+            XCTFail("a changed refusal is not quiet")
+        } catch let error as TowerWriteError {
+            XCTAssertEqual(error.code, .changed)
+            XCTAssertFalse(error.isGone)
+        }
     }
 
     func testProposalAndEventAreNoOps() async throws {

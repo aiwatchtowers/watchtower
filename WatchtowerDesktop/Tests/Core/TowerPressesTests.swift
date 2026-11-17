@@ -24,21 +24,27 @@ final class TowerPressesTests: XCTestCase {
         XCTAssertEqual(reads, 1)
     }
 
-    func testBusyWhileWaitingWithItsLabelAndASecondPressDoesNothing() async {
+    func testBusyWhileWaitingWithItsLabelAndASecondPressWaitsItsTurn() async {
         let tower = FakeScreenTower()
         let (gate, open) = AsyncStream<Void>.makeStream()
         tower.onOK = { _, _ in for await _ in gate { return } }
         let presses = TowerPresses(tower: tower)
 
         let first = Task { await press(presses) }
-        await untilObserved { presses.isBusy("r") }
+        let busy = await settles { presses.isBusy("r") }
+        XCTAssertTrue(busy)
         XCTAssertEqual(presses.label("r"), TowerPressText.approving)
-        let second = await press(presses)
+        let second = Task { await press(presses) }
+        let queued = await settles(turns: 1_000) { tower.calls.count > 1 }
+        XCTAssertFalse(queued, "the second press waits for the first")
         open.yield()
         _ = await first.value
+        open.yield()
+        let secondResult = await second.value
 
-        XCTAssertNil(second, "a second press on a busy row does nothing")
-        XCTAssertEqual(tower.calls.count, 1)
+        XCTAssertNotNil(secondResult, "no press is dropped: the second goes after the first")
+        XCTAssertEqual(tower.calls.count, 2)
+        XCTAssertNil(presses.state("r"))
     }
 
     func testRefusalKeepsTheSentenceAndRetryIsANewPress() async {
@@ -73,19 +79,24 @@ final class TowerPressesTests: XCTestCase {
         XCTAssertEqual(ids.first, ids.last)
     }
 
-    func testUnknownIsNeverResent() async {
+    func testUnknownIsNeverResentAndSaysSoOnlyWhileTheScreenReReads() async {
         let tower = FakeScreenTower()
         tower.next(.ideasStatus, .unknown)
-        var reads = 0
         let presses = TowerPresses(tower: tower)
-        presses.reread = { reads += 1 }
+        var during: TowerActionState?
+        var reads = 0
+        presses.reread = {
+            reads += 1
+            during = presses.state("r")
+        }
 
         _ = await press(presses)
         await presses.retry("r")
 
-        XCTAssertEqual(presses.state("r"), .unknown)
-        XCTAssertEqual(reads, 1, "the screen reads what landed")
-        XCTAssertEqual(tower.calls.count, 1)
+        XCTAssertEqual(during, .unknown, "the row says so while the screen reads what landed")
+        XCTAssertNil(presses.state("r"), "the re-read settled: the row shows what it found, not a stuck line")
+        XCTAssertEqual(reads, 1)
+        XCTAssertEqual(tower.calls.count, 1, "an unknown outcome is never re-sent, not even by Retry")
     }
 
     func testWithoutATowerAPressFailsAtOnce() async {
@@ -93,17 +104,6 @@ final class TowerPressesTests: XCTestCase {
         let result = await press(presses)
         XCTAssertNil(result)
         XCTAssertEqual(presses.state("r"), .refused(TowerText.daemonDown))
-    }
-
-    func testForgetDropsAFailureButNeverABusyPress() async {
-        let tower = FakeScreenTower()
-        tower.next(.ideasStatus, .refused("no"))
-        let presses = TowerPresses(tower: tower)
-        _ = await press(presses)
-        presses.forget("r")
-        XCTAssertNil(presses.state("r"))
-        await presses.retry("r")
-        XCTAssertEqual(tower.calls.count, 1, "a forgotten failure has no Retry")
     }
 
     func testTheBusyLabels() {
@@ -115,9 +115,22 @@ final class TowerPressesTests: XCTestCase {
         XCTAssertEqual(TowerPresses(tower: nil).label("never pressed"), "Updating…")
     }
 
-    func testAGoneRefusalReadsAsGone() {
-        XCTAssertTrue(TowerWriteError("Couldn't snooze it: it's no longer on the Mac.").isGone)
-        XCTAssertFalse(TowerWriteError("Couldn't snooze it: the database is busy.").isGone)
+    func testGoneComesFromGosNotFoundCodeNotItsWords() async {
+        XCTAssertTrue(TowerWriteError("anything", code: .notFound).isGone)
+        XCTAssertFalse(TowerWriteError("Couldn't snooze it: it's no longer on the Mac.", code: .changed).isGone)
+        XCTAssertFalse(TowerWriteError("Couldn't snooze it: it's no longer on the Mac.").isGone, "no answer is not gone")
         XCTAssertEqual(TowerWriteError("x").errorDescription, "x")
+
+        let tower = FakeScreenTower()
+        tower.next(.ideasStatus, .refused("Ce n'est plus sur le Mac.", code: .notFound))
+        do {
+            let _: ActResult = try await tower.perform(.ideasStatus) { IdeaStatusRequest(requestID: $0, id: 1, status: "active") }
+            XCTFail("a refusal throws")
+        } catch let error as TowerWriteError {
+            XCTAssertTrue(error.isGone, "the code travels from the tower, whatever the sentence says")
+            XCTAssertEqual(error.code, .notFound)
+        } catch {
+            XCTFail("\(error)")
+        }
     }
 }

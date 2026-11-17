@@ -521,9 +521,9 @@ final class AppState {
     /// Test seam: the CLI a custom track's activity applies actions through
     /// (design shots have no installed CLI); nil finds the installed one.
     @ObservationIgnored var trackActionRunnerOverride: (any CLIRunnerProtocol)?
-    /// Test seam: the CLI Wipe LLM Data runs `watchtower db wipe-llm` with;
-    /// nil finds the installed one.
-    @ObservationIgnored var wipeLLMRunnerOverride: (any CLIRunnerProtocol)?
+    /// Test seam: finds the CLI Wipe LLM Data runs `watchtower db wipe-llm`
+    /// with (the installed one; nil: none installed).
+    @ObservationIgnored var findWipeLLMRunner: @MainActor () -> (any CLIRunnerProtocol)? = { ProcessCLIRunner.makeDefault() }
 
     /// `managedPolicyRead` reads the organization policy (design shots pass a
     /// fixture). `onboardingDefaults` backs the onboarding step and goals,
@@ -1457,7 +1457,7 @@ final class AppState {
     func resetLLMData(workspaceDir: String? = Constants.activeWorkspaceDir()) async throws {
         guard databaseManager != nil else { return }
         let daemon = daemonControl
-        let runner = wipeLLMRunnerOverride ?? ProcessCLIRunner.makeDefault()
+        let runner = findWipeLLMRunner()
         // One item on the start queue: no other start lands mid-wipe.
         let failure = await enqueueDaemonStart { () -> (any Error)? in
             await Self.stopWipeRestart(daemon: daemon, runner: runner, workspaceDir: workspaceDir)
