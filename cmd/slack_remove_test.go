@@ -94,6 +94,7 @@ func TestSlackRemove_RevokeFailureStillRemoves(t *testing.T) {
 		body   string
 	}{
 		"server error": {http.StatusInternalServerError, `{}`},
+		"not revoked":  {http.StatusOK, `{"ok":true,"revoked":false}`},
 		"invalid_auth": {http.StatusOK, `{"ok":false,"error":"invalid_auth"}`},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -106,10 +107,37 @@ func TestSlackRemove_RevokeFailureStillRemoves(t *testing.T) {
 			cmd.SetOut(out)
 			require.NoError(t, runSlackRemove(cmd, []string{"1"}))
 
-			assert.NotEmpty(t, fake.auths)
+			assert.Len(t, fake.auths, 1)
 			assert.False(t, store.Exists())
 			assert.Equal(t, "removed", accountStatus(t, cfg, id))
-			assert.Contains(t, out.String(), "Slack did not confirm the token was revoked; it will expire")
+			assert.Contains(t, out.String(), "Slack did not confirm the token was revoked; it may stay valid until a workspace admin removes the app")
 		})
 	}
+}
+
+func TestSlackRemove_UnreadableTokenFileWarnsAndRemoves(t *testing.T) {
+	cfg, store, id := setupSlackRemove(t)
+	require.NoError(t, os.WriteFile(store.Path(), []byte("{not json"), 0o600))
+
+	out := &bytes.Buffer{}
+	cmd := &cobra.Command{}
+	cmd.SetOut(out)
+	require.NoError(t, runSlackRemove(cmd, []string{"1"}))
+
+	assert.False(t, store.Exists())
+	assert.Equal(t, "removed", accountStatus(t, cfg, id))
+	assert.Contains(t, out.String(), "Slack did not confirm the token was revoked")
+}
+
+func TestSlackRemove_NoTokenFileIsSilent(t *testing.T) {
+	cfg, store, id := setupSlackRemove(t)
+	require.NoError(t, store.Delete())
+
+	out := &bytes.Buffer{}
+	cmd := &cobra.Command{}
+	cmd.SetOut(out)
+	require.NoError(t, runSlackRemove(cmd, []string{"1"}))
+
+	assert.Equal(t, "removed", accountStatus(t, cfg, id))
+	assert.NotContains(t, out.String(), "did not confirm")
 }

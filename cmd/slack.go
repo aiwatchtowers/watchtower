@@ -523,7 +523,7 @@ var slackRevokeAPIURL = slackgo.APIURL
 const slackRevokeTimeout = 10 * time.Second
 
 // slackRevokeWarning is printed when Slack did not confirm the revoke.
-const slackRevokeWarning = "Slack did not confirm the token was revoked; it will expire"
+const slackRevokeWarning = "Slack did not confirm the token was revoked; it may stay valid until a workspace admin removes the app"
 
 // removeSlackAccount disconnects account id: revokes its OAuth token at Slack
 // (auth.revoke; a failure prints slackRevokeWarning to warnOut and never stops
@@ -540,7 +540,11 @@ func removeSlackAccount(ctx context.Context, cfg *config.Config, database *db.DB
 		ctx = context.Background()
 	}
 	store := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), id)
-	if tok, err := store.Load(); err == nil && tok != nil && tok.AccessToken != "" {
+	tok, loadErr := store.Load()
+	switch {
+	case loadErr != nil:
+		fmt.Fprintln(warnOut, slackRevokeWarning)
+	case tok != nil && tok.AccessToken != "":
 		rctx, cancel := context.WithTimeout(ctx, slackRevokeTimeout)
 		err := watchtowerslack.NewClientWithAPIURL(tok.AccessToken, slackRevokeAPIURL).RevokeToken(rctx)
 		cancel()
