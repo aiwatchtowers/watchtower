@@ -54,7 +54,9 @@ final class ViewModelAsyncWritePhase2bTests: XCTestCase {
         defer { held.release() }
 
         let writing = Task { await vm.updateStatus(target, to: "done") }
-        let pending = await eventually { vm.isWriting }
+        // The status press is the tower's (outside the local edit chain): its
+        // row is busy while Go's write waits for the writer.
+        let pending = await settles { vm.presses.isBusy(TargetsViewModel.row(target.id)) }
         XCTAssertTrue(pending, "the write is under way, waiting for the writer")
         let responsive: Void? = await boundedValue(Task { () })
         XCTAssertNotNil(responsive, "the main actor is free while the write waits")
@@ -120,7 +122,7 @@ final class ViewModelAsyncWritePhase2bTests: XCTestCase {
         defer { held.release() }
 
         let first = Task { await chat.approve(card) }
-        let applying = await eventually { chat.isApplying(card) }
+        let applying = await settles { chat.isApplying(card) }
         XCTAssertTrue(applying)
         await chat.approve(card)
         chat.reject(card)
@@ -214,7 +216,7 @@ final class ViewModelAsyncWritePhase2bTests: XCTestCase {
         defer { held.release() }
 
         let saving = Task { await vm.saveDescription(for: taskA) }
-        let waiting = await eventually { vm.isSavingDescription(taskA) }
+        let waiting = await settles { vm.isSavingDescription(taskA) }
         XCTAssertTrue(waiting)
         vm.setDescriptionDraft("First, and more", for: taskA)
         held.release()
@@ -241,7 +243,7 @@ final class ViewModelAsyncWritePhase2bTests: XCTestCase {
         defer { held.release() }
 
         let sending = Task { await vm.sendCommentDraft() }
-        let pending = await eventually { vm.isSendingComment }
+        let pending = await settles { vm.isSendingComment }
         XCTAssertTrue(pending)
         let second = await vm.sendCommentDraft()
         XCTAssertFalse(second)
@@ -266,7 +268,7 @@ final class ViewModelAsyncWritePhase2bTests: XCTestCase {
 
         let first = Task { await vm.addSubItem(target, text: "one") }
         let second = Task { await vm.addSubItem(target, text: "two") }
-        let queued = await eventually { vm.isWriting }
+        let queued = await settles { vm.isWriting }
         XCTAssertTrue(queued)
         held.release()
 
@@ -346,7 +348,7 @@ final class ViewModelAsyncWritePhase2bTests: XCTestCase {
         defer { held.release() }
 
         let first = Task { await vm.saveDescription(for: taskA) }
-        let waiting = await eventually { vm.isSavingDescription(taskA) }
+        let waiting = await settles { vm.isSavingDescription(taskA) }
         XCTAssertTrue(waiting)
         vm.setDescriptionDraft("First, and more", for: taskA)
         let second = Task { await vm.saveDescription(for: taskA) }
@@ -384,7 +386,7 @@ final class ViewModelAsyncWritePhase2bTests: XCTestCase {
         defer { held.release() }
 
         let approving = Task { await chat.approveAll() }
-        let applying = await eventually { busy.isAnyWorking && chat.actionCards.contains { chat.isApplying($0) } }
+        let applying = await settles { busy.isAnyWorking && chat.actionCards.contains { chat.isApplying($0) } }
         XCTAssertTrue(applying)
         _ = center.container(for: other, viewModel: targets, dbManager: dbManager)
 

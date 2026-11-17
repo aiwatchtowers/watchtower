@@ -96,7 +96,6 @@ final class LiveSlack01GuardTests: XCTestCase {
         "CodeQuestionSurface.swift": "workbench Questions tab, never leaves it",
         "IdeaChatSurface.swift": "Discuss-an-idea chat, never mined",
         "DatabaseManager.swift": "table list of the database",
-        "IdeaQueries.swift": "delete only",
         "LearnQueries.swift": "an existence signal, no text",
         "ChatCommand.swift": "comment only",
         "ChatModels.swift": "row types and comments",
