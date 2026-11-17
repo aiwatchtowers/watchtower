@@ -50,14 +50,14 @@ final class HeldWriterTests: XCTestCase {
         defer { first.release() }
         XCTAssertTrue(first.isHolding)
         var failures: [String] = []
-        let second = HeldWriter(pool, fail: { message, _, _ in failures.append(message) })
+        let second = HeldWriter(pool) { message, _, _ in failures.append(message) }
         second.release() // a no-op: it never held the writer, and must not free the first's claim
         XCTAssertFalse(second.isHolding)
         XCTAssertEqual(failures.count, 1)
         XCTAssertTrue(failures.first?.contains("already held") ?? false)
 
         var stillRefused: [String] = []
-        let third = HeldWriter(pool, fail: { message, _, _ in stillRefused.append(message) })
+        let third = HeldWriter(pool) { message, _, _ in stillRefused.append(message) }
         XCTAssertFalse(third.isHolding, "the first hold still owns the writer after the refused one's release")
         XCTAssertEqual(stillRefused.count, 1)
     }
