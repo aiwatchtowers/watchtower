@@ -340,7 +340,7 @@ final class RelayChatClient: ChatClient {
             return await request(op, ChatEntitySearchParams(query: query, kinds: kinds))
         case .skillsList:
             return await request(op, ChatSkillsListParams())
-        case .project, .artifact, .attach(_, .path), .attachDiscard, .shutdown:
+        case .project, .artifact, .attach(_, .path), .attachDiscard, .shutdown, .warm, .retireSessions:
             // Answered by localAnswer; listed so a new operation is a compile error here.
             return unsupported
         }
@@ -348,7 +348,8 @@ final class RelayChatClient: ChatClient {
 
     /// What the phone answers itself, connected or not: a held page, a search record already here, and the
     /// operations the relay does not carry (§6.4: project editing, artifact comments, Add to Knowledge and Mac files
-    /// are the Mac's shell; `continue` and a move between projects have no relay kind).
+    /// are the Mac's shell; `continue`, a move between projects, archive, discard, warm and session retire have no relay
+    /// kind).
     private func localAnswer(_ op: ChatOperation) -> ChatEcho? {
         switch op {
         case let .page(conversationID, before):
@@ -360,7 +361,11 @@ final class RelayChatClient: ChatClient {
             return .applied(.none)
         case let .turn(request) where request.mode == .continue:
             return unsupported
-        case .manage(_, .move, _, _), .project, .artifact, .attach(_, .path), .shutdown:
+        case .manage(_, .move, _, _), .manage(_, .archive, _, _), .manage(_, .discard, _, _), .project, .artifact,
+             .attach(_, .path), .shutdown:
+            return unsupported
+        case .warm, .retireSessions:
+            // The tower's own session pool; the hub carries neither.
             return unsupported
         default:
             return nil

@@ -40,7 +40,7 @@ extension AppState {
         ensureChatViewModels()
         guard let chatViewModel else { return }
         resumeLastChatIfUnopened()
-        chatViewModel.draft = HelpChatPrefill.merge(draft: chatViewModel.draft, prefill: prefill)
+        chatViewModel.composer.draft = HelpChatPrefill.merge(draft: chatViewModel.composer.draft, prefill: prefill)
         isHelpChatShown = true
     }
 

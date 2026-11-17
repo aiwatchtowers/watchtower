@@ -2,11 +2,6 @@ import Foundation
 import GRDB
 
 package enum ChatConversationQueries {
-    package static func fetchAll(_ db: Database) throws -> [ChatConversation] {
-        try ChatConversation.fetchAll(db, sql: """
-            SELECT * FROM chat_conversations ORDER BY updated_at DESC
-        """)
-    }
 
     /// The main chat's list; `has_attachments` lets a message-less chat
     /// that holds unsent files stay visible in the history.
@@ -17,17 +12,6 @@ package enum ChatConversationQueries {
             WHERE c.context_type IS NULL AND c.archived_at IS NULL
             ORDER BY c.updated_at DESC
         """)
-    }
-
-    package static func search(_ db: Database, query: String) throws -> [ChatConversation] {
-        let pattern = "%\(query)%"
-        return try ChatConversation.fetchAll(
-            db,
-            sql: """
-                SELECT * FROM chat_conversations WHERE context_type IS NULL AND title LIKE ? ORDER BY updated_at DESC
-                """,
-            arguments: [pattern]
-        )
     }
 
     @discardableResult
@@ -108,46 +92,6 @@ package enum ChatConversationQueries {
         """, arguments: [title, now, id])
     }
 
-    /// Owner rename — `title_source='user'` keeps `chat title` and the
-    /// prefix title from ever overwriting it.
-    package static func rename(_ db: Database, id: Int64, title: String) throws {
-        try db.execute(sql: """
-            UPDATE chat_conversations SET title = ?, title_source = 'user', updated_at = ? WHERE id = ?
-        """, arguments: [title, Date().timeIntervalSince1970, id])
-        try db.requireUpdated("chat", id: id)
-    }
-
-    /// First-message title (80 chars), only while nothing better exists.
-    package static func setPrefixTitle(_ db: Database, id: Int64, text: String) throws {
-        try db.execute(sql: """
-            UPDATE chat_conversations SET title = ? WHERE id = ? AND title_source = 'prefix' AND title = ''
-        """, arguments: [String(text.prefix(80)), id])
-    }
-
-    /// True exactly when the conversation still has its prefix title and has
-    /// just finished its first assistant reply (spec §4.4).
-    package static func needsAITitle(_ db: Database, id: Int64) throws -> Bool {
-        let completed = try Int.fetchOne(db, sql: """
-            SELECT COUNT(*) FROM chat_messages m
-            JOIN chat_conversations c ON c.id = m.conversation_id
-            WHERE c.id = ? AND c.title_source = 'prefix' AND m.role = 'assistant' AND m.status = 'complete'
-            """, arguments: [id]) ?? 0
-        return completed == 1
-    }
-
-    package static func pin(_ db: Database, id: Int64, pinned: Bool) throws {
-        try db.execute(sql: "UPDATE chat_conversations SET pinned = ? WHERE id = ?", arguments: [pinned ? 1 : 0, id])
-        try db.requireUpdated("chat", id: id)
-    }
-
-    package static func archive(_ db: Database, id: Int64) throws {
-        try db.execute(
-            sql: "UPDATE chat_conversations SET archived_at = ? WHERE id = ?",
-            arguments: [Date().timeIntervalSince1970, id]
-        )
-        try db.requireUpdated("chat", id: id)
-    }
-
     /// Moves a conversation into (or out of) a project. An actual move also
     /// clears the stored provider session: a `--resume`d Claude session keeps
     /// the prompt it was started with, so it would never see the new
@@ -164,20 +108,6 @@ package enum ChatConversationQueries {
         )
     }
 
-    /// Explicit complete choice. Automatic also explicitly removes the model pin.
-    package static func setRouting(_ db: Database, id: Int64, automatic: Bool, provider: String, model: String?) throws {
-        guard automatic || ManagedPolicy.knownProviders.contains(provider) else {
-            throw DatabaseError(message: "Invalid chat provider")
-        }
-        try db.execute(sql: """
-            UPDATE chat_conversations SET routing_mode = ?, provider = ?, model = ?,
-                actual_provider = '', actual_model = '', routing_reason = '' WHERE id = ?
-            """, arguments: [
-                automatic ? "preferred_reserve" : "pinned", automatic ? nil : provider, automatic ? nil : model, id
-            ])
-        try db.requireUpdated("chat", id: id)
-    }
-
     package static func setProviderModel(_ db: Database, id: Int64, provider: String, model: String?) throws {
         try db.execute(
             sql: "UPDATE chat_conversations SET provider = ?, model = ? WHERE id = ?",
@@ -185,42 +115,11 @@ package enum ChatConversationQueries {
         )
     }
 
-    package static func updateSessionID(_ db: Database, id: Int64, sessionID: String?) throws {
-        let now = Date().timeIntervalSince1970
-        try db.execute(sql: """
-            UPDATE chat_conversations SET session_id = ?, updated_at = ? WHERE id = ?
-        """, arguments: [sessionID, now, id])
-    }
-
-    /// `updateSessionID` guarded by the project the session was spawned for:
-    /// a no-op once the conversation moved to another project (or out).
-    package static func updateSessionID(_ db: Database, id: Int64, sessionID: String, projectID: Int64?) throws {
-        let now = Date().timeIntervalSince1970
-        try db.execute(sql: """
-            UPDATE chat_conversations SET session_id = ?, updated_at = ? WHERE id = ? AND project_id IS ?
-        """, arguments: [sessionID, now, id, projectID])
-    }
-
     package static func touch(_ db: Database, id: Int64) throws {
         let now = Date().timeIntervalSince1970
         try db.execute(sql: """
             UPDATE chat_conversations SET updated_at = ? WHERE id = ?
         """, arguments: [now, id])
-    }
-
-    /// The owner saw this chat (Chats panel spec §5.2): `read_at` becomes
-    /// "read through" the `created_at` of its last complete answer on the
-    /// active branch (`ChatHistoryQueries.lastAnswerAt`), not the clock — an
-    /// answer still streaming (a `partial` row, created when its turn began)
-    /// is not covered, so its completion off screen leaves the chat unread.
-    /// No complete answer yet = nothing changes. Never moves the mark back,
-    /// and leaves `updated_at` alone: reading is not activity. Unchecked — a
-    /// chat deleted meanwhile needs no mark.
-    package static func markRead(_ db: Database, id: Int64) throws {
-        guard let through = try ChatHistoryQueries.lastAnswerAt(db, conversationID: id) else { return }
-        try db.execute(sql: """
-            UPDATE chat_conversations SET read_at = MAX(COALESCE(read_at, 0), ?) WHERE id = ?
-            """, arguments: [through, id])
     }
 
     package static func delete(_ db: Database, id: Int64) throws {
@@ -234,36 +133,12 @@ package enum ChatConversationQueries {
     /// unused. Callers only ever pass the landing's own draft id and project:
     /// an empty chat of any other origin (moved out of a project, or left by
     /// a deleted one) is never theirs to delete.
-    private static let untouchedPredicate = """
+    package static let untouchedPredicate = """
         c.context_type IS NULL AND c.project_id IS ? AND c.archived_at IS NULL
         AND c.pinned = 0 AND c.title_source <> 'user'
         AND NOT EXISTS (SELECT 1 FROM chat_messages m WHERE m.conversation_id = c.id)
         AND NOT EXISTS (SELECT 1 FROM chat_attachments a WHERE a.conversation_id = c.id)
         """
-
-    /// The landing's draft while it is still untouched, for reuse. `createdAt`
-    /// must match too: the draft is persisted across launches, and a reset
-    /// database at the same path can reissue the id to an unrelated chat.
-    package static func fetchUntouched(
-        _ db: Database, id: Int64, createdAt: Double, projectID: Int64? = nil
-    ) throws -> ChatConversation? {
-        try ChatConversation.fetchOne(db, sql: """
-            SELECT c.* FROM chat_conversations c WHERE c.id = ? AND c.created_at = ? AND \(untouchedPredicate)
-            """, arguments: [id, createdAt, projectID])
-    }
-
-    /// Deletes the landing's draft only while it is still untouched (and is
-    /// still the same row: `createdAt` matches); true when it was deleted.
-    @discardableResult
-    package static func deleteIfUntouched(
-        _ db: Database, id: Int64, createdAt: Double, projectID: Int64? = nil
-    ) throws -> Bool {
-        try db.execute(sql: """
-            DELETE FROM chat_conversations WHERE id IN (
-                SELECT c.id FROM chat_conversations c WHERE c.id = ? AND c.created_at = ? AND \(untouchedPredicate))
-            """, arguments: [id, createdAt, projectID])
-        return db.changesCount > 0
-    }
 
     /// Which of `ids` are still conversations (a chat mention's "Chat
     /// deleted" check).

@@ -57,6 +57,16 @@ public struct ChatConversationView: View {
     }
 
     private var feedContext: ChatFeedContext {
+        conversation.feedContext(composer: composer, partActions: partActions)
+    }
+}
+
+extension ChatConversationModel {
+    /// The feed's context for this conversation: its rows' turn operations through this model, the composer's
+    /// fixed sends, edits and quotes, and the screen's own part actions. Shared by `ChatConversationView` and a shell
+    /// that puts its own composer under the feed (the Mac's window).
+    public func feedContext(composer: ChatComposerModel, partActions: ChatPartActions) -> ChatFeedContext {
+        let conversation = self
         var actions = partActions
         actions.sendFixedText = { text in Task { await composer.sendFixed(text) } }
         actions.retry = { id in Task { await conversation.retry(id) } }
@@ -73,7 +83,7 @@ public struct ChatConversationView: View {
             actions: conversation.feed?.actions ?? [],
             isTurnRunning: conversation.isTurnRunning,
             hasEarlier: conversation.hasEarlier,
-            staleLine: conversation.isStale ? ChatConversationModel.staleLine : nil,
+            staleLine: conversation.isStale ? Self.staleLine : nil,
             notice: nil,
             partActions: actions,
             rowActions: rowActions,

@@ -1,5 +1,6 @@
 import ChatWire
 import SwiftUI
+import WatchtowerChatText
 import WatchtowerDesign
 
 /// One message: the owner's as a bubble on the right, a reply as its parts in reading order, with the row's actions
@@ -50,10 +51,22 @@ public struct ChatMessageRow: View {
         .accessibilityIdentifier("chat.message.\(message.id)")
     }
 
+    /// The owner's own words: the stored text's skill and REFERENCED lines (the engine composes them) show as chips.
+    private var owner: ChatOwnerTextParts { ChatOwnerText.displayParts(message.text) }
+
     private var ownerBubble: some View {
-        VStack(alignment: .trailing, spacing: Spacing.small) {
-            ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
+        let owner = owner
+        let shown = (owner.body.isEmpty ? [] : [ChatMessageParts.textPart(owner.body, cut: false)])
+            + parts.filter { $0.kind != ChatPartKind.text }
+        return VStack(alignment: .trailing, spacing: Spacing.small) {
+            ForEach(Array(shown.enumerated()), id: \.offset) { _, part in
                 ChatPartRegistry.view(for: part, context: context)
+            }
+            if owner.skill != nil || !owner.references.isEmpty {
+                HStack(spacing: Spacing.compact) {
+                    if let skill = owner.skill { style.chip("/\(skill)") }
+                    ForEach(owner.references, id: \.token) { style.chip("@\($0.label)") }
+                }
             }
         }
         .padding(.horizontal, Spacing.medium)
@@ -67,7 +80,7 @@ public struct ChatMessageRow: View {
                 if message.siblings.count > 1 {
                     branchSwitcher
                 }
-                style.secondaryButton(Self.copyLabel) { rowActions.copy(message.text) }
+                style.secondaryButton(Self.copyLabel) { rowActions.copy(isOwner ? owner.body : message.text) }
                 if !isOwner, let quote = rowActions.quote {
                     ChatQuoteRowAction(text: message.text, onQuote: quote)
                 }

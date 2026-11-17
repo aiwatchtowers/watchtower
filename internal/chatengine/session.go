@@ -85,6 +85,7 @@ type session struct {
 	leaf         *int64      // the last message this process answered (ChatContinuity)
 	blocked      bool        // pending with no slot coming: "Waiting for a free slot"
 	retire       bool        // close once idle; never reused
+	warm         bool        // started ahead of a turn (Warm): launches only into a free slot
 	closing      bool        // the runner closes: stop now, leave a cut turn's lease
 	dropped      bool        // a pending session given up (cancelled, gone, failed spawn)
 	cancelPoke   bool        // Cancel asked for an immediate lease read

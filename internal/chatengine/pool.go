@@ -62,6 +62,8 @@ func (e *Engine) admit() {
 		}
 		occupied++
 		switch {
+		case s.retire && s.turn != nil && !s.closing && !s.dropped:
+			// Retires after its turn (RetireWarm): its slot is not coming soon.
 		case s.retire || s.closing || s.dropped:
 			coming++
 		case s.phase == phaseLive && s.turn == nil:
@@ -93,6 +95,20 @@ func (e *Engine) admit() {
 		default:
 			s.blocked = true
 		}
+	}
+	// A warm session (no turn yet) only ever takes a free slot: it never
+	// evicts, and with no slot it is given up.
+	for _, s := range e.sessions {
+		if s.phase != phasePending || s.turn != nil || !s.warm || s.dropped || s.closing {
+			continue
+		}
+		if free > 0 && !e.predecessorAlive(s) {
+			free--
+			s.phase = phaseLaunch
+		} else {
+			s.dropped = true
+		}
+		s.poke()
 	}
 }
 

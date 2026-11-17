@@ -1,4 +1,6 @@
 import AppKit
+import ChatUI
+import ChatWire
 import Combine
 import SwiftUI
 import WatchtowerCore
@@ -8,7 +10,7 @@ struct ChatView: View {
 
     var body: some View {
         Group {
-            if let chatVM = appState.chatViewModel, let historyVM = appState.chatHistoryViewModel {
+            if let chatVM = appState.chatViewModel, let historyVM = appState.chatPanelModel {
                 ChatSplitView(chatVM: chatVM, historyVM: historyVM)
             } else {
                 ProgressView()
@@ -27,7 +29,7 @@ struct ChatSplitView: View {
 
     @Environment(AppState.self) private var appState
     @Bindable var chatVM: ChatViewModel
-    @Bindable var historyVM: ChatHistoryViewModel
+    @Bindable var historyVM: ChatPanelModel
     @AppStorage("chat.historyVisible") private var showSidebar = false
     /// The conversation last on screen (0 = the landing), when it last was,
     /// and in which workspace database — `ChatLandingPolicy`'s inputs after a
@@ -66,31 +68,23 @@ struct ChatSplitView: View {
                         ChatErrorStrip(chatVM: chatVM)
                             .padding(10)
                         ChatInspectorContent(chatVM: chatVM)
-                            .background {
-                                if let live = chatVM.liveTurn {
-                                    ChatLiveArtifactFeed(turn: live) { chatVM.updateLiveArtifacts(streamingText: $0) }
-                                }
-                            }
                     } else if let projectID = chatVM.openProjectID, let dbPool = appState.databaseManager?.dbPool {
                         ProjectDetailView(
                             projectID: projectID,
                             chatVM: chatVM,
                             dbPool: dbPool,
-                            attachmentsRoot: ChatAttachmentStore.defaultRootDir(),
                             modelSuggestions: appState.aiModelCatalog.suggestions(for: chatVM.selectedProvider.rawValue),
                             maxComposerHeight: max(120, geo.size.height * 0.4),
                             onOpenChat: { historyVM.selectedConversationID = $0 },
-                            onRenamed: { chatVM.reloadProjects() },
                             onDeleted: { chatVM.projectDeleted($0) },
-                            onPromptChanged: { chatVM.projectPromptChanged($0) },
-                            hiddenChatIDs: historyVM.hiddenChatIDs,
-                            panelChats: historyVM.conversations
+                            hiddenChatIDs: Set([historyVM.list.pendingDelete].compactMap { $0 }),
+                            panelChats: historyVM.list.store.list?.conversations ?? []
                         )
                         .id(projectID)
                     } else if chatVM.isOnLanding {
                         ChatLandingView(
                             chatVM: chatVM,
-                            recents: ChatLandingPolicy.recents(historyVM.conversations),
+                            recents: ChatLandingPolicy.recents(historyVM.list.conversations),
                             ownerName: appState.owner.displayName,
                             modelSuggestions: appState.aiModelCatalog.suggestions(for: chatVM.selectedProvider.rawValue),
                             maxComposerHeight: max(120, geo.size.height * 0.4)
@@ -102,8 +96,6 @@ struct ChatSplitView: View {
                             modelSuggestions: appState.aiModelCatalog.suggestions(for: chatVM.selectedProvider.rawValue),
                             maxHeight: max(120, geo.size.height * 0.4)
                         )
-                        // A turn the phone runs in this chat (spec 2026-11-15 §5).
-                        .task(id: chatVM.conversationID) { await chatVM.watchForeignTurns() }
                         .frame(maxWidth: 760)
                         .frame(maxWidth: .infinity)
                     }
@@ -113,6 +105,7 @@ struct ChatSplitView: View {
             // also paints it), so the selected history tab meets one colour.
             .detailBackground()
         }
+        .macChatStyle(hooks: .app)
         // View → Go to Item (⌘1…⌘9) and Back (⌘[) act on the panel while
         // this tab is in the key window (spec §5.4, `ItemShortcutCommands`).
         .focusedSceneValue(\.chatsMenu, ChatsMenuContext(
@@ -137,17 +130,14 @@ struct ChatSplitView: View {
             if scenePhase == .active { rememberShownConversation() }
         }
         .sheet(isPresented: $showSearch) {
-            ChatSearchView(search: { historyVM.search($0) }, onOpen: open)
+            ChatSearchView(list: historyVM.list, onOpen: open)
         }
         .alert("Rename Chat", isPresented: $showRename) {
             TextField("Title", text: $renameText)
             Button("Save") {
                 if let id = chatVM.conversationID {
                     let title = renameText
-                    Task {
-                        await historyVM.rename(id, title: title)
-                        chatVM.reload()
-                    }
+                    Task { await historyVM.list.rename(id, title) }
                 }
             }
             Button("Cancel", role: .cancel) {}
@@ -173,7 +163,7 @@ struct ChatSplitView: View {
                 .lineLimit(1)
                 .onTapGesture(count: 2) {
                     guard chatVM.openProjectID == nil, !chatVM.isOnLanding, chatVM.conversationID != nil else { return }
-                    renameText = chatVM.currentConversation?.title ?? ""
+                    renameText = chatVM.title ?? ""
                     showRename = true
                 }
                 .help("Double-click to rename")
@@ -219,7 +209,8 @@ struct ChatSplitView: View {
             return chatVM.projects.first { $0.id == projectID }?.name ?? "Project"
         }
         if chatVM.isOnLanding { return "New Chat" }
-        return chatVM.currentConversation?.displayTitle ?? "New Chat"
+        let title = chatVM.title ?? ""
+        return title.isEmpty ? "New Chat" : title
     }
 
     /// ⌘N / New Chat / the panel's `+`: the landing — its composer makes
@@ -245,10 +236,8 @@ struct ChatSplitView: View {
         // A project page stays open, with no history selection.
         guard chatVM.openProjectID == nil else { return }
         let shown = chatVM.isOnLanding ? nil : chatVM.conversationID
-        // Back on the tab, the chat on screen is read (spec §5.2): a turn
-        // that ended while the tab was away left it unread. A changed
-        // selection marks it itself; an unchanged one is marked here — once.
-        if let shown, shown == historyVM.selectedConversationID { historyVM.markRead(shown) }
+        // Back on the tab, the chat on screen is read (spec §5.2): the
+        // thread marks its newest answer read while it is shown.
         historyVM.selectedConversationID = shown
     }
 
@@ -265,8 +254,8 @@ struct ChatSplitView: View {
         let wasShown = id == chatVM.conversationID
         chatVM.forget(conversationID: id)
         Task {
-            await historyVM.commitPendingDelete()
-            await historyVM.deleteConversation(id)
+            await historyVM.list.commitPendingDelete()
+            await historyVM.list.deleteNow(id)
         }
         if wasShown { showLanding() }
     }
@@ -288,15 +277,15 @@ struct ChatSplitView: View {
     /// column says why (`lastError`).
     private func archive(_ id: Int64) {
         Task {
-            guard await historyVM.archive(id) else { return }
+            guard await historyVM.list.archive(id) else { return }
             let wasShown = id == chatVM.conversationID
             chatVM.forget(conversationID: id)
             if wasShown { showLanding() }
         }
     }
 
-    private func open(_ hit: ChatSearchHit) {
-        Task { await chatVM.open(hit) }
+    private func open(_ hit: ChatSearch.Hit) {
+        chatVM.open(hit)
         historyVM.selectedConversationID = hit.conversationID
     }
 }

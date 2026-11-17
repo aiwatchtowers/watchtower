@@ -387,6 +387,8 @@ func TestChatManage_RenameSetsUserTitle(t *testing.T) {
 	}
 	wantOutcome(t, c.run("chat_manage", map[string]any{"conversation_id": conv, "op": "unpin"}), wire.StatusApplied, "")
 	wantOutcome(t, c.run("chat_manage", map[string]any{"conversation_id": conv, "op": "archive"}), wire.StatusFailed, reasonInvalidParams)
+	// discard (the Mac's untouched landing draft) is chat.sock only: the relay never deletes a chat by it.
+	wantOutcome(t, c.run("chat_manage", map[string]any{"conversation_id": conv, "op": "discard"}), wire.StatusFailed, reasonInvalidParams)
 	wantOutcome(t, c.run("chat_manage", map[string]any{"conversation_id": 9999, "op": "pin"}), wire.StatusFailed, reasonNotFound)
 }
 

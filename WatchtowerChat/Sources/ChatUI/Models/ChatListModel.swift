@@ -68,6 +68,26 @@ public final class ChatListModel {
         }
     }
 
+    /// Sends the delete waiting in the Undo window now (the window closes: the app quits, the panel goes away).
+    public func commitPendingDelete() async {
+        guard let id = pendingDelete else { return }
+        pendingCommit?.cancel()
+        pendingCommit = nil
+        await commit(id)
+    }
+
+    /// Deletes at once, with no Undo (a confirmed Delete…). Whether the engine applied it.
+    @discardableResult
+    public func deleteNow(_ id: Int64) async -> Bool {
+        let echo = try? await client.send(.manage(conversationID: id, op: .delete, title: nil, projectID: nil))
+        if case .applied? = echo {
+            notice = nil
+            return true
+        }
+        notice = Self.deleteFailedLine
+        return false
+    }
+
     /// Brings the row back; nothing is sent.
     public func undo() {
         pendingCommit?.cancel()
@@ -95,6 +115,13 @@ public final class ChatListModel {
 
     public func move(_ id: Int64, toProject projectID: Int64?) async {
         await manage(id, op: .move, projectID: projectID)
+    }
+
+    /// Takes the chat off the list (its messages are kept). Whether the engine applied it.
+    @discardableResult
+    public func archive(_ id: Int64) async -> Bool {
+        await manage(id, op: .archive)
+        return notice == nil
     }
 
     /// Full-text search over the chats; an empty query clears it.

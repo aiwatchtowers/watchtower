@@ -88,6 +88,15 @@ func (s *Store) Delete(ctx context.Context, conv int64) error {
 	return requireConversation(res, err)
 }
 
+// Archive is ChatConversationQueries.archive: the chat leaves the list
+// (ReadList skips archived rows) and keeps its messages. ErrConversationGone
+// when absent or not a main chat.
+func (s *Store) Archive(ctx context.Context, conv int64) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE chat_conversations SET archived_at = ? WHERE id = ? AND context_type IS NULL`,
+		seconds(s.now()), conv)
+	return requireConversation(res, err)
+}
+
 // Move is ChatConversationQueries.setProject: conv into projectID (nil =
 // out of any project). An actual move also clears the stored provider
 // session, so the next turn starts fresh and replays with the new
@@ -133,4 +142,41 @@ func requireConversation(res sql.Result, err error) error {
 		return ErrConversationGone
 	}
 	return nil
+}
+
+// SessionConfig is the routing and project a session of conv starts with
+// before a turn (the engine's prewarm): req, else the conversation's own,
+// as Start resolves them. ErrConversationGone when conv is absent or not a
+// main chat.
+func (s *Store) SessionConfig(ctx context.Context, conv int64, req *Routing) (Routing, *int64, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return Routing{}, nil, fmt.Errorf("reading a chat's routing: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	row, err := readConversationTx(tx, conv)
+	if err != nil {
+		return Routing{}, nil, err
+	}
+	if row == nil || row.contextType.Valid {
+		return Routing{}, nil, ErrConversationGone
+	}
+	return s.resolveRouting(row, req), nullable(row.projectID), nil
+}
+
+// DeleteIfUntouched deletes conv when it is still an untouched draft: a
+// main chat with no message and no attachment (the Mac's landing draft it
+// made on the first keystroke, left without a send). Whether it deleted.
+func (s *Store) DeleteIfUntouched(ctx context.Context, conv int64) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM chat_conversations WHERE id = ? AND context_type IS NULL
+		AND NOT EXISTS (SELECT 1 FROM chat_messages WHERE conversation_id = chat_conversations.id)
+		AND NOT EXISTS (SELECT 1 FROM chat_attachments WHERE conversation_id = chat_conversations.id)`, conv)
+	if err != nil {
+		return false, fmt.Errorf("discarding a chat draft: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("discarding a chat draft: %w", err)
+	}
+	return n > 0, nil
 }

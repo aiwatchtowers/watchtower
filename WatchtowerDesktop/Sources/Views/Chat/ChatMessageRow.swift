@@ -149,7 +149,7 @@ struct ChatMessageRow: View, Equatable {
     /// The owner's own words, without the skill line/REFERENCED tokens
     /// (Task 25) — what the edit box and the copy button work with for a
     /// user message.
-    private var userDisplayBody: String { ChatTurnComposer.displayParts(item.message.text).body }
+    private var userDisplayBody: String { ChatOwnerText.displayParts(item.message.text).body }
 
     /// A reply without its raw question-card JSON — what Copy takes.
     private var assistantReadableText: String { ChatQuestionParser.readableText(item.message.text) }
@@ -311,7 +311,7 @@ struct UserMessageBubble: View {
     /// remember command or a knowledge prefix shows its outcome here.
     var stored: (conversationID: Int64, messageID: Int64)?
 
-    private var parts: ChatTurnDisplayParts { ChatTurnComposer.displayParts(text) }
+    private var parts: ChatOwnerTextParts { ChatOwnerText.displayParts(text) }
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 4) {
@@ -343,5 +343,16 @@ struct UserMessageBubble: View {
                                       text: parts.body)
             }
         }
+    }
+}
+
+/// Hands a live turn's text to the artifact panel as it streams (`LiveAssistantRow`). Only this empty view re-renders
+/// per delta.
+struct ChatLiveArtifactFeed: View {
+    let turn: LiveTurn
+    let onText: (String) -> Void
+
+    var body: some View {
+        Color.clear.onChange(of: turn.text, initial: true) { _, text in onText(text) }
     }
 }

@@ -615,7 +615,7 @@ enum DesignShotCatalog {
             + TuningChatShotFixtures.shots // The tuning chat over the Analytics pane (#1517).
             + SlackFullLiveShotFixtures.shots // Slack Full / Live screens spec (#1779), design only.
             + SlackAdaptiveSyncShotFixtures.shots // Adaptive Slack sync, Statistics → Channels (#1709).
-            + IPhoneChatShotFixtures.shots // The iPhone chat's Mac side (#1791), mockups 4a/4b.
+            + IPhoneChatShotFixtures.shots // The iPhone chat's Mac side (#1791), mockup 4b.
             + UnifiedChatShotFixtures.shots // The unified chat's new states and baselines (#1822 T0).
     }
 }

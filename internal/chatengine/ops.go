@@ -129,6 +129,7 @@ func (e *Engine) registerOps() {
 	e.Register("chat_manage", e.opManage)
 	e.Register(opShutdown, e.opShutdownHandler)
 	e.registerMacOps()
+	e.registerWarmOps()
 }
 
 func (e *Engine) opNew(ctx context.Context, params json.RawMessage, _ Client) (any, error) {

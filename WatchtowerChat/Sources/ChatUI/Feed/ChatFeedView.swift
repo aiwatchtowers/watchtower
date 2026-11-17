@@ -47,6 +47,10 @@ public struct ChatFeedContext {
     public var notice: String?
     public var partActions: ChatPartActions
     public var rowActions: ChatRowActions
+    /// What the app draws under a message (the Mac's "Approve all" and action review); nil draws nothing.
+    public var messageAccessory: ((ChatFeed.Message) -> AnyView?)?
+    /// What the app draws after the last message (the Mac's cards of an interrupted turn).
+    public var footer: AnyView?
     /// A message to scroll to once it is loaded (a search hit); nil follows the newest message.
     public var focusMessageID: Int64?
 
@@ -60,6 +64,8 @@ public struct ChatFeedContext {
         notice: String? = nil,
         partActions: ChatPartActions = ChatPartActions(),
         rowActions: ChatRowActions = ChatRowActions(),
+        messageAccessory: ((ChatFeed.Message) -> AnyView?)? = nil,
+        footer: AnyView? = nil,
         focusMessageID: Int64? = nil
     ) {
         self.provider = provider
@@ -71,6 +77,8 @@ public struct ChatFeedContext {
         self.notice = notice
         self.partActions = partActions
         self.rowActions = rowActions
+        self.messageAccessory = messageAccessory
+        self.footer = footer
         self.focusMessageID = focusMessageID
     }
 }
@@ -96,6 +104,12 @@ public struct ChatFeedView: View {
                     }
                     ForEach(rows) { row in
                         rowView(row).id(row.id)
+                        if case let .message(message, _) = row, let accessory = context.messageAccessory?(message) {
+                            accessory
+                        }
+                    }
+                    if let footer = context.footer {
+                        footer
                     }
                     if let staleLine = context.staleLine {
                         SystemRow(kind: .line(staleLine))

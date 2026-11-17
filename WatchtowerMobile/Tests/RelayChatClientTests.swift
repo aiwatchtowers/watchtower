@@ -204,6 +204,10 @@ final class RelayChatClientTests: XCTestCase {
             .artifact(ChatArtifactRequest(op: .keep, key: "r", version: 1)),
             .attach(conversationID: 7, source: .path("/tmp/notes.md")),
             .manage(conversationID: 7, op: .move, title: nil, projectID: 2),
+            .manage(conversationID: 7, op: .archive, title: nil, projectID: nil),
+            .manage(conversationID: 7, op: .discard, title: nil, projectID: nil),
+            .warm(conversationID: 7, routing: nil),
+            .retireSessions,
             .turn(ChatTurnRequest(conversationID: 7, mode: .continue, messageID: 3, text: "", clientKey: "k")),
             .shutdown
         ]

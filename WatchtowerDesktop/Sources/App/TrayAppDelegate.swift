@@ -254,7 +254,9 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
                 // An embedded chat's reply keeps all it streamed: its writes
                 // await the writer (board #670), so the quit waits for them.
                 await app.embeddedChatCenter.finishAllAsPartialForQuit()
-                await app.chatSessionPool?.closeAll()
+                // The engine ends every chat turn (partial kept) and reaps the
+                // sessions (`chat_shutdown`); T10b adds the CLI fallback.
+                if let client = app.chatClient { _ = await client.shutdown() }
             },
             closeTerminals: {
                 // Not reported stopped: the next launch reconciles them.
@@ -268,7 +270,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
             stopDaemon: { await Self.stopDaemonForQuit(app) },
             finishPendingDeletes: {
                 await Self.finishAllPendingDeletes(
-                    chats: { _ = await app.chatHistoryViewModel?.commitPendingDeleteForQuit() },
+                    chats: { await app.chatPanelModel?.list.commitPendingDelete() },
                     sessions: { await Self.finishPendingDeletes(app.workbenchesViewModel) }
                 )
             },

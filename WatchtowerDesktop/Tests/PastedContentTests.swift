@@ -1,3 +1,4 @@
+import ChatWire
 import XCTest
 import AppKit
 @testable import WatchtowerDesktop
@@ -54,7 +55,7 @@ final class PastedContentTests: XCTestCase {
         XCTAssertEqual(PastedContent.action(from: pasteboard), .attachImage)
         let image = try XCTUnwrap(PastedContent.imageAttachment(from: pasteboard))
         XCTAssertEqual(image.name, PastedContent.imageName)
-        XCTAssertEqual(try AttachmentValidator.validate(data: image.data, fileName: image.name).get(),
+        XCTAssertEqual(try ChatAttachmentLimits.validate(data: image.data, fileName: image.name).get(),
                        .image(mime: "image/png"))
     }
 

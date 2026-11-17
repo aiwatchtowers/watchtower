@@ -1,11 +1,11 @@
+import ChatWire
 import Foundation
 
 /// The Chats project switcher's order, search and row state text (spec
 /// 2026-10-26 §4), kept out of the views so it is testable. Mirrors
 /// `WorkbenchSwitcherPresentation`.
 package enum ChatProjectSwitcherPresentation {
-    /// One project's row inputs. `answeringCount` is not in the database:
-    /// the caller fills it from the live chat pool at render time.
+    /// One project's row inputs, counted from the engine's list (`summaries`).
     package struct Summary: Equatable, Identifiable, Sendable {
         package let id: Int64
         package let name: String
@@ -41,22 +41,24 @@ package enum ChatProjectSwitcherPresentation {
         }
     }
 
-    /// The switcher's rows: each project's `answeringCount` set to how many
-    /// of its listed chats `isAnswering` (the live pool, asked at render
-    /// time), latest activity first.
-    package static func rows(
-        _ summaries: [Summary],
-        chats: [(id: Int64, projectID: Int64?)],
-        isAnswering: (Int64) -> Bool
-    ) -> [Summary] {
-        var answering: [Int64: Int] = [:]
-        for chat in chats {
-            if let projectID = chat.projectID, isAnswering(chat.id) { answering[projectID, default: 0] += 1 }
-        }
-        return ordered(summaries.map { summary in
-            var summary = summary
-            summary.answeringCount = answering[summary.id] ?? 0
-            return summary
+    /// One row per listed project from the engine's list: its chats' latest
+    /// update (none: `.distantPast`, shown without an age), and how many of
+    /// them have a new answer, wait for an approval or answer now. A chat in
+    /// `hidden` (waiting in the Undo window) counts for nothing. Latest
+    /// activity first.
+    package static func summaries(_ list: ChatList?, hiding hidden: Set<Int64> = []) -> [Summary] {
+        guard let list else { return [] }
+        let chats = list.conversations.filter { !hidden.contains($0.id) }
+        return ordered(list.projects.map { project in
+            let mine = chats.filter { $0.project?.id == project.id }
+            return Summary(
+                id: project.id,
+                name: project.name,
+                lastActivity: mine.map(\.updatedAt).max() ?? .distantPast,
+                unreadCount: mine.filter { $0.state == .unread }.count,
+                waitingCount: mine.filter { $0.state == .waiting }.count,
+                answeringCount: mine.filter { $0.state == .answering }.count
+            )
         })
     }
 
@@ -85,7 +87,7 @@ package enum ChatProjectSwitcherPresentation {
         if summary.answeringCount > 0 {
             out.append(SwitcherSegment(text: "\(summary.answeringCount) answering", tone: .secondary))
         }
-        if out.isEmpty {
+        if out.isEmpty, summary.lastActivity != .distantPast {
             out.append(SwitcherSegment(text: TimeFormatting.shortAge(from: summary.lastActivity, now: now), tone: .secondary))
         }
         return out

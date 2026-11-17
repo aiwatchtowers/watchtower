@@ -1,4 +1,5 @@
 import AppKit
+import ChatWire
 import GRDB
 import SwiftUI
 import WatchtowerCore
@@ -21,14 +22,13 @@ struct ProjectDetailView: View {
     let modelSuggestions: [String]
     let maxComposerHeight: CGFloat
     let onOpenChat: (Int64) -> Void
-    let onRenamed: () -> Void
     let onDeleted: (Int64) -> Void
     /// The chats waiting in the panel's Undo window (or being deleted):
     /// not listed (spec 2026-10-26 §5.3).
     let hiddenChatIDs: Set<Int64>
     /// The panel's chats as last read: a change (a chat moved, deleted,
     /// archived or answered elsewhere) re-reads the page's list.
-    let panelChats: [ChatConversation]
+    let panelChats: [ChatList.Conversation]
     @State private var showSourcePicker = false
     @State private var confirmDelete = false
     @State private var dropTargeted = false
@@ -38,29 +38,19 @@ struct ProjectDetailView: View {
         projectID: Int64,
         chatVM: ChatViewModel,
         dbPool: DatabasePool,
-        attachmentsRoot: URL?,
         modelSuggestions: [String],
         maxComposerHeight: CGFloat,
         onOpenChat: @escaping (Int64) -> Void,
-        onRenamed: @escaping () -> Void,
         onDeleted: @escaping (Int64) -> Void,
-        onPromptChanged: @escaping (Int64) -> Void,
         hiddenChatIDs: Set<Int64> = [],
-        panelChats: [ChatConversation] = []
+        panelChats: [ChatList.Conversation] = []
     ) {
-        _vm = State(initialValue: ProjectDetailViewModel(
-            projectID: projectID,
-            dbPool: dbPool,
-            attachmentsRoot: attachmentsRoot,
-            importFile: ProjectDetailViewModel.storeImporter(dbPool: dbPool, rootDir: attachmentsRoot),
-            onPromptChanged: onPromptChanged
-        ))
+        _vm = State(initialValue: ProjectDetailViewModel(projectID: projectID, dbPool: dbPool, client: chatVM.client))
         self.chatVM = chatVM
         self.dbPool = dbPool
         self.modelSuggestions = modelSuggestions
         self.maxComposerHeight = maxComposerHeight
         self.onOpenChat = onOpenChat
-        self.onRenamed = onRenamed
         self.onDeleted = onDeleted
         self.hiddenChatIDs = hiddenChatIDs
         self.panelChats = panelChats
@@ -106,7 +96,7 @@ struct ProjectDetailView: View {
             }
         }
         .sheet(isPresented: $showSourcePicker) {
-            ProjectSourcePickerSheet(dbPool: dbPool) { hit in Task { await vm.addSource(hit) } }
+            ProjectSourcePickerSheet(client: chatVM.client) { hit in Task { await vm.addSource(hit) } }
         }
         .confirmationDialog("Delete this project?", isPresented: $confirmDelete) {
             Button("Delete project and its files", role: .destructive) {
@@ -311,7 +301,6 @@ struct ProjectDetailView: View {
         let name = vm.nameDraft
         Task {
             await vm.rename(name)
-            onRenamed()
         }
     }
 

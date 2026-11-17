@@ -159,6 +159,7 @@ let package = Package(
                 "WatchtowerCore",
                 "WatchtowerTestSupport",
                 .product(name: "GRDB", package: "GRDB.swift"),
+                .product(name: "ChatWire", package: "WatchtowerChat"),
             ],
             path: "Tests/Core",
             exclude: ["Fixtures"]

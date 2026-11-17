@@ -94,6 +94,12 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(UnifiedChatShotFixtures.shots)
     }
 
+    /// Every main-chat shot (`chat-*`), for the before/after comparison of the
+    /// chat's move onto the engine (#1822 T8).
+    func testChatShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("chat-") })
+    }
+
     /// The adaptive Slack sync plan's Statistics mockups (#1709).
     func testSlackAdaptiveSyncShotsRender() throws {
         try renderShots(SlackAdaptiveSyncShotFixtures.shots)

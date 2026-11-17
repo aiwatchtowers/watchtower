@@ -17,7 +17,7 @@ struct ChatPanelHeaderActions {
 /// The Chats panel's header: `All chats ⌄` + `+`, or at a project
 /// `‹ 📁 <name> ⌄` + `+` (the Workbench sessions panel's header, for chats).
 struct ChatPanelHeader: View {
-    @Bindable var historyVM: ChatHistoryViewModel
+    @Bindable var historyVM: ChatPanelModel
     /// The level's project name; nil at All chats.
     let projectName: String?
     let actions: ChatPanelHeaderActions
@@ -108,7 +108,7 @@ struct ChatProjectSwitcherButton: View {
 /// find a project by name, most recently active first with its chats'
 /// state, the current one checked; New Project…; back to All Chats.
 struct ChatProjectSwitcherPopover: View {
-    @Bindable var historyVM: ChatHistoryViewModel
+    @Bindable var historyVM: ChatPanelModel
     /// The level's project; nil at All chats (nothing checked).
     let currentID: Int64?
     let onSelect: (Int64) -> Void
@@ -139,21 +139,11 @@ struct ChatProjectSwitcherPopover: View {
         }
         .padding(Spacing.cozy)
         .frame(width: 320)
-        .task {
-            searchFocused = true
-            await historyVM.loadSwitcherSummaries()
-        }
+        .task { searchFocused = true }
     }
 
     @ViewBuilder
     private var list: some View {
-        if let error = historyVM.switcherError {
-            Text(error)
-                .font(.caption)
-                .foregroundStyle(.red)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-        }
         let rows = ChatProjectSwitcherPresentation.matching(historyVM.switcherRows, query: query)
         if rows.isEmpty {
             if !query.trimmingCharacters(in: .whitespaces).isEmpty {

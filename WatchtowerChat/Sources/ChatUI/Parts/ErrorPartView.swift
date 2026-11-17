@@ -8,6 +8,7 @@ import WatchtowerDesign
 struct ErrorPartView: View {
     static let retryLabel = "Retry"
     static let continueLabel = "Continue"
+    static let reviewActionsLabel = "Review actions"
 
     let payload: ChatErrorPayload
     let context: ChatPartContext
@@ -33,6 +34,9 @@ struct ErrorPartView: View {
                     }
                     if context.message.status == ChatMessageStatus.partial, payload.code != "quota_exhausted" {
                         style.secondaryButton(Self.continueLabel) { context.actions.continueStopped(context.message.id) }
+                    }
+                    if payload.code == "quota_exhausted", let review = context.actions.reviewActions {
+                        style.secondaryButton(Self.reviewActionsLabel) { review(context.message.id) }
                     }
                 }
             }

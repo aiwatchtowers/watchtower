@@ -4,8 +4,10 @@ import WatchtowerTestSupport
 @testable import WatchtowerCore
 
 /// BEHAVIOR PROJ-01 (Desktop side) — a project target lives only on its
-/// project's board: it never reaches the Targets tab's list, counts, tag menu,
-/// or the chat `@` picker. See docs/inventory/workbench.md.
+/// project's board: it never reaches the Targets tab's list, counts or tag
+/// menu. The chat's `@` picker searches through the engine now; its guard is
+/// Go's `TestProj01_EntitySearchNeverOffersAProjectTarget`. See
+/// docs/inventory/workbench.md.
 final class WorkbenchTargetExclusionTests: XCTestCase {
 
     /// One ordinary target and one project target, identical in every field a
@@ -81,13 +83,6 @@ final class WorkbenchTargetExclusionTests: XCTestCase {
         try queue.write(seed)
         let tags = try queue.read { try TargetQueries.fetchDistinctTags($0) }
         XCTAssertEqual(tags, ["ordinary-tag"])
-    }
-
-    func testProj01_MentionPickerNeverOffersAProjectTarget() throws {
-        let queue = try TestDatabase.create()
-        try queue.write(seed)
-        let hits = try queue.read { try ChatEntitySearch.targets($0, query: "ship") }
-        XCTAssertEqual(hits.map(\.label), ["Ship ordinary"])
     }
 
     func testTargetDecodesProjectID() throws {
