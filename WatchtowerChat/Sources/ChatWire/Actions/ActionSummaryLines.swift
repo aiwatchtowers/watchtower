@@ -5,6 +5,8 @@ import Foundation
 /// to the raw arguments.
 public enum ActionSummaryLines {
     public static func summaryLines(for action: ChatAgentAction) -> [String] {
+        // Clipped args cannot be read: the tool's "too long" line, or the clipped text itself.
+        if action.argsClipped { return [clippedLine(for: action.tool) ?? action.argsJSON] }
         switch action.tool {
         case "create_target":
             var lines = [action.argString("text") ?? ""]
@@ -32,6 +34,17 @@ public enum ActionSummaryLines {
         }
     }
 
+    /// The line for a proposal whose args reached this device clipped (`ChatAgentAction.argsClipped`): too long to
+    /// show in full here, which is not unreadable. Nil for a tool with no such line (its clipped text is shown).
+    public static func clippedLine(for tool: String) -> String? {
+        switch tool {
+        case SlackSendProposal.tool: SlackSendProposal.clippedNote
+        case ConnectorCallProposal.tool: ConnectorCallProposal.clippedNote
+        case ConfluenceEdit.tool: ConfluenceEdit.clippedNote
+        default: nil
+        }
+    }
+
     /// The `send_slack_message` text-only summary (cheat sheet, tests); the
     /// card itself shows the recipient with `SlackRecipientLine`. Nil for any
     /// other tool or unreadable args.
@@ -43,6 +56,7 @@ public enum ActionSummaryLines {
     /// The `edit_confluence_page` line; nil for any other tool.
     public static func confluenceEditSummaryLines(for action: ChatAgentAction) -> [String]? {
         guard action.tool == ConfluenceEdit.tool else { return nil }
+        if action.argsClipped { return [ConfluenceEdit.clippedNote] }
         guard let edit = ConfluenceEdit.proposal(for: action) else { return ["Unreadable Confluence edit proposal"] }
         return ["Page: \(edit.title) · edits version \(edit.baseVersion)"]
     }

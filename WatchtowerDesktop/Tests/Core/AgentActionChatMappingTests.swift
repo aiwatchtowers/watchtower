@@ -30,4 +30,12 @@ final class AgentActionChatMappingTests: XCTestCase {
         XCTAssertEqual(action, ChatAgentAction(id: 1, tool: "create_idea"))
         XCTAssertTrue(action.argsComplete, "a Mac row carries its whole args")
     }
+
+    /// AGENT-07: a row's approve digest is the one the Mac pins today (`AgentActionFeed.argsSHA256` of the args).
+    @MainActor
+    func testRowApproveDigestIsTheFeedsPin() {
+        let args = #"{"summary":"x"}"#
+        let action = AgentAction(row: Row(["id": 1, "tool": "create_jira_issue", "args_json": args]))
+        XCTAssertEqual(action.approveDigest, AgentActionFeed.argsSHA256(args))
+    }
 }

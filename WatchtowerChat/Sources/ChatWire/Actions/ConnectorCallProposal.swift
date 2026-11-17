@@ -21,6 +21,10 @@ public struct ConnectorCallProposal: Equatable, Sendable {
     public static let notApprovedInTime = "not approved within 15 minutes"
     public static let stopped = "stopped"
 
+    /// The card's line when the args reached this device clipped (`ChatAgentAction.argsClipped`): not unreadable,
+    /// so Approve stays, pinned to the args digest.
+    public static let clippedNote = "This call's input is too long to show in full here."
+
     /// Shown beside Reject on a pending call the card cannot read.
     public static let unreadableNote = "This call's details can't be shown, so it can't be approved — reject it and ask again."
 
@@ -65,6 +69,11 @@ public struct ConnectorCallProposal: Equatable, Sendable {
     public func approval(editedInput: String) -> Approval? {
         if editedInput == inputJSON { return .plain }
         return patch(editedInput: editedInput).map { .edited(patch: $0) }
+    }
+
+    /// A call the card cannot read (no Approve, `unreadableNote`); clipped args are not unreadable (`clippedNote`).
+    public static func isUnreadable(_ action: ChatAgentAction) -> Bool {
+        action.tool == tool && !action.argsClipped && Self(action: action) == nil
     }
 
     /// Whether the live chat session that proposed `action` still holds it:

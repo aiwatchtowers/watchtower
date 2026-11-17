@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// One agent action — a write-tool proposal the assistant made — as both devices' approval card reads it (ask #1409).
@@ -9,12 +10,16 @@ public struct ChatAgentAction: Identifiable, Equatable, Sendable {
     public let id: Int64
     public let tool: String
     public let external: Bool
-    /// The stored args on the Mac; on the phone the payload's display text (indented, clipped past 4000 characters).
+    /// Two different texts, told apart by `argsStored`: on a row-built action (the Mac's `agent_actions` row) the
+    /// stored `args_json` bytes, which the approve digest is over; on a payload-built one the payload's
+    /// `args_display` — indented, clipped past 4000 characters — which is for display only and is never hashed.
     public let argsJSON: String
-    /// The digest the phone pins on approve (Go `tools.ArgsSHA256` over the stored bytes). "" on a Mac row:
-    /// `AgentActionFeed` hashes `argsJSON` at approve time (AGENT-07).
+    /// True when `argsJSON` holds the stored bytes (a row); false when it holds display text (a payload).
+    public let argsStored: Bool
+    /// The digest the payload carries (Go `tools.ArgsSHA256` over the stored bytes). "" on a row-built action:
+    /// `approveDigest` hashes the stored `argsJSON` instead, so no row fetch hashes up to 4 MiB.
     public let argsSHA256: String
-    /// False: `args_display` was clipped; editors and the Confluence diff are off.
+    /// False: `args_display` was clipped (or the daemon did not say); editors and the Confluence diff are off.
     public let argsComplete: Bool
     public let reason: String
     public let surface: String
@@ -38,6 +43,7 @@ public struct ChatAgentAction: Identifiable, Equatable, Sendable {
         tool: String,
         external: Bool = false,
         argsJSON: String = "",
+        argsStored: Bool = true,
         argsSHA256: String = "",
         argsComplete: Bool = true,
         reason: String = "",
@@ -59,6 +65,7 @@ public struct ChatAgentAction: Identifiable, Equatable, Sendable {
         self.tool = tool
         self.external = external
         self.argsJSON = argsJSON
+        self.argsStored = argsStored
         self.argsSHA256 = argsSHA256
         self.argsComplete = argsComplete
         self.reason = reason
@@ -85,6 +92,7 @@ public struct ChatAgentAction: Identifiable, Equatable, Sendable {
             tool: payload.tool,
             external: payload.external,
             argsJSON: payload.argsDisplay,
+            argsStored: false,
             argsSHA256: payload.argsSHA256,
             argsComplete: payload.argsComplete,
             reason: payload.reason ?? "",
@@ -93,6 +101,27 @@ public struct ChatAgentAction: Identifiable, Equatable, Sendable {
             resultJSON: Self.json(payload.result),
             error: payload.error
         )
+    }
+
+    /// The digest an approve pins (AGENT-07): the payload's `argsSHA256` when it carries one, else the hash of the
+    /// stored `argsJSON` of a row-built action. Nil for a payload without a digest: its `argsJSON` is display text,
+    /// so there is nothing the owner can be shown to have seen, and the card offers no Approve.
+    public var approveDigest: String? {
+        if !argsSHA256.isEmpty { return argsSHA256 }
+        return argsStored ? Self.digest(of: argsJSON) : nil
+    }
+
+    /// Hex sha256 of a stored args text's UTF-8 bytes — Go `tools.ArgsSHA256`.
+    public static func digest(of argsJSON: String) -> String {
+        SHA256.hash(data: Data(argsJSON.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// The args reached this device clipped and cannot be read: a state of its own ("too long to show in full
+    /// here"), not an unreadable proposal. Args marked incomplete that still parse (a daemon one version behind
+    /// does not say) are read as usual.
+    public var argsClipped: Bool {
+        guard !argsComplete, let data = argsJSON.data(using: .utf8) else { return false }
+        return (try? JSONSerialization.jsonObject(with: data)) == nil
     }
 
     public var isPending: Bool { status == "pending" }

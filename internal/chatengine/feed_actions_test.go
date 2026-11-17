@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rivo/uniseg"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -87,4 +88,33 @@ func TestChatengine_FeedActionArgsCompleteFalseWhenClipped(t *testing.T) {
 	assert.False(t, big.ArgsComplete)
 	small := feedActionOf(t, 1, "", "", `{"text":"hi"}`)
 	assert.True(t, small.ArgsComplete)
+}
+
+// TestChatengine_FeedActionErrorClippedToLabel: a tool failure's error (a
+// whole API body) leaves the Mac clipped to maxLabel, in the flat action and
+// the approval part alike.
+func TestChatengine_FeedActionErrorClippedToLabel(t *testing.T) {
+	long := "jira said no: " + strings.Repeat("x", 5000)
+	a := feedActionOf(t, 1, long, "", `{}`)
+	assert.LessOrEqual(t, uniseg.GraphemeClusterCount(a.Error), maxLabel)
+	assert.True(t, strings.HasPrefix(a.Error, "jira said no: "))
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(approvalPart(a).Payload, &payload))
+	assert.Equal(t, a.Error, payload["error"])
+}
+
+// TestChatengine_FeedActionResultEdges: a url past the value cap is dropped
+// (a cut link would open somewhere else); a result that is not a JSON object
+// yields none; args that are not JSON are shown as stored and whole.
+func TestChatengine_FeedActionResultEdges(t *testing.T) {
+	longURL := "https://example.com/acme-1?q=" + strings.Repeat("a", 600)
+	a := feedActionOf(t, 0, "", `{"url":"`+longURL+`","label":"ACME-1"}`, `{}`)
+	assert.NotContains(t, a.Result, "url")
+	assert.Equal(t, "ACME-1", a.Result["label"])
+	for _, bad := range []string{"not json", `[1,2]`, `"x"`} {
+		assert.Nil(t, feedActionOf(t, 0, "", bad, `{}`).Result, bad)
+	}
+	raw := feedActionOf(t, 0, "", "", "not json")
+	assert.Equal(t, "not json", raw.ArgsDisplay)
+	assert.True(t, raw.ArgsComplete)
 }

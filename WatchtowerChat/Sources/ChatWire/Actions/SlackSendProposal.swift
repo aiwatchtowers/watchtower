@@ -10,6 +10,8 @@ public struct SlackSendProposal: Equatable, Sendable {
     /// Go `tools.SlackSendScopeHint`: the phrase every "this token cannot
     /// send" failure carries. Change both together.
     public static let scopeHint = "sign in again to grant send"
+    /// The card's line when the args reached this device clipped (`ChatAgentAction.argsClipped`).
+    public static let clippedNote = "This Slack message is too long to show in full here."
     /// Go `slackSendMaxRunes`.
     public static let maxCharacters = 4000
 

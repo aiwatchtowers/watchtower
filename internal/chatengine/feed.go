@@ -661,6 +661,9 @@ func chatFeedActionsTx(ctx context.Context, tx *sql.Tx, conv int64, window []cha
 		a.Title = actionTitle(a.Tool)
 		a.ArgsDisplay, a.ArgsComplete = argsDisplay(argsJSON)
 		a.Result = cardResult(resultJSON)
+		// A tool failure's error may hold a whole API response; the card
+		// needs its first line's worth (maxLabel), and the Mac reads the row.
+		a.Error, _ = clipText(a.Error, maxLabel)
 		a.ArgsSHA256 = tools.ArgsSHA256(argsJSON)
 		if reason != "" {
 			a.Reason = &reason
@@ -700,7 +703,8 @@ func argsDisplay(argsJSON string) (string, bool) {
 var cardResultKeys = []string{"url", "label", "key", "target_id", "board_name", "version", "warning"}
 
 // cardResult is resultJSON cut down to cardResultKeys, each value as text
-// clipped to maxResultValueBytes; nil when none is present.
+// clipped to maxResultValueBytes (a longer url is dropped, never cut); nil
+// when none is present or resultJSON is not an object.
 func cardResult(resultJSON string) map[string]string {
 	if resultJSON == "" {
 		return nil
@@ -723,6 +727,9 @@ func cardResult(resultJSON string) map[string]string {
 			v = strconv.FormatBool(x)
 		default:
 			continue
+		}
+		if k == "url" && len(v) > maxResultValueBytes {
+			continue // a cut link would still open, somewhere else
 		}
 		if out == nil {
 			out = map[string]string{}

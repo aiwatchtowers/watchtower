@@ -8,6 +8,12 @@ import Foundation
 /// exactly what Approve writes — the card never recomputes the edit.
 public struct ConfluenceEdit: Equatable, Sendable {
     public static let tool = "edit_confluence_page"
+    /// The card's line when the args reached this device clipped (`ChatAgentAction.argsClipped`) — nearly every
+    /// edit on the phone, as the args carry the whole new page.
+    public static let clippedNote = "This page edit is too long to show in full here."
+    /// Whether a clipped edit, whose diff this device cannot show, may still be approved (pinned to the args digest,
+    /// today's phone behaviour). Rule F7 ("never approve a page the owner never saw") is the owner's call here.
+    public static let allowsApproveWhenClipped = true
 
     public struct Change: Equatable, Sendable {
         /// "text in <section>" for a text replacement, "Section: <heading>"
@@ -47,7 +53,9 @@ public struct ConfluenceEdit: Equatable, Sendable {
     /// approving an unreadable `edit_confluence_page` row would write a page
     /// the owner never saw (F7). Every other tool is approvable as before.
     public static func canApprove(_ action: ChatAgentAction) -> Bool {
-        action.tool != tool || proposal(for: action) != nil
+        guard action.tool == tool else { return true }
+        if action.argsClipped { return allowsApproveWhenClipped }
+        return proposal(for: action) != nil
     }
 
     /// Why a Retry of this failed tool is or is not safe.
