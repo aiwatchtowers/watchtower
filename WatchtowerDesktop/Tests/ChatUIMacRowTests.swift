@@ -181,6 +181,18 @@ final class ChatUIMacRowTests: XCTestCase {
         XCTAssertThrowsError(try row(message).inspect().find(EmbeddedStepRow.self), "the default style keeps ChatUI's line")
     }
 
+    /// The Mac keeps its own line for a cut reply (#1783 is the phone's rule: ChatUI names no machine itself).
+    func testACutReplySaysTheMacOnTheMac() throws {
+        let cut = ChatFeed.Message(id: 4, role: "assistant", text: "body", textCut: true, status: "complete",
+                                   createdAt: .distantPast)
+        let mac = row(cut).environment(\.chatHostText, .mac)
+        XCTAssertNoThrow(try mac.inspect().find(text: "This message is cut here; the whole text is on your Mac."))
+        XCTAssertNoThrow(try row(cut).inspect().find(text: ChatHostText.plain.messageCut), "ChatUI's own line names no Mac")
+        XCTAssertFalse(ChatHostText.plain.messageCut.contains("Mac"))
+        XCTAssertEqual(ChatHostText.mac.artifactCut, "This artifact is cut here; the whole text is on your Mac.")
+        XCTAssertEqual(ChatHostText.mac.chooseSlackWorkspace, "Choose a workspace on the Mac before approving")
+    }
+
     // MARK: - Artifacts, steps, sources, published pages
 
     func testArtifactCardShowsWritingThenOpens() throws {

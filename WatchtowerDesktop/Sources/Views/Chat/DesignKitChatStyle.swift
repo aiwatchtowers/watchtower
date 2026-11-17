@@ -163,8 +163,18 @@ extension View {
     /// The shared chat views with the Mac's controls and artifact presentation.
     func macChatStyle(hooks: ChatMacArtifactHooks, look: DesignKitChatStyle.Look = .standard) -> some View {
         environment(\.chatUIStyle, DesignKitChatStyle(look: look))
+            .environment(\.chatHostText, .mac)
             .environment(\.chatMacArtifactHooks, hooks)
     }
+}
+
+extension ChatHostText {
+    /// The Mac's own lines: the chat runs on this Mac (#1783 is the phone's rule).
+    static let mac = ChatHostText(
+        messageCut: "This message is cut here; the whole text is on your Mac.",
+        artifactCut: "This artifact is cut here; the whole text is on your Mac.",
+        chooseSlackWorkspace: "Choose a workspace on the Mac before approving"
+    )
 }
 
 extension ChatMacArtifactHooks {

@@ -6,12 +6,11 @@ import WatchtowerDesign
 /// and text of an email, an event or a Slack message; a document, table or code as Markdown; a page in the sandboxed
 /// web view; the kind's open button, Copy and Share, and on the Mac Print, Present and Open in Window.
 public struct ArtifactViewer: View {
-    public static let cutLine = "This artifact is cut here; the whole text is on your Mac."
-
     let artifact: ChatArtifactContent
     let openURL: (URL) -> Void
     let copy: (String) -> Void
     @Environment(\.chatUIStyle) private var style
+    @Environment(\.chatHostText) private var hostText
 
     public init(artifact: ChatArtifactContent, openURL: @escaping (URL) -> Void, copy: @escaping (String) -> Void) {
         self.artifact = artifact
@@ -30,7 +29,7 @@ public struct ArtifactViewer: View {
             }
             content
             if artifact.contentCut {
-                Text(Self.cutLine).font(.caption).foregroundStyle(.secondary)
+                Text(hostText.artifactCut).font(.caption).foregroundStyle(.secondary)
             }
         }
         .padding(Spacing.large)

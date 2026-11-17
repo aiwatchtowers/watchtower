@@ -30,6 +30,11 @@ struct PhoneChatStyle: ChatUIStyle {
     }
 }
 
+extension ChatHostText {
+    /// The phone names the tower in the shared chat's lines (#1783): its name, "your tower" without one.
+    static func phone(_ hubName: String) -> ChatHostText { ChatHostText(hostName: TowerText.name(hubName)) }
+}
+
 /// A compact button inside a chat card (an approval's Approve and Reject, a question's Send): the row radius, a
 /// filled background and a label colour, dimmed while pressed and when off.
 struct ChatCardButtonStyle: ButtonStyle {
