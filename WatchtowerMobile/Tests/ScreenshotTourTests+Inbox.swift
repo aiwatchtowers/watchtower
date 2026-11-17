@@ -114,7 +114,8 @@ extension ScreenshotTourTests {
         case "inbox-approve-changed":
             frame.path = [.folder(Seed.approvalsID)]
             let feed = Seed.feed(now: now)
-            if let slack = feed.cards.first(where: { $0.id == Seed.slackProposal }), let reply = feed.cards.first(where: { $0.id == Seed.replyProposal }) {
+            if let slack = feed.cards.first(where: { $0.id == Seed.slackProposal }),
+               let reply = feed.cards.first(where: { $0.id == Seed.replyProposal }) {
                 let sending = ActRequest(requestID: "r3", target: slack.id, verb: .approval, params: ActParams(approvalVerb: .approve))
                 let changed = ActRequest(requestID: "r4", target: reply.id, verb: .approval, params: ActParams(approvalVerb: .approve))
                 center.showForTour(feed: feed, rows: [
