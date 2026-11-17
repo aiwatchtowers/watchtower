@@ -68,7 +68,7 @@ final class ChatActionParamsTests: XCTestCase {
         try check("branch_select", ChatBranchSelectParams(messageID: 1))
         try check("manage_rename", ChatManageParams(conversationID: 2, op: .rename, title: "Rollout notes"))
         try check("manage_pin", ChatManageParams(conversationID: 2, op: .pin))
-        try check("manage_use_preferred", ChatManageParams(conversationID: 2, op: .usePreferred))
+        try check("manage_use_preferred", ChatManageParams(conversationID: 3, op: .usePreferred))
         try check("action_approve", ChatActionAnswerParams(
             actionID: 1, decision: .approve,
             argsSHA256: "e7b995efa755c5ff3b84d2188b58cb4ae916a59470eb3761df8a814f11763500"))

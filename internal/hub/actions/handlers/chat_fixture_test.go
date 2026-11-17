@@ -37,8 +37,10 @@ func TestChatActionsFixture(t *testing.T) {
 	}
 	c := newChatEnv(t, false)
 	ctx := context.Background()
-	if one, two := c.conversation(), c.conversation(); one != 1 || two != 2 {
-		t.Fatalf("seed chats %d, %d", one, two)
+	// Chat 3 stays without a turn: the fixture's turn cases leave live leases
+	// on chats 1 and 2, and use_preferred is refused while a turn runs.
+	if one, two, three := c.conversation(), c.conversation(), c.conversation(); one != 1 || two != 2 || three != 3 {
+		t.Fatalf("seed chats %d, %d, %d", one, two, three)
 	}
 	st, err := c.chat.Start(ctx, chatstore.StartRequest{ConversationID: 1, Mode: chatstore.ModeSend, Text: "hello"})
 	if err != nil || st.UserMessageID != 1 || st.AssistantMessageID != 2 {
