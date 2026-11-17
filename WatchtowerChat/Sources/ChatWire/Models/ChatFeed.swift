@@ -164,12 +164,25 @@ public struct ChatFeed: Decodable, Hashable, Sendable {
         public let outcome: Outcome
         public let summary: String
         public let sources: [Source]
+        /// When the call started and ended — set by the Mac's embedded chats, whose steps carry their times (the
+        /// "Worked for 12s" header); the engine's wire sends none.
+        public let startedAt: Date?
+        public let endedAt: Date?
 
-        public init(name: String, outcome: Outcome = .running, summary: String = "", sources: [Source] = []) {
+        public init(
+            name: String,
+            outcome: Outcome = .running,
+            summary: String = "",
+            sources: [Source] = [],
+            startedAt: Date? = nil,
+            endedAt: Date? = nil
+        ) {
             self.name = name
             self.outcome = outcome
             self.summary = summary
             self.sources = sources
+            self.startedAt = startedAt
+            self.endedAt = endedAt
         }
 
         public init(from decoder: Decoder) throws {
@@ -182,10 +195,12 @@ public struct ChatFeed: Decodable, Hashable, Sendable {
             }
             summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
             sources = try c.decodeIfPresent([Source].self, forKey: .sources) ?? []
+            startedAt = try c.decodeIfPresent(Date.self, forKey: .startedAt)
+            endedAt = try c.decodeIfPresent(Date.self, forKey: .endedAt)
         }
 
         enum CodingKeys: String, CodingKey {
-            case name, ok, summary, sources
+            case name, ok, summary, sources, startedAt, endedAt
         }
     }
 

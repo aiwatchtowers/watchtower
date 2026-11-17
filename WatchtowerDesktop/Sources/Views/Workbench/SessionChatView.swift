@@ -27,8 +27,10 @@ struct SessionChatView: View {
     @State private var markdown = SessionFeedMarkdownCache()
     @State private var window = SessionFeedWindow()
     @State private var expandedEvents: Set<String> = []
-    /// The entry that was at the top before "Load earlier messages": the feed keeps it in view.
+    /// The entry that was at the top before earlier messages loaded: the feed keeps it in view, then lets it go.
     @State private var earlierAnchor: Int64?
+    /// An artifact card opened from the feed.
+    @State private var artifact: ChatArtifactContent?
 
     init(
         vm: WorkbenchesViewModel,
@@ -318,16 +320,28 @@ struct SessionChatView: View {
     private var feed: some View {
         let total = store.entries.count
         let shown = Array(store.entries[window.range(total: total)])
-        let workchatFeed = WorkchatFeed(entries: shown, markdown: markdown, expandedEvents: expandedEvents,
+        var workchatFeed = WorkchatFeed(entries: shown, markdown: markdown, expandedEvents: expandedEvents,
                                         onOpenSubagent: { path.push($0) }, onToggle: toggleEvent)
+        // A question card's answers go to the agent as the owner's next line while the session takes lines.
+        if composerShown, let workchat {
+            workchatFeed.onAnswer = { text in Task { await workchat.sendLine(text) } }
+        }
+        workchatFeed.isWorking = working
+        workchatFeed.onOpenArtifact = { artifact = $0 }
         var context = workchatFeed.context()
         context.hasEarlier = window.hasEarlier(total: total)
         context.rowActions.loadEarlier = loadEarlier
         context.focusMessageID = earlierAnchor
-        context.follow = ChatFeedFollow(conversationID: sessionID)
+        var follow = ChatFeedFollow(conversationID: sessionID)
+        follow.anchorsBottom = true
+        follow.loadsEarlierAtTop = true
+        follow.onFollowingChange = followingChanged
+        follow.onFocusApplied = { earlierAnchor = nil }
+        context.follow = follow
         context.footer = AnyView(pending)
         return ChatUI.ChatFeedView(messages: workchatFeed.messages, context: context)
-            .macChatStyle(hooks: .app)
+            .macChatStyle(hooks: .app, look: .workchat)
+            .embeddedArtifactSheet($artifact)
     }
 
     /// After the entries: the lines on their way, the permission card and this session's open asks.
@@ -358,11 +372,14 @@ struct SessionChatView: View {
         if expandedEvents.contains(id) { expandedEvents.remove(id) } else { expandedEvents.insert(id) }
     }
 
-    /// Grows the window by one step and keeps the entry that was at the top on screen; the window stops following
-    /// the newest entries, so what the owner reads stays put.
+    /// The owner scrolled up (the window keeps what they read) or back to the newest entries (the window lets its
+    /// pin go and shrinks to the newest again).
+    private func followingChanged(_ following: Bool) {
+        if window.followingChanged(following, total: store.entries.count) { earlierAnchor = nil }
+    }
+
     private func loadEarlier() {
-        window.setFollowing(false, total: store.entries.count)
-        earlierAnchor = window.grow(entries: store.entries).map(WorkchatFeedAdapter.messageID)
+        if let anchor = window.loadEarlier(entries: store.entries) { earlierAnchor = anchor }
     }
 
     @ViewBuilder
@@ -387,5 +404,23 @@ struct SessionChatView: View {
         }
         .padding(8)
         .background(Color.orange.opacity(0.1))
+    }
+}
+
+extension SessionFeedWindow {
+    /// The feed's follow bit: scrolling up pins what the owner reads; back at the newest entries the pin goes and the
+    /// window shrinks to the newest again. True when the feed follows (its scroll anchor can go).
+    mutating func followingChanged(_ following: Bool, total: Int) -> Bool {
+        setFollowing(following, total: total)
+        return following
+    }
+
+    /// Grows the window by one step: while the owner reads older text, the message id of the entry that was at the
+    /// top, to keep in view; a following window (content shorter than the pane) just grows. Nil when nothing grew or
+    /// nothing needs keeping.
+    mutating func loadEarlier(entries: [SessionFeedEntry]) -> Int64? {
+        guard hasEarlier(total: entries.count) else { return nil }
+        let anchor = grow(entries: entries)
+        return following ? nil : anchor.map(WorkchatFeedAdapter.messageID)
     }
 }

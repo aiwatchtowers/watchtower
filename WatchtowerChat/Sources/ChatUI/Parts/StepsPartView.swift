@@ -23,7 +23,7 @@ struct StepsPartView: View {
                 }
                 .padding(.top, Spacing.small)
             } label: {
-                Text(Self.header(count: payload.steps.count, running: running))
+                Text(Self.header(count: payload.steps.count, running: running, steps: payload.steps))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -31,10 +31,15 @@ struct StepsPartView: View {
         }
     }
 
-    /// The wire carries no step times, so the header counts steps only ("Worked · 3 steps").
-    static func header(count: Int, running: Bool) -> String {
-        let steps = count == 1 ? "1 step" : "\(count) steps"
-        return running ? "Working… · \(steps)" : "Worked · \(steps)"
+    /// The engine's wire carries no step times, so the header counts steps only ("Worked · 3 steps"); steps that
+    /// carry them (the Mac's embedded chats) say how long the turn worked ("Worked for 12s · 3 steps").
+    static func header(count: Int, running: Bool, steps: [ChatStepsPayload.Step] = []) -> String {
+        if !running, let start = steps.compactMap(\.startedAt).min() {
+            let end = steps.compactMap(\.endedAt).max() ?? start
+            return StepsSummary.header(stepCount: count, elapsed: end.timeIntervalSince(start), running: false)
+        }
+        let label = count == 1 ? "1 step" : "\(count) steps"
+        return running ? "Working… · \(label)" : "Worked · \(label)"
     }
 }
 

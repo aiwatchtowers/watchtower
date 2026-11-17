@@ -13,6 +13,16 @@ enum ChatDensity {
 
     /// The thread column; a compact chat uses its whole (narrow) width.
     var maxColumnWidth: CGFloat? { self == .regular ? 760 : nil }
+    /// The thread's margins, as the app's own feed had them (the bottom one less the feed's 2 pt end mark).
+    var margins: EdgeInsets {
+        switch self {
+        case .regular: EdgeInsets(top: Spacing.large, leading: Spacing.page, bottom: Spacing.medium + Spacing.tight,
+                                  trailing: Spacing.page)
+        case .compact: EdgeInsets(top: Spacing.regular, leading: Spacing.medium, bottom: Spacing.compact,
+                                  trailing: Spacing.medium)
+        }
+    }
+
     /// The composer's growth limit for a chat that has no window-relative one.
     var composerMaxHeight: CGFloat { self == .regular ? 200 : 120 }
 }
@@ -50,7 +60,7 @@ struct EmbeddedChatView<Accessory: View, Footer: View>: View {
             }
         }
         .embeddedArtifactSheet($artifact)
-        .macChatStyle(hooks: .app)
+        .macChatStyle(hooks: .app, look: .embedded)
     }
 }
 
@@ -84,7 +94,7 @@ struct EmbeddedChatRows<Accessory: View>: View {
             ChatFeedRows(messages: feed.messages, context: feed.context(follows: false))
         }
         .embeddedArtifactSheet($artifact)
-        .macChatStyle(hooks: .app)
+        .macChatStyle(hooks: .app, look: .embedded)
     }
 }
 
@@ -138,6 +148,8 @@ struct EmbeddedChatFeed<Accessory: View> {
         context.footer = AnyView(footer(lastAssistantID: lastAssistantID))
         context.compact = density == .compact
         context.columnMaxWidth = density.maxColumnWidth
+        context.margins = density.margins
+        context.lastMessageID = engine.messages.last?.id
         if follows {
             context.follow = ChatFeedFollow(conversationID: engine.spec.key.conversationID,
                                             liveMessageID: engine.liveTurn?.messageID)

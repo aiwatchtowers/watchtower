@@ -173,7 +173,8 @@ final class EmbeddedChatViewTests: XCTestCase {
     func testEmbeddedRowsOfferCopyOnlyAndAStoppedReplyHasNoContinue() async throws {
         let engine = try await engine(rows: [("user", "Hi"), ("assistant", "Hello")], finalizeLast: "partial")
         let rows = try EmbeddedChatRows(engine: engine).inspect()
-        XCTAssertFalse(try rows.findAll(ViewType.Button.self) { (try? $0.labelView().text().string()) == "Copy" }.isEmpty)
+        XCTAssertFalse(try rows.findAll(ViewType.Button.self) { (try? $0.accessibilityLabel().string()) == "Copy message" }.isEmpty,
+                       "the icon Copy the embedded chats had")
         XCTAssertThrowsError(try rows.find(button: "Regenerate"))
         XCTAssertThrowsError(try rows.find(button: "Edit"))
         XCTAssertNoThrow(try rows.find(text: "Stopped"))

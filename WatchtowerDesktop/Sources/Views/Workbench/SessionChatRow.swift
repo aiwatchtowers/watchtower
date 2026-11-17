@@ -1,3 +1,4 @@
+import AppKit
 import ChatUI
 import ChatWire
 import SwiftUI
@@ -14,6 +15,13 @@ struct WorkchatFeed {
     let expandedEvents: Set<String>
     let onOpenSubagent: (SessionFeedSubagent) -> Void
     let onToggle: (String) -> Void
+    /// Sends a question card's answers as the owner's next line; nil (a subagent's run, a finished session) shows the
+    /// card read-only.
+    var onAnswer: ((String) -> Void)?
+    /// The agent works: no card is answered meanwhile.
+    var isWorking = false
+    /// An artifact card opens the viewer.
+    var onOpenArtifact: (ChatArtifactContent) -> Void = { _ in }
 
     var messages: [ChatFeed.Message] { WorkchatFeedAdapter.messages(entries) }
 
@@ -31,9 +39,35 @@ struct WorkchatFeed {
         }
         rowActions.allowsEdit = false
         rowActions.allowsRegenerate = false
-        var context = ChatFeedContext(rowActions: rowActions)
+        rowActions.allowsCopy = false
+        var partActions = ChatPartActions(openArtifact: onOpenArtifact)
+        partActions.openURL = { url in if AllowedURLSchemes.permits(url) { NSWorkspace.shared.open(url) } }
+        partActions.copy = rowActions.copy
+        partActions.showsSources = false
+        partActions.offersContinue = false
+        if let onAnswer { partActions.sendFixedText = onAnswer }
+        var context = ChatFeedContext(isTurnRunning: onAnswer == nil || isWorking, partActions: partActions,
+                                      rowActions: rowActions)
         context.compact = true
-        context.caption = { message in byID[message.id].flatMap(WorkchatFeedAdapter.caption) }
+        context.margins = EdgeInsets(top: Spacing.medium, leading: Spacing.medium, bottom: Spacing.medium,
+                                     trailing: Spacing.medium)
+        context.captionView = { message in
+            let parts = byID[message.id].map(WorkchatFeedAdapter.caption) ?? []
+            guard !parts.isEmpty else { return nil }
+            return AnyView(HStack(spacing: Spacing.compact) {
+                ForEach(parts, id: \.self) { Text($0) }
+            }
+            .font(.caption2)
+            .foregroundStyle(.tertiary))
+        }
+        context.ownerHeader = { message in
+            byID[message.id].flatMap(WorkchatFeedAdapter.askHeader).map { header in
+                AnyView(VStack(alignment: .leading, spacing: Spacing.small) {
+                    Text(header.label).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    if let title = header.title { Text(title).font(.callout.weight(.semibold)) }
+                })
+            }
+        }
         let (markdown, expanded, open, toggle) = (markdown, expandedEvents, onOpenSubagent, onToggle)
         context.systemRow = { message in
             guard let entry = byID[message.id] else { return AnyView(EmptyView()) }

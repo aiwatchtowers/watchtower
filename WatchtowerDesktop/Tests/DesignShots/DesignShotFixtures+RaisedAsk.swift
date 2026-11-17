@@ -31,7 +31,7 @@ enum RaisedAskShotFixtures {
         return VStack(alignment: .leading, spacing: 8) {
             OwnerAskHeaderCard(ask: ask)
             QuestionPartView(card: ChatQuestionCard(questions: ask.payload.questions), answerText: nil, onAnswer: nil)
-                .macChatStyle(hooks: ChatMacArtifactHooks())
+                .macChatStyle(hooks: ChatMacArtifactHooks(), look: .ask)
         }
     }
 

@@ -86,6 +86,18 @@ final class OwnerAskTextTests: XCTestCase {
     /// Every link the text renders opens something: a file, or the
     /// system for an allowlisted scheme; any other scheme is stripped
     /// before it renders, so none looks clickable and does nothing.
+    /// The drawer's question keeps the Mac's Markdown view: blocks render, and a link whose scheme the app refuses
+    /// is stripped, not left live (review M2).
+    func testTheDrawersQuestionIsMarkdownWithRefusedLinksStripped() throws {
+        let card = ChatQuestionCard(questions: [
+            ChatQuestion(id: "q", question: "Keep [this](javascript:alert(1)) or [that](https://example.com/that)?",
+                         options: [ChatQuestionOption(label: "A", description: "See [x](javascript:alert(2))")])
+        ])
+        let view = QuestionPartView(card: card, draft: Self.draft(.constant([:])))
+        XCTAssertNoThrow(try view.inspect().find(MarkdownView.self))
+        XCTAssertEqual(try links(view).map(\.absoluteString), ["https://example.com/that"])
+    }
+
     func testDocumentFileLinksUseFilesInsteadOfTheSystem() throws {
         for (url, path) in [("file:///work/demo/shot%20dark.png", "/work/demo/shot dark.png"),
                             ("docs/shot.png", "docs/shot.png")] {

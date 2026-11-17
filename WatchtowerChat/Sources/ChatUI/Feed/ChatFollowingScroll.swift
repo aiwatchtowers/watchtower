@@ -9,6 +9,7 @@ import WatchtowerDesign
 /// (`ChatFollowTracker`, `ChatAutoScrollPolicy`).
 struct ChatFollowingScroll: View {
     static let jumpLabel = "Jump to latest"
+    static let loadingEarlierLabel = "Loading earlier messages…"
 
     let rows: [ChatFeedLayout.Row]
     let messages: [ChatFeed.Message]
@@ -18,6 +19,8 @@ struct ChatFollowingScroll: View {
     /// Mirrors `box.tracker.following`; starts `true` so opening a conversation lands at the bottom.
     @State private var isFollowing = true
     @State private var box = TrackerBox()
+    /// The loading row at the top is on screen (`follow.loadsEarlierAtTop`).
+    @State private var earlierRowVisible = false
     private static let bottomID = "chat-feed-bottom"
     private static let scrollSpace = "chat-feed-scroll"
 
@@ -36,7 +39,10 @@ struct ChatFollowingScroll: View {
             GeometryReader { viewport in
                 ScrollView {
                     ChatFeedColumn(context: context) {
-                        ChatFeedRows(rows: rows, messages: messages, context: context)
+                        if follow.loadsEarlierAtTop, context.hasEarlier {
+                            loadingEarlierRow
+                        }
+                        ChatFeedRows(rows: rows, messages: messages, context: rowsContext)
                         // The bottom margin: scrolling to it lands at the content's true bottom.
                         Color.clear.frame(height: Spacing.tight).id(Self.bottomID)
                     }
@@ -48,7 +54,7 @@ struct ChatFollowingScroll: View {
                     )
                 }
                 .coordinateSpace(name: Self.scrollSpace)
-                .defaultScrollAnchor(.bottom)
+                .defaultScrollAnchor(follow.anchorsBottom ? .bottom : nil)
                 .onPreferenceChange(ContentFrameKey.self) { frame in
                     guard let frame else { return }
                     measure(.init(contentTop: frame.minY, contentHeight: frame.height,
@@ -72,12 +78,43 @@ struct ChatFollowingScroll: View {
         }
     }
 
+    /// With the loading row the rows draw no "Load earlier" button of their own.
+    private var rowsContext: ChatFeedContext {
+        var rows = context
+        if follow.loadsEarlierAtTop { rows.hasEarlier = false }
+        return rows
+    }
+
+    /// Loads earlier messages when it comes on screen while the reader reads older text (a following view keeps the
+    /// newest content; the row can lay out at open).
+    private var loadingEarlierRow: some View {
+        HStack(spacing: Spacing.compact) {
+            ProgressView().controlSize(.mini)
+            Text(Self.loadingEarlierLabel)
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity)
+        .onAppear {
+            earlierRowVisible = true
+            if !isFollowing || isShort(box.tracker.lastMetrics) { context.rowActions.loadEarlier() }
+        }
+        .onDisappear { earlierRowVisible = false }
+    }
+
+    /// Content shorter than the viewport keeps the loading row on screen, so it never appears again: load from here.
+    private func isShort(_ metrics: ChatAutoScrollPolicy.Metrics?) -> Bool {
+        guard let metrics, metrics.viewportHeight > 0 else { return false }
+        return metrics.contentHeight < metrics.viewportHeight
+    }
+
     private func handle(_ change: ChatAutoScrollPolicy.ThreadChange, proxy: ScrollViewProxy) {
         switch change {
         case let .jumpToMessage(target):
             box.tracker.restartTracking(following: false)
             sync()
-            proxy.scrollTo(ChatFeedLayout.rowID(target), anchor: .center)
+            proxy.scrollTo(ChatFeedLayout.rowID(target), anchor: follow.loadsEarlierAtTop ? .top : .center)
+            follow.onFocusApplied?()
         case .switchedConversation:
             box.tracker.restartTracking(following: true)
             sync()
@@ -96,13 +133,21 @@ struct ChatFollowingScroll: View {
     /// Feeds one measurement to the tracker and pulls a following view down when the content grew under it.
     private func measure(_ current: ChatAutoScrollPolicy.Metrics, proxy: ScrollViewProxy) {
         guard current.viewportHeight > 0 else { return }
+        let wasFollowing = box.tracker.following
         let pull = box.tracker.observeMeasurement(current)
         sync()
         if pull { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
+        guard follow.loadsEarlierAtTop, context.hasEarlier else { return }
+        // The loading row appeared before this scroll registered, or the content is still short.
+        if (wasFollowing && !box.tracker.following && earlierRowVisible) || isShort(current) {
+            context.rowActions.loadEarlier()
+        }
     }
 
     private func sync() {
-        if box.tracker.following != isFollowing { isFollowing = box.tracker.following }
+        guard box.tracker.following != isFollowing else { return }
+        isFollowing = box.tracker.following
+        follow.onFollowingChange?(isFollowing)
     }
 
     /// Shown once the reader has scrolled away from the bottom; jumping follows again.

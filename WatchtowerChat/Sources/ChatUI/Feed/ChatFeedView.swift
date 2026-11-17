@@ -19,6 +19,8 @@ public struct ChatRowActions {
     /// Workchat) turns them off.
     public var allowsEdit = true
     public var allowsRegenerate = true
+    /// Whether a row offers Copy; off for a feed whose rows only show (Workchat).
+    public var allowsCopy = true
 
     public init(
         regenerate: @escaping (Int64) -> Void = { _ in },
@@ -64,6 +66,15 @@ public struct ChatFeedContext {
     /// The line under a message, after its actions (the Mac's embedded chats: "model · time"; Workchat: the time and
     /// "via Watchtower"); nil draws none.
     public var caption: ((ChatFeed.Message) -> String?)?
+    /// Draws the line under a message instead of `caption` (Workchat's "via Watchtower" and time).
+    public var captionView: ((ChatFeed.Message) -> AnyView?)?
+    /// What sits in the owner's bubble over the text (Workchat: the ask an answer went to).
+    public var ownerHeader: ((ChatFeed.Message) -> AnyView?)?
+    /// The newest message when it is drawn outside `messages` (an embedded chat's streaming reply, in the footer); it,
+    /// not the last of `messages`, keeps a hover-only actions row shown.
+    public var lastMessageID: Int64?
+    /// The column's margins; nil keeps the feed's own.
+    public var margins: EdgeInsets?
     /// How a `system` message is drawn (Workchat's notices, subagent cards and Watchtower's own lines); nil draws its
     /// text as one centred caption line.
     public var systemRow: ((ChatFeed.Message) -> AnyView)?
@@ -106,9 +117,17 @@ public struct ChatFeedContext {
 
 /// What the feed follows (`ChatFeedContext.follow`): the conversation (a switch lands at the bottom) and the message a
 /// running turn streams into (its start pins the feed to the bottom again).
-public struct ChatFeedFollow: Equatable {
+public struct ChatFeedFollow {
     public var conversationID: Int64?
     public var liveMessageID: Int64?
+    /// Short content sits at the bottom of the viewport (Workchat); off, it starts at the top (embedded chats).
+    public var anchorsBottom = false
+    /// Scrolling to the top loads earlier messages by itself (Workchat's window), as the "Load earlier" row would.
+    public var loadsEarlierAtTop = false
+    /// The reader came back to the newest content (or left it): Workchat lets its window go when it follows again.
+    public var onFollowingChange: ((Bool) -> Void)?
+    /// The feed scrolled to `ChatFeedContext.focusMessageID`: the screen may let the focus go.
+    public var onFocusApplied: (() -> Void)?
 
     public init(conversationID: Int64?, liveMessageID: Int64? = nil) {
         self.conversationID = conversationID
@@ -176,8 +195,12 @@ struct ChatFeedColumn<Content: View>: View {
         LazyVStack(alignment: .leading, spacing: context.compact ? Spacing.cozy : Spacing.large) {
             content()
         }
-        .padding(.horizontal, context.compact ? Spacing.cozy : Spacing.large)
-        .padding(.vertical, context.compact ? Spacing.regular : Spacing.medium)
+        .padding(context.margins ?? EdgeInsets(
+            top: context.compact ? Spacing.regular : Spacing.medium,
+            leading: context.compact ? Spacing.cozy : Spacing.large,
+            bottom: context.compact ? Spacing.regular : Spacing.medium,
+            trailing: context.compact ? Spacing.cozy : Spacing.large
+        ))
         .frame(maxWidth: context.columnMaxWidth ?? .infinity)
         .frame(maxWidth: .infinity)
     }
@@ -239,7 +262,9 @@ public struct ChatFeedRows: View {
             }
         case let .message(message, parts):
             ChatMessageRow(message: message, parts: parts, context: partContext(message), rowActions: context.rowActions,
-                           isTurnRunning: context.isTurnRunning, caption: context.caption?(message))
+                           isTurnRunning: context.isTurnRunning, caption: context.caption?(message),
+                           captionView: context.captionView?(message), ownerHeader: context.ownerHeader?(message),
+                           isLast: message.id == (context.lastMessageID ?? messages.last?.id))
         case .approvals(let actions):
             VStack(alignment: .leading, spacing: Spacing.regular) {
                 ForEach(actions) { action in

@@ -224,8 +224,8 @@ enum ChatUIShotRow {
     ) -> some View {
         ChatUI.ChatMessageRow(message: message, parts: ChatMessageParts.parts(for: message),
                               context: ChatPartContext(message: message, actions: partActions), rowActions: rowActions,
-                              isTurnRunning: message.status == EmbeddedChatFeedAdapter.pendingStatus)
-            .macChatStyle(hooks: ChatMacArtifactHooks())
+                              isTurnRunning: message.status == EmbeddedChatFeedAdapter.pendingStatus, isLast: true)
+            .macChatStyle(hooks: ChatMacArtifactHooks(), look: .embedded)
     }
 }
 

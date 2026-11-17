@@ -35,6 +35,7 @@ struct SessionChatSubagentView: View {
     @State private var error: String?
     @State private var markdown = SessionFeedMarkdownCache()
     @State private var expandedEvents: Set<String> = []
+    @State private var artifact: ChatArtifactContent?
 
     private var currentStatus: String {
         observedStatus ?? SessionSubagentLifecycle.status(parentStatus: status(), snapshot: live, error: liveError, now: .now)
@@ -101,8 +102,10 @@ struct SessionChatSubagentView: View {
     /// The run on ChatUI's feed (`WorkchatFeed`): "Task" over the task given, "Report" over the report, a read error
     /// over the entries still shown.
     private var run: some View {
-        let feed = WorkchatFeed(entries: entries, markdown: markdown, expandedEvents: expandedEvents,
+        // Read-only: a subagent's question card shows its questions and takes no answer.
+        var feed = WorkchatFeed(entries: entries, markdown: markdown, expandedEvents: expandedEvents,
                                 onOpenSubagent: onOpenSubagent, onToggle: toggleEvent)
+        feed.onOpenArtifact = { artifact = $0 }
         let byID = feed.entriesByMessage
         var context = feed.context()
         context.follow = ChatFeedFollow(conversationID: nil)
@@ -113,7 +116,8 @@ struct SessionChatSubagentView: View {
             }
         }
         return ChatUI.ChatFeedView(messages: feed.messages, context: context)
-            .macChatStyle(hooks: .app)
+            .macChatStyle(hooks: .app, look: .workchat)
+            .embeddedArtifactSheet($artifact)
     }
 
     /// The first owner line is the task given; the last agent line of a run

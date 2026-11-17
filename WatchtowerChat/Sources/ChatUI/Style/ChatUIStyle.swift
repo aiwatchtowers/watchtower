@@ -13,6 +13,36 @@ public protocol ChatUIStyle {
     /// A question card's "Other…" field: `onSubmit` (⌘↩) sends the card, nil while it is incomplete. The default is a
     /// growing text field; the Mac draws its multi-line comment editor.
     func questionOtherField(text: Binding<String>, placeholder: String, onSubmit: (() -> Void)?) -> AnyView
+    /// The owner's bubble around its content.
+    func ownerBubble(_ content: AnyView) -> AnyView
+    /// A row's Copy.
+    func copyButton(_ action: @escaping () -> Void) -> AnyView
+    /// A row's actions show only while the pointer is over it (and on the last row).
+    var actionsOnHover: Bool { get }
+    /// The gap between a message and its actions row.
+    var rowSpacing: CGFloat { get }
+    /// The gap between a row's actions.
+    var actionsSpacing: CGFloat { get }
+    /// A question card's frame.
+    func questionCard(_ content: AnyView) -> AnyView
+    /// A question option's "Recommended" mark.
+    func recommendedMark(_ title: String) -> AnyView
+    /// A failed or cut reply's card drawn by the app; nil draws ChatUI's own.
+    func errorCard(_ content: ChatErrorCardContent) -> AnyView?
+    /// A reply's actions row shows only once it is complete (not on a failed or cut one).
+    var actionsOnCompleteRepliesOnly: Bool { get }
+    /// A reply's tool steps come before its text (the Mac's embedded chats); off, they follow it (Go's part order).
+    var stepsFirst: Bool { get }
+}
+
+/// What a failed or cut reply's card says and offers (`ChatUIStyle.errorCard`); a nil action is not offered.
+public struct ChatErrorCardContent {
+    public let code: String?
+    public let message: String
+    public let detail: String?
+    public let retry: (() -> Void)?
+    public let continueStopped: (() -> Void)?
+    public let reviewActions: (() -> Void)?
 }
 
 extension ChatUIStyle {
@@ -23,6 +53,33 @@ extension ChatUIStyle {
                 .font(.callout)
         )
     }
+
+    public func ownerBubble(_ content: AnyView) -> AnyView {
+        AnyView(
+            content
+                .padding(.horizontal, Spacing.medium)
+                .padding(.vertical, Spacing.regular)
+                .background(Fill.selected, in: RoundedRectangle(cornerRadius: Radius.bubble))
+        )
+    }
+
+    public func copyButton(_ action: @escaping () -> Void) -> AnyView {
+        secondaryButton(ChatMessageRow.copyLabel, action: action)
+    }
+
+    public var actionsOnHover: Bool { false }
+    public var rowSpacing: CGFloat { Spacing.regular }
+    public var actionsSpacing: CGFloat { Spacing.regular }
+
+    public func questionCard(_ content: AnyView) -> AnyView { card { content } }
+
+    public func recommendedMark(_ title: String) -> AnyView { chip(title) }
+
+    public func errorCard(_ content: ChatErrorCardContent) -> AnyView? { nil }
+
+    public var actionsOnCompleteRepliesOnly: Bool { false }
+
+    public var stepsFirst: Bool { false }
 }
 
 /// The default style: borderless controls on the shared tokens, no app look.

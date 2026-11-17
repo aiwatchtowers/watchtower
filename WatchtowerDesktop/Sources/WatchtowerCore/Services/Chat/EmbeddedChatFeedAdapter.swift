@@ -48,7 +48,7 @@ package enum EmbeddedChatFeedAdapter {
         case .failed: .failed
         }
         return ChatFeed.Step(name: display.name, outcome: outcome, summary: display.summary,
-                             sources: display.sources.map(source))
+                             sources: display.sources.map(source), startedAt: display.startedAt, endedAt: display.endedAt)
     }
 
     package static func source(_ source: ChatSource) -> ChatFeed.Source {

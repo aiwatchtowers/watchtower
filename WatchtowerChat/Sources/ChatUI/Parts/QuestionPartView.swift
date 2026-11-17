@@ -86,14 +86,14 @@ public struct QuestionPartView: View {
     }
 
     public var body: some View {
-        style.card {
+        style.questionCard(AnyView(
             VStack(alignment: .leading, spacing: Spacing.medium) {
                 ForEach(card.questions) { question in
                     questionView(question)
                 }
                 footer
             }
-        }
+        ))
         .accessibilityIdentifier("chat.question")
     }
 
@@ -109,7 +109,7 @@ public struct QuestionPartView: View {
     private func questionBody(_ question: ChatQuestion) -> some View {
         let entry = answered?[question.id] ?? picks[question.id] ?? .init()
         return VStack(alignment: .leading, spacing: Spacing.compact) {
-            Text(Self.inline(question.question)).font(.callout.weight(.semibold))
+            QuestionMarkdown(text: question.question).font(.callout.weight(.semibold))
             ForEach(Array(question.options.enumerated()), id: \.element.label) { index, option in
                 optionRow(option, in: question, selected: entry.labels.contains(option.label))
                     .help(draft?.optionHelp?(index) ?? "")
@@ -123,14 +123,9 @@ public struct QuestionPartView: View {
                                                  ? send : nil)
                 }
             } else if let other = entry.other, !other.isEmpty {
-                Text(Self.otherLine(other)).font(.callout).foregroundStyle(.secondary)
+                QuestionMarkdown(text: "Other: \(other)", lineBreaks: true).font(.callout).foregroundStyle(.secondary)
             }
         }
-    }
-
-    /// A read-only "Other" answer; its line breaks are kept.
-    static func otherLine(_ other: String) -> AttributedString {
-        AttributedString("Other: ") + inline(other)
     }
 
     private func send() {
@@ -145,9 +140,9 @@ public struct QuestionPartView: View {
             } label: {
                 HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
                     Image(systemName: icon).foregroundStyle(selected ? Color.accentColor : Color.secondary)
-                    Text(Self.inline(option.label))
+                    Text(Self.optionLabel(option.label))
                     if option.recommended {
-                        style.chip(Self.recommendedLabel)
+                        style.recommendedMark(Self.recommendedLabel)
                     }
                     Spacer(minLength: 0)
                 }
@@ -155,10 +150,11 @@ public struct QuestionPartView: View {
             }
             .buttonStyle(.plain)
             .disabled(!interactive)
+            .accessibilityLabel(String(Self.optionLabel(option.label).characters))
             if !option.description.isEmpty {
                 HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
                     Image(systemName: icon).hidden().accessibilityHidden(true)
-                    Text(Self.inline(option.description)).font(.caption).foregroundStyle(.secondary)
+                    QuestionMarkdown(text: option.description).font(.caption).foregroundStyle(.secondary)
                 }
             }
         }

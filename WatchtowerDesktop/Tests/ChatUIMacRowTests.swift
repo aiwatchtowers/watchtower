@@ -1,5 +1,6 @@
 import ChatUI
 import ChatWire
+import DesignKit
 import SwiftUI
 import ViewInspector
 import WatchtowerChatText
@@ -132,6 +133,33 @@ final class ChatUIMacRowTests: XCTestCase {
                                          context: ChatPartContext(message: message), rowActions: ChatRowActions(),
                                          isTurnRunning: false, caption: "opus · 10:42")
         XCTAssertNoThrow(try view.inspect().find(text: "opus · 10:42"))
+    }
+
+    // MARK: - The Mac looks (review I1: each surface keeps its look)
+
+    func testEachMacSurfaceKeepsItsLook() throws {
+        let embedded = DesignKitChatStyle(look: .embedded)
+        XCTAssertTrue(embedded.actionsOnHover, "Copy and the caption show on hover and on the last row")
+        XCTAssertEqual(embedded.rowSpacing, Spacing.small)
+        XCTAssertEqual(try embedded.copyButton {}.inspect().find(ViewType.Button.self).accessibilityLabel().string(),
+                       "Copy message")
+        XCTAssertNoThrow(try embedded.ownerBubble(AnyView(Text("hi"))).inspect().find(ViewType.Spacer.self))
+        let standard = DesignKitChatStyle()
+        XCTAssertFalse(standard.actionsOnHover, "the main chat is unchanged")
+        XCTAssertEqual(standard.rowSpacing, Spacing.regular)
+        XCTAssertNoThrow(try standard.copyButton {}.inspect().find(button: "Copy"))
+        XCTAssertEqual(DesignKitChatStyle(look: .workchat).rowSpacing, Spacing.tight)
+    }
+
+    /// Steps that carry their times (an embedded chat's) say how long the turn worked, as before.
+    func testStepTimesGiveTheWorkedForHeader() throws {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let steps = [ChatFeed.Step(name: "a", outcome: .succeeded, startedAt: start, endedAt: start.addingTimeInterval(12)),
+                     ChatFeed.Step(name: "b", outcome: .succeeded, startedAt: start.addingTimeInterval(2),
+                                   endedAt: start.addingTimeInterval(5))]
+        XCTAssertNoThrow(try row(reply("Done", steps: steps)).inspect().find(text: "Worked for 12s · 2 steps"))
+        XCTAssertNoThrow(try row(reply("Done", steps: [ChatFeed.Step(name: "a", outcome: .succeeded)]))
+            .inspect().find(text: "Worked · 1 step"), "the engine's wire has no times")
     }
 
     // MARK: - Artifacts, steps, sources, published pages

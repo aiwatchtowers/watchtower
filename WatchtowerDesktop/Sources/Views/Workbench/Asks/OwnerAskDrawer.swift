@@ -270,7 +270,7 @@ struct OwnerAskDrawer: View {
         )
         if !ask.payload.questions.isEmpty {
             QuestionPartView(card: ChatQuestionCard(questions: ask.payload.questions), draft: questionDraft)
-                .environment(\.chatUIStyle, DesignKitChatStyle())
+                .environment(\.chatUIStyle, DesignKitChatStyle(look: .ask))
         }
     }
 

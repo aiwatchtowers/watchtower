@@ -33,11 +33,13 @@ final class WorkchatFeedAdapterTests: XCTestCase {
         XCTAssertEqual(WorkchatFeedAdapter.messageID("e2"), WorkchatFeedAdapter.messageID("e2"), "stable across reads")
         XCTAssertGreaterThanOrEqual(WorkchatFeedAdapter.messageID("e2"), 0)
 
-        let time = at.formatted(date: .omitted, time: .shortened)
-        XCTAssertEqual(WorkchatFeedAdapter.caption(entries[3]), "Ask #12: Ship it? · via Watchtower · \(time)")
-        XCTAssertEqual(WorkchatFeedAdapter.caption(entries[1]), time)
-        XCTAssertNil(WorkchatFeedAdapter.caption(entries[0]))
-        XCTAssertEqual(WorkchatFeedAdapter.caption(SessionFeedEntry(id: "x", kind: "ask_answer", text: "No")),
-                       "Ask · via Watchtower")
+        let time = at.formatted(.dateTime.hour().minute())
+        XCTAssertEqual(WorkchatFeedAdapter.caption(entries[3]), ["via Watchtower", time])
+        XCTAssertEqual(WorkchatFeedAdapter.caption(entries[1]), [time])
+        XCTAssertEqual(WorkchatFeedAdapter.caption(entries[0]), [])
+        XCTAssertEqual(WorkchatFeedAdapter.askHeader(entries[3])?.label, "Ask #12")
+        XCTAssertEqual(WorkchatFeedAdapter.askHeader(entries[3])?.title, "Ship it?")
+        XCTAssertEqual(WorkchatFeedAdapter.askHeader(SessionFeedEntry(id: "x", kind: "ask_answer", text: "No"))?.label, "Ask")
+        XCTAssertNil(WorkchatFeedAdapter.askHeader(entries[1]))
     }
 }

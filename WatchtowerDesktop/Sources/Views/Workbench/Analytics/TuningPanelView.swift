@@ -62,7 +62,7 @@ struct TuningPanelView: View {
             EmbeddedChatComposer(engine: engine, placeholder: TuningChatTexts.placeholder, density: .compact,
                                  onEscape: onClose)
         }
-        .macChatStyle(hooks: .app)
+        .macChatStyle(hooks: .app, look: .embedded)
         .task(id: ObjectIdentifier(chat)) { await chat.refreshCards() }
         .sheet(item: $editing) { proposal in
             if let coach { CoachEditSheet(proposal: proposal, coach: coach) }

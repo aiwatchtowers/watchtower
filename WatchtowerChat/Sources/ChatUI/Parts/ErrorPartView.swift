@@ -14,7 +14,36 @@ struct ErrorPartView: View {
     let context: ChatPartContext
     @Environment(\.chatUIStyle) private var style
 
+    private var retry: (() -> Void)? {
+        guard ChatErrorText.isRetryable(payload.code), context.actions.canRetry?(context.message.id) ?? true else { return nil }
+        return { context.actions.retry(context.message.id) }
+    }
+
+    private var continueStopped: (() -> Void)? {
+        guard context.message.status == ChatMessageStatus.partial, payload.code != "quota_exhausted",
+              context.actions.offersContinue else { return nil }
+        return { context.actions.continueStopped(context.message.id) }
+    }
+
+    private var reviewActions: (() -> Void)? {
+        guard payload.code == "quota_exhausted", let review = context.actions.reviewActions else { return nil }
+        return { review(context.message.id) }
+    }
+
     var body: some View {
+        let content = ChatErrorCardContent(
+            code: payload.code, message: ChatErrorText.message(for: payload.code, provider: context.provider),
+            detail: ChatErrorText.detail(payload.message), retry: retry, continueStopped: continueStopped,
+            reviewActions: reviewActions
+        )
+        if let card = style.errorCard(content) {
+            card.accessibilityIdentifier("chat.error")
+        } else {
+            ownCard
+        }
+    }
+
+    private var ownCard: some View {
         style.card {
             VStack(alignment: .leading, spacing: Spacing.small) {
                 Label(ChatErrorText.message(for: payload.code, provider: context.provider),
@@ -28,16 +57,15 @@ struct ErrorPartView: View {
                         .textSelection(.enabled)
                 }
                 HStack(spacing: Spacing.regular) {
-                    if ChatErrorText.isRetryable(payload.code), context.actions.canRetry?(context.message.id) ?? true {
-                        style.secondaryButton(Self.retryLabel) { context.actions.retry(context.message.id) }
+                    if let retry {
+                        style.secondaryButton(Self.retryLabel, action: retry)
                             .accessibilityIdentifier("chat.error.retry")
                     }
-                    if context.message.status == ChatMessageStatus.partial, payload.code != "quota_exhausted",
-                       context.actions.offersContinue {
-                        style.secondaryButton(Self.continueLabel) { context.actions.continueStopped(context.message.id) }
+                    if let continueStopped {
+                        style.secondaryButton(Self.continueLabel, action: continueStopped)
                     }
-                    if payload.code == "quota_exhausted", let review = context.actions.reviewActions {
-                        style.secondaryButton(Self.reviewActionsLabel) { review(context.message.id) }
+                    if let reviewActions {
+                        style.secondaryButton(Self.reviewActionsLabel, action: reviewActions)
                     }
                 }
             }

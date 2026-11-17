@@ -40,17 +40,17 @@ package enum WorkchatFeedAdapter {
         return Int64(bitPattern: hash & UInt64(Int64.max))
     }
 
-    /// The line under a message: who sent it when it is not plainly the owner's, and its time.
-    package static func caption(_ entry: SessionFeedEntry) -> String? {
+    /// The line under a message: "via Watchtower" for a line Watchtower carried, then its time.
+    package static func caption(_ entry: SessionFeedEntry) -> [String] {
         var parts: [String] = []
-        if entry.kind == "ask_answer" {
-            let ask = entry.askID.map { "Ask #\($0)" } ?? "Ask"
-            parts.append(entry.title.flatMap { $0.isEmpty ? nil : "\(ask): \($0)" } ?? ask)
-            parts.append("via Watchtower")
-        }
-        if let at = entry.at {
-            parts.append(at.formatted(date: .omitted, time: .shortened))
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        if entry.kind == "ask_answer" { parts.append("via Watchtower") }
+        if let at = entry.at { parts.append(at.formatted(.dateTime.hour().minute())) }
+        return parts
+    }
+
+    /// An ask answer's bubble names its ask ("Ask #12") and the ask's title over the text.
+    package static func askHeader(_ entry: SessionFeedEntry) -> (label: String, title: String?)? {
+        guard entry.kind == "ask_answer" else { return nil }
+        return (entry.askID.map { "Ask #\($0)" } ?? "Ask", entry.title.flatMap { $0.isEmpty ? nil : $0 })
     }
 }
