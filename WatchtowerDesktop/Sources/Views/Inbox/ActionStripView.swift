@@ -266,15 +266,17 @@ struct ActionStripActionsView: View {
 
     private var inbox: some View {
         VStack(spacing: 0) {
-            if let list = vm.legacyList {
-                legacyHeader(list)
-                if list == .ideas, let ideas, let ideasRow {
-                    self.ideasRow(ideasRow, ideas: ideas)
-                        .padding(.horizontal, Spacing.medium)
-                        .padding(.bottom, Spacing.regular)
+            // The feed's line (mockup §7): over the kept list, or alone before
+            // the first list, where "Loading the Inbox…" stands in for it.
+            if let status = vm.feedStatus(now: now ?? Date()) {
+                InboxFeedStatusLine(status: status) { Task { await vm.retryFeed() } }
+                if vm.towerFeed == nil {
+                    Spacer(minLength: 0)
                 }
             }
-            content
+            if vm.towerFeed != nil || vm.feedLoader == nil {
+                feedContent
+            }
         }
         .confirmationDialog(deleteTitle, isPresented: deleteConfirming,
                             presenting: artifactMenu?.pendingDelete) { pending in
@@ -286,6 +288,20 @@ struct ActionStripActionsView: View {
         } message: { _ in
             Text("This removes the recipe file with its runs, state and outputs.")
         }
+    }
+
+    /// The selected folder: its legacy header, then its list and reading pane.
+    @ViewBuilder
+    private var feedContent: some View {
+        if let list = vm.legacyList {
+            legacyHeader(list)
+            if list == .ideas, let ideas, let ideasRow {
+                self.ideasRow(ideasRow, ideas: ideas)
+                    .padding(.horizontal, Spacing.medium)
+                    .padding(.bottom, Spacing.regular)
+            }
+        }
+        content
     }
 
     // MARK: - The ⋯ menus

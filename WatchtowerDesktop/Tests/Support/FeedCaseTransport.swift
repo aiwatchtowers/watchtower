@@ -44,6 +44,7 @@ package final class FeedCaseTransport: TowerTransport, @unchecked Sendable {
         var served: Int?
         var acts: [ActRequest] = []
         var feedReads = 0
+        var actRefusal: String?
     }
 
     package let fixture: Case
@@ -148,8 +149,16 @@ package final class FeedCaseTransport: TowerTransport, @unchecked Sendable {
     /// The number of `inbox.feed` reads answered.
     package var feedReads: Int { state.withLock { $0.feedReads } }
 
-    /// Every `inbox.act` request, in order (each is answered ok).
+    /// Every `inbox.act` request, in order (each is answered ok, or refused
+    /// with `actRefusal` when one is set).
     package var acts: [ActRequest] { state.withLock { $0.acts } }
+
+    /// The sentence every `inbox.act` is refused with from now on (Go's,
+    /// such as "Couldn't mark it done: the database is busy."); nil answers ok.
+    package var actRefusal: String? {
+        get { state.withLock { $0.actRefusal } }
+        set { state.withLock { $0.actRefusal = newValue } }
+    }
 
     package func call(_ request: Request) async throws -> Response {
         switch request.command {
@@ -163,6 +172,9 @@ package final class FeedCaseTransport: TowerTransport, @unchecked Sendable {
         case TowerCommand.inboxAct.rawValue:
             if let params = request.params, let act = try? JSONDecoder().decode(ActRequest.self, from: params.data) {
                 state.withLock { $0.acts.append(act) }
+            }
+            if let sentence = actRefusal {
+                return Response(id: request.id, status: .refused, refusal: Refusal(code: .unsupported, sentence: sentence))
             }
             return try Self.ok(request, ActResult())
         default:

@@ -33,19 +33,35 @@ enum InboxFolderMenuShotFixtures {
     /// first read, with the mockups' counts.
     static func model(
         _ folders: [Folder],
-        runner: (any CLIRunnerProtocol)? = FakeCLIRunner(),
-        routedToRelease: Int = 0,
-        artifactsInRelease: Int = 0
+        runner: (any CLIRunnerProtocol)? = FakeCLIRunner()
     ) throws -> (InboxFolderMenuModel, [String: Int64]) {
         let (pool, path) = try TestDatabase.createPool()
         poolPaths.append(path)
         let ids = try pool.write { db in
-            try seed(db, folders, routedToRelease: routedToRelease, artifactsInRelease: artifactsInRelease)
+            try seed(db, folders)
         }
         let model = InboxFolderMenuModel(dbPool: pool) { runner }
         spin(until: "the first read", model.tree.folders.count > 1) { await model.reload() }
         mockupCounts(model)
         return (model, ids)
+    }
+
+    /// The model over Go's case `name`, its feed laid over the folders it
+    /// read (each folder's artifacts), with the mockups' counts.
+    static func listedModel(_ name: String) throws -> InboxFolderMenuModel {
+        let (pool, path) = try TestDatabase.createPool()
+        poolPaths.append(path)
+        let tower = try FeedCaseTransport.seeded(name, pool: pool)
+        let model = InboxFolderMenuModel(dbPool: pool) { FakeCLIRunner() }
+        spin(until: "the first read", model.tree.folders.count > 1) { await model.reload() }
+        // Each folder's artifacts as Go's feed lists them; the menu's
+        // numbers stay the mockups' (`mockupCounts`).
+        model.towerFeed = try tower.mirroredFeed()
+        let artifacts = model.snapshot.artifacts
+        model.towerFeed = nil
+        model.apply(InboxFolderMenuSnapshot(tree: model.tree, counts: [:], artifacts: artifacts))
+        mockupCounts(model)
+        return model
     }
 
     /// The mockups' numbers on the folders the model read.
@@ -70,9 +86,7 @@ enum InboxFolderMenuShotFixtures {
 
     private static func seed(
         _ db: Database,
-        _ folders: [Folder],
-        routedToRelease: Int,
-        artifactsInRelease: Int
+        _ folders: [Folder]
     ) throws -> [String: Int64] {
         try db.execute(sql: "INSERT INTO inbox_folders (kind, parent_id, slug, title, position) VALUES ('root', NULL, 'inbox', 'Inbox', 0)")
         let root = db.lastInsertedRowID
@@ -99,21 +113,6 @@ enum InboxFolderMenuShotFixtures {
             case .blockers: try insert("blockers", "Blockers", icon: "shippingbox", parent: ids["release"] ?? root)
             case .team: try insert("team", "Team", icon: "person.2", parent: root)
             case .oldSprint: try insert("old-sprint", "Old sprint", icon: "shippingbox", parent: root, hidden: true)
-            }
-        }
-        if let release = ids["release"] {
-            var automations: [Int64] = []
-            for index in 0..<routedToRelease {
-                let automation = try TestDatabase.insertAutomation(db, slug: "weekly-\(index)", name: "Weekly \(index)")
-                try db.execute(sql: "INSERT INTO inbox_folder_routes (automation_id, folder_id) VALUES (?, ?)",
-                               arguments: [automation, release])
-                automations.append(automation)
-            }
-            for index in 0..<artifactsInRelease {
-                guard let automation = automations.first else { break }
-                let run = try TestDatabase.insertAutomationRun(db, automationID: automation)
-                try TestDatabase.insertAutomationOutput(db, automationID: automation, runID: run,
-                                                        title: "Release note \(index)")
             }
         }
         return ids
@@ -175,8 +174,10 @@ enum InboxFolderMenuShotFixtures {
             }
             return model.content
         case "inbox-b-folder-delete-confirm":
-            let (model, ids) = try model([.release, .blockers, .team], routedToRelease: 3, artifactsInRelease: 5)
-            let release = try XCTUnwrap(ids["release"])
+            // Release (3) with three routed automations and five artifacts:
+            // Go's case, its folders' artifacts from Go's feed.
+            let model = try listedModel("desktop_shot_folder_menu_delete")
+            let release: Int64 = 3
             model.select(release)
             model.askDelete(release)
             XCTAssertNotNil(model.deleteConfirmation)

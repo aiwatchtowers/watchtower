@@ -20,6 +20,10 @@ package final class InboxFeedLoader {
     package private(set) var state: TowerScreenState = .idle
     /// The last read's failure while a feed is kept; nil after an answer.
     package private(set) var failure: TowerFailure?
+    /// When the last answered read landed ("Showing the list from 09:14").
+    package private(set) var answeredAt: Date?
+    /// The clock `answeredAt` is read from.
+    @ObservationIgnored package var clock: () -> Date = Date.init
     /// True while the tower has been down long enough to show
     /// "Reconnecting to Watchtower…" (`TowerTiming.reconnectingLineAfter`).
     package private(set) var showsReconnectingLine = false
@@ -123,8 +127,18 @@ package final class InboxFeedLoader {
 
     private func answered(_ feed: Feed) {
         self.feed = feed
+        answeredAt = clock()
         failure = nil
         onFeed?(feed)
+    }
+
+    /// Shows the client's `state` and a read's `failure` as if the tower
+    /// had answered so, with no daemon: the design shots draw the Inbox's
+    /// states (mockup §7) through it. The transitions themselves are the
+    /// client's and the loader's own (`TowerClientTests`, `InboxFeedLoaderTests`).
+    package func showForShots(_ state: TowerScreenState, failure: TowerFailure?, reconnectingLine: Bool) {
+        self.failure = failure
+        show(state, line: reconnectingLine)
     }
 
     private func show(_ state: TowerScreenState, line: Bool) {

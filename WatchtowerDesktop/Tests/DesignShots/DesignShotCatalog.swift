@@ -303,7 +303,8 @@ enum DesignShotCatalog {
             // Built-in automations (C2): the Inbox notice of a failed move.
             DesignShot(name: "inbox-builtin-notice", size: NSSize(width: 1180, height: 720)) {
                 OneInboxShotFixtures.builtinNotice()
-            },
+            }
+        ] + InboxFeedStateShotFixtures.shots + [
             // Built-in automations (C2): the Built in section and Morning brief's card.
             DesignShot(name: "automation-builtin-list", size: NSSize(width: 1280, height: 760)) {
                 BuiltinShotFixtures.list()
@@ -661,6 +662,7 @@ enum DesignShotFixtures {
         InboxFolderMenuShotFixtures.cleanUp()
         InboxFoldersShotFixtures.cleanUp()
         InboxApprovalsShotFixtures.cleanUp()
+        InboxFeedStateShotFixtures.cleanUp()
         TuningChatShotFixtures.cleanUp()
         ProjectPageShotFixtures.cleanUp()
         ClosedAsksShotFixtures.cleanUp()

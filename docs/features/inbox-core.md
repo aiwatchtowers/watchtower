@@ -170,7 +170,7 @@ The switch the Mac reads (its feature list) and the one Go reads (`config.yaml` 
 - Go runs it in `TestInboxFeedCases`; `go test ./internal/inboxfeed/ -run TestInboxFeedCases -update` rewrites the expects. It is the Go golden of the Inbox's rules.
 - The Swift half (`InboxFeedParityTests` over the Swift builders through `SwiftFeedAdapter`) ran until the Mac switched to the feed. It was deleted with the builders in Task 11d-a.
 - The Desktop's tests read canned feeds. A test whose subject is a press or a pane hands the view model a feed that names its seeded records (`Tests/Support/TestInboxFeeds`).
-- A case marked `"desktop": true` is a test-only scenario. The Go golden test regenerates it like any other case, and the Desktop's tests seed its SQL and serve its `expect`. 11d-c and 11e add them.
+- A case marked `"desktop": true` is a test-only scenario. The Go golden test regenerates it like any other case, and the Desktop's tests seed its SQL and serve its `expect` (`FeedCaseTransport`). The Inbox design shots do the same: each shot's database is a `desktop_shot_*` case, so no shot builds an Inbox list in Swift (`InboxShotFeed`). The five `inbox-feed-*` shots draw mockup §7's states (first load, a failed read over the kept list, a failed action on its row, reconnecting, another version) through `InboxMacFeedStatus`.
 - The native approval's text and the target button states stay pinned by `testdata/approval_text_cases.json` and `testdata/target_button_cases.json` (Go: `TestApprovalText_SharedCases`, `TestTargetState_SharedCases`).
 
 `testdata/save_automation_summary_cases.json` is run the same way, by `TestSaveAutomationSummary_SharedCases` and `testSaveAutomationSummaryMatchesGo`.

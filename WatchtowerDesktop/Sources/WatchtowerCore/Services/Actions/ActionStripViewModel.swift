@@ -328,6 +328,21 @@ package final class ActionStripViewModel {
         Task { await refresh() }
     }
 
+    /// The Inbox's line about its feed (mockup §7): first load, a failed
+    /// read, reconnecting, another version; nil while the list is current
+    /// and when no loader is attached (the Inbox reads only the database).
+    package func feedStatus(now: Date) -> InboxMacFeedStatus? {
+        guard let feedLoader else { return nil }
+        return InboxMacFeedStatus.resolve(
+            hasList: feedLoader.feed != nil, shownAt: feedLoader.answeredAt, failure: feedLoader.failure,
+            state: feedLoader.state, showsReconnectingLine: feedLoader.showsReconnectingLine, now: now)
+    }
+
+    /// The feed line's Retry or Restart: the client's retry, then a read.
+    package func retryFeed() async {
+        await feedLoader?.retry()
+    }
+
     /// The feed's card `id` ("o12", "a7"); nil without a feed or such a card.
     package func feedCard(_ id: String) -> Card? {
         towerFeed?.cards.first { $0.id == id }
