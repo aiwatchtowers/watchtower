@@ -473,12 +473,15 @@ final class RelayChatClient: ChatClient {
 
     /// The shared card's answer: the action it showed, pinned to the digest the hub sent (AGENT-07).
     func decide(_ action: ChatAgentAction, _ decision: ChatApprovalDecision, permissions: Bool) async {
-        guard permissions, isConnected, action.status == "pending", !answering.contains(action.id) else { return }
+        // An approve pins the digest the hub sent (AGENT-07); with none there is nothing to pin, and only Reject goes.
+        guard permissions, isConnected, action.status == "pending", !answering.contains(action.id),
+              decision == .reject || action.approveDigest != nil else { return }
+        let digest = action.approveDigest ?? ""
         answering.insert(action.id)
         approvalFailures[action.id] = nil
         defer { answering.remove(action.id) }
         let params = ChatActionAnswerParams(
-            actionID: action.id, decision: decision == .approve ? .approve : .reject, argsSHA256: action.argsSHA256
+            actionID: action.id, decision: decision == .approve ? .approve : .reject, argsSHA256: digest
         )
         switch await sender.request(params) {
         case .applied:

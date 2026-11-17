@@ -247,7 +247,12 @@ struct ChatConversationView: View {
         let conversation = conversation
         return ChatApprovalServices(
             decide: { action, answer in
-                Task { await client.decide(action, answer == .reject ? .reject : .approve, permissions: permissions) }
+                switch answer {
+                case .approve(nil): Task { await client.decide(action, .approve, permissions: permissions) }
+                case .reject: Task { await client.decide(action, .reject, permissions: permissions) }
+                // The relay answer carries no patch: an edited approve is never sent as a plain one.
+                case .approve(_?): break
+                }
             },
             state: { action in client.approvalCard(action, permissions: permissions, host: host).state },
             sessionHoldsCall: { ConnectorCallProposal.sessionHolds($0, runningTurnID: conversation.runningTurnID) }

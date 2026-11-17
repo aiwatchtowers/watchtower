@@ -18,16 +18,18 @@ public struct AgentActionCard: View {
     /// False on an older proposal of an Inbox target button whose newest row is another one: no Retry.
     let offersRetry: Bool
 
-    @Environment(\.chatUIStyle) var style
+    /// The engine's title, for a card drawn from its payload whose tool the catalog does not know.
+    let fallbackTitle: String?
 
-    /// The pending Slack send's edited text (nil = untouched) and workspace pick.
-    @State var slackDraft: String?
-    @State var slackPick: Int?
+    @Environment(\.chatUIStyle) var style
+    @Environment(\.chatHostText) var hostText
+
+    /// The owner's unsent edits, stamped with the row they were made on (`draftKey`): once the row settles or its args
+    /// change, they are dropped, so nothing approves args the owner did not see.
+    @State var storedDrafts: CardDrafts?
     /// The card's own Slack gestures: an edit that could not be encoded, and the outcome of Reconnect Slack.
     @State var slackMessage: String?
     @State private var reconnecting = false
-    /// The connector call's input while the owner edits it; nil = not editing.
-    @State var connectorDraft: String?
 
     public init(
         action: ChatAgentAction,
@@ -37,12 +39,68 @@ public struct AgentActionCard: View {
         outlined: Bool = false,
         offersRetry: Bool = true
     ) {
+        self.init(action: action, services: services, contextLabel: contextLabel, onOpenContext: onOpenContext,
+                  outlined: outlined, offersRetry: offersRetry, fallbackTitle: nil, drafts: nil)
+    }
+
+    /// `fallbackTitle`: the payload's title (ApprovalPartView). `drafts`: edits a test starts the card with.
+    init(
+        action: ChatAgentAction,
+        services: ChatApprovalServices,
+        contextLabel: String? = nil,
+        onOpenContext: (() -> Void)? = nil,
+        outlined: Bool = false,
+        offersRetry: Bool = true,
+        fallbackTitle: String?,
+        drafts: CardDrafts?
+    ) {
         self.action = action
         self.services = services
         self.contextLabel = contextLabel
         self.onOpenContext = onOpenContext
         self.outlined = outlined
         self.offersRetry = offersRetry
+        self.fallbackTitle = fallbackTitle
+        _storedDrafts = State(initialValue: drafts)
+    }
+
+    /// The owner's unsent edits on one row: the Slack text and workspace pick, the connector input.
+    struct CardDrafts: Equatable {
+        let key: String
+        var slack: String?
+        var pick: Int?
+        var connector: String?
+    }
+
+    /// The row an edit was made on: its id, status and args. Edits made under another key are not this row's.
+    static func draftKey(_ action: ChatAgentAction) -> String {
+        "\(action.id)|\(action.status)|\(action.argsSHA256)|\(action.argsJSON.utf8.count)"
+    }
+
+    /// The edits that belong to the row as it is now; empty when they were made on another state of it.
+    var drafts: CardDrafts {
+        let key = Self.draftKey(action)
+        if let storedDrafts, storedDrafts.key == key { return storedDrafts }
+        return CardDrafts(key: key)
+    }
+
+    func editDrafts(_ change: (inout CardDrafts) -> Void) {
+        var next = drafts
+        change(&next)
+        storedDrafts = next
+    }
+
+    var slackPickBinding: Binding<Int?> {
+        Binding(get: { drafts.pick }, set: { pick in editDrafts { $0.pick = pick } })
+    }
+
+    /// The card's title: the screen's own (save_automation), else the catalog's; a payload-drawn card of a tool the
+    /// catalog does not know keeps the engine's title rather than the raw tool id.
+    static func cardTitle(for action: ChatAgentAction, fallback: String?) -> String {
+        if !action.argsStored, ActionToolCatalog.info(for: action.tool) == nil, let fallback, !fallback.isEmpty {
+            return fallback
+        }
+        return title(for: action)
     }
 
     /// After a sign-in that reported no error — which a cancelled one does not either, and a grant Slack still refused
@@ -63,6 +121,8 @@ public struct AgentActionCard: View {
     /// The summary lines the card draws. A payload's empty lines are left out: a daemon one version behind sends no
     /// `args_display` and does not say whether it was clipped, which reads as one empty line. A row draws its lines as
     /// they are.
+    static let payloadLineLimit = 12
+
     static func bodyLines(for action: ChatAgentAction) -> [String] {
         let lines = summaryLines(for: action)
         return action.argsStored ? lines : lines.filter { !$0.isEmpty }
@@ -106,7 +166,7 @@ public struct AgentActionCard: View {
                 contextLine(contextLabel)
             }
             style.approvalHeader(ChatApprovalHeader(
-                title: services.title?(action) ?? Self.title(for: action),
+                title: services.title?(action) ?? Self.cardTitle(for: action, fallback: fallbackTitle),
                 status: Self.statusLabel(for: action, sessionHolds: sessionHolds),
                 external: action.external, kind: Self.headerKind(action.status)
             ))
@@ -115,7 +175,7 @@ public struct AgentActionCard: View {
                 ConfluenceEditChangesView(edit: edit)
             }
             if action.isPending, editsSlack, let slack = SlackSendProposal(action: action) {
-                SlackSendEditor(proposal: slack, text: slackTextBinding(slack), pick: $slackPick)
+                SlackSendEditor(proposal: slack, text: slackTextBinding(slack), pick: slackPickBinding)
                     .disabled(inFlight)
             }
             if !action.reason.isEmpty {
@@ -152,12 +212,6 @@ public struct AgentActionCard: View {
             }
             decision(connector: connector)
         }), outlined: outlined)
-        // A row settled elsewhere drops the owner's unsent edits: nothing may approve stale args.
-        .onChange(of: action.status) { _, _ in
-            slackDraft = nil
-            slackPick = nil
-            connectorDraft = nil
-        }
     }
 
     @ViewBuilder
@@ -167,6 +221,10 @@ public struct AgentActionCard: View {
         } else if let connector {
             ConnectorCallDetails(proposal: connector, draft: connectorDraftBinding, approval: connectorApproval(connector))
                 .disabled(inFlight)
+        } else if let choose = Self.slackChooseLine(action, editsSlack: editsSlack, hostText: hostText) {
+            // Nothing to pick with here: say where to choose, and offer no Approve (`pendingApproval`).
+            Text(choose).font(.callout).fixedSize(horizontal: false, vertical: true)
+            style.approvalSlackText(SlackSendProposal(action: action)?.text ?? action.argString("text") ?? "")
         } else if let slack = SlackSendProposal(action: action) {
             SlackRecipientLine(proposal: slack)
             // The text is in the editor while the row can still be edited.
@@ -175,7 +233,11 @@ public struct AgentActionCard: View {
             }
         } else {
             ForEach(Self.bodyLines(for: action), id: \.self) { line in
-                Text(line).font(.callout).fixedSize(horizontal: false, vertical: true)
+                // A payload's raw args can run to 4000 characters: bounded, as the phone's card always was.
+                Text(line)
+                    .font(.callout)
+                    .lineLimit(action.argsStored ? nil : Self.payloadLineLimit)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

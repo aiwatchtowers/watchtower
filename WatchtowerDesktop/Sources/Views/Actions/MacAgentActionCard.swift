@@ -52,6 +52,7 @@ struct MacAgentActionCard: View {
         ChatUI.AgentActionCard(action: action, services: services, contextLabel: contextLabel,
                                onOpenContext: onOpenContext, offersRetry: offersRetry)
             .environment(\.chatUIStyle, DesignKitChatStyle())
+            .environment(\.chatHostText, .mac)
     }
 
     private var services: ChatApprovalServices {

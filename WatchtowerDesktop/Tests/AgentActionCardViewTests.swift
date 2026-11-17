@@ -1,3 +1,4 @@
+@testable import ChatUI
 import ChatWire
 import XCTest
 import GRDB
@@ -457,25 +458,37 @@ final class AgentActionCardViewTests: XCTestCase {
         XCTAssertThrowsError(try settled.inspect().find(button: "Retry"))
     }
 
-    /// The owner edits a pending Slack send, and the row is rejected elsewhere: the editor goes with the pending state
-    /// and nothing approves the edited text.
+    /// The owner edits a pending Slack send, then the row changes under the card — rejected elsewhere, or its args
+    /// re-pinned: the edits belonged to the row as it was, so they are dropped and nothing approves them.
     func testSlackEditDroppedWhenRowSettlesElsewhere() throws {
-        var edited: [String] = []
-        let pending = try row { db in
-            try TestDatabase.insertAgentAction(db, tool: "send_slack_message", external: true, argsJSON: Self.slackArgs)
+        var answers: [ChatApprovalAnswer] = []
+        var services = ChatApprovalServices(approveEdited: true)
+        services.decide = { answers.append($1) }
+        let shown = AgentAction(id: 5, tool: "send_slack_message", external: true, argsJSON: Self.slackArgs)
+        let key = ChatUI.AgentActionCard.draftKey(shown)
+        let edits = ChatUI.AgentActionCard.CardDrafts(key: key, slack: "an edit the owner made")
+        func card(_ action: AgentAction) -> some View {
+            ChatUI.AgentActionCard(action: action, services: services, fallbackTitle: nil, drafts: edits)
+                .environment(\.chatUIStyle, DesignKitChatStyle())
         }
-        let editing = MacAgentActionCard(action: pending, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
-                                         onApproveEdited: { edited.append($0) })
-        try editing.inspect().find(ViewType.TextEditor.self).setInput("an edit the owner never sent")
-        let rejected = try row { db in
-            try TestDatabase.insertAgentAction(db, tool: "send_slack_message", external: true, argsJSON: Self.slackArgs,
-                                               status: "rejected")
-        }
-        let settled = MacAgentActionCard(action: rejected, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
-                                         onApproveEdited: { edited.append($0) })
-        XCTAssertThrowsError(try settled.inspect().find(ViewType.TextEditor.self))
-        XCTAssertThrowsError(try settled.inspect().find(button: "Approve & send"))
-        XCTAssertNoThrow(try settled.inspect().find(text: "Rejected"))
-        XCTAssertEqual(edited, [])
+        // The row the edits were made on: the editor holds them and Approve & send carries them.
+        XCTAssertEqual(try card(shown).inspect().find(ViewType.TextEditor.self).input(), "an edit the owner made")
+        try card(shown).inspect().find(button: "Approve & send").tap()
+        guard case .approve(let patch?) = answers.last else { return XCTFail("the edit travels as a patch") }
+        XCTAssertTrue(patch.contains("an edit the owner made"))
+
+        // The same row with its args re-pinned: the editor shows the new text, and Approve & send is plain.
+        let repinned = AgentAction(id: 5, tool: "send_slack_message", external: true,
+                                   argsJSON: Self.slackArgs.replacingOccurrences(of: "build is green", with: "build is red again"))
+        XCTAssertEqual(try card(repinned).inspect().find(ViewType.TextEditor.self).input(), "build is red again")
+        answers = []
+        try card(repinned).inspect().find(button: "Approve & send").tap()
+        XCTAssertEqual(answers, [.approve(patch: nil)])
+
+        // Rejected elsewhere: no editor and no Approve & send.
+        let rejected = AgentAction(id: 5, tool: "send_slack_message", external: true, argsJSON: Self.slackArgs,
+                                   status: "rejected")
+        XCTAssertThrowsError(try card(rejected).inspect().find(ViewType.TextEditor.self))
+        XCTAssertThrowsError(try card(rejected).inspect().find(button: "Approve & send"))
     }
 }

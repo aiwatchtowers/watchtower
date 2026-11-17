@@ -338,4 +338,34 @@ final class ChatUIMacRowTests: XCTestCase {
         for _ in 0..<1000 where runner.invocations.count < 2 { await Task.yield() }
         XCTAssertEqual(runner.invocations.map { $0.prefix(3) }, ids.map { ["actions", "approve", String($0)] })
     }
+
+    /// Approve hands the screen the exact action the card was drawn from — its args and its digest (AGENT-07): a card
+    /// drawn from the part's payload sends the payload's digest, a card on a resolved row sends that row.
+    func testApproveCarriesTheShownSnapshot() throws {
+        var answers: [(ChatAgentAction, ChatApprovalAnswer)] = []
+        let payload = ChatApprovalPayload(id: 7, tool: "create_target", title: "", argsDisplay: #"{"text":"Call"}"#,
+                                          argsSHA256: "d1g", status: "pending", turnID: "t1", argsComplete: true)
+        var services = ChatApprovalServices()
+        services.decide = { answers.append(($0, $1)) }
+        let reply = ChatFeed.Message(id: 4, role: "assistant", text: "", createdAt: .distantPast, parts: [
+            ChatPart(kind: ChatPartKind.approval, payload: .object([
+                "id": .integer(7), "tool": .string("create_target"), "status": .string("pending"),
+                "args_display": .string(#"{"text":"Call"}"#), "args_sha256": .string("d1g"), "turn_id": .string("t1"),
+                "args_complete": .bool(true)
+            ]), fallback: ChatPartFallback(text: "An action waits for your approval"))
+        ])
+        try approvalFeed(reply, services: services).inspect().find(button: "Approve").tap()
+        XCTAssertEqual(answers.map(\.0), [ChatAgentAction(payload: payload)])
+        XCTAssertEqual(answers.first?.0.argsSHA256, "d1g")
+        XCTAssertEqual(answers.first?.0.approveDigest, "d1g")
+        XCTAssertEqual(answers.first?.1, .approve(patch: nil))
+
+        // The screen's own row wins over the payload: the card shows it, and Approve carries it.
+        let row = ChatAgentAction(id: 7, tool: "create_target", argsJSON: #"{"text":"Call Vasya"}"#, turnID: "t1")
+        services.resolve = { _ in row }
+        answers = []
+        try approvalFeed(reply, services: services).inspect().find(button: "Approve").tap()
+        XCTAssertEqual(answers.map(\.0), [row])
+        XCTAssertEqual(answers.first?.0.approveDigest, ChatAgentAction.digest(of: #"{"text":"Call Vasya"}"#))
+    }
 }

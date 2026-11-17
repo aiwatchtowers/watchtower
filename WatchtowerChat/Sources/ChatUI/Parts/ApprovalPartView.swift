@@ -15,7 +15,8 @@ struct ApprovalPartView: View {
         AgentActionCard(
             action: action, services: services,
             outlined: AgentActionCard.isAwaited(action, runningTurnID: context.runningTurnID)
-                || services.highlighted?(action) == true
+                || services.highlighted?(action) == true,
+            fallbackTitle: payload.title, drafts: nil
         )
         .accessibilityIdentifier("chat.approval.\(payload.id)")
     }

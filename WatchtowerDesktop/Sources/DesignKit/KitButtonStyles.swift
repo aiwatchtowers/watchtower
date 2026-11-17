@@ -24,12 +24,6 @@ extension PrimitiveButtonStyle where Self == KitPrimaryButtonStyle {
     public static var kitPrimary: KitPrimaryButtonStyle { KitPrimaryButtonStyle() }
 }
 
-extension PrimitiveButtonStyle where Self == BorderedProminentButtonStyle {
-    /// The agent-action card's Approve: the system's prominent style, disabled look included, as the card has always
-    /// drawn it (unified chat T15 moved the card into ChatUI without a redesign).
-    public static var kitApprovalProminent: BorderedProminentButtonStyle { .borderedProminent }
-}
-
 /// The main action that stops or discards something (the recorder's Stop):
 /// a red plate with a white label, drawn here from plain shapes (#397).
 /// `.borderedProminent` + `.tint(.red)` leaves the plate and the label to

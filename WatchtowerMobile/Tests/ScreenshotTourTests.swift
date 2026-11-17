@@ -355,8 +355,13 @@ final class ScreenshotTourTests: XCTestCase {
     }
 
     /// A chat center showing `list` and `searches`, its sends going nowhere.
+    /// A center whose timers never fire during the tour. Its sleep must suspend: `RelayChatClient`'s feed repeat loop
+    /// runs on the main actor, and a sleep that returns at once turns it into a busy loop that starves every later
+    /// frame (the C2 conversations hung on it, #1822 T15).
     private static func chatCenter(
-        _ list: ChatList?, searches: [String: ChatSearch] = [:], sleep: @escaping @Sendable (Duration) async throws -> Void = { _ in }
+        _ list: ChatList?,
+        searches: [String: ChatSearch] = [:],
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { _ in try await Task.sleep(for: .seconds(86_400)) }
     ) -> ChatsCenter {
         let center = ChatsCenter(sender: ChatSender { _, _ in "" }, sleep: sleep)
         center.apply(ChatsSnapshot(list: list, searches: searches))

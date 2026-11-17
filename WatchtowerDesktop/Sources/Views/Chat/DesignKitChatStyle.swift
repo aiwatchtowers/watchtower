@@ -197,9 +197,13 @@ struct DesignKitChatStyle: ChatUIStyle {
         })
     }
 
-    /// The system's prominent Approve and plain Reject, as the Mac card always drew them.
+    /// The system's prominent Approve and plain Reject, as the Mac card always drew them. The stock prominent style is
+    /// the card's lint-baseline debt, kept so the T15 move stays byte-identical (`.kitPrimary` would change the
+    /// disabled "Approve & send"); switching is the owner's call.
     func approvalButton(_ title: String, prominent: Bool, action: @escaping () -> Void) -> AnyView {
-        prominent ? AnyView(Button(title, action: action).buttonStyle(.kitApprovalProminent)) : AnyView(Button(title, action: action))
+        guard prominent else { return AnyView(Button(title, action: action)) }
+        return AnyView(Button(title, action: action)
+            .buttonStyle(.borderedProminent))
     }
 
     func approvalSlackText(_ text: String) -> AnyView {

@@ -67,22 +67,15 @@ final class AgentActionCardModelTests: XCTestCase {
         XCTAssertTrue(AgentActionCard.editsSlack(whole, services: editing))
     }
 
-    /// The card hands the screen the exact action it was built with: its args and its digest (AGENT-07).
-    func testApproveCarriesTheShownSnapshot() {
-        var answers: [(ChatAgentAction, ChatApprovalAnswer)] = []
-        var services = ChatApprovalServices()
-        services.decide = { answers.append(($0, $1)) }
-        let shown = ChatAgentAction(payload: payload(tool: "create_target", args: #"{"text":"Call"}"#, sha: "d1g"))
-        AgentActionCard.approve(shown, patch: nil, services: services)
-        AgentActionCard.approve(shown, patch: #"{"text":"edited"}"#, services: services)
-        XCTAssertEqual(answers.map(\.0), [shown, shown])
-        XCTAssertEqual(answers.map(\.0.argsJSON), [#"{"text":"Call"}"#, #"{"text":"Call"}"#])
-        XCTAssertEqual(answers.map(\.0.argsSHA256), ["d1g", "d1g"])
-        XCTAssertEqual(answers.map(\.1), [.approve(patch: nil), .approve(patch: #"{"text":"edited"}"#)])
-        // A payload with no digest offers no Approve: display text is never hashed.
+    /// A payload with no digest offers no Approve: its args are display text, which is never hashed (AGENT-07). The
+    /// press itself is pinned on the Mac (`ChatUIMacRowTests.testApproveCarriesTheShownSnapshot`).
+    func testUndigestedPayloadOffersNoApprove() {
         let undigested = ChatAgentAction(payload: payload(tool: "create_target", args: #"{"text":"Call"}"#, sha: ""))
         XCTAssertNil(undigested.approveDigest)
         XCTAssertEqual(AgentActionCard.pendingApproval(for: undigested, editsSlack: false), .none)
+        let digested = ChatAgentAction(payload: payload(tool: "create_target", args: #"{"text":"Call"}"#, sha: "d1g"))
+        XCTAssertEqual(digested.approveDigest, "d1g")
+        XCTAssertEqual(AgentActionCard.pendingApproval(for: digested, editsSlack: false), .plain)
     }
 
     /// A capability the screen does not inject hides its control, on a row that would offer each (ask #1411).
@@ -144,13 +137,42 @@ final class AgentActionCardModelTests: XCTestCase {
         XCTAssertNil(ConnectorCallProposal(action: card))
     }
 
-    /// No recipient: the card falls back to the arguments; the app's own words name its host, never "the Mac" itself.
-    func testSlackApprovalWithoutRecipientLeavesTheLineToTheApp() {
+    /// No recipient: the card asks for a workspace in the app's own words (`ChatHostText`), never "the Mac" itself.
+    func testSlackApprovalWithoutRecipientLeavesTheLineToTheApp() throws {
         let card = ChatAgentAction(payload: payload(tool: "send_slack_message", args: ##"{"text": "hi"}"##))
-        XCTAssertNil(SlackSendProposal(action: card))
-        XCTAssertEqual(AgentActionCard.summaryLines(for: card), [##"{"text": "hi"}"##])
+        XCTAssertEqual(AgentActionCard.slackChooseLine(card, editsSlack: false, hostText: .plain),
+                       ChatHostText.plain.chooseSlackWorkspace)
         XCTAssertEqual(ChatHostText.plain.chooseSlackWorkspace, "Choose a workspace on your tower before approving")
         XCTAssertEqual(ChatHostText.plain.artifactCut, "This artifact is cut here; the whole text is on your tower.")
+    }
+
+    /// A Slack send that still needs a workspace pick, on a screen that cannot pick (the phone): the host's line and
+    /// no Approve, as the Mac's Inbox row. With the editor (the Mac chat) Approve & send waits for the pick instead.
+    func testSlackWithoutPickOffersNoApproveWhereNothingCanPick() {
+        let candidates = ##"{"text":"hi","candidates":[{"account_id":1,"workspace":"A","label":"#g"},"##
+            + ##"{"account_id":2,"workspace":"B","label":"#g"}]}"##
+        let card = ChatAgentAction(payload: payload(tool: SlackSendProposal.tool, args: candidates))
+        XCTAssertEqual(AgentActionCard.slackChooseLine(card, editsSlack: false, hostText: .plain),
+                       "Choose a workspace on your tower before approving")
+        XCTAssertEqual(AgentActionCard.pendingApproval(for: card, editsSlack: false), .none)
+        XCTAssertNil(AgentActionCard.slackChooseLine(card, editsSlack: true, hostText: .plain))
+        guard case .slack = AgentActionCard.pendingApproval(for: card, editsSlack: true) else {
+            return XCTFail("the editor's card approves once a workspace is picked")
+        }
+        let pinned = ChatAgentAction(payload: payload(tool: SlackSendProposal.tool, args: Self.slackArgs))
+        XCTAssertNil(AgentActionCard.slackChooseLine(pinned, editsSlack: false, hostText: .plain))
+        XCTAssertEqual(AgentActionCard.pendingApproval(for: pinned, editsSlack: false), .plain)
+    }
+
+    /// A payload-drawn card of a tool the catalog does not know keeps the engine's title; a known tool, the catalog's.
+    func testUnknownToolKeepsTheEnginesTitle() {
+        let unknown = ChatAgentAction(payload: payload(tool: "frobnicate", args: "{}"))
+        XCTAssertEqual(AgentActionCard.cardTitle(for: unknown, fallback: "Frobnicate the build"), "Frobnicate the build")
+        XCTAssertEqual(AgentActionCard.cardTitle(for: unknown, fallback: ""), "frobnicate")
+        let known = ChatAgentAction(payload: payload(tool: "create_target", args: "{}"))
+        XCTAssertEqual(AgentActionCard.cardTitle(for: known, fallback: "Engine words"), "Create a target")
+        let row = ChatAgentAction(id: 1, tool: "frobnicate", argsJSON: "{}")
+        XCTAssertEqual(AgentActionCard.cardTitle(for: row, fallback: "Engine words"), "frobnicate", "the Mac's rows as before")
     }
 
     /// The header's tone: orange (waiting) only while the action waits for the owner (P5).

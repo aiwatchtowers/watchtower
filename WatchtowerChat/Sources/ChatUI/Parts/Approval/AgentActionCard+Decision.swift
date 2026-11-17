@@ -38,6 +38,8 @@ extension AgentActionCard {
         // AGENT-07: an approve pins the digest of the args the owner saw. A card with none (a payload from a daemon
         // that sends no digest) offers no Approve rather than hash its display text.
         guard action.approveDigest != nil else { return .none }
+        // A Slack send still waiting for its workspace on a screen that cannot pick: Go would refuse the approve.
+        if slackNeedsPick(action, editsSlack: editsSlack) { return .none }
         if editsSlack, let slack = SlackSendProposal(action: action) { return .slack(slack) }
         return ConfluenceEdit.canApprove(action) ? .plain : .none
     }
@@ -67,6 +69,20 @@ extension AgentActionCard {
     /// The Slack editor and workspace pick show: the screen takes edits, and the args reached this device whole.
     static func editsSlack(_ action: ChatAgentAction, services: ChatApprovalServices) -> Bool {
         services.approveEdited && SlackSendProposal(action: action)?.editable == true
+    }
+
+    /// A Slack send whose workspace is not chosen yet (candidates and no target, or no recipient at all) on a screen
+    /// without the editor's pick (the phone, a Mac surface that takes no edits). The card says where to choose
+    /// (`ChatHostText.chooseSlackWorkspace`) and offers no Approve, as the Mac's Inbox row (`rowButtons`) does.
+    static func slackNeedsPick(_ action: ChatAgentAction, editsSlack: Bool) -> Bool {
+        guard action.tool == SlackSendProposal.tool, !editsSlack, !action.argsClipped else { return false }
+        if let slack = SlackSendProposal(action: action) { return slack.target == nil }
+        return action.argString("text") != nil
+    }
+
+    /// The line the card shows for a Slack send's recipient when there is nothing to pick with: the host's words.
+    static func slackChooseLine(_ action: ChatAgentAction, editsSlack: Bool, hostText: ChatHostText) -> String? {
+        slackNeedsPick(action, editsSlack: editsSlack) ? hostText.chooseSlackWorkspace : nil
     }
 
     /// A connector call's Edit Input shows: the screen takes edits, the args are whole and the call can be approved.
@@ -99,11 +115,6 @@ extension AgentActionCard {
     /// A card the running turn waits on (its action is pending in the turn that runs): outlined.
     static func isAwaited(_ action: ChatAgentAction, runningTurnID: String?) -> Bool {
         action.isPending && !action.turnID.isEmpty && action.turnID == runningTurnID
-    }
-
-    /// Approve with the snapshot the card showed: its args and digest travel with the answer (AGENT-07).
-    static func approve(_ action: ChatAgentAction, patch: String?, services: ChatApprovalServices) {
-        services.decide(action, .approve(patch: patch))
     }
 
     static let approveLabel = "Approve"
@@ -154,15 +165,15 @@ extension AgentActionCard {
         case .session:
             connectorButtons(connector)
         case let .slack(slack):
-            let text = slackDraft ?? slack.text
+            let text = drafts.slack ?? slack.text
             style.approvalButton(state?.approveFailed == true ? Self.retryLabel : "Approve & send", prominent: true) {
                 approveSlack(slack, text: text)
             }
-            .disabled(!slack.canApprove(text: text, pick: slackPick))
+            .disabled(!slack.canApprove(text: text, pick: drafts.pick))
             .accessibilityIdentifier("chat.approval.approve")
         case .plain:
             style.approvalButton(approveTitle, prominent: true) {
-                Self.approve(action, patch: nil, services: services)
+                services.decide(action, .approve(patch: nil))
             }
             .accessibilityIdentifier("chat.approval.approve")
         case .none:
@@ -197,19 +208,19 @@ extension AgentActionCard {
             let approval = connector.map(connectorApproval) ?? .plain
             style.approvalButton(approveTitle, prominent: true) {
                 switch approval {
-                case .plain?: Self.approve(action, patch: nil, services: services)
-                case .edited(let patch)?: Self.approve(action, patch: patch, services: services)
+                case .plain?: services.decide(action, .approve(patch: nil))
+                case .edited(let patch)?: services.decide(action, .approve(patch: patch))
                 case nil: break // disabled below
                 }
             }
             .disabled(approval == nil)
             .accessibilityIdentifier("chat.approval.approve")
             if let connector, Self.connectorEditable(action, services: services, sessionHolds: sessionHolds) {
-                if connectorDraft == nil {
-                    Button("Edit Input") { connectorDraft = connector.inputJSON }
+                if drafts.connector == nil {
+                    Button("Edit Input") { editDrafts { $0.connector = connector.inputJSON } }
                         .accessibilityIdentifier("agentAction.connectorEdit")
                 } else {
-                    Button("Revert") { connectorDraft = nil }
+                    Button("Revert") { editDrafts { $0.connector = nil } }
                         .accessibilityIdentifier("agentAction.connectorRevert")
                 }
             }
@@ -221,13 +232,13 @@ extension AgentActionCard {
     /// The editor's binding while the owner edits the input of a call that can still be approved; once Approve is
     /// gone the input is read-only.
     var connectorDraftBinding: Binding<String>? {
-        guard Self.connectorEditable(action, services: services, sessionHolds: sessionHolds), connectorDraft != nil else {
+        guard Self.connectorEditable(action, services: services, sessionHolds: sessionHolds), drafts.connector != nil else {
             return nil
         }
-        return Binding(get: { connectorDraft ?? "" }, set: { connectorDraft = $0 })
+        return Binding(get: { drafts.connector ?? "" }, set: { input in editDrafts { $0.connector = input } })
     }
 
     func connectorApproval(_ connector: ConnectorCallProposal) -> ConnectorCallProposal.Approval? {
-        connector.approval(editedInput: connectorDraft ?? connector.inputJSON)
+        connector.approval(editedInput: drafts.connector ?? connector.inputJSON)
     }
 }

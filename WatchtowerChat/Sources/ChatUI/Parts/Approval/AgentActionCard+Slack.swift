@@ -14,9 +14,9 @@ extension AgentActionCard {
     /// reported, never dropped for the original draft.
     func approveSlack(_ slack: SlackSendProposal, text: String) {
         do {
-            switch try slack.approval(text: text, pick: slackPick) {
-            case .edited(let patch): Self.approve(action, patch: patch, services: services)
-            case .plain: Self.approve(action, patch: nil, services: services)
+            switch try slack.approval(text: text, pick: drafts.pick) {
+            case .edited(let patch): services.decide(action, .approve(patch: patch))
+            case .plain: services.decide(action, .approve(patch: nil))
             }
             slackMessage = nil
         } catch {
@@ -25,11 +25,11 @@ extension AgentActionCard {
     }
 
     func slackTextBinding(_ slack: SlackSendProposal) -> Binding<String> {
-        Binding(get: { slackDraft ?? slack.text }, set: { slackDraft = $0 })
+        Binding(get: { drafts.slack ?? slack.text }, set: { text in editDrafts { $0.slack = text } })
     }
 }
 
-/// Text editor + workspace picker for a pending Slack send. State lives on the card (`slackDraft`/`slackPick`) so
+/// Text editor + workspace picker for a pending Slack send. State lives on the card (`CardDrafts`) so
 /// Approve reads the same values.
 struct SlackSendEditor: View {
     let proposal: SlackSendProposal
