@@ -303,7 +303,7 @@ struct SlackConnectionDetail: View {
             ),
             titleVisibility: .visible
         ) {
-            Button("Remove Workspace", role: .destructive) {
+            Button(AccountPurgeStatus.removeButton, role: .destructive) {
                 if let account = slackAccountPendingRemoval {
                     Task { await appState.slackAccountsViewModel?.remove(account, daemonPolicy: appState.accountDaemonPolicy) }
                 }
@@ -312,8 +312,7 @@ struct SlackConnectionDetail: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(AccountPurgeStatus.removeDialogMessage(
-                "Disconnects the workspace. Already-synced messages, digests, and "
-                    + "situations stay in Watchtower.",
+                slackAccount: slackAccountPendingRemoval?.displayName ?? "this workspace",
                 status: appState.accountPurgeCenter?.status
             ))
         }
