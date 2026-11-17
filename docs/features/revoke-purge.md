@@ -1,6 +1,6 @@
 # Revoked access wipes the account's data (2026-10-21, board #601)
 
-When a company revokes the owner's Slack, Google, Jira or Linear access, or an install has not reached a source for 30 days, and the purge is on, the account's synced data is deleted after a 72 h notice unless the owner reconnects first. Part of board group #595 (corporate data on the Mac). Spec: `docs/superpowers/specs/2026-10-21-revoke-purge-design.md` (approved 2026-10-21, ask #474: Q1 on in the corp build and under a future MDM policy, opt-in elsewhere; Q2 (a); Q3 72 h; Q4 30-day lease; the LINEAR-03 amendment). Plan: `docs/superpowers/plans/2026-10-21-revoke-purge.md` (ask #477: the lease counts disabled accounts, and removed accounts get a lease of their own). Contracts: PURGE-01..02 in `docs/inventory/account-purge.md`, LINEAR-03 amended in `docs/inventory/linear.md`; SLACK-01 unchanged. User guide: `docs/guide/concepts/revoked-access.md`.
+When a company revokes the owner's Slack, Google, Jira or Linear access, or an install has not reached a source for 30 days, and the purge is on, the account's synced data is deleted after a 72 h notice unless the owner reconnects first. Part of board group #595 (corporate data on the Mac). Spec: `docs/superpowers/specs/2026-10-21-revoke-purge-design.md` (approved 2026-10-21, ask #474: Q1 on in the corp build and under a future MDM policy, opt-in elsewhere — overturned 2026-11-17 (#1769, ask #1412): on by default everywhere, with origin `default` covering revoked and removed accounts only; Q2 (a); Q3 72 h; Q4 30-day lease; the LINEAR-03 amendment). Plan: `docs/superpowers/plans/2026-10-21-revoke-purge.md` (ask #477: the lease counts disabled accounts, and removed accounts get a lease of their own). Contracts: PURGE-01..02 in `docs/inventory/account-purge.md`, LINEAR-03 amended in `docs/inventory/linear.md`; SLACK-01 unchanged in what it keeps (amended in #1769: `slack remove` revokes the token). User guide: `docs/guide/concepts/revoked-access.md`.
 
 ## Schema (migration 00148)
 
@@ -77,6 +77,14 @@ Times are RFC 3339 UTC, `""` when unset; `purges` is `[]`, never `null`; `accoun
 - `AccountPurgeCenter` on `AppState`: a 30 s poll of the ledger (the daemon writes it from another process, so GRDB observation never fires), the notifications through `NotificationService.sendAccountPurgeNotice` (deduped in `UserDefaults` `accountPurges.noticesSent`, held back while notifications are paused; a click opens the source's connection), and the switch's state.
 - The red line under each Slack, Google, Jira and Linear account in the Connections tab (`AccountPurgeLine`: open row, else purged, else a recent failed row); a purged account shows **Data deleted** (gray dot, the Enabled switch off) and the purged line. **Re-login** is disabled with its reason while the account's purge runs (`AccountPurgeLine.reloginBlockedReason`). Google's Remove dialog says its mail and events are deleted (they are). Home's `AccountPurgeBanner` above Getting ready, with **Reconnect** on scheduled rows (a running purge cannot be stopped).
 - `linear add` for a purged workspace still says it is already connected; the copy points to Re-login.
+
+## Slack remove and verified deletion (2026-11-17, #1769)
+
+- `slack remove` and `auth logout` revoke the account's token at Slack (`auth.revoke`, best effort, 10 s) before the token file is deleted; that ends the user's authorization of the app everywhere, so another Mac using the same sign-in sees a revoked token and deletes its copy after its own 72 h notice. A failed revoke never blocks the remove and prints "Slack did not confirm the token was revoked; it may stay valid until a workspace admin removes the app".
+- A removed Slack account is due 72 h after Watchtower's next pass after the remove (zero lease); adding it back cancels it (`StartAccountPurge(requireRemoved)` re-checks in the same `UPDATE`).
+- After the last step `purge.Run` counts what each step's predicate still matches (`db.PurgeLeft`). A non-zero count ends the row `failed` with `left: <table>=<n>, ...`. A revoked or removed account whose row failed that way stays held (no retry, no new notice) until a Re-login or adding it back; a live account keeps syncing and retries under its lease.
+- Kept after a purge, and said so in the guide and the privacy policy: AI text that mixes sources (PURGE-02).
+- The policy text for the site is `docs/legal/2026-11-17-privacy-policy-slack-changes.md`; nothing there is applied in this repository.
 
 ## Later
 

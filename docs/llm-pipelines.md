@@ -261,96 +261,36 @@ RunRollups(ctx)
 
 ---
 
-## Pipeline 3: People Analysis
+## Pipeline 3: People Cards
+
+`internal/guide` (`Pipeline.Run`). The earlier per-user analysis (`analysis.user`, `user_analyses`, active-hours and volume statistics, red flags, the period summary's attention list) was removed in #1769; its rows were deleted by migration 00194 and nothing writes them.
 
 ### Algorithm: Run
 
 ```
 Run(ctx)
     │
-    ├─ config.Digest.Enabled == false? → return 0
+    ├─ people-cards feature off or digests off? → return 0
+    ├─ owner identity unknown? → no cards (never falls back to everyone)
     │
-    ├─ Window: from = now - 7 days, to = now
+    ├─ Window: last 7 days ending at the start of today (a fresh install ends now)
     │
-    ├─ Window already analyzed? (GetUserAnalysesForWindow)
-    │    └─ YES && !ForceRegenerate → SKIP
+    ├─ SQL stats (no AI): message and channel counts per user, only for the owner's
+    │    interaction partners (a DM or group DM together, a thread both wrote in,
+    │    a mention either way, >= 3 messages) plus the owner; bots, deleted
+    │    accounts and people the owner stopped (people_card_exclusions) are skipped
     │
-    ├─ PHASE: SQL Stats (5 bulk queries, NO AI)
-    │    │
-    │    │  ComputeAllUserStats(from, to, minMessages=3)
-    │    │    ├─ Query 1: Core stats (msg_count, channels, avg_len)
-    │    │    │   WHERE msg_count >= 3, non-bot, non-deleted, non-DM
-    │    │    ├─ Query 2: Threads initiated (reply_count > 0)
-    │    │    ├─ Query 3: Threads replied (distinct thread_ts)
-    │    │    ├─ Query 4: Active hours distribution (hour 0-23 UTC)
-    │    │    └─ Query 5: Previous window volume → VolumeChangePct
-    │    │
-    │    └─ 0 users? → return 0
+    ├─ Per user, in batches: digest people_signals + the user's messages
+    │    → prompt people.reduce (no health, mood, burnout, workload, personal life,
+    │      protected characteristics or performance verdicts)
+    │    → {summary, communication_style, decision_role, highlights,
+    │       accomplishments, communication_guide, decision_style, tactics}
+    │    → stored card with a "Based on N messages in M channels" basis line
     │
-    ├─ Detect hasThreadData (search sync doesn't provide threads)
-    │    if !hasThreadData → add instruction: "Do NOT penalize for low thread participation"
-    │
-    ├─ PHASE: AI Analysis (parallel workers)
-    │    │
-    │    │  Workers = min(10, totalUsers)
-    │    │
-    │    │  for each user (parallel):
-    │    │    ┌───────────────────────────────────────────────────┐
-    │    │    │  1. GetMessages(userID, from, to, limit=5000)     │
-    │    │    │     sorted chronologically                        │
-    │    │    │                                                   │
-    │    │    │  2. Format user block:                            │
-    │    │    │     User ID: U123                                 │
-    │    │    │     Stats: 42 msgs, 5 channels, threads...       │
-    │    │    │     Volume change: +12.5%                         │
-    │    │    │     Active hours: {"9":8,"10":12,...}             │
-    │    │    │     Messages:                                     │
-    │    │    │       [2026-03-18 09:30 #general] message text   │
-    │    │    │       ...                                         │
-    │    │    │                                                   │
-    │    │    │  3. Build prompt (analysis.user template):        │
-    │    │    │     @username, date range, profile context,       │
-    │    │    │     language, user messages block                 │
-    │    │    │                                                   │
-    │    │    │  4. generator.Generate() → Claude CLI             │
-    │    │    │                                                   │
-    │    │    │  5. Parse JSON:                                   │
-    │    │    │     {summary, communication_style,                │
-    │    │    │      decision_role, style_details,                │
-    │    │    │      red_flags[], highlights[],                   │
-    │    │    │      recommendations[], concerns[],              │
-    │    │    │      accomplishments[]}                           │
-    │    │    │                                                   │
-    │    │    │  6. UpsertUserAnalysis()                          │
-    │    │    │     key: (user_id, period_from, period_to)        │
-    │    │    │                                                   │
-    │    │    │  Error? → log, continue (non-fatal)               │
-    │    │    └───────────────────────────────────────────────────┘
-    │    │
-    │    └─ wg.Wait()
-    │
-    ├─ PHASE: Period Summary (1 AI call)
-    │    │
-    │    │  analyses = GetUserAnalysesForWindow(from, to)
-    │    │
-    │    │  Format all user analyses (sanitized):
-    │    │    === @alice ===
-    │    │    Style: driver | Role: decision-maker | 42 msgs | +12%
-    │    │    Summary: ...
-    │    │    Red flags: [...]
-    │    │    === @bob ===
-    │    │    ...
-    │    │
-    │    │  generator.Generate() → analysis.period prompt
-    │    │  Parse: {summary, attention[]}
-    │    │  UpsertPeriodSummary()
-    │    │
-    │
-    └─ (Social graph phase: no production caller even before 2026-10-17, so
-        `user_interactions` was already not being filled. Its dead function
-        `ComputeUserInteractions` was removed 2026-10-17; `UpsertUserInteractions`
-        remains in internal/db. See docs/backlog/2026-09-26-people-connections-view-and-meeting-prep-read-tables-that.md.)
+    └─ Team summary (people.team): {summary, tips}; no attention list
 ```
+
+A one-time pass (`guide.PrunePreUpgradeCards`, per account, recorded in `people_prune_done_at`) deletes cards made for non-partners before the upgrade.
 
 ### Output classification
 
@@ -358,7 +298,6 @@ Run(ctx)
 |---|---|
 | communication_style | driver, collaborator, executor, observer, facilitator |
 | decision_role | decision-maker, approver, contributor, observer, blocker |
-| red_flags | volume drop >40%, unresponsive, conflicts, missed commitments |
 
 ---
 
@@ -669,8 +608,8 @@ Stored in `internal/prompts/defaults.go`, managed via DB (`prompts` table).
 | `digest.period` | Period Summary (CLI) | all digests | same |
 | `tracks.extract` | Tracks Extract | messages + existing tracks + chains | `{items: [{text, context, priority, category, ...}]}` |
 | `tracks.update` | Tracks Update | tracks + new messages | `{results: [{track_id, has_update, status_hint, ...}]}` |
-| `analysis.user` | People Analysis | user stats + messages | `{summary, communication_style, decision_role, ...}` |
-| `analysis.period` | Period Summary | all user analyses | `{summary, attention[]}` |
+| `people.reduce` / `people.batch` | People Cards | digest people signals + the user's messages | `{summary, communication_style, decision_role, highlights, accomplishments, communication_guide, decision_style, tactics}` |
+| `people.team` | Team Summary | the cards | `{summary, tips[]}` |
 
 ### Prompt loading: DB-first with fallback
 

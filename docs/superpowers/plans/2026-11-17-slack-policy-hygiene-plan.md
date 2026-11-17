@@ -141,7 +141,7 @@ git commit -m "purge: on by default, per-account rules, verified deletion (#1769
 
 `TestSlackRemove_RevokesBeforeDelete`: a fake Slack server records calls; `removeSlackAccount` → exactly one `auth.revoke` with the account's token, then the token file is gone and the row is `removed` (assert the call happened before the file delete via the fake's timestamp vs a file-stat hook).
 
-`TestSlackRemove_RevokeFailureStillRemoves`: the fake answers 500, then `invalid_auth` (two sub-tests) → the remove succeeds, the file is gone, the row is `removed`, and the command output contains `Slack did not confirm the token was revoked; it will expire`.
+`TestSlackRemove_RevokeFailureStillRemoves`: the fake answers 500, then `invalid_auth` (two sub-tests) → the remove succeeds, the file is gone, the row is `removed`, and the command output contains `Slack did not confirm the token was revoked; it may stay valid until a workspace admin removes the app`.
 
 The existing SLACK-01 guards stay green (data kept at once).
 

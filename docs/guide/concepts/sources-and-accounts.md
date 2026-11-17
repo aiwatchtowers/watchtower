@@ -20,7 +20,13 @@ A service that needs you gets a banner on top with **Reconnect**, which opens th
 | **Linear** | Connections → Linear | Issues, cycles and projects of the teams you select ([Linear](../features/linear.md)) | Blockers, weekly digest progress, the main chat; identifies you as the owner |
 | **Quick Connections** | Connections → Quick Connections | Nothing is synced. The assistant can call an external tool server (MCP) you add, only when you ask in chat | The main chat. See [Quick Connections](../features/quick-connections.md) |
 
-Slack is read-only. The assistant sends a Slack message only after you approve it, and Slack may ask you to reconnect once to grant that permission.
+Slack is read-only. The assistant sends a Slack message only after you approve it, and Slack may ask you to reconnect once to grant that permission. Why Watchtower asks for each Slack permission:
+
+- **History and channel lists** of public and private channels, DMs and group DMs, and **search**: to keep the local copy on your Mac.
+- **Open a DM and post a message**: only when you press Approve.
+- **People's names and emails**: to match them with your calendar, Jira and Linear.
+- **Files**: to describe images you were sent. **Your reactions**: for reaction commands.
+- **The workspace's name and custom emoji**: to show them. A sign-in granted before the emoji permission existed keeps syncing without emoji until you **Re-login**.
 
 ## Live Slack through your Claude or ChatGPT account
 <!-- learn
@@ -75,7 +81,7 @@ Use **Reconnect Slack** or **Re-login** on the row. Your data stays and syncing 
 
 It depends on the source. **Remove** always stops syncing and deletes the sign-in from your Mac.
 
-- **Slack and Jira:** the data already synced stays: messages, digests, issues, boards.
+- **Slack and Jira:** the data already synced stays until the deletion below: messages, digests, issues, boards.
 - **Google, Email and Calendar:** the mail and calendar events synced from that account are deleted from the local database (a Google account keeps events tied to a recording or recap). Digests, briefings and other AI results built from them stay.
 
 With **Delete an account's data when its access ends** on (the default), a removed Slack workspace's data is deleted 72 hours after Watchtower's next pass after the remove, and a removed Jira or Linear account's once it has not been reached for 30 days, after a 72-hour notice. A revoked account goes the same way. See [Revoked access deletes an account's data](revoked-access.md).
