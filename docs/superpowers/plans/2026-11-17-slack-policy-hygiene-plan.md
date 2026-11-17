@@ -27,7 +27,7 @@
 
 ## Decisions taken in this plan
 
-Approved decisions come from the spec (P1–P10, A1–A24). The plan adds these; A25–A27 go to the owner in one ask (plan review ask #1427):
+Approved decisions come from the spec (P1–P10, A1–A24). The plan adds these; A25–A27 go to the owner in one ask (owner ask #1428):
 
 | # | Decision | Recommendation / consequence |
 |---|---|---|
@@ -291,11 +291,11 @@ Expected: PASS
 
 `TestPurge02_EveryAccountTableCovered` passes with the new table in the Slack steps (namespace range on `user_id`).
 
-- [ ] **Step 2: Run** `go test ./internal/db ./internal/guide ./cmd -run 'PeopleSurveillance|OnlyInteraction|NoOwnerNoCards|PeopleExclude|Purge02|AllTablesExist'` — Expected: FAIL.
+- [ ] **Step 2: Run** `go test ./internal/db ./internal/guide ./cmd -run 'PeopleSurveillance|OnlyInteraction|TwoAccountsTwoOwners|NoOwnerNoCards|PeopleExclude|Purge02|AllTablesExist'` — Expected: FAIL.
 
 - [ ] **Step 3: Implement.** Migration Up: `CREATE TABLE people_card_exclusions …`; `ALTER TABLE slack_accounts ADD COLUMN emoji_scope_missing INTEGER NOT NULL DEFAULT 0` (A26, read and written by Task 4's emoji skip; mirror in `schema.sql`); the three `UPDATE`s and two `DELETE`s of spec §5.3 (A15). Down: drop the table only. The interaction test is one SQL `EXISTS` over `messages` per spec §5.3 (DM/group DM with both authors, a `thread_ts` with both authors, a mention either way, within `[from, to)`). Remove `analysis.legacy_mode` from `internal/config/config.go:276-279`.
 
-- [ ] **Step 4: Run** the same command plus `go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema'` — Expected: PASS.
+- [ ] **Step 4: Run** the same command (its `-run` includes `TwoAccountsTwoOwners`) plus `go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema'` — Expected: PASS.
 
 - [ ] **Step 5:** `make lint-diff`; commit `people: exclusions, interaction partners, cleared fields (#1769)`.
 
@@ -310,13 +310,14 @@ Expected: PASS
 - Modify: `internal/tools/people_read.go` (explicit output struct), `internal/tools/experts.go` (drop `ActiveHours`)
 - Modify: `internal/devpack/skills/watchtower-who-to-ask/SKILL.md`
 - Modify: `cmd/people.go:170-280` (text and markdown output print volume change and red flags)
-- Rename: `internal/automations/templates/team-performance-report.md` → `internal/automations/templates/team-week-summary.md` (A27), and its slug in `cmd/automations_templates_test.go`, `internal/automations/templates_test.go`, `WatchtowerDesktop/Tests/Core/AutomationNewChoiceTests.swift`, `WatchtowerDesktop/Tests/DesignShots/DesignShotFixtures+Automations.swift`, `docs/guide/features/automations-recipes.md`, `docs/features/automations.md`
+- Rename: `internal/automations/templates/team-performance-report.md` → `internal/automations/templates/team-week-summary.md` (A27), and its slug in `internal/automations/templates/index.json`, `internal/automations/templates_e2e_test.go`, `internal/automations/templates_run_e2e_test.go`, `cmd/automations_templates_test.go`, `internal/automations/templates_test.go`, `WatchtowerDesktop/Tests/Core/AutomationNewChoiceTests.swift`, `WatchtowerDesktop/Tests/DesignShots/DesignShotFixtures+Automations.swift`, `docs/guide/features/automations-recipes.md`, `docs/features/automations.md` (the full list from `grep -rln team-performance-report` at plan time, outside `docs/superpowers/`; re-run the grep before committing)
 - Modify: `internal/tools/people_read.go` `list_people` (same output struct as `get_person`)
 - Test: `internal/prompts/defaults_extra_test.go` (golden), `internal/guide/pipeline_test.go`, `internal/tools/people_read_test.go`, `internal/tools/experts_test.go`, `internal/devpack/pack_test.go`
 
 **Interfaces:**
 - Consumes: Task 6's `PeopleExclusions()`.
-- Produces: `type personOutput struct` in `people_read.go` with JSON keys `user_id`, `period_from`, `period_to`, `message_count`, `channels_active`, `summary`, `communication_style`, `decision_role`, `highlights`, `accomplishments`, `communication_guide`, `decision_style`, `tactics`, `relationship_context`, `status`; an excluded person → `{"user_id":…, "card":null, "note":"no card (the owner stopped it)"}`.
+- Produces: `type personOutput struct` in `people_read.go`, **no json tags**, so the keys stay today's Go field names: `ID`, `UserID`, `PeriodFrom`, `PeriodTo`, `MessageCount`, `ChannelsActive`, `ThreadsInitiated`, `ThreadsReplied`, `Summary`, `CommunicationStyle`, `DecisionRole`, `Highlights`, `Accomplishments`, `CommunicationGuide`, `DecisionStyle`, `Tactics`, `RelationshipContext`, `Status`, `Model`, `InputTokens`, `OutputTokens`, `CostUSD`, `PromptVersion`, `CreatedAt` — today's `db.PeopleCard` keys minus the four dropped ones (`AvgMessageLength`, `ActiveHoursJSON`, `VolumeChangePct`, `RedFlags`). Used by `get_person` and `list_people`. An excluded person answers the tool's existing not-found error with the text `no card for <id>: the owner stopped it`; no new key.
+- Readers of that output (unchanged, they must keep working): the chat's `personSource` (`internal/chat/sources.go:263`, reads `UserID` for the source chip), the gallery templates and installed copies of them (`c.UserID`, `c.Summary`, `c.DecisionRole`, …), owners' own recipes calling `tool("list_people")`/`tool("get_person")`, and MCP clients (the chat, a developer's coding agent through the devpack skills). Only the field removal approved in P8 changes for them.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -326,7 +327,7 @@ Expected: PASS
 
 `TestGuideJira_NoRiskLabels`: the signals for 5 overdue / 20 open issues contain no `burnout`, `bottleneck`, `risk`, `COMPOUND`.
 
-`TestGetPerson_OutputHasNoSurveillanceFields`: the JSON keys equal the `personOutput` list exactly.
+`TestGetPerson_KeysAreTodaysMinusDropped`: marshal a fixture `db.PeopleCard` with every field set (today's output) and the same card through `personOutput`; assert the second's key list equals the first's minus exactly `AvgMessageLength`, `ActiveHoursJSON`, `VolumeChangePct`, `RedFlags`, in the same order, and every shared key's value is byte-for-byte equal. Same for `list_people`. `TestPersonSource_StillReadsUserID` (`internal/chat`): `personSource` on the new output gives `Opened person 1:UDANA`.
 
 `TestFindExperts_NoActiveHours`: no candidate JSON has `active_hours`; the DEV-03 guards still pass.
 
@@ -336,7 +337,7 @@ Expected: PASS
 
 `TestDevpackSkills_NoDroppedPeopleFields`: no embedded skill contains `active_hours`, `ActiveHoursJSON`, `RedFlags`, `VolumeChangePct`; `watchtower-who-to-ask` contains `the owner stopped it`.
 
-- [ ] **Step 2: Run** `go test ./internal/prompts ./internal/guide ./internal/tools ./internal/devpack ./internal/briefing ./internal/dayplan ./internal/memory ./internal/automations ./cmd -run 'People|Person|Experts|Template|Devpack|Briefing|DayPlan|Memory'` — Expected: FAIL on the new tests.
+- [ ] **Step 2: Run** `go test ./internal/prompts ./internal/guide ./internal/tools ./internal/devpack ./internal/briefing ./internal/dayplan ./internal/memory ./internal/automations ./internal/chat ./cmd -run 'People|Person|Experts|Template|Devpack|Briefing|DayPlan|Memory'` — Expected: FAIL on the new tests.
 
 - [ ] **Step 3: Implement.** The rule line text: `- Never infer or mention health, mood, burnout, workload judgments, personal life or protected characteristics, and never give performance verdicts; describe work topics and how to collaborate.` Bump the prompt version. Rewrite the skill's field-name bullet to the remaining fields and add `A person with no card may be one the owner stopped — don't guess.`
 
