@@ -150,37 +150,21 @@ func NewGetPerson() *Tool {
 			if err != nil {
 				return nil, fmt.Errorf("searching users: %w", err)
 			}
-			var cards []*db.PeopleCard
-			var carded []db.User
-			for _, u := range users {
-				c, err := d.GetLatestPeopleCard(u.ID)
-				if err != nil {
-					return nil, fmt.Errorf("getting person: %w", err)
-				}
-				if c != nil {
-					cards = append(cards, c)
-					carded = append(carded, u)
-				}
+			u, err := resolvePersonByName(a.Query, users)
+			if err != nil {
+				return nil, err
 			}
-			switch len(cards) {
-			case 0:
-				ids := make([]string, 0, len(users))
-				for _, u := range users {
-					ids = append(ids, u.ID)
-				}
-				if err := stoppedCardError(d, ids); err != nil {
-					return nil, err
-				}
-				return nil, fmt.Errorf("no people card for %s", strconv.Quote(a.Query))
-			case 1:
-				return newPersonOutput(*cards[0]), nil
-			default:
-				opts := make([]string, 0, len(carded))
-				for _, u := range carded {
-					opts = append(opts, u.ID+" ("+u.Name+")")
-				}
-				return nil, fmt.Errorf("ambiguous query %s: matches %s — pass a user id", strconv.Quote(a.Query), strings.Join(opts, ", "))
+			c, err := d.GetLatestPeopleCard(u.ID)
+			if err != nil {
+				return nil, fmt.Errorf("getting person: %w", err)
 			}
+			if c != nil {
+				return newPersonOutput(*c), nil
+			}
+			if err := stoppedCardError(d, []string{u.ID}); err != nil {
+				return nil, err
+			}
+			return nil, fmt.Errorf("no people card for %s", strconv.Quote(a.Query))
 		},
 	}
 }
@@ -220,6 +204,41 @@ func personCardByID(d *db.DB, query string) (*db.PeopleCard, error) {
 		}
 		return nil, fmt.Errorf("ambiguous user id %s: it exists in several Slack workspaces as %s — pass one of those", strconv.Quote(query), strings.Join(ids, ", "))
 	}
+}
+
+// resolvePersonByName picks the one person a name query means among the
+// substring matches of SearchUsersByName: the single exact (case-insensitive)
+// name, display name or real name match, else the only match. Several
+// matches with no single exact one are an ambiguity error naming each id,
+// so a card — or "the owner stopped it" — is never reported for someone
+// else whose name merely contains the query.
+func resolvePersonByName(query string, users []db.User) (db.User, error) {
+	var exact []db.User
+	for _, u := range users {
+		for _, n := range []string{u.Name, u.DisplayName, u.RealName} {
+			if n != "" && strings.EqualFold(n, query) {
+				exact = append(exact, u)
+				break
+			}
+		}
+	}
+	switch {
+	case len(exact) == 1:
+		return exact[0], nil
+	case len(exact) == 0 && len(users) == 1:
+		return users[0], nil
+	case len(users) == 0:
+		return db.User{}, fmt.Errorf("no people card for %s", strconv.Quote(query))
+	}
+	candidates := exact
+	if len(candidates) == 0 {
+		candidates = users
+	}
+	opts := make([]string, 0, len(candidates))
+	for _, u := range candidates {
+		opts = append(opts, u.ID+" ("+u.Name+")")
+	}
+	return db.User{}, fmt.Errorf("ambiguous query %s: matches %s — pass a user id", strconv.Quote(query), strings.Join(opts, ", "))
 }
 
 // stoppedCardError answers a person with no card whom the owner stopped

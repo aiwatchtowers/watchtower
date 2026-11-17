@@ -274,3 +274,28 @@ func TestNoReaderReturnsDroppedPeopleFields(t *testing.T) {
 		}
 	}
 }
+
+// A name query reports a stopped card only for the person it resolves to:
+// "carol" with Carol (no card, not excluded) and the excluded Carolyn is
+// Carol's plain not-found, never Carolyn's stop; a partial name matching
+// both asks for a user id.
+func TestGetPerson_StoppedOnlyForTheResolvedPerson(t *testing.T) {
+	d := openDB(t)
+	require.NoError(t, d.UpsertUser(db.User{ID: "1:U0CAROL1", Name: "carol", RealName: "Carol Example"}))
+	seedPersonCard(t, d, "1:U0CAROL2", "carolyn", "Carolyn Example", "card")
+	require.NoError(t, d.ExcludePerson("1:U0CAROL2"))
+	reg := peopleRegistry(t, d)
+
+	_, err := reg.CallRead(context.Background(), "get_person", json.RawMessage(`{"query":"carol"}`), Binding{})
+	require.Error(t, err)
+	assert.Equal(t, `no people card for "carol"`, err.Error())
+
+	_, err = reg.CallRead(context.Background(), "get_person", json.RawMessage(`{"query":"carolyn"}`), Binding{})
+	require.Error(t, err)
+	assert.Equal(t, "no card for 1:U0CAROL2: the owner stopped it", err.Error())
+
+	_, err = reg.CallRead(context.Background(), "get_person", json.RawMessage(`{"query":"caro"}`), Binding{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pass a user id")
+	assert.NotContains(t, err.Error(), "stopped")
+}

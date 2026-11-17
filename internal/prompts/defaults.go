@@ -532,7 +532,7 @@ Rules:
 - JIRA INTEGRATION: When JIRA CONTEXT is provided, incorporate Jira signals:
   - In "attention": flag stale issues (in_progress >7 days), blocked issues, and overdue issues. Use source_type="jira" and source_id=issue key.
   - In "your_day": include assigned Jira issues and awaiting-input items. Cross-reference with Slack tracks/digests when the same topic appears in both.
-  - In "team_pulse": mention team workload signals if sprint progress data is available.
+  - In "team_pulse": mention sprint progress facts (done vs planned) if sprint progress data is available — never as a judgment of a person.
   - Each Jira signal should include Slack context if the same issue key appears in digests or tracks.
   - If JIRA CONTEXT section is empty, ignore Jira instructions entirely.
 - WORKBENCHES: the WORKBENCHES section lists the user's Watchtower workbenches — folder-bound boards that coding agents work on — with activity since the previous briefing. Bring a workbench into "attention" only for a blocked target, open asks waiting for the owner (an agent is waiting for the owner's answer in the Desktop app) or unread agent comments; use source_type="project" and source_id=the block's project_id (both keep their stored names). Never put a workbench's targets into "your_day" or into target_id — they live on the workbench board, not among the user's targets. If the section reads "(no project activity)", do not mention workbenches at all.

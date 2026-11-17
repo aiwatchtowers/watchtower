@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -21,6 +23,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/llmusage"
+	"watchtower/internal/prompts"
 	"watchtower/internal/slack"
 )
 
@@ -913,4 +916,32 @@ func TestPeopleCard_DropsSurveillanceFields(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPeoplePrompt_CustomizedOldTemplateFallsBack (#1769): a customized
+// people.reduce/people.batch row written for v1 (one more %s, the team-norms
+// section) is never upgraded by Seed; the pipeline renders the v2 default
+// instead of shifting sections, so the A17 rule still applies. A customized
+// row with the right count (people.team keeps 5) keeps the owner's text.
+func TestPeoplePrompt_CustomizedOldTemplateFallsBack(t *testing.T) {
+	database := testDB(t)
+	store := prompts.New(database, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	require.NoError(t, store.Seed())
+	oldReduce := "OLD reduce" + strings.Repeat(" %s", 11)
+	oldBatch := "OLD batch" + strings.Repeat(" %s", 7)
+	ownTeam := "OWN team" + strings.Repeat(" %s", 5)
+	require.NoError(t, store.Update(prompts.PeopleReduce, oldReduce, "owner edit"))
+	require.NoError(t, store.Update(prompts.PeopleBatch, oldBatch, "owner edit"))
+	require.NoError(t, store.Update(prompts.PeopleTeam, ownTeam, "owner edit"))
+
+	p := New(database, testConfig(), &mockGenerator{}, testLogger())
+	p.SetPromptStore(store)
+	for _, id := range []string{prompts.PeopleReduce, prompts.PeopleBatch} {
+		tmpl, version := p.getPrompt(id)
+		assert.Equal(t, prompts.Defaults[id], tmpl, id)
+		assert.Zero(t, version, id)
+		assert.Contains(t, tmpl, "- Never infer or mention health", id)
+	}
+	tmpl, _ := p.getPrompt(prompts.PeopleTeam)
+	assert.Equal(t, ownTeam, tmpl)
 }

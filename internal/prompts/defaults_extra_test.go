@@ -455,10 +455,27 @@ func TestPeoplePrompt_HasNoSurveillanceRules(t *testing.T) {
 	// The briefing and the day plan read people cards: neither asks for
 	// red flags or volume changes any more.
 	for _, id := range []string{BriefingDaily, DayPlanGenerate} {
-		for _, word := range []string{"red_flag", "red flags", "volume_drop", "volume_spike", "Flag volume"} {
+		for _, word := range []string{"red_flag", "red flags", "volume_drop", "volume_spike", "Flag volume", "workload signals"} {
 			assert.NotContains(t, Defaults[id], word, id)
 		}
 	}
 	assert.GreaterOrEqual(t, DefaultVersions[BriefingDaily], 13)
 	assert.GreaterOrEqual(t, DefaultVersions[DayPlanGenerate], 5)
+}
+
+// TestPeoplePrompts_RoleInstructionHasNoJudgments (#1769, A17): the role
+// instruction prepended to the people prompts and the briefing (guide and
+// briefing getPrompt → WithRoleInstruction) asks for no performance, health
+// or workload judgments for any role.
+func TestPeoplePrompts_RoleInstructionHasNoJudgments(t *testing.T) {
+	for role := range RoleInstructions {
+		for _, id := range []string{PeopleReduce, PeopleBatch, PeopleTeam, BriefingDaily} {
+			rendered := WithRoleInstruction(role, Defaults[id])
+			head := strings.ToLower(strings.TrimSuffix(rendered, Defaults[id]))
+			require.NotEmpty(t, head, "%s/%s: no role instruction", role, id)
+			for _, word := range []string{"performance", "health", "workload", "burnout", "mood"} {
+				assert.NotContains(t, head, word, "%s/%s", role, id)
+			}
+		}
+	}
 }

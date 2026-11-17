@@ -1219,6 +1219,14 @@ func (p *Pipeline) getPrompt(id string) (string, int) {
 	if err != nil {
 		p.logger.Printf("people: %v — using the built-in default", err)
 	}
+	// A stored (customized) template with another placeholder count — e.g.
+	// one written for v1, before #1769 dropped the team-norms section —
+	// would shift every later section and render %!s(MISSING): use the
+	// default instead, which also carries the A17 rules.
+	if got, want := prompts.CountVerbs(tmpl), prompts.CountVerbs(prompts.Defaults[id]); got != want {
+		p.logger.Printf("people: stored %s template: %s Reset the prompt in Settings to pick up the new sections.", id, prompts.PlaceholderNote(got, want))
+		tmpl, version = prompts.Defaults[id], 0
+	}
 	return prompts.WithRoleInstruction(role, tmpl), version
 }
 
