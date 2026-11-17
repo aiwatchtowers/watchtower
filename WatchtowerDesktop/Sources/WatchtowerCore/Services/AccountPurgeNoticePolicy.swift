@@ -65,7 +65,8 @@ package enum AccountPurgeNoticePolicy {
         let why = p.error.isEmpty ? "" : " (\(p.error))"
         let head = "Watchtower could not finish deleting \(p.displayLabel)'s data\(why). "
         if p.error.hasPrefix("left:") {
-            if p.isRemovedAccount { return head + "No new attempt is made until you add it again." }
+            // Go's `purge.VerifyHeld`: a removed account, not a gone row.
+            if p.accountStatus == "removed" { return head + "No new attempt is made until you add it again." }
             if p.accountStatus == "revoked" { return head + "No new attempt is made until you Re-login." }
         }
         return head + "Any new attempt comes with a new notice."
@@ -119,7 +120,7 @@ package enum AccountPurgeNoticePolicy {
 
     /// "Nov 20, 14:00" in `zone` (the removed-workspace line's form, spec §8);
     /// "soon" without a date.
-    package static func shortDate(_ date: Date?, zone: TimeZone) -> String {
+    private static func shortDate(_ date: Date?, zone: TimeZone) -> String {
         guard let date else { return "soon" }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")

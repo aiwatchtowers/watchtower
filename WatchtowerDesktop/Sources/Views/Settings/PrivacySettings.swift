@@ -11,21 +11,21 @@ struct PrivacySettings: View {
     @Bindable var config: ConfigService
 
     @ViewBuilder var body: some View {
+        let policy = appState.managedPolicy.policy.purgeRevokedData
+        let status = appState.accountPurgeCenter?.status
         PrivacySettingsContent(
             isOn: Binding(
                 // A forced PurgeRevokedData (#608) shows its value; the
                 // owner's stored setting is kept, outvoted.
                 get: {
-                    AccountPurgeStatus.shownValue(
-                        policy: appState.managedPolicy.policy.purgeRevokedData,
-                        setting: config.purgeRevokedData,
-                        status: appState.accountPurgeCenter?.status)
+                    AccountPurgeStatus.shownValue(policy: policy, setting: config.purgeRevokedData, status: status)
                 },
                 set: { config.purgeRevokedData = $0 }
             ),
             lockedByPolicy: appState.managedPolicy.policy.isLocked(.purgeRevokedData),
-            status: appState.accountPurgeCenter?.status,
-            statusError: appState.accountPurgeCenter?.statusError
+            status: status,
+            statusError: appState.accountPurgeCenter?.statusError,
+            origin: AccountPurgeStatus.shownOrigin(policy: policy, setting: config.purgeRevokedData, status: status)
         )
         .task { await appState.accountPurgeCenter?.reloadStatus() }
         OrganizationPolicySection(policy: appState.managedPolicy.policy)
@@ -38,6 +38,9 @@ struct PrivacySettingsContent: View {
     var lockedByPolicy = false
     let status: AccountPurgeStatus?
     let statusError: String?
+    /// Where the shown value comes from (`AccountPurgeStatus.shownOrigin`);
+    /// nil: the CLI status's origin.
+    var origin: String?
 
     var body: some View {
         Section {
@@ -46,7 +49,7 @@ struct PrivacySettingsContent: View {
                     .labelsHidden()
                     .managedByOrganization(lockedByPolicy || (status?.isSetByPolicy ?? false))
             }
-            Text(AccountPurgeStatus.footnote(status, shown: isOn))
+            Text(AccountPurgeStatus.footnote(status, shown: isOn, origin: origin))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -55,9 +58,9 @@ struct PrivacySettingsContent: View {
         }
     }
 
-    /// "On by default" while on by its default origin; otherwise a failed
-    /// status read, if any.
+    /// A failed status read wins (the owner should see it); else "On by
+    /// default" while on by its default origin.
     private var caption: String? {
-        AccountPurgeStatus.caption(status, shown: isOn) ?? statusError
+        statusError ?? AccountPurgeStatus.caption(status, shown: isOn, origin: origin)
     }
 }

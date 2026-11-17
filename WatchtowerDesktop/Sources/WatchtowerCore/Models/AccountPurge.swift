@@ -141,15 +141,26 @@ package struct AccountPurgeStatus: Decodable, Equatable, Sendable {
         policy ?? setting ?? status?.enabled ?? buildDefault
     }
 
-    /// On by its default origin; an unknown status (the CLI has not answered)
-    /// counts as the default.
-    private static func isDefaultOrigin(_ status: Self?) -> Bool {
-        status.map { $0.enabledBy == "default" } ?? true
+    /// The origin of the value `shownValue` picks, from the same inputs: a
+    /// forced value is `policy`, the owner's saved or pending setting is
+    /// `setting`, else the CLI's origin, else `default` (it has not answered).
+    package static func shownOrigin(
+        policy: Bool?, setting: Bool?, status: Self? // swiftlint:disable:this discouraged_optional_boolean
+    ) -> String {
+        if policy != nil || status?.isSetByPolicy == true { return "policy" }
+        if setting != nil { return "setting" }
+        return status?.enabledBy ?? "default"
+    }
+
+    /// `origin` (from `shownOrigin`) when given, else the CLI's; an unknown
+    /// status counts as the default.
+    private static func isDefaultOrigin(_ status: Self?, origin: String?) -> Bool {
+        (origin ?? status?.enabledBy ?? "default") == "default"
     }
 
     /// The Privacy switch's footnote for the shown value. On by default holds
     /// a live account's 30-day lease, so its text leaves that rule out.
-    package static func footnote(_ status: Self?, shown: Bool) -> String {
+    package static func footnote(_ status: Self?, shown: Bool, origin: String? = nil) -> String {
         guard shown else {
             return "Off: synced data stays on this Mac after access ends, until you delete it with "
                 + "Reset All Data… in Settings → System. Slack expects a workspace's data to be gone within "
@@ -160,7 +171,7 @@ package struct AccountPurgeStatus: Decodable, Equatable, Sendable {
         let removed = "A removed Slack workspace's data goes \(grace) hours after the remove, another removed "
             + "account's \(lease) days after it was last reached."
         let kept = "Briefings, recaps, ideas, memory, chats and meeting transcripts are kept."
-        if isDefaultOrigin(status) {
+        if isDefaultOrigin(status, origin: origin) {
             return "On: when an account's access is revoked, its synced data is deleted \(grace) hours later "
                 + "unless you reconnect. \(removed) An account you only turned off keeps its data. \(kept)"
         }
@@ -170,8 +181,8 @@ package struct AccountPurgeStatus: Decodable, Equatable, Sendable {
 
     /// "On by default" while the switch is on by its default origin (or the
     /// CLI has not answered); nil otherwise.
-    package static func caption(_ status: Self?, shown: Bool) -> String? {
-        shown && isDefaultOrigin(status) ? "On by default" : nil
+    package static func caption(_ status: Self?, shown: Bool, origin: String? = nil) -> String? {
+        shown && isDefaultOrigin(status, origin: origin) ? "On by default" : nil
     }
 
     /// The Slack Remove dialog's message (#1769, A2/A3): the remove signs out

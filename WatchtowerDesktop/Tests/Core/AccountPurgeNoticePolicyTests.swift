@@ -158,4 +158,15 @@ final class AccountPurgeNoticePolicyTests: XCTestCase {
                                  state: "failed", error: "disk full")
         XCTAssertTrue(AccountPurgeNoticePolicy.failedLine(chunk, zone: utc).hasSuffix("Any new attempt comes with a new notice."))
     }
+
+    /// Fix round 1: only a `removed` account is held (Go's `purge.VerifyHeld`);
+    /// a gone row ("" status) keeps the "new notice" line.
+    func testFailedLineOfAGoneRowIsNotHeld() {
+        let gone = AccountPurge(id: 11, source: "jira", accountID: 4, accountStatus: "", reason: "lease",
+                                state: "failed", error: "left: issues=1")
+        XCTAssertEqual(
+            AccountPurgeNoticePolicy.failedLine(gone, zone: utc),
+            "Watchtower could not finish deleting Jira account #4's data (left: issues=1). "
+                + "Any new attempt comes with a new notice.")
+    }
 }
