@@ -94,10 +94,14 @@ final class InboxTrackPaneTests: XCTestCase {
             onRestore: onRestore, onMakeTask: onMakeTask, onGoToTarget: { _ in }, onDelete: onDelete)
     }
 
-    /// Waits until `condition` holds, re-checking on every change of the
-    /// observable state it reads — no deadline.
-    private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
-        await untilObserved(condition)
+    /// Waits until `condition` holds, re-checked once per main-actor turn and
+    /// bounded by a count of turns (`settles`): a condition over a fake's
+    /// plain state is re-checked too, and one that never holds fails here
+    /// instead of hanging the run.
+    private func waitUntil(_ condition: @escaping @MainActor () -> Bool,
+                           file: StaticString = #filePath, line: UInt = #line) async {
+        let held = await settles(condition)
+        XCTAssertTrue(held, "the condition never held", file: file, line: line)
     }
 
     // MARK: - The buttons
