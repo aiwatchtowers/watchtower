@@ -97,6 +97,11 @@ final class SidebarCountsViewModel {
         apply(await fetch())
         // After the other badges: a tower that is down or restarting must
         // not hold them back.
+        await applyTowerBadge()
+    }
+
+    /// The tower's Inbox badge, when it answers.
+    private func applyTowerBadge() async {
         if let towerInboxBadge, let badge = await towerInboxBadge() {
             towerBadgeKnown = true
             inboxStripCount = badge
@@ -148,6 +153,9 @@ final class SidebarCountsViewModel {
                         let counts = await self.fetch()
                         guard !Task.isCancelled else { return }
                         self.apply(counts)
+                        // A write here can change what the tower lists (Waiting
+                        // for me turned off): its badge is read again too.
+                        await self.applyTowerBadge()
                     }
                     return
                 } catch {

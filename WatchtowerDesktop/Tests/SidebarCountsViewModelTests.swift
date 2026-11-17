@@ -125,28 +125,15 @@ final class SidebarCountsViewModelTests: XCTestCase {
     /// so it is inserted here to prove it contributes zero; an applied
     /// proposal and a reminder not yet due count zero too.
     func testInboxBadgeCountsTheInboxCards() async throws {
-        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
-
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
 
-        try await manager.dbPool.write { db in
-            try TestDatabase.insertSituation(db, status: "open")
-            try TestDatabase.insertInboxItem(db, channelID: "C001", messageTS: "1700000000.000100")
-            _ = try TestDatabase.insertAgentAction(db, turnID: "t1", status: "pending")
-            _ = try TestDatabase.insertAgentAction(db, turnID: "t2", status: "failed")
-            _ = try TestDatabase.insertAgentAction(db, turnID: "t3", status: "applied")
-            try db.execute(sql: """
-                INSERT INTO reminders (message_ref, note, remind_at, status)
-                VALUES ('C1@1','due','2000-01-01T00:00:00Z','pending')
-                """)
-            try db.execute(sql: """
-                INSERT INTO reminders (message_ref, note, remind_at, status)
-                VALUES ('C2@2','x','2999-01-01T00:00:00Z','pending')
-                """)
-        }
+        // An open situation, an unread message, proposals pending, failed and
+        // applied, a due reminder and one not yet due.
+        let tower = try FeedCaseTransport.seeded("desktop_badge_counts_the_inbox_cards", pool: manager.dbPool)
 
         let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
+        vm.towerInboxBadge = { await tower.badge() }
         await vm.loadInitial()
 
         XCTAssertEqual(vm.inboxStripCount, 4, "2 proposals awaiting the owner + 1 due reminder + 1 unread message")
@@ -156,11 +143,12 @@ final class SidebarCountsViewModelTests: XCTestCase {
     /// the daemon's writes are) reaches the badge through the Inbox read's
     /// `onFeedRefreshed`, the hook AppState wires to the counts' refresh.
     func testInboxBadgeFollowsAWriteTheObservationNeverSees() async throws {
-        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
-
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
+        // Empty; Go's next feed once a message is written.
+        let tower = try FeedCaseTransport.seeded("desktop_badge_message_written_elsewhere", pool: manager.dbPool)
         let counts = SidebarCountsViewModel(dbPool: manager.dbPool)
+        counts.towerInboxBadge = { await tower.badge() }
         await counts.loadInitial()
         let strip = ActionStripViewModel(dbPool: manager.dbPool, cliRunner: FakeCLIRunner())
         strip.onFeedRefreshed = { await counts.refresh() }
@@ -182,32 +170,23 @@ final class SidebarCountsViewModelTests: XCTestCase {
     /// neither Waiting for me nor the Messages stand-in counts, even on a
     /// row the daemon stopped earlier (the owner's off wins).
     func testInboxBadgeCountsNoWaitingForMeWhileAttentionDetectionIsOff() async throws {
-        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
-
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try await manager.dbPool.write { db in
-            try TestDatabase.insertInboxItem(db, channelID: "C001", messageTS: "1700000000.000100")
-            try Self.insertWaitingForMe(db, enabled: false, disabledReason: "run would not end")
-        }
+        // An unread message; Waiting for me stopped by the daemon. Go builds the
+        // feed with the Mac's feature switches: one case per setting.
+        let stopped = try FeedCaseTransport.seeded("desktop_badge_waiting_for_me_stopped_by_daemon", pool: manager.dbPool)
+        let turnedOff = try FeedCaseTransport("desktop_badge_waiting_for_me_turned_off", pool: manager.dbPool)
         let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
+        vm.towerInboxBadge = { [weak vm] in
+            await (vm?.disabledFeatures.contains(InboxFolderQueries.waitingForMeFeatureID) == true ? turnedOff : stopped)
+                .badge()
+        }
         await vm.loadInitial()
         XCTAssertEqual(vm.inboxStripCount, 1, "stopped by the daemon: the Messages entry stands in")
 
         vm.disabledFeatures = [InboxFolderQueries.waitingForMeFeatureID]
         await vm.refresh()
         XCTAssertEqual(vm.inboxStripCount, 0, "turned off by the owner: nothing counts")
-    }
-
-    /// The `waiting-for-me` built-in's row as the indexer writes it.
-    nonisolated private static func insertWaitingForMe(
-        _ db: Database, enabled: Bool, disabledReason: String = ""
-    ) throws {
-        let id = try TestDatabase.insertAutomation(db, slug: "waiting-for-me", name: "Waiting for me")
-        try db.execute(sql: """
-            UPDATE automations SET origin = 'builtin', builtin_id = 'waiting-for-me', path = 'builtin:waiting-for-me',
-                enabled = ?, disabled_reason = ? WHERE id = ?
-            """, arguments: [enabled, disabledReason, id])
     }
 
     func testInboxBadgeIsZeroOnEmptyDB() async throws {
@@ -393,16 +372,14 @@ final class SidebarCountsViewModelTests: XCTestCase {
     /// A write to `automations` (Waiting for me turned off in this process)
     /// re-counts the badge: the observation tracks the table.
     func testTheTableObservationRefreshesOnAnAutomationsWrite() async throws {
-        throw XCTSkip("11d-c: convert to a Go-written feed (no local list or badge since 11d-a)")
-
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try await manager.dbPool.write { db in
-            try TestDatabase.insertInboxItem(db, channelID: "C001", messageTS: "1700000000.000100")
-            try Self.insertWaitingForMe(db, enabled: true)
-        }
+        // An unread message; Waiting for me on, no run yet; Go's next feed once it is turned off.
+        let tower = try FeedCaseTransport.seeded("desktop_badge_waiting_for_me_disabled_in_process",
+                                                 pool: manager.dbPool)
         let changes = PulledChanges()
         let vm = SidebarCountsViewModel(dbPool: manager.dbPool) { changes.changes($0) }
+        vm.towerInboxBadge = { await tower.badge() }
         await vm.loadInitial()
         XCTAssertEqual(vm.inboxStripCount, 1, "no run yet: the Messages entry stands in")
         vm.startObserving()

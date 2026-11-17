@@ -122,6 +122,16 @@ package final class FeedCaseTransport: TowerTransport, @unchecked Sendable {
         return state.withLock { $0.feedReads == 0 || $0.served != step }
     }
 
+    /// The sidebar's Inbox badge as the app reads it beside the screen: one
+    /// `inbox.feed` read through a `TowerClient`, its visible folders'
+    /// counts summed (`InboxRootModel.countBadge`); nil when it fails.
+    @MainActor
+    package func badge() async -> Int? {
+        let client = TowerClient(transport: self, clock: ContinuousClock(), restartDaemon: nil, startDaemon: nil)
+        guard let feed: Feed = await client.readAside(.inboxFeed, params: FeedRequest(limit: 1)) else { return nil }
+        return InboxRootModel(feed: feed, platform: .mac).countBadge
+    }
+
     /// The number of `inbox.feed` reads answered.
     package var feedReads: Int { state.withLock { $0.feedReads } }
 
