@@ -518,7 +518,7 @@ struct SlackConnectionDetail: View {
     }
 
     private func reconnectSlack() {
-        guard let cliPath = Constants.findCLIPath() else {
+        guard let cliPath = AppState.slackCLIPath() else {
             flow.reconnectResult = "watchtower CLI not found"
             flow.reconnectSuccess = false
             return

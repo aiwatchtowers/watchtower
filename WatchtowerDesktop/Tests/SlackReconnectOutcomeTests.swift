@@ -68,6 +68,32 @@ final class SlackReconnectOutcomeTests: XCTestCase {
         XCTAssertNil(appState.slackConnectListener, "never under XCTest")
     }
 
+    /// Under XCTest no Slack CLI path AppState builds for plan B starts a
+    /// process: a test must never run the installed `watchtower` against the
+    /// owner's live workspace (`slack app status` reads it; `slack accounts
+    /// --json` runs the A17 backfill UPDATE). The setup's record read, the
+    /// accounts flags and Re-login route reads and the listener all refuse.
+    func testIsolatedAppStateRunsNoSlackCLI() async throws {
+        XCTAssertNil(AppState.slackLineStream(), "no streamer in a test process")
+        XCTAssertNil(AppState.slackCLIPath(), "no CLI path in a test process")
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        try await pool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamName: "Acme") }
+        let appState = AppState.isolated()
+        appState.initSlackAccountsAndConnectFlow(dbPool: pool)
+        XCTAssertNil(appState.slackConnectListener)
+
+        let records = await appState.slackAppSetup.reloadRecords()
+        XCTAssertNil(records, "the setup's status read has no CLI to run")
+        appState.slackAppSetup.accountsChanged() // the same read, from the pane's accounts change
+
+        let vm = try XCTUnwrap(appState.slackAccountsViewModel)
+        await vm.refreshFlags()
+        XCTAssertNil(vm.accountFlags, "the flags read has no CLI to run")
+        let route = await vm.reloginRoute(accountID: 1)
+        XCTAssertEqual(route, .failure(.init("Watchtower CLI not found")))
+    }
+
     /// Fix round 2: a link clicked after onboarding's Connect step is shown
     /// once onboarding ends: Connections → Slack, where the confirm lives.
     func testPendingLinkShowsAfterOnboardingEnds() {
