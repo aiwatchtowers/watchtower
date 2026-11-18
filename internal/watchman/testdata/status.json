@@ -156,7 +156,7 @@
   "armed": [
     {
       "scope": "session",
-      "id": 7,
+      "id": 1,
       "armed_at": "2026-11-02T12:00:00Z"
     },
     {
@@ -164,6 +164,9 @@
       "id": 4,
       "armed_at": "2026-11-02T13:00:00Z"
     }
+  ],
+  "armed_sessions": [
+    1
   ],
   "daemon_running": true
 }

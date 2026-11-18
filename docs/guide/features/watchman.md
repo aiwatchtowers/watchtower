@@ -1,6 +1,6 @@
 # Watchman
 
-Watchman learns how you decide in a workbench and tests, on your own past decisions, how often a stand-in would have chosen what you chose. It is for the person who wants to hand agents a task and leave, and first wants to know whether a stand-in could be trusted. In this version Watchman only learns and measures. It answers nothing, approves nothing and writes nothing on your behalf.
+Watchman learns how you decide in a workbench and tests, on your own past decisions, how often a stand-in would have chosen what you chose. It is for the person who wants to hand agents a task and leave, and first wants to know whether a stand-in could be trusted. It answers only for the sessions you hand it, until you take them back.
 
 ## Why use it
 
@@ -41,6 +41,21 @@ The overall verdict is **go** when at least three categories are strong and one 
 4. If a run fails or is interrupted, the error is shown with **Retry**, and the last finished result stays below it.
 
 From a terminal, `watchtower watchman learn --workbench N` prints the estimate (add `--start` to begin), `watchman profile --workbench N` shows the learned rules and sleep window, and `watchman backtest --workbench N` runs a backtest (it waits for learning to finish; `--force` runs it earlier). Starting and backtesting are yours to run: an AI agent's session is refused.
+
+### Hand a session to Watchman
+<!-- learn
+id: watchman-hand-over
+title: Hand a session to Watchman
+text: Press **Hand to Watchman** on a session's strip and Watchman answers its asks for you until you press **Take back**.
+area: development
+level: power
+kind: feature
+since: next
+-->
+
+**Hand to Watchman** on a session's strip hands that session over; on a target's panel it hands every session under the target, also ones started later; **Hand all running sessions to Watchman** in the menu bar hands every running agent session. Watchman then answers for them whether you are at the Mac or not, until you press **Take back**. The strip reads "Watchman · Sleep since 01:40" meanwhile.
+
+The first time on a workbench a sheet shows what turns on: Agent analytics and learning, with its estimate. Until learning finishes, Watchman parks everything for you. The sheet warns when main is not protected on GitHub (an agent's `gh pr merge` cannot be stopped then) or when the git guard cannot go into a repository. Merging to main, messages to people and releases stay yours. Not caught: deleting files outside the worktree from a script, or messaging people from a script with its own token.
 
 ### Read the night's journal
 <!-- learn

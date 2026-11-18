@@ -136,6 +136,9 @@ final class WorkbenchesViewModel {
     /// The agent coach (#1120): the Analytics pane's proposals. AppState
     /// wires its own; nil = a pane without the coach section.
     @ObservationIgnored weak var coach: CoachCenter?
+    /// Watchman (#1823): the session strip's Hand to Watchman / Take back.
+    /// AppState wires its own; nil = a strip without it.
+    @ObservationIgnored weak var watchman: WatchmanCenter?
     /// The Analytics pane's period per workbench (7 days until picked).
     var analyticsPeriod: [Int64: AgentAnalyticsCenter.Period] = [:]
     /// The Analytics pane's agent filter per workbench (All until picked;

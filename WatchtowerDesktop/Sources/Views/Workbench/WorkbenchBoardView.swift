@@ -405,7 +405,9 @@ struct WorkbenchBoardView: View {
                 return projects.asks.loadErrors[projectID]
             },
             onOpenGroup: { id in enterScopeAndFocus(vm, id) { vm.enterScope($0) } },
-            onClose: { closePanel(vm) }
+            onClose: { closePanel(vm) },
+            watchman: appState.watchmanCenter,
+            workbenchName: workbenchName
         )
         .frame(maxWidth: dragPanelWidth ?? clampedPanelWidth, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))

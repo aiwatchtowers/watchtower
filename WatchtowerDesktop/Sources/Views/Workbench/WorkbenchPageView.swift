@@ -58,6 +58,14 @@ struct WorkbenchPageView: View {
         .sheet(item: handoffRequest) { request in
             HandToSessionSheet(handoff: appState.codeHandoffCenter, request: request)
         }
+        // Hand to Watchman's arm sheet, from the session strip or the target panel.
+        .sheet(item: watchmanSheet) { request in
+            WatchmanArmSheet(
+                content: request.content,
+                onCancel: { appState.watchmanCenter?.sheet = nil },
+                onConfirm: { Task { await appState.watchmanCenter?.confirmSheet() } }
+            )
+        }
         .task(id: project.id) { await vm.refreshInstallStatus(projectID: project.id) }
         // The one-time "old worktrees use ~N GB" hint (board #535).
         .task(id: project.id) { await vm.watchCleanupHint(projectID: project.id) }
@@ -100,6 +108,11 @@ struct WorkbenchPageView: View {
         } message: {
             Text(deleteSummaryError ?? "")
         }
+    }
+
+    private var watchmanSheet: Binding<WatchmanArmSheetRequest?> {
+        let center = appState.watchmanCenter
+        return Binding(get: { center?.sheet }, set: { if $0 == nil { center?.sheet = nil } })
     }
 
     private var handoffRequest: Binding<CodeHandoffRequest?> {

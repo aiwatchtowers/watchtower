@@ -12,6 +12,11 @@ import WatchtowerCore
 /// Both owner verbs block until the CLI finishes (a backtest takes minutes);
 /// meanwhile `watch()` rereads the status every `pollInterval` for the
 /// progress line. Nothing here writes the database.
+///
+/// Phase 2 (#1823, D47): the arming controls — Hand to Watchman / Take back
+/// on the session strip and the target panel, the tray's Hand all running
+/// sessions — go through `watchman arm|disarm --json` (one implementation of
+/// arming, its sidecar and git hooks) and read the arming from the status.
 @MainActor
 @Observable
 final class WatchmanCenter {
@@ -32,18 +37,35 @@ final class WatchmanCenter {
     /// the last status and shows this line.
     private(set) var readError: String?
 
+    /// The last status read: the arming the controls show; nil before one.
+    private(set) var lastStatus: WatchmanStatus?
+    /// Arming scopes whose `arm`/`disarm` (or its check) this app runs now.
+    private(set) var armingHere: Set<WatchmanArmScope> = []
+    /// One line per scope under its control: a failed arm or take back.
+    private(set) var armNotices: [WatchmanArmScope: String] = [:]
+    /// The arm sheet on screen (the check said a first time or a warning).
+    var sheet: WatchmanArmSheetRequest?
+
     @ObservationIgnored private let runner: any CLIRunnerProtocol
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
-    @ObservationIgnored private var lastStatus: WatchmanStatus?
+    /// Sessions the status was reread for once because a target was armed
+    /// (a session started under it after the last read).
+    @ObservationIgnored private var rereadFor: Set<Int64> = []
+    @ObservationIgnored private var firstReadStarted = false
     /// Bumped by every read: an older reply never overwrites a newer one.
     @ObservationIgnored private var readToken = 0
 
+    /// `status`: one already read (a design shot draws the controls on it);
+    /// the app reads its own on first use.
     init(
         runner: any CLIRunnerProtocol,
-        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        status: WatchmanStatus? = nil
     ) {
         self.runner = runner
         self.sleep = sleep
+        lastStatus = status
+        daemon = status?.daemon ?? .unknown
     }
 
     /// `daemon_running` of the last status read; unknown before one, or
@@ -139,6 +161,109 @@ final class WatchmanCenter {
         await load()
     }
 
+    // MARK: - Arming
+
+    /// `arm` and `disarm` print their reply at once, after the branch
+    /// protection check (15 s budget) at most.
+    nonisolated static let armTimeout: TimeInterval = 120
+
+    /// Reads the status when the controls have none, or when a target is
+    /// armed and this session is not known armed yet (it may have started
+    /// under that target since the last read) — once per session.
+    func loadIfNeeded(for scope: WatchmanArmScope) async {
+        guard let status = lastStatus else {
+            // Several strips appear at once: one first read for them all.
+            guard !firstReadStarted else { return }
+            firstReadStarted = true
+            return await load()
+        }
+        guard case let .session(id) = scope, status.armed.contains(where: { $0.scope == .target }),
+              !status.isArmed(session: id), rereadFor.insert(id).inserted else { return }
+        await load()
+    }
+
+    /// Hand to Watchman on a control: `arm --check` first; a first time on
+    /// the workbench or a warning opens the arm sheet, otherwise it arms.
+    func handTo(_ scope: WatchmanArmScope, workbench: String) async {
+        guard armingHere.insert(scope).inserted else { return }
+        armNotices[scope] = nil
+        let check = await check(scope)
+        armingHere.remove(scope)
+        switch check {
+        case let .failed(message):
+            armNotices[scope] = WatchmanArmingCopy.armFailed(message)
+        case let .reply(reply) where reply.needsSheet:
+            sheet = WatchmanArmSheetRequest(scope: scope, content: WatchmanArmSheetContent(workbench: workbench, reply: reply))
+        case .reply:
+            await arm(scope)
+        }
+    }
+
+    /// The arm sheet's Hand to Watchman: arms its scope and closes it.
+    func confirmSheet() async {
+        guard let request = sheet else { return }
+        sheet = nil
+        await arm(request.scope)
+    }
+
+    /// `watchman arm --check`: writes nothing.
+    func check(_ scope: WatchmanArmScope) async -> WatchmanArmCheck {
+        let outcome = await call(["watchman", "arm"] + scope.flags() + ["--check", "--json"], timeout: Self.armTimeout)
+        if let failure = outcome.failure { return .failed(failure) }
+        guard let reply = try? JSONDecoder().decode(WatchmanArmReply.self, from: outcome.stdout) else {
+            return .failed("the reply could not be read")
+        }
+        return .reply(reply)
+    }
+
+    /// `watchman arm`, then the status again. A failure is the scope's notice.
+    @discardableResult
+    func arm(_ scope: WatchmanArmScope) async -> WatchmanArmReply? {
+        armingHere.insert(scope)
+        armNotices[scope] = nil
+        let outcome = await call(["watchman", "arm"] + scope.flags() + ["--json"], timeout: Self.armTimeout)
+        armingHere.remove(scope)
+        let reply = try? JSONDecoder().decode(WatchmanArmReply.self, from: outcome.stdout)
+        if let failure = outcome.failure ?? (reply == nil ? "the reply could not be read" : nil) {
+            armNotices[scope] = WatchmanArmingCopy.armFailed(failure)
+        } else if let reply {
+            armNotices[scope] = Self.armedNotice(scope, reply)
+        }
+        await load()
+        return outcome.failure == nil ? reply : nil
+    }
+
+    /// Take back: `watchman disarm`, then the status again.
+    func disarm(_ scope: WatchmanArmScope) async {
+        guard armingHere.insert(scope).inserted else { return }
+        armNotices[scope] = nil
+        let outcome = await call(["watchman", "disarm"] + scope.flags(disarm: true) + ["--json"], timeout: Self.armTimeout)
+        armingHere.remove(scope)
+        if let failure = outcome.failure { armNotices[scope] = WatchmanArmingCopy.takeBackFailed(failure) }
+        await load()
+    }
+
+    /// The tray's Hand all running sessions to Watchman: no sheet (a menu
+    /// has no room for one), so what the sheet would say becomes the tray's
+    /// notice lines.
+    func handAllRunning() async {
+        guard !armingHere.contains(.allRunning) else { return }
+        await arm(.allRunning)
+    }
+
+    /// What stays under a control after a successful arm: the tray, which
+    /// had no sheet, gets the D21 line and the warnings; every scope the
+    /// sidecar note.
+    private static func armedNotice(_ scope: WatchmanArmScope, _ reply: WatchmanArmReply) -> String? {
+        var lines: [String] = []
+        if scope == .allRunning {
+            if reply.analyticsTurnedOn { lines.append(WatchmanArmingCopy.analyticsLine) }
+            lines += reply.warnings
+        }
+        if !reply.sidecarError.isEmpty { lines.append(WatchmanArmingCopy.sidecarNote) }
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
+    }
+
     // MARK: - Private
 
     private func apply() {
@@ -193,4 +318,11 @@ final class WatchmanCenter {
         }
         return SessionReportCenter.errorLine(error)
     }
+}
+
+/// The arm sheet of one control: the scope it arms and what it shows.
+struct WatchmanArmSheetRequest: Identifiable, Equatable {
+    let scope: WatchmanArmScope
+    let content: WatchmanArmSheetContent
+    var id: WatchmanArmScope { scope }
 }

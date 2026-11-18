@@ -253,7 +253,8 @@ func TestStatus_Fixture(t *testing.T) {
 	_ = off
 
 	require.NoError(t, d.UpsertWatchmanArming(db.WatchmanArming{Scope: "target", RefID: 4, ArmedAt: learnT0.Add(4 * time.Hour), ArmedBy: "cli"}))
-	require.NoError(t, d.UpsertWatchmanArming(db.WatchmanArming{Scope: "session", RefID: 7, ArmedAt: learnT0.Add(3 * time.Hour), ArmedBy: "cli"}))
+	armed := addSession(t, d, on, "agent-armed")
+	require.NoError(t, d.UpsertWatchmanArming(db.WatchmanArming{Scope: "session", RefID: armed, ArmedAt: learnT0.Add(3 * time.Hour), ArmedBy: "cli"}))
 
 	git := func(context.Context, string, ...string) ([]byte, error) { return []byte("5\n"), nil }
 	rep, err := Status(context.Background(), d, 0, StatusOptions{Running: true, DaemonRunning: true, Git: git})

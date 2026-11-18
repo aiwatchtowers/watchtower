@@ -1,15 +1,19 @@
 import AppKit
 import DesignKit
+import GRDB
 import SwiftUI
 import WatchtowerCore
 import WatchtowerTestSupport
+import XCTest
 @testable import WatchtowerDesktop
 
 /// Design-only scenes for Watchman (#1824, spec
 /// `docs/superpowers/specs/2026-11-16-watchman-design.md` §2, §10, §11).
-/// The `journal-*` (but the Correct… sheet), `home-row`, `inbox-entry` and
-/// `settings-*` frames draw the real views on fixture data; the rest are
-/// design-only (the strings are `WatchmanMockCopy`).
+/// The `journal-*` (but the Correct… sheet), `home-row`, `inbox-entry`,
+/// `settings-*`, `strip-*`, `target-panel-*` and `arm-first-time` frames draw
+/// the real views on fixture data; `tray-menu` draws the native menu as it
+/// reads, in the real copy; the rest are design-only (the strings are
+/// `WatchmanMockCopy`).
 /// Sample data only (`acme`, made-up ids).
 @MainActor
 enum WatchmanShotFixtures {
@@ -77,16 +81,16 @@ enum WatchmanShotFixtures {
                 JournalShot(model: JournalFixture.model([JournalFixture.unsureNight] + JournalFixture.older))
             case .journalCorrectSheet: CorrectSheetMock()
             case .homeRow: HomeRowShot()
-            case .stripArmed: SessionStripMock(armed: true)
-            case .stripUnarmed: SessionStripMock(armed: false)
-            case .armFirstTime: ArmSheetMock()
+            case .stripArmed: WatchmanArmingShotFixture.strip(armed: true)
+            case .stripUnarmed: WatchmanArmingShotFixture.strip(armed: false)
+            case .armFirstTime: ArmSheetShot()
             case .settingsResults: WatchmanSettingsShot(json: WatchmanStatusFixtures.results)
             case .settingsNeverRun: WatchmanSettingsShot(json: WatchmanStatusFixtures.neverRun)
             case .settingsRunning: WatchmanSettingsShot(json: WatchmanStatusFixtures.running)
             case .settingsFailed: WatchmanSettingsShot(json: WatchmanStatusFixtures.failed)
-            case .trayMenu: TrayMenuMock()
-            case .targetPanelArmed: TargetPanelMock(armed: true)
-            case .targetPanelUnarmed: TargetPanelMock(armed: false)
+            case .trayMenu: TrayMenuShot()
+            case .targetPanelArmed: WatchmanArmingShotFixture.targetPanel(armed: true)
+            case .targetPanelUnarmed: WatchmanArmingShotFixture.targetPanel(armed: false)
             case .inboxEntry: InboxEntryMock()
             case .settingsNotLearned: WatchmanSettingsShot(json: WatchmanStatusFixtures.learning)
             case .settingsRelabelling: WatchmanSettingsShot(json: WatchmanStatusFixtures.relabelling)
@@ -102,9 +106,6 @@ enum WatchmanShotFixtures {
 }
 
 private typealias Copy = WatchmanMockCopy
-
-/// The capsule tint of Watchman's own marks (armed chip, the journal's moon).
-private let watchmanTone = Tone.status("purple")
 
 // MARK: - Inbox → Watchman (the real journal)
 
@@ -296,90 +297,119 @@ private struct HomeRowShot: View {
     }
 }
 
-// MARK: - Arming
+// MARK: - Arming (the real controls)
 
-/// The session strip above a session's pane, armed or not.
-private struct SessionStripMock: View {
-    let armed: Bool
+/// The arming controls' fixtures: a workbench `acme-api` with a session and
+/// a group target, and a `WatchmanCenter` holding a status read before (so
+/// the controls draw without calling the CLI). "Sleep since" is read in UTC.
+@MainActor
+enum WatchmanArmingShotFixture {
+    private static var poolPaths: [String] = []
+    /// What the views hold weakly (`WorkbenchesViewModel.watchman`).
+    private static var kept: [AnyObject] = []
 
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: Spacing.regular) {
-                MenuLabel(text: Copy.stripSession, systemImage: "circle.fill", color: Tone.success).fixedSize()
-                Label(Copy.stripPlace, systemImage: "folder").foregroundStyle(.secondary).lineLimit(1).fixedSize()
-                Label(Copy.stripBranch, systemImage: "arrow.triangle.branch")
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: Spacing.small)
-                if armed {
-                    Chip(text: Copy.armedChip, color: watchmanTone, dot: true).fixedSize()
-                    Button(Copy.takeBack) {}.buttonStyle(.kitSecondary).fixedSize()
-                } else {
-                    Button {} label: { Label(Copy.handTo, systemImage: "moon.stars") }
-                        .buttonStyle(.kitSecondary)
-                        .fixedSize()
-                }
-                segment(Copy.workchat, icon: "bubble.left.and.bubble.right")
-                segment(Copy.report, icon: "doc.text")
-            }
-            .font(.caption)
-            .padding(.horizontal, Spacing.regular)
-            .padding(.vertical, Spacing.tight)
-            Rectangle().fill(.separator).frame(height: Stroke.hairline)
-            Color.clear.frame(height: Spacing.hero)
-        }
-        .controlSize(.small)
-        .padding(.top, Spacing.regular)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground()
+    static func cleanUp() {
+        poolPaths.forEach(TestDatabase.cleanup(path:))
+        poolPaths = []
+        kept = []
     }
 
-    private func segment(_ title: String, icon: String) -> some View {
-        Toggle(isOn: .constant(false)) { Label(title, systemImage: icon) }
-            .toggleStyle(SegmentedToggleStyle(showsIcon: false, isHovered: false) { _ in })
-            .segmentCapsule()
-            .fixedSize()
+    static func status(armed: Bool, scope: WatchmanArmedEntry.Scope, id: Int64, sessions: Set<Int64>) -> WatchmanStatus {
+        guard armed else { return WatchmanStatus(workbenches: [], daemon: .running) }
+        let since = JournalFixture.at("2026-11-17T01:40:00Z")
+        return WatchmanStatus(workbenches: [], daemon: .running, mode: .sleep, modeSince: since,
+                              armed: [WatchmanArmedEntry(scope: scope, id: id, armedAt: since)], armedSessions: sessions)
+    }
+
+    private static func center(_ status: WatchmanStatus) -> WatchmanCenter {
+        let center = WatchmanCenter(runner: FakeCLIRunner(), status: status)
+        kept.append(center)
+        return center
+    }
+
+    /// The real `WorkbenchSessionStrip` of an agent session.
+    static func strip(armed: Bool) -> AnyView {
+        do {
+            let (pool, path) = try TestDatabase.createPool()
+            poolPaths.append(path)
+            let (project, session) = try pool.write { db -> (Workbench, TerminalSession) in
+                let id = try TestDatabase.insertWorkbench(db, name: "acme-api", folder: "/tmp/acme-api")
+                let session = try TerminalSessionQueries.create(db, .init(
+                    projectID: id, kind: .claude, title: Copy.stripSession, folderPath: "/tmp/acme-api",
+                    claudeSessionID: "00000000-0000-4000-8000-000000001826"))
+                let project = try XCTUnwrap(try Workbench.fetchOne(db, sql: "SELECT * FROM projects WHERE id = ?", arguments: [id]))
+                return (project, session)
+            }
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: DesignShotFixtures.defaultsSuite))
+            let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
+            vm.selectedWorkbenchID = project.id
+            vm.terminalSessions[project.id] = [session]
+            vm.watchman = center(status(armed: armed, scope: .session, id: session.id, sessions: [session.id]))
+            kept.append(vm)
+            return AnyView(VStack(spacing: 0) {
+                WorkbenchSessionStrip(vm: vm, project: project, pane: .session(session.id), sessionID: session.id,
+                                      isSplit: false, isExpanded: false)
+                Rectangle().fill(.separator).frame(height: Stroke.hairline)
+                Color.clear.frame(height: Spacing.hero)
+            }
+            .environment(\.calendar, JournalFixture.calendar)
+            .padding(.top, Spacing.regular)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .detailBackground())
+        } catch {
+            return DesignShotFixtures.failure(error)
+        }
+    }
+
+    /// The real `WorkbenchTargetPanel` of a group with four tasks.
+    static func targetPanel(armed: Bool) -> AnyView {
+        do {
+            let (pool, path) = try TestDatabase.createPool()
+            poolPaths.append(path)
+            let (projectID, group) = try pool.write { db -> (Int64, Int64) in
+                let pid = try TestDatabase.insertWorkbench(db, name: "acme-api", folder: "/tmp/acme-api")
+                let group = try TestDatabase.insertWorkbenchTarget(db, projectID: pid, text: Copy.targetTitle,
+                                                                   status: "in_progress", priority: "high")
+                for child in Copy.targetChildren {
+                    let status = ["Done": "done", "In progress": "in_progress"][child.status] ?? "todo"
+                    try TestDatabase.insertWorkbenchTarget(db, projectID: pid, text: child.title, status: status,
+                                                           parentID: group)
+                }
+                return (pid, group)
+            }
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: DesignShotFixtures.defaultsSuite))
+            let vm = WorkbenchBoardViewModel(dbPool: pool, projectID: projectID, defaults: defaults)
+            vm.load()
+            vm.select(Int(group))
+            let node = try XCTUnwrap(vm.selectedNode)
+            let watchman = center(status(armed: armed, scope: .target, id: group, sessions: []))
+            kept.append(vm)
+            return AnyView(WorkbenchTargetPanel(
+                vm: vm, node: node, findings: [], titleDraft: .constant(Copy.targetTitle),
+                onShowAsk: { _, _ in false }, askOpenFailure: { nil }, onOpenGroup: { _ in }, onClose: {},
+                watchman: watchman, workbenchName: "acme-api"
+            )
+            .environment(\.calendar, JournalFixture.calendar)
+            .environment(AppState())
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .detailBackground())
+        } catch {
+            return DesignShotFixtures.failure(error)
+        }
     }
 }
 
-/// The first arm on a workbench: what turns on, what learning costs.
-private struct ArmSheetMock: View {
+/// The real arm sheet of a first hand-over: `arm --check` said a first time
+/// (with its estimate) and an unprotected main.
+private struct ArmSheetShot: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.large) {
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                Text(Copy.armTitle).font(.title3.weight(.semibold))
-                Text(Copy.armBody).font(.callout).fixedSize(horizontal: false, vertical: true)
-            }
-            VStack(alignment: .leading, spacing: Spacing.medium) {
-                line("chart.bar.xaxis", .secondary, Copy.armAnalytics)
-                line("books.vertical", .secondary, Copy.armHistory)
-                line("hand.raised", .secondary, Copy.armLimits)
-            }
-            .padding(Spacing.medium)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .card()
-            line("exclamationmark.triangle.fill", Tone.warning, Copy.armNoProtection)
-                .padding(Spacing.medium)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Tone.warning.opacity(ChipTint.fillOpacity), in: RoundedRectangle(cornerRadius: Radius.row))
-            HStack(spacing: Spacing.regular) {
-                Spacer()
-                Button(Copy.notNow) {}.buttonStyle(.kitSecondary)
-                Button(Copy.start) {}.buttonStyle(.kitPrimary)
-            }
-        }
-        .controlSize(.small)
-        .padding(Spacing.page)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground()
-    }
-
-    private func line(_ icon: String, _ tone: Color, _ text: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-            Image(systemName: icon).foregroundStyle(tone).frame(width: IconSize.composer)
-            Text(text).font(.callout).fixedSize(horizontal: false, vertical: true)
-        }
+        let reply = WatchmanArmReply(
+            firstTime: true, estimate: WatchmanEstimate(decisions: 1850, needLabels: 1200, tokens: 1_600_000),
+            protectionWarning: WatchmanArmingCopy.protectionWarning)
+        WatchmanArmSheet(content: WatchmanArmSheetContent(workbench: "acme-api", reply: reply),
+                         onCancel: {}, onConfirm: {})
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .detailBackground()
     }
 }
 
@@ -400,19 +430,20 @@ private struct WatchmanSettingsShot: View {
 
 // MARK: - Menu bar
 
-/// The menu bar menu (`TrayMenuContent`, a native menu) with Watchman's
-/// section between Sync Now and New Voice Idea. Drawn as the menu reads:
-/// status lines dimmed, a check on the item that is on.
-private struct TrayMenuMock: View {
+/// The menu bar menu (`TrayMenuContent`, a native menu that cannot render
+/// in a shot) drawn as it reads, with Watchman's section between Sync Now
+/// and New Voice Idea in the real copy: its status line and Hand all running
+/// sessions to Watchman. Phase 2 has no Going to sleep item (D47).
+private struct TrayMenuShot: View {
     var body: some View {
+        let status = WatchmanArmingShotFixture.status(armed: true, scope: .target, id: 1820, sessions: [3, 5, 7])
         VStack(alignment: .leading, spacing: Spacing.tight) {
             item(Copy.trayStatus, status: true)
             separator
             item(Copy.traySyncNow)
             separator
-            item(Copy.trayWatchmanStatus, status: true)
-            item(Copy.trayHandAll)
-            item(Copy.trayGoingToSleep, checked: true)
+            item(WatchmanArmingCopy.trayStatus(status, calendar: JournalFixture.calendar) ?? "", status: true)
+            item(WatchmanArmingCopy.trayHandAll)
             separator
             item(Copy.trayVoiceIdea, shortcut: Copy.trayVoiceShortcut)
             separator
@@ -432,109 +463,15 @@ private struct TrayMenuMock: View {
         Rectangle().fill(.separator).frame(height: Stroke.hairline).padding(.vertical, Spacing.small)
     }
 
-    private func item(_ title: String, status: Bool = false, checked: Bool = false, shortcut: String? = nil) -> some View {
+    private func item(_ title: String, status: Bool = false, shortcut: String? = nil) -> some View {
         HStack(spacing: Spacing.compact) {
-            Image(systemName: "checkmark")
-                .font(.caption.weight(.semibold))
-                .opacity(checked ? 1 : 0)
-                .frame(width: Spacing.medium)
             Text(title).foregroundStyle(status ? .secondary : .primary).lineLimit(1)
             Spacer(minLength: Spacing.large)
             if let shortcut { Text(shortcut).foregroundStyle(.secondary) }
         }
         .font(.body)
-        .padding(.horizontal, Spacing.compact)
+        .padding(.horizontal, Spacing.regular)
         .padding(.vertical, Spacing.tight)
-    }
-}
-
-// MARK: - Target panel
-
-/// `WorkbenchTargetPanel`'s header in group mode with Watchman's line: the
-/// whole subtree's sessions are handed over (or taken back) here.
-private struct TargetPanelMock: View {
-    let armed: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: Spacing.cozy) {
-                topBar
-                Text(Copy.targetTitle).font(.title3.weight(.semibold))
-                HStack(spacing: Spacing.compact) {
-                    MenuLabel(text: Copy.targetStatus, systemImage: "circle.fill", color: Tone.status("blue"))
-                    MenuLabel(text: Copy.targetPriority, systemImage: "flag.fill", color: Tone.priority("high"))
-                }
-                VStack(alignment: .leading, spacing: Spacing.small) {
-                    ProgressView(value: 0.6).frame(width: ListLayout.progressBar)
-                    Text(Copy.targetProgress).font(.caption).foregroundStyle(.secondary)
-                }
-                watchman
-            }
-            .padding(Spacing.large)
-            Rectangle().fill(.separator).frame(height: Stroke.hairline)
-            children.padding(Spacing.large)
-        }
-        .controlSize(.small)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground()
-    }
-
-    private var topBar: some View {
-        HStack(spacing: Spacing.regular) {
-            OutlineTag(text: Copy.targetNumber)
-            Chip(text: Copy.targetGroup, color: .secondary)
-            Spacer(minLength: 0)
-            Button {} label: { Label(Copy.targetWorkOnIt, systemImage: "play.fill") }
-                .buttonStyle(.kitSecondary)
-                .fixedSize()
-            Button {} label: { Image(systemName: "ellipsis") }.buttonStyle(.kitIcon(isOn: false))
-            Button {} label: { Image(systemName: "xmark") }.buttonStyle(.kitIcon(isOn: false))
-        }
-    }
-
-    @ViewBuilder private var watchman: some View {
-        if armed {
-            VStack(alignment: .leading, spacing: Spacing.compact) {
-                HStack(spacing: Spacing.regular) {
-                    Image(systemName: "moon.stars").foregroundStyle(watchmanTone)
-                    Text(Copy.targetArmed).font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: Spacing.regular)
-                    Button(Copy.takeBack) {}.buttonStyle(.kitSecondary).fixedSize()
-                }
-                Text(Copy.targetArmedCaption)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(Spacing.medium)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(watchmanTone.opacity(ChipTint.fillOpacity), in: RoundedRectangle(cornerRadius: Radius.row))
-        } else {
-            VStack(alignment: .leading, spacing: Spacing.compact) {
-                Button {} label: { Label(Copy.handTo, systemImage: "moon.stars") }
-                    .buttonStyle(.kitSecondary)
-                    .fixedSize()
-                Text(Copy.targetUnarmedCaption)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    private var children: some View {
-        VStack(alignment: .leading, spacing: Spacing.small) {
-            Text(Copy.targetChildrenTitle).font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-            ForEach(Copy.targetChildren, id: \.title) { child in
-                HStack(spacing: Spacing.regular) {
-                    Text(child.title).font(.callout).lineLimit(1)
-                    Spacer(minLength: Spacing.regular)
-                    Text(child.status).font(.caption).foregroundStyle(.secondary)
-                }
-                .frame(minHeight: ListLayout.rowMinHeight)
-                .kitRow(isSelected: false)
-            }
-        }
     }
 }
 

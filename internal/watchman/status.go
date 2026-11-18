@@ -28,6 +28,10 @@ type StatusReport struct {
 	ModeSince *string  `json:"mode_since"`
 	// Armed is every arming row, oldest first.
 	Armed []ArmedEntry `json:"armed"`
+	// ArmedSessions is the live sessions the twin decides for, armed
+	// directly or under an armed target (db.WatchmanArmedSessions), so the
+	// Desktop's session strip need not resolve the target subtree itself.
+	ArmedSessions []int64 `json:"armed_sessions"`
 	// DaemonRunning: the daemon that runs the twin is up; when it is not,
 	// nothing decides ("Watchman is not running — the daemon is stopped").
 	DaemonRunning bool `json:"daemon_running"`
@@ -172,7 +176,15 @@ func Status(ctx context.Context, d *db.DB, workbenchID int64, o StatusOptions) (
 	if err != nil {
 		return StatusReport{}, fmt.Errorf("watchman status: %w", err)
 	}
-	rep := StatusReport{OK: true, Workbenches: []WorkbenchStatus{}, Armed: ArmedEntries(arming), DaemonRunning: o.DaemonRunning}
+	sessions, err := d.WatchmanArmedSessions()
+	if err != nil {
+		return StatusReport{}, fmt.Errorf("watchman status: %w", err)
+	}
+	rep := StatusReport{OK: true, Workbenches: []WorkbenchStatus{}, Armed: ArmedEntries(arming),
+		ArmedSessions: make([]int64, 0, len(sessions)), DaemonRunning: o.DaemonRunning}
+	for _, s := range sessions {
+		rep.ArmedSessions = append(rep.ArmedSessions, s.SessionID)
+	}
 	var since time.Time
 	rep.Mode, since = armingMode(time.Now(), arming)
 	if !since.IsZero() {

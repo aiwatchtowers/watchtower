@@ -660,6 +660,7 @@ enum DesignShotFixtures {
         TuningChatShotFixtures.cleanUp()
         ProjectPageShotFixtures.cleanUp()
         ClosedAsksShotFixtures.cleanUp()
+        WatchmanArmingShotFixture.cleanUp()
         IPhoneChatShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil

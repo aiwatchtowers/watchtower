@@ -64,6 +64,18 @@ final class WatchmanStatusDecodingTests: XCTestCase {
         // `running` is the workspace-wide lock, the same on every row.
         XCTAssertTrue(second.running)
         XCTAssertEqual(WatchmanWorkbenchPhase.of(second), .notLearned)
+
+        // Phase 2: the arming (D47).
+        XCTAssertEqual(status.mode, .sleep)
+        XCTAssertEqual(status.modeSince, AutomationDates.parse("2026-11-02T12:00:00Z"))
+        XCTAssertEqual(status.armed.map(\.scope), [.session, .target])
+        XCTAssertEqual(status.armed.last, WatchmanArmedEntry(
+            scope: .target, id: 4, armedAt: AutomationDates.parse("2026-11-02T13:00:00Z")))
+        XCTAssertEqual(status.armedSessions, [1])
+        XCTAssertTrue(status.isArmed(session: 1))
+        XCTAssertTrue(status.isArmed(target: 4))
+        XCTAssertFalse(status.isArmed(target: 1))
+        XCTAssertEqual(status.daemon, .running)
     }
 
     func testEveryPinnedKeyDecodes() throws {
@@ -184,5 +196,55 @@ final class WatchmanStatusDecodingTests: XCTestCase {
         XCTAssertEqual(try decode(#"{"ok":true,"workbenches":[],"daemon_running":false}"#).daemon, .stopped)
         XCTAssertEqual(try decode(#"{"ok":true,"workbenches":[],"daemon_running":true}"#).daemon, .running)
         XCTAssertEqual(try decode(#"{"ok":true,"workbenches":[]}"#).daemon, .unknown)
+    }
+
+    /// `mode`, `mode_since`, `armed`, `armed_sessions` (phase 2); a CLI that
+    /// does not print them (or an unknown mode) reads as off, nothing armed.
+    func testModeKeysDecodeAndMissingIsOff() throws {
+        func decode(_ json: String) throws -> WatchmanStatus {
+            try JSONDecoder().decode(WatchmanStatus.self, from: Data(json.utf8))
+        }
+        let armed = try decode(#"""
+            {"ok":true,"workbenches":null,"mode":"sleep","mode_since":"2026-11-17T01:40:00Z",
+             "armed":[{"scope":"session","id":7,"armed_at":"2026-11-17T01:40:00Z"}],"armed_sessions":[7,9]}
+            """#)
+        XCTAssertEqual(armed.mode, .sleep)
+        XCTAssertEqual(armed.modeSince, AutomationDates.parse("2026-11-17T01:40:00Z"))
+        XCTAssertEqual(armed.armed, [WatchmanArmedEntry(scope: .session, id: 7,
+                                                        armedAt: AutomationDates.parse("2026-11-17T01:40:00Z"))])
+        XCTAssertTrue(armed.isArmed(session: 9))
+
+        let off = try decode(#"{"ok":true,"workbenches":[],"mode":"off","mode_since":null,"armed":[],"armed_sessions":[]}"#)
+        XCTAssertEqual(off.mode, .off)
+        XCTAssertNil(off.modeSince)
+        XCTAssertEqual(off.armed, [])
+
+        let older = try decode(#"{"ok":true,"workbenches":[]}"#)
+        XCTAssertEqual(older.mode, .off)
+        XCTAssertNil(older.modeSince)
+        XCTAssertEqual(older.armed, [])
+        XCTAssertEqual(older.armedSessions, [])
+        XCTAssertEqual(try decode(#"{"ok":true,"workbenches":[],"mode":"later"}"#).mode, .off)
+        // A session armed itself counts even without `armed_sessions`.
+        let direct = try decode(#"{"ok":true,"workbenches":[],"mode":"sleep","armed":[{"scope":"session","id":3}]}"#)
+        XCTAssertTrue(direct.isArmed(session: 3))
+    }
+
+    /// `watchman arm --json` (`watchmanArmJSON`): every key; a reply without
+    /// the optional keys reads as nothing to say.
+    func testArmReplyDecodes() throws {
+        let reply = try JSONDecoder().decode(WatchmanArmReply.self, from: Data(#"""
+            {"ok":true,"armed":[],"protection_warning":"main is not protected","first_time":true,
+             "analytics_turned_on":true,"learning_started":true,
+             "estimate":{"decisions":5,"need_labels":5,"tokens":1750},"error":"","sidecar_error":"disk full",
+             "hooks_warning":"a\nb"}
+            """#.utf8))
+        XCTAssertEqual(reply, WatchmanArmReply(
+            firstTime: true, analyticsTurnedOn: true, learningStarted: true,
+            estimate: WatchmanEstimate(decisions: 5, needLabels: 5, tokens: 1750),
+            protectionWarning: "main is not protected", hooksWarning: "a\nb", sidecarError: "disk full"))
+        XCTAssertEqual(reply.warnings, ["main is not protected", "a", "b"])
+        let bare = try JSONDecoder().decode(WatchmanArmReply.self, from: Data(#"{"ok":false,"error":"busy"}"#.utf8))
+        XCTAssertEqual(bare, WatchmanArmReply(ok: false, error: "busy"))
     }
 }

@@ -22,6 +22,8 @@ struct TrayMenuView: View {
         .onAppear {
             appState.daemonManager.checkStatus()
             appState.quickRunCenter?.reload()
+            // The Watchman line reads the arming as it is now.
+            Task { await appState.watchmanCenter?.load() }
         }
     }
 
@@ -54,6 +56,13 @@ struct TrayMenuView: View {
                 Task { await appState.runAutomationFromTray(id) }
             },
             openAutomationsAction: { appState.openAutomationsFromTray() },
+            watchman: appState.watchmanCenter.map { center in
+                TrayWatchmanSection(
+                    statusLine: WatchmanArmingCopy.trayStatus(center.lastStatus),
+                    notes: center.armNotices[.allRunning]?.components(separatedBy: "\n") ?? [],
+                    busy: center.armingHere.contains(.allRunning)
+                ) { Task { await center.handAllRunning() } }
+            },
             quickCaptureAction: {
                 // Same "become regular" move as Open Watchtower: the Quick
                 // Capture window is a real window and needs a Dock icon /
@@ -140,6 +149,9 @@ struct TrayMenuContent: View {
     var runAutomationSections: [TrayRunAutomationMenu.Section]?
     var runAutomationAction: (Int64) -> Void = { _ in }
     var openAutomationsAction: () -> Void = {}
+    /// Watchman's lines and Hand all running sessions to Watchman (D47: no
+    /// Going to sleep item in phase 2); nil hides them.
+    var watchman: TrayWatchmanSection?
     let quickCaptureAction: () -> Void
     let voicesAction: () -> Void
     let reviewVoicesAction: () -> Void
@@ -200,6 +212,12 @@ struct TrayMenuContent: View {
             if let runAutomationSections {
                 runAutomationMenu(runAutomationSections)
             }
+            if let watchman {
+                Divider()
+                if let line = watchman.statusLine { Text(line) }
+                ForEach(watchman.notes, id: \.self) { Text($0) }
+                Button(WatchmanArmingCopy.trayHandAll, action: watchman.handAll).disabled(watchman.busy)
+            }
             Divider()
             // Shows the global ⌃⌥D (`GlobalHotKey`) beside the item (issue #288).
             Button("New Voice Idea", action: quickCaptureAction)
@@ -239,4 +257,13 @@ struct TrayMenuContent: View {
             Button("Open Automations…", action: openAutomationsAction)
         }
     }
+}
+
+/// The tray's Watchman part: its status line, what the last Hand all
+/// running sessions left to say, and the item itself.
+struct TrayWatchmanSection {
+    let statusLine: String?
+    let notes: [String]
+    let busy: Bool
+    let handAll: () -> Void
 }
