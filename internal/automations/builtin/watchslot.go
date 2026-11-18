@@ -180,8 +180,9 @@ func (g watchGate) Due(_ context.Context, a db.Automation, t db.Track, now time.
 // Then, per recipe: an unconfirmed one has its queued manual runs cancelled
 // not_runnable and is skipped, as is a disabled one; otherwise its track is
 // ensured (no owner: skipped), a queued manual run (Run Now, Scan from) is
-// executed without asking the gate, and with none only a due recipe gets a
-// sync run row, executed inline.
+// executed without asking the gate, and with none it is skipped while
+// background AI is paused (SkippedPaused, before the gate), else only a due
+// recipe gets a sync run row, executed inline.
 func (r *Runner) RunWatchSlot(ctx context.Context, g WatchGate) []SlotOutcome {
 	if n, err := r.db.UnbindRemovedWatchTracks(); err != nil {
 		r.logger.Printf("watch recipes: %v", err)
@@ -244,6 +245,11 @@ func (r *Runner) runWatch(ctx context.Context, g WatchGate, a db.Automation) Slo
 	if queued != nil {
 		return r.execute(ctx, o, queued.ID, false)
 	}
+	runCtx, paused := r.slotCtx(ctx, &a, fmt.Sprintf("slot:%d", a.ID))
+	if paused {
+		o.Skipped = SkippedPaused
+		return o
+	}
 	t, err := r.db.GetTrackByID(trackID)
 	if err != nil {
 		return fail("reading its track", err)
@@ -257,7 +263,7 @@ func (r *Runner) runWatch(ctx context.Context, g WatchGate, a db.Automation) Slo
 	if err != nil {
 		return fail("queueing its sync run", err)
 	}
-	return r.execute(ctx, o, runID, true)
+	return r.execute(runCtx, o, runID, true)
 }
 
 // CancelQueuedWatchRuns cancels the queued manual runs (Run Now, Scan from)

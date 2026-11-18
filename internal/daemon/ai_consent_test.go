@@ -17,6 +17,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/aiconsent"
+	"watchtower/internal/automations"
+	"watchtower/internal/automations/builtin"
 	"watchtower/internal/briefing"
 	"watchtower/internal/config"
 	"watchtower/internal/dayplan"
@@ -469,4 +471,25 @@ func TestBGAI01_PausedLegacyMorningBriefKeepsConflictPhase(t *testing.T) {
 	assert.Zero(t, d.dayPlanAttempts)
 	assert.Equal(t, 1, fp.syncCalls, "the calendar refresh still runs")
 	assert.Equal(t, 1, fp.detectCalls, "conflict detection still runs")
+}
+
+// BGAI-01: the daemon's consent reader reaches the built-ins' slot runner,
+// so a paused cycle skips the active Morning brief — no model call, no run
+// row — and a queued Run Now still runs (BGAI-02).
+func TestBGAI01_PausedSkipsActiveMorningBriefSlot(t *testing.T) {
+	f := newMBFixture(t, nil)
+	f.d.SetConsent(newFakeConsent(consentPausedByOwner).read)
+	f.cycle(mbAt(10, 0))
+	assert.Zero(t, f.gen.count(), "paused: no model call")
+	assert.Empty(t, f.runs(t), "paused: no run row")
+
+	a, err := f.db.GetBuiltinAutomation(morningBriefID)
+	require.NoError(t, err)
+	_, _, err = builtin.EnqueueManual(f.db, a.ID, automations.BuiltinInput{}, f.clock.Now())
+	require.NoError(t, err)
+	f.cycle(mbAt(10, 5))
+	runs := f.runs(t)
+	require.Len(t, runs, 1)
+	assert.Equal(t, db.TriggerManual, runs[0].Trigger)
+	assert.Equal(t, db.RunSucceeded, runs[0].Status)
 }

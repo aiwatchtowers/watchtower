@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/aiconsent/aiconsenttest"
 	"watchtower/internal/auditlog"
 	"watchtower/internal/automations"
@@ -44,15 +45,19 @@ var testStart = time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC)
 type fakePrimitive struct {
 	mu    sync.Mutex
 	calls []automations.PrimitiveCall
-	res   automations.PrimitiveResult
-	err   error
+	// origins is each call's ctx origin (aiconsent.OriginOf).
+	origins []aiconsent.Origin
+	res     automations.PrimitiveResult
+	err     error
 	// during runs inside each call (a call made while the run is active).
 	during func()
 }
 
-func (p *fakePrimitive) fn(_ context.Context, c automations.PrimitiveCall) (automations.PrimitiveResult, error) {
+func (p *fakePrimitive) fn(ctx context.Context, c automations.PrimitiveCall) (automations.PrimitiveResult, error) {
+	o, _ := aiconsent.OriginOf(ctx)
 	p.mu.Lock()
 	p.calls = append(p.calls, c)
+	p.origins = append(p.origins, o)
 	during, res, err := p.during, p.res, p.err
 	p.mu.Unlock()
 	if during != nil {

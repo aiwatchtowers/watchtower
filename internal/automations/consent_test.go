@@ -353,6 +353,22 @@ func TestExecutor_BackgroundSyncRunHeldInline(t *testing.T) {
 	}
 }
 
+// A slot's sync run the builtin runner admitted after its own consent check
+// is not held by a pause meanwhile (D12); its model calls run admitted, not
+// as the owner.
+func TestExecutor_AdmittedSlotSyncRunPassesInline(t *testing.T) {
+	daemonProcess(t)
+	f, prim, a := newOwnerPrimitiveFixture(t, newConsent(true))
+	id := f.enqueueReq(t, db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerSync})
+	run, err := f.e.ExecuteBuiltinInline(aiconsent.WithAdmitted(context.Background(), "slot:morning-brief"), id)
+	if err != nil || run.Status != db.RunSucceeded {
+		t.Fatalf("run = %+v, %v; want succeeded", run, err)
+	}
+	if len(prim.origin) != 1 || prim.origin[0] != aiconsent.OriginBackground {
+		t.Fatalf("primitive origins = %v; want one background call", prim.origin)
+	}
+}
+
 // flipShell is a shell() backend that pauses background AI when called.
 type flipShell struct{ consent *consentSwitch }
 
