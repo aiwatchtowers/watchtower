@@ -16,7 +16,7 @@ struct WatchmanSettingsSection: View {
             readError: center.readError,
             onStartLearning: { id in Task { await center.startLearning(workbench: id) } },
             onRunBacktest: { id in Task { await center.runBacktest(workbench: id) } },
-            onRetry: { Task { await center.load() } },
+            onRetry: { Task { await center.refresh() } },
             editing: center.editing,
             actions: WatchmanEditActions(
                 saveProfile: { await center.saveProfile(workbench: $0, key: $1, text: $2) },

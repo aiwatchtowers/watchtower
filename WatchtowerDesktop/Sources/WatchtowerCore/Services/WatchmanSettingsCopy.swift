@@ -97,6 +97,7 @@ package enum WatchmanSettingsCopy {
     package static let profilePinned = "Pinned by you"
     package static let profilePinnedNote = "Saving pins this text: the weekly rebuild leaves it until you unpin it."
     package static let profileEmptyText = "Write at least one rule line."
+    package static let profileLoading = "Reading what Watchman learned…"
 
     package static func profileTitle(name: String, several: Bool) -> String {
         several ? "\(profileTitle) · \(name)" : profileTitle
@@ -121,7 +122,25 @@ package enum WatchmanSettingsCopy {
     package static let limitsTitle = "Your hard limits"
     package static let limitsCaption = "Watchman parks these for you in every mode. "
         + "The built-in ones can't be removed; you can add your own."
-    package static let builtinTag = "Built in"
+    /// How many built-in rows the one line names before "…".
+    package static let builtinShown = 4
+
+    /// The built-in rows on one line: "Built in: A, B, C, D… (12)"; the
+    /// full list is `builtinHelp`.
+    package static func builtinSummary(_ names: [String]) -> String {
+        let shown = names.prefix(builtinShown).map(builtinLimit).joined(separator: ", ")
+        let more = names.count > builtinShown ? "…" : ""
+        return "Built in: \(shown)\(more) (\(names.count))"
+    }
+
+    /// Every built-in row, one per line (the summary line's tooltip).
+    package static func builtinHelp(_ names: [String]) -> String {
+        names.map(builtinLimit).joined(separator: "\n")
+    }
+
+    /// The confirmation before **Remove**.
+    package static func removeConfirmTitle(_ pattern: String) -> String { "Remove the limit “\(pattern)”?" }
+    package static let removeConfirmMessage = "Watchman may then take this action for you while it holds a session."
     package static let addLimit = "Add a Limit…"
     package static let limitKindTitle = "Kind"
     package static let limitEmptyPattern = "Write the command's first words or the tool's name."

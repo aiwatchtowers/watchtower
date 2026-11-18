@@ -44,6 +44,11 @@ final class WatchmanCenter {
     @ObservationIgnored private var lastStatus: WatchmanStatus?
     /// Bumped by every read: an older reply never overwrites a newer one.
     @ObservationIgnored private var readToken = 0
+    /// Bumped by every limits read, and per workbench by every profile read.
+    @ObservationIgnored private var limitsToken = 0
+    @ObservationIgnored private var profileTokens: [Int64: Int] = [:]
+    /// Learned workbenches whose profile was read since the last `refresh()`.
+    @ObservationIgnored private var profilesAsked: Set<Int64> = []
 
     init(
         runner: any CLIRunnerProtocol,
@@ -93,7 +98,17 @@ final class WatchmanCenter {
         } catch {
             guard token == readToken, !(error is CancellationError) else { return }
             readFailed(Self.message(error))
+            return
         }
+        await loadNewProfiles()
+    }
+
+    /// Reads everything again: the status, each learned workbench's
+    /// profile and the limits. Opening Settings and **Retry** run it.
+    func refresh() async {
+        profilesAsked.removeAll()
+        await load()
+        await loadLimits()
     }
 
     /// Replaces the section only when no status was read yet.
@@ -108,8 +123,7 @@ final class WatchmanCenter {
     /// Reads once, then again every `pollInterval` while something runs.
     /// The view restarts it whenever `needsPolling` changes.
     func watch() async {
-        await load()
-        await loadEditing()
+        await refresh()
         while needsPolling, !Task.isCancelled {
             do { try await sleep(Self.pollInterval) } catch { return }
             guard !Task.isCancelled else { return }
@@ -149,33 +163,41 @@ final class WatchmanCenter {
 
     // MARK: - Editing (phase 2)
 
-    /// Reads the limits and the profile of every learned workbench. A failed
-    /// read keeps what was read before and shows its line.
-    func loadEditing() async {
-        await loadLimits()
-        for row in lastStatus?.workbenches ?? [] where row.isLearned {
+    /// Reads the profile of each workbench the last status shows learned
+    /// for the first time since `refresh()`, also while polling goes on for
+    /// another. A failed read keeps what was read before and shows its line.
+    private func loadNewProfiles() async {
+        for row in lastStatus?.workbenches ?? [] where row.isLearned && profilesAsked.insert(row.workbench).inserted {
             await loadProfile(workbench: row.workbench)
         }
     }
 
     private func loadLimits() async {
+        limitsToken += 1
+        let token = limitsToken
         do {
             let data = try await runner.run(args: ["watchman", "limits", "list", "--json"])
-            editing.limits = try JSONDecoder().decode(WatchmanLimits.self, from: data)
+            let limits = try JSONDecoder().decode(WatchmanLimits.self, from: data)
+            guard token == limitsToken else { return }
+            editing.limits = limits
             editing.limitsReadError = nil
         } catch {
-            guard !(error is CancellationError) else { return }
+            guard token == limitsToken, !(error is CancellationError) else { return }
             editing.limitsReadError = Self.message(error)
         }
     }
 
     private func loadProfile(workbench: Int64) async {
+        let token = (profileTokens[workbench] ?? 0) + 1
+        profileTokens[workbench] = token
         do {
             let data = try await runner.run(args: ["watchman", "profile", "--workbench", String(workbench), "--json"])
-            editing.profiles[workbench] = try JSONDecoder().decode(WatchmanProfile.self, from: data)
+            let profile = try JSONDecoder().decode(WatchmanProfile.self, from: data)
+            guard profileTokens[workbench] == token else { return }
+            editing.profiles[workbench] = profile
             editing.profileReadErrors[workbench] = nil
         } catch {
-            guard !(error is CancellationError) else { return }
+            guard profileTokens[workbench] == token, !(error is CancellationError) else { return }
             editing.profileReadErrors[workbench] = Self.message(error)
         }
     }
@@ -283,14 +305,16 @@ final class WatchmanCenter {
         let line: String
     }
 
-    /// `"00:30-07:45"` as the CLI stores it; an en dash (as the screen shows
-    /// it) and blanks are accepted.
+    /// `"00:30-07:45"` as the CLI stores it (ASCII digits only); the edges
+    /// are trimmed, and an en dash (as the screen shows it) and spaces
+    /// around the dash are accepted.
     static func sleepWindow(_ text: String) -> Result<String, EditProblem> {
-        let compact = text.replacingOccurrences(of: "–", with: "-").filter { !$0.isWhitespace }
-        guard compact.wholeMatch(of: #/([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d/#) != nil else {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "–", with: "-")
+        let window = #/(?<start>(?:[01][0-9]|2[0-3]):[0-5][0-9]) *- *(?<end>(?:[01][0-9]|2[0-3]):[0-5][0-9])/#
+        guard let match = trimmed.wholeMatch(of: window) else {
             return .failure(EditProblem(line: WatchmanSettingsCopy.sleepBadFormat))
         }
-        return .success(compact)
+        return .success("\(match.output.start)-\(match.output.end)")
     }
 
     /// A category text: its non-blank lines, 1 to 20 of them.

@@ -22,6 +22,7 @@ private final class ScriptedWatchmanRunner: CLIRunnerProtocol, @unchecked Sendab
     private var editError: Error?
     private var textFiles: [String] = []
     private var afterEdit: (@Sendable () -> Void)?
+    private var heldReads: [String: AsyncGate] = [:]
 
     /// The gate the next `learn`/`backtest` call waits on.
     var gate: AsyncGate { lock.withLock { currentGate } }
@@ -41,6 +42,13 @@ private final class ScriptedWatchmanRunner: CLIRunnerProtocol, @unchecked Sendab
     func failEdit(_ error: Error) { lock.withLock { editError = error } }
     /// Runs after an edit verb, before it returns (the CLI's write).
     func onEdit(_ body: @escaping @Sendable () -> Void) { lock.withLock { afterEdit = body } }
+    /// Holds the next read of `verb` after it took its reply, until the
+    /// returned gate is released (a read overtaken by a newer one).
+    func holdNextRead(_ verb: String) -> AsyncGate {
+        let gate = AsyncGate()
+        lock.withLock { heldReads[verb] = gate }
+        return gate
+    }
     /// The `--text-file` contents each `profile set` read.
     var textFileContents: [String] { lock.withLock { textFiles } }
     /// The `--text-file` paths each `profile set` was given.
@@ -70,6 +78,7 @@ private final class ScriptedWatchmanRunner: CLIRunnerProtocol, @unchecked Sendab
             default: (statusJSON, statusError)
             }
         }
+        if let held = lock.withLock({ heldReads.removeValue(forKey: verb) }) { await held.wait() }
         if let error { throw error }
         return Data(json.utf8)
     }
@@ -267,17 +276,17 @@ final class WatchmanCenterTests: XCTestCase {
     /// A center that has read `results`, the profile and the limits.
     private func editingCenter(_ runner: ScriptedWatchmanRunner) async -> WatchmanCenter {
         let center = WatchmanCenter(runner: runner)
-        await center.load()
-        await center.loadEditing()
+        await center.refresh()
         return center
     }
 
-    func testLoadEditingReadsLimitsAndTheLearnedWorkbenchesProfiles() async {
+    func testRefreshReadsLimitsAndTheLearnedWorkbenchesProfiles() async {
         let runner = ScriptedWatchmanRunner(status: Fixtures.results)
         let center = await editingCenter(runner)
-        XCTAssertEqual(runner.invocations.dropFirst(), [
-            ["watchman", "limits", "list", "--json"],
-            ["watchman", "profile", "--workbench", "1", "--json"]
+        XCTAssertEqual(runner.invocations, [
+            ["watchman", "status", "--json"],
+            ["watchman", "profile", "--workbench", "1", "--json"],
+            ["watchman", "limits", "list", "--json"]
         ])
         XCTAssertEqual(center.editing.profiles[1]?.categories.map(\.key), ["design", "ux_text"])
         XCTAssertEqual(center.editing.profiles[1]?.categories.first?.lines.count, 3)
@@ -285,7 +294,7 @@ final class WatchmanCenterTests: XCTestCase {
     }
 
     /// A workbench Watchman has not learned has no profile to read.
-    func testLoadEditingSkipsWorkbenchesNotLearned() async {
+    func testRefreshSkipsWorkbenchesNotLearned() async {
         let runner = ScriptedWatchmanRunner(status: Fixtures.notLearned)
         let center = await editingCenter(runner)
         XCTAssertFalse(runner.invocations.contains { $0.dropFirst().first == "profile" })
@@ -347,7 +356,9 @@ final class WatchmanCenterTests: XCTestCase {
         let runner = ScriptedWatchmanRunner(status: Fixtures.results)
         let center = await editingCenter(runner)
         let slot = WatchmanEditSlot.profile(workbench: 1, key: "sleep_window")
-        for bad in ["", "25:00-07:00", "00:30-7:45", "00:60-07:45", "00:30 to 07:45", "00:30-07:45-08:00"] {
+        let badTexts = ["", "25:00-07:00", "00:30-7:45", "00:60-07:45", "00:30 to 07:45", "00:30-07:45-08:00",
+                        "00 :30-07:45", "0 0:30-07:45", "٠٠:٣٠-٠٧:٤٥", "００:３０-０７:４５"]
+        for bad in badTexts {
             let saved = await center.saveProfile(workbench: 1, key: "sleep_window", text: bad)
             XCTAssertFalse(saved, bad)
             XCTAssertEqual(center.editing.errors[slot], Copy.sleepBadFormat, bad)
@@ -355,9 +366,11 @@ final class WatchmanCenterTests: XCTestCase {
         XCTAssertFalse(runner.invocations.contains { $0.starts(with: ["watchman", "profile", "set"]) })
 
         // The en dash the screen shows and blanks are fine; the CLI gets HH:MM-HH:MM.
-        let saved = await center.saveProfile(workbench: 1, key: "sleep_window", text: " 23:15 – 06:30 ")
+        let saved = await center.saveProfile(workbench: 1, key: "sleep_window", text: " 23:15 – 06:30 \n")
         XCTAssertTrue(saved)
-        XCTAssertEqual(runner.textFileContents, ["23:15-06:30"])
+        let spaced = await center.saveProfile(workbench: 1, key: "sleep_window", text: "00:30 - 07:45")
+        XCTAssertTrue(spaced)
+        XCTAssertEqual(runner.textFileContents, ["23:15-06:30", "00:30-07:45"])
         XCTAssertNil(center.editing.errors[slot])
         XCTAssertEqual(runner.invocations.last, ["watchman", "status", "--json"])
     }
@@ -465,7 +478,7 @@ final class WatchmanCenterTests: XCTestCase {
         let center = await editingCenter(runner)
         runner.failRead("limits", CLIRunnerError.nonZeroExit(code: 1, stderr: "database is locked"))
         runner.failRead("profile", CLIRunnerError.nonZeroExit(code: 1, stderr: "database is locked"))
-        await center.loadEditing()
+        await center.refresh()
         XCTAssertEqual(center.editing.limitsReadError, "database is locked")
         XCTAssertEqual(center.editing.profileReadErrors[1], "database is locked")
         XCTAssertNotNil(center.editing.limits)
@@ -473,7 +486,7 @@ final class WatchmanCenterTests: XCTestCase {
 
         runner.failRead("limits", nil)
         runner.failRead("profile", nil)
-        await center.loadEditing()
+        await center.refresh()
         XCTAssertNil(center.editing.limitsReadError)
         XCTAssertNil(center.editing.profileReadErrors[1])
     }
@@ -499,5 +512,66 @@ final class WatchmanCenterTests: XCTestCase {
         XCTAssertTrue(empty.categories.isEmpty)
         let null = try JSONDecoder().decode(WatchmanLimits.self, from: Data(#"{"ok":true,"builtin":null,"owner":null}"#.utf8))
         XCTAssertEqual(null, WatchmanLimits(builtin: [], owner: []))
+    }
+
+    /// **Retry** after a failed status read also reads the profiles and the limits.
+    func testRetryAfterAFailedReadAlsoReadsTheEdits() async {
+        let runner = ScriptedWatchmanRunner(status: Fixtures.results)
+        runner.failStatus(CLIRunnerError.nonZeroExit(code: 1, stderr: "database is locked"))
+        runner.failRead("limits", CLIRunnerError.nonZeroExit(code: 1, stderr: "database is locked"))
+        let center = WatchmanCenter(runner: runner)
+        await center.refresh()
+        XCTAssertEqual(center.state, .readFailed("database is locked"))
+        XCTAssertTrue(center.editing.profiles.isEmpty)
+
+        runner.setStatus(Fixtures.results)
+        runner.failRead("limits", nil)
+        await center.refresh()
+        XCTAssertEqual(center.state, .results(Fixtures.status(Fixtures.results)))
+        XCTAssertNotNil(center.editing.profiles[1])
+        XCTAssertNotNil(center.editing.limits)
+        XCTAssertNil(center.editing.limitsReadError)
+    }
+
+    /// A workbench that turns learned while the center polls has its profile
+    /// read at once, and only once.
+    func testProfileIsReadWhenAWorkbenchTurnsLearnedWhilePolling() async {
+        let runner = ScriptedWatchmanRunner(status: Fixtures.learning)
+        let center = WatchmanCenter(runner: runner)
+        await center.refresh()
+        XCTAssertNil(center.editing.profiles[1])
+        runner.setStatus(Fixtures.running)
+        await center.load()
+        XCTAssertTrue(center.needsPolling)
+        XCTAssertNotNil(center.editing.profiles[1])
+        XCTAssertFalse(center.editing.isLoadingProfile(1))
+        await center.load()
+        let profileReads = runner.invocations.filter { $0.dropFirst().first == "profile" }
+        XCTAssertEqual(profileReads.count, 1)
+    }
+
+    /// An older limits read that returns after a newer one changes nothing.
+    func testStaleLimitsReadIsDropped() async {
+        let runner = ScriptedWatchmanRunner(status: Fixtures.results)
+        let center = await editingCenter(runner)
+        let limitsReads = { runner.invocations.filter { $0 == ["watchman", "limits", "list", "--json"] }.count }
+        let before = limitsReads()
+        let gate = runner.holdNextRead("limits")
+        let stale = Task { await center.refresh() }
+        // Until the refresh's limits read has taken its (old) reply and waits on the gate.
+        while limitsReads() == before { await Task.yield() }
+        runner.onEdit { runner.setLimits(Fixtures.limits([(7, "tool", "create_jira_issue")])) }
+        await center.removeLimit(id: 4)
+        XCTAssertEqual(center.editing.limits?.owner.map(\.id), [7])
+        gate.release()
+        await stale.value
+        XCTAssertEqual(center.editing.limits?.owner.map(\.id), [7])
+    }
+
+    func testProfileIsLoadingUntilItsFirstReadEnds() {
+        var data = WatchmanEditingData()
+        XCTAssertTrue(data.isLoadingProfile(1))
+        data.profileReadErrors[1] = "database is locked"
+        XCTAssertFalse(data.isLoadingProfile(1))
     }
 }

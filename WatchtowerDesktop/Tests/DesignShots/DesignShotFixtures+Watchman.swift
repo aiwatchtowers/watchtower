@@ -94,15 +94,15 @@ enum WatchmanShotFixtures {
                 WatchmanSettingsShot(
                     json: WatchmanStatusFixtures.results, editing: WatchmanStatusFixtures.editing(),
                     draft: .entry(workbench: 1, key: "ux_text", text: WatchmanShotFixtures.profileDraft))
-            case .settingsNeverRun: WatchmanSettingsShot(json: WatchmanStatusFixtures.neverRun)
-            case .settingsRunning: WatchmanSettingsShot(json: WatchmanStatusFixtures.running)
-            case .settingsFailed: WatchmanSettingsShot(json: WatchmanStatusFixtures.failed)
+            case .settingsNeverRun: WatchmanSettingsShot(json: WatchmanStatusFixtures.neverRun, editing: WatchmanStatusFixtures.editing())
+            case .settingsRunning: WatchmanSettingsShot(json: WatchmanStatusFixtures.running, editing: WatchmanStatusFixtures.editing())
+            case .settingsFailed: WatchmanSettingsShot(json: WatchmanStatusFixtures.failed, editing: WatchmanStatusFixtures.editing())
             case .trayMenu: TrayMenuMock()
             case .targetPanelArmed: TargetPanelMock(armed: true)
             case .targetPanelUnarmed: TargetPanelMock(armed: false)
             case .inboxEntry: InboxEntryMock()
             case .settingsNotLearned: WatchmanSettingsShot(json: WatchmanStatusFixtures.learning)
-            case .settingsRelabelling: WatchmanSettingsShot(json: WatchmanStatusFixtures.relabelling)
+            case .settingsRelabelling: WatchmanSettingsShot(json: WatchmanStatusFixtures.relabelling, editing: WatchmanStatusFixtures.editing())
             }
         }
     }

@@ -56,6 +56,7 @@ struct WatchmanInlineEditor: View {
         VStack(alignment: .leading, spacing: Spacing.small) {
             if multiline {
                 TextEditor(text: $text)
+                    .disabled(saving)
                     .font(.callout)
                     .scrollContentBackground(.hidden)
                     .padding(Spacing.small)
@@ -66,6 +67,7 @@ struct WatchmanInlineEditor: View {
                     .textFieldStyle(.kit)
                     .font(.body.monospacedDigit())
                     .frame(width: ListLayout.textColumn)
+                    .disabled(saving)
                     .onSubmit(onSave)
             }
             if let error { WatchmanErrorLine(text: error) }
@@ -113,6 +115,11 @@ struct WatchmanProfileSection: View {
                     Text(Copy.profileEmpty).font(.callout).foregroundStyle(.secondary)
                 }
                 ForEach(profile.categories, id: \.key) { entry($0) }
+            } else if editing.isLoadingProfile(row.workbench) {
+                HStack(spacing: Spacing.regular) {
+                    ProgressView().controlSize(.small)
+                    Text(Copy.profileLoading).font(.callout).foregroundStyle(.secondary)
+                }
             }
         }
     }
@@ -177,12 +184,14 @@ struct WatchmanProfileSection: View {
 
 // MARK: - Your hard limits
 
-/// The owner's limits with **Remove**, **Add a Limit…** and its form, then
-/// the built-in rows, read-only.
+/// The owner's limits with **Remove** (confirmed), **Add a Limit…** and its
+/// form, then the built-in rows on one read-only line.
 struct WatchmanLimitsSection: View {
     let editing: WatchmanEditingData
     let actions: WatchmanEditActions
     @Binding var draft: WatchmanSettingsDraft?
+    /// The owner's row whose **Remove** waits for confirmation.
+    @State private var removing: WatchmanLimitRow?
 
     private typealias Copy = WatchmanSettingsCopy
 
@@ -208,7 +217,26 @@ struct WatchmanLimitsSection: View {
                 .buttonStyle(.kitSecondary)
                 .disabled(editing.limits == nil)
             }
-            ForEach(rows.filter(\.isBuiltin), id: \.text) { builtinRow($0) }
+            if let builtin = editing.limits?.builtin, !builtin.isEmpty {
+                HStack(spacing: Spacing.regular) {
+                    Image(systemName: "lock").foregroundStyle(.secondary)
+                    Text(Copy.builtinSummary(builtin)).font(.caption).foregroundStyle(.secondary)
+                }
+                .help(Copy.builtinHelp(builtin))
+                .padding(.top, Spacing.small)
+            }
+        }
+        .confirmationDialog(
+            removing.map { Copy.removeConfirmTitle($0.text) } ?? "",
+            isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }),
+            presenting: removing
+        ) { row in
+            Button(Copy.remove, role: .destructive) {
+                if let id = row.removableID { Task { await actions.removeLimit(id) } }
+            }
+            Button(Copy.cancel, role: .cancel) {}
+        } message: { _ in
+            Text(Copy.removeConfirmMessage)
         }
     }
 
@@ -218,23 +246,13 @@ struct WatchmanLimitsSection: View {
             Text(row.text).font(.callout.monospaced())
             if let kind = row.kind { OutlineTag(text: Copy.limitKind(kind)) }
             Spacer(minLength: Spacing.regular)
-            if let id = row.removableID {
-                Button(Copy.remove) { Task { await actions.removeLimit(id) } }
+            if row.removableID != nil {
+                Button(Copy.remove) { removing = row }
                     .buttonStyle(.kitQuiet)
                     .disabled(saving)
             }
         }
         .frame(minHeight: ListLayout.rowMinHeight)
-    }
-
-    private func builtinRow(_ row: WatchmanLimitRow) -> some View {
-        HStack(spacing: Spacing.regular) {
-            Image(systemName: "lock").foregroundStyle(.secondary)
-            Text(Copy.builtinLimit(row.text)).font(.callout)
-            Spacer(minLength: Spacing.regular)
-            OutlineTag(text: Copy.builtinTag)
-        }
-        .frame(minHeight: ListLayout.lineMinHeight)
     }
 
     private func form(kind: WatchmanLimitKind, pattern: String, saving: Bool) -> some View {
@@ -257,6 +275,7 @@ struct WatchmanLimitsSection: View {
                     .font(.body.monospaced())
                     .onSubmit { add(kind, pattern) }
             }
+            .disabled(saving)
             Text(Copy.limitHint(kind)).font(.caption).foregroundStyle(.secondary)
             if let error = editing.errors[.limits] { WatchmanErrorLine(text: error) }
             HStack(spacing: Spacing.regular) {

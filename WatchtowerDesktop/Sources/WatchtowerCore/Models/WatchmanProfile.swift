@@ -135,6 +135,11 @@ package struct WatchmanEditingData: Equatable, Sendable {
     /// Edits the CLI runs now; their controls are disabled.
     package var saving: Set<WatchmanEditSlot> = []
 
+    /// The workbench's first profile read is still in flight.
+    package func isLoadingProfile(_ workbench: Int64) -> Bool {
+        profiles[workbench] == nil && profileReadErrors[workbench] == nil
+    }
+
     package init(
         profiles: [Int64: WatchmanProfile] = [:],
         limits: WatchmanLimits? = nil,

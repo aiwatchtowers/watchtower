@@ -175,7 +175,6 @@ final class WatchmanSettingsCopyTests: XCTestCase {
         XCTAssertEqual(Copy.limitsTitle, "Your hard limits")
         XCTAssertEqual(Copy.limitsCaption, "Watchman parks these for you in every mode. "
             + "The built-in ones can't be removed; you can add your own.")
-        XCTAssertEqual(Copy.builtinTag, "Built in")
         XCTAssertEqual(Copy.addLimit, "Add a Limit…")
         XCTAssertEqual(Copy.limitKindTitle, "Kind")
         XCTAssertEqual(Copy.limitEmptyPattern, "Write the command's first words or the tool's name.")
@@ -208,5 +207,22 @@ final class WatchmanSettingsCopyTests: XCTestCase {
             "Edit a file outside the workbench folder and its worktrees"
         ])
         XCTAssertEqual(Copy.builtinLimit("new_row"), "new_row")
+    }
+
+    /// The built-in rows on one line, the full list in its tooltip.
+    func testBuiltinSummaryLine() {
+        let names = WatchmanStatusFixtures.builtinLimits
+        XCTAssertEqual(Copy.builtinSummary(names), "Built in: A command that cannot be read, "
+            + "A plumbing push (git send-pack), Push to or merge into the default branch, "
+            + "Create, delete or push a tag… (12)")
+        XCTAssertEqual(Copy.builtinSummary(["tag", "release"]), "Built in: Create, delete or push a tag, A GitHub release (2)")
+        XCTAssertEqual(Copy.builtinHelp(names).split(separator: "\n").count, 12)
+        XCTAssertTrue(Copy.builtinHelp(names).hasSuffix("Edit a file outside the workbench folder and its worktrees"))
+    }
+
+    func testRemoveConfirmationNamesThePattern() {
+        XCTAssertEqual(Copy.removeConfirmTitle("terraform apply"), "Remove the limit “terraform apply”?")
+        XCTAssertEqual(Copy.removeConfirmMessage, "Watchman may then take this action for you while it holds a session.")
+        XCTAssertEqual(Copy.profileLoading, "Reading what Watchman learned…")
     }
 }
