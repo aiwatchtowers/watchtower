@@ -317,7 +317,7 @@ func runTrackSlotsBothWays(d *Daemon) {
 	for _, active := range []bool{false, true} {
 		d.builtinActive[trackMyThreadsID], d.builtinActive[customTracksID] = active, active
 		d.phaseWatchSlot(context.Background())
-		d.phaseTrackMyThreads(context.Background(), time.Now())
+		d.phaseTrackMyThreads(context.Background(), time.Now(), true)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	gosync "sync"
 	"sync/atomic"
@@ -16,10 +17,14 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/aiconsent"
+	"watchtower/internal/briefing"
 	"watchtower/internal/config"
+	"watchtower/internal/dayplan"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/ideas"
 	"watchtower/internal/reactioncmd"
+	"watchtower/internal/tracks"
 )
 
 // fakeConsent is an aiconsent.Reader whose state a test flips.
@@ -300,4 +305,147 @@ func TestDaemon_ConsentLogOncePerChange(t *testing.T) {
 	lines := pausedLines()
 	require.Len(t, lines, 2)
 	assert.Contains(t, lines[1], "paused by you")
+}
+
+// pausedGenerator refuses every call as the per-call backstop would.
+type pausedGenerator struct{ calls int }
+
+func (g *pausedGenerator) Generate(context.Context, string, string, string) (string, *digest.Usage, string, error) {
+	g.calls++
+	return "", nil, "", fmt.Errorf("generate: %w", aiconsent.ErrPaused)
+}
+
+// pausedDayPlanRunner refuses every day-plan run with ErrPaused.
+type pausedDayPlanRunner struct{ fakeDayPlanRunner }
+
+func (f *pausedDayPlanRunner) Run(context.Context, dayplan.RunOptions) (*db.DayPlan, error) {
+	f.runCalls++
+	return nil, fmt.Errorf("dayplan: %w", aiconsent.ErrPaused)
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// BGAI-01: while paused the Track my threads group (built-in not active)
+// runs neither the legacy tracks phase nor the rollups: no model call, no
+// tracks row or stamp, no rollup attempt, no pending daily-digest file.
+// Allowed again, the rollup reaches the model.
+func TestBGAI01_PausedTrackGroupSkipsLegacyTracksAndRollups(t *testing.T) {
+	d, database, gen := rollupBackoffTestSetup(t)
+	fc := newFakeConsent(consentPausedByOwner)
+	d.SetConsent(fc.read)
+	d.config.Tracks.Enabled = true
+	d.SetTracksPipeline(tracks.New(database, d.config, gen, d.logger))
+
+	d.runSync(context.Background(), context.Background())
+
+	assert.Zero(t, gen.calls, "no tracks or rollup model call")
+	assert.Zero(t, d.rollupAttempts)
+	assert.False(t, fileExists(d.rollupAttemptsPath()), "no rollup attempt marker")
+	assert.False(t, fileExists(filepath.Join(d.config.WorkspaceDir(), "digest_pending_daily.json")))
+	assert.Zero(t, countPipelineRuns(t, database, "tracks"))
+	assert.True(t, d.tracksRanAt.IsZero(), "no tracks stamp")
+
+	fc.set(consentAllowed)
+	d.runSync(context.Background(), context.Background())
+	assert.Positive(t, gen.calls, "allowed: the group reaches the model")
+}
+
+// BGAI-01: the legacy Morning brief (built-in not active) holds while
+// paused: no briefing or day-plan call, no attempt spent.
+func TestBGAI01_PausedLegacyMorningBriefSpendsNothing(t *testing.T) {
+	d, _, gen := briefingBackoffTestSetup(t)
+	fc := newFakeConsent(consentPausedUnanswered)
+	d.SetConsent(fc.read)
+	d.config.DayPlan.Enabled = true
+	fp := &fakeDayPlanRunner{alwaysFail: true}
+	d.SetDayPlanPipeline(fp)
+
+	for range 3 {
+		d.phaseMorningBrief(context.Background(), time.Now())
+	}
+	assert.Zero(t, gen.calls)
+	assert.Zero(t, fp.runCalls)
+	assert.Zero(t, d.briefingAttempts)
+	assert.Zero(t, d.dayPlanAttempts)
+
+	fc.set(consentAllowed)
+	d.phaseMorningBrief(context.Background(), time.Now())
+	assert.Equal(t, 1, gen.calls, "allowed: the briefing reaches the model")
+}
+
+// BGAI-01: the legacy Idea finder (built-in not active) holds while paused:
+// no ideas row and no lastIdeas stamp.
+func TestBGAI01_PausedLegacyIdeaFinderStampsNothing(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	fc := newFakeConsent(consentPausedUnanswered)
+	d.SetConsent(fc.read)
+	d.config.Ideas.Enabled = true
+	d.SetIdeasPipeline(ideas.New(database, d.config, &mockGenerator{}, d.logger))
+
+	d.phaseIdeaFinder(context.Background())
+	assert.Zero(t, countPipelineRuns(t, database, "ideas"))
+	assert.True(t, d.lastIdeas.IsZero(), "no throttle stamp")
+
+	fc.set(consentAllowed)
+	d.phaseIdeaFinder(context.Background())
+	assert.Equal(t, 1, countPipelineRuns(t, database, "ideas"), "allowed: the legacy phase runs")
+}
+
+// BGAI-01: the legacy custom-track scan (built-in not active) holds while
+// paused: no model call, no custom_tracks row. Allowed again, it scans.
+func TestBGAI01_PausedLegacyCustomTrackScanWritesNothing(t *testing.T) {
+	f := newSlotFixture(t, nil)
+	fc := newFakeConsent(consentPausedUnanswered)
+	f.d.SetConsent(fc.read)
+	f.d.builtinActive[customTracksID] = false
+	_, err := f.db.CreateCustomTrack(db.Track{AssigneeUserID: f.owner.ID, Text: "unbound", Instruction: "watch the unbound sentinel"})
+	require.NoError(t, err)
+
+	f.d.phaseWatchSlot(context.Background())
+	assert.Zero(t, f.gen.callsWith("watch the unbound sentinel"))
+	assert.Zero(t, pipelineRunCount(t, f.db, "custom_tracks"))
+
+	fc.set(consentAllowed)
+	f.d.phaseWatchSlot(context.Background())
+	assert.Equal(t, 1, pipelineRunCount(t, f.db, "custom_tracks"), "allowed: the legacy scan runs")
+}
+
+// A refusal with ErrPaused (the per-call backstop) is deferred, not an
+// attempt: the rollup, briefing and day-plan budgets stay whole.
+func TestBGAI01_ErrPausedSpendsNoAttempt(t *testing.T) {
+	t.Run("rollup", func(t *testing.T) {
+		d, database, _ := rollupBackoffTestSetup(t)
+		gen := &pausedGenerator{}
+		d.SetDigestPipeline(digest.New(database, d.config, gen, d.logger))
+		for range maxDailyAIAttempts + 1 {
+			d.phaseTrackMyThreads(context.Background(), rollupFixedNow, true)
+		}
+		assert.Equal(t, maxDailyAIAttempts+1, gen.calls, "never given up for the day")
+		assert.Zero(t, d.rollupAttempts)
+	})
+	t.Run("briefing", func(t *testing.T) {
+		d, database, _ := briefingBackoffTestSetup(t)
+		gen := &pausedGenerator{}
+		d.SetBriefingPipeline(briefing.New(database, d.config, gen, d.logger))
+		for range maxDailyAIAttempts + 1 {
+			d.phaseBriefing(context.Background())
+		}
+		assert.Equal(t, maxDailyAIAttempts+1, gen.calls)
+		assert.Zero(t, d.briefingAttempts)
+	})
+	t.Run("day plan", func(t *testing.T) {
+		d, _, _ := dayPlanBackoffTestSetup(t)
+		fp := &pausedDayPlanRunner{}
+		d.SetDayPlanPipeline(fp)
+		at := time.Date(2026, 4, 23, 8, 0, 0, 0, time.Local)
+		for i := range maxDailyAIAttempts + 1 {
+			now := at.Add(time.Duration(i) * time.Hour)
+			d.runDayPlanPhase(context.Background(), now, d.dayPlanOwner(now))
+		}
+		assert.Equal(t, maxDailyAIAttempts+1, fp.runCalls)
+		assert.Zero(t, d.dayPlanAttempts)
+	})
 }

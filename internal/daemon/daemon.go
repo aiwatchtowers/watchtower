@@ -728,17 +728,19 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	//   Group A: Track my threads → inject track context → Rollups
 	//   Group B: People Cards (only depends on Phase 1 channel digests)
 	// The consent is read once, when the group starts. Paused, People cards
-	// are skipped; Track my threads still runs, its built-in gating itself
-	// at the slot.
-	tracksCtx, peopleCtx, peopleOn := ctx, ctx, false
-	if d.consentNow().Allowed() {
+	// do not start, and Track my threads skips its legacy tracks phase and
+	// the rollups (before any stamp, attempt or file write); only the
+	// built-in's slot runs there, gating itself (a queued Run Now still
+	// runs).
+	tracksCtx, peopleCtx, aiOK := ctx, ctx, d.consentNow().Allowed()
+	if aiOK {
 		tracksCtx = aiconsent.WithAdmitted(ctx, "phase:tracks")
-		peopleCtx, peopleOn = aiconsent.WithAdmitted(ctx, "phase:people"), true
+		peopleCtx = aiconsent.WithAdmitted(ctx, "phase:people")
 	}
 	var phasesWg gosync.WaitGroup
 	rollupNow := time.Now()
-	phasesWg.Go(func() { d.phaseTrackMyThreads(tracksCtx, rollupNow) })
-	if peopleOn {
+	phasesWg.Go(func() { d.phaseTrackMyThreads(tracksCtx, rollupNow, aiOK) })
+	if aiOK {
 		phasesWg.Go(func() { d.phasePeopleCards(peopleCtx) })
 	}
 	phasesWg.Wait()
@@ -1862,7 +1864,9 @@ func (d *Daemon) runRollupPhase(ctx context.Context, now time.Time) {
 		return
 	}
 	if err := d.digestPipe.RunRollups(ctx); err != nil {
-		if !digest.ProviderDeferred(err) {
+		// A provider deferral or a background-AI-paused refusal is not an
+		// attempt.
+		if !digest.ProviderDeferred(err) && !errors.Is(err, aiconsent.ErrPaused) {
 			d.recordRollupAttempt(date)
 		}
 		d.logger.Printf("rollup error: %v", err)
@@ -2451,8 +2455,11 @@ func (d *Daemon) phaseBriefingAt(ctx context.Context, now time.Time) {
 			// A real failure (AI generate/parse/store error) reached this
 			// point — RunForDate's benign skips (no owner, handled above;
 			// "no data yet", (0, nil)) never consume budget; only a real
-			// error does.
-			d.recordBriefingAttempt(today)
+			// error does. A refusal because background AI is paused is
+			// deferred, not an attempt.
+			if !errors.Is(err, aiconsent.ErrPaused) {
+				d.recordBriefingAttempt(today)
+			}
 			d.logger.Printf("briefing error: %v", err)
 		} else if id > 0 {
 			d.logger.Printf("generated briefing (id=%d)", id)
@@ -2952,8 +2959,11 @@ func (d *Daemon) runDayPlanPhase(ctx context.Context, now time.Time, owner db.Ow
 			// shouldRunDayPlan already filtered out the "no owner"
 			// case before Run was ever called (see its own gate above), so
 			// every Run invocation reaching this point is a real attempt —
-			// any error here is a real failure and consumes budget.
-			d.recordDayPlanAttempt(date)
+			// any error here is a real failure and consumes budget —
+			// except a refusal because background AI is paused (deferred).
+			if !errors.Is(err, aiconsent.ErrPaused) {
+				d.recordDayPlanAttempt(date)
+			}
 			d.logger.Printf("dayplan: generation failed: %v", err)
 		} else {
 			d.lastDayPlanDate = date
