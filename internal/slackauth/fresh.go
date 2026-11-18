@@ -72,19 +72,33 @@ func LoadFresh(ctx context.Context, workspaceDir string, database *db.DB, accoun
 	if !rowNeedsRepair(row, tok) && !refreshDue(tok, now()) {
 		return tok, nil
 	}
-	return freshLocked(ctx, store, database, accountID, refresh, now)
+	return freshLocked(ctx, store, database, accountID, refresh, now, false)
 }
 
-// freshLocked is LoadFresh's slow path: under the lock it re-reads the file
-// and the row, repairs the row, and refreshes if the token is still due.
-func freshLocked(ctx context.Context, store *slack.TokenStore, database *db.DB, accountID int64, refresh Refresher, now func() time.Time) (*slack.Token, error) {
-	lockCtx, cancel := context.WithTimeout(ctx, lockWait)
-	defer cancel()
-	unlock, err := store.Lock(lockCtx)
-	if err != nil {
-		return nil, err
+// LoadFreshHeld is LoadFresh for a caller that already holds store.Lock:
+// `slack remove` refreshes a due token and revokes it in one locked section,
+// so the token it revokes is one Slack still honours. Taking the lock again
+// here would wait on itself.
+func LoadFreshHeld(ctx context.Context, store *slack.TokenStore, database *db.DB, accountID int64, refresh Refresher, now func() time.Time) (*slack.Token, error) {
+	if now == nil {
+		now = time.Now
 	}
-	defer unlock()
+	return freshLocked(ctx, store, database, accountID, refresh, now, true)
+}
+
+// freshLocked is LoadFresh's slow path: under the lock (taken here unless
+// the caller holds it) it re-reads the file and the row, repairs the row,
+// and refreshes if the token is still due.
+func freshLocked(ctx context.Context, store *slack.TokenStore, database *db.DB, accountID int64, refresh Refresher, now func() time.Time, held bool) (*slack.Token, error) {
+	if !held {
+		lockCtx, cancel := context.WithTimeout(ctx, lockWait)
+		defer cancel()
+		unlock, err := store.Lock(lockCtx)
+		if err != nil {
+			return nil, err
+		}
+		defer unlock()
+	}
 
 	tok, err := store.Load()
 	if err != nil || tok == nil {
@@ -156,30 +170,48 @@ func freshLocked(ctx context.Context, store *slack.TokenStore, database *db.DB, 
 // written; nil outside tests.
 var saveFault func() error
 
-// refreshedToken is tok after Slack's refresh answer got at at. An expiry
-// Slack did not state is kept from tok — except for a new token: a new access
-// token gets slackAccessTokenDefaultTTL, a new refresh token
-// slackRefreshTokenDefaultTTL.
+// IssuedExpiries is a newly issued token's access and refresh expiries at
+// at: Slack's stated lifetime (seconds) wins; a token that rotates
+// (refreshToken set) gets slackAccessTokenDefaultTTL and
+// slackRefreshTokenDefaultTTL for what Slack did not state. A token without a
+// refresh token does not rotate: an unstated expiry stays zero (unknown).
+// The connect's grant and the refresh answer share it.
+func IssuedExpiries(refreshToken string, expiresIn, refreshExpiresIn int64, at time.Time) (expiresAt, refreshExpiresAt time.Time) {
+	if expiresIn > 0 {
+		expiresAt = at.Add(time.Duration(expiresIn) * time.Second).UTC()
+	} else if refreshToken != "" {
+		expiresAt = at.Add(slackAccessTokenDefaultTTL).UTC()
+	}
+	if refreshToken == "" {
+		return expiresAt, time.Time{}
+	}
+	if refreshExpiresIn > 0 {
+		refreshExpiresAt = at.Add(time.Duration(refreshExpiresIn) * time.Second).UTC()
+	} else {
+		refreshExpiresAt = at.Add(slackRefreshTokenDefaultTTL).UTC()
+	}
+	return expiresAt, refreshExpiresAt
+}
+
+// refreshedToken is tok after Slack's refresh answer got at at. A new access
+// or refresh token gets its expiry from IssuedExpiries; an unchanged one
+// keeps its expiry unless Slack states a new lifetime. RefreshedAt records
+// the refresh, so refreshDue never repeats one that could not move an expiry.
 func refreshedToken(tok *slack.Token, got Refreshed, clientID string, at time.Time) *slack.Token {
 	next := *tok
 	next.AccessToken = got.AccessToken
-	switch {
-	case got.ExpiresIn > 0:
-		next.ExpiresAt = at.Add(time.Duration(got.ExpiresIn) * time.Second).UTC()
-	case got.AccessToken != tok.AccessToken:
-		// A new token never inherits the old one's (near or past) expiry,
-		// which would rotate it again on every read.
-		next.ExpiresAt = at.Add(slackAccessTokenDefaultTTL).UTC()
-	}
+	next.RefreshedAt = at.UTC()
 	rotatedRefresh := got.RefreshToken != "" && got.RefreshToken != tok.RefreshToken
 	if rotatedRefresh {
 		next.RefreshToken = got.RefreshToken
 	}
-	switch {
-	case got.RefreshExpiresIn > 0:
-		next.RefreshExpiresAt = at.Add(time.Duration(got.RefreshExpiresIn) * time.Second).UTC()
-	case rotatedRefresh:
-		next.RefreshExpiresAt = at.Add(slackRefreshTokenDefaultTTL).UTC()
+	issuedAccess, issuedRefresh := IssuedExpiries(next.RefreshToken, got.ExpiresIn, got.RefreshExpiresIn, at)
+	// A new access token never inherits the old one's (near or past) expiry.
+	if got.ExpiresIn > 0 || got.AccessToken != tok.AccessToken {
+		next.ExpiresAt = issuedAccess
+	}
+	if got.RefreshExpiresIn > 0 || rotatedRefresh {
+		next.RefreshExpiresAt = issuedRefresh
 	}
 	if next.ClientID == "" {
 		next.ClientID = clientID
@@ -189,15 +221,25 @@ func refreshedToken(tok *slack.Token, got Refreshed, clientID string, at time.Ti
 
 // refreshDue reports whether a rotated token must be refreshed at now: the
 // access token has less than refreshAhead left, or the refresh token less
-// than refreshTokenAhead. An unknown (zero) expiry is never due.
+// than refreshTokenAhead. An unknown (zero) expiry is never due, and neither
+// is one a refresh inside its window already left where it was (Slack kept
+// the token or stated no lifetime): refreshing again would call Slack on
+// every read until the expiry (review m1).
 func refreshDue(tok *slack.Token, now time.Time) bool {
 	if tok.RefreshToken == "" {
 		return false
 	}
-	if !tok.ExpiresAt.IsZero() && tok.ExpiresAt.Sub(now) < refreshAhead {
-		return true
+	return expiryDue(tok.ExpiresAt, refreshAhead, tok.RefreshedAt, now) ||
+		expiryDue(tok.RefreshExpiresAt, refreshTokenAhead, tok.RefreshedAt, now)
+}
+
+// expiryDue reports whether expiry is within ahead of now and no refresh
+// already ran inside that window (refreshedAt at or after expiry-ahead).
+func expiryDue(expiry time.Time, ahead time.Duration, refreshedAt, now time.Time) bool {
+	if expiry.IsZero() || expiry.Sub(now) >= ahead {
+		return false
 	}
-	return !tok.RefreshExpiresAt.IsZero() && tok.RefreshExpiresAt.Sub(now) < refreshTokenAhead
+	return refreshedAt.Before(expiry.Add(-ahead))
 }
 
 // rowNeedsRepair reports whether the token file names an app the row does
