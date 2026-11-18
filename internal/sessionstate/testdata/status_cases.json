@@ -1272,6 +1272,256 @@
     "needs_approval": false,
     "background_shells": 0
    }
+  },
+  {
+   "name": "idle with a live sub-session",
+   "row": {
+    "kind": "claude",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "spec_review_round": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z",
+    "live_children": 1
+   },
+   "expect": {
+    "state": "sub_sessions_working",
+    "hooks_reported": true,
+    "idle": true,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "finished over a turn end with live sub-sessions",
+   "row": {
+    "kind": "claude",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": "2026-10-31T11:30:00.000Z",
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "spec_review_round": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z",
+    "live_children": 2
+   },
+   "expect": {
+    "state": "sub_sessions_working",
+    "hooks_reported": true,
+    "idle": true,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "idle, its last sub-session stopped",
+   "row": {
+    "kind": "claude",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "spec_review_round": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z",
+    "live_children": 0
+   },
+   "expect": {
+    "state": "stopped",
+    "hooks_reported": true,
+    "idle": true,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "finished, its last sub-session stopped",
+   "row": {
+    "kind": "claude",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": "2026-10-31T11:30:00.000Z",
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "spec_review_round": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z",
+    "live_children": 0
+   },
+   "expect": {
+    "state": "finished",
+    "hooks_reported": true,
+    "idle": true,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "working with a live sub-session",
+   "row": {
+    "kind": "claude",
+    "agent_state": "working",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "spec_review_round": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z",
+    "live_children": 1
+   },
+   "expect": {
+    "state": "working",
+    "hooks_reported": true,
+    "idle": false,
+    "working": true,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "open question ask with a live sub-session",
+   "row": {
+    "kind": "claude",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 2,
+    "open_question_asks": 1,
+    "open_review_asks": 0,
+    "spec_review_round": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z",
+    "live_children": 1
+   },
+   "expect": {
+    "state": "waiting_for_you",
+    "hooks_reported": true,
+    "idle": true,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "finished, not live, with a live sub-session",
+   "row": {
+    "kind": "claude",
+    "agent_state": null,
+    "agent_state_at": null,
+    "finished_at": "2026-10-31T10:00:00.000Z",
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "spec_review_round": 0,
+    "run_started_at": "",
+    "live_children": 1
+   },
+   "expect": {
+    "state": "finished",
+    "hooks_reported": false,
+    "idle": false,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "background agents with a live sub-session",
+   "row": {
+    "kind": "claude",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": 2,
+    "agent_background_at": "2026-10-31T11:30:00.000Z",
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "spec_review_round": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z",
+    "live_children": 1
+   },
+   "expect": {
+    "state": "agents_working",
+    "hooks_reported": true,
+    "idle": false,
+    "working": true,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "finished with an open question and a live sub-session",
+   "row": {
+    "kind": "claude",
+    "agent_state": null,
+    "agent_state_at": null,
+    "finished_at": "2026-10-31T11:30:00.000Z",
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 1,
+    "open_question_asks": 1,
+    "open_review_asks": 0,
+    "spec_review_round": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z",
+    "live_children": 1
+   },
+   "expect": {
+    "state": "finished",
+    "hooks_reported": false,
+    "idle": false,
+    "working": false,
+    "needs_approval": false
+   }
+  },
+  {
+   "name": "needs approval with a live sub-session",
+   "row": {
+    "kind": "claude",
+    "agent_state": "approval",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "spec_review_round": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z",
+    "live_children": 1
+   },
+   "expect": {
+    "state": "needs_approval",
+    "hooks_reported": true,
+    "idle": false,
+    "working": false,
+    "needs_approval": true
+   }
   }
  ],
  "note": "idle/working/needs_approval mirror SessionControl.isIdle / isWorking and the lineCheck needs-approval test (Swift)"

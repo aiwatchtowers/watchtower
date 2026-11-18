@@ -418,6 +418,40 @@ func TestReadyToCheckWiresKindAndPurpleTone(t *testing.T) {
 	}
 }
 
+// PROJ-11 (amended, ask #1545): a live parent whose turn ended while a
+// sub-session of it runs in the host publishes Sub-sessions working — the
+// Mac's hourglass and green, wired as working and counted as working — and
+// its own Idle once the last child is no longer live.
+func TestProj11_SubSessionsWorkingIsPublishedWhileAChildIsLive(t *testing.T) {
+	r := newSessionRig(t)
+	project := insertWorkbench(t, r.d, "acme", "/tmp/acme")
+	parent := insertSession(t, r.d, project, sessionSeed{})
+	child := insertSession(t, r.d, project, sessionSeed{})
+	other := insertSession(t, r.d, project, sessionSeed{})
+	exec(t, r.d, `UPDATE terminal_sessions SET parent_session_id = ? WHERE id = ?`, parent, child)
+	waiting, working := "waiting", "working"
+	r.setState(parent, stateSeed{state: &waiting})
+	r.setState(child, stateSeed{state: &working})
+	r.setState(other, stateSeed{state: &waiting})
+
+	all := payloads(t, r.source([]int64{parent, child, other}, time.Time{}, nil))
+	p := all[parent]
+	if p["state_caption"] != "Sub-sessions working" || p["state_glyph"] != "hourglass" ||
+		p["state_tone"] != "green" || p["state_kind"] != "working" {
+		t.Errorf("parent = %v", p)
+	}
+	if all[other]["state_caption"] != "Idle" {
+		t.Errorf("a session without children = %v", all[other])
+	}
+	if got := countsOf(t, r.d, r.source([]int64{parent, child, other}, time.Time{}, nil))[project]; got != (sessionCounts{Working: 2, Stopped: 1}) {
+		t.Errorf("counts = %+v", got)
+	}
+	// The child's run ended: the parent's own state shows again.
+	if p := payloads(t, r.source([]int64{parent, other}, time.Time{}, nil))[parent]; p["state_caption"] != "Idle" || p["state_kind"] != "stopped" {
+		t.Errorf("last child stopped: parent = %v", p)
+	}
+}
+
 // #534: ready to check counts as waiting.
 func TestReadyToCheckCountsAsWaiting(t *testing.T) {
 	r := newSessionRig(t)
