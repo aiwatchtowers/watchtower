@@ -312,7 +312,7 @@ func TestProviderRun_QuietStatesLogOncePerChange(t *testing.T) {
 			<-done
 			var got []string
 			for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
-				if f := strings.Fields(line); len(f) > 2 {
+				if f := strings.Fields(line); len(f) > 3 {
 					got = append(got, f[3])
 				}
 			}
