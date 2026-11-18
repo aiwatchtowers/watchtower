@@ -196,7 +196,7 @@ func linkedMainTop(path string) string {
 // mainTopFromGitdirFile reads a linked worktree's .git file in dir —
 // "gitdir: <top>/.git/worktrees/<name>" — and returns <top> resolved, or "".
 func mainTopFromGitdirFile(dir, entry string) string {
-	f, err := os.Open(entry) //nolint:gosec // a .git file above the folder asked about; read, never run
+	f, err := os.Open(entry)
 	if err != nil {
 		return ""
 	}
