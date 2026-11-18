@@ -84,10 +84,12 @@ One migration (next free number at implementation time; SQL, goose):
 5. `workbench_folder_declines` (`workbench_id`, `folder_path` NOCASE, `declined_at`; PK both) —
    "Never for This Folder".
 6. `session_messages` (`id`, `workbench_id`, `from_session_id`, `to_session_id` — both FK SET
-   NULL, `kind` CHECK IN (`message`,`finished`), `text`, `created_at`, `state` CHECK IN
-   (`queued`,`delivered`,`failed`), `reason`, `delivered_at`). Persisted so a hub restart
-   resumes delivery. Text is not indexed and never leaves the Mac except over the existing relay
-   path the phone already uses for session lines.
+   NULL, `kind` CHECK IN (`message`,`finished`,`failure`), `text`, `created_at`, `state` CHECK
+   IN (`queued`,`delivered`,`failed`), `reason`, `delivered_at`). Persisted so a daemon restart
+   resumes delivery. Text is not indexed and never leaves the Mac.
+7. Docs index key (PROJ-08) gains the folder: `wbdoc:<project_id>:<folder_id>:<rel_path>`; the
+   2 000-document cap becomes per folder. The migration drops the old `wbdoc:` rows; the next
+   index pass rebuilds them (the index is derived data).
 
 Mirrors: `schema.sql`, `TestAllTablesExist`, golden snapshot, `TestDatabase+Schema.swift`,
 Kit's schema floor if it reads these tables.
@@ -99,7 +101,7 @@ Kit's schema floor if it reads these tables.
 | CLI | `workbench folder add|remove|locate|list --workbench N [--folder P] --json`; `workbench session start … --folder F --parent S`; `workbench message send --to S` (agents use MCP; CLI for tests and the Desktop) |
 | MCP (workbench server) | `start_session(folder, brief, title?, target_id?, agent?)`, `send_to_session(session_id, text)`, `list_sessions()` (live sessions with folder, title, state, parent), `suggest_workbench_folder(path, why)`; `workbench_info` lists folders; `create_targets`/`update_target` take `folder` |
 | Hooks | PostToolUse (Claude) counts outside-bench touches (§6.7) |
-| Hub | delivers `session_messages` (§6.6) |
+| Daemon | delivers `session_messages` (§6.6) |
 
 The pack version (DEV-06 tool count) goes up by four tools.
 
@@ -114,7 +116,13 @@ Entry points: the switcher popover item **Put on the Bench…** (subtitle `Add a
 Go validates, in one `BEGIN IMMEDIATE`: the path resolves to a directory; it is not already a
 folder of this bench (→ `already_here`, the Desktop highlights that root); not a folder of
 another bench (→ `other_bench` with that bench's name); not inside or containing a folder of any
-bench (→ `nested`, naming the folder). The sensitive-location confirmation of Open Folder…
+bench (→ `nested`, naming the folder). Benches that are already nested today are grandfathered:
+the rule applies to new adds only.
+
+**Path → workbench lookups.** Every lookup by folder (`WorkbenchByFolder`, `CreateWorkbench`'s
+duplicate check, `--read-folder`, the Desktop's `openFolder` match) goes through
+`workbench_folders` instead of `projects.folder_path`. **Open Folder…** on a folder that is on a
+bench but not its home opens that bench. The sensitive-location confirmation of Open Folder…
 (TCC) applies unchanged. Then, outside the transaction: the devpack install into the folder
 with the same workbench id (PROJ-04 rules), docs indexing (PROJ-08), git watching.
 
@@ -181,18 +189,43 @@ session strip of a child ends with `↖ from “<parent title>”` (click opens 
 (`too_long`). Inserted into `session_messages` as `queued`; the tool returns `{message_id,
 state}` at once and never waits.
 
-Delivery is the hub's, through the same gate as the phone's lines (PROJ-16, `LineGate`): a
-Claude Code session takes the line while it works (Claude queues it to its next step); a Codex
-session only when idle; a permission prompt, text in the prompt or a just-submitted line hold
-it; the Return is sent only where the hooks vouch for the run (PROJ-12). The pasted text is
+**Who delivers.** The daemon (`watchtower daemon`, single instance — its existing lock is the
+"exactly one deliverer" guarantee), not the Go hub: the hub runs only with Mobile on, and
+messages must work without a phone. A `MessageDeliverer` goroutine wakes on a 2 s tick (and at
+once when the MCP tool signals the daemon's existing wake) and delivers each `queued` row
+through session-host `Deliver` (`sessionstart.Port.Deliver`, the same client the hub uses).
+
+**The gate.** The phone's line gate (`LineGate` in `internal/hub/actions/handlers`) is
+extracted into a shared package (`internal/sessionline`) that both the hub and the daemon call,
+so both apply one rule set: a Claude Code session takes the line while it works (Claude queues
+it to its next step); a Codex session only when idle; a permission prompt, text in the prompt or
+a just-submitted line hold it; the Return is sent only where the hooks vouch for the run
+(PROJ-12). The hub's phone-specific parts (sealed action records, device, echo) stay in the
+hub.
+
+**Live** = the session host has a run for the row (the agent process exists), whatever its
+agent state: Working, Waiting for you, Finished, Idle, Agents working. A row with no run (the
+process exited, the app shows it as resumable) is not live: a message to it fails at once with
+`not_running` — delivery never launches or resumes a session. The pasted text is
 `[Message from #<id> “<title>” · <folder>] <text>` + a final line
 `(Reply with send_to_session(<id>, …))`. Held lines are retried on each state read and fail
 after 24 h, or at once when the target stops or is deleted; a failure is delivered to the sender
 as `[Message to #<id> not delivered: <reason>]` through the same path.
 
 **Finish:** a sub-session's `finish_session` inserts a `finished` message to its parent:
-`[Sub-session #<id> “<title>” finished · <folder>] <summary>`. A parent that is gone drops it
-(logged).
+`[Sub-session #<id> “<title>” finished · <folder>] <summary>`. A parent that is not live keeps
+it `queued` until the parent's next run starts (the owner resumes it), then it is delivered;
+a deleted parent drops it (logged). A parent's report and feed show the finish either way.
+
+**A parent waiting for its children.** A session whose own turn ended while at least one of
+its sub-sessions is live shows **Sub-sessions working** (a new state presentation beside
+Agents working, `· <n> sub-sessions` on the row), not Finished or Waiting for you, and raises no
+owner-presence notice or chat-question escalation until the last child is no longer live.
+
+**Finish gate for sub-sessions.** `start_session`'s `target_id` is optional. A sub-session with
+its own target is gated (gate 1) on that target's subtree only, never on its parent's; one
+started without a target skips gate 1 (its summary goes to the parent, and the parent's gate
+covers the ticket). Gate 2 (review overview) runs in the sub-session's own folder.
 
 Feed (Workchat): the receiver's feed shows these lines as a peer bubble (`↘ From “<title>” ·
 <folder>`, `✓ Sub-session “<title>” finished`) by their fixed prefix; the sender's feed shows
@@ -243,8 +276,8 @@ progress share run git/`gh` in the target's folder (NULL → home folder). Cards
 before the branch when the bench has more than one folder.
 
 ### 6.11 Documents, search, automations
-Docs indexing (PROJ-08) and the search scope cover every folder; a document's path in search and
-asks is shown as `<folder>/<rel>`. `ask_owner` review `doc_path`: a relative path resolves
+Docs indexing (PROJ-08) and the search scope cover every folder (key and per-folder cap in
+§4 item 7); a document's path in search and asks is shown as `<folder>/<rel>`. `ask_owner` review `doc_path`: a relative path resolves
 against the caller session's folder; an absolute one must lie in a bench folder. Automations are
 read from every folder's `.watchtower/automations`; a duplicate recipe name is shown as
 `<folder>/<name>`.
@@ -268,10 +301,13 @@ read from every folder's `.watchtower/automations`; a duplicate recipe name is s
 | folder missing at launch | moved/deleted | root `Folder not found`; start refused `folder_missing` | Swift presentation + Go |
 | sub-session start | host down / launch fails | existing start failure path; parent's tool result carries the error; no row left (existing) | Go |
 | message | target stops, is deleted, or 24 h pass | `failed` + failure line to the sender | Go hub test with fake clock |
-| message | hub restarts with queued lines | resumed from `session_messages` | Go |
+| message | daemon restarts with queued lines | resumed from `session_messages` | Go |
+| message | target not running | `failed` `not_running` at once; never launches it | Go |
+| finish → parent | parent not running | stays `queued` until the parent's next run; delivered then | Go |
 | message | target at a permission prompt / owner draft | held, retried on state read; never typed into either | Go gate test (reuses PROJ-16 cases) |
 | message | Mac quits mid-delivery | host keeps the run (PROJ-20); line resumes as queued; at-most-once: a line marked `delivered` only after Deliver's `submitted` | Go |
-| finish → parent | parent gone | dropped, logged | Go |
+| finish → parent | parent deleted | dropped, logged | Go |
+| parent waits | last child stops | parent leaves Sub-sessions working; its stored state shows | Swift presentation test |
 | suggestion | owner clicks Put on Bench while the folder became another bench's | card shows `other_bench`; agent told | Swift + Go |
 | hook | repo-root walk on a slow network path | walk capped at 64 levels and skips paths under `/Volumes` network mounts; hook budget unchanged | Go |
 
@@ -281,8 +317,8 @@ read from every folder's `.watchtower/automations`; a duplicate recipe name is s
 - `terminal_sessions.workbench_folder_id`/`parent_session_id`: only `session start` (insert).
 - `targets.workbench_folder_id`: MCP `create_targets`/`update_target` and the owner's board edit;
   last write wins, as for `branch`.
-- `session_messages`: MCP inserts; the hub alone moves `state`. A row is delivered by exactly one
-  hub (the hub's existing single-instance lock).
+- `session_messages`: MCP inserts; the daemon alone moves `state`. Exactly one daemon runs (its
+  existing single-instance lock).
 - `owner_asks` kind `folder`: MCP inserts; the Desktop answers (existing ask writers).
 - `workbench_folder_declines`: the Desktop's answer handler only.
 
@@ -295,16 +331,19 @@ To be approved by the owner in a separate ask before review:
 - **PROJ-07** (drift): checks run in the target's folder; a target whose folder was removed
   reports `folder removed` instead of a git verdict.
 - **PROJ-08** (documents searchable only from own sessions): the workbench's documents are the
-  union of its folders.
+  union of its folders; the key gains the folder id and the 2 000 cap is per folder.
 - **PROJ-10** (header branch switch): per folder of the active session.
-- **PROJ-14** (session report): a parent's report does not include its sub-sessions' work;
-  each reports its own.
-- **PROJ-16** (phone lines): the same gate now also carries agent messages (new writer).
+- **PROJ-11** (session states): new presentation **Sub-sessions working** for a parent whose
+  turn ended while its sub-sessions are live; no owner-presence notice meanwhile.
+- **PROJ-14** (session report, finish gate): a parent's report does not include its
+  sub-sessions' work; a sub-session is gated only on its own target, or not at all without one.
+- **PROJ-16** (phone lines): unchanged in behaviour; its gate moves into a shared package the
+  daemon also uses.
 - **PROJ-18** (cleanup): per folder repository; never removes anything in a folder that left the
   bench except worktrees its own sessions created.
 - **New PROJ-23 — agent messages:** a message reaches only a live session of the same workbench,
-  through the PROJ-16 gate, never into a permission prompt or over the owner's draft, at most
-  once, and its failure is reported to the sender.
+  through the shared line gate, never into a permission prompt or over the owner's draft, at most
+  once, never launches a session, and its failure is reported to the sender.
 - **New PROJ-24 — folder membership:** a folder belongs to at most one workbench; removing it
   from the bench touches nothing but Watchtower's install.
 
@@ -338,7 +377,8 @@ Every string above lives in a presentation model with a test (owner rule).
 7. Cleanup per folder (PROJ-18 amendment).
 8. Docs/search/automations over all folders.
 9. MCP `start_session`, `list_sessions`, sub-session brief header, limits.
-10. `session_messages` + MCP `send_to_session` + hub delivery + finish → parent.
+10. Extract the line gate to `internal/sessionline`; `session_messages` + MCP `send_to_session`
+    + daemon `MessageDeliverer` + finish → parent.
 11. Hook detection + `suggest_workbench_folder` + ask kind `folder`.
 12. Desktop: models (`WorkbenchFolder`, session/target columns), `CodeRoot` per folder.
 13. Desktop: FILES multi-root + root states + context menu + Put on the Bench (switcher, header).
@@ -372,6 +412,12 @@ Every string above lives in a presentation model with a test (owner rule).
 | D18 | Sub-session limits: depth 3, six live per root | decided by the agent |
 | D19 | Phone: flat list with folder labels in v1 | decided by the agent |
 | D20 | Last folder cannot be removed; removal refused while sessions run there | decided by the agent |
+| D21 | The daemon delivers messages (works without Mobile); the line gate is shared with the hub | decided by the agent |
+| D22 | Live = the host has a run; a message never launches a session | decided by the agent |
+| D23 | Parent shows Sub-sessions working while children are live | decided by the agent |
+| D24 | A sub-session is finish-gated on its own target only, or not at all | decided by the agent |
+| D25 | Open Folder… on a non-home bench folder opens that bench; existing nesting grandfathered | decided by the agent |
+| D26 | Docs key gains the folder id; 2 000 cap per folder | decided by the agent |
 
 ## Left to the builder
 Exact migration number; how `CodeRoot` encodes the folder id in its defaults key; the hub's
