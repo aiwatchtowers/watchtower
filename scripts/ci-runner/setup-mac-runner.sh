@@ -1,9 +1,10 @@
 #!/bin/bash
 # Sets up the owner's Mac as Watchtower's self-hosted CI (see README.md next
-# to this file): a standard macOS user `ci` and six GitHub Actions runners
+# to this file): a standard macOS user `ci` and nine GitHub Actions runners
 # under it, each a LaunchAgent in ci's GUI session —
 #
-#   ~ci/actions-runner-general-N  label wt-general  N = 1..6
+#   ~ci/actions-runner-swift      label wt-swift    (idle: Swift Test needs a window server)
+#   ~ci/actions-runner-general-N  label wt-general  (every other job), N = 1..8
 #
 # .github/workflows/ci.yml sends jobs here only while these runners are online
 # (scripts/ci-pick-runner.sh); otherwise CI runs on GitHub-hosted runners.
@@ -12,7 +13,7 @@
 # asks for your sudo password. Safe to run again: it creates what is missing,
 # rewrites each runner's PATH and environment, restarts the runners, and
 # removes every other actions-runner-* folder in ci's home (ci serves these
-# runners only; earlier setups made wt-swift, general-7 and general-8).
+# runners only).
 #
 # Usage: scripts/ci-runner/setup-mac-runner.sh [--uninstall] [--repo OWNER/NAME]
 #            [--xcode /Applications/Xcode.app] [--allow-open-home]
@@ -48,7 +49,7 @@ RUNNER_URL="https://github.com/actions/runner/releases/download/v${RUNNER_VERSIO
 # Six: one run's Mac jobs at once (Go Test, Go Lint, Leak Check, Swift Lint
 # + Kit Test, Guide Check, the code index), so a second run queues instead of
 # piling onto the cores the owner's own work needs (#1705).
-INSTANCES="general-1:wt-general general-2:wt-general general-3:wt-general general-4:wt-general general-5:wt-general general-6:wt-general"
+INSTANCES="swift:wt-swift general-1:wt-general general-2:wt-general general-3:wt-general general-4:wt-general general-5:wt-general general-6:wt-general general-7:wt-general general-8:wt-general"
 
 die() {
     echo "setup-mac-runner: $*" >&2
@@ -294,7 +295,7 @@ install() {
 
     echo
     if gui_session "$uid"; then
-        echo "All six runners are running in $CI_USER's session."
+        echo "All nine runners are running in $CI_USER's session."
     else
         echo "Runners installed. They start when $CI_USER logs in: log in as $CI_USER once"
         echo "(Fast User Switching), then switch back to your account without logging out."
