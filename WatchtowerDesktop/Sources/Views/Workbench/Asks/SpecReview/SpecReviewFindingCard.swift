@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import ChatUI
 
 /// One finding of a chapter (spec §7): its badge and text, where it comes
 /// from (the owner's words only when the source is the owner's), what the

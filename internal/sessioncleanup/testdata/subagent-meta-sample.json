@@ -1,0 +1,15 @@
+{
+  "agentType": "general-purpose",
+  "isBuiltIn": true,
+  "worktreePath": "{{worktree_path}}",
+  "spawnedWithWorktree": true,
+  "worktreeBranch": "{{worktree_branch}}",
+  "launchedWithDefaults": true,
+  "description": "Example task",
+  "toolUseId": "toolu_00000000000000000000000000",
+  "spawnDepth": 1,
+  "requestShape": "text",
+  "requestNonInteractive": true,
+  "pickedEffortModel": "example-model",
+  "finished": true
+}

@@ -177,7 +177,10 @@ final class CoachCenterTests: XCTestCase {
         runner.hold()
         let center = makeCenter(runner)
         let first = Task { await center.decline(7) }
-        await waitUntil { center.pending.contains(7) }
+        // `pending` is set before the CLI call is recorded (the runner hops off
+        // the main actor): wait for the held call itself, not the flag.
+        await runner.untilCalls { $0.contains { $0.contains("decline") } }
+        XCTAssertTrue(center.pending.contains(7))
         await center.decline(7)
         XCTAssertEqual(runner.invocations.filter { $0.contains("decline") }.count, 1)
         runner.release(0)
@@ -209,7 +212,10 @@ final class CoachCenterTests: XCTestCase {
         runner.hold()
         let center = makeCenter(runner)
         let first = Task { await center.runNow() }
-        await waitUntil { center.running }
+        // `running` is set before the CLI call is recorded (it runs in its own
+        // task): wait for the held call itself, not the flag.
+        await runner.untilCalls { $0.contains { $0.contains("run") } }
+        XCTAssertTrue(center.running)
         await center.runNow()
         XCTAssertEqual(runner.invocations.filter { $0.contains("run") }.count, 1)
         runner.release(0)

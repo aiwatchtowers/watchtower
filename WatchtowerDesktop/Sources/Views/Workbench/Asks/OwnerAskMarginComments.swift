@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import ChatUI
 
 /// One margin comment of a review: a draft's (editable while the ask is)
 /// or a closed ask's stored one.

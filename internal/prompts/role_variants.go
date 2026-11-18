@@ -26,9 +26,9 @@ You are supporting a coordinator and people manager. Focus on:
 - Team execution and coordination needs
 - Ownership clarity and assignment routing
 - Priority conflicts and dependency resolution
-- Team capability and capability gaps
-- Individual performance signals
-Emphasize: who owns what, what's blocked, coordination tax, team health`,
+- Where the team needs knowledge or help
+- Individual ownership and blockers
+Emphasize: who owns what, what's blocked, coordination tax, team flow`,
 
 	"senior_ic": `[ROLE CONTEXT: User is Senior IC/Expert without direct management]
 You are supporting a technical authority. Focus on:

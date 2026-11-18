@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 
 /// The two fenced blocks a Discuss thread's agent may end a reply with
 /// (spec 2026-11-08 §3; Go `specreview.AskAuthorFence`/`FindingFence`,

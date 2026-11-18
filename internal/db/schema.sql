@@ -88,12 +88,15 @@ CREATE TABLE IF NOT EXISTS messages (
     permalink    TEXT NOT NULL DEFAULT '',
     ts_unix      REAL GENERATED ALWAYS AS (CASE WHEN INSTR(ts, '.') > 0 THEN CAST(SUBSTR(ts, 1, INSTR(ts, '.') - 1) AS REAL) ELSE CAST(ts AS REAL) END) STORED,
     raw_json     TEXT NOT NULL DEFAULT '{}', -- kept empty ('{}'): the Slack payload is not stored (Slack API terms: minimum necessary retention)
+    synced_at    REAL NOT NULL DEFAULT 0,  -- unix seconds the Slack sync first stored the row; 0 = unstamped, read as ts_unix (Slack inbox detection; see 00190)
     PRIMARY KEY (channel_id, ts)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id);
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(channel_id, thread_ts);
 CREATE INDEX IF NOT EXISTS idx_messages_ts_unix ON messages(ts_unix);
 CREATE INDEX IF NOT EXISTS idx_messages_channel_ts_unix ON messages(channel_id, ts_unix);
+-- Slack inbox detection reads synced_at, an unstamped 0 as the post time (see 00190).
+CREATE INDEX IF NOT EXISTS idx_messages_synced_at ON messages(CASE WHEN synced_at = 0 THEN ts_unix ELSE synced_at END);
 
 -- FTS5 virtual table for full-text search on messages
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
@@ -735,6 +738,15 @@ CREATE TABLE IF NOT EXISTS people_cards (
 CREATE INDEX IF NOT EXISTS idx_people_cards_user ON people_cards(user_id);
 CREATE INDEX IF NOT EXISTS idx_people_cards_period ON people_cards(period_from, period_to);
 
+-- People the owner stopped cards for (Stop card for this person; see 00195).
+-- user_id is namespaced "<account>:<raw user id>"; written only by
+-- `watchtower people exclude|include`. The people pipeline makes no card for
+-- these ids.
+CREATE TABLE IF NOT EXISTS people_card_exclusions (
+    user_id    TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
 -- People card summaries (cross-user team health for a time window)
 CREATE TABLE IF NOT EXISTS people_card_summaries (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -780,7 +792,13 @@ CREATE TABLE IF NOT EXISTS channel_settings (
     channel_id       TEXT PRIMARY KEY REFERENCES channels(id) ON DELETE CASCADE,
     is_muted_for_llm INTEGER NOT NULL DEFAULT 0,
     is_favorite      INTEGER NOT NULL DEFAULT 0,
-    updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    sync_excluded    INTEGER NOT NULL DEFAULT 0,  -- 1 = Stop syncing: no new messages stored, except mentions of the user (see 00191)
+    excluded_at      TEXT NOT NULL DEFAULT '',    -- when Stop syncing began
+    catchup_from     REAL,                        -- Sync again's pending catch-up: fixed lower bound (unix); NULL = none
+    catchup_to       REAL,                        -- the catch-up's moving upper bound (unix)
+    muted_by_exclusion INTEGER NOT NULL DEFAULT 0, -- 1 = Stop syncing set the AI mute; Sync again lifts it
+    muted_at         TEXT NOT NULL DEFAULT ''     -- when the AI mute turned on ('' = not muted)
 );
 
 -- Pipeline run history — logs every pipeline invocation (CLI, daemon, desktop)
@@ -1600,6 +1618,9 @@ CREATE TABLE IF NOT EXISTS slack_accounts (
     deletion_sweep_day TEXT NOT NULL DEFAULT '',  -- last UTC day (YYYY-MM-DD) the Slack deletion sweep finished (see 00139)
     access_ok_at      TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last confirmed authenticated call; '' = unknown (see 00148)
     revoked_at        TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00148)
+    first_cycle_at    TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the account's first sync attempt; older messages a sync stores keep their post time as synced_at (see 00190)
+    emoji_scope_missing INTEGER NOT NULL DEFAULT 0,  -- 1 = a legacy token (no recorded grant) lacks emoji:read; the emoji sync skips the account until a re-login (see 00195)
+    people_prune_done_at TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC when the one-time pass deleting people cards of non-partners finished; '' = pending (see 00195)
     company_slug      TEXT NOT NULL DEFAULT ''   -- company bundle (<workspace>/company/<slug>.json) whose OAuth client the account signed in with; '' = our shared client (see 00198)
 );
 
@@ -2471,10 +2492,12 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     tokens_out      INTEGER,
     parent_id       INTEGER REFERENCES chat_messages(id) ON DELETE CASCADE,
     error_code      TEXT,
-    error_message   TEXT
+    error_message   TEXT,
+    client_key      TEXT                                 -- the client's id of the chat_turn that inserted this row; NULL = none (00194)
 );
 CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation ON chat_messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_chat_messages_parent ON chat_messages(parent_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_messages_client_key ON chat_messages(conversation_id, client_key) WHERE client_key IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS chat_turn_steps (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2753,6 +2776,7 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     agent_watch_issue TEXT CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), -- why the session host's codex rollout watch cannot read a working codex row's rollout (00175, Go only); NULL = watched; the next hook event clears it
     agent_watch_issue_at TEXT, -- when that issue was written, agent_state_at format; NULL with agent_watch_issue
     start_notice      TEXT, -- Go's start (`workbench session start`): the owner's line about the place (worktree warnings, "Started in the folder: …", the setup command that did not run, a failed move); NULL/'' = nothing to say (00179)
+    delete_requested_at TEXT, -- the owner confirmed the delete and its background cleanup has not finished (Desktop only, 00192); NULL = not deleting
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 );
@@ -2969,6 +2993,14 @@ CREATE TABLE IF NOT EXISTS terminal_session_agent_sessions (
     agent_session_id    TEXT NOT NULL,
     first_seen_at       TEXT NOT NULL, -- UTC ISO-8601 seconds
     PRIMARY KEY (terminal_session_id, agent_session_id)
+);
+
+-- Every agent session id a deleted terminal session had (00193), written by a
+-- BEFORE DELETE trigger on terminal_sessions; no foreign key, it outlives the
+-- row. A tombstoned uuid counts as shared for the cleanup's subagent and scratchpad rules.
+CREATE TABLE IF NOT EXISTS agent_session_tombstones (
+    agent_session_id TEXT PRIMARY KEY,
+    deleted_at       TEXT NOT NULL -- UTC ISO-8601 seconds
 );
 
 -- Go-only cache of a workbench's PR/branch state for session reports (00101).

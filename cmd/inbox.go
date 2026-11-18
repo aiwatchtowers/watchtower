@@ -560,7 +560,7 @@ func runInboxTask(cmd *cobra.Command, args []string) error {
 
 // backfillMentionsAccountEnvelope is one connected account's contribution to
 // a `inbox backfill-mentions` run's JSON envelope. Every candidate
-// FindPendingMentions found for this account lands in exactly one of
+// FindPendingMentionsPostedSince found for this account lands in exactly one of
 // Created/AlreadyAnswered/EmptySnippet/CreateErrors on a completed run (see
 // inbox.BackfillAccountResult), so CandidatesFound always equals their sum —
 // a --dry-run envelope is fully readable without re-checking the database.

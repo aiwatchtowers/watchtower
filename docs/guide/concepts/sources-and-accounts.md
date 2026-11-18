@@ -20,7 +20,13 @@ A service that needs you gets a banner on top with **Reconnect**, which opens th
 | **Linear** | Connections → Linear | Issues, cycles and projects of the teams you select ([Linear](../features/linear.md)) | Blockers, weekly digest progress, the main chat; identifies you as the owner |
 | **Quick Connections** | Connections → Quick Connections | Nothing is synced. The assistant can call an external tool server (MCP) you add, only when you ask in chat | The main chat. See [Quick Connections](../features/quick-connections.md) |
 
-Slack is read-only. The assistant sends a Slack message only after you approve it, and Slack may ask you to reconnect once to grant that permission.
+Slack is read-only. The assistant sends a Slack message only after you approve it, and Slack may ask you to reconnect once to grant that permission. Why Watchtower asks for each Slack permission:
+
+- **History and channel lists** of public and private channels, DMs and group DMs, and **search**: to keep the local copy on your Mac.
+- **Open a DM and post a message**: only when you press Approve.
+- **People's names and emails**: to match them with your calendar, Jira and Linear.
+- **Files**: to describe images you were sent. **Your reactions**: for reaction commands.
+- **The workspace's name and custom emoji**: to show them. A sign-in granted before the emoji permission existed keeps syncing without emoji until you **Re-login**.
 
 ## Live Slack through your Claude or ChatGPT account
 <!-- learn
@@ -33,7 +39,7 @@ kind: feature
 since: 0.28.3
 -->
 
-If your Claude or ChatGPT account has its Slack connector turned on, the assistant in **Chats** can use it for what Watchtower has not synced: a channel outside your synced scope, a date older than the history, a first sync that is still running. The assistant looks in Watchtower's own data first and says which part of an answer came from Live. Watchtower checks the connector with one real read when you open **Connections → Slack** (unless it checked in the last 10 minutes) and at a chat's first Slack lookup once the last check is a day old; `watchtower slack live probe` runs the check now. Live is not on the iPhone.
+If your Claude or ChatGPT account has its Slack connector turned on, the assistant in **Chats** can use it for what Watchtower has not synced: a channel outside your synced scope, a channel you set to **Stop syncing** in [Statistics](../features/statistics.md), a date older than the history, a first sync that is still running. The assistant looks in Watchtower's own data first and says which part of an answer came from Live. Watchtower checks the connector with one real read when you open **Connections → Slack** (unless it checked in the last 10 minutes) and at a chat's first Slack lookup once the last check is a day old; `watchtower slack live probe` runs the check now. Live is not on the iPhone.
 
 **What is not kept.** A Live answer stays in that chat and nowhere else. A conversation that used Live feeds no ideas, memory, coach, target next steps or Knowledge, and **Add to Knowledge** is disabled on its artifacts. A `remember:` line is saved only when it is your own words.
 
@@ -75,10 +81,10 @@ Use **Reconnect Slack** or **Re-login** on the row. Your data stays and syncing 
 
 It depends on the source. **Remove** always stops syncing and deletes the sign-in from your Mac.
 
-- **Slack and Jira:** the data already synced stays: messages, digests, issues, boards.
+- **Slack and Jira:** the data already synced stays until the deletion below: messages, digests, issues, boards.
 - **Google, Email and Calendar:** the mail and calendar events synced from that account are deleted from the local database (a Google account keeps events tied to a recording or recap). Digests, briefings and other AI results built from them stay.
 
-With **Delete an account's data when its access is revoked** on, a removed Slack, Jira or Linear account's data is deleted too, once the account has not been reached for 30 days, after a 72-hour notice. A revoked account goes the same way. See [Revoked access deletes an account's data](revoked-access.md).
+With **Delete an account's data when its access ends** on (the default), a removed Slack workspace's data is deleted 72 hours after Watchtower's next pass after the remove, and a removed Jira or Linear account's once it has not been reached for 30 days, after a 72-hour notice. A revoked account goes the same way. See [Revoked access deletes an account's data](revoked-access.md).
 
 **Known issue:** the confirmation dialog for Email and Calendar says synced data is kept, but it is deleted (Google's dialog says it is deleted). If you need the mail or events, do not remove the account; use its **Enabled** switch where there is one, or remove it only after you have what you need. Slack and Jira do keep their data.
 

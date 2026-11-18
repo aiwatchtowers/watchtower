@@ -1,5 +1,7 @@
 import SwiftUI
 import WatchtowerCore
+import ChatUI
+import WatchtowerChatText
 
 /// `DocumentTextView` with Google-Docs-style commenting: selecting text shows
 /// a floating Comment button next to it (also "Comment…" in the context
@@ -156,22 +158,5 @@ struct CommentableDocumentText: View {
             }
             saving = false
         }
-    }
-}
-
-/// The floating Comment button (#165): an opaque, shadowed chip — the default
-/// translucent bezel let the document's text show through it. The chat
-/// feed's "Ask about this" chip shares it.
-struct FloatingCommentButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(Color.primary)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color(nsColor: configuration.isPressed ? .controlColor : .windowBackgroundColor))
-            )
-            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1))
-            .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
-            .contentShape(RoundedRectangle(cornerRadius: 6))
     }
 }

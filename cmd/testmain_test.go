@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"watchtower/internal/auditlog"
+	"watchtower/internal/chat/listenstub"
 	"watchtower/internal/codex"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
@@ -60,6 +61,10 @@ import (
 func TestMain(m *testing.M) {
 	// Read tests' audit lines stay out of the machine's unified log.
 	auditlog.SetSinkForTest(func(string) {})
+	// The `ai session --listen` stand-in (sync stop's chat tests).
+	if os.Getenv(listenstub.Env) == "1" {
+		listenstub.Main()
+	}
 	if len(os.Args) == 3 && os.Args[1] == extractPDFTextCmd.Name() {
 		if err := extract.ServePDFHelper(os.Stdout, os.Stderr, os.Args[2]); err != nil {
 			os.Exit(1)
@@ -112,6 +117,9 @@ func TestMain(m *testing.M) {
 	askOwnerDesktop = func(context.Context, string, ownerconfirm.Request) (ownerconfirm.Reply, error) {
 		return ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil
 	}
+	// No cmd test may call Slack: `slack remove` revokes at a refused local
+	// port unless a test points slackRevokeAPIURL at its own server.
+	slackRevokeAPIURL = "http://127.0.0.1:1/"
 	// No git a cmd test starts may leave maintenance writing into a
 	// t.TempDir repository after it returns.
 	gittest.DisableBackgroundGit()

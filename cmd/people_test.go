@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -277,4 +278,35 @@ func TestShowPeopleList_WithSummary(t *testing.T) {
 
 	output := buf.String()
 	assert.Contains(t, output, "alice")
+}
+
+func TestPeopleExcludeCLI_JSON(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	require.NoError(t, database.UpsertUser(db.User{ID: "1:UP1", Name: "dana"}))
+	require.NoError(t, database.Close())
+	defer func() { peopleExcludeFlagUser, peopleExcludeFlagJSON = "", false }()
+
+	run := func(c *cobra.Command, user string) (string, error) {
+		buf := new(bytes.Buffer)
+		c.SetOut(buf)
+		peopleExcludeFlagUser, peopleExcludeFlagJSON = user, true
+		err := c.RunE(c, nil)
+		return buf.String(), err
+	}
+
+	out, err := run(peopleExcludeCmd, "1:UP1")
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"ok":true,"user_id":"1:UP1","excluded":true}`, out)
+
+	out, err = run(peopleIncludeCmd, "1:UP1")
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"ok":true,"user_id":"1:UP1","excluded":false}`, out)
+
+	_, err = run(peopleExcludeCmd, "1:UNOPE")
+	require.ErrorContains(t, err, "user not found")
+	_, err = run(peopleIncludeCmd, "1:UNOPE")
+	require.ErrorContains(t, err, "user not found")
 }

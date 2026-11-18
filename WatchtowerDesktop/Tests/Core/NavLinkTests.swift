@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import WatchtowerCore
+import WatchtowerChatText
 
 @Suite("NavLink")
 struct NavLinkTests {

@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 
 // MARK: - Assistant Skills catalog (Swift side of the dual-path)
 //
@@ -298,12 +299,7 @@ package enum SkillsCatalog {
     /// `private` — the create sheet must reject exactly what the catalog would
     /// silently skip.)
     package nonisolated static func isValidSkillName(_ name: String) -> Bool {
-        guard let first = name.unicodeScalars.first else { return false }
-        let lowerDigit = (first >= "a" && first <= "z") || (first >= "0" && first <= "9")
-        guard lowerDigit else { return false }
-        return name.unicodeScalars.allSatisfy {
-            ($0 >= "a" && $0 <= "z") || ($0 >= "0" && $0 <= "9") || $0 == "-"
-        }
+        ChatSkillName.isValid(name)
     }
 
     /// Parse every valid skill file in `dir`, sorted by name. A missing or

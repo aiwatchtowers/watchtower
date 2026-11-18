@@ -16,6 +16,8 @@ package enum SlackAccountID {
 
     /// The raw Slack id portion of a possibly-namespaced id: strips a valid
     /// `"<accountID>:"` prefix, or returns `id` unchanged when it isn't namespaced.
+    /// Twin: `ChatWire.SlackMessageRef.archivesURL` strips the same prefix (the
+    /// shared chat cannot import Core); change both together.
     package static func raw(_ id: String) -> String {
         split(id)?.rawID ?? id
     }

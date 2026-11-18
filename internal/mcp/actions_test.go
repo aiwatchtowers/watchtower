@@ -214,8 +214,21 @@ func TestAgent06_ChatModeReadToolsDoNotWrite(t *testing.T) {
 	if err := reg.Register(authoring.NewGetAutomation(authoring.Deps{DB: database})); err != nil {
 		t.Fatal(err)
 	}
-	if err := reg.Register(tools.NewListSlackChannels()); err != nil {
-		t.Fatal(err)
+	// Conversation 7 is the bound chat: a message and an artifact, so the
+	// chat-history reads do real reads.
+	for _, q := range []string{
+		`INSERT INTO chat_conversations (id, created_at, updated_at) VALUES (7, 1, 1)`,
+		`INSERT INTO chat_messages (id, conversation_id, role, text, created_at) VALUES (70, 7, 'assistant', 'here', 1)`,
+		`INSERT INTO chat_artifacts (conversation_id, message_id, artifact_key, version, kind, content, created_at) VALUES (7, 70, 'guard-doc', 1, 'document', 'x', 1)`,
+	} {
+		if _, err := database.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, ct := range []*tools.Tool{tools.NewListSlackChannels(), tools.NewGetChatHistory(), tools.NewListChatArtifacts(), tools.NewGetChatArtifact()} {
+		if err := reg.Register(ct); err != nil {
+			t.Fatal(err)
+		}
 	}
 	before := countRows(t, database, tables)
 	gen := &automationstest.FakeGenerator{Replies: []string{"done"}}
@@ -285,6 +298,10 @@ func chatOnlyReadGuardCalls() []mcpsdk.CallToolParams {
 		{Name: "list_automations", Arguments: map[string]any{}},
 		{Name: "get_automation", Arguments: map[string]any{"automation": "guard-auto"}},
 		{Name: "list_slack_channels", Arguments: map[string]any{}},
+		// The chat's own history and artifacts (bound conversation 7).
+		{Name: "get_chat_history", Arguments: map[string]any{}},
+		{Name: "list_chat_artifacts", Arguments: map[string]any{}},
+		{Name: "get_chat_artifact", Arguments: map[string]any{"key": "guard-doc"}},
 	}
 }
 

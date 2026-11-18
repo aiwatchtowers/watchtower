@@ -353,7 +353,14 @@ func (c *Client) post(ctx context.Context, req *relayv1.Request, token string) (
 	if err := proto.Unmarshal(b, &resp); err != nil {
 		return nil, fmt.Errorf("relay: HTTP %d: undecodable response", res.StatusCode)
 	}
-	return &resp, errorOf(&resp)
+	err = errorOf(&resp)
+	if err == nil && res.StatusCode != http.StatusOK {
+		// The relay answers every success 200; an error status without a
+		// protocol error (an empty 5xx from the edge decodes as an empty
+		// Response) is no answer, never a success (#1872).
+		return nil, fmt.Errorf("relay: HTTP %d without an answer", res.StatusCode)
+	}
+	return &resp, err
 }
 
 // errorOf returns the response's protocol error; UNSUPPORTED_VERSION also matches

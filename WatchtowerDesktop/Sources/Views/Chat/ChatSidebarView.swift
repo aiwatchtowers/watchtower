@@ -1,3 +1,5 @@
+import ChatUI
+import ChatWire
 import SwiftUI
 import WatchtowerCore
 
@@ -10,18 +12,18 @@ import WatchtowerCore
 /// is a tab that runs on into the conversation beside it (`panelTab`, with
 /// `ChatSplitView` putting the panel on `panelSurface()`).
 struct ChatSidebarView: View {
-    @Bindable var historyVM: ChatHistoryViewModel
+    @Bindable var historyVM: ChatPanelModel
     let chatVM: ChatViewModel
     let onNewChat: () -> Void
     let onArchive: (Int64) -> Void
     let onDelete: (Int64) -> Void
     /// ✕ / ⌘⌫ on a chat that neither answers nor waits: deleted at once with
-    /// Undo (`ChatHistoryViewModel.deleteWithUndo`); the split view lands
+    /// Undo (`ChatPanelModel.deleteWithUndo`); the split view lands
     /// when it was the chat on screen.
     var onQuickDelete: (Int64) -> Void = { _ in }
-    @State private var renaming: ChatConversation?
+    @State private var renaming: ChatList.Conversation?
     @State private var renameText = ""
-    @State private var deleting: ChatConversation?
+    @State private var deleting: ChatList.Conversation?
     /// The panel holds the keyboard (`SessionsPanelKeyView`, spec §5.4).
     @State private var hasKeyboard = false
     /// The row under the mouse: its ✕ shows.
@@ -42,7 +44,7 @@ struct ChatSidebarView: View {
             // selected before it is listed (the policy keeps it pending).
             ScrollViewReader { proxy in
                 List {
-                    if let projectID = historyVM.level.projectID { projectOverviewRow(projectID) }
+                    if let projectID = historyVM.resolvedLevel.projectID { projectOverviewRow(projectID) }
                     ForEach(historyVM.sections) { section in
                         if section.kind == .older {
                             olderHeader(count: section.items.count)
@@ -89,13 +91,13 @@ struct ChatSidebarView: View {
             }
         }
         // The tab left (or the panel hidden): the waiting delete commits.
-        .onDisappear { Task { await historyVM.commitPendingDelete() } }
+        .onDisappear { Task { await historyVM.list.commitPendingDelete() } }
         .alert("Rename Chat", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Title", text: $renameText)
             Button("Save") {
                 if let conv = renaming {
                     let title = renameText
-                    Task { await historyVM.rename(conv.id, title: title) }
+                    Task { await historyVM.list.rename(conv.id, title) }
                 }
             }
             Button("Cancel", role: .cancel) {}
@@ -113,7 +115,7 @@ struct ChatSidebarView: View {
     /// The level's project name; nil at All chats. A project not (yet) in
     /// `chatVM.projects` — just created, reloading — still reads as one.
     private var levelProjectName: String? {
-        guard let id = historyVM.level.projectID else { return nil }
+        guard let id = historyVM.resolvedLevel.projectID else { return nil }
         return chatVM.projects.first { $0.id == id }?.name ?? "Project"
     }
 
@@ -143,21 +145,15 @@ struct ChatSidebarView: View {
             .id("project-overview-\(projectID)")
     }
 
-    /// A chat's row: its state dot, title and second line (spec §5.1);
-    /// "Answering" is read live from the pool at render time. In All chats
-    /// a project chat's second line names its project.
-    /// The ✕ shows while the row is hovered or under the panel cursor, and
-    /// only when the chat neither answers nor waits (spec §5.3).
-    private func chatRow(_ row: ChatPanelRow) -> some View {
-        let conv = row.conversation
-        let state = historyVM.state(of: row)
+    /// A chat's row (ChatUI's list row, which the Mac's style draws as the panel's own row, `ChatSidebarRow`: its
+    /// state dot, title, the line under it and its age). The ✕ shows while the row is hovered or under the panel
+    /// cursor, and only when the chat neither answers nor waits (spec §5.3).
+    private func chatRow(_ conv: ChatList.Conversation) -> some View {
         let hasCursor = hasKeyboard && historyVM.panelCursor == conv.id
-        return ChatPanelRowView(
-            row: row,
-            state: state,
-            secondLine: state.secondLine(for: row, now: historyVM.now(), showsProject: historyVM.level == .all)
-        ) {
-            if state.allowsQuickDelete, hasCursor || hoveredRow == conv.id {
+        let quickDeletable = conv.state != .answering && conv.state != .waiting
+        return HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
+            ChatListRow(content: ChatSidebarRow.content(conv, now: historyVM.now(), showsProject: historyVM.level == .all))
+            if quickDeletable, hasCursor || hoveredRow == conv.id {
                 ChatRowDeleteButton {
                     historyVM.requestPanelKeyboard()
                     quickDelete(conv)
@@ -187,7 +183,7 @@ struct ChatSidebarView: View {
     }
 
     /// At once with Undo, or — while it answers or waits — the alert.
-    private func quickDelete(_ conv: ChatConversation) {
+    private func quickDelete(_ conv: ChatList.Conversation) {
         if historyVM.deleteWithUndo(conv.id) {
             onQuickDelete(conv.id)
         } else {
@@ -208,7 +204,7 @@ struct ChatSidebarView: View {
         case .handBack:
             return false
         case .deleteCursor:
-            if let id = historyVM.listedPanelCursor, let conv = historyVM.rows.first(where: { $0.id == id })?.conversation {
+            if let id = historyVM.listedPanelCursor, let conv = historyVM.rows.first(where: { $0.id == id }) {
                 quickDelete(conv)
             }
         case .undoDelete:
@@ -268,20 +264,19 @@ struct ChatSidebarView: View {
     }
 
     @ViewBuilder
-    private func menu(_ conv: ChatConversation) -> some View {
+    private func menu(_ conv: ChatList.Conversation) -> some View {
         Button("Rename…") {
             renameText = conv.title
             renaming = conv
         }
-        Button(conv.pinned ? "Unpin" : "Pin") { Task { await historyVM.togglePin(conv.id) } }
-            .disabled(historyVM.pendingWrites.isPending("pin:\(conv.id)"))
-        if !chatVM.projects.isEmpty || conv.projectID != nil {
+        Button(conv.pinned ? "Unpin" : "Pin") { Task { await historyVM.list.pin(conv.id) } }
+        if !chatVM.projects.isEmpty || conv.project != nil {
             Menu("Move to Project") {
                 Button("None") { Task { await chatVM.moveConversation(conv.id, toProject: nil) } }
-                    .disabled(conv.projectID == nil)
+                    .disabled(conv.project == nil)
                 ForEach(chatVM.projects) { project in
                     Button(project.name) { Task { await chatVM.moveConversation(conv.id, toProject: project.id) } }
-                        .disabled(conv.projectID == project.id)
+                        .disabled(conv.project?.id == project.id)
                 }
             }
         }

@@ -4,6 +4,7 @@ import SwiftUI
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
+@testable import ChatUI
 
 /// Inbox builder A (plan Task 1): the block renderer, today's Inbox card
 /// states, every Look step state and the target button's states, on the
@@ -264,8 +265,8 @@ enum InboxBuilderAShotFixtures {
             "reason": "From the Inbox card “Release 4.2 — where we are” of Threads waiting for me",
             "decided_at": "2026-11-03T09:00:00Z"
         ]))
-        return AnyView(AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
-                                           targetButtonState: .stuck)
+        return AnyView(MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                                          targetButtonState: .stuck)
             .padding(Spacing.page)
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .detailBackground())

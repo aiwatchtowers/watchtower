@@ -4,6 +4,7 @@ import Observation
 import SwiftTerm
 import SwiftUI
 import WatchtowerCore
+import ChatUI
 
 /// One running terminal process. The center owns it; a view only hosts `view`.
 @MainActor

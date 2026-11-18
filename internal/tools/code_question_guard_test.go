@@ -85,6 +85,14 @@ var chatTableReaders = map[string]chatTableReader{
 		threadTest: "TestChatArtifactSource_SkipsSpecReviewThreads",
 		tuningTest: "TestChatArtifactSource_SkipsTuningChats",
 	},
+	// The chat's own history and artifacts (2026-11-16): the bound
+	// conversation only, refused when it is an isolated thread.
+	"chat_history.go": {
+		testFile:   "chat_history_test.go",
+		test:       "TestChatHistory_RefusesCodeQuestionChats",
+		threadTest: "TestChatHistory_RefusesSpecReviewThreads",
+		tuningTest: "TestChatHistory_RefusesTuningChats",
+	},
 	// The ideas consolidator's chat turns (chat knowledge, 2026-10-24).
 	filepath.Join("..", "db", "chat_knowledge.go"): {
 		testFile:   filepath.Join("..", "db", "chat_knowledge_test.go"),

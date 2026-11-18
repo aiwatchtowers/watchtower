@@ -2,6 +2,7 @@ import XCTest
 import GRDB
 import WatchtowerTestSupport
 @testable import WatchtowerCore
+import WatchtowerChatText
 
 final class ChatStepQueriesTests: XCTestCase {
     private func withMessage(_ body: (Database, Int64) throws -> Void) throws {

@@ -152,6 +152,14 @@ final class ActionLatencyTests: XCTestCase {
         XCTAssertEqual(try pendingCount(phone.store), 0)
     }
 
+    /// The composer's pickers answer in the echo (echo-only, no slice follows): no row, so no misleading sample.
+    func testAnEchoOnlyPickerLeavesNoRow() async throws {
+        let phone = try await makePhone()
+        _ = try await send(phone, .chatEntitySearch)
+        _ = try await send(phone, .chatSkillsList)
+        XCTAssertEqual(try pendingCount(phone.store), 0)
+    }
+
     func testALegacyActionLeavesNoRow() async throws {
         let phone = try await makePhone(ordered: false)
         _ = try await phone.outbox.enqueue(kind: .boardTargetStatus, entityRecordName: "target-42")
@@ -359,6 +367,10 @@ final class ActionLatencyTests: XCTestCase {
         XCTAssertEqual(ActionEffectKinds.table, fixture)
         XCTAssertEqual(ActionEffectKinds.kinds(for: "ask_answer"), ["owner_ask", "ask_alert"])
         XCTAssertEqual(ActionEffectKinds.kinds(for: "kind_from_a_newer_build"), [])
+        // The pickers answer in the echo: listed, with no effect kind, so they time nothing.
+        for kind in ["chat_entity_search", "chat_skills_list"] {
+            XCTAssertEqual(ActionEffectKinds.table[kind], [], kind)
+        }
     }
 }
 

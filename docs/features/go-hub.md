@@ -584,7 +584,7 @@ re-checked in its Task 0; the plan's Global Constraints, Decisions and Known lim
   body fixed (`Answer ready`, `The answer stopped`, `Waiting for your approval`), never answer text. Sources:
   the runner's `OnTurnEnd` for the hub's own turns (`complete` = answer, `partial`/`error` = stopped), and a
   check on every `data_version` change (plus the chat timer's 5 s backstop) for the Mac's: a `chat_turn_leases`
-  row with `owner='desktop'` that disappeared with the turn's assistant row present, and a newly pending
+  row with `owner='desktop'` (main chats only, `context_type IS NULL`, as for every chat push) that disappeared with the turn's assistant row present, and a newly pending
   `agent_actions` row (`trust_at_create='ask'`, chat turn) as the approval case. The first look only records
   (nothing pushes for what happened before the hub started). No push when an `open` `chat_feed_request` for the
   conversation arrived in the last 90 s (`ChatWatches.Open`; a prefetch never counts). The pusher's owner-away and
@@ -595,6 +595,15 @@ re-checked in its Task 0; the plan's Global Constraints, Decisions and Known lim
   `relay.Transport.SendAlert(ctx, phoneRelayID, secure.Push)` refuses an unsealed push before any I/O and sends the
   envelope only. On this op `NOT_FOUND` is `transport.ErrNoPushToken` and `UNSPECIFIED` "not implemented"
   `transport.ErrPushOff`; the rest maps through `MapError`; `relay.RetryAfter(err)` reads `retry_after_s`.
+- **Relay answers `MapError` has no code class for** (#1872). `UNSPECIFIED` "internal error" (the relay failed the
+  op: a 200 from the device object's catch around one op, a 500 when the call to the device object threw, a 200 on
+  a public op such as login) is `relay.ErrRelayInternal`, which is `transport.ErrUnavailable` (a mailbox pass and
+  `set_hub_readers` retry later) with two exceptions: the publisher does not take it as cycle-wide (one op may throw
+  alone, so the other kinds still go, #1761), and the alert pusher settles it `expired` (`in_flight`), never resent
+  (the push may already be queued). An HTTP status other than 200 whose body carries no protocol error (an empty 5xx
+  from the edge) is no answer (`client.Do` fails; unavailable), never a success. The publisher's, the hub's, the
+  mailbox processor's and the pusher's log classes name the former `relay_internal` and any other unclassed code
+  `relay_<code>` (`relay.CodeClass`) instead of a bare `error`/`other`.
 - **The pusher** (`internal/hub/alerts`, wired in `alerts_wiring.go`). The publisher calls
   `slices.Config.OnAlertSaved` once per alert key after its first successful save, only while the relay is the active
   transport (republishes and rotations never; on CloudKit the `sig-` signal path runs instead). `Pusher.Enqueue`
@@ -714,4 +723,27 @@ On a relay route the keyring rotates every 7 days (`relayRotationAge`; 90 days o
 
 ## iPhone chat (2026-11-15, board #1791)
 
+**Superseded in part (unified chat, 2026-11-16, [unified-chat.md](unified-chat.md)):** the runner `internal/hub/chatrun` and its pool of 2 are now the daemon's chat engine (`internal/chatengine`, one pool of 3 for the Mac and the phone), the hub calls it in-process as an adapter (`hub.Options.ChatEngine`) and no longer watches `chat_*` tables, and the lease watch, `desktop_too_old` and the heartbeat's `chat_lease` flag are gone (the flag is accepted and ignored for one release). The text below describes the 2026-11-15 design.
+
 The hub runs phone-started chat turns: `internal/chatstore` (the Go turn store) and `internal/hub/chatrun` (a pool of 2 `ai session` processes, started at hub start with a sweep of orphan groups and dead leases, closed first at hub stop). A turn's rows are written by the lease holder's store, Swift or Go (`chat_turn_leases`, migration 00189). The ten `chat_*` kinds and the `chat_attachment` frame are registered in `handlers.Register`; the `chat` grant (`hub allow <device> chat [--revoke]`, sidecar migration 00017) is on by default; the heartbeat carries `capabilities.chat` and `chat_reason`; `hub desktop heartbeat --chat-lease 0|1` and the control socket's `chat_lease` tell the hub the Desktop honours the lease. Full note: [iphone-chat.md](iphone-chat.md); push: the `chat_answer` paragraph in Phase 4 above.
+
+## A failing publish is visible (2026-11-16, #1873, asks #1396/#1398)
+
+- **The log names the reason.** A failed publish cycle, a kind's source read, a phone's mailbox read and the relay readers sync log a
+  content-free reason after their class (`internal/hub/logreason`): the relay's error code when the chain carries one
+  (`other: relay code CONFLICT`), else the deepest typed Go error (`unavailable: *net.OpError`), else `untyped` —
+  never the error's text. The cycle line lists the kinds it retries (`kinds retried: owner_ask, target`). Each of the
+  lines goes through a `logreason.Limiter` (one per publisher, processor and hub runtime): the first copy is logged,
+  then at most one per `logreason.RepeatEvery` (10 min) with "(repeated N more times over 10m0s)"; a different line
+  logs at once. The cycle line is keyed by its reason alone (the kinds retried vary through one outage), the mailbox
+  line by device and reason, the source line by kind and reason; a line that stops repeating loses its held-back count.
+- **`hub status` text** shows a relay that is not connected: `hub: running, relay unavailable since 15:22 (last saved
+  15:20), 1 phone(s)` (local time, the date when not today; "never saved since the hub started" before the first
+  save). `--json` already carried `relay.state`/`since`/`last_saved_at`; Settings → Mobile's Relay row already reads
+  them ("Relay unavailable for <N> min.", "Connected · last change delivered … ago").
+- **Heartbeat `stuck_since`** (optional Unix seconds): when the oldest kind whose last attempt did not go through
+  whole first failed — a failed save or source read, or a record the cycle skipped (oversized, unsealable, refused by
+  the transport). `Publisher.StuckSince` keeps it per kind (`slices/stuck.go`) until an attempt goes through whole; an
+  epoch rotation's abort counts neither way. The heartbeat restamps at once when the value changes. `last_publish_at`
+  keeps its meaning (moves when any kind finished). The phone's use of it is in
+  [mobile-companion.md](mobile-companion.md) ("The data's age").

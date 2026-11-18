@@ -67,6 +67,14 @@ type Caps struct {
 	// start and the skill listing, which agent analytics' Context and Skills
 	// blocks read (Claude Code's; a Codex rollout records neither).
 	AnalyticsContext bool `json:"analytics_context"`
+	// ClaudeSessionFiles: the agent keeps Claude Code's per-session files
+	// the session's cleanup reads to adopt what the session's agents made
+	// (auto cleanup spec 2026-11-10 §2): its subagents' records,
+	// <projects dir>/<slug>/<session uuid>/subagents/agent-<id>.meta.json,
+	// which name the worktrees they were started in (§2a), and its
+	// scratchpad, <TMPDIR>/claude-<uid>/<slug>/<session uuid>/ (§2b).
+	// Claude Code's; Codex has neither.
+	ClaudeSessionFiles bool `json:"claude_session_files"`
 }
 
 // TakesLineWhileWorking reports whether a line may go into the session while

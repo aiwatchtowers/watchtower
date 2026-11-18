@@ -130,7 +130,21 @@ type syncCycle struct {
 // fetches and history backfill on a context derived from ctx that the loop
 // can cancel. A daemon shutdown cancels both.
 func (d *Daemon) startCycle(ctx context.Context, resetTicker bool) *syncCycle {
+	return d.startCycleOn(ctx, resetTicker, false)
+}
+
+// startManualCycle is startCycle for a manual trigger (Sync Now): its Slack
+// sync runs every account, whatever their adaptive cadence.
+func (d *Daemon) startManualCycle(ctx context.Context) *syncCycle {
+	return d.startCycleOn(ctx, true, true)
+}
+
+func (d *Daemon) startCycleOn(ctx context.Context, resetTicker, manual bool) *syncCycle {
 	fetchCtx, cancel := context.WithCancelCause(ctx)
+	runCtx := fetchCtx
+	if manual {
+		runCtx = withManualSync(fetchCtx)
+	}
 	// Set here, on the loop goroutine, so a trigger right after this never
 	// reads the previous cycle's state.
 	d.setSection(sectionSlackFetch)
@@ -139,7 +153,7 @@ func (d *Daemon) startCycle(ctx context.Context, resetTicker bool) *syncCycle {
 	go func() {
 		defer close(c.done)
 		defer cancel(nil)
-		d.runSync(ctx, fetchCtx)
+		d.runSync(ctx, runCtx)
 		if d.cycleEnded != nil {
 			d.cycleEnded()
 		}
@@ -311,12 +325,13 @@ func (d *Daemon) runLoop(ctx context.Context, pollInterval time.Duration) error 
 					dropConnections()
 				}
 				triggerQueued = false
-				cycle = d.startCycle(ctx, true)
+				cycle = d.startManualCycle(ctx)
 			case finished.resetTicker:
 				ticker.Reset(pollInterval)
 			}
 		case <-settleC:
 			settle = nil
+			manual := triggerQueued
 			switch {
 			case triggerQueued:
 				// The owner asked for it: never gated.
@@ -331,7 +346,11 @@ func (d *Daemon) runLoop(ctx context.Context, pollInterval time.Duration) error 
 			d.logger.Println("syncing after wake")
 			triggerQueued = false
 			clearDeferred()
-			cycle = d.startCycle(ctx, true)
+			if manual {
+				cycle = d.startManualCycle(ctx)
+			} else {
+				cycle = d.startCycle(ctx, true)
+			}
 		case <-recheckC:
 			// Never a start here: the deferral stays marked, so the delay's
 			// end runs the owed cycle (sync_on_wake off too) after asking the
@@ -419,7 +438,7 @@ func (d *Daemon) onTrigger(ctx context.Context, cycle **syncCycle, settling bool
 		return true
 	case c == nil:
 		d.logger.Println("manual sync trigger received, syncing")
-		*cycle = d.startCycle(ctx, true)
+		*cycle = d.startManualCycle(ctx)
 		return false
 	case d.triggerRestarts(c):
 		d.logger.Printf("manual sync trigger received after %s without Slack sync progress, cancelling the source syncs and syncing afresh",

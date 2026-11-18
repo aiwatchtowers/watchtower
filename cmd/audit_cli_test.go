@@ -196,6 +196,9 @@ var cliNoContentCommands = map[string]bool{
 	"catchup ack":                      true,
 	"catchup feedback":                 true,
 	"channels":                         true,
+	"channels exclude":                 true,
+	"channels include":                 true,
+	"chat shutdown":                    true,
 	"chat title":                       true,
 	"code index":                       true,
 	"coach accept":                     true,
@@ -347,7 +350,9 @@ var cliNoContentCommands = map[string]bool{
 	"outlook login":                    true,
 	"outlook logout":                   true,
 	"outlook rename":                   true,
+	"people exclude":                   true, // prints the person's id only
 	"people generate":                  true,
+	"people include":                   true, // prints the person's id only
 	"policy show":                      true, // the organization policy: settings, no company content
 	"profile":                          true,
 	"project":                          true,
