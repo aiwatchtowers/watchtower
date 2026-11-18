@@ -61,6 +61,47 @@ struct ConfigServiceTests {
         #expect(saved.contains("enabled: true"))
     }
 
+    @Test("Save takes the config lock, then re-reads and writes inside it")
+    func testSaveHoldsConfigLockAroundReadAndWrite() throws {
+        let path = makeTempConfig("sync: {workers: 2}")
+        let recorder = RecordingConfigFileAccess()
+        let service = ConfigService(configPath: path, fileAccess: recorder.access)
+        service.syncWorkers = 4
+        try service.save()
+        #expect(recorder.events == ["lock", "read(locked)", "write(locked)", "unlock"])
+        #expect(ConfigService(configPath: path).syncWorkers == 4)
+    }
+
+    @Test("Save keeps keys another writer set after this instance loaded the file")
+    func testSaveKeepsKeysWrittenByOthers() throws {
+        let path = makeTempConfig("sync: {workers: 2}")
+        let service = ConfigService(configPath: path)
+        // `watchtower ai background allow` and `jira login` write behind the loaded instance.
+        try ConfigFileLock.withLock(configPath: path) { token in
+            try ConfigFileWriter.write(
+                "sync: {workers: 2}\nai: {background_runs: allowed}\njira: {enabled: true}\n",
+                configPath: path, token: token
+            )
+        }
+        service.syncWorkers = 5
+        try service.save()
+        let yaml = try #require(try Yams.load(yaml: String(contentsOfFile: path, encoding: .utf8)) as? [String: Any])
+        #expect((yaml["ai"] as? [String: Any])?["background_runs"] as? String == "allowed")
+        #expect((yaml["jira"] as? [String: Any])?["enabled"] as? Bool == true)
+        #expect((yaml["sync"] as? [String: Any])?["workers"] as? Int == 5)
+    }
+
+    @Test("Save over a config that exists but does not parse throws and writes nothing")
+    func testSaveRefusesUnparsableConfig() throws {
+        let path = makeTempConfig("ai: {background_runs: allowed}\nsync: {workers: 2}\n")
+        let service = ConfigService(configPath: path)
+        let broken = "ai: {background_runs: allowed\nsync: [unclosed\n"
+        try broken.write(toFile: path, atomically: true, encoding: .utf8)
+        service.syncWorkers = 7
+        #expect(throws: ConfigUnreadableError.self) { try service.save() }
+        #expect(try String(contentsOfFile: path, encoding: .utf8) == broken)
+    }
+
     @Test("Reserve starts off and independent models survive switches and Saves", arguments: ["claude", "codex"])
     func reserveBuckets(provider: String) throws {
         let other = provider == "claude" ? "codex" : "claude"

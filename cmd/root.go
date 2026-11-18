@@ -69,16 +69,19 @@ func ensureSchemaFormat(_ *cobra.Command, _ []string) error {
 		}
 	}
 
-	v := viper.New()
-	v.SetConfigFile(flagConfig)
-	if err := v.ReadInConfig(); err != nil {
-		return fmt.Errorf("re-reading config for schema_format bump: %w", err)
-	}
-	v.Set("db.schema_format", db.CurrentSchemaFormat)
-	if err := writeConfigAtomic(v, flagConfig); err != nil {
-		return fmt.Errorf("persisting schema_format: %w", err)
-	}
-	return nil
+	return config.WithWriteLock(flagConfig, func(lk *config.WriteLock) error {
+		v := viper.New()
+		v.SetConfigFile(flagConfig)
+		v.SetConfigType("yaml")
+		if err := v.ReadInConfig(); err != nil {
+			return fmt.Errorf("re-reading config for schema_format bump: %w", err)
+		}
+		v.Set("db.schema_format", db.CurrentSchemaFormat)
+		if err := writeConfigAtomic(lk, v, flagConfig); err != nil {
+			return fmt.Errorf("persisting schema_format: %w", err)
+		}
+		return nil
+	})
 }
 
 // Execute runs the root command and returns the exit code.

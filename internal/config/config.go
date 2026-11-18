@@ -489,6 +489,9 @@ type WorkbenchConfig struct {
 }
 
 // Load reads config from the given path, binds env vars, and returns the config.
+// The file is always read as YAML, whatever the path's extension: a --config
+// path naming a .json/.toml file (or none) is parsed as YAML too, as every
+// other config.yaml reader and writer does.
 func Load(configPath string) (*Config, error) {
 	v := viper.New()
 
@@ -607,8 +610,12 @@ func Load(configPath string) (*Config, error) {
 	// after RunSchemaUpgrade succeeds.
 	v.SetDefault("db.schema_format", 1)
 	v.SetDefault("workbench.default_agent", string(agentkind.Claude))
-	// Config file
+	// Config file. config.yaml is YAML by contract, whatever the path's
+	// extension (--config / WATCHTOWER_CONFIG_PATH may name any file): every
+	// reader and writer of it sets the type, so the format never follows
+	// the name.
 	v.SetConfigFile(configPath)
+	v.SetConfigType("yaml")
 
 	if err := v.ReadInConfig(); err != nil {
 		// Missing config file is OK — use defaults

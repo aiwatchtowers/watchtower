@@ -460,9 +460,9 @@ func TestWorkspaceInitHeadlessTurnsOffEveryNonCoreFeature(t *testing.T) {
 	// without the headless profile.
 	writes := 0
 	old := writeConfigFile
-	writeConfigFile = func(v *viper.Viper, path string) error {
+	writeConfigFile = func(lk *config.WriteLock, v *viper.Viper, path string) error {
 		writes++
-		return old(v, path)
+		return old(lk, v, path)
 	}
 	t.Cleanup(func() { writeConfigFile = old })
 
