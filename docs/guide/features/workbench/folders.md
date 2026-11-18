@@ -69,7 +69,7 @@ action: nav:projects
 When Claude Code keeps working in a repository outside the bench, the agent may suggest it. A card **Put <name> on the bench?** shows in **Waiting for you**:
 
 - **Put on Bench** adds it, and the agent hears it can start a sub-session there.
-- **Not Now** keeps the session from asking about it again.
+- **Not Now** stops the automatic reminder about it for the rest of this session. The agent can still suggest it again; only **Never for This Folder** blocks that.
 - **Never for This Folder** stops every agent of this bench from suggesting it.
 
 A Codex agent is not reminded, so it suggests a folder only when it sees the need itself.

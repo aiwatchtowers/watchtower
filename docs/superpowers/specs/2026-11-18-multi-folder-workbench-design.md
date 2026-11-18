@@ -427,7 +427,8 @@ The tasks named these where the spec gave no text; each lives in a presentation 
   `↗ Sub-session “<title>” starting · <folder>`; a started one's body `Brief sent.` A waiting
   message whose hold the Desktop cannot tell reads `The message goes when the session can take
   it.`; with the daemon stopped, `Watchtower's background sync is stopped; the message goes when
-  it runs.` (D44).
+  it runs.` (D44). A failure to a session whose row was deleted reads `[Message to a deleted
+  session not delivered: <reason>]` (its id went with the row).
 - **Board (§6.10).** The folder chip's tooltip is `Folder`; the target panel's folder menu reads
   `Folder removed` for a removed folder.
 
