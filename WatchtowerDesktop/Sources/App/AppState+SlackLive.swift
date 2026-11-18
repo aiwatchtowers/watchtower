@@ -3,6 +3,22 @@ import GRDB
 import WatchtowerCore
 
 extension AppState {
+    /// The CLI streamer every plan B Slack model AppState builds runs on
+    /// (the company setup, the connect listener): nil in a test process, so
+    /// no test ever runs the installed `watchtower` against the owner's live
+    /// workspace (`slack app status` reads it, `slack accounts --json` runs
+    /// the A17 backfill write). A test that needs a CLI injects a fake.
+    nonisolated static func slackLineStream() -> (any CLILineStreaming)? {
+        runsUnderXCTest ? nil : ProcessCLILineStream.makeDefault()
+    }
+
+    /// The CLI path of the Slack accounts view model AppState builds (the
+    /// flags read, the Re-login route read, the sign-ins): none in a test
+    /// process, for the same reason as `slackLineStream`.
+    nonisolated static func slackCLIPath() -> String? {
+        runsUnderXCTest ? nil : Constants.findCLIPath()
+    }
+
     /// The Slack Live probe's status mirror, rebuilt with the database.
     func initSlackLive(dbPool: DatabasePool, cliRunner: (any CLIRunnerProtocol)?) {
         let center = SlackLiveStatusCenter(dbPool: dbPool, runner: cliRunner)
@@ -46,7 +62,7 @@ extension AppState {
     private func startSlackConnectListener() {
         guard slackConnectListener == nil,
               !Self.runsUnderXCTest,
-              let streamer = ProcessCLILineStream.makeDefault() else { return }
+              let streamer = Self.slackLineStream() else { return }
         let host = SlackConnectListenerHost(streamer: streamer)
         slackConnectListener = host
         // The flow consumes the host's events from its first line on.

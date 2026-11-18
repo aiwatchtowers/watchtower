@@ -331,7 +331,8 @@ final class SlackAppSetupModelTests: XCTestCase {
         let model = await problem(result("not_allowed", appID: "", clientID: ""))
         XCTAssertFalse(model.adminNoteCopied)
         XCTAssertEqual(model.copyAdminNote(), "Please set up Watchtower for acme in Slack: "
-            + "https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/concepts/sources-and-accounts.md")
+            + "https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/features/slack-full.md"
+            + "#set-up-slack-for-your-company")
         XCTAssertTrue(model.adminNoteCopied)
         XCTAssertEqual(Model.adminNoteCopiedLine, "Copied. Send it to a workspace admin.")
         XCTAssertEqual(Model.adminNote(workspace: ""), "Please set up Watchtower for our Slack workspace in Slack: "

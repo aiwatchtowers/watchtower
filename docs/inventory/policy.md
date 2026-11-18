@@ -44,6 +44,7 @@
 **Test guards:**
 - `internal/policy/policy_test.go`: `TestPolicy02_SharedFixture`.
 - `WatchtowerDesktop/Tests/Core/ManagedPolicyTests.swift`: `sharedFixture`, `sharedConnectionCases`.
+- The shared fixture `internal/policy/testdata/policy_cases.json` carries the `SlackApps` cases both twins run (`slack_apps_valid`, `slack_apps_wrong_type`, `slack_apps_bad_entries`, `slack_apps_duplicate_team`, `slack_apps_empty`; plan B Task 5, #1709); removing one weakens POLICY-01/02 for that key.
 
 **Locked since:** 2026-10-25
 

@@ -20,7 +20,7 @@ A service that needs you gets a banner on top with **Reconnect**, which opens th
 | **Linear** | Connections → Linear | Issues, cycles and projects of the teams you select ([Linear](../features/linear.md)) | Blockers, weekly digest progress, the main chat; identifies you as the owner |
 | **Quick Connections** | Connections → Quick Connections | Nothing is synced. The assistant can call an external tool server (MCP) you add, only when you ask in chat | The main chat. See [Quick Connections](../features/quick-connections.md) |
 
-Slack is read-only. The assistant sends a Slack message only after you approve it, and Slack may ask you to reconnect once to grant that permission. Why Watchtower asks for each Slack permission:
+Slack syncs in **Full**, through your workspace's own Watchtower app: one person sets it up, colleagues connect from its About page in Slack ([Slack Full](../features/slack-full.md)). Slack is read-only. The assistant sends a Slack message only after you approve it, and Slack may ask you to reconnect once to grant that permission. Why Watchtower asks for each Slack permission:
 
 - **History and channel lists** of public and private channels, DMs and group DMs, and **search**: to keep the local copy on your Mac.
 - **Open a DM and post a message**: only when you press Approve.
@@ -75,7 +75,7 @@ A red dot on a service means at least one of its accounts has a problem. An expi
 
 A source your company's profile forbids is listed as **Blocked by your organization**: its accounts stop syncing and keep their data, and nothing new can be connected.
 
-Use **Reconnect Slack** or **Re-login** on the row. Your data stays and syncing resumes. More in [Troubleshooting](../troubleshooting/README.md).
+Use **Reconnect Slack** or **Re-login** on the row (**Move to Full** on an account of the retiring shared Slack app). Your data stays and syncing resumes. More in [Troubleshooting](../troubleshooting/README.md).
 
 ## What removing an account does
 

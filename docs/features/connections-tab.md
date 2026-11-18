@@ -26,7 +26,12 @@ Every account Watchtower reads from, and the assistant's Quick Connections, in o
 ## State that survives navigation
 
 - `AppState.slackAuthFlow` (`SlackAuthFlowState`) holds an in-flight Slack connect/reconnect/disconnect, so it survives switching services and leaving the tab (it lived on the Settings tab before).
+- `AppState.slackConnectListener` (the `slack connect serve` child), `slackConnectFlow` (`SlackConnectFlowModel`) and `slackAppSetup` (`SlackAppSetupModel`) hold the Slack connect flow and the company setup, so a run survives closing its sheet, switching services and leaving the tab ([slack-full.md](slack-full.md)).
 - `AppState.sharedConfig` is the one in-memory `ConfigService` both the Settings window and the tab edit, so neither saves a stale copy over the other's change. Lazy; a test sets its own before first use. Both re-read config.yaml on appear unless an edit awaits Save (`reloadUnlessEdited`, `hasUnsavedEdits` compares the settings fields by reflection with what the last reload or save left).
+
+## Slack: the mode pane (plan B, #1709)
+
+`SlackConnectionDetail` is no longer a `Form`: `SettingsSection`s in a `ScrollView`, top to bottom the shared-app banner, **Slack mode** (chip, summary, Live block), the company setup's record rows, **Connect your workspace's app** (MDM rows, the link-or-code field, **Set up for my company**, the port-busy line; folded behind **Connect another workspace…** in Full), then **Slack Workspaces** (**Add Slack Account** only while the build bakes a Slack app, `builtin_app`), the legacy Workspace block and Reaction commands. The overview's Slack card gets a `ConnectionSummary.notice` "Shared app retiring" under its status line while an account syncs through the retired shared app: a notice, never `needsAttention` or a badge. Strings and states: [slack-live.md](slack-live.md) (mode, Live block) and [slack-full.md](slack-full.md) (setup, connect, banner).
 
 ## Jira: the Boards tab's sections
 

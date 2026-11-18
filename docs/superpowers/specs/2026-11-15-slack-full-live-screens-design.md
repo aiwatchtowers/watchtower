@@ -127,7 +127,7 @@ Tests: `FeatureReadinessTests.testNeedsFullSlackForSlackFeatures`, `testNeedsFul
 | Statistics | `slackSync` (slack) | Live only — the tab stays visible with Live alone (sidebar rule below) |
 | Knowledge (search) | `knowledgeIndex` (none) | no readiness change. The note "Slack is not in Knowledge: Live answers are not kept. Connect your workspace's app to add synced Slack." (quiet **Connect workspace app**) ships as a string in `SlackModePresentation.knowledgeNote` with its test only: the Desktop has no Knowledge search screen yet, so it is placed under that screen's search field when one exists (agent decision, §11 B4) |
 
-**The sidebar with Live only (owner, ask #1315).** Catch-Up and Statistics stay visible and show `needsFullSlack` instead of being hidden. Rule, in `WatchtowerCore/Services/SidebarVisibility.swift`: `ConnectedSources` gains `slackLive` (`ConnectedSources.fetch`: `EXISTS(SELECT 1 FROM slack_live_status WHERE status = 'ok')`), `SidebarSource` gains `.slackLive` (`provides` → `slackLive`), and `SidebarDestination.requiredSources` adds `.slackLive` to exactly these two tabs: Catch-Up `[.messages, .slackLive, .jira, .linear, .calendar]`, Statistics `[.messages, .slackLive]`. `.messages` keeps its meaning (synced Slack or mail), so no other tab changes. Re-read: `AppState.refreshConnectedSources()` runs on a `SlackLiveStatusCenter.statuses` change, next to the `ReadinessCenter.refresh()` of §6, so the tabs appear and disappear with the mode. Tests: `SidebarVisibilityTests.testLiveOnlyShowsCatchUpAndStatistics`, `testLiveDoesNotCountAsMessages` (every other `.messages` tab stays hidden), `testRefreshOnLiveStatusChange`.
+**The sidebar with Live only (owner, ask #1315).** Catch-Up and Statistics stay visible and show `needsFullSlack` instead of being hidden. Rule, in `WatchtowerCore/Services/SidebarVisibility.swift`: `ConnectedSources` gains `slackLive` (`ConnectedSources.fetch`: the newest probe batch per provider says `ok` — the SLACKMODE-01 reduction, ask #1525, `ReadinessQueries.slackLiveVerdicts`; an absent table reads Off), `SidebarSource` gains `.slackLive` (`provides` → `slackLive`), and `SidebarDestination.requiredSources` adds `.slackLive` to exactly these two tabs: Catch-Up `[.messages, .slackLive, .jira, .linear, .calendar]`, Statistics `[.messages, .slackLive]`. `.messages` keeps its meaning (synced Slack or mail), so no other tab changes. Re-read: `AppState.refreshConnectedSources()` runs on a `SlackLiveStatusCenter.statuses` change, next to the `ReadinessCenter.refresh()` of §6, so the tabs appear and disappear with the mode. Tests: `SidebarSlackLiveTests.testLiveOnlyShowsCatchUpAndStatistics`, `testLiveDoesNotCountAsMessages` (every other `.messages` tab stays hidden), `testRefreshOnLiveStatusChange` — in the app-target class `SidebarSlackLiveTests`, because `SidebarDestination` and `AppState` are not visible to Core tests; the Core `SidebarVisibilityTests` keeps the fetch and source tests (`testSlackLiveIsItsOwnSource`, `testSlackLiveReadsTheNewestBatch`).
 
 **The one narrowing of the parent's promise** ("`needsFullSlack` on every Slack-dependent screen"): **Knowledge shows a note, not a readiness state** (its feature has no source to need). Every other Slack-dependent screen shows the state.
 
@@ -158,7 +158,7 @@ The phone has no digests, Inbox or briefing screens, so the state shows only in 
 | Busy (progress) | `slack-fl-setup-progress` | four steps with done / running / waiting marks: "Checking the token", "Creating the app", "Writing the connect link to its About page", "Connecting your Slack account"; "Keep this window open. If it closes, continue from Connections → Slack; the app is never created twice." | **Close** |
 | Success | `slack-fl-setup-success` | "Watchtower's app is ready in <workspace>" / "You are connected. Colleagues open Watchtower in Slack, go to About and click the connect link." | **Copy connect code**, **Done** |
 | Error: bad token | `slack-fl-setup-badToken` | "That token did not work: it has expired or is not a configuration token. Generate a new one and paste it." | **Cancel**, **Try again** |
-| Error: not allowed | `slack-fl-setup-notAllowed` | "Your workspace does not let you create apps. Ask a workspace admin to run this setup." Under it, the note for the admin, shown ready to copy and selectable: "Please set up Watchtower for <workspace> in Slack: <guide link>" (A23; the guide page is Task 17's); after **Copy a note for your admin**: "Copied. Send it to a workspace admin." The not-collaborator state (adopt) offers the same note | **Cancel**, **Copy a note for your admin**, **Try again** |
+| Error: not allowed | `slack-fl-setup-notAllowed` | "Your workspace does not let you create apps. Ask a workspace admin to run this setup." Under it, the note for the admin, shown ready to copy and selectable: "Please set up Watchtower for <workspace> in Slack: <guide link>" (A23; the guide link is `SlackAppSetupModel.guideURL`, `docs/guide/features/slack-full.md#set-up-slack-for-your-company` on `main`); after **Copy a note for your admin**: "Copied. Send it to a workspace admin." The not-collaborator state (adopt) offers the same note | **Cancel**, **Copy a note for your admin**, **Try again** |
 | Error: network | (layout of `badToken`) | "Could not reach Slack: <error>. Nothing was created." | **Cancel**, **Try again** |
 | Error: other Slack refusal | (layout of `badToken`) | "Slack refused the app: <code>. Nothing was created." | **Cancel**, **Try again** |
 | Link not written | `slack-fl-setup-linkFailed` | "Watchtower's app is ready in <workspace>" / "The app works, but its About page has no connect link yet: the token expired before the link was written. Paste a fresh token to add it." | **Close**, **Add the link to the app** |
@@ -246,12 +246,24 @@ When the listener cannot bind, the connect section shows a warning line above th
 
 `SlackConnectFlowModel` in `WatchtowerDesktop/Sources/WatchtowerCore/Services/Slack/SlackConnectFlowModel.swift`, `@Observable`, held on `AppState` beside the listener (T8). It parses the pasted text, runs the flow's states (idle → confirming → browser → connected / failed), and owns every string of §4.2–§4.4 except the section's static lines, which `SlackModePresentation` builds. One flow at a time: the shared `SlackAuthFlowState` guard also covers Reconnect. Test: `SlackConnectFlowModelTests` (`Tests/Core`).
 
+### 4.6 Onboarding's Slack sheet (plan B A13)
+
+Onboarding's Connect step follows `builtin_app` too: while the build bakes a Slack app the Slack card opens **Add Slack Account** as before; without one (`builtin_app: false`, or flags still unread while a connect flow exists) it opens `SlackOnboardingConnectSheet` — the connect section's fields in a sheet, then the flow's own browser/success/failed states inline. Strings in `SlackConnectFlowModel.onboarding*`, pinned by `SlackConnectFlowModelTests.testOnboardingStrings` and `SlackFullLiveMockCopyTests`; test `OnboardingConnectStepTests.testSlackWithoutBuiltinAppOpensConnectSection`. A link that arrives during onboarding opens this sheet (never over another source's sheet); if onboarding ends with a flow on screen, the app lands on Connections → Slack.
+
+| State | Shot | What shows | Buttons |
+|---|---|---|---|
+| Empty | `slack-fl-onboarding-empty` (+ `-empty-narrow`) | title "Connect Slack", caption "Watchtower connects through your workspace's own Slack app. Open Watchtower in Slack, go to its About tab and click the connect link, or paste the link or code here.", the field, **Set up for my company**, the Live hint "No app in your workspace? Chats can still read Slack through Live in your Claude or ChatGPT account." | **Skip**, **Connect** |
+| Organization rows | `slack-fl-onboarding-organization` | the MDM rows of §4.2 above the field | **Connect** per row |
+| Paste invalid | `slack-fl-onboarding-pasteInvalid` | the §4.2 inline error | as Empty |
+| Port busy | `slack-fl-onboarding-portBusy` | the §4.4 line | as Empty |
+
 ## 5. The retired shared app (D11)
 
 - **Banner** at the top of Connections → Slack while any enabled account is on the shared app (shots `slack-fl-pane-sharedApp`, `-sharedApp-narrow`): icon in `Tone.warning`, the card tinted with `Tone.warning` at `ChipTint.fillOpacity`, title "Watchtower's shared Slack app is retiring", body "<label> still syncs through it until Slack turns it off. Move to Full with your workspace's own app, or use Live through your Claude or ChatGPT account." Buttons: **Set up for my company** (`.kitSecondary`), **Paste a connect link** (`.kitQuiet`, focuses the connect field). No dismiss: it goes when the account moves to its workspace's own app — the move re-binds the same account row to the new client id, history kept, nothing removed (ask #1425, which replaced #1414's new-row move; SLACK-01 untouched) — or when Slack stops the token (the account then shows the existing Re-login/error state).
 - The account row carries an outline tag "Shared app" and "Syncing through the shared app · last sync <age>".
 - **Connections overview:** the Slack card's status line reads "Shared app retiring"; it is not a problem (`needsAttention` stays false, no red badge) — the app keeps working.
-- Strings in `SlackModePresentation` (`sharedAppBanner`); tests `SlackModePresentationTests.testSharedAppBanner`, `testSharedAppIsNotAttention`; the parent's `TestSharedAppBanner` (T9) covers the Go side of the shared-app detection.
+- Strings in `SlackModePresentation` (`sharedAppBanner`); tests `SlackModePresentationTests.testSharedAppBanner`, `testSharedAppIsNotAttention`; the Go side of the shared-app detection is `TestSlackAccountSharedApp_RetiredIDOnly` and `TestSlackAccountsJSON_SharedAppByClientIDOnly` (the parent's planned `TestSharedAppBanner` was not written under that name).
+- **As shipped (plan B Task 15):** the banner body names the first shared-app account only (`<label>`); every flagged row carries its own tag. The account row's button reads **Move to Full** for `relogin: "move"` (once no build bakes the retired id) and opens the connect section; the legacy **Workspace** block keeps its **Reconnect Slack** label, routed the same way. A row whose token Slack stopped keeps the tag and **Move to Full** but drops the "Syncing through the shared app" line, and the chip override needs an `ok` account.
 
 ## 6. Failure modes
 
@@ -277,7 +289,7 @@ When the listener cannot bind, the connect section shows a warning line above th
 | Listener | port 18551 busy | warning line telling the owner to free the port (paste cannot finish either, A9); bind retried when the pane opens | `TestSlackConnectListener_PortBusy` (parent), `SlackModePresentationTests.testPortBusyLine` |
 | Readiness | the mode changes Off ↔ Live (a probe or a chat use writes `slack_live_status`) while a tab is open | `slackLiveOnly` is a new `ReadinessInputs` input, so it needs its own trigger: `ReadinessCenter` reads `slack_live_status` in `readSnapshot` (added to `DBSnapshot`), and a change of `SlackLiveStatusCenter.statuses` calls `ReadinessCenter.refresh()` at once (the probe is a CLI child — another process — which the GRDB observation does not see; the 30 s tick is only the backstop for chat/automation writes). Off → Live turns "Connect Slack to get this" into `needsFullSlack`; Live → Off the reverse | `ReadinessCenterTests.testLiveStatusChangeReevaluates`, `FeatureReadinessTests.testOffModeKeepsConnectSlack` |
 | Build | a public release built without `RETIRED_SLACK_CLIENT_ID` | refused before building by `retired-slack-id-check`; a non-release binary without the id calls nothing shared (no banner), and an empty `client_id` is never shared (§1) | `scripts/tests/test-build-app-retired-slack-id.sh`, `TestSlackAccountSharedApp_RetiredIDOnly` |
-| Sidebar | the mode changes Off ↔ Live while the app is open | `refreshConnectedSources()` on the center's change: Catch-Up and Statistics appear with Live and go with Off; a failed read keeps the last value (existing) | `SidebarVisibilityTests.testRefreshOnLiveStatusChange` |
+| Sidebar | the mode changes Off ↔ Live while the app is open | `refreshConnectedSources()` on the center's change: Catch-Up and Statistics appear with Live and go with Off; a failed read keeps the last value (existing) | `SidebarSlackLiveTests.testRefreshOnLiveStatusChange` |
 | Phone | the Mac sends `live` to an old phone | the raw word shows (default branch); nothing breaks | `AccountStatusStyleTests.testUnknownStatusShowsRaw` (exists in spirit; add) |
 
 ## 7. Writers of the same data and who wins
@@ -341,6 +353,11 @@ Design-only SwiftUI scenes in `DesignShotCatalog` (`SlackFullLiveShotFixtures`, 
 | [`slack-fl-connect-success`](../../design/mockups/slack-full-live/slack-fl-connect-success-light.png) | connected |
 | [`slack-fl-connect-teamMismatch`](../../design/mockups/slack-full-live/slack-fl-connect-teamMismatch-light.png) | error: team mismatch, **Start again** |
 | [`slack-fl-connect-denied`](../../design/mockups/slack-full-live/slack-fl-connect-denied-light.png) | error: denied in Slack |
+| [`slack-fl-onboarding-empty`](../../design/mockups/slack-full-live/slack-fl-onboarding-empty-light.png) | onboarding's Slack sheet, nothing pasted (§4.6, plan B A13) |
+| [`slack-fl-onboarding-empty-narrow`](../../design/mockups/slack-full-live/slack-fl-onboarding-empty-narrow-light.png) | the same, narrow |
+| [`slack-fl-onboarding-organization`](../../design/mockups/slack-full-live/slack-fl-onboarding-organization-light.png) | onboarding's Slack sheet with an MDM `SlackApps` workspace |
+| [`slack-fl-onboarding-pasteInvalid`](../../design/mockups/slack-full-live/slack-fl-onboarding-pasteInvalid-light.png) | onboarding's Slack sheet: pasted text is not a link or code |
+| [`slack-fl-onboarding-portBusy`](../../design/mockups/slack-full-live/slack-fl-onboarding-portBusy-light.png) | onboarding's Slack sheet: port 18551 busy |
 | [`slack-fl-needs-full-digests`](../../design/mockups/slack-full-live/slack-fl-needs-full-digests-light.png) | `needsFullSlack` on Digests |
 | [`slack-fl-needs-full-digests-narrow`](../../design/mockups/slack-full-live/slack-fl-needs-full-digests-narrow-light.png) | the same at 360 pt |
 | [`slack-fl-needs-full-catchup`](../../design/mockups/slack-full-live/slack-fl-needs-full-catchup-light.png) | `needsFullSlack` on Catch-Up (visible with Live only) |
@@ -364,7 +381,7 @@ Screen tasks (S) follow the parent plan B tasks they need.
 | The pane shows the mode, the Live rows with their age, and every block state | S1 `SlackModePresentation` + the pane on `SettingsSection` | plan A (shipped) | `SlackModePresentationTests`, `SlackLiveStatusCenterTests` |
 | **Check again** probes now, once at a time | S1 | plan A | `SlackLiveStatusCenterTests.testCheckAgainWhileRunningIsIgnored` |
 | `needsFullSlack` on every Slack-dependent screen and Home | S2 readiness | plan A | `FeatureReadinessTests.testNeedsFullSlack*`, `EmptyStateCopyCoverageTests` |
-| Catch-Up and Statistics stay visible with Live only and show `needsFullSlack` | S2 sidebar rule | plan A | `SidebarVisibilityTests.testLiveOnlyShowsCatchUpAndStatistics`, `testLiveDoesNotCountAsMessages` |
+| Catch-Up and Statistics stay visible with Live only and show `needsFullSlack` | S2 sidebar rule | plan A | `SidebarSlackLiveTests.testLiveOnlyShowsCatchUpAndStatistics`, `testLiveDoesNotCountAsMessages` |
 | The Knowledge note while Live (string + test; placed when a Knowledge search screen exists) | S2 | plan A | `SlackModePresentationTests.testKnowledgeNoteOnlyInLive` |
 | The phone says "Live only" | S2 | plan A | `TestDBAccounts_LiveOnlySlackRow`, `AccountStatusStyleTests.testLiveOnly` |
 | One-paste setup with progress, errors and resume | S3 `SlackAppSetupModel` + sheet + record row | T7 | `SlackAppSetupModelTests`, `TestAppSetup_*` |
@@ -373,10 +390,10 @@ Screen tasks (S) follow the parent plan B tasks they need.
 | Port busy is said and has a way out | S4 | T8 | `SlackModePresentationTests.testPortBusyLine`, `TestSlackConnectListener_PortBusy` |
 | A second workspace connects in Full | S4 | T8, T9 | `SlackModePresentationTests.testFullFoldsConnectSection` |
 | The baked app leaves every build only after adopt can turn on PKCE (plan B Task 16 before Task 18) | plan B T16, T18 | T13 (adopt) | plan B Task 18 "Depends on: … Task 16"; `TestAdopt_*` |
-| The shared-app banner, chip and tag; not an attention item | S5 | T2 (`client_id`), T9 | `SlackModePresentationTests.testSharedAppBanner`, `testSharedAppIsNotAttention`, `TestSharedAppBanner` |
+| The shared-app banner, chip and tag; not an attention item | S5 | T2 (`client_id`), T9 | `SlackModePresentationTests.testSharedAppBanner`, `testSharedAppIsNotAttention`, `TestSlackAccountSharedApp_RetiredIDOnly` |
 | Every public release can recognise shared-app accounts; a corp-app account is Full like any company app (ask #1425) | S5 (+ `scripts/build-app.sh` guard) | T9 | `scripts/tests/test-build-app-retired-slack-id.sh`, `TestSlackAccountSharedApp_RetiredIDOnly`, `TestBackfillSlackClientIDs_*` |
 | Disabled Add to Knowledge with its reason | shipped (plan A) | — | `LiveSlack01GuardTests` |
-| The guide and the feature notes say all of this | S6 docs: `docs/guide/concepts/sources-and-accounts.md` (Full, Live, setup, link, banner), `docs/features/slack-live.md`, `slack-multi-account.md`, `connections-tab.md` | S1–S5 | `go test ./docs/guide` (8 KB cap) |
+| The guide and the feature notes say all of this | S6 docs: `docs/guide/features/slack-full.md` (Full, setup, link, code, MDM, banner; the setup section is the admin note's anchor), `docs/guide/concepts/sources-and-accounts.md` (Live, pointer), `docs/features/slack-full.md` (new), `slack-live.md`, `slack-multi-account.md`, `connections-tab.md` | S1–S5 | `go test ./docs/guide` (8 KB cap) |
 | Each new screen looked at before merge | S1–S5 | — | the implementation re-renders the same shot names from the real views (`DesignShotsTests.testSlackFullLiveShotsRender`) |
 
 ## 11. Decisions
@@ -456,5 +473,5 @@ Added by plan B Task 13 and its reviews; approved by the owner in ask #1577 (202
 
 ## 13. Open
 
-- Whether Slack's callback reports a pending install request (T1 spike) — decides whether the approval row can appear (§3.4).
-- Whether Slack renders the About page link as clickable (T1) — the code is the fallback either way.
+- ~~Whether Slack's callback reports a pending install request (T1 spike)~~ Answered by the plan B spike (Q5, docs): no callback is documented, so the connect step waits with **Cancel** and the approval row does not appear (`SlackSetupConnector` never reports `approvalRequested`); plan B Task 16's live check confirms it.
+- ~~Whether Slack renders the About page link as clickable (T1)~~ Spike Q6: `long_description` is Slack mrkdwn, 175–4,000 characters; how the About tab renders the link is checked live in plan B Task 16. The code is the fallback either way.

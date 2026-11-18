@@ -99,7 +99,7 @@ final class AppState {
     /// The Connections tab's open service (nil: the overview), so a link opens a service.
     var selectedConnection: ConnectionService?
     @ObservationIgnored private(set) lazy var slackAuthFlow = SlackAuthFlowState() // a connect survives leaving the tab
-    @ObservationIgnored private(set) lazy var slackAppSetup = SlackAppSetupModel { ProcessCLILineStream.makeDefault() } // #1709 S3
+    @ObservationIgnored private(set) lazy var slackAppSetup = SlackAppSetupModel { Self.slackLineStream() } // #1709 S3; no process under XCTest
     @ObservationIgnored var connectionAccountsReadAt: Date? // `refreshConnectionAccountsIfStale`'s clock
     /// The one config.yaml copy Settings and the Connections tab edit (no stale overwrite); a test may set it.
     @ObservationIgnored weak var observedProviderConnection: ProviderConnection?
@@ -1682,7 +1682,7 @@ final class AppState {
     }
 
     func initSlackAccounts(dbPool: DatabasePool) {
-        let vm = SlackAccountsViewModel(dbPool: dbPool, readsAccountFlags: !Self.runsUnderXCTest)
+        let vm = SlackAccountsViewModel(dbPool: dbPool, cliPath: Self.slackCLIPath, readsAccountFlags: !Self.runsUnderXCTest)
         vm.onAccountsChanged = { [weak self, weak vm] in
             if let vm { self?.slackAccountsDidChange(vm.accounts) }
             await self?.accountsChanged()
