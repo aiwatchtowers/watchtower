@@ -159,7 +159,7 @@ func TestWatchmanArm_JSONKeysPinned(t *testing.T) {
 	s1, _ := armSession(t, wb, "claude", nil, false)
 	_, out, err := armCLI(t, "arm", "--session", strconv.FormatInt(s1, 10), "--json")
 	require.NoError(t, err, out)
-	assert.Equal(t, []string{"analytics_turned_on", "armed", "error", "estimate", "first_time", "learning_started", "ok",
+	assert.Equal(t, []string{"analytics_turned_on", "armed", "error", "estimate", "first_time", "hooks_warning", "learning_started", "ok",
 		"protection_warning", "sidecar_error"}, jsonKeys(t, out))
 	var raw struct {
 		Armed []map[string]json.RawMessage `json:"armed"`
@@ -170,7 +170,7 @@ func TestWatchmanArm_JSONKeysPinned(t *testing.T) {
 
 	_, out, err = armCLI(t, "arm", "--session", strconv.FormatInt(s1, 10), "--check", "--json")
 	require.NoError(t, err, out)
-	assert.Equal(t, []string{"analytics_turned_on", "armed", "error", "estimate", "first_time", "learning_started", "ok",
+	assert.Equal(t, []string{"analytics_turned_on", "armed", "error", "estimate", "first_time", "hooks_warning", "learning_started", "ok",
 		"protection_warning", "sidecar_error"}, jsonKeys(t, out))
 
 	_, out, err = armCLI(t, "disarm", "--session", strconv.FormatInt(s1, 10), "--json")
@@ -180,7 +180,7 @@ func TestWatchmanArm_JSONKeysPinned(t *testing.T) {
 	// A refused arm still prints its JSON.
 	_, out, err = armCLI(t, "arm", "--session", "999", "--json")
 	require.Error(t, err)
-	assert.Equal(t, []string{"analytics_turned_on", "armed", "error", "estimate", "first_time", "learning_started", "ok",
+	assert.Equal(t, []string{"analytics_turned_on", "armed", "error", "estimate", "first_time", "hooks_warning", "learning_started", "ok",
 		"protection_warning", "sidecar_error"}, jsonKeys(t, out))
 }
 
@@ -475,7 +475,7 @@ func testHooksDir(t *testing.T) string {
 
 // withFakeGh puts a gh on PATH that names main the default branch and
 // answers its protection: "unprotected" is GitHub's 404, "protected"
-// requires an approving review.
+// requires an approving review with admins enforced.
 func withFakeGh(t *testing.T, mode string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -484,7 +484,7 @@ case $* in
 *"--jq .default_branch") echo main ;;
 */protection)
 	if [ "` + mode + `" = protected ]; then
-		echo '{"required_pull_request_reviews":{"required_approving_review_count":1}}'
+		echo '{"required_pull_request_reviews":{"required_approving_review_count":1},"enforce_admins":{"enabled":true}}'
 	else
 		echo '{"message":"Branch not protected","status":"404"}'
 		exit 1
@@ -559,4 +559,66 @@ func TestWatchmanDisarm_RestoresHooks(t *testing.T) {
 	_, out, err = armCLI(t, "disarm", "--all")
 	require.NoError(t, err, out)
 	assert.Empty(t, worktreeHooksPath(t, folder2))
+}
+
+// setSessionFolder points a session at folder.
+func setSessionFolder(t *testing.T, id int64, folder string) {
+	t.Helper()
+	var path string
+	_, err := openAgentsTestMain(t, &path).Exec(`UPDATE terminal_sessions SET folder_path = ? WHERE id = ?`, folder, id)
+	require.NoError(t, err)
+}
+
+// Two sessions on one worktree by different paths: disarming one keeps the
+// other's guard.
+func TestWatchmanDisarm_KeepsHooksOfAnotherSessionOnTheSameWorktree(t *testing.T) {
+	wb, _ := watchmanFixture(t)
+	s1, folder := gitRepoSession(t, wb)
+	s2, _ := armSession(t, wb, "claude", nil, false)
+	link := filepath.Join(t.TempDir(), "same-worktree")
+	require.NoError(t, os.Symlink(folder, link))
+	setSessionFolder(t, s2, link)
+	for _, s := range []int64{s1, s2} {
+		_, out, err := armCLI(t, "arm", "--session", strconv.FormatInt(s, 10))
+		require.NoError(t, err, out)
+	}
+	_, out, err := armCLI(t, "disarm", "--session", strconv.FormatInt(s1, 10))
+	require.NoError(t, err, out)
+	assert.Equal(t, testHooksDir(t), worktreeHooksPath(t, folder), "the still-armed session lost its guard")
+	_, out, err = armCLI(t, "disarm", "--session", strconv.FormatInt(s2, 10))
+	require.NoError(t, err, out)
+	assert.Empty(t, worktreeHooksPath(t, folder))
+}
+
+// A shared core.worktree: no extension, no hooks, and the arm says so.
+func TestWatchmanArm_HooksWarningForUnsupportedLayout(t *testing.T) {
+	wb, _ := watchmanFixture(t)
+	s1, _ := gitRepoSession(t, wb)
+	var path string
+	w, err := openAgentsTestMain(t, &path).GetWorkbench(wb)
+	require.NoError(t, err)
+	repo := w.FolderPath
+	out, gerr := exec.Command("git", "init", "-q", repo).CombinedOutput()
+	require.NoError(t, gerr, string(out))
+	out, gerr = exec.Command("git", "-C", repo, "config", "core.worktree", repo).CombinedOutput()
+	require.NoError(t, gerr, string(out))
+	setSessionFolder(t, s1, repo)
+	want := "Watchman's git guard cannot be installed in " + repo + ": shared core.worktree/core.bare — the other layers still apply"
+	for _, check := range []bool{true, false} {
+		args := []string{"arm", "--session", strconv.FormatInt(s1, 10), "--json"}
+		if check {
+			args = append(args, "--check")
+		}
+		r, raw, err := armCLI(t, args...)
+		require.NoError(t, err, raw)
+		assert.True(t, r.OK)
+		assert.Equal(t, want, r.HooksWarning, "check=%v", check)
+	}
+	assert.Empty(t, worktreeHooksPath(t, repo))
+	_, gerr = exec.Command("git", "-C", repo, "config", "--get", "extensions.worktreeConfig").Output()
+	assert.Error(t, gerr, "the extension was enabled")
+	text, err := runWatchman(t, "arm", "--session", strconv.FormatInt(s1, 10), "--check")
+	resetWatchmanArmFlags()
+	require.NoError(t, err, text)
+	assert.Contains(t, text, want)
 }

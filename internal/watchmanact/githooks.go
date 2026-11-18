@@ -25,6 +25,13 @@ import (
 // armed or not, every script runs the worktree's previous hook of its name,
 // so the repository's own hooks keep working. Unarmed is pass-through, so
 // the hooks may stay until the worktree goes.
+//
+// Accepted gaps of this layer (the guard hook and the feature note cover
+// them): `git push --no-verify`, a hooks path given on the command line
+// (`-c core.hooksPath=…`, GIT_CONFIG_COUNT), `git send-pack`, and pushing
+// the branch from the main checkout or another unarmed worktree of the same
+// repository. A disarm racing the daemon's upkeep can leave the hooks set on
+// a worktree no longer armed: they pass through, so nothing is refused.
 
 // ClientHookNames are the client-side hook names of githooks(5) — every
 // hook git runs in a working repository; the server-side ones (pre-receive,
@@ -47,13 +54,16 @@ func HooksDir(workspace string) string { return filepath.Join(workspace, "watchm
 func hooksPrevDir(workspace string) string { return filepath.Join(workspace, "watchman", "hooks-prev") }
 
 // hooksRecord is a worktree's state before Watchman set its hooks path:
-// the worktree's resolved top level, the hooks directory git used (what the
-// scripts proxy to) and the worktree-level core.hooksPath (nil = unset;
-// what RestoreHooks puts back). On disk, one `worktree `, `hooks ` and
-// optional `value ` line each.
+// its resolved top level and git dir (the scripts find their record by the
+// git dir), the hooks directory its own worktree-level config named
+// ("" = none: the scripts read the other config levels when they run, so a
+// later retarget of the shared or global hooks path keeps chaining), and
+// the direct worktree-level core.hooksPath (nil = unset; what RestoreHooks
+// puts back). On disk, `worktree `, `gitdir `, optional `hooks ` and
+// optional `value ` lines.
 type hooksRecord struct {
-	Worktree, Hooks string
-	Value           *string
+	Worktree, GitDir, Hooks string
+	Value                   *string
 }
 
 func recordPath(workspace, top string) string {
@@ -62,24 +72,25 @@ func recordPath(workspace, top string) string {
 }
 
 func (r hooksRecord) encode() ([]byte, error) {
+	lines := [][2]string{{"worktree", r.Worktree}, {"gitdir", r.GitDir}}
+	if r.Hooks != "" {
+		lines = append(lines, [2]string{"hooks", r.Hooks})
+	}
+	if r.Value != nil {
+		lines = append(lines, [2]string{"value", *r.Value})
+	}
 	var b bytes.Buffer
-	for _, l := range [][2]string{{"worktree", r.Worktree}, {"hooks", r.Hooks}} {
+	for _, l := range lines {
 		if strings.ContainsAny(l[1], "\r\n") {
 			return nil, fmt.Errorf("the %s path %q has a line break", l[0], l[1])
 		}
 		fmt.Fprintf(&b, "%s %s\n", l[0], l[1])
 	}
-	if r.Value != nil {
-		if strings.ContainsAny(*r.Value, "\r\n") {
-			return nil, fmt.Errorf("the hooks path %q has a line break", *r.Value)
-		}
-		fmt.Fprintf(&b, "value %s\n", *r.Value)
-	}
 	return b.Bytes(), nil
 }
 
 // readRecord reads a record; a missing file, or one without its worktree
-// and hooks lines, is an error.
+// and gitdir lines, is an error.
 func readRecord(path string) (hooksRecord, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -87,17 +98,19 @@ func readRecord(path string) (hooksRecord, error) {
 	}
 	var r hooksRecord
 	for _, line := range strings.Split(string(raw), "\n") {
-		switch {
-		case strings.HasPrefix(line, "worktree "):
-			r.Worktree = strings.TrimPrefix(line, "worktree ")
-		case strings.HasPrefix(line, "hooks "):
-			r.Hooks = strings.TrimPrefix(line, "hooks ")
-		case strings.HasPrefix(line, "value "):
-			v := strings.TrimPrefix(line, "value ")
-			r.Value = &v
+		key, value, _ := strings.Cut(line, " ")
+		switch key {
+		case "worktree":
+			r.Worktree = value
+		case "gitdir":
+			r.GitDir = value
+		case "hooks":
+			r.Hooks = value
+		case "value":
+			r.Value = &value
 		}
 	}
-	if r.Worktree == "" || r.Hooks == "" {
+	if r.Worktree == "" || r.GitDir == "" {
 		return hooksRecord{}, fmt.Errorf("%s is not a hooks record", path)
 	}
 	return r, nil
@@ -117,28 +130,80 @@ func lockHooks(ctx context.Context, workspace string) (func(), error) {
 	return unlock, nil
 }
 
-// EnsureHooks makes the worktree run Watchman's hooks. It (re)writes the
-// hook scripts when their content differs, enables extensions.worktreeConfig,
-// and — unless the worktree's own core.hooksPath is HooksDir already —
-// records the worktree's previous hooks and sets core.hooksPath with
-// `git config --worktree` (never the shared config). Calling it again
-// changes nothing. An owner's later change of the worktree value is
-// recorded as the new previous value and the hooks path is set again: the
-// layer holds while the session is armed.
+// GuardUnsupportedError means the repository's shared config holds core.worktree
+// or core.bare = true, which extensions.worktreeConfig would make wrong for
+// its other worktrees, so Watchman installs no git guard there.
+type GuardUnsupportedError struct{ Repo string }
+
+func (e *GuardUnsupportedError) Error() string {
+	return "Watchman's git guard cannot be installed in " + e.Repo + ": shared core.worktree/core.bare — the other layers still apply"
+}
+
+// CheckGuardLayout reads, without writing, whether the git guard can be
+// installed in folder's repository: a *GuardUnsupportedError when the
+// shared config has core.worktree or core.bare = true.
+func CheckGuardLayout(ctx context.Context, folder string) error {
+	top, err := WorktreeRoot(ctx, folder)
+	if err != nil {
+		return err
+	}
+	return checkLayout(ctx, top)
+}
+
+func checkLayout(ctx context.Context, top string) error {
+	_, worktreeSet, err := gitConfigGet(ctx, top, "--local", "core.worktree")
+	if err != nil {
+		return err
+	}
+	bare, _, err := gitConfigGet(ctx, top, "--local", "--type=bool", "core.bare")
+	if err != nil {
+		return err
+	}
+	if !worktreeSet && bare != "true" {
+		return nil
+	}
+	common, err := runGit(ctx, top, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return fmt.Errorf("reading the git common dir: %w", err)
+	}
+	repo := filepath.Clean(strings.TrimSpace(string(common)))
+	if filepath.Base(repo) == ".git" {
+		repo = filepath.Dir(repo)
+	}
+	return &GuardUnsupportedError{Repo: repo}
+}
+
+// EnsureHooks makes the worktree run Watchman's hooks. It refuses a
+// repository whose shared layout the worktree config would break
+// (*GuardUnsupportedError), (re)writes the hook scripts whose content
+// differs, enables extensions.worktreeConfig, and — unless the worktree's
+// own core.hooksPath is HooksDir already — records the worktree's previous
+// hooks and sets core.hooksPath with `git config --worktree` (never the
+// shared config). Calling it again changes nothing. An owner's later
+// change of the worktree value while armed is taken as the new previous
+// value and the hooks path is set again (the layer holds while armed);
+// RestoreHooks gives the owner's value back at disarm.
 func EnsureHooks(ctx context.Context, worktree, workspace string) error {
 	unlock, err := lockHooks(ctx, workspace)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	if err := writeHookScripts(workspace); err != nil {
-		return err
-	}
-	top, err := toplevel(ctx, worktree)
+	top, err := WorktreeRoot(ctx, worktree)
 	if err != nil {
 		return err
 	}
+	if err := checkLayout(ctx, top); err != nil {
+		return err
+	}
+	if err := writeHookScripts(workspace); err != nil {
+		return err
+	}
 	if err := enableWorktreeConfig(ctx, top); err != nil {
+		return err
+	}
+	gitDir, err := absGitDir(ctx, top)
+	if err != nil {
 		return err
 	}
 	own := HooksDir(workspace)
@@ -151,30 +216,22 @@ func EnsureHooks(ctx context.Context, worktree, workspace string) error {
 		if _, err := readRecord(rec); err == nil {
 			return nil
 		}
-		// The record went missing: what git used before is now what the
-		// other config levels say.
-		hooks, err := hooksBelowWorktree(ctx, top, own)
-		if err != nil {
-			return err
-		}
-		return writeRecord(rec, hooksRecord{Worktree: top, Hooks: hooks})
+		// The record went missing: the scripts fall back to the other
+		// config levels, as for a worktree that had no value of its own.
+		return writeRecord(rec, hooksRecord{Worktree: top, GitDir: gitDir})
 	}
-	r := hooksRecord{Worktree: top}
+	r := hooksRecord{Worktree: top, GitDir: gitDir}
 	if set {
 		v := cur
 		r.Value = &v
-		resolved, _, err := gitConfigGet(ctx, top, "--worktree", "--type=path", "core.hooksPath")
-		if err != nil {
-			return err
-		}
-		r.Hooks = absHooks(top, resolved)
-		if filepath.Clean(r.Hooks) == own {
-			if r.Hooks, err = hooksBelowWorktree(ctx, top, own); err != nil {
-				return err
-			}
-		}
-	} else if r.Hooks, err = hooksBelowWorktree(ctx, top, own); err != nil {
+	}
+	// The worktree level's effective value, includes followed.
+	eff, effSet, err := gitConfigGet(ctx, top, "--worktree", "--includes", "--type=path", "core.hooksPath")
+	if err != nil {
 		return err
+	}
+	if abs := absHooks(top, eff); effSet && abs != own {
+		r.Hooks = abs
 	}
 	if err := writeRecord(rec, r); err != nil {
 		return err
@@ -201,7 +258,7 @@ func RestoreHooks(ctx context.Context, worktree, workspace string) error {
 		return err
 	}
 	defer unlock()
-	top, err := toplevel(ctx, worktree)
+	top, err := WorktreeRoot(ctx, worktree)
 	if err != nil {
 		return err
 	}
@@ -258,18 +315,34 @@ func removeRecord(path string) error {
 	return nil
 }
 
-// toplevel is the worktree's top level with symlinks resolved — what
-// `pwd -P` says inside a hook, so the scripts find their record.
-func toplevel(ctx context.Context, worktree string) (string, error) {
-	out, err := runGit(ctx, worktree, "rev-parse", "--show-toplevel")
+// WorktreeRoot is the canonical top level of the git worktree holding
+// folder (symlinks resolved): the key the hooks are installed and restored
+// under, so two paths to one worktree are one worktree.
+func WorktreeRoot(ctx context.Context, folder string) (string, error) {
+	out, err := runGit(ctx, folder, "rev-parse", "--show-toplevel")
 	if err != nil {
-		return "", fmt.Errorf("%s is not a git worktree: %w", worktree, err)
+		return "", fmt.Errorf("%s is not a git worktree: %w", folder, err)
 	}
 	top, err := filepath.EvalSymlinks(strings.TrimSpace(string(out)))
 	if err != nil {
-		return "", fmt.Errorf("resolving the worktree %s: %w", worktree, err)
+		return "", fmt.Errorf("resolving the worktree %s: %w", folder, err)
 	}
 	return top, nil
+}
+
+// absGitDir is the worktree's git dir, absolute with symlinks resolved —
+// what the scripts compute with `git rev-parse --absolute-git-dir` and
+// `pwd -P`.
+func absGitDir(ctx context.Context, top string) (string, error) {
+	out, err := runGit(ctx, top, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return "", fmt.Errorf("reading the git dir of %s: %w", top, err)
+	}
+	dir, err := filepath.EvalSymlinks(strings.TrimSpace(string(out)))
+	if err != nil {
+		return "", fmt.Errorf("resolving the git dir of %s: %w", top, err)
+	}
+	return dir, nil
 }
 
 // enableWorktreeConfig turns extensions.worktreeConfig on (repository-wide;
@@ -283,35 +356,6 @@ func enableWorktreeConfig(ctx context.Context, top string) error {
 		return fmt.Errorf("enabling extensions.worktreeConfig: %w", err)
 	}
 	return nil
-}
-
-// hooksBelowWorktree is the hooks directory git uses for the worktree when
-// its worktree-level value is left out: the last core.hooksPath of the
-// other config levels, else <common dir>/hooks. HooksDir itself never
-// counts (the scripts must not proxy to themselves).
-func hooksBelowWorktree(ctx context.Context, top, own string) (string, error) {
-	out, err := runGit(ctx, top, "config", "--show-scope", "--type=path", "--get-all", "core.hooksPath")
-	if err != nil && !isExit(err, 1) {
-		return "", fmt.Errorf("reading core.hooksPath: %w", err)
-	}
-	hooks := ""
-	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
-		scope, value, ok := strings.Cut(line, "\t")
-		if !ok || scope == "worktree" || value == "" {
-			continue
-		}
-		if abs := absHooks(top, value); filepath.Clean(abs) != own {
-			hooks = abs
-		}
-	}
-	if hooks != "" {
-		return hooks, nil
-	}
-	common, err := runGit(ctx, top, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	if err != nil {
-		return "", fmt.Errorf("reading the git common dir: %w", err)
-	}
-	return filepath.Join(strings.TrimSpace(string(common)), "hooks"), nil
 }
 
 // absHooks makes a hooks path absolute: a relative core.hooksPath is
@@ -399,12 +443,11 @@ func hookScript(workspace, name string) ([]byte, error) {
 	return b.Bytes(), nil
 }
 
-// hookTemplate is every hook script. The prelude finds the worktree's
-// previous hooks directory: its record (matched by the top level — a hook
-// runs there, push-to-checkout runs in $GIT_DIR with GIT_WORK_TREE set),
-// else what the config levels below the worktree say, else
-// <common dir>/hooks. Builtins only on the common path: reference-transaction
-// and post-index-change run on most git commands.
+// hookTemplate is every hook script. The prelude finds the previous hooks
+// directory: the worktree level's own value from its record (matched by
+// the git dir), else what the other config levels say now — a relative
+// path against the work tree's root (push-to-checkout runs in $GIT_DIR with
+// GIT_WORK_TREE set) — else <common dir>/hooks; never its own directory.
 var hookTemplate = template.Must(template.New("hook").Parse(`#!/bin/sh
 # Watchman's {{.Name}} hook, written by watchtower (spec 2026-11-16-watchman-design §5).
 # It runs this worktree's previous {{.Name}} hook{{if eq .Name "pre-push"}} after refusing, while the
@@ -417,17 +460,18 @@ wm_top=$(cd "${GIT_WORK_TREE:-.}" 2>/dev/null && pwd -P)
 {{- else}}
 wm_top=$(pwd -P)
 {{- end}}
+wm_gitdir=$(git rev-parse --absolute-git-dir 2>/dev/null) && wm_gitdir=$(cd "$wm_gitdir" 2>/dev/null && pwd -P) || wm_gitdir=
 wm_prev=
 for wm_f in "$wm_records"/*; do
-	[ -f "$wm_f" ] || continue
-	wm_wt= wm_h=
+	[ -n "$wm_gitdir" ] && [ -f "$wm_f" ] || continue
+	wm_gd= wm_h=
 	while IFS= read -r wm_l || [ -n "$wm_l" ]; do
 		case $wm_l in
-		"worktree "*) wm_wt=${wm_l#worktree } ;;
+		"gitdir "*) wm_gd=${wm_l#gitdir } ;;
 		"hooks "*) wm_h=${wm_l#hooks } ;;
 		esac
 	done < "$wm_f"
-	if [ -n "$wm_top" ] && [ "$wm_wt" = "$wm_top" ]; then
+	if [ "$wm_gd" = "$wm_gitdir" ]; then
 		wm_prev=$wm_h
 		break
 	fi
@@ -438,11 +482,15 @@ if [ -z "$wm_prev" ]; then
 		while IFS="$wm_tab" read -r wm_s wm_v; do
 			[ "$wm_s" = worktree ] || printf '%s\n' "$wm_v"
 		done | tail -n 1)
-	[ -n "$wm_prev" ] || wm_prev=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/hooks
+	case $wm_prev in
+	"") wm_c=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && wm_prev=$wm_c/hooks ;;
+	/*) ;;
+	*) wm_prev=$wm_top/$wm_prev ;;
+	esac
 fi
-case $wm_prev in
-"$wm_self" | "$wm_self"/) wm_prev= ;;
-esac
+if [ -n "$wm_prev" ] && [ "$(cd "$wm_prev" 2>/dev/null && pwd -P)" = "$(cd "$wm_self" 2>/dev/null && pwd -P)" ]; then
+	wm_prev= # never back into this directory
+fi
 wm_hook=$wm_prev/{{.Name}}
 [ -n "$wm_prev" ] && [ -f "$wm_hook" ] && [ -x "$wm_hook" ] || wm_hook=
 {{- if eq .Name "pre-push"}}
@@ -450,16 +498,22 @@ wm_sidecar={{.Sidecar}}
 wm_in=$(mktemp "${TMPDIR:-/tmp}/watchman-pre-push.XXXXXX") || exit 1
 trap 'rm -f "$wm_in"' EXIT
 cat > "$wm_in"
+# Armed: a sidecar worktree has this push's git dir (whatever the cwd or
+# --work-tree). Cannot tell: refuse what an armed session may not push.
 wm_armed=
 if [ -e "$wm_sidecar" ] && [ ! -r "$wm_sidecar" ]; then
-	wm_armed=1 # cannot tell: refuse what an armed session may not push
+	wm_armed=1
 elif [ -e "$wm_sidecar" ]; then
 	while IFS= read -r wm_l || [ -n "$wm_l" ]; do
 		case $wm_l in
 		"worktree "*)
-			wm_wt=$(unset $(git rev-parse --local-env-vars); cd "${wm_l#worktree }" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null) || continue
-			wm_wt=$(cd "$wm_wt" 2>/dev/null && pwd -P) || continue
-			if [ "$wm_wt" = "$wm_top" ]; then
+			if [ -z "$wm_gitdir" ]; then
+				wm_armed=1
+				break
+			fi
+			wm_wgd=$(unset $(git rev-parse --local-env-vars); cd "${wm_l#worktree }" 2>/dev/null && git rev-parse --absolute-git-dir 2>/dev/null) || continue
+			wm_wgd=$(cd "$wm_wgd" 2>/dev/null && pwd -P) || continue
+			if [ "$wm_wgd" = "$wm_gitdir" ]; then
 				wm_armed=1
 				break
 			fi
@@ -498,11 +552,16 @@ exit $?
 {{- else if eq .Name "push-to-checkout"}}
 [ -z "$wm_hook" ] || exec "$wm_hook" "$@"
 # No previous hook: what git does without one — refuse a dirty worktree,
-# else check the pushed commit out.
+# else check the pushed commit out (from the empty tree on an unborn HEAD).
+if git rev-parse -q --verify HEAD > /dev/null; then
+	wm_head=HEAD
+else
+	wm_head=$(git hash-object -t tree /dev/null) || exit 1
+fi
 git update-index -q --ignore-submodules --refresh
 git diff-files --quiet --ignore-submodules -- || { echo "Working directory has unstaged changes" >&2; exit 1; }
-git diff-index --quiet --cached --ignore-submodules HEAD -- || { echo "Working directory has staged changes" >&2; exit 1; }
-exec git read-tree -u -m HEAD "$1"
+git diff-index --quiet --cached --ignore-submodules "$wm_head" -- || { echo "Working directory has staged changes" >&2; exit 1; }
+exec git read-tree -u -m "$wm_head" "$1"
 {{- else}}
 [ -z "$wm_hook" ] || exec "$wm_hook" "$@"
 exit 0

@@ -1,6 +1,7 @@
 #!/bin/sh
 # A fake gh for the protection check tests. FAKE_GH_MODE picks the answer:
-# protected (a required approving review), noreview (protected, no review
+# protected (a required approving review, admins enforced), noadmins (a
+# required review, admins not enforced), noreview (protected, no review
 # required), unprotected (GitHub's 404), missing (exit 127, as a shell
 # reports a missing command).
 case $FAKE_GH_MODE in
@@ -12,7 +13,8 @@ case $* in
 	;;
 "api repos/{owner}/{repo}/branches/main/protection")
 	case $FAKE_GH_MODE in
-	protected) echo '{"url":"https://api.github.com/repos/acme/app/branches/main/protection","required_pull_request_reviews":{"required_approving_review_count":1}}' ;;
+	protected) echo '{"url":"https://api.github.com/repos/acme/app/branches/main/protection","required_pull_request_reviews":{"required_approving_review_count":1},"enforce_admins":{"enabled":true}}' ;;
+	noadmins) echo '{"url":"https://api.github.com/repos/acme/app/branches/main/protection","required_pull_request_reviews":{"required_approving_review_count":1},"enforce_admins":{"enabled":false}}' ;;
 	noreview) echo '{"url":"https://api.github.com/repos/acme/app/branches/main/protection","required_status_checks":{"strict":true}}' ;;
 	unprotected)
 		echo '{"message":"Branch not protected","documentation_url":"https://docs.github.com/rest","status":"404"}'

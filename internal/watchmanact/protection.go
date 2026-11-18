@@ -20,8 +20,9 @@ const (
 )
 
 // Protection is what the check found: the default branch, whether merging
-// into it needs an approving review, and the arm sheet's warning ("" =
-// none).
+// into it needs an approving review that admins cannot bypass (an agent
+// runs gh with the owner's token, so `gh pr merge --admin` would otherwise
+// get through), and the arm sheet's warning ("" = none).
 type Protection struct {
 	DefaultBranch       string
 	OwnerReviewRequired bool
@@ -33,7 +34,7 @@ type Protection struct {
 // gh fills {owner}/{repo} from the folder's remote). run runs a command in
 // dir and returns its stdout — on a failure too, which is where gh puts an
 // API error's body. A 404 is an unprotected branch; a protection without
-// a required approving review warns the same; gh missing or any other
+// a required approving review, or with enforce_admins off, warns the same; gh missing or any other
 // failure warns that the protection could not be read.
 func CheckProtection(ctx context.Context, run func(ctx context.Context, dir, name string, args ...string) ([]byte, error), folder string) Protection {
 	out, err := run(ctx, folder, "gh", "api", "repos/{owner}/{repo}", "--jq", ".default_branch")
@@ -49,6 +50,9 @@ func CheckProtection(ctx context.Context, run func(ctx context.Context, dir, nam
 		Reviews *struct {
 			Count int `json:"required_approving_review_count"`
 		} `json:"required_pull_request_reviews"`
+		EnforceAdmins *struct {
+			Enabled bool `json:"enabled"`
+		} `json:"enforce_admins"`
 	}
 	parsed := json.Unmarshal(bytes.TrimSpace(out), &body) == nil
 	switch {
@@ -56,7 +60,7 @@ func CheckProtection(ctx context.Context, run func(ctx context.Context, dir, nam
 		p.Warning = ProtectionWarningUnprotected
 	case err != nil || !parsed:
 		p.Warning = ProtectionWarningUnreadable
-	case body.Reviews == nil || body.Reviews.Count < 1:
+	case body.Reviews == nil || body.Reviews.Count < 1 || body.EnforceAdmins == nil || !body.EnforceAdmins.Enabled:
 		p.Warning = ProtectionWarningUnprotected
 	default:
 		p.OwnerReviewRequired = true

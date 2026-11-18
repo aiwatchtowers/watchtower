@@ -2,6 +2,7 @@ package watchmanact
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -264,7 +265,10 @@ func TestEnsureHooks_WorktreeOnlyNeverSharedConfig(t *testing.T) {
 	require.NoError(t, err)
 	rec, err := readRecord(recordPath(r.ws, top))
 	require.NoError(t, err)
-	assert.Equal(t, hooksRecord{Worktree: top, Hooks: filepath.Join(top, "scripts/git-hooks")}, rec)
+	gitDir, err := filepath.EvalSymlinks(filepath.Join(r.work, ".git", "worktrees", "wt"))
+	require.NoError(t, err)
+	// The shared value is read when a hook runs, not recorded.
+	assert.Equal(t, hooksRecord{Worktree: top, GitDir: gitDir}, rec)
 
 	files := []string{
 		filepath.Join(r.work, ".git", "config"),
@@ -365,4 +369,140 @@ func TestClientHookNames_CoverInstalledGit(t *testing.T) {
 	for _, n := range serverHookNames {
 		assert.NotContains(t, ClientHookNames, n)
 	}
+}
+
+func TestPrePush_ArmedByGitDirNotCwd(t *testing.T) {
+	r := newHookRepo(t)
+	require.NoError(t, EnsureHooks(context.Background(), r.work, r.ws))
+	r.arm(t, r.work)
+	before := r.remoteRef(t, "refs/heads/main")
+	gitT(t, r.work, "commit", "-q", "--allow-empty", "-m", "agent work")
+	elsewhere := t.TempDir()
+
+	out, err := gitOut(r.work, "--work-tree="+elsewhere, "push", "origin", "HEAD:main")
+	require.Error(t, err, "a --work-tree push went through: %s", out)
+	assert.Contains(t, out, "Parked for the owner: a push to main")
+
+	cmd := exec.Command("git", "push", "origin", "HEAD:main")
+	cmd.Dir = elsewhere
+	cmd.Env = append(os.Environ(), "GIT_DIR="+filepath.Join(r.work, ".git"))
+	raw, err := cmd.CombinedOutput()
+	require.Error(t, err, "a GIT_DIR push from another cwd went through: %s", raw)
+	assert.Contains(t, string(raw), "Parked for the owner: a push to main")
+	assert.Equal(t, before, r.remoteRef(t, "refs/heads/main"))
+}
+
+func TestEnsureHooks_RefusesSharedWorktreeOrBare(t *testing.T) {
+	ctx := context.Background()
+	t.Run("core.worktree", func(t *testing.T) {
+		r := newHookRepo(t)
+		gitT(t, r.work, "config", "core.worktree", r.work)
+		err := EnsureHooks(ctx, r.work, r.ws)
+		var unsupported *GuardUnsupportedError
+		require.True(t, errors.As(err, &unsupported), "got %v", err)
+		top, _ := filepath.EvalSymlinks(r.work)
+		assert.Equal(t, "Watchman's git guard cannot be installed in "+top+": shared core.worktree/core.bare — the other layers still apply", err.Error())
+		require.ErrorAs(t, CheckGuardLayout(ctx, r.work), &unsupported)
+		_, gerr := gitOut(r.work, "config", "--get", "extensions.worktreeConfig")
+		assert.Error(t, gerr, "the extension was enabled")
+		_, gerr = gitOut(r.work, "config", "--get", "core.hooksPath")
+		assert.Error(t, gerr, "a hooks path was set")
+	})
+	t.Run("core.bare", func(t *testing.T) {
+		r := newHookRepo(t)
+		bare := filepath.Join(r.root, "bare.git")
+		gitT(t, r.root, "clone", "-q", "--bare", r.remote, bare)
+		wt := filepath.Join(r.root, "bwt")
+		gitT(t, bare, "worktree", "add", "-q", "-b", "feature/b", wt)
+		err := EnsureHooks(ctx, wt, r.ws)
+		var unsupported *GuardUnsupportedError
+		require.ErrorAs(t, err, &unsupported)
+		want, _ := filepath.EvalSymlinks(bare)
+		assert.Equal(t, want, unsupported.Repo)
+		_, gerr := gitOut(bare, "config", "--get", "extensions.worktreeConfig")
+		assert.Error(t, gerr, "the extension was enabled")
+	})
+	t.Run("an ordinary repository is fine", func(t *testing.T) {
+		r := newHookRepo(t)
+		assert.NoError(t, CheckGuardLayout(ctx, r.work))
+	})
+}
+
+func TestEnsureHooks_ChainsHooksPathFromInclude(t *testing.T) {
+	ctx := context.Background()
+	t.Run("worktree level", func(t *testing.T) {
+		r := newHookRepo(t)
+		owner := filepath.Join(r.root, "owner-hooks")
+		ran := filepath.Join(r.root, "ran")
+		writeHook(t, owner, "post-commit", "touch '"+ran+"'\n")
+		extra := filepath.Join(r.root, "extra.config")
+		require.NoError(t, os.WriteFile(extra, []byte("[core]\n\thooksPath = "+owner+"\n"), 0o600))
+		gitT(t, r.work, "config", "extensions.worktreeConfig", "true")
+		gitT(t, r.work, "config", "--worktree", "include.path", extra)
+		require.NoError(t, EnsureHooks(ctx, r.work, r.ws))
+		assert.Equal(t, HooksDir(r.ws), gitT(t, r.work, "config", "--get", "core.hooksPath"))
+		gitT(t, r.work, "commit", "-q", "--allow-empty", "-m", "x")
+		assert.FileExists(t, ran, "the included hooks path was not chained")
+		// The direct worktree value was unset: restore unsets, the include stays.
+		require.NoError(t, RestoreHooks(ctx, r.work, r.ws))
+		_, err := gitOut(r.work, "config", "--worktree", "--get", "core.hooksPath")
+		assert.Error(t, err)
+		assert.Equal(t, owner, gitT(t, r.work, "config", "--get", "core.hooksPath"))
+	})
+	t.Run("shared level", func(t *testing.T) {
+		r := newHookRepo(t)
+		owner := filepath.Join(r.root, "owner-hooks")
+		ran := filepath.Join(r.root, "ran")
+		writeHook(t, owner, "post-commit", "touch '"+ran+"'\n")
+		extra := filepath.Join(r.root, "extra.config")
+		require.NoError(t, os.WriteFile(extra, []byte("[core]\n\thooksPath = "+owner+"\n"), 0o600))
+		gitT(t, r.work, "config", "include.path", extra)
+		require.NoError(t, EnsureHooks(ctx, r.work, r.ws))
+		gitT(t, r.work, "commit", "-q", "--allow-empty", "-m", "x")
+		assert.FileExists(t, ran, "the included hooks path was not chained")
+	})
+}
+
+func TestHooks_SharedHooksPathRetargetKeepsChaining(t *testing.T) {
+	r := newHookRepo(t)
+	a, b := filepath.Join(r.root, "ran-a"), filepath.Join(r.root, "ran-b")
+	writeHook(t, filepath.Join(r.work, "hooks-a"), "post-commit", "touch '"+a+"'\n")
+	writeHook(t, filepath.Join(r.work, "hooks-b"), "post-commit", "touch '"+b+"'\n")
+	gitT(t, r.work, "config", "core.hooksPath", "hooks-a")
+	require.NoError(t, EnsureHooks(context.Background(), r.work, r.ws))
+	gitT(t, r.work, "config", "core.hooksPath", "hooks-b") // `make hooks` retargets it
+	gitT(t, r.work, "commit", "-q", "--allow-empty", "-m", "x")
+	assert.FileExists(t, b, "the retargeted hooks path was not chained")
+	assert.NoFileExists(t, a)
+}
+
+func TestHooks_PushToCheckoutRelativeSharedPath(t *testing.T) {
+	r := newHookRepo(t)
+	ran := filepath.Join(r.root, "ran")
+	gitT(t, r.work, "config", "receive.denyCurrentBranch", "updateInstead")
+	gitT(t, r.work, "config", "core.hooksPath", "repo-hooks")
+	writeHook(t, filepath.Join(r.work, "repo-hooks"), "push-to-checkout", "touch '"+ran+"'\n")
+	require.NoError(t, EnsureHooks(context.Background(), r.work, r.ws))
+	other := filepath.Join(r.root, "other")
+	gitT(t, r.root, "clone", "-q", r.work, other)
+	gitT(t, other, "commit", "-q", "--allow-empty", "-m", "y")
+	gitT(t, other, "push", "-q", "origin", "main")
+	assert.FileExists(t, ran, "the relative shared push-to-checkout was not found from $GIT_DIR")
+}
+
+func TestHooks_PushToCheckoutUnbornHead(t *testing.T) {
+	isolateGit(t)
+	root := t.TempDir()
+	target, src, ws := filepath.Join(root, "target"), filepath.Join(root, "src"), filepath.Join(root, "ws")
+	gitT(t, root, "init", "-q", "-b", "main", target)
+	gitT(t, target, "config", "receive.denyCurrentBranch", "updateInstead")
+	require.NoError(t, EnsureHooks(context.Background(), target, ws))
+	gitT(t, root, "init", "-q", "-b", "main", src)
+	require.NoError(t, os.WriteFile(filepath.Join(src, "f.txt"), []byte("first\n"), 0o600))
+	gitT(t, src, "add", "f.txt")
+	gitT(t, src, "commit", "-q", "-m", "first")
+	gitT(t, src, "push", "-q", target, "main")
+	raw, err := os.ReadFile(filepath.Join(target, "f.txt"))
+	require.NoError(t, err, "the pushed commit was not checked out into the unborn worktree")
+	assert.Equal(t, "first\n", string(raw))
 }

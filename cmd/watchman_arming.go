@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -80,6 +81,9 @@ type watchmanArmJSON struct {
 	// SidecarError: the rows were written (ok stays true) but the sidecar
 	// rewrite failed; the daemon's upkeep rewrites it next cycle.
 	SidecarError string `json:"sidecar_error"`
+	// HooksWarning: one line per repository whose layout (a shared
+	// core.worktree or core.bare) the git guard cannot be installed in.
+	HooksWarning string `json:"hooks_warning"`
 }
 
 // watchmanDisarmJSON is `watchman disarm --json`.
@@ -133,10 +137,39 @@ func watchmanProtectionWarning(ctx context.Context, database *db.DB, workbenches
 	return "", nil
 }
 
+// addLine appends line to the newline-joined text unless it is there.
+func addLine(text *string, line string) {
+	if slices.Contains(strings.Split(*text, "\n"), line) {
+		return
+	}
+	if *text != "" {
+		*text += "\n"
+	}
+	*text += line
+}
+
+// watchmanGuardWarnings adds to text the repositories of the workbenches
+// whose layout the git guard cannot be installed in; a folder that is no
+// git repository has nothing to warn about here.
+func watchmanGuardWarnings(ctx context.Context, database *db.DB, workbenches []int64, text *string) error {
+	for _, id := range workbenches {
+		wb, err := database.GetWorkbench(id)
+		if err != nil {
+			return fmt.Errorf("reading workbench %d: %w", id, err)
+		}
+		var unsupported *watchmanact.GuardUnsupportedError
+		if err := watchmanact.CheckGuardLayout(ctx, wb.FolderPath); errors.As(err, &unsupported) {
+			addLine(text, unsupported.Error())
+		}
+	}
+	return nil
+}
+
 // watchmanEnsureHooks gives every armed session's worktree Watchman's git
-// hooks (spec §5 item 1). A failure is a warning: the daemon's upkeep
-// installs them again each cycle.
-func watchmanEnsureHooks(cmd *cobra.Command, workspace string, database *db.DB) {
+// hooks (spec §5 item 1). A repository the guard cannot be installed in
+// goes to text; any other failure is a warning on stderr: the daemon's
+// upkeep installs the hooks again each cycle.
+func watchmanEnsureHooks(cmd *cobra.Command, workspace string, database *db.DB, text *string) {
 	sessions, err := database.WatchmanArmedSessions()
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: the git hooks were not installed (the daemon installs them at its next cycle): %v\n", err)
@@ -148,23 +181,33 @@ func watchmanEnsureHooks(cmd *cobra.Command, workspace string, database *db.DB) 
 			continue
 		}
 		done[s.Folder] = true
-		if err := watchmanact.EnsureHooks(cmd.Context(), s.Folder, workspace); err != nil {
+		err := watchmanact.EnsureHooks(cmd.Context(), s.Folder, workspace)
+		var unsupported *watchmanact.GuardUnsupportedError
+		switch {
+		case errors.As(err, &unsupported):
+			addLine(text, unsupported.Error())
+		case err != nil:
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: the git hooks for session %d were not installed (the daemon installs them at its next cycle): %v\n", s.SessionID, err)
 		}
 	}
 }
 
-// watchmanArmedFolders is the worktrees of the armed sessions.
-func watchmanArmedFolders(database *db.DB) (map[string]bool, error) {
+// watchmanArmedRoots is the canonical worktree roots of the armed sessions
+// (watchmanact.WorktreeRoot, the key the hooks are installed under), so two
+// sessions on one worktree by different paths count as one. A folder that
+// is no git worktree has no hooks and is left out.
+func watchmanArmedRoots(ctx context.Context, database *db.DB) (map[string]bool, error) {
 	sessions, err := database.WatchmanArmedSessions()
 	if err != nil {
 		return nil, err
 	}
-	folders := map[string]bool{}
+	roots := map[string]bool{}
 	for _, s := range sessions {
-		folders[s.Folder] = true
+		if root, err := watchmanact.WorktreeRoot(ctx, s.Folder); err == nil {
+			roots[root] = true
+		}
 	}
-	return folders, nil
+	return roots, nil
 }
 
 // sidecarWarning is the text form of a failed sidecar rewrite.
@@ -203,8 +246,10 @@ func runWatchmanArm(cmd *cobra.Command, _ []string) error {
 	}
 	sidecarWarning(cmd, out.SidecarError)
 	w := cmd.OutOrStdout()
-	if out.ProtectionWarning != "" {
-		defer fmt.Fprintln(w, out.ProtectionWarning)
+	for _, warning := range []string{out.ProtectionWarning, out.HooksWarning} {
+		if warning != "" {
+			defer fmt.Fprintln(w, warning)
+		}
 	}
 	if watchmanArmFlagCheck {
 		if out.Estimate != nil {
@@ -283,6 +328,9 @@ func watchmanArm(cmd *cobra.Command, out *watchmanArmJSON) error {
 	if out.ProtectionWarning, err = watchmanProtectionWarning(cmd.Context(), database, workbenches); err != nil {
 		return err
 	}
+	if err := watchmanGuardWarnings(cmd.Context(), database, workbenches, &out.HooksWarning); err != nil {
+		return err
+	}
 
 	if watchmanArmFlagCheck {
 		if out.FirstTime {
@@ -341,7 +389,7 @@ func watchmanArm(cmd *cobra.Command, out *watchmanArmJSON) error {
 		}
 	}
 	out.Armed = watchman.ArmedEntries(arming)
-	watchmanEnsureHooks(cmd, cfg.WorkspaceDir(), database)
+	watchmanEnsureHooks(cmd, cfg.WorkspaceDir(), database, &out.HooksWarning)
 	return nil
 }
 
@@ -455,7 +503,7 @@ func watchmanDisarm(cmd *cobra.Command, out *watchmanDisarmJSON) error {
 		return fmt.Errorf("opening database: %w", err)
 	}
 	defer database.Close()
-	armedBefore, err := watchmanArmedFolders(database)
+	armedBefore, err := watchmanArmedRoots(cmd.Context(), database)
 	if err != nil {
 		return err
 	}
@@ -488,22 +536,23 @@ func watchmanDisarm(cmd *cobra.Command, out *watchmanDisarmJSON) error {
 	return nil
 }
 
-// watchmanRestoreHooks restores the git hooks of the worktrees armed before
-// the disarm and not after it.
+// watchmanRestoreHooks restores the git hooks of the worktree roots armed
+// before the disarm and not after it (canonical roots, so a session still
+// armed on the same worktree by another path keeps its guard).
 func watchmanRestoreHooks(cmd *cobra.Command, workspace string, database *db.DB, armedBefore map[string]bool) {
-	armedNow, err := watchmanArmedFolders(database)
+	armedNow, err := watchmanArmedRoots(cmd.Context(), database)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: the git hooks were not restored (they pass through while not armed): %v\n", err)
 		return
 	}
-	folders := make([]string, 0, len(armedBefore))
-	for f := range armedBefore {
-		if !armedNow[f] {
-			folders = append(folders, f)
+	roots := make([]string, 0, len(armedBefore))
+	for root := range armedBefore {
+		if !armedNow[root] {
+			roots = append(roots, root)
 		}
 	}
-	slices.Sort(folders)
-	for _, f := range folders {
+	slices.Sort(roots)
+	for _, f := range roots {
 		if err := watchmanact.RestoreHooks(cmd.Context(), f, workspace); err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: the git hooks of %s were not restored (they pass through while not armed): %v\n", f, err)
 		}

@@ -33,6 +33,7 @@ func TestCheckProtection_FakeGh(t *testing.T) {
 		want Protection
 	}{
 		{"protected", Protection{DefaultBranch: "main", OwnerReviewRequired: true}},
+		{"noadmins", Protection{DefaultBranch: "main", Warning: "main is not protected on GitHub — an agent's gh pr merge cannot be stopped here"}},
 		{"noreview", Protection{DefaultBranch: "main", Warning: "main is not protected on GitHub — an agent's gh pr merge cannot be stopped here"}},
 		{"unprotected", Protection{DefaultBranch: "main", Warning: "main is not protected on GitHub — an agent's gh pr merge cannot be stopped here"}},
 		{"missing", Protection{Warning: "Could not read main's protection on GitHub — treat it as unprotected"}},
