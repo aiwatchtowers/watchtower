@@ -14,6 +14,7 @@ struct InboxApprovalCard: View {
     let now: Date
     var hubAway = false
     var hubName = ""
+    var host: TowerHost = .mac
     var timeZone: TimeZone = .current
 
     var body: some View {
@@ -23,7 +24,7 @@ struct InboxApprovalCard: View {
             AgentActionCard(
                 action: ChatAgentAction(inboxCard: card.card),
                 services: Self.services(center: center, card: card.card, grants: grants, hubAway: hubAway, hubName: hubName,
-                                        now: now),
+                                        now: now, host: host),
                 contextLabel: card.sourceLine.isEmpty ? nil : card.sourceLine,
                 offersRetry: card.card.approval?.superseded != true
             )
@@ -37,7 +38,7 @@ struct InboxApprovalCard: View {
     /// re-sends the same outbox action. Approve, Retry and Dismiss need `permissions`; without it the card shows the
     /// notes (`InboxApprovalState`) and these send nothing. Edit… stays on the Mac (no edits here).
     static func services(
-        center: InboxCenter, card: InboxCard, grants: Grants, hubAway: Bool, hubName: String, now: Date
+        center: InboxCenter, card: InboxCard, grants: Grants, hubAway: Bool, hubName: String, now: Date, host: TowerHost = .mac
     ) -> ChatApprovalServices {
         let model = InboxApprovalModel(card: card, platform: .phone, grants: grants, now: now)
         let press: (ApprovalVerb) -> Void = { verb in
@@ -55,7 +56,7 @@ struct InboxApprovalCard: View {
             },
             state: { _ in
                 InboxApprovalState.make(card: card, rowState: center.rowState(card.id), grants: grants, hubAway: hubAway,
-                                        hubName: hubName, now: now)
+                                        hubName: hubName, now: now, host: host)
             },
             retry: { _ in if model.canRetry { press(.retry) } },
             dismiss: { _ in if grants.permissions { press(.dismiss) } },
@@ -66,7 +67,7 @@ struct InboxApprovalCard: View {
                 }
             },
             decisionOverride: { _ in
-                InboxTargetRow.view(targetRow, canRetry: grants.permissions) { press(.retry) }
+                InboxTargetRow.view(targetRow, canRetry: grants.permissions, host: host) { press(.retry) }
             },
             resend: { _ in
                 if case let .refused(_, retry)? = center.rowState(card.id) {
@@ -81,20 +82,23 @@ struct InboxApprovalCard: View {
 /// Mac's `MacAgentActionCard.targetRowView`): stuck offers "Didn't finish" with Try again; creating shows progress;
 /// anything else keeps the card's row (nil).
 enum InboxTargetRow {
-    static func view(_ row: InboxApprovalModel.TargetRow, canRetry: Bool, onTryAgain: @escaping () -> Void) -> AnyView? {
+    static func view(
+        _ row: InboxApprovalModel.TargetRow, canRetry: Bool, host: TowerHost = .mac, onTryAgain: @escaping () -> Void
+    ) -> AnyView? {
         switch row {
         case .decision:
             return nil
         case .inFlight:
             return AnyView(ProgressView().controlSize(.small))
         case .stuck:
-            return AnyView(InboxStuckTargetRow(canRetry: canRetry, onTryAgain: onTryAgain))
+            return AnyView(InboxStuckTargetRow(canRetry: canRetry, host: host, onTryAgain: onTryAgain))
         }
     }
 }
 
 private struct InboxStuckTargetRow: View {
     let canRetry: Bool
+    let host: TowerHost
     let onTryAgain: () -> Void
     @Environment(\.chatUIStyle) private var style
 
@@ -104,7 +108,7 @@ private struct InboxStuckTargetRow: View {
             if canRetry {
                 style.approvalButton(InboxText.tryAgain, prominent: true, action: onTryAgain)
             } else {
-                Text(InboxPhoneText.retryOnTheMac).font(.caption).foregroundStyle(.secondary)
+                Text(ChatText.retryElsewhere(host)).font(.caption).foregroundStyle(.secondary)
             }
         }
     }

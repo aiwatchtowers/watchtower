@@ -14,13 +14,13 @@ enum InboxApprovalState {
     /// - a refusal shows the tower's sentence in red with the row live again; Not delivered shows its named Retry alone;
     /// - Didn't confirm turns the row off until Refresh.
     static func make(
-        card: InboxCard, rowState: InboxRowState?, grants: Grants, hubAway: Bool, hubName: String, now: Date
+        card: InboxCard, rowState: InboxRowState?, grants: Grants, hubAway: Bool, hubName: String, now: Date, host: TowerHost = .mac
     ) -> ChatApprovalState {
         let model = InboxApprovalModel(card: card, platform: .phone, grants: grants, now: now)
         let action = ChatAgentAction(inboxCard: card)
         let settledNote: String? = switch AgentActionCard.settledOffer(for: action) {
-        case .retry where !grants.permissions: InboxPhoneText.retryOnTheMac
-        case .dismiss where !grants.permissions: InboxPhoneText.dismissOnTheMac
+        case .retry where !grants.permissions: ChatText.retryElsewhere(host)
+        case .dismiss where !grants.permissions: ChatText.dismissElsewhere(host)
         default: nil
         }
         switch rowState {

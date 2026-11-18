@@ -82,10 +82,8 @@ enum InboxPhoneText {
         "Run “\(name)” now"
     }
 
-    // The approval card (mobile Inbox spec §12.5).
-    /// Retry and Dismiss on an approval without the `permissions` grant.
-    static let retryOnTheMac = "Retry on the Mac"
-    static let dismissOnTheMac = "Dismiss on the Mac"
+    // The approval card (mobile Inbox spec §12.5). Retry and Dismiss without the `permissions` grant are
+    // `ChatText.retryElsewhere` / `dismissElsewhere` (the Mac or the tower).
     static let retrying = "Retrying…"
     static let dismissing = "Dismissing…"
 

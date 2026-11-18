@@ -20,6 +20,8 @@ struct InboxInputs {
     var macAway: Date?
     var grants: Grants
     var now: Date
+    /// The Mac or a server tower: the approval card's "Retry on the Mac" / "on your tower".
+    var host: TowerHost = .mac
 
     @MainActor
     static func current(_ env: AppEnvironment, now: Date) -> Self {
@@ -32,7 +34,8 @@ struct InboxInputs {
             hubName: env.activeSession.hubName ?? heartbeat?.macName ?? "",
             macAway: env.macReachability(now: now).asOf,
             grants: Grants(permissions: grant?.permissionsAllowed == true, typing: grant?.typingAllowed == true),
-            now: now
+            now: now,
+            host: TowerHost(heartbeat, device: grant?.deviceID)
         )
     }
 }
@@ -332,7 +335,7 @@ struct InboxCardList: View {
                 InboxUnconfirmedCard(center: center, card: card)
             } else if InboxCardRowModel.isDecision(card.card) {
                 InboxApprovalCard(center: center, card: card, grants: inputs.grants, now: inputs.now,
-                                  hubAway: inputs.macAway != nil, hubName: inputs.hubName)
+                                  hubAway: inputs.macAway != nil, hubName: inputs.hubName, host: inputs.host)
                     .padding(.vertical, Spacing.compact)
             } else {
                 NavigationLink(value: InboxRoute.card(card.id)) {
