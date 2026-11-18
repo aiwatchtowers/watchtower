@@ -321,10 +321,3 @@ func (j *job) permissionLost(o db.WatchmanOutcome) {
 	o.Outcome = OutcomeOwnerFirst
 	j.finishAlone(o)
 }
-
-// runOutput runs name args… in dir and returns its stdout.
-func runOutput(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
-	c := exec.CommandContext(ctx, name, args...) // #nosec G204 -- fixed binaries (git, gh), explicit args
-	c.Dir = dir
-	return c.Output()
-}

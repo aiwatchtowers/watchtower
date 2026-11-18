@@ -51,12 +51,20 @@ type TwinDeps struct {
 	Parked       func(ctx context.Context, text string) (bool, string, error) // light-tier label: may only add a park; an error or timeout parks
 	StartSession func(ctx context.Context, workbenchID, targetID int64, brief string) error
 	Run          func(ctx context.Context, dir, name string, args ...string) ([]byte, error)
-	Clock        func() time.Time
+	// ReviewPlace reads a session's review place for a diff review round
+	// (LiveReviewPlace); nil leaves review_code items queued.
+	ReviewPlace func(ctx context.Context, workbenchID, sessionID int64) (ReviewPlace, error)
+	// PRBase reads the base branch of branch's PR in folder and the
+	// repository's default branch (GHPRBase); an error, "" or nil parks an
+	// Approve.
+	PRBase func(ctx context.Context, folder, branch string) (base, defaultBranch string, err error)
+	Clock  func() time.Time
 }
 
 // Twin answers the queued items of armed sessions in the owner's place: the
-// asks, the checks, the finish handovers and the permission prompts (reviews
-// have their own decider). Every decision is journalled unsure (D43).
+// asks, the checks, the finish handovers, the permission prompts and the
+// reviews — a spec or plan review ask, a diff review round. Every decision
+// is journalled unsure (D43).
 type Twin struct {
 	d  TwinDeps
 	wg sync.WaitGroup
@@ -72,16 +80,16 @@ func NewTwin(d TwinDeps) *Twin {
 		d.Clock = time.Now
 	}
 	if d.Run == nil {
-		d.Run = runOutput
+		d.Run = ExecRun
 	}
 	return &Twin{d: d, starting: map[int64]bool{}}
 }
 
 // twinKinds are the item kinds this worker leases, each with the ref kind
-// its wait point has: question asks, checks and handovers of an ask, and
-// permission prompts. Review items wait for the review decider; guard
-// denials are journal-only and never leased.
-var twinKinds = map[string]string{"ask": "ask", "check": "ask", "handover": "ask", "permission": "permission"}
+// its wait point has: question asks, checks, handovers and document reviews
+// of an ask, permission prompts, and diff reviews (of a session or a round:
+// "" here, checked apart). Guard denials are journal-only and never leased.
+var twinKinds = map[string]string{"ask": "ask", "check": "ask", "handover": "ask", "review_doc": "ask", "review_code": "", "permission": "permission"}
 
 // RunOnce first starts the next sessions of handovers answered "Continue"
 // whose start is still owed (a crash between the answer and the start), then
@@ -106,7 +114,15 @@ func (t *Twin) RunOnce(ctx context.Context) int {
 		armed[s.SessionID] = true
 	}
 	eligible := func(it db.WatchmanItem) bool {
-		if ref, ok := twinKinds[it.Kind]; !ok || it.RefKind != ref {
+		ref, ok := twinKinds[it.Kind]
+		switch {
+		case !ok:
+			return false
+		case it.Kind == "review_code":
+			if t.d.ReviewPlace == nil || (it.RefKind != "session" && it.RefKind != "round") {
+				return false
+			}
+		case it.RefKind != ref:
 			return false
 		}
 		isArmed := armed[it.SessionID]
@@ -144,6 +160,10 @@ func (t *Twin) RunOnce(ctx context.Context) int {
 		t.wg.Add(1)
 		go func(it db.WatchmanItem) {
 			defer t.wg.Done()
+			if it.Kind == "review_code" {
+				t.handleReviewCode(ctx, it)
+				return
+			}
 			t.handle(ctx, it)
 		}(*it)
 	}
@@ -272,6 +292,12 @@ func (j *job) lostRace(o db.WatchmanOutcome) {
 	parked := o.Outcome == OutcomeParked
 	o.ParkReason, o.Error = "", "" // no park, and no session start owed
 	ask, err := j.t.d.DB.GetOwnerAskByID(j.it.RefID)
+	if err == nil && ask.Status == "open" {
+		// Still open: the spec review's author loop hid it meanwhile. Not
+		// the owner's answer: decided again once the loop ends.
+		j.release()
+		return
+	}
 	if errors.Is(err, db.ErrAskNotFound) || (err == nil && ask.Status == "withdrawn") {
 		if j.dec == nil {
 			j.drop()
@@ -309,7 +335,7 @@ func (j *job) fail(ctx context.Context, err error) {
 	switch {
 	case j.parked != nil && j.it.Attempts >= MaxAttempts:
 		j.finishAlone(*j.parked)
-	case j.parked == nil && j.it.Attempts >= MaxAttempts && (j.ask != nil || j.perm != nil):
+	case j.parked == nil && j.it.Attempts >= MaxAttempts && (j.ask != nil || j.perm != nil || j.it.Kind == "review_code"):
 		j.park(ctx, failedReason(text))
 	default:
 		j.requeue(j.now(), text)

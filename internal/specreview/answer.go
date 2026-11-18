@@ -43,6 +43,32 @@ type TwinMark struct {
 	Key, State, Body string
 }
 
+// FindingText is a finding a twin mark may name: its key and its text.
+type FindingText struct {
+	Key, Text string
+}
+
+// MarkableFindings lists the findings AnswerMarks accepts marks on, once
+// per key: the result's (agreements, decided alone, blind spots, checks),
+// then the ledger's keys the result does not have.
+func MarkableFindings(result *Result, loop []LedgerEntry) []FindingText {
+	seen := map[string]bool{}
+	var out []FindingText
+	add := func(key, text string) {
+		if !seen[key] {
+			seen[key] = true
+			out = append(out, FindingText{Key: key, Text: text})
+		}
+	}
+	for _, f := range answerFindings(result) {
+		add(f.key, f.text)
+	}
+	for _, e := range loop {
+		add(e.Key, e.Text)
+	}
+	return out
+}
+
 // AnswerMarks is what the twin's marks make of a review answer: the marks as
 // the Mac would store them (the finding's text kept as About on a comment) and
 // the answer, built by BuildAnswer over those marks, so its comments are
@@ -54,13 +80,8 @@ type TwinMark struct {
 func AnswerMarks(askID int64, result *Result, loop []LedgerEntry, twin []TwinMark,
 	verdict string, snapshot string, at time.Time) (asks.Answer, []db.SpecReviewMark) {
 	known := map[string]string{}
-	for _, f := range answerFindings(result) {
-		known[f.key] = f.text
-	}
-	for _, e := range loop {
-		if _, ok := known[e.Key]; !ok {
-			known[e.Key] = e.Text
-		}
+	for _, f := range MarkableFindings(result, loop) {
+		known[f.Key] = f.Text
 	}
 	stamp := at.UTC().Format("2006-01-02T15:04:05Z")
 	var order []string
