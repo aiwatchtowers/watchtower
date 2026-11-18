@@ -804,12 +804,11 @@ func (h *hubRuntime) eventLane(ctx context.Context, work chan<- transport.Event)
 		case ev = <-evA:
 		case ev = <-evB:
 		}
+		h.noteReach(ev)
 		if h.laneEvent(ev) {
 			if h.isMailbox(ev.Zone) {
 				h.onMailboxEvent(ctx, ev)
-			} else {
-				h.setUnreachable(false) // all onEvent does with it
-			}
+			} // else a plain zone write: noteReach was all there is to it
 			continue
 		}
 		select {
@@ -817,6 +816,19 @@ func (h *hubRuntime) eventLane(ctx context.Context, work chan<- transport.Event)
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+// noteReach follows what ev says of the transport's reach, in the order the
+// events arrive (the lane's), never in the order the lane and work() get to
+// them: an error not tied to a zone makes it unreachable, a zone write or
+// CloudKit's PullNow reachable again.
+func (h *hubRuntime) noteReach(ev transport.Event) {
+	switch {
+	case ev.Err != nil && ev.Zone == "":
+		h.setUnreachable(true)
+	case ev.Err == nil && ev.Control == nil && (ev.Zone != "" || ev.PullNow):
+		h.setUnreachable(false)
 	}
 }
 
@@ -830,7 +842,6 @@ func (h *hubRuntime) laneEvent(ev transport.Event) bool {
 
 // onMailboxEvent is the pass a mailbox zone's event asks for.
 func (h *hubRuntime) onMailboxEvent(ctx context.Context, ev transport.Event) {
-	h.setUnreachable(false)
 	if h.passEvent(ctx, ev) {
 		return // only the hub's own writes: no phone wrote, nothing to poll
 	}
@@ -842,7 +853,8 @@ func (h *hubRuntime) onMailboxEvent(ctx context.Context, ev transport.Event) {
 	}
 }
 
-// onEvent handles one transport event.
+// onEvent handles one transport event the event lane handed over (its
+// reach already noted there, noteReach).
 func (h *hubRuntime) onEvent(ctx context.Context, ev transport.Event) {
 	if h.cloudKitEvent(ctx, ev) {
 		return
@@ -861,11 +873,9 @@ func (h *hubRuntime) onEvent(ctx context.Context, ev transport.Event) {
 		h.kick(h.linkKick)
 	case ev.Err != nil:
 		log.Printf("hub: transport event: %s", errClass(ev.Err))
-		h.setUnreachable(true)
 	case ev.Control != nil:
 		h.onControl(ctx, *ev.Control)
 	case ev.Zone != "":
-		h.setUnreachable(false)
 		if ev.Resync {
 			// A reconnect: what the phones wait for goes out again, and
 			// the account state the relay re-read may have new readers.

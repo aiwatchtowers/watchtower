@@ -29,8 +29,9 @@ var ErrNotDecided = errors.New("actions: no decided action of a linked phone at 
 // own dispatch (p.mu is not re-entrant) — the handlers queue it on a
 // goroutine of their own. E2E: sealed relayToPhone to r.Device like every
 // echo, never written in the clear. The queued write is flushed at once,
-// with p.mu released (best effort: a failed write stays queued for the next
-// pass), except while paused (SetPaused).
+// with p.mu released and p.run held shared, as a pass's (best effort: a
+// failed write stays queued for the next pass), except while paused
+// (SetPaused).
 func (p *Processor) LateEcho(ctx context.Context, r Request, o Outcome) error {
 	if p.cfg.Sealer == nil {
 		return errors.New("actions: no sealer for a late echo")
@@ -43,6 +44,10 @@ func (p *Processor) LateEcho(ctx context.Context, r Request, o Outcome) error {
 	if err != nil {
 		return err
 	}
+	// The write is a pass's as PauseFor sees it: a pause returns only after
+	// a write already past this check, and none starts after it.
+	p.run.RLock()
+	defer p.run.RUnlock()
 	if p.paused.Load() {
 		// Queued: the first pass after the pause writes it.
 		return nil

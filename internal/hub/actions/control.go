@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"slices"
 	"time"
 
 	"watchtower/internal/hub/secure"
@@ -517,19 +516,16 @@ func (p *Processor) FlushControls(ctx context.Context) (written, failed int, err
 	if p.paused.Load() {
 		return 0, 0, nil
 	}
-	return p.flushAll(ctx, "")
+	return p.flushAll(ctx)
 }
 
-// flushAll writes every linked phone's queue (queue first, when set), each
-// under its own flush lock, never p.mu: a pass applying another mailbox's
-// page, and a write to another mailbox, go on meanwhile.
-func (p *Processor) flushAll(ctx context.Context, first string) (written, failed int, err error) {
+// flushAll writes every linked phone's queue, each under its own flush
+// lock, never p.mu: a pass applying another mailbox's page, and a write to
+// another mailbox, go on meanwhile.
+func (p *Processor) flushAll(ctx context.Context) (written, failed int, err error) {
 	boxes, err := p.mailboxes()
 	if err != nil {
 		return 0, 0, err
-	}
-	if i := slices.IndexFunc(boxes, func(b mailbox) bool { return b.queue == first }); i > 0 {
-		boxes[0], boxes[i] = boxes[i], boxes[0]
 	}
 	var errs []error
 	for _, b := range boxes {

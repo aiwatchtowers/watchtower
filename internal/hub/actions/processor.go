@@ -99,6 +99,9 @@ type Processor struct {
 	// boxWait, when set (tests), is called when a mailbox's lock is found
 	// held, before waiting for it.
 	boxWait func(zone string)
+	// queueWait, when set (tests), is called when a queue's flush lock is
+	// found held, before waiting for it.
+	queueWait func(queue string)
 	// failLog keeps a mailbox read that fails every pass to one line per
 	// logreason.RepeatEvery per phone and reason (#1873).
 	failLog *logreason.Limiter
@@ -410,7 +413,12 @@ func (p *Processor) PassEvent(ctx context.Context, ev transport.Event) (PassRepo
 		// An event an earlier read already took reads nothing: no sample.
 		p.eventRead(ev, readAt)
 	}
-	return p.finish(ctx, ps, p.passError(b, err, nil), b.queue)
+	// Only b's queue: another mailbox's write (the backstop's, maybe slow)
+	// never holds the lane; the passes write the other queues.
+	p.nudge(ps)
+	written, _, ferr := p.flushQueue(ctx, b)
+	ps.report.ControlsWritten = written
+	return ps.report, errors.Join(append(p.passError(b, err, nil), ferr)...)
 }
 
 // readEvent reads what ev stands for in b's own mailbox, under its mailbox
@@ -442,11 +450,11 @@ func (p *Processor) readEvent(ctx context.Context, ep EventPuller, ev transport.
 }
 
 // finish ends a pass: the nudge of the kinds it applied first, then the
-// control queues (queue first, when set: an event's own mailbox), so the
-// slices' save starts ahead of the echoes' (live link R4).
-func (p *Processor) finish(ctx context.Context, ps *pass, errs []error, first string) (PassReport, error) {
+// control queues, so the slices' save starts ahead of the echoes' (live
+// link R4).
+func (p *Processor) finish(ctx context.Context, ps *pass, errs []error) (PassReport, error) {
 	p.nudge(ps)
-	written, _, err := p.flushAll(ctx, first)
+	written, _, err := p.flushAll(ctx)
 	ps.report.ControlsWritten = written
 	return ps.report, errors.Join(append(errs, err)...)
 }
@@ -479,7 +487,12 @@ func (p *Processor) boxLock(zone string) (unlock func()) {
 // its unlock: rows of one queue go out in order, another queue's go on.
 func (p *Processor) flushLock(queue string) (unlock func()) {
 	m := p.keyed(&p.queues, queue)
-	m.Lock()
+	if !m.TryLock() {
+		if p.queueWait != nil {
+			p.queueWait(queue)
+		}
+		m.Lock()
+	}
 	return m.Unlock
 }
 
@@ -555,7 +568,7 @@ func (p *Processor) passBoxes(ctx context.Context, boxes []mailbox, ps *pass) (P
 	for _, g := range p.withHelloZone(byZone(boxes), false) {
 		errs = p.readZone(ctx, g, ps, errs)
 	}
-	return p.finish(ctx, ps, errs, "")
+	return p.finish(ctx, ps, errs)
 }
 
 // readZone reads g under its mailbox lock, adding what stopped a phone to

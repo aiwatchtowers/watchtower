@@ -671,8 +671,10 @@ and a burst of 8–10 actions/s ran into `rate_limited`. Now:
   its own next event or the next backstop pass, not at another phone's event as before.
 - **Mailbox events on their own lane (live link R4).** The runtime's `eventLane` goroutine reads the transports'
   events: a mailbox zone's write (no error, control, resync or CloudKit bridge flag) runs its `PassEvent` there at
-  once, and any other plain zone write (the hub's own data-zone echoes, one per slice save) only clears the
-  unreachable flag there; errors, controls, resyncs, pairing and the bridge's events go to `work()` in order (a
+  once, and any other plain zone write (the hub's own data-zone echoes, one per slice save) ends there; the lane
+  also sets the relay's reachability from every event in arrival order (`noteReach`: an error not tied to a zone
+  → unreachable, a zone write or `PullNow` → reachable), so an error still waiting for `work()` never overrides a
+  later write; errors, controls, resyncs, pairing and the bridge's events go to `work()` in order (a
   64-event hand-off), which keeps the backstop pass, link upkeep, the soon tick and housekeeping. A mailbox write may
   overtake an event still waiting in the hand-off (a pass reads the current links, so nothing it decides depends on
   that order). The CloudKit account read and `SweepShares` run with `work()`'s passes only (the sweep acts on its due
@@ -682,8 +684,9 @@ and a burst of 8–10 actions/s ran into `rate_limited`. Now:
   another mailbox's read goes on; `Processor.mu` is held only while a page's records (and the held actions) are
   applied, never across a mailbox read but the read back of held recording uploads after a restart
   (`recoverHeld`); each control queue's writes hold that queue's own flush lock (`flushLock`), so one mailbox's
-  write never waits for another's, and an event pass writes its own mailbox's queue first. `LateEcho` decides
-  under `mu` and writes with `mu` released. Lock order: `run` (shared by passes and `FlushControls`, exclusive for
+  write never waits for another's, and an event pass writes its own mailbox's queue only (the passes write the
+  rest). `LateEcho` decides under `mu` and writes with `mu` released but `run` held shared, so `PauseFor` returns
+  only after a late echo already past its pause check has written. Lock order: `run` (shared by passes and `FlushControls`, exclusive for
   `Hygiene` and `PauseFor`'s wait), a mailbox's lock, `mu`, a queue's flush lock. A pass nudges the slice kinds it
   applied (`PublishNow`) before it writes the queued echoes, so the slices' save starts ahead of the applied echo's.
   v1 limits: the daily `Hygiene` holds every pass, the lane's included, while it runs (on CloudKit, its RelayZone

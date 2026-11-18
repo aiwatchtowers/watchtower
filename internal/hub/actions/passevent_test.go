@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -534,17 +535,78 @@ func TestProcessor_EventFlushNotBehindAnotherMailboxsWrite(t *testing.T) {
 	passed := make(chan error, 1)
 	go func() { _, err := w.proc.Pass(w.ctx); passed <- err }()
 	<-writing
-	if _, err := other.Act("board_comment_add"); err != nil {
-		t.Fatal(err)
+	// Two events of the other phone, each read, applied and echoed while the
+	// first phone's write still waits: an event pass writes its own
+	// mailbox's queue only, never waiting on another's.
+	for range 2 {
+		seq, err := other.Act("board_comment_add")
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := w.proc.PassEvent(w.ctx, transport.Event{Zone: other.Zone()})
+		if err != nil || r.Applied != 1 || r.ControlsWritten != 1 {
+			t.Fatalf("event pass of action %d: %+v, %v", seq, r, err)
+		}
+		<-written
 	}
-	evDone := make(chan error, 1)
-	go func() { _, err := w.proc.PassEvent(w.ctx, transport.Event{Zone: other.Zone()}); evDone <- err }()
-	<-written // the other phone's echo, while the first phone's write still waits
 	close(release)
 	if err := <-passed; err != nil {
 		t.Fatal(err)
 	}
-	if err := <-evDone; err != nil {
+}
+
+// TestProcessor_NoLateEchoWriteAfterPauseFor: PauseFor returns only once a
+// late echo already past its pause check has written, so nothing reaches
+// the transport after it (a switch or a reset drains the old side).
+func TestProcessor_NoLateEchoWriteAfterPauseFor(t *testing.T) {
+	w := newWorld(t, transport.KindRelay)
+	seen := heldThenLate(w)
+	w.act("session_input")
+	w.settle()
+	var mu sync.Mutex
+	var order []string
+	note := func(s string) {
+		mu.Lock()
+		defer mu.Unlock()
+		order = append(order, s)
+	}
+	cs := &countSaves{Fake: w.fake, before: func(int) { note("save") }}
+	w.use(cs)
+	unlockQueue := w.proc.flushLock(w.queue(w.phone)) // the late echo's write waits here
+	waiting := make(chan struct{})
+	w.proc.queueWait = func(string) { close(waiting) }
+	late := make(chan error, 1)
+	go func() { late <- w.proc.LateEcho(w.ctx, *seen, Outcome{Status: wire.StatusApplied}) }()
+	<-waiting
+	paused := make(chan struct{})
+	go func() {
+		w.proc.PauseFor("test")
+		note("paused")
+		close(paused)
+	}()
+	// Wait until PauseFor either returned or waits for the late echo (its
+	// writer lock then refuses a reader).
+	for waited := false; !waited; {
+		select {
+		case <-paused:
+			waited = true
+		default:
+			if !w.proc.run.TryRLock() {
+				waited = true
+				break
+			}
+			w.proc.run.RUnlock()
+			runtime.Gosched()
+		}
+	}
+	unlockQueue()
+	if err := <-late; err != nil {
 		t.Fatal(err)
+	}
+	<-paused
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []string{"save", "paused"}; !slices.Equal(order, want) {
+		t.Fatalf("order %v, want %v", order, want)
 	}
 }

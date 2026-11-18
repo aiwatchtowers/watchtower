@@ -163,8 +163,7 @@ func (h *hubRuntime) cloudKitEvent(ctx context.Context, ev transport.Event) bool
 			}
 		}
 		return true
-	case ev.PullNow:
-		h.setUnreachable(false)
+	case ev.PullNow: // reachable again: noted by the event lane (noteReach)
 		h.publishSoon(slices.UrgentKinds...)
 		h.kick(h.linkKick)
 		h.pass(ctx)
