@@ -104,6 +104,8 @@ func printPolicy(w io.Writer, p policy.Policy) error {
 		{policy.KeyAllowedAIProviders, plainList(k.AllowedAIProviders)},
 		{policy.KeyAllowClaudeAITools, plainAllowed(k.AllowClaudeAITools)},
 		{policy.KeyPurgeRevokedData, plainOnOff(k.PurgeRevokedData)},
+		{policy.KeyAllowBackgroundAI, plainAllowed(k.AllowBackgroundAI)},
+		{policy.KeySlackApps, plainSlackApps(k.SlackApps)},
 		{policy.KeyCompanyBundle, plainCompanyBundle(k.CompanyBundle)},
 		{policy.KeyAllowAtlassianAPIToken, plainAllowed(k.AllowAtlassianAPIToken)},
 		{policy.KeyAllowOwnGoogleProject, plainAllowed(k.AllowOwnGoogleProject)},
@@ -136,6 +138,20 @@ func plainList(v []string) string {
 		return "none"
 	}
 	return strings.Join(v, ", ")
+}
+
+func plainSlackApps(v []policy.SlackApp) string {
+	switch {
+	case v == nil:
+		return policyNotSet
+	case len(v) == 0:
+		return "none"
+	}
+	parts := make([]string, 0, len(v))
+	for _, a := range v {
+		parts = append(parts, a.TeamID+" ("+a.ClientID+")")
+	}
+	return strings.Join(parts, ", ")
 }
 
 func plainString(v *string) string {

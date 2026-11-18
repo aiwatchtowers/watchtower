@@ -42,6 +42,7 @@ final class ScreenshotTourTests: XCTestCase {
     private static let onlyRelayPhase5 = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_ONLY"] == "relay-phase5"
     /// `SHOTS_ONLY=chat` runs `testTheChatShots` alone: the Chats tab's states (iPhone chat mockups 1a–1j).
     private static let onlyChat = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_ONLY"] == "chat"
+    private static let onlySpecReview = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_ONLY"] == "spec-review"
 
     func testTheRelayPhase4Shots() async throws {
         guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"], Self.onlyRelayPhase4 else {
@@ -69,6 +70,23 @@ final class ScreenshotTourTests: XCTestCase {
         let written = try FileManager.default.contentsOfDirectory(atPath: path)
             .filter { name in rows.contains { name.hasPrefix($0.number + "-") } && name.hasSuffix(".png") }
         XCTAssertEqual(written.count, 3 * rows.count)
+    }
+
+    /// Board #1945: the website workbench's Sessions tab with a session in
+    /// Spec review (`make mobile-shots SHOTS_ONLY=spec-review`).
+    func testTheSpecReviewShots() async throws {
+        guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"], Self.onlySpecReview else {
+            throw XCTSkip("Only with make mobile-shots SHOTS_ONLY=spec-review")
+        }
+        let dir = URL(fileURLWithPath: path, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let (root, _) = try makeDemoRoot()
+        try await poll({ Self.isHydrated(root.env) }, "the demo seed hydrated")
+        let host = ScreenshotHost(directory: dir, env: root.env, linking: root.linking)
+        try await host.capture("05r-workbench-sessions-spec-review", NavigationStack {
+            WorkbenchView(replica: root.env.workbenchReplica, writer: root.env.boardWriter,
+                          workbenchID: DemoSeed.websiteID, segment: .sessions)
+        })
     }
 
     func testTheChatShots() async throws {

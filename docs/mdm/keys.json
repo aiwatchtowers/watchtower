@@ -42,6 +42,18 @@
     "effect": "Whether an account whose access was revoked has its data wiped."
   },
   {
+    "key": "AllowBackgroundAI",
+    "type": "boolean",
+    "default": "not set: each person is asked",
+    "effect": "true is the organization's consent to AI that runs in the background, so people are not asked; each person can still pause it. false keeps background AI off and locks the switch."
+  },
+  {
+    "key": "SlackApps",
+    "type": "array of dictionaries",
+    "default": "not set: none",
+    "effect": "The company's own Slack apps, one entry per workspace with team_id (T…) and client_id. Connections → Slack offers a one-press Connect for each; it never connects anyone. A malformed or duplicate entry is dropped."
+  },
+  {
     "key": "CompanyBundle",
     "type": "string",
     "default": "not set: no company",

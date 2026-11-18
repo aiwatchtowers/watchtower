@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/db"
 )
 
@@ -38,7 +39,7 @@ func specReviewAsk(t *testing.T, database *db.DB, queuedAt time.Time) int64 {
 
 func recordLaunches(d *Daemon) *[]int64 {
 	var got []int64
-	d.SetSpecReviewLaunch(func(id int64) error {
+	d.SetSpecReviewLaunch(func(_ context.Context, id int64) error {
 		got = append(got, id)
 		return nil
 	})
@@ -60,6 +61,85 @@ func TestSpecReviewSweep_RelaunchesStaleQueued(t *testing.T) {
 	assert.Equal(t, 2, row.Attempt, "a launch counts")
 	d.phaseSpecReviewSweep(context.Background())
 	assert.Equal(t, []int64{stale}, *launched, "the minute restarts after a launch")
+}
+
+// D20 (#1886): while background AI is paused the sweep starts no reviewer:
+// a stale queued row stays queued with its attempt unspent, and the
+// running-row repair still fails a dead reviewer.
+func TestSpecReviewSweep_HoldsWhilePaused(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	d.SetConsent(newFakeConsent(consentPausedByOwner).read)
+	launched := recordLaunches(d)
+	queued := specReviewAsk(t, database, time.Now().Add(-5*time.Minute))
+	dead := specReviewAsk(t, database, time.Now().Add(-5*time.Minute))
+	helper := exec.Command("true")
+	require.NoError(t, helper.Run()) // started and reaped: its pid is gone
+	ok, err := database.ClaimSpecReview(dead, helper.Process.Pid, time.Now())
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	for range specReviewMaxAttempts + 1 {
+		d.phaseSpecReviewSweep(context.Background())
+	}
+
+	assert.Empty(t, *launched)
+	row, err := database.GetSpecReview(queued)
+	require.NoError(t, err)
+	assert.Equal(t, "queued", row.Status)
+	assert.Equal(t, 1, row.Attempt, "a held row spends no attempt")
+	row, err = database.GetSpecReview(dead)
+	require.NoError(t, err)
+	assert.Equal(t, "failed", row.Status)
+}
+
+// D20: a pause written while the sweep relaunches holds the rows after it:
+// they stay queued with their attempt unspent.
+func TestSpecReviewSweep_PauseMidLoopHoldsTheRest(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	fc := newFakeConsent(consentAllowed)
+	d.SetConsent(fc.read)
+	var launched []int64
+	d.SetSpecReviewLaunch(func(_ context.Context, id int64) error {
+		launched = append(launched, id)
+		fc.set(consentPausedByOwner)
+		return nil
+	})
+	ids := []int64{
+		specReviewAsk(t, database, time.Now().Add(-5*time.Minute)),
+		specReviewAsk(t, database, time.Now().Add(-5*time.Minute)),
+		specReviewAsk(t, database, time.Now().Add(-5*time.Minute)),
+	}
+
+	d.phaseSpecReviewSweep(context.Background())
+
+	require.Len(t, launched, 1)
+	for _, id := range ids {
+		row, err := database.GetSpecReview(id)
+		require.NoError(t, err)
+		assert.Equal(t, "queued", row.Status)
+		if id == launched[0] {
+			assert.Equal(t, 2, row.Attempt, "the launched row spent its attempt")
+		} else {
+			assert.Equal(t, 1, row.Attempt, "a row after the pause spends no attempt")
+		}
+	}
+}
+
+// D20: allowed, each relaunch runs admitted as its own unit, which the
+// launcher passes to the reviewer.
+func TestSpecReviewSweep_RelaunchIsAdmitted(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	d.SetConsent(newFakeConsent(consentAllowed).read)
+	var env []string
+	d.SetSpecReviewLaunch(func(ctx context.Context, _ int64) error {
+		env = aiconsent.ChildEnv(ctx)
+		return nil
+	})
+	id := specReviewAsk(t, database, time.Now().Add(-5*time.Minute))
+
+	d.phaseSpecReviewSweep(context.Background())
+
+	assert.Equal(t, []string{aiconsent.EnvOrigin + "=background", aiconsent.EnvAdmitted + "=review:" + strconv.FormatInt(id, 10)}, env)
 }
 
 func TestSpecReviewSweep_AtMostThreePerCycle(t *testing.T) {

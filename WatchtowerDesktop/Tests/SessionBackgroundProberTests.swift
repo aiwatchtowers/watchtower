@@ -1,6 +1,7 @@
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerTestSupport
 
 /// Answers `workbench session-probe` calls from a script, optionally holding
 /// each call open until the test releases it. No process is spawned.

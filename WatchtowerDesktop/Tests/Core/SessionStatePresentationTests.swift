@@ -26,6 +26,19 @@ final class SessionStatePresentationTests: XCTestCase {
         }
     }
 
+    func testSpecReviewCaptionTonesAndRing() {
+        let round2 = State.live(.specReview, specReviewRound: 2)
+        XCTAssertEqual(SessionStatePresentation.color(for: round2), .green)
+        XCTAssertEqual(SessionStatePresentation.glyph(for: round2), "doc.text.magnifyingglass")
+        XCTAssertEqual(SessionStatePresentation.caption(for: round2, oldestAskID: nil), "Spec review · round 2")
+        XCTAssertEqual(SessionStatePresentation.caption(for: .live(.specReview), oldestAskID: nil), "Spec review")
+        let closed = State(kind: .specReview, live: false, specReviewRound: 2)
+        XCTAssertTrue(SessionStatePresentation.isRing(closed))
+        XCTAssertFalse(SessionStatePresentation.isRing(round2))
+        XCTAssertFalse(SessionStatePresentation.pulses(round2))
+        XCTAssertFalse(SessionStatePresentation.pulses(closed))
+    }
+
     func testFillOrRingFollowsLiveness() {
         let closedFinished = State(kind: .finished, live: false)
         XCTAssertTrue(SessionStatePresentation.isRing(closedFinished))
@@ -152,7 +165,7 @@ final class SessionStatePresentationTests: XCTestCase {
 
     func testOnlyALiveBackgroundPulses() {
         let kinds: [State.Kind] = [
-            .notStarted, .running, .working, .waitingOnAsk, .needsApproval, .finished, .stopped, .failed, .background
+            .notStarted, .running, .working, .waitingOnAsk, .needsApproval, .finished, .stopped, .failed, .background, .specReview
         ]
         for kind in kinds {
             for live in [true, false] {

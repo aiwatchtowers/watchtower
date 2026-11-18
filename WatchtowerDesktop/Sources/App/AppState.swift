@@ -46,10 +46,11 @@ final class AppState {
     /// binary store has been synced — see `initialize()`.
     let daemonManager = DaemonManager()
     let uiVisibility = UIVisibilityCenter() // board #731, `applyUIVisibility`
-    /// The organization policy forced through the MDM (#608). Read only once
-    /// `initialize()` starts it, so a test that never initializes never reads
-    /// this Mac's managed preferences.
+    /// The organization policy forced through the MDM (#608). Read only once `initialize()` starts it,
+    /// so a test that never initializes never reads this Mac's managed preferences.
     let managedPolicy: ManagedPolicyCenter
+    @ObservationIgnored private(set) lazy var backgroundAIRefresher = makeBackgroundAIRefresher() // #1886, started with the policy
+    var backgroundAIConsentSheet = BackgroundAIConsentSheet() // #1886, AppState+BackgroundAI
     var isDBAvailable: Bool { databaseManager != nil }
 
     /// Live per-feature readiness behind the tabs' empty states, here so a
@@ -58,10 +59,7 @@ final class AppState {
     /// `readinessEnvironmentOverride`, set before first use, replaces the
     /// live environment in tests.
     @ObservationIgnored private(set) lazy var readinessCenter = ReadinessCenter(
-        environment: readinessEnvironmentOverride
-            ?? LiveReadinessEnvironment(daemon: daemonManager, visibility: featureVisibility) {
-                Constants.activeWorkspaceDir()
-            }
+        environment: readinessEnvironmentOverride ?? makeLiveReadinessEnvironment()
     )
 
     /// The Home snapshot and the Getting ready memory, here so a read
@@ -98,8 +96,8 @@ final class AppState {
     var settingsAnchor: SettingsAnchor?
     /// The Connections tab's open service (nil: the overview), so a link opens a service.
     var selectedConnection: ConnectionService?
-    /// A Slack connect in flight survives leaving the Connections tab (`SlackAuthFlowState`).
-    @ObservationIgnored private(set) lazy var slackAuthFlow = SlackAuthFlowState()
+    @ObservationIgnored private(set) lazy var slackAuthFlow = SlackAuthFlowState() // a connect survives leaving the tab
+    @ObservationIgnored private(set) lazy var slackAppSetup = SlackAppSetupModel { Self.slackLineStream() } // #1709 S3; no process under XCTest
     @ObservationIgnored var connectionAccountsReadAt: Date? // `refreshConnectionAccountsIfStale`'s clock
     /// The one config.yaml copy Settings and the Connections tab edit (no stale overwrite); a test may set it.
     @ObservationIgnored weak var observedProviderConnection: ProviderConnection?
@@ -111,7 +109,7 @@ final class AppState {
     var isLoading: Bool = true
 
     /// Whether onboarding (Goals → Connect) is on screen.
-    var needsOnboarding: Bool = false
+    var needsOnboarding: Bool = false { didSet { if oldValue, !needsOnboarding { showPendingSlackConnect() } } }
 
     /// Persistent onboarding state machine — tracks which step the user is on across app restarts.
     let onboarding: OnboardingStateMachineV2
@@ -377,11 +375,11 @@ final class AppState {
     private(set) var workbenchNotificationCenter: WorkbenchNotificationCenter?
     /// Claude plan limits (menu bar text, tray rows, Usage tab); nil until the database is open.
     private(set) var planUsageCenter: PlanUsageCenter?
-    /// The account purge ledger (board #601): red lines, Home banner, notices.
-    var accountPurgeCenter: AccountPurgeCenter?
+    var accountPurgeCenter: AccountPurgeCenter? // the account purge ledger (board #601): red lines, Home banner, notices
     let fileVault = FileVaultWatch() // `fdesetup status` at launch and on activation (#1769)
-    /// The Slack Live probe's verdicts (Connections → Slack).
-    var slackLiveStatusCenter: SlackLiveStatusCenter?
+    var slackLiveStatusCenter: SlackLiveStatusCenter? // the Slack Live probe's verdicts (Connections → Slack)
+    var slackConnectListener: SlackConnectListenerHost? // `slack connect serve` on 18551 (#1709); none under XCTest
+    var slackConnectFlow: SlackConnectFlowModel? // the connect flow on that listener (link, code, MDM, Reconnect)
     /// The live workbench sessions' agent states (board #312), polled while a `claude` session runs, whatever tab is shown.
     private(set) var sessionAgentStateCenter: SessionAgentStateCenter?
     /// The Go hub over its control socket (heartbeat, view inputs, status; go hub plan 3 Task 14); none under XCTest.
@@ -835,8 +833,7 @@ final class AppState {
         isLoading = true
         Constants.prewarmResolvedEnvironment()
         // Before anything a key decides starts (the mobile hub, the pickers).
-        managedPolicy.start(activation: NSApplication.didBecomeActiveNotification)
-        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil { fileVault.start() }
+        startPolicyAndConsentRefresh()
         // Text older versions handed the CLI through temp files (now stdin).
         Task.detached(priority: .utility) {
             StaleTempSweep.run(in: FileManager.default.temporaryDirectory)
@@ -1050,11 +1047,6 @@ final class AppState {
         }
         onboarding.settle(route: route)
         needsOnboarding = !skipThisLaunch && onboarding.currentStep != .complete
-    }
-
-    /// The route onboarding follows: the goals of the last Continue.
-    var onboardingRoute: OnboardingRoute {
-        onboardingGoals.route
     }
 
     /// Settings' account changes (Add, Remove, re-login) while onboarding is
@@ -1305,7 +1297,7 @@ final class AppState {
 
     /// A first run of onboarding opens Home, whatever the goals.
     private func landOnHome() {
-        selectedDestination = .home
+        if !showPendingSlackConnect() { selectedDestination = .home }
     }
 
     /// Called when onboarding flow completes successfully.
@@ -1546,7 +1538,7 @@ final class AppState {
         initEmailAccounts(dbPool: manager.dbPool)
         initCalendarAccounts(dbPool: manager.dbPool)
         initGoogleAccounts(dbPool: manager.dbPool)
-        initSlackAccounts(dbPool: manager.dbPool)
+        initSlackAccountsAndConnectFlow(dbPool: manager.dbPool)
         initJiraAccounts(dbPool: manager.dbPool)
         linearAccountsViewModel = .started { [weak self] in await self?.accountsChanged() }
     }
@@ -1682,7 +1674,7 @@ final class AppState {
     }
 
     func initSlackAccounts(dbPool: DatabasePool) {
-        let vm = SlackAccountsViewModel(dbPool: dbPool)
+        let vm = SlackAccountsViewModel(dbPool: dbPool, cliPath: Self.slackCLIPath, readsAccountFlags: !Self.runsUnderXCTest)
         vm.onAccountsChanged = { [weak self, weak vm] in
             if let vm { self?.slackAccountsDidChange(vm.accounts) }
             await self?.accountsChanged()

@@ -66,6 +66,16 @@ package enum ReadinessFeature: String, CaseIterable, Sendable {
     /// Whether the feature has nothing to work on until the first Slack sync
     /// finishes (when Slack is connected). Slack sync is that sync itself.
     package var readsSyncedData: Bool { self != .slackSync }
+
+    /// Whether the daemon makes the feature with background AI, which waits
+    /// for the owner's or the organization's "yes" (#1886, spec §6.2). Sync,
+    /// Inbox's rules and the knowledge index run either way.
+    package var usesBackgroundAI: Bool {
+        switch self {
+        case .digests, .streamDigests, .tracks, .peopleCards, .briefing, .dayPlan, .ideas, .memory: true
+        case .slackSync, .inbox, .knowledgeIndex, .calendar, .jira, .linear: false
+        }
+    }
 }
 
 /// The source a feature reads.
@@ -82,6 +92,10 @@ package enum ReadinessSource: Hashable, Sendable {
     /// Jira is connected but no board is selected: the daemon's Jira sync
     /// has nothing to fetch until the owner picks boards (#572).
     case jiraBoards
+    /// Slack is Live only (no synced account, Live on): a Slack feature, or
+    /// an any-source one with nothing else connected, needs the workspace's
+    /// own Slack app (screens spec §2.1, `Readiness.needsFullSlack`).
+    case fullSlack
 
     /// What a "Connect …" line or button names.
     package var displayName: String {
@@ -92,6 +106,7 @@ package enum ReadinessSource: Hashable, Sendable {
         case .linear: "Linear"
         case .jiraBoards: "Jira boards"
         case .jiraOrMail: "Jira or mail"
+        case .fullSlack: "your workspace's Slack app"
         case .ownerIdentity: "Slack, Google, Jira, Linear or an email account"
         case .ownerIdentityPending(let name): "your \(name) identity"
         case .anySource, .none: "a source"
@@ -104,6 +119,7 @@ package enum ReadinessSource: Hashable, Sendable {
     package var actionTitle: String {
         switch self {
         case .jiraBoards: "Choose Jira boards"
+        case .fullSlack: "Connect workspace app"
         default: "Connect \(displayName)"
         }
     }
@@ -119,7 +135,7 @@ package enum ReadinessSource: Hashable, Sendable {
     package func isConnected(in connected: ConnectedSources) -> Bool {
         switch self {
         case .none, .ownerIdentity, .ownerIdentityPending: true
-        case .slack: connected.slack
+        case .slack, .fullSlack: connected.slack
         case .anySource: connected.slack || connected.mail || connected.calendar || connected.jira || connected.linear
         case .calendar: connected.calendar
         case .jira, .jiraBoards: connected.jira
@@ -154,6 +170,11 @@ package enum Readiness: Equatable, Sendable {
     /// On, with no content yet, and the daemon skips it while Slack Digests
     /// is off (`ReadinessFeature.runsOnlyWithDigests`, #575).
     case needsDigests
+    /// On, with no content yet, and background AI is paused
+    /// (`ReadinessFeature.usesBackgroundAI`, #1886): by the owner or not
+    /// answered yet, or turned off by the organization (`managed`, no
+    /// button).
+    case backgroundAIPaused(managed: Bool)
     /// The daemon has been down for `FeatureReadiness.daemonDownGrace`:
     /// nothing scheduled will happen until it is started (from the app-wide
     /// banner; the state itself carries no button).
@@ -162,6 +183,14 @@ package enum Readiness: Equatable, Sendable {
     case error(message: String)
     case waitingForSync(detail: String?)
     case scheduled(Eta)
+
+    /// A Slack feature while Slack is Live only (screens spec §2.1).
+    package static let needsFullSlack = Self.needsSource(.fullSlack)
+
+    package var isBackgroundAIPaused: Bool {
+        if case .backgroundAIPaused = self { return true }
+        return false
+    }
 }
 
 /// The newest `pipeline_runs` row of one pipeline.
@@ -227,6 +256,12 @@ package struct ReadinessInputs: Equatable {
     /// the daemon's Jira sync fetches nothing (`internal/jira/sync.go`), so a
     /// connected Jira with no content reads `.needsSource(.jiraBoards)`.
     package var jiraBoardsSelected: Bool
+    /// `SlackMode.derive(...) == .live`: no synced Slack account, and Live
+    /// is on (each provider's newest probe batch, SLACKMODE-01). Turns a
+    /// missing Slack into `Readiness.needsFullSlack`.
+    package var slackLiveOnly: Bool
+    /// The background AI consent (`AppState.backgroundAI`).
+    package var backgroundAI: BackgroundAIConsent.State
 
     package init(
         now: Date,
@@ -244,7 +279,9 @@ package struct ReadinessInputs: Equatable {
         runningBackfillStarts: [Date] = [],
         memoryHasRun: Bool = false,
         backfillOff: Bool = false,
-        jiraBoardsSelected: Bool = true
+        jiraBoardsSelected: Bool = true,
+        slackLiveOnly: Bool = false,
+        backgroundAI: BackgroundAIConsent.State = .allowedByOwner
     ) {
         self.now = now
         self.disabledFeatureIDs = disabledFeatureIDs
@@ -262,5 +299,7 @@ package struct ReadinessInputs: Equatable {
         self.memoryHasRun = memoryHasRun
         self.backfillOff = backfillOff
         self.jiraBoardsSelected = jiraBoardsSelected
+        self.slackLiveOnly = slackLiveOnly
+        self.backgroundAI = backgroundAI
     }
 }

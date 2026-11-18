@@ -65,6 +65,30 @@ final class HomeViewTests: XCTestCase {
         XCTAssertThrowsError(try loading.inspect().find(text: "Nothing needs you right now."))
     }
 
+    // MARK: - Background AI (#1886, spec §6.3)
+
+    /// The paused card shows whatever the Getting ready zone does (hidden
+    /// here), and its Allow opens the consent screen; the organization's
+    /// card has no button.
+    func testBackgroundAICardOutsideGettingReady() throws {
+        var allowed = 0
+        let paused = HomeContent(
+            snapshot: viewSnapshot(.hidden), today: Date(), onLink: { _ in }, onHideGettingReady: {},
+            onAllowBackgroundAI: { allowed += 1 },
+            backgroundAI: HomeBackgroundAICard.make(BackgroundAIConsent.resolve(answer: nil, policy: nil)))
+        XCTAssertNoThrow(try paused.inspect().find(text: BackgroundAIConsentCopy.homeTitle))
+        try paused.inspect().find(button: BackgroundAIConsentCopy.allowAction).tap()
+        XCTAssertEqual(allowed, 1)
+
+        let org = HomeContent(
+            snapshot: nil, today: Date(), onLink: { _ in }, onHideGettingReady: {},
+            backgroundAI: HomeBackgroundAICard.make(BackgroundAIConsent.resolve(answer: nil, policy: false)))
+        XCTAssertNoThrow(try org.inspect().find(text: BackgroundAIConsentCopy.homeOrgBody))
+        XCTAssertThrowsError(try org.inspect().find(button: BackgroundAIConsentCopy.allowAction))
+
+        XCTAssertThrowsError(try makeContent(viewSnapshot()).inspect().find(text: BackgroundAIConsentCopy.homeTitle))
+    }
+
     // MARK: - Layout
 
     /// The columns share the whole width about 60/40 (the mockup's 1.55 : 1).
@@ -817,5 +841,22 @@ final class HomeViewTests: XCTestCase {
         XCTAssertEqual(appState.homeCenter.todayReads, reads)
         let content = makeContent(appState.homeCenter.snapshot)
         XCTAssertThrowsError(try content.inspect().find(ViewType.ProgressView.self))
+    }
+
+    /// Slack Live only (ask #1572): one row with one Connect workspace app
+    /// button; a policy that forbids Slack keeps the line, drops the button.
+    func testLiveOnlyRowButtonFollowsPolicy() throws {
+        var links: [HomeLink] = []
+        let row = GettingReadySourceRow(source: .fullSlack, features: [.digests, .tracks])
+        let line = GettingReadyZoneView.connectLine(row)
+        XCTAssertEqual(line, "Connect your workspace's app to get Digests and Track my threads — Live answers in Chats only.")
+        let allowed = makeContent(viewSnapshot(.shown(cards: [], sourceRows: [row]))) { links.append($0) }
+        try allowed.inspect().find(button: "Connect workspace app").tap()
+        XCTAssertEqual(links, [.connect(.fullSlack)])
+
+        let forbiddenRow = GettingReadySourceRow(source: .fullSlack, features: [.digests], offersConnect: false)
+        let forbidden = makeContent(viewSnapshot(.shown(cards: [], sourceRows: [forbiddenRow])))
+        XCTAssertNoThrow(try forbidden.inspect().find(text: GettingReadyZoneView.connectLine(forbiddenRow)))
+        XCTAssertThrowsError(try forbidden.inspect().find(button: "Connect workspace app"))
     }
 }

@@ -155,8 +155,10 @@ package struct AutomationsCLI {
         try await decode(.run(id, rerunOf: rerunOf))
     }
 
+    /// The owner's Dry run of a saved automation: it calls a model.
     package func dryRun(_ id: Int64) async throws -> DryRunResult {
-        try await decode(.dryRun(id))
+        let data = try await runner.runModel(args: Self.args(.dryRun(id)), origin: .owner)
+        return try JSONDecoder().decode(DryRunResult.self, from: data)
     }
 
     package func show(_ id: Int64) async throws -> AutomationDetail {
@@ -283,7 +285,10 @@ package struct AutomationsCLI {
     /// granted without a window. Cancelling the calling task terminates it.
     package func preview(text: String, slug: String?, workbench: Int64?, builtin: String?) async throws
         -> AutomationDraftEntry.Result {
-        try await decode(.preview(slug: slug, workbench: workbench, builtin: builtin), stdin: Data(text.utf8))
+        let data = try await runner.runModel(
+            args: Self.args(.preview(slug: slug, workbench: workbench, builtin: builtin)),
+            origin: .owner, timeout: nil, stdin: Data(text.utf8))
+        return try JSONDecoder().decode(AutomationDraftEntry.Result.self, from: data)
     }
 
     private func decode<T: Decodable>(_ op: Op) async throws -> T {

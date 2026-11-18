@@ -1193,6 +1193,31 @@ struct UpdateServicePeriodicTests {
         #expect(presented == ["## New"])
     }
 
+    @Test("What's New settles once its first pass returns; a build with no channel is settled at once")
+    func whatsNewSettled() async throws {
+        let (defaults, suite) = try isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("1.0.0", forKey: "lastLaunchedAppVersion")
+        let svc = whatsNewService(defaults, notes: "## New") { _ in }
+        #expect(!svc.isWhatsNewSettled, "a window may still open")
+        await svc.showWhatsNewIfUpdated(currentVersion: "1.1.0")
+        #expect(svc.isWhatsNewSettled)
+
+        let seen = whatsNewService(defaults, notes: nil) { _ in }
+        await seen.showWhatsNewIfUpdated(currentVersion: "1.1.0")
+        #expect(seen.isWhatsNewSettled, "the memo already says seen")
+
+        let offline = whatsNewService(defaults, notes: nil) { _ in }
+        defaults.set("1.0.0", forKey: "lastLaunchedAppVersion")
+        await offline.showWhatsNewIfUpdated(currentVersion: "1.1.0")
+        #expect(offline.isWhatsNewSettled, "an offline pass gives up until the next one")
+
+        let noChannel = UpdateService()
+        noChannel.buildFlavor = "dev"
+        #expect(!noChannel.updatesSupported)
+        #expect(noChannel.isWhatsNewSettled)
+    }
+
     @Test("a fresh install shows nothing and remembers its version")
     func whatsNewFreshInstall() async throws {
         let (defaults, suite) = try isolatedDefaults()

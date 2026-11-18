@@ -18,6 +18,17 @@ final class DesignShotsTests: XCTestCase {
         super.tearDown()
     }
 
+    /// Every background AI consent frame (#1886) has its shot.
+    func testEveryBackgroundAIConsentFrameHasAShot() {
+        let names = Set(BackgroundAIConsentShotFixtures.shots.map(\.name))
+        for step in BackgroundAIConsentShotFixtures.Step.allCases {
+            XCTAssertTrue(names.contains("ai-consent-step-\(step.rawValue)"))
+        }
+        for state in BackgroundAIConsentShotFixtures.Settings.allCases {
+            XCTAssertTrue(names.contains("ai-consent-settings-\(state.rawValue)"))
+        }
+    }
+
     func testShotNamesAreUnique() {
         let shots = DesignShotCatalog.all
         XCTAssertFalse(shots.isEmpty, "the catalog registers no shots")
@@ -93,9 +104,58 @@ final class DesignShotsTests: XCTestCase {
         })
     }
 
+    /// The plan limits without a token spec's mockups (#1885).
+    func testPlanLimitsNoTokenShotsRender() throws {
+        try renderShots(PlanLimitsNoTokenShotFixtures.shots)
+    }
+
     /// The Slack Full / Live screens spec's mockups (#1779).
+    func testBackgroundAIConsentShotsRender() throws {
+        try renderShots(BackgroundAIConsentShotFixtures.shots)
+    }
+
     func testSlackFullLiveShotsRender() throws {
         try renderShots(SlackFullLiveShotFixtures.shots)
+    }
+
+    /// Connections → Slack: the `slack-fl-pane-*` shots draw the real Slack
+    /// mode section (`SlackModeSection`, screens spec §1), and its chip and
+    /// summary say what the approved mockup said for the same frame.
+    func testSlackModePaneShotsRender() throws {
+        typealias Copy = SlackFullLiveMockCopy
+        let expected: [SlackFullLiveShotFixtures.Pane: (String, String)] = [
+            .full: (Copy.chipFull, Copy.summaryFull),
+            .fullLive: (Copy.chipFullLive, Copy.summaryFullLive),
+            .checking: (Copy.chipFullLive, Copy.summaryFullLive),
+            .probeFailed: (Copy.chipFullLive, Copy.summaryFullLive),
+            .live: (Copy.chipLive, Copy.summaryLive),
+            .liveProblems: (Copy.chipLive, Copy.summaryLive),
+            .off: (Copy.chipOff, Copy.summaryOff),
+            .sharedApp: (Copy.chipShared, Copy.summaryShared)
+        ]
+        for (pane, copy) in expected {
+            let presentation = SlackPaneModeFixture.presentation(pane)
+            XCTAssertEqual(presentation.chip, copy.0, pane.rawValue)
+            XCTAssertEqual(presentation.summary, copy.1, pane.rawValue)
+        }
+        XCTAssertEqual(SlackPaneModeFixture.presentation(.probeFailed).problem, Copy.probeFailed)
+        XCTAssertEqual(SlackPaneModeFixture.presentation(.readFailed).problem, Copy.readFailed)
+        XCTAssertEqual(SlackPaneModeFixture.presentation(.live).liveRows.map(\.status),
+                       [Copy.liveNotConnected, Copy.liveOnTeamID])
+        XCTAssertEqual(SlackPaneModeFixture.presentation(.fullLive).liveRows.map(\.age),
+                       [Copy.checked5H, Copy.checked5H])
+        try renderShots(SlackFullLiveShotFixtures.shots.filter { $0.name.hasPrefix("slack-fl-pane-") })
+    }
+
+    /// `needsFullSlack` (screens spec §2): the Digests, Catch-Up and
+    /// Statistics shots draw the real `FeatureEmptyState`, the Home shot the
+    /// real Getting ready row; their strings are the approved mockups'.
+    func testSlackNeedsFullShotsRender() throws {
+        typealias Copy = SlackFullLiveMockCopy
+        XCTAssertEqual(FeatureReadiness.line(.needsFullSlack), Copy.needsFullLine)
+        XCTAssertEqual(ReadinessSource.fullSlack.actionTitle, Copy.needsFullAction)
+        XCTAssertEqual(SlackPaneModeFixture.presentation(.live).knowledgeNote, Copy.knowledgeNote)
+        try renderShots(SlackFullLiveShotFixtures.shots.filter { $0.name.hasPrefix("slack-fl-needs-full-") })
     }
 
     /// The unified chat's new states and baselines (#1822 T0).
@@ -134,6 +194,11 @@ final class DesignShotsTests: XCTestCase {
     /// The adaptive Slack sync plan's Statistics mockups (#1709).
     func testSlackAdaptiveSyncShotsRender() throws {
         try renderShots(SlackAdaptiveSyncShotFixtures.shots)
+    }
+
+    /// The session's Spec review state mockups (board #1945).
+    func testSpecReviewStateShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("session-state-spec-review") })
     }
 
     /// The Slack Developer Policy hygiene spec's mockups (#1769).

@@ -3,11 +3,14 @@ import XCTest
 import WatchtowerCore
 import WatchtowerTestSupport
 
-/// Records the argv of each call and answers a fixed output. No process is spawned.
+/// Records the argv of each call and answers a fixed output. No process is
+/// spawned. Refuses a model command on the generic entries as
+/// `ProcessCLIRunner` does (#1886), and records each call's origin.
 private final class RecordingCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
     private let lock = NSLock()
     private var last: [String] = []
     private var lastLimit: TimeInterval?
+    private var calls: [(args: [String], origin: CLIOrigin?)] = []
     private let output: String
 
     init(output: String) { self.output = output }
@@ -15,14 +18,28 @@ private final class RecordingCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
     var lastArgs: [String] { lock.withLock { last } }
     /// The timeout of the last call; nil when it had none.
     var lastTimeout: TimeInterval? { lock.withLock { lastLimit } }
+    /// Every call, with the `runModel` origin (nil for a generic call).
+    var recorded: [(args: [String], origin: CLIOrigin?)] { lock.withLock { calls } }
 
     func run(args: [String], timeout: TimeInterval) async throws -> Data {
-        lock.withLock { last = args; lastLimit = timeout }
-        return Data(output.utf8)
+        try record(args, timeout: timeout, origin: nil)
     }
 
     func run(args: [String]) async throws -> Data {
-        lock.withLock { last = args; lastLimit = nil }
+        try record(args, timeout: nil, origin: nil)
+    }
+
+    func runModel(args: [String], origin: CLIOrigin, timeout: TimeInterval?, stdin _: Data?) async throws -> Data {
+        try record(args, timeout: timeout, origin: origin)
+    }
+
+    private func record(_ args: [String], timeout: TimeInterval?, origin: CLIOrigin?) throws -> Data {
+        if origin == nil { try CLIRunnerError.refuseModelCommand(args) }
+        lock.withLock {
+            last = args
+            lastLimit = timeout
+            calls.append((args, origin))
+        }
         return Data(output.utf8)
     }
 }
@@ -89,6 +106,35 @@ final class WorkbenchCLIReviewTests: XCTestCase {
         _ = try await cli.reviewLessons(projectID: 1, action: .propose)
         XCTAssertEqual(runner.lastArgs, ["workbench", "review", "lessons", "propose", "--workbench", "1", "--json"])
         XCTAssertEqual(runner.lastTimeout, 330)
+        XCTAssertEqual(runner.recorded.map(\.origin), [.owner, .owner, .owner], "overview (both forms) and propose name the owner")
+    }
+
+    /// Every argv the review family builds, fed through `ModelCommands.match`:
+    /// the model ones (and only those) go through `runModel` (#1886 Task 18).
+    func testEveryModelArgvOfTheReviewFamilyGoesThroughRunModel() async throws {
+        let runner = RecordingCLIRunner(output: #"{"ok":true}"#)
+        let cli = WorkbenchCLI(runner: runner)
+        _ = try await cli.reviewStart(projectID: 1, sessionID: 4, refresh: true)
+        _ = try await cli.reviewDiff(projectID: 1, roundID: 7, since: true)
+        _ = try await cli.reviewFile(projectID: 1, roundID: 7, path: "a.go", oldPath: "b.go", since: true)
+        _ = try await cli.reviewSend(projectID: 1, roundID: 7)
+        _ = try await cli.reviewApprove(projectID: 1, roundID: 7, resolveOpen: true)
+        _ = try await cli.reviewContext(projectID: 1, sessionID: 4)
+        _ = try await cli.reviewMap(projectID: 1, roundID: 7)
+        _ = try await cli.reviewOverview(projectID: 1, roundID: 7)
+        _ = try await cli.reviewOverview(projectID: 1, roundID: 7, cachedOnly: true)
+        _ = try await cli.reviewRevertHunk(projectID: 1, roundID: 7, hunkID: "h", since: false)
+        for action: WorkbenchCLI.LessonAction in [.propose, .accept(5), .dismiss(5)] {
+            _ = try await cli.reviewLessons(projectID: 1, action: action)
+        }
+        XCTAssertEqual(runner.recorded.count, 13)
+        var models = 0
+        for call in runner.recorded {
+            let isModel = ModelCommands.match(call.args) != nil
+            if isModel { models += 1 }
+            XCTAssertEqual(call.origin != nil, isModel, "\(call.args): a model command needs runModel, no other does")
+        }
+        XCTAssertEqual(models, 3)
     }
 
     func testRevertAndLessonDecisionsBuildArgsWithoutATimeout() async throws {

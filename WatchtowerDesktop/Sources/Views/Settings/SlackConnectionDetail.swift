@@ -27,9 +27,11 @@ final class SlackAuthFlowState {
     let daemonManager = DaemonManager()
 }
 
-/// Slack detail pane in the Connections tab — the legacy single-workspace
-/// connect/reconnect/disconnect block plus the multi-account Slack Workspaces
-/// list (`slack_accounts` table, migration 00048).
+/// Slack detail pane in the Connections tab (screens spec
+/// `2026-11-15-slack-full-live-screens-design.md` §1): the Slack mode with
+/// its Live block on top, then the legacy single-workspace
+/// connect/reconnect/disconnect block, the multi-account Slack Workspaces
+/// list (`slack_accounts` table, migration 00048) and the reaction commands.
 struct SlackConnectionDetail: View {
     @Environment(AppState.self) private var appState
     /// The organization's policy forbids this source (#608): nothing new
@@ -42,30 +44,58 @@ struct SlackConnectionDetail: View {
     @State private var showAddSlackAccountSheet = false
     @State private var slackAccountPendingRemoval: SlackAccount?
     @State private var accountBeingRenamed: AccountRenameTarget?
+    /// Full: the owner opened **Connect another workspace…** (or a Reconnect
+    /// with no app to sign in with asked for the section).
+    @State private var connectExpanded = false
+    @FocusState private var connectFieldFocused: Bool
 
     var body: some View {
-        Form {
-            workspaceSection
-            Section { FileVaultLine() }
-            slackAccountsSection
-            reactionDictionarySection
+        ScrollView {
+            VStack(alignment: .leading, spacing: Spacing.large) {
+                sharedAppBanner
+                modeSection
+                SlackSetupRecordRows(model: appState.slackAppSetup, blocked: sourceBlocked)
+                connectSection
+                workspaceSection
+                FileVaultLine()
+                slackAccountsSection
+                reactionDictionarySection
+            }
+            .controlSize(.small)
+            .padding(Spacing.page)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .formStyle(.grouped)
-        .padding(.horizontal)
-        .padding(.top, 4)
+        .detailBackground()
         // Keyed on the pool, so a pane opened before the database exists
         // re-configures once it does instead of keeping a nil pool.
         .task(id: appState.databaseManager?.dbPool.path) {
             slackAuth.configure(dbPool: appState.databaseManager?.dbPool)
             await slackAuth.refreshStatus()
         }
-        .onAppear { appState.slackLiveStatusCenter?.refreshIfStale() }
+        .onAppear {
+            appState.slackLiveStatusCenter?.refreshIfStale()
+            // A10: a busy or stopped listener tries again when the pane opens.
+            appState.slackConnectListener?.ensureRunning()
+        }
+        .task(id: appState.databaseManager?.dbPool.path) { await appState.slackAppSetup.reloadRecords() }
+        // On appear too: a Reconnect that opened this pane asked before it mounted.
+        .task(id: appState.slackConnectFlow?.connectSectionRequest) {
+            if appState.slackConnectFlow?.takeConnectSectionRequest() == true {
+                connectExpanded = true
+                connectFieldFocused = true
+            }
+        }
+        .sheet(isPresented: Bindable(appState.slackAppSetup).isPresented) {
+            SlackAppSetupSheet(model: appState.slackAppSetup).frame(width: 520)
+        }
+        .background { Color.clear.sheet(isPresented: connectSheetShown) { connectSheet } }
         // The Workspaces list below enables/disables, removes and adds
         // accounts through its own VM; re-derive the Workspace status from the
         // table whenever that list changes, or it goes stale (e.g. "Slack
         // connected" after the last account is removed).
         .onChange(of: appState.slackAccountsViewModel?.accounts) { _, _ in
             Task { await slackAuth.refreshStatus() }
+            appState.slackAppSetup.accountsChanged() // a setup's stage derives from the accounts
         }
         // A refresh can take the disconnect target away while the confirm
         // dialog is open; there is then nothing left to confirm.
@@ -74,18 +104,105 @@ struct SlackConnectionDetail: View {
         }
     }
 
+    /// The chip, the summary and the Live block; the ages re-read the clock
+    /// once a minute.
+    @ViewBuilder private var modeSection: some View {
+        if let center = appState.slackLiveStatusCenter {
+            TimelineView(.everyMinute) { context in
+                SlackModeSection(
+                    presentation: modePresentation(center, now: context.date),
+                    checkAgain: { center.checkAgain() },
+                    tryAgain: { Task { await center.reload() } })
+            }
+        }
+    }
+
+    /// §5: while an account syncs through the retired shared app. Its
+    /// **Paste a connect link** asks for the connect section as a Reconnect
+    /// with no app to sign in with does: unfolded, field focused.
+    @ViewBuilder private var sharedAppBanner: some View {
+        if let center = appState.slackLiveStatusCenter,
+           let banner = modePresentation(center, now: Date()).sharedAppBanner {
+            SlackSharedAppBanner(
+                banner: banner, blocked: sourceBlocked,
+                setUpForCompany: { appState.slackAppSetup.present() },
+                pasteLink: appState.slackConnectFlow.map { flow in { flow.reconnect(.connectSection) } })
+        }
+    }
+
+    private func modePresentation(_ center: SlackLiveStatusCenter, now: Date) -> SlackModePresentation {
+        SlackModePresentation(
+            accounts: appState.slackAccountsViewModel?.accounts ?? [],
+            sharedAppAccountIDs: appState.slackAccountsViewModel?.sharedAppAccountIDs ?? [],
+            liveStatuses: center.statuses,
+            isRunning: center.isRunning,
+            hasRead: center.hasRead,
+            lastError: center.lastError,
+            now: now)
+    }
+
+    /// Connect your workspace's app (screens spec §4.2): open in Live, Off and
+    /// Shared app; folded in Full behind **Connect another workspace…**.
+    private var connectPresentation: SlackModePresentation.ConnectSection? {
+        guard let center = appState.slackLiveStatusCenter, appState.slackConnectFlow != nil else { return nil }
+        return SlackModePresentation.ConnectSection(
+            display: modePresentation(center, now: Date()).display,
+            portBusy: appState.slackConnectListener?.state == .portBusy,
+            expanded: connectExpanded,
+            organizationApps: appState.managedPolicy.policy.slackApps,
+            accounts: appState.slackAccountsViewModel?.accounts ?? [],
+            builtinApp: appState.slackAccountsViewModel?.builtinApp ?? true)
+    }
+
+    @ViewBuilder private var connectSection: some View {
+        if let section = connectPresentation, !section.isFolded, let flow = appState.slackConnectFlow {
+            SlackConnectSection(section: section, flow: flow, blocked: sourceBlocked,
+                                setUpForCompany: { appState.slackAppSetup.present() },
+                                fieldFocused: $connectFieldFocused)
+        }
+    }
+
+    private var connectSheetShown: Binding<Bool> {
+        // The setup sheet mirrors its admin connect as a step: no second sheet over it.
+        Binding(get: { (appState.slackConnectFlow?.showsSheet ?? false) && !appState.slackAppSetup.isPresented },
+                set: { _ in })
+    }
+
+    /// The flow's sheet; its buttons drive the flow (no swipe-away: Cancel
+    /// must reach the listener).
+    @ViewBuilder private var connectSheet: some View {
+        if let flow = appState.slackConnectFlow, let content = flow.sheet {
+            TimelineView(.everyMinute) { context in
+                SlackConnectSheet(
+                    content: content,
+                    waitingLine: flow.waitingLine(at: context.date),
+                    connectEnabled: !flow.externalBusy()
+                ) { action in
+                    switch action {
+                    case .cancel: flow.cancel()
+                    case .connect: flow.confirm()
+                    case .done, .close: flow.dismiss()
+                    case .startAgain: flow.startAgain()
+                    }
+                }
+            }
+            .frame(width: 440)
+            .interactiveDismissDisabled()
+        }
+    }
+
     private var workspaceSection: some View {
-        Section("Workspace") {
+        SettingsSection(title: "Workspace") {
             HStack {
                 Image(systemName: slackAuth.isConnected ? "checkmark.circle.fill" : "bolt.horizontal.circle")
-                    .foregroundStyle(slackAuth.isConnected ? AnyShapeStyle(.green) : AnyShapeStyle(.secondary))
+                    .foregroundStyle(slackAuth.isConnected ? AnyShapeStyle(Tone.success) : AnyShapeStyle(.secondary))
                 Text(slackAuth.isConnected ? "Slack connected" : "Slack not connected")
                 Spacer()
 
                 Button {
-                    reconnectSlack()
+                    reconnectWorkspace()
                 } label: {
-                    HStack(spacing: 4) {
+                    HStack(spacing: Spacing.small) {
                         if flow.reconnecting {
                             ProgressView()
                                 .controlSize(.small)
@@ -95,20 +212,22 @@ struct SlackConnectionDetail: View {
                             : (slackAuth.isConnected ? "Reconnect Slack" : "Connect Slack"))
                     }
                 }
-                .disabled(flow.reconnecting || flow.disconnecting)
+                .buttonStyle(.kitSecondary)
+                .disabled(flow.reconnecting || flow.disconnecting || appState.slackConnectFlow?.isRunning == true)
                 .managedByOrganization(sourceBlocked)
 
                 if flow.reconnecting {
                     Button("Cancel") {
                         cancelSlackReconnect()
                     }
+                    .buttonStyle(.kitSecondary)
                 }
 
                 if slackAuth.disconnectTarget != nil {
                     Button(role: .destructive) {
                         showSlackDisconnectConfirm = true
                     } label: {
-                        HStack(spacing: 4) {
+                        HStack(spacing: Spacing.small) {
                             if flow.disconnecting {
                                 ProgressView()
                                     .controlSize(.small)
@@ -116,6 +235,7 @@ struct SlackConnectionDetail: View {
                             Text(flow.disconnecting ? "Disconnecting..." : "Disconnect")
                         }
                     }
+                    .buttonStyle(.kitDestructive)
                     .disabled(flow.reconnecting || flow.disconnecting)
                 }
             }
@@ -123,10 +243,10 @@ struct SlackConnectionDetail: View {
             if let result = flow.reconnectResult {
                 HStack {
                     Image(systemName: flow.reconnectSuccess ? "checkmark.circle.fill" : "xmark.circle.fill")
-                        .foregroundStyle(flow.reconnectSuccess ? .green : .red)
+                        .foregroundStyle(flow.reconnectSuccess ? Tone.success : Tone.error)
                     Text(result)
                         .font(.caption)
-                        .foregroundStyle(flow.reconnectSuccess ? .green : .red)
+                        .foregroundStyle(flow.reconnectSuccess ? Tone.success : Tone.error)
                         .lineLimit(3)
                         .textSelection(.enabled)
                 }
@@ -135,7 +255,7 @@ struct SlackConnectionDetail: View {
             if let err = slackAuth.error {
                 Text(err)
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Tone.error)
             }
 
             if let notice = slackAuth.revokeNotice {
@@ -205,7 +325,7 @@ struct SlackConnectionDetail: View {
     /// single-account Slack "Disconnect" in `workspaceSection` runs the same
     /// remove (`auth logout` → `removeSlackAccount`) and shows the same text.
     private var slackAccountsSection: some View {
-        Section("Slack Workspaces") {
+        SettingsSection(title: "Slack Workspaces") {
             if let vm = appState.slackAccountsViewModel {
                 if vm.accounts.isEmpty {
                     Text("No Slack workspaces connected.")
@@ -214,19 +334,9 @@ struct SlackConnectionDetail: View {
                 } else {
                     ForEach(vm.accounts) { account in
                         HStack {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(account.displayName)
-                                if !account.teamDomain.isEmpty {
-                                    Text("\(account.teamDomain).slack.com")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                if let note = account.syncNote {
-                                    Label(note, systemImage: "exclamationmark.triangle")
-                                        .font(.caption)
-                                        .foregroundStyle(.orange)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
+                            VStack(alignment: .leading, spacing: Spacing.tight) {
+                                SlackAccountTitle(account: account, sharedAppAccountIDs: vm.sharedAppAccountIDs,
+                                                  lastSync: vm.lastSyncs[account.id])
                                 if let line = AccountPurgeLine.make(
                                     center: appState.accountPurgeCenter, source: "slack", accountID: Int64(account.id),
                                     isPurged: account.isPurged
@@ -237,7 +347,7 @@ struct SlackConnectionDetail: View {
                             Spacer()
                             Circle()
                                 .fill(slackAccountStatusColor(account))
-                                .frame(width: 8, height: 8)
+                                .frame(width: IconSize.stateDot, height: IconSize.stateDot)
                                 .help(accountStatusHelp(account))
                             Toggle("Enabled", isOn: Binding(
                                 get: { account.enabled },
@@ -250,25 +360,29 @@ struct SlackConnectionDetail: View {
                             .disabled(vm.isConnecting || account.isPurged)
                             // Always offered: a healthy account re-consents to pick up a
                             // newly requested permission (sending, chat:write).
-                            Button(account.isOK ? "Reconnect" : "Re-login") {
+                            // Move to Full (on the retired app) opens the connect section (A7).
+                            Button(SlackModePresentation.reloginTitle(isOK: account.isOK,
+                                                                      relogin: vm.relogin(of: account.id))) {
                                 Task { await vm.relogin(account) }
                             }
+                            .buttonStyle(.kitSecondary)
                             .managedByOrganization(sourceBlocked)
                             .help(
                                 reloginBlocked(account.id)
                                     ?? "Sign in to this workspace again (grants new permissions such as sending messages)"
                             )
-                            .disabled(vm.isConnecting || reloginBlocked(account.id) != nil)
+                            .disabled(vm.isConnecting || reloginBlocked(account.id) != nil
+                                || appState.slackConnectFlow?.isRunning == true)
                             Button("Rename…") {
                                 accountBeingRenamed = AccountRenameTarget(id: account.id, currentName: account.displayName)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.kitQuiet)
                             .disabled(vm.isConnecting)
                             Button("Remove") {
                                 slackAccountPendingRemoval = account
                             }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(.red)
+                            .buttonStyle(.kitQuiet)
+                            .foregroundStyle(Tone.error)
                             .disabled(vm.isConnecting)
                         }
                     }
@@ -321,23 +435,26 @@ struct SlackConnectionDetail: View {
         if let err = vm.error {
             Text(err)
                 .font(.caption)
-                .foregroundStyle(.red)
+                .foregroundStyle(Tone.error)
         }
 
         if let notice = vm.revokeNotice {
             SlackRevokeNoticeLine(text: notice)
         }
 
-        Button("Add Slack Workspace") {
-            showAddSlackAccountSheet = true
-        }
-        .managedByOrganization(sourceBlocked)
-        .disabled(vm.isConnecting)
+        SlackWorkspacesAddRow(
+            section: connectPresentation, blocked: sourceBlocked,
+            addDisabled: vm.isConnecting || appState.slackConnectFlow?.isRunning == true,
+            add: { showAddSlackAccountSheet = true },
+            openFold: {
+                connectExpanded = true
+                connectFieldFocused = true
+            })
     }
 
     /// The dictionary editor lives only on the Reactions built-in's card (ask #366, C3).
     private var reactionDictionarySection: some View {
-        Section("Reaction commands") {
+        SettingsSection(title: "Reaction commands") {
             HStack {
                 Text("Reaction commands live in Automations → Built in → Reactions")
                     .font(.caption)
@@ -347,6 +464,7 @@ struct SlackConnectionDetail: View {
                     appState.openBuiltinAutomation(BuiltinAutomationCard.reactionsID)
                     appState.bringMainWindowForward()
                 }
+                .buttonStyle(.kitSecondary)
             }
         }
     }
@@ -358,10 +476,10 @@ struct SlackConnectionDetail: View {
     }
 
     private func slackAccountStatusColor(_ account: SlackAccount) -> Color {
-        if account.isOK { return .green }
-        if account.isRevoked { return .red }
-        if account.isPurged { return .gray }
-        return .orange
+        if account.isOK { return Tone.success }
+        if account.isRevoked { return Tone.error }
+        if account.isPurged { return Tone.status("gray") }
+        return Tone.warning
     }
 
     private func accountStatusHelp(_ account: SlackAccount) -> String {
@@ -370,8 +488,37 @@ struct SlackConnectionDetail: View {
         return account.error.isEmpty ? account.status : account.error
     }
 
+    /// The legacy block's Reconnect (account #1) takes the same per-account
+    /// route as the Workspaces list (plan B A14): `auth login` for the build's
+    /// own app, else the connect flow or the connect section.
+    private func reconnectWorkspace() {
+        guard let connect = appState.slackConnectFlow, let vm = appState.slackAccountsViewModel else {
+            reconnectSlack()
+            return
+        }
+        Task {
+            let route: SlackReloginRoute
+            switch await vm.reloginRoute(accountID: 1) {
+            case let .failure(failure):
+                // Shown here only: the Workspaces list's error line stays its own.
+                flow.reconnectResult = failure.message
+                flow.reconnectSuccess = false
+                return
+            case let .success(found):
+                route = found
+            }
+            let started = route == .builtin ? !connect.isRunning : connect.reconnect(route)
+            if !started {
+                flow.reconnectResult = "Another connection is already in progress."
+                flow.reconnectSuccess = false
+            } else if route == .builtin {
+                reconnectSlack()
+            }
+        }
+    }
+
     private func reconnectSlack() {
-        guard let cliPath = Constants.findCLIPath() else {
+        guard let cliPath = AppState.slackCLIPath() else {
             flow.reconnectResult = "watchtower CLI not found"
             flow.reconnectSuccess = false
             return

@@ -270,7 +270,7 @@ func TestContextCancellationDuringGetUsers(t *testing.T) {
 
 func TestNewClient(t *testing.T) {
 	c := NewClient("xoxp-test")
-	assert.NotNil(t, c.api)
+	assert.NotNil(t, c.api())
 	assert.NotNil(t, c.rateLimiter)
 }
 
@@ -285,7 +285,7 @@ func newUnlimitedTestClient(t *testing.T, mux *http.ServeMux) *Client {
 
 func TestNewClientWithAPIUnlimited(t *testing.T) {
 	c := NewClientWithAPIURLUnlimited("xoxp-test", "http://127.0.0.1:0/")
-	assert.NotNil(t, c.api)
+	assert.NotNil(t, c.api())
 	assert.NotNil(t, c.rateLimiter)
 	assert.Nil(t, c.rateLimiter.gate, "unlimited limiter should have nil gate")
 }
@@ -841,7 +841,7 @@ func TestAnsweredCalls_CountsWhatSlackAnswered(t *testing.T) {
 	assert.Equal(t, uint64(2), c.AnsweredCalls(), "a request that died on the wire is no answer")
 
 	err = c.doRequest(context.Background(), 4, func() error {
-		_, err := c.api.GetUserProfileContext(context.Background(), &goslack.GetUserProfileParameters{UserID: "U001"})
+		_, err := c.api().GetUserProfileContext(context.Background(), &goslack.GetUserProfileParameters{UserID: "U001"})
 		return err
 	})
 	require.Error(t, err)
@@ -1581,4 +1581,30 @@ func TestRevokeToken(t *testing.T) {
 			}
 		})
 	}
+}
+
+// SetToken swaps the token every later call carries, on the same client.
+func TestClient_SetTokenSwapsTheBearer(t *testing.T) {
+	var seen []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/auth.test", func(w http.ResponseWriter, r *http.Request) {
+		tok := r.Header.Get("Authorization")
+		if tok == "" { // slack-go sends the token in the form
+			_ = r.ParseForm()
+			tok = "Bearer " + r.PostForm.Get("token")
+		}
+		seen = append(seen, tok)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "user_id": "U1", "team_id": "T1"})
+	})
+	c := newUnlimitedTestClient(t, mux)
+	_, err := c.AuthTest(context.Background())
+	require.NoError(t, err)
+	c.SetToken("xoxe.xoxp-rotated")
+	_, err = c.AuthTest(context.Background())
+	require.NoError(t, err)
+	require.Len(t, seen, 2)
+	assert.NotEqual(t, "Bearer xoxe.xoxp-rotated", seen[0])
+	assert.Equal(t, "Bearer xoxe.xoxp-rotated", seen[1])
+	assert.Equal(t, "xoxe.xoxp-rotated", c.bearer())
 }

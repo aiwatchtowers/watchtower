@@ -120,7 +120,9 @@ var WorkbenchOnlyKinds = []slices.Kind{
 // chat_* table is here either (unified chat §6.4): every chat write goes
 // through the daemon's engine, whose OnChange publishes chat_list and
 // chat_feed; agent_actions stays, as a tool's proposal is written by the
-// session's MCP process, not the engine.
+// session's MCP process, not the engine. spec_reviews feeds every kind whose
+// read hides the author loop's asks (askVisible) or reads the loop round
+// (db.SpecLoopRoundSQL): a queue or a reveal writes only that table (#1945).
 var ChangeTables = map[string][]slices.Kind{
 	"projects":                 {"workbench"},
 	"automations":              {"workbench"},
@@ -132,7 +134,7 @@ var ChangeTables = map[string][]slices.Kind{
 	"project_comments":         {"workbench_target", "workbench_comment"},
 	"terminal_sessions":        {"workbench", "workbench_target", "terminal_session", "session_timeline", "permission_request"},
 	"owner_asks":               {"workbench", "workbench_target", "terminal_session", "session_timeline", "owner_ask", slices.KindAskAlert},
-	"spec_reviews":             {"owner_ask", slices.KindAskAlert},
+	"spec_reviews":             {"workbench", "workbench_target", "terminal_session", "session_timeline", "owner_ask", slices.KindAskAlert},
 	"permission_requests":      {"permission_request", slices.KindAskAlert},
 	"calendar_events":          {"calendar_event"},
 	"meeting_prep_cache":       {"calendar_event"},

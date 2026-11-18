@@ -17,16 +17,14 @@ func NewFakeTime() *FakeTime { return newFakeTime() }
 // Advance moves the clock and fires the timers due; true when one fired.
 func (f *fakeTime) Advance(d time.Duration) bool { return f.advance(d) }
 
-// Armed is how many timers were ever armed.
+// Armed is how many timers were armed with no wake pending.
 func (f *fakeTime) Armed() int { return f.armedCount() }
 
-// WaitArmed blocks until more than n timers were armed.
+// WaitArmed blocks until more than n timers were armed with no wake pending.
 func (f *fakeTime) WaitArmed(n int) { f.waitArmed(n) }
 
-// SetRunClock puts Run's monotonic clock and timers on a test clock.
-func SetRunClock(p *Publisher, mono func() time.Time, timer func(time.Duration) (<-chan time.Time, func())) {
-	p.mono, p.timer = mono, timer
-}
+// SetRunClock puts Run's monotonic clock and timers on ft.
+func SetRunClock(p *Publisher, ft *FakeTime) { ft.drive(p) }
 
 // SetWatchTimer puts the watch's wait between polls on a test clock.
 func SetWatchTimer(w *ChangeWatch, timer func(time.Duration) (<-chan time.Time, func())) {

@@ -589,6 +589,31 @@ type UserBulkGetter interface{ UsersBulk(ctx context.Context, ids []string) (int
 func classifyBulkUser(status int, body []byte) map[string]Status // ambiguous → absent
 func LookupClosed(ctx context.Context, g UserBulkGetter, ids []string) (map[string]Status, error)
 ```
+*As built (Task 17):*
+```go
+// internal/jira
+const AuthKindAPIToken = "api_token"; const CodeAPITokenDead = "api_token_dead"
+var ErrAPITokenDead      // 401 not naming a scope; accountLost; daemon → status 'error', error 'api_token_dead', no access_ok_at
+var ErrAPITokenForbidden // AllowAtlassianAPIToken = false: no request leaves (POLICY-03)
+type APITokenCreds struct{ AuthKind, Email, Token string; Scoped bool; Scope string } // the 0600 token file; String() hides the token
+func (s *TokenStore) SaveAPIToken(c APITokenCreds) error; func (s *TokenStore) LoadAPIToken() (APITokenCreds, error)
+func APITokenBaseURL(scoped bool, cloudID, site string) string // the one S1.4 decision (Confluence: same rule, /wiki paths)
+func NewAPITokenClient(cloudID, site string, store *TokenStore) *Client // reads the store at every request
+func TenantInfo(ctx context.Context, hc *http.Client, site string) (cloudID string, err error) // every host, *.atlassian.net too
+func ProbeAPIToken(ctx context.Context, hc *http.Client, cloudID, site string, creds APITokenCreds) (APITokenCreds, Myself, error) // site (classic) then gateway (scoped); sets Scoped
+type ScopeError struct{ Scope string }
+// internal/atlassianpdr
+type UsersGetter interface{ UsersBulk(ctx context.Context, ids []string) ([]jira.User, error) }
+type LookupReporter struct{ Users UsersGetter } // Reporter of a token account; Run no longer skips api_token
+func LookupClosed(ctx context.Context, g UsersGetter, ids []string) (map[string]Status, error)
+func classifyBulkUsers(ids []string, users []jira.User) map[string]Status // closed = asked-for, !active, "Former user"
+// internal/purge, internal/db
+func AccountRules(on bool, origin Origin, syncAllowed func(db.PurgeAccount) bool) func(db.PurgeAccount) Rule // Rules delegates
+PurgeAccount.AuthKind // jira_accounts.auth_kind
+// cmd
+func newJiraClientForAccount(workspaceDir string, account db.JiraAccount) (*jira.Client, error) // CLI/tools; the daemon builds its own in buildAtlassianClients
+```
+Deviations: the token file's creds are read per request (`NewAPITokenClient` takes the store, not creds), so a re-auth reaches a running daemon; a 401 while the file changed mid-request is not a dead token. `UsersBulk` keeps Task 16's `([]User, error)`; classification is over decoded users, not raw bytes. The token kind is probed (site, then gateway) and stored as `scoped` instead of asked. Re-auth checks the site's `cloudId` equals the account's before the token is sent. A token is sent only to an https `<name>.atlassian.net` site (`jira.ValidateAPITokenSite`): a custom domain's `tenant_info` is the host's own claim. The lookup reads `jira.UsersBulkStatus` (`BulkUser.Active *bool`), so an absent `active` field is never closed. `Client.SetOnAPITokenDead` lets the daemon mark the account from any consumer's 401. Policy stop also holds the PURGE-01 lease of a token account (`purge.AccountRules`, inventory changelog), since POLICY-03 keeps its data.
 - [ ] **Step 1: Failing tests:** `TestJiraClient_AuthHeaderPerKind` (oauth → `Bearer`, api_token → `Basic`), `TestJiraClient_APITokenNeverRefreshes`, `TestJiraAPIToken401IsErrorNotRevoked` (`status='error'`, `error='api_token_dead'`; no revoked purge row: `purge.Plan` shows none), `TestJiraAPIToken403NamesScope`, `TestJiraAdd_APITokenStdinOnly` (no token flag; argv token refused; captured log has no token), `TestJiraAdd_APITokenFillsOwnerFromMyself`, `TestJiraAdd_NotCloudSiteRefusedBeforeStore`, `TestJiraAdd_APITokenNetworkStoresNothing`, `TestJiraLogin_NewTokenClearsError` (stamps `access_ok_at`), `TestJiraAPIToken_PolicyRefusesAdd`, `TestJiraAPIToken_PolicyStopsSyncKeepsData` (POLICY-03), `TestConfluence_APITokenReusesCreds`, `TestTokenLookup_ClosedErased` (7-day lookup → `EraseClosed`), `TestTokenLookup_AmbiguousErasesNothing` (403, error, not found without marker).
 - [ ] **Step 2:** `go test ./internal/jira ./internal/atlassianpdr ./cmd -run 'APIToken|AuthHeaderPerKind|TokenLookup|JiraAdd_|JiraLogin_NewToken|Confluence_APIToken'` → FAIL; implement; → PASS; `make lint-diff`.
 - [ ] **Step 3: Commit** `feat(jira): connect Jira and Confluence with an API token (#1887)`.

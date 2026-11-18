@@ -154,6 +154,7 @@ final class MeetingPrepViewModel {
         }
         start(
             args: args,
+            origin: .owner,
             initialStatus: "Gathering attendee context...",
             runningStatus: "Analyzing attendee activity..."
         ) { "Meeting prep failed (exit \($0))" }
@@ -167,6 +168,7 @@ final class MeetingPrepViewModel {
         }
         start(
             args: args,
+            origin: .owner,
             initialStatus: "Finding next meeting...",
             runningStatus: "Analyzing attendees..."
         ) { _ in "No upcoming meetings found" }
@@ -179,6 +181,7 @@ final class MeetingPrepViewModel {
 
     private func start(
         args: [String],
+        origin: CLIOrigin,
         initialStatus: String,
         runningStatus: String,
         emptyStderrError: @escaping (Int32) -> String
@@ -202,7 +205,7 @@ final class MeetingPrepViewModel {
                 statusMessage = ""
             }
             do {
-                let data = try await cli.run(args: args)
+                let data = try await cli.runModel(args: args, origin: origin)
                 // ASCII whitespace only: the old Process wrapper trimmed stdout.
                 if data.allSatisfy({ [0x20, 0x09, 0x0A, 0x0D].contains($0) }) {
                     error = emptyStderrError(0)

@@ -415,6 +415,13 @@ final class UpdateService {
     /// version, cleared when that window closes.
     private(set) var installedRelease: InstalledRelease?
 
+    /// This launch's first What's New pass has returned (shown, nothing to
+    /// show, or given up until the next pass), or this build has no update
+    /// channel. Until then a window may still open, so the background AI
+    /// consent sheet waits for it (#1886) instead of stacking under it.
+    var isWhatsNewSettled: Bool { !updatesSupported || whatsNewPassReturned }
+    private var whatsNewPassReturned = false
+
     private static let lastLaunchedVersionKey = "lastLaunchedAppVersion"
 
     /// Release notes of the running version from the channel; nil = could not
@@ -449,6 +456,7 @@ final class UpdateService {
     /// the next launch.
     func showWhatsNewIfUpdated(currentVersion: String = Constants.appVersion) async {
         guard updatesSupported else { return }
+        defer { whatsNewPassReturned = true }
         let lastLaunched = defaults.string(forKey: Self.lastLaunchedVersionKey)
         let lastOffered = Self.newer(defaults.string(forKey: Self.lastPresentedVersionKey),
                                      defaults.string(forKey: Self.lastAnnouncedVersionKey))

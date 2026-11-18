@@ -84,6 +84,78 @@ final class ReadinessCenterTests: XCTestCase {
         await waitUntil(center) { $0[.digests] == .ready }
     }
 
+    /// The Live probe is a CLI child (another process) the observation never
+    /// sees: `rereadDatabase()` — what a change of the Live center's
+    /// statuses calls — re-evaluates Off ↔ Live at once (screens spec §6).
+    func testLiveStatusChangeReevaluates() async throws {
+        let pool = try makePool()
+        let environment = FakeReadinessEnvironment()
+        environment.connected = .none
+        let ticks = HandOpenedSleeps()
+        let center = ReadinessCenter(environment: environment)
+        center.tickSleep = { _ in await ticks.sleep() }
+        center.start(pool: pool)
+        defer { center.stop() }
+        await waitUntil(center) { !$0.isEmpty }
+        XCTAssertEqual(center.readiness(for: .digests), .needsSource(.slack))
+        XCTAssertEqual(center.readiness(for: .inbox), .needsSource(.anySource))
+
+        let probe = try DatabasePool(path: try XCTUnwrap(poolPaths.last))
+        try await probe.write { db in
+            try db.execute(sql: """
+                INSERT INTO slack_live_status (team_id, provider, status, error_class, connector_id, checked_at)
+                VALUES ('T1', 'claude', 'ok', '', '', '2026-11-18T09:00:00.000000000Z')
+                """)
+        }
+        await center.rereadDatabase()
+        XCTAssertEqual(center.readiness(for: .digests), .needsFullSlack)
+        XCTAssertEqual(center.readiness(for: .inbox), .needsFullSlack)
+
+        try await probe.write { db in
+            try db.execute(sql: """
+                INSERT INTO slack_live_status (team_id, provider, status, error_class, connector_id, checked_at)
+                VALUES ('', 'claude', 'not_connected', '', '', '2026-11-18T10:00:00.000000000Z')
+                """)
+        }
+        try probe.close()
+        await center.rereadDatabase()
+        XCTAssertEqual(center.readiness(for: .digests), .needsSource(.slack), "Live → Off")
+
+        environment.connected = ConnectedSources(slack: true)
+        center.refresh()
+        XCTAssertNotEqual(center.readiness(for: .digests), .needsFullSlack, "a synced account is Full")
+    }
+
+    /// A change of the Live verdicts after the first read (a chat or an
+    /// automation wrote the row) calls `onSlackLiveChange`, so the sidebar
+    /// re-reads; the first read and an unrelated change do not.
+    func testSlackLiveChangeCallsTheHook() async throws {
+        let pool = try makePool()
+        let ticks = HandOpenedSleeps()
+        let center = ReadinessCenter(environment: FakeReadinessEnvironment())
+        let calls = HookCalls()
+        center.onSlackLiveChange = { calls.count += 1 }
+        center.tickSleep = { _ in await ticks.sleep() }
+        center.start(pool: pool)
+        defer { center.stop() }
+        await waitUntil(center) { !$0.isEmpty }
+        await center.rereadDatabase()
+        try insertDigest(pool)
+        await waitUntil(center) { $0[.digests] == .ready }
+        XCTAssertEqual(calls.count, 0, "the first read and a content change are not a Live change")
+
+        let chat = try DatabasePool(path: try XCTUnwrap(poolPaths.last))
+        try await chat.write { db in
+            try db.execute(sql: """
+                INSERT INTO slack_live_status (team_id, provider, status, error_class, connector_id, checked_at)
+                VALUES ('T1', 'claude', 'ok', '', '', '2026-11-18T09:00:00.000000000Z')
+                """)
+        }
+        try chat.close()
+        await center.rereadDatabase()
+        await untilObserved { calls.count == 1 }
+    }
+
     func testObservationStartsWithMissingTable() async throws {
         let pool = try makePool()
         try await pool.write { db in try db.execute(sql: "DROP TABLE stream_digests") }
@@ -111,6 +183,40 @@ final class ReadinessCenterTests: XCTestCase {
         environment.now = today(9)
         center.refresh()
         XCTAssertEqual(center.readiness(for: .briefing), .scheduled(.nextCycle(minutes: 15)))
+    }
+
+    /// #1886: the consent state reaches the AI features' readiness.
+    func testBackgroundAIConsentWiring() async throws {
+        let environment = FakeReadinessEnvironment()
+        let center = ReadinessCenter(environment: environment)
+        center.start(pool: try makePool())
+        defer { center.stop() }
+        await waitUntil(center) { !$0.isEmpty }
+        XCTAssertNotEqual(center.readiness(for: .digests), .backgroundAIPaused(managed: false))
+
+        environment.consent = BackgroundAIConsent.resolve(answer: "paused", policy: nil)
+        center.refresh()
+        XCTAssertEqual(center.readiness(for: .digests), .backgroundAIPaused(managed: false))
+        XCTAssertNotEqual(center.readiness(for: .slackSync), .backgroundAIPaused(managed: false))
+    }
+
+    /// An answer or a profile change (observable, as `AppState.backgroundAI`
+    /// is) re-evaluates on its own, without a refresh.
+    func testObservedConsentChangeReevaluates() async throws {
+        let box = ConsentBox()
+        let environment = FakeReadinessEnvironment()
+        environment.consentRead = { box.state }
+        let center = ReadinessCenter(environment: environment)
+        // The 30 s poll is held shut: only the observation can re-evaluate.
+        let ticks = HandOpenedSleeps()
+        center.tickSleep = { _ in await ticks.sleep() }
+        center.start(pool: try makePool())
+        defer { center.stop() }
+        await waitUntil(center) { !$0.isEmpty }
+        XCTAssertNotEqual(center.readiness(for: .digests), .backgroundAIPaused(managed: true))
+
+        box.state = BackgroundAIConsent.resolve(answer: nil, policy: false)
+        await waitUntil(center) { $0[.digests] == .backgroundAIPaused(managed: true) }
     }
 
     /// F5 (#578): the backfill rows, memory's first run and the kill switch
@@ -159,8 +265,9 @@ final class ReadinessCenterTests: XCTestCase {
         try "briefing:\n  hour: 7\nsync:\n  poll_interval: 30m\n  backfill_days: 0\n".write(toFile: configPath, atomically: true, encoding: .utf8)
 
         let environment = LiveReadinessEnvironment(
-            daemon: DaemonManager(), visibility: FeatureVisibilityStore(), configPath: configPath
-        ) { dir }
+            daemon: DaemonManager(), visibility: FeatureVisibilityStore(), configPath: configPath,
+            backgroundAI: { .allowedByOwner }, workspaceDir: { dir }
+        )
         XCTAssertNil(environment.stamp("last_people.txt"))
         XCTAssertNil(environment.stamp("last_briefing.txt"))
         XCTAssertEqual(environment.stamp("last_ideas.txt"), Date(timeIntervalSince1970: 1_700_000_000))
@@ -169,8 +276,9 @@ final class ReadinessCenterTests: XCTestCase {
         XCTAssertEqual(environment.backfillDays, 0)
 
         let noWorkspace = LiveReadinessEnvironment(
-            daemon: DaemonManager(), visibility: FeatureVisibilityStore(), configPath: configPath
-        ) { nil }
+            daemon: DaemonManager(), visibility: FeatureVisibilityStore(), configPath: configPath,
+            backgroundAI: { .allowedByOwner }, workspaceDir: { nil }
+        )
         XCTAssertNil(noWorkspace.stamp("last_ideas.txt"))
         // The names read are the daemon's stamp files (Reset LLM data clears the same list).
         XCTAssertTrue(Set(ReadinessCenter.stampFiles).isSubset(of: DaemonStampFiles.names))
@@ -227,4 +335,17 @@ final class ReadinessCenterTests: XCTestCase {
         await waitUntil(appState.readinessCenter) { !$0.isEmpty }
         XCTAssertEqual(appState.readinessCenter.readiness.count, ReadinessFeature.allCases.count)
     }
+}
+
+/// Counts hook calls; observable, so a test can wait on it.
+@MainActor
+@Observable
+private final class HookCalls {
+    var count = 0
+}
+
+@MainActor
+@Observable
+private final class ConsentBox {
+    var state = BackgroundAIConsent.State.allowedByOwner
 }

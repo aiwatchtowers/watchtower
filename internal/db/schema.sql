@@ -1621,7 +1621,24 @@ CREATE TABLE IF NOT EXISTS slack_accounts (
     first_cycle_at    TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the account's first sync attempt; older messages a sync stores keep their post time as synced_at (see 00190)
     emoji_scope_missing INTEGER NOT NULL DEFAULT 0,  -- 1 = a legacy token (no recorded grant) lacks emoji:read; the emoji sync skips the account until a re-login (see 00195)
     people_prune_done_at TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC when the one-time pass deleting people cards of non-partners finished; '' = pending (see 00195)
+    client_id         TEXT NOT NULL DEFAULT '',  -- Slack app client id the token was issued through; '' = connected before 00196, backfilled once (see 00196)
+    app_id            TEXT NOT NULL DEFAULT '',  -- Slack App ID from oauth.v2.access; '' = unknown (see 00196)
+    refresh_token_expires_at TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC expiry of a rotated token's refresh token; '' = no rotation (see 00196)
     company_slug      TEXT NOT NULL DEFAULT ''   -- company bundle (<workspace>/company/<slug>.json) whose OAuth client the account signed in with; '' = our shared client (see 00198)
+);
+
+-- One row per team whose own Slack app this install set up (slack app
+-- create|adopt). "Connected" = an ok slack_accounts row with the same
+-- client_id; never stored here (see 00196).
+CREATE TABLE IF NOT EXISTS slack_app_setups (
+    team_id              TEXT PRIMARY KEY,
+    team_name            TEXT NOT NULL DEFAULT '',
+    app_id               TEXT NOT NULL,
+    client_id            TEXT NOT NULL,
+    link_written         INTEGER NOT NULL DEFAULT 0,  -- 1 = the connect link is on the app's About page
+    install_requested_at TEXT NOT NULL DEFAULT '',    -- RFC 3339 UTC of an admin approval request; '' = none
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL
 );
 
 -- Multi-account IMAP/Outlook email source: one row per connected mailbox

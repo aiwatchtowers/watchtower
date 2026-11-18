@@ -27,7 +27,7 @@ $(error BUILD_COMPANY_NAME is required for the corp flavor)
 endif
 endif
 export ENV_FILE
-export WATCHTOWER_OAUTH_CLIENT_ID WATCHTOWER_OAUTH_CLIENT_SECRET WATCHTOWER_GOOGLE_CLIENT_ID WATCHTOWER_GOOGLE_CLIENT_SECRET WATCHTOWER_JIRA_CLIENT_ID WATCHTOWER_JIRA_CLIENT_SECRET WATCHTOWER_PURGE_DEFAULT WATCHTOWER_LINK_FETCH_DENY_HOSTS BUILD_FLAVOR BUILD_COMPANY_NAME
+export WATCHTOWER_OAUTH_CLIENT_ID WATCHTOWER_OAUTH_CLIENT_SECRET RETIRED_SLACK_CLIENT_ID WATCHTOWER_GOOGLE_CLIENT_ID WATCHTOWER_GOOGLE_CLIENT_SECRET WATCHTOWER_JIRA_CLIENT_ID WATCHTOWER_JIRA_CLIENT_SECRET WATCHTOWER_PURGE_DEFAULT WATCHTOWER_LINK_FETCH_DENY_HOSTS BUILD_FLAVOR BUILD_COMPANY_NAME
 
 BINARY_NAME := watchtower
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -46,7 +46,7 @@ LINK_FETCH_DENY_HOSTS ?= $(WATCHTOWER_LINK_FETCH_DENY_HOSTS)
 # The company name may hold spaces (single-quoted in ldflags); the quotes a
 # shell-sourced profile needs around it are not part of it.
 COMPANY_NAME := $(subst ',,$(subst ",,$(BUILD_COMPANY_NAME)))
-LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X 'watchtower/cmd.BuildCompanyName=$(COMPANY_NAME)' -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET) -X watchtower/internal/linear.DefaultLinearClientID=$(LINEAR_ID) -X watchtower/internal/purge.BuildDefault=$(PURGE_DEFAULT) -X watchtower/internal/media.BuildDenyHosts=$(LINK_FETCH_DENY_HOSTS) -X watchtower/internal/hub/identity.KeychainBuildFlag=false"
+LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X 'watchtower/cmd.BuildCompanyName=$(COMPANY_NAME)' -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/auth.RetiredSharedClientID=$(RETIRED_SLACK_CLIENT_ID) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET) -X watchtower/internal/linear.DefaultLinearClientID=$(LINEAR_ID) -X watchtower/internal/purge.BuildDefault=$(PURGE_DEFAULT) -X watchtower/internal/media.BuildDenyHosts=$(LINK_FETCH_DENY_HOSTS) -X watchtower/internal/hub/identity.KeychainBuildFlag=false"
 
 .PHONY: golangci-version-check build bridge-build test test-verbose test-cover test-race race-packages test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test chattext-test chat-test e2e-vectors test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check cloudkit-subscriptions-deployed relay-go relay-proto relay-interop relay-interop-kit relay-interop-kit-hub hub-smoke hub-staging
 
@@ -238,6 +238,7 @@ SHOTS_DIR ?= build/mobile-shots
 # SHOTS_ONLY=relay-phase4 runs only the relay client Phase 4 frames (S01 upward), into the same folder;
 # SHOTS_ONLY=relay-phase5 only the Phase 5 frames (S58 upward).
 # SHOTS_ONLY=chat only the Chats tab's frames (C1a upward, iPhone chat mockups 1a–1j).
+# SHOTS_ONLY=spec-review only the Sessions tab with a session in Spec review (board #1945).
 SHOTS_ONLY ?=
 mobile-shots:
 	xcrun simctl boot "$(SIM)" 2>/dev/null || true
@@ -245,7 +246,7 @@ mobile-shots:
 	mkdir -p "$(SHOTS_DIR)"
 	TEST_RUNNER_WATCHTOWER_SHOTS_ONLY="$(SHOTS_ONLY)" TEST_RUNNER_WATCHTOWER_SHOTS_DIR="$(abspath $(SHOTS_DIR))" xcodebuild test -project $(MOBILE_PROJ) \
 		-scheme WatchtowerMobile -destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=NO $(MOBILE_XCB) \
-		-only-testing:WatchtowerMobileTests/ScreenshotTourTests$(if $(filter relay-phase5,$(SHOTS_ONLY)),/testTheRelayPhase5Shots,$(if $(filter chat,$(SHOTS_ONLY)),/testTheChatShots,$(if $(SHOTS_ONLY),/testTheRelayPhase4Shots)))
+		-only-testing:WatchtowerMobileTests/ScreenshotTourTests$(if $(filter relay-phase5,$(SHOTS_ONLY)),/testTheRelayPhase5Shots,$(if $(filter chat,$(SHOTS_ONLY)),/testTheChatShots,$(if $(filter spec-review,$(SHOTS_ONLY)),/testTheSpecReviewShots,$(if $(SHOTS_ONLY),/testTheRelayPhase4Shots))))
 
 # The Desktop style guide's shots (WatchtowerDesktop/Tests/DesignShots, #719):
 # every DesignShotCatalog entry in light and dark mode as PNGs, written to
