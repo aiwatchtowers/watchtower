@@ -39,8 +39,13 @@ final class BackgroundAIConsentPromptTests: XCTestCase {
     }
 
     @MainActor
-    private func due(_ sheet: inout BackgroundAIConsentSheet, notes: Bool = false, unreadable: Bool = false,
-                     done: Bool = true, made: BackgroundAIConsentModel? = nil) {
+    private func due(
+        _ sheet: inout BackgroundAIConsentSheet,
+        notes: Bool = false,
+        unreadable: Bool = false,
+        done: Bool = true,
+        made: BackgroundAIConsentModel? = nil
+    ) {
         let made = made ?? model()
         sheet.presentIfDue(onboardingDone: done, state: unanswered, configUnreadable: unreadable,
                            releaseNotesPending: notes) { made }
