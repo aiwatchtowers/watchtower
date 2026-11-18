@@ -106,12 +106,12 @@ final class SlackLiveStatusCenterErrorTests: XCTestCase {
         }
         let center = SlackLiveStatusCenter(dbPool: pool, runner: nil)
         await center.reload()
-        try await pool.write { try $0.execute(sql: "ALTER TABLE slack_live_status RENAME TO slack_live_status_gone") }
+        try await breakStatusTable(pool)
         await center.reload()
         XCTAssertEqual(center.statuses.count, 1, "the last rows stay")
         XCTAssertEqual(center.lastError?.kind, .read)
         XCTAssertTrue(center.hasRead)
-        try await pool.write { try $0.execute(sql: "ALTER TABLE slack_live_status_gone RENAME TO slack_live_status") }
+        try await restoreStatusTable(pool)
         await center.reload()
         XCTAssertNil(center.lastError)
     }
@@ -124,12 +124,12 @@ final class SlackLiveStatusCenterErrorTests: XCTestCase {
         let runner = FakeCLIRunner()
         runner.shouldThrow = CLIRunnerError.nonZeroExit(code: 1, stderr: "boom")
         let center = SlackLiveStatusCenter(dbPool: pool, runner: runner, providers: ["claude"])
-        try await pool.write { try $0.execute(sql: "ALTER TABLE slack_live_status RENAME TO slack_live_status_gone") }
+        try await breakStatusTable(pool)
         center.checkAgain()
         await center.inFlight?.value
         XCTAssertEqual(center.lastError?.kind, .read)
         XCTAssertEqual(center.probeError?.provider, "claude")
-        try await pool.write { try $0.execute(sql: "ALTER TABLE slack_live_status_gone RENAME TO slack_live_status") }
+        try await restoreStatusTable(pool)
         await center.reload()
         XCTAssertEqual(center.lastError?.kind, .probe, "the probe failure is not lost")
     }
@@ -142,14 +142,32 @@ final class SlackLiveStatusCenterErrorTests: XCTestCase {
         let runner = FakeCLIRunner()
         runner.shouldThrow = CLIRunnerError.nonZeroExit(code: 1, stderr: "boom")
         let center = SlackLiveStatusCenter(dbPool: pool, runner: runner, providers: ["claude"])
-        try await pool.write { try $0.execute(sql: "ALTER TABLE slack_live_status RENAME TO slack_live_status_gone") }
+        try await breakStatusTable(pool)
         await center.reload()
         XCTAssertEqual(center.lastError?.kind, .read)
-        try await pool.write { try $0.execute(sql: "ALTER TABLE slack_live_status_gone RENAME TO slack_live_status") }
+        try await restoreStatusTable(pool)
         center.checkAgain()
         await center.inFlight?.value
         XCTAssertNil(center.readError)
         XCTAssertEqual(center.lastError?.kind, .probe)
+    }
+
+    /// A status read that genuinely fails: the table is swapped for one
+    /// without the row's columns, so the SELECT errors. (A missing table is
+    /// a legitimate "no rows" for `SlackLiveStatusRow.fetchAll`, an older
+    /// database, so renaming it away no longer forces a failure.)
+    private func breakStatusTable(_ pool: DatabasePool) async throws {
+        try await pool.write { db in
+            try db.execute(sql: "ALTER TABLE slack_live_status RENAME TO slack_live_status_gone")
+            try db.execute(sql: "CREATE TABLE slack_live_status (unrelated TEXT)")
+        }
+    }
+
+    private func restoreStatusTable(_ pool: DatabasePool) async throws {
+        try await pool.write { db in
+            try db.execute(sql: "DROP TABLE slack_live_status")
+            try db.execute(sql: "ALTER TABLE slack_live_status_gone RENAME TO slack_live_status")
+        }
     }
 
     func testCheckAgainWhileRunningIsIgnored() async throws {
