@@ -284,7 +284,8 @@ struct WorkbenchTargetPanel: View {
     /// removed folder keeps showing as `folder removed` until another is picked.
     @ViewBuilder
     private var folderMenu: some View {
-        if let folders = vm.folders, folders.live.count > 1 {
+        if let folders = vm.folders,
+           WorkbenchBoardCard.showsFolderMenu(folderID: target.workbenchFolderID, folders: folders) {
             let current = folders.folder(target.workbenchFolderID)
             Menu {
                 ForEach(folders.live) { folder in

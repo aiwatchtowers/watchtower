@@ -198,6 +198,18 @@ final class WorkbenchBoardCardTests: XCTestCase {
         XCTAssertEqual(WorkbenchBoardCard(node(hub), folders: one).folderChip, .removed)
     }
 
+    func testFolderMenuShowsOnSeveralFoldersOrForARemovedOne() {
+        let two = BenchFolders(folders: [folder(1, "app"), folder(2, "hub")], homeID: 1)
+        XCTAssertTrue(WorkbenchBoardCard.showsFolderMenu(folderID: nil, folders: two))
+        let one = BenchFolders(folders: [folder(1, "app"), folder(2, "hub", removed: true)], homeID: 1)
+        XCTAssertFalse(WorkbenchBoardCard.showsFolderMenu(folderID: nil, folders: one), "one live folder: as before")
+        XCTAssertFalse(WorkbenchBoardCard.showsFolderMenu(folderID: 1, folders: one))
+        XCTAssertTrue(WorkbenchBoardCard.showsFolderMenu(folderID: 2, folders: one), "a way back from a removed folder")
+        let none = BenchFolders(folders: [folder(2, "hub", removed: true)], homeID: nil)
+        XCTAssertFalse(WorkbenchBoardCard.showsFolderMenu(folderID: 2, folders: none), "no live folder to move to")
+        XCTAssertFalse(WorkbenchBoardCard.showsFolderMenu(folderID: 2, folders: nil))
+    }
+
     func testFolderMenuTitles() {
         XCTAssertEqual(WorkbenchBoardCard.folderMenuTitle(folder(1, "app")), "app")
         XCTAssertEqual(WorkbenchBoardCard.folderMenuTitle(folder(2, "hub", removed: true)), "Folder removed")

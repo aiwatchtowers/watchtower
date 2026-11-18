@@ -50,10 +50,7 @@ package struct TargetCounts {
     package let highPriority: Int
 }
 
-/// A write addressed a target that no longer exists — typically deleted in
-/// another process (the agent over the project MCP server, the CLI, a second
-/// window) after the screen loaded it. The update touched no row, so the
-/// mutator throws instead of reporting a success that never happened.
+/// A folder write the target or the bench refuses (`setFolder`).
 package enum TargetFolderError: LocalizedError, Equatable {
     case notOnABoard(Int)
     case notAFolderOfTheBench(Int64)
@@ -66,6 +63,10 @@ package enum TargetFolderError: LocalizedError, Equatable {
     }
 }
 
+/// A write addressed a target that no longer exists — typically deleted in
+/// another process (the agent over the project MCP server, the CLI, a second
+/// window) after the screen loaded it. The update touched no row, so the
+/// mutator throws instead of reporting a success that never happened.
 package struct TargetNotFoundError: LocalizedError, Equatable {
     package let id: Int
 

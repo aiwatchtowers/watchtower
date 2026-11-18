@@ -113,6 +113,15 @@ package struct WorkbenchBoardCard: Equatable {
         return folders.live.count > 1 ? .folder(folder.name) : nil
     }
 
+    /// The panel's Folder menu (spec 2026-11-18 §6.10): on a bench of several
+    /// live folders, and also for a target left on a removed folder while a
+    /// live one can take it back (the menu then lists the live folders).
+    package static func showsFolderMenu(folderID: Int64?, folders: BenchFolders?) -> Bool {
+        guard let folders else { return false }
+        if folders.live.count > 1 { return true }
+        return folders.folder(folderID)?.isRemoved == true && !folders.live.isEmpty
+    }
+
     /// The panel's Folder menu title: the folder's name, `Folder removed` for
     /// one that left the bench, `Folder` for one this bench does not know.
     package static func folderMenuTitle(_ folder: WorkbenchFolder?) -> String {
