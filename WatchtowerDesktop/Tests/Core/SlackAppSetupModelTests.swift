@@ -481,8 +481,8 @@ final class SlackAppSetupModelTests: XCTestCase {
         XCTAssertTrue(connector.calls.isEmpty)
         XCTAssertEqual(model.notice?.title, "Watchtower's app already exists in acme")
         XCTAssertEqual(model.notice?.body, "Update it to the current version: Watchtower adds the connect link to its "
-            + "About page and the sign-in settings it needs. Watchtower turns on PKCE sign-in for this app, which "
-            + "cannot be undone; Slack may ask colleagues already connected to allow Watchtower again.")
+            + "About page and the sign-in settings it needs. Watchtower turns on PKCE sign-in for this app, which can be "
+            + "turned off only by Slack support; Slack may ask colleagues already connected to allow Watchtower again.")
         XCTAssertEqual(labels(model), ["Cancel", "Update the app"])
         XCTAssertTrue(model.showsTokenForm)
         XCTAssertFalse(model.showsAppIDField)
@@ -493,7 +493,7 @@ final class SlackAppSetupModelTests: XCTestCase {
                                     form: adopt)
         model.startAdopt(token: token, appID: nil)
         await settled(model)
-        XCTAssertEqual(fake.invocations[0].args, ["slack", "app", "adopt", "--json", "--team", "T0ACME"])
+        XCTAssertEqual(fake.invocations[0].args, ["slack", "app", "adopt", "--json", "--enable-pkce", "--team", "T0ACME"])
         XCTAssertTrue(model.showsAppIDField)
         XCTAssertEqual(Model.appIDLabel, "App ID")
         XCTAssertEqual(Model.appIDHelp, "Find it on the app's Basic Information page at api.slack.com/apps.")
@@ -514,9 +514,10 @@ final class SlackAppSetupModelTests: XCTestCase {
         fake.enqueue(noSetups)
         model.startAdopt(token: token, appID: " A0ACME ")
         await settled(model)
-        XCTAssertEqual(fake.invocations.dropLast().last?.args, ["slack", "app", "adopt", "--json", "--team", "T0ACME", "--app-id", "A0ACME"])
+        XCTAssertEqual(fake.invocations.dropLast().last?.args,
+                       ["slack", "app", "adopt", "--json", "--enable-pkce", "--team", "T0ACME", "--app-id", "A0ACME"])
         XCTAssertEqual(model.notice?.body, "App A0ACME is called “Watchtower”. Update it only if it is your workspace's "
-            + "Watchtower app.")
+            + "Watchtower app. " + Model.adoptPKCEWarning, "the App ID check keeps the PKCE warning")
         XCTAssertNil(model.appIDProblemLine)
 
         fake.enqueue(reply(result("ok")))
@@ -524,7 +525,8 @@ final class SlackAppSetupModelTests: XCTestCase {
         model.startAdopt(token: token, appID: "A0ACME")
         await settled(model)
         XCTAssertEqual(fake.invocations.dropLast().last?.args,
-                       ["slack", "app", "adopt", "--json", "--team", "T0ACME", "--app-id", "A0ACME", "--confirm-app-id", "A0ACME"])
+                       ["slack", "app", "adopt", "--json", "--enable-pkce", "--team", "T0ACME", "--app-id", "A0ACME",
+                        "--confirm-app-id", "A0ACME"])
         guard case .finished(.success) = model.phase else { return XCTFail("\(model.phase)") }
     }
 
@@ -554,6 +556,18 @@ final class SlackAppSetupModelTests: XCTestCase {
         XCTAssertEqual(model.notice?.title, "Watchtower's app is ready in acme")
         XCTAssertEqual(labels(model), ["Copy connect code", "Done"])
         XCTAssertEqual(fake.invocations[0].stdin, Data((token + "\n").utf8))
+        // App ID known from the row (no App ID check): the press on the
+        // adopt body, which carries the PKCE warning, is the consent.
+        XCTAssertEqual(fake.invocations[0].args, ["slack", "app", "adopt", "--json", "--enable-pkce", "--team", "T0ACME"])
+        XCTAssertTrue(Model.adoptBody.hasSuffix(Model.adoptPKCEWarning))
+    }
+
+    func testAdoptNeedsPKCEConsentReturnsToTheWarning() async {
+        let (model, _, _) = make([reply(result("needs_pkce_consent")), noSetups], form: adopt)
+        model.startAdopt(token: token, appID: nil)
+        await settled(model)
+        XCTAssertEqual(model.notice?.body, Model.adoptBody)
+        XCTAssertEqual(labels(model), ["Cancel", "Update the app"])
     }
 
     // MARK: - A create whose answer was lost

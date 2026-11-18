@@ -153,7 +153,8 @@ extension SlackAppSetupModel {
             return nil
         case let .adopt(adopt):
             let body = adopt.confirm.map {
-                "App \($0.appID) is called “\($0.appName)”. Update it only if it is your workspace's Watchtower app."
+                "App \($0.appID) is called “\($0.appName)”. Update it only if it is your workspace's Watchtower app. "
+                    + Self.adoptPKCEWarning
             } ?? Self.adoptBody
             return Notice(icon: "arrow.triangle.2.circlepath", tone: .blue, title: Self.adoptTitle(adopt.target.workspace), body: body)
         case let .pending(target):
@@ -162,9 +163,13 @@ extension SlackAppSetupModel {
         }
     }
 
+    /// Shown on every screen with **Update the app** (the adopt body and the
+    /// App ID check): the run passes `--enable-pkce` only after it.
+    package static let adoptPKCEWarning = "Watchtower turns on PKCE sign-in for this app, which can be turned off "
+        + "only by Slack support; Slack may ask colleagues already connected to allow Watchtower again."
+
     package static let adoptBody = "Update it to the current version: Watchtower adds the connect link to its About page "
-        + "and the sign-in settings it needs. Watchtower turns on PKCE sign-in for this app, which cannot be undone; "
-        + "Slack may ask colleagues already connected to allow Watchtower again."
+        + "and the sign-in settings it needs. " + adoptPKCEWarning
 
     package static func adoptTitle(_ workspace: String) -> String {
         "Watchtower's app already exists in \(workspace)"

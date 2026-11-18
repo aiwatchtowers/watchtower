@@ -170,9 +170,10 @@ enum SlackFullLiveMockCopy {
     static let adminNote = "Please set up Watchtower for acme in Slack: "
         + "https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/concepts/sources-and-accounts.md"
     static let adoptTitle = "Watchtower's app already exists in acme"
+    static let adoptPKCEWarning = "Watchtower turns on PKCE sign-in for this app, which can be turned off "
+        + "only by Slack support; Slack may ask colleagues already connected to allow Watchtower again."
     static let adoptBody = "Update it to the current version: Watchtower adds the connect link to its About page "
-        + "and the sign-in settings it needs. Watchtower turns on PKCE sign-in for this app, which cannot be undone; "
-        + "Slack may ask colleagues already connected to allow Watchtower again."
+        + "and the sign-in settings it needs. " + adoptPKCEWarning
     static let adoptAction = "Update the app"
     static let adoptAppIDLabel = "App ID"
     static let adoptAppIDHelp = "Find it on the app's Basic Information page at api.slack.com/apps."
@@ -200,7 +201,8 @@ enum SlackFullLiveMockCopy {
     static let pendingUseApp = "Use this app"
     static let recordPending = "Setup is not finished: Slack did not confirm Watchtower's app in acme. "
         + "Check api.slack.com/apps before going on."
-    static let adoptConfirm = "App A0ACME is called “Watchtower”. Update it only if it is your workspace's Watchtower app."
+    static let adoptConfirm = "App A0ACME is called “Watchtower”. Update it only if it is your workspace's Watchtower app. "
+        + adoptPKCEWarning
     static let appIDFormat = "That is not an App ID: it starts with A."
     static let busy = "Another setup is already running on this Mac. Try again once it has finished."
 }

@@ -490,7 +490,9 @@ package final class SlackAppSetupModel {
 
     private func runAdopt(token: String, appID: String) async {
         guard case let .adopt(adopt) = form else { return }
-        var args = ["slack", "app", "adopt", "--json"]
+        // --enable-pkce: Update the app is pressed only on a screen showing
+        // adoptPKCEWarning (the adopt body or the App ID check).
+        var args = ["slack", "app", "adopt", "--json", "--enable-pkce"]
         // The workspace the sheet names: a token of another one changes nothing (wrong_team).
         if !adopt.target.teamID.isEmpty { args += ["--team", adopt.target.teamID] }
         if !appID.isEmpty {
@@ -505,21 +507,16 @@ package final class SlackAppSetupModel {
         switch result.result {
         case "ok":
             phase = .finished(.success(next.target))
-        case "need_app_id":
+        case "need_app_id", "app_not_found":
             next.needsAppID = true
-            next.appIDProblem = switch result.code {
-            case "app_id_format": .format
-            case "app_id_mismatch": .mismatch
-            default: nil
-            }
-            reset(.adopt(next))
-        case "app_not_found":
-            next.needsAppID = true
-            next.appIDProblem = .notFound
+            next.appIDProblem = Self.appIDProblem(for: result)
             reset(.adopt(next))
         case "confirm_app":
             next.needsAppID = true
             next.confirm = (result.appID ?? appID, result.appName ?? "")
+            reset(.adopt(next))
+        case "needs_pkce_consent":
+            // Not expected (the run agrees above); back to the warning screen.
             reset(.adopt(next))
         case "exists":
             await reloadRecords()
@@ -529,6 +526,16 @@ package final class SlackAppSetupModel {
             reset(.pending(next.target))
         default:
             finishWithProblem(result, workspace: next.target.workspace)
+        }
+    }
+
+    /// The App ID field's problem line for a `need_app_id`/`app_not_found` answer.
+    private static func appIDProblem(for result: ResultLine) -> AppIDProblem? {
+        if result.result == "app_not_found" { return .notFound }
+        return switch result.code {
+        case "app_id_format": .format
+        case "app_id_mismatch": .mismatch
+        default: nil
         }
     }
 

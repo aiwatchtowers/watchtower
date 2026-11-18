@@ -40,7 +40,8 @@ final class SlackFullLiveMockCopyTests: XCTestCase {
         typealias Copy = SlackFullLiveMockCopy
         XCTAssertEqual(Copy.copyAdminNote, "Copy a note for your admin")
         XCTAssertTrue(Copy.adminNote.contains("docs/guide/"))
-        XCTAssertTrue(Copy.adoptBody.contains("Watchtower turns on PKCE sign-in for this app, which cannot be undone"))
+        XCTAssertTrue(Copy.adoptBody.contains("which can be turned off only by Slack support"))
+        XCTAssertTrue(Copy.adoptConfirm.hasSuffix(Copy.adoptPKCEWarning), "the App ID check keeps the PKCE warning")
         XCTAssertEqual(Copy.adoptAction, "Update the app")
         XCTAssertTrue(Copy.notCollaborator.contains("collaborators"))
         XCTAssertTrue(Copy.onboardingCaption.contains("paste the link or code"))
