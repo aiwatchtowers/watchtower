@@ -30,6 +30,26 @@ public struct ChatApprovalState: Equatable, Sendable {
     public let approveFailed: Bool
     /// The failure outlives the row's own state (an applied `create_track` whose `tracks start` failed).
     public let gestureErrorOutlivesRow: Bool
+    /// Approve is not offered on this device: the note stands in its place ("Approve on the Mac", "Open Draft — on
+    /// your Mac"); Reject keeps `canAnswer` (mobile Inbox spec §12.4). Nil on the Mac and in the phone chat.
+    public let approveNote: String?
+    /// Retry or Dismiss is not offered on this device (no grant, an older hub): the note stands in its place ("Retry
+    /// on the Mac"). Nil keeps the offer.
+    public let settledNote: String?
+    /// Not delivered (the phone's outbox gave up): the line in red and the press's named Retry ("Retry Approve") as
+    /// the row's one button, which re-sends the same action (`ChatApprovalServices.resend`).
+    public let undelivered: Undelivered?
+
+    /// A Not delivered press: its line and its named Retry.
+    public struct Undelivered: Equatable, Sendable {
+        public let line: String
+        public let retryTitle: String
+
+        public init(line: String, retryTitle: String) {
+            self.line = line
+            self.retryTitle = retryTitle
+        }
+    }
 
     public init(
         showsButtons: Bool,
@@ -38,7 +58,10 @@ public struct ChatApprovalState: Equatable, Sendable {
         inFlight: Bool = false,
         gestureError: String? = nil,
         approveFailed: Bool = false,
-        gestureErrorOutlivesRow: Bool = false
+        gestureErrorOutlivesRow: Bool = false,
+        approveNote: String? = nil,
+        settledNote: String? = nil,
+        undelivered: Undelivered? = nil
     ) {
         self.showsButtons = showsButtons
         self.canAnswer = canAnswer
@@ -47,6 +70,9 @@ public struct ChatApprovalState: Equatable, Sendable {
         self.gestureError = gestureError
         self.approveFailed = approveFailed
         self.gestureErrorOutlivesRow = gestureErrorOutlivesRow
+        self.approveNote = approveNote
+        self.settledNote = settledNote
+        self.undelivered = undelivered
     }
 }
 
@@ -66,6 +92,8 @@ public struct ChatApprovalServices {
     public var retry: ((ChatAgentAction) -> Void)?
     /// Dismiss a session call whose outcome is unknown (`ConnectorCallProposal.awaitsDismissal`).
     public var dismiss: ((ChatAgentAction) -> Void)?
+    /// Sends a Not delivered press again (`ChatApprovalState.undelivered`, the phone Inbox's outbox).
+    public var resend: ((ChatAgentAction) -> Void)?
     /// Approve every bulk-approvable card of a turn (**Approve all** under a reply).
     public var approveAll: ((_ turnID: String) -> Void)?
     /// Re-consents a Slack account whose token lacks the send grant; returns why it failed, nil on success.
@@ -97,7 +125,8 @@ public struct ChatApprovalServices {
         title: ((ChatAgentAction) -> String?)? = nil,
         details: ((ChatAgentAction) -> AnyView?)? = nil,
         decisionOverride: ((ChatAgentAction) -> AnyView?)? = nil,
-        highlighted: ((ChatAgentAction) -> Bool)? = nil
+        highlighted: ((ChatAgentAction) -> Bool)? = nil,
+        resend: ((ChatAgentAction) -> Void)? = nil
     ) {
         self.resolve = resolve
         self.decide = decide
@@ -113,5 +142,6 @@ public struct ChatApprovalServices {
         self.details = details
         self.decisionOverride = decisionOverride
         self.highlighted = highlighted
+        self.resend = resend
     }
 }
