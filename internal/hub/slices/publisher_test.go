@@ -410,11 +410,16 @@ type fakeTime struct {
 	// armedCh is closed (and replaced) on every arm: waitArmed blocks on it.
 	armedCh chan struct{}
 	// woken reports a wake already pending for the driven Run (nil: never).
-	// An arm made while one is pending is not counted: Run's select takes
-	// the wake at once and arms again, so that arm is no settled sleep.
-	// (A failed kind's cycle marks the heartbeat dirty, which pokes Run
-	// from inside its own cycle; a settle counting that arm let a step
-	// advance the clock while no timer was armed, #1918.)
+	// An arm made while one is pending is not counted: the pending wake
+	// makes Run's select return without sleeping (on the wake, or on a
+	// d<=0 timer with the wake still queued), so an uncounted arm is always
+	// followed by another arm, and only an arm with no wake pending is a
+	// settled sleep. Run pokes itself from inside its own cycle: a kind
+	// turning stuck or recovering marks the heartbeat dirty
+	// (noteKindOutcome, stuck.go), and the alerts re-signalled after a
+	// transport switch mark the ask alerts dirty (PublishSoon in
+	// publisher.go). A settle counting that arm let a step advance the
+	// clock while no timer was armed (#1918).
 	woken func() bool
 }
 
@@ -615,6 +620,28 @@ func TestFailedSaveIsRetriedWithBackoff(t *testing.T) {
 	}
 	if RetryFirst != time.Second || RetryMax != 10*time.Second {
 		t.Fatalf("retry bounds = %v / %v", RetryFirst, RetryMax)
+	}
+}
+
+// An arm made while a wake is pending for the driven Publisher is no
+// settled sleep and is not counted; once the wake is drained, the next arm
+// counts (#1918).
+func TestFakeTimeSkipsArmWithWakePending(t *testing.T) {
+	r := newRig(t, transport.KindRelay)
+	ft := newFakeTime()
+	p := r.publisher()
+	ft.drive(p)
+	p.poke()
+	_, stop := ft.Timer(time.Second)
+	stop()
+	if n := ft.armedCount(); n != 0 {
+		t.Fatalf("an arm with a wake pending counted: armed = %d", n)
+	}
+	<-p.wake
+	_, stop = ft.Timer(time.Second)
+	stop()
+	if n := ft.armedCount(); n != 1 {
+		t.Fatalf("an arm with no wake pending: armed = %d, want 1", n)
 	}
 }
 
