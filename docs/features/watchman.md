@@ -68,7 +68,7 @@ Prompts (all on both providers, `digest.WithSource(ctx, "<id>")`): `watchman.lab
 
 ## Phase 1b: measure decisions only (spec §§9.1, 9a, 11b; migration 00197)
 
-Phase 1 hid every candidate and graded each; phase 1b makes the measurement fairer. Prompts: `watchman.label` v2 (light), `watchman.decide` v3 (strong), `watchman.judge` v4 (strong).
+Phase 1 hid every candidate and graded each; phase 1b makes the measurement fairer. Prompts: `watchman.label` v2 (light), `watchman.decide` v3 (strong), `watchman.judge` v5 (strong; a handoff's option label is not a claim).
 
 - **Decisions only (D34).** A precedent is a backtest candidate only when it is a decision and Watchman would not park it. Owner turns that answer no agent question or proposal, and parked items, stay precedents (retrievable) and are never hidden. `watchman.label` v2 returns `decision` and `parked` per item; asks whose category Go sets still go through it for the flags (the category it returns for them is ignored). A row whose flags are unset (NULL) counts as a candidate.
 - **Relabel pass (D39).** Earlier ask, turn and permission precedents are flagged once, after the sources in the learning cycle, in the 5-minute budget with cursors carrying the rest (`Stats.Relabelled`, status `relabel_pending`). It sets only `is_decision`/`parked`; a stored category never changes. The CLI `watchman backtest` refuses while `relabel_pending > 0` (`--force` overrides, like the learned check) and the daemon's weekly launch waits. Settings shows "Sorting earlier decisions: N left" and disables **Run Backtest Now**.

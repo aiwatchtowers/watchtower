@@ -639,11 +639,11 @@ func TestBacktest_AskOptions(t *testing.T) {
 	}
 	require.Equal(t, "Choice: comment\nOwner's words: add a nil check",
 		ownerAnswer(db.WatchmanPrecedent{Choice: "comment", OwnerWords: "add a nil check"}))
-	require.Equal(t, "Choice: approve", twinAnswer(Decision{Choice: "approve"}))
-	require.Equal(t, "Choice: approve\nConfidence: high", twinAnswer(Decision{Choice: "approve", Confidence: "high"}))
+	require.Equal(t, "Choice: approve", twinAnswer(Decision{Choice: "approve"}, false))
+	require.Equal(t, "Choice: approve\nConfidence: high", twinAnswer(Decision{Choice: "approve", Confidence: "high"}, false))
 	require.Equal(t, "Owner's words: add a nil check", ownerAnswer(db.WatchmanPrecedent{OwnerWords: "add a nil check"}),
 		"an empty choice leaves its line out")
-	require.Equal(t, "Reasoning: r", twinAnswer(Decision{Rationale: "r"}))
+	require.Equal(t, "Reasoning: r", twinAnswer(Decision{Rationale: "r"}, false))
 }
 
 func TestBacktest_BusyLock(t *testing.T) {
@@ -1172,4 +1172,47 @@ func TestBacktest_ReportNameSurvivesReusedID(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, "stale\n", string(b), "a stale report is left alone")
 	}
+}
+
+const signInPayload = `{"focus":[],"questions":[` +
+	`{"id":"q1","question":"Sign in to the registry?","options":[{"label":"Signed in"},{"label":"Could not sign in"}]}],"checklist":[]}`
+
+func signInAnswer(int) string {
+	return `{"answers":[{"id":"q1","labels":["Signed in"],"other":""}],"checklist":[],"comments":[],"note":"","verdict":""}`
+}
+
+// TestBacktest_HandoffSendsNoOptionLabel: a handed item reaches the judge as
+// "Handed to the owner: <why>", never with the option the twin picked.
+func TestBacktest_HandoffSendsNoOptionLabel(t *testing.T) {
+	d, wb := btDB(t)
+	btAddAsks(t, d, wb, CategoryDesign, 30, btT0, signInPayload, signInAnswer)
+	gen := &btGen{decide: func(decideInput) (string, string, error) { return "Signed in", "high", nil }, handoff: firstN(1)}
+	judge := &btJudge{}
+	_, err := Backtest(context.Background(), d, gen, judge, nil, wb, "", btT0.Add(1000*time.Hour))
+	require.NoError(t, err)
+	require.NotEmpty(t, judge.inputs)
+	in := judge.inputs[0]
+	require.True(t, in.Handoff)
+	require.NotContains(t, in.Twin, "Signed in")
+	require.Contains(t, in.Twin, "Handed to the owner:")
+	require.Contains(t, in.Twin, "Confidence: high")
+}
+
+// TestBacktest_ConfirmationHandoffJustifiedIsHanded: options that confirm the
+// owner's own action, handed and ruled justified, count as handed, not bad.
+func TestBacktest_ConfirmationHandoffJustifiedIsHanded(t *testing.T) {
+	d, wb := btDB(t)
+	payload := `{"focus":[],"questions":[{"id":"q1","question":"Connect the service?","options":[{"label":"Connected it"},{"label":"Skip"}]}],"checklist":[]}`
+	answer := func(int) string {
+		return `{"answers":[{"id":"q1","labels":["Connected it"],"other":""}],"checklist":[],"comments":[],"note":"","verdict":""}`
+	}
+	btAddAsks(t, d, wb, CategoryDesign, 30, btT0, payload, answer)
+	gen := &btGen{decide: func(decideInput) (string, string, error) { return "Connected it", "high", nil }, handoff: firstN(5)}
+	judge := &btJudge{handoff: func(JudgeInput) string { return HandoffJustified }}
+	_, err := Backtest(context.Background(), d, gen, judge, nil, wb, "", btT0.Add(1000*time.Hour))
+	require.NoError(t, err)
+	_, rows := btRows(t, d, wb)
+	r := rows[CategoryDesign]
+	require.Equal(t, 5, r.Handed)
+	require.Zero(t, r.Bad)
 }
