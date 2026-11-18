@@ -104,7 +104,7 @@ func TestPromptStateTimeoutIsUnknown(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		clientEnd, hostEnd := net.Pipe()
 		frames := fakeV2Host(hostEnd, []string{FeaturePromptState})
-		cl, err := newClient(t.Context(), clientEnd)
+		cl, err := NewClient(t.Context(), clientEnd)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -169,4 +169,43 @@ func TestPromptStateNeverSentWithoutTheFeature(t *testing.T) {
 	if n := <-frames; n != 0 {
 		t.Fatalf("host read %d frames after hello, want none", n)
 	}
+}
+
+// A call waiting for the client while another holds it (a host stuck on
+// that call) gives up with its own ctx: PromptState is unknown after exactly
+// its deadline and sends nothing.
+func TestPromptStateWaitingBehindABusyCallEndsAtItsDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		clientEnd, hostEnd := net.Pipe()
+		frames := fakeV2Host(hostEnd, []string{FeaturePromptState})
+		cl, err := NewClient(t.Context(), clientEnd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		listed := make(chan error, 1)
+		go func() {
+			_, err := cl.List(context.Background())
+			listed <- err
+		}()
+		synctest.Wait() // the List holds the client
+
+		ctx, cancel := context.WithTimeout(t.Context(), PromptStateTimeout)
+		defer cancel()
+		start := time.Now()
+		got, err := cl.PromptState(ctx, PromptStateMsg{Row: 1, Run: "r1", Launch: 1})
+
+		if !errors.Is(err, context.DeadlineExceeded) || got.Known {
+			t.Fatalf("behind a busy call = %+v, %v; want the deadline, unknown", got, err)
+		}
+		if waited := time.Since(start); waited != PromptStateTimeout {
+			t.Fatalf("gave up after %v, want %v", waited, PromptStateTimeout)
+		}
+		_ = cl.Close()
+		if err := <-listed; err == nil {
+			t.Fatal("the stuck List succeeded")
+		}
+		if n := <-frames; n != 1 {
+			t.Fatalf("host read %d frames after hello, want only the List", n)
+		}
+	})
 }

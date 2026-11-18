@@ -8,7 +8,6 @@ import (
 	"net"
 	"slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 )
 
@@ -31,11 +30,13 @@ const v1Refusal = "(host speaks 1)"
 
 // Client is a non-attaching v2 client: it lists, launches detached, types
 // with InputTo, delivers lines (Deliver), reads prompt state, hints and stops, and never binds its connection to a
-// session, so it never takes a pane over. Calls are serialised.
+// session, so it never takes a pane over. Calls are serialised; a call
+// waiting for another gives up when its ctx ends.
 type Client struct {
-	mu  sync.Mutex
-	nc  net.Conn
-	pid int
+	// turn is the call lock: a one-slot channel, so a waiter honours its ctx.
+	turn chan struct{}
+	nc   net.Conn
+	pid  int
 	// features is the HelloOK's Features (set once, before any call).
 	features []string
 	dead     atomic.Bool // the connection was closed (Close, or a failure that left the stream out of step)
@@ -49,12 +50,13 @@ func Dial(ctx context.Context, socket string) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dial session host: %w", err)
 	}
-	return newClient(ctx, nc)
+	return NewClient(ctx, nc)
 }
 
-// newClient says the v2 Hello on nc; nc is closed when it fails.
-func newClient(ctx context.Context, nc net.Conn) (*Client, error) {
-	c := &Client{nc: nc}
+// NewClient says the v2 Hello on an established connection to a host (Dial's
+// last step; an in-memory connection in tests); nc is closed when it fails.
+func NewClient(ctx context.Context, nc net.Conn) (*Client, error) {
+	c := &Client{nc: nc, turn: make(chan struct{}, 1)}
 	if err := c.hello(ctx); err != nil {
 		_ = nc.Close()
 		return nil, err
@@ -224,12 +226,17 @@ func (c *Client) roundTrip(ctx context.Context, t FrameType, p []byte, want Fram
 	return c.do(ctx, func() (FrameType, []byte, error) { return c.exchangeLocked(t, p, want) })
 }
 
-// do runs one exchange under the lock with ctx's deadline and cancellation.
-// Any failure but a host Error leaves the stream out of step, so the
-// connection is closed and later calls fail.
+// do runs one exchange under the lock with ctx's deadline and cancellation;
+// waiting for the lock ends with ctx too (the call then sent nothing). Any
+// failure but a host Error leaves the stream out of step, so the connection
+// is closed and later calls fail.
 func (c *Client) do(ctx context.Context, fn func() (FrameType, []byte, error)) (FrameType, []byte, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	select {
+	case c.turn <- struct{}{}:
+	case <-ctx.Done():
+		return 0, nil, ctx.Err() //nolint:wrapcheck // the caller wraps with the operation
+	}
+	defer func() { <-c.turn }()
 	if err := ctx.Err(); err != nil {
 		return 0, nil, err //nolint:wrapcheck // the caller wraps with the operation
 	}
