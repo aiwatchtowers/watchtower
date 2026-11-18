@@ -41,19 +41,22 @@ const labelTimeout = 2 * time.Minute
 // Parked the light-tier label check of an ask's text, which may only add a
 // park — an error or a timeout parks. StartSession starts a new session on
 // a target for a handover the twin continues (it arms nothing: a new session
-// is armed only through its target's arming). Clock nil is time.Now.
+// is armed only through its target's arming). Run runs a command in a
+// directory and returns its stdout — the live branch and PR base of a
+// permission request (git, gh); nil runs it. Clock nil is time.Now.
 type TwinDeps struct {
 	DB           *db.DB
 	Answerer     *askanswer.Answerer
 	Decide       func(ctx context.Context, it watchman.Item) (watchman.Decision, error)
 	Parked       func(ctx context.Context, text string) (bool, string, error) // light-tier label: may only add a park; an error or timeout parks
 	StartSession func(ctx context.Context, workbenchID, targetID int64, brief string) error
+	Run          func(ctx context.Context, dir, name string, args ...string) ([]byte, error)
 	Clock        func() time.Time
 }
 
 // Twin answers the queued items of armed sessions in the owner's place: the
-// asks, the checks and the finish handovers (permissions and reviews have
-// their own deciders). Every decision is journalled unsure (D43).
+// asks, the checks, the finish handovers and the permission prompts (reviews
+// have their own decider). Every decision is journalled unsure (D43).
 type Twin struct {
 	d  TwinDeps
 	wg sync.WaitGroup
@@ -68,13 +71,17 @@ func NewTwin(d TwinDeps) *Twin {
 	if d.Clock == nil {
 		d.Clock = time.Now
 	}
+	if d.Run == nil {
+		d.Run = runOutput
+	}
 	return &Twin{d: d, starting: map[int64]bool{}}
 }
 
-// twinKinds are the item kinds this worker leases: question asks, checks and
-// handovers, all of an ask. Review items wait for the review decider; guard
+// twinKinds are the item kinds this worker leases, each with the ref kind
+// its wait point has: question asks, checks and handovers of an ask, and
+// permission prompts. Review items wait for the review decider; guard
 // denials are journal-only and never leased.
-var twinKinds = map[string]bool{"ask": true, "check": true, "handover": true}
+var twinKinds = map[string]string{"ask": "ask", "check": "ask", "handover": "ask", "permission": "permission"}
 
 // RunOnce first starts the next sessions of handovers answered "Continue"
 // whose start is still owed (a crash between the answer and the start), then
@@ -99,7 +106,7 @@ func (t *Twin) RunOnce(ctx context.Context) int {
 		armed[s.SessionID] = true
 	}
 	eligible := func(it db.WatchmanItem) bool {
-		if it.RefKind != "ask" || !twinKinds[it.Kind] {
+		if ref, ok := twinKinds[it.Kind]; !ok || it.RefKind != ref {
 			return false
 		}
 		isArmed := armed[it.SessionID]
@@ -167,6 +174,7 @@ type job struct {
 	it     db.WatchmanItem
 	lease  time.Time
 	ask    *db.OwnerAsk
+	perm   *db.PermissionRequest // a permission item's request
 	dec    *watchman.Decision
 	// parked is the outcome of a park in progress (nil when not parking).
 	parked *db.WatchmanOutcome
@@ -176,8 +184,14 @@ func (j *job) now() time.Time { return j.t.d.Clock() }
 
 // outcome is the item's finish: the decision's columns when there is one.
 func (j *job) outcome(outcome string) db.WatchmanOutcome {
-	o := db.WatchmanOutcome{Outcome: outcome, DecidedAt: j.now()}
-	if d := j.dec; d != nil {
+	return outcomeOf(j.dec, outcome, j.now())
+}
+
+// outcomeOf is a finish with outcome at at, with dec's columns when there is
+// a decision.
+func outcomeOf(d *watchman.Decision, outcome string, at time.Time) db.WatchmanOutcome {
+	o := db.WatchmanOutcome{Outcome: outcome, DecidedAt: at}
+	if d != nil {
 		o.Choice, o.Rationale, o.Confidence, o.Importance, o.Category = d.Choice, d.Rationale, d.Confidence, d.Importance, d.Category
 		o.PrecedentIDs = d.PrecedentIDs
 		if d.Usage != nil {
@@ -295,7 +309,7 @@ func (j *job) fail(ctx context.Context, err error) {
 	switch {
 	case j.parked != nil && j.it.Attempts >= MaxAttempts:
 		j.finishAlone(*j.parked)
-	case j.parked == nil && j.it.Attempts >= MaxAttempts && j.ask != nil:
+	case j.parked == nil && j.it.Attempts >= MaxAttempts && (j.ask != nil || j.perm != nil):
 		j.park(ctx, failedReason(text))
 	default:
 		j.requeue(j.now(), text)

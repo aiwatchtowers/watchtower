@@ -645,3 +645,87 @@ func TestPermissionWait_QueueFailureStillWaits(t *testing.T) {
 	assert.Contains(t, errOut, fmt.Sprintf("permission request %d was not queued for Watchman", reqID))
 	assert.Zero(t, wakes.Load())
 }
+
+// closePendingAs closes the hook's request with status, decided by by, once
+// it is pending — the CAS of the Mac, the phone or Watchman's Answerer.
+func closePendingAs(database *db.DB, row int64, status, by string) <-chan error {
+	done := make(chan error, 1)
+	ended := permissionWaitsEnded.Load()
+	go func() {
+		id, err := pendingPermissionID(database, row, ended)
+		if err == nil {
+			var ok bool
+			ok, err = database.ClosePermissionRequest(id, status, by, time.Now())
+			if err == nil && !ok {
+				err = errors.New("the request was no longer pending")
+			}
+		}
+		done <- err
+	}()
+	return done
+}
+
+// PROJ-21 with a third decider: Watchman's deny tells the agent the twin
+// denied it and the owner decides in the morning; its allow is the plain
+// allow.
+func TestProj21_WatchmanDenySaysTwin(t *testing.T) {
+	for _, c := range []struct {
+		status, want string
+	}{
+		{db.PermissionDenied, `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"` +
+			"Watchman (the owner's twin) denied this — the owner decides it in the morning; continue with other work" + `"}}}`},
+		{db.PermissionAllowed, permissionAllowJSON},
+	} {
+		t.Run(c.status, func(t *testing.T) {
+			database, pid, row := briefSessionFixture(t)
+			armHookSession(t, database, row)
+			t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+			stepClock(t)
+			fastPermissionPoll(t)
+			countPermissionWakes(t)
+			done := closePendingAs(database, row, c.status, "watchman")
+
+			out, errOut := runPermissionWait(t, pid, permissionPayload(briefLaunchID))
+
+			require.NoError(t, <-done)
+			assert.Equal(t, c.want, out)
+			assert.Empty(t, errOut)
+			var decoded map[string]any
+			require.NoError(t, json.Unmarshal([]byte(out), &decoded), "valid JSON")
+		})
+	}
+}
+
+// An armed session's prompt (its twin item queued) still takes the Mac's
+// and the phone's answers as before, each with its own text.
+func TestProj21_PhoneAndMacUnchangedWithWatchman(t *testing.T) {
+	for _, c := range []struct {
+		name, status, by, want string
+	}{
+		{"phone allow", db.PermissionAllowed, "iPhone", permissionAllowJSON},
+		{"phone deny", db.PermissionDenied, "iPhone", permissionDenyJSON},
+		{"mac deny", db.PermissionDenied, permissionDecidedByMac,
+			`{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied by the owner at the Mac."}}}`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			database, pid, row := briefSessionFixture(t)
+			armHookSession(t, database, row)
+			t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+			stepClock(t)
+			fastPermissionPoll(t)
+			countPermissionWakes(t)
+			done := closePendingAs(database, row, c.status, c.by)
+
+			out, errOut := runPermissionWait(t, pid, permissionPayload(briefLaunchID))
+
+			require.NoError(t, <-done)
+			assert.Equal(t, c.want, out)
+			assert.Empty(t, errOut)
+			var reqID int64
+			require.NoError(t, database.QueryRow(`SELECT id FROM permission_requests`).Scan(&reqID))
+			it, err := database.WatchmanItemByRef("permission", reqID, "permission")
+			require.NoError(t, err)
+			require.NotNil(t, it, "the twin's item was queued")
+		})
+	}
+}

@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/agentkind"
+	"watchtower/internal/askanswer"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/sessionagent"
@@ -40,11 +41,18 @@ const permissionSummaryRunes = 2000
 
 // The decisions permission-wait prints. Allow is for this one call: never
 // updatedInput, never updatedPermissions (a phone allows a call, not a rule).
-// A deny decided by the Mac's Workchat card (`decided_by = "Mac"`) says so.
+// A deny decided by the Mac's Workchat card (`decided_by = "Mac"`) says so,
+// and so does one decided by Watchman, the owner's twin (`decided_by =
+// "watchman"`); an allow is the same whoever decided it.
 const (
 	permissionAllowOutput   = `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`
 	permissionDenyOutput    = `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied from the owner's phone."}}}`
 	permissionMacDenyOutput = `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied by the owner at the Mac."}}}`
+	// permissionDeniedByWatchman is the agent's text for a twin's deny (spec
+	// 2026-11-16-watchman-design, verbatim).
+	permissionDeniedByWatchman   = "Watchman (the owner's twin) denied this — the owner decides it in the morning; continue with other work"
+	permissionWatchmanDenyOutput = `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"` +
+		permissionDeniedByWatchman + `"}}}`
 )
 
 // permissionDecidedByMac is the `decided_by` the Desktop's Workchat writes.
@@ -230,8 +238,11 @@ func checkPermissionRequest(stderr io.Writer, database *db.DB, id, workbenchID i
 	case db.PermissionAllowed:
 		return permissionAllowOutput, true, nil
 	case db.PermissionDenied:
-		if req.DecidedBy.Valid && req.DecidedBy.String == permissionDecidedByMac {
+		switch {
+		case req.DecidedBy.Valid && req.DecidedBy.String == permissionDecidedByMac:
 			return permissionMacDenyOutput, true, nil
+		case req.DecidedBy.Valid && req.DecidedBy.String == askanswer.ByWatchman:
+			return permissionWatchmanDenyOutput, true, nil
 		}
 		return permissionDenyOutput, true, nil
 	case db.PermissionPending:
