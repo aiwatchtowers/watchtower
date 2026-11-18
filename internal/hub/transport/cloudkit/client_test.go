@@ -62,7 +62,7 @@ func newRig(t *testing.T, opts ...bridgefake.Option) *rig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	r := &rig{t: t, ctx: ctx, dir: dir, hub: kr.HubID().String(), st: st, ident: ident, kr: kr, sealer: secure.NewSealer(kr)}
 	r.fake = bridgefake.Serve(t, dir, opts...)
@@ -127,17 +127,11 @@ func (r *rig) lastSave() *pb.Save {
 	return nil
 }
 
-func (r *rig) nextEvent(what string, ok func(transport.Event) bool) transport.Event {
+func (r *rig) nextEvent(_ string, ok func(transport.Event) bool) transport.Event {
 	r.t.Helper()
-	deadline := time.After(10 * time.Second)
 	for {
-		select {
-		case e := <-r.c.Events():
-			if ok(e) {
-				return e
-			}
-		case <-deadline:
-			r.t.Fatalf("no %s event", what)
+		if e := <-r.c.Events(); ok(e) {
+			return e
 		}
 	}
 }
@@ -654,5 +648,89 @@ func TestLargeSavesSplitIntoFramesUnderTheCap(t *testing.T) {
 	}
 	if saves < 2 {
 		t.Fatalf("%d save frames, want the items split", saves)
+	}
+}
+
+// TestAHeldCallReturnsWhenItsContextEnds: a request the bridge holds (a slow
+// CloudKit call) ends with its ctx: the client gives up on the socket read,
+// which is what bounds the switcher's old side on CloudKit. No clock: the
+// ctx is cancelled once the bridge holds the request.
+func TestAHeldCallReturnsWhenItsContextEnds(t *testing.T) {
+	r := newRig(t)
+	rec := r.data("workbench-1", []byte("{}"))
+	calls := map[string]func(ctx context.Context) error{
+		"changes": func(ctx context.Context) error { _, err := r.c.Changes(ctx, dataZone, 0); return err },
+		"save": func(ctx context.Context) error {
+			_, err := r.c.Save(ctx, []transport.SaveItem{{Record: rec}})
+			return err
+		},
+	}
+	for op, call := range calls {
+		arrived, release := r.fake.Block(op)
+		ctx, cancel := context.WithCancel(r.ctx)
+		errc := make(chan error, 1)
+		go func() { errc <- call(ctx) }()
+		<-arrived
+		cancel()
+		if err := <-errc; !errors.Is(err, context.Canceled) {
+			t.Errorf("%s held by the bridge, its ctx cancelled: %v", op, err)
+		}
+		release()
+	}
+}
+
+// TestRetireZonesDeletesOnlyTheOtherSpelling (#1750): a hub adopted from the
+// Swift hub (lowercase hub_id) asks the bridge to delete the zones and the
+// database subscription builds up to v0.28.0 named with the uppercase form.
+// Zone names are case-sensitive: the lowercase zones the phones use keep
+// every record, and neither the hub's own spelling nor an unrelated id is
+// ever sent. A zone already gone is done.
+func TestRetireZonesDeletesOnlyTheOtherSpelling(t *testing.T) {
+	r := newRig(t)
+	upper, lower := strings.ToUpper(r.hub), strings.ToLower(r.hub)
+	c := cloudkit.New(cloudkit.Config{Dir: r.dir, HubID: lower, RelayID: relayID})
+	t.Cleanup(func() { _ = c.Close() })
+	env := []byte("sealed")
+	zones := []string{
+		cloudkit.DataZoneName(upper), cloudkit.RelayZoneName(upper),
+		cloudkit.DataZoneName(lower), cloudkit.RelayZoneName(lower),
+	}
+	for _, z := range zones {
+		if _, err := r.fake.Store().Write(z, "k1", env, transport.Expect{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The client says Hello with its own (lowercase) spelling first.
+	if _, err := c.Changes(r.ctx, dataZone, 0); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{lower, "", "0a1b2c3d-4e5f-4a6b-8c7d-8e9fa0b1c2d3", upper + "0"} {
+		frames := len(r.fake.Frames())
+		if err := c.RetireZones(r.ctx, bad); !errors.Is(err, transport.ErrUnsupportedZone) {
+			t.Errorf("RetireZones(%q) = %v, want refused", bad, err)
+		}
+		if n := len(r.fake.Frames()); n != frames {
+			t.Errorf("RetireZones(%q) sent %d frames, want none", bad, n-frames)
+		}
+	}
+	if err := c.RetireZones(r.ctx, upper); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{cloudkit.DataZoneName(upper), cloudkit.RelayZoneName(upper), "watchtower-bridge-db-" + upper}
+	if got := r.fake.Retired(); !slices.Equal(got, want) {
+		t.Fatalf("retired %v, want %v", got, want)
+	}
+	for i, z := range zones {
+		b, err := r.fake.Store().Changes(r.ctx, z, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gone := i < 2; gone != (len(b.Changed) == 0) {
+			t.Errorf("zone %s holds %d records after the retire (gone = %v)", z, len(b.Changed), gone)
+		}
+	}
+	// Again: the zones are already gone, which is what was asked for.
+	if err := c.RetireZones(r.ctx, upper); err != nil {
+		t.Fatalf("retiring zones already gone: %v", err)
 	}
 }

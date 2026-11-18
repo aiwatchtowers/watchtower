@@ -136,7 +136,7 @@ func storeIssues(t *testing.T, database *db.DB, accountID int64, project string,
 func deletionsSyncer(t *testing.T, database *db.DB, srv *httptest.Server, accountID int64) *Syncer {
 	t.Helper()
 	c := makeTestClient(t, srv.URL)
-	c.rateLimiter = &RateLimiter{tokens: 1000, maxTokens: 1000, refillRate: 1000, lastRefill: time.Now()}
+	c.rateLimiter = unthrottledLimiter()
 	s := NewSyncer(c, database, nil, nil, accountID)
 	s.SetLogger(log.New(io.Discard, "", 0))
 	return s

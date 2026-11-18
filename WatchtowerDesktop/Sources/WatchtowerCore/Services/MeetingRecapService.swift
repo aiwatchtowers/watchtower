@@ -21,6 +21,6 @@ package struct MeetingRecapService {
             "--json"
         ]
         // Discard stdout — caller refetches from DB.
-        _ = try await runner.run(args: args, stdin: Data(text.utf8))
+        _ = try await runner.runModel(args: args, origin: .owner, timeout: nil, stdin: Data(text.utf8))
     }
 }

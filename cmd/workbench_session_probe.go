@@ -21,14 +21,15 @@ import (
 // report before the probe reads the registry (spec §10).
 const probeStaleAfter = 30 * time.Minute
 
-// Probe outcomes. busy and waiting leave the row alone; idle, shell,
-// unknown and gone end the count.
+// Probe outcomes. busy and waiting leave the row alone; shell ends the
+// subagent count and keeps the background shells (board #1712); idle,
+// unknown and gone end every count.
 const (
 	probeNotStale = "not_stale"               // no counted `waiting`, or its last report is under probeStaleAfter old
 	probeBusy     = sessionagent.ProbeBusy    // the registry reads busy: the agents still work
 	probeWaiting  = sessionagent.ProbeWaiting // the registry reads waiting: a prompt or a held message
 	probeIdle     = sessionagent.ProbeIdle
-	probeShell    = sessionagent.ProbeShell   // only background shells run, which the count does not track
+	probeShell    = sessionagent.ProbeShell   // only background shells run: the subagents are over, the shells are not
 	probeUnknown  = sessionagent.ProbeUnknown // no status, or one this version does not know
 	probeGone     = sessionagent.ProbeGone    // no registry entry, or its process is dead or its pid reused
 	probeFailed   = "failed"                  // a working codex row's last turn failed and this probe stored it (board #959)
@@ -50,11 +51,12 @@ var workbenchSessionProbeCmd = &cobra.Command{
 		"StopFailure hook); a rollout it cannot read for its permissions or a compressed one that\n" +
 		"does not decode marks the row not watched (outcome \"not_watched\"). This is the app's\n" +
 		"bridge for a session the session host does not watch. Otherwise, when the row S reads\n" +
-		"waiting with background subagents and no report for 30 minutes, reads Claude Code's\n" +
+		"waiting with background subagents or shells and no report for 30 minutes, reads Claude Code's\n" +
 		"session registry entry of its conversation (~/.claude/sessions/<pid>.json, matched by\n" +
 		"sessionId), or a codex row's rollout (its subagents still running). busy or\n" +
-		"waiting leave the row alone; idle, shell, a missing or unknown status, no entry or a\n" +
-		"dead process end the count, unless a report or Stop landed since the probe read the row.\n" +
+		"waiting leave the row alone; shell ends the subagent count and keeps the background\n" +
+		"shells; idle, a missing or unknown status, no entry or a dead process end every count,\n" +
+		"unless a report or Stop landed since the probe read the row.\n" +
 		"It never starts a count and never changes the row's state. Prints one JSON object\n" +
 		"{\"ok\": true, \"outcome\", \"ended\", \"agent_background_at\"} or {\"ok\": false, \"error\"}\n" +
 		"and exits 0 either way; an ending outcome also logs one stderr line with the registry's\n" +
@@ -155,10 +157,22 @@ func probeSession(workbenchID, sessionID int64, now time.Time, logOut io.Writer)
 	if err != nil {
 		return sessionProbeResult{}, err
 	}
-	if res.Outcome == probeBusy || res.Outcome == probeWaiting {
+	switch {
+	case res.Outcome == probeBusy || res.Outcome == probeWaiting:
 		return res, nil
+	case res.Outcome == probeShell && row.BackgroundShells.Int64 > 0:
+		// Only background shells run: they are the count's shells, still
+		// running, so only the subagents end (board #1712). A shell that
+		// never exits (a dev server) is bounded by the Desktop's shell cap.
+		if row.Background.Int64 <= 0 {
+			return res, nil
+		}
+		res.Ended, err = database.EndTerminalBackgroundAgents(row.ID, workbenchID, row.ClaudeSessionID.String,
+			res.AgentBackgroundAt)
+	default:
+		res.Ended, err = database.EndTerminalBackground(row.ID, workbenchID, row.ClaudeSessionID.String,
+			res.AgentBackgroundAt)
 	}
-	res.Ended, err = database.EndTerminalBackground(row.ID, workbenchID, row.ClaudeSessionID.String, res.AgentBackgroundAt)
 	if err != nil {
 		return sessionProbeResult{}, err
 	}
@@ -265,7 +279,7 @@ func markCodexNotWatched(database *db.DB, row *db.TerminalSession, issue string,
 // report is at least probeStaleAfter old at now: the only rows a probe asks
 // the registry about.
 func backgroundCountStale(row *db.TerminalSession, now time.Time) bool {
-	return row.AgentState.String == agentStateWaiting && row.Background.Valid && row.Background.Int64 > 0 &&
+	return row.AgentState.String == agentStateWaiting && (row.Background.Int64 > 0 || row.BackgroundShells.Int64 > 0) &&
 		now.Sub(row.BackgroundAt) >= probeStaleAfter
 }
 

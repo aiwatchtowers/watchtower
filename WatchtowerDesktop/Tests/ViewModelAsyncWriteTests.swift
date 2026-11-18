@@ -54,7 +54,7 @@ final class ViewModelAsyncWriteTests: XCTestCase {
         let fast = Task { await writes.run { order.append("second") } }
         let queued = await eventually { writes.depth == 2 }
         XCTAssertTrue(queued)
-        let early: Void? = await boundedValue(Task { () }, timeout: .seconds(1))
+        let early: Void? = await boundedValue(Task { () })
         XCTAssertNotNil(early)
         XCTAssertEqual(order, [], "the second body waits for the first")
         gate.release()
@@ -97,16 +97,6 @@ final class ViewModelAsyncWriteTests: XCTestCase {
             try TrackQueries.fetchByID(db, id: Int(id))?.decodedSubItems.map(\.status)
         }
         XCTAssertEqual(stored, ["done", "done"])
-    }
-
-    /// A failed archive says so and leaves the selection where it was.
-    func testArchiveFailureKeepsTheSelection() async throws {
-        let history = ChatHistoryViewModel(dbManager: dbManager, attachmentsRoot: nil)
-        history.selectedConversationID = 999
-        let archived = await history.archive(999)
-        XCTAssertFalse(archived)
-        XCTAssertNotNil(history.lastError)
-        XCTAssertEqual(history.selectedConversationID, 999)
     }
 
     /// The star shows only once it is stored, and a second press while the

@@ -27,16 +27,15 @@ const (
 	// not land on a later turn the owner never saw.
 	InterruptMaxAge = 120 * time.Second
 
-	permissionTimeoutMessage   = "The Mac did not finish this in time — check the session on the Mac"
-	answeredOnMacMessage       = "Answered on the Mac"
-	tooLateMessage             = "Too late — answer on the Mac"
-	sessionGoneMessage         = "This session no longer exists on the Mac"
-	promptMayBeOpenMessage     = "A permission prompt may be open — answer it on the Mac or with Deny"
-	notRunningMessage          = "This session is not running on the Mac"
+	permissionTimeoutMessage   = "Your tower did not finish this in time — check the session there"
+	answeredOnMacMessage       = "Answered on your tower"
+	tooLateMessage             = "Too late — answer on your tower"
+	sessionGoneMessage         = "This session no longer exists on your tower"
+	promptMayBeOpenMessage     = "A permission prompt may be open — answer it on your tower or with Deny"
+	notRunningMessage          = "This session is not running on your tower"
 	notWorkingMessage          = "The agent is not working right now"
-	requestGoneMessage         = "This permission request no longer exists on the Mac"
+	requestGoneMessage         = "This permission request no longer exists on your tower"
 	permissionsNotAllowedMsg   = "This phone is not allowed to answer permission prompts"
-	typingNotAllowedMessage    = "This phone is not allowed to type into sessions"
 	unnamedDevice              = "phone"
 	permissionAnswerParamsMsg  = "permission_answer needs a session id, request_id and behavior"
 	permissionBehaviorParamMsg = "behavior must be allow or deny"
@@ -84,7 +83,7 @@ func (h *Handlers) applyPermissionAnswer(ctx context.Context, r actions.Request)
 		return failed(reasonWriteFailed, err.Error())
 	}
 	if !linked || !device.PermissionsAllowed {
-		return failed(reasonDeviceNotAllowed, permissionsNotAllowedMsg)
+		return failed(reasonDeviceNotAllowed, h.withServerAllowStep(permissionsNotAllowedMsg, r.Device, "permissions"))
 	}
 	agent, board, err := h.boardSession(ctx, sessionID)
 	if err != nil {
@@ -205,7 +204,7 @@ func (h *Handlers) applySessionInterrupt(ctx context.Context, r actions.Request)
 		return failed(reasonWriteFailed, err.Error())
 	}
 	if !linked || !device.TypingAllowed {
-		return failed(reasonDeviceNotAllowed, typingNotAllowedMessage)
+		return failed(reasonDeviceNotAllowed, h.withServerAllowStep(typingNotAllowedLead, r.Device, "typing"))
 	}
 	agent, board, err := h.boardSession(ctx, sessionID)
 	if err != nil {

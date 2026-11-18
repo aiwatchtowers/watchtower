@@ -9,7 +9,6 @@ import (
 	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/secure"
 	hubslices "watchtower/internal/hub/slices"
-	"watchtower/internal/hub/switcher"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/wire"
 )
@@ -193,7 +192,7 @@ func TestTheOldTransportMarkerIsNeverSwept(t *testing.T) {
 // phone's unechoed actions resend on CloudKit and apply once, and when the
 // relay comes back what was stuck there applies nothing twice.
 func TestSwitchToCloudKitDuringRelayOutage(t *testing.T) {
-	eachFlavour(t, func(t *testing.T, w *world) {
+	eachFlavourTimed(t, func(t *testing.T, w *world) {
 		a := w.addPhone(true)
 		w.moveTo(a, wire.TransportRelay)
 		one := w.act(a)
@@ -212,8 +211,11 @@ func TestSwitchToCloudKitDuringRelayOutage(t *testing.T) {
 		w.ask(a, wire.TransportCloudKit)
 		start := time.Now()
 		w.settle(a)
-		if time.Since(start) > switcher.OldSideTimeout {
-			t.Fatalf("the switch waited on the unreachable relay (%s)", time.Since(start))
+		// The bubble's clock: no wait at all. The bridgefake flavour runs on
+		// the real clock, where an elapsed bound would only measure the
+		// machine's load; the memfake flavour holds the exact zero.
+		if d := time.Since(start); w.virtual && d != 0 {
+			t.Fatalf("the switch waited on the unreachable relay (%s)", d)
 		}
 		w.wantActive(transport.KindCloudKit)
 		c, ok := a.LastSwitch()

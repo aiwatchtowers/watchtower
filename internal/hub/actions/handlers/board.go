@@ -22,7 +22,7 @@ const (
 )
 
 // boardTimeoutMessage is BoardHandlers.timeoutMessage, verbatim.
-const boardTimeoutMessage = "The Mac did not finish this board change in time — check the board on the Mac"
+const boardTimeoutMessage = "Your tower did not finish this board change in time — check the board there"
 
 // The values the phone may set (WorkbenchBoardCard.editableStatuses and
 // editablePriorities).
@@ -121,7 +121,7 @@ func (h *Handlers) editField(r actions.Request, field string, allowed []string, 
 		return actions.Outcome{}, err
 	}
 	if conflict {
-		o := failed(reasonConflict, "Changed on the Mac to "+current)
+		o := failed(reasonConflict, "Changed on your tower to "+current)
 		o.Result = map[string]any{"current": current}
 		return o, nil
 	}
@@ -174,7 +174,7 @@ func (h *Handlers) reply(r actions.Request, rootID int64, hasRoot bool, workbenc
 		var parent sql.NullInt64
 		err := tx.QueryRow(`SELECT project_id, parent_id FROM project_comments WHERE id = ?`, rootID).Scan(&project, &parent)
 		if errors.Is(err, sql.ErrNoRows) {
-			return &refusal{reasonNotFound, "This comment no longer exists on the Mac"}
+			return &refusal{reasonNotFound, "This comment no longer exists on your tower"}
 		}
 		if err != nil {
 			return err
@@ -267,7 +267,7 @@ func requireWorkbench(tx *sql.Tx, workbenchID int64) error {
 	var one int
 	err := tx.QueryRow(`SELECT 1 FROM projects WHERE id = ?`, workbenchID).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
-		return &refusal{reasonNotFound, "This workbench no longer exists on the Mac"}
+		return &refusal{reasonNotFound, "This workbench no longer exists on your tower"}
 	}
 	return err
 }
@@ -283,7 +283,7 @@ func boardTarget(tx *sql.Tx, targetID, workbenchID int64) (boardRow, error) {
 	var project sql.NullInt64
 	err := tx.QueryRow(`SELECT project_id, status, priority FROM targets WHERE id = ?`, targetID).Scan(&project, &t.status, &t.priority)
 	if errors.Is(err, sql.ErrNoRows) {
-		return boardRow{}, &refusal{reasonNotFound, "This target no longer exists on the Mac"}
+		return boardRow{}, &refusal{reasonNotFound, "This target no longer exists on your tower"}
 	}
 	if err != nil {
 		return boardRow{}, err

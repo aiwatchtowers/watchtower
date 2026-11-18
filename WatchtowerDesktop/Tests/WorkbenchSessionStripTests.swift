@@ -110,17 +110,6 @@ final class WorkbenchSessionStripTests: XCTestCase {
         try sut.inspect().find(ViewType.Toggle.self) { try Self.title($0) == title }
     }
 
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("condition not met in \(timeout)s")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-    }
-
     // MARK: - Where it shows
 
     /// Every pane of a session — terminal, Workchat, report, Branch review — has
@@ -200,7 +189,7 @@ final class WorkbenchSessionStripTests: XCTestCase {
         vm.gitStatus[p] = Self.status(branch: "feature/x", dirty: false)
         vm.setLayout(Self.split(terminal, .board), projectID: p)
         try toggle("Review", strip(vm, s.project, terminal)).tap()
-        await waitUntil { vm.layout(projectID: p).visiblePanes == [terminal, .changes(s.first.id)] }
+        await untilObserved { vm.layout(projectID: p).visiblePanes == [terminal, .changes(s.first.id)] }
         XCTAssertEqual(try toggle("Review", strip(vm, s.project, terminal)).help().string(), "Review this session's branch")
         try toggle("Review", strip(vm, s.project, terminal)).tap()
         XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [terminal])
@@ -246,7 +235,7 @@ final class WorkbenchSessionStripTests: XCTestCase {
         let terminal = WorkspacePane.session(s.first.id)
         vm.setLayout(Self.split(terminal, .board), projectID: p)
         try toggle("Report", strip(vm, s.project, terminal)).tap()
-        await waitUntil { vm.layout(projectID: p).visiblePanes == [terminal, .sessionReport(s.first.id)] }
+        await untilObserved { vm.layout(projectID: p).visiblePanes == [terminal, .sessionReport(s.first.id)] }
         XCTAssertTrue(try toggle("Report", strip(vm, s.project, terminal)).isOn())
         try toggle("Report", strip(vm, s.project, terminal)).tap()
         XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [terminal])
@@ -300,13 +289,13 @@ final class WorkbenchSessionStripTests: XCTestCase {
         let one = s.first.id
         vm.setLayout(Self.split(.sessionReport(one), .board), projectID: p)
         try toggle("Terminal", strip(vm, s.project, .sessionReport(one))).tap()
-        await waitUntil { vm.layout(projectID: p).visiblePanes == [.session(one), .board] }
+        await untilObserved { vm.layout(projectID: p).visiblePanes == [.session(one), .board] }
 
         var remembered = Self.split(.changes(one), .board)
         remembered.workchatSessions = [one]
         vm.setLayout(remembered, projectID: p)
         try toggle("Workchat", strip(vm, s.project, .changes(one))).tap()
-        await waitUntil { vm.layout(projectID: p).visiblePanes == [.sessionChat(one), .board] }
+        await untilObserved { vm.layout(projectID: p).visiblePanes == [.sessionChat(one), .board] }
         XCTAssertEqual(vm.layout(projectID: p).pane(forSession: one), .sessionChat(one), "the mode is recorded")
     }
 
@@ -348,7 +337,7 @@ final class WorkbenchSessionStripTests: XCTestCase {
         let sessions = try strip(vm, s.project, .session(s.first.id)).inspect().find(WorkbenchSessionsMenu.self)
         XCTAssertNoThrow(try sessions.find(text: "one"), "the menu's label names the pane's session")
         try sessions.find(button: "two").tap()
-        await waitUntil { vm.layout(projectID: p).visiblePanes == [.session(s.second.id), .board] }
+        await untilObserved { vm.layout(projectID: p).visiblePanes == [.session(s.second.id), .board] }
     }
 
     /// A split of a terminal and its report stays paired when the session
@@ -360,7 +349,7 @@ final class WorkbenchSessionStripTests: XCTestCase {
 
         let sessions = try strip(vm, s.project, .session(s.first.id)).inspect().find(WorkbenchSessionsMenu.self)
         try sessions.find(button: "two").tap()
-        await waitUntil { vm.layout(projectID: p).visiblePanes == [.session(s.second.id), .sessionReport(s.second.id)] }
+        await untilObserved { vm.layout(projectID: p).visiblePanes == [.session(s.second.id), .sessionReport(s.second.id)] }
 
         await vm.showSession(id: s.first.id)
         XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(s.first.id), .sessionReport(s.first.id)])
@@ -375,13 +364,13 @@ final class WorkbenchSessionStripTests: XCTestCase {
         vm.setLayout({ var l = WorkspaceLayout.default; l.show(.session(one)); return l }(), projectID: p)
 
         try toggle("Workchat", strip(vm, s.project, .session(one))).tap()
-        await waitUntil { vm.layout(projectID: p).visiblePanes == [.sessionChat(one)] }
+        await untilObserved { vm.layout(projectID: p).visiblePanes == [.sessionChat(one)] }
         try toggle("Terminal", strip(vm, s.project, .sessionChat(one))).tap()
-        await waitUntil { vm.layout(projectID: p).visiblePanes == [.session(one)] }
+        await untilObserved { vm.layout(projectID: p).visiblePanes == [.session(one)] }
 
         vm.setLayout(Self.split(.session(one), .board), projectID: p)
         try toggle("Workchat", strip(vm, s.project, .session(one))).tap()
-        await waitUntil { vm.layout(projectID: p).visiblePanes == [.sessionChat(one), .board] }
+        await untilObserved { vm.layout(projectID: p).visiblePanes == [.sessionChat(one), .board] }
         XCTAssertEqual(vm.layout(projectID: p).pane(forSession: one), .sessionChat(one), "the mode is recorded")
     }
 

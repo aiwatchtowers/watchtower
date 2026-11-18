@@ -10,6 +10,7 @@ import (
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/transport/relay"
 	"watchtower/internal/hub/wire"
 )
 
@@ -45,10 +46,10 @@ const (
 
 // The Swift hub's messages, verbatim.
 const (
-	notLinkedMessage  = "This phone is not linked to this Mac."
-	wrongHubMessage   = "This was sent to another Mac."
-	clockAheadMessage = "Your iPhone's and Mac's clocks differ by more than 5 minutes — check Date & Time on both."
-	restartedMessage  = "The Mac restarted while applying this"
+	notLinkedMessage  = "This phone is not linked to this tower."
+	wrongHubMessage   = "This was sent to another tower."
+	clockAheadMessage = "Your iPhone's and your tower's clocks differ by more than 5 minutes — check Date & Time on both."
+	restartedMessage  = "Your tower restarted while applying this"
 	// notDeliveredUploadMessage is the failed echo of an upload a lapsed
 	// relay phone sent: the phone keeps the audio and may send it again.
 	notDeliveredUploadMessage = "Your Relay subscription ended before your Mac got this recording. It stays on your iPhone; send it again."
@@ -234,6 +235,7 @@ func errClass(err error) string {
 		err   error
 		class string
 	}{
+		{relay.ErrRelayInternal, "relay_internal"},
 		{transport.ErrUnavailable, "unavailable"}, {transport.ErrRateLimited, "rate_limited"},
 		{transport.ErrMailboxQuota, "mailbox_quota"}, {transport.ErrHubQuota, "hub_quota"},
 		{transport.ErrRecordTooLarge, "record_too_large"}, {transport.ErrForbidden, "forbidden"},
@@ -252,6 +254,9 @@ func errClass(err error) string {
 	}
 	if droppable(err) {
 		return "malformed"
+	}
+	if c := relay.CodeClass(err); c != "" {
+		return c
 	}
 	return "other"
 }

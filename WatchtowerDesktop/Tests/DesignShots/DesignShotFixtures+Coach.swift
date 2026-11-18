@@ -27,7 +27,7 @@ enum CoachShotFixtures {
                 return AnyView(AgentAnalyticsOverviewView(
                     state: .overview(overview, staleError: nil), period: .constant(.week),
                     actions: AgentAnalyticsActions(turnOn: {}, openSession: { _ in }, openTarget: { _ in },
-                                                   openFile: { _ in }, openAsks: {}, discuss: { _ in },
+                                                   openFile: { _ in }, openAsks: {}, tune: {},
                                                    asksWaiting: false),
                     coach: coach, workbench: 3
                 ).detailBackground())

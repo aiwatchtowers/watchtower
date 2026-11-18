@@ -310,7 +310,7 @@ func launchHub(t *testing.T, opts interopOpts, shared bool) *interopHub {
 	} else {
 		t.Cleanup(h.stop)
 	}
-	eventually(t, stepWait, "the control socket", func() bool {
+	eventuallyOnStand(t, stepWait, "the control socket", func() bool {
 		_, err := os.Stat(filepath.Join(dir, SocketName))
 		return err == nil
 	})
@@ -326,7 +326,7 @@ func launchHub(t *testing.T, opts interopOpts, shared bool) *interopHub {
 
 func (h *interopHub) waitRunning() {
 	h.t.Helper()
-	eventually(h.t, stepWait, "the hub running on the stand", func() bool {
+	eventuallyOnStand(h.t, stepWait, "the hub running on the stand", func() bool {
 		return h.rec.last().State == StateRunning
 	})
 }
@@ -532,7 +532,7 @@ func linkPhone(t *testing.T, h *interopHub) *linked {
 	if err := store.PromotePairing(ctx, slot); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, stepWait, "the hub admitted with one phone", func() bool {
+	eventuallyOnStand(t, stepWait, "the hub admitted with one phone", func() bool {
 		s, err := ReadStatus(h.dir)
 		return err == nil && s.State == StateRunning && s.Reason == "" && s.Phones == 1
 	})
@@ -652,7 +652,7 @@ func TestInterop_VouchedHubLinksAndPublishes(t *testing.T) {
 	if len(l.code) != 4 || strings.Trim(l.code, "0123456789") != "" {
 		t.Fatalf("code %q is not four digits", l.code)
 	}
-	eventually(t, stepWait, "the phone stamped admitted", func() bool {
+	eventuallyOnStand(t, stepWait, "the phone stamped admitted", func() bool {
 		st, err := state.OpenReadOnly(h.dir)
 		if err != nil {
 			return false
@@ -746,7 +746,7 @@ func TestInterop_ReconnectResubscribesAndPulls(t *testing.T) {
 	tr := h.transport()
 	before := tr.resyncsOf(mailbox)
 	restartStand(t, h.origin)
-	eventually(t, restartWait, "a resync of the mailbox after the restart", func() bool {
+	eventuallyOnStand(t, restartWait, "a resync of the mailbox after the restart", func() bool {
 		return tr.resyncsOf(mailbox) > before
 	})
 	if h.transport() != tr {
@@ -778,8 +778,8 @@ func restartStand(t *testing.T, origin string) {
 		_ = res.Body.Close()
 		return res.StatusCode == http.StatusOK
 	}
-	eventually(t, stepWait, "the stand going down", func() bool { return !healthy() })
-	eventually(t, restartWait, "the stand answering again", healthy)
+	eventuallyOnStand(t, stepWait, "the stand going down", func() bool { return !healthy() })
+	eventuallyOnStand(t, restartWait, "the stand answering again", healthy)
 }
 
 // TestInterop_NoPlaintextOnTheWire is the E2E red line on the real wire:
@@ -796,7 +796,7 @@ func TestInterop_NoPlaintextOnTheWire(t *testing.T) {
 		t.Fatalf("name: %+v, %v", a, err)
 	}
 	// The hub restarts for its new name: a new transport, then running.
-	eventually(t, stepWait, "the hub restarted for its new name", func() bool {
+	eventuallyOnStand(t, stepWait, "the hub restarted for its new name", func() bool {
 		return h.transport() != before && h.rec.last().State == StateRunning
 	})
 	l := linkPhone(t, h)
@@ -944,7 +944,7 @@ func TestInterop_SendAlertOnTheLocalStandIsPushOff(t *testing.T) {
 	waitApplied(t, l.phone, stepWait, seq)
 	device := l.phone.ID().String()
 	line := "push of ask-1 to " + device + ": push_off after 1 attempts"
-	eventually(t, stepWait, "the push settled push_off", func() bool { return strings.Contains(probe.logs.String(), line) })
+	eventuallyOnStand(t, stepWait, "the push settled push_off", func() bool { return strings.Contains(probe.logs.String(), line) })
 	st, err := state.OpenReadOnly(h.dir)
 	if err != nil {
 		t.Fatal(err)

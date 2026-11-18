@@ -212,11 +212,7 @@ func (f *fakeClock) After(d time.Duration) <-chan time.Time {
 // nextWait blocks until some goroutine waits on the clock and returns how long it asked for.
 func (f *fakeClock) nextWait(t *testing.T) time.Duration {
 	t.Helper()
-	select {
-	case <-f.waiting:
-	case <-time.After(5 * time.Second):
-		t.Fatal("nobody waits on the clock")
-	}
+	<-f.waiting
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.waiters[len(f.waiters)-1].at.Sub(f.now)
@@ -225,8 +221,7 @@ func (f *fakeClock) nextWait(t *testing.T) time.Duration {
 // waitBetween blocks until a pending waiter asks for a duration in [lo, hi] and returns it.
 func (f *fakeClock) waitBetween(t *testing.T, lo, hi time.Duration) time.Duration {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	for {
 		f.mu.Lock()
 		for _, w := range f.waiters {
 			if d := w.at.Sub(f.now); d >= lo && d <= hi {
@@ -235,10 +230,8 @@ func (f *fakeClock) waitBetween(t *testing.T, lo, hi time.Duration) time.Duratio
 			}
 		}
 		f.mu.Unlock()
-		time.Sleep(5 * time.Millisecond)
+		<-f.waiting // the next After call
 	}
-	t.Fatalf("no waiter between %v and %v", lo, hi)
-	return 0
 }
 
 func (f *fakeClock) Advance(d time.Duration) {
@@ -366,17 +359,20 @@ func TestDialSendsAuthorizationHeader(t *testing.T) {
 // TestClientPings30s: an open connection is pinged every 30 s of the client's clock, not sooner.
 func TestClientPings30s(t *testing.T) {
 	s := newFakeServer(t)
-	pings := make(chan struct{}, 8)
+	clk := newFakeClock()
+	start := clk.Now()
+	// Each ping carries the client clock's time it arrived at: one sent
+	// before its 30 s would carry an earlier time.
+	pings := make(chan time.Time, 8)
 	s.ws = func(w http.ResponseWriter, r *http.Request) {
 		ws := acceptHello(t, w, r, &websocket.AcceptOptions{OnPingReceived: func(context.Context, []byte) bool {
-			pings <- struct{}{}
+			pings <- clk.Now()
 			return true
 		}})
 		if ws != nil {
 			_, _, _ = ws.Read(r.Context()) // reading is what processes pings
 		}
 	}
-	clk := newFakeClock()
 	c := newClient(t, s, client.WithClock(clk))
 	conn, err := c.Connect(t.Context())
 	if err != nil {
@@ -387,16 +383,9 @@ func TestClientPings30s(t *testing.T) {
 		if d := clk.nextWait(t); d != 30*time.Second {
 			t.Fatalf("round %d: ping scheduled in %v, want 30s", i, d)
 		}
-		select {
-		case <-pings:
-			t.Fatalf("round %d: ping before 30 s", i)
-		case <-time.After(100 * time.Millisecond):
-		}
 		clk.Advance(30 * time.Second)
-		select {
-		case <-pings:
-		case <-time.After(5 * time.Second):
-			t.Fatalf("round %d: no ping after 30 s", i)
+		if at, want := <-pings, start.Add(time.Duration(i+1)*30*time.Second); !at.Equal(want) {
+			t.Fatalf("round %d: ping at +%v, want +%v", i, at.Sub(start), want.Sub(start))
 		}
 	}
 }
@@ -461,8 +450,6 @@ loop:
 			clk.mu.Unlock()
 			delays = append(delays, d)
 			clk.Advance(d)
-		case <-time.After(5 * time.Second):
-			t.Fatal("timeout")
 		}
 	}
 	want := []time.Duration{500 * time.Millisecond, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 8 * time.Second, 6500 * time.Millisecond}
@@ -549,7 +536,11 @@ func TestHelloMismatchRelogsIn(t *testing.T) {
 // before dialing again; not sooner.
 func TestReconnectDelayAfterGoingAway(t *testing.T) {
 	s := newFakeServer(t)
+	clk := newFakeClock()
+	// redial carries the client clock's time of the second upgrade: one
+	// dialed before the delay ran out would carry an earlier time.
 	var upgrades atomic.Int32
+	redial := make(chan time.Time, 4)
 	s.ws = func(w http.ResponseWriter, r *http.Request) {
 		ws := acceptHello(t, w, r, nil)
 		if ws == nil {
@@ -561,27 +552,20 @@ func TestReconnectDelayAfterGoingAway(t *testing.T) {
 			_ = ws.Close(websocket.StatusGoingAway, "displaced")
 			return
 		}
+		redial <- clk.Now()
 		_, _, _ = ws.Read(r.Context())
 	}
-	clk := newFakeClock()
 	c := newClient(t, s, client.WithClock(clk))
 	conn, err := c.Connect(t.Context())
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	defer func() { _ = conn.Close() }()
+	start := clk.Now()
 	d := clk.waitBetween(t, time.Second, 3*time.Second)
-	time.Sleep(100 * time.Millisecond)
-	if upgrades.Load() != 1 {
-		t.Fatal("reconnected before the delay")
-	}
 	clk.Advance(d)
-	deadline := time.Now().Add(5 * time.Second)
-	for upgrades.Load() < 2 {
-		if time.Now().After(deadline) {
-			t.Fatal("no reconnect after the delay")
-		}
-		time.Sleep(5 * time.Millisecond)
+	if at := <-redial; at.Sub(start) != d {
+		t.Fatalf("reconnected at +%v of the client's clock, want after the %v delay", at.Sub(start), d)
 	}
 }
 
@@ -593,6 +577,7 @@ func TestCloseGoingAwayWithoutFrame(t *testing.T) {
 		t.Run(fmt.Sprintf("frame=%v", frame), func(t *testing.T) {
 			s := newFakeServer(t)
 			var upgrades atomic.Int32
+			redial := make(chan struct{}, 4)
 			s.ws = func(w http.ResponseWriter, r *http.Request) {
 				ws := acceptHello(t, w, r, nil)
 				if ws == nil {
@@ -606,6 +591,7 @@ func TestCloseGoingAwayWithoutFrame(t *testing.T) {
 					_ = ws.Close(websocket.StatusGoingAway, "rollout")
 					return
 				}
+				redial <- struct{}{}
 				_, _, _ = ws.Read(r.Context())
 			}
 			var calls atomic.Int32
@@ -621,16 +607,52 @@ func TestCloseGoingAwayWithoutFrame(t *testing.T) {
 				t.Fatalf("onGoingAway ran %d times, want 1", n)
 			}
 			clk.Advance(d)
-			deadline := time.Now().Add(5 * time.Second)
-			for upgrades.Load() < 2 {
-				if time.Now().After(deadline) {
-					t.Fatal("no reconnect after the delay")
-				}
-				time.Sleep(5 * time.Millisecond)
-			}
+			<-redial
 			if n := calls.Load(); n != 1 {
 				t.Fatalf("onGoingAway ran %d times, want 1", n)
 			}
 		})
+	}
+}
+
+// TestNon200WithoutAnErrorIsNoAnswer (#1872): an HTTP error status whose body
+// decodes to a Response without an error (an empty 502/503 from the edge
+// decodes as an empty Response) is no answer, never a success: Do fails with
+// an error that is not a protocol error, which the transport maps to
+// unavailable. A 200 with the same body is no failure of the client's.
+func TestNon200WithoutAnErrorIsNoAnswer(t *testing.T) {
+	for _, status := range []int{http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusInternalServerError} {
+		s := newFakeServer(t)
+		s.op = func(w http.ResponseWriter, _ *relayv1.Request) bool { w.WriteHeader(status); return true }
+		c := newClient(t, s)
+		resp, err := c.Do(t.Context(), &relayv1.Request{Op: &relayv1.Request_RemoveSlot{RemoveSlot: &relayv1.RemoveMacSlot{}}})
+		var pe *client.Error
+		if err == nil || resp != nil || errors.As(err, &pe) {
+			t.Errorf("HTTP %d with an empty body: resp %v, err %v", status, resp, err)
+		}
+	}
+	s := newFakeServer(t)
+	s.op = func(w http.ResponseWriter, _ *relayv1.Request) bool { w.WriteHeader(http.StatusOK); return true }
+	if _, err := newClient(t, s).Do(t.Context(), &relayv1.Request{Op: &relayv1.Request_RemoveSlot{RemoveSlot: &relayv1.RemoveMacSlot{}}}); err != nil {
+		t.Errorf("HTTP 200 with an empty body: %v", err)
+	}
+}
+
+// TestErrorStatusWithAnErrorKeepsIt: the relay's 500 carrying UNSPECIFIED
+// "internal error" (its catch around the device object) comes back as the
+// protocol error, not as no answer, so the transport can name it (#1872).
+func TestErrorStatusWithAnErrorKeepsIt(t *testing.T) {
+	s := newFakeServer(t)
+	s.op = func(w http.ResponseWriter, _ *relayv1.Request) bool {
+		b, _ := proto.Marshal(&relayv1.Response{Result: &relayv1.Response_Error{Error: &relayv1.Error{
+			Code: relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED, Message: "internal error"}}})
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write(b)
+		return true
+	}
+	_, err := newClient(t, s).Do(t.Context(), &relayv1.Request{Op: &relayv1.Request_RemoveSlot{RemoveSlot: &relayv1.RemoveMacSlot{}}})
+	var pe *client.Error
+	if !errors.As(err, &pe) || pe.E.GetMessage() != "internal error" {
+		t.Fatalf("Do: %v", err)
 	}
 }

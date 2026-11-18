@@ -43,6 +43,22 @@ func TestHeartbeatCarriesTheRecordingsCapability(t *testing.T) {
 	}
 }
 
+// TestHeartbeatCarriesTheHubKind: the hub kind goes out as hub_kind (#1783);
+// no kind fact leaves the key out, as an older hub does.
+func TestHeartbeatCarriesTheHubKind(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	for _, kind := range []string{wire.HubKindMac, wire.HubKindServer} {
+		f := heartbeatFacts(func() time.Time { return now }, nil)
+		f.HubKind = kind
+		if p := onlyItem(t, HeartbeatSource(f)).Payload; !bytes.Contains(p, []byte(`"hub_kind":"`+kind+`"`)) {
+			t.Fatalf("kind %s: payload %s", kind, p)
+		}
+	}
+	if p := onlyItem(t, HeartbeatSource(heartbeatFacts(func() time.Time { return now }, nil))).Payload; bytes.Contains(p, []byte(`hub_kind`)) {
+		t.Fatalf("payload without a kind fact: %s", p)
+	}
+}
+
 func TestSwitchChangeIsPublishedWithinMaxDebounceWait(t *testing.T) {
 	r := newRig(t, transport.KindRelay)
 	var on atomic.Bool
@@ -70,5 +86,24 @@ func TestSwitchChangeIsPublishedWithinMaxDebounceWait(t *testing.T) {
 	ru.step(MaxDebounceWait)
 	if got := recordings(); got != "off" {
 		t.Fatalf("after %v: recordings %q, want off", ru.ft.Now().Sub(start), got)
+	}
+}
+
+// TestHeartbeatCarriesTheChatCapability: "on" only while the chat fact says
+// so, else "off" with its reason; a change restamps at once (iPhone chat
+// §4.8).
+func TestHeartbeatCarriesTheChatCapability(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	on, reason := true, ""
+	f := heartbeatFacts(func() time.Time { return now }, nil)
+	f.Chat = func() (bool, string) { return on, reason }
+	src := HeartbeatSource(f)
+	if c := capabilitiesOf(t, onlyItem(t, src).Payload); c == nil || c.Chat != "on" || c.ChatReason != "" {
+		t.Fatalf("capabilities = %+v", c)
+	}
+	on, reason = false, wire.ChatOffRunnerDown
+	now = now.Add(time.Second)
+	if c := capabilitiesOf(t, onlyItem(t, src).Payload); c == nil || c.Chat != "off" || c.ChatReason != wire.ChatOffRunnerDown {
+		t.Fatalf("capabilities = %+v", c)
 	}
 }

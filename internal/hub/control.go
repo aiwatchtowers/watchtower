@@ -23,6 +23,7 @@ import (
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/platform"
 	"watchtower/internal/policy"
 )
 
@@ -136,6 +137,10 @@ type ControlRequest struct {
 	DisplayOver  []ShownOverWire `json:"display_over,omitempty"`
 	Phase        string          `json:"phase,omitempty"`
 	Percent      *int            `json:"percent,omitempty"`
+	// ChatLease is a desktop_heartbeat's old chat_lease flag: accepted and
+	// ignored for one release (unified chat §6.4: no desktop_too_old any
+	// more), then gone with the app's field.
+	ChatLease int `json:"chat_lease,omitempty"`
 }
 
 // ControlAnswer is one line from the hub: the answer to a request (Op set,
@@ -193,7 +198,7 @@ type ControlAnswer struct {
 // without it: CLI writes then fail.
 func (s *supervisor) serveControl(ctx context.Context) (stop func()) {
 	path := filepath.Join(s.o.Dir, SocketName)
-	l, err := listenControl(path)
+	l, err := s.o.listen(path)
 	if err != nil {
 		log.Printf("hub: control socket not served (%s)", errClass(err))
 		return func() {}
@@ -210,21 +215,11 @@ func (s *supervisor) serveControl(ctx context.Context) (stop func()) {
 			if err != nil {
 				return
 			}
-			uc, ok := c.(*net.UnixConn)
-			if !ok {
-				_ = c.Close()
-				continue
-			}
-			uid, err := s.o.peerUID(uc)
+			uid, err := s.o.peerUID(c)
 			if err != nil || uid != os.Getuid() {
-				log.Printf("hub: control socket: a client of another user refused")
+				log.Printf("hub: control socket: a client refused (another user, or its credentials unreadable)")
 				_ = c.Close()
 				continue
-			}
-			if s.o.sendBuffer > 0 {
-				if err := uc.SetWriteBuffer(s.o.sendBuffer); err != nil {
-					log.Printf("hub: control socket: send buffer not set (%s)", errClass(err))
-				}
 			}
 			connsMu.Lock()
 			conns[c] = true
@@ -250,6 +245,16 @@ func (s *supervisor) serveControl(ctx context.Context) (stop func()) {
 		wg.Wait()
 		_ = os.Remove(path)
 	}
+}
+
+// unixPeerUID is the peer's uid on a unix connection; any other
+// connection is refused.
+func unixPeerUID(c net.Conn) (int, error) {
+	uc, ok := c.(*net.UnixConn)
+	if !ok {
+		return 0, errors.New("hub: control socket: not a unix connection")
+	}
+	return platform.PeerUID(uc)
 }
 
 // listenControl binds path 0600, replacing a stale socket (Run holds the
@@ -736,6 +741,11 @@ func (h *hubRuntime) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		}
 		if err := h.center.Allow(r.Device, link.Grant(r.Grant), r.On); err != nil {
 			return ControlAnswer{Error: LinkErrClass(err)}
+		}
+		if link.Grant(r.Grant) == link.GrantChat {
+			// The chat slices publish only while a phone holds the grant; a
+			// sidecar write changes no watchtower.db row.
+			h.publishSoon(chatKinds...)
 		}
 		on := r.On
 		return ControlAnswer{OK: true, DeviceID: strings.ToUpper(r.Device), Grant: r.Grant, Allowed: &on}

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -71,43 +72,47 @@ func openConcurrently(dbPath string, n int) []error {
 
 // TestOpenWaitsForAnotherProcessesMigrations: with a migration pending and
 // another process holding the migration lock, Open does not run goose; it
-// proceeds once the lock is released.
+// proceeds once the lock is released. Open waits in a synctest bubble: its
+// lock poll runs on the bubble's clock, so "still waiting" is checked once
+// everything blocks, a minute later, with no real time passing.
 func TestOpenWaitsForAnotherProcessesMigrations(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "watchtower.db")
 	openOnePending(t, dbPath)
 	release := holdMigrateLock(t, dbPath)
 
-	type result struct {
-		d   *DB
-		err error
-	}
-	done := make(chan result, 1)
-	go func() {
-		d, err := Open(dbPath)
-		done <- result{d, err}
-	}()
-
-	select {
-	case r := <-done:
-		if r.d != nil {
-			_ = r.d.Close()
+	synctest.Test(t, func(t *testing.T) {
+		type result struct {
+			d   *DB
+			err error
 		}
-		t.Fatalf("Open returned (err=%v) while another process held the migration lock", r.err)
-	case <-time.After(300 * time.Millisecond):
-	}
-	release()
+		done := make(chan result, 1)
+		go func() {
+			d, err := Open(dbPath)
+			done <- result{d, err}
+		}()
 
-	select {
-	case r := <-done:
+		time.Sleep(migrateLockWait / 2)
+		synctest.Wait()
+		select {
+		case r := <-done:
+			if r.d != nil {
+				_ = r.d.Close()
+			}
+			t.Fatalf("Open returned (err=%v) while another process held the migration lock", r.err)
+		default:
+		}
+		release()
+
+		r := <-done
 		require.NoError(t, r.err)
 		require.NoError(t, r.d.Close())
-	case <-time.After(30 * time.Second):
-		t.Fatal("Open did not proceed after the migration lock was released")
-	}
+	})
 }
 
 // TestOpenCurrentSchemaSkipsMigrationLock: a file with nothing pending opens
-// at once even while another process holds the migration lock.
+// at once even while another process holds the migration lock — on the
+// bubble's clock no time passes, where a wait for the lock would run out
+// migrateLockWait and fail.
 func TestOpenCurrentSchemaSkipsMigrationLock(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "watchtower.db")
 	d, err := Open(dbPath)
@@ -115,33 +120,34 @@ func TestOpenCurrentSchemaSkipsMigrationLock(t *testing.T) {
 	require.NoError(t, d.Close())
 	holdMigrateLock(t, dbPath)
 
-	old := migrateLockWait
-	migrateLockWait = 50 * time.Millisecond
-	t.Cleanup(func() { migrateLockWait = old })
-
-	d, err = Open(dbPath)
-	require.NoError(t, err)
-	require.NoError(t, d.Close())
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		d, err := Open(dbPath)
+		require.NoError(t, err)
+		require.NoError(t, d.Close())
+		require.Zero(t, time.Since(start), "Open waited for the migration lock")
+	})
 }
 
 // TestOpenMigrationLockTimeoutIsRetryable: an Open that gives up waiting for
-// another process's migrations fails with ErrMigrationInProgress, a
-// temporary condition — not ErrSchemaSetup.
+// another process's migrations — after migrateLockWait, on the bubble's
+// clock — fails with ErrMigrationInProgress, a temporary condition — not
+// ErrSchemaSetup.
 func TestOpenMigrationLockTimeoutIsRetryable(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "watchtower.db")
 	openOnePending(t, dbPath)
 	holdMigrateLock(t, dbPath)
 
-	old := migrateLockWait
-	migrateLockWait = 100 * time.Millisecond
-	t.Cleanup(func() { migrateLockWait = old })
-
-	d, err := Open(dbPath)
-	if d != nil {
-		_ = d.Close()
-	}
-	require.ErrorIs(t, err, ErrMigrationInProgress)
-	require.False(t, errors.Is(err, ErrSchemaSetup), "a lock timeout is not a schema failure: %v", err)
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		d, err := Open(dbPath)
+		if d != nil {
+			_ = d.Close()
+		}
+		require.ErrorIs(t, err, ErrMigrationInProgress)
+		require.False(t, errors.Is(err, ErrSchemaSetup), "a lock timeout is not a schema failure: %v", err)
+		require.GreaterOrEqual(t, time.Since(start), migrateLockWait, "it waited migrateLockWait for the lock")
+	})
 }
 
 // TestOpenMigrationLockFailureIsSchemaSetup: a lock file that cannot be

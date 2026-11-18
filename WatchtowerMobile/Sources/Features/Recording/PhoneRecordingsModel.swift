@@ -32,7 +32,7 @@ enum PhoneUploadStage: Equatable {
         case .delivered:
             self = .delivered
         case .failed:
-            self = .failed(recording.errorMessage ?? "Not sent to your Mac.", retryable: recording.offersRetry)
+            self = .failed(recording.errorMessage ?? "Not sent to your tower.", retryable: recording.offersRetry)
         case .waiting, .uploading:
             // A sleeping Mac comes first: an upload waiting for it is not
             // stuck, whatever its attempts (the owner's Retry would change
@@ -48,9 +48,9 @@ enum PhoneUploadStage: Equatable {
     var label: String {
         switch self {
         case .recording: "Recording on the phone"
-        case .sending: "Sending to your Mac"
-        case .waitingForMac: "Waiting for the Mac to wake"
-        case .delivered: "Sent to your Mac"
+        case .sending: "Sending to your tower"
+        case .waitingForMac: "Waiting for the tower to wake"
+        case .delivered: "Sent to your tower"
         case let .failed(message, _): message
         }
     }
@@ -80,12 +80,12 @@ enum PhoneTranscriptStage: Equatable {
             return
         }
         switch job.status {
-        case .received, .queued: self = .inProgress("Queued on your Mac")
-        case .transcribing: self = .inProgress("Transcribing on Mac · \(Self.clampedPercent(job.percent))%")
-        case .diarizing: self = .inProgress("Finding speakers on your Mac")
-        case .summarizing: self = .inProgress("Writing the recap on your Mac")
+        case .received, .queued: self = .inProgress("Queued on your tower")
+        case .transcribing: self = .inProgress("Transcribing on your tower · \(Self.clampedPercent(job.percent))%")
+        case .diarizing: self = .inProgress("Finding speakers on your tower")
+        case .summarizing: self = .inProgress("Writing the recap on your tower")
         case .done: self = .ready
-        case .failed: self = .failed(job.error ?? "Transcription failed on your Mac.")
+        case .failed: self = .failed(job.error ?? "Transcription failed on your tower.")
         }
     }
 }

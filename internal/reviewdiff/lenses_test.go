@@ -6,7 +6,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -138,21 +137,12 @@ func TestLoadLenses_RefusesUnsafeFiles(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			tc.setup(t, dir)
-			type result struct {
+			// A hang (e.g. a FIFO opened for reading) is go test -timeout's.
+			var r struct {
 				ls    []Lens
 				notes []string
 			}
-			done := make(chan result, 1)
-			go func() {
-				ls, notes := LoadLenses(dir)
-				done <- result{ls, notes}
-			}()
-			var r result
-			select {
-			case r = <-done:
-			case <-time.After(2 * time.Second):
-				t.Fatal("LoadLenses did not return")
-			}
+			r.ls, r.notes = LoadLenses(dir)
 			if tc.wantNote == "" {
 				assert.Empty(t, r.notes)
 			} else {

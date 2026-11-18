@@ -106,10 +106,10 @@ final class RecordingsWiringTests: XCTestCase {
         let (store, _, _) = try await ledger()
         var recordings = try await snapshot(of: store)
         recordings.heartbeat = heartbeat(updatedAt: now.addingTimeInterval(-3_600))
-        XCTAssertEqual(list(recordings).inProgress.first?.statusText, "Waiting for the Mac to wake")
+        XCTAssertEqual(list(recordings).inProgress.first?.statusText, "Waiting for the tower to wake")
 
         recordings.heartbeat = nil
-        XCTAssertEqual(list(recordings).inProgress.first?.statusText, "Waiting for the Mac to wake", "no heartbeat at all")
+        XCTAssertEqual(list(recordings).inProgress.first?.statusText, "Waiting for the tower to wake", "no heartbeat at all")
     }
 
     func testATranscribingJobShowsThePercentOnTheMac() async throws {
@@ -118,7 +118,7 @@ final class RecordingsWiringTests: XCTestCase {
         recordings.jobs[recording.id] = RecordingJob(id: recording.id, status: .transcribing, percent: 37, updatedAt: now)
 
         let entry = try XCTUnwrap(list(recordings).inProgress.first)
-        XCTAssertEqual(entry.statusText, "Transcribing on Mac · 37%")
+        XCTAssertEqual(entry.statusText, "Transcribing on your tower · 37%")
         XCTAssertEqual(entry.tone, .purple)
     }
 
@@ -127,9 +127,9 @@ final class RecordingsWiringTests: XCTestCase {
         let (store, recording, _) = try await ledger()
         var recordings = try await snapshot(of: store)
         recordings.jobs[recording.id] = RecordingJob(id: recording.id, status: .transcribing, percent: 140, updatedAt: now)
-        XCTAssertEqual(list(recordings).inProgress.first?.statusText, "Transcribing on Mac · 100%")
+        XCTAssertEqual(list(recordings).inProgress.first?.statusText, "Transcribing on your tower · 100%")
         recordings.jobs[recording.id] = RecordingJob(id: recording.id, status: .transcribing, percent: -5, updatedAt: now)
-        XCTAssertEqual(list(recordings).inProgress.first?.statusText, "Transcribing on Mac · 0%")
+        XCTAssertEqual(list(recordings).inProgress.first?.statusText, "Transcribing on your tower · 0%")
         XCTAssertEqual(PhoneTranscriptStage.clampedPercent(nil), 0)
     }
 
@@ -157,7 +157,7 @@ final class RecordingsWiringTests: XCTestCase {
         let entry = try XCTUnwrap(model.earlier.first)
         XCTAssertEqual(entry.statusText, "Ready")
         XCTAssertEqual(entry.transcriptID, 5)
-        XCTAssertTrue(entry.subtitle.contains("recorded on Mac"), entry.subtitle)
+        XCTAssertTrue(entry.subtitle.contains("recorded on the tower"), entry.subtitle)
         XCTAssertTrue(entry.subtitle.contains("2 speakers"), entry.subtitle)
         XCTAssertEqual(list(PhoneRecordingsSnapshot()).emptyText, "No recordings yet")
     }
@@ -169,7 +169,7 @@ final class RecordingsWiringTests: XCTestCase {
             PhoneRecordingsSnapshot(), transcripts: [transcript(id: 6, eventID: "evt-1", phoneRecordingID: "gone")]
         ).earlier.first)
         XCTAssertTrue(entry.subtitle.contains("from this phone"), entry.subtitle)
-        XCTAssertFalse(entry.subtitle.contains("recorded on Mac"), entry.subtitle)
+        XCTAssertFalse(entry.subtitle.contains("recorded on the tower"), entry.subtitle)
     }
 
     func testAFailedUploadOffersRetry() async throws {
@@ -177,11 +177,11 @@ final class RecordingsWiringTests: XCTestCase {
         try await uploader.applyEcho(RecordingUploadPayload(
             id: recording.id, startedAt: recording.startedAt, endedAt: recording.endedAt,
             durationSec: recording.durationSec, sampleFormat: recording.sampleFormat,
-            status: .failed, errorMessage: "The Mac could not save the recording.", deviceID: nil
+            status: .failed, errorMessage: "The tower could not save the recording.", deviceID: nil
         ))
         let recordings = try await snapshot(of: store)
         let entry = try XCTUnwrap(list(recordings).inProgress.first)
-        XCTAssertEqual(entry.statusText, "The Mac could not save the recording.")
+        XCTAssertEqual(entry.statusText, "The tower could not save the recording.")
         XCTAssertEqual(entry.tone, .red)
         XCTAssertTrue(entry.offersRetry)
     }
@@ -224,7 +224,7 @@ final class RecordingsWiringTests: XCTestCase {
         for beat in [heartbeat(updatedAt: now.addingTimeInterval(-3_600)), nil] {
             recordings.heartbeat = beat
             let waiting = try XCTUnwrap(list(recordings).inProgress.first)
-            XCTAssertEqual(waiting.statusText, "Waiting for the Mac to wake")
+            XCTAssertEqual(waiting.statusText, "Waiting for the tower to wake")
             XCTAssertFalse(waiting.offersRetry)
             XCTAssertNotEqual(waiting.tone, .red)
             XCTAssertEqual(PhoneUploadStage(recording: row, heartbeat: beat, now: now), .waitingForMac)
@@ -268,6 +268,13 @@ final class RecordingsWiringTests: XCTestCase {
         XCTAssertEqual(relaunched.value, seen.value)
         XCTAssertEqual(RecordingsListModel.pillText(newCount: 1), "Recordings · 1 new")
         XCTAssertEqual(RecordingsListModel.pillText(newCount: 0), "Recordings")
+    }
+
+    /// #1789: the Calendar's labelled button and the list's voice-note
+    /// button (the round mic left the agenda).
+    func testTheCalendarButtonIsLabelledAndTheListRecordsAVoiceNote() {
+        XCTAssertEqual(RecordingsListModel.screenTitle, "Recordings")
+        XCTAssertEqual(RecordingsListModel.voiceNoteTitle, "Record a voice note")
     }
 
     /// The Calendar pill counts new recaps without building the list (no
@@ -341,7 +348,7 @@ final class RecordingsWiringTests: XCTestCase {
         )
         XCTAssertTrue(bare.sections.isEmpty)
         XCTAssertNil(bare.summary)
-        XCTAssertEqual(bare.recapEmptyText, "No recap yet — your Mac writes it after the transcript")
+        XCTAssertEqual(bare.recapEmptyText, "No recap yet — your tower writes it after the transcript")
     }
 
     func testMakeTargetIsNotShownOnTheRecap() {
@@ -359,7 +366,7 @@ final class RecordingsWiringTests: XCTestCase {
             transcript: transcript(id: 1, clipped: true), body: .segments(segments([(0, 10)])),
             marks: [], calendar: calendar, now: now
         )
-        XCTAssertEqual(clipped.clippedNotice, "Transcript shortened — the full text is on the Mac")
+        XCTAssertEqual(clipped.clippedNotice, "Transcript shortened — the full text is on the tower")
         let whole = RecapModel(
             transcript: transcript(id: 1), body: .segments(segments([(0, 10)])), marks: [], calendar: calendar, now: now
         )

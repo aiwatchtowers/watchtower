@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -820,30 +821,34 @@ func TestBackfillLock_ReleaseDoesNotRemoveAReclaimedLock(t *testing.T) {
 // live miners. The heartbeat must periodically re-stamp started= so a held lock
 // stays fresh for as long as its holder runs.
 func TestBackfillLock_HeartbeatKeepsLockFresh(t *testing.T) {
-	restore := SetBackfillLockHeartbeatIntervalForTest(5 * time.Millisecond)
+	const interval = 5 * time.Millisecond
+	restore := SetBackfillLockHeartbeatIntervalForTest(interval)
 	defer restore()
 
-	dir := t.TempDir()
-	release, err := AcquireBackfillLock(dir, "daemon")
-	require.NoError(t, err)
-	defer release()
+	// A synctest bubble: the heartbeat's ticker runs on the bubble's clock,
+	// so one interval later the re-stamp has happened, every time.
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+		release, err := AcquireBackfillLock(dir, "daemon")
+		require.NoError(t, err)
+		defer release()
 
-	path := filepath.Join(dir, backfillLockFilename)
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	first, ok := parseLockStarted(string(data))
-	require.True(t, ok)
+		path := filepath.Join(dir, backfillLockFilename)
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		first, ok := parseLockStarted(string(data))
+		require.True(t, ok)
 
-	require.Eventually(t, func() bool {
-		d, rerr := os.ReadFile(path)
-		if rerr != nil {
-			return false
-		}
-		s, ok := parseLockStarted(string(d))
-		return ok && s.After(first)
-	}, 2*time.Second, 5*time.Millisecond, "the heartbeat must re-stamp started= while the lock is held")
+		time.Sleep(interval)
+		synctest.Wait() // the beat has written
+		data, err = os.ReadFile(path)
+		require.NoError(t, err)
+		restamped, ok := parseLockStarted(string(data))
+		require.True(t, ok)
+		assert.Equal(t, first.Add(interval), restamped, "the heartbeat must re-stamp started= while the lock is held")
 
-	assert.True(t, BackfillLockFresh(dir), "a heartbeated lock stays fresh")
+		assert.True(t, BackfillLockFresh(dir), "a heartbeated lock stays fresh")
+	})
 }
 
 // The other half of the restore rule (IDEA-01): when the pre-backfill Jira

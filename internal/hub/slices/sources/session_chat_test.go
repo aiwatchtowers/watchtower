@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/agentlog"
@@ -434,24 +435,23 @@ func TestSessionChatReadCutByStopOrExpiryStoresNothing(t *testing.T) {
 }
 
 func TestSessionChatRunDropsEverythingOnStop(t *testing.T) {
-	r := newChatRig(t)
-	s := r.source(nil, ChatTiming{Every: 3 * time.Second, Timeout: time.Second, Wake: 10 * time.Millisecond})
-	r.watch(7, "", "")
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- s.Run(ctx) }()
-	deadline := time.Now().Add(5 * time.Second)
-	for len(chatItems(t, s)) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the loop never stored the payload")
+	synctest.Test(t, func(t *testing.T) {
+		r := newChatRig(t)
+		s := r.source(nil, ChatTiming{Every: 3 * time.Second, Timeout: time.Second, Wake: 10 * time.Millisecond})
+		r.watch(7, "", "")
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- s.Run(ctx) }()
+		for len(chatItems(t, s)) == 0 { // bubble time: one wake per step
+			time.Sleep(10 * time.Millisecond)
+			synctest.Wait()
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	cancel()
-	<-done
-	if len(chatItems(t, s)) != 0 || len(r.watches.Active(r.clock.Now())) != 0 {
-		t.Fatal("the chat outlived the hub")
-	}
+		cancel()
+		<-done
+		if len(chatItems(t, s)) != 0 || len(r.watches.Active(r.clock.Now())) != 0 {
+			t.Fatal("the chat outlived the hub")
+		}
+	})
 }
 
 func TestSessionChatIsUrgentAfterTheAskKinds(t *testing.T) {
@@ -615,38 +615,35 @@ func TestSessionChatRepeatRequestExtendsTheWatch(t *testing.T) {
 // twin of SessionChatRunnerTests.testLoopRunsOnlyWhilePhoneIsLinked: with no
 // linked phone the loop wakes but reads no feed.
 func TestSessionChatLoopReadsNothingWhileUnlinked(t *testing.T) {
-	r := newChatRig(t)
-	var checks atomic.Int32
-	s := SessionChat(r.watches, nil, SessionChatOptions{
-		Timing: ChatTiming{Every: 10 * time.Second, Timeout: 5 * time.Second, Wake: 10 * time.Millisecond},
-		Fetch: func(context.Context, int64, string) ([]sessionfeed.Entry, error) {
-			r.mu.Lock()
-			r.calls = append(r.calls, "read")
-			r.mu.Unlock()
-			return []sessionfeed.Entry{feedEntry(0, "hi")}, nil
-		},
-		Active: func() bool {
-			checks.Add(1)
-			return false
-		},
-		Now: r.clock.Now,
-	})
-	r.watch(7, "", "")
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- s.Run(ctx) }()
-	deadline := time.Now().Add(5 * time.Second)
-	for checks.Load() < 3 {
-		if time.Now().After(deadline) {
-			cancel()
-			<-done
-			t.Fatal("the loop never woke three times")
+	synctest.Test(t, func(t *testing.T) {
+		r := newChatRig(t)
+		var checks atomic.Int32
+		s := SessionChat(r.watches, nil, SessionChatOptions{
+			Timing: ChatTiming{Every: 10 * time.Second, Timeout: 5 * time.Second, Wake: 10 * time.Millisecond},
+			Fetch: func(context.Context, int64, string) ([]sessionfeed.Entry, error) {
+				r.mu.Lock()
+				r.calls = append(r.calls, "read")
+				r.mu.Unlock()
+				return []sessionfeed.Entry{feedEntry(0, "hi")}, nil
+			},
+			Active: func() bool {
+				checks.Add(1)
+				return false
+			},
+			Now: r.clock.Now,
+		})
+		r.watch(7, "", "")
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- s.Run(ctx) }()
+		for checks.Load() < 3 { // bubble time: one wake per step
+			time.Sleep(10 * time.Millisecond)
+			synctest.Wait()
 		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	cancel()
-	<-done
-	if n := r.callCount(); n != 0 {
-		t.Fatalf("the loop read %d feeds with no linked phone", n)
-	}
+		cancel()
+		<-done
+		if n := r.callCount(); n != 0 {
+			t.Fatalf("the loop read %d feeds with no linked phone", n)
+		}
+	})
 }

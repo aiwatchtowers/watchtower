@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/fsutil"
@@ -75,19 +76,10 @@ func startHelper(t *testing.T, dir, action string) *helperProcess {
 }
 func waitHelper(t *testing.T, p *helperProcess) {
 	t.Helper()
-	done := make(chan error, 1)
-	go func() { done <- p.cmd.Wait() }()
-	select {
-	case err := <-done:
-		p.waited = true
-		if err != nil {
-			t.Fatalf("helper: %v %s", err, p.output.String())
-		}
-	case <-time.After(10 * time.Second):
-		_ = syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL)
-		<-done
-		p.waited = true
-		t.Fatal("helper timeout")
+	err := p.cmd.Wait() // a hang is go test -timeout's to report
+	p.waited = true
+	if err != nil {
+		t.Fatalf("helper: %v %s", err, p.output.String())
 	}
 }
 func TestProcessesCompeteForOneLease(t *testing.T) {
@@ -133,33 +125,28 @@ func TestProcessDeathReleasesStableLock(t *testing.T) {
 			_ = cmd.Wait()
 		}
 	})
-	ready := make(chan bool, 1)
-	go func() { ready <- bufio.NewScanner(stdout).Scan() }()
-	select {
-	case ok := <-ready:
-		if !ok {
-			t.Fatal("helper failed to lock")
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("helper readiness timeout")
+	if !bufio.NewScanner(stdout).Scan() { // the helper's ready line
+		t.Fatal("helper failed to lock")
 	}
 	before, err := os.Stat(filepath.Join(s.dir, "health.lock"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	if _, err := s.Read(ctx, scope); err == nil {
-		t.Fatal("read ignored held flock")
-	}
+	// The read waits for the lock until its deadline, on a synctest
+	// bubble's clock.
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		if _, err := s.Read(ctx, scope); err == nil {
+			t.Fatal("read ignored held flock")
+		}
+	})
 	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
 	_ = cmd.Wait()
 	waited = true
-	ctx2, cancel2 := context.WithTimeout(context.Background(), time.Second)
-	defer cancel2()
-	if _, err := s.Read(ctx2, scope); err != nil {
+	if _, err := s.Read(context.Background(), scope); err != nil { // the kernel dropped the lock
 		t.Fatal(err)
 	}
 	after, err := os.Stat(filepath.Join(s.dir, "health.lock"))

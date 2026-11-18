@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -60,13 +61,10 @@ func startSession(t *testing.T, b Backend, configure func(*Session)) *harness {
 		// (killing a real claude_backend's child and its process group) in
 		// its exit defer, so a test that never called h.finish() itself must
 		// still not tear down before that has happened — otherwise the kill
-		// races the process exit and a later assertNoProcessSurvives can
-		// catch a stub mid-escalation instead of a genuine leak.
-		select {
-		case <-h.runDone:
-		case <-time.After(5 * time.Second):
-			t.Errorf("session did not stop within 5s of cancel + stdin close")
-		}
+		// races the process exit and a later leak check (useRealProcess, the
+		// fake's live-children check) can catch a stub mid-escalation
+		// instead of a genuine leak.
+		<-h.runDone
 	})
 	return h
 }
@@ -85,19 +83,15 @@ func (h *harness) sendRaw(line string) {
 	require.NoError(h.t, err)
 }
 
-// next returns the next event of type want, skipping others; fails after 10 s.
+// next returns the next event of type want, skipping others. It waits for
+// the event itself: go test -timeout is the only bound on a broken run.
 func (h *harness) next(want string) Event {
 	h.t.Helper()
-	deadline := time.After(10 * time.Second)
 	for {
-		select {
-		case e, ok := <-h.events:
-			require.True(h.t, ok, "session ended before a %s event", want)
-			if e.Type == want {
-				return e
-			}
-		case <-deadline:
-			h.t.Fatalf("no %s event within 10s", want)
+		e, ok := <-h.events
+		require.True(h.t, ok, "session ended before a %s event", want)
+		if e.Type == want {
+			return e
 		}
 	}
 }
@@ -106,13 +100,8 @@ func (h *harness) next(want string) Event {
 func (h *harness) finish() error {
 	h.t.Helper()
 	_ = h.in.Close()
-	select {
-	case err := <-h.done:
-		return err
-	case <-time.After(15 * time.Second):
-		h.t.Fatal("session did not stop within 15s of stdin EOF")
-		return nil
-	}
+	err := <-h.done
+	return err
 }
 
 // fakeBackend scripts a Backend.
@@ -319,72 +308,71 @@ func TestSession_TurnWithoutIDIsRejected(t *testing.T) {
 // soon as it reads turn_done, while the backend's Turn may still be returning.
 // That turn must run (after the previous Turn returns), not be rejected busy.
 func TestSession_TurnRightAfterTurnDoneIsAccepted(t *testing.T) {
-	var mu sync.Mutex
-	inTurn := 0
-	fb := &fakeBackend{turn: func(_ context.Context, c Command, emit func(Event)) error {
-		mu.Lock()
-		inTurn++
-		overlap := inTurn > 1
-		mu.Unlock()
-		defer func() { mu.Lock(); inTurn--; mu.Unlock() }()
-		assert.False(t, overlap, "two Backend.Turn calls overlapped")
-		emit(Event{Type: EventTextDelta, Text: "echo: " + ownerText(c.Text)})
-		emit(Event{Type: EventTurnDone, Status: StatusComplete})
-		time.Sleep(100 * time.Millisecond) // still returning after the terminal event
-		return nil
-	}}
-	h := startSession(t, fb, nil)
-	h.next(EventSessionReady)
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "one"})
-	h.next(EventTurnDone)
-	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "two"})
-	deadline := time.After(10 * time.Second)
-	for got := false; !got; {
-		select {
-		case e := <-h.events:
+	synctest.Test(t, func(t *testing.T) {
+		var mu sync.Mutex
+		inTurn := 0
+		fb := &fakeBackend{turn: func(_ context.Context, c Command, emit func(Event)) error {
+			mu.Lock()
+			inTurn++
+			overlap := inTurn > 1
+			mu.Unlock()
+			defer func() { mu.Lock(); inTurn--; mu.Unlock() }()
+			assert.False(t, overlap, "two Backend.Turn calls overlapped")
+			emit(Event{Type: EventTextDelta, Text: "echo: " + ownerText(c.Text)})
+			emit(Event{Type: EventTurnDone, Status: StatusComplete})
+			time.Sleep(100 * time.Millisecond) // still returning after the terminal event
+			return nil
+		}}
+		h := startSession(t, fb, nil)
+		h.next(EventSessionReady)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "one"})
+		h.next(EventTurnDone)
+		h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "two"})
+		for got := false; !got; {
+			e := <-h.events
 			require.NotEqual(t, EventError, e.Type, "the follow-up turn was rejected: %s", e.Message)
 			if e.Type == EventTextDelta {
 				assert.Equal(t, "echo: two", e.Text)
 				assert.Equal(t, "t2", e.TurnID)
 				got = true
 			}
-		case <-deadline:
-			t.Fatal("no text_delta for the follow-up turn within 10s")
 		}
-	}
-	assert.Equal(t, "t2", h.next(EventTurnDone).TurnID)
-	require.NoError(t, h.finish())
+		assert.Equal(t, "t2", h.next(EventTurnDone).TurnID)
+		require.NoError(t, h.finish())
+	})
 }
 
 // TestSession_CancelWhileQueuedInterruptsThatTurn: a cancel that lands while
 // the next turn still waits for the previous Turn to return ends the queued
 // turn as interrupted without running it.
 func TestSession_CancelWhileQueuedInterruptsThatTurn(t *testing.T) {
-	gate := make(chan struct{})
-	var calls int
-	var mu sync.Mutex
-	fb := &fakeBackend{turn: func(_ context.Context, c Command, emit func(Event)) error {
+	synctest.Test(t, func(t *testing.T) {
+		gate := make(chan struct{})
+		var calls int
+		var mu sync.Mutex
+		fb := &fakeBackend{turn: func(_ context.Context, c Command, emit func(Event)) error {
+			mu.Lock()
+			calls++
+			mu.Unlock()
+			emit(Event{Type: EventTurnDone, Status: StatusComplete})
+			<-gate
+			return nil
+		}}
+		h := startSession(t, fb, nil)
+		h.next(EventSessionReady)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "one"})
+		h.next(EventTurnDone)
+		h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "two"})
+		h.send(Command{Type: CommandCancel})
+		synctest.Wait() // let the cancel land before t1 returns
+		close(gate)
+		done := h.next(EventTurnDone)
+		assert.Equal(t, "t2", done.TurnID)
+		assert.Equal(t, StatusInterrupted, done.Status)
+		require.NoError(t, h.finish())
 		mu.Lock()
-		calls++
-		mu.Unlock()
-		emit(Event{Type: EventTurnDone, Status: StatusComplete})
-		<-gate
-		return nil
-	}}
-	h := startSession(t, fb, nil)
-	h.next(EventSessionReady)
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "one"})
-	h.next(EventTurnDone)
-	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "two"})
-	h.send(Command{Type: CommandCancel})
-	time.Sleep(50 * time.Millisecond) // let the cancel land before t1 returns
-	close(gate)
-	done := h.next(EventTurnDone)
-	assert.Equal(t, "t2", done.TurnID)
-	assert.Equal(t, StatusInterrupted, done.Status)
-	require.NoError(t, h.finish())
-	mu.Lock()
-	defer mu.Unlock()
-	assert.Equal(t, 1, calls, "the cancelled turn never reached the backend")
-	assert.Equal(t, 0, fb.cancels, "nothing was running, so the backend is not interrupted")
+		defer mu.Unlock()
+		assert.Equal(t, 1, calls, "the cancelled turn never reached the backend")
+		assert.Equal(t, 0, fb.cancels, "nothing was running, so the backend is not interrupted")
+	})
 }

@@ -163,7 +163,7 @@ package final class DaemonManager {
         }
 
         do {
-            let result = try await Self.runProcessCapturingStderr(path: path, arguments: ["sync", "--daemon", "--detach"])
+            let result = try await Self.launchDetachedDaemon(path: path)
             if result.status == 0 {
                 isRunning = true
                 errorMessage = nil
@@ -189,7 +189,7 @@ package final class DaemonManager {
         guard let path = watchtowerPath else { return }
 
         do {
-            let status = try await Self.runProcess(path: path, arguments: ["sync", "stop"])
+            let status = try await Self.runProcess(path: path, arguments: ["sync", "stop", "--internal"])
             if status == 0 {
                 isRunning = false
                 errorMessage = nil
@@ -252,15 +252,50 @@ package final class DaemonManager {
         throw DaemonRestartError.timedOut
     }
 
+    /// The environment the daemon is launched with: `base` plus the login
+    /// shell's `CODEX_HOME` when it is an absolute path. Nothing else is taken
+    /// from `login` (PATH and the rest stay the app's), and `login == nil`
+    /// (the shell did not answer) leaves `base` as it is. The daemon's Codex
+    /// rollout reader only trusts files under its own `$CODEX_HOME`, which an
+    /// app launched from the Dock does not have.
+    nonisolated static func daemonEnvironment(
+        base: [String: String], login: [String: String]?
+    ) -> [String: String] {
+        var env = base
+        if let home = login?["CODEX_HOME"], home.hasPrefix("/") {
+            env["CODEX_HOME"] = home
+        }
+        return env
+    }
+
+    /// The one launch of `sync --daemon --detach`, shared by `startDaemon()`
+    /// and `restart()`, so both give the daemon the owner's `CODEX_HOME`.
+    /// `loginEnvironment` and `processFactory` are test seams.
+    nonisolated static func launchDetachedDaemon(
+        path: String,
+        loginEnvironment: () async -> [String: String]? = { await Constants.resolvedLoginEnvironment() },
+        processFactory: (String, [String]) -> Process = makeProcess
+    ) async throws -> (status: Int32, stderr: String) {
+        let login = await loginEnvironment()
+        return try await runProcessCapturingStderr(
+            path: path, arguments: ["sync", "--daemon", "--detach"]
+        ) { path, arguments in
+            let process = processFactory(path, arguments)
+            process.environment = daemonEnvironment(base: ProcessInfo.processInfo.environment, login: login)
+            return process
+        }
+    }
+
     /// `runProcess` with the child's stderr kept instead of muted, for the one
     /// call whose failure has no other trace (see `startFailureMessage`).
     /// The pipe is drained before `waitUntilExit` so a chatty child cannot
     /// block on a full pipe.
     nonisolated private static func runProcessCapturingStderr(
         path: String,
-        arguments: [String]
+        arguments: [String],
+        processFactory: (String, [String]) -> Process = makeProcess
     ) async throws -> (status: Int32, stderr: String) {
-        let process = makeProcess(path: path, arguments: arguments)
+        let process = processFactory(path, arguments)
         let pipe = Pipe()
         process.standardError = pipe
         try process.run()
@@ -308,7 +343,7 @@ package final class DaemonManager {
 
         var stopStatus: Int32 = 1
         do {
-            stopStatus = try await runProcess(path: path, arguments: ["sync", "stop"])
+            stopStatus = try await runProcess(path: path, arguments: ["sync", "stop", "--internal"])
         } catch {
             NSLog("DaemonManager: restart: `sync stop` failed to spawn: %@", error.localizedDescription)
         }
@@ -324,7 +359,7 @@ package final class DaemonManager {
             }
         }
 
-        let result = try await runProcessCapturingStderr(path: path, arguments: ["sync", "--daemon", "--detach"])
+        let result = try await launchDetachedDaemon(path: path)
         if result.status != 0 {
             throw DaemonRestartError.startFailed(status: result.status, stderr: result.stderr)
         }
@@ -356,20 +391,23 @@ package final class DaemonManager {
     }
 
     /// Polls `isAlive` every `step` until it reports death or `deadline`
-    /// (wall time from the first call) elapses. Pure aside from the clock
-    /// read and the sleep: `isAlive` is the only I/O seam, so both branches
-    /// are pinned with a fake counter instead of a real process.
+    /// (wall time from the first call) elapses. `isAlive` is the only I/O
+    /// seam; `now` and `sleep` are the clock (real by default), so both
+    /// branches are pinned with a fake counter and a fake clock instead of a
+    /// real process and real time.
     nonisolated static func waitForPidDeath(
         isAlive: () -> Bool,
         step: Duration,
-        deadline: Duration
+        deadline: Duration,
+        now: () -> ContinuousClock.Instant = { ContinuousClock.now },
+        sleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) async -> PidWaitOutcome {
-        let start = ContinuousClock.now
+        let start = now()
         while isAlive() {
-            if ContinuousClock.now - start >= deadline {
+            if now() - start >= deadline {
                 return .timedOut
             }
-            try? await Task.sleep(for: step)
+            await sleep(step)
         }
         return .died
     }
@@ -378,43 +416,73 @@ package final class DaemonManager {
     /// gives up and says so.
     nonisolated private static let sigtermGrace: Duration = .milliseconds(250)
 
-    /// Stop the daemon with a bounded wait: `sync stop` (the daemon gets up to
+    /// Stop the daemon with a bounded wait: `sync stop --internal` (an app
+    /// stop: no stopped marker, chat sessions left to whoever ends them —
+    /// spec §7; the daemon gets up to
     /// 10 s of SIGTERM grace from the CLI) under an outer watchdog. If the CLI
     /// hangs, the watchdog terminates the subprocess once the timeout expires,
     /// so no caller can block forever — the next launch adopts or replaces the
     /// daemon. Used by both callers that cannot afford an open-ended wait: the
     /// quit path (`terminateLater` must reply) and the launch path (the store
     /// sync runs before the database opens, behind the splash).
+    ///
+    /// `sleep` is the watchdog's clock (real by default): the timeout and the
+    /// SIGTERM grace each race the child's exit against one `sleep` call, so
+    /// a test decides when either runs out.
     package nonisolated static func stopDaemonBounded(
         timeout: Duration = .seconds(12),
-        cliPath: String? = Constants.findCLIPath()
+        cliPath: String? = Constants.findCLIPath(),
+        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    ) async {
+        await runBounded(["sync", "stop", "--internal"], timeout: timeout, cliPath: cliPath, sleep: sleep)
+    }
+
+    /// `watchtower chat shutdown` with a short `chat.sock` step: the app has
+    /// already asked the engine (or, at compaction, needs the sessions gone
+    /// whatever the engine does), so the direct reap — cancel and close over
+    /// each session socket, 2 s, SIGTERM, SIGKILL 3 s later — always runs
+    /// inside the watchdog: about 1 + 5 s of the 12.
+    package static let chatShutdownArguments = ["chat", "shutdown", "--socket-timeout", "1s"]
+
+    /// `chatShutdownArguments` under the same watchdog as the bounded stop:
+    /// the chat's stop when the engine could not end it (spec §7).
+    package nonisolated static func chatShutdownBounded(
+        timeout: Duration = .seconds(12),
+        cliPath: String? = Constants.findCLIPath(),
+        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    ) async {
+        await runBounded(chatShutdownArguments, timeout: timeout, cliPath: cliPath, sleep: sleep)
+    }
+
+    nonisolated private static func runBounded(
+        _ arguments: [String],
+        timeout: Duration,
+        cliPath: String?,
+        sleep: @escaping @Sendable (Duration) async -> Void
     ) async {
         guard let path = cliPath else { return }
 
-        let process = makeProcess(path: path, arguments: ["sync", "stop"])
+        let verb = arguments.prefix(2).joined(separator: " ")
+        let process = makeProcess(path: path, arguments: arguments)
+        let exit = ProcessExitSignal()
+        process.terminationHandler = { _ in exit.fire() }
         do {
             try process.run()
         } catch {
-            NSLog("DaemonManager: could not spawn `sync stop` at %@: %@", path, error.localizedDescription)
+            NSLog("DaemonManager: could not spawn `%@` at %@: %@", verb, path, error.localizedDescription)
             return
         }
 
         // Race: process exit vs timeout. Timeout wins → terminate subprocess
-        let startTime = ContinuousClock.now
-        while process.isRunning && ContinuousClock.now - startTime < timeout {
-            try? await Task.sleep(for: .milliseconds(50))
-        }
+        if await exit.wait(orSleep: timeout, sleep: sleep) { return }
         guard process.isRunning else { return }
         let pid = process.processIdentifier
         process.terminate()
         // Observe the outcome instead of sleeping blind: SIGTERM is a request,
         // and a child that ignores it is worth a line in the log.
-        let terminateStart = ContinuousClock.now
-        while process.isRunning && ContinuousClock.now - terminateStart < sigtermGrace {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
+        if await exit.wait(orSleep: sigtermGrace, sleep: sleep) { return }
         if process.isRunning {
-            NSLog("DaemonManager: `sync stop` (pid %d) survived SIGTERM; leaving it to the OS", pid)
+            NSLog("DaemonManager: `%@` (pid %d) survived SIGTERM; leaving it to the OS", verb, pid)
         }
     }
 
@@ -490,5 +558,61 @@ package final class DaemonManager {
 
     nonisolated private static func findWatchtowerSync() -> String? {
         Constants.findCLIPath()
+    }
+}
+
+/// A child's exit as an awaitable event (its `terminationHandler` fires it),
+/// so `stopDaemonBounded` waits on the exit itself instead of polling
+/// `isRunning`. Fired once; every wait after that returns at once.
+private final class ProcessExitSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fired = false
+    private var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+
+    func fire() {
+        lock.lock()
+        fired = true
+        let resumed = waiters
+        waiters = [:]
+        lock.unlock()
+        resumed.values.forEach { $0.resume() }
+    }
+
+    /// Returns when the child has exited (true) or the task is cancelled
+    /// (whether it had exited by then).
+    func wait() async -> Bool {
+        let id = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                lock.lock()
+                if fired || Task.isCancelled {
+                    lock.unlock()
+                    continuation.resume()
+                    return
+                }
+                waiters[id] = continuation
+                lock.unlock()
+            }
+        } onCancel: {
+            lock.lock()
+            let continuation = waiters.removeValue(forKey: id)
+            lock.unlock()
+            continuation?.resume()
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        return fired
+    }
+
+    /// Races the exit against `sleep(duration)`: true when the child exited
+    /// first. The loser is cancelled.
+    func wait(orSleep duration: Duration, sleep: @escaping @Sendable (Duration) async -> Void) async -> Bool {
+        await withTaskGroup(of: Bool.self) { group in
+            group.addTask { await self.wait() }
+            group.addTask { await sleep(duration); return false }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
     }
 }

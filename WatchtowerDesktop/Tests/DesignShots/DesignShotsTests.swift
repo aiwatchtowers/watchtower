@@ -1,4 +1,5 @@
 import AppKit
+import ChatWire
 import SwiftUI
 import XCTest
 import WatchtowerCore
@@ -15,6 +16,17 @@ final class DesignShotsTests: XCTestCase {
     override static func tearDown() {
         MainActor.assumeIsolated { DesignShotFixtures.cleanUp() }
         super.tearDown()
+    }
+
+    /// Every background AI consent frame (#1886) has its shot.
+    func testEveryBackgroundAIConsentFrameHasAShot() {
+        let names = Set(BackgroundAIConsentShotFixtures.shots.map(\.name))
+        for step in BackgroundAIConsentShotFixtures.Step.allCases {
+            XCTAssertTrue(names.contains("ai-consent-step-\(step.rawValue)"))
+        }
+        for state in BackgroundAIConsentShotFixtures.Settings.allCases {
+            XCTAssertTrue(names.contains("ai-consent-settings-\(state.rawValue)"))
+        }
     }
 
     func testShotNamesAreUnique() {
@@ -58,12 +70,105 @@ final class DesignShotsTests: XCTestCase {
         })
     }
 
+    func testTuningChatShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("tuning-chat-") })
+    }
+
     func testWorkchatActivityShotsRender() throws {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("workchat-activity-") })
     }
 
+    /// The approval card's shots alone (#1822 T15): every card state, the chat's, and the older approval shots.
+    func testApprovalCardShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter {
+            $0.name.hasPrefix("approval-") || $0.name.hasPrefix("inbox-b-approvals-")
+                || ApprovalCardShotFixtures.comparedNames.contains($0.name)
+        })
+    }
+
+    func testChatMarkdownShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("chat-markdown-") })
+    }
+
+    func testClosedAsksShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("closed-asks-") })
+    }
+
     func testReportProblemShotsRender() throws {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("report-problem-") })
+    }
+
+    func testOnboardingAgentShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter {
+            $0.name.hasPrefix("onboarding-agent-") || $0.name.hasPrefix("onboarding-step-live-")
+        })
+    }
+
+    /// The plan limits without a token spec's mockups (#1885).
+    func testPlanLimitsNoTokenShotsRender() throws {
+        try renderShots(PlanLimitsNoTokenShotFixtures.shots)
+    }
+
+    /// The Slack Full / Live screens spec's mockups (#1779).
+    func testBackgroundAIConsentShotsRender() throws {
+        try renderShots(BackgroundAIConsentShotFixtures.shots)
+    }
+
+    func testSlackFullLiveShotsRender() throws {
+        try renderShots(SlackFullLiveShotFixtures.shots)
+    }
+
+    /// The unified chat's new states and baselines (#1822 T0).
+    /// The composer's shots and the existing shots that hold a composer (#1822 T13).
+    func testComposerShotsRender() throws {
+        let parts = [
+            "composer-", "chat-daemon-", "other-provider", "chat-composer-ollama-capabilities", "workchat-hold-caption",
+            "spec-review-thread-replying", "chat-project-page-", "embedded-chat-", "chat-remote-turn-live"
+        ]
+        try renderShots(DesignShotCatalog.all.filter { shot in parts.contains { shot.name.contains($0) } })
+    }
+
+    /// The routing pill, the fallback card and every shot that holds them, for the before/after comparison of the
+    /// pill's move into ChatUI (#1822 T17).
+    func testRoutingShotsRender() throws {
+        let parts = ["routing-", "provider-chat-", "provider-fallback-", "chat-composer-ollama-capabilities", "composer-main-"]
+        try renderShots(DesignShotCatalog.all.filter { shot in parts.contains { shot.name.hasPrefix($0) } }
+            + ProviderFallbackShotFixtures.historicalActualShots)
+    }
+
+    func testUnifiedChatShotsRender() throws {
+        try renderShots(UnifiedChatShotFixtures.shots)
+    }
+
+    /// The Chats panel's rows (final review I5), for the before/after comparison with the pre-umbrella row.
+    func testChatSidebarShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("chat-sidebar-") })
+    }
+
+    /// Every main-chat shot (`chat-*`), for the before/after comparison of the
+    /// chat's move onto the engine (#1822 T8).
+    func testChatShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("chat-") })
+    }
+
+    /// The adaptive Slack sync plan's Statistics mockups (#1709).
+    func testSlackAdaptiveSyncShotsRender() throws {
+        try renderShots(SlackAdaptiveSyncShotFixtures.shots)
+    }
+
+    /// The session's Spec review state mockups (board #1945).
+    func testSpecReviewStateShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("session-state-spec-review") })
+    }
+
+    /// The workbench FILES tree's states (#2017).
+    func testFilesSectionShotsRender() throws {
+        try renderShots(FilesSectionShotFixtures.shots)
+    }
+
+    /// The Slack Developer Policy hygiene spec's mockups (#1769).
+    func testSlackPolicyShotsRender() throws {
+        try renderShots(SlackPolicyShotFixtures.shots)
     }
 
     private func renderShots(_ shots: [DesignShot]) throws {
@@ -188,5 +293,12 @@ extension DesignShotsTests {
     /// The big-branch review frames only (board #1025), for iterating on them.
     func testBigBranchReviewShotsRender() throws {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("big-branch-") })
+    }
+}
+
+extension DesignShotsTests {
+    /// The auto-cleanup states only (board #1716), for iterating on them.
+    func testAutoCleanupShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("auto-cleanup-") })
     }
 }

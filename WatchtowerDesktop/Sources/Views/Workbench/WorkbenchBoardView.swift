@@ -409,7 +409,7 @@ struct WorkbenchBoardView: View {
         )
         .frame(maxWidth: dragPanelWidth ?? clampedPanelWidth, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
-        .overlay(alignment: .leading) { Divider() }
+        .overlay(alignment: .leading) { Rectangle().fill(Stroke.hairlineColor).frame(width: Stroke.hairline) }
         // Flattened first, so the shadow is the panel's outline and not a
         // blurred halo behind each line of text.
         .compositingGroup()

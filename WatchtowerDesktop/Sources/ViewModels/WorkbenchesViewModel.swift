@@ -138,41 +138,112 @@ final class WorkbenchesViewModel {
     @ObservationIgnored weak var coach: CoachCenter?
     /// The Analytics pane's period per workbench (7 days until picked).
     var analyticsPeriod: [Int64: AgentAnalyticsCenter.Period] = [:]
+    /// The Analytics pane's agent filter per workbench (All until picked;
+    /// an older CLI's refusal of `--agent` removes the entry).
+    var analyticsAgent: [Int64: AgentAnalyticsCenter.Agent] = [:]
     /// The session (its uuid) whose detail the Analytics pane shows per
     /// workbench; none = the overview.
     var analyticsSession: [Int64: String] = [:]
-    /// Session cleanup (board #535): the Delete dialog's plan and apply, the
-    /// Clean Up screen. Held here, on the AppState-owned view model, so a
-    /// run survives navigating away. AppState wires its own; nil = Delete
-    /// Only.
+    /// The workbenches whose Analytics pane shows the tuning side panel
+    /// (**Tune**, #1517); closed when analytics goes off or the workbench goes.
+    var tuningOpen: Set<Int64> = []
+    /// A section of the Analytics overview to scroll to once per workbench
+    /// (`CoachSectionsView.acceptedID` from the panel's Show in Accepted
+    /// edits); the overview clears it after scrolling.
+    var analyticsScroll: [Int64: String] = [:]
+
+    /// The Analytics overview, scrolled to the section `id` (a session
+    /// detail open beside the tuning panel goes back to the overview first).
+    func showAnalyticsSection(_ id: String, projectID: Int64) {
+        analyticsSession[projectID] = nil
+        analyticsScroll[projectID] = id
+    }
+    /// Session cleanup (board #535): the Clean Up screen, the placed
+    /// sessions' cleanup and every delete's background cleanup (#1716).
+    /// Held here, on the AppState-owned view model, so a run survives
+    /// navigating away. AppState wires its own; nil = a deleted session's
+    /// cleanup cannot run (it stays Not fully cleaned).
     @ObservationIgnored var sessionCleanup: SessionCleanupCenter?
     /// The sessions' stored cleanup results (`cleanup_result`), for the
     /// report's Cleanup line; a session without one has no entry.
     var cleanupRecords: [Int64: SessionCleanupRecord] = [:]
-    /// The sessions a cleanup runs on (board #535) — Delete and Clean Up,
-    /// or the Clean Up screen's apply in a session's scope: the row is busy, it does not delete (✕, ⌘⌫,
-    /// Delete, Delete and Clean Up) or start fresh, and shows "Cleaning
-    /// up…".
+    /// The sessions a cleanup apply runs on (board #535) — the Clean Up
+    /// screen's in a session's scope, a placed session's: the row is busy,
+    /// it does not delete (✕, ⌘⌫, Delete) or start fresh, and shows
+    /// "Cleaning up…".
     var cleaningUpSessions: Set<Int64> = []
-    /// The subset whose terminal Delete and Clean Up closed: the row does
-    /// not resume either, until it is deleted or kept. A Clean Up… apply
-    /// leaves a live session's terminal reachable.
-    var closedForCleanup: Set<Int64> = []
-    /// The Delete and Clean Up runs this view model owns, per session: a
-    /// view going away never cancels one.
-    @ObservationIgnored var cleanupRuns: [Int64: Task<Bool, Never>] = [:]
-    /// Each Delete and Clean Up run's workbench, per session: the run
-    /// counts as that workbench's cleanup apply from its start, before the
-    /// terminal closed and any re-plan (one apply per workbench, spec
-    /// 2026-10-26 §3.2).
-    var cleanupRunWorkbenches: [Int64: Int64] = [:]
     /// The automatic cleanups of finished placed sessions whose agent
     /// exited (session worktrees spec §9), per session; gone when done.
     @ObservationIgnored var placedCleanupRuns: [Int64: Task<Void, Never>] = [:]
-    /// Per deleted session, what its Delete and Clean Up kept of the items
-    /// the dialog showed: told on the Undo bar while the row waits there,
-    /// dropped once it leaves the batch (Undo or the commit).
-    var cleanupKeptNotices: [Int64: String] = [:]
+    /// The deleted sessions waiting for their background cleanup, per
+    /// workbench, in request order (board #1716, spec 2026-11-10 §1); the
+    /// first one runs. A row here is hidden, its terminal closed, and it
+    /// does not resume (`closedForCleanup`).
+    var autoCleanupQueue: [Int64: [Int64]] = [:] {
+        didSet { closedForCleanup = Set(autoCleanupQueue.values.joined()) }
+    }
+    /// The rows in `autoCleanupQueue`, kept with it: hidden, their terminal
+    /// closed, and they do not resume.
+    private(set) var closedForCleanup: Set<Int64> = []
+    /// Per workbench, the row whose background cleanup has started (the
+    /// apply may still wait for the slot); nil between rows.
+    @ObservationIgnored var autoCleanupRunning: [Int64: Int64] = [:]
+    /// Not fully cleaned rows in a transition — a Resume clearing the
+    /// delete request, a Delete Anyway's DELETE: the other actions refuse
+    /// the row meanwhile.
+    var autoCleanupBusy: Set<Int64> = []
+    /// Per row, the Resumes whose delete-request write is in flight: a
+    /// further Resume of the same row joins them (every click resumes
+    /// through that write, a fast A → B → A included), it is not refused
+    /// as a transition. The row leaves `autoCleanupBusy` with the last.
+    @ObservationIgnored var resumesClearing: [Int64: Int] = [:]
+    /// Rows still marked deleted whose terminal was live at launch: queued
+    /// for their cleanup once that terminal ends.
+    @ObservationIgnored var deletingLiveAtLaunch: [Int64: PendingSessionDeletes.Entry] = [:]
+    /// The launch re-queue's read of every deleting row. A seam for tests.
+    @ObservationIgnored lazy var deletingRowsRead: @Sendable () async throws -> [TerminalSession] = { [dbPool] in
+        try await dbPool.read { try TerminalSessionQueries.fetchDeleting($0, projectID: nil) }
+    }
+    /// Clears a row's delete request for a Resume. A seam for tests.
+    @ObservationIgnored lazy var clearDeleteRequestWrite: @Sendable (Int64) async throws -> Void = { [dbPool] id in
+        try await dbPool.write { try TerminalSessionQueries.clearDeleteRequested($0, id: id) }
+    }
+    /// A deleted session whose background cleanup could not remove
+    /// everything: its "Not fully cleaned: …" line (`SessionAutoCleanupOutcome`).
+    /// In memory: the next launch cleans the row up again.
+    var notFullyCleaned: [Int64: String] = [:]
+    /// Per workbench, the Not fully cleaned rows (`fetchDeleting`, marked
+    /// and not queued) for the finished group.
+    var notFullyCleanedRows: [Int64: [TerminalSession]] = [:]
+    /// The Not fully cleaned rows whose Clean Up Again is queued or runs:
+    /// they stay listed, reading "Cleaning up…", until the outcome.
+    var cleaningAgain: Set<Int64> = []
+    /// The quiet notice of the background cleanups that ended clean, on the
+    /// Undo bar's place for `cleanupNoticeDuration`; deletes in a row join
+    /// into one.
+    var cleanupNotice: SessionCleanupNotice?
+    /// Each queued row's title, for the notice.
+    @ObservationIgnored var autoCleanupTitles: [Int64: String] = [:]
+    /// The queue's runner per workbench while it has work.
+    @ObservationIgnored var autoCleanupWorkers: [Int64: Task<Void, Never>] = [:]
+    /// What the shown notice joins.
+    @ObservationIgnored var cleanupNoticeEntries: [(title: String, result: SessionCleanupPlan)] = []
+    @ObservationIgnored var cleanupNoticeTask: Task<Void, Never>?
+    /// The notice's wait. A seam for tests.
+    @ObservationIgnored var cleanupNoticeSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    /// Set by the quit: no further background cleanup starts, and an
+    /// outcome that arrives is dropped (the row keeps `delete_requested_at`).
+    @ObservationIgnored var autoCleanupStopped = false
+    /// The launch's re-queue read the deleting rows (once per view model).
+    @ObservationIgnored var requeuedAtLaunch = false
+    /// The launch's re-queue failed to read them: the next `reload` tries
+    /// again.
+    @ObservationIgnored var launchRequeueFailed = false
+    /// A launch re-queue is under way (no second one starts beside it).
+    @ObservationIgnored var launchRequeueRunning = false
+    /// Told when an automatic cleanup starts waiting for another cleanup
+    /// apply of its workbench to end (tests await it instead of a clock).
+    @ObservationIgnored var placedCleanupWaitsForApply: (Int64) -> Void = { _ in }
     /// The Clean Up screen's applies this view model owns, per workbench
     /// (either scope): closing the screen or leaving the page cancels none.
     var sweepRuns: [Int64: Task<Bool, Never>] = [:]
@@ -205,6 +276,11 @@ final class WorkbenchesViewModel {
     /// The longest a hint plan may run before it is stopped and the slot
     /// freed.
     @ObservationIgnored var cleanupHintTimeLimit: Duration = .seconds(5 * 60)
+    /// The wait for `cleanupHintTimeLimit`; throws once the plan ended first.
+    /// A seam for tests.
+    @ObservationIgnored var cleanupHintLimitSleep: @Sendable (Duration) async throws -> Void = {
+        try await Task.sleep(for: $0)
+    }
     /// The hint's clock (the 7-day re-check). A seam for tests.
     @ObservationIgnored var cleanupHintNow: () -> Date = { Date() }
     /// Where each session's agent works (board #565): the rows' place line
@@ -240,8 +316,8 @@ final class WorkbenchesViewModel {
     @ObservationIgnored var gitHubRepositoryReads: Set<Int64> = []
     /// `git remote get-url origin` of a folder. A seam for tests.
     @ObservationIgnored var readOriginRemote: (URL) async -> String? = { await GitHubRemote.readOrigin(folder: $0) }
-    /// Runs `watchtower terminal title`; nil without a CLI. A seam for tests.
-    @ObservationIgnored var titleService: ((Int64) async throws -> TerminalTitleResult)?
+    /// Runs `watchtower terminal title` for a session row; nil without a CLI. A seam for tests.
+    @ObservationIgnored var titleService: ((TerminalSession) async throws -> TerminalTitleResult)?
     @ObservationIgnored var now: () -> Date = Date.init
 
     // Session state. Written only by WorkbenchesViewModel+Sessions.swift, which
@@ -368,7 +444,6 @@ final class WorkbenchesViewModel {
             if oldValue.ids != pendingDeletes.ids {
                 onPendingDeletesChanged?(pendingDeletes.ids)
                 onHiddenSessionsChanged?(pendingDeletes.ids)
-                cleanupKeptNotices = cleanupKeptNotices.filter { pendingDeletes.ids.contains($0.key) }
             }
         }
     }
@@ -396,6 +471,11 @@ final class WorkbenchesViewModel {
     nonisolated static let defaultQuitDeleteWait = TimeInterval(DBLockInstrumentation.busyTimeoutMS) / 1000 + 3
     /// `defaultQuitDeleteWait`; a seam for tests.
     @ObservationIgnored var quitDeleteWait: TimeInterval = WorkbenchesViewModel.defaultQuitDeleteWait
+    /// Arms the quit's bound: calls `fire` once `quitDeleteWait` has passed.
+    /// A seam for tests, which fire it by hand.
+    @ObservationIgnored var quitDeleteTimeout: @Sendable (TimeInterval, @escaping @Sendable () -> Void) -> Void = { bound, fire in
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + bound, execute: fire)
+    }
     /// The Undo window's wait. A seam for tests.
     @ObservationIgnored var deleteSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     /// Runs deferred DELETEs in one write — the only DELETE path of the
@@ -405,6 +485,13 @@ final class WorkbenchesViewModel {
         try await dbPool.write { db in
             for id in ids { try TerminalSessionQueries.delete(db, id: id) }
         }
+    }
+    /// Marks workbench rows deleted in one write when the Undo window ends
+    /// or the app quits (`delete_requested_at`, board #1716): they leave
+    /// every list and wait for their background cleanup. Off the main actor.
+    /// A seam for tests.
+    @ObservationIgnored lazy var commitDeleteRequests: @Sendable ([Int64], Date) async throws -> Void = { [dbPool] ids, at in
+        try await dbPool.write { db in try TerminalSessionQueries.markDeleteRequested(db, ids: ids, at: at) }
     }
 
     /// The owner changed something in a project (a comment, a status): the
@@ -564,12 +651,16 @@ final class WorkbenchesViewModel {
     @ObservationIgnored var rescanAutomations: ((_ workbenchID: Int64) async throws -> Void)?
     /// How long recipe-folder changes settle before one rescan runs.
     @ObservationIgnored var automationRescanDelay: Duration = .seconds(1)
+    /// Waits out `automationRescanDelay` (a seam: tests open the wait by hand).
+    @ObservationIgnored var automationRescanSleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     /// The debounced rescan waiting per workbench (`automationRecipesChanged`).
     @ObservationIgnored var automationRescanTimers: [Int64: Task<Void, Never>] = [:]
     /// The workbenches with a rescan running, and those asked for again
     /// meanwhile (one follow-up rescan, not one per ask).
     @ObservationIgnored var automationRescansInFlight: Set<Int64> = []
     @ObservationIgnored var automationRescansAgain: Set<Int64> = []
+    /// The running rescan per workbench (`automationRescansSettled`).
+    @ObservationIgnored var automationRescanRuns: [Int64: Task<Void, Never>] = [:]
     /// The workbenches asked for a rescan before the Feature Manager state
     /// loaded: rescanned once it has.
     @ObservationIgnored var automationRescansDeferred: Set<Int64> = []
@@ -605,7 +696,7 @@ final class WorkbenchesViewModel {
         asks = OwnerAsksViewModel(dbPool: dbPool, terminalCenter: terminalCenter, lineDelivery: lineDelivery, defaults: defaults)
         if let cli {
             let service = TerminalTitleService(runner: cli.runner)
-            titleService = { try await service.title(sessionID: $0) }
+            titleService = { try await service.title(session: $0) }
             terminalCenter?.codexLaunchArgs = { try await cli.launchArgs(agent: .codex, workbenchID: $0) }
             let automations = AutomationsCLI(runner: cli.runner)
             asks.wakeAutomations = { try await automations.wake() }
@@ -727,6 +818,7 @@ final class WorkbenchesViewModel {
         }
         if let selectedWorkbenchID { await loadSessions(projectID: selectedWorkbenchID) }
         await loadSessions(projectID: nil)
+        if launchRequeueFailed { await requeueDeletingRowsAtLaunch() }
         return true
     }
 
@@ -770,6 +862,8 @@ final class WorkbenchesViewModel {
         // The rows are gone: an answer still streaming stops now, not at the
         // reload (a failed delete above leaves the questions as they were).
         onWorkbenchRemoved?(id)
+        // Its asks went with the cascade: so do its closed lists and drawer (#1713).
+        asks.forgetClosedLists(projectID: id)
         // Its hidden sessions went with the cascade: nothing to commit or restore.
         discardPendingDeletes(workbenchID: id)
         if let warning = result.cleanupWarning { errorMessage = warning }

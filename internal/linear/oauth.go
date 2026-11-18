@@ -128,10 +128,7 @@ func Login(ctx context.Context, cfg OAuthConfig, out io.Writer, opt LoginOptions
 
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go server.Serve(listener)
-	defer func() {
-		time.Sleep(500 * time.Millisecond)
-		server.Close()
-	}()
+	defer oauthpage.CloseCallbackServer(server)
 
 	if opt.SkipBrowserOpen {
 		fmt.Fprintf(out, "Authorize URL:\n\n  %s\n\n", authURL)

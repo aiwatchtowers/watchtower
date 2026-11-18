@@ -37,7 +37,7 @@ final class RelayUpgradeWiringTests: XCTestCase {
         let link = try XCTUnwrap(bed.row()?.link)
         XCTAssertEqual(link.relayUpgrade?.step, .requested)
         XCTAssertEqual(link.relayUpgrade?.requestID, asked.first?.id)
-        XCTAssertEqual(link.relayMacDeviceID, bed.mac.deviceID, "the Mac's relay identity is kept")
+        XCTAssertEqual(link.relayMacDeviceID, bed.mac.deviceID, "the tower's relay identity is kept")
         XCTAssertEqual(link.relayAuthPub, WireBytes.base64URL(bed.macAuthPub))
         XCTAssertEqual(link.transport, .cloudKit, "the route stays on iCloud")
     }
@@ -151,7 +151,7 @@ final class RelayUpgradeWiringTests: XCTestCase {
         XCTAssertEqual(upgrade.refusal, .readerNotConfirmed)
         XCTAssertEqual(
             upgrade.refusal?.message(macName: "Work Mac", now: bed.clock.now),
-            "Work Mac didn't confirm Relay. Update Watchtower on the Mac and try again.")
+            "Work Mac didn't confirm Relay. Update Watchtower on it and try again.")
         XCTAssertTrue(bed.relayOps.slots.contains(bed.mac.deviceID), "the slot is kept")
         XCTAssertEqual(bed.relayOps.count("removeSlot"), 0)
         let none = try await bed.cloudControls(.transportSwitch)
@@ -714,7 +714,7 @@ final class RelayUpgradeWiringTests: XCTestCase {
         XCTAssertEqual(try bed.row()?.link.relayUpgrade?.refusal, .notSupported)
         XCTAssertEqual(
             RelayUpgradeRefusal.notSupported.message(macName: "Work Mac", now: bed.clock.now),
-            "Work Mac can't switch to Relay. Update Watchtower on the Mac.")
+            "Work Mac can't switch to Relay. Update Watchtower on it.")
     }
 
     func testARejectionCopyOnTheOtherTransportIsDeletedUnread() async throws {
@@ -900,17 +900,13 @@ final class RelayUpgradeWiringTests: XCTestCase {
         try await TestPhone.hub(over: bed.cloud.inner).save([try TestPhone.grantRecord(grant, modifiedAt: Date())])
     }
 
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: () -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
+    /// Yields until `condition` holds; no wall-clock cap (a hang runs until the CI step's timeout).
+    private func waitUntil(_ condition: () -> Bool) async throws {
         while !condition() {
-            guard Date() < deadline else { throw WaitTimedOut() }
-            try await Task.sleep(for: .milliseconds(10))
+            await Task.yield()
         }
     }
 }
-
-/// A wait in a test that never ended.
-private struct WaitTimedOut: Error {}
 
 /// The queue step's failure in a test.
 private struct QueueFault: Error {}

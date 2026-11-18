@@ -120,18 +120,13 @@ func (s *captureSink) take() []llmusage.Call {
 	return out
 }
 
-// pidGone reports whether pid no longer exists, polling kill(pid, 0) until
-// ESRCH for at most wait. A fake the adapter started but never waited for
-// stays a zombie and reads as not gone.
-func pidGone(pid int, wait time.Duration) bool {
-	deadline := time.Now().Add(wait)
-	for {
-		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
-			return true
-		}
-		if time.Now().After(deadline) {
-			return false
-		}
+// waitPIDGone returns once pid no longer exists, polling kill(pid, 0) until
+// ESRCH (a process this test does not own: polling is the only signal). No
+// deadline: a fake the adapter started but never waited for stays a zombie,
+// and the wait that never ends is go test -timeout's to report, its
+// goroutine dump naming this helper.
+func waitPIDGone(pid int) {
+	for !errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
@@ -152,8 +147,8 @@ func reapAll(t *testing.T, launches []launch) {
 	}
 	for _, l := range launches {
 		for _, pid := range append([]int{l.PID}, l.Grandchildren...) {
-			if pid > 1 && !pidGone(pid, 5*time.Second) {
-				t.Errorf("fake pid %d survived the cleanup", pid)
+			if pid > 1 {
+				waitPIDGone(pid)
 			}
 		}
 	}
@@ -191,9 +186,7 @@ func TestFakeCLI_GroupReaped(t *testing.T) {
 	cancel()
 	_ = cmd.Wait()
 	for _, pid := range []int{launches[0].PID, launches[0].Grandchildren[0]} {
-		if !pidGone(pid, 5*time.Second) {
-			t.Errorf("pid %d survived the group kill", pid)
-		}
+		waitPIDGone(pid) // a survivor of the group kill hangs the test
 	}
 }
 

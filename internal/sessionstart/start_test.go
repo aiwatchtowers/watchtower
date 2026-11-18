@@ -21,13 +21,13 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/agentkind"
+	"watchtower/internal/aiconsent"
+	"watchtower/internal/aiconsent/aiconsenttest"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions/handlers"
 	"watchtower/internal/sessionfeed"
 	"watchtower/internal/sessionhost"
 )
-
-const waitFor = 10 * time.Second
 
 // world is a real in-process session-host on its own socket, a workspace
 // database with one workbench (a git repository) and stub agents: the login
@@ -68,6 +68,7 @@ func newWorld(t *testing.T) *world {
 	writeScript(t, w.shell, "PATH='"+bin+":/usr/bin:/bin'; export PATH\nshift\nexec /bin/sh \"$@\"\n")
 	writeScript(t, filepath.Join(bin, "claude"), "out='"+w.stub+"'\nrow=\"$"+SessionRowEnv+"\"\n"+
 		"printf '%s\\n' \"$@\" > \"$out/argv.$row\"\npwd -P > \"$out/cwd.$row\"\n"+
+		"printf '%s\\n%s' \"$"+aiconsent.EnvOrigin+"\" \"$"+aiconsent.EnvAdmitted+"\" > \"$out/origin.$row\"\n"+
 		"printf '%s' \"$"+AutomationRunEnv+"\" > \"$out/run.$row\"\n"+
 		"stty raw -echo\nprintf '\\033[?2004h'\nexec cat >> \"$out/pty.$row\"\n")
 
@@ -78,11 +79,7 @@ func newWorld(t *testing.T) *world {
 	go func() { done <- sessionhost.NewServer(sessionhost.Options{CodexWatch: w.codexWatch}).Serve(ctx, l) }()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case <-done:
-		case <-time.After(waitFor):
-			t.Error("the session host did not stop")
-		}
+		<-done
 	})
 	t.Cleanup(w.reapAll) // runs before the host stops
 
@@ -140,9 +137,7 @@ func (w *world) deps() Deps {
 
 func (w *world) client() *sessionhost.Client {
 	w.t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), waitFor)
-	defer cancel()
-	c, err := sessionhost.Dial(ctx, w.socket)
+	c, err := sessionhost.Dial(context.Background(), w.socket)
 	require.NoError(w.t, err)
 	w.t.Cleanup(func() { _ = c.Close() })
 	return c
@@ -198,8 +193,7 @@ func (w *world) reapAll() {
 			continue
 		}
 		_ = syscall.Kill(-info.Pid, syscall.SIGKILL)
-		deadline := time.Now().Add(waitFor)
-		for syscall.Kill(info.Pid, 0) == nil && time.Now().Before(deadline) {
+		for syscall.Kill(info.Pid, 0) == nil { // until the host reaped it
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
@@ -262,13 +256,12 @@ func (w *world) row(id int64) sessionRow {
 	return r
 }
 
-func eventually(t *testing.T, what string, ok func() bool) {
+// eventually checks ok until it holds — for what a stub process or the
+// session host writes on its own. No deadline: go test -timeout bounds a
+// broken run.
+func eventually(t *testing.T, _ string, ok func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(waitFor)
 	for !ok() {
-		if time.Now().After(deadline) {
-			t.Fatalf("never: %s", what)
-		}
 		time.Sleep(20 * time.Millisecond)
 	}
 }
@@ -457,7 +450,6 @@ func (p *pane) send(ft sessionhost.FrameType, b []byte) {
 // until reads frames until one of type want (an Error fails the test).
 func (p *pane) until(want sessionhost.FrameType) []byte {
 	p.t.Helper()
-	_ = p.nc.SetReadDeadline(time.Now().Add(waitFor))
 	for {
 		ft, b, err := sessionhost.ReadFrame(p.nc)
 		require.NoError(p.t, err)
@@ -506,4 +498,100 @@ func TestSessionStartTitleAndAutomationRunReachTheRowAndTheLaunch(t *testing.T) 
 	})
 	assert.Equal(t, strconv.FormatInt(run, 10), w.stubFile("run", begun.SessionID))
 	assert.Contains(t, w.stubFile("argv", begun.SessionID), "sweep the board")
+	assert.Empty(t, w.stubFile("origin", begun.SessionID), "an owner-triggered run's session carries no origin")
+}
+
+// BGAI-01 (#1886 §4.3): a session a background run started carries the
+// run's admission, so the agent's own `watchtower` calls in it run while
+// background AI is paused, as the run they belong to does (D12).
+func TestSessionOfABackgroundRunIsAdmittedAsItsRun(t *testing.T) {
+	w := newWorld(t)
+	res, err := w.db.Exec(`INSERT INTO automations (slug, scope, path) VALUES ('a', 'personal', '/p/a.md')`)
+	require.NoError(t, err)
+	aid, _ := res.LastInsertId()
+	res, err = w.db.Exec(`INSERT INTO automation_runs (automation_id, trigger, status, started_at) VALUES (?, 'schedule', 'running', '2026-11-18T09:00:00Z')`, aid)
+	require.NoError(t, err)
+	run, _ := res.LastInsertId()
+
+	begun, err := Begin(context.Background(), w.deps(), handlers.StartRequest{Workbench: w.wb, AutomationRunID: run})
+	require.NoError(t, err)
+	require.NoError(t, Finish(context.Background(), w.deps(), begun.SessionID, "folder", "sweep", false))
+	w.launched(begun.SessionID)
+	eventually(t, "the stub recorded its origin", func() bool {
+		_, err := os.Stat(filepath.Join(w.stub, "origin."+strconv.FormatInt(begun.SessionID, 10)))
+		return err == nil
+	})
+	unit := "run:" + strconv.FormatInt(run, 10)
+	assert.Equal(t, "background\n"+unit, w.stubFile("origin", begun.SessionID))
+
+	// A `watchtower` child started with that env, background AI paused.
+	aiconsenttest.Use(t, "", map[string]string{
+		aiconsent.EnvOrigin: "background", aiconsent.EnvAdmitted: unit,
+		AutomationRunEnv: strconv.FormatInt(run, 10),
+	}, false)
+	require.NoError(t, aiconsent.Check(context.Background()), "the run's session child is admitted while paused")
+
+	// A run never claimed (cancelled by the paused hold): its session's
+	// child is background, not admitted, and refused while paused.
+	aiconsenttest.Use(t, "", map[string]string{aiconsent.EnvOrigin: "background"}, false)
+	require.ErrorIs(t, aiconsent.Check(context.Background()), aiconsent.ErrPaused)
+}
+
+func TestOriginEnvFollowsTheRun(t *testing.T) {
+	d := db.OpenTestDB(t)
+	res, err := d.Exec(`INSERT INTO automations (slug, scope, path) VALUES ('a', 'personal', '/p/a.md')`)
+	require.NoError(t, err)
+	aid, _ := res.LastInsertId()
+	runOf := func(trigger string) int64 {
+		res, err := d.Exec(`INSERT INTO automation_runs (automation_id, trigger, status, started_at) VALUES (?, ?, 'running', '2026-11-18T09:00:00Z')`, aid, trigger)
+		require.NoError(t, err)
+		id, _ := res.LastInsertId()
+		return id
+	}
+	ctx := context.Background()
+	for _, trigger := range []string{"schedule", "catch_up", "event", "sync"} {
+		id := runOf(trigger)
+		assert.Equal(t, []string{aiconsent.EnvOrigin + "=background", aiconsent.EnvAdmitted + "=run:" + strconv.FormatInt(id, 10)},
+			originEnv(ctx, d, id), trigger)
+	}
+	for _, trigger := range []string{"manual", "button", "dry_run", "reply"} {
+		assert.Nil(t, originEnv(ctx, d, runOf(trigger)), trigger)
+	}
+	assert.Nil(t, originEnv(aiconsent.WithOwnerStarted(ctx), d, 0), "the owner's own session")
+	// Every row of the shared fixture (the Desktop reads it too): admitted
+	// only once claimed under consent; queued or cancelled before its start
+	// (the paused hold included) is background, not admitted.
+	data, err := os.ReadFile(filepath.Join("..", "aiconsent", "testdata", "run_session_origin.json"))
+	require.NoError(t, err)
+	var cases []struct {
+		Name, Trigger, Status, Error, Want string
+		Started                            bool
+	}
+	require.NoError(t, json.Unmarshal(data, &cases))
+	require.NotEmpty(t, cases)
+	for i, c := range cases {
+		res, err := d.Exec(`INSERT INTO automations (slug, scope, path) VALUES (?, 'personal', ?)`,
+			fmt.Sprintf("case-%d", i), fmt.Sprintf("/p/case-%d.md", i))
+		require.NoError(t, err)
+		caseAuto, _ := res.LastInsertId()
+		var started any
+		if c.Started {
+			started = "2026-11-18T09:00:00Z"
+		}
+		res, err = d.Exec(`INSERT INTO automation_runs (automation_id, trigger, status, started_at, error) VALUES (?, ?, ?, ?, ?)`,
+			caseAuto, c.Trigger, c.Status, started, c.Error)
+		require.NoError(t, err, c.Name)
+		id, _ := res.LastInsertId()
+		want := map[string][]string{
+			"admitted":   {aiconsent.EnvOrigin + "=background", aiconsent.EnvAdmitted + "=run:" + strconv.FormatInt(id, 10)},
+			"background": {aiconsent.EnvOrigin + "=background"},
+			"owner":      nil,
+		}[c.Want]
+		assert.Equal(t, want, originEnv(ctx, d, id), c.Name)
+	}
+
+	// A run that cannot be read: the starting process's own origin.
+	assert.Nil(t, originEnv(aiconsent.WithOwnerStarted(ctx), d, 999999))
+	assert.Equal(t, []string{aiconsent.EnvOrigin + "=background", aiconsent.EnvAdmitted + "=phase:x"},
+		originEnv(aiconsent.WithAdmitted(ctx, "phase:x"), d, 999999))
 }

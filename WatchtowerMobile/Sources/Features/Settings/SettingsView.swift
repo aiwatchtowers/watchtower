@@ -19,7 +19,7 @@ struct SettingsView: View {
                 notificationsSection
                 diagnosticsSection
                 SettingsCard(title: "Chat") {
-                    SettingsRow(title: "Chat without the Mac — later") { EmptyView() }
+                    SettingsRow(title: "Chat without the tower — later") { EmptyView() }
                 }
                 .disabled(true)
                 unlinkSection
@@ -56,7 +56,7 @@ struct SettingsView: View {
     // MARK: - Your Mac
 
     private var yourMacSection: some View {
-        SettingsCard(title: "This Mac") {
+        SettingsCard(title: "This tower") {
             // The status turns offline by the clock alone, so re-evaluate it
             // periodically, not only on replica writes.
             TimelineView(.periodic(from: .now, by: 30)) { context in
@@ -85,7 +85,7 @@ struct SettingsView: View {
                 NavigationLink {
                     MacsView()
                 } label: {
-                    SettingsRow(title: "Macs") {
+                    SettingsRow(title: "Towers") {
                         HStack(spacing: Spacing.regular) {
                             Text("\(linking.links.count + linking.unreadableHubIDs.count)")
                             Image(systemName: "chevron.right").font(TypeScale.badge)
@@ -120,7 +120,7 @@ struct SettingsView: View {
     @ViewBuilder private var accountsSection: some View {
         let accounts = model.snapshot.heartbeat?.accounts ?? []
         if !accounts.isEmpty {
-            SettingsCard(title: "Accounts", footer: "Accounts are managed on your Mac.") {
+            SettingsCard(title: "Accounts", footer: "Accounts are managed on your tower.") {
                 ForEach(Array(accounts.enumerated()), id: \.offset) { index, account in
                     if index > 0 { CardRowDivider() }
                     HStack(spacing: Spacing.medium) {
@@ -189,27 +189,41 @@ struct SettingsView: View {
     /// The Mac's answer to each request made; an error is drawn apart, in red.
     private func workbenchFooter(_ settings: DeviceSettings) -> String? {
         guard settings.lastError == nil else { return nil }
+        return Self.workbenchFooter(
+            typing: settings.typingRequested, start: settings.startSessions,
+            permissions: settings.permissionsRequested, grant: model.snapshot.grant,
+            host: TowerHost(model.snapshot.heartbeat, device: model.snapshot.grant?.deviceID)
+        )
+    }
+
+    /// The Workbench card's footer: the Mac's answer to each switch that is
+    /// on and, while permission answers are off, what that means (#1790 —
+    /// the default stays off; the owner learns the cost before an agent waits).
+    static func workbenchFooter(typing: Bool, start: Bool, permissions: Bool, grant: DeviceGrant?, host: TowerHost) -> String? {
         let lines = [
-            settings.typingRequested ? "Typing: \(Self.typingCaption(grant: model.snapshot.grant))" : nil,
-            settings.startSessions ? "Starting sessions: \(Self.startSessionsCaption(grant: model.snapshot.grant))" : nil,
-            settings.permissionsRequested ? "Permission prompts: \(Self.permissionsCaption(grant: model.snapshot.grant))" : nil
+            typing ? "Typing: \(typingCaption(grant: grant))" : nil,
+            start ? "Starting sessions: \(startSessionsCaption(grant: grant, host: host))" : nil,
+            permissions ? "Permission prompts: \(permissionsCaption(grant: grant))" : permissionsOffHint
         ].compactMap { $0 }
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
+
+    static let permissionsOffHint =
+        "Permission prompts stay on the tower: a session that needs your approval waits until you answer there."
 
     /// The typing request's answer from the Mac (spec §4.13).
     static func typingCaption(grant: DeviceGrant?) -> String {
         grant?.typingAllowed == true
             ? "Allowed"
-            : "Waiting for your Mac to confirm"
+            : "Waiting for your tower to confirm"
     }
 
     /// Whether the Mac lets this phone start sessions (#565): the owner
     /// allows it on the Mac, after typing.
-    static func startSessionsCaption(grant: DeviceGrant?) -> String {
+    static func startSessionsCaption(grant: DeviceGrant?, host: TowerHost) -> String {
         grant?.mayStartSessions == true
             ? "Allowed"
-            : "Allow it on your Mac: Watchtower → Settings → Mobile, after typing"
+            : host.startSessionsAllow
     }
 
     /// The permission-prompt request's answer from the Mac (#517): its own
@@ -217,7 +231,7 @@ struct SettingsView: View {
     static func permissionsCaption(grant: DeviceGrant?) -> String {
         grant?.permissionsAllowed == true
             ? "Allowed"
-            : "Waiting for your Mac to confirm"
+            : "Waiting for your tower to confirm"
     }
 
     // MARK: - Unlink
@@ -272,7 +286,7 @@ struct SettingsView: View {
                 } message: {
                     Text(ask.message)
                 }
-                Text("To use Watchtower here again, scan a new code on the Mac.")
+                Text("To use Watchtower here again, scan a new code on the tower.")
                     .font(TypeScale.meta)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, Spacing.small)

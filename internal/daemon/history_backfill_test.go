@@ -19,6 +19,7 @@ import (
 	gosync "sync"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -1179,23 +1180,26 @@ func TestOnSlackBackfillDone_PeopleRowLoopCancelVsBudget(t *testing.T) {
 		}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			d, database := firstRunTestSetup(t)
-			seedFirstRunMessages(t, database)
-			seedFirstRunSituation(t, database)
-			gen := &cutGenerator{}
-			d.SetPeoplePipeline(guide.New(database, d.config, gen, d.logger))
-			ctx := tc.hookCtx(t, gen)
+			// In a bubble: the budget case's deadline is on its clock.
+			synctest.Test(t, func(t *testing.T) {
+				d, database := firstRunTestSetup(t)
+				seedFirstRunMessages(t, database)
+				seedFirstRunSituation(t, database)
+				gen := &cutGenerator{}
+				d.SetPeoplePipeline(guide.New(database, d.config, gen, d.logger))
+				ctx := tc.hookCtx(t, gen)
 
-			require.Error(t, d.onSlackBackfillDone(ctx, firstRunDayStart().AddDate(0, 0, -30)))
-			var errMsg string
-			require.NoError(t, database.QueryRow(`SELECT COALESCE(error_msg, '') FROM pipeline_runs
-				WHERE pipeline = 'people-backfill'`).Scan(&errMsg))
-			if tc.wantErr {
-				assert.Contains(t, errMsg, context.DeadlineExceeded.Error(), "the budget's deadline is a failure")
-			} else {
-				assert.Empty(t, errMsg, "cancelled, not failed")
-			}
-			assert.NoFileExists(t, d.historyBackfillHooksStampPath(), "no stamp: retried on a later Step")
+				require.Error(t, d.onSlackBackfillDone(ctx, firstRunDayStart().AddDate(0, 0, -30)))
+				var errMsg string
+				require.NoError(t, database.QueryRow(`SELECT COALESCE(error_msg, '') FROM pipeline_runs
+					WHERE pipeline = 'people-backfill'`).Scan(&errMsg))
+				if tc.wantErr {
+					assert.Contains(t, errMsg, context.DeadlineExceeded.Error(), "the budget's deadline is a failure")
+				} else {
+					assert.Empty(t, errMsg, "cancelled, not failed")
+				}
+				assert.NoFileExists(t, d.historyBackfillHooksStampPath(), "no stamp: retried on a later Step")
+			})
 		})
 	}
 }

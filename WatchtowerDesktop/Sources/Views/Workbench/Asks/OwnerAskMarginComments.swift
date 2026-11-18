@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import ChatUI
 
 /// One margin comment of a review: a draft's (editable while the ask is)
 /// or a closed ask's stored one.
@@ -64,7 +65,7 @@ struct OwnerAskMarginComments: View {
             }
         }
         .background(Color.secondary.opacity(0.04))
-        .overlay(alignment: .leading) { Divider() }
+        .overlay(alignment: .leading) { Rectangle().fill(Stroke.hairlineColor).frame(width: Stroke.hairline) }
     }
 
     private func measured(_ comment: OwnerAskMarginComment) -> some View {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -1344,10 +1346,7 @@ func TestRunSyncCommandInvalidSlackAPI(t *testing.T) {
 	deps := testDeps(t)
 	deps.Config.Workspaces["test-workspace"].SlackToken = "xoxb-invalid-token-12345"
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	output := runSyncCommand(ctx, deps)
+	output := runSyncCommand(context.Background(), deps)
 	// Should fail with some error (invalid auth, network error, etc.)
 	hasError := strings.Contains(output, "failed") || strings.Contains(output, "Error") || strings.Contains(output, "error")
 	assert.True(t, hasError, "Expected error in output, got: %s", output)
@@ -1389,11 +1388,21 @@ func TestRunSyncCommandFanOutOverAccounts(t *testing.T) {
 	store := watchtowerslack.NewTokenStore(deps.Config.WorkspaceDir(), id2)
 	require.NoError(t, store.Save(&watchtowerslack.Token{AccessToken: "xoxb-invalid-token-12345"}))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// Slack is a fake that refuses every token, so the failure is the
+	// sync's own, never the network's or a clock's.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":false,"error":"invalid_auth"}`))
+	}))
+	t.Cleanup(srv.Close)
+	prev := newSlackClient
+	newSlackClient = func(token string) *watchtowerslack.Client {
+		return watchtowerslack.NewClientWithAPIURLUnlimited(token, srv.URL+"/")
+	}
+	t.Cleanup(func() { newSlackClient = prev })
 
-	output := runSyncCommand(ctx, deps)
-	// Account #2's invalid token makes the real sync call fail, so the
+	output := runSyncCommand(context.Background(), deps)
+	// Account #2's invalid token makes the sync call fail, so the
 	// aggregate result must report the failure (not "no stored token").
 	hasError := strings.Contains(output, "failed") || strings.Contains(output, "Error") || strings.Contains(output, "error")
 	assert.True(t, hasError, "expected error in output, got: %s", output)

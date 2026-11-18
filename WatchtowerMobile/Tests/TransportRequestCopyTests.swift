@@ -13,7 +13,7 @@ final class TransportRequestCopyTests: XCTestCase {
     func testNotSupported() {
         XCTAssertEqual(
             TransportRequestRefusal.notSupported.message(macName: "Work Mac"),
-            "Work Mac can't switch from here. Update Watchtower on the Mac.")
+            "Work Mac can't switch from here. Update Watchtower on it.")
     }
 
     func testNotOrdered() {

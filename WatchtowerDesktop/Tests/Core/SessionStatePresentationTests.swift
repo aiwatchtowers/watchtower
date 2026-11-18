@@ -12,7 +12,7 @@ final class SessionStatePresentationTests: XCTestCase {
             (.live(.waitingOnAsk, openAsks: 1), .orange, "questionmark", "Waiting for you · ask #12"),
             (.live(.needsApproval), .orange, "hand.raised.fill", "Needs approval"),
             (.live(.finished, openAsks: 1), .orange, "checkmark", "Finished · 1 ask open"),
-            (.live(.stopped), .secondary, "pause.fill", "Stopped"),
+            (.live(.stopped), .secondary, "pause.fill", "Idle"),
             (.live(.finished), .blue, "checkmark", "Finished"),
             (.live(.failed, error: "rate limit"), .red, "exclamationmark", "Error: rate limit"),
             (.live(.running), .green, nil, "Running"),
@@ -24,6 +24,19 @@ final class SessionStatePresentationTests: XCTestCase {
             XCTAssertEqual(SessionStatePresentation.caption(for: state, oldestAskID: 12), caption, "\(state)")
             XCTAssertEqual(SessionStatePresentation.isRing(state), !state.live, "\(state)")
         }
+    }
+
+    func testSpecReviewCaptionTonesAndRing() {
+        let round2 = State.live(.specReview, specReviewRound: 2)
+        XCTAssertEqual(SessionStatePresentation.color(for: round2), .green)
+        XCTAssertEqual(SessionStatePresentation.glyph(for: round2), "doc.text.magnifyingglass")
+        XCTAssertEqual(SessionStatePresentation.caption(for: round2, oldestAskID: nil), "Spec review · round 2")
+        XCTAssertEqual(SessionStatePresentation.caption(for: .live(.specReview), oldestAskID: nil), "Spec review")
+        let closed = State(kind: .specReview, live: false, specReviewRound: 2)
+        XCTAssertTrue(SessionStatePresentation.isRing(closed))
+        XCTAssertFalse(SessionStatePresentation.isRing(round2))
+        XCTAssertFalse(SessionStatePresentation.pulses(round2))
+        XCTAssertFalse(SessionStatePresentation.pulses(closed))
     }
 
     func testFillOrRingFollowsLiveness() {
@@ -132,9 +145,27 @@ final class SessionStatePresentationTests: XCTestCase {
         XCTAssertFalse(SessionStatePresentation.pulses(closed), "a ring never pulses")
     }
 
+    /// #1712: background shells alone (a CI watch) are green and pulse like
+    /// agents, with an hourglass and their own caption; agents win the
+    /// caption when both run.
+    func testBackgroundShellsCaption() {
+        let rows: [(State, String?, String)] = [
+            (.live(.background, backgroundShells: 1), "hourglass", "Background task running"),
+            (.live(.background, backgroundShells: 3), "hourglass", "3 background tasks running"),
+            (.live(.background, backgroundAgents: 1, backgroundShells: 2), "person.2.fill", "1 agent working"),
+            (.live(.background, openAsks: 1, backgroundShells: 1), "questionmark", "Background task running · 1 ask open")
+        ]
+        for (state, glyph, caption) in rows {
+            XCTAssertEqual(SessionStatePresentation.color(for: state), .green, "\(state)")
+            XCTAssertEqual(SessionStatePresentation.glyph(for: state), glyph, "\(state)")
+            XCTAssertEqual(SessionStatePresentation.caption(for: state), caption, "\(state)")
+            XCTAssertTrue(SessionStatePresentation.pulses(state), "\(state)")
+        }
+    }
+
     func testOnlyALiveBackgroundPulses() {
         let kinds: [State.Kind] = [
-            .notStarted, .running, .working, .waitingOnAsk, .needsApproval, .finished, .stopped, .failed, .background
+            .notStarted, .running, .working, .waitingOnAsk, .needsApproval, .finished, .stopped, .failed, .background, .specReview
         ]
         for kind in kinds {
             for live in [true, false] {

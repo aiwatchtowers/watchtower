@@ -42,6 +42,29 @@ func TestDBStore_CleanupSessionReadsWorkbenchAndStart(t *testing.T) {
 	}
 }
 
+// A row being deleted carries its delete_requested_at as Ended: when its
+// terminal had ended (auto cleanup spec 2026-11-10 §2a); none, or one that
+// does not parse, bounds nothing.
+func TestDBStore_CleanupSessionReadsEnded(t *testing.T) {
+	s, _, id := storeFixture(t)
+	got, err := s.CleanupSession(context.Background(), id)
+	if err != nil || !got.Ended.IsZero() {
+		t.Fatalf("CleanupSession = %+v, %v; want no Ended", got, err)
+	}
+	for stamp, want := range map[string]time.Time{
+		"2026-10-12T10:00:00Z": time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC),
+		"yesterday":            {},
+	} {
+		if _, err := s.DB.Exec(`UPDATE terminal_sessions SET delete_requested_at = ? WHERE id = ?`, stamp, id); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.CleanupSession(context.Background(), id)
+		if err != nil || !got.Ended.Equal(want) {
+			t.Fatalf("delete_requested_at %q: Ended = %v, %v; want %v", stamp, got.Ended, err, want)
+		}
+	}
+}
+
 // An unparsable created_at fails the read (and so the plan, which keeps
 // everything): it never becomes a zero start that makes everything young.
 func TestDBStore_UnparsableStartIsAnError(t *testing.T) {

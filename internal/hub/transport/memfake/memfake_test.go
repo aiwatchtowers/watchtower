@@ -606,15 +606,9 @@ func TestMemfake_EventsNeverDropped(t *testing.T) {
 	// The first overflow event may already be in the pump's hands when the
 	// next one for its zone arrives, so the 10 box writes fold into one or two.
 	var tail []transport.Event
-	timeout := time.After(5 * time.Second)
 	for n := 0; len(tail) == 0 || tail[len(tail)-1].Err == nil; n++ {
-		select {
-		case e := <-f.Events():
-			if n >= eventBuffer {
-				tail = append(tail, e)
-			}
-		case <-timeout:
-			t.Fatalf("lost events: overflow tail %+v", tail)
+		if e := <-f.Events(); n >= eventBuffer {
+			tail = append(tail, e)
 		}
 	}
 	boxes := 0
@@ -632,13 +626,8 @@ func TestMemfake_EventsNeverDropped(t *testing.T) {
 	if _, err := f.Write(box, "b-1", []byte("x"), absent); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case e := <-f.Events():
-		if e.Zone != box {
-			t.Errorf("after drain: %+v", e)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("no event after drain")
+	if e := <-f.Events(); e.Zone != box {
+		t.Errorf("after drain: %+v", e)
 	}
 }
 

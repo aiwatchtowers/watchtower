@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -124,22 +125,25 @@ func TestWorkbenchReviewRevertHunk_RefusedUnderAgentMarkers(t *testing.T) {
 }
 
 // N2: the owner may take longer to confirm an Undo than the round's git
-// budget; the revert gets a budget of its own after the click.
+// budget; the revert gets a budget of its own after the click. The command
+// runs in a synctest bubble, so the owner's late click moves the bubble's
+// clock past the round's (production) budget at once; git's own run is
+// real work, during which that clock stands still.
 func TestWorkbenchReviewRevertHunk_SlowConfirmStillReverts(t *testing.T) {
 	database, wb, s, repo := reviewFixture(t)
 	original := readmeOf(t, repo)
 	require.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("changed\n"), 0o644))
 	round, hunk := undoRound(t, wb, s, false)
-	budget := workbenchReviewBudget
-	t.Cleanup(func() { workbenchReviewBudget = budget })
-	workbenchReviewBudget = 2 * time.Second
 	withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil)
 	slow := askOwnerDesktop
 	askOwnerDesktop = func(ctx context.Context, path string, req ownerconfirm.Request) (ownerconfirm.Reply, error) {
-		time.Sleep(workbenchReviewBudget + 500*time.Millisecond) // the owner clicks late
+		time.Sleep(workbenchReviewBudget + time.Second) // the owner clicks late
 		return slow(ctx, path, req)
 	}
-	out := reviewJSON(t, wb, "revert-hunk", "--round", itoa(round), "--hunk", hunk)
+	var out map[string]any
+	synctest.Test(t, func(t *testing.T) {
+		out = reviewJSON(t, wb, "revert-hunk", "--round", itoa(round), "--hunk", hunk)
+	})
 	require.Equal(t, true, out["ok"], "%v", out)
 	assert.Equal(t, original, readmeOf(t, repo))
 	assert.Equal(t, 1, revertCount(t, database))

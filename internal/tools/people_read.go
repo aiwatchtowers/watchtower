@@ -36,6 +36,68 @@ type listUpcomingEventsArgs struct {
 	Limit int `json:"limit,omitempty" jsonschema:"max results, 0 = default (50), capped at 200"`
 }
 
+// personOutput is what list_people and get_person return for a people card:
+// today's db.PeopleCard record minus the four fields dropped by #1769 (A12,
+// A24) — AvgMessageLength, ActiveHoursJSON, VolumeChangePct, RedFlags. No
+// json tags, so the remaining keys keep their Go field names and order for
+// every reader (the chat's person source, gallery templates, owners' recipes,
+// MCP clients).
+type personOutput struct {
+	ID                  int
+	UserID              string
+	PeriodFrom          float64
+	PeriodTo            float64
+	MessageCount        int
+	ChannelsActive      int
+	ThreadsInitiated    int
+	ThreadsReplied      int
+	Summary             string
+	CommunicationStyle  string
+	DecisionRole        string
+	Highlights          string
+	Accomplishments     string
+	CommunicationGuide  string
+	DecisionStyle       string
+	Tactics             string
+	RelationshipContext string
+	Status              string
+	Model               string
+	InputTokens         int
+	OutputTokens        int
+	CostUSD             float64
+	PromptVersion       int
+	CreatedAt           string
+}
+
+func newPersonOutput(c db.PeopleCard) personOutput {
+	return personOutput{
+		ID:                  c.ID,
+		UserID:              c.UserID,
+		PeriodFrom:          c.PeriodFrom,
+		PeriodTo:            c.PeriodTo,
+		MessageCount:        c.MessageCount,
+		ChannelsActive:      c.ChannelsActive,
+		ThreadsInitiated:    c.ThreadsInitiated,
+		ThreadsReplied:      c.ThreadsReplied,
+		Summary:             c.Summary,
+		CommunicationStyle:  c.CommunicationStyle,
+		DecisionRole:        c.DecisionRole,
+		Highlights:          c.Highlights,
+		Accomplishments:     c.Accomplishments,
+		CommunicationGuide:  c.CommunicationGuide,
+		DecisionStyle:       c.DecisionStyle,
+		Tactics:             c.Tactics,
+		RelationshipContext: c.RelationshipContext,
+		Status:              c.Status,
+		Model:               c.Model,
+		InputTokens:         c.InputTokens,
+		OutputTokens:        c.OutputTokens,
+		CostUSD:             c.CostUSD,
+		PromptVersion:       c.PromptVersion,
+		CreatedAt:           c.CreatedAt,
+	}
+}
+
 // NewListPeople lists people cards (per-person communication profiles).
 func NewListPeople() *Tool {
 	return &Tool{
@@ -53,10 +115,11 @@ func NewListPeople() *Tool {
 			if err != nil {
 				return nil, fmt.Errorf("listing people: %w", err)
 			}
-			if cards == nil {
-				cards = []db.PeopleCard{}
+			out := make([]personOutput, 0, len(cards))
+			for _, c := range cards {
+				out = append(out, newPersonOutput(c))
 			}
-			return cards, nil
+			return out, nil
 		},
 	}
 }
@@ -77,37 +140,27 @@ func NewGetPerson() *Tool {
 				return nil, &ValidationError{Msg: "invalid arguments"}
 			}
 			card, err := personCardByID(d, a.Query)
-			if err != nil || card != nil {
-				return card, err
-			}
-			users, err := d.SearchUsersByName(a.Query, 10)
 			if err != nil {
-				return nil, fmt.Errorf("searching users: %w", err)
+				return nil, err
 			}
-			var cards []*db.PeopleCard
-			var carded []db.User
-			for _, u := range users {
-				c, err := d.GetLatestPeopleCard(u.ID)
-				if err != nil {
-					return nil, fmt.Errorf("getting person: %w", err)
-				}
-				if c != nil {
-					cards = append(cards, c)
-					carded = append(carded, u)
-				}
+			if card != nil {
+				return newPersonOutput(*card), nil
 			}
-			switch len(cards) {
-			case 0:
-				return nil, fmt.Errorf("no people card for %s", strconv.Quote(a.Query))
-			case 1:
-				return cards[0], nil
-			default:
-				opts := make([]string, 0, len(carded))
-				for _, u := range carded {
-					opts = append(opts, u.ID+" ("+u.Name+")")
-				}
-				return nil, fmt.Errorf("ambiguous query %s: matches %s — pass a user id", strconv.Quote(a.Query), strings.Join(opts, ", "))
+			u, err := resolvePersonByName(d, a.Query)
+			if err != nil {
+				return nil, err
 			}
+			c, err := d.GetLatestPeopleCard(u.ID)
+			if err != nil {
+				return nil, fmt.Errorf("getting person: %w", err)
+			}
+			if c != nil {
+				return newPersonOutput(*c), nil
+			}
+			if err := stoppedCardError(d, []string{u.ID}); err != nil {
+				return nil, err
+			}
+			return nil, fmt.Errorf("no people card for %s", strconv.Quote(a.Query))
 		},
 	}
 }
@@ -137,7 +190,7 @@ func personCardByID(d *db.DB, query string) (*db.PeopleCard, error) {
 	}
 	switch len(cards) {
 	case 0:
-		return nil, nil
+		return nil, stoppedCardError(d, forms)
 	case 1:
 		return cards[0], nil
 	default:
@@ -147,6 +200,57 @@ func personCardByID(d *db.DB, query string) (*db.PeopleCard, error) {
 		}
 		return nil, fmt.Errorf("ambiguous user id %s: it exists in several Slack workspaces as %s — pass one of those", strconv.Quote(query), strings.Join(ids, ", "))
 	}
+}
+
+// resolvePersonByName picks the one person a name query means: the single
+// exact (case-insensitive) name, display name or real name match, looked up
+// on its own so a capped list of partial matches cannot hide it; else the
+// only partial match. Several exact matches, or several partial ones and no
+// exact one, are an ambiguity error naming each id, so a card — or "the
+// owner stopped it" — is never reported for someone else whose name merely
+// contains the query.
+func resolvePersonByName(d *db.DB, query string) (db.User, error) {
+	exact, err := d.FindUsersByExactName(query, 10)
+	if err != nil {
+		return db.User{}, fmt.Errorf("searching users: %w", err)
+	}
+	candidates := exact
+	if len(candidates) == 0 {
+		if candidates, err = d.SearchUsersByName(query, 10); err != nil {
+			return db.User{}, fmt.Errorf("searching users: %w", err)
+		}
+	}
+	switch len(candidates) {
+	case 0:
+		return db.User{}, fmt.Errorf("no people card for %s", strconv.Quote(query))
+	case 1:
+		return candidates[0], nil
+	}
+	opts := make([]string, 0, len(candidates))
+	for _, u := range candidates {
+		opts = append(opts, u.ID+" ("+u.Name+")")
+	}
+	return db.User{}, fmt.Errorf("ambiguous query %s: matches %s — pass a user id", strconv.Quote(query), strings.Join(opts, ", "))
+}
+
+// stoppedCardError answers a person with no card whom the owner stopped
+// cards for (people exclude, #1769 A14): "no card for <id>: the owner
+// stopped it", naming the first excluded id of ids. It is nil when none of
+// ids is excluded.
+func stoppedCardError(d *db.DB, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	excluded, err := d.PeopleExclusions()
+	if err != nil {
+		return fmt.Errorf("getting person: %w", err)
+	}
+	for _, id := range ids {
+		if excluded[id] {
+			return fmt.Errorf("no card for %s: the owner stopped it", id)
+		}
+	}
+	return nil
 }
 
 // NewListTracks lists work/narrative tracks (active by default), filterable by

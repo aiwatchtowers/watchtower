@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import SwiftUI
+import WatchtowerCore
 
 struct ChannelStat: Identifiable, FetchableRecord, Decodable {
     let id: String
@@ -16,9 +17,17 @@ struct ChannelStat: Identifiable, FetchableRecord, Decodable {
     let mentionCount: Int
     let lastActivity: Double
     let lastUserActivity: Double
+    /// The newest message mentioning the owner (0 = none).
+    let lastMention: Double
     let isMutedForLLM: Bool
+    /// When the AI mute turned on, unix seconds (0 = not muted or unknown).
+    let mutedAt: Double
     let isFavorite: Bool
     let isWatched: Bool
+    /// Stop syncing (`channel_settings.sync_excluded`).
+    let isSyncExcluded: Bool
+    /// Sync again's pending catch-up start, unix seconds (nil = none).
+    let catchupFrom: Double?
     // Digest processing info
     let digestCount: Int
     let lastDigestAt: String?
@@ -38,9 +47,13 @@ struct ChannelStat: Identifiable, FetchableRecord, Decodable {
         case mentionCount = "mention_count"
         case lastActivity = "last_activity"
         case lastUserActivity = "last_user_activity"
+        case lastMention = "last_mention"
         case isMutedForLLM = "is_muted_for_llm"
+        case mutedAt = "muted_at"
         case isFavorite = "is_favorite"
         case isWatched = "is_watched"
+        case isSyncExcluded = "is_sync_excluded"
+        case catchupFrom = "catchup_from"
         case digestCount = "digest_count"
         case lastDigestAt = "last_digest_at"
         case messagesSinceDigest = "messages_since_digest"
@@ -51,6 +64,10 @@ struct ChannelStat: Identifiable, FetchableRecord, Decodable {
         guard lastActivity > 0 else { return nil }
         let age = Date().timeIntervalSince1970 - lastActivity
         return max(0, Int(age / 86400))
+    }
+
+    var syncState: ChannelStatsPresentation.SyncState {
+        ChannelStatsPresentation.syncState(isSyncExcluded: isSyncExcluded, catchupFrom: catchupFrom)
     }
 
     /// Whether this channel has ever been processed by the digest pipeline.

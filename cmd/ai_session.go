@@ -28,6 +28,7 @@ var (
 	aiSessionFlagProjectID    int64
 	aiSessionFlagResume       string
 	aiSessionFlagDBPath       string
+	aiSessionFlagListen       string
 )
 
 var aiSessionCmd = &cobra.Command{
@@ -37,7 +38,13 @@ var aiSessionCmd = &cobra.Command{
 as JSON lines ({"type":"turn"|"cancel"|"close", ...}); protocol-v2 events go
 to stdout as NDJSON. With the claude provider one warm claude process serves
 every turn. The system prompt is built here and passed by file; message text
-and attachment paths travel on stdin, never on argv.`,
+and attachment paths travel on stdin, never on argv.
+
+--listen <socket> moves the same protocol from stdin/stdout onto a unix
+socket (0600, its folder 0700) the chat engine connects to: the session then
+outlives the daemon that started it, replays its current turn to the engine
+that attaches next, and exits 10 minutes after its turn with no engine
+attached. Only this team's watchtower CLI may connect.`,
 	Args: cobra.NoArgs,
 	RunE: runAISession,
 }
@@ -55,6 +62,7 @@ func init() {
 	f.StringVar(&aiSessionFlagResume, "resume", "", "ignored: chats replay their history instead of resuming")
 	_ = f.MarkHidden("resume")
 	f.StringVar(&aiSessionFlagDBPath, "db-path", "", "SQLite database path (overrides the workspace default)")
+	f.StringVar(&aiSessionFlagListen, "listen", "", "serve the session on this unix socket instead of stdin/stdout (the chat engine's)")
 }
 
 func runAISession(cmd *cobra.Command, _ []string) error {
@@ -99,11 +107,16 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fail(chat.CodeProviderUnavailable, err.Error())
 	}
+	waitSlackLive := attachSessionSlackLive(ctx, out, database, aiSessionFlagSurface, cfg.AI.Provider)
+	defer waitSlackLive() // before the database closes
 	s := chat.NewSession(backend, out)
 	s.Provider = cfg.AI.Provider
 	_, s.Model = providers.ResolveModelsFor(cfg, cfg.AI.Provider)
 
 	s.TurnFile = turnFile
+	if aiSessionFlagListen != "" {
+		return chat.ServeListen(ctx, chat.ListenOptions{Path: aiSessionFlagListen}, s)
+	}
 	return s.Run(ctx, cmd.InOrStdin())
 }
 
@@ -199,6 +212,7 @@ type sessionWiring struct {
 	chatProjectID int64                  // 0 = not a project chat; bound into the ollama registry
 	warn          io.Writer              // skipped project files are named here
 	claudeAI      claudeAISetup          // zero = claude.ai mode off
+	codexSlack    []string               // read-only apps overrides of a codex chat with Live Slack; nil = apps off
 	// onMounted hears the Quick Connections a warm Claude session mounts for
 	// its whole life (the per-turn policy check, #608); nil = nobody.
 	onMounted func([]ai.ExternalMCPServer)

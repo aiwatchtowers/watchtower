@@ -34,6 +34,7 @@ final class TargetBriefCenterTests: XCTestCase {
     private func makeCenter(chatVMFor: @escaping (Target) -> TargetChatViewModel?) -> TargetBriefCenter {
         let center = TargetBriefCenter()
         center.makeChatVM = chatVMFor
+        center.watchPause = { await Task.yield() }  // no clock in the watcher's loop
         return center
     }
 
@@ -54,23 +55,12 @@ final class TargetBriefCenterTests: XCTestCase {
         )
     }
 
-    /// Poll until `condition` holds, failing the test at the deadline rather
-    /// than after a fixed number of spins (wall-clock, not spin count).
-    private func waitUntil(
-        _ label: String,
-        timeout: TimeInterval = 10,
-        file: StaticString = #filePath,
-        line: UInt = #line,
-        _ condition: () -> Bool
-    ) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            guard Date() < deadline else {
-                XCTFail("timed out waiting for \(label)", file: file, line: line)
-                return
-            }
-            await Task.yield()
-        }
+    /// Waits until `condition` holds, re-checked once per main-actor turn
+    /// (`untilTurn`): a streamed reply's text is plain (observation-ignored)
+    /// state, so a turn is the event. No clock, no deadline; `label` names
+    /// the wait for a reader of a hang.
+    private func waitUntil(_ label: String, _ condition: @MainActor () -> Bool) async {
+        await untilTurn(condition)
     }
 
     /// The VM a just-started brief runs on, once the center resolved it
@@ -242,7 +232,8 @@ final class TargetBriefCenterTests: XCTestCase {
         XCTAssertEqual(persistedA.filter { $0.role == "assistant" }.count, 1)
 
         // Only then does B run, exactly once.
-        await waitUntil("B to finish") { center.phase(for: targetB.id) == .idle && !mockB.prompts.isEmpty }
+        await mockB.untilCalls(1)
+        await waitUntil("B to finish") { center.phase(for: targetB.id) == .idle }
         XCTAssertEqual(mockB.prompts, ["brief B"])
         let persistedB = try fetchPersistedMessages(manager, targetID: targetB.id)
         XCTAssertEqual(persistedB.filter { $0.role == "user" }.map(\.text), ["brief B"])
@@ -272,7 +263,8 @@ final class TargetBriefCenterTests: XCTestCase {
         await waitUntil("A to fail") {
             center.phase(for: targetA.id) == .failed(targetID: targetA.id, message: "CLI unavailable")
         }
-        await waitUntil("B to finish") { center.phase(for: targetB.id) == .idle && !mockB.prompts.isEmpty }
+        await mockB.untilCalls(1)
+        await waitUntil("B to finish") { center.phase(for: targetB.id) == .idle }
 
         XCTAssertEqual(mockB.prompts, ["brief B"])
         let persistedB = try fetchPersistedMessages(manager, targetID: targetB.id)
@@ -352,11 +344,9 @@ final class TargetBriefCenterTests: XCTestCase {
         await vm.engine.finished()
         XCTAssertFalse(vm.isStreaming)
 
-        // Give the cancelled executeStream a chance to run its tail (a bounded
-        // settle window — we assert an ABSENCE, so there is no condition to
-        // await), then assert the cancelled run wrote NOTHING:
-        let settleDeadline = Date().addingTimeInterval(0.2)
-        while Date() < settleDeadline { await Task.yield() }
+        // Let the cancelled run play out to its end — the center's job task
+        // (watch, settle, drain) — then assert it wrote NOTHING:
+        await center.task?.value
         let after = try XCTUnwrap(fetchTarget(manager, id: target.id))
         XCTAssertFalse(after.decodedSubItems.contains { $0.text == "sneaky step" },
                        "cancelled run auto-applied an action after cancel")
@@ -500,7 +490,7 @@ final class TargetBriefCenterTests: XCTestCase {
         vmB.inputText = "half-typed draft"
 
         mockA.release()
-        await waitUntil("B to start") { !mockB.prompts.isEmpty }
+        await mockB.untilCalls(1)  // B started
         XCTAssertEqual(vmB.inputText, "half-typed draft", "the brief overwrote the owner's draft")
         await waitUntil("B to finish") { center.phase(for: targetB.id) == .idle }
 
@@ -576,7 +566,8 @@ final class TargetBriefCenterTests: XCTestCase {
 
         vmA.cancelStream()
 
-        await waitUntil("B to finish") { center.phase(for: targetB.id) == .idle && !mockB.prompts.isEmpty }
+        await mockB.untilCalls(1)
+        await waitUntil("B to finish") { center.phase(for: targetB.id) == .idle }
         XCTAssertEqual(center.phase(for: targetA.id), .idle)
         XCTAssertEqual(mockB.prompts, ["brief B"])
         let persistedB = try fetchPersistedMessages(manager, targetID: targetB.id)
@@ -614,7 +605,8 @@ final class TargetBriefCenterTests: XCTestCase {
 
         XCTAssertEqual(vmA?.isStreaming, false, "the cancelled watcher left A streaming")
         XCTAssertFalse(aStreamingWhenBStarted, "B started while A was still streaming")
-        await waitUntil("B to finish") { center.phase(for: targetB.id) == .idle && !mockB.prompts.isEmpty }
+        await mockB.untilCalls(1)
+        await waitUntil("B to finish") { center.phase(for: targetB.id) == .idle }
         XCTAssertEqual(mockB.prompts, ["brief B"])
     }
 

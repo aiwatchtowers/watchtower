@@ -56,12 +56,14 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
 
     func testWorkbenchActionKindsAreFrozen() {
         XCTAssertEqual(
-            ActionKind.allCases.suffix(16).map(\.rawValue),
+            ActionKind.allCases.suffix(28).map(\.rawValue),
             [
                 "ask_answer", "board_target_status", "board_target_priority", "board_comment_add",
                 "board_comment_reply", "board_target_create", "session_start", "session_input",
                 "session_input_cancel", "session_finish_request", "session_stop", "session_report_request",
-                "permission_answer", "session_interrupt", "session_chat_request", "automation_run"
+                "permission_answer", "session_interrupt", "session_chat_request", "automation_run",
+                "chat_new", "chat_turn", "chat_cancel", "chat_feed_request", "chat_page", "chat_search", "chat_read",
+                "chat_branch_select", "chat_manage", "chat_action_answer", "chat_entity_search", "chat_skills_list"
             ]
         )
     }
@@ -76,7 +78,7 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertTrue(kind.isKnown)
         XCTAssertEqual(tone, .purple)
         XCTAssertTrue(tone.isKnown)
-        XCTAssertEqual(TerminalSessionState.Kind.knownValues.last, .readyToCheck)
+        XCTAssertEqual(TerminalSessionState.Kind.knownValues.last, .specReview)
         XCTAssertEqual(TerminalSessionState.Tone.knownValues.last, .purple)
     }
 
@@ -97,7 +99,7 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
             TerminalSessionState.Kind.knownValues.map(\.rawValue),
             [
                 "working", "running", "waiting_on_ask", "needs_approval", "finished", "stopped", "failed", "not_started",
-                "ready_to_check"
+                "ready_to_check", "spec_review"
             ]
         )
         XCTAssertEqual(
@@ -162,6 +164,17 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertEqual(workbench.lastSessionActivity, t0)
         XCTAssertEqual(workbench.archiveAfterDays, 14)
         XCTAssertEqual(workbench.targetsMore, 1)
+        XCTAssertEqual(workbench.boardColumns, ["Backlog", "Todo", "Coding"])
+    }
+
+    /// #1781: a hub older than the lane order (or a workbench without
+    /// columns) sends no `board_columns`; the record still decodes.
+    func testWorkbenchWithoutBoardColumnsDecodes() throws {
+        var json = try object("workbench")
+        json["board_columns"] = nil
+        let workbench = try Workbench.decode(payload: try data(json))
+        XCTAssertNil(workbench.boardColumns)
+        XCTAssertEqual(workbench.id, 7)
     }
 
     /// A hub older than Codex support sends no `default_agent` (board #399):
@@ -279,6 +292,25 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         }
     }
 
+    /// #1945: a session in the spec review author loop decodes as a known
+    /// `.specReview`, its caption carrying the round and no ask named.
+    func testTerminalSessionInSpecReviewDecodes() throws {
+        var json = try object("terminal_session")
+        json["state_kind"] = "spec_review"
+        json["state_caption"] = "Spec review · round 2"
+        json["state_glyph"] = "doc.text.magnifyingglass"
+        json["state_tone"] = "green"
+        json["open_asks"] = 0
+        json.removeValue(forKey: "oldest_ask_id")
+        let session = try TerminalSessionState.decode(payload: try data(json))
+        XCTAssertEqual(session.stateKind, .specReview)
+        XCTAssertTrue(session.stateKind.isKnown)
+        XCTAssertEqual(session.stateCaption, "Spec review · round 2")
+        XCTAssertEqual(session.stateTone, .green)
+        XCTAssertEqual(session.openAsks, 0)
+        XCTAssertNil(session.oldestAskID)
+    }
+
     /// A record from a Mac older than G5 has no `watch_issue`: it still
     /// decodes, as watched.
     func testTerminalSessionWithoutWatchIssueDecodes() throws {
@@ -346,8 +378,9 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertNil(request.summaryClipped)
         XCTAssertEqual(request.createdAt, t0)
         XCTAssertEqual(
-            ActionReason.allCases.suffix(4).map(\.rawValue),
-            ["not_pending", "not_working", "answer_on_mac", "not_supported"]
+            ActionReason.allCases.suffix(7).map(\.rawValue),
+            ["not_pending", "not_working", "answer_on_mac", "not_supported",
+             "conversation_busy", "attachment_missing", "changed"]
         )
     }
 

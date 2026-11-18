@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import Observation
+import WatchtowerChatText
 
 /// State of the artifact side panel for one (conversation, key). Owned by
 /// ChatViewModel so the panel survives navigation like the turn itself.
@@ -21,15 +22,20 @@ package final class ArtifactPanelModel {
     package let comments: ArtifactCommentsModel
     /// The version of this key pinned as knowledge, `nil` when it is not kept.
     package private(set) var keptVersion: Int?
+    /// Why Add to Knowledge is unavailable: the conversation used Live Slack (LIVE-01).
+    package private(set) var keepDisabledReason: String?
     /// Called after a keep / unkeep landed, so the card badges follow.
     @ObservationIgnored package var onKnowledgeChanged: (() -> Void)?
-    @ObservationIgnored private let db: any DatabaseWriter
+    /// Reads the panel's rows; every write goes through `writer` (the engine, D19).
+    @ObservationIgnored private let db: any DatabaseReader
+    @ObservationIgnored private let writer: any ChatArtifactWriting
 
-    package init(db: any DatabaseWriter, conversationID: Int64, key: String) {
+    package init(db: any DatabaseReader, writer: any ChatArtifactWriting, conversationID: Int64, key: String) {
         self.db = db
+        self.writer = writer
         self.conversationID = conversationID
         self.key = key
-        comments = ArtifactCommentsModel(db: db, conversationID: conversationID, key: key)
+        comments = ArtifactCommentsModel(db: db, writer: writer, conversationID: conversationID, key: key)
         reload()
     }
 
@@ -42,6 +48,8 @@ package final class ArtifactPanelModel {
             keptVersion = try db.read {
                 try ChatArtifactQueries.keptVersion($0, conversationID: conversationID, artifactKey: key)
             }
+            let live = try db.read { try LiveSlackMark.isMarked($0, conversationID: conversationID) }
+            keepDisabledReason = live ? Self.liveSlackReason : nil
             comments.sync(latest: versions.last)
             errorMessage = nil
         } catch {
@@ -89,7 +97,7 @@ package final class ArtifactPanelModel {
         editText = ""
     }
 
-    /// Stores the edit as a new version off the main thread (board #670).
+    /// Stores the edit as a new version (the engine writes it).
     /// The editor stays open and editable meanwhile; it closes once the
     /// version landed, unless the owner typed on since — then it stays open
     /// over the new version with that text.
@@ -100,16 +108,10 @@ package final class ArtifactPanelModel {
             cancelEdit()
             return
         }
-        var draft = base.asDraft
-        draft.content = text
         isSavingEdit = true
         defer { isSavingEdit = false }
-        let (db, conversationID, messageID, saved) = (db, conversationID, base.messageID, draft)
         do {
-            _ = try await db.write {
-                try ChatArtifactQueries.saveVersion($0, conversationID: conversationID, messageID: messageID,
-                                                    draft: saved, edited: true)
-            }
+            try await writer.edit(conversationID: conversationID, key: key, version: base.version, content: text)
             selectedVersion = nil
             if editText == text { cancelEdit() }
             reload()
@@ -126,10 +128,19 @@ package final class ArtifactPanelModel {
         return ArtifactKnowledgeState.for(kind: shown.kind, shownVersion: shown.version, keptVersion: keptVersion)
     }
 
+    package static let liveSlackReason = "Built on Live Slack answers, which are not kept"
+
+    /// Why the shown control cannot keep this version (LIVE-01); `nil` when it
+    /// can. Remove is never blocked: an earlier pin can always be dropped.
+    package var knowledgeKeepBlocked: String? {
+        knowledgeState == .remove ? nil : keepDisabledReason
+    }
+
     /// Runs the press of the knowledge control: Add / Update pin the shown
     /// version, Remove drops the pin. A failure is shown, nothing changes.
     package func toggleKnowledge() async {
         guard let state = knowledgeState else { return }
+        if state != .remove, keepDisabledReason != nil { return }
         await writeKnowledge(remove: state == .remove)
     }
 
@@ -141,17 +152,16 @@ package final class ArtifactPanelModel {
 
     private func writeKnowledge(remove: Bool) async {
         guard let shown = selectedArtifact else { return }
-        let (db, conversationID, key, version) = (db, conversationID, key, shown.version)
         do {
-            try await db.write {
-                if remove {
-                    try ChatArtifactQueries.unkeep($0, conversationID: conversationID, artifactKey: key)
-                } else {
-                    try ChatArtifactQueries.keep($0, conversationID: conversationID, artifactKey: key, version: version)
-                }
+            if remove {
+                try await writer.unkeep(conversationID: conversationID, key: key)
+            } else {
+                try await writer.keep(conversationID: conversationID, key: key, version: shown.version)
             }
             reload()
             onKnowledgeChanged?()
+        } catch let refused as ChatArtifactWriteRefused where refused.isLiveSlack && !remove {
+            keepDisabledReason = Self.liveSlackReason
         } catch {
             errorMessage = "Could not update Knowledge: \(error.localizedDescription)"
         }

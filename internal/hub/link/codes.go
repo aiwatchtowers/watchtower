@@ -53,7 +53,7 @@ func (c *Center) issue(ck *cloudKitFields) (wire.LinkPayload, string, error) {
 	b64 := base64.RawURLEncoding.EncodeToString
 	p := wire.LinkPayload{
 		V:             wire.LinkPayloadVersion,
-		HubID:         c.keys.HubID().String(),
+		HubID:         c.keys.HubIDText(),
 		MacName:       wire.ClipMacName(c.host.Name),
 		Nonce:         b64(raw),
 		Iat:           now.Unix(),

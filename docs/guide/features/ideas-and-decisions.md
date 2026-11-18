@@ -41,7 +41,7 @@ text: Open **Idea finder** in the Inbox and **Approve**, **Reject** or **Make a 
 area: planning
 level: basics
 kind: feature
-since: next
+since: 0.28.0
 action: nav:ideas
 replaces: [ideas-review]
 changed: Ideas moved from the Inbox's Ideas filter to its Idea finder entry.
@@ -114,7 +114,7 @@ text: Open **⋯** → **Find Ideas in Past Messages…** on the Inbox's **Idea 
 area: planning
 level: power
 kind: feature
-since: next
+since: 0.28.0
 action: nav:ideas
 replaces: [ideas-past-messages]
 changed: The command moved from the Ideas filter's menu to the Idea finder's.

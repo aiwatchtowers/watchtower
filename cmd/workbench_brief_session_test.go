@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -349,22 +350,26 @@ func TestProjectBrief_HookSkipsAndBadInputStillPrintTheBrief(t *testing.T) {
 
 // A hook input that never arrives (stdin left open) costs at most the wait,
 // never a stalled session start: the brief is printed after it.
+//
+// The brief runs in a synctest bubble: the open stdin is the only thing it
+// could wait on, so the bubble's clock shows the production wait exactly.
 func TestProjectBrief_HookNeverStallsOnAnOpenStdin(t *testing.T) {
-	orig := sessionStartInputWait
-	sessionStartInputWait = 50 * time.Millisecond
-	t.Cleanup(func() { sessionStartInputWait = orig })
 	database, pid, row := briefSessionFixture(t)
 	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
-	r, w := io.Pipe()
-	t.Cleanup(func() { _ = w.Close() })
-	rootCmd.SetIn(r)
-	t.Cleanup(func() { rootCmd.SetIn(nil) })
+	var out, errOut string
+	var err error
+	synctest.Test(t, func(t *testing.T) {
+		r, w := io.Pipe()
+		t.Cleanup(func() { _ = w.Close() })
+		rootCmd.SetIn(r)
+		t.Cleanup(func() { rootCmd.SetIn(nil) })
 
-	start := time.Now()
-	out, errOut, err := runWorkbench(t, "brief", "--workbench", strconv.FormatInt(pid, 10))
+		start := time.Now()
+		out, errOut, err = runWorkbench(t, "brief", "--workbench", strconv.FormatInt(pid, 10))
+		assert.Equal(t, sessionStartInputWait, time.Since(start), "the input wait, and nothing else, is waited")
+	})
 
 	require.NoError(t, err)
-	assert.Less(t, time.Since(start), 5*time.Second)
 	assert.Contains(t, out, "Setup pending")
 	assert.Contains(t, errOut, "reading the hook input")
 	assert.Equal(t, briefLaunchID, storedClaudeSessionID(t, database, row))

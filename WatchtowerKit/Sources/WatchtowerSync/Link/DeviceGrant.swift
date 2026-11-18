@@ -49,6 +49,9 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
     /// (`permissionsAllowed`). Absent on the wire reads false, and false is not written, so older peers' bytes
     /// stay as they were.
     let permissionsGranted: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    /// The owner's `chat` grant (iPhone chat D9): a newer hub writes it on every linked row, true or false. Absent
+    /// (an older hub, a waiting or refused phone) reads as allowed: such a hub announces no chat capability.
+    let chatGranted: Bool? // swiftlint:disable:this discouraged_optional_boolean
     /// nil while the hub has not decided yet.
     public let decidedAt: Date?
     /// The hub read the hello and waits for the owner; absent otherwise.
@@ -73,6 +76,8 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
     public var recordName: String { SliceKind.deviceGrant.recordName(id: deviceID) }
     /// Default false.
     public var permissionsAllowed: Bool { permissionsGranted ?? false }
+    /// Default true (see `chatGranted`).
+    public var chatAllowed: Bool { chatGranted ?? true }
     /// Whether the hub takes a `session_start` from this phone (#565; an older hub: its `startSessionsAllowed`).
     public var mayStartSessions: Bool { startSessionsGranted ?? startSessionsAllowed }
     /// Whether this hub takes numbered actions (`a-<device>-<seq>`); false keeps the legacy path.
@@ -97,6 +102,7 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
         case startSessionsAllowed
         case startSessionsGranted
         case permissionsGranted = "permissionsAllowed"
+        case chatGranted = "chat"
         case decidedAt
         case awaitingConfirmation
         case confirmNonce
@@ -120,6 +126,7 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
         startSessionsAllowed: Bool,
         mayStartSessions: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
         permissionsAllowed: Bool = false,
+        chatAllowed: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
         decidedAt: Date? = nil,
         awaitingConfirmation: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
         confirmNonce: String? = nil,
@@ -141,6 +148,7 @@ public struct DeviceGrant: Codable, Equatable, Sendable {
         self.startSessionsAllowed = startSessionsAllowed
         startSessionsGranted = mayStartSessions
         permissionsGranted = permissionsAllowed ? true : nil
+        chatGranted = chatAllowed
         self.decidedAt = decidedAt
         self.awaitingConfirmation = awaitingConfirmation
         self.confirmNonce = confirmNonce

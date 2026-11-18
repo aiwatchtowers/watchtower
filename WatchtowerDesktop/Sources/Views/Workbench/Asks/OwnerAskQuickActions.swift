@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import WatchtowerCore
+import ChatUI
 
 /// A Quick ask's one-tap row, shared by the banner over the terminal and
 /// the stack card (spec 2026-10-10 Part 9.1–9.2): the options as buttons

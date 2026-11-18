@@ -62,3 +62,21 @@ var RegistryErrorForTest = registryError
 // ExecutorMarkInterrupted runs the executor's start sweep (Run's first step)
 // without its poll loop.
 func ExecutorMarkInterrupted(ctx context.Context, e *Executor) bool { return e.markInterrupted(ctx) }
+
+// OnAbandonedRunEnd calls f each time an abandoned script goroutine ends
+// (tests); the returned func removes it.
+func OnAbandonedRunEnd(f func()) (remove func()) {
+	abandonedRunEnded.Store(&f)
+	return func() { abandonedRunEnded.Store(nil) }
+}
+
+// SetLiveCadenceZone pins the slack:live schedule check's zone for the
+// test.
+func SetLiveCadenceZone(t interface{ Cleanup(func()) }, zone *time.Location) {
+	old := liveCadenceZone
+	liveCadenceZone = func() *time.Location { return zone }
+	t.Cleanup(func() { liveCadenceZone = old })
+}
+
+// ShellEnv exposes shellEnv to the external tests.
+var ShellEnv = shellEnv

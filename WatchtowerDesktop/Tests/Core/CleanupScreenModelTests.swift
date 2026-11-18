@@ -117,6 +117,9 @@ final class CleanupScreenModelTests: XCTestCase {
             wtKey, "branch:feat/golden", "lsreg:/work/acme/wt-golden/Build/App.app",
             "process:501:Mon Oct 12 10:00:00 2026"
         ]
+        // Go's note, spelled once in Go and read here (spec §2a).
+        XCTAssertEqual(try XCTUnwrap(plan).notes, [SessionCleanupPlan.subagentRecordsUnreadableNote])
+        XCTAssertTrue(try XCTUnwrap(plan).subagentRecordsUnreadable)
         for items in [checked, try XCTUnwrap(plan).items] {
             let rows = all(model(items))
             XCTAssertEqual(rows.map(\.id), [wtKey])

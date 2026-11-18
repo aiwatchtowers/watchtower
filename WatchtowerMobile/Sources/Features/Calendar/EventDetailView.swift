@@ -3,7 +3,8 @@ import WatchtowerKit
 
 /// One event: the time line, attendees, the Prep card, linked targets
 /// (read-only), the Recording section, and the bottom bar: Join and the red
-/// Record, or Open recap once the event is over and has one.
+/// Record until the event ends, then Open recap or Open recording when
+/// there is one (`EventDetailModel.actions`).
 struct EventDetailView: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(\.openURL) private var openURL
@@ -23,7 +24,7 @@ struct EventDetailView: View {
                 ContentUnavailableView(
                     "Event not found",
                     systemImage: "calendar",
-                    description: Text("It is no longer in your calendar on the Mac.")
+                    description: Text("It is no longer in your calendar on the tower.")
                 )
             }
         }
@@ -175,6 +176,11 @@ struct EventDetailView: View {
             // A link, not a calendarPath append: the event detail is also
             // pushed on Now's stack, and the recap opens on the stack it is on.
             NavigationLink(value: CalendarRoute.recap(id)) {
+                Text(action.title)
+            }
+            .buttonStyle(ProminentActionStyle())
+        case .openRecording:
+            NavigationLink(value: CalendarRoute.recordings) {
                 Text(action.title)
             }
             .buttonStyle(ProminentActionStyle())

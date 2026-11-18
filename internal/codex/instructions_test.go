@@ -5,11 +5,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -288,25 +286,8 @@ reply gone
 			// The stub leads its own process group and exits by itself in half
 			// a second. Whatever path the call took (reply, timeout, failure),
 			// kill the group if it is still alive and wait until it is gone.
-			t.Cleanup(func() {
-				b, _ := os.ReadFile(pidFile)
-				pgid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
-				if pgid <= 0 || syscall.Kill(-pgid, 0) == syscall.ESRCH {
-					return
-				}
-				_ = syscall.Kill(-pgid, syscall.SIGKILL)
-				deadline := time.Now().Add(10 * time.Second)
-				for syscall.Kill(-pgid, 0) != syscall.ESRCH {
-					if time.Now().After(deadline) {
-						t.Errorf("stub process group %d still alive", pgid)
-						return
-					}
-					time.Sleep(20 * time.Millisecond)
-				}
-			})
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			defer cancel()
-			out, err := tc.run(ctx, script)
+			t.Cleanup(func() { reapGroup(readPID(pidFile)) })
+			out, err := tc.run(context.Background(), script)
 			if err != nil || out != "present" {
 				t.Errorf("output = %q, %v; want present (the file must outlive codex's first output)", out, err)
 			}
@@ -326,11 +307,13 @@ func TestInstructionsFileSupported_ConcurrentProbesOnce(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "codex")
 
 	var probes atomic.Int32
-	// The first probe fails; every later one: the first succeeds, slowly,
-	// and the rest fail.
+	// A probe is held until every caller of the round has started, so the
+	// round's calls overlap it. The first probe fails; every later one: the
+	// first succeeds and the rest fail.
+	var release chan struct{}
 	probeCodexVersion = func(string) ([3]int, error) {
 		n := probes.Add(1)
-		time.Sleep(50 * time.Millisecond)
+		<-release
 		if n == 2 {
 			return minInstructionsFileVersion, nil
 		}
@@ -339,10 +322,17 @@ func TestInstructionsFileSupported_ConcurrentProbesOnce(t *testing.T) {
 	instructionsProbeRetry = time.Hour
 	run := func() []bool {
 		got := make([]bool, 8)
-		var wg sync.WaitGroup
+		release = make(chan struct{})
+		var started, wg sync.WaitGroup
+		started.Add(len(got))
 		for i := range got {
-			wg.Go(func() { got[i] = instructionsFileSupported(bin) })
+			wg.Go(func() {
+				started.Done()
+				got[i] = instructionsFileSupported(bin)
+			})
 		}
+		started.Wait()
+		close(release)
 		wg.Wait()
 		return got
 	}

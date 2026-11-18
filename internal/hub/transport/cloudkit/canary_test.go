@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -229,11 +228,7 @@ func (c *canary) phoneTraffic() {
 	if _, err := c.phone.WriteUpload("u1", upload, &aDesc, sealedAudio); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(15 * time.Second)
 	for c.phone.Echoes[seq].Status != wire.StatusApplied || c.phone.UploadEchoes["u1"]["status"] != wire.StatusReceived {
-		if time.Now().After(deadline) {
-			t.Fatalf("echo %q, upload %v", c.phone.Echoes[seq].Status, c.phone.UploadEchoes["u1"])
-		}
 		if _, err := proc.Pass(c.ctx); err != nil {
 			t.Fatalf("pass: %v", err)
 		}

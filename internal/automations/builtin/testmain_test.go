@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"watchtower/internal/aiconsent"
+	"watchtower/internal/aiconsent/aiconsenttest"
 	"watchtower/internal/auditlog"
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/automationstest"
@@ -25,6 +27,8 @@ import (
 func TestMain(m *testing.M) {
 	// Read tests' audit lines stay out of the machine's unified log.
 	auditlog.SetSinkForTest(func(string) {})
+	// Background AI reads allowed unless a test injects a consent reader.
+	aiconsenttest.AllowByDefault()
 	if err := db.InitTestFileTemplate(); err != nil {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
 		os.Exit(1)
@@ -41,15 +45,23 @@ var testStart = time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC)
 type fakePrimitive struct {
 	mu    sync.Mutex
 	calls []automations.PrimitiveCall
-	res   automations.PrimitiveResult
-	err   error
+	// origins is each call's ctx origin (aiconsent.OriginOf).
+	origins []aiconsent.Origin
+	// checks is aiconsent.Check(ctx) at each call: the per-call backstop.
+	checks []error
+	res    automations.PrimitiveResult
+	err    error
 	// during runs inside each call (a call made while the run is active).
 	during func()
 }
 
-func (p *fakePrimitive) fn(_ context.Context, c automations.PrimitiveCall) (automations.PrimitiveResult, error) {
+func (p *fakePrimitive) fn(ctx context.Context, c automations.PrimitiveCall) (automations.PrimitiveResult, error) {
+	o, _ := aiconsent.OriginOf(ctx)
+	check := aiconsent.Check(ctx)
 	p.mu.Lock()
 	p.calls = append(p.calls, c)
+	p.origins = append(p.origins, o)
+	p.checks = append(p.checks, check)
 	during, res, err := p.during, p.res, p.err
 	p.mu.Unlock()
 	if during != nil {

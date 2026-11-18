@@ -7,7 +7,6 @@ import (
 	"sync"
 	"syscall"
 	"testing"
-	"time"
 )
 
 // useLauncher installs l for Ensure until the test ends.
@@ -37,11 +36,7 @@ func (c *childLauncher) launch(_ context.Context, exe, socket string) error {
 	go func() { _ = cmd.Wait(); close(waited) }()
 	c.t.Cleanup(func() {
 		_ = syscall.Kill(-pid, syscall.SIGKILL)
-		select {
-		case <-waited:
-		case <-time.After(ioTimeout):
-			c.t.Errorf("test session host %d not reaped", pid)
-		}
+		<-waited
 	})
 	c.mu.Lock()
 	c.pids = append(c.pids, pid)

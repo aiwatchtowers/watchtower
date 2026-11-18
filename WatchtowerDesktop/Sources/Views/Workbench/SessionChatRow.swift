@@ -1,10 +1,94 @@
+import AppKit
+import ChatUI
+import ChatWire
 import SwiftUI
+import WatchtowerChatText
 import WatchtowerCore
 
-/// One message of the session chat, shared by the pane and the subagent
-/// view. `Equatable` on its data only + `.equatable()` at the call site (the
-/// `ChatMessageRow` pattern): an unchanged row never re-renders its markdown.
-/// The closures are rebuilt per render and stay out of `==`.
+/// Workchat's feed on ChatUI (unified chat spec §9.2), shared by the pane and the subagent view: the owner's lines and
+/// the agent's text are ChatUI's rows (`WorkchatFeedAdapter`), with their time and "via Watchtower" as the caption;
+/// the `system` lines — Watchtower's own, the brief, notices, separators and subagent cards — are `SessionChatRow`.
+@MainActor
+struct WorkchatFeed {
+    let entries: [SessionFeedEntry]
+    let markdown: SessionFeedMarkdownCache
+    let expandedEvents: Set<String>
+    let onOpenSubagent: (SessionFeedSubagent) -> Void
+    let onToggle: (String) -> Void
+    /// Sends a question card's answers as the owner's next line; nil (a subagent's run, a finished session) shows the
+    /// card read-only.
+    var onAnswer: ((String) -> Void)?
+    /// The agent works: no card is answered meanwhile.
+    var isWorking = false
+    /// A line the owner sent is still on its way (not yet read back in the feed): a card just answered takes no
+    /// second answer.
+    var answerPending = false
+    /// An artifact card opens the viewer.
+    var onOpenArtifact: (ChatArtifactContent) -> Void = { _ in }
+
+    var messages: [ChatFeed.Message] { WorkchatFeedAdapter.messages(entries) }
+
+    /// The entry behind each message id.
+    var entriesByMessage: [Int64: SessionFeedEntry] {
+        Dictionary(entries.map { (WorkchatFeedAdapter.messageID($0.id), $0) }) { _, last in last }
+    }
+
+    func context() -> ChatFeedContext {
+        let byID = entriesByMessage
+        var rowActions = ChatRowActions()
+        rowActions.copy = { text in
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+        }
+        rowActions.allowsEdit = false
+        rowActions.allowsRegenerate = false
+        rowActions.allowsCopy = false
+        var partActions = ChatPartActions(openArtifact: onOpenArtifact)
+        partActions.openURL = { url in if AllowedURLSchemes.permits(url) { NSWorkspace.shared.open(url) } }
+        partActions.copy = rowActions.copy
+        partActions.showsSources = false
+        partActions.offersContinue = false
+        if let onAnswer { partActions.sendFixedText = onAnswer }
+        var context = ChatFeedContext(isTurnRunning: onAnswer == nil || isWorking || answerPending,
+                                      partActions: partActions,
+                                      rowActions: rowActions)
+        context.compact = true
+        context.margins = EdgeInsets(top: Spacing.medium, leading: Spacing.medium, bottom: Spacing.medium,
+                                     trailing: Spacing.medium)
+        context.captionView = { message in
+            let parts = byID[message.id].map(WorkchatFeedAdapter.caption) ?? []
+            guard !parts.isEmpty else { return nil }
+            return AnyView(HStack(spacing: Spacing.compact) {
+                ForEach(parts, id: \.self) { Text($0) }
+            }
+            .font(.caption2)
+            .foregroundStyle(.tertiary))
+        }
+        context.ownerHeader = { message in
+            byID[message.id].flatMap(WorkchatFeedAdapter.askHeader).map { header in
+                AnyView(VStack(alignment: .leading, spacing: Spacing.small) {
+                    Text(header.label).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    if let title = header.title { Text(title).font(.callout.weight(.semibold)) }
+                })
+            }
+        }
+        let (markdown, expanded, open, toggle) = (markdown, expandedEvents, onOpenSubagent, onToggle)
+        context.systemRow = { message in
+            guard let entry = byID[message.id] else { return AnyView(EmptyView()) }
+            return AnyView(
+                SessionChatRow(entry: entry, blocks: markdown.blocks(for: entry), expanded: expanded.contains(entry.id),
+                               onOpenSubagent: { entry.subagent.map(open) }, onToggle: { toggle(entry.id) })
+                    .equatable()
+            )
+        }
+        return context
+    }
+}
+
+/// A `system` line of the session chat (Watchtower's own line, the brief, a
+/// notice, a separator, a subagent card). `Equatable` on its data only +
+/// `.equatable()` at the call site: an unchanged row never re-renders its
+/// markdown. The closures are rebuilt per render and stay out of `==`.
 struct SessionChatRow: View, Equatable {
     let entry: SessionFeedEntry
     /// The parsed text, from the pane's `SessionFeedMarkdownCache`.
@@ -26,20 +110,8 @@ struct SessionChatRow: View, Equatable {
 
     var body: some View {
         switch entry.kind {
-        case "owner":
-            ownerBubble(label: nil, title: nil, caption: nil)
-        case "ask_answer":
-            ownerBubble(label: entry.askID.map { "Ask #\($0)" } ?? "Ask", title: entry.title, caption: "via Watchtower")
         case "watchtower":
-            ownerBubble(label: nil, title: nil, caption: "via Watchtower")
-        case "agent":
-            HStack {
-                VStack(alignment: .leading, spacing: Spacing.tight) {
-                    markdown
-                    timeCaption
-                }
-                Spacer(minLength: 48)
-            }
+            watchtowerBubble
         case "brief":
             DisclosureGroup {
                 markdown.padding(.top, Spacing.small)
@@ -93,36 +165,23 @@ struct SessionChatRow: View, Equatable {
         .frame(maxWidth: .infinity)
     }
 
-    private func ownerBubble(label: String?, title: String?, caption: String?) -> some View {
+    /// A line Watchtower wrote to the agent for the owner: on the owner's side, marked "via Watchtower".
+    private var watchtowerBubble: some View {
         HStack {
             Spacer(minLength: 48)
             VStack(alignment: .trailing, spacing: Spacing.tight) {
-                VStack(alignment: .leading, spacing: Spacing.small) {
-                    if let label {
-                        Text(label).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    }
-                    if let title, !title.isEmpty {
-                        Text(title).font(.callout.weight(.semibold))
-                    }
-                    markdown
-                }
-                .padding(.horizontal, Spacing.cozy)
-                .padding(.vertical, Spacing.compact)
-                .background(Color.accentColor.opacity(ChipTint.fillOpacity), in: RoundedRectangle(cornerRadius: Radius.container, style: .continuous))
+                markdown
+                    .padding(.horizontal, Spacing.cozy)
+                    .padding(.vertical, Spacing.compact)
+                    .background(Color.accentColor.opacity(ChipTint.fillOpacity),
+                                in: RoundedRectangle(cornerRadius: Radius.container, style: .continuous))
                 HStack(spacing: Spacing.compact) {
-                    if let caption { Text(caption) }
+                    Text("via Watchtower")
                     if let at = entry.at { Text(at, format: .dateTime.hour().minute()) }
                 }
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
             }
-        }
-    }
-
-    @ViewBuilder
-    private var timeCaption: some View {
-        if let at = entry.at {
-            Text(at, format: .dateTime.hour().minute()).font(.caption2).foregroundStyle(.tertiary)
         }
     }
 

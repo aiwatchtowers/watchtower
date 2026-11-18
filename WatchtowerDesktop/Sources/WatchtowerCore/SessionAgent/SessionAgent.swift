@@ -40,6 +40,8 @@ package protocol SessionAgent: Sendable {
     /// The agent's transcript home in `environment` (the login shell's, which
     /// the launched agent reads); nil when its lookup needs none.
     func transcriptHome(environment: [String: String]) -> URL?
+    /// Onboarding's install, sign-in and update data for the agent's CLI.
+    var setup: AgentSetup { get }
 }
 
 extension AgentKind {

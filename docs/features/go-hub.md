@@ -33,7 +33,7 @@ One runtime (`internal/hub`, `Run`) inside the daemon joins these packages:
 | `internal/hub/transport` | The `Transport` seam (`Write`/`Changes`/`Delete`, `Expect` preconditions, zones), `relay` — the hosted relay client (the relay's Go client and generated proto vendored by `make relay-go`, pinned in `transport/relay/VERSION`) — `memfake`, the in-memory relay/CloudKit stand-in for tests, and `cloudkit` (phase 3) — the client of `WatchtowerCloudBridge.app` over `<hub dir>/bridge.sock` (`bridge.proto`/`bridgepb`, frames pinned by `testdata/frames.json` for the Swift bridge; runtime zone names mapped onto `DataZone-<hub_id>`/`RelayZone-<hub_id>`, every phone on the one shared mailbox `relay/<relay id>/*`; the bridge's generation in `<hub dir>/bridge.generation` so a lost `bridge.db` resets cursors and refuses old tags), its `Supervisor` and the `bridgefake` test bridge. |
 | `internal/hub/link` | Linking: link codes, the pair zone hello, the awaiting keybox, the SAS confirmation (`Confirm(device, code, ok)`), grants (`typing`, `permissions`, `start_sessions`), unlink and the revoke hook; a linked phone's `device` record naming its relay id with the `relay_auth` key's proof (`VerifyRelayIDProof`, relay client Phase 3b Task 23) sets `devices.relay_device_id`, takes the id (with its admission stamp and any relay lapse) off any other row (ask #1005; a hello's unproven id is stored only when no other row holds it), clears the phone's own admission stamp, and `OnRelayIDNamed` makes the runtime run the link upkeep (`set_hub_readers`) and read the account state at once. |
 | `internal/hub/actions` | The processor (ordered actions per phone by `action_seq`: hold ahead of a gap, one `resend_from` per gap (asked again once the ask is 10 minutes old and another action is read ahead of it, #1498), `skip_to`, the exactly-once ledger, `received`/final echoes, the legacy unordered path, controls, and the phone's `device-<id>` record through `link.Center.ApplyDeviceRecord`, on CloudKit's shared `RelayZone` and, since G1, in its relay mailbox with no creator check, see `relay-client.md`) and the dispatcher; the hosted relay keeps one mailbox per phone, read drain-then-read per phone as in phase 1 (a zone event reads only the mailbox it names, see Phase 4 → Relay ops per action), while the shared `RelayZone` (`actions/shared.go`) is read once per pass with every record routed to the phone its envelope's sender names (every linked phone with or without a relay id; a name naming another device than its sender is dropped as `sender_mismatch`; the hub's own records go to the phone whose key opens them; `control_queue` keyed `<zone>@<device>`, moved when a phone's mailbox changes shape; a failed phone's records wait for the next pass with the zone token held back; only a record whose own content fails is struck, and it is passed over after `MaxRecordStrikes` = 3 failures over at least `StrikeWindow` = 10 min — a store or transport error never strikes); `actions/handlers` holds every action handler (asks, board, session start/stop, session input and Interrupt, permission answers, chat/report requests, recording uploads). |
-| `internal/hub/slices` | The publisher (hash per record, debounced saves with a 60 s full diff — only the kinds an applied phone action nudges (`PublishNow`) skip the debounce; they are still held by the transport spacing and by a failed save's retry (the backoff, or the relay's `retry_after_s` after RATE_LIMITED, capped at `RetryRateLimitedMax` 60 s); a held kind keeps its time across the periodic full diff and Resume's full diff, which cover only the kinds not held —, the 900 KB guard, heartbeat), the change watch (`data_version` poll: 250 ms while a phone was in touch within the last 10 min (`ActiveWindow`), else 1 s; nudges from handlers and the session-state lane) and `slices/sources`, one source per slice kind. |
+| `internal/hub/slices` | The publisher (hash per record, debounced saves with a 60 s full diff — only the kinds an applied phone action nudges (`PublishNow`) skip the debounce; they are still held by the transport spacing and by a failed save's retry (the backoff, or the relay's `retry_after_s` after RATE_LIMITED, capped at `RetryRateLimitedMax` 60 s); a held kind keeps its time across the periodic full diff and Resume's full diff, which cover only the kinds not held, except that a Resume after a transport switch drops the retries (and backoffs) of the old transport, spacing holds kept; one kind's failed save does not stop the cycle (#1761): the later kinds still go and only the failed one is retried, on its own backoff (1 s doubling to 10 s, to 5 min for `record_too_large`/`unsupported_version`), while a transport- or zone-wide refusal (`unavailable`, `hub_quota`, `rate_limited`, `forbidden`, `not_vouched`, `unsupported_version`, `entitlement_inactive`), ctx and an epoch rotation still end the cycle (the kinds it never tried back off by the stopping failure's class, by the plain backoff after an epoch rotation); `last_publish_at` moves unless the cycle tried kinds and finished none —, the 900 KB guard, heartbeat), the change watch (`data_version` poll: 250 ms while a phone was in touch within the last 10 min (`ActiveWindow`), else 1 s; nudges from handlers and the session-state lane) and `slices/sources`, one source per slice kind. |
 | `internal/hub/alerts` (phase 4) | The pusher: work alerts to the paying phones over the relay's `send_alert`, at most once per (alert key, phone), with the `alert_pushes` ledger (below). |
 | `internal/hub/measure` (phase 4) | `Recorder`: content-free latency samples (read → applied → slice saved) into `latency_samples`. |
 | `internal/hub/platform` | Darwin/Linux specifics: the owner-away signal, keeping the machine awake, and `PeerUID` (the unix-socket peer check of the control socket and the bridge client). |
@@ -153,7 +153,7 @@ baseline's own columns, checked by the canary test.
 
 The host (`internal/sessionhost`) answers v1 and v2 hellos; a v2 client refuses a v1 host and never replaces it. v2 adds
 operations that never bind the connection to a session, so the hub never takes a run over from the app's window:
-`List`, `InputTo` (bytes into one run and launch — the phone's Interrupt Esc; never the owner's draft), `Deliver`
+`List`, `InputTo` (bytes into one run and launch — the phone's Interrupt Esc, the Desktop pane's terminal replies and app input (#1743); never the owner's draft), `Deliver`
 (PROJ-12's typed-never-submitted delivery inside the host: bracketed paste, the settle pause, `DeliverCheck` before
 the Return, `hold_if_prompt_text` for PROJ-16 lines; outcomes `submitted`, `typed`, `held`, `no_paste_mode`,
 `no_session`), `PromptHint` and `Stop` (the exit carries `requested`, so no PROJ-18 cleanup follows). Every launch of a
@@ -190,7 +190,6 @@ checked against the code named).
 | `internal/workbenchgit` `.worktreeinclude` (`clone_other.go`) | `clonefile` | plain copy |
 | `internal/hub/platform` (`away_linux.go`, `awake_linux.go`) | console lock, input idle and display sleep; keep-awake | always away, no keep-awake (`Hold` does nothing) |
 | `internal/chat` sandbox (`NewChildSandbox`) | `sandbox-exec` profile | refused ("needs macOS"), so claude.ai mode stays off |
-| `internal/planusage` (`DefaultCredentialSource`) | Keychain, then `~/.claude/.credentials.json` | the credentials file only, no Keychain |
 | `internal/daemon` process identity (`procident_other.go`) | `kern.proc.pid` sysctl start time | `ps -o lstart=` under `LC_ALL=C` |
 | Phone line or ask answer the session cannot take (`internal/hub/actions/handlers`: `deps.go` `Clipboard`/`DesktopHost`, `session_input.go`, `ask.go`) | a line: copied to the clipboard (pbcopy) while the Desktop heartbeat is fresh, echo `failed(cannot_type)` saying so; an ask answer: saved, `failed(cannot_type)` | no Desktop heartbeat, so no clipboard: `failed(cannot_type)` with `CannotTypeMessage` (an ask answer still saved) |
 | `internal/sqlcipher` crypto (`wt_cgo.go`) | CommonCrypto | OpenSSL `libcrypto` (dynamic) |
@@ -331,6 +330,26 @@ rulings asks #827, #881, #883). The hub leaves the test workspace for real data 
   without `relay_admitted_at`, `relay` with it. `hubtest.Phone.VouchLink` (the copied client's `VouchHub`: VOUCH challenge, then
   `vouch_hub` with no attestation) and `relaytest`'s vouch model (gate incl. open sockets, the relay's refusal order,
   10-minute pending vouch consumed by `promote_pairing`/`add_slot`, best-effort `SLOT_ADDED`, `RemoveSlot`).
+- **Relay saves in requests under the relay's cap** (#1760; `relay.Transport.Save`, `transport/relay/save.go`). The
+  relay refuses a record over 1 MiB and an op body over 1 MiB + 64 KiB as a whole (`RECORD_TOO_LARGE`), and the
+  publisher saves a whole kind per call (a thousand-target board failed every cycle). `Save` packs the items, in
+  order, into requests of at most `saveRequestBudget` (960 KiB estimated, 128 KiB under the cap); an envelope over
+  1 MiB is refused alone (`record_too_large`) and never sent; per request the assets are uploaded first (an
+  attachment over the limit refuses its item alone). A request the relay still refuses `RECORD_TOO_LARGE` is halved
+  and each half sent again; a record refused alone gets `record_too_large`. Any other failure — the relay's answer,
+  a dropped connection, the host stopping (ctx) — fails the whole call at any point, as the CloudKit client does:
+  items of the requests that went through before it may already be in the zone, and the next try re-sends the whole
+  batch (a restart leaves the same state). v1 limit, shared with CloudKit: the publisher records none of a failed
+  call's items, so an item removed (or publishing turned off) before the retry leaves its saved record in the zone
+  until the zone is recreated (no sweep lists a zone). Conflict indexes are per request
+  and mapped back to the items; a refused request re-reads its zones. `relaytest` enforces the same two limits
+  (`MaxRecordBytes`, `MaxBodyBytes`).
+- **Zone subscriptions** (`watchZones`, link upkeep): a zone the relay refuses (FORBIDDEN: no phone holds the hub
+  in a slot for it yet) waits `linkEvery` (1 min) doubling to `maxSubBackoff`; the hub turning vouched clears the
+  waits. A phone newly admitted while the hub was already vouched (a new `relay_admitted_at` stamp, or
+  `SLOT_ADDED`) makes the refused zones due at once and kicks a link upkeep (`retryZonesNow`, #1761: a phone that
+  named its relay id had its mailbox, and its `transport_switch`, read a minute late); the failure count stays, so a
+  refusal after that waits the doubled time.
 - **Session host under a service manager** (PROJ-20 amended for Linux, ask #827): socket dir `/run/user/<uid>` or
   `<data root>/.run` (see Linux behaviour); on Linux `sessionhost.Ensure` always starts the host as the transient unit
   `watchtower-session-host` (`systemd-run --user --collect --quiet --property=UMask=0077`, `--setenv` of `PATH` and the
@@ -389,7 +408,12 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
   with backoff 1 s → 60 s) carries sealed envelopes and metadata over `<hub dir>/bridge.sock` (0600, peer UID
   checked, u32 BE length ‖ protobuf, 4 MiB max); assets travel as file paths only. It holds no hub key and opens no
   envelope. Its CloudKit state is `<hub dir>/cloudkit/`. It keeps running while the hub is on the relay, to poll the
-  CloudKit mailboxes for a switch back (decision 4).
+  CloudKit mailboxes for a switch back (decision 4). One frame's saves or deletes reach CloudKit in modify requests of
+  at most 200 records and about 1 MiB (`CloudKitBridgeCloud.batches`); a request CloudKit still refuses as a whole
+  (`limitExceeded`) is halved and each half sent again, and only a record refused alone is answered
+  `record_too_large`, for that item alone (#1745: a 4 MiB frame in one request failed every publish cycle). A
+  request that fails otherwise after earlier ones went through keeps their results and refuses the rest with its
+  class; a failure before anything went through still fails the whole call.
 - **Adoption** (`hub adopt`). Desktop's `HubAdoptionDriver` reads the state only through `hub adopt --status --json`,
   hands the settings over on stdin (`--settings-stdin`), then the keys on stdin (`--keys-stdin`, a separate call),
   deletes its Keychain items, and confirms (`--confirm-deleted`). Go derives the Swift directory itself and leaves
@@ -398,6 +422,32 @@ decisions asks #843, #851, #956; the plan's Global Constraints are the contract)
   the Desktop's Keychain items, which Reset All Data does not remove (the guide's privacy page says so).
   **Set up Mobile again** (`hub adopt --set-aside`, after `no_keys`) writes `MOVED` and moves the Swift files into
   `MobileHub/set-aside-<UTC time>/`: kept, never imported or deleted.
+- **`hub_id` keeps its stored spelling** (#1746). The Swift hub stored `UUID().uuidString.lowercased()`; the Go
+  hub makes an uppercase one. CloudKit zone names are case-sensitive and phones compare a grant's and a heartbeat's
+  `hub_id` with their link's as text, so everything that names the hub in text — the bridge's `DataZone-<hub_id>` /
+  `RelayZone-<hub_id>`, link codes, grants, the heartbeat, switch markers — uses `Keyring.HubIDText()` (hub_id as
+  stored), never `HubID().String()` (controls such as `resend_from` keep `HubID().String()`: a phone parses their
+  `hub_id` as a UUID). Releases up to v0.28.0 used the uppercase form, so an adopted hub published into
+  two new, empty zones its phones never read and read a mailbox no phone wrote: no phone action arrived and phones
+  kept the Swift hub's last grant. At start the hub compares `hub_meta.cloudkit_zones_hub_id` (absent = the uppercase
+  form) with the stored spelling; when they differ it runs the account-change reset once (published state forgotten,
+  CloudKit's mailbox read again from the start, the exactly-once ledger answering repeats) and records the mark.
+  **The uppercase zones are deleted once** (#1750): after that mark, while the iCloud account is available,
+  housekeeping (`retireOldCloudKitZones`) sends the bridge `RetireZones{hub_id: <UPPERCASE>}`, which deletes
+  `DataZone-`/`RelayZone-<UPPERCASE>` and the bridge's `watchtower-bridge-db-<UPPERCASE>` database subscription
+  (the extra silent push per private-database change ends) and forgets its tags and cursors of those zones; zones or
+  a subscription already gone count as done. Only another spelling of the hub's id can be named: the Go client
+  (`cloudkit.OtherSpelling`) and the bridge (`BridgeService.otherSpelling`) both refuse the stored spelling itself or
+  any id that differs other than by ASCII case, before CloudKit is called, and zone names are used exactly as given
+  (CloudKit compares them case-sensitively), so the phones' lowercase zones are never touched. A Go-made hub (stored
+  uppercase) has nothing to retire and never asks. `hub_meta.cloudkit_retired_zones_hub_id` records the deletion only
+  after the bridge answered done; a failure (bridge down, an older bridge that answers `bad_request`, iCloud
+  unavailable) never holds the hub, is logged once per class and run, and is retried after a backoff (10 min doubling
+  to 12 h, and at every start). Writers of those zones: only builds up to v0.28.0 (this Mac, before the update) and a
+  phone that linked to an adopted hub while it ran v0.28.0 — it got an uppercase code and lives in those zones; the
+  deletion wins over such a phone for good (its writes then fail with the zone gone) and it must link again, which it
+  already needed. v1 limits: an iCloud account change before the deletion leaves the uppercase zones in the old
+  account (the deletion then runs in the new one, finds nothing and is recorded).
 - **Transport switch.** Only a person switches: a paying phone's `transport_switch`, or `entitlement_expired`. A switch
   toward the relay waits at least 5 minutes after the previous one; a switch toward CloudKit is immediate. Every
   accepted switch rotates the keyring. A notice is left in the transport being left (decision 1), and old keys are
@@ -526,12 +576,33 @@ re-checked in its Task 0; the plan's Global Constraints, Decisions and Known lim
   cluster at a time with "…", `ErrAlertTooLarge` only when all three are empty and it still does not fit. The final
   bound is `AlertPushMaxEnvelope` = 3021 bytes (relay `MAX_PAYLOAD_BYTES` 4096 − the 67-byte APNs body, base64). The data-zone record keeps the full text (ask #864).
   `secure.WorkAlertFields` is the one JSON shape of the record and the push (the Kit's `WorkAlertPayload` keys).
+- **The `chat_answer` push** (iPhone chat, #1791 T7; `internal/hub/chat_turn_watch.go`). Event `chat_answer`
+  with the optional `conversation_id` field of `WorkAlertFields`; no ask_alert zone record, the push goes straight
+  to `alerts.Pusher.Enqueue` (relay only). Ledger key `chat:<turn_id>:<answer|stopped|approval>`, so each
+  (turn, event) is pushed at most once per phone, across restarts. Title = the conversation title clipped at 60;
+  body fixed (`Answer ready`, `The answer stopped`, `Waiting for your approval`), never answer text. Sources:
+  the runner's `OnTurnEnd` for the hub's own turns (`complete` = answer, `partial`/`error` = stopped), and a
+  check on every `data_version` change (plus the chat timer's 5 s backstop) for the Mac's: a `chat_turn_leases`
+  row with `owner='desktop'` (main chats only, `context_type IS NULL`, as for every chat push) that disappeared with the turn's assistant row present, and a newly pending
+  `agent_actions` row (`trust_at_create='ask'`, chat turn) as the approval case. The first look only records
+  (nothing pushes for what happened before the hub started). No push when an `open` `chat_feed_request` for the
+  conversation arrived in the last 90 s (`ChatWatches.Open`; a prefetch never counts). The pusher's owner-away and
+  paying-slot rules apply as to every work alert.
   `secure.Push` has no exported constructor: only `AlertPush` makes one. Pinned by `go-sealed.json` case `alertPush`
   and the Kit's `GoSealedEnvelopeTests.testGoSealedAlertPushOpensWithAlertOpener`.
 - **`send_alert`** (`transport.Alerts`, implemented by the relay transport only; `memfake` and `cloudkit` have none).
   `relay.Transport.SendAlert(ctx, phoneRelayID, secure.Push)` refuses an unsealed push before any I/O and sends the
   envelope only. On this op `NOT_FOUND` is `transport.ErrNoPushToken` and `UNSPECIFIED` "not implemented"
   `transport.ErrPushOff`; the rest maps through `MapError`; `relay.RetryAfter(err)` reads `retry_after_s`.
+- **Relay answers `MapError` has no code class for** (#1872). `UNSPECIFIED` "internal error" (the relay failed the
+  op: a 200 from the device object's catch around one op, a 500 when the call to the device object threw, a 200 on
+  a public op such as login) is `relay.ErrRelayInternal`, which is `transport.ErrUnavailable` (a mailbox pass and
+  `set_hub_readers` retry later) with two exceptions: the publisher does not take it as cycle-wide (one op may throw
+  alone, so the other kinds still go, #1761), and the alert pusher settles it `expired` (`in_flight`), never resent
+  (the push may already be queued). An HTTP status other than 200 whose body carries no protocol error (an empty 5xx
+  from the edge) is no answer (`client.Do` fails; unavailable), never a success. The publisher's, the hub's, the
+  mailbox processor's and the pusher's log classes name the former `relay_internal` and any other unclassed code
+  `relay_<code>` (`relay.CodeClass`) instead of a bare `error`/`other`.
 - **The pusher** (`internal/hub/alerts`, wired in `alerts_wiring.go`). The publisher calls
   `slices.Config.OnAlertSaved` once per alert key after its first successful save, only while the relay is the active
   transport (republishes and rotations never; on CloudKit the `sig-` signal path runs instead). `Pusher.Enqueue`
@@ -638,3 +709,45 @@ Measured with `TestMeasure_HubLatencyOverTheStand` (200 actions, local stand, hu
 ## Relay key rotation (relay client Phase 5, ask #1066/#1067)
 
 On a relay route the keyring rotates every 7 days (`relayRotationAge`; 90 days on iCloud). A phone's `epoch_ack.next_kx` is stored as `devices.kx_offer`/`kx_offer_epoch` (only on the relay, only while not lapsed); at the rotation the hub draws `hub_eph` per offering phone, seals the derived keys as `epoch_relay_keys`, clears `hub_eph`, and sends a keybox sealed to the offer (`KeyboxRecipient`, `relay_kx`/`previous_relay_kx`), in the data zone for timer rotations. A free phone gets a grant and no keys on the relay. Erasure runs only on epochs that began on the relay (`hub_epochs.on_relay`). Each republish after a rotation logs `hub: rotation republish: complete|interrupted|resumed, N records, B asset bytes, E envelope bytes, D s`. Limits: see relay-client.md "Phase 5 limits".
+
+## Hub kind and board columns (2026-11-15, #1783, #1781)
+
+- The heartbeat carries an optional `hub_kind` (`wire.HubKindMac` = `mac` in a desktop host's live mode, else
+  `server`). The phone reads it to word its allow steps: the Mac app's Settings → Mobile for `mac` or a hub that sends
+  no kind, `watchtower hub allow <phone id> typing|start_sessions|permissions` otherwise. A `device_not_allowed`
+  refusal follows the same kind (`handlers.Deps.ServerHost`, from `hubKindOf`). Phone-facing hub messages call the hub
+  "your tower" ("Answered on your tower", "Too late — answer on your tower"; PROJ-21 amended, ask #1322).
+- The workbench record carries an optional `board_columns` (the workbench's Kanban column titles in order, from
+  `workbench_board_columns`) for the phone's board lanes; an older phone ignores it.
+
+## iPhone chat (2026-11-15, board #1791)
+
+**Superseded in part (unified chat, 2026-11-16, [unified-chat.md](unified-chat.md)):** the runner `internal/hub/chatrun` and its pool of 2 are now the daemon's chat engine (`internal/chatengine`, one pool of 3 for the Mac and the phone), the hub calls it in-process as an adapter (`hub.Options.ChatEngine`) and no longer watches `chat_*` tables, and the lease watch, `desktop_too_old` and the heartbeat's `chat_lease` flag are gone (the flag is accepted and ignored for one release). The text below describes the 2026-11-15 design.
+
+The hub runs phone-started chat turns: `internal/chatstore` (the Go turn store) and `internal/hub/chatrun` (a pool of 2 `ai session` processes, started at hub start with a sweep of orphan groups and dead leases, closed first at hub stop). A turn's rows are written by the lease holder's store, Swift or Go (`chat_turn_leases`, migration 00189). The ten `chat_*` kinds and the `chat_attachment` frame are registered in `handlers.Register`; the `chat` grant (`hub allow <device> chat [--revoke]`, sidecar migration 00017) is on by default; the heartbeat carries `capabilities.chat` and `chat_reason`; `hub desktop heartbeat --chat-lease 0|1` and the control socket's `chat_lease` tell the hub the Desktop honours the lease. Full note: [iphone-chat.md](iphone-chat.md); push: the `chat_answer` paragraph in Phase 4 above.
+
+## A failing publish is visible (2026-11-16, #1873, asks #1396/#1398)
+
+- **The log names the reason.** A failed publish cycle, a kind's source read, a phone's mailbox read and the relay readers sync log a
+  content-free reason after their class (`internal/hub/logreason`): the relay's error code when the chain carries one
+  (`other: relay code CONFLICT`), else the deepest typed Go error (`unavailable: *net.OpError`), else `untyped` —
+  never the error's text. The cycle line lists the kinds it retries (`kinds retried: owner_ask, target`). Each of the
+  lines goes through a `logreason.Limiter` (one per publisher, processor and hub runtime): the first copy is logged,
+  then at most one per `logreason.RepeatEvery` (10 min) with "(repeated N more times over 10m0s)"; a different line
+  logs at once. The cycle line is keyed by its reason alone (the kinds retried vary through one outage), the mailbox
+  line by device and reason, the source line by kind and reason; a line that stops repeating loses its held-back count.
+- **`hub status` text** shows a relay that is not connected: `hub: running, relay unavailable since 15:22 (last saved
+  15:20), 1 phone(s)` (local time, the date when not today; "never saved since the hub started" before the first
+  save). `--json` already carried `relay.state`/`since`/`last_saved_at`; Settings → Mobile's Relay row already reads
+  them ("Relay unavailable for <N> min.", "Connected · last change delivered … ago").
+- **Heartbeat `background_ai`** (optional string, #1886): `allowed`, `paused` (the owner's answer, or none yet) or
+  `organization` (paused by the AllowBackgroundAI policy). `runtime.go`'s `backgroundAIValue(aiconsent.Current())`
+  feeds `HeartbeatFacts.BackgroundAI` (nil or empty = absent); a change restamps the heartbeat at once, as `caps`
+  does. The Kit's `HeartbeatPayload.backgroundAI` is `BackgroundAIStatus?`; an absent key (an older hub) and an
+  unknown value read as nil.
+- **Heartbeat `stuck_since`** (optional Unix seconds): when the oldest kind whose last attempt did not go through
+  whole first failed — a failed save or source read, or a record the cycle skipped (oversized, unsealable, refused by
+  the transport). `Publisher.StuckSince` keeps it per kind (`slices/stuck.go`) until an attempt goes through whole; an
+  epoch rotation's abort counts neither way. The heartbeat restamps at once when the value changes. `last_publish_at`
+  keeps its meaning (moves when any kind finished). The phone's use of it is in
+  [mobile-companion.md](mobile-companion.md) ("The data's age").

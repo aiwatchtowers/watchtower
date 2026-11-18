@@ -650,3 +650,40 @@ func TestWatchSlot_StaleRunNeverOverwritesTheMirror(t *testing.T) {
 		t.Errorf("track = %+v; want the new instruction kept", tr)
 	}
 }
+
+// countingWatchGate counts its calls and answers due.
+type countingWatchGate struct{ calls int }
+
+func (g *countingWatchGate) Due(context.Context, db.Automation, db.Track, time.Time) bool {
+	g.calls++
+	return true
+}
+
+// BGAI-01: while paused a watch recipe is skipped before its gate, with no
+// run row and no scan; a queued Run Now (Scan from) still runs.
+func TestRunWatchSlot_PausedSkipsWithoutGate(t *testing.T) {
+	f := newWatchFixture(t)
+	sw := &consentSwitch{}
+	sw.paused.Store(true)
+	f.runner.SetConsent(sw.read)
+	a := f.addWatch(t, "on", "watch the refund", true, true)
+	f.seedActivity(t, "the refund was approved")
+	gate := &countingWatchGate{}
+
+	out := f.runner.RunWatchSlot(context.Background(), gate)
+	if o := outcomeOf(t, out, a.ID); o.Skipped != SkippedPaused || o.RunID != 0 {
+		t.Errorf("paused: %+v; want skipped paused", o)
+	}
+	if gate.calls != 0 || len(f.runsOf(t, a.ID)) != 0 || len(f.scan.scanCalls()) != 0 {
+		t.Errorf("paused: %d gate calls, %d runs, %d scans; want none", gate.calls, len(f.runsOf(t, a.ID)), len(f.scan.scanCalls()))
+	}
+
+	id, _, err := EnqueueManual(f.d, a.ID, automations.BuiltinInput{}, f.clock.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out = f.runner.RunWatchSlot(context.Background(), gate)
+	if o := outcomeOf(t, out, a.ID); o.RunID != id || o.Status != db.RunSucceeded || gate.calls != 0 {
+		t.Errorf("queued Run Now while paused: %+v, gate calls %d; want run %d succeeded, no gate", o, gate.calls, id)
+	}
+}

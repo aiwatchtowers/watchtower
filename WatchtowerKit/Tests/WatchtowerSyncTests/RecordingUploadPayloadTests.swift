@@ -107,7 +107,7 @@ final class RecordingUploadPayloadTests: XCTestCase {
         XCTAssertEqual(RelayRecordKind.recordingUpload.rawValue, "recording_upload")
         XCTAssertEqual(
             RelayRecordKind.allCases.map(\.rawValue),
-            ["action", "heartbeat", "recording_upload", "device", "hello", "control"]
+            ["action", "heartbeat", "recording_upload", "chat_attachment", "device", "hello", "control"]
         )
     }
 

@@ -90,7 +90,7 @@ func TestReport_CodexSessionsIncludedAndUnpriced(t *testing.T) {
 	require.NoError(t, d.SetWorkbenchAgentAnalytics(wb, true))
 	putSession(t, d, wb, "claude-1", 8, 4)
 	storeCodex(t, d, wb)
-	ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0.Add(time.Hour), English)
+	ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0.Add(time.Hour), English, AgentAll)
 	require.NoError(t, err)
 	require.Len(t, ov.Sessions, 2)
 	rows := map[string]SessionRow{}

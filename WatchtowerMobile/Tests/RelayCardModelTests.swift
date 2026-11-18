@@ -56,11 +56,11 @@ final class RelayCardModelTests: XCTestCase {
             Case(phase: .unknown, rows: [["Relay", ""]], line: "Couldn't reach Relay.", action: .retry, actionTitle: "Retry"),
             Case(
                 phase: .paying(grace: false, macs: ["a", "b"]),
-                rows: [["Subscription", "Active"], ["Macs on this subscription", "2 of 3"]], line: nil, action: nil, actionTitle: nil
+                rows: [["Subscription", "Active"], ["Towers on this subscription", "2 of 3"]], line: nil, action: nil, actionTitle: nil
             ),
             Case(
                 phase: .paying(grace: true, macs: ["a", "b"]),
-                rows: [["Subscription", "Active"], ["Macs on this subscription", "2 of 3"]],
+                rows: [["Subscription", "Active"], ["Towers on this subscription", "2 of 3"]],
                 line: "Active. Check your payment in the App Store.", action: nil, actionTitle: nil
             ),
             Case(

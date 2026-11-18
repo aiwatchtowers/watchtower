@@ -3,7 +3,6 @@ package relay
 import (
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/relay/client"
@@ -21,7 +20,11 @@ func TestOnConnectedOncePerConnect(t *testing.T) {
 	})
 	t.Cleanup(func() { _ = tr.Close() })
 	var n atomic.Int32
-	tr.OnConnected(func() { n.Add(1) })
+	connected := make(chan struct{}, 16)
+	tr.OnConnected(func() {
+		n.Add(1)
+		connected <- struct{}{}
+	})
 	h.relay.SetAccountState(&relayv1.AccountState{Phones: []*relayv1.SlotHolder{{PhoneDeviceId: "phone1", Paying: true}}})
 	data := transport.DataZone(tr.c.DeviceID())
 	box := transport.MailboxZone(tr.c.DeviceID(), "phone1")
@@ -52,9 +55,8 @@ func TestOnConnectedOncePerConnect(t *testing.T) {
 			t.Fatalf("event %+v, want a reconnect marker", ev)
 		}
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for n.Load() < 2 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
+	for n.Load() < 2 {
+		<-connected
 	}
 	if got := n.Load(); got != 2 {
 		t.Fatalf("%d connects after one reconnect, want 2", got)

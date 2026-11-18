@@ -1,6 +1,8 @@
+import ChatWire
 import SwiftUI
 @testable import WatchtowerDesktop
 import WatchtowerCore
+@testable import ChatUI
 
 /// A long markdown answer in the chat (spec 2026-10-24 §5b): a finished
 /// row draws its prose with native text runs, a streaming one with SwiftUI
@@ -51,18 +53,42 @@ enum ChatMarkdownShotFixtures {
         Last paragraph.
         """
 
-    static func finished(width: CGFloat) -> AnyView {
-        let message = ChatMessageRecord(id: 2, conversationID: 1, role: "assistant", text: answer, createdAt: 0,
+    /// "Пункт | Что сказано": a short column and a column of sentences,
+    /// wider than the column (ask #1197), then a small table that fits.
+    static let wideTable = """
+        Что сказано на встрече:
+
+        | Пункт | Что сказано |
+        |---|---|
+        | Запуск | Команда переносит запуск на следующую неделю, потому что проверка ещё не закончена. |
+        | Бюджет | Бюджет остаётся прежним, но часть денег уходит на внешний аудит безопасности. |
+        | Сроки | Первую версию показываем в пятницу, полную — в конце месяца. |
+        | Риски | Главный риск — интеграция с почтой: у двух клиентов она падает на больших ящиках. |
+        | Команда | Нужен ещё один разработчик на мобильное приложение до конца квартала. |
+        | Клиенты | Три клиента ждут демо, один просит перенести встречу на понедельник. |
+        | Документы | Спецификацию обновляем после ревью, старую версию не удаляем. |
+        | Решение | Голосовали за вариант Б: он проще и не требует новой базы данных. |
+        | Дальше | Каждый пишет свои вопросы в канал до среды, ответы собираем в одном документе. |
+
+        | Step | Tool |
+        |---|---:|
+        | 1 | `list_messages` |
+        | 2 | `llm` |
+        """
+
+    static func finished(width: CGFloat, text: String = answer) -> AnyView {
+        let message = ChatMessageRecord(id: 2, conversationID: 1, role: "assistant", text: text, createdAt: 0,
                                         turnID: "t1")
         let item = ChatThreadItem(message: message, steps: [], siblingIndex: 1, siblingCount: 1)
-        return AnyView(ChatMessageRow(item: item, isLast: true, isEditing: false, actions: ChatRowActions())
+        return AnyView(ChatUIShotRow.row(item)
             .environment(\.markdownNavScreens, ["inbox"])
             .frame(width: width, alignment: .topLeading)
             .padding(12))
     }
 
-    static func streaming(width: CGFloat) -> AnyView {
-        AnyView(AssistantMessageBody(text: answer, steps: [], isRunning: true)
+    static func streaming(width: CGFloat, text: String = answer) -> AnyView {
+        AnyView(ChatUIShotRow.message(ChatFeed.Message(id: 2, role: "assistant", text: text,
+                                                       status: EmbeddedChatFeedAdapter.pendingStatus, createdAt: .distantPast))
             .environment(\.markdownNavScreens, ["inbox"])
             .frame(width: width, alignment: .topLeading)
             .padding(12))

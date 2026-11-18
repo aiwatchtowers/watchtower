@@ -146,7 +146,7 @@ final class InboxMessagePaneTests: XCTestCase {
         }
     }
 
-    private func card(_ action: AgentAction) -> AgentActionCardView {
-        AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+    private func card(_ action: AgentAction) -> MacAgentActionCard {
+        MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
     }
 }

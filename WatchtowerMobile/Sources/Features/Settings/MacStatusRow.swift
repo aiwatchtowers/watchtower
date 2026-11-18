@@ -12,7 +12,7 @@ struct MacStatusRow: Equatable {
 
     init(status: MacStatus, now: Date, locale: Locale = .current) {
         let name = status.macName ?? ""
-        label = name.isEmpty ? "Mac" : name
+        label = TowerText.label(name)
         switch status {
         case .notConnected:
             value = "Not connected"
@@ -96,21 +96,22 @@ enum MacReachability: Equatable {
     }
 }
 
-/// The workchat's banner while the Mac is not online (mockup 8): "**Your
-/// Mac is asleep** · last seen 12 min ago. New lines go when it wakes."
+/// The workchat's banner while the hub is not online (mockup 8): "**Acme
+/// Mac is asleep** · last seen 12 min ago. New lines go when it wakes."; "Your
+/// tower" when it has no name (#1783).
 struct MacAwayBanner: Equatable {
     let title: String
     let detail: String
 
-    init?(_ mac: MacReachability, now: Date) {
+    init?(_ mac: MacReachability, name: String, now: Date) {
         switch mac {
         case .online:
             return nil
         case let .asleep(lastSeen):
-            title = "Your Mac is asleep"
+            title = "\(TowerText.sentenceName(name)) is asleep"
             detail = " · last seen \(LastSeen.phrase(lastSeen, now: now)). New lines go when it wakes."
         case .offline:
-            title = "Your Mac is offline"
+            title = "\(TowerText.sentenceName(name)) is offline"
             detail = ". New lines go when it is back."
         }
     }
@@ -122,15 +123,5 @@ extension AppEnvironment {
     /// The active Mac's reachability at `now`, from its heartbeat and link.
     func macReachability(now: Date) -> MacReachability {
         .of(heartbeat: workbenchReplica.snapshot.heartbeat?.updatedAt, linked: linkedDevice != nil, now: now)
-    }
-
-    /// The Mac status chip of Now and the Calendar (mockups 1, 7).
-    func macChip(now: Date) -> MacStatusChipModel {
-        let linked = linkedDevice != nil
-        return MacStatusChipModel(
-            macName: workbenchReplica.snapshot.heartbeat?.macName ?? "",
-            state: macReachability(now: now).chipState(linked: linked),
-            now: now
-        )
     }
 }

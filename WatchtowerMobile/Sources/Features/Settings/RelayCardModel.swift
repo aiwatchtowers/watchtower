@@ -22,7 +22,7 @@ struct RelayCardModel: Equatable {
     static let relayTitle = "Relay"
     static let sectionTitle = "Relay"
     static let subscriptionTitle = "Subscription"
-    static let macsTitle = "Macs on this subscription"
+    static let macsTitle = "Towers on this subscription"
     static let notSubscribed = "Not subscribed"
     static let checking = "Checking…"
     static let unreachable = "Couldn't reach Relay."

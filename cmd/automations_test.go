@@ -625,9 +625,10 @@ func TestAutomationsCLI_WakeSkipsDaemonWithoutCapability(t *testing.T) {
 	c := newAutoCLI(t)
 	a := c.confirmedRecipe(t, "digest", autoCLIRecipeText(`return 1`))
 	writeDaemonPID(t, false)
-	got := make(chan os.Signal, 1)
-	signal.Notify(got, daemon.AutomationWakeSignal)
-	t.Cleanup(func() { signal.Stop(got) })
+	var sent []syscall.Signal
+	prev := automationWakeKill
+	automationWakeKill = func(_ int, sig syscall.Signal) error { sent = append(sent, sig); return nil }
+	t.Cleanup(func() { automationWakeKill = prev })
 
 	out, err := runAutomations(t, "wake")
 	require.NoError(t, err)
@@ -636,11 +637,7 @@ func TestAutomationsCLI_WakeSkipsDaemonWithoutCapability(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, out, "the run starts on its next poll")
 	assert.Len(t, c.runs(t, a.ID), 1, "the run is queued all the same")
-	select {
-	case <-got:
-		t.Fatal("SIGUSR2 sent to a daemon that does not advertise it")
-	case <-time.After(200 * time.Millisecond):
-	}
+	assert.Empty(t, sent, "SIGUSR2 sent to a daemon that does not advertise it")
 }
 
 func TestAutomationsCLI_WakeSignalsCapableDaemon(t *testing.T) {
@@ -653,11 +650,7 @@ func TestAutomationsCLI_WakeSignalsCapableDaemon(t *testing.T) {
 
 	res := runAutomationsJSON(t, "run", idArg(a.ID))
 	assert.Equal(t, true, res["daemon_running"])
-	select {
-	case <-got:
-	case <-time.After(5 * time.Second):
-		t.Fatal("no SIGUSR2 reached the capable daemon")
-	}
+	<-got // the real SIGUSR2 reached this process (the "daemon")
 }
 
 // guardWorkbenchFolder binds a workbench to a folder under the fake HOME's

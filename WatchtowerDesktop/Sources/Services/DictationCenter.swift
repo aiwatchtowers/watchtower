@@ -111,6 +111,9 @@ final class DictationCenter {
     private let pauseAutoStopAfter: Duration
     /// Per-chunk RMS below this counts as silence for the auto-pause.
     private let silenceRMSThreshold: Float
+    /// The wait behind the idle-release and pause-timeout timers. Injectable
+    /// so a test ends a timer by hand instead of waiting it out.
+    private let timerSleep: @Sendable (Duration) async -> Void
 
     private var recorder: MicRecording?
     private var dictationTask: Task<Void, Never>?
@@ -125,14 +128,14 @@ final class DictationCenter {
     /// `dictation.model` exactly once per dictation, never mid-run, so a
     /// Settings flip while recording cannot tear the run between engines.
     private var runChoice: DictationEngineChoice = .whisper(model: "small")
-    private var engineReleaseTask: Task<Void, Never>?
+    private(set) var engineReleaseTask: Task<Void, Never>?
     /// Consecutive silence accumulated on the SAMPLE clock (chunk sample
     /// counts / 16 kHz), never wall-clock — reset by a loud chunk, `resume()`,
     /// and `start()`.
     private var silentSeconds: Double = 0
     /// Armed by `pause()`; cancelled by `resume()`/`stop()`/`cancel()`. Fires
     /// the pause-timeout auto-stop.
-    private var pauseTimeoutTask: Task<Void, Never>?
+    private(set) var pauseTimeoutTask: Task<Void, Never>?
     /// Set by `meetingCaptureWillStart()` while a dictation (or its engine
     /// load / cleanup) is still in flight: the completion path drops the
     /// resident engine outright instead of arming the idle-release timer.
@@ -155,7 +158,8 @@ final class DictationCenter {
          engineIdleTTL: Duration = .seconds(15 * 60),
          silenceAutoPauseAfter: Duration = .seconds(120),
          pauseAutoStopAfter: Duration = .seconds(300),
-         silenceRMSThreshold: Float = 0.003) {
+         silenceRMSThreshold: Float = 0.003,
+         timerSleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }) {
         self.recorderFactory = recorderFactory
         self.engineFactory = engineFactory
         self.sessionFactory = sessionFactory
@@ -168,6 +172,7 @@ final class DictationCenter {
         self.silenceAutoPauseAfter = silenceAutoPauseAfter
         self.pauseAutoStopAfter = pauseAutoStopAfter
         self.silenceRMSThreshold = silenceRMSThreshold
+        self.timerSleep = timerSleep
     }
 
     /// Production dictation engine factory: a WhisperKit transcriber for the
@@ -658,8 +663,8 @@ final class DictationCenter {
     private func armPauseTimeout() {
         pauseTimeoutTask?.cancel()
         let timeout = pauseAutoStopAfter
-        pauseTimeoutTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: timeout)
+        pauseTimeoutTask = Task { @MainActor [weak self, timerSleep] in
+            await timerSleep(timeout)
             guard !Task.isCancelled, let self else { return }
             self.stop()
         }
@@ -839,8 +844,8 @@ final class DictationCenter {
         }
         engineReleaseTask?.cancel()
         let ttl = engineIdleTTL
-        engineReleaseTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: ttl)
+        engineReleaseTask = Task { @MainActor [weak self, timerSleep] in
+            await timerSleep(ttl)
             guard !Task.isCancelled, let self else { return }
             self.warmTranscriber = nil
             self.warmEngineKey = nil

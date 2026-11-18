@@ -31,14 +31,18 @@ var DefaultBudgets = Budgets{
 type Part func(ctx context.Context) (text string, reason string)
 
 // Slot places a part on an output line. Slots sharing a Line are joined
-// with " · " in the order they are given (stage order, then slot order);
-// lines print by ascending Line, whatever order the stages ran in. Label
-// (e.g. "Daemon: ") is printed before the part's text, including a
-// replacement `unknown (internal error)` / `unknown (timed out)`.
+// with " · " by ascending Pos, ties in the order they are given (stage
+// order, then slot order); lines print by ascending Line, whatever order
+// the stages ran in. Label (e.g. "Daemon: ") is printed before the part's
+// text, including a replacement `unknown (internal error)` / `unknown
+// (timed out)`; StopLabel, when set, replaces Label before such a
+// replacement only (a block whose own text carries its title).
 type Slot struct {
-	Line  int
-	Label string
-	Part  Part
+	Line      int
+	Pos       int
+	Label     string
+	StopLabel string
+	Part      Part
 }
 
 // Stage is a group of slots run one after another. A Deadline > 0 gives
@@ -52,19 +56,16 @@ type Stage struct {
 // SafeLine runs p and turns a panic into `unknown (internal error)` for
 // that part only.
 func SafeLine(p Part) Part {
-	return func(ctx context.Context) (text, reason string) {
-		defer func() {
-			if recover() != nil {
-				text, reason = UnknownInternal, ""
-			}
-		}()
-		return p(ctx)
+	return func(ctx context.Context) (string, string) {
+		text, reason, _ := runPart(ctx, p)
+		return text, reason
 	}
 }
 
 type slotResult struct {
 	text, reason string
 	done         bool
+	replaced     bool // the runner's text, not the part's (a panic)
 }
 
 // Run builds the report lines in a worker goroutine, running the stages in
@@ -91,13 +92,13 @@ func Run(ctx context.Context, b Budgets, stages []Stage) Report {
 		defer close(done)
 		i := 0
 		for _, st := range stages {
-			runStage(workCtx, st, func(text, reason string) bool {
+			runStage(workCtx, st, func(text, reason string, replaced bool) bool {
 				mu.Lock()
 				defer mu.Unlock()
 				if stopped {
 					return false
 				}
-				results[i] = slotResult{text: text, reason: reason, done: true}
+				results[i] = slotResult{text: text, reason: reason, done: true, replaced: replaced}
 				i++
 				return true
 			})
@@ -124,7 +125,7 @@ func Run(ctx context.Context, b Budgets, stages []Stage) Report {
 
 // runStage runs the stage's parts in order and hands each result to
 // deliver; it stops when deliver refuses (the hard stop has passed).
-func runStage(ctx context.Context, st Stage, deliver func(text, reason string) bool) {
+func runStage(ctx context.Context, st Stage, deliver func(text, reason string, replaced bool) bool) {
 	sctx := ctx
 	if st.Deadline > 0 {
 		var cancel context.CancelFunc
@@ -132,26 +133,53 @@ func runStage(ctx context.Context, st Stage, deliver func(text, reason string) b
 		defer cancel()
 	}
 	for _, sl := range st.Parts {
-		text, reason := SafeLine(sl.Part)(sctx)
-		if !deliver(text, reason) {
+		text, reason, panicked := runPart(sctx, sl.Part)
+		if !deliver(text, reason, panicked) {
 			return
 		}
 	}
 }
 
+// runPart is SafeLine that also says whether the part panicked.
+func runPart(ctx context.Context, p Part) (text, reason string, panicked bool) {
+	defer func() {
+		if recover() != nil {
+			text, reason, panicked = UnknownInternal, "", true
+		}
+	}()
+	text, reason = p(ctx)
+	return text, reason, false
+}
+
+type placedPart struct {
+	pos  int
+	text string
+}
+
 func assemble(slots []Slot, results []slotResult) Report {
-	parts := map[int][]string{}
+	placed := map[int][]placedPart{}
 	var reasons []string
 	for i, sl := range slots {
 		res := results[i]
 		if !res.done {
-			res = slotResult{text: UnknownTimedOut, reason: ReasonTimedOut}
+			res = slotResult{text: UnknownTimedOut, reason: ReasonTimedOut, replaced: true}
 		}
 		if res.reason != "" {
 			reasons = append(reasons, res.reason)
 		}
+		label := sl.Label
+		if res.replaced && sl.StopLabel != "" {
+			label = sl.StopLabel
+		}
 		if res.text != "" {
-			parts[sl.Line] = append(parts[sl.Line], sl.Label+res.text)
+			placed[sl.Line] = append(placed[sl.Line], placedPart{pos: sl.Pos, text: label + res.text})
+		}
+	}
+	parts := map[int][]string{}
+	for line, ps := range placed {
+		slices.SortStableFunc(ps, func(a, b placedPart) int { return a.pos - b.pos })
+		for _, p := range ps {
+			parts[line] = append(parts[line], p.text)
 		}
 	}
 	positions := make([]int, 0, len(parts))

@@ -22,11 +22,11 @@ func TestPeopleQuotaDoesNotCreateFallbackCard(t *testing.T) {
 				deferred bool
 			}{{&providerrouting.Deferred{Provider: "claude", Attempts: 1}, true}, {digest.ErrAICall, false}} {
 				database := testDB(t)
-				seedUser(t, database, "U1", "member")
+				seedUser(t, database, "1:U1", "member")
 				seedChannel(t, database, "C1", "general")
 				now := time.Now()
 				for i := range messages {
-					seedMessage(t, database, "C1", fmt.Sprintf("%d.000000", now.Add(time.Duration(i-20)*time.Minute).Unix()), "U1", "message")
+					seedPartnerMessage(t, database, "C1", fmt.Sprintf("%d.000000", now.Add(time.Duration(i-20)*time.Minute).Unix()), "1:U1", "message")
 				}
 				gen := &mockGenerator{err: tc.err}
 				var generator digest.Generator = gen
@@ -41,7 +41,7 @@ func TestPeopleQuotaDoesNotCreateFallbackCard(t *testing.T) {
 					require.True(t, digest.ProviderDeferred(err))
 					require.Zero(t, n)
 				}
-				card, cardErr := database.GetLatestPeopleCard("U1")
+				card, cardErr := database.GetLatestPeopleCard("1:U1")
 				require.NoError(t, cardErr)
 				if tc.deferred || messages >= MinSituationMessages {
 					require.Nil(t, card)
@@ -89,14 +89,14 @@ func TestScheduledPeopleRetryRestartKeepsWindowAndCommittedUsers(t *testing.T) {
 	from := to - 7*86400
 	var results []BatchCardResult
 	for u := range 11 {
-		id := fmt.Sprintf("U%02d", u)
+		id := fmt.Sprintf("1:U%02d", u)
 		seedUser(t, database, id, id)
 		for i := range 4 {
-			seedMessage(t, database, "C1", fmt.Sprintf("%.6f", to-3600+float64(u*10+i)), id, "message")
+			seedPartnerMessage(t, database, "C1", fmt.Sprintf("%.6f", to-3600+float64(u*10+i)), id, "message")
 		}
 		results = append(results, BatchCardResult{UserID: id, Summary: "summary"})
 	}
-	seedDigestWithSituations(t, database, "C1", from, to, "[]", `[{"topic":"work","type":"collaboration","participants":[{"user_id":"U00","role":"lead"}],"dynamic":"worked","outcome":"done"}]`)
+	seedDigestWithSituations(t, database, "C1", from, to, "[]", `[{"topic":"work","type":"collaboration","participants":[{"user_id":"1:U00","role":"lead"}],"dynamic":"worked","outcome":"done"}]`)
 	response, err := json.Marshal(results)
 	require.NoError(t, err)
 	first := &resumablePeopleGenerator{response: string(response), failAt: 2}
@@ -146,11 +146,11 @@ func TestScheduledPeopleRetryRestartKeepsWindowAndCommittedUsers(t *testing.T) {
 
 func TestLegacyPeopleUnavailableKeepsIndividualFallback(t *testing.T) {
 	database := testDB(t)
-	seedUser(t, database, "U1", "member")
+	seedUser(t, database, "1:U1", "member")
 	seedChannel(t, database, "C1", "general")
 	now := time.Now()
 	for i := range 12 {
-		seedMessage(t, database, "C1", fmt.Sprintf("%d.000000", now.Add(time.Duration(i-20)*time.Minute).Unix()), "U1", "message")
+		seedPartnerMessage(t, database, "C1", fmt.Sprintf("%d.000000", now.Add(time.Duration(i-20)*time.Minute).Unix()), "1:U1", "message")
 	}
 	gen := &mockGenerator{err: digest.ErrAICall}
 	p := New(database, testConfig(), gen, testLogger())
@@ -177,10 +177,10 @@ func TestPeopleMixedMaterialAndQuotaPreservesOriginalFailure(t *testing.T) {
 	seedChannel(t, database, "C1", "general")
 	now := time.Now()
 	for u := range 11 {
-		id := fmt.Sprintf("U%02d", u)
+		id := fmt.Sprintf("1:U%02d", u)
 		seedUser(t, database, id, id)
 		for i := range 4 {
-			seedMessage(t, database, "C1", fmt.Sprintf("%d.000000", now.Add(time.Duration(u*4+i-100)*time.Minute).Unix()), id, "message")
+			seedPartnerMessage(t, database, "C1", fmt.Sprintf("%d.000000", now.Add(time.Duration(u*4+i-100)*time.Minute).Unix()), id, "message")
 		}
 	}
 	material := errors.New("invalid material")

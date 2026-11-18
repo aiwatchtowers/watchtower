@@ -190,7 +190,11 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// The running push fetch has stopped waiting and runs its own fetch.
     var pushFetchFetching = false
     /// Push fetches that joined a running one (observable in tests).
-    var pushFetchJoins = 0
+    var pushFetchJoins = 0 {
+        didSet { onPushFetchJoin?() }
+    }
+    /// Told on every join (tests await a join with it).
+    var onPushFetchJoin: (@Sendable () -> Void)?
     /// Push fetches an own engine run covered, so they sent no request of
     /// their own (observable in tests).
     var pushFetchesCoveredByEngine = 0

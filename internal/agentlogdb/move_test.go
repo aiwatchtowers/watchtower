@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -306,66 +307,70 @@ func copySteps(t *testing.T) int {
 // one copy; the other waits, finds the marker and copies nothing. The first
 // mover holds its first chunk until the second reaches a copy chunk or
 // 500 ms pass, so without the lock both would copy (ON CONFLICT DO NOTHING would
-// hide that in the counts; the copy steps do not).
+// hide that in the counts; the copy steps do not). The clock is a synctest
+// bubble's: it moves only while the second mover sits in the lock wait, so
+// one that is not stopped by the lock always reaches its copy first.
 func TestMoveFromMain_TwoMoversOneCopy(t *testing.T) {
-	setMoveSeams(t, 10, nil)
-	oneMover := copySteps(t)
-	require.Positive(t, oneMover)
+	synctest.Test(t, func(t *testing.T) {
+		setMoveSeams(t, 10, nil)
+		oneMover := copySteps(t)
+		require.Positive(t, oneMover)
 
-	f := newMoveFixture(t)
-	f.seed(t, 3, 50)
-	want := f.counts(t, f.main)
-	var steps atomic.Int64
-	var first atomic.Bool
-	second := make(chan struct{}, 1)
-	moveHook = func(step string) error {
-		if !strings.HasPrefix(step, "copy ") {
-			return nil
-		}
-		steps.Add(1)
-		if first.CompareAndSwap(false, true) {
+		f := newMoveFixture(t)
+		f.seed(t, 3, 50)
+		want := f.counts(t, f.main)
+		var steps atomic.Int64
+		var first atomic.Bool
+		second := make(chan struct{}, 1)
+		moveHook = func(step string) error {
+			if !strings.HasPrefix(step, "copy ") {
+				return nil
+			}
+			steps.Add(1)
+			if first.CompareAndSwap(false, true) {
+				select {
+				case <-second:
+				case <-time.After(500 * time.Millisecond):
+				}
+				return nil
+			}
 			select {
-			case <-second:
-			case <-time.After(500 * time.Millisecond):
+			case second <- struct{}{}:
+			default:
 			}
 			return nil
 		}
-		select {
-		case second <- struct{}{}:
-		default:
-		}
-		return nil
-	}
 
-	var wg sync.WaitGroup
-	errs := make([]error, 2)
-	for i := range errs {
-		wg.Go(func() {
-			main, err := db.Open(filepath.Join(f.dir, "watchtower.db"))
-			if err != nil {
-				errs[i] = err
-				return
-			}
-			defer main.Close()
-			al, err := Open(filepath.Join(f.dir, "agentlog.db"))
-			if err != nil {
-				errs[i] = err
-				return
-			}
-			defer al.Close()
-			_, errs[i] = MoveFromMain(context.Background(), main, al, f.lockPath())
-		})
-	}
-	wg.Wait()
-	require.NoError(t, errs[0])
-	require.NoError(t, errs[1])
-	assert.Equal(t, int64(oneMover), steps.Load(), "only one mover copies")
-	assert.Equal(t, want, f.counts(t, f.al))
-	var dup int
-	require.NoError(t, f.al.QueryRow(`SELECT COUNT(*) - COUNT(DISTINCT key) FROM agent_log_events`).Scan(&dup))
-	assert.Zero(t, dup)
-	f.assertMainEmpty(t)
-	f.assertMoved(t)
+		var wg sync.WaitGroup
+		errs := make([]error, 2)
+		for i := range errs {
+			wg.Go(func() {
+				main, err := db.Open(filepath.Join(f.dir, "watchtower.db"))
+				if err != nil {
+					errs[i] = err
+					return
+				}
+				defer main.Close()
+				al, err := Open(filepath.Join(f.dir, "agentlog.db"))
+				if err != nil {
+					errs[i] = err
+					return
+				}
+				defer al.Close()
+				_, errs[i] = MoveFromMain(context.Background(), main, al, f.lockPath())
+			})
+		}
+		wg.Wait()
+		require.NoError(t, errs[0])
+		require.NoError(t, errs[1])
+		assert.Equal(t, int64(oneMover), steps.Load(), "only one mover copies")
+		assert.Equal(t, want, f.counts(t, f.al))
+		var dup int
+		require.NoError(t, f.al.QueryRow(`SELECT COUNT(*) - COUNT(DISTINCT key) FROM agent_log_events`).Scan(&dup))
+		assert.Zero(t, dup)
+		f.assertMainEmpty(t)
+		f.assertMoved(t)
+	})
 }
 
 // The result counts what moved, including an orphan event (its session gone,

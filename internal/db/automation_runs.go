@@ -586,6 +586,23 @@ func (db *DB) CancelQueuedNotRunnable(runID int64, now time.Time) error {
 	return requireRunTransition(db, res, runID, ErrRunNotQueued)
 }
 
+// CancelQueuedBackgroundPaused ends a queued background run of an AI recipe
+// that the executor holds while background AI is paused: cancelled with
+// error_kind='cancelled' and the exact text "Background AI is paused".
+// ErrRunNotQueued when the run was claimed or ended meanwhile.
+func (db *DB) CancelQueuedBackgroundPaused(runID int64, now time.Time) error {
+	if err := requireRunTime(now, fmt.Sprintf("cancelling paused automation run %d", runID)); err != nil {
+		return err
+	}
+	res, err := db.Exec(`UPDATE automation_runs SET status = 'cancelled', error_kind = 'cancelled',
+		error = 'Background AI is paused', finished_at = ?
+		WHERE id = ? AND status = 'queued'`, formatAutomationTime(now), runID)
+	if err != nil {
+		return fmt.Errorf("cancelling paused automation run %d: %w", runID, err)
+	}
+	return requireRunTransition(db, res, runID, ErrRunNotQueued)
+}
+
 // requireRunTransition maps a conditional update that touched no row to
 // ErrAutomationRunNotFound or to notMatched.
 func requireRunTransition(q interface {
@@ -1486,7 +1503,9 @@ type NamedAutomationOutput struct {
 // ListAutomationOutputsSince returns the newest limit outputs of kind created
 // at or after since, newest first, each with its automation's name and its
 // body cut to maxBodyChars characters, plus the count of every matching row
-// (so a caller can say how many it left out). Never nil.
+// (so a caller can say how many it left out). Outputs of a run that used Live
+// Slack (live_slack = 1) are left out: they are that run's transcript and
+// nothing reads them further (#1709 D14). Never nil.
 func (db *DB) ListAutomationOutputsSince(kind string, since time.Time, limit, maxBodyChars int) ([]NamedAutomationOutput, int, error) {
 	rows, err := db.Query(`SELECT o.id, o.automation_id, o.run_id, o.kind, o.title, substr(o.body, 1, ?), o.priority,
 			o.created_at, o.read_at, o.dismissed_at, o.link, o.actions_json, o.done_at, o.pressed_action,
@@ -1494,7 +1513,9 @@ func (db *DB) ListAutomationOutputsSince(kind string, since time.Time, limit, ma
 			COALESCE(o.written_at, o.created_at), COALESCE(o.changed_at, o.created_at), o.folder_id,
 			COALESCE(NULLIF(a.name, ''), a.slug), COUNT(*) OVER ()
 		FROM automation_outputs o JOIN automations a ON a.id = o.automation_id
-		WHERE o.kind = ? AND o.created_at >= ? ORDER BY o.created_at DESC, o.id DESC LIMIT ?`,
+		WHERE o.kind = ? AND o.created_at >= ?
+			AND NOT EXISTS (SELECT 1 FROM automation_runs r WHERE r.id = o.run_id AND r.live_slack = 1)
+		ORDER BY o.created_at DESC, o.id DESC LIMIT ?`,
 		maxBodyChars, kind, formatAutomationTime(since), limit)
 	if err != nil {
 		return nil, 0, fmt.Errorf("listing %s automation outputs since %s: %w", kind, formatAutomationTime(since), err)

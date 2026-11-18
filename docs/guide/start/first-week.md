@@ -102,7 +102,7 @@ Details: [Automations](../features/automations.md).
 Close the week by checking what the AI used.
 
 - **Try:** open **Usage → Watchtower** and pick **7 days**.
-- **See:** calls, tokens and cost per job, with your automations and chats listed apart. Cost is at API rates, so it is not your bill. The Claude plan tab shows your 5-hour and weekly limits when **Claude plan limits** is on in **Settings → Features**.
+- **See:** calls, tokens and cost per job, with your automations and chats listed apart. Cost is at API rates, so it is not your bill. The **Plans** tab shows your Claude and Codex subscription limits when **Subscription plan limits** is on in **Settings → Features**.
 - **Needs:** nothing for the numbers. If it is more than you expected, switch off the features you do not read.
 
 Details: [AI providers, models and cost](../concepts/ai-providers-and-cost.md) and [Turning features on and off](../concepts/features-on-and-off.md).

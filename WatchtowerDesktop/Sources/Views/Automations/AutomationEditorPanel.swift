@@ -277,7 +277,7 @@ struct AutomationEditorPanel: View {
     }
 
     private func card(_ chat: AutomationEditorChat, _ action: AgentAction) -> some View {
-        AgentActionCardView(
+        MacAgentActionCard(
             action: action,
             inFlight: chat.actionFeed.inFlight.contains(action.id),
             onApprove: { Task { await chat.actionFeed.approve(action.id, shownArgs: action.argsJSON) } },

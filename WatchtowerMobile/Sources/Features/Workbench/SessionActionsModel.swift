@@ -63,7 +63,7 @@ struct SessionActionsModel: Equatable {
                 }
         }
         stopRows = rows(.sessionStop, SessionStartText.stopping, SessionStartText.stopFailed)
-        interruptRows = rows(.sessionInterrupt, BoardWriteText.sending, "Your Mac could not interrupt the session")
+        interruptRows = rows(.sessionInterrupt, BoardWriteText.sending, "Your tower could not interrupt the session")
         let stopping = inFlight.contains(SessionStarter.stopKey(session.id)) || stopRows.contains(where: \.isSending)
         canStop = session.live && !stopping
         let interrupting = inFlight.contains(SessionInputSender.interruptKey(session.id)) || interruptRows.contains(where: \.isSending)

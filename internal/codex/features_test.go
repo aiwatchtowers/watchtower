@@ -2,7 +2,6 @@ package codex
 
 import (
 	"bufio"
-	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -11,7 +10,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -186,15 +184,12 @@ func liveFeatureDefaults(t *testing.T, bin string) map[string]string {
 
 // runCodexCLI runs the installed codex CLI with args in dir and returns its
 // stdout. The child runs in its own process group, killed and reaped on
-// every path; a failure names the args, a fired deadline and codex's stderr.
+// every path; a failure names the args and codex's stderr.
 func runCodexCLI(t *testing.T, bin, dir string, env []string, args ...string) string {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd := exec.Command(bin, args...)
 	cmd.Dir, cmd.Env = dir, env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	out, err := cmd.Output()
 	if cmd.Process != nil {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
@@ -204,7 +199,7 @@ func runCodexCLI(t *testing.T, bin, dir string, env []string, args ...string) st
 	if errors.As(err, &ee) {
 		stderr = ee.Stderr
 	}
-	require.NoError(t, err, "codex %v (deadline: %v): %s", args, ctx.Err(), stderr)
+	require.NoError(t, err, "codex %v: %s", args, stderr)
 	return string(out)
 }
 

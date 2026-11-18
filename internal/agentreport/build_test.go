@@ -2,11 +2,12 @@ package agentreport
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
+	"syscall"
 	"testing"
 	"time"
 
@@ -101,7 +102,7 @@ func TestBuildOverview_OldFormatExcludedFromTime(t *testing.T) {
 	putSessionWith(t, d, wb, "new", 40, 2, extra)
 	putSessionWith(t, d, wb, "old", 40, 1, extra)
 
-	ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0.Add(time.Hour), English)
+	ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0.Add(time.Hour), English, AgentAll)
 	require.NoError(t, err)
 	assert.Equal(t, 1, ov.OldFormatSessions)
 	assert.Equal(t, 2, ov.Totals.Sessions)
@@ -150,7 +151,7 @@ func TestBuildOverview_ImportState(t *testing.T) {
 			d, wb := buildDB(t)
 			require.NoError(t, d.SetWorkbenchAgentAnalytics(wb, true))
 			require.NoError(t, tc.set(d, wb))
-			ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0, English)
+			ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0, English, AgentAll)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, ov.Import)
 		})
@@ -172,13 +173,13 @@ func TestBuildOverview_ImportWaitingForMove(t *testing.T) {
 	require.NoError(t, d.SetWorkbenchAgentAnalytics(wb, true))
 	require.NoError(t, al.SetImportProgress(wb, false, 3, t0))
 
-	ov, err := BuildOverview(d, al, wb, time.Time{}, t0, English)
+	ov, err := BuildOverview(d, al, wb, time.Time{}, t0, English, AgentAll)
 	require.NoError(t, err)
 	assert.Equal(t, ImportState{State: "waiting_for_move"}, ov.Import)
 
 	_, err = agentlogdb.MoveFromMain(context.Background(), d, al, agentlogdb.MoveLockPath(filepath.Join(dir, "agentlog.db")))
 	require.NoError(t, err)
-	ov, err = BuildOverview(d, al, wb, time.Time{}, t0, English)
+	ov, err = BuildOverview(d, al, wb, time.Time{}, t0, English, AgentAll)
 	require.NoError(t, err)
 	assert.Equal(t, "loading", ov.Import.State)
 }
@@ -242,15 +243,12 @@ func TestBuildSession_C1OpenFile(t *testing.T) {
 	assert.Equal(t, &Fix{Kind: FixOpenFile, Ref: "CLAUDE.md"}, hs[0].Fix)
 }
 
-// The budget covers the v2 blocks: every session carries parser-v3 facts
-// (result sizes, error classes, context parts per lane, a skill listing,
-// subagents), so Context, Skills and Trouble do their full work.
-func TestBuildOverview_Performance(t *testing.T) {
-	if testing.Short() || raceEnabled || testing.CoverMode() != "" {
-		t.Skip("wall-clock budget: skipped under -short, the race detector and coverage instrumentation")
-	}
-	d, wb := buildDB(t)
-	now := time.Now().UTC()
+// seedPerf fills agentlog.db with days × 25 sessions of 200 parser-v3
+// events each (result sizes, error classes, context parts per lane, a skill
+// listing, subagents), all before now: 30 days are the 150k events of the
+// owner's busiest month.
+func seedPerf(t *testing.T, d testDBs, wb int64, now time.Time, days int) {
+	t.Helper()
 	tx, err := d.al.Begin()
 	require.NoError(t, err)
 	ins, err := tx.Prepare(`INSERT INTO agent_log_events (session_uuid, key, kind, ts, name, target, outcome, duration_ms,
@@ -264,7 +262,7 @@ func TestBuildOverview_Performance(t *testing.T) {
 	sub, err := tx.Prepare(`INSERT INTO agent_log_subagents (session_uuid, agent_id, agent_type, depth, finished) VALUES (?,?,?,?,?)`)
 	require.NoError(t, err)
 	errClasses := []string{"exit_code", "too_large", "not_found", "edit_no_match", "automode-blocked"}
-	for day := range 30 {
+	for day := range days {
 		for s := range 25 {
 			id := fmt.Sprintf("s-%d-%d", day, s)
 			path := "/tmp/x/" + id + ".jsonl"
@@ -319,36 +317,79 @@ func TestBuildOverview_Performance(t *testing.T) {
 		}
 	}
 	require.NoError(t, tx.Commit())
+}
 
-	// The fastest of three runs: one slow run on a loaded machine is noise.
-	var ov *Overview
-	var runs []time.Duration
-	for range 3 {
-		start := time.Now()
-		ov, err = BuildOverview(d.DB, d.al, wb, time.Time{}, now, English)
-		runs = append(runs, time.Since(start))
-		require.NoError(t, err)
+// perfGrowth is how many times more sessions the big overview reads than
+// the small one, and perfMaxGrowth the most its CPU time may grow: linear
+// work grows by about perfGrowth (less, with fixed costs), quadratic work
+// (a per-session pass over every event, a lost index) by perfGrowth² = 25.
+const (
+	perfGrowth    = 5
+	perfMaxGrowth = 3 * perfGrowth
+)
+
+// perfCeiling caps the CPU time of the 150k-event overview (about 1 s
+// measured): a ceiling that holds on any machine, under any load (CPU
+// time does not count the waits for a core), so a regression that makes
+// every size costlier still fails, which the ratio alone would not see.
+const perfCeiling = 10 * time.Second
+
+// BuildOverview stays linear in the events it reads, with the v2 blocks
+// (Context, Skills, Trouble) doing their full work over 150k events. Linear
+// is measured as scaling, not as a wall-clock budget: the process CPU time
+// of 30 days of sessions against 6 days, the fastest of interleaved runs,
+// so a loaded machine cannot fail it and the fixed costs only lower the
+// ratio.
+func TestBuildOverview_Performance(t *testing.T) {
+	if testing.Short() || raceEnabled {
+		t.Skip("150k events: skipped under -short and the race detector (cost, not timing)")
 	}
-	took := slices.Min(runs)
+	now := time.Now().UTC()
+	small, smallWB := buildDB(t)
+	seedPerf(t, small, smallWB, now, 30/perfGrowth)
+	big, bigWB := buildDB(t)
+	seedPerf(t, big, bigWB, now, 30)
+
+	var ov *Overview
+	fastSmall, fastBig := time.Duration(1<<62), time.Duration(1<<62)
+	for range 3 {
+		fastSmall = min(fastSmall, cpuTime(t, func() {
+			_, err := BuildOverview(small.DB, small.al, smallWB, time.Time{}, now, English, AgentAll)
+			require.NoError(t, err)
+		}))
+		fastBig = min(fastBig, cpuTime(t, func() {
+			var err error
+			ov, err = BuildOverview(big.DB, big.al, bigWB, time.Time{}, now, English, AgentAll)
+			require.NoError(t, err)
+		}))
+	}
 	assert.Equal(t, 750, ov.Totals.Sessions)
 	assert.Equal(t, 750, ov.Context.FactsSessions, "every session has the v3 facts")
 	assert.Equal(t, 750, ov.Skills.FactsSessions)
 	assert.Equal(t, 750, ov.Trouble.FactsSessions)
 	assert.NotEmpty(t, ov.Trouble.Classes, "the trouble block did its work")
-	t.Logf("BuildOverview over 150k v3 events: %v (fastest %s)", runs, took)
-	// The ceiling holds under any load: an algorithmic regression (a
-	// quadratic pass, a lost index) costs far more than 10 s here.
-	require.Less(t, took, overloadCeiling, "over the ceiling that holds even on an overloaded machine")
-	if took >= time.Second {
-		// More runnable work than cores (parallel builds, agents): the
-		// fastest run still waited for a core or ran on a slow one. The
-		// 1 s budget is judged on a machine that is not overloaded.
-		if load, over := overloaded(); over {
-			t.Skipf("over the 1 s budget (%s) with load average %.1f on %d CPUs: not judged on an overloaded machine",
-				took, load, runtime.NumCPU())
-		}
-	}
-	assert.Less(t, took, time.Second)
+	ratio := float64(fastBig) / float64(max(fastSmall, time.Millisecond))
+	t.Logf("BuildOverview CPU: %v over 150k v3 events, %v over 1/%d of them, x%.2f", fastBig, fastSmall, perfGrowth, ratio)
+	assert.LessOrEqual(t, ratio, float64(perfMaxGrowth), "%d× the sessions cost x%.2f CPU, want at most x%d (linear)", perfGrowth, ratio, perfMaxGrowth)
+	assert.Less(t, fastBig, perfCeiling, "150k-event overview CPU time")
+}
+
+// cpuTime is the user plus system CPU time the process spends running f.
+// Unlike the wall clock it does not grow while other processes have the
+// machine.
+func cpuTime(t *testing.T, f func()) time.Duration {
+	t.Helper()
+	runtime.GC() // a collection owed by an earlier run is not f's
+	before := processCPU(t)
+	f()
+	return processCPU(t) - before
+}
+
+func processCPU(t *testing.T) time.Duration {
+	t.Helper()
+	var ru syscall.Rusage
+	require.NoError(t, syscall.Getrusage(syscall.RUSAGE_SELF, &ru))
+	return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
 }
 
 // The overview measures the trouble of the v3 sessions only, with their
@@ -370,7 +411,7 @@ func TestBuildOverview_Trouble(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0.Add(2*time.Hour), English)
+	ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0.Add(2*time.Hour), English, AgentAll)
 	require.NoError(t, err)
 	assert.Equal(t, 1, ov.Trouble.FactsSessions)
 	assert.Equal(t, 3, ov.Trouble.Interrupts)
@@ -382,4 +423,99 @@ func TestBuildOverview_Trouble(t *testing.T) {
 	det, err := BuildSession(d.DB, d.al, wb, "new", t0.Add(time.Hour), English)
 	require.NoError(t, err)
 	assert.Len(t, hintsOf(det.Hints, "T3"), 1, "the session's drill-down has the trouble hints too")
+}
+
+// Task 4.4: the agent filter and the per-block agents.
+func TestBuildOverview_AgentFilter(t *testing.T) {
+	d, wb := buildDB(t)
+	putSession(t, d, wb, "claude-1", 8, 3)
+	storeCodex(t, d, wb)
+	now := t0.Add(time.Hour)
+
+	all, err := BuildOverview(d.DB, d.al, wb, time.Time{}, now, English, AgentAll)
+	require.NoError(t, err)
+	assert.Equal(t, "all", all.Agent)
+	assert.Equal(t, []string{"claude", "codex"}, all.Agents)
+	assert.Equal(t, []string{"claude", "codex"}, all.AgentFilter)
+	assert.Equal(t, []string{"claude"}, all.Context.Agents, "a rollout carries no context facts")
+	assert.Equal(t, []string{"claude"}, all.Skills.Agents)
+	assert.Equal(t, []string{"claude", "codex"}, all.Trouble.Agents)
+
+	cx, err := BuildOverview(d.DB, d.al, wb, time.Time{}, now, English, "codex")
+	require.NoError(t, err)
+	assert.Equal(t, "codex", cx.Agent)
+	require.Len(t, cx.Sessions, 1)
+	assert.Equal(t, cxSession, cx.Sessions[0].UUID)
+	assert.Equal(t, 1, cx.Totals.Sessions)
+	assert.Equal(t, []string{"codex"}, cx.Agents)
+	assert.Equal(t, []string{}, cx.Context.Agents)
+	assert.Equal(t, []string{}, cx.Skills.Agents)
+	assert.Equal(t, []string{"codex"}, cx.Trouble.Agents)
+	assert.Equal(t, []string{"claude", "codex"}, cx.AgentFilter, "the unfiltered period still has both")
+
+	cl, err := BuildOverview(d.DB, d.al, wb, time.Time{}, now, English, "claude")
+	require.NoError(t, err)
+	require.Len(t, cl.Sessions, 1)
+	assert.Equal(t, "claude-1", cl.Sessions[0].UUID)
+	assert.Equal(t, []string{"claude"}, cl.Agents)
+	assert.Equal(t, []string{"claude"}, cl.Context.Agents)
+	assert.Equal(t, []string{"claude"}, cl.Trouble.Agents)
+}
+
+func TestBuildOverview_SingleAgentNoFilter(t *testing.T) {
+	noFilter := func(t *testing.T, ov *Overview) {
+		t.Helper()
+		raw, err := json.Marshal(ov)
+		require.NoError(t, err)
+		assert.NotContains(t, string(raw), `"agent_filter"`)
+		assert.Contains(t, string(raw), `"agents":[`, "agents is never null")
+	}
+	t.Run("no sessions", func(t *testing.T) {
+		d, wb := buildDB(t)
+		ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0, English, AgentAll)
+		require.NoError(t, err)
+		noFilter(t, ov)
+	})
+	t.Run("empty period", func(t *testing.T) {
+		d, wb := buildDB(t)
+		putSession(t, d, wb, "claude-1", 8, 3)
+		storeCodex(t, d, wb)
+		ov, err := BuildOverview(d.DB, d.al, wb, t0.Add(48*time.Hour), t0.Add(72*time.Hour), English, AgentAll)
+		require.NoError(t, err)
+		assert.Empty(t, ov.Sessions)
+		noFilter(t, ov)
+	})
+	t.Run("claude only", func(t *testing.T) {
+		d, wb := buildDB(t)
+		putSession(t, d, wb, "claude-1", 8, 3)
+		ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0.Add(time.Hour), English, AgentAll)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"claude"}, ov.Agents)
+		noFilter(t, ov)
+	})
+}
+
+func TestBuildOverview_CodexOnlyEmptyNotError(t *testing.T) {
+	d, wb := buildDB(t)
+	putSession(t, d, wb, "claude-1", 8, 3)
+	ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0.Add(time.Hour), English, "codex")
+	require.NoError(t, err)
+	assert.Empty(t, ov.Sessions)
+	assert.Zero(t, ov.Totals.Sessions)
+	assert.Equal(t, []string{}, ov.Agents)
+	assert.Equal(t, []string{}, ov.Context.Agents)
+	assert.Equal(t, []string{}, ov.Trouble.Agents)
+	assert.Nil(t, ov.AgentFilter)
+	raw, err := json.Marshal(ov)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "null")
+}
+
+func TestBuildOverview_UnknownAgentRefused(t *testing.T) {
+	d, wb := buildDB(t)
+	_, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0, English, "gemini")
+	require.ErrorIs(t, err, ErrUnknownAgent)
+	ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0, English, "")
+	require.NoError(t, err)
+	assert.Equal(t, "all", ov.Agent, `"" means all`)
 }

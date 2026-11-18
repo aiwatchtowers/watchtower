@@ -131,6 +131,10 @@ public protocol BridgeCloud: Sendable {
     func downloadAsset(zone: String, name: String, to dst: URL) async throws
     /// The Mac's iCloud user record name; "" while the account has no user.
     func ownerUser() async throws -> String
+    /// Deletes the zones `DataZone-<hubID>` / `RelayZone-<hubID>` and the bridge's database subscription named
+    /// with `hubID`, exactly as spelled (zone names are case-sensitive); ones already gone are done. The caller
+    /// passes another spelling of the hub's id only (`BridgeService`'s check, #1750).
+    func retireZones(hubID: String) async throws
 }
 
 /// The protocol's class word for an error a CloudKit call threw.
@@ -219,6 +223,10 @@ public protocol BridgeDatabase: Sendable {
     func saveZones(_ ids: [CKRecordZone.ID]) async throws
     /// `CKContainer.userRecordID().recordName`; nil when there is no signed-in account.
     func ownerUserRecordName() async throws -> String?
+    /// Deletes the zones; a zone already gone is done.
+    func deleteZones(_ ids: [CKRecordZone.ID]) async throws
+    /// Deletes the subscription; one already gone is done.
+    func deleteSubscription(_ id: CKSubscription.ID) async throws
 }
 
 /// The live seam: the container's private database.
@@ -297,6 +305,32 @@ public struct LiveBridgeDatabase: BridgeDatabase {
             return nil
         }
     }
+
+    public func deleteZones(_ ids: [CKRecordZone.ID]) async throws {
+        let results: [CKRecordZone.ID: Result<Void, any Error>]
+        do {
+            results = try await db.modifyRecordZones(saving: [], deleting: ids).deleteResults
+        } catch where Self.isGone(error) {
+            return
+        }
+        for (_, result) in results {
+            if case .failure(let error) = result, !Self.isGone(error) { throw error }
+        }
+    }
+
+    public func deleteSubscription(_ id: CKSubscription.ID) async throws {
+        do {
+            _ = try await db.deleteSubscription(withID: id)
+        } catch where Self.isGone(error) {
+            // Already gone: what was asked for.
+        }
+    }
+
+    /// A zone or subscription that is not there (any more).
+    public static func isGone(_ error: any Error) -> Bool {
+        guard let ck = error as? CKError else { return false }
+        return ck.code == .zoneNotFound || ck.code == .userDeletedZone || ck.code == .unknownItem
+    }
 }
 
 // MARK: - CloudKit
@@ -357,6 +391,68 @@ public struct CloudKitBridgeCloud: BridgeCloud {
         }
     }
 
+    // MARK: Request limits
+
+    /// Records per modify request: CloudKit refuses more than 400 in one; the Kit's engine sends 200.
+    static let maxBatchRecords = 200
+    /// Estimated request bytes per modify request, well under CloudKit's request size limit (a record holds at
+    /// most 1 MB without its asset, which uploads apart from the request); one record over it still goes, alone.
+    static let maxBatchBytes = 1 << 20
+
+    /// A record's estimated share of a modify request: its payload, its name and the keys and system fields
+    /// around them.
+    static func requestSize(name: String, payload: Int) -> Int {
+        payload + name.utf8.count + 512
+    }
+
+    /// Splits `count` items, in order, into runs of at most `maxBatchRecords` whose sizes sum to at most
+    /// `maxBatchBytes`; every run holds at least one item.
+    static func batches(_ count: Int, size: (Int) -> Int) -> [Range<Int>] {
+        var out: [Range<Int>] = []
+        var start = 0, bytes = 0
+        for at in 0..<count {
+            let n = size(at)
+            if at > start && (at - start >= maxBatchRecords || bytes + n > maxBatchBytes) {
+                out.append(start..<at)
+                start = at
+                bytes = 0
+            }
+            bytes += n
+        }
+        if start < count { out.append(start..<count) }
+        return out
+    }
+
+    /// Sends `range` through `send`. A request CloudKit refuses as too large as a whole (`.limitExceeded`, which
+    /// names no record) is split in halves and each half sent again, down to one item, which `alone` answers:
+    /// only that item is refused, never the rest of the request. Any other failure is the whole call's.
+    private func sendSplitting(
+        _ range: Range<Int>,
+        _ send: (Range<Int>) async throws -> Void,
+        alone: (Int, CKError) -> Void
+    ) async throws {
+        do {
+            try await send(range)
+        } catch let error as CKError where error.code == .limitExceeded {
+            guard range.count > 1 else {
+                bridgeLogger.error("CloudKit refused one record alone as too large (limitExceeded)")
+                return alone(range.lowerBound, error)
+            }
+            let mid = range.lowerBound + range.count / 2
+            try await sendSplitting(range.lowerBound..<mid, send, alone: alone)
+            try await sendSplitting(mid..<range.upperBound, send, alone: alone)
+        }
+    }
+
+    /// The answer when a request fails after earlier requests of the same call reached CloudKit: those keep their
+    /// results (the bridge's tag map must learn what they wrote) and every item not answered yet is refused with
+    /// the failure's class. A failure before anything reached CloudKit stays the whole call's.
+    static func partial(_ results: [CloudWriteResult?], after error: any Error) -> [CloudWriteResult] {
+        let failureClass = bridgeFailureClass(error)
+        bridgeLogger.error("a modify request failed after earlier ones were applied: \(failureClass, privacy: .public); the rest refused")
+        return results.map { $0 ?? .refused(failureClass) }
+    }
+
     static func isSignal(_ name: String, _ envelope: Data) -> Bool {
         envelope.isEmpty && name.hasPrefix("\(WireKind.signal)-")
     }
@@ -396,21 +492,35 @@ public struct CloudKitBridgeCloud: BridgeCloud {
             }
         }
         // CloudKit compares change tags only under .ifServerRecordUnchanged; an unconditional save overwrites.
-        for (group, policy) in [(conditional, CKModifyRecordsOperation.RecordSavePolicy.ifServerRecordUnchanged), (plain, .allKeys)]
-        where !group.isEmpty {
-            let saved = try await withZones(db) { try await db.save(group.map(\.1), policy: policy) }
-            for (i, pending) in group {
-                switch saved[pending.record.recordID] {
-                case .saved(let server)?:
-                    results[i] = item(server, kind: kind).map { .done($0) } ?? .refused("unavailable")
-                case .changed(let server)?:
-                    results[i] = .conflict(server.flatMap { item($0, kind: kind) })
-                case .failed(let error)?:
-                    results[i] = .refused(bridgeFailureClass(error))
-                case nil:
-                    results[i] = .refused("unavailable")
+        var applied = false
+        do {
+            for (group, policy) in [(conditional, CKModifyRecordsOperation.RecordSavePolicy.ifServerRecordUnchanged), (plain, .allKeys)]
+            where !group.isEmpty {
+                let size = { (at: Int) in Self.requestSize(name: writes[group[at].0].name, payload: writes[group[at].0].envelope.count) }
+                for batch in Self.batches(group.count, size: size) {
+                    try await sendSplitting(batch) { range in
+                        let part = group[range]
+                        let saved = try await withZones(db) { try await db.save(part.map(\.1), policy: policy) }
+                        applied = true
+                        for (i, pending) in part {
+                            switch saved[pending.record.recordID] {
+                            case .saved(let server)?:
+                                results[i] = item(server, kind: kind).map { .done($0) } ?? .refused("unavailable")
+                            case .changed(let server)?:
+                                results[i] = .conflict(server.flatMap { item($0, kind: kind) })
+                            case .failed(let error)?:
+                                results[i] = .refused(bridgeFailureClass(error))
+                            case nil:
+                                results[i] = .refused("unavailable")
+                            }
+                        }
+                    } alone: { at, error in
+                        results[group[at].0] = .refused(bridgeFailureClass(error))
+                    }
                 }
             }
+        } catch where applied {
+            return Self.partial(results, after: error)
         }
         return results.map { $0 ?? .refused("unavailable") }
     }
@@ -445,23 +555,35 @@ public struct CloudKitBridgeCloud: BridgeCloud {
                 if let now, now.changeTag == tag { sendable.append(i) } else { results[i] = .conflict(now.flatMap { item($0, kind: kind) }) }
             }
         }
-        if !sendable.isEmpty {
-            let deleted: [CKRecord.ID: Result<Void, any Error>]
-            do {
-                deleted = try await db.delete(sendable.map { ids[$0] })
-            } catch let error as CKError where error.code == .zoneNotFound || error.code == .userDeletedZone {
-                deleted = [:] // no zone, no record: what was asked for
-            }
-            for i in sendable {
-                switch deleted[ids[i]] {
-                case .failure(let error as CKError)? where error.code == .unknownItem || error.code == .zoneNotFound:
-                    results[i] = .done(nil)
-                case .failure(let error)?:
-                    results[i] = .refused(bridgeFailureClass(error))
-                case .success?, nil:
-                    results[i] = .done(nil)
+        let size = { (at: Int) in Self.requestSize(name: deletions[sendable[at]].name, payload: 0) }
+        var applied = false
+        do {
+            for batch in Self.batches(sendable.count, size: size) {
+                try await sendSplitting(batch) { range in
+                    let part = sendable[range]
+                    let deleted: [CKRecord.ID: Result<Void, any Error>]
+                    do {
+                        deleted = try await db.delete(part.map { ids[$0] })
+                    } catch let error as CKError where error.code == .zoneNotFound || error.code == .userDeletedZone {
+                        deleted = [:] // no zone, no record: what was asked for
+                    }
+                    applied = true
+                    for i in part {
+                        switch deleted[ids[i]] {
+                        case .failure(let error as CKError)? where error.code == .unknownItem || error.code == .zoneNotFound:
+                            results[i] = .done(nil)
+                        case .failure(let error)?:
+                            results[i] = .refused(bridgeFailureClass(error))
+                        case .success?, nil:
+                            results[i] = .done(nil)
+                        }
+                    }
+                } alone: { at, error in
+                    results[sendable[at]] = .refused(bridgeFailureClass(error))
                 }
             }
+        } catch where applied {
+            return Self.partial(results, after: error)
         }
         return results.map { $0 ?? .refused("unavailable") }
     }
@@ -509,6 +631,14 @@ public struct CloudKitBridgeCloud: BridgeCloud {
         }
         try FileManager.default.copyItem(at: url, to: dst)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dst.path)
+    }
+
+    public func retireZones(hubID old: String) async throws {
+        // Never this hub's own zones, whatever the caller checked.
+        guard BridgeService.otherSpelling(old, of: hubID) else { throw BridgeCloudFailure.unsupportedZone }
+        let db = try db()
+        try await db.deleteZones(HubZones(scope: .private, hubID: old).allZoneIDs)
+        try await db.deleteSubscription(PushReceiver.databaseSubscriptionID(hubID: old))
     }
 
     public func ownerUser() async throws -> String {

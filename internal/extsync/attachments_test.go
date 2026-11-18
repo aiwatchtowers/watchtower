@@ -9,6 +9,7 @@ import (
 	"io"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -496,12 +497,8 @@ func TestAttachmentDeadlineIsTransientFailure(t *testing.T) {
 		_, err := e.Run(context.Background())
 		done <- err
 	}()
-	select {
-	case err := <-done:
-		require.NoError(t, err)
-	case <-time.After(10 * time.Second):
-		t.Fatal("the stuck attachment was never cut off")
-	}
+	err := <-done
+	require.NoError(t, err)
 
 	row, ok := loadAttachment(t, d, src.ID, "a1")
 	require.True(t, ok)
@@ -518,34 +515,40 @@ func TestAttachmentDeadlineIsTransientFailure(t *testing.T) {
 // spent no further one starts, so a cycle overshoots by at most one
 // attachment.
 func TestAttachmentExtractionIsSequentialAndBudgetBound(t *testing.T) {
-	d, src := newSourceDB(t)
-	f := newFake()
-	f.pageSize = 20
 	start := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
-	f.addPage("p1", 1, start)
-	for i := range 6 {
-		f.addAttachment(fmt.Sprintf("a%d", i), "p1", 1, start.Add(time.Duration(i+1)*time.Second),
-			fmt.Sprintf("n%d.txt", i), "text/plain", []byte("x"), -1)
-	}
-	x := newFakeExtractor()
-	var mu sync.Mutex
-	inFlight, peak := 0, 0
-	x.onExtract = func() {
-		mu.Lock()
-		inFlight++
-		peak = max(peak, inFlight)
-		mu.Unlock()
-		time.Sleep(10 * time.Millisecond)
-		mu.Lock()
-		inFlight--
-		mu.Unlock()
-	}
-	e := New(d, Options{Extractor: x})
-	e.SetFetcher(src.JiraAccountID, f)
-	_, err := e.Run(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, 6, countStatus(t, d, src.ID, "ok"))
-	assert.Equal(t, 1, peak, "no two extractions overlap")
+	// On synctest's clock: the bubble's time moves only once every goroutine
+	// in it is blocked, so an extraction running beside another would be
+	// inside its hook before the first one's sleep ends — a sure overlap
+	// rather than a likely one.
+	synctest.Test(t, func(t *testing.T) {
+		d, src := newSourceDB(t)
+		f := newFake()
+		f.pageSize = 20
+		f.addPage("p1", 1, start)
+		for i := range 6 {
+			f.addAttachment(fmt.Sprintf("a%d", i), "p1", 1, start.Add(time.Duration(i+1)*time.Second),
+				fmt.Sprintf("n%d.txt", i), "text/plain", []byte("x"), -1)
+		}
+		x := newFakeExtractor()
+		var mu sync.Mutex
+		inFlight, peak := 0, 0
+		x.onExtract = func() {
+			mu.Lock()
+			inFlight++
+			peak = max(peak, inFlight)
+			mu.Unlock()
+			time.Sleep(10 * time.Millisecond) // virtual: every other runnable extraction starts first
+			mu.Lock()
+			inFlight--
+			mu.Unlock()
+		}
+		e := New(d, Options{Extractor: x})
+		e.SetFetcher(src.JiraAccountID, f)
+		_, err := e.Run(context.Background())
+		require.NoError(t, err)
+		assert.Equal(t, 6, countStatus(t, d, src.ID, "ok"))
+		assert.Equal(t, 1, peak, "no two extractions overlap")
+	})
 
 	// A budget spent by the first extraction stops the batch after it.
 	d2, src2 := newSourceDB(t)

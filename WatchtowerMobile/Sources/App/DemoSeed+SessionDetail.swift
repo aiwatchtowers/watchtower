@@ -52,9 +52,10 @@ extension DemoSeed {
         let entries: [[String: Any]] = [
             ["id": "e1", "kind": "owner", "at": ago(1_800), "text": "Add an Archive Closed Targets Now item to the header menu."],
             ["id": "e2", "kind": "agent", "at": ago(1_700), "text": "On it. I will add the menu item and an undo."],
+            // An answer line exists only once its ask is answered: the delivered #105, never the open #109.
             [
-                "id": "e3", "kind": "ask_answer", "at": ago(900), "ask_id": 109, "title": "Which menu wording?",
-                "text": "Archive Closed Targets Now", "via": "watchtower"
+                "id": "e3", "kind": "ask_answer", "at": ago(1_650), "ask_id": 105, "title": "Keep the counter?",
+                "text": "Drop it", "via": "watchtower"
             ],
             ["id": "e4", "kind": "subagent", "at": ago(600), "text": "", "subagent": [
                 "agent_id": "demo-1", "tool_use_id": "toolu_demo1", "type": "Explore", "description": "Find the archive view", "status": "finished"

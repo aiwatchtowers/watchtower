@@ -19,6 +19,49 @@ final class QuitCoordinatorTests: XCTestCase {
         await fulfillment(of: [stopped, replied], timeout: 5)
     }
 
+    /// Board #1716: every quit — sessions kept or stopped — stops the
+    /// deleted sessions' background cleanups before it replies.
+    func testQuitStopsBackgroundCleanupsBeforeReplying() async {
+        for choice in [QuitChoice.quitKeepingSessions, .quitStoppingSessions] {
+            var order: [String] = []
+            let replied = expectation(description: "replied")
+            _ = QuitCoordinator.shouldTerminate(
+                hasBlockingWork: true,
+                confirmQuit: { choice },
+                stopDaemon: {},
+                stopBackgroundCleanups: { order.append("cleanups") },
+                reply: { _ in order.append("reply"); replied.fulfill() })
+            await fulfillment(of: [replied], timeout: 5)
+            XCTAssertEqual(order, ["cleanups", "reply"], "\(choice)")
+        }
+    }
+
+    /// The app's quit entry: `TrayAppDelegate.terminateDecision` passes the
+    /// step on, and its helper stops the view model's cleanups.
+    func testTrayQuitPathStopsTheViewModelsCleanups() async throws {
+        var stopped = false
+        let replied = expectation(description: "replied")
+        _ = TrayAppDelegate.terminateDecision(
+            managesLifecycle: true,
+            hasBlockingWork: false,
+            confirmQuit: { .quitStoppingSessions },
+            stopDaemon: {},
+            stopBackgroundCleanups: { stopped = true },
+            reply: { _ in replied.fulfill() })
+        await fulfillment(of: [replied], timeout: 5)
+        XCTAssertTrue(stopped)
+
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "QuitCoordinatorTests-\(UUID().uuidString)"))
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults)
+        let center = SessionCleanupCenter(runner: nil, streamer: nil)
+        vm.sessionCleanup = center
+        await TrayAppDelegate.stopBackgroundCleanups(vm)
+        XCTAssertTrue(center.backgroundStopped)
+        XCTAssertTrue(vm.autoCleanupStopped)
+    }
+
     func testBlockingWorkCancelBlocksQuitWithoutStopping() {
         var stoppedCalled = false
         let reply = QuitCoordinator.shouldTerminate(
@@ -50,7 +93,7 @@ final class QuitCoordinatorTests: XCTestCase {
         let reply = QuitCoordinator.shouldTerminate(
             hasBlockingWork: false,
             confirmQuit: { .quitStoppingSessions },
-            closeChatSessions: { order.append("chat") },
+            shutdownChat: { order.append("chat") },
             stopDaemon: { order.append("daemon") },
             reply: { ok in XCTAssertTrue(ok); replied.fulfill() })
         XCTAssertEqual(reply, .terminateLater)
@@ -58,12 +101,43 @@ final class QuitCoordinatorTests: XCTestCase {
         XCTAssertEqual(order, ["chat", "daemon"])
     }
 
+    /// Spec §7: the engine could not end the chat (`chat.sock` unreachable,
+    /// refused or past its bound) → `watchtower chat shutdown` ends it over
+    /// the session sockets, still before the daemon stops.
+    func testQuitFallsBackToCLIShutdown() async {
+        var order: [String] = []
+        let replied = expectation(description: "replied")
+        _ = QuitCoordinator.shouldTerminate(
+            hasBlockingWork: false,
+            confirmQuit: { .quitStoppingSessions },
+            shutdownChat: {
+                await QuitCoordinator.shutdownChat(
+                    engine: { order.append("engine"); return false },
+                    cli: { order.append("cli") }
+                )
+            },
+            stopDaemon: { order.append("daemon") },
+            reply: { _ in replied.fulfill() })
+        await fulfillment(of: [replied], timeout: 5)
+        XCTAssertEqual(order, ["engine", "cli", "daemon"])
+    }
+
+    /// The engine ended the chat: no CLI process is spawned.
+    func testQuitSkipsCLIShutdownWhenTheEngineEndedTheChat() async {
+        var order: [String] = []
+        await QuitCoordinator.shutdownChat(
+            engine: { order.append("engine"); return true },
+            cli: { order.append("cli") }
+        )
+        XCTAssertEqual(order, ["engine"])
+    }
+
     func testCancelledQuitLeavesChatSessionsRunning() {
         var closed = false
         let reply = QuitCoordinator.shouldTerminate(
             hasBlockingWork: true,
             confirmQuit: { .cancel },
-            closeChatSessions: { closed = true },
+            shutdownChat: { closed = true },
             stopDaemon: {},
             reply: { _ in XCTFail("must not reply") })
         XCTAssertEqual(reply, .terminateCancel)
@@ -78,7 +152,7 @@ final class QuitCoordinatorTests: XCTestCase {
         let reply = QuitCoordinator.shouldTerminate(
             hasBlockingWork: false,
             confirmQuit: { .quitStoppingSessions },
-            closeChatSessions: { order.append("chat") },
+            shutdownChat: { order.append("chat") },
             closeTerminals: { order.append("terminals") },
             stopDaemon: { order.append("daemon") },
             reply: { ok in XCTAssertTrue(ok); replied.fulfill() })
@@ -95,7 +169,7 @@ final class QuitCoordinatorTests: XCTestCase {
         let reply = QuitCoordinator.shouldTerminate(
             hasBlockingWork: true,
             confirmQuit: { choice },
-            closeChatSessions: { order.append("chat") },
+            shutdownChat: { order.append("chat") },
             closeTerminals: { order.append("close") },
             detachTerminals: { order.append("detach") },
             stopDaemon: { order.append("daemon") },
@@ -127,7 +201,7 @@ final class QuitCoordinatorTests: XCTestCase {
         let reply = QuitCoordinator.shouldTerminate(
             hasBlockingWork: true,
             confirmQuit: { .cancel },
-            closeChatSessions: { XCTFail("a cancelled quit closes nothing") },
+            shutdownChat: { XCTFail("a cancelled quit closes nothing") },
             closeTerminals: { XCTFail("a cancelled quit closes nothing") },
             detachTerminals: { XCTFail("a cancelled quit detaches nothing") },
             stopDaemon: { XCTFail("a cancelled quit stops nothing") },

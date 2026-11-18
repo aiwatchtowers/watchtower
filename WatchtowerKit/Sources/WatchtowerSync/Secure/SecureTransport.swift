@@ -22,7 +22,8 @@ import os
 /// `SecureTransportError.keysUnavailable` so the consumer keeps its token and replays (Review Focus 1). `deletedRecordNames` are passed through as wire names.
 public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingTransport {
     private static let hubRelayKinds: Set<String> = [
-        RelayRecordKind.action.rawValue, RelayRecordKind.recordingUpload.rawValue, RelayRecordKind.device.rawValue
+        RelayRecordKind.action.rawValue, RelayRecordKind.recordingUpload.rawValue,
+        RelayRecordKind.chatAttachment.rawValue, RelayRecordKind.device.rawValue
     ]
     /// The phone also seals and opens `control` (both directions); the Swift hub keeps dropping it as `unknownKind`.
     private static let phoneRelayKinds = hubRelayKinds.union([RelayRecordKind.control.rawValue])

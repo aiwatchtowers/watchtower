@@ -139,12 +139,8 @@ func TestWatchWake_ClosesOnCancel(t *testing.T) {
 	ch := WatchWake(ctx)
 	cancel()
 
-	select {
-	case _, ok := <-ch:
-		assert.False(t, ok, "no wake without a sleep, only the close")
-	case <-time.After(2 * time.Second):
-		t.Fatal("wake channel was not closed after context cancellation")
-	}
+	_, ok := <-ch
+	assert.False(t, ok, "no wake without a sleep, only the close")
 }
 
 // The real clock's wall reading carries no monotonic reading: with one, the

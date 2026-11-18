@@ -8,7 +8,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 )
 
 var update = flag.Bool("update", false, "rewrite testdata/result_keys.golden")
@@ -230,15 +229,9 @@ func TestParse_EvidenceOutsideFolderDropped(t *testing.T) {
 	// a FIFO must not hang Parse
 	fifo := filepath.Join(folder, "pipe")
 	if err := syscall.Mkfifo(fifo, 0o600); err == nil {
-		done := make(chan Result, 1)
-		go func() { done <- parseOne(t, `{"summary":"s","blind_spots":[`+spot("pipe")+`]}`, src) }()
-		select {
-		case r := <-done:
-			if len(r.BlindSpots) != 0 {
-				t.Error("FIFO accepted as evidence")
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("Parse hangs on a FIFO evidence path")
+		// A Parse that opened it would hang here: go test -timeout reports it.
+		if r := parseOne(t, `{"summary":"s","blind_spots":[`+spot("pipe")+`]}`, src); len(r.BlindSpots) != 0 {
+			t.Error("FIFO accepted as evidence")
 		}
 	}
 	// a symlink out of the folder is refused too

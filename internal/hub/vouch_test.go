@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/hub/hubtest"
@@ -14,6 +15,8 @@ import (
 	"watchtower/internal/hub/relaytest"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/transport/memfake"
+	"watchtower/internal/hub/transport/relay/client"
 	"watchtower/internal/hub/transport/relay/relayv1"
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/policy/policytest"
@@ -150,6 +153,15 @@ func TestARelayIDNamedRunsTheLinkUpkeepWithAFreshAccountRead(t *testing.T) {
 	}
 }
 
+// newRelayRig is a bubble rig whose relay transport reaches srv, an
+// in-memory relaytest.
+func newRelayRig(t *testing.T, dir string, srv *relaytest.Server) *rig {
+	t.Helper()
+	r := newBubbleRig(t, dir)
+	r.http = srv.HTTPClient()
+	return r
+}
+
 // vouchRig is a test-mode Run (rules off unless asked) over the production
 // relay transport against relaytest.
 type vouchRig struct {
@@ -165,7 +177,8 @@ func startOnRelay(t *testing.T, rules bool, configure ...func(*Options)) *vouchR
 	policytest.Set(t, nil)
 	dir := shortDir(t)
 	setMeta(t, dir, state.MetaEnabled, "1")
-	r := &vouchRig{rig: newRig(t, dir), srv: relaytest.Start(t), clock: &setClock{now: time.Unix(1_800_000_000, 0)}}
+	srv := relaytest.StartInMemory(t)
+	r := &vouchRig{rig: newRelayRig(t, dir, srv), srv: srv, clock: &setClock{now: time.Unix(1_800_000_000, 0)}}
 	o := r.options()
 	o.newTransport = nil // the production relay transport
 	o.RelayOrigin = r.srv.URL
@@ -195,15 +208,9 @@ type linkedPhone struct {
 func (r *vouchRig) link() linkedPhone {
 	r.t.Helper()
 	t := r.t
-	eventually(t, 10*time.Second, "the hub up, not vouched", func() bool { return r.rec.last().Reason == ReasonNotVouched })
-	c, err := Dial(r.dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	eventually(t, "the hub up, not vouched", func() bool { return r.rec.last().Reason == ReasonNotVouched })
+	c := r.dial()
 	t.Cleanup(func() { _ = c.Close() })
-	if err := c.Send(ControlRequest{Op: OpPair}); err != nil {
-		t.Fatal(err)
-	}
 	next := func(event string) ControlAnswer {
 		t.Helper()
 		for {
@@ -219,7 +226,8 @@ func (r *vouchRig) link() linkedPhone {
 			}
 		}
 	}
-	lp, err := wire.ParseLinkURL(next(link.EventQR).URL)
+	qr := pairStep(t, c, ControlRequest{Op: OpPair}, link.EventQR, link.EventWaiting)[link.EventQR]
+	lp, err := wire.ParseLinkURL(qr.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +238,7 @@ func (r *vouchRig) link() linkedPhone {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store.C = hubtest.NewPhoneClient(r.srv.URL, phone)
+	store.C = hubtest.NewPhoneClient(r.srv.URL, phone, client.WithHTTPClient(r.srv.HTTPClient()))
 	if _, err := store.Register(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +252,7 @@ func (r *vouchRig) link() linkedPhone {
 	}
 	next(link.EventSAS)
 	var awaiting wire.Keybox
-	eventually(t, 10*time.Second, "the awaiting keybox", func() bool {
+	eventually(t, "the awaiting keybox", func() bool {
 		kb, ok, err := phone.ReadKeybox(pair)
 		awaiting = kb
 		return err == nil && ok && kb.Grant.ConfirmNonce != nil
@@ -252,11 +260,8 @@ func (r *vouchRig) link() linkedPhone {
 	if _, err := phone.SAS(*awaiting.Grant.ConfirmNonce); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Send(ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true}); err != nil {
-		t.Fatal(err)
-	}
-	next(link.EventLinked)
-	eventually(t, 10*time.Second, "the keys in the pair zone", func() bool {
+	pairStep(t, c, ControlRequest{Op: OpConfirm, Device: phone.ID().String(), Confirm: true}, link.EventLinked)
+	eventually(t, "the keys in the pair zone", func() bool {
 		kb, ok, err := phone.ReadKeybox(pair)
 		return err == nil && ok && kb.Keys != nil
 	})
@@ -272,14 +277,23 @@ func (r *vouchRig) admit(l linkedPhone) {
 	if err := l.store.PromotePairing(r.t.Context(), l.slot); err != nil {
 		r.t.Fatal(err)
 	}
-	// The clock is frozen, so an unvouched hub's backstop read answers from
-	// its window's cache. When an in-flight HUB_NOT_VOUCHED answer lands
-	// after the slot was added it empties the transport's account state and
-	// only a fresh read reopens the gate; let one window pass per half
-	// second, as production time would.
+	r.waitAdmitted()
+}
+
+// waitAdmitted waits for running/ after the phone put the hub in its slot.
+// The hub's clock is frozen, so an unvouched hub's backstop read answers
+// from its window's cache. When an in-flight HUB_NOT_VOUCHED answer lands
+// after the slot was added it empties the transport's account state and
+// only a fresh read reopens the gate; let one window pass per half second
+// of the bubble's clock, as production time would.
+func (r *vouchRig) waitAdmitted() { r.t.Helper(); r.waitAfterSlot("") }
+
+// waitAfterSlot is waitAdmitted for running/reason.
+func (r *vouchRig) waitAfterSlot(reason string) {
+	r.t.Helper()
 	tick := 0
-	eventually(r.t, 10*time.Second, "running/", func() bool {
-		if s := r.rec.last(); s.State == StateRunning && s.Reason == "" {
+	eventually(r.t, "running/"+reason, func() bool {
+		if s := r.rec.last(); s.State == StateRunning && s.Reason == reason {
 			return true
 		}
 		if tick++; tick%50 == 0 {
@@ -341,56 +355,66 @@ func (r *vouchRig) accountReads() int { return len(r.srv.Requests("get_account_s
 // zone, a mailbox or set_hub_readers — and says not_vouched; the phone is
 // pending.
 func TestUnvouchedHubOnlyWritesItsPairingSlot(t *testing.T) {
-	r := startOnRelay(t, false)
-	r.link()
-	r.waitState(StateRunning, ReasonNotVouched)
-	time.Sleep(300 * time.Millisecond) // several link and pass ticks
-	if ops := r.opsOutsidePairZones(); len(ops) > 0 {
-		t.Fatalf("an unvouched hub ran %v", ops)
-	}
-	if !r.device(t).RelayAdmittedAt.IsZero() {
-		t.Fatal("a phone not holding the hub was stamped admitted")
-	}
+	bubble(t, func(t *testing.T) {
+		r := startOnRelay(t, false)
+		r.link()
+		r.waitState(StateRunning, ReasonNotVouched)
+		time.Sleep(300 * time.Millisecond) // several link and pass ticks
+		synctest.Wait()
+		if ops := r.opsOutsidePairZones(); len(ops) > 0 {
+			t.Fatalf("an unvouched hub ran %v", ops)
+		}
+		if !r.device(t).RelayAdmittedAt.IsZero() {
+			t.Fatal("a phone not holding the hub was stamped admitted")
+		}
+	})
 }
 
 // TestUnvouchedHubPollsTheAccountStateAtMostEvery30s: the short link retry
 // ticks fast after the link, but an unvouched hub reads the account state
 // at most once per unvouchedPoll of its clock.
 func TestUnvouchedHubPollsTheAccountStateAtMostEvery30s(t *testing.T) {
-	r := startOnRelay(t, false)
-	r.link()
-	time.Sleep(200 * time.Millisecond) // ~10 short-retry ticks and two link backstops
-	base := r.accountReads()
-	time.Sleep(300 * time.Millisecond)
-	if n := r.accountReads() - base; n != 0 {
-		t.Fatalf("%d account-state reads inside one poll window", n)
-	}
-	r.clock.Advance(unvouchedPoll)
-	eventually(t, 5*time.Second, "one read after the window", func() bool { return r.accountReads() > base })
-	time.Sleep(200 * time.Millisecond)
-	if n := r.accountReads() - base; n != 1 {
-		t.Fatalf("%d account-state reads after one window, want 1", n)
-	}
+	bubble(t, func(t *testing.T) {
+		r := startOnRelay(t, false)
+		r.link()
+		time.Sleep(200 * time.Millisecond) // ~10 short-retry ticks and two link backstops
+		synctest.Wait()
+		base := r.accountReads()
+		time.Sleep(300 * time.Millisecond)
+		synctest.Wait()
+		if n := r.accountReads() - base; n != 0 {
+			t.Fatalf("%d account-state reads inside one poll window", n)
+		}
+		r.clock.Advance(unvouchedPoll)
+		eventually(t, "one read after the window", func() bool { return r.accountReads() > base })
+		time.Sleep(200 * time.Millisecond)
+		synctest.Wait()
+		if n := r.accountReads() - base; n != 1 {
+			t.Fatalf("%d account-state reads after one window, want 1", n)
+		}
+	})
 }
 
 // TestVouchAcceptedAdmitsTheHub: vouch_hub and promote_pairing put the
 // hub into the phone's slot; SLOT_ADDED opens the gate at once, the
 // device_grant reaches the data zone and the phone is stamped admitted.
 func TestVouchAcceptedAdmitsTheHub(t *testing.T) {
-	r := startOnRelay(t, false)
-	l := r.link()
-	r.admit(l)
-	data := transport.DataZone(l.lp.RelayDeviceID)
-	eventually(t, 10*time.Second, "the device_grant in the data zone", func() bool {
-		kb, ok, err := l.phone.ReadKeybox(data)
-		return err == nil && ok && kb.Grant.Linked
+	bubble(t, func(t *testing.T) {
+		r := startOnRelay(t, false)
+		l := r.link()
+		r.admit(l)
+		data := transport.DataZone(l.lp.RelayDeviceID)
+		eventually(t, "the device_grant in the data zone", func() bool {
+			kb, ok, err := l.phone.ReadKeybox(data)
+			return err == nil && ok && kb.Grant.Linked
+		})
+		if r.device(t).RelayAdmittedAt.IsZero() {
+			t.Fatal("the admitted phone carries no relay_admitted_at")
+		}
+		if n := r.readsToOpenTheGate(); n < 1 || n > 3 {
+			t.Fatalf("%d account-state reads from promote_pairing to the open gate, want 1..3", n)
+		}
 	})
-	if r.device(t).RelayAdmittedAt.IsZero() {
-		t.Fatal("the admitted phone carries no relay_admitted_at")
-	}
-	if n := r.readsToOpenTheGate(); n < 1 || n > 3 {
-		t.Fatalf("%d account-state reads from promote_pairing to the open gate, want 1..3", n)
-	}
 }
 
 // readsToOpenTheGate counts the get_account_state ops between the phone's
@@ -411,7 +435,7 @@ func (r *vouchRig) readsToOpenTheGate() int {
 	r.t.Helper()
 	var ops []string
 	from, to := -1, -1
-	eventually(r.t, 10*time.Second, "set_hub_readers after promote_pairing", func() bool {
+	eventually(r.t, "set_hub_readers after promote_pairing", func() bool {
 		ops = r.srv.Ops()
 		from, to = -1, -1
 		for i, op := range ops {
@@ -449,25 +473,28 @@ func TestVouchRefusedKeepsTheHubOffTheRelay(t *testing.T) {
 		relayv1.ErrorCode_ERROR_CODE_SLOT_LIMIT,
 	} {
 		t.Run(code.String(), func(t *testing.T) {
-			r := startOnRelay(t, false)
-			l := r.link()
-			r.srv.FailNext("vouch_hub", code)
-			if err := l.phone.VouchLink(t.Context(), l.lp); err == nil {
-				t.Fatal("the refused vouch succeeded")
-			}
-			// The phone does not promote after a refusal; a promote anyway
-			// is refused too (no pending vouch).
-			if err := l.store.PromotePairing(t.Context(), l.slot); err == nil {
-				t.Fatal("promote_pairing without a vouch succeeded")
-			}
-			time.Sleep(200 * time.Millisecond)
-			r.waitState(StateRunning, ReasonNotVouched)
-			if ops := r.opsOutsidePairZones(); len(ops) > 0 {
-				t.Fatalf("a refused hub ran %v", ops)
-			}
-			if !r.device(t).RelayAdmittedAt.IsZero() {
-				t.Fatal("pending phone stamped admitted")
-			}
+			bubble(t, func(t *testing.T) {
+				r := startOnRelay(t, false)
+				l := r.link()
+				r.srv.FailNext("vouch_hub", code)
+				if err := l.phone.VouchLink(t.Context(), l.lp); err == nil {
+					t.Fatal("the refused vouch succeeded")
+				}
+				// The phone does not promote after a refusal; a promote anyway
+				// is refused too (no pending vouch).
+				if err := l.store.PromotePairing(t.Context(), l.slot); err == nil {
+					t.Fatal("promote_pairing without a vouch succeeded")
+				}
+				time.Sleep(200 * time.Millisecond)
+				synctest.Wait()
+				r.waitState(StateRunning, ReasonNotVouched)
+				if ops := r.opsOutsidePairZones(); len(ops) > 0 {
+					t.Fatalf("a refused hub ran %v", ops)
+				}
+				if !r.device(t).RelayAdmittedAt.IsZero() {
+					t.Fatal("pending phone stamped admitted")
+				}
+			})
 		})
 	}
 }
@@ -477,58 +504,61 @@ func TestVouchRefusedKeepsTheHubOffTheRelay(t *testing.T) {
 // nothing published, the sidecar intact, also across a restart; the phone's
 // new vouch and add_slot admit it again.
 func TestHubNotVouchedAfterAdmissionIsRevoked(t *testing.T) {
-	r := startOnRelay(t, false)
-	l := r.link()
-	r.admit(l)
-	data := transport.DataZone(l.lp.RelayDeviceID)
-	eventually(t, 10*time.Second, "the device_grant in the data zone", func() bool {
-		kb, ok, err := l.phone.ReadKeybox(data)
-		return err == nil && ok && kb.Grant.Linked
-	})
+	bubble(t, func(t *testing.T) {
+		r := startOnRelay(t, false)
+		l := r.link()
+		r.admit(l)
+		data := transport.DataZone(l.lp.RelayDeviceID)
+		eventually(t, "the device_grant in the data zone", func() bool {
+			kb, ok, err := l.phone.ReadKeybox(data)
+			return err == nil && ok && kb.Grant.Linked
+		})
 
-	r.srv.RemoveSlot(l.phone.RelayDeviceID(), l.lp.RelayDeviceID)
-	r.waitState(StateRunning, ReasonVouchRevoked)
-	saves := len(r.srv.Requests("save"))
-	time.Sleep(300 * time.Millisecond)
-	for _, req := range r.srv.Requests("save")[saves:] {
-		for _, it := range req.GetSave().GetItems() {
-			if !strings.HasPrefix(it.GetRecord().GetZone(), "pair/") {
-				t.Fatalf("a revoked hub saved into %s", it.GetRecord().GetZone())
+		r.srv.RemoveSlot(l.phone.RelayDeviceID(), l.lp.RelayDeviceID)
+		r.waitState(StateRunning, ReasonVouchRevoked)
+		saves := len(r.srv.Requests("save"))
+		time.Sleep(300 * time.Millisecond)
+		synctest.Wait()
+		for _, req := range r.srv.Requests("save")[saves:] {
+			for _, it := range req.GetSave().GetItems() {
+				if !strings.HasPrefix(it.GetRecord().GetZone(), "pair/") {
+					t.Fatalf("a revoked hub saved into %s", it.GetRecord().GetZone())
+				}
 			}
 		}
-	}
-	if d := r.device(t); d.RelayAdmittedAt.IsZero() {
-		t.Fatal("the sidecar lost the phone's admission")
-	}
-	hubRegisters := 0
-	for _, req := range r.srv.Requests("register") {
-		if req.GetRegister().GetDeviceKind() == relayv1.DeviceKind_DEVICE_KIND_HUB {
-			hubRegisters++
+		if d := r.device(t); d.RelayAdmittedAt.IsZero() {
+			t.Fatal("the sidecar lost the phone's admission")
 		}
-	}
-	if hubRegisters != 1 {
-		t.Fatalf("%d hub registers: the hub registered again", hubRegisters)
-	}
+		hubRegisters := 0
+		for _, req := range r.srv.Requests("register") {
+			if req.GetRegister().GetDeviceKind() == relayv1.DeviceKind_DEVICE_KIND_HUB {
+				hubRegisters++
+			}
+		}
+		if hubRegisters != 1 {
+			t.Fatalf("%d hub registers: the hub registered again", hubRegisters)
+		}
 
-	// A restart while revoked reads the same.
-	if err := r.stop(); err != nil {
-		t.Fatal(err)
-	}
-	r2 := &vouchRig{rig: newRig(t, r.dir), srv: r.srv, clock: r.clock}
-	o := r2.options()
-	o.newTransport, o.RelayOrigin, o.Clock = nil, r.srv.URL, r.clock.Now
-	r2.start(o)
-	r2.waitState(StateRunning, ReasonVouchRevoked)
+		// A restart while revoked reads the same.
+		if err := r.stop(); err != nil {
+			t.Fatal(err)
+		}
+		r2 := &vouchRig{rig: newRelayRig(t, r.dir, r.srv), srv: r.srv, clock: r.clock}
+		o := r2.options()
+		o.newTransport, o.RelayOrigin, o.Clock = nil, r.srv.URL, r.clock.Now
+		r2.start(o)
+		r2.waitState(StateRunning, ReasonVouchRevoked)
 
-	if err := l.phone.VouchLink(t.Context(), l.lp); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := l.store.C.Do(t.Context(), &relayv1.Request{Op: &relayv1.Request_AddSlot{AddSlot: &relayv1.AddMacSlot{
-		MacDeviceId: l.lp.RelayDeviceID,
-	}}}); err != nil {
-		t.Fatal(err)
-	}
-	r2.waitState(StateRunning, "")
+		if err := l.phone.VouchLink(t.Context(), l.lp); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := l.store.C.Do(t.Context(), &relayv1.Request{Op: &relayv1.Request_AddSlot{AddSlot: &relayv1.AddMacSlot{
+			MacDeviceId: l.lp.RelayDeviceID,
+		}}}); err != nil {
+			t.Fatal(err)
+		}
+		r2.waitAdmitted()
+	})
 }
 
 // TestHubNeverCountsItselfOnTheRelayBeforeAdmitted: before a phone holds
@@ -536,20 +566,22 @@ func TestHubNotVouchedAfterAdmissionIsRevoked(t *testing.T) {
 // and publishes no heartbeat; in live mode (relay-only rules) it is paused
 // with the same reason first.
 func TestHubNeverCountsItselfOnTheRelayBeforeAdmitted(t *testing.T) {
-	r := startOnRelay(t, true)
-	r.waitState(StatePaused, ReasonNotVouched)
-	l := r.link()
-	r.waitState(StatePaused, ReasonNotVouched)
-	if ops := r.opsOutsidePairZones(); len(ops) > 0 {
-		t.Fatalf("an unvouched live hub ran %v", ops)
-	}
-	if err := l.phone.VouchLink(t.Context(), l.lp); err != nil {
-		t.Fatal(err)
-	}
-	if err := l.store.PromotePairing(t.Context(), l.slot); err != nil {
-		t.Fatal(err)
-	}
-	r.waitState(StateRunning, "")
+	bubble(t, func(t *testing.T) {
+		r := startOnRelay(t, true)
+		r.waitState(StatePaused, ReasonNotVouched)
+		l := r.link()
+		r.waitState(StatePaused, ReasonNotVouched)
+		if ops := r.opsOutsidePairZones(); len(ops) > 0 {
+			t.Fatalf("an unvouched live hub ran %v", ops)
+		}
+		if err := l.phone.VouchLink(t.Context(), l.lp); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.store.PromotePairing(t.Context(), l.slot); err != nil {
+			t.Fatal(err)
+		}
+		r.waitAdmitted()
+	})
 }
 
 // restart stops r's Run and starts it again on the same dir and relay with
@@ -560,7 +592,7 @@ func (r *vouchRig) restart(t *testing.T) *vouchRig {
 	if err := r.stop(); err != nil {
 		t.Fatal(err)
 	}
-	r2 := &vouchRig{rig: newRig(t, r.dir), srv: r.srv, clock: r.clock}
+	r2 := &vouchRig{rig: newRelayRig(t, r.dir, r.srv), srv: r.srv, clock: r.clock}
 	o := r2.options()
 	o.newTransport, o.RelayOrigin, o.Clock, o.linkEvery = nil, r.srv.URL, r.clock.Now, time.Hour
 	r2.start(o)
@@ -572,53 +604,96 @@ func (r *vouchRig) restart(t *testing.T) *vouchRig {
 // its start read (phones relay), and a later HUB_NOT_VOUCHED reads
 // vouch_revoked.
 func TestHubStartedVouchedStampsItsPhonesAtOnce(t *testing.T) {
-	r := startOnRelay(t, false)
-	l := r.link()
-	r.admit(l)
-	if err := r.stop(); err != nil {
-		t.Fatal(err)
-	}
-	st, err := state.Open(r.dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	devices, err := st.Devices()
-	if err == nil {
-		err = st.WithTx(t.Context(), func(tx *sql.Tx) error { return state.LinkDevice(tx, devices[0]) }) // stamp cleared
-	}
-	_ = st.Close()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !r.device(t).RelayAdmittedAt.IsZero() {
-		t.Fatal("the stamp was not cleared")
-	}
+	bubble(t, func(t *testing.T) {
+		r := startOnRelay(t, false)
+		l := r.link()
+		r.admit(l)
+		if err := r.stop(); err != nil {
+			t.Fatal(err)
+		}
+		st, err := state.Open(r.dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		devices, err := st.Devices()
+		if err == nil {
+			err = st.WithTx(t.Context(), func(tx *sql.Tx) error { return state.LinkDevice(tx, devices[0]) }) // stamp cleared
+		}
+		_ = st.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !r.device(t).RelayAdmittedAt.IsZero() {
+			t.Fatal("the stamp was not cleared")
+		}
 
-	r2 := r.restart(t)
-	r2.waitState(StateRunning, "")
-	eventually(t, 5*time.Second, "the phone stamped from the start's account state", func() bool {
-		return !r2.device(t).RelayAdmittedAt.IsZero()
+		r2 := r.restart(t)
+		r2.waitState(StateRunning, "")
+		eventually(t, "the phone stamped from the start's account state", func() bool {
+			return !r2.device(t).RelayAdmittedAt.IsZero()
+		})
+		r2.srv.RemoveSlot(l.phone.RelayDeviceID(), l.lp.RelayDeviceID)
+		r2.waitState(StateRunning, ReasonVouchRevoked)
 	})
-	r2.srv.RemoveSlot(l.phone.RelayDeviceID(), l.lp.RelayDeviceID)
-	r2.waitState(StateRunning, ReasonVouchRevoked)
 }
 
 // HUB_NOT_VOUCHED on a publisher write closes the gate at once: no poll
 // (the clock is frozen, so a poll inside the window reads the last answer)
 // is needed for the hub to stop and say vouch_revoked.
 func TestPublisherNotVouchedClosesTheGateAtOnce(t *testing.T) {
-	r := startOnRelay(t, false)
-	l := r.link()
-	r.srv.FailNextSaveIn(transport.DataZone(l.lp.RelayDeviceID), relayv1.ErrorCode_ERROR_CODE_HUB_NOT_VOUCHED)
-	if err := l.phone.VouchLink(t.Context(), l.lp); err != nil {
+	bubble(t, func(t *testing.T) {
+		r := startOnRelay(t, false)
+		l := r.link()
+		r.srv.FailNextSaveIn(transport.DataZone(l.lp.RelayDeviceID), relayv1.ErrorCode_ERROR_CODE_HUB_NOT_VOUCHED)
+		if err := l.phone.VouchLink(t.Context(), l.lp); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.store.PromotePairing(t.Context(), l.slot); err != nil {
+			t.Fatal(err)
+		}
+		// The gate opens on SLOT_ADDED (or, after a racing HUB_NOT_VOUCHED,
+		// on the next window's read), the publisher's first data-zone save is
+		// refused, and the gate closes again without a new account read.
+		r.waitAfterSlot(ReasonVouchRevoked)
+	})
+}
+
+// slotFake is a relay transport whose last account state the test sets.
+type slotFake struct {
+	*memfake.Fake
+	st *relayv1.AccountState
+}
+
+func (f slotFake) Vouched() bool                           { return len(f.st.GetPhones()) > 0 }
+func (f slotFake) Admitted() bool                          { return f.Vouched() }
+func (f slotFake) LastAccountState() *relayv1.AccountState { return f.st }
+
+// TestGateOpeningStampsTheStateItOpenedOn: a caller follows an older answer
+// (the reader's cached one, no phone) while a SLOT_ADDED read has already
+// put the phone in the transport's state. The gate opens on that state, so
+// the phone it lists is stamped there: a HUB_NOT_VOUCHED right after (before
+// SLOT_ADDED's own handling, which then sees the forgotten state) reads
+// vouch_revoked, not not_vouched (the CI hang of
+// TestPublisherNotVouchedClosesTheGateAtOnce, #1756).
+func TestGateOpeningStampsTheStateItOpenedOn(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := l.store.PromotePairing(t.Context(), l.slot); err != nil {
-		t.Fatal(err)
+	t.Cleanup(func() { _ = st.Close() })
+	linkTestPhone(t, st, runtimePhone)
+	slotted := &relayv1.AccountState{Phones: []*relayv1.SlotHolder{{PhoneDeviceId: runtimePhone}}}
+	h := &hubRuntime{sup: &supervisor{o: Options{Clock: time.Now}}, st: st,
+		tr: slotFake{Fake: memfake.New(transport.KindRelay, time.Now), st: slotted}, unvouched: true}
+
+	h.followAccount(&relayv1.AccountState{}) // the cached answer from before the slot
+
+	if h.isUnvouched() {
+		t.Fatal("the gate stayed closed on a state that lists a phone")
 	}
-	// The gate opens on SLOT_ADDED, the publisher's first data-zone save is
-	// refused, and the gate closes again without a new account read.
-	r.waitState(StateRunning, ReasonVouchRevoked)
+	if got := h.vouchReason(); got != ReasonVouchRevoked {
+		t.Fatalf("vouchReason after the opening = %q, want %q", got, ReasonVouchRevoked)
+	}
 }
 
 func TestNotVouchedHasItsClassAndStartReason(t *testing.T) {

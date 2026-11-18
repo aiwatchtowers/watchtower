@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,10 +34,31 @@ const (
 	pasteClose = "\x1b[201~"
 )
 
+// ptyMark is the marker ptyBefore types.
+const ptyMark = "<mark>"
+
+// ptyBefore types ptyMark through pane and returns what the session's PTY
+// got before it: the PTY takes bytes in order, so anything the host typed
+// before this call is in it — no window to wait out. The marker stays in
+// the PTY.
+func (w *world) ptyBefore(row int64, pane *pane) string {
+	w.t.Helper()
+	before := len(w.pty(row))
+	pane.send(sessionhost.Input, []byte(ptyMark))
+	var got string
+	eventually(w.t, "the marker", func() bool {
+		got = w.pty(row)
+		return strings.Contains(got[min(before, len(got)):], ptyMark)
+	})
+	return got[:strings.LastIndex(got, ptyMark)]
+}
+
 func (w *world) port() *Port {
 	w.t.Helper()
 	d := w.deps()
-	d.LaunchWatch = 200 * time.Millisecond
+	// One look at the launch: these sessions keep running, so a longer watch
+	// would only run out its time.
+	d.LaunchWatch = time.Nanosecond
 	p := NewPort(d, nil)
 	w.t.Cleanup(func() { _ = p.Close() })
 	return p
@@ -101,8 +123,7 @@ func TestPortDeliverPassesHeldThrough(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, handlers.DeliverResult{Outcome: handlers.DeliverHeld, Reason: sessionhost.HeldPromptHasText}, res)
 	assert.Equal(t, 1, checks, "only the pre-paste check ran")
-	time.Sleep(100 * time.Millisecond)
-	assert.Equal(t, "half typed", w.pty(sid))
+	assert.Equal(t, "half typed", w.ptyBefore(sid, pane))
 
 	gone, err := p.Deliver(context.Background(), handlers.DeliverRequest{SessionID: sid, Run: info.Launch + 1, Text: "x"})
 	require.NoError(t, err)
@@ -227,14 +248,13 @@ func TestProj16_ADraftHoldsTheLineAndNothingIsPasted(t *testing.T) {
 	r.echo(seq, "the line held", func(e wire.ActionRequest) bool {
 		return e.Status == wire.StatusHeld && e.Reason != nil && *e.Reason == "prompt_has_text"
 	})
-	time.Sleep(200 * time.Millisecond)
-	assert.Equal(t, "my draft", w.pty(sid), "not one byte from the hub beside the owner's draft")
+	assert.Equal(t, "my draft", w.ptyBefore(sid, pane), "not one byte from the hub beside the owner's draft")
 
 	pane.send(sessionhost.Input, []byte("\r"))
-	w.waitPTY(sid, "my draft\r")
+	w.waitPTY(sid, "my draft"+ptyMark+"\r")
 	r.h.DeliverHeld(context.Background())
 	r.echo(seq, "the held line submitted", submitted)
-	w.waitPTY(sid, "my draft\r"+pasteOpen+"hello"+pasteClose+"\r")
+	w.waitPTY(sid, "my draft"+ptyMark+"\r"+pasteOpen+"hello"+pasteClose+"\r")
 }
 
 // Smoke: a phone line through the hub's handlers and the real port reaches a
@@ -249,12 +269,13 @@ func TestHubTypesAPhoneLineIntoAStubSession(t *testing.T) {
 	w.waitPTY(sid, pasteOpen+"hello"+pasteClose+"\r")
 }
 
-// portWith is a port over w's host whose deps change applies (a short
-// launch watch).
+// portWith is a port over w's host whose deps change applies. Its launch
+// watch never runs out: every launch it starts ends (or never ran), and the
+// watch returns at that end however long a loaded machine takes to it.
 func (w *world) portWith(change func(*Deps)) *Port {
 	w.t.Helper()
 	d := w.deps()
-	d.LaunchWatch = time.Second
+	d.LaunchWatch = time.Hour
 	change(&d)
 	p := NewPort(d, nil)
 	w.t.Cleanup(func() { _ = p.Close() })

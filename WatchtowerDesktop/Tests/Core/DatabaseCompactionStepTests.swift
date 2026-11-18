@@ -1,5 +1,6 @@
 import Foundation
 @testable import WatchtowerCore
+import WatchtowerTestSupport
 import XCTest
 
 @MainActor
@@ -48,16 +49,36 @@ final class DatabaseCompactionStepTests: XCTestCase {
     func testDueStopsDaemonThenCompactsInOrder() async {
         let step = makeStep(check: .success(.fixture(dbBytes: 2_000_000_000)))
         let run = Task { await step.run { "/db" } }
-        await until { step.phase != .idle && step.phase != .checking }
+        await untilTurn { step.phase != .idle && step.phase != .checking }
         XCTAssertEqual(step.phase, .compacting(dbBytes: 2_000_000_000))
         XCTAssertTrue(step.stoppedDaemon)
         XCTAssertTrue(step.isRunning)
-        XCTAssertEqual(calls.items, ["check", "stopDaemon", "startCompact"])
+        XCTAssertEqual(calls.items, ["check", "chatShutdown", "stopDaemon", "startCompact"])
         child.exit(status: 0, stdout: #"{"compacted":true,"reason":"migration:134","bytes_before":10,"bytes_after":5,"duration_ms":7}"#)
         await run.value
         XCTAssertEqual(step.phase, .finished)
         XCTAssertFalse(step.isRunning)
         XCTAssertNil(step.notice)
+    }
+
+    /// Spec §7: chat sessions a crashed app left alive (they still write
+    /// routing columns and `agent_actions`) end before the daemon stops and
+    /// the database is compacted. A compaction that is not due ends nothing.
+    func testCompactionStepShutsDownChatSessionsFirst() async throws {
+        let step = makeStep(check: .success(.fixture()))
+        let run = await startCompacting(step)
+        let items = calls.items
+        XCTAssertEqual(items.filter { $0 == "chatShutdown" }.count, 1)
+        XCTAssertLessThan(
+            try XCTUnwrap(items.firstIndex(of: "chatShutdown")), try XCTUnwrap(items.firstIndex(of: "stopDaemon"))
+        )
+        child.exit(status: 0)
+        await run.value
+
+        calls.clear()
+        let notDue = makeStep(check: .success(.fixture(due: false)))
+        await notDue.run { "/db" }
+        XCTAssertFalse(calls.items.contains("chatShutdown"), "a compaction that is not due ends no chat")
     }
 
     func testCheckFailureContinues() async {
@@ -78,7 +99,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
     func testStartFailureContinues() async {
         let step = makeStep(check: .success(.fixture()), startFails: true)
         await step.run { "/db" }
-        XCTAssertEqual(calls.items, ["check", "stopDaemon", "startCompact"])
+        XCTAssertEqual(calls.items, ["check", "chatShutdown", "stopDaemon", "startCompact"])
         XCTAssertEqual(step.phase, .finished)
         XCTAssertTrue(logs.items.contains { $0.contains("could not start") })
     }
@@ -129,7 +150,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
         await run.value
         // …and once it has finished.
         await step.run { "/db" }
-        XCTAssertEqual(calls.items, ["check", "stopDaemon", "startCompact"])
+        XCTAssertEqual(calls.items, ["check", "chatShutdown", "stopDaemon", "startCompact"])
         XCTAssertEqual(step.phase, .finished)
     }
 
@@ -199,7 +220,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
         await step.terminateForQuit()
         let run = await startCompacting(step)
         let quit = Task { await step.terminateForQuit() }
-        await until { self.child.terminateCount == 1 }
+        await untilTurn { self.child.terminateCount == 1 }
         child.exit(status: 4)
         await quit.value
         await run.value
@@ -215,7 +236,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
         let run = await startCompacting(step)
         let quit = Task { await step.terminateForQuit() }
         // The ticker's sleep and the grace's.
-        await until { self.child.terminateCount == 1 && self.sleeper.pendingCount == 2 }
+        await untilTurn { self.child.terminateCount == 1 && self.sleeper.pendingCount == 2 }
         XCTAssertEqual(child.killCount, 0)
         sleeper.releaseAll()
         await quit.value
@@ -236,7 +257,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
             await stop()
         }
         let run = await startCompacting(step)
-        XCTAssertEqual(calls.items, ["check", "queued", "stopDaemon", "startCompact"])
+        XCTAssertEqual(calls.items, ["check", "chatShutdown", "queued", "stopDaemon", "startCompact"])
         child.exit(status: 0)
         await run.value
     }
@@ -245,7 +266,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
         let parked = ParkedCheck()
         let step = makeStep(check: .success(.fixture()), parkedCheck: parked)
         let run = Task { await step.run { "/db" } }
-        await until { parked.isParked }
+        await untilTurn { parked.isParked }
         XCTAssertTrue(step.isRunning)
         await step.terminateForQuit()
         await run.value
@@ -269,7 +290,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
         )
         box.step = step
         await step.run { "/db" }
-        XCTAssertEqual(calls.items, ["check", "stopDaemon"])
+        XCTAssertEqual(calls.items, ["check", "chatShutdown", "stopDaemon"])
         XCTAssertEqual(step.phase, .finished)
     }
 
@@ -330,7 +351,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
 
         child.emit(.ftsRebuild)
         child.emit(.compact)
-        await until { step.phase == .compacting(dbBytes: 2_000) }
+        await untilTurn { step.phase == .compacting(dbBytes: 2_000) }
         XCTAssertEqual(step.phaseElapsedSeconds, 0, "the compaction line starts at 0:00")
         XCTAssertEqual(step.elapsedSeconds, 3)
         await tick(1, step)
@@ -364,7 +385,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
         await tick(1, step)
         XCTAssertTrue(step.canSkip, "Skip shows 15 s into the step, in the search index phase")
         child.emit(.compact)
-        await until { step.phase == .compacting(dbBytes: 1_000) }
+        await untilTurn { step.phase == .compacting(dbBytes: 1_000) }
         XCTAssertTrue(step.canSkip, "Skip stays across the phase change")
         await tick(1, step)
         XCTAssertTrue(step.canSkip)
@@ -428,7 +449,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
         let run = await startCompacting(step)
         child.emit(.ftsRebuild)
         child.emit(.compact)
-        await until { step.phase == .compacting(dbBytes: 5_000) }
+        await untilTurn { step.phase == .compacting(dbBytes: 5_000) }
         child.exit(status: 2, stdout: #"""
         {"phase":"fts_rebuild"}
         {"phase":"compact"}
@@ -728,7 +749,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
     /// waits on the first sleep.
     private func startCompacting(_ step: DatabaseCompactionStep) async -> Task<Void, Never> {
         let run = Task { await step.run { "/db" } }
-        await until { step.phase != .idle && step.phase != .checking && self.sleeper.pendingCount == 1 }
+        await untilTurn { step.phase != .idle && step.phase != .checking && self.sleeper.pendingCount == 1 }
         return run
     }
 
@@ -737,7 +758,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
         for _ in 0..<n {
             let before = step.elapsedSeconds
             sleeper.releaseOne()
-            await until { step.elapsedSeconds == before + 1 && self.sleeper.pendingCount == 1 }
+            await untilTurn { step.elapsedSeconds == before + 1 && self.sleeper.pendingCount == 1 }
         }
     }
 
@@ -746,16 +767,6 @@ final class DatabaseCompactionStepTests: XCTestCase {
     /// the main queue.
     private func drainMainActor() async {
         await Task { @MainActor in }.value
-    }
-
-    /// Yields the main actor until `condition` holds; fails after a bounded
-    /// number of turns rather than hanging.
-    private func until(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
-        for _ in 0..<10_000 {
-            if condition() { return }
-            await Task.yield()
-        }
-        XCTFail("condition never held", file: file, line: line)
     }
 }
 
@@ -766,6 +777,7 @@ private final class Recorder: @unchecked Sendable {
     private var stored: [String] = []
     var items: [String] { lock.withLock { stored } }
     func append(_ item: String) { lock.withLock { stored.append(item) } }
+    func clear() { lock.withLock { stored.removeAll() } }
 }
 
 private struct FakeCompactionCLI: CompactionCLI {
@@ -783,6 +795,10 @@ private struct FakeCompactionCLI: CompactionCLI {
             try Task.checkCancellation()
         }
         return try result.get()
+    }
+
+    func chatShutdown() async {
+        calls.append("chatShutdown")
     }
 
     func startCompact(onPhase: @escaping @Sendable (CompactionRunPhase) -> Void) throws -> any CompactionChild {

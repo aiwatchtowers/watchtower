@@ -18,6 +18,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 
 	"watchtower/internal/agentkind"
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
 	"watchtower/internal/hub/actions/handlers"
@@ -343,7 +344,7 @@ func Finish(ctx context.Context, d Deps, sessionID int64, place, brief string, p
 	var wbID, targetID, runID sql.NullInt64
 	var kind, claudeID string
 	err = d.DB.QueryRowContext(ctx, `SELECT project_id, kind, target_id, COALESCE(claude_session_id, ''), automation_run_id
-		FROM terminal_sessions WHERE id = ?`, sessionID).Scan(&wbID, &kind, &targetID, &claudeID, &runID)
+		FROM terminal_sessions WHERE id = ? AND `+db.NotDeletingSQL, sessionID).Scan(&wbID, &kind, &targetID, &claudeID, &runID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("terminal session %d: %w", sessionID, db.ErrTerminalSessionNotFound)
 	}
@@ -591,10 +592,12 @@ func (s *newStart) finish(ctx context.Context) error {
 		setup = s.wb.setup
 		setupNotice = strings.TrimSpace(notice + " " + SetupNotRunPrefix + strings.TrimSpace(setup))
 	}
-	// Deleted while its place was decided: it never launches.
+	// Deleted (or its delete requested, #1716) while its place was decided:
+	// it never launches.
 	var one int
 	// Read past a cancelled ctx: the launch below then fails and is recorded.
-	err = s.d.DB.QueryRowContext(context.WithoutCancel(ctx), `SELECT 1 FROM terminal_sessions WHERE id = ?`, s.id).Scan(&one)
+	err = s.d.DB.QueryRowContext(context.WithoutCancel(ctx), `SELECT 1 FROM terminal_sessions WHERE id = ? AND `+db.NotDeletingSQL,
+		s.id).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("Session #%d was deleted before it started.", s.id) //nolint:staticcheck // Swift's sentence, verbatim
 	}
@@ -605,7 +608,8 @@ func (s *newStart) finish(ctx context.Context) error {
 	if beforeLaunch != nil {
 		beforeLaunch(s.id)
 	}
-	m := Mode{Agent: string(s.agent), SessionID: s.claudeID, AutomationRunID: s.automationRun}
+	m := Mode{Agent: string(s.agent), SessionID: s.claudeID, AutomationRunID: s.automationRun,
+		OriginEnv: originEnv(ctx, s.d.DB, s.automationRun)}
 	if s.prompt != "" {
 		p := s.prompt
 		m.Prompt = &p
@@ -617,8 +621,9 @@ func (s *newStart) finish(ctx context.Context) error {
 	}
 	// The owner's delete (the Desktop's Undo batch committing) can land
 	// between the check above and the launch: a run whose row is gone is
-	// stopped at once, never left running.
-	if err := s.d.DB.QueryRowContext(context.WithoutCancel(ctx), `SELECT 1 FROM terminal_sessions WHERE id = ?`,
+	// stopped at once, never left running; so is a row whose delete was
+	// requested meanwhile (#1716).
+	if err := s.d.DB.QueryRowContext(context.WithoutCancel(ctx), `SELECT 1 FROM terminal_sessions WHERE id = ? AND `+db.NotDeletingSQL,
 		s.id).Scan(&one); errors.Is(err, sql.ErrNoRows) {
 		if serr := stopOn(context.WithoutCancel(ctx), c, s.d.scope(), s.id); serr != nil {
 			log.Printf("sessionstart: session %d: the run of a deleted row could not be stopped (%s)", s.id, errClass(serr))
@@ -768,7 +773,7 @@ func (s *newStart) occupied(ctx context.Context, c *sessionhost.Client) (occupie
 	}
 	rows, err := s.d.DB.QueryContext(ctx, `SELECT id, folder_path, COALESCE(worktree_branch, ''),
 		COALESCE(agent_cwd, ''), COALESCE(agent_cwd_at, '')
-		FROM terminal_sessions WHERE project_id = ? AND kind <> 'shell' AND id <> ?`, s.wb.id, s.id)
+		FROM terminal_sessions WHERE project_id = ? AND kind <> 'shell' AND id <> ? AND `+db.NotDeletingSQL, s.wb.id, s.id)
 	if err != nil {
 		return false, 0, fmt.Errorf("reading the workbench's sessions: %w", err)
 	}
@@ -904,6 +909,47 @@ func launchFailure(err error) string {
 	return "the session host did not launch the session"
 }
 
+// originEnv is the background AI origin of a new session's agent (spec
+// §4.3). A session an automation run started is that run's: a background
+// trigger's run was claimed under consent, so its session is admitted as
+// unit "run:<id>" and finishes even when the owner pauses meanwhile (D12),
+// once it was claimed (runClaimed; an unclaimed one is background, not
+// admitted);
+// an owner-triggered run's session carries nothing (the run marker reads
+// owner). A run that cannot be read falls back to the starting process's
+// own origin, as does a session no run started.
+func originEnv(ctx context.Context, q *db.DB, runID int64) []string {
+	if runID != 0 {
+		run, err := q.GetAutomationRun(runID)
+		if err == nil {
+			if !aiconsent.BackgroundTrigger(run.Trigger) {
+				return nil
+			}
+			if !runClaimed(run) {
+				// Never claimed under consent (still queued, or ended before
+				// it started, the paused hold included): background, not
+				// admitted, so its calls are refused while paused.
+				return []string{aiconsent.EnvOrigin + "=background"}
+			}
+			return aiconsent.ChildEnv(aiconsent.WithAdmitted(ctx, "run:"+strconv.FormatInt(runID, 10)))
+		}
+		log.Printf("sessionstart: automation run %d could not be read for its origin (%s)", runID, errClass(err))
+	}
+	return aiconsent.ChildEnv(ctx)
+}
+
+// runClaimed reports whether run was claimed, which for a background
+// trigger happens only under consent: it left the queue with a start time,
+// and it is not the paused hold's cancel (CancelQueuedBackgroundPaused).
+// The Desktop's twin is TerminalSessionQueries' automation_run_claimed
+// (shared fixture internal/aiconsent/testdata/run_session_origin.json).
+func runClaimed(run *db.AutomationRun) bool {
+	if run.Status == "queued" || run.StartedAt == nil {
+		return false
+	}
+	return run.Status != "cancelled" || run.Error != aiconsent.ErrPaused.Error()
+}
+
 // baseEnv is a hosted launch's environment before its own entries, as the
 // Desktop's processEnvironment gives it: SwiftTerm's terminal basics, the
 // owner's identity and home, then SHELL.
@@ -926,14 +972,15 @@ type existingRow struct {
 
 // latestTargetSession is the target's most recently active session on the
 // workbench (TerminalSessionPolicy.sessionForTarget), of agent when one is
-// named, never one of hidden (the Desktop's Undo batch, PROJ-17). With no
+// named, never one of hidden (the Desktop's Undo batch, PROJ-17) nor one
+// being deleted (delete_requested_at, #1716). With no
 // agent named, a row of a kind this version does not know (a newer
 // version's) counts too, so reopen refuses it rather than a new session
 // starting beside it (A7b).
 func latestTargetSession(ctx context.Context, q *db.DB, target, wb int64, agent string, hidden map[int64]bool) (existingRow, bool, error) {
 	rows, err := q.QueryContext(ctx, `SELECT id, kind, folder_path, COALESCE(claude_session_id, '')
 		FROM terminal_sessions WHERE target_id = ? AND project_id = ? AND kind <> 'shell'
-		  AND (? = '' OR kind = ?)
+		  AND (? = '' OR kind = ?) AND `+db.NotDeletingSQL+`
 		ORDER BY last_active_at DESC, id DESC`, target, wb, agent, agent)
 	if err != nil {
 		return existingRow{}, false, fmt.Errorf("reading target %d's sessions: %w", target, err)

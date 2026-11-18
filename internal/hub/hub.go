@@ -44,6 +44,7 @@ import (
 	"sync"
 	"time"
 
+	"watchtower/internal/chatengine"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
@@ -58,9 +59,11 @@ import (
 	"watchtower/internal/hub/switcher"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/cloudkit"
+	"watchtower/internal/hub/transport/relay"
 	"watchtower/internal/policy"
 	"watchtower/internal/sessionhost"
 	"watchtower/internal/sessionstart"
+	"watchtower/internal/tools"
 )
 
 // The phase-1 environment.
@@ -171,13 +174,29 @@ type Options struct {
 	// and goes on pairing — and resumes when a paying phone is back. The
 	// transport must have the relay's get_account_state.
 	RelayOnlyRules bool
+	// The AI chat from the phone (iPhone chat §4.5), set by the daemon:
+	// ChatEngine is the daemon's chat engine (unified chat §4: started
+	// before the hub, stopped after it; nil = chat off, runner_down; its AI
+	// titles and preferred provider are its own config); ChatTools approves
+	// the chat's actions and runs the ones no chat session runs (nil = a
+	// registry with no tools).
+	ChatEngine *chatengine.Engine
+	ChatTools  *tools.Registry
+	// ChatRouting reads the routing pill's catalog for the chat_list record
+	// (unified chat T17): the providers, their pair and capability rows and
+	// the routing status, read on every build. nil leaves `routing` out.
+	ChatRouting func(context.Context) *chatengine.RoutingCatalog
 
 	// Test seams (zero = production).
 	newTransport func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error)
 	httpClient   *http.Client // the relay client's and the attachments' (nil = their own)
 	openStore    func(dir string) (*state.Store, error)
 	report       func(Status)
-	peerUID      func(*net.UnixConn) (int, error)
+	peerUID      func(net.Conn) (int, error) // nil = unixPeerUID
+	// listen binds the control socket (nil = listenControl). A test in a
+	// synctest bubble hands an in-memory listener: a goroutine in a real
+	// Accept is not durably blocked and would stop the bubble's clock.
+	listen       func(path string) (net.Listener, error)
 	mobileSync   func() string
 	lockRetry    time.Duration
 	lockWindow   time.Duration
@@ -194,7 +213,6 @@ type Options struct {
 	runnerGap    time.Duration       // 0 = the runners' standard 5 s
 	liveEvery    time.Duration       // 0 = livenessEvery
 	away         platform.Away       // nil = platform.NewAway(), the console's state
-	sendBuffer   int                 // SO_SNDBUF of each accepted control connection (0 = the OS default)
 	// payTimer is the PayingWatch's poll timer (nil = a real one).
 	payTimer func(time.Duration) (<-chan time.Time, func())
 	// soonTimer is the link check's short retry after a link change (nil =
@@ -231,7 +249,10 @@ func (o Options) withDefaults() Options {
 		o.openStore = state.Open
 	}
 	if o.peerUID == nil {
-		o.peerUID = platform.PeerUID
+		o.peerUID = unixPeerUID
+	}
+	if o.listen == nil {
+		o.listen = listenControl
 	}
 	if o.mobileSync == nil {
 		o.mobileSync = policy.MobileSync
@@ -768,6 +789,7 @@ func errClass(err error) string {
 		class string
 	}{
 		{context.Canceled, "canceled"}, {context.DeadlineExceeded, "timeout"},
+		{relay.ErrRelayInternal, "relay_internal"},
 		{transport.ErrUnavailable, "unavailable"}, {transport.ErrForbidden, "forbidden"},
 		{transport.ErrEntitlementInactive, "entitlement_inactive"}, {transport.ErrRateLimited, "rate_limited"},
 		{transport.ErrTokenExpired, "token_expired"}, {transport.ErrUnsupportedVersion, "unsupported_version"},
@@ -780,6 +802,9 @@ func errClass(err error) string {
 		if errors.Is(err, c.err) {
 			return c.class
 		}
+	}
+	if c := relay.CodeClass(err); c != "" {
+		return c
 	}
 	return "other"
 }

@@ -16,7 +16,17 @@ text: In **Deep**, Branch review splits a big branch into chapters and lists **B
 area: development
 level: next
 kind: feature
-since: next
+since: 0.28.0
+action: nav:projects
+-->
+<!-- learn
+id: big-branch-review-patterns
+title: Teach Branch review what is risky
+text: List globs under `## Breaking` or `## Can skip` in `.watchtower/review-map.md` to change the chapter order.
+area: development
+level: power
+kind: tip
+since: 0.28.0
 action: nav:projects
 -->
 

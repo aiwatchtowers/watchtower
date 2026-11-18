@@ -14,16 +14,16 @@ import (
 
 // outcomeBatchReply is a batch-shaped AI reply naming U1, so a run stores a
 // real AI card (only an AI card covers the window).
-const outcomeBatchReply = `[{"user_id":"U1","summary":"s","communication_style":"","decision_role":"","red_flags":[],"highlights":[],"accomplishments":[],"communication_guide":"","decision_style":"","tactics":[]}]`
+const outcomeBatchReply = `[{"user_id":"1:U1","summary":"s","communication_style":"","decision_role":"","red_flags":[],"highlights":[],"accomplishments":[],"communication_guide":"","decision_style":"","tactics":[]}]`
 
 // seedOutcomeUser seeds U1 with enough messages inside the window to count as
 // an active user.
 func seedOutcomeUser(t *testing.T, database *db.DB, from float64) {
 	t.Helper()
-	seedUser(t, database, "U1", "alice")
+	seedUser(t, database, "1:U1", "alice")
 	seedChannel(t, database, "C1", "general")
 	for i := range DefaultMinMessages + 1 {
-		seedMessage(t, database, "C1", fmt.Sprintf("%.6f", from+86400+float64(i*60)), "U1", "msg")
+		seedPartnerMessage(t, database, "C1", fmt.Sprintf("%.6f", from+86400+float64(i*60)), "1:U1", "msg")
 	}
 }
 
@@ -31,11 +31,14 @@ func seedOutcomeUser(t *testing.T, database *db.DB, from float64) {
 func seedOutcomeSituation(t *testing.T, database *db.DB, from, to float64) {
 	t.Helper()
 	seedDigestWithSituations(t, database, "C1", from, to, `[]`,
-		`[{"topic":"X","type":"collaboration","participants":[{"user_id":"U1","role":"lead"}],"dynamic":"d","outcome":"o","red_flags":[],"observations":[],"message_refs":[]}]`)
+		`[{"topic":"X","type":"collaboration","participants":[{"user_id":"1:U1","role":"lead"}],"dynamic":"d","outcome":"o","red_flags":[],"observations":[],"message_refs":[]}]`)
 }
 
 func TestRunForWindow_NoActiveUsersReportsNoData(t *testing.T) {
 	database := db.OpenTestDB(t)
+	// An owner is known, so the run reaches the active-users check.
+	_, err := database.Exec(`INSERT INTO slack_accounts (id, current_user_id) VALUES (1, '1:UOWNER')`)
+	require.NoError(t, err)
 	gen := &mockGenerator{response: outcomeBatchReply}
 	pipe := New(database, testConfig(), gen, testLogger())
 	from, to := (&Pipeline{}).currentWindow()

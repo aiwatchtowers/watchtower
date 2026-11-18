@@ -54,6 +54,9 @@ type Result struct {
 	// because their own session_meta cwd is not the workbench's (AGENTLOG-04).
 	CodexRolloutsMissing  int `json:"codex_rollouts_missing"`
 	CodexOutsideWorkbench int `json:"codex_outside_workbench"`
+	// CodexUsageMismatch counts the codex token lines stored this scan whose
+	// fresh input came out negative (stored as 0).
+	CodexUsageMismatch int `json:"codex_usage_mismatch"`
 }
 
 // fail records one file's read or store failure.
@@ -151,15 +154,19 @@ func Scan(ctx context.Context, main *db.DB, al *agentlogdb.DB, id int64, o Optio
 		present[tf.Path] = true
 	}
 	st := store{main: main, al: al, transcripts: transcripts}
-	sessions, err := scanOwnedFiles(ctx, st, files, wb, folders, roots, deadline, o.Now, res)
+	stop := func() bool { return ctx.Err() != nil || (!deadline.IsZero() && o.Now().After(deadline)) }
+	sessions, err := scanOwnedFiles(st, files, wb, folders, roots, stop, res)
 	if err != nil {
 		return nil, err
 	}
 	res.Sessions = len(sessions)
+	if err := scanCodexChildren(st, codexFiles, sessions, wb, stop, res); err != nil {
+		return nil, err
+	}
 	if err := markMissingFiles(al, dirs, present, o.Now(), res); err != nil {
 		return nil, err
 	}
-	if res.Repriced, err = al.RepriceAgentLogEvents(PriceVersion, Cost); err != nil {
+	if res.Repriced, err = al.RepriceAgentLogEvents(PriceVersion, CostFor); err != nil {
 		return nil, fmt.Errorf("repricing: %w", err)
 	}
 	if err := recordImportProgress(al, id, res, o.Now()); err != nil {
@@ -216,6 +223,85 @@ func workbenchCodexFiles(main *db.DB, id int64, o Options) (files []TranscriptFi
 	return files, transcripts, missing, failed, nil
 }
 
+// scanCodexChildren reads the Codex sub-agents of the workbench's owned
+// codex sessions (AGENTLOG-04 as amended in ask #1132): only a thread a read
+// rollout named in a spawn event (a stored agent_log_subagents link), found
+// through the root's Transcript by that id, with its own session_meta naming
+// the root or another linked sub-agent of it as its parent. A child is
+// stored under its root's session whatever its own cwd (never through
+// ownsSession). Links found while reading children are read in the same
+// pass until none is new or the budget stops; a child not found yet counts
+// in CodexRolloutsMissing and is looked for again next scan.
+func scanCodexChildren(st store, rootFiles []TranscriptFile, owned map[string]bool, wb *db.Workbench, stop func() bool, res *Result) error {
+	for _, rf := range rootFiles {
+		if !owned[rf.SessionUUID] {
+			continue
+		}
+		tr := st.transcripts[rf.Path]
+		done := map[string]bool{}
+		// Each pass lists the links again: a child read in it may have linked grandchildren.
+		for {
+			links, err := st.al.CodexSubagents(rf.SessionUUID)
+			if err != nil {
+				return err
+			}
+			parents := []string{rf.SessionUUID}
+			for _, l := range links {
+				parents = append(parents, l.AgentID)
+			}
+			progressed := false
+			for _, l := range links {
+				if done[l.AgentID] {
+					continue
+				}
+				if res.Incomplete || stop() {
+					res.Incomplete = true
+					return nil
+				}
+				done[l.AgentID], progressed = true, true
+				if err := scanCodexChild(st, tr, rf.SessionUUID, l, parents, wb, stop, res); err != nil {
+					res.fail(err)
+				}
+			}
+			if !progressed {
+				break
+			}
+		}
+	}
+	return nil
+}
+
+// scanCodexChild locates and reads one linked sub-agent rollout.
+func scanCodexChild(st store, tr sessionagent.Transcript, root string, l agentlogdb.AgentSubagent, parents []string,
+	wb *db.Workbench, stop func() bool, res *Result) error {
+	if tr == nil {
+		return &codexFailure{op: "locating", session: l.AgentID, err: errNoTranscript}
+	}
+	path, ok, err := tr.ChildImportFile(l.AgentID, parents)
+	if err != nil {
+		return &codexFailure{op: "locating", session: l.AgentID, err: err}
+	}
+	if !ok {
+		res.CodexRolloutsMissing++
+		return nil
+	}
+	f, ok := agentfiles.StatTranscript(path)
+	if !ok {
+		_, serr := os.Lstat(path)
+		switch {
+		case errors.Is(serr, fs.ErrNotExist):
+			res.CodexRolloutsMissing++
+			return nil
+		case serr == nil:
+			serr = errNotRegular
+		}
+		return &codexFailure{op: "listing", session: l.AgentID, err: serr}
+	}
+	f.SessionUUID, f.Agent, f.Subagent, f.AgentID, f.Depth = root, AgentCodex, true, l.AgentID, l.Depth
+	st.transcripts[path] = tr
+	return scanCodexFile(st, f, wb, stop, res)
+}
+
 // errNotRegular: a located rollout turned out not to be a regular file.
 var errNotRegular = errors.New("not a regular file")
 
@@ -242,11 +328,10 @@ type store struct {
 // scanOwnedFiles scans every listed transcript this workbench owns until the
 // deadline or ctx ends (then res.Incomplete) and returns the owned session
 // uuids.
-func scanOwnedFiles(ctx context.Context, st store, files []TranscriptFile, wb *db.Workbench, folders, roots []string,
-	deadline time.Time, now func() time.Time, res *Result) (map[string]bool, error) {
+func scanOwnedFiles(st store, files []TranscriptFile, wb *db.Workbench, folders, roots []string,
+	stop func() bool, res *Result) (map[string]bool, error) {
 	owned := map[string]bool{} // session uuid → owned by this workbench
 	sessions := map[string]bool{}
-	stop := func() bool { return ctx.Err() != nil || (!deadline.IsZero() && now().After(deadline)) }
 	for _, tf := range files {
 		if res.Incomplete || stop() {
 			res.Incomplete = true
@@ -424,7 +509,7 @@ func scanFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bool, r
 // file (a Claude transcript) or the session (a codex rollout, FILES-01).
 func storeSlice(st store, tf TranscriptFile, wb *db.Workbench, pr *ParseResult, start, expect int64) (int64, bool, error) {
 	f := agentlogdb.AgentLogFile{Path: tf.Path, Agent: cmp.Or(tf.Agent, AgentClaude), Size: tf.Size, MTime: tf.MTime,
-		ReadOffset: start + pr.Consumed, ParserVersion: ParserVersion}
+		ReadOffset: start + pr.Consumed, ParserVersion: parserVersionFor(tf.Agent)}
 	if pr.More {
 		// Not the whole file yet: no mtime, so a stop here never reads as "unchanged".
 		f.Size, f.MTime = f.ReadOffset, ""
@@ -435,8 +520,13 @@ func storeSlice(st store, tf TranscriptFile, wb *db.Workbench, pr *ParseResult, 
 	}
 	b := agentlogdb.AgentLogBatch{File: f, ExpectOffset: expect, Events: pr.Events,
 		ToolResults: pr.ToolResults, ContextParts: pr.ContextParts, SkillListing: pr.SkillListing, Sessions: sessions}
-	if tf.Subagent && tf.AgentID != "" && hasSession(sessions, tf.SessionUUID) { // the row references its session
+	if tf.Agent != AgentCodex && tf.Subagent && tf.AgentID != "" && hasSession(sessions, tf.SessionUUID) { // the row references its session
 		b.Subagents = []agentlogdb.AgentSubagent{subagentRow(tf)}
+	}
+	b.Subagents = append(b.Subagents, pr.Subagents...) // codex spawn links, committed with the slice's offset
+	b.Spawns = pr.CodexSpawns
+	if tf.Agent == AgentCodex && tf.Subagent {
+		b.Lane = tf.AgentID
 	}
 	applied, err := st.al.ApplyAgentLogBatch(b)
 	if err != nil {
@@ -494,6 +584,7 @@ func (res *Result) addSlice(pr *ParseResult, applied bool) {
 	res.LongLines += pr.LongLines
 	if applied {
 		res.EventsWritten += len(pr.Events)
+		res.CodexUsageMismatch += pr.CodexUsageMismatch
 	}
 }
 
@@ -505,10 +596,11 @@ func resumePoint(stored *agentlogdb.AgentLogFile, tf TranscriptFile) (start, exp
 	if stored == nil {
 		return 0, -1, false
 	}
-	if stored.MissingAt == "" && stored.Size == tf.Size && stored.MTime == tf.MTime && stored.ParserVersion == ParserVersion {
+	current := stored.ParserVersion == parserVersionFor(tf.Agent)
+	if stored.MissingAt == "" && stored.Size == tf.Size && stored.MTime == tf.MTime && current {
 		return 0, stored.ReadOffset, true
 	}
-	if tf.Size >= stored.ReadOffset && stored.ParserVersion == ParserVersion {
+	if tf.Size >= stored.ReadOffset && current {
 		start = stored.ReadOffset
 	}
 	return start, stored.ReadOffset, false
@@ -614,10 +706,11 @@ func scanCodexFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bo
 		res.FilesSkipped++
 		return nil
 	}
-	if stored != nil && stored.ParserVersion == ParserVersion && start < stored.ReadOffset {
+	if stored != nil && stored.ParserVersion == parserVersionFor(tf.Agent) && start < stored.ReadOffset {
 		start = stored.ReadOffset // resumePoint compares the compressed size with a text offset
 	}
 	tr := st.transcripts[tf.Path]
+	id := cmp.Or(tf.AgentID, tf.SessionUUID) // a failure names the rollout's own thread, never its path
 	rc, err := openCodexAt(tr, tf.Path, start)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil // vanished between listing and open
@@ -627,15 +720,23 @@ func scanCodexFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bo
 		rc, err = openCodexAt(tr, tf.Path, 0)
 	}
 	if err != nil {
-		return &codexFailure{op: "opening", session: tf.SessionUUID, err: err}
+		return &codexFailure{op: "opening", session: id, err: err}
 	}
 	defer rc.Close()
 	o := ParseOptions{Path: tf.Path, Folder: wb.FolderPath, SessionUUID: tf.SessionUUID, MaxRows: batchRows}
+	if tf.Agent == AgentCodex && tf.Subagent {
+		o.AgentID, o.Depth = tf.AgentID, tf.Depth
+	}
 	if start > 0 {
-		if o.CodexModel, o.CodexCWD, err = st.al.CodexResumeState(tf.SessionUUID); err != nil {
+		var cwd string
+		if cwd, o.CodexLineage, err = codexHead(tr, tf.Path, id); err != nil {
 			return err
 		}
-		if _, o.CodexLineage, err = codexHead(tr, tf.Path, tf.SessionUUID); err != nil {
+		if o.AgentID != "" { // the session row is the root's: its head's cwd, the last model before the offset
+			o.CodexCWD = cwd
+			prefix := start
+			o.CodexPriorModel = func() (string, error) { return codexPriorModel(tr, tf.Path, prefix, id) }
+		} else if o.CodexModel, o.CodexCWD, err = st.al.CodexResumeState(tf.SessionUUID); err != nil {
 			return err
 		}
 	}
@@ -643,16 +744,16 @@ func scanCodexFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bo
 	for first := true; ; first = false {
 		pr, err := ParseCodex(br, start, o)
 		if err != nil {
-			return &codexFailure{op: "reading", session: tf.SessionUUID, err: err}
+			return &codexFailure{op: "reading", session: id, err: err}
 		}
-		if s := pr.Sessions[tf.SessionUUID]; s != nil {
-			o.CodexModel = cmp.Or(s.Model, o.CodexModel)
-			o.CodexCWD = cmp.Or(s.HomeCWD, o.CodexCWD)
+		o.CodexModel, o.CodexCWD = pr.CodexModel, pr.CodexCWD
+		if pr.CodexModelSeen {
+			o.CodexPriorModel = nil // the next slice starts with this one's model
 		}
 		o.CodexLineage = pr.CodexLineage // the next slice starts past the head
 		next, applied, err := storeSlice(st, tf, wb, pr, start, expect)
 		if err != nil {
-			return &codexFailure{op: "storing", session: tf.SessionUUID, err: err}
+			return &codexFailure{op: "storing", session: id, err: err}
 		}
 		if first {
 			res.FilesScanned++
@@ -742,6 +843,40 @@ func failureClass(err error) string {
 		return class
 	}
 	return err.Error()
+}
+
+// codexPriorModel is the model of the last turn_context in the first limit
+// bytes of the rollout's text at path, read through tr ("" when none); a
+// failure is a codexFailure naming thread id.
+func codexPriorModel(tr sessionagent.Transcript, path string, limit int64, id string) (string, error) {
+	fail := func(err error) error { return &codexFailure{op: "reading the model of", session: id, err: err} }
+	if tr == nil {
+		return "", fail(errNoTranscript)
+	}
+	rc, _, err := tr.Open(path)
+	if err != nil {
+		return "", fail(err)
+	}
+	defer rc.Close()
+	br := bufio.NewReaderSize(io.LimitReader(rc, limit), 64<<10)
+	model := ""
+	for {
+		raw, _, complete, err := NextLine(br, maxLineBytes)
+		if !complete {
+			if err != nil && !errors.Is(err, io.EOF) {
+				return "", fail(err)
+			}
+			return model, nil
+		}
+		if raw == nil || !bytes.Contains(raw, []byte(`"turn_context"`)) {
+			continue
+		}
+		var l codexRolloutLine
+		var pl codexPayload
+		if json.Unmarshal(raw, &l) == nil && l.Type == "turn_context" && json.Unmarshal(l.Payload, &pl) == nil && pl.Model != "" {
+			model = pl.Model
+		}
+	}
 }
 
 // codexHead reads the first 200 lines of the codex rollout at path through

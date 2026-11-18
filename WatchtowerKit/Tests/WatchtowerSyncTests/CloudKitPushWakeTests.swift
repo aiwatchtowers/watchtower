@@ -21,6 +21,30 @@ private final class RecordingSaver: SubscriptionSaving, @unchecked Sendable {
 final class CloudKitPushWakeTests: XCTestCase {
     private let hosted = HubRoute.hostedRelay(macDeviceID: "mac-acme")
 
+    func testErrorDetailCarriesTheServerMessage() {
+        let refused = CKError(.invalidArguments, userInfo: [
+            "ServerErrorDescription": "attempting to create a subscription in a production container"
+        ])
+        XCTAssertEqual(
+            CloudKitPushWake.errorDetail(refused),
+            "CKError 12 (attempting to create a subscription in a production container)")
+        XCTAssertEqual(CloudKitPushWake.errorDetail(CKError(.networkFailure)), "CKError 4", "no server message")
+        let long = CKError(.invalidArguments, userInfo: ["ServerErrorDescription": String(repeating: "x", count: 500)])
+        XCTAssertEqual(CloudKitPushWake.errorDetail(long)?.count, "CKError 12 ()".count + CloudKitPushWake.serverMessageCap)
+        XCTAssertNil(CloudKitPushWake.errorDetail(CocoaError(.fileNoSuchFile)))
+    }
+
+    func testOnlyARefusedRequestIsPermanent() {
+        for code in [CKError.Code.invalidArguments, .missingEntitlement, .badContainer, .permissionFailure] {
+            XCTAssertTrue(CloudKitPushWake.isPermanentRefusal(CKError(code)), "\(code.rawValue)")
+        }
+        for code in [CKError.Code.networkFailure, .networkUnavailable, .notAuthenticated, .serviceUnavailable,
+                     .requestRateLimited, .zoneBusy, .quotaExceeded, .internalError] {
+            XCTAssertFalse(CloudKitPushWake.isPermanentRefusal(CKError(code)), "\(code.rawValue)")
+        }
+        XCTAssertFalse(CloudKitPushWake.isPermanentRefusal(CocoaError(.fileNoSuchFile)))
+    }
+
     func testAPrivateRouteSavesTheSubscription() async throws {
         let saver = RecordingSaver()
         let wake = CloudKitPushWake(saver: saver)

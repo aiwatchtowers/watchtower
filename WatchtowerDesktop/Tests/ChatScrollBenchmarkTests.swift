@@ -1,8 +1,11 @@
 import AppKit
+import ChatWire
 import SwiftUI
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerChatText
+@testable import ChatUI
 
 /// Reproducible numbers for scrolling a long chat (automations tab polish,
 /// spec §5): a 100-message thread whose answers are long markdown (tables,
@@ -104,39 +107,27 @@ final class ChatScrollBenchmarkTests: XCTestCase {
         print("BENCH stepDisplays, 100 rows: median \(median(samples))")
     }
 
-    /// `EmbeddedChatRows`' per-row look-ups (retry, answerQuestion,
-    /// ownerReply) over a 100-message thread, every row once: the per-row
-    /// map and scan it did before, then the one `ChatThreadIndex` per pass.
-    func testEmbeddedRowLookups() {
-        let items = Self.thread()
+    /// A streamed `message_upsert` over the last 60 messages (final review I4): the feed body pass's row build with
+    /// every message derived again (no cache, as before) and with the feed's parts cache (only the streamed one).
+    func testStreamedUpdateRowBuild() {
+        let messages = Array(EmbeddedChatFeedAdapter.messages(rows: Self.thread(), live: nil).suffix(60))
+        let last = messages[messages.count - 1]
+        let cache = ChatMessagePartsCache()
+        _ = ChatFeedLayout.rows(messages: messages, actions: [], cache: cache)
         let clock = ContinuousClock()
-        let samples = (0..<15).map { _ in
-            clock.measure {
-                for item in items {
-                    _ = items.last { $0.message.isAssistant }?.id == item.id
-                    let rows = items.map(\.message)
-                    if let index = rows.firstIndex(where: { $0.id == item.id }) {
-                        _ = ChatQuestionThread.isAnswerable(at: index, in: rows, busy: false)
-                    }
-                    let rows2 = items.map(\.message)
-                    if let index = rows2.firstIndex(where: { $0.id == item.id }) {
-                        _ = ChatQuestionThread.ownerReply(after: index, in: rows2)
-                    }
-                }
-            }
+        var every: [Duration] = []
+        var cached: [Duration] = []
+        for tick in 0..<30 {
+            var streamed = messages
+            streamed[streamed.count - 1] = ChatFeed.Message(
+                id: last.id, role: last.role, text: last.text + String(repeating: " more", count: tick + 1),
+                status: "pending", createdAt: last.createdAt, steps: last.steps
+            )
+            every.append(clock.measure { _ = ChatFeedLayout.rows(messages: streamed, actions: []) })
+            cached.append(clock.measure { _ = ChatFeedLayout.rows(messages: streamed, actions: [], cache: cache) })
         }
-        let indexed = (0..<15).map { _ in
-            clock.measure {
-                let thread = ChatThreadIndex(items.map(\.message))
-                for item in items {
-                    _ = thread.lastAssistantID == item.id
-                    _ = thread.isAnswerable(item.id, busy: false)
-                    _ = thread.ownerReply(after: item.id)
-                }
-            }
-        }
-        print("BENCH EmbeddedChatRows look-ups, 100 rows: per-row scans median \(median(samples)), " +
-              "ChatThreadIndex median \(median(indexed))")
+        print("BENCH streamed update row build, 60 messages: every message median \(median(every)), " +
+              "parts cache median \(median(cached))")
     }
 
     /// The thread's rows in a `LazyVStack` (no feed), scrolled in a real
@@ -150,21 +141,21 @@ final class ChatScrollBenchmarkTests: XCTestCase {
         })
     }
 
-    /// The same rows in `ChatFeedView` (follow tracking, the content-frame
-    /// preference every scroll tick), as the main and embedded chats show them.
+    /// The same rows in ChatUI's feed with follow tracking (the content-frame
+    /// preference every scroll tick), as the embedded chats and Workchat show them.
     func testScrollLongThreadInChatFeed() throws {
         let items = Self.thread()
-        let state = ChatAutoScrollPolicy.ThreadState(conversationID: 1, lastMessageID: items.last?.id,
-                                                     scrollTarget: nil, liveMessageID: nil)
-        try scrollBench("ChatFeedView", ChatFeedView(state: state, lastRowID: items.last?.id) { Self.rows(items) })
+        var context = ChatFeedContext()
+        context.follow = ChatFeedFollow(conversationID: 1)
+        try scrollBench("ChatFeedView", ChatUI.ChatFeedView(messages: EmbeddedChatFeedAdapter.messages(rows: items, live: nil),
+                                                            context: context)
+            .macChatStyle(hooks: ChatMacArtifactHooks()))
     }
 
     @ViewBuilder
     private static func rows(_ items: [ChatThreadItem]) -> some View {
         ForEach(items) { item in
-            ChatMessageRow(item: item, isLast: item.id == items.last?.id, isEditing: false, actions: ChatRowActions())
-                .equatable()
-                .id(item.id)
+            ChatUIShotRow.row(item).id(item.id)
         }
     }
 

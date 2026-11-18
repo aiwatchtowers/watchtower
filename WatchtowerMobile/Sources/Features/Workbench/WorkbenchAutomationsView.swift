@@ -21,7 +21,7 @@ struct WorkbenchAutomationsView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: Spacing.regular) {
                 if let notAllowed = model.notAllowed {
-                    Text(notAllowed).font(.footnote).foregroundStyle(.secondary)
+                    Text(notAllowed).font(.footnote).foregroundStyle(.secondary).textSelection(.enabled)
                 }
                 if let sendError {
                     Text(sendError).font(.footnote).foregroundStyle(.red)

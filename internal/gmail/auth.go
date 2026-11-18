@@ -334,12 +334,7 @@ func Login(ctx context.Context, cfg GoogleOAuthConfig, out io.Writer, opts ...Lo
 
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go server.Serve(listener)
-	defer func() {
-		// Brief grace period to let the browser receive and render the success/error
-		// HTML page before the server is torn down.
-		time.Sleep(500 * time.Millisecond)
-		server.Close()
-	}()
+	defer oauthpage.CloseCallbackServer(server)
 
 	if opt.SkipBrowserOpen {
 		fmt.Fprintf(out, "Authorize URL:\n\n  %s\n\n", authorizeURL)

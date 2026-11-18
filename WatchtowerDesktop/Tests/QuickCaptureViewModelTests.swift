@@ -108,11 +108,13 @@ final class QuickCaptureViewModelTests: MeetingRecorderTestCase {
         let first = Task { await vm.save(dbPool: manager.dbPool) }
         let second = Task { await vm.save(dbPool: manager.dbPool) }
 
-        // A blocked main thread would hold this hop back for the 5 s busy wait.
-        let start = Date()
-        try await Task.sleep(for: .milliseconds(200))
-        XCTAssertLessThan(Date().timeIntervalSince(start), 1.5, "the main actor kept running while the write waited")
-        XCTAssertTrue(vm.isSaving)
+        // The write is now in flight behind the held lock. This line runs on
+        // the main actor; a write blocking the main thread would hold it back
+        // for the whole 5 s busy wait, then fail — `isSaving` would be false
+        // and `error` set by the time it ran.
+        await untilObserved { vm.isSaving }
+        XCTAssertTrue(vm.isSaving, "the main actor kept running while the write waited")
+        XCTAssertNil(vm.error, "the write is still waiting, not failed")
         XCTAssertNil(vm.savedIdeaID, "nothing lands before the lock is released")
 
         try await holder.writeWithoutTransaction { try $0.execute(sql: "ROLLBACK") }

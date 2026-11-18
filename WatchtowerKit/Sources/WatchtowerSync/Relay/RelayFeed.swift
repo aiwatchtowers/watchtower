@@ -17,7 +17,7 @@ public enum DesktopReachability: Equatable, Sendable {
 /// fans records out in-process —
 /// - `action` echoes → `ActionOutbox.applyEcho` (own still-`pending`
 ///   enqueues reflecting back are skipped),
-/// - `recording_upload` echoes → the `RecordingUploadAcking` seam,
+/// - `recording_upload` echoes → the `RecordingUploadAcking` seam, `chat_attachment` echoes → `ChatAttachmentAcking`,
 /// - hub `control` records (relay client Phase 1) → `resend_from` to
 ///   `ActionOutbox.resendFrom`, `transport_switch_rejected` to the rejection
 ///   handler (relay client Phase 3b: the session's upgrade to the relay; with
@@ -100,6 +100,8 @@ public actor RelayFeed {
     /// (hub echoes are re-read from scratch only via token reset) — so the
     /// uploader must ship wired wherever the Record UI ships.
     private let uploads: (any RecordingUploadAcking)?
+    /// Receives `chat_attachment` echoes (`applied` / `failed`); nil drops them with a log line.
+    private let chatUploads: (any ChatAttachmentAcking)?
     /// Wraps CloudKitTransport.pull() at composition time; nil in tests
     /// (InMemoryCloudTransport has no engine to nudge).
     private let pull: (@Sendable () async throws -> Void)?
@@ -130,6 +132,10 @@ public actor RelayFeed {
     /// The currently-running cycle, if any. Concurrent `pollOnce` callers
     /// await this instead of starting their own — see `pollOnce`.
     private var inFlight: Task<Int, Error>?
+    /// Told when a caller joins the running cycle instead of starting one; tests replace it.
+    private var onJoin: @Sendable () -> Void = {}
+    /// Told when `pollFresh` waits out the running cycle instead of joining it; tests replace it.
+    private var onWaitOut: @Sendable () -> Void = {}
     /// No fetch until `resumeIfParked()`: the feed waited its cap for a keybox, or has no key source (relay client
     /// Phase 5). In memory only, so a launch reads again.
     private var parked = false
@@ -149,6 +155,7 @@ public actor RelayFeed {
         store: ReplicaStore,
         outbox: ActionOutbox,
         uploads: (any RecordingUploadAcking)? = nil,
+        chatUploads: (any ChatAttachmentAcking)? = nil,
         pull: (@Sendable () async throws -> Void)? = nil,
         onActionApplied: (@Sendable () async -> Void)? = nil,
         onHubOnRelay: (@Sendable () async -> Void)? = nil,
@@ -158,6 +165,7 @@ public actor RelayFeed {
         self.store = store
         self.outbox = outbox
         self.uploads = uploads
+        self.chatUploads = chatUploads
         self.pull = pull
         self.onActionApplied = onActionApplied
         self.onHubOnRelay = onHubOnRelay
@@ -176,6 +184,9 @@ public actor RelayFeed {
 
     // MARK: - One cycle
 
+    func observeJoins(_ onJoin: @escaping @Sendable () -> Void) { self.onJoin = onJoin }
+    func observeWaitOuts(_ onWaitOut: @escaping @Sendable () -> Void) { self.onWaitOut = onWaitOut }
+
     /// One relay cycle: optional engine pull, read relay-zone changes since
     /// the persisted relay token, route every record, persist the new token.
     /// Returns how many desktop echoes were routed.
@@ -189,12 +200,32 @@ public actor RelayFeed {
     @discardableResult
     public func pollOnce() async throws -> Int {
         if let inFlight {
+            onJoin()
             return try await inFlight.value
         }
-        let task = Task { try await self.performPoll() }
+        // The cycle clears itself on the actor before it ends, so a caller resuming from its result never finds it
+        // still in flight (`pollFresh`).
+        let task = Task {
+            defer { inFlight = nil }
+            return try await self.performPoll()
+        }
         inFlight = task
-        defer { inFlight = nil }
         return try await task.value
+    }
+
+    /// One cycle begun after this call: what was buffered before it is routed by the time it returns. A running cycle
+    /// may have read its batch before that (a fetch's own pull buffered a control the cycle never saw), so it is waited
+    /// out, never joined; a cycle started after it ended began after this call and is joined. The count includes the
+    /// waited-out cycle's, which may have routed what this call's caller pulled.
+    @discardableResult
+    public func pollFresh() async throws -> Int {
+        var waitedOut = 0
+        if let running = inFlight {
+            onWaitOut()
+            // Only its end matters here: the cycle's own caller gets and reports its error.
+            waitedOut = (try? await running.value) ?? 0
+        }
+        return try await pollOnce() + waitedOut
     }
 
     private func performPoll() async throws -> Int {
@@ -369,12 +400,28 @@ public actor RelayFeed {
             }
             try await uploads.applyEcho(upload)
             return Routed(echoes: 1)
+        case .chatAttachment:
+            return try await routeChatAttachment(record)
         case nil:
             if loggedUnknownKinds.insert(record.kind).inserted {
                 logger.warning("unknown relay record kind ignored: \(record.kind, privacy: .public)")
             }
         }
         return Routed()
+    }
+
+    /// A `chat_attachment` record: the hub's verdict goes to `chatUploads`; a pending one is our own upload
+    /// reflecting back.
+    private func routeChatAttachment(_ record: CloudRecord) async throws -> Routed {
+        guard let upload = decode(ChatAttachmentUploadPayload.self, from: record), upload.status != .pending else {
+            return Routed()
+        }
+        guard let chatUploads else {
+            logger.warning("chat attachment echo skipped, no consumer wired: \(record.recordName, privacy: .public)")
+            return Routed()
+        }
+        try await chatUploads.applyEcho(upload)
+        return Routed(echoes: 1)
     }
 
     /// Hands every undecided transport control to the handler again; returns the deletes of the ones it decided.

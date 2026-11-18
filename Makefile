@@ -38,7 +38,7 @@ PURGE_DEFAULT ?= $(WATCHTOWER_PURGE_DEFAULT)
 LINK_FETCH_DENY_HOSTS ?= $(WATCHTOWER_LINK_FETCH_DENY_HOSTS)
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET) -X watchtower/internal/linear.DefaultLinearClientID=$(LINEAR_ID) -X watchtower/internal/purge.BuildDefault=$(PURGE_DEFAULT) -X watchtower/internal/media.BuildDenyHosts=$(LINK_FETCH_DENY_HOSTS) -X watchtower/internal/hub/identity.KeychainBuildFlag=false"
 
-.PHONY: golangci-version-check build bridge-build test test-verbose test-cover test-race race-packages test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test e2e-vectors test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check relay-go relay-proto relay-interop relay-interop-kit relay-interop-kit-hub hub-smoke hub-staging
+.PHONY: golangci-version-check build bridge-build test test-verbose test-cover test-race race-packages test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test chattext-test chat-test e2e-vectors test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check cloudkit-subscriptions-deployed relay-go relay-proto relay-interop relay-interop-kit relay-interop-kit-hub hub-smoke hub-staging
 
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
@@ -139,11 +139,14 @@ test-race:
 # Inner-loop Swift tests: make test-swift FILTER=SomeTestClass runs only that
 # class (a regex alternation works too: FILTER='ClassA|ClassB' — the recipe
 # single-quotes it so the | never reaches the shell); without FILTER the full
-# suite runs as before, followed by the mobile Kit suite (kit-test), so the
-# gate covers both packages.
+# suite runs as before, followed by the mobile Kit suite (kit-test), the chat
+# text package (chattext-test) and the chat package (chat-test), so the
+# gate covers every package.
 test-swift:
 	cd WatchtowerDesktop && caffeinate -i swift test $(if $(FILTER),--filter '$(FILTER)',)
 	$(if $(FILTER),,caffeinate -i $(MAKE) kit-test)
+	$(if $(FILTER),,caffeinate -i $(MAKE) chattext-test)
+	$(if $(FILTER),,caffeinate -i $(MAKE) chat-test)
 
 # Inner-loop tests for the shared mobile Kit package (WatchtowerSync +
 # WatchtowerKit): make kit-test FILTER=SomeTestClass (a regex alternation
@@ -151,6 +154,17 @@ test-swift:
 # no ML stack.
 kit-test:
 	cd WatchtowerKit && swift test $(if $(FILTER),--filter '$(FILTER)',)
+
+# Inner-loop tests for WatchtowerChatText (the chat text helpers shared by the
+# Mac and the phone, no GRDB, no ML stack): make chattext-test FILTER=SomeTestClass.
+chattext-test:
+	cd WatchtowerChatText && swift test $(if $(FILTER),--filter '$(FILTER)',)
+
+# Inner-loop tests for WatchtowerChat (ChatWire: the chat wire models, operations
+# and stores; ChatUI: the chat views and models; both shared by the Mac and the
+# phone, no ML stack): make chat-test FILTER=SomeTestClass.
+chat-test:
+	cd WatchtowerChat && swift test $(if $(FILTER),--filter '$(FILTER)',)
 
 # The Kit E2E vectors the Go hub's golden tests read: padding, envelope, kdf,
 # hpke-envelope and asset .json in WatchtowerKit/Tests/Fixtures/e2e
@@ -168,6 +182,11 @@ e2e-vectors:  ## regenerate the Kit E2E vectors (expected XCTFail "regenerated")
 SIM ?= iPhone 18 Pro
 MOBILE_PROJ := WatchtowerMobile/WatchtowerMobile.xcodeproj
 MOBILE_DEST := platform=iOS Simulator,name=$(SIM)
+# Explicit precompiled modules go stale between the build and test xcodebuild runs
+# sharing DerivedData (SQLCipher-<hash>.pcm, then "missing required module
+# 'GRDBSQLCipher'"), so every phone xcodebuild turns them off (#1822).
+# MOBILE_XCB_EXTRA adds more xcodebuild arguments (e.g. -derivedDataPath).
+MOBILE_XCB := SWIFT_ENABLE_EXPLICIT_MODULES=NO $(MOBILE_XCB_EXTRA)
 MOBILE_BUNDLE_ID := com.aiwatchtowers.watchtower.mobile
 # make mobile-test MOBILE_FILTER=SomeTestClass runs only that class; an
 # alternation (MOBILE_FILTER='ClassA|ClassB') becomes one -only-testing per class.
@@ -179,7 +198,7 @@ mobile-gen:
 
 mobile-build:
 	xcodebuild build -project $(MOBILE_PROJ) -scheme WatchtowerMobile \
-		-destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=NO
+		-destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=NO $(MOBILE_XCB)
 
 # The test host shares one on-disk replica with the simulator's installed app
 # (spec §10), so the recipe boots the simulator and uninstalls the app first:
@@ -191,7 +210,7 @@ mobile-test:
 	xcrun simctl uninstall "$(SIM)" $(MOBILE_BUNDLE_ID) 2>/dev/null || true
 	xcodebuild test -project $(MOBILE_PROJ) -scheme WatchtowerMobile \
 		-destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=- \
-		CODE_SIGN_ENTITLEMENTS="$(CURDIR)/WatchtowerMobile/StoreKitTesting.entitlements" $(MOBILE_ONLY)
+		CODE_SIGN_ENTITLEMENTS="$(CURDIR)/WatchtowerMobile/StoreKitTesting.entitlements" $(MOBILE_XCB) $(MOBILE_ONLY)
 
 # Build, boot the simulator, install and launch: the mobile app-dev.
 mobile-run: mobile-build
@@ -208,14 +227,16 @@ mobile-run: mobile-build
 SHOTS_DIR ?= build/mobile-shots
 # SHOTS_ONLY=relay-phase4 runs only the relay client Phase 4 frames (S01 upward), into the same folder;
 # SHOTS_ONLY=relay-phase5 only the Phase 5 frames (S58 upward).
+# SHOTS_ONLY=chat only the Chats tab's frames (C1a upward, iPhone chat mockups 1a–1j).
+# SHOTS_ONLY=spec-review only the Sessions tab with a session in Spec review (board #1945).
 SHOTS_ONLY ?=
 mobile-shots:
 	xcrun simctl boot "$(SIM)" 2>/dev/null || true
 	xcrun simctl uninstall "$(SIM)" $(MOBILE_BUNDLE_ID) 2>/dev/null || true
 	mkdir -p "$(SHOTS_DIR)"
 	TEST_RUNNER_WATCHTOWER_SHOTS_ONLY="$(SHOTS_ONLY)" TEST_RUNNER_WATCHTOWER_SHOTS_DIR="$(abspath $(SHOTS_DIR))" xcodebuild test -project $(MOBILE_PROJ) \
-		-scheme WatchtowerMobile -destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=NO \
-		-only-testing:WatchtowerMobileTests/ScreenshotTourTests$(if $(filter relay-phase5,$(SHOTS_ONLY)),/testTheRelayPhase5Shots,$(if $(SHOTS_ONLY),/testTheRelayPhase4Shots))
+		-scheme WatchtowerMobile -destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=NO $(MOBILE_XCB) \
+		-only-testing:WatchtowerMobileTests/ScreenshotTourTests$(if $(filter relay-phase5,$(SHOTS_ONLY)),/testTheRelayPhase5Shots,$(if $(filter chat,$(SHOTS_ONLY)),/testTheChatShots,$(if $(filter spec-review,$(SHOTS_ONLY)),/testTheSpecReviewShots,$(if $(SHOTS_ONLY),/testTheRelayPhase4Shots))))
 
 # The Desktop style guide's shots (WatchtowerDesktop/Tests/DesignShots, #719):
 # every DesignShotCatalog entry in light and dark mode as PNGs, written to
@@ -291,10 +312,17 @@ mobile-archive:
 # with destination=upload; the key (Admin role) also lets xcodebuild mint the
 # certificates and profiles the archive and the App Store export need.
 # Fails when CloudKit Production lacks record types or fields Development has
-# (deployed only by hand in the CloudKit Console; cktool cannot). Needs a
-# management token saved once: xcrun cktool save-token --type management.
+# (deployed only by hand in the CloudKit Console; cktool cannot), and until
+# the owner records the query subscription types as deployed
+# (make cloudkit-subscriptions-deployed; cktool cannot read them, #1749).
+# Needs a management token saved once: xcrun cktool save-token --type management.
 cloudkit-check:
 	bash scripts/cloudkit-schema-check.sh
+
+# Records that the query subscription types cloudkit-check lists were deployed
+# to Production (cktool cannot read them; see the script's header).
+cloudkit-subscriptions-deployed:
+	bash scripts/cloudkit-schema-check.sh --subscriptions-deployed
 
 -include $(HOME)/.appstoreconnect/watchtower.mk
 ASC_KEY_ID ?=
@@ -444,10 +472,15 @@ lint: golangci-version-check
 lint-diff: golangci-version-check
 	golangci-lint run --new-from-rev origin/main ./...
 
+# kit-lint-guard covers the Desktop's Views/App, the phone's Features and the
+# shared chat views (WatchtowerChat/Sources/ChatUI); each package's own
+# .swiftlint.yml carries the kit_* rules for its views.
 lint-swift:
 	bash scripts/kit-lint-guard.sh
 	cd WatchtowerDesktop && swiftlint lint --strict --baseline .swiftlint-baseline.json
 	cd WatchtowerKit && swiftlint lint --strict
+	cd WatchtowerChatText && swiftlint lint --strict
+	cd WatchtowerChat && swiftlint lint --strict
 	cd WatchtowerMobile && swiftlint lint --strict
 
 lint-all: lint lint-swift

@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 
 /// Print… (and the print panel's Save as PDF) and Export as Word for chat
 /// artifacts: which artifacts offer them, and the print-friendly HTML page a

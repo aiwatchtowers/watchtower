@@ -126,7 +126,7 @@ final class NotDeliveredModelTests: XCTestCase {
         let nameless = NotDeliveredModel(
             items: [item("relay", .sessionStop, entity: nil, reason: .hubOnRelay)], snapshot: try demoSnapshot(now: now),
             macName: "", now: now, calendar: .current, retrying: [], errors: [:])
-        XCTAssertEqual(nameless.rows.first?.detail, "Your Mac runs over Relay now")
+        XCTAssertEqual(nameless.rows.first?.detail, "Your tower runs over Relay now")
     }
 
     func testTheDismissAllConfirmationCountsTheActions() throws {

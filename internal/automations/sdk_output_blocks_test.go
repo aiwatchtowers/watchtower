@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/automations"
@@ -431,29 +432,31 @@ func TestAuto12_LivingDryRunWritesNothing(t *testing.T) {
 // the living buffer — the card's blocks and key, and the removal — so the
 // commit carries them.
 func TestAuto08_ResumeRebuildsLivingBuffer(t *testing.T) {
-	w := newWriteFixture(t)
-	a := w.seedWorkbenchOutputWith(t, "living", []string{"ask:owner"}, "inbox", "artifacts: living\nconcurrency: 1\n",
-		`output.inbox({title: "filed", key: "k", blocks: [{type: "heading", text: "h"}]}); output.remove({key: "gone"});
+	synctest.Test(t, func(t *testing.T) {
+		w := newWriteFixture(t)
+		a := w.seedWorkbenchOutputWith(t, "living", []string{"ask:owner"}, "inbox", "artifacts: living\nconcurrency: 1\n",
+			`output.inbox({title: "filed", key: "k", blocks: [{type: "heading", text: "h"}]}); output.remove({key: "gone"});
 		const r = `+resumeAskCall+`; return 1`)
-	w.commitLivingPrior(t, a, "gone", "h0")
-	id := w.enqueue(t, a, db.TriggerManual)
-	w.stopWhileWaiting(t, id)
-	ask := w.onlyAsk(t, a.ProjectID)
+		w.commitLivingPrior(t, a, "gone", "h0")
+		id := w.enqueue(t, a, db.TriggerManual)
+		w.stopWhileWaiting(t, id)
+		ask := w.onlyAsk(t, a.ProjectID)
 
-	w.restart()
-	stop := runExecutor(t, w.exFixture)
-	defer stop()
-	w.waitStatus(t, id, db.RunWaiting)
-	w.answerAsk(t, ask.ID)
-	w.e.Wake()
-	if r := w.waitEnded(t, id); r.Status != db.RunSucceeded {
-		t.Fatalf("run = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
-	}
-	outs, err := w.d.ListAutomationOutputs("inbox", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(outs) != 1 || outs[0].OutputKey != "k" || !strings.Contains(outs[0].BlocksJSON, `"text":"h"`) || outs[0].ContentHash == "" {
-		t.Fatalf("committed outputs = %+v; want the one living card with its blocks, gone removed", outs)
-	}
+		w.restart()
+		stop := runExecutor(t, w.exFixture)
+		defer stop()
+		w.waitStatus(t, id, db.RunWaiting)
+		w.answerAsk(t, ask.ID)
+		w.e.Wake()
+		if r := w.waitEnded(t, id); r.Status != db.RunSucceeded {
+			t.Fatalf("run = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
+		}
+		outs, err := w.d.ListAutomationOutputs("inbox", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(outs) != 1 || outs[0].OutputKey != "k" || !strings.Contains(outs[0].BlocksJSON, `"text":"h"`) || outs[0].ContentHash == "" {
+			t.Fatalf("committed outputs = %+v; want the one living card with its blocks, gone removed", outs)
+		}
+	})
 }

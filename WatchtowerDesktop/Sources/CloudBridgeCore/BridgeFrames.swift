@@ -81,6 +81,9 @@ public enum BridgeOp: Equatable, Sendable {
     case removeParticipants(zone: String, userRecordNames: [String])
     /// The Mac's iCloud user record name; answered `ownerUser`.
     case ownerUser
+    /// Delete the zones and the database subscription another spelling of the helloed hub id names; answered
+    /// `done` (#1750).
+    case retireZones(hubID: String)
 }
 
 /// Every frame the Go hub writes.
@@ -455,6 +458,8 @@ extension BridgeRequest {
             w.message(11) { $0.put(1, zone); $0.putEach(2, names) }
         case .ownerUser:
             w.message(12) { _ in }
+        case .retireZones(let hubID):
+            w.message(13) { $0.put(1, hubID) }
         case nil:
             break
         }
@@ -466,7 +471,7 @@ extension BridgeRequest {
         try ProtoReader.fields(data) { field, value in
             switch field {
             case 1: request.id = try value.uint64(field)
-            case 2...12: request.op = try decodeOp(field, try value.data(field))
+            case 2...13: request.op = try decodeOp(field, try value.data(field))
             default: break
             }
         }
@@ -530,6 +535,10 @@ extension BridgeRequest {
             return .participants(zone: zone)
         case 12:
             return .ownerUser
+        case 13:
+            var hubID = ""
+            try ProtoReader.fields(body) { f, v in if f == 1 { hubID = try v.string(f) } }
+            return .retireZones(hubID: hubID)
         default:
             var zone = "", names: [String] = []
             try ProtoReader.fields(body) { f, v in

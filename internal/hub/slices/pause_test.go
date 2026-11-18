@@ -112,7 +112,7 @@ func TestRunHandsAFailedSaveToOnError(t *testing.T) {
 	seen := make(chan error, 4)
 	ft := newFakeTime()
 	p := r.publisherWith(Config{Clock: ft.Now, OnError: func(err error) { seen <- err }}, src)
-	p.mono, p.timer = ft.Now, ft.Timer
+	ft.drive(p)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- p.Run(ctx) }()
@@ -120,12 +120,7 @@ func TestRunHandsAFailedSaveToOnError(t *testing.T) {
 		cancel()
 		<-done
 	})
-	select {
-	case err := <-seen:
-		if !errors.Is(err, transport.ErrEntitlementInactive) {
-			t.Fatalf("OnError got %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("OnError never called")
+	if err := <-seen; !errors.Is(err, transport.ErrEntitlementInactive) {
+		t.Fatalf("OnError got %v", err)
 	}
 }

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
+	"testing/synctest"
 	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
@@ -434,29 +434,45 @@ func TestAgentloopQuery_UndecodableChunkBesideTextIsLogged(t *testing.T) {
 	assert.NotContains(t, logs.String(), "SECRET-CHUNK")
 }
 
+// pipeTransport answers every request with an SSE body written by feed into
+// an in-memory pipe, closed when the request's context ends (as the real
+// transport does). Every wait is a channel operation, so it runs in a
+// synctest bubble.
+type pipeTransport func(w io.Writer)
+
+func (feed pipeTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	pr, pw := io.Pipe()
+	go feed(pw)
+	go func() {
+		<-r.Context().Done()
+		_ = pw.CloseWithError(r.Context().Err())
+	}()
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: pr, Request: r}, nil
+}
+
 // A consumer that stops reading and cancels never parks the loop on a full
 // text channel: the run ends, its ledger row is written and the channels
 // close.
 func TestAgentloopQuery_StoppedConsumerDoesNotParkTheLoop(t *testing.T) {
 	calls := captureCalls(t)
-	lines := make([]string, 0, 41)
-	for i := range 40 {
-		lines = append(lines, sseText("chunk "+strconv.Itoa(i)+" "))
-	}
-	srv := newSSEServer(t, append(lines, "HANG"))
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	textCh, errCh, _ := clientWith(listTargetsReg(), srv.URL).Query(ctx, "", "go", "")
-	// Nothing is read: the loop fills the channel's buffer and blocks.
-	require.Eventually(t, func() bool { return len(textCh) == cap(textCh) }, 5*time.Second, 10*time.Millisecond)
-	cancel()
-	select {
-	case <-errCh:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the loop stayed parked on the unread text channel")
-	}
-	require.Eventually(t, func() bool { return len(calls.all()) == 1 }, 5*time.Second, 20*time.Millisecond,
-		"the stopped call's ledger row is written")
+	synctest.Test(t, func(t *testing.T) {
+		c := clientWith(listTargetsReg(), "http://model.invalid")
+		c.httpc = &http.Client{Transport: pipeTransport(func(w io.Writer) {
+			for i := range 40 {
+				_, _ = io.WriteString(w, sseText("chunk "+strconv.Itoa(i)+" ")+"\n\n")
+			}
+			// then holds the response open: nothing more is written
+		})}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		textCh, errCh, _ := c.Query(ctx, "", "go", "")
+		// Nothing is read: the loop fills the channel's buffer and blocks.
+		synctest.Wait()
+		require.Equal(t, cap(textCh), len(textCh), "the loop is parked on the full text channel")
+		cancel()
+		<-errCh // the run's error, or the close when it ended without one
+		require.Len(t, calls.all(), 1, "the stopped call's ledger row is written")
+	})
 }
 
 // A body cut short mid-response (the server died) is a transport failure.

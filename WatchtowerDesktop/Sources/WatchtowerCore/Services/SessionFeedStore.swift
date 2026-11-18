@@ -261,6 +261,7 @@ package final class SessionFeedStore: ObservableObject {
 /// this is never called.
 private struct UnavailableRunner: CLIRunnerProtocol {
     func run(args: [String]) async throws -> Data { Data() }
+    func runModel(args: [String], origin: CLIOrigin, timeout: TimeInterval?, stdin: Data?) async throws -> Data { Data() }
 }
 
 private struct SubagentObservationKey: Equatable {

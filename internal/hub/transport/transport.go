@@ -172,7 +172,15 @@ type Transport interface {
 	Kind() Kind
 	// Save writes items, which may name several zones. It refuses the whole
 	// call with secure.ErrUnsealed, before any I/O, when any item's Record
-	// did not come from the Sealer. Outcomes follow the items' order.
+	// did not come from the Sealer. Outcomes follow the items' order. A
+	// transport may send the items in several requests: an error then means
+	// some earlier requests may already have saved their items, and the
+	// caller saves the whole batch again later (saves are idempotent
+	// re-writes; a conditional item that already landed comes back as a
+	// conflict on the caller's own record). v1 limit: the caller tracks
+	// none of a failed call's items, so an item removed (or publishing
+	// turned off) before that retry leaves its already-saved record in the
+	// zone until the zone is recreated; no sweep lists a zone.
 	Save(ctx context.Context, items []SaveItem) ([]Outcome, error)
 	// Delete removes records of zone by wire name; outcomes follow the items.
 	Delete(ctx context.Context, zone string, items []DeleteItem) ([]Outcome, error)

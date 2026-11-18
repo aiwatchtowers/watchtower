@@ -18,6 +18,14 @@ import (
 // no longer the one the caller saw.
 var ErrCoachStateChanged = errors.New("coach proposal state changed")
 
+// ErrConversationRemoved refuses a chat proposal whose tuning conversation was
+// deleted before the proposal was filed.
+var ErrConversationRemoved = errors.New("conversation removed")
+
+// ErrCoachTextBusy refuses a chat proposal while another proposal is open for
+// the same destination text; wrapped as "<err>: #<open id>".
+var ErrCoachTextBusy = errors.New("another proposal is open for this text")
+
 // CoachEvidence is one source a proposal rests on. Kind is
 // ask|session|chat|review_round|hint|suggestion (a folded instruction
 // suggestion, ref sg:<id>).
@@ -28,6 +36,10 @@ type CoachEvidence struct {
 
 // CoachProposal is one coach_proposals row. WorkbenchID 0 = global; zero
 // times mean "not yet"; Baseline and VerdictValue are nil until measured.
+// Origin is weekly|chat ("" is written as weekly); Skill names the skill a
+// skill or overlay destination edits; ConversationID is the tuning
+// conversation that filed a chat proposal (nil for weekly ones and after the
+// conversation is deleted).
 type CoachProposal struct {
 	ID                                                  int64
 	Fingerprint, Kind, Destination                      string
@@ -43,6 +55,13 @@ type CoachProposal struct {
 	Verdict                                             string
 	VerdictValue                                        *float64
 	VerdictAt                                           time.Time
+	Origin, Skill                                       string
+	ConversationID                                      *int64
+	// WrittenBranch is the branch a repo_* Accept wrote on ("" otherwise, or
+	// when the branch could not be read); MeasureFrom is when the daemon first
+	// saw a repo_* edit at the folder's HEAD (zero = not yet, or not repo_*).
+	WrittenBranch string
+	MeasureFrom   time.Time
 }
 
 // PromptAddition is an owner-accepted addition to a Watchtower prompt.
@@ -70,15 +89,18 @@ func parseCoachStamp(s string) (time.Time, error) {
 
 const coachCols = `id, fingerprint, kind, destination, COALESCE(workbench_id, 0), prompt_id, title, why, metric,
 	before_text, after_text, evidence, sources, status, COALESCE(reverts_id, 0), created_at, decided_at,
-	baseline, baseline_n, verdict, verdict_value, verdict_at`
+	baseline, baseline_n, verdict, verdict_value, verdict_at, origin, skill, conversation_id,
+	written_branch, COALESCE(measure_from, '')`
 
 func scanCoachProposal(row interface{ Scan(...any) error }) (CoachProposal, error) {
 	var p CoachProposal
-	var evidence, created, decided, verdictAt string
+	var evidence, created, decided, verdictAt, measureFrom string
 	var baseline, verdictValue sql.NullFloat64
+	var conv sql.NullInt64
 	if err := row.Scan(&p.ID, &p.Fingerprint, &p.Kind, &p.Destination, &p.WorkbenchID, &p.PromptID, &p.Title,
 		&p.Why, &p.Metric, &p.BeforeText, &p.AfterText, &evidence, &p.Sources, &p.Status, &p.RevertsID,
-		&created, &decided, &baseline, &p.BaselineN, &p.Verdict, &verdictValue, &verdictAt); err != nil {
+		&created, &decided, &baseline, &p.BaselineN, &p.Verdict, &verdictValue, &verdictAt,
+		&p.Origin, &p.Skill, &conv, &p.WrittenBranch, &measureFrom); err != nil {
 		return CoachProposal{}, fmt.Errorf("scanning coach proposal: %w", err)
 	}
 	if err := json.Unmarshal([]byte(evidence), &p.Evidence); err != nil {
@@ -94,6 +116,9 @@ func scanCoachProposal(row interface{ Scan(...any) error }) (CoachProposal, erro
 	if p.VerdictAt, err = parseCoachStamp(verdictAt); err != nil {
 		return CoachProposal{}, fmt.Errorf("parsing coach proposal verdict_at: %w", err)
 	}
+	if p.MeasureFrom, err = parseCoachStamp(measureFrom); err != nil {
+		return CoachProposal{}, fmt.Errorf("parsing coach proposal measure_from: %w", err)
+	}
 	if baseline.Valid {
 		v := baseline.Float64
 		p.Baseline = &v
@@ -101,6 +126,10 @@ func scanCoachProposal(row interface{ Scan(...any) error }) (CoachProposal, erro
 	if verdictValue.Valid {
 		v := verdictValue.Float64
 		p.VerdictValue = &v
+	}
+	if conv.Valid {
+		v := conv.Int64
+		p.ConversationID = &v
 	}
 	return p, nil
 }
@@ -118,19 +147,28 @@ func insertCoachProposal(x interface {
 	if err != nil {
 		return 0, fmt.Errorf("encoding coach evidence: %w", err)
 	}
-	var workbench, reverts any
+	var workbench, reverts, conv any
 	if p.WorkbenchID != 0 {
 		workbench = p.WorkbenchID
 	}
 	if p.RevertsID != 0 {
 		reverts = p.RevertsID
 	}
+	if p.ConversationID != nil {
+		conv = *p.ConversationID
+	}
+	origin := p.Origin
+	if origin == "" {
+		origin = "weekly"
+	}
 	res, err := x.Exec(`INSERT INTO coach_proposals (fingerprint, kind, destination, workbench_id, prompt_id,
-		title, why, metric, before_text, after_text, evidence, sources, reverts_id, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		title, why, metric, before_text, after_text, evidence, sources, reverts_id, created_at,
+		origin, skill, conversation_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(fingerprint) DO NOTHING`,
 		p.Fingerprint, p.Kind, p.Destination, workbench, p.PromptID, p.Title, p.Why, p.Metric,
-		p.BeforeText, p.AfterText, string(evidence), p.Sources, reverts, coachStamp(now))
+		p.BeforeText, p.AfterText, string(evidence), p.Sources, reverts, coachStamp(now),
+		origin, p.Skill, conv)
 	if err != nil {
 		return 0, fmt.Errorf("inserting coach proposal: %w", err)
 	}
@@ -146,6 +184,78 @@ func insertCoachProposal(x interface {
 		return 0, fmt.Errorf("inserting coach proposal: %w", err)
 	}
 	return id, nil
+}
+
+// InsertChatCoachProposal files p as an open chat proposal of conversation
+// convID (nil = none) in one short write transaction. It refuses with
+// ErrCoachTextBusy while another proposal is open for the same destination
+// text (destination, workbench, prompt, skill), and with
+// ErrConversationRemoved when convID names a deleted conversation. A
+// fingerprint that already exists returns 0, nil like InsertCoachProposal,
+// before the busy check, so a retry of the open proposal itself is not busy.
+// The busy check compares p's fields as given: callers pass them normalised
+// to the destination's key (coach keyOf), e.g. Skill only for a skill
+// destination.
+func (db *DB) InsertChatCoachProposal(p CoachProposal, convID *int64, now time.Time) (int64, error) {
+	p.Origin = "chat"
+	p.ConversationID = convID
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("inserting chat coach proposal: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	// A retry of an existing proposal is a fingerprint conflict (0, nil),
+	// even while that proposal is still the open one for its text.
+	var exists int
+	err = tx.QueryRow(`SELECT 1 FROM coach_proposals WHERE fingerprint = ?`, p.Fingerprint).Scan(&exists)
+	switch {
+	case err == nil:
+		return 0, nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return 0, fmt.Errorf("checking coach fingerprint: %w", err)
+	}
+	var open int64
+	err = tx.QueryRow(`SELECT id FROM coach_proposals WHERE status = 'open' AND destination = ?
+		AND COALESCE(workbench_id, 0) = ? AND prompt_id = ? AND skill = ? LIMIT 1`,
+		p.Destination, p.WorkbenchID, p.PromptID, p.Skill).Scan(&open)
+	switch {
+	case err == nil:
+		return 0, fmt.Errorf("%w: #%d", ErrCoachTextBusy, open)
+	case !errors.Is(err, sql.ErrNoRows):
+		return 0, fmt.Errorf("checking open coach proposals: %w", err)
+	}
+	if convID != nil {
+		// Checked under the write lock rather than read off a foreign-key
+		// failure: the row has other parents (workbench, reverts_id).
+		err = tx.QueryRow(`SELECT 1 FROM chat_conversations WHERE id = ?`, *convID).Scan(&exists)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return 0, ErrConversationRemoved
+		case err != nil:
+			return 0, fmt.Errorf("checking chat conversation: %w", err)
+		}
+	}
+	id, err := insertCoachProposal(tx, p, now)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("inserting chat coach proposal: %w", err)
+	}
+	return id, nil
+}
+
+// CoachProposalByFingerprint returns the proposal with fingerprint fp; a
+// missing one wraps sql.ErrNoRows.
+func (db *DB) CoachProposalByFingerprint(fp string) (CoachProposal, error) {
+	p, err := scanCoachProposal(db.QueryRow(`SELECT `+coachCols+` FROM coach_proposals WHERE fingerprint = ?`, fp))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return CoachProposal{}, fmt.Errorf("coach proposal by fingerprint: %w", sql.ErrNoRows)
+		}
+		return CoachProposal{}, err
+	}
+	return p, nil
 }
 
 // ListCoachProposals returns the proposals in the given statuses (all when
@@ -249,17 +359,48 @@ func (db *DB) DecideCoachProposal(id int64, from, to string, now time.Time) erro
 }
 
 // MarkCoachAccepted accepts an open proposal: it stores the destination text
-// as written (after, which may be the owner's edit of the proposed text) and
-// the metric baseline with the number of observations behind it, measured at
-// that moment. A nil baseline (nothing measurable) is stored as NULL.
-func (db *DB) MarkCoachAccepted(id int64, after string, baseline *float64, n int, now time.Time) error {
+// as written (after, which may be the owner's edit of the proposed text), the
+// branch a workbench repository file was written on ("" for every other
+// destination) and the metric baseline with the number of observations behind
+// it, measured at that moment. A nil baseline (nothing measurable) is stored
+// as NULL.
+func (db *DB) MarkCoachAccepted(id int64, after, branch string, baseline *float64, n int, now time.Time) error {
 	var b any
 	if baseline != nil {
 		b = *baseline
 	}
 	res, err := db.Exec(`UPDATE coach_proposals SET status = 'accepted', decided_at = ?, after_text = ?,
-		baseline = ?, baseline_n = ? WHERE id = ? AND status = 'open'`, coachStamp(now), after, b, n, id)
+		written_branch = ?, baseline = ?, baseline_n = ? WHERE id = ? AND status = 'open'`,
+		coachStamp(now), after, branch, b, n, id)
 	return coachCAS(res, err, "accepting coach proposal")
+}
+
+// SetCoachMeasureFrom starts the verdict window of an accepted repo_* edit:
+// the first time the daemon sees it at the folder's HEAD. A compare-and-set on
+// measure_from IS NULL and status accepted: false (no error) when it was
+// already set, the proposal left accepted or was judged meanwhile (the
+// 30-day too_little_data is final), so a second pass is a no-op.
+func (db *DB) SetCoachMeasureFrom(id int64, at time.Time) (bool, error) {
+	res, err := db.Exec(`UPDATE coach_proposals SET measure_from = ?
+		WHERE id = ? AND status = 'accepted' AND measure_from IS NULL AND verdict = ''`, coachStamp(at), id)
+	if err != nil {
+		return false, fmt.Errorf("setting coach measure_from: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("setting coach measure_from: %w", err)
+	}
+	return n > 0, nil
+}
+
+// ListRepoProposalsAwaitingCommit returns the accepted workbench repository
+// edits whose commit has not been seen yet (measure_from NULL) and that have
+// no verdict (30 days without the commit is a final too_little_data), oldest
+// first.
+func (db *DB) ListRepoProposalsAwaitingCommit() ([]CoachProposal, error) {
+	return queryCoachProposals(db, `SELECT `+coachCols+` FROM coach_proposals
+		WHERE status = 'accepted' AND destination LIKE 'repo\_%' ESCAPE '\'
+		AND measure_from IS NULL AND verdict = '' ORDER BY id`)
 }
 
 // SetCoachVerdict stores the outcome verdict of an accepted proposal, only

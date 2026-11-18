@@ -3,6 +3,7 @@ package automations_test
 import (
 	"encoding/json"
 	"testing"
+	"testing/synctest"
 
 	"watchtower/internal/db"
 )
@@ -118,27 +119,29 @@ func TestExecutor_ReplyRunWithoutHashRuns(t *testing.T) {
 // a resume too — a card rewritten while the reply run waited ends the
 // resumed run cancelled before any of its script replays.
 func TestAuto08_ResumedReplyRunIsCheckedForChangedCard(t *testing.T) {
-	w := newWriteFixture(t)
-	a := w.seedWorkbenchOutput(t, "triage", []string{"ask:owner", "inbox:reply"}, "inbox",
-		`log("a"); `+resumeAskCall+`; return trigger.reply.value`)
-	w.writeCard(t, a, "h1")
-	id := w.pressCard(t, a, "h1")
-	w.stopWhileWaiting(t, id)
-	before := len(w.steps(t, id))
-	// The run holds the automation's one slot while it waits, so no other
-	// run can commit: write the changed-hash rewrite's effect directly.
-	if _, err := w.d.Exec(`UPDATE automation_outputs SET content_hash = 'h2' WHERE id = ?`, w.cardID(t, a)); err != nil {
-		t.Fatal(err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		w := newWriteFixture(t)
+		a := w.seedWorkbenchOutput(t, "triage", []string{"ask:owner", "inbox:reply"}, "inbox",
+			`log("a"); `+resumeAskCall+`; return trigger.reply.value`)
+		w.writeCard(t, a, "h1")
+		id := w.pressCard(t, a, "h1")
+		w.stopWhileWaiting(t, id)
+		before := len(w.steps(t, id))
+		// The run holds the automation's one slot while it waits, so no other
+		// run can commit: write the changed-hash rewrite's effect directly.
+		if _, err := w.d.Exec(`UPDATE automation_outputs SET content_hash = 'h2' WHERE id = ?`, w.cardID(t, a)); err != nil {
+			t.Fatal(err)
+		}
 
-	w.restart()
-	stop := runExecutor(t, w.exFixture)
-	defer stop()
-	r := w.waitEnded(t, id)
-	if r.Status != db.RunCancelled || r.ErrorKind != db.ErrKindCancelled {
-		t.Fatalf("run = %s/%s (%s); want cancelled/cancelled", r.Status, r.ErrorKind, r.Error)
-	}
-	if n := len(w.steps(t, id)); n != before {
-		t.Fatalf("steps = %d; want %d (nothing replayed)", n, before)
-	}
+		w.restart()
+		stop := runExecutor(t, w.exFixture)
+		defer stop()
+		r := w.waitEnded(t, id)
+		if r.Status != db.RunCancelled || r.ErrorKind != db.ErrKindCancelled {
+			t.Fatalf("run = %s/%s (%s); want cancelled/cancelled", r.Status, r.ErrorKind, r.Error)
+		}
+		if n := len(w.steps(t, id)); n != before {
+			t.Fatalf("steps = %d; want %d (nothing replayed)", n, before)
+		}
+	})
 }

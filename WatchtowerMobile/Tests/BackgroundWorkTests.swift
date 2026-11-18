@@ -135,7 +135,7 @@ final class BackgroundWorkTests: XCTestCase {
             recordingsDirectory: try makeRecordingsDirectory(),
             uploadRetriesAllowed: false,
             remoteFetch: { try await remote.fetch($0) },
-            sleep: { _ in try await Task.sleep(for: .seconds(86_400)) },
+            sleep: { _ in try await sleepUntilCancelled() },
             startWork: BackgroundWork.starter(runner: tasks, suspension: suspension) { true }
         )
         addTeardownBlock { @MainActor in

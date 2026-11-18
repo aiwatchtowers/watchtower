@@ -356,7 +356,7 @@ func stopOf(k sessionKind) (event, body string, ok bool) {
 		return eventSessionStopped, "Waiting for you", true
 	case kindFailed:
 		return eventSessionFailed, "Failed", true
-	case kindNotStarted, kindRunning, kindWorking, kindNeedsApproval, kindWaitingOnAsk, kindBackground, kindReadyToCheck:
+	case kindNotStarted, kindRunning, kindWorking, kindNeedsApproval, kindWaitingOnAsk, kindBackground, kindReadyToCheck, kindSpecReview:
 	}
 	return "", "", false
 }
@@ -432,4 +432,38 @@ func openAlertAsks(ctx context.Context, tx *sql.Tx, names map[int64]string, hidd
 		return nil, fmt.Errorf("reading open asks: %w", err)
 	}
 	return out, nil
+}
+
+// The chat_answer alert (iPhone chat spec §4.7): the event, its three kinds
+// and their fixed bodies (never chat text, D14). The alert key is
+// chat:<turn_id>:<kind>.
+const (
+	EventChatAnswer = "chat_answer"
+
+	ChatAlertAnswer   = "answer"
+	ChatAlertStopped  = "stopped"
+	ChatAlertApproval = "approval"
+)
+
+// chatAlertBodies is the fixed body of each kind.
+var chatAlertBodies = map[string]string{
+	ChatAlertAnswer:   "Answer ready",
+	ChatAlertStopped:  "The answer stopped",
+	ChatAlertApproval: "Waiting for your approval",
+}
+
+// ChatAlertKey is the push ledger key of one (turn, kind).
+func ChatAlertKey(turnID, kind string) string { return "chat:" + turnID + ":" + kind }
+
+// ChatAlert is the chat_answer alert of one turn: the conversation's title
+// (clipped like a session's) and the kind's fixed body. ok is false for an
+// unknown kind.
+func ChatAlert(conv int64, turnID, kind, convTitle string) (key string, f secure.WorkAlertFields, ok bool) {
+	body, ok := chatAlertBodies[kind]
+	if !ok {
+		return "", secure.WorkAlertFields{}, false
+	}
+	title, _ := clipText(convTitle, alertMaxSession)
+	key = ChatAlertKey(turnID, kind)
+	return key, secure.WorkAlertFields{Event: EventChatAnswer, Key: key, Title: title, Body: body, ConversationID: conv}, true
 }

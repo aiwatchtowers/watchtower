@@ -210,6 +210,11 @@ type Client struct {
 	// toolEvents streams tool calls and the turn's usage as chunks
 	// (EmitToolEvents) instead of a boundary per tool call.
 	toolEvents bool
+	// streamJSON (SetStreamJSONInput) runs QuerySync over the stream-json
+	// input protocol with the account's claude.ai connectors loaded;
+	// streamHooks drive it (SetStreamJSONHooks).
+	streamJSON  bool
+	streamHooks StreamJSONHooks
 }
 
 // EmitToolEvents switches Query onto the chat events `ai query --events v2`
@@ -257,6 +262,11 @@ func (c *Client) childEnviron() []string {
 // leave a SIGINT-ignoring child behind.
 const GroupKillGrace = time.Second
 
+// groupKillGrace is the grace ConfigureChild applies: GroupKillGrace, which
+// a test replaces to tell the reap's kill from the timer's without waiting
+// out a real second.
+var groupKillGrace = GroupKillGrace
+
 // ConfigureChild applies the one cancel policy of every CLI child (spec
 // 2026-11-05 §3.4: group-only, so no caller can forget it): a process group
 // of its own that is interrupted and then killed as a whole (the leader's
@@ -267,7 +277,8 @@ const GroupKillGrace = time.Second
 // returns — even when WaitDelay ended the wait first — and no timer
 // outlives the call to signal a reused process group id later.
 func ConfigureChild(cmd *exec.Cmd) (reap func()) {
-	cmd.WaitDelay = GroupKillGrace
+	grace := groupKillGrace
+	cmd.WaitDelay = grace
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var mu sync.Mutex
 	var kill *time.Timer
@@ -277,7 +288,7 @@ func ConfigureChild(cmd *exec.Cmd) (reap func()) {
 		defer mu.Unlock()
 		leader := cmd.Process.Pid // Setpgid: the leader's pid is the group id
 		pgid = leader
-		kill = time.AfterFunc(GroupKillGrace, func() { _ = syscall.Kill(-leader, syscall.SIGKILL) })
+		kill = time.AfterFunc(grace, func() { _ = syscall.Kill(-leader, syscall.SIGKILL) })
 		return syscall.Kill(-pgid, syscall.SIGINT)
 	}
 	return func() {
@@ -315,7 +326,11 @@ func (c *Client) SetReadFolder(dir string) { c.readFolder = dir }
 // package: cmd's spec reviewer wiring). Nothing is written to disk: the
 // prompt and a secret-bearing config travel as /dev/fd payloads.
 func (c *Client) ArgsForTest(systemPrompt, userMessage string) []string {
-	args, _, _ := c.buildArgs(systemPrompt, userMessage, "json")
+	format := "json"
+	if c.streamJSON {
+		format = "stream-json"
+	}
+	args, _, _ := c.buildArgs(systemPrompt, userMessage, format)
 	return args
 }
 
@@ -365,7 +380,7 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat string) (args
 		// must not be able to run shell commands. The task-chat agent still
 		// changes targets ONLY via watchtower-action approval cards, never by
 		// writing to the DB directly.
-		"--allowedTools", c.allowedToolsFlag(),
+		"--allowedTools", c.withStreamTools(c.allowedToolsFlag(), c.streamHooks.ExtraAllowed),
 		// Built-in allowlist: the model sees exactly the Claude Code built-ins
 		// named here (MCP tools are unaffected), so a built-in a future CLI
 		// release adds stays hidden by default instead of slipping past the
@@ -388,7 +403,7 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat string) (args
 		// The deny list is defence in depth behind --tools: it keeps every
 		// known built-in hidden even if a CLI release stopped honouring the
 		// allowlist. A read-folder run unhides only the file reads.
-		"--disallowedTools", WithExternalDisallowed(c.disallowedTools(), c.externalServers),
+		"--disallowedTools", c.withStreamTools(WithExternalDisallowed(c.disallowedTools(), c.externalServers), c.streamHooks.ExtraDisallowed),
 		// Skip user-level ~/.claude/settings.json so its plugins/hooks/CLAUDE.md
 		// auto-discovery don't probe ~/Desktop or ~/Documents at startup —
 		// those probes trigger macOS TCC prompts attributed to Watchtower.app.
@@ -400,6 +415,9 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat string) (args
 		// other server the CLI would load on its own.
 		"--strict-mcp-config",
 	})
+	if c.streamJSON {
+		args, stdin = c.streamJSONArgs(args), "" // the message goes as a stream-json line
+	}
 	if c.maxTurns > 0 {
 		args = append(args, "--max-turns", strconv.Itoa(c.maxTurns))
 	}
@@ -954,6 +972,9 @@ func logSkippedLines(lines *streamline.Reader) {
 // (see Query).
 func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ string) (text string, _ *Usage, err error) {
 	defer func() { err = providers.ContextFailure("claude", ctx, providers.ProcessFailure("claude", err)) }()
+	if c.streamJSON {
+		return c.queryStreamJSON(ctx, systemPrompt, userMessage)
+	}
 	args, promptStdin, payloads := c.buildArgs(systemPrompt, userMessage, "json")
 	cmd := exec.CommandContext(ctx, c.claudeCmd, args...)
 	// cmd.Output starts the child before it blocks; the parent's read ends

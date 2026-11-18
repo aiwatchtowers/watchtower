@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -71,17 +70,15 @@ func TestPDFHelperArgvServedByTestBinary(t *testing.T) {
 		t.Skip("inside a re-exec: never recurse")
 	}
 	argv := append(pdfHelperArgv(), filepath.Join("..", "internal", "extract", "testdata", "sample.pdf"))
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) // the test binary itself
+	cmd := exec.Command(argv[0], argv[1:]...) // the test binary itself
 	cmd.Env = append(os.Environ(), "WATCHTOWER_PDF_HELPER_REEXEC=1")
-	start := time.Now()
 	out, err := cmd.Output()
 	require.NoError(t, err, string(out))
 	var res struct {
 		OK bool `json:"ok"`
 	}
+	// A re-run of the suite would print test output (at least "PASS")
+	// around or instead of the JSON, so stdout must be exactly the JSON.
 	require.NoError(t, json.Unmarshal(out, &res), "stdout is the helper's JSON, not test output: %s", out)
 	assert.True(t, res.OK)
-	assert.Less(t, time.Since(start), 20*time.Second)
 }

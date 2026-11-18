@@ -18,6 +18,9 @@ import (
 
 var codexIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
+// IsCodexThreadID reports whether id has a codex thread id's shape (a UUID).
+func IsCodexThreadID(id string) bool { return codexIDRe.MatchString(id) }
+
 type codexLine struct {
 	Timestamp string          `json:"timestamp"`
 	Type      string          `json:"type"`

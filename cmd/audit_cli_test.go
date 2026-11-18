@@ -150,10 +150,14 @@ var cliNoContentCommands = map[string]bool{
 	"agents report":                    true,
 	"agents scan":                      true,
 	"agents stats":                     true,
+	"ai background allow":              true, // Config and policy only.
+	"ai background pause":              true,
+	"ai background status":             true,
 	"ai models":                        true,
 	"ai routing-status":                true, // Local provider health/revision metadata only.
 	"ai session":                       true,
 	"ai test":                          true,
+	"ai which":                         true,
 	"auth check-cert":                  true,
 	"auth login":                       true,
 	"auth logout":                      true,
@@ -195,6 +199,9 @@ var cliNoContentCommands = map[string]bool{
 	"catchup ack":                      true,
 	"catchup feedback":                 true,
 	"channels":                         true,
+	"channels exclude":                 true,
+	"channels include":                 true,
+	"chat shutdown":                    true,
 	"chat title":                       true,
 	"code index":                       true,
 	"coach accept":                     true,
@@ -223,6 +230,7 @@ var cliNoContentCommands = map[string]bool{
 	"db compact":                       true,
 	"db lockstats":                     true,
 	"db migrate":                       true,
+	"diagnostics":                      true, // kinds, counts, states and error classes only (DIAG-01)
 	"dictate clean":                    true,
 	"digest generate":                  true,
 	"digest reset-context":             true,
@@ -345,7 +353,9 @@ var cliNoContentCommands = map[string]bool{
 	"outlook login":                    true,
 	"outlook logout":                   true,
 	"outlook rename":                   true,
+	"people exclude":                   true, // prints the person's id only
 	"people generate":                  true,
+	"people include":                   true, // prints the person's id only
 	"policy show":                      true, // the organization policy: settings, no company content
 	"profile":                          true,
 	"project":                          true,
@@ -363,6 +373,7 @@ var cliNoContentCommands = map[string]bool{
 	"slack disable":                    true,
 	"slack enable":                     true,
 	"slack login":                      true,
+	"slack live probe":                 true, // one connector read; prints the verdict, workspace ids and the connector id only
 	"slack remove":                     true,
 	"slack rename":                     true,
 	"status":                           true,

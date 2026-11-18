@@ -8,7 +8,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -64,15 +63,14 @@ func cliTreeStub(t *testing.T, name, version string) (bin string, grandchild fun
 		// Wait until both are gone (reaped by their parent or by init), so
 		// no stub outlives the test.
 		for _, pid := range killed {
-			require.Eventually(t, func() bool { return syscall.Kill(pid, 0) == syscall.ESRCH },
-				5*time.Second, 20*time.Millisecond, "stub process %d is still alive or unreaped after SIGKILL", pid)
+			waitFor(t, "the SIGKILLed stub reaped", func() bool { return syscall.Kill(pid, 0) == syscall.ESRCH })
 		}
 	})
 	return bin, grandchild
 }
 
 // assertTreeDiesOnCancel runs one streaming query on p, cancels it once the
-// stub's grandchild is up, and requires the query to end promptly with the
+// stub's grandchild is up, and requires the query to end with the
 // grandchild dead.
 func assertTreeDiesOnCancel(t *testing.T, p ai.Provider, grandchild func() int) {
 	t.Helper()
@@ -89,17 +87,14 @@ func assertTreeDiesOnCancel(t *testing.T, p ai.Provider, grandchild func() int) 
 		}
 		close(done)
 	}()
-	require.Eventually(t, func() bool { return grandchild() > 0 }, 20*time.Second, 20*time.Millisecond)
+	waitFor(t, "the stub's grandchild", func() bool { return grandchild() > 0 })
 	pid := grandchild()
 	cancel()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the cancelled query did not end: a descendant still holds its stdout")
-	}
-	require.Eventually(t, func() bool {
+	// The query ends only once no descendant holds its stdout any more.
+	<-done
+	waitFor(t, "the CLI's grandchild gone after the cancel", func() bool {
 		return syscall.Kill(pid, 0) == syscall.ESRCH
-	}, 5*time.Second, 50*time.Millisecond, "the CLI's grandchild %d survived the cancel", pid)
+	})
 }
 
 // groupTestConfig is a workspace whose provider runs the stub bin, with

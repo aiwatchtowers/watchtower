@@ -15,14 +15,22 @@ final class HeldWriter: @unchecked Sendable {
     init(_ pool: DatabasePool, file: StaticString = #filePath, line: UInt = #line) {
         let entered = DispatchSemaphore(value: 0)
         let gate = gate
+        let failure = Locked<Error?>(nil)
         Thread.detachNewThread {
-            try? pool.write { _ in
+            do {
+                try pool.write { _ in
+                    entered.signal()
+                    gate.wait()
+                }
+            } catch {
+                // A write that never entered still wakes the waiting init.
+                failure.set(error)
                 entered.signal()
-                gate.wait()
             }
         }
-        if entered.wait(timeout: .now() + 5) == .timedOut {
-            XCTFail("the writer queue was not taken", file: file, line: line)
+        entered.wait() // the writer queue is taken (or the write failed): the detached write's own signal, no clock
+        if let error = failure.get() {
+            XCTFail("HeldWriter could not take the writer: \(error)", file: file, line: line)
         }
     }
 
@@ -35,25 +43,21 @@ final class HeldWriter: @unchecked Sendable {
     }
 }
 
-/// What a task the test cannot trust to finish returned: nil when it did
-/// not finish within `timeout`, so a regression fails the test instead of
-/// hanging the suite.
+/// What `task` returned, awaited with no clock and no deadline (a task that
+/// never finishes is a hang the lane watchdog reports). Optional so the
+/// existing `XCTUnwrap(await boundedValue(…))` call sites read the same.
 @MainActor
-func boundedValue<T>(_ task: Task<T, Never>, timeout: Duration = .seconds(5)) async -> T? {
-    let outcome = TaskOutcome<T>()
-    Task { @MainActor in
-        outcome.value = await task.value
-        outcome.done = true
-    }
-    let start = ContinuousClock.now
-    while !outcome.done, !Task.isCancelled, ContinuousClock.now - start < timeout {
-        try? await Task.sleep(for: .milliseconds(5))
-    }
-    return outcome.value
+func boundedValue<T>(_ task: Task<T, Never>) async -> T? {
+    await task.value
 }
 
-@MainActor
-private final class TaskOutcome<T> {
-    var value: T?
-    var done = false
+/// A value read and written from two threads.
+private final class Locked<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Value
+
+    init(_ value: Value) { self.value = value }
+
+    func get() -> Value { lock.withLock { value } }
+    func set(_ new: Value) { lock.withLock { value = new } }
 }

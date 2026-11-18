@@ -55,6 +55,10 @@ type Message struct {
 	Subtype    string
 	Permalink  string
 	TSUnix     float64
+	// SyncedAt is when the row was first stored (unix seconds), written on
+	// insert only: an upsert of an existing row never moves it. 0 means
+	// unstamped, which the Slack detectors read as the post time (TSUnix).
+	SyncedAt float64
 }
 
 // Reaction represents a reaction on a Slack message.
@@ -407,6 +411,16 @@ type ChannelSettings struct {
 	IsMutedForLLM bool
 	IsFavorite    bool
 	UpdatedAt     string
+	// Stop syncing (SYNCEX-01, SetSyncExcluded): the flag, when it began,
+	// Sync again's pending catch-up window (both NULL when none) and whether
+	// Stop syncing set the AI mute.
+	SyncExcluded     bool
+	ExcludedAt       string
+	CatchupFrom      sql.NullFloat64
+	CatchupTo        sql.NullFloat64
+	MutedByExclusion bool
+	// MutedAt is when the AI mute turned on ("" while not muted).
+	MutedAt string
 }
 
 // Target represents a hierarchical goal at any level (replaces Task).

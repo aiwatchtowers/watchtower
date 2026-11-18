@@ -22,7 +22,7 @@ The `watchtower` binary does everything the app does and a bit more. Add `--help
 
 | Command | What it does |
 |---|---|
-| `watchtower slack`, `auth` | Slack workspaces (`slack add` connects another; `auth login` connects the first; `slack backfill --account N --from D --to D` fetches up to 31 past days of one account again, with digests for channel days that had none; on a day that already has a digest for a channel, the fetched messages are saved and searchable but not digested) |
+| `watchtower slack`, `auth` | Slack workspaces (`slack add` connects another; `auth login` connects the first; `slack backfill --account N --from D --to D` fetches up to 31 past days of one account again, with digests for channel days that had none; on a day that already has a digest for a channel, the fetched messages are saved and searchable but not digested; `slack live probe [--provider claude\|codex] [--json]` checks that your Claude or ChatGPT Slack connector can read, for [Live Slack](../concepts/sources-and-accounts.md#live-slack-through-your-claude-or-chatgpt-account)) |
 | `watchtower google`, `gmail` | Google accounts and Gmail |
 | `watchtower imap`, `outlook` | Other mailboxes |
 | `watchtower calendar`, `caldav` | Calendar events and CalDAV/ICS feeds |
@@ -44,7 +44,8 @@ Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the 
 | `watchtower inbox folders` | The Inbox menu: `list`, and `create`, `update`, `move`, `delete`, `route <automation-id>`, each with `--expect-revision` from `list`; a stale one changes nothing ("the Inbox menu changed"). Refused in a coding agent's shell |
 | `watchtower digest`, `decisions`, `ideas` | [Digests](../features/digests.md), decisions, [ideas](../features/ideas-and-decisions.md) |
 | `watchtower targets`, `tracks` | [Targets](../features/targets.md) and [tracks](../features/tracks.md); `tracks start <id>` makes a track's watch, `tracks instruction <id> --text <t>` edits it |
-| `watchtower people`, `trends`, `users`, `channels` | [People](../features/people.md), trends (no weekly digest is generated today), synced users and channels |
+| `watchtower people` (`people exclude --user <id>` and `people include --user <id>` stop and restore a person's card, as in the app), `trends`, `users`, `channels` | [People](../features/people.md), trends (no weekly digest is generated today), synced users and channels |
+| `watchtower channels exclude <name>`, `channels include <name>` | **Stop syncing** and **Sync again** on a Slack channel from the terminal, as in [Statistics](../features/statistics.md); a name (`#` optional) or `--id <id>`, `--json` for scripts |
 | `watchtower meeting-prep [event-id\|next]` | Meeting preparation |
 | `watchtower ask "<question>"` | Ask the assistant a question from the terminal |
 | `watchtower kb search <query>`, `kb status`, `kb reindex` | The [knowledge index](../features/search-and-knowledge.md) |
@@ -83,7 +84,7 @@ This keeps an agent that was talked into running such a command from going ahead
 | `watchtower integrate claude-code\|codex\|status\|remove` | Wire Watchtower into [Claude Code or Codex](../features/claude-code-integration.md) |
 | `watchtower mcp` | Run the MCP server over stdio |
 | `watchtower tools` | Call the read-only data tools from the console |
-| `watchtower agents enable\|disable\|scan\|stats` | [Agent analytics](../features/agent-analytics.md) |
+| `watchtower agents enable\|disable\|scan\|stats\|report` | [Agent analytics](../features/agent-analytics.md) |
 | `watchtower coach status\|proposals\|accept\|decline\|rollback\|run` | [Agent coach](../features/agent-coach.md) |
 | `watchtower code index\|search` | Symbol index and text search for a workbench folder |
 
@@ -115,12 +116,18 @@ Commands for a [headless host](../features/headless-host.md): a Linux box or a M
 | Command | What it does |
 |---|---|
 | `watchtower ai models` | Models per provider and tier |
+| `watchtower ai background status [--json]` | Whether [background AI](../concepts/features-on-and-off.md#paused-is-not-off-background-ai) may run and who decided: you, nobody yet, or your organization (`effective`, `reason`, `answer`, `policy`) |
+| `watchtower ai background allow [--yes]` | Let Watchtower run AI on its own. On a terminal it shows what runs and asks **Allow background AI? [y/N]**; without a terminal it needs `--yes`. Refused when your organization turned background AI off. Wakes the running daemon |
+| `watchtower ai background pause` | Pause it; sync and everything you start yourself keep running |
+| `watchtower ai which --provider claude\|codex --json` | The claude or codex executable Watchtower would run (`provider`, `path`, `found`); the Desktop app asks it |
 | `watchtower usage plan` | Claude plan limits (5-hour, weekly) |
 | `watchtower usage plans --json [--now] [--provider all\|claude\|codex]` | Separate subscription snapshots; `--now` refreshes selected sources, with partial results on failure |
 | `watchtower usage llm [--since today\|7d\|30d] [--json]` | AI calls, tokens and cost: Watchtower, your automations, chats, workbenches ([AI providers, models and cost](../concepts/ai-providers-and-cost.md)) |
 | `watchtower prompts`, `tune` | Prompt templates and feedback-based tuning |
 | `--provider claude\|codex\|ollama` | Per-command provider override |
 
-`terminal`, `dictate` and `chat` are helpers the Desktop app calls; `ai` is too, apart from `ai models`.
+`terminal`, `dictate` and `chat` are helpers the Desktop app calls; `ai` is too, apart from `ai models` and `ai background`.
+
+A daemon started without the app (a [headless host](../features/headless-host.md) included) keeps background AI paused until you run `watchtower ai background allow`; `watchtower status` prints a **Background AI:** line. `config set ai.background_runs` is refused: use `ai background`.
 
 For `usage plans`, `--provider` selects subscriptions, independently of the AI backend. Read-only calls return saved data without creating or migrating a database. Refresh exits 3 when **Subscription plan limits** is off; source/read failures exit 1 with partial JSON, and SIGINT/SIGTERM use 130/143 when a partial response can be written.

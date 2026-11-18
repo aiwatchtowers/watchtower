@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -72,31 +73,33 @@ func TestWorkerPoolCollectsErrors(t *testing.T) {
 }
 
 func TestWorkerPoolContextCancellation(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	wp := NewWorkerPool(2, nil)
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		wp := NewWorkerPool(2, nil)
 
-	var processed atomic.Int32
-	wp.Start(ctx, func(ctx context.Context, task SyncTask) error {
-		processed.Add(1)
-		// Simulate slow work
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(50 * time.Millisecond):
-			return nil
-		}
+		var processed atomic.Int32
+		wp.Start(ctx, func(ctx context.Context, task SyncTask) error {
+			processed.Add(1)
+			// Simulate slow work
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(50 * time.Millisecond):
+				return nil
+			}
+		})
+
+		// Submit a few tasks then cancel
+		wp.Submit(ctx, SyncTask{ChannelID: "C001"})
+		wp.Submit(ctx, SyncTask{ChannelID: "C002"})
+		cancel()
+
+		wp.Close()
+		wp.Wait()
+
+		// Workers should stop promptly after cancel
+		// We just verify it doesn't hang
 	})
-
-	// Submit a few tasks then cancel
-	wp.Submit(ctx, SyncTask{ChannelID: "C001"})
-	wp.Submit(ctx, SyncTask{ChannelID: "C002"})
-	cancel()
-
-	wp.Close()
-	wp.Wait()
-
-	// Workers should stop promptly after cancel
-	// We just verify it doesn't hang
 }
 
 func TestWorkerPoolSubmitReturnsFalseOnCancel(t *testing.T) {
@@ -110,33 +113,35 @@ func TestWorkerPoolSubmitReturnsFalseOnCancel(t *testing.T) {
 }
 
 func TestWorkerPoolConcurrency(t *testing.T) {
-	wp := NewWorkerPool(3, nil)
+	synctest.Test(t, func(t *testing.T) {
+		wp := NewWorkerPool(3, nil)
 
-	var concurrent atomic.Int32
-	var maxConcurrent atomic.Int32
+		var concurrent atomic.Int32
+		var maxConcurrent atomic.Int32
 
-	wp.Start(context.Background(), func(ctx context.Context, task SyncTask) error {
-		cur := concurrent.Add(1)
-		// Track max concurrent workers
-		for {
-			old := maxConcurrent.Load()
-			if cur <= old || maxConcurrent.CompareAndSwap(old, cur) {
-				break
+		wp.Start(context.Background(), func(ctx context.Context, task SyncTask) error {
+			cur := concurrent.Add(1)
+			// Track max concurrent workers
+			for {
+				old := maxConcurrent.Load()
+				if cur <= old || maxConcurrent.CompareAndSwap(old, cur) {
+					break
+				}
 			}
+			time.Sleep(20 * time.Millisecond)
+			concurrent.Add(-1)
+			return nil
+		})
+
+		for range 9 {
+			wp.Submit(context.Background(), SyncTask{ChannelID: "C001"})
 		}
-		time.Sleep(20 * time.Millisecond)
-		concurrent.Add(-1)
-		return nil
+		wp.Close()
+		wp.Wait()
+
+		// With 3 workers and enough tasks, we should see > 1 concurrent
+		assert.Greater(t, maxConcurrent.Load(), int32(1))
 	})
-
-	for range 9 {
-		wp.Submit(context.Background(), SyncTask{ChannelID: "C001"})
-	}
-	wp.Close()
-	wp.Wait()
-
-	// With 3 workers and enough tasks, we should see > 1 concurrent
-	assert.Greater(t, maxConcurrent.Load(), int32(1))
 }
 
 func TestWorkerPoolNoTasksReturnsCleanly(t *testing.T) {

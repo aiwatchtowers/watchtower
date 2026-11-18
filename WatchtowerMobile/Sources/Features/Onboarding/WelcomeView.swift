@@ -91,7 +91,7 @@ struct WelcomeView: View {
             VStack(spacing: Spacing.regular) {
                 Text("Watchtower")
                     .font(.largeTitle.bold())
-                Text("Your Mac's Watchtower on this iPhone: asks, sessions, the board and your meetings.")
+                Text(PairingText.welcomeTagline)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
             }
@@ -129,7 +129,7 @@ struct WelcomeView: View {
     /// quiet links (mockup 17).
     private var buttons: some View {
         VStack(spacing: Spacing.regular) {
-            Text("On your Mac: Settings → Mobile → Use Watchtower on iPhone.")
+            Text(PairingText.welcomeSteps)
                 .font(TypeScale.meta)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
@@ -137,13 +137,13 @@ struct WelcomeView: View {
             Button {
                 linking.startScan()
             } label: {
-                Label("Scan the code on your Mac", systemImage: "qrcode.viewfinder")
+                Label(PairingText.scanButton, systemImage: "qrcode.viewfinder")
             }
             .buttonStyle(ProminentActionStyle())
             NavigationLink {
                 MacNotShowingView()
             } label: {
-                QuietLinkLabel(text: "The Mac doesn't show up")
+                QuietLinkLabel(text: PairingText.notShowingLink)
             }
             // No Mac at hand (App Review has none): the demo Macs (#174).
             if let startDemoTour {

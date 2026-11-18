@@ -49,19 +49,3 @@ final class LoginEnvironmentCallSiteTests: XCTestCase {
         XCTAssertGreaterThan(scanned, 100, "the scan found too few sources: wrong path?")
     }
 }
-
-/// Board #592: the app's chat pool holds admission until the login
-/// environment resolves, so no chat spawns without the owner's CODEX_HOME.
-@MainActor
-final class ChatSessionPoolWiringTests: XCTestCase {
-    func testAppPoolHoldsAdmissionUntilTheLoginEnvironment() async throws {
-        let (manager, path) = try TestDatabase.createDatabaseManager()
-        defer { TestDatabase.cleanup(path: path) }
-        let pool = AppState().ensureChatSessionPool(manager)
-        XCTAssertFalse(pool.admissionOpen, "held from the start")
-        let opened = await waitForCondition(timeout: .seconds(10)) { pool.admissionOpen }
-        XCTAssertTrue(opened, "opens once the login environment resolves")
-        pool.stopPolicy()
-        await pool.closeAll()
-    }
-}

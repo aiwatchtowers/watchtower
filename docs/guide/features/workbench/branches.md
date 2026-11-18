@@ -37,8 +37,8 @@ action: nav:projects
 -->
 
 1. Click the branch button. Type part of a name in **Find branch** to filter.
-2. Click a branch under **Local branches** to switch to it. A branch open in another worktree is greyed out.
-3. Under **Remote only**, click a branch you have no local copy of to **Check out**. Watchtower creates a local branch that tracks origin's and switches to it, with the same questions as a switch.
+2. Click a branch under **LOCAL BRANCHES** to switch to it. A branch open in another worktree is greyed out.
+3. Under **REMOTE ONLY**, click a branch you have no local copy of to **Check out**. Watchtower creates a local branch that tracks origin's and switches to it, with the same questions as a switch.
 4. **New branch from current…** starts a branch from the current commit and takes your uncommitted changes along.
 5. The ↻ button next to **Fetched 2m ago** fetches right away.
 

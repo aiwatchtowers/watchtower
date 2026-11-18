@@ -103,6 +103,13 @@ func TestDesktopHeartbeatJSONKeys(t *testing.T) {
 	fresh, seen, err := st.DesktopHost(time.Now())
 	require.NoError(t, err)
 	assert.True(t, fresh && seen)
+	require.NoError(t, st.Close())
+
+	// --chat-lease is accepted and ignored for one release (an older app).
+	_, err = runHub(t, "desktop", "heartbeat", "--chat-lease", "1", "--json")
+	require.NoError(t, err)
+	_, err = runHub(t, "desktop", "heartbeat", "--chat-lease", "2")
+	assert.ErrorContains(t, err, "--chat-lease")
 }
 
 func TestHubRecordingClaimFinishJSONKeys(t *testing.T) {

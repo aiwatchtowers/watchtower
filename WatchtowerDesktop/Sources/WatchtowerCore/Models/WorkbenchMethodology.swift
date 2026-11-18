@@ -72,7 +72,7 @@ package enum WorkbenchMethodologyKey: String, CaseIterable, Sendable {
         case (.finishCheck, "on"):
             "A turn that reports the work complete without finish_session is sent back."
         case (.finishCheck, "off"):
-            "No reminder: a session the agent does not finish ends as Stopped, without a summary."
+            "No reminder: a session the agent does not finish ends as Idle, without a summary."
         default:
             ""
         }

@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
@@ -75,7 +74,7 @@ cat >/dev/null`
 			command := &cobra.Command{}
 			command.Flags().String("model", "", "")
 			command.SetErr(io.Discard)
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			makeBackend := func() chat.Backend {
 				conv, getErr := database.GetChatConversation(1)

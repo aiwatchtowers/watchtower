@@ -29,20 +29,46 @@ final class CodeFileBufferTests: XCTestCase {
 
     private func disk(_ url: URL? = nil) throws -> String { try String(contentsOf: url ?? file, encoding: .utf8) }
 
-    /// Waits on state, not on a tight wall-clock margin.
-    private func eventually(_ condition: () throws -> Bool, timeout: Duration = .seconds(3)) async rethrows {
-        let deadline = ContinuousClock.now + timeout
-        while try !condition(), ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
+    /// The autosave's pause, which the test ends by hand.
+    @MainActor
+    private final class PauseGate {
+        private(set) var pauses: [Duration] = []
+        private var waiting: [CheckedContinuation<Void, Never>] = []
+        private var isOpen = false
+
+        func pause(_ duration: Duration) async {
+            pauses.append(duration)
+            guard !isOpen else { return }
+            await withCheckedContinuation { waiting.append($0) }
         }
+
+        /// Ends every pause, now and later.
+        func open() {
+            isOpen = true
+            let woken = waiting
+            waiting = []
+            woken.forEach { $0.resume() }
+        }
+    }
+
+    private func gated(_ buffer: CodeFileBuffer) -> PauseGate {
+        let gate = PauseGate()
+        buffer.autosaveSleep = { await gate.pause($0) }
+        return gate
     }
 
     func testEditSavesItselfAfterThePauseAndKeepsPermissions() async throws {
         let buffer = loaded()
+        let gate = gated(buffer)
         buffer.edited("echo b\n", base: 0)
         XCTAssertTrue(buffer.isDirty)
+        let autosave = try XCTUnwrap(buffer.autosave)
+        await Task.yield()
         XCTAssertEqual(try disk(), "echo a\n", "not before the pause")
-        try await eventually { !buffer.isDirty }
+        gate.open()
+        await autosave.value
+        XCTAssertEqual(gate.pauses, [Self.delay])
+        XCTAssertFalse(buffer.isDirty)
         XCTAssertEqual(try disk(), "echo b\n")
         let mode = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? Int
         XCTAssertEqual(mode, 0o755)
@@ -51,13 +77,18 @@ final class CodeFileBufferTests: XCTestCase {
     /// Back-to-back edits leave one save of the last text (the restart of
     /// the delay itself is the Task cancellation in `scheduleAutosave`).
     func testBackToBackEditsWriteOnlyTheLastText() async throws {
-        let buffer = CodeFileBuffer(url: file, relPath: "run.sh", autosaveDelay: .seconds(2))
-        buffer.loadIfNeeded()
+        let buffer = loaded()
+        let gate = gated(buffer)
         buffer.edited("echo b\n", base: 0)
+        let first = try XCTUnwrap(buffer.autosave)
         buffer.edited("echo bc\n", base: 0)
-        // Long before the first edit's delay could run out, under any load.
+        let last = try XCTUnwrap(buffer.autosave)
+        XCTAssertTrue(first.isCancelled, "the second edit restarts the pause")
         XCTAssertEqual(try disk(), "echo a\n")
-        try await eventually({ !buffer.isDirty }, timeout: .seconds(6))
+        gate.open()
+        await first.value
+        await last.value
+        XCTAssertFalse(buffer.isDirty)
         XCTAssertEqual(try disk(), "echo bc\n")
     }
 
@@ -139,11 +170,15 @@ final class CodeFileBufferTests: XCTestCase {
 
     func testProj03ADeletionUnderEditsIsNeverUndoneByTheAutosave() async throws {
         let buffer = loaded()
+        let gate = gated(buffer)
         buffer.edited("echo mine\n", base: 0)
+        let autosave = try XCTUnwrap(buffer.autosave)
         try FileManager.default.removeItem(at: file)
         buffer.diskChanged()
         XCTAssertEqual(buffer.problem, .deletedWhileEditing)
-        try await Task.sleep(for: Self.delay * 4)
+        // The pause the edit started runs out after the deletion.
+        gate.open()
+        await autosave.value
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
         XCTAssertFalse(buffer.saveNow(), "an autosave-style save stays refused")
         buffer.keepMine()

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// "Changed on the Mac to X — apply anyway?" with Yes (send again over the
+/// "Changed on your tower to X — apply anyway?" with Yes (send again over the
 /// Mac's value) and No (drop the change): the design system's prominent and
 /// secondary buttons sharing the width.
 struct ConflictPrompt: View {
@@ -17,7 +17,7 @@ struct ConflictPrompt: View {
                     .accessibilityLabel("Yes, apply anyway")
                 Button("No", role: .cancel, action: onNo)
                     .buttonStyle(SecondaryActionStyle())
-                    .accessibilityLabel("No, keep the Mac's value")
+                    .accessibilityLabel("No, keep the tower's value")
             }
         }
         .padding(.vertical, Spacing.small)

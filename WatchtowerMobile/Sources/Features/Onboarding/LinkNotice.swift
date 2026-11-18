@@ -62,12 +62,12 @@ enum LinkNotice: Equatable {
             Self.notSentText(count)
         case let .recordingKept(macName, notSent):
             (macName.map { "The link to \($0) ended during a recording. It's saved on this iPhone and goes to \($0) after you link it again" }
-                ?? "The link ended during a recording. It's saved on this iPhone and goes to your Mac after you link it again")
+                ?? "The link ended during a recording. It's saved on this iPhone and goes to your tower after you link it again")
                 + (notSent > 0 ? ". \(Self.notSentText(notSent))" : "")
         case let .recordingsProblem(problem, notSent):
             problem + (notSent > 0 ? ". \(Self.notSentText(notSent))" : "")
         case .encryptionReScan:
-            "Watchtower now encrypts your data. Scan the code on your Mac again."
+            "Watchtower now encrypts your data. Scan the code on your tower again."
         case let .macOnRelay(macName):
             "\(macName) runs over Relay — \(LinkFailure.macOnRelayHint)"
         case let .finishingInBackground(macName):
@@ -80,11 +80,11 @@ enum LinkNotice: Equatable {
         }
     }
 
-    private static let seeMacs = "See Settings → Macs."
+    private static let seeMacs = "See Settings → Towers."
 
     private static func notSentText(_ count: Int) -> String {
         count == 1
-            ? "Not sent: 1 item was still waiting for your Mac"
-            : "Not sent: \(count) items were still waiting for your Mac"
+            ? "Not sent: 1 item was still waiting for your tower"
+            : "Not sent: \(count) items were still waiting for your tower"
     }
 }

@@ -20,6 +20,7 @@ import (
 	internalmcp "watchtower/internal/mcp"
 	"watchtower/internal/skills"
 	"watchtower/internal/tools"
+	"watchtower/internal/tuning"
 )
 
 var mcpCmd = &cobra.Command{
@@ -83,7 +84,7 @@ func init() {
 	rootCmd.AddCommand(mcpCmd)
 	mcpCmd.Flags().StringVar(&mcpFlagDBPath, "db-path", "", "SQLite database path (overrides the workspace default)")
 	mcpCmd.Flags().BoolVar(&mcpFlagChat, "chat", false, "assistant chat mode: mount write tools as proposals (never for external clients)")
-	mcpCmd.Flags().StringVar(&mcpFlagSurface, "surface", "main", "chat surface for --chat: main|target|automation|automation_editor")
+	mcpCmd.Flags().StringVar(&mcpFlagSurface, "surface", "main", "chat surface for --chat: main|target|automation|automation_editor|tuning")
 	mcpCmd.Flags().Int64Var(&mcpFlagConversation, "conversation", 0, "chat conversation id for --chat")
 	mcpCmd.Flags().StringVar(&mcpFlagTurn, "turn", "", "turn id for --chat (proposals attach to it)")
 	mcpCmd.Flags().StringVar(&mcpFlagTurnFile, "turn-file", "", "file holding the running turn id for --chat (a warm ai session); mutually exclusive with --turn")
@@ -182,18 +183,52 @@ func mcpChatOptions(cfg *config.Config, database *db.DB, turn string, turnFunc f
 	if mcpFlagSurface == tools.AutomationSurface || mcpFlagAutomationRun != 0 || mcpFlagAutomationTools != nil {
 		return mcpAutomationOptions(cfg, database)
 	}
-	if mcpFlagSurface != "main" && mcpFlagSurface != "target" && mcpFlagSurface != tools.AutomationEditorSurface {
-		return nil, fmt.Errorf("--surface must be main, target, %s or %s", tools.AutomationSurface, tools.AutomationEditorSurface)
+	binding, err := mcpChatBinding(turn, turnFunc)
+	if err != nil {
+		return nil, err
+	}
+	return []internalmcp.ServerOption{internalmcp.WithRegistry(buildToolRegistry(cfg, database), binding)}, nil
+}
+
+// mcpChatBinding is the binding `mcp --chat` gives one of
+// tools.ChatSurfaces. The tuning chat
+// is bound to its own conversation (so READ-01's session key is
+// conversation:<id>) and applies directly: its proposal tools only file a
+// card the owner presses.
+func mcpChatBinding(turn string, turnFunc func() string) (tools.Binding, error) {
+	if !tools.KnownChatSurface(mcpFlagSurface) {
+		return tools.Binding{}, fmt.Errorf("--surface must be one of %s (or %s for an automation run's agent)",
+			strings.Join(tools.ChatSurfaces(), ", "), tools.AutomationSurface)
 	}
 	if mcpFlagContextType == tools.AutomationContextType {
 		// Only the automations executor binds a run (Binding.AutomationRunID);
 		// a chat must not record rows that read as a run's proposals.
-		return nil, fmt.Errorf("--context-type %s is reserved for automation runs", tools.AutomationContextType)
+		return tools.Binding{}, fmt.Errorf("--context-type %s is reserved for automation runs", tools.AutomationContextType)
 	}
-	return []internalmcp.ServerOption{internalmcp.WithRegistry(buildToolRegistry(cfg, database), tools.Binding{
+	b := tools.Binding{
 		Surface: mcpFlagSurface, ConversationID: mcpFlagConversation, TurnID: turn, TurnIDFunc: turnFunc,
 		ContextType: mcpFlagContextType, ContextID: mcpFlagContextID, ChatProjectID: mcpFlagChatProject,
-	})}, nil
+	}
+	if mcpFlagSurface == tools.SurfaceTuning {
+		if err := checkTuningBinding(mcpFlagConversation, mcpFlagContextType); err != nil {
+			return tools.Binding{}, err
+		}
+		b.DirectApply = true
+	}
+	return b, nil
+}
+
+// checkTuningBinding is what a tuning chat must name: its conversation and
+// its context type. `ai query` checks it too, so a turn missing either fails
+// before the provider starts instead of running without its MCP child.
+func checkTuningBinding(conversation int64, contextType string) error {
+	if conversation <= 0 {
+		return errors.New("--surface tuning needs --conversation N")
+	}
+	if contextType != tuning.ContextType {
+		return fmt.Errorf("--surface tuning needs --context-type %s", tuning.ContextType)
+	}
+	return nil
 }
 
 // mcpAutomationOptions is `watchtower mcp --chat --surface automation

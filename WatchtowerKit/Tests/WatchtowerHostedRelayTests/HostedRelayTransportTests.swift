@@ -1204,9 +1204,8 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
         await eventually { intercepting.holding }
 
         let wake = Task { try await transport.fetchForPush(since: Self.stamp, grace: 0, pollOnFallback: false) }
-        let deadline = Date().addingTimeInterval(5)
-        while await !transport.zonesToPull.contains(.data), Date() < deadline {
-            try await Task.sleep(for: .milliseconds(5))
+        while await !transport.zonesToPull.contains(.data) {
+            await Task.yield()
         }
         intercepting.release()
         await socketPull.value

@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/agentlogdb"
+	"watchtower/internal/agentreport"
 	"watchtower/internal/coach"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -22,6 +23,7 @@ import (
 	"watchtower/internal/fsutil"
 	"watchtower/internal/instructions"
 	"watchtower/internal/sessionfeed"
+	"watchtower/internal/workbenchgit"
 )
 
 // coachDefaultDays is the default length of the period `coach status`
@@ -49,6 +51,7 @@ var (
 	coachFlagForce     bool
 	coachFlagDryRun    bool
 	coachFlagDays      int
+	coachFlagAgent     string
 )
 
 // coachGeneratorFactory is the seam tests override. The prompt carries the
@@ -73,6 +76,7 @@ func init() {
 		Args: cobra.NoArgs, RunE: func(c *cobra.Command, _ []string) error { return coachRun(c, runCoachStatus) }}
 	statusCmd.Flags().Int64Var(&coachFlagWorkbench, "workbench", 0, "workbench id (default: every workbench with analytics on)")
 	statusCmd.Flags().IntVar(&coachFlagDays, "days", coachDefaultDays, "length of the period in days (1 to 90)")
+	statusCmd.Flags().StringVar(&coachFlagAgent, "agent", agentreport.AgentAll, "whose sessions the agent metrics count: all, claude or codex")
 	proposalsCmd := &cobra.Command{Use: "proposals", Short: "List the coach's proposals",
 		Args: cobra.NoArgs, RunE: func(c *cobra.Command, _ []string) error { return coachRun(c, runCoachProposals) }}
 	proposalsCmd.Flags().StringVar(&coachFlagStatus, "status", "open", "open, accepted, declined or all")
@@ -146,7 +150,54 @@ type coachEnv struct {
 
 func (e *coachEnv) applier() *coach.Applier {
 	home, _ := coachHome() // empty: only a settings.json destination fails, with its own error
-	return &coach.Applier{DB: e.db, AgentLog: e.al, Home: home}
+	return &coach.Applier{DB: e.db, AgentLog: e.al, Home: home, CodexHome: coach.CodexHomeFromEnv(),
+		RepoState: coachRepoState(), RepoBranch: coachRepoBranch()}
+}
+
+// coachRepoState is the coach's reader of one workbench repository file's git
+// state (coach.Applier.RepoState, coach.Env.RepoState): workbenchgit.PathStatus,
+// `git status` only. With coachRepoBranch it is the only cmd code that calls
+// workbenchgit for the coach (COACH-01: TestCOACH01_NoGitWrites).
+func coachRepoState() func(folder, rel string) (coach.RepoFileState, error) {
+	return func(folder, rel string) (coach.RepoFileState, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), workbenchGitReadBudget)
+		defer cancel()
+		st, err := workbenchgit.PathStatus(ctx, workbenchgit.Options{Folder: folder}, rel)
+		return coach.RepoFileState{Git: st.Git, Dirty: st.Dirty}, err
+	}
+}
+
+// coachRepoBranch is the branch checked out in a workbench folder
+// (coach.Applier.RepoBranch): workbenchgit.ReadStatus's branch, or
+// "detached:<short sha>" for a detached HEAD; a folder that is not a work tree
+// or a failed status read is an error.
+func coachRepoBranch() func(folder string) (string, error) {
+	return func(folder string) (string, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), workbenchGitReadBudget)
+		defer cancel()
+		return coachBranchOf(coachFolderStatus(ctx, folder))
+	}
+}
+
+// coachFolderStatus is the read-only `git status` of a workbench folder
+// (workbenchgit.ReadStatus); a seam so tests count the reads.
+var coachFolderStatus = func(ctx context.Context, folder string) workbenchgit.Status {
+	return workbenchgit.ReadStatus(ctx, workbenchgit.Options{Folder: folder})
+}
+
+// coachBranchOf names the branch of a folder's status: the branch, or
+// "detached:<short sha>" for a detached HEAD; not a work tree or a failed
+// status read is an error.
+func coachBranchOf(st workbenchgit.Status) (string, error) {
+	switch {
+	case !st.Git:
+		return "", coach.ErrRepoNotGit
+	case !st.StatusOK:
+		return "", errors.New("reading the branch: git status failed")
+	case st.Detached:
+		return "detached:" + st.Head, nil
+	}
+	return st.Branch, nil
 }
 
 // coachCodedError carries the machine-readable "code" (and a diff) of a failure object.
@@ -249,14 +300,17 @@ func runCoachStatus(_ *cobra.Command, e *coachEnv) (any, error) {
 	if coachFlagDays < 1 || coachFlagDays > coachMaxDays {
 		return nil, fmt.Errorf("--days must be between 1 and %d, not %d", coachMaxDays, coachFlagDays)
 	}
+	if coachFlagAgent == "" || !agentreport.ValidAgent(coachFlagAgent) {
+		return nil, fmt.Errorf("--agent must be all, claude or codex, not %q", coachFlagAgent)
+	}
 	period := time.Duration(coachFlagDays) * 24 * time.Hour
 	now := time.Now().UTC()
 	since := now.Add(-period)
-	cur, err := coach.Measure(e.db, e.al, coachFlagWorkbench, since, now)
+	cur, err := coach.Measure(e.db, e.al, coachFlagWorkbench, since, now, coachFlagAgent)
 	if err != nil {
 		return nil, err
 	}
-	prev, err := coach.Measure(e.db, e.al, coachFlagWorkbench, since.Add(-period), since)
+	prev, err := coach.Measure(e.db, e.al, coachFlagWorkbench, since.Add(-period), since, coachFlagAgent)
 	if err != nil {
 		return nil, err
 	}
@@ -322,6 +376,23 @@ type coachProposalJSON struct {
 	RevertsID    int64               `json:"reverts_id"`
 	// Budget is the destination's rune budget (0: none), the same number Validate uses.
 	Budget int `json:"budget"`
+	// Origin is "weekly" (the coach run) or "chat" (the tuning chat).
+	Origin string `json:"origin"`
+	// Skill names the skill of a skill destination ("" for the others).
+	Skill string `json:"skill"`
+	// ConversationID is the tuning chat a chat proposal came from; null for
+	// a weekly one and once that conversation is deleted.
+	ConversationID *int64 `json:"conversation_id"`
+	// WrittenBranch is the branch a workbench repository file was written on
+	// at Accept ("" for every other destination).
+	WrittenBranch string `json:"written_branch"`
+	// MeasureFrom is when the daemon first saw a repository edit committed:
+	// its verdict window starts there; null until then and for the others.
+	MeasureFrom *string `json:"measure_from"`
+	// FolderBranch is only on an open repository proposal: the branch checked
+	// out in the workbench folder now ("detached:<short sha>"; "" when it
+	// cannot be read). No key on any other row.
+	FolderBranch *string `json:"folder_branch,omitempty"`
 }
 
 type coachProposalsJSON struct {
@@ -347,7 +418,9 @@ func proposalJSON(p db.CoachProposal) coachProposalJSON {
 		Before: p.BeforeText, After: p.AfterText, Evidence: ev, Sources: p.Sources, Status: p.Status,
 		CreatedAt: p.CreatedAt.UTC().Format(time.RFC3339), DecidedAt: stampPtr(p.DecidedAt),
 		Baseline: p.Baseline, Verdict: p.Verdict, VerdictValue: p.VerdictValue, VerdictAt: stampPtr(p.VerdictAt),
-		RevertsID: p.RevertsID, Budget: coach.BudgetOf(p.Destination, p.BeforeText)}
+		RevertsID: p.RevertsID, Budget: coach.BudgetOf(p.Destination, p.BeforeText),
+		Origin: p.Origin, Skill: p.Skill, ConversationID: p.ConversationID,
+		WrittenBranch: p.WrittenBranch, MeasureFrom: stampPtr(p.MeasureFrom)}
 }
 
 func proposalsOf(ps []db.CoachProposal) coachProposalsJSON {
@@ -371,7 +444,51 @@ func runCoachProposals(_ *cobra.Command, e *coachEnv) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return proposalsOf(ps), nil
+	out := proposalsOf(ps)
+	withFolderBranches(e.db, out.Proposals)
+	return out, nil
+}
+
+// withFolderBranches gives each open repository proposal the branch checked
+// out in its workbench folder now: one read-only status per workbench per
+// call; "" when the workbench or its folder cannot be read or is not a git
+// work tree (spec §4.3a: the open card names the branch it would land on).
+func withFolderBranches(d *db.DB, ps []coachProposalJSON) {
+	branches := map[int64]string{}
+	for i := range ps {
+		p := &ps[i]
+		if p.Status != "open" {
+			continue
+		}
+		if _, ok := coach.RepoRelPath(p.Destination, p.Skill); !ok {
+			continue
+		}
+		branch, ok := branches[p.WorkbenchID]
+		if !ok {
+			branch = coachFolderBranch(d, p.WorkbenchID)
+			branches[p.WorkbenchID] = branch
+		}
+		p.FolderBranch = &branch
+	}
+}
+
+// coachFolderBranch is the branch checked out in a workbench's folder, ""
+// when it cannot be read.
+func coachFolderBranch(d *db.DB, wb int64) string {
+	w, err := d.GetWorkbench(wb)
+	if err != nil {
+		return ""
+	}
+	if fi, err := os.Stat(w.FolderPath); err != nil || !fi.IsDir() {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), workbenchGitReadBudget)
+	defer cancel()
+	branch, err := coachBranchOf(coachFolderStatus(ctx, w.FolderPath))
+	if err != nil {
+		return ""
+	}
+	return branch
 }
 
 // ---- accept, decline, rollback ----
@@ -380,6 +497,21 @@ type coachDecisionJSON struct {
 	OK     bool   `json:"ok"`
 	ID     int64  `json:"id"`
 	Status string `json:"status"`
+}
+
+// coachAcceptJSON is an Accept's decision plus, for a pack overlay, the
+// installed copies re-rendered and the copies left because the owner edited
+// them by hand (both 0 for any other destination).
+type coachAcceptJSON struct {
+	coachDecisionJSON
+	PackCopiesUpdated int `json:"pack_copies_updated"`
+	PackCopiesDrifted int `json:"pack_copies_drifted"`
+	// WrittenPath is the workbench repository file written, relative to the
+	// workbench folder; "" for every other destination.
+	WrittenPath string `json:"written_path"`
+	// WrittenBranch is the branch that file was written on ("" for every
+	// other destination, or when the branch could not be read).
+	WrittenBranch string `json:"written_branch"`
 }
 
 func parseCoachID(s string) (int64, error) {
@@ -411,10 +543,13 @@ func runCoachAccept(cmd *cobra.Command, e *coachEnv, arg string) (any, error) {
 	if err := coachConfirm(e, "accept a coach proposal", id, edited); err != nil {
 		return nil, err
 	}
-	if err := e.applier().Accept(id, edited); err != nil {
+	res, err := e.applier().Accept(id, edited)
+	if err != nil {
 		return nil, codedCoachErr(err)
 	}
-	return coachDecisionJSON{OK: true, ID: id, Status: "accepted"}, nil
+	return coachAcceptJSON{coachDecisionJSON: coachDecisionJSON{OK: true, ID: id, Status: "accepted"},
+		PackCopiesUpdated: res.PackCopiesUpdated, PackCopiesDrifted: res.PackCopiesDrifted,
+		WrittenPath: res.WrittenPath, WrittenBranch: res.WrittenBranch}, nil
 }
 
 func runCoachDecline(e *coachEnv, arg string) (any, error) {
@@ -478,6 +613,12 @@ func codedCoachErr(err error) *coachCodedError {
 		code = "changed_since"
 	case errors.Is(err, db.ErrCoachStateChanged):
 		code = "state_changed"
+	case errors.Is(err, coach.ErrRepoDirty):
+		code = "dirty"
+	case errors.Is(err, coach.ErrRepoNotGit):
+		code = "not_git"
+	case errors.Is(err, coach.ErrRefused):
+		code = "refused"
 	}
 	return &coachCodedError{code: code, err: err}
 }
@@ -588,6 +729,12 @@ func printCoach(w io.Writer, v any) {
 		printCoachProposals(w, r.Proposals)
 	case coachDecisionJSON:
 		fmt.Fprintf(w, "Proposal %d: %s\n", r.ID, r.Status)
+	case coachAcceptJSON:
+		fmt.Fprintf(w, "Proposal %d: %s\n", r.ID, r.Status)
+		if r.PackCopiesUpdated > 0 || r.PackCopiesDrifted > 0 {
+			fmt.Fprintf(w, "Installed copies updated: %d; edited by hand and not updated: %d\n",
+				r.PackCopiesUpdated, r.PackCopiesDrifted)
+		}
 	case coachRunJSON:
 		if r.Skipped != "" {
 			fmt.Fprintln(w, r.Skipped)
@@ -624,7 +771,21 @@ func printCoachProposals(w io.Writer, ps []coachProposalJSON) {
 		if p.PromptID != "" {
 			dest += " [" + p.PromptID + "]"
 		}
-		fmt.Fprintf(w, "#%d [%s] %s\n  where: %s\n  why: %s\n", p.ID, p.Status, p.Title, dest, p.Why)
+		if p.Skill != "" {
+			dest += " [" + p.Skill + "]"
+		}
+		if p.FolderBranch != nil && *p.FolderBranch != "" {
+			dest += " on " + *p.FolderBranch
+		}
+		fmt.Fprintf(w, "#%d [%s] %s\n  where: %s\n", p.ID, p.Status, p.Title, dest)
+		if p.Origin == "chat" {
+			from := "deleted"
+			if p.ConversationID != nil {
+				from = strconv.FormatInt(*p.ConversationID, 10)
+			}
+			fmt.Fprintf(w, "  from: chat %s\n", from)
+		}
+		fmt.Fprintf(w, "  why: %s\n", p.Why)
 		printCoachChange(w, p.Before, p.After)
 	}
 }

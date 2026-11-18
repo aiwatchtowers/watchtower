@@ -18,20 +18,20 @@ final class MacsModelTests: XCTestCase {
     func testOneActionPerRow() {
         XCTAssertEqual(MacsModel.action(for: item()), .unlink, "a healthy linked Mac")
         XCTAssertEqual(MacsModel.action(for: item(canForget: true)), .forget, "long offline")
-        XCTAssertEqual(MacsModel.action(for: item(removed: true, canForget: true)), .forget, "removed by the Mac")
+        XCTAssertEqual(MacsModel.action(for: item(removed: true, canForget: true)), .forget, "removed by the tower")
     }
 
     func testConfirmationCopy() {
         let unlink = MacsModel.Ask(action: .unlink, item: item())
         XCTAssertEqual(unlink.title, "Unlink Acme Mac?")
         XCTAssertEqual(unlink.button, "Unlink")
-        XCTAssertEqual(unlink.message, "This phone forgets the Mac's data. Changes still waiting for the Mac are not sent.")
+        XCTAssertEqual(unlink.message, "This phone forgets the tower's data. Changes still waiting for the tower are not sent.")
         let removed = MacsModel.Ask(action: .forget, item: item(removed: true, canForget: true))
         XCTAssertEqual(removed.title, "Forget Acme Mac?")
         XCTAssertEqual(removed.button, "Forget")
         XCTAssertEqual(removed.message, "Its data on this iPhone is deleted.")
         let offline = MacsModel.Ask(action: .forget, item: item(canForget: true))
-        XCTAssertEqual(offline.message, "This unlinks the Mac and deletes its data on this iPhone.")
+        XCTAssertEqual(offline.message, "This unlinks the tower and deletes its data on this iPhone.")
     }
 
     /// A Mac whose data could not be opened at launch is listed with its
@@ -52,7 +52,7 @@ final class MacsModelTests: XCTestCase {
 
         let broken = try XCTUnwrap(items.first)
         XCTAssertTrue(broken.unopened)
-        XCTAssertEqual(broken.problem, "Couldn't open this Mac's data on this iPhone")
+        XCTAssertEqual(broken.problem, "Couldn't open this tower's data on this iPhone")
         XCTAssertTrue(broken.canForget, "online by its last heartbeat, but nothing else can be done with it")
         XCTAssertEqual(MacsModel.action(for: broken), .forget)
         XCTAssertEqual(
@@ -130,15 +130,15 @@ final class MacsModelTests: XCTestCase {
     func testEveryNeedsOwnerReasonHasItsRowCopyAndActions() {
         let expected: [PromotedLink.Reason: (String, [MacsModel.FinishingRow.Action])] = [
             .slotExpired: ("The link timed out on Relay. Try again, or cancel it.", [.tryAgain, .cancel]),
-            .slotsFull: ("Relay already has 3 Macs. Remove one, then try again, or cancel this link.", [.manageMacs, .tryAgain, .cancel]),
-            .replacementLimit: ("Too many Mac changes on Relay. Try again later, or cancel this link.", [.tryAgain, .cancel]),
+            .slotsFull: ("Relay already has 3 towers. Remove one, then try again, or cancel this link.", [.manageMacs, .tryAgain, .cancel]),
+            .replacementLimit: ("Too many tower changes on Relay. Try again later, or cancel this link.", [.tryAgain, .cancel]),
             .notPaying: ("Relay isn't active on this iPhone. Try again when it is, or cancel this link.", [.tryAgain, .cancel]),
             .hubNotOnRelay: (
                 "build-box isn't on Relay yet. Keep Watchtower open on it and try again, or cancel this link.", [.tryAgain, .cancel]
             ),
             .notConfirmed: ("Relay didn't confirm the link. Try again, or cancel it.", [.tryAgain, .cancel]),
             .updateApp: ("Update Watchtower to finish this link, or cancel it.", [.tryAgain, .cancel]),
-            .tooManyMacs: ("You can link up to 4 Macs. Unlink one, then try again, or cancel this link.", [.tryAgain, .cancel])
+            .tooManyMacs: ("You can link up to 4 towers. Unlink one, then try again, or cancel this link.", [.tryAgain, .cancel])
         ]
         XCTAssertEqual(Set(expected.keys), Set(PromotedLink.Reason.allCases))
         for (reason, (line, actions)) in expected {
@@ -148,7 +148,7 @@ final class MacsModelTests: XCTestCase {
             XCTAssertNil(row?.note)
             XCTAssertEqual(row?.showsProgress, false)
         }
-        XCTAssertEqual(MacsModel.FinishingRow.Action.manageMacs.title, "Manage Macs")
+        XCTAssertEqual(MacsModel.FinishingRow.Action.manageMacs.title, "Manage towers")
         XCTAssertEqual(MacsModel.FinishingRow.Action.tryAgain.title, "Try Again")
         XCTAssertEqual(MacsModel.FinishingRow.Action.cancel.title, "Cancel")
     }

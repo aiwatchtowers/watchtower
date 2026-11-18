@@ -1,6 +1,7 @@
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerTestSupport
 
 /// Answers `workbench session-probe` calls from a script, optionally holding
 /// each call open until the test releases it. No process is spawned.
@@ -120,16 +121,18 @@ final class SessionBackgroundProberTests: XCTestCase {
         return statuses[1]?.state
     }
 
+    /// Yields the main actor until `condition` holds. No deadline: the wait
+    /// ends on the fake runner's state, never on a clock — a wait that never
+    /// ends is a hang the lane watchdog reports.
     private func eventually(_ what: String, _ condition: () -> Bool) async {
-        let deadline = ContinuousClock.now + .seconds(3)
-        while !condition() {
-            if ContinuousClock.now > deadline { return XCTFail("timed out: \(what)") }
-            try? await Task.sleep(for: .milliseconds(5))
-        }
+        while !condition() { await Task.yield() }
     }
 
+    /// Waits for the probe in flight, if any, to end (it was started by the
+    /// pass, synchronously).
     private func settled(_ prober: SessionBackgroundProber) async {
-        await eventually("the probe settles") { !prober.isProbing(1) }
+        await prober.probeTask(1)?.value
+        XCTAssertFalse(prober.isProbing(1), "the probe settled")
     }
 
     private func minutes(_ value: Double) -> Date { reported.addingTimeInterval(value * 60) }
@@ -144,6 +147,30 @@ final class SessionBackgroundProberTests: XCTestCase {
         pass(prober, [row()], at: minutes(30))
         await settled(prober)
         XCTAssertEqual(runner.invocations, [["workbench", "session-probe", "--workbench", "7", "--session", "1"]])
+    }
+
+    /// #1712: a count of background shells alone is probed like one of
+    /// agents, after 30 minutes of silence; past the shell cap it no longer
+    /// shows, so it is not probed.
+    func testAShellOnlyCountIsProbedAfterThirtyMinutes() async {
+        var shells = row(count: 0)
+        shells.agentBackgroundShells = 1
+        let runner = ScriptedProbeRunner(json: ProbeAnswer.ran("shell"))
+        let prober = makeProber(runner)
+        XCTAssertEqual(pass(prober, [shells], at: reported.addingTimeInterval(30 * 60 - 1)),
+                       .live(.background, backgroundShells: 1))
+        await settled(prober)
+        XCTAssertEqual(runner.invocations, [])
+
+        pass(prober, [shells], at: minutes(30))
+        await settled(prober)
+        XCTAssertEqual(runner.invocations.count, 1)
+
+        let late = makeProber(runner)
+        XCTAssertEqual(pass(late, [shells], at: reported.addingTimeInterval(SessionBackgroundPolicy.shellCap)),
+                       .live(.stopped), "past the shell cap")
+        await settled(late)
+        XCTAssertEqual(runner.invocations.count, 1, "a count no longer shown is not probed")
     }
 
     /// ask #142: `busy` keeps Agents working; the same count is asked again
@@ -181,15 +208,16 @@ final class SessionBackgroundProberTests: XCTestCase {
         XCTAssertEqual(runner.invocations, [])
     }
 
-    func testOneProbeInFlightPerSession() async {
+    func testOneProbeInFlightPerSession() async throws {
         let runner = ScriptedProbeRunner(json: ProbeAnswer.ran("busy"))
         runner.hold()
         let prober = makeProber(runner)
         pass(prober, [row()], at: minutes(30))
         await eventually("the probe runs") { runner.invocations.count == 1 }
+        let first = try XCTUnwrap(prober.probeTask(1))
         pass(prober, [row()], at: minutes(31))
         pass(prober, [row()], at: minutes(120))
-        try? await Task.sleep(for: .milliseconds(30))
+        XCTAssertEqual(prober.probeTask(1), first, "no second probe started")
         XCTAssertEqual(runner.invocations.count, 1)
         XCTAssertTrue(prober.isProbing(1))
         runner.release(0)
@@ -293,7 +321,7 @@ final class SessionBackgroundProberTests: XCTestCase {
     }
 
     /// `stop()` cancels the probe in flight; its late answer applies nothing.
-    func testStopCancelsTheProbe() async {
+    func testStopCancelsTheProbe() async throws {
         let runner = ScriptedProbeRunner(json: ProbeAnswer.failed)
         runner.hold()
         let prober = makeProber(runner)
@@ -301,10 +329,11 @@ final class SessionBackgroundProberTests: XCTestCase {
         prober.onSettled = { settles += 1 }
         pass(prober, [row()], at: minutes(30))
         await eventually("the probe runs") { runner.invocations.count == 1 }
+        let probe = try XCTUnwrap(prober.probeTask(1))
         prober.stop()
         XCTAssertFalse(prober.isProbing(1))
         runner.release(0)
-        try? await Task.sleep(for: .milliseconds(50))
+        await probe.value // the cancelled probe's late answer has landed
         XCTAssertEqual(settles, 0)
         XCTAssertEqual(prober.displayOver([row()], liveIDs: [1], startedAt: [1: started]), [],
                        "the cancelled failure is not counted")

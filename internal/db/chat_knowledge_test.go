@@ -207,6 +207,29 @@ func TestListChatTurnsForIdeas_SkipsSpecReviewThreads(t *testing.T) {
 	assert.Equal(t, []int64{before, after}, ids)
 }
 
+// TestListChatTurnsForIdeas_SkipsTuningChats: a tuning chat is never mined.
+func TestListChatTurnsForIdeas_SkipsTuningChats(t *testing.T) {
+	d := openTestDB(t)
+	cutoff := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	old := float64(cutoff.Add(-time.Hour).Unix())
+	require.NoError(t, d.SetMediaStartAt(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)))
+
+	plain := insertChatConversation(t, d, "", "")
+	tuning := insertChatConversation(t, d, "analytics_tuning", "main")
+	before := insertChatMessage(t, d, plain, "user", "we ship on Monday", old)
+	insertChatMessage(t, d, tuning, "user", "решили: drop the cache", old)
+	insertChatMessage(t, d, tuning, "assistant", "ok", old)
+	after := insertChatMessage(t, d, plain, "user", "after", old)
+
+	got, err := d.ListChatTurnsForIdeas(0, cutoff.Format(time.RFC3339), 10)
+	require.NoError(t, err)
+	var ids []int64
+	for _, g := range got {
+		ids = append(ids, g.ID)
+	}
+	assert.Equal(t, []int64{before, after}, ids)
+}
+
 func TestKnowledgeVisibleIdeaCond(t *testing.T) {
 	assert.Equal(t, "NOT (chat_born = 1 AND status IN ('proposed','not_now','rejected','dropped'))", KnowledgeVisibleIdeaCond(""))
 	assert.Equal(t, "NOT (i.chat_born = 1 AND i.status IN ('proposed','not_now','rejected','dropped'))", KnowledgeVisibleIdeaCond("i"))

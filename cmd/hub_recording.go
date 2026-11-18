@@ -92,6 +92,7 @@ func init() {
 	desktop := &cobra.Command{Use: "desktop", Short: "Desktop's reports to the hub"}
 	beat := &cobra.Command{Use: "heartbeat", Short: "Tell the hub Desktop (the transcriber) is running", Args: cobra.NoArgs, RunE: runHubDesktopHeartbeat}
 	beat.Flags().Bool("json", false, "print JSON")
+	beat.Flags().Int("chat-lease", 0, "accepted and ignored (an older app sends it; chat no longer depends on the app)")
 	desktop.AddCommand(beat)
 
 	recording := &cobra.Command{Use: "recording", Short: "Phone recording jobs"}
@@ -144,7 +145,11 @@ func runHubDesktopHeartbeat(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("there is no Watchtower app on this host: the Desktop heartbeat goes to a desktop host's hub (or a test-mode one, %s)", hubDirEnv)
 	}
 	asJSON, _ := cmd.Flags().GetBool("json")
-	a, err := hubWrite(hub.ControlRequest{Op: hub.OpDesktopHeartbeat}, func(_ string, st *state.Store) (hub.ControlAnswer, error) {
+	lease, _ := cmd.Flags().GetInt("chat-lease")
+	if lease != 0 && lease != 1 {
+		return errors.New("--chat-lease takes 0 or 1")
+	}
+	a, err := hubWrite(hub.ControlRequest{Op: hub.OpDesktopHeartbeat, ChatLease: lease}, func(_ string, st *state.Store) (hub.ControlAnswer, error) {
 		now := hubNow()
 		return hub.ControlAnswer{OK: true, At: &now}, st.Heartbeat(now)
 	})

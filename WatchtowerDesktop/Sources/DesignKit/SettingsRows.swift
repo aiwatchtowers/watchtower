@@ -55,15 +55,19 @@ public struct SettingsSection<Content: View>: View {
 /// One setting: its title and an optional caption on the left, the control
 /// trailing. The row makes a `Toggle` a small switch (and the control small).
 /// It is one accessibility element labelled by the title (the caption is its
-/// hint), so the control's own label may be empty.
+/// hint), so the control's own label may be empty. `captionTone` colours a
+/// caption that reports a problem (a `Tone`, e.g. `Tone.error`); secondary
+/// otherwise.
 public struct SettingRow<Control: View>: View {
     let title: String
     var caption: String?
+    var captionTone: Color?
     @ViewBuilder let control: Control
 
-    public init(title: String, caption: String? = nil, @ViewBuilder control: () -> Control) {
+    public init(title: String, caption: String? = nil, captionTone: Color? = nil, @ViewBuilder control: () -> Control) {
         self.title = title
         self.caption = caption
+        self.captionTone = captionTone
         self.control = control()
     }
 
@@ -74,7 +78,7 @@ public struct SettingRow<Control: View>: View {
                 if let caption {
                     Text(caption)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(captionTone.map(AnyShapeStyle.init) ?? AnyShapeStyle(.secondary))
                 }
             }
             Spacer(minLength: Spacing.medium)

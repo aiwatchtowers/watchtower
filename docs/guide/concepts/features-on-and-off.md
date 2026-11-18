@@ -22,6 +22,30 @@ Settings → Features lists each feature with a description, a cost badge (None,
 
 Setup picks the starting set from your goals; see [Set up Watchtower](../start/setup.md).
 
+## Paused is not off: background AI
+<!-- learn
+id: features-background-ai-allow
+title: Let AI work run on its own
+text: Press **Allow background AI…** on Home and digests, briefings and AI automations run on their own again.
+area: setup
+level: basics
+kind: tip
+since: next
+action: nav:home
+-->
+
+Background AI is one switch above the feature switches: may Watchtower run AI that a timer, a sync or an event starts, rather than you? It stays paused until you allow it, in setup or later, unless your organization decides.
+
+| | A feature that is off | Background AI paused |
+|---|---|---|
+| Covers | one feature | every AI feature, and automations that use AI on a schedule or event |
+| Sync | that feature's work stops | Slack, mail, calendar and Jira keep syncing |
+| What you start yourself | still runs | still runs: chats, Catch-Up, **Run now**, reaction commands |
+| Empty tab says | **Off — Turn on** | **Paused — background AI is off**, with **Allow background AI…** |
+| Turning it back on | resumes from now | the next sync works through what arrived while paused, within the usual windows; a missed automation time is not caught up |
+
+**Allow background AI…** (Home, an empty tab, Automations) and the **Background AI** switch in **Settings → System → AI** open the same consent screen. Switching it off pauses at once; a call already running finishes. If your organization turned it off, tabs say **Off — your organization turned background AI off**, with no button.
+
 ## What feeds what
 
 | Feature | Cost | Feeds into |
@@ -39,7 +63,8 @@ Setup picks the starting set from your goals; see [Set up Watchtower](../start/s
 | Daily Briefing | Light | Day Plan |
 | Day Plan | Light | |
 | Next Step Suggestions | Medium | |
-| Claude plan limits (no AI) | None | |
+| Subscription plan limits (no AI) | None | |
+| Needs approval cards (no AI) | None | |
 
 The Tracks, Ideas & Decisions, Reaction Commands, Daily Briefing and Day Plan rows are switched on their built-in cards. Turning **Track my threads** off also pauses your custom-track watches.
 
@@ -63,6 +88,7 @@ An empty tab shows an icon, a title ("No briefings yet"), one sentence on what w
 | **Off — Turn on** | The feature is off. | **Turn on** switches it on at once and restarts the sync once, without going through **Save**. |
 | **Connect Slack to get this** (or "a calendar", "Jira", "Jira or mail", "a source") | The source it reads is not connected. | Connect it in **Connections**. |
 | **Needs Slack Digests** (Tracks and People only) | The feature is on, but it runs only while Slack Digests is on, and Slack Digests is off. | **Turn on Slack Digests** switches Slack Digests on (heavy AI use). |
+| **Paused — background AI is off** (AI features only) | Background AI is paused; see [Paused is not off](#paused-is-not-off-background-ai). | **Allow background AI…** opens the consent screen. |
 | **Preparing now** | Its job is running; the sync's progress follows. | Wait. |
 | **Didn't work yet — retries automatically** | Its last run failed; the first line of the reason follows. | Nothing: the next cycle retries. |
 | **Starts after the first sync** | Slack is connected and its first sync has not finished. | Wait; a first sync usually takes 3 to 5 minutes. |

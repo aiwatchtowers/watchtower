@@ -200,3 +200,85 @@ func (f *StatusFields) header(h string) error {
 	}
 	return nil
 }
+
+// PathState is what `git status --porcelain=v1 -z --ignored=matching -- <rel>` says about one path.
+type PathState struct {
+	Git   bool // the folder is a git work tree and git is available
+	Dirty bool // the path has any status entry (modified, staged, untracked, conflicted) or git ignores it
+}
+
+// PathStatus runs only `git status` (with ignored entries); it never writes. A
+// path git ignores counts as dirty: its text is not in git, so a write could
+// lose it (ask #1236); an ignored path that does not exist yet, outside an
+// ignored folder, is not listed and holds nothing to lose. rel is relative to
+// o.Folder and must stay inside it (no "..", not absolute) — else an error.
+// No git, or a folder that is not a work tree, is {Git: false} with no
+// error; a failed git call is an error (callers refuse, never read it as
+// clean).
+func PathStatus(ctx context.Context, o Options, rel string) (PathState, error) {
+	if err := checkRel(rel); err != nil {
+		return PathState{}, err
+	}
+	r, _, _, _, err := probe(ctx, o)
+	if r == nil {
+		return PathState{}, nil
+	}
+	if err != nil {
+		return PathState{Git: true}, err
+	}
+	out, err := r.git(ctx, "status", "--porcelain=v1", "-z", "--ignored=matching", "--", rel)
+	if err != nil {
+		return PathState{Git: true}, err
+	}
+	return PathState{Git: true, Dirty: len(bytes.TrimRight(out, "\x00")) > 0}, nil
+}
+
+// checkRel refuses a path that is empty, absolute or leaves the folder.
+func checkRel(rel string) error {
+	if rel == "" || !filepath.IsLocal(rel) {
+		return fmt.Errorf("path %q must be relative and stay inside the folder", rel)
+	}
+	return nil
+}
+
+// FileAtHead is the text of rel at the folder's HEAD, through `git show
+// HEAD:./<rel>` only (relative to the folder, which may sit below the top
+// level); it never writes. ok is false when HEAD has no such path or there is
+// no commit yet. rel follows PathStatus's rule (an escaping path is an error,
+// no git run); a folder that is not a work tree, or a failed git call, is an
+// error.
+func FileAtHead(ctx context.Context, o Options, rel string) (text string, ok bool, err error) {
+	if err := checkRel(rel); err != nil {
+		return "", false, err
+	}
+	r, _, _, note, err := probe(ctx, o)
+	if r == nil {
+		return "", false, errors.New(note)
+	}
+	if err != nil {
+		return "", false, err
+	}
+	out, err := r.git(ctx, "show", "HEAD:./"+filepath.ToSlash(rel))
+	if err != nil {
+		if notAtHead(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return string(out), true, nil
+}
+
+// notAtHead: git's words (LC_ALL=C) for a path HEAD does not hold, or a HEAD
+// with no commit.
+func notAtHead(err error) bool {
+	var re *runError
+	if !errors.As(err, &re) {
+		return false
+	}
+	for _, s := range []string{"does not exist in 'HEAD'", "exists on disk, but not in 'HEAD'", "invalid object name 'HEAD'"} {
+		if strings.Contains(re.stderr, s) {
+			return true
+		}
+	}
+	return false
+}

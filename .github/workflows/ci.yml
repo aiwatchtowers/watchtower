@@ -75,7 +75,7 @@ jobs:
             guide_input:
               - 'docs/guide/reference/keyboard-shortcuts.md'
             mobile:
-              - '{WatchtowerMobile/**,WatchtowerKit/**,Makefile,.github/workflows/ci.yml}'
+              - '{WatchtowerMobile/**,WatchtowerKit/**,WatchtowerChatText/**,WatchtowerChat/**,Makefile,.github/workflows/ci.yml}'
             guide:
               - 'docs/guide/**'
 
@@ -470,7 +470,9 @@ jobs:
         run: command -v swiftlint >/dev/null || brew install swiftlint
 
       # The design kit's rules have no inline swiftlint:disable (the
-      # baseline only absorbs legacy code); same check as `make lint-swift`.
+      # baseline only absorbs legacy code) under the Desktop's views, the
+      # phone's features and the shared chat views (WatchtowerChat ChatUI);
+      # same check as `make lint-swift`.
       - name: Kit lint guard
         run: bash ../scripts/kit-lint-guard.sh
 
@@ -479,6 +481,15 @@ jobs:
 
       - name: SwiftLint (mobile Kit)
         working-directory: WatchtowerKit
+        run: swiftlint lint --strict
+
+      - name: SwiftLint (chat text package)
+        working-directory: WatchtowerChatText
+        run: swiftlint lint --strict
+
+      # ChatUI's views are held to the kit_* rules by the package's config.
+      - name: SwiftLint (chat package)
+        working-directory: WatchtowerChat
         run: swiftlint lint --strict
 
       # The iPhone app has its own config: the `orange_outside_phone_tone`
@@ -491,6 +502,18 @@ jobs:
       - name: Test (mobile Kit)
         timeout-minutes: 15
         working-directory: WatchtowerKit
+        run: swift test
+
+      - name: Test (chat text package)
+        timeout-minutes: 10
+        working-directory: WatchtowerChatText
+        run: swift test
+
+      # ChatWire (the chat wire models, operations and stores) and ChatUI (the
+      # shared chat views and models, CHAT-06's Swift guard) — unified chat.
+      - name: Test (chat package)
+        timeout-minutes: 15
+        working-directory: WatchtowerChat
         run: swift test
 
   swift-test:
@@ -584,7 +607,7 @@ jobs:
       # classes (see the script): serially the suite took ~5 min (2026-10-13).
       # LANE_TIMEOUT: the script kills a lane hung past it and prints its log
       # (the step's own timeout would kill the script with every log unread).
-      # Two phases (shards, then the timing-bound classes) fit the step's 25.
+      # One phase of lanes; a lane's 10 minutes fit the step's 25.
       - name: Test
         timeout-minutes: 25
         env:

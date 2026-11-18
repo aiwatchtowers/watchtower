@@ -1,3 +1,4 @@
+import ChatWire
 import SwiftUI
 import WatchtowerCore
 
@@ -32,6 +33,7 @@ struct ProviderSettings: View {
             // subscription quota (its capability row).
             if catalog.capabilities(for: preferred).quota { healthSection }
             Text(ProviderFallbackPreview.scope).font(.caption).foregroundStyle(.secondary)
+            BackgroundAISettingsSection(config: config, catalog: catalog)
         }
         .controlSize(.small)
         .onChange(of: signature) { _, _ in connection.invalidate() }

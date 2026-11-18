@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -15,22 +16,24 @@ func fixed(text, reason string) Part {
 }
 
 func TestDiagnostics_LinePanicIsContained(t *testing.T) {
-	stages := []Stage{{
-		Name: "local",
-		Parts: []Slot{
-			{Line: 0, Part: fixed("Watchtower 1.0", "")},
-			{Line: 1, Label: "Daemon: ", Part: func(context.Context) (string, string) { panic("boom") }},
-			{Line: 2, Label: "Logs: ", Part: fixed("watchtower.log 1 MB", "")},
-		},
-	}}
-	r := Run(context.Background(), DefaultBudgets, stages)
-	want := []string{"Watchtower 1.0", "Daemon: " + UnknownInternal, "Logs: watchtower.log 1 MB"}
-	if strings.Join(r.Lines, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("lines = %q, want %q", r.Lines, want)
-	}
-	if len(r.Reasons) != 0 {
-		t.Fatalf("a contained panic is not a partial reason: %q", r.Reasons)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		stages := []Stage{{
+			Name: "local",
+			Parts: []Slot{
+				{Line: 0, Part: fixed("Watchtower 1.0", "")},
+				{Line: 1, Label: "Daemon: ", Part: func(context.Context) (string, string) { panic("boom") }},
+				{Line: 2, Label: "Logs: ", Part: fixed("watchtower.log 1 MB", "")},
+			},
+		}}
+		r := Run(context.Background(), DefaultBudgets, stages)
+		want := []string{"Watchtower 1.0", "Daemon: " + UnknownInternal, "Logs: watchtower.log 1 MB"}
+		if strings.Join(r.Lines, "\n") != strings.Join(want, "\n") {
+			t.Fatalf("lines = %q, want %q", r.Lines, want)
+		}
+		if len(r.Reasons) != 0 {
+			t.Fatalf("a contained panic is not a partial reason: %q", r.Reasons)
+		}
+	})
 }
 
 func TestDiagnostics_SafeLine(t *testing.T) {
@@ -41,77 +44,83 @@ func TestDiagnostics_SafeLine(t *testing.T) {
 }
 
 func TestDiagnostics_HardStop(t *testing.T) {
-	block := make(chan struct{})
-	t.Cleanup(func() { close(block) })
-	b := DefaultBudgets
-	b.HardStop = 50 * time.Millisecond
-	stages := []Stage{
-		{Name: "local", Parts: []Slot{{Line: 0, Label: "Config: ", Part: fixed(ConfigOK, "")}}},
-		{Name: "logs", Parts: []Slot{
-			{Line: 1, Label: "Crash: ", Part: func(context.Context) (string, string) { <-block; return "late", "" }},
-			{Line: 2, Label: "Logs: ", Part: fixed("never reached", "")},
-		}},
-	}
-	start := time.Now()
-	r := Run(context.Background(), b, stages)
-	if d := time.Since(start); d > 200*time.Millisecond {
-		t.Fatalf("Run took %v, want < 200ms", d)
-	}
-	want := []string{"Config: ok", "Crash: " + UnknownTimedOut, "Logs: " + UnknownTimedOut}
-	if strings.Join(r.Lines, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("lines = %q, want %q", r.Lines, want)
-	}
-	if !strings.HasSuffix(r.Text(), "\nPartial report: timed out at 8 s") {
-		t.Fatalf("text = %q", r.Text())
-	}
+	synctest.Test(t, func(t *testing.T) {
+		block := make(chan struct{})
+		t.Cleanup(func() { close(block) })
+		b := DefaultBudgets
+		b.HardStop = 50 * time.Millisecond
+		stages := []Stage{
+			{Name: "local", Parts: []Slot{{Line: 0, Label: "Config: ", Part: fixed(ConfigOK, "")}}},
+			{Name: "logs", Parts: []Slot{
+				{Line: 1, Label: "Crash: ", Part: func(context.Context) (string, string) { <-block; return "late", "" }},
+				{Line: 2, Label: "Logs: ", Part: fixed("never reached", "")},
+			}},
+		}
+		start := time.Now()
+		r := Run(context.Background(), b, stages)
+		if d := time.Since(start); d != b.HardStop {
+			t.Fatalf("Run took %v, want the hard stop's %v", d, b.HardStop)
+		}
+		want := []string{"Config: ok", "Crash: " + UnknownTimedOut, "Logs: " + UnknownTimedOut}
+		if strings.Join(r.Lines, "\n") != strings.Join(want, "\n") {
+			t.Fatalf("lines = %q, want %q", r.Lines, want)
+		}
+		if !strings.HasSuffix(r.Text(), "\nPartial report: timed out at 8 s") {
+			t.Fatalf("text = %q", r.Text())
+		}
+	})
 }
 
 func TestDiagnostics_RunLineOrderAndParts(t *testing.T) {
-	// Stages run in order, but lines print by position; parts of one line
-	// join with " · " in slot order; an empty part or line is left out.
-	stages := []Stage{
-		{Name: "db", Deadline: time.Second, Parts: []Slot{
-			{Line: 3, Label: "Database: ", Part: fixed(SchemaUnknownBecause(UnknownDatabaseBusy), ReasonDatabaseBusy)},
-			{Line: 1, Label: "Sources: ", Part: fixed(UnknownDatabaseBusy, ReasonDatabaseBusy)},
-		}},
-		{Name: "local", Parts: []Slot{
-			{Line: 0, Part: fixed("Watchtower 1.0", "")},
-			{Line: 1, Part: fixed("iPhone companion on", "")},
-			{Line: 2, Label: "Workspace: ", Part: fixed("", "")},
-			{Line: 3, Part: fixed(Managed(ManagedNo), "")},
-			{Line: 4, Label: "Crash: ", Part: fixed(CrashNone, ReasonLogScan)},
-		}},
-	}
-	r := Run(context.Background(), DefaultBudgets, stages)
-	want := strings.Join([]string{
-		"Watchtower 1.0",
-		"Sources: unknown (database busy) · iPhone companion on",
-		"Database: schema unknown (database busy) · managed by organization: no",
-		"Crash: none in the logs",
-		"Partial report: database busy, log scan stopped",
-	}, "\n")
-	if r.Text() != want {
-		t.Fatalf("text =\n%s\nwant\n%s", r.Text(), want)
-	}
-	if strings.Join(r.Reasons, ",") != ReasonDatabaseBusy+","+ReasonLogScan {
-		t.Fatalf("reasons = %q", r.Reasons)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		// Stages run in order, but lines print by position; parts of one line
+		// join with " · " in slot order; an empty part or line is left out.
+		stages := []Stage{
+			{Name: "db", Deadline: time.Second, Parts: []Slot{
+				{Line: 3, Label: "Database: ", Part: fixed(SchemaUnknownBecause(UnknownDatabaseBusy), ReasonDatabaseBusy)},
+				{Line: 1, Label: "Sources: ", Part: fixed(UnknownDatabaseBusy, ReasonDatabaseBusy)},
+			}},
+			{Name: "local", Parts: []Slot{
+				{Line: 0, Part: fixed("Watchtower 1.0", "")},
+				{Line: 1, Part: fixed("iPhone companion on", "")},
+				{Line: 2, Label: "Workspace: ", Part: fixed("", "")},
+				{Line: 3, Part: fixed(Managed(ManagedNo), "")},
+				{Line: 4, Label: "Crash: ", Part: fixed(CrashNone, ReasonLogScan)},
+			}},
+		}
+		r := Run(context.Background(), DefaultBudgets, stages)
+		want := strings.Join([]string{
+			"Watchtower 1.0",
+			"Sources: unknown (database busy) · iPhone companion on",
+			"Database: schema unknown (database busy) · managed by organization: no",
+			"Crash: none in the logs",
+			"Partial report: database busy, log scan stopped",
+		}, "\n")
+		if r.Text() != want {
+			t.Fatalf("text =\n%s\nwant\n%s", r.Text(), want)
+		}
+		if strings.Join(r.Reasons, ",") != ReasonDatabaseBusy+","+ReasonLogScan {
+			t.Fatalf("reasons = %q", r.Reasons)
+		}
+	})
 }
 
 func TestDiagnostics_StageDeadlineReachesParts(t *testing.T) {
-	var got time.Duration
-	stages := []Stage{{Name: "db", Deadline: 4 * time.Second, Parts: []Slot{{Line: 0, Part: func(ctx context.Context) (string, string) {
-		dl, ok := ctx.Deadline()
-		if !ok {
-			return "no deadline", ""
+	synctest.Test(t, func(t *testing.T) {
+		var got time.Duration
+		stages := []Stage{{Name: "db", Deadline: 4 * time.Second, Parts: []Slot{{Line: 0, Part: func(ctx context.Context) (string, string) {
+			dl, ok := ctx.Deadline()
+			if !ok {
+				return "no deadline", ""
+			}
+			got = time.Until(dl)
+			return "ok", ""
+		}}}}}
+		r := Run(context.Background(), DefaultBudgets, stages)
+		if r.Lines[0] != "ok" || got <= 3*time.Second || got > 4*time.Second {
+			t.Fatalf("line %q, remaining %v", r.Lines[0], got)
 		}
-		got = time.Until(dl)
-		return "ok", ""
-	}}}}}
-	r := Run(context.Background(), DefaultBudgets, stages)
-	if r.Lines[0] != "ok" || got <= 3*time.Second || got > 4*time.Second {
-		t.Fatalf("line %q, remaining %v", r.Lines[0], got)
-	}
+	})
 }
 
 func TestReport_JSONKeys(t *testing.T) {
@@ -170,41 +179,45 @@ func TestReport_PartialReasonsOrderAndOnce(t *testing.T) {
 }
 
 func TestDiagnostics_CancelledContextIsHardStop(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	block := make(chan struct{})
-	t.Cleanup(func() { close(block) })
-	r := Run(ctx, DefaultBudgets, []Stage{{Name: "local", Parts: []Slot{{Line: 0, Label: "Daemon: ", Part: func(context.Context) (string, string) { <-block; return "running", "" }}}}})
-	if got, want := r.Text(), "Daemon: "+UnknownTimedOut+"\nPartial report: "+ReasonTimedOut; got != want {
-		t.Fatalf("text = %q, want %q", got, want)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		block := make(chan struct{})
+		t.Cleanup(func() { close(block) })
+		r := Run(ctx, DefaultBudgets, []Stage{{Name: "local", Parts: []Slot{{Line: 0, Label: "Daemon: ", Part: func(context.Context) (string, string) { <-block; return "running", "" }}}}})
+		if got, want := r.Text(), "Daemon: "+UnknownTimedOut+"\nPartial report: "+ReasonTimedOut; got != want {
+			t.Fatalf("text = %q, want %q", got, want)
+		}
+	})
 }
 
 func TestDiagnostics_LateResultAfterHardStopIgnored(t *testing.T) {
-	block := make(chan struct{})
-	returned := make(chan struct{})
-	b := DefaultBudgets
-	b.HardStop = 50 * time.Millisecond
-	stages := []Stage{{Name: "logs", Parts: []Slot{
-		{Line: 0, Label: "Crash: ", Part: func(context.Context) (string, string) {
-			<-block
-			defer close(returned)
-			return "late", ReasonLogScan
-		}},
-		{Line: 1, Label: "Logs: ", Part: fixed("late too", "")},
-	}}}
-	r := Run(context.Background(), b, stages)
-	before := r.Text()
-	lines := slices.Clone(r.Lines)
-	close(block)
-	<-returned
-	time.Sleep(50 * time.Millisecond) // let the worker try to deliver both results
-	if r.Text() != before || !slices.Equal(r.Lines, lines) {
-		t.Fatalf("report changed after the hard stop: %q", r.Text())
-	}
-	if want := "Crash: " + UnknownTimedOut + "\nLogs: " + UnknownTimedOut + "\nPartial report: " + ReasonTimedOut; before != want {
-		t.Fatalf("text = %q, want %q", before, want)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		block := make(chan struct{})
+		returned := make(chan struct{})
+		b := DefaultBudgets
+		b.HardStop = 50 * time.Millisecond
+		stages := []Stage{{Name: "logs", Parts: []Slot{
+			{Line: 0, Label: "Crash: ", Part: func(context.Context) (string, string) {
+				<-block
+				defer close(returned)
+				return "late", ReasonLogScan
+			}},
+			{Line: 1, Label: "Logs: ", Part: fixed("late too", "")},
+		}}}
+		r := Run(context.Background(), b, stages)
+		before := r.Text()
+		lines := slices.Clone(r.Lines)
+		close(block)
+		<-returned
+		synctest.Wait() // the worker has tried to deliver both results
+		if r.Text() != before || !slices.Equal(r.Lines, lines) {
+			t.Fatalf("report changed after the hard stop: %q", r.Text())
+		}
+		if want := "Crash: " + UnknownTimedOut + "\nLogs: " + UnknownTimedOut + "\nPartial report: " + ReasonTimedOut; before != want {
+			t.Fatalf("text = %q, want %q", before, want)
+		}
+	})
 }
 
 func TestDiagnostics_FormatTime(t *testing.T) {
@@ -212,4 +225,37 @@ func TestDiagnostics_FormatTime(t *testing.T) {
 	if got := FormatTime(time.Date(2026, 11, 4, 12, 12, 30, 0, loc)); got != "2026-11-04 09:12Z" {
 		t.Fatalf("got %q", got)
 	}
+}
+
+// Pos orders the parts of one line whatever stage they ran in; StopLabel
+// titles a runner replacement (panic, hard stop) only.
+func TestDiagnostics_RunPosAndStopLabel(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		block := make(chan struct{})
+		t.Cleanup(func() { close(block) })
+		stages := []Stage{
+			{Name: "first", Parts: []Slot{
+				{Line: 1, Pos: 2, Part: fixed("iPhone companion on", "")},
+				{Line: 2, StopLabel: "Recent errors: ", Part: fixed(RecentErrorsNone, "")},
+				{Line: 3, StopLabel: "Recent errors: ", Part: func(context.Context) (string, string) { panic("bug") }},
+			}},
+			{Name: "second", Parts: []Slot{
+				{Line: 1, Pos: 1, Label: "Sources: ", Part: fixed("Slack 1 ok", "")},
+				{Line: 4, StopLabel: "Recent errors: ", Part: func(context.Context) (string, string) { <-block; return "", "" }},
+			}},
+		}
+		b := DefaultBudgets
+		b.HardStop = 50 * time.Millisecond
+		r := Run(context.Background(), b, stages)
+		want := strings.Join([]string{
+			"Sources: Slack 1 ok · iPhone companion on",
+			"Recent errors: none",
+			"Recent errors: unknown (internal error)",
+			"Recent errors: unknown (timed out)",
+			"Partial report: timed out at 8 s",
+		}, "\n")
+		if r.Text() != want {
+			t.Fatalf("text =\n%s\nwant\n%s", r.Text(), want)
+		}
+	})
 }

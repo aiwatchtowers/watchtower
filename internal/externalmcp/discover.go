@@ -60,7 +60,7 @@ type ToolDef struct {
 // for a caller that offers the tools to a model itself (runtime B). A
 // schema that cannot be encoded is left nil.
 func ListToolDefs(ctx context.Context, spec ServerSpec) ([]ToolDef, error) {
-	transport, stderr, err := discoveryTransport(ctx, spec)
+	transport, stderr, err := serverTransport(ctx, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -103,6 +103,10 @@ func ListToolDefs(ctx context.Context, spec ServerSpec) ([]ToolDef, error) {
 // stderrHeadLimit bounds how much of a stdio server's stderr a failed
 // listing quotes.
 const stderrHeadLimit = 2048
+
+// serverTransport is how ListToolDefs and CallTool reach a server:
+// discoveryTransport; tests replace it with an in-process fake server.
+var serverTransport = discoveryTransport
 
 // discoveryTransport builds the transport for spec, plus (stdio only) the
 // buffer collecting the server's stderr for error messages.

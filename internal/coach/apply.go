@@ -38,7 +38,23 @@ type Applier struct {
 	// Home is the home folder ~/.claude/settings.json lives in (a seam:
 	// os.UserHomeDir in production, a temp dir in tests).
 	Home string
-	Now  func() time.Time
+	// CodexHome is Codex's home ($CODEX_HOME when the owner set one); ""
+	// means <Home>/.codex.
+	CodexHome string
+	Now       func() time.Time
+	// RepoState reads the git state of one workbench repository file
+	// (folder, its relative path); RepoBranch the branch checked out in a
+	// workbench folder ("detached:<short sha>" for a detached HEAD). Both are
+	// seams with no default here — internal/coach runs no git (COACH-01) — and
+	// cmd fills them over workbenchgit's read-only helpers. A nil RepoState
+	// refuses every Accept of a repository file.
+	RepoState  func(folder, rel string) (RepoFileState, error)
+	RepoBranch func(folder string) (string, error)
+}
+
+// env is where a's file destinations live.
+func (a *Applier) env() Env {
+	return Env{Home: a.Home, CodexHome: a.CodexHome, RepoState: a.RepoState}
 }
 
 func (a *Applier) now() time.Time {
@@ -48,32 +64,71 @@ func (a *Applier) now() time.Time {
 	return time.Now()
 }
 
-// Accept applies an open proposal. edited "" applies the proposed text;
-// otherwise edited is the owner's own whole after-text, checked by the same
-// rules. The destination must still hold the proposal's before-text, else the
-// proposal is superseded and ErrStale returned; an owner text is written by a
+// AcceptResult is what an Accept changed beyond the destination: for a pack
+// overlay, how many installed copies of the skill were re-rendered and how
+// many were left because the owner edited them by hand; for a workbench
+// repository file, the file written, relative to the workbench folder, and
+// the branch checked out there at the write ("detached:<short sha>" for a
+// detached HEAD; "" when it could not be read, and for every other
+// destination).
+type AcceptResult struct {
+	PackCopiesUpdated, PackCopiesDrifted int
+	WrittenPath, WrittenBranch           string
+}
+
+// Accept applies an open proposal (accept); a pack overlay then re-renders
+// the skill's installed copies (rerenderPack) and the result counts them.
+func (a *Applier) Accept(id int64, edited string) (AcceptResult, error) {
+	p, err := a.DB.GetCoachProposal(id)
+	if err != nil {
+		return AcceptResult{}, err
+	}
+	branch, err := a.accept(p, edited)
+	if err != nil {
+		return AcceptResult{}, err
+	}
+	r := AcceptResult{WrittenBranch: branch}
+	if p.Destination == DestPackOverlay {
+		r.PackCopiesUpdated, r.PackCopiesDrifted = a.rerenderPack(p.Skill)
+	}
+	if repoDestinations[p.Destination] {
+		r.WrittenPath, _ = RepoRelPath(p.Destination, p.Skill)
+	}
+	return r, nil
+}
+
+// accept applies p. edited "" applies the proposed text; otherwise edited is
+// the owner's own whole after-text, checked by the same rules. The
+// destination must still hold the proposal's before-text, else the proposal
+// is superseded and ErrStale returned; an owner text is written by a
 // compare-and-set on that before-text, so an edit made after the check is
 // never overwritten. When the destination already holds the proposal's own
 // after-text (an earlier Accept wrote it but failed to record it), only the
-// status is written; an edited text never takes that shortcut. The destination is written first, then the status; when
-// the status write fails the before-state is put back.
-func (a *Applier) Accept(id int64, edited string) error {
-	p, err := a.DB.GetCoachProposal(id)
-	if err != nil {
-		return err
-	}
+// status is written; an edited text never takes that shortcut. The
+// destination is written first, then the status; when the status write fails
+// the before-state is put back. A workbench repository file's branch is read
+// between the two and returned ("" for any other destination).
+func (a *Applier) accept(p db.CoachProposal, edited string) (string, error) {
+	id := p.ID
 	if p.Status != "open" {
-		return fmt.Errorf("coach proposal %d is %s, not open: %w", id, p.Status, db.ErrCoachStateChanged)
+		return "", fmt.Errorf("coach proposal %d is %s, not open: %w", id, p.Status, db.ErrCoachStateChanged)
 	}
 	now := a.now()
 	// The slow measure runs first so the read and the write stay adjacent.
 	baseline, n, err := a.baseline(p, now)
 	if err != nil {
-		return fmt.Errorf("coach proposal %d: measuring the baseline: %w", id, err)
+		return "", fmt.Errorf("coach proposal %d: measuring the baseline: %w", id, err)
+	}
+	if repoDestinations[p.Destination] {
+		// The git check is not repeated after the write, which makes the path
+		// dirty itself (spec §4.3a).
+		if err := a.checkRepo(p); err != nil {
+			return "", fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, err)
+		}
 	}
 	cur, err := a.readCurrent(p)
 	if err != nil {
-		return fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, err)
+		return "", fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, err)
 	}
 	after := p.AfterText
 	if edited != "" {
@@ -82,32 +137,35 @@ func (a *Applier) Accept(id int64, edited string) error {
 	if cur.Text != p.BeforeText {
 		// Recovery only: an edited text always takes the normal path below.
 		if cur.Text == p.AfterText {
-			if err := a.DB.MarkCoachAccepted(id, cur.Text, baseline, n, now); err != nil {
-				return fmt.Errorf("accepting coach proposal %d: %w", id, err)
+			// The branch now, which may not be the one of the earlier write.
+			branch := a.writtenBranch(p)
+			if err := a.DB.MarkCoachAccepted(id, cur.Text, branch, baseline, n, now); err != nil {
+				return "", fmt.Errorf("accepting coach proposal %d: %w", id, err)
 			}
-			return nil
+			return branch, nil
 		}
-		return a.supersede(p, now)
+		return "", a.supersede(p, now)
 	}
 	if err := ValidateAfter(cur, after); err != nil {
-		return logredact.Errorf("coach proposal %d (%s): %w: %s", id, p.Destination, ErrInvalidEdit,
+		return "", logredact.Errorf("coach proposal %d (%s): %w: %s", id, p.Destination, ErrInvalidEdit,
 			logredact.Text(err.Error()))
 	}
 	w, err := a.writeDestination(p, cur, after, now)
 	if errors.Is(err, ErrStale) {
-		return a.supersede(p, now)
+		return "", a.supersede(p, now)
 	}
 	if err != nil {
-		return fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, err)
+		return "", fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, err)
 	}
-	if err := a.DB.MarkCoachAccepted(id, w.result, baseline, n, now); err != nil {
+	branch := a.writtenBranch(p)
+	if err := a.DB.MarkCoachAccepted(id, w.result, branch, baseline, n, now); err != nil {
 		err = fmt.Errorf("accepting coach proposal %d: %w", id, err)
 		if uerr := w.undo(); uerr != nil {
-			return errors.Join(err, fmt.Errorf("restoring %s of coach proposal %d: %w", p.Destination, id, uerr))
+			return "", errors.Join(err, fmt.Errorf("restoring %s of coach proposal %d: %w", p.Destination, id, uerr))
 		}
-		return err
+		return "", err
 	}
-	return nil
+	return branch, nil
 }
 
 // supersede closes p because its destination no longer holds its before-text.
@@ -129,8 +187,9 @@ func (a *Applier) Decline(id int64) error {
 // Rollback undoes an accepted proposal. When the destination no longer holds
 // the accepted edit (stillHolds) and force is false, nothing is written and it
 // returns a unified diff (accepted → now) with ErrChangedSince. An owner text gets its
-// before-text back; a prompt loses the additions this proposal made and gets
-// back the ones it removed; the allow list loses the rules this proposal
+// before-text back; a prompt or a pack skill's overlay loses the lines this
+// proposal made and gets back the ones it removed (an overlay then re-renders
+// the skill's installed copies); the allow list loses the rules this proposal
 // added, every other key and rule staying as it is.
 func (a *Applier) Rollback(id int64, force bool) (string, error) {
 	p, err := a.DB.GetCoachProposal(id)
@@ -155,6 +214,11 @@ func (a *Applier) Rollback(id int64, force bool) (string, error) {
 	if err := a.restoreDestination(p, cur, now); err != nil {
 		return "", fmt.Errorf("rolling back coach proposal %d (%s): %w", id, p.Destination, err)
 	}
+	if p.Destination == DestPackOverlay {
+		// The rows are back: the copies follow them whatever the status write
+		// does. The counts are reported for an Accept only.
+		_, _ = a.rerenderPack(p.Skill)
+	}
 	// The destination is back; only the status is left. An accepted proposal
 	// can only move to rolled_back, so a failed CAS means another rollback won.
 	if err := a.DB.DecideCoachProposal(id, "accepted", "rolled_back", now); err != nil {
@@ -164,32 +228,15 @@ func (a *Applier) Rollback(id int64, force bool) (string, error) {
 }
 
 // stillHolds is whether the destination still contains p's accepted edit: an
-// owner text is exactly the after-text; a prompt still has every row this
-// proposal added, with the same text; the allow list still has every rule the
-// proposal added. Later additions and rules of others do not count.
+// owner text is exactly the after-text; a prompt or a pack skill's overlay
+// still has every row this proposal added, with the same text; the allow list
+// or the Codex rules still have every rule the proposal added. Later
+// additions and rules of others do not count.
 func (a *Applier) stillHolds(p db.CoachProposal, cur CurrentText) (bool, error) {
 	switch p.Destination {
-	case DestPromptAdd:
-		rows, err := a.DB.ListPromptAdditions(p.PromptID)
-		if err != nil {
-			return false, err
-		}
-		added := linesAdded(p.BeforeText, p.AfterText)
-		left := countLines(added)
-		tagged := 0
-		for _, r := range rows {
-			if r.ProposalID != p.ID {
-				continue
-			}
-			tagged++
-			if k := strings.TrimSpace(r.Text); left[k] > 0 {
-				left[k]--
-				continue
-			}
-			return false, nil
-		}
-		return tagged == len(added), nil
-	case DestSettingsAllow:
+	case DestPromptAdd, DestPackOverlay:
+		return a.linesStillHold(p)
+	case DestSettingsAllow, DestCodexRulesAllow:
 		have := countLines(nonEmptyLines(cur.Text))
 		for _, r := range linesAdded(p.BeforeText, p.AfterText) {
 			if have[r] == 0 {
@@ -219,7 +266,7 @@ func (a *Applier) baseline(p db.CoachProposal, now time.Time) (*float64, int, er
 	if a.AgentLog == nil {
 		return nil, 0, errors.New("no agent log database")
 	}
-	m, err := Measure(a.DB, a.AgentLog, p.WorkbenchID, now.Add(-baselineWindow), now)
+	m, err := Measure(a.DB, a.AgentLog, p.WorkbenchID, now.Add(-baselineWindow), now, AgentFor(p.Destination))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -259,7 +306,7 @@ func (a *Applier) claudeMDPath() (string, error) {
 // rule per line — except that a settings file the coach cannot write safely
 // (a symlink, invalid JSON) is an error here, not an empty list.
 func (a *Applier) readCurrent(p db.CoachProposal) (CurrentText, error) {
-	t := CurrentText{Destination: p.Destination, WorkbenchID: p.WorkbenchID, PromptID: p.PromptID}
+	t := CurrentText{Destination: p.Destination, WorkbenchID: p.WorkbenchID, PromptID: p.PromptID, Skill: p.Skill}
 	if globalDestinations[p.Destination] && p.WorkbenchID != 0 {
 		return CurrentText{}, errors.New("this destination has no per-workbench text")
 	}
@@ -284,13 +331,13 @@ func (a *Applier) readCurrent(p db.CoachProposal) (CurrentText, error) {
 		default:
 			t.Text = o.Chat
 		}
-	case DestPromptAdd:
-		t.Budget = BudgetOf(DestPromptAdd, "")
-		adds, err := a.DB.ListPromptAdditions(p.PromptID)
+	case DestPromptAdd, DestPackOverlay:
+		t.Budget = BudgetOf(p.Destination, "")
+		rows, err := a.linesOf(p).list()
 		if err != nil {
 			return CurrentText{}, err
 		}
-		t.Text = joinAdditions(adds)
+		t.Text = joinLines(rows)
 	case DestSettingsAllow:
 		path, err := a.settingsPath()
 		if err != nil {
@@ -310,6 +357,17 @@ func (a *Applier) readCurrent(p db.CoachProposal) (CurrentText, error) {
 			return CurrentText{}, err
 		}
 		t.WorkbenchID, t.PromptID = p.WorkbenchID, p.PromptID
+	case DestClaudeSkillUser, DestCodexSkillUser, DestCodexAgentsMDUser, DestCodexRulesAllow:
+		u, err := userFileOf(a.env(), p.Destination, p.Skill)
+		if err != nil {
+			return CurrentText{}, err
+		}
+		if t.Text, err = u.readText(); err != nil {
+			return CurrentText{}, err
+		}
+		t.Budget = BudgetOf(p.Destination, t.Text)
+	case DestRepoClaudeMD, DestRepoAgentsMD, DestRepoClaudeSkill, DestRepoCodexSkill, DestRepoWorkflow:
+		return a.readRepo(p, t)
 	default:
 		return CurrentText{}, errors.New("unknown destination")
 	}
@@ -351,59 +409,20 @@ func (a *Applier) writeDestination(p db.CoachProposal, cur CurrentText, after st
 			}
 			return err
 		}}, nil
-	case DestPromptAdd:
-		return a.writeAdditions(p, after, now)
+	case DestPromptAdd, DestPackOverlay:
+		return a.writeLines(p, after, now)
 	case DestSettingsAllow:
 		return a.writeAllow(p, cur, after)
 	case DestClaudeMDUser:
 		return a.writeClaudeMD(cur, after)
+	case DestClaudeSkillUser, DestCodexSkillUser, DestCodexAgentsMDUser, DestCodexRulesAllow:
+		// The Codex rules too: after is the whole file, its old text plus the
+		// added lines (ValidateAfter).
+		return a.writeUserFile(p, cur, after)
+	case DestRepoClaudeMD, DestRepoAgentsMD, DestRepoClaudeSkill, DestRepoCodexSkill, DestRepoWorkflow:
+		return a.writeRepoFile(p, cur, after)
 	}
 	return written{}, errNotSupported
-}
-
-// writeAdditions makes the prompt's additions the lines of after: the rows
-// whose text after still has are kept (in their order), the others removed,
-// and the new lines added, tagged with this proposal.
-func (a *Applier) writeAdditions(p db.CoachProposal, after string, now time.Time) (written, error) {
-	rows, err := a.DB.ListPromptAdditions(p.PromptID)
-	if err != nil {
-		return written{}, err
-	}
-	want := countLines(nonEmptyLines(after))
-	var kept []db.PromptAddition
-	var removed []db.PromptAddition
-	var removeIDs []int64
-	for _, r := range rows {
-		if k := strings.TrimSpace(r.Text); want[k] > 0 {
-			want[k]--
-			kept = append(kept, r)
-			continue
-		}
-		removed = append(removed, r)
-		removeIDs = append(removeIDs, r.ID)
-	}
-	have := map[string]int{}
-	for _, r := range kept {
-		have[strings.TrimSpace(r.Text)]++
-	}
-	var add []db.PromptAddition
-	for _, line := range nonEmptyLines(after) {
-		if have[line] > 0 {
-			have[line]--
-			continue
-		}
-		add = append(add, db.PromptAddition{Text: line, ProposalID: p.ID})
-	}
-	addedIDs, err := a.DB.EditPromptAdditions(p.PromptID, removeIDs, add, now)
-	if err != nil {
-		return written{}, err
-	}
-	result := append(append([]db.PromptAddition{}, kept...), add...)
-	return written{result: joinAdditions(result), undo: func() error {
-		// Put the removed rows back with their own proposal tags.
-		_, err := a.DB.EditPromptAdditions(p.PromptID, addedIDs, removed, now)
-		return err
-	}}, nil
 }
 
 // writeAllow appends the rules the proposal adds (after − its before-text);
@@ -476,6 +495,25 @@ func (a *Applier) writeClaudeMD(cur CurrentText, after string) (written, error) 
 	}}, nil
 }
 
+// writeUserFile replaces a skill's or AGENTS.md's text cur.Text by after,
+// refused with ErrStale when the file is no longer cur.Text. The undo puts
+// cur.Text back only while the file still holds after; an AGENTS.md this write
+// created is written back empty, never removed.
+func (a *Applier) writeUserFile(p db.CoachProposal, cur CurrentText, after string) (written, error) {
+	u, err := userFileOf(a.env(), p.Destination, p.Skill)
+	if err != nil {
+		return written{}, err
+	}
+	err = u.replaceText(cur.Text, after)
+	if errors.Is(err, u.kind.changed) {
+		return written{}, ErrStale
+	}
+	if err != nil {
+		return written{}, err
+	}
+	return written{result: after, undo: func() error { return u.replaceText(after, cur.Text) }}, nil
+}
+
 // restoreDestination puts p's before-state back (see Rollback).
 func (a *Applier) restoreDestination(p db.CoachProposal, cur CurrentText, now time.Time) error {
 	switch p.Destination {
@@ -485,40 +523,8 @@ func (a *Applier) restoreDestination(p db.CoachProposal, cur CurrentText, now ti
 			err = ErrChangedSince
 		}
 		return err
-	case DestPromptAdd:
-		rows, err := a.DB.ListPromptAdditions(p.PromptID)
-		if err != nil {
-			return err
-		}
-		var removeIDs []int64
-		left := map[string]int{}
-		for _, r := range rows {
-			if r.ProposalID == p.ID {
-				removeIDs = append(removeIDs, r.ID)
-				continue
-			}
-			left[strings.TrimSpace(r.Text)]++
-		}
-		// The lines the proposal removed, re-added unless still there. Their
-		// original proposal tags are not stored, so they come back untagged.
-		gone := countLines(nonEmptyLines(p.BeforeText))
-		for _, l := range nonEmptyLines(p.AfterText) {
-			gone[l]--
-		}
-		var add []db.PromptAddition
-		for _, l := range nonEmptyLines(p.BeforeText) {
-			if gone[l] <= 0 {
-				continue
-			}
-			gone[l]--
-			if left[l] > 0 {
-				left[l]--
-				continue
-			}
-			add = append(add, db.PromptAddition{Text: l})
-		}
-		_, err = a.DB.EditPromptAdditions(p.PromptID, removeIDs, add, now)
-		return err
+	case DestPromptAdd, DestPackOverlay:
+		return a.restoreLines(p, now)
 	case DestSettingsAllow:
 		path, err := a.settingsPath()
 		if err != nil {
@@ -540,6 +546,37 @@ func (a *Applier) restoreDestination(p db.CoachProposal, cur CurrentText, now ti
 			return err
 		}
 		return nil
+	case DestClaudeSkillUser, DestCodexSkillUser, DestCodexAgentsMDUser:
+		// Like CLAUDE.md: the file must still be what Rollback read. A created
+		// AGENTS.md goes back to its empty before-text and stays.
+		u, err := userFileOf(a.env(), p.Destination, p.Skill)
+		if err != nil {
+			return err
+		}
+		if err := u.replaceText(cur.Text, p.BeforeText); err != nil {
+			if errors.Is(err, u.kind.changed) {
+				return ErrChangedSince
+			}
+			return err
+		}
+		return nil
+	case DestCodexRulesAllow:
+		// Only the lines this proposal added go, from the text Rollback read;
+		// the owner's own lines and bytes stay.
+		u, err := userFileOf(a.env(), p.Destination, p.Skill)
+		if err != nil {
+			return err
+		}
+		to := removeCodexRules(cur.Text, linesAdded(p.BeforeText, p.AfterText))
+		if err := u.replaceText(cur.Text, to); err != nil {
+			if errors.Is(err, u.kind.changed) {
+				return ErrChangedSince
+			}
+			return err
+		}
+		return nil
+	case DestRepoClaudeMD, DestRepoAgentsMD, DestRepoClaudeSkill, DestRepoCodexSkill, DestRepoWorkflow:
+		return a.restoreRepoFile(p, cur)
 	}
 	return errNotSupported
 }

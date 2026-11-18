@@ -359,7 +359,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         XCTAssertEqual(vm.gitErrors[project.id], "The editor did not hand over its latest edits — try again.")
         XCTAssertNil(vm.switchingBranch[project.id])
         page.answer([CodeEditorPendingEdit(id: buffer.id, text: "package a // late\n", base: 0)])
-        await waitUntil { buffer.text == "package a // late\n" }
+        await untilObserved { buffer.text == "package a // late\n" }
         buffer.cancelAutosave()
     }
 
@@ -666,7 +666,8 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         owner.cancel()
         runner.release()
         await owner.value
-        await waitUntil { runner.invocations.count == 2 && vm.gitStatus[self.project.id] != nil }
+        await untilObserved { vm.gitStatus[self.project.id] != nil }
+        XCTAssertEqual(runner.invocations.count, 2)
         XCTAssertEqual(vm.gitStatus[project.id]?.branch, "feature/x")
         XCTAssertTrue(vm.gitRefreshing.isEmpty)
     }
@@ -679,7 +680,8 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         owner.cancel()
         runner.release()
         await owner.value
-        await settle(vm)
+        XCTAssertTrue(vm.gitRefreshQueued.isEmpty, "no rerun is booked")
+        XCTAssertTrue(vm.gitRefreshing.isEmpty)
         XCTAssertEqual(runner.invocations.count, 1)
         XCTAssertNil(vm.gitStatus[project.id])
         XCTAssertNil(vm.gitStatusErrors[project.id], "a cancelled read reports nothing")
@@ -850,7 +852,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         var sleeps = 0
         vm.gitPollSleep = { _ in
             sleeps += 1
-            try? await Task.sleep(for: .seconds(3600))
+            await parkUntilCancelled()
         }
         await vm.startGitWatching(project: project)
         XCTAssertEqual(watchers.count, 1)
@@ -859,7 +861,9 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
 
         // A ref change re-reads the status; new dirs re-arm the watcher.
         watchers[0].onChange(GitRefsChange(mayMoveWorktrees: true))
-        await waitUntil { runner.invocations.count == 2 && watchers.count == 2 }
+        await untilObserved { vm.gitStatus[self.project.id]?.gitDir == "/r2/.git" }
+        XCTAssertEqual(runner.invocations.count, 2)
+        XCTAssertEqual(watchers.count, 2)
         XCTAssertTrue(watchers[0].stopped)
         XCTAssertEqual(watchers[1].gitDir, "/r2/.git")
         XCTAssertNotNil(vm.gitTimers[project.id])
@@ -885,8 +889,8 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
             watchers.append(watcher)
             return watcher
         }
-        vm.gitPollSleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
-        vm.titleSleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
+        vm.gitPollSleep = { _ in await parkUntilCancelled() }
+        vm.titleSleep = { _ in await parkUntilCancelled() }
         vm.startTitleRefresh()
         await vm.startGitWatching(project: project)
         vm.codeFiles.startWatching(CodeRoot(main: project))
@@ -920,7 +924,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
             watchers.append(watcher)
             return watcher
         }
-        vm.gitPollSleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
+        vm.gitPollSleep = { _ in await parkUntilCancelled() }
         let watching = Task { await vm.startGitWatching(project: self.project) }
         await awaitStarted(held)
 
@@ -938,36 +942,47 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
 
     func testThePollRefreshesOnlyWhileTheTabIsOnScreen() async {
         let runner = ScriptedCLIRunner(results: [.success(status(gitDir: ""))])
-        let vm = makeVM(runner)
+        let signaling = SignalingRunner(runner)
+        let vm = makeVM(signaling)
         var onScreen = false
         vm.isTabOnScreen = { onScreen }
         let ticks = AsyncStream<Void>.makeStream()
         var tickIterator = ticks.stream.makeAsyncIterator()
-        vm.gitPollSleep = { _ in _ = await tickIterator.next() }
+        let sleeps = CallSignal()
+        vm.gitPollSleep = { _ in
+            sleeps.hit()
+            _ = await tickIterator.next()
+        }
         await vm.startGitWatching(project: project)
         XCTAssertEqual(runner.invocations.count, 1)
+        await sleeps.until(1)
         ticks.continuation.yield()
-        await settle(vm)
+        // The loop is back in its sleep: the tick was handled.
+        await sleeps.until(2)
         XCTAssertEqual(runner.invocations.count, 1, "off screen: no read")
         onScreen = true
         ticks.continuation.yield()
-        await waitUntil { runner.invocations.count == 2 }
+        await signaling.calls.until(2)
+        XCTAssertEqual(runner.invocations.count, 2)
         vm.stopGitWatching(projectID: project.id)
         ticks.continuation.finish()
     }
 
     func testAppActivationRefreshesWatchedWorkbenches() async {
         let runner = ScriptedCLIRunner(results: [.success(status(gitDir: ""))])
-        let vm = makeVM(runner)
+        let signaling = SignalingRunner(runner)
+        let vm = makeVM(signaling)
         let center = NotificationCenter()
         vm.gitNotificationCenter = center
-        vm.gitPollSleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
+        vm.gitPollSleep = { _ in await parkUntilCancelled() }
         await vm.startGitWatching(project: project)
         center.post(name: NSApplication.didBecomeActiveNotification, object: nil)
-        await waitUntil { runner.invocations.count == 2 }
+        await signaling.calls.until(2)
         vm.stopGitWatching(projectID: project.id)
+        // The observer runs inline on the main thread and walks the watched
+        // workbenches: none is left, so nothing is read.
         center.post(name: NSApplication.didBecomeActiveNotification, object: nil)
-        await settle(vm)
+        XCTAssertTrue(vm.gitWatching.isEmpty)
         XCTAssertEqual(runner.invocations.count, 2, "not watched any more")
     }
 
@@ -1005,22 +1020,6 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         }
     }
 
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("condition not met in \(timeout)s")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-    }
-
-    /// Lets queued main-actor tasks run.
-    private func settle(_ vm: WorkbenchesViewModel) async {
-        for _ in 0..<20 { await Task.yield() }
-        try? await Task.sleep(for: .milliseconds(50))
-    }
 }
 
 @MainActor
@@ -1123,7 +1122,7 @@ extension WorkbenchesViewModelGitTests {
         vm.makeGitWatcher = { gitDir, commonDir, onChange in
             FakeWatcher(gitDir: gitDir, commonDir: commonDir, onChange: onChange)
         }
-        vm.gitPollSleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
+        vm.gitPollSleep = { _ in await parkUntilCancelled() }
         vm.gitNotificationCenter = NotificationCenter()
         return vm
     }
@@ -1139,7 +1138,7 @@ extension WorkbenchesViewModelGitTests {
     private func showWorktreeSession(_ sessionID: Int64, in vm: WorkbenchesViewModel) async -> CodeRoot {
         await vm.startGitWatching(project: project)
         pageShowing(sessionID, in: vm)
-        await waitUntil { !vm.activeCodeRoot(project: self.project).isMain }
+        await untilObserved { !vm.activeCodeRoot(project: self.project).isMain }
         let root = vm.activeCodeRoot(project: project)
         await vm.followGitRoot(root)
         return root
@@ -1194,7 +1193,7 @@ extension WorkbenchesViewModelGitTests {
         center.start(elsewhere, fresh: true)
         let vm = worktreeVM(runner, terminals: center)
         _ = await showWorktreeSession(shown.id, in: vm)
-        await waitUntil {
+        await untilObserved {
             if case .worktree = vm.sessionPlaces.currentPlace(sessionID: elsewhere.id) { return true }
             return false
         }
@@ -1259,14 +1258,14 @@ extension WorkbenchesViewModelGitTests {
         center.start(elsewhere, fresh: true)
         let vm = worktreeVM(runner, terminals: center)
         _ = await showWorktreeSession(shown.id, in: vm)
-        await waitUntil {
+        await untilObserved {
             if case .worktree = vm.agentPlace(sessionID: elsewhere.id) { return true }
             return false
         }
 
         runner.failFolderReads()
         vm.sessionPlaces.refreshPlaces(workbenchID: project.id)
-        await waitUntil { vm.sessionPlaces.isPlaceStale(sessionID: elsewhere.id) }
+        await untilObserved { vm.sessionPlaces.isPlaceStale(sessionID: elsewhere.id) }
         XCTAssertEqual(vm.agentPlace(sessionID: elsewhere.id), .unknown)
         await vm.switchBranch("feature/x", project: project)
         XCTAssertEqual(runner.switches.last?.contains("--agent-running"), true)
@@ -1428,7 +1427,7 @@ extension WorkbenchesViewModelGitTests {
         center.start(shown, fresh: true)
         let vm = worktreeVM(runner, terminals: center)
         let root = await showWorktreeSession(shown.id, in: vm)
-        await waitUntil {
+        await untilObserved {
             if case .worktree = vm.agentPlace(sessionID: shown.id) { return true }
             return false
         }

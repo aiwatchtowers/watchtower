@@ -12,7 +12,7 @@ final class RelaySubscriptionModelTests: XCTestCase {
     private let free = RelayAccountCenter.Phase.free(ended: false)
     private let lead = "Changes reach your phone in under a second instead of tens of seconds."
     private let bullets = [
-        "Up to 3 Macs on this iPhone", "Encrypted end to end: our server can't read anything", "Switch back to iCloud at any time"
+        "Up to 3 towers on this iPhone", "Encrypted end to end: our server can't read anything", "Switch back to iCloud at any time"
     ]
     private let subscribe = "Subscribe — $4.99 / month"
     private let manage = "Manage Subscription"
@@ -21,7 +21,7 @@ final class RelaySubscriptionModelTests: XCTestCase {
     private let noPurchases = "Relay can't take purchases right now. You're not charged again; try again later."
     private let tooOld = "Update Watchtower from the App Store to use Relay."
     private let notReached = "You're subscribed. Relay turns on as soon as Watchtower reaches it."
-    private let relayIsOn = "Relay is on. Choose it for each Mac in Macs."
+    private let relayIsOn = "Relay is on. Choose it for each tower in Towers."
 
     private func model(
         _ purchase: RelayAccountCenter.PurchaseState,
@@ -346,7 +346,7 @@ final class RelaySubscriptionModelTests: XCTestCase {
     }
 
     func testDoneNamesTheNextStep() {
-        XCTAssertEqual(model(.done).line, "Relay is on. Choose it for each Mac in Macs.")
+        XCTAssertEqual(model(.done).line, "Relay is on. Choose it for each tower in Towers.")
         XCTAssertEqual(model(.done).primary, Model.Button(title: "Done", action: .done))
         XCTAssertFalse(model(.done).lineIsError)
     }

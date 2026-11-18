@@ -39,6 +39,7 @@ final class HubContractFixtureTests: XCTestCase {
             XCTAssertEqual(grant.revoked, kit["revoked"] as? Bool, name)
             XCTAssertEqual(grant.mayStartSessions, kit["may_start_sessions"] as? Bool, name)
             XCTAssertEqual(grant.permissionsAllowed, kit["permissions_allowed"] as? Bool, name)
+            XCTAssertEqual(grant.chatAllowed, kit["chat_allowed"] as? Bool, name)
             XCTAssertEqual(grant.name, kit["name"] as? String, name)
             XCTAssertEqual(grant.scope.rawValue, kit["scope"] as? String, name)
             XCTAssertEqual(grant.typingAllowed, kit["typing_allowed"] as? Bool, name)
@@ -49,6 +50,53 @@ final class HubContractFixtureTests: XCTestCase {
             XCTAssertEqual(grant.orderedActions, ordered, name)
             XCTAssertEqual(grant.runsOrderedActions, (ordered ?? 0) >= 1, name)
         }
+    }
+
+    /// The heartbeat's hub kind (#1783): an older hub sends none and reads as a Mac; `server` and a kind this
+    /// build does not know do not. Every case decodes, and `hub_kind` re-encodes exactly as the Go hub writes it.
+    func testHeartbeatCasesReadTheHubKind() throws {
+        let cases = try XCTUnwrap(load()["heartbeat"])
+        XCTAssertTrue(cases.contains { $0["name"] as? String == "hub_kind_server" })
+        for fixtureCase in cases {
+            let name = try XCTUnwrap(fixtureCase["name"] as? String)
+            let json = try XCTUnwrap(fixtureCase["json"] as? [String: Any], name)
+            let heartbeat = try RelayCoder.makeDecoder().decode(HeartbeatPayload.self, from: bytes(json))
+            let kit = try XCTUnwrap(fixtureCase["kit"] as? [String: Any], name)
+            XCTAssertEqual(heartbeat.isMac, kit["is_mac"] as? Bool, name)
+            XCTAssertEqual(heartbeat.hubKind?.rawValue, json["hub_kind"] as? String, name)
+            let encoded = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: RelayCoder.makeEncoder().encode(heartbeat)) as? [String: Any], name)
+            XCTAssertEqual(encoded["hub_kind"] as? String, json["hub_kind"] as? String, name)
+            // The capabilities: recordings is on unless "off"; chat is offered only on an explicit "on" (D4).
+            XCTAssertEqual(heartbeat.recordingsOffered, kit["recordings_offered"] as? Bool, name)
+            XCTAssertEqual(heartbeat.chatOffered, (kit["chat"] as? String) == "on", name)
+            XCTAssertEqual(heartbeat.capabilities?.chat, kit["chat"] as? String, name)
+            XCTAssertEqual(heartbeat.capabilities?.chatReason, kit["chat_reason"] as? String, name)
+            // #1873: stuck_since reads as a date and re-encodes as the hub wrote it; absent unless a kind is stuck.
+            XCTAssertEqual(heartbeat.stuckSince?.timeIntervalSince1970, kit["stuck_since"] as? Double, name)
+            XCTAssertEqual(encoded["stuck_since"] as? Double, json["stuck_since"] as? Double, name)
+            // #1886: background_ai is optional; an unknown value reads as nil.
+            XCTAssertEqual(heartbeat.backgroundAI?.rawValue, kit["background_ai"] as? String, name)
+            XCTAssertEqual(encoded["background_ai"] as? String, json["background_ai"] as? String, name)
+            // Re-encoded, the capabilities this build knows are what the hub wrote (an unknown key is dropped).
+            let known = (json["capabilities"] as? [String: Any])?.filter { ["recordings", "chat", "chat_reason"].contains($0.key) }
+            XCTAssertEqual(encoded["capabilities"] as? NSDictionary, known as NSDictionary?, name)
+        }
+    }
+
+    /// The chat capability fixture cases are there, and an absent `capabilities` object is not a chat host.
+    func testHeartbeatChatCapabilityIsAnExplicitOn() throws {
+        let cases = try XCTUnwrap(load()["heartbeat"])
+        let names = cases.compactMap { $0["name"] as? String }
+        XCTAssertTrue(names.contains("chat_on") && names.contains("chat_off_runner_down"))
+        let older = HeartbeatPayload(
+            updatedAt: Date(), appVersion: "1", hubID: "h", macName: "m", flavor: .default, lastPublishAt: nil,
+            lastRelayAt: nil, relayBacklog: 0, accounts: [], enabledAt: Date(), ownerUser: "", sharing: .none)
+        XCTAssertFalse(older.chatOffered)
+        XCTAssertTrue(older.recordingsOffered)
+        let reason = HeartbeatCapabilities(chat: "off", chatReason: "desktop_too_old")
+        XCTAssertEqual(reason.chatOffReason, .desktopTooOld)
+        XCTAssertEqual(HeartbeatCapabilities(chat: "off", chatReason: "from_the_future").chatOffReason?.isKnown, false)
     }
 
     /// Equal as JSON objects (key order and number spelling aside).

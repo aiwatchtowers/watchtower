@@ -7,14 +7,17 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
+	"watchtower/internal/chatengine"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/actions/handlers"
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/wire"
 	"watchtower/internal/sessionhost"
 	"watchtower/internal/sessionstart"
 )
@@ -85,6 +88,62 @@ type wiring struct {
 	live *liveness
 	// away nudges the work alerts when the owner leaves the Mac.
 	away *awayWatch
+	// chat is the daemon's chat engine (Options.ChatEngine; nil = chat off,
+	// runner_down). The hub uses it and never closes it: the daemon stops
+	// it after the hub.
+	chat *chatengine.Engine
+	// chatTimer republishes what only time changes (nil under
+	// workbench_only).
+	chatTimer *chatTimer
+	chatPush  *chatPushWatch
+	// bg is the chat's background work (turn-end pushes, approved actions'
+	// applies), started only through spawn: bgClosed, set under bgMu at
+	// close, refuses new work so no Add ever races the close's Wait. An
+	// apply runs to its end within chatBackgroundBudget.
+	bgMu     sync.Mutex
+	bgClosed bool
+	bg       sync.WaitGroup
+}
+
+// chatBackgroundBudget bounds the hub stop's wait for the chat's background
+// work (an approved action's apply, a cancelled title): as the runner's
+// close, the stop never waits longer.
+const chatBackgroundBudget = 30 * time.Second
+
+// spawn runs work on its own goroutine, tracked for the close; false once
+// the wiring is closing (work does not run).
+func (w *wiring) spawn(work func()) bool {
+	w.bgMu.Lock()
+	defer w.bgMu.Unlock()
+	if w.bgClosed {
+		return false
+	}
+	w.bg.Add(1)
+	go func() {
+		defer w.bg.Done()
+		work()
+	}()
+	return true
+}
+
+// stopBackground refuses new background work and waits for what runs, at
+// most budget (close cancels the titles first).
+func (w *wiring) stopBackground(budget time.Duration) {
+	w.bgMu.Lock()
+	w.bgClosed = true
+	w.bgMu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		w.bg.Wait()
+		close(done)
+	}()
+	t := time.NewTimer(budget)
+	defer t.Stop()
+	select {
+	case <-done:
+	case <-t.C:
+		log.Printf("hub: the chat's background work did not end within %s: stopping without it", budget)
+	}
 }
 
 // Seed retry at start: 1 s doubling to 10 s.
@@ -161,6 +220,14 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 	w.away = &awayWatch{away: away, active: h.phoneLinked, nudge: func() { h.publishSoon(slices.KindAskAlert) }}
 	home, _ := os.UserHomeDir()
 	watches := handlers.NewChatWatchRegistry()
+	// The daemon's chat engine first: the chat sources read it and the
+	// chat handlers call it.
+	dbPath, _ := mainFile(context.Background(), o.DB)
+	w.chat = h.useChatEngine(o, w.spawn)
+	var chatReader sources.ChatReader
+	if w.chat != nil {
+		chatReader = w.chat
+	}
 	set, err := sources.All(sources.Config{
 		DB: o.DB, Store: st, Watches: watches, Sealer: h.kr, Mode: mode, Live: live,
 		AssetDir: filepath.Join(o.Dir, assetDirName, transcriptAssetDir),
@@ -172,6 +239,8 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 		GitFetch:       o.gitFetch,
 		RunnerGap:      o.runnerGap,
 		Now:            o.Clock,
+		ChatEngine:     chatReader,
+		ChatRouting:    o.ChatRouting,
 	})
 	if err != nil {
 		w.close()
@@ -179,6 +248,19 @@ func (h *hubRuntime) buildWiring(o Options, st *state.Store, mode string, d *act
 	}
 	w.set = set
 	deps := handlerDeps(o, st, set, watches, h.kr, port, lateEcho)
+	deps.Chat = h.chatDeps(o, w, dbPath)
+	if set.ChatWatches != nil {
+		clock := o.Clock
+		if clock == nil {
+			clock = time.Now
+		}
+		w.chatTimer = &chatTimer{
+			watches: set.ChatWatches, fresh: o.DB.FreshChatLeases, grant: st.AnyChatPhone,
+			available: h.chatAvailable, now: clock, publish: h.publishSoon,
+		}
+		w.chatPush = newChatPushWatch(o.DB.DB, set.ChatWatches, h.onRelay, clock, h.chatPushEnqueue)
+		h.chatPush.Store(w.chatPush)
+	}
 	deps.RecordingQueued = func(uploadID string) {
 		h.sup.notifyDesktop(ControlAnswer{Event: EventRecordingQueued, OK: true, UploadID: uploadID})
 	}
@@ -232,7 +314,7 @@ func handlerDeps(o Options, st *state.Store, set *sources.Set, watches handlers.
 ) handlers.Deps {
 	deps := handlers.Deps{
 		DB: o.DB, Store: st, Sessions: port, RecordingsDir: o.RecordingsDir, Clock: o.Clock, Policy: o.mobileSync,
-		ChatWatches: watches, Sealer: sealer, LateEcho: lateEcho,
+		ChatWatches: watches, Sealer: sealer, LateEcho: lateEcho, ServerHost: hubKindOf(o.Desktop) == wire.HubKindServer,
 	}
 	// Typed nils stay nil interfaces.
 	if set.Sessions != nil {
@@ -331,6 +413,20 @@ func mainFile(ctx context.Context, d *db.DB) (string, error) {
 // publisher retries it, and the lane does not observe). Nothing else waits:
 // the device_grant and the other kinds keep publishing.
 func (h *hubRuntime) startWiring(ctx context.Context, w *wiring) {
+	if w.chatPush != nil {
+		h.wg.Add(1)
+		go func() {
+			defer h.wg.Done()
+			w.chatPush.run(ctx)
+		}()
+	}
+	if w.chatTimer != nil {
+		h.wg.Add(1)
+		go func() {
+			defer h.wg.Done()
+			w.chatTimer.run(ctx)
+		}()
+	}
 	if w.port != nil {
 		// Ensure the host on start when none answers (a later call dials
 		// again if this fails).
@@ -392,6 +488,9 @@ func (h *hubRuntime) startWiring(ctx context.Context, w *wiring) {
 		_ = w.watch.Run(ctx, func(kinds ...slices.Kind) {
 			h.publishSoon(kinds...)
 			w.lane.kick()
+			if w.chatPush != nil {
+				w.chatPush.kick()
+			}
 			if w.live != nil {
 				w.live.kick() // a start or an exit wrote its row
 			}
@@ -417,11 +516,49 @@ func (w *wiring) retrySeed(ctx context.Context) {
 	}
 }
 
-// close releases the watch's handle once the goroutines are done.
+// useChatEngine hooks the daemon's chat engine (o.ChatEngine; nil = chat
+// off) into this hub: a turn's text, steps and end reach the phone's feed
+// and list (the publisher coalesces the per-event calls), and a turn's end
+// pushes through spawn (wiring.spawn: close waits for it). close unhooks
+// it; the engine itself, its sweep and its close are the daemon's.
+func (h *hubRuntime) useChatEngine(o Options, spawn func(func()) bool) *chatengine.Engine {
+	e := o.ChatEngine
+	if e == nil {
+		return nil
+	}
+	e.OnChange(func(int64) { h.publishSoon(slices.KindChatFeed, slices.KindChatList) })
+	e.OnTurnEnd(h.chatTurnEnded(spawn))
+	return e
+}
+
+// chatTurnEnded is the runner's OnTurnEnd: the chat_answer push (spec
+// §4.7) is a database read and the pusher's enqueue, so it runs off the
+// runner's goroutine (OnTurnEnd must not block) through spawn.
+func (h *hubRuntime) chatTurnEnded(spawn func(func()) bool) func(conv int64, turnID, status string) {
+	return func(conv int64, turnID, status string) {
+		p := h.chatPush.Load()
+		if p == nil {
+			return
+		}
+		if !spawn(func() { p.turnEnded(conv, turnID, status) }) {
+			log.Printf("hub: chat %d turn %s ended while the hub stops: no push", conv, turnID)
+		}
+	}
+}
+
+// close unhooks the chat engine (it keeps running: the daemon owns it) and
+// releases the watch's handle once the goroutines are done.
 func (w *wiring) close() {
 	if w == nil {
 		return
 	}
+	// Unhook the engine first, so no turn end spawns work any more; then
+	// the background work (spawn refuses anything later).
+	if w.chat != nil {
+		w.chat.OnChange(func(int64) {})
+		w.chat.OnTurnEnd(func(int64, string, string) {})
+	}
+	w.stopBackground(chatBackgroundBudget)
 	if w.port != nil {
 		_ = w.port.Close()
 	}
@@ -436,7 +573,14 @@ func (w *wiring) close() {
 // sweepTemps removes what a crash left in the recordings and asset dirs,
 // and the recording jobs (with their audio) finished more than 31 days ago.
 func sweepTemps(o Options, st *state.Store) {
-	n, err := handlers.SweepRecordingTemps(o.RecordingsDir, filepath.Join(o.Dir, assetDirName))
+	dirs := []string{o.RecordingsDir, filepath.Join(o.Dir, assetDirName)}
+	if o.DB != nil {
+		// A chat attachment's sealed download a crash left (.<id>.sealed).
+		if path, err := mainFile(context.Background(), o.DB); err == nil {
+			dirs = append(dirs, chatFilesDir(path))
+		}
+	}
+	n, err := handlers.SweepRecordingTemps(dirs...)
 	if err != nil {
 		log.Printf("hub: sweeping temp files failed (%s)", errClass(err))
 	}

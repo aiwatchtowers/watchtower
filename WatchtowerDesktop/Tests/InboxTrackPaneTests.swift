@@ -2,6 +2,7 @@ import GRDB
 import SwiftUI
 import ViewInspector
 import XCTest
+import Observation
 @testable import WatchtowerCore
 @testable import WatchtowerDesktop
 import WatchtowerTestSupport
@@ -93,11 +94,10 @@ final class InboxTrackPaneTests: XCTestCase {
             onRestore: onRestore, onMakeTask: onMakeTask, onGoToTarget: { _ in }, onDelete: onDelete)
     }
 
+    /// Waits until `condition` holds, re-checking on every change of the
+    /// observable state it reads — no deadline.
     private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(5)
-        while !condition(), Date() < deadline {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
+        await untilObserved(condition)
     }
 
     // MARK: - The buttons
@@ -209,7 +209,7 @@ final class InboxTrackPaneTests: XCTestCase {
 
     func testCustomTrackControlsGoThroughTheSeam() async throws {
         let custom = try track(custom: true)
-        let fake = RecordingCustomTrackControls()
+        let fake = ObservedTrackControls()
         let state = Box(TrackCardState(track: custom))
         func section() -> CustomTrackControlsSection {
             CustomTrackControlsSection(track: custom, controls: fake, state: state.binding) {}
@@ -609,5 +609,49 @@ final class InboxTrackPaneTests: XCTestCase {
         let row = try trackRow(bound.id)
         XCTAssertNotEqual(row["dismissed_at"] as String?, "")
         XCTAssertEqual(row["enabled"] as Int?, 1)
+    }
+}
+
+/// `RecordingCustomTrackControls` with its calls on Observation, so a test
+/// waits for a call with `untilObserved` (the recorder's list is plain state).
+@MainActor
+@Observable
+private final class ObservedTrackControls: CustomTrackControlling {
+    @ObservationIgnored private let recorder = RecordingCustomTrackControls()
+    private var count = 0
+
+    var calls: [RecordingCustomTrackControls.Call] {
+        _ = count
+        return recorder.calls
+    }
+
+    func saveInstruction(_ track: Track, text: String) async throws {
+        defer { count = recorder.calls.count }
+        try await recorder.saveInstruction(track, text: text)
+    }
+
+    func setCollecting(_ track: Track, on: Bool) async throws {
+        defer { count = recorder.calls.count }
+        try await recorder.setCollecting(track, on: on)
+    }
+
+    func scan(_ track: Track, from: Date?) async throws {
+        defer { count = recorder.calls.count }
+        try await recorder.scan(track, from: from)
+    }
+
+    func stopWatching(_ track: Track) async throws {
+        defer { count = recorder.calls.count }
+        try await recorder.stopWatching(track)
+    }
+
+    func resumeWatching(_ track: Track) async throws {
+        defer { count = recorder.calls.count }
+        try await recorder.resumeWatching(track)
+    }
+
+    func delete(_ track: Track) async throws {
+        defer { count = recorder.calls.count }
+        try await recorder.delete(track)
     }
 }

@@ -1,5 +1,6 @@
 // Package pricing holds the Anthropic price table shared by agent analytics
-// (agentlog) and the LLM usage ledger (llmusage).
+// (agentlog) and the LLM usage ledger (llmusage), and the OpenAI table agent
+// analytics prices Codex sessions with (CodexCost).
 package pricing
 
 import (
@@ -9,7 +10,8 @@ import (
 
 // Version is stamped on every priced agent-analytics row; bump it with any
 // change to prices so the next scan reprices stored rows (no reparse).
-const Version = 1
+// 2: the Codex table (codexPrices).
+const Version = 2
 
 type price struct {
 	input, output, cacheRead float64 // $ per million tokens
@@ -97,4 +99,51 @@ func ModelTiers() []string {
 		return cmp.Or(cmp.Compare(prices[b].output, prices[a].output), cmp.Compare(a, b))
 	})
 	return out
+}
+
+type codexPrice struct {
+	input, cached, output float64 // $ per million tokens
+	// cacheWrite is the published short-retention (30-minute) cache write
+	// rate; 0 = none published, so a cache write is priced at the input rate
+	// (spec 2026-11-03 D36).
+	cacheWrite float64
+}
+
+// OpenAI's standard-tier, short-context (≤272K input tokens) rates for the
+// model ids Codex writes in turn_context.model, checked against
+// https://developers.openai.com/api/docs/pricing on 2026-11-10. The
+// long-context tier is not applied (v1 limit). Kept apart from prices:
+// ModelTiers and the LLM ledger stay Anthropic-only.
+var codexPrices = map[string]codexPrice{
+	"gpt-6-astra":   {input: 10, cached: 1, output: 50, cacheWrite: 12.50},
+	"gpt-6.1-sol":   {input: 2, cached: 0.10, output: 10, cacheWrite: 2.50},
+	"gpt-6.1-terra": {input: 1, cached: 0.05, output: 5, cacheWrite: 1.25},
+	"gpt-6-sol":     {input: 2, cached: 0.20, output: 10, cacheWrite: 2.50},
+	"gpt-6-luna":    {input: 0.10, cached: 0.01, output: 0.50, cacheWrite: 0.125},
+	"gpt-5.6-sol":   {input: 4, cached: 0.40, output: 20, cacheWrite: 5},
+	"gpt-5.6-terra": {input: 2, cached: 0.20, output: 12, cacheWrite: 2.50},
+	"gpt-5.6-luna":  {input: 0.20, cached: 0.02, output: 1.20, cacheWrite: 0.25},
+	"gpt-5.5":       {input: 5, cached: 0.50, output: 30},
+	"gpt-5.4":       {input: 2.50, cached: 0.25, output: 15},
+	"gpt-5.4-mini":  {input: 0.75, cached: 0.075, output: 4.50},
+	"gpt-5.4-nano":  {input: 0.20, cached: 0.02, output: 1.25},
+	"gpt-5.3-codex": {input: 1.75, cached: 0.175, output: 14},
+	"gpt-5.2":       {input: 1.75, cached: 0.175, output: 14},
+	"gpt-5.1":       {input: 1.25, cached: 0.125, output: 10},
+	"gpt-5":         {input: 1.25, cached: 0.125, output: 10},
+	"gpt-5-mini":    {input: 0.25, cached: 0.025, output: 2},
+	"gpt-5-nano":    {input: 0.05, cached: 0.005, output: 0.40},
+}
+
+// CodexCost prices one Codex model response: fresh input at the input rate,
+// cache reads at the cached rate, cache writes at the published write rate
+// (else the input rate), output at the output rate. known=false (cost 0) for
+// a model with no row — never guessed.
+func CodexCost(model string, in, out, cacheRead, cacheWrite int64) (float64, bool) {
+	p, ok := codexPrices[model]
+	if !ok {
+		return 0, false
+	}
+	write := cmp.Or(p.cacheWrite, p.input)
+	return (float64(in)*p.input + float64(cacheRead)*p.cached + float64(cacheWrite)*write + float64(out)*p.output) / 1e6, true
 }

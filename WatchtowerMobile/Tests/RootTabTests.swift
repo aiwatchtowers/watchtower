@@ -1,15 +1,44 @@
+import SwiftUI
 import UIKit
 import XCTest
 @testable import WatchtowerMobile
 
 /// The phone's tab bar (design pass spec §5, amending mobile POC spec §13
-/// A4): Now, Workbench and Calendar, in that order; Settings is pushed from
+/// A4; iPhone chat spec §6.1): Now, Workbench, Chats and Calendar, in that order; Settings is pushed from
 /// Now's gear.
 @MainActor
 final class RootTabTests: XCTestCase {
-    func testExactlyThreeTabsInOrder() {
-        XCTAssertEqual(RootTabView.Tab.allCases.map(\.title), ["Now", "Workbench", "Calendar"])
-        XCTAssertEqual(RootTabView.Tab.allCases.map(\.systemImage), ["clock", "hammer", "calendar"])
+    func testExactlyFourTabsInOrder() {
+        XCTAssertEqual(RootTabView.Tab.allCases.map(\.title), ["Now", "Workbench", "Chats", "Calendar"])
+        XCTAssertEqual(
+            RootTabView.Tab.allCases.map(\.systemImage), ["clock", "hammer", "bubble.left.and.bubble.right", "calendar"]
+        )
+    }
+
+    /// Switch to Relay… (iPhone chat mockup 1e) opens Settings → Towers → this hub on Now's stack.
+    func testSwitchToRelayOpensThisHubInSettings() {
+        let navigation = AppNavigation()
+        navigation.tab = .chats
+        navigation.showTowerSettings(hubID: "hub-a", detail: true)
+        XCTAssertEqual(navigation.tab, .now)
+        var expected = NavigationPath()
+        expected.append(NowRoute.settings)
+        expected.append(NowRoute.macs)
+        expected.append(MacDetailRoute(hubID: "hub-a"))
+        XCTAssertEqual(navigation.nowPath, expected)
+
+        navigation.showTowerSettings(hubID: "hub-a", detail: false)
+        XCTAssertEqual(navigation.nowPath.count, 2, "without a detail screen for the hub, the list of towers")
+    }
+
+    func testAChatOpensOnTheChatsTabFromItsRoot() {
+        let navigation = AppNavigation()
+        navigation.chatsPath = [ChatRoute(id: 3)]
+        navigation.show(conversation: 9, messageID: 41)
+        XCTAssertEqual(navigation.tab, .chats)
+        XCTAssertEqual(navigation.chatsPath, [ChatRoute(id: 9, messageID: 41)])
+        navigation.resetStacks()
+        XCTAssertEqual(navigation.chatsPath, [])
     }
 
     func testSettingsIsReachedFromNow() {

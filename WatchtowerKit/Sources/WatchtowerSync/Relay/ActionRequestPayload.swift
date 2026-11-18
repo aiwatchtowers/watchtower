@@ -56,6 +56,33 @@ public enum ActionKind: String, Codable, CaseIterable {
     /// Entity: automation id; params `workbench_id`. Not idempotent: runs a workbench automation now, under the
     /// start-sessions grant (ask #692).
     case automationRun = "automation_run"
+    // AI chat on the phone (iPhone chat spec §4.5). The typed params live in WatchtowerKit (`Chat*Params`).
+    /// No entity; params `client_key`, optional `project_id`, `routing`. Idempotent per `client_key`.
+    case chatNew = "chat_new"
+    /// No entity; params `conversation_id`, `mode`, `text`, `attachment_ids`, optional `message_id`, `routing`.
+    /// Not idempotent: starts a turn.
+    case chatTurn = "chat_turn"
+    /// No entity; params `conversation_id`, `turn_id`. Stops the turn.
+    case chatCancel = "chat_cancel"
+    /// No entity; params `conversation_id`, `purpose` (`open` | `prefetch`). Idempotent: asks the hub to publish the feed.
+    case chatFeedRequest = "chat_feed_request"
+    /// No entity; params `conversation_id`, `before_message_id`. Idempotent: publishes one `chat_page`.
+    case chatPage = "chat_page"
+    /// No entity; params `query`. Idempotent: publishes a `chat_search` result.
+    case chatSearch = "chat_search"
+    /// No entity; params `conversation_id`, `message_id`. Idempotent: marks the conversation read.
+    case chatRead = "chat_read"
+    /// No entity; params `message_id`. Idempotent: selects a branch.
+    case chatBranchSelect = "chat_branch_select"
+    /// No entity; params `conversation_id`, `op`, optional `title`. Pin, unpin, rename or delete.
+    case chatManage = "chat_manage"
+    /// No entity; params `action_id`, `decision`, `args_sha256`; needs the permissions grant too.
+    case chatActionAnswer = "chat_action_answer"
+    /// No entity; params `query`, `kinds`. Idempotent: the `@` picker's hits come back in the applied echo's
+    /// result (`hits`).
+    case chatEntitySearch = "chat_entity_search"
+    /// No entity; no params. Idempotent: the `/` picker's skills come back in the applied echo's result (`skills`).
+    case chatSkillsList = "chat_skills_list"
 }
 
 /// Wire status of one action record (spec §5.2). Only the Mac moves a record

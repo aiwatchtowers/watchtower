@@ -133,8 +133,8 @@ enum AutomationShotFixtures {
                 "status": "pending", "turn_id": "t1"
             ]))
             let sessions = AutomationDraftPanelModel.dryRunSessions(in: [try cacheLine()])
-            return AnyView(AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {},
-                                               onRetry: {}, latestDraftText: recipe, draftSessions: sessions))
+            return AnyView(MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {},
+                                              onRetry: {}, latestDraftText: recipe, draftSessions: sessions))
         } catch {
             return failure(error)
         }
@@ -148,7 +148,7 @@ enum AutomationShotFixtures {
       "trigger_text":"Weekdays 10:00, 16:00","permissions":["starts agent sessions"],"outputs":["inbox"]},
      {"name":"jira-state-report","title":"Jira state report","description":"Weekly.","scope":"personal",
       "trigger_text":"Mondays 09:00","permissions":["reads Jira"],"outputs":["report"]},
-     {"name":"team-performance-report","title":"Team performance report","description":"Weekly.",
+     {"name":"team-week-summary","title":"Team week summary","description":"Weekly.",
       "scope":"personal","trigger_text":"Fridays 17:00","permissions":["reads Jira and Slack"],"outputs":["report"]},
      {"name":"release-buttons","title":"Release and deploy buttons","description":"Buttons.","scope":"workbench",
       "trigger_text":"Button: Release","permissions":["runs a shell command"],"outputs":["report"]},
@@ -361,7 +361,10 @@ enum AutomationShotFixtures {
                 vm.toggleSection(AutomationListSections.workbenchID(docsID))
             }
             let docs = AutomationScopeChoice.workbench(id: docsID, name: "acme-docs", folder: "/work/acme-docs")
-            return AnyView(AutomationsView(vm: vm, hooks: hooks(acmeID: acmeID, extra: [docs])))
+            return AnyView(AutomationsView(
+                vm: vm, hooks: hooks(acmeID: acmeID, extra: [docs]), backgroundAI: .allowedByOwner,
+                onAllowBackgroundAI: {}, policyBlocked: { _ in false }
+            ))
         } catch {
             return failure(error)
         }

@@ -69,6 +69,7 @@ extension DemoSeed {
                 "open_asks": 3, "open_targets": 7, "in_progress_targets": 3, "blocked_targets": 1, "done_targets": 1,
                 "session_counts": JSON.counts(working: 1, waiting: 1, needsApproval: 1, finished: 2, failed: 1, stopped: 1, notRunning: 1),
                 "last_session_activity": JSON.stamp(ago(30)),
+                "board_columns": ["Backlog", "Todo"],
                 "automations": [
                     ["id": 71, "name": "Release notes", "kind": "button", "asks_first": true, "state": "runnable",
                      "last_run_status": "succeeded", "last_run_at": JSON.stamp(ago(7200))],
@@ -80,7 +81,7 @@ extension DemoSeed {
             JSON.workbench(websiteID, [
                 "name": "Acme Website", "folder_display": "~/Projects/acme-web", "branch": "feature/landing",
                 "open_targets": 1, "in_progress_targets": 1, "done_targets": 1,
-                "session_counts": JSON.counts(working: 1, stopped: 1),
+                "session_counts": JSON.counts(working: 2, stopped: 1),
                 "last_session_activity": JSON.stamp(ago(600))
             ]),
             JSON.workbench(notesID, ["name": "Notes", "folder_display": "~/Projects/notes", "branch": "main"])
@@ -130,7 +131,7 @@ extension DemoSeed {
             ]),
             JSON.session(17, workbench: acmeID, [
                 "title": "Scratch", "state_kind": "not_started", "state_caption": "Not running", "state_tone": "secondary",
-                "live": false, "is_ring": true, "last_active_at": JSON.stamp(ago(86_400))
+                "live": false, "is_ring": true, "last_active_at": JSON.stamp(ago(172_800))
             ])
         ]
         let website: [[String: Any]] = [
@@ -141,6 +142,11 @@ extension DemoSeed {
             JSON.session(21, workbench: websiteID, [
                 "title": "Pricing table", "state_kind": "stopped", "state_caption": "Stopped", "state_tone": "secondary",
                 "state_glyph": "pause.fill", "live": false, "is_ring": true, "target_id": 501, "last_active_at": JSON.stamp(ago(5_400))
+            ]),
+            // Board #1945: a session whose spec is in the spec review author loop.
+            JSON.session(22, workbench: websiteID, [
+                "title": "Checkout spec", "state_kind": "spec_review", "state_caption": "Spec review · round 2",
+                "state_tone": "green", "state_glyph": "doc.text.magnifyingglass", "last_active_at": JSON.stamp(ago(900))
             ])
         ]
         return acme + website
@@ -173,7 +179,10 @@ extension DemoSeed {
                 "previous_ask_id": 107, "changes": "Step 2 now names the Stop hook.",
                 "payload": ["focus": [["text": "Is the stop blocked early enough?", "heading": "Steps"]]],
                 "doc_path": "docs/plans/ask-guard-v2.md",
-                "doc_snapshot": "# Ask guard v2\n\n## Steps\n\nStep 1: block the stop.\n\nStep 2: the Stop hook asks the owner first.\n",
+                "doc_snapshot": "# Ask guard v2\n\nThe agent must not stop while a question to the owner is open.\n\n"
+                    + "## Steps\n\nStep 1: block the stop.\n\nStep 2: the Stop hook asks the owner first.\n\n"
+                    + "- Read the open asks of the session\n- Refuse the stop with the ask's title\n\n"
+                    + "## Risks\n\nA stale ask could keep the session running; the hook skips asks older than a day.\n",
                 "doc_clipped": true, "doc_bytes": 412_000
             ]),
             JSON.ask(111, workbench: acmeID, [
@@ -214,7 +223,7 @@ extension DemoSeed {
                 "progress": 0.5, "pr": "175", "branch": "feature/archive-now", "open_asks": 2, "open_comments": 1,
                 "session_ids": [11], "intent": "Archive closed targets on demand from the header menu."
             ]),
-            JSON.target(416, workbench: acmeID, ["parent_id": 400, "text": "Undo Archive Now", "session_ids": [16]]),
+            JSON.target(416, workbench: acmeID, ["parent_id": 400, "text": "Undo Archive Now", "session_ids": [16], "column": "Todo"]),
             JSON.target(417, workbench: acmeID, [
                 "parent_id": 400, "text": "Archive view", "status": "done", "archived": true, "progress": 1,
                 "last_status_at": JSON.stamp(ago(864_000)), "last_status_actor": "owner"
@@ -225,7 +234,12 @@ extension DemoSeed {
             ]),
             JSON.target(422, workbench: acmeID, ["parent_id": 420, "text": "Per-lane fold", "status": "done", "progress": 1, "session_ids": [13]]),
             JSON.target(430, workbench: acmeID, ["text": "Session report", "status": "in_progress", "progress": 0.3, "session_ids": [10]]),
-            JSON.target(431, workbench: acmeID, ["text": "Ask guard v2", "priority": "low", "open_asks": 1, "session_ids": [14]]),
+            JSON.target(431, workbench: acmeID, ["text": "Ask guard v2", "priority": "low", "open_asks": 1, "session_ids": [14], "column": "Todo"]),
+            JSON.target(432, workbench: acmeID, ["text": "Export the board as CSV", "column": "Backlog"]),
+            JSON.target(433, workbench: acmeID, ["text": "Pinned lanes", "priority": "low", "column": "Backlog"]),
+            JSON.target(434, workbench: acmeID, [
+                "text": "Search the board from the phone", "priority": "high", "column": "Todo", "branch": "feature/board-search"
+            ]),
             JSON.target(390, workbench: acmeID, ["text": "Old onboarding", "status": "done", "archived": true, "progress": 1]),
             JSON.target(391, workbench: acmeID, ["text": "Legacy inbox", "status": "dismissed", "archived": true])
         ]

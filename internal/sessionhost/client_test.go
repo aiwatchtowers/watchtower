@@ -10,7 +10,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 )
 
 // asHostEnv makes the test binary run as `session-host --socket PATH`, so
@@ -32,7 +31,9 @@ func runTestHost(args []string) int {
 	if err != nil {
 		return 1
 	}
-	if err := NewServer(Options{IdleExit: 2 * time.Second}).Serve(context.Background(), l); err != nil {
+	// No idle exit: the test's cleanup kills the host's group, so a slow
+	// test never finds it gone.
+	if err := NewServer(Options{}).Serve(context.Background(), l); err != nil {
 		return 1
 	}
 	return 0
@@ -56,7 +57,6 @@ func fakeV1Host(t *testing.T) string {
 			}
 			go func(nc net.Conn) {
 				defer func() { _ = nc.Close() }()
-				_ = nc.SetDeadline(time.Now().Add(ioTimeout))
 				_, _, _ = ReadFrame(nc)
 				_ = WriteFrame(nc, Error, encode(ErrorMsg{Message: "unsupported protocol version 2 (host speaks 1)"}))
 			}(nc)
@@ -67,9 +67,7 @@ func fakeV1Host(t *testing.T) string {
 
 func ctxT(t *testing.T) context.Context {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), ioTimeout)
-	t.Cleanup(cancel)
-	return ctx
+	return t.Context()
 }
 
 func TestClientRefusesV1Host(t *testing.T) {
@@ -264,7 +262,6 @@ func TestClientCancelMidCallClosesTheConnection(t *testing.T) {
 			return
 		}
 		close(gotRequest)
-		_ = nc.SetReadDeadline(time.Now().Add(ioTimeout))
 		if _, _, err := ReadFrame(nc); err != nil && !errors.Is(err, os.ErrDeadlineExceeded) {
 			close(hostSawClose)
 		}
@@ -283,11 +280,7 @@ func TestClientCancelMidCallClosesTheConnection(t *testing.T) {
 	if _, err := cl.List(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("List cancelled mid-call = %v, want context.Canceled", err)
 	}
-	select {
-	case <-hostSawClose:
-	case <-time.After(ioTimeout):
-		t.Fatal("the host never saw the connection close")
-	}
+	<-hostSawClose
 	if _, err := cl.List(ctxT(t)); err == nil {
 		t.Fatal("a call after a mid-call cancel succeeded on an out-of-step connection")
 	}

@@ -1,6 +1,6 @@
 # Jira and Linear
 
-Watchtower copies the Jira boards you pick onto your Mac and turns them into four overview tabs: **Project Map**, **Releases**, **Blockers** and **Workload**. It is for anyone who wants to see what is stuck, late or overloaded without opening Jira. Linear workspaces connect in **Settings** too, and their issues show in **Blockers** and the weekly digest's progress next to Jira's.
+Watchtower copies the Jira boards you pick onto your Mac and turns them into four overview tabs: **Project Map**, **Releases**, **Blockers** and **Workload**. It is for anyone who wants to see what is stuck, late or overloaded without opening Jira. Linear workspaces connect in **Connections** too, and their issues show in **Blockers** and the weekly digest's progress next to Jira's.
 
 ## Why use it
 

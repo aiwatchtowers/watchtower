@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -26,9 +25,7 @@ func TestEngine_CancelledTxKeepsConnection(t *testing.T) {
 	_, err = tx.Exec(`INSERT INTO kept VALUES (1)`)
 	require.NoError(t, err)
 	cancel()
-	require.Eventually(t, func() bool {
-		return tx.Commit() != nil
-	}, time.Second, 10*time.Millisecond, "the cancelled transaction must be done")
+	require.Error(t, tx.Commit(), "the cancelled transaction must be done")
 
 	var n int
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM kept`).Scan(&n))

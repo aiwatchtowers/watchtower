@@ -16,7 +16,7 @@ text: Press **New Folder** under the Inbox menu, then **Move to Folder** in a ca
 area: communication
 level: basics
 kind: feature
-since: next
+since: 0.28.0
 action: nav:inbox
 replaces: [inbox-filters]
 changed: The filters above the list are gone; folders you arrange replace them.
@@ -44,7 +44,7 @@ text: Every proposed action and due reminder waits in **Needs approval** for you
 area: communication
 level: basics
 kind: feature
-since: next
+since: 0.28.0
 action: nav:inbox
 replaces: [inbox-proposals]
 changed: Proposals and due reminders moved from Needs your decision to their own folder.
@@ -62,7 +62,7 @@ text: **Waiting for me** at the top of the Inbox lists the mentions, DMs, replie
 area: communication
 level: basics
 kind: feature
-since: next
+since: 0.28.0
 action: nav:inbox
 replaces: [inbox-messages]
 changed: The Messages filter became the Waiting for me list in the Inbox.
@@ -136,7 +136,7 @@ since: 0.24.0
 action: nav:inbox
 -->
 
-A row in **Waiting for me** has **Open in Slack** (or Mail, Jira, Linear), **Reply…**, **Done**, **Hide**, **Snooze** (**Tomorrow**, **In 3 days**, **Next week**), **Discuss in Chat** and **Hand to Agent…**. A track row has **Done** and **Stop watching**, an idea row its verdict buttons. While a press runs the row's buttons wait; a failed press leaves the row with the error and **Retry**. The list re-reads every 30 seconds.
+A row in **Waiting for me** has **Open in Slack** (or Mail, Jira, Linear), **Reply…**, **Done**, **Hide**, **Snooze** (**Tomorrow**, **In 3 days**, **Next week**), **Discuss in Chat** and **Hand to Agent…**. A track row has **Done** and **⋯** (**Stop watching**, **Make a Task**; a custom track **Go to Target**, **Delete…**), an idea row its verdict buttons. A failed press leaves the row with the error and **Retry**. The list re-reads every 30 seconds.
 
 ### Reply to a message
 <!-- learn
@@ -146,7 +146,7 @@ text: Press **Reply…** on a Waiting for me row, type the answer and **Propose 
 area: communication
 level: next
 kind: feature
-since: next
+since: 0.28.0
 action: nav:inbox
 -->
 
@@ -173,7 +173,7 @@ text: Open **⋯** on the **Inbox** folder → **Learned Rules**; the brief and 
 area: communication
 level: next
 kind: tip
-since: next
+since: 0.28.0
 action: nav:inbox
 replaces: [inbox-learned-rules]
 changed: Learned Rules moved to the Inbox folder's ⋯.

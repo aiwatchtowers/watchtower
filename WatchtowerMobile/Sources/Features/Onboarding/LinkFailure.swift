@@ -31,14 +31,14 @@ enum LinkFailure: Equatable {
         switch self {
         case .expired: "This code expired"
         case .signIn: "Sign in to iCloud on this iPhone"
-        case .cannotShare: "This Mac can't share with another Apple ID right now"
-        case .noAnswer: "Your Mac didn't answer"
+        case .cannotShare: "This tower can't share with another Apple ID right now"
+        case .noAnswer: "Your tower didn't answer"
         case .refused: "This code can't be used"
         case .updateApp: "Update Watchtower on this iPhone"
-        case .updateMac: "Update Watchtower on this Mac"
+        case .updateMac: "Update Watchtower on this tower"
         case .iCloud: "Couldn't reach iCloud"
         case .local: "Couldn't set up sync on this iPhone"
-        case .tooManyMacs: "You can link up to \(HubRegistry.limit) Macs"
+        case .tooManyMacs: "You can link up to \(HubRegistry.limit) towers"
         case let .needsRelay(macName): "\(macName) works over Relay only"
         case .relayUnreachable: "Couldn't reach Relay"
         case let .macOnRelay(macName): "\(macName) runs over Relay"
@@ -49,15 +49,15 @@ enum LinkFailure: Equatable {
     /// What to do about it, under the title; nil when the title says it all.
     var hint: String? {
         switch self {
-        case .expired, .cannotShare, .refused: "Show a new code on the Mac"
-        case .signIn: "Watchtower uses iCloud to reach your Mac"
-        case .noAnswer: "Keep Settings → Mobile open on the Mac and scan again"
+        case .expired, .cannotShare, .refused: "Show a new code on the tower"
+        case .signIn: "Watchtower uses iCloud to reach your tower"
+        case .noAnswer: "Keep the code open on your tower and scan again"
         case .updateApp, .updateMac: nil
-        case .tooManyMacs: "Unlink one in Settings → Macs, then scan again"
+        case .tooManyMacs: "Unlink one in Settings → Towers, then scan again"
         case .needsRelay: "Relay isn't available on this iPhone"
         case .relayUnreachable: "Check your connection and scan again"
         case .macOnRelay: Self.macOnRelayHint
-        case .macNotOnRelay: "Open Watchtower on the Mac and try again"
+        case .macNotOnRelay: "Open Watchtower on the tower and try again"
         case let .iCloud(reason), let .local(reason): reason.isEmpty ? nil : reason
         }
     }
@@ -73,7 +73,7 @@ enum LinkFailure: Equatable {
     }
 
     /// Why a Mac on Relay is not linked over iCloud (the failure screen and the never-live link's notice).
-    static let macOnRelayHint = "This iPhone can't use Relay, so it would get no updates from it. Link it when the Mac is back on iCloud."
+    static let macOnRelayHint = "This iPhone can't use Relay, so it would get no updates from it. Link it when the tower is back on iCloud."
 
     /// The failure screen's one colour: its icon, never orange (spec §14).
     var toneUses: [ToneUse] {
