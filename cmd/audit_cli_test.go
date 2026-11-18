@@ -366,6 +366,10 @@ var cliNoContentCommands = map[string]bool{
 	"remind":                           true,
 	"session-host":                     true,
 	"slack add":                        true,
+	"slack app adopt":                  true, // updates the app's manifest; prints ids and the result only
+	"slack app create":                 true, // creates the app; prints ids and the result only
+	"slack app link":                   true,
+	"slack app status":                 true,
 	"slack backfill":                   true, // fetches into the database; prints counts only
 	"slack disable":                    true,
 	"slack enable":                     true,

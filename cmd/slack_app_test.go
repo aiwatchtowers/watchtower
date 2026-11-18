@@ -1,0 +1,246 @@
+package cmd
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io/fs"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/config"
+	"watchtower/internal/db"
+	"watchtower/internal/slackapp"
+)
+
+const (
+	slackAppTestToken  = "xoxe.xoxp-1-test-config-token"
+	slackAppTestSecret = "f4k3-client-secret-0123456789"
+)
+
+// fakeSlackAppServer is Slack's auth.test and apps.manifest.* over HTTP; its
+// create answer carries a client secret, signing secret and verification token.
+type fakeSlackAppServer struct {
+	mu       sync.Mutex
+	manifest string
+	calls    []string
+}
+
+func (f *fakeSlackAppServer) serve(t *testing.T) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		method := strings.TrimPrefix(r.URL.Path, "/")
+		f.calls = append(f.calls, method)
+		if r.Header.Get("Authorization") != "Bearer "+slackAppTestToken {
+			_, _ = w.Write([]byte(`{"ok":false,"error":"invalid_auth"}`))
+			return
+		}
+		switch method {
+		case "auth.test":
+			_, _ = w.Write([]byte(`{"ok":true,"team_id":"T0ACME","team":"Acme","expires_in":43200}`))
+		case "apps.manifest.create":
+			f.manifest = r.PostForm.Get("manifest")
+			_, _ = fmt.Fprintf(w, `{"ok":true,"app_id":"A0NEW","credentials":{"client_id":"1111.2222","client_secret":%q,"verification_token":"vt-%s","signing_secret":"ss-%s"},"oauth_authorize_url":"https://slack.com/oauth/v2/authorize?client_id=1111.2222","team_id":"T0ACME","team_domain":"acme"}`,
+				slackAppTestSecret, slackAppTestSecret, slackAppTestSecret)
+		case "apps.manifest.export":
+			_, _ = fmt.Fprintf(w, `{"ok":true,"manifest":%s}`, f.manifest)
+		case "apps.manifest.update":
+			f.manifest = r.PostForm.Get("manifest")
+			_, _ = w.Write([]byte(`{"ok":true,"app_id":"A0NEW","permissions_updated":false}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	old := slackAppAPI
+	slackAppAPI = func() slackapp.API { return slackapp.NewClient(srv.URL) }
+	t.Cleanup(func() { slackAppAPI = old })
+}
+
+func setupSlackAppWorkspace(t *testing.T) (*config.Config, string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeLegacyConfig(t, "")
+	cfg, err := config.Load(flagConfig)
+	require.NoError(t, err)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+	return cfg, home
+}
+
+func slackAppTestCmd(stdin string, flags map[string]string) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
+	c := &cobra.Command{}
+	c.Flags().Bool("json", false, "")
+	c.Flags().String("app-id", "", "")
+	c.Flags().String("team", "", "")
+	for k, v := range flags {
+		_ = c.Flags().Set(k, v)
+	}
+	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+	c.SetIn(strings.NewReader(stdin))
+	c.SetOut(out)
+	c.SetErr(errOut)
+	return c, out, errOut
+}
+
+// jsonLines decodes each line of out.
+func jsonLines(t *testing.T, out string) []map[string]any {
+	t.Helper()
+	var lines []map[string]any
+	for _, l := range strings.Split(strings.TrimSpace(out), "\n") {
+		var m map[string]any
+		require.NoError(t, json.Unmarshal([]byte(l), &m), l)
+		lines = append(lines, m)
+	}
+	return lines
+}
+
+func TestAppSetup_CreateJSONLines(t *testing.T) {
+	setupSlackAppWorkspace(t)
+	(&fakeSlackAppServer{}).serve(t)
+	c, out, _ := slackAppTestCmd(slackAppTestToken+"\n", map[string]string{"json": "true"})
+	require.NoError(t, runSlackAppCreate(c, nil))
+	lines := jsonLines(t, out.String())
+	require.Len(t, lines, 7)
+	assert.Equal(t, map[string]any{"step": "check_token", "state": "running"}, lines[0])
+	assert.Equal(t, map[string]any{"step": "write_link", "state": "done"}, lines[5])
+	assert.Equal(t, map[string]any{"result": "ok", "team_id": "T0ACME", "team_name": "Acme", "app_id": "A0NEW",
+		"client_id": "1111.2222", "link_written": true}, lines[6])
+
+	sc, sout, _ := slackAppTestCmd("", map[string]string{"json": "true"})
+	require.NoError(t, runSlackAppStatus(sc, nil))
+	assert.JSONEq(t, `{"setups":[{"team_id":"T0ACME","team_name":"Acme","app_id":"A0NEW","client_id":"1111.2222",
+		"connected":false,"link_written":true,"install_requested":false,"stage":"install"}]}`, sout.String())
+}
+
+func TestAppSetup_SecretNeverStored(t *testing.T) {
+	cfg, home := setupSlackAppWorkspace(t)
+	fake := &fakeSlackAppServer{}
+	fake.serve(t)
+	c, out, errOut := slackAppTestCmd(slackAppTestToken+"\n", map[string]string{"json": "true"})
+	require.NoError(t, runSlackAppCreate(c, nil))
+	require.Contains(t, out.String(), `"result":"ok"`)
+	require.Contains(t, fake.calls, "apps.manifest.create")
+
+	for _, secret := range []string{slackAppTestSecret, slackAppTestToken} {
+		assert.NotContains(t, out.String(), secret)
+		assert.NotContains(t, errOut.String(), secret)
+	}
+	root, err := os.OpenRoot(home)
+	require.NoError(t, err)
+	defer root.Close()
+	require.NoError(t, fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
+		require.NoError(t, err)
+		if d.IsDir() {
+			return nil
+		}
+		b, err := fs.ReadFile(root.FS(), path)
+		require.NoError(t, err)
+		assert.NotContains(t, string(b), slackAppTestSecret, path)
+		assert.NotContains(t, string(b), slackAppTestToken, path)
+		return nil
+	}))
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	defer database.Close()
+	dump := dumpEveryTable(t, database)
+	assert.Contains(t, dump, "1111.2222", "the dump does reach the setup record")
+	assert.NotContains(t, dump, slackAppTestSecret)
+	assert.NotContains(t, dump, slackAppTestToken)
+}
+
+// dumpEveryTable renders every row of every table as text.
+func dumpEveryTable(t *testing.T, d *db.DB) string {
+	t.Helper()
+	var names []string
+	func() {
+		rows, err := d.Query(`SELECT name FROM sqlite_master WHERE type = 'table'`)
+		require.NoError(t, err)
+		defer rows.Close()
+		for rows.Next() {
+			var n string
+			require.NoError(t, rows.Scan(&n))
+			names = append(names, n)
+		}
+		require.NoError(t, rows.Err())
+	}()
+	var b strings.Builder
+	for _, tbl := range names {
+		func() {
+			rows, err := d.Query(`SELECT * FROM "` + tbl + `"`)
+			require.NoError(t, err)
+			defer rows.Close()
+			cols, err := rows.Columns()
+			require.NoError(t, err)
+			for rows.Next() {
+				vals := make([]any, len(cols))
+				ptrs := make([]any, len(cols))
+				for i := range vals {
+					ptrs[i] = &vals[i]
+				}
+				require.NoError(t, rows.Scan(ptrs...))
+				for i, v := range vals {
+					if raw, ok := v.([]byte); ok {
+						vals[i] = string(raw)
+					}
+				}
+				fmt.Fprintf(&b, "%s %v\n", tbl, vals)
+			}
+			require.NoError(t, rows.Err())
+		}()
+	}
+	return b.String()
+}
+
+func TestAppSetup_TokenNeverInArgv(t *testing.T) {
+	for _, c := range []*cobra.Command{slackAppCreateCmd, slackAppAdoptCmd, slackAppLinkCmd} {
+		c.Flags().VisitAll(func(f *pflag.Flag) {
+			assert.NotContains(t, strings.ToLower(f.Name), "token", c.Name())
+		})
+		err := c.Args(c, []string{slackAppTestToken})
+		require.Error(t, err, c.Name())
+		assert.NotContains(t, err.Error(), slackAppTestToken, "the refusal does not echo the token")
+		require.NoError(t, c.Args(c, nil))
+	}
+}
+
+func TestAppSetup_EmptyStdinRefused(t *testing.T) {
+	setupSlackAppWorkspace(t)
+	fake := &fakeSlackAppServer{}
+	fake.serve(t)
+	c, _, _ := slackAppTestCmd("\n", map[string]string{"json": "true"})
+	err := runSlackAppCreate(c, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "stdin")
+	assert.Empty(t, fake.calls)
+}
+
+func TestAppSetup_BadTokenCLI(t *testing.T) {
+	setupSlackAppWorkspace(t)
+	fake := &fakeSlackAppServer{}
+	fake.serve(t)
+	c, out, _ := slackAppTestCmd("xoxe.wrong\n", map[string]string{"json": "true"})
+	require.NoError(t, runSlackAppCreate(c, nil))
+	lines := jsonLines(t, out.String())
+	assert.Equal(t, "bad_token", lines[len(lines)-1]["result"])
+	assert.Equal(t, []string{"auth.test"}, fake.calls)
+
+	h, _, _ := slackAppTestCmd("xoxe.wrong\n", nil)
+	err := runSlackAppCreate(h, nil)
+	require.Error(t, err, "without --json a failed setup exits non-zero")
+	assert.Contains(t, err.Error(), "bad_token")
+}

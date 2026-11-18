@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -422,39 +423,45 @@ func TestAdopt_SecretNeverStored(t *testing.T) {
 	assert.NotContains(t, fmt.Sprint(res), "their-secret-value")
 }
 
-// dumpDB renders every row of every table.
+// dumpDB renders every row of every table as text.
 func dumpDB(t *testing.T, d *db.DB) string {
 	t.Helper()
-	rows, err := d.Query(`SELECT name FROM sqlite_master WHERE type = 'table'`)
-	require.NoError(t, err)
-	var tables []string
-	for rows.Next() {
-		var n string
-		require.NoError(t, rows.Scan(&n))
-		tables = append(tables, n)
-	}
-	require.NoError(t, rows.Close())
-	out := ""
-	for _, tbl := range tables {
-		r, err := d.Query(`SELECT * FROM "` + tbl + `"`)
+	var names []string
+	func() {
+		rows, err := d.Query(`SELECT name FROM sqlite_master WHERE type = 'table'`)
 		require.NoError(t, err)
-		cols, err := r.Columns()
-		require.NoError(t, err)
-		for r.Next() {
-			vals := make([]any, len(cols))
-			ptrs := make([]any, len(cols))
-			for i := range vals {
-				ptrs[i] = &vals[i]
-			}
-			require.NoError(t, r.Scan(ptrs...))
-			for i, v := range vals {
-				if b, ok := v.([]byte); ok {
-					vals[i] = string(b)
-				}
-			}
-			out += fmt.Sprintf("%s %v\n", tbl, vals)
+		defer rows.Close()
+		for rows.Next() {
+			var n string
+			require.NoError(t, rows.Scan(&n))
+			names = append(names, n)
 		}
-		require.NoError(t, r.Close())
+		require.NoError(t, rows.Err())
+	}()
+	var b strings.Builder
+	for _, tbl := range names {
+		func() {
+			rows, err := d.Query(`SELECT * FROM "` + tbl + `"`)
+			require.NoError(t, err)
+			defer rows.Close()
+			cols, err := rows.Columns()
+			require.NoError(t, err)
+			for rows.Next() {
+				vals := make([]any, len(cols))
+				ptrs := make([]any, len(cols))
+				for i := range vals {
+					ptrs[i] = &vals[i]
+				}
+				require.NoError(t, rows.Scan(ptrs...))
+				for i, v := range vals {
+					if raw, ok := v.([]byte); ok {
+						vals[i] = string(raw)
+					}
+				}
+				fmt.Fprintf(&b, "%s %v\n", tbl, vals)
+			}
+			require.NoError(t, rows.Err())
+		}()
 	}
-	return out
+	return b.String()
 }
