@@ -168,6 +168,12 @@ final class OwnerAsksViewModel {
     /// Put on Bench's `workbench folder add` (`agent_suggestion`), which also
     /// refreshes FILES; set by `WorkbenchesViewModel`.
     @ObservationIgnored var addSuggestedFolder: ((_ path: String, _ projectID: Int64) async throws -> FolderResult)?
+    /// The bench a card's folder turned out to be on when Put on Bench ran
+    /// (F14, spec §7 "suggestion"): the card switches to the merge variant.
+    private(set) var folderMergeBench: [Int64: FolderSuggestionPayload.OtherBench] = [:]
+    /// Merge Benches… on a card: opens the merge confirmation for that
+    /// bench into the ask's; set by `WorkbenchesViewModel`.
+    @ObservationIgnored var offerMerge: ((_ ask: OwnerAsk, _ bench: FolderSuggestionPayload.OtherBench, _ path: String) async -> Void)?
     /// Each workbench's open asks the app saw bound to a session that has
     /// since been deleted (board #542): in the DB they are session-less like
     /// one filed outside the app; only this run of the app tells them apart.
@@ -932,9 +938,10 @@ final class OwnerAsksViewModel {
 
     /// `workbench folder add --added-by agent_suggestion` as the owner's
     /// action (§6.1), then the answer: the folder's stored name and how to
-    /// start there. A refused or failed add (another bench's folder
-    /// included — its merge variant is §6.13's) answers the agent with the
-    /// reason (`sendFolderFailure`).
+    /// start there. A folder that turned out to be on another bench switches
+    /// the card to the merge variant (F14; the agent hears how it ends: the
+    /// merge's added answer, or Not Now). Any other refused or failed add
+    /// answers the agent with the reason (`sendFolderFailure`).
     func putSuggestedFolderOnBench(_ ask: OwnerAsk) async {
         guard let suggestion = ask.folderSuggestion, claimFolderCard(ask.id) else { return }
         defer { folderWorking.remove(ask.id) }
@@ -948,6 +955,11 @@ final class OwnerAsksViewModel {
                 folderPhases[ask.id] = nil
                 let stored = result.folder?.name ?? name
                 await answer(ask, with: OwnerAskAnswer(note: FolderSuggestionPresentation.addedAnswer(name: stored)))
+                return
+            }
+            if result.code == .otherBench, let other = result.otherBench {
+                folderPhases[ask.id] = nil
+                folderMergeBench[ask.id] = FolderSuggestionPayload.OtherBench(id: other.id, name: other.name)
                 return
             }
             reason = result.reason
@@ -1030,6 +1042,24 @@ final class OwnerAsksViewModel {
         guard !isFolderCardWorking(askID) else { return false }
         folderWorking.insert(askID)
         return true
+    }
+
+    /// Merge Benches… on a card's merge variant (§6.13): the confirmation
+    /// for the folder's bench into the ask's. The card stays as it is until
+    /// the merge is done (`answerMergedSuggestion`) or the owner says Not Now.
+    func mergeBenches(_ ask: OwnerAsk) async {
+        guard let suggestion = ask.folderSuggestion, let bench = folderMergeBench[ask.id] ?? suggestion.otherBench,
+              claimFolderCard(ask.id) else { return }
+        defer { folderWorking.remove(ask.id) }
+        await offerMerge?(ask, bench, suggestion.path)
+    }
+
+    /// The merge a card offered is done: the folder is on the ask's bench
+    /// now as `name`, which the agent hears as Put on Bench's answer.
+    func answerMergedSuggestion(askID: Int64, name: String) async {
+        folderMergeBench[askID] = nil
+        guard let ask = openAsks.values.lazy.flatMap({ $0 }).first(where: { $0.id == askID }) else { return }
+        await answer(ask, with: OwnerAskAnswer(note: FolderSuggestionPresentation.addedAnswer(name: name)))
     }
 
     /// `OK` on a failed card: it goes (the agent already has the reason).

@@ -773,6 +773,9 @@ final class WorkbenchesViewModel {
             guard let self else { throw FolderSuggestionError.noCLI }
             return try await self.addSuggestedFolder(path: path, projectID: projectID)
         }
+        asks.offerMerge = { [weak self] ask, bench, path in
+            await self?.offerMerge(fromID: bench.id, fromName: bench.name, into: ask.projectID, path: path, askID: ask.id)
+        }
         // A line (an answer's) is held while its session waits on a permission
         // prompt and goes once the states show it answered (PROJ-12); its
         // Return only into a session whose hooks reported this run (a

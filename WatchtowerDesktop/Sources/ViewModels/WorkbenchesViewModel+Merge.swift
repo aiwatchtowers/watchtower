@@ -6,24 +6,25 @@ import WatchtowerCore
 /// merge that bench into this one. Go does the merge (`workbench merge`);
 /// the Desktop asks, shows the refusal, and afterwards FILES and the list.
 extension WorkbenchesViewModel {
-    /// Opens the merge confirmation for bench `other` into `projectID`, read
-    /// from the database now (its name, targets and folders). `askID`: the
-    /// folder suggestion it came from, answered once the merge is done.
-    func offerMerge(from other: FolderResult.OtherBench, into projectID: Int64, path: String, askID: Int64? = nil) async {
+    /// Opens the merge confirmation for bench `fromID` into `projectID`,
+    /// read from the database now (the names, its targets and folders).
+    /// `askID`: the folder suggestion it came from, answered once the merge
+    /// is done.
+    func offerMerge(fromID: Int64, fromName: String, into projectID: Int64, path: String, askID: Int64? = nil) async {
         do {
             mergeOffer = try await dbPool.read { db in
                 let into = try WorkbenchQueries.fetch(db, id: projectID)
-                let from = try WorkbenchQueries.fetch(db, id: other.id)
-                let folders = try WorkbenchFolderQueries.benchFolders(db, workbenchID: other.id).live.map(\.name)
+                let from = try WorkbenchQueries.fetch(db, id: fromID)
                 return BenchMergeOffer(
-                    fromID: other.id, fromName: from?.name ?? other.name, intoID: projectID, intoName: into?.name ?? "",
-                    targets: try WorkbenchQueries.targetCount(db, workbenchID: other.id), folders: folders,
+                    fromID: fromID, fromName: from?.name ?? fromName, intoID: projectID, intoName: into?.name ?? "",
+                    targets: try WorkbenchQueries.targetCount(db, workbenchID: fromID),
+                    folders: try WorkbenchFolderQueries.benchFolders(db, workbenchID: fromID).live.map(\.name),
                     path: path, askID: askID
                 )
             }
         } catch {
-            print("[WorkbenchMerge] reading workbench \(other.id) for the merge failed: \(error)")
-            putOnBenchErrors[projectID] = BenchMergePresentation.failed(from: other.name, reason: error.localizedDescription)
+            print("[WorkbenchMerge] reading workbench \(fromID) for the merge failed: \(error)")
+            putOnBenchErrors[projectID] = BenchMergePresentation.failed(from: fromName, reason: error.localizedDescription)
         }
     }
 
@@ -64,6 +65,9 @@ extension WorkbenchesViewModel {
             }
             return
         }
+        // Best-effort steps after the move: the data is whole either way.
+        if !result.imagesError.isEmpty { print("[WorkbenchMerge] moving the target images failed: \(result.imagesError)") }
+        if !result.indexError.isEmpty { print("[WorkbenchMerge] re-indexing the documents failed: \(result.indexError)") }
         await reload()
         await loadBenchFolders(projectID: offer.intoID)
         applyMergeReinstall(result, projectID: offer.intoID)
@@ -80,6 +84,21 @@ extension WorkbenchesViewModel {
     /// OK on the refusal dialog.
     func dismissMergeRefusal() {
         mergeRefusal = nil
+    }
+
+    /// The launch backstop for the Desktop's own launches (resume, Start
+    /// fresh; spec §6.13, D37): a folder still installed for another (a
+    /// merged) bench gets its own bench's install from Go first. Best effort:
+    /// the launch goes on whatever it answers.
+    func ensureInstallBeforeLaunch(_ row: TerminalSession) async {
+        guard let projectID = row.projectID, row.kind.agent != nil, let cli,
+              WorkbenchInstallCheck.needsReinstall(folder: row.folderPath, workbenchID: projectID) else { return }
+        do {
+            let result = try await cli.ensureInstall(sessionID: row.id)
+            if !result.ok { print("[WorkbenchMerge] reinstalling for session \(row.id) failed: \(result.error)") }
+        } catch {
+            print("[WorkbenchMerge] workbench session ensure-install for session \(row.id) failed: \(error)")
+        }
     }
 
     /// The moved folders' install flags as the merge's reinstall left them:

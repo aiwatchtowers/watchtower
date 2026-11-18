@@ -44,7 +44,7 @@ package enum BenchMergePresentation {
 
     // MARK: Suggestion card, merge variant
 
-    package static func cardTitle(name: String, bench: String) -> String {
+    package static func cardLine(name: String, bench: String) -> String {
         "\(name) is on the “\(bench)” bench"
     }
 
@@ -69,8 +69,14 @@ package struct BenchMergeOffer: Equatable, Sendable, Identifiable {
     package var id: Int64 { fromID }
 
     package init(
-        fromID: Int64, fromName: String, intoID: Int64, intoName: String, targets: Int, folders: [String],
-        path: String, askID: Int64?
+        fromID: Int64,
+        fromName: String,
+        intoID: Int64,
+        intoName: String,
+        targets: Int,
+        folders: [String],
+        path: String,
+        askID: Int64?
     ) {
         self.fromID = fromID
         self.fromName = fromName

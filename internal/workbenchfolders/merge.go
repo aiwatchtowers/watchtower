@@ -416,9 +416,12 @@ func countBenchLiveRows(ctx context.Context, tx *sql.Tx, wb int64, asked bool, m
 // sessionCwds is every place the merged bench's agent sessions ran in: the
 // rows' folder_path and every worktree root they reported.
 func sessionCwds(ctx context.Context, tx *sql.Tx, wb int64) ([]string, error) {
+	// A row being deleted (#1716) is on its way out with its worktree: no
+	// install goes there.
 	rows, err := tx.QueryContext(ctx, `SELECT folder_path FROM terminal_sessions WHERE project_id = ? AND kind <> 'shell'
+		AND `+db.NotDeletingSQL+`
 		UNION SELECT w.root FROM terminal_session_worktrees w JOIN terminal_sessions s ON s.id = w.session_id
-		WHERE s.project_id = ? AND s.kind <> 'shell'`, wb, wb)
+		WHERE s.project_id = ? AND s.kind <> 'shell' AND s.`+db.NotDeletingSQL, wb, wb)
 	if err != nil {
 		return nil, fmt.Errorf("reading the session folders of workbench %d: %w", wb, err)
 	}

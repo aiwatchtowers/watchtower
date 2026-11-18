@@ -43,7 +43,7 @@ final class BenchMergePresentationTests: XCTestCase {
     }
 
     func testCardVariant() {
-        XCTAssertEqual(Copy.cardTitle(name: "billing", bench: "tools"), "billing is on the “tools” bench")
+        XCTAssertEqual(Copy.cardLine(name: "billing", bench: "tools"), "billing is on the “tools” bench")
         XCTAssertEqual(Copy.mergeBenches, "Merge Benches…")
         XCTAssertEqual(Copy.notNow, "Not Now")
     }

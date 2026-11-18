@@ -85,6 +85,12 @@ type workbenchMergeJSON struct {
 	MovedFolders []folderJSON       `json:"moved_folders"`
 	Targets      int                `json:"targets"`
 	Reinstall    mergeReinstallJSON `json:"reinstall"`
+	// The target images' move to the surviving bench's store (best effort:
+	// a failed one keeps them where they were, still shown).
+	ImagesOK    bool   `json:"images_ok"`
+	ImagesError string `json:"images_error"`
+	// The surviving bench's re-index (index_ok, index_error, index_skipped).
+	workbenchIndexJSON
 }
 
 // mergeLiveSessions counts the session host's live runs of a workbench's
@@ -183,16 +189,18 @@ func runWorkbenchMerge(cmd *cobra.Command, _ []string) error {
 			out.Reinstall.Failed = append(out.Reinstall.Failed, mergeFailedJSON{Path: path, Error: rerr.Error()})
 		}
 	}
+	out.ImagesOK = true
 	if ierr := moveTargetImages(ctx, cfg, database, from.ID, into.ID); ierr != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: moving the target images of workbench %d failed: %v (they stay where they were and still show)\n",
 			from.ID, ierr)
+		out.ImagesOK, out.ImagesError = false, ierr.Error()
 	}
 	// F20: B's documents leave the index (done with knowledge search off
 	// too, as a folder remove does), then A's folders are indexed.
 	if _, derr := kb.DropWorkbenchDocs(ctx, database, from.ID); derr != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: dropping workbench %d's documents from search failed: %v\n", from.ID, derr)
 	}
-	indexWorkbenchDocs(cmd, cfg.Knowledge.Enabled, database, into.ID)
+	out.workbenchIndexJSON = indexWorkbenchDocs(cmd, cfg.Knowledge.Enabled, database, into.ID)
 	if into, err = database.GetWorkbench(into.ID); err != nil {
 		return err
 	}

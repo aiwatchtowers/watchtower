@@ -73,18 +73,28 @@ package enum FolderSuggestionPresentation {
         WorkbenchFolderPresentation.putOnBenchFailed(name: name, reason: reason)
     }
 
+    /// `otherBench`: the bench the folder turned out to be on when Put on
+    /// Bench ran (F14), else the one the suggestion was filed with. On
+    /// another bench the card is the merge variant (§6.13, mockup
+    /// `suggest-card-merge`): its line reads `<name> is on the “<B>” bench`,
+    /// its buttons `Merge Benches…` · `Not Now`.
     package static func card(
-        _ suggestion: FolderSuggestionPayload, sessionTitle: String?, phase: Phase, home: String = NSHomeDirectory()
+        _ suggestion: FolderSuggestionPayload,
+        sessionTitle: String?,
+        phase: Phase,
+        otherBench: FolderSuggestionPayload.OtherBench? = nil,
+        home: String = NSHomeDirectory()
     ) -> Card {
         let name = folderName(suggestion.path)
-        let subtitle: String
+        let bench = (otherBench ?? suggestion.otherBench)?.name
         switch phase {
         case let .failed(line), let .unsent(line):
-            subtitle = line
+            return Card(title: title(name: name), subtitle: line, phase: phase, otherBench: bench)
         case .ready, .busy:
-            subtitle = Self.subtitle(sessionTitle: sessionTitle, path: suggestion.path, touches: suggestion.touches, home: home)
+            let subtitle = bench.map { BenchMergePresentation.cardLine(name: name, bench: $0) }
+                ?? Self.subtitle(sessionTitle: sessionTitle, path: suggestion.path, touches: suggestion.touches, home: home)
+            return Card(title: title(name: name), subtitle: subtitle, phase: phase, otherBench: bench)
         }
-        return Card(title: title(name: name), subtitle: subtitle, phase: phase, otherBench: suggestion.otherBench?.name)
     }
 
     // MARK: Answer lines (the ask's note, read with get_ask)

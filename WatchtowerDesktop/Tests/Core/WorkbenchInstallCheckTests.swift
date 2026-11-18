@@ -4,7 +4,9 @@ import XCTest
 /// The launch backstop's read of a folder's installed workbench (spec §6.13, D37).
 final class WorkbenchInstallCheckTests: XCTestCase {
     private func settings(_ ids: [Int64]) -> Data {
-        let hooks = ids.map { #"{"type":"command","command":"'/Applications/Watch Tower/watchtower' workbench session-state --workbench \#($0)","async":true}"# }
+        let hooks = ids.map {
+            #"{"type":"command","command":"'/Applications/Watch Tower/watchtower' workbench session-state --workbench \#($0)","async":true}"#
+        }
         return Data(#"{"model":"sonnet","hooks":{"UserPromptSubmit":[{"hooks":[\#(hooks.joined(separator: ","))]}]}}"#.utf8)
     }
 

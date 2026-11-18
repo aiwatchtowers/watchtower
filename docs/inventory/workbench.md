@@ -884,8 +884,17 @@ separation of boards.
 - `WatchtowerDesktop/Tests/Core/WorkbenchMoveTargetTests.swift` — the `testProj09_*` Desktop twins (`testProj09_UpdateParentRefusesACycle` for Suggest Links)
 - `WatchtowerDesktop/Tests/WorkbenchBoardViewModelTests.swift::testMoveReportsBothRolledUpParentsAndExpandsTheNewOne`
   (both rolled-up parents count as the owner's writes)
+- `internal/workbenchfolders/merge_test.go` — `TestProj09_MergeMovesEveryTargetWithItsTree` (the merge amendment below)
 
 **Locked since:** 2026-10-02
+
+*2026-11-18 amendment (multi-folder workbench, spec §6.13, ask #1548):* merging
+bench B into bench A (`workbench merge --from B --into A`,
+`workbenchfolders.Merge`) moves every target of B, with its tree intact —
+parents, children and statuses — onto A's board, each in A's first column of
+its status (PROJ-19); PROJ-05's rollup is suspended for that one update (the
+trees move whole) and works on the moved tree afterwards. This is the only way
+a target leaves its workbench; a single target's move stays within its own.
 
 ## PROJ-10 — a branch switch from the header never loses work, never runs unconfirmed, never pops the install dialog
 

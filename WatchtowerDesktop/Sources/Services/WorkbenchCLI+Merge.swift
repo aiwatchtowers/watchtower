@@ -22,6 +22,11 @@ struct BenchMergeResult: Decodable, Equatable {
     let movedFolders: [FolderInfo]
     let targets: Int
     let reinstall: Reinstall
+    /// The target images' move to the surviving bench's store (best effort;
+    /// a failed one leaves them where they were, still shown). Absent = ok.
+    let imagesError: String
+    /// The surviving bench's re-index of its documents. Absent = ok.
+    let indexError: String
 
     var code: WorkbenchRefusalCode? { WorkbenchRefusalCode(rawValue: errorCode) }
     var reason: String { WorkbenchRefusalCode.sentence(error, code: errorCode) }
@@ -30,6 +35,8 @@ struct BenchMergeResult: Decodable, Equatable {
         case ok, error, running, targets, reinstall
         case errorCode = "error_code"
         case movedFolders = "moved_folders"
+        case imagesError = "images_error"
+        case indexError = "index_error"
     }
 
     init(from decoder: Decoder) throws {
@@ -41,6 +48,8 @@ struct BenchMergeResult: Decodable, Equatable {
         movedFolders = try c.decodeIfPresent([FolderInfo].self, forKey: .movedFolders) ?? []
         targets = try c.decodeIfPresent(Int.self, forKey: .targets) ?? 0
         reinstall = try c.decodeIfPresent(Reinstall.self, forKey: .reinstall) ?? Reinstall(ok: true, failed: [])
+        imagesError = try c.decodeIfPresent(String.self, forKey: .imagesError) ?? ""
+        indexError = try c.decodeIfPresent(String.self, forKey: .indexError) ?? ""
     }
 }
 
