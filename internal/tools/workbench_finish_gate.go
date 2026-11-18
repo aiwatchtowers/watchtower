@@ -60,6 +60,9 @@ type ReviewSnapshot struct {
 	Head string
 	// Branch is the task branch read at its tip; "" for a folder snapshot.
 	Branch string
+	// Source is the review_rounds.source of the place; BaseLabel the
+	// base's label (what a round there stores).
+	Source, BaseLabel string
 	// FolderHead is the folder's checked-out branch on a branch-tip place
 	// ("" = a detached HEAD).
 	FolderHead string
@@ -103,7 +106,8 @@ func SnapshotReviewSession(ctx context.Context, d *db.DB, p *db.Workbench, sessi
 	if err != nil {
 		return ReviewSnapshot{}, err
 	}
-	snap := ReviewSnapshot{Repo: repo, Folder: src.Folder, Tree: tree, Base: base.SHA, Empty: same, Head: head, Branch: src.Branch()}
+	snap := ReviewSnapshot{Repo: repo, Folder: src.Folder, Tree: tree, Base: base.SHA, Empty: same, Head: head, Branch: src.Branch(),
+		Source: src.Source(), BaseLabel: base.Label}
 	if src.Tip == nil {
 		return snap, nil
 	}

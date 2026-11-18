@@ -46,7 +46,27 @@ type Item struct {
 	Exclude       []int64
 	Profile       string
 	Instructions  string
+	// Findings are the spec review's findings of a review_doc item, by key:
+	// what the reply's marks may name.
+	Findings []Finding
 }
+
+// Finding is one keyed finding of a spec review the twin may mark.
+type Finding struct {
+	Key  string `json:"key"`
+	Text string `json:"text"`
+}
+
+// TwinMarkReply is the twin's mark on one finding of a review_doc item:
+// State ok, comment or not_useful; Body its words on a comment.
+type TwinMarkReply struct {
+	Key   string `json:"key"`
+	State string `json:"state"`
+	Body  string `json:"body"`
+}
+
+// markStates are the states a twin mark may carry.
+var markStates = map[string]bool{"ok": true, "comment": true, "not_useful": true}
 
 // The twin's handoff values (spec §4 "Hand to the owner", D35): owner_only
 // when the step needs the owner's own hands (a token, a sign-in, a command
@@ -59,10 +79,12 @@ const (
 // Decision is the twin's validated answer. Confidence is low, medium or high;
 // Importance is low or high; Handoff is HandoffNone or HandoffOwnerOnly (a
 // reply without it is none). PrecedentIDs holds only ids that were retrieved
-// for the item.
+// for the item. Marks, only for a review_doc item, holds only marks on the
+// item's findings with a known state.
 type Decision struct {
 	Choice, Rationale, Category, Confidence, Importance, Handoff string
 	PrecedentIDs                                                 []int64
+	Marks                                                        []TwinMarkReply
 	Usage                                                        *digest.Usage
 }
 
@@ -117,16 +139,18 @@ type decideInput struct {
 	Precedents   []decidePrecedent `json:"precedents"`
 	Profile      string            `json:"profile"`
 	Instructions string            `json:"instructions"`
+	Findings     []Finding         `json:"findings,omitempty"`
 }
 
 type decideReply struct {
-	Choice       string  `json:"choice"`
-	Rationale    string  `json:"rationale"`
-	PrecedentIDs []int64 `json:"precedent_ids"`
-	Confidence   string  `json:"confidence"`
-	Category     string  `json:"category"`
-	Importance   string  `json:"importance"`
-	Handoff      string  `json:"handoff"`
+	Choice       string          `json:"choice"`
+	Rationale    string          `json:"rationale"`
+	PrecedentIDs []int64         `json:"precedent_ids"`
+	Confidence   string          `json:"confidence"`
+	Category     string          `json:"category"`
+	Importance   string          `json:"importance"`
+	Handoff      string          `json:"handoff"`
+	Marks        []TwinMarkReply `json:"marks"`
 }
 
 // Decide retrieves the item's precedents, asks the model on the strong tier
@@ -149,7 +173,7 @@ func Decide(ctx context.Context, d *db.DB, gen digest.Generator, store *prompts.
 	if err != nil {
 		return Decision{Usage: usage}, fmt.Errorf("watchman decide: generating: %w", err)
 	}
-	dec, err := parseDecision(raw, it.Options, ps)
+	dec, err := parseDecision(raw, it, ps)
 	dec.Usage = usage
 	if err != nil {
 		return dec, fmt.Errorf("%w: %w", ErrBadReply, err)
@@ -164,6 +188,9 @@ func buildDecideUser(it Item, ps []db.WatchmanPrecedent) (string, error) {
 	in := decideInput{
 		Category: it.Category, Situation: it.Situation, Options: it.Options,
 		Precedents: make([]decidePrecedent, 0, len(ps)), Profile: it.Profile, Instructions: it.Instructions,
+	}
+	if it.Category == CategoryReviewDoc {
+		in.Findings = it.Findings
 	}
 	if in.Options == nil {
 		in.Options = []string{}
@@ -182,8 +209,10 @@ func buildDecideUser(it Item, ps []db.WatchmanPrecedent) (string, error) {
 }
 
 // parseDecision decodes the reply (one surrounding code fence dropped),
-// checks the enums and the choice, and keeps only retrieved precedent ids.
-func parseDecision(raw string, options []string, ps []db.WatchmanPrecedent) (Decision, error) {
+// checks the enums and the choice, and keeps only retrieved precedent ids
+// and, for a review_doc item, marks on its findings.
+func parseDecision(raw string, it Item, ps []db.WatchmanPrecedent) (Decision, error) {
+	options := it.Options
 	var r decideReply
 	if err := json.Unmarshal([]byte(trimJSONFence(strings.TrimSpace(raw))), &r); err != nil {
 		return Decision{}, fmt.Errorf("watchman decide: the reply is not a JSON object: %w", err)
@@ -230,7 +259,34 @@ func parseDecision(raw string, options []string, ps []db.WatchmanPrecedent) (Dec
 			known[id] = false // once
 		}
 	}
+	if it.Category == CategoryReviewDoc {
+		dec.Marks = keptMarks(r.Marks, it.Findings)
+	}
 	return dec, nil
+}
+
+// keptMarks keeps the marks on known finding keys with a known state, the
+// last one on a key winning; unknown ones are dropped.
+func keptMarks(marks []TwinMarkReply, findings []Finding) []TwinMarkReply {
+	known := make(map[string]bool, len(findings))
+	for _, f := range findings {
+		known[f.Key] = true
+	}
+	var out []TwinMarkReply
+	at := map[string]int{}
+	for _, m := range marks {
+		m.Key, m.State, m.Body = strings.TrimSpace(m.Key), strings.TrimSpace(m.State), strings.TrimSpace(m.Body)
+		if !known[m.Key] || !markStates[m.State] {
+			continue
+		}
+		if i, ok := at[m.Key]; ok {
+			out[i] = m
+			continue
+		}
+		at[m.Key] = len(out)
+		out = append(out, m)
+	}
+	return out
 }
 
 // trimJSONFence drops one surrounding ``` fence (and its info string).

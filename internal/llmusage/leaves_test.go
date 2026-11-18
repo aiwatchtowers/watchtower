@@ -57,6 +57,7 @@ var knownNonLLMExec = map[string]string{
 	"extract.(*helperOCR).run":           "the Vision OCR helper",
 	"extract.runCodesign":                "codesign --verify of the OCR helper",
 	"watchman.ExecGit":                   "git (the Watchman git source reads history, no model call)",
+	"watchmanact.ExecRun":                "gh pr view / gh api for the twin's review Approve (the PR's base, the default branch), no model call",
 	"gitbin.run":                         "git",
 	"hub.bridgeLauncher":                 "starts the CloudKit bridge helper (WatchtowerCloudBridge.app, no model call)",
 	"main.spawnGrandchild":               "the transport contract suite's fake CLI (internal/transporttest/fakecli) starting its own copy to hold stdout",

@@ -249,3 +249,33 @@ func TestDecide_HandoffUnknownIsBadReply(t *testing.T) {
 	require.ErrorContains(t, err, `unknown handoff "maybe"`)
 	require.NotNil(t, dec.Usage)
 }
+
+// Marks are read only for a review_doc item, and only on its findings: an
+// unknown key or state is dropped, the last mark on a key wins; the
+// findings reach the model only for review_doc.
+func TestDecide_MarksOnlyForReviewDoc(t *testing.T) {
+	d, wb, _ := decideFixture(t)
+	marks := []map[string]string{
+		{"key": "a:1", "state": "ok"},
+		{"key": "b:2", "state": "comment", "body": "say why"},
+		{"key": "gone:9", "state": "ok"},
+		{"key": "a:1", "state": "not_useful"},
+		{"key": "b:2", "state": "viewed"},
+	}
+	it := decideItem(wb)
+	it.Category, it.Options = CategoryReviewDoc, []string{"approve", "changes"}
+	it.Findings = []Finding{{Key: "a:1", Text: "cache in sqlite"}, {Key: "b:2", Text: "no migration plan"}}
+	gen := &decideGen{out: reply(t, map[string]any{"choice": "changes", "category": "review_doc", "marks": marks})}
+	dec, err := Decide(context.Background(), d, gen, nil, it)
+	require.NoError(t, err)
+	require.Equal(t, []TwinMarkReply{{Key: "a:1", State: "not_useful"}, {Key: "b:2", State: "comment", Body: "say why"}}, dec.Marks)
+	require.Equal(t, it.Findings, decideData(t, gen.user).Findings)
+
+	design := decideItem(wb)
+	design.Findings = it.Findings
+	gen.out = reply(t, map[string]any{"marks": marks})
+	dec, err = Decide(context.Background(), d, gen, nil, design)
+	require.NoError(t, err)
+	require.Empty(t, dec.Marks, "marks are read only for review_doc")
+	require.Empty(t, decideData(t, gen.user).Findings, "findings go to the model only for review_doc")
+}
