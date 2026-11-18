@@ -1371,6 +1371,9 @@ func wireSlackSyncers(database *db.DB, cfg *config.Config, logger *log.Logger) [
 	// is workspace-wide (issue_slack_links is deliberately not account-scoped)
 	// and its only mutable state is behind a mutex.
 	keyDetector := newIssueKeyDetector(cfg, database, logger)
+	// One deny source for every account too: a damaged company file is then
+	// logged once, not once per account.
+	deny := linkDenySource(cfg, logger)
 	var orchestrators []*sync.Orchestrator
 	for _, acct := range accounts {
 		store := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), acct.ID)
@@ -1389,6 +1392,7 @@ func wireSlackSyncers(database *db.DB, cfg *config.Config, logger *log.Logger) [
 		client.SetLogger(logger)
 		orch := sync.NewOrchestrator(database, client, cfg, acct.ID)
 		orch.SetLogger(logger)
+		orch.SetDenyHosts(deny)
 		orch.SetTokenTeam(token.TeamID)
 		orch.SetTokenScope(token.Scope)
 		if keyDetector != nil {
@@ -1960,6 +1964,13 @@ func buildLinearSyncers(cfg *config.Config, database *db.DB, logger *log.Logger)
 	return syncers
 }
 
+// linkDenySource is the link deny list every media path reads afresh: the
+// build seed, the config, the stored company bundles and the forced MDM one
+// (companyForcedBundle, read at each call).
+func linkDenySource(cfg *config.Config, logger *log.Logger) func() []string {
+	return media.DenySource(cfg, cfg.WorkspaceDir(), func() string { return companyForcedBundle() }, logger)
+}
+
 // newMediaPipeline builds the media describe pass: the owner's uploads open
 // through the local opener (chat_files, project_files only); the run builds
 // its own web fetcher over the synced and denied hosts. Source openers are
@@ -1971,7 +1982,7 @@ func newMediaPipeline(cfg *config.Config, database *db.DB, gen digest.Generator,
 		DB:           database,
 		Gen:          gen,
 		Prompts:      prompts.New(database, nil),
-		DenyHosts:    media.DenyHosts(cfg),
+		DenyHosts:    linkDenySource(cfg, logger),
 		Openers:      map[string]media.Opener{"chat": local, "target": local, "gmail": gmailMediaOpener(cfg, database), "imap": imapMediaOpener(cfg, database, logger)},
 		WorkspaceDir: wd,
 		Logger:       logger,

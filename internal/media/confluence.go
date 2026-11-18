@@ -28,16 +28,34 @@ import (
 // unreachable.
 var confluenceAttachmentWait = 24 * time.Hour
 
+// confluenceDenyRefresh is how long a Confluence recorder reuses its read of
+// the deny list (company files and the forced bundle) before reading again.
+const confluenceDenyRefresh = time.Minute
+
 // ConfluenceRecorder is the extsync engine's media seam (Options.Media) for
 // Confluence: refs replace the document's image and link rows. External
 // image URLs and links are checked again with Fetchable against the synced
-// sources, the connected sites and denyHosts (DenyHosts(cfg)), and a link's
-// content key is its normalized URL; anything Fetchable refuses is not
-// recorded. Content older than media_state.start_at records nothing. When
-// an attachment's image row is replaced (a new version, or no longer an
-// image), the page's inline image of it ("att:<title>") is reset to
-// pending in the same transaction, so it copies the new description.
-func ConfluenceRecorder(denyHosts []string) extsync.MediaRecorder {
+// sources, the connected sites and denyHosts() (DenySource; nil for none),
+// and a link's content key is its normalized URL; anything Fetchable
+// refuses is not recorded. The recorder runs inside the item's write
+// transaction, so denyHosts() is read at most once per
+// confluenceDenyRefresh, not per document. Content older than
+// media_state.start_at records nothing. When an attachment's image row is
+// replaced (a new version, or no longer an image), the page's inline image
+// of it ("att:<title>") is reset to pending in the same transaction, so it
+// copies the new description.
+func ConfluenceRecorder(denyHosts func() []string) extsync.MediaRecorder {
+	var denyMu sync.Mutex
+	var deny []string
+	var denyAt time.Time
+	currentDeny := func() []string {
+		denyMu.Lock()
+		defer denyMu.Unlock()
+		if now := time.Now(); denyAt.IsZero() || now.Sub(denyAt) >= confluenceDenyRefresh || now.Before(denyAt) {
+			deny, denyAt = readDeny(denyHosts), now
+		}
+		return deny
+	}
 	return func(ctx context.Context, q extsync.Queryer, sourceID int64, extID string, refs []extsync.MediaRef, contentAt time.Time) error {
 		p := db.MediaParent{Kind: "confluence", ExtSourceID: sourceID, ExtID: extID, ContentAt: contentAt}
 		before, err := attachmentImageLocators(ctx, q, p.Key())
@@ -51,7 +69,7 @@ func ConfluenceRecorder(denyHosts []string) extsync.MediaRecorder {
 			if r.Kind == "link" || strings.HasPrefix(r.Locator, "url:") {
 				if refused == nil {
 					var err error
-					if refused, err = RefusedHosts(ctx, q, denyHosts); err != nil {
+					if refused, err = RefusedHosts(ctx, q, currentDeny()); err != nil {
 						return err
 					}
 				}
