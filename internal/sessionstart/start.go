@@ -26,6 +26,7 @@ import (
 	"watchtower/internal/providers"
 	"watchtower/internal/sessionagent"
 	"watchtower/internal/sessionhost"
+	"watchtower/internal/sessionmsg"
 	"watchtower/internal/workbenchfolders"
 	"watchtower/internal/workbenchgit"
 )
@@ -418,9 +419,35 @@ func Start(ctx context.Context, d Deps, r handlers.StartRequest) (handlers.Start
 	}
 	defer done()
 	if err := st.finish(ctx); err != nil {
+		tellParentOfFailedStart(ctx, d, st.id, err)
 		return handlers.StartResult{SessionID: st.id, State: StateFailed}, err
 	}
 	return handlers.StartResult{SessionID: st.id, State: StateRunning}, nil
+}
+
+// tellParentOfFailedStart queues a failure line to the parent of
+// sub-session id when its start failed with a reason on the row (spec §7
+// "launch fails after the host answered"): the parent asked for it and
+// would otherwise wait on a child that never ran. A start refused because the
+// row runs already tells nothing. Best effort, logged.
+func tellParentOfFailedStart(ctx context.Context, d Deps, id int64, startErr error) {
+	if startErr == nil || errors.Is(startErr, ErrAlreadyLaunched) {
+		return
+	}
+	ctx = context.WithoutCancel(ctx)
+	var reason string
+	err := d.DB.QueryRowContext(ctx, `SELECT COALESCE(agent_error, '') FROM terminal_sessions
+		WHERE id = ? AND parent_session_id IS NOT NULL AND `+db.NotDeletingSQL, id).Scan(&reason)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && reason == "") {
+		return // no parent, the row is gone, or no failure recorded
+	}
+	if err != nil {
+		log.Printf("sessionstart: session %d: its failed start could not be read for its parent (%s)", id, errClass(err))
+		return
+	}
+	if _, err := sessionmsg.QueueStartFailure(ctx, d.DB, id, reason); err != nil {
+		log.Printf("sessionstart: session %d: its parent was not told of the failed start (%s)", id, errClass(err))
+	}
 }
 
 // Begin writes a new session's row (Starting…, in its bench folder) and
@@ -441,7 +468,10 @@ func Begin(ctx context.Context, d Deps, r handlers.StartRequest) (handlers.Start
 // bench fails the row with its refusal) and Claude session id; brief (else the target's
 // work-on prompt) and planFirst make the first prompt. A row the host
 // already runs is refused. Failures are recorded on the row as Start's are.
-func Finish(ctx context.Context, d Deps, sessionID int64, place, brief string, planFirst bool) error {
+func Finish(ctx context.Context, d Deps, sessionID int64, place, brief string, planFirst bool) (err error) {
+	defer func() {
+		tellParentOfFailedStart(ctx, d, sessionID, err)
+	}()
 	choice, err := parseChoice(place)
 	if err != nil {
 		return err

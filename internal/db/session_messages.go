@@ -1,10 +1,12 @@
 package db
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -86,11 +88,22 @@ func (db *DB) SettleSessionMessage(ctx context.Context, id int64, state, reason 
 	}
 	var deliveredAt any
 	if state == SessionMessageDelivered {
-		deliveredAt = at.UTC().Format(time.RFC3339)
+		// Millisecond precision (agent_state_at's layout): a hook stamped in
+		// the same second but before the paste is not after it.
+		deliveredAt = at.UTC().Format(agentStateAtLayout)
 	}
 	res, err := db.ExecContext(ctx, `UPDATE session_messages SET state = ?, reason = ?, delivered_at = ?
 		WHERE id = ? AND state IN ('queued','delivering')`, state, reason, deliveredAt, id)
 	return requireMessageMoved(res, err, id, "settling")
+}
+
+// FailQueuedSessionMessage fails message id with reason only while it is
+// still queued (never a row another tick has claimed); a row in any other
+// state is ErrSessionMessageNotPending.
+func (db *DB) FailQueuedSessionMessage(ctx context.Context, id int64, reason string) error {
+	res, err := db.ExecContext(ctx, `UPDATE session_messages SET state = 'failed', reason = ? WHERE id = ? AND state = 'queued'`,
+		reason, id)
+	return requireMessageMoved(res, err, id, "failing")
 }
 
 // RequeueSessionMessage puts claimed message id back in the queue: the
@@ -128,9 +141,16 @@ func (db *DB) UnclearedPromptMessages(ctx context.Context) ([]SessionMessage, er
 }
 
 func (db *DB) sessionMessages(ctx context.Context, what, where string) ([]SessionMessage, error) {
-	rows, err := db.QueryContext(ctx, `SELECT `+sessionMessageCols+` FROM session_messages WHERE `+where+` ORDER BY id`)
+	return db.scanSessionMessages(ctx, "reading "+what,
+		`SELECT `+sessionMessageCols+` FROM session_messages WHERE `+where+` ORDER BY id`)
+}
+
+// scanSessionMessages runs query (selecting or returning sessionMessageCols)
+// and scans its rows, sorted by id; never nil. what names the failure.
+func (db *DB) scanSessionMessages(ctx context.Context, what, query string, args ...any) ([]SessionMessage, error) {
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", what, err)
+		return nil, fmt.Errorf("%s: %w", what, err)
 	}
 	defer rows.Close()
 	out := []SessionMessage{}
@@ -138,29 +158,24 @@ func (db *DB) sessionMessages(ctx context.Context, what, where string) ([]Sessio
 		var m SessionMessage
 		if err := rows.Scan(&m.ID, &m.WorkbenchID, &m.FromSessionID, &m.ToSessionID, &m.Kind, &m.Text, &m.CreatedAt,
 			&m.State, &m.Reason, &m.DeliveredAt, &m.PromptClearedAt); err != nil {
-			return nil, fmt.Errorf("reading %s: %w", what, err)
+			return nil, fmt.Errorf("%s: %w", what, err)
 		}
 		out = append(out, m)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("reading %s: %w", what, err)
+		return nil, fmt.Errorf("%s: %w", what, err)
 	}
+	slices.SortFunc(out, func(a, b SessionMessage) int { return cmp.Compare(a.ID, b.ID) })
 	return out, nil
 }
 
 // FailInFlightSessionMessages fails, with reason, every message left
 // delivering (a daemon start: whether its Deliver landed is unknown, so it
-// is never retried) and returns how many.
-func (db *DB) FailInFlightSessionMessages(ctx context.Context, reason string) (int64, error) {
-	res, err := db.ExecContext(ctx, `UPDATE session_messages SET state = 'failed', reason = ? WHERE state = 'delivering'`, reason)
-	if err != nil {
-		return 0, fmt.Errorf("failing in-flight session messages: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("failing in-flight session messages: %w", err)
-	}
-	return n, nil
+// is never retried) and returns them as they are now, oldest first; never
+// nil.
+func (db *DB) FailInFlightSessionMessages(ctx context.Context, reason string) ([]SessionMessage, error) {
+	return db.scanSessionMessages(ctx, "failing in-flight session messages",
+		`UPDATE session_messages SET state = 'failed', reason = ? WHERE state = 'delivering' RETURNING `+sessionMessageCols, reason)
 }
 
 // ClearPromptFlag records that message id's text left the receiver's

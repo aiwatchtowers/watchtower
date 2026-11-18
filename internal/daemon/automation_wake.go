@@ -36,9 +36,13 @@ const AutomationWakeCapability = "automations-wake"
 // line is the daemon's pid, each further line one capability.
 func CapsPath(pidPath string) string { return pidPath + ".caps" }
 
-// writeCaps writes this process's capabilities file beside pidPath.
-func writeCaps(pidPath string) error {
-	body := strconv.Itoa(os.Getpid()) + "\n" + AutomationWakeCapability + "\n"
+// writeCaps writes this process's capabilities file beside pidPath, one
+// line per capability.
+func writeCaps(pidPath string, caps []string) error {
+	body := strconv.Itoa(os.Getpid()) + "\n"
+	for _, c := range caps {
+		body += c + "\n"
+	}
 	if err := fsutil.WriteFileAtomic(CapsPath(pidPath), []byte(body), 0o600); err != nil {
 		return fmt.Errorf("writing capabilities file: %w", err)
 	}
@@ -53,15 +57,23 @@ func removeCaps(pidPath string) {
 }
 
 // advertiseCaps writes the capabilities file beside the PID file and returns
-// its removal — only while automationsActive; otherwise it writes nothing
-// and the CLI never signals this daemon. A failed write is logged, not
-// fatal: the daemon runs, the CLI just never wakes it.
+// its removal: AutomationWakeCapability only while automationsActive,
+// SessionMessagesWakeCapability only with a message deliverer; with neither
+// it writes nothing and the CLI never signals this daemon. A failed write is
+// logged, not fatal: the daemon runs, the CLI just never wakes it.
 func (d *Daemon) advertiseCaps() (remove func()) {
-	if !d.automationsActive() {
+	var caps []string
+	if d.automationsActive() {
+		caps = append(caps, AutomationWakeCapability)
+	}
+	if d.messages != nil {
+		caps = append(caps, SessionMessagesWakeCapability)
+	}
+	if len(caps) == 0 {
 		return func() {}
 	}
-	if err := writeCaps(d.pidPath); err != nil {
-		d.logger.Printf("automations: %v (the CLI will not wake this daemon)", err)
+	if err := writeCaps(d.pidPath, caps); err != nil {
+		d.logger.Printf("daemon: %v (the CLI will not wake this daemon)", err)
 		return func() {}
 	}
 	return func() { removeCaps(d.pidPath) }
@@ -206,8 +218,9 @@ func (d *Daemon) startAutomations(ctx context.Context) (stop func()) {
 	}
 }
 
-// forwardAutomationWakes hands every wake to both runners until ctx is done
-// or the wake channel closes.
+// forwardAutomationWakes hands every wake to both runners (and the agent
+// message deliverer, when wired) until ctx is done or the wake channel
+// closes.
 func (d *Daemon) forwardAutomationWakes(ctx context.Context) {
 	for {
 		select {
@@ -219,6 +232,7 @@ func (d *Daemon) forwardAutomationWakes(ctx context.Context) {
 			}
 			d.automationScheduler.Wake()
 			d.automationExecutor.Wake()
+			d.wakeMessages()
 		}
 	}
 }

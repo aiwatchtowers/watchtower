@@ -27,6 +27,7 @@ import (
 	"watchtower/internal/hub/transport/memfake"
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/sessionhost"
+	"watchtower/internal/sessionmsg"
 )
 
 const (
@@ -335,6 +336,34 @@ func TestPortStartFailuresAreNeverStarted(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, StateFailed, res.State)
 	assert.Equal(t, "the session host is not running", w.row(res.SessionID).agentError)
+}
+
+// A sub-session whose launch fails after the host answered stays a failed
+// start, and its parent gets a failure line (spec §7 "sub-session start",
+// amended); a failed start with no parent tells no one.
+func TestFailedSubSessionStartTellsTheParent(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	parent, err := w.db.CreateTerminalSession(ctx, db.NewTerminalSession{WorkbenchID: w.wb, Kind: "codex", Title: "Lead", FolderPath: w.folder})
+	require.NoError(t, err)
+	refused := w.portWith(func(d *Deps) { d.Shell = filepath.Join(w.stub, "no-such-shell") })
+
+	res, err := refused.Start(ctx, handlers.StartRequest{Workbench: w.wb, Brief: "go", ParentSessionID: parent})
+	require.Error(t, err)
+	assert.Equal(t, StateFailed, res.State)
+	reason := w.row(res.SessionID).agentError
+	require.Contains(t, reason, "launch refused: ")
+
+	_, err = refused.Start(ctx, handlers.StartRequest{Workbench: w.wb, Brief: "go"})
+	require.Error(t, err)
+
+	msgs, err := w.db.QueuedSessionMessages(ctx)
+	require.NoError(t, err)
+	require.Len(t, msgs, 1, "only the sub-session's failure is told")
+	assert.Equal(t, sessionmsg.KindFailure, msgs[0].Kind)
+	assert.Equal(t, parent, msgs[0].ToSessionID.Int64)
+	assert.Equal(t, res.SessionID, msgs[0].FromSessionID.Int64)
+	assert.Equal(t, sessionmsg.FailureLine(res.SessionID, sessionmsg.StartFailureReason(reason)), msgs[0].Text)
 }
 
 // Swift's launch watch: a launch that exits 127 at once (no claude on the
