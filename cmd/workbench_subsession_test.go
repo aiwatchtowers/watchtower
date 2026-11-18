@@ -22,7 +22,7 @@ func TestSubSessionStartRunsTheCLIWithTheBriefOnStdin(t *testing.T) {
 		"cat > \"" + dir + "/brief\"\n" +
 		"echo '{\"ok\":true,\"session_id\":5}'\n" +
 		"if [ -n \"$FAIL\" ]; then echo 'Error: the session host is not running' >&2; exit 1; fi\n"
-	require.NoError(t, os.WriteFile(bin, []byte(script), 0o755)) //nolint:gosec // a test stub that must run
+	require.NoError(t, os.WriteFile(bin, []byte(script), 0o755))
 	prev := workbenchExecutable
 	workbenchExecutable = func() (string, error) { return bin, nil }
 	t.Cleanup(func() { workbenchExecutable = prev })
