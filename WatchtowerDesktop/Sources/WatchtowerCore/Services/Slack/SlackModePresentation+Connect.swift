@@ -29,6 +29,11 @@ extension SlackModePresentation {
         package let noAppYet = "No Watchtower app in your workspace yet?"
         package let setUpForCompany = "Set up for my company"
         package let foldButton = "Connect another workspace…"
+        /// The LLM-provider disclosure every connecting member sees before a
+        /// paste or MDM **Connect** (policy hygiene spec §6), with its link.
+        package let disclosure = SlackDisclosureCopy.connectLine(workspace: "your workspace")
+        package let privacyLink = SlackDisclosureCopy.privacyLink
+        package let privacyURL = SlackDisclosureCopy.privacyURL
 
         /// - Parameters:
         ///   - display: the pane's mode; Full and Full · Live fold the section.
@@ -52,7 +57,8 @@ extension SlackModePresentation {
                                 title: "Workspace \(app.teamID)")
             }
             portBusyLine = portBusy
-                ? "The connect link cannot reach Watchtower: port 18551 is busy. Paste the link or the code here instead."
+                ? "The connect link cannot reach Watchtower: port 18551 is busy. Quit the app holding port 18551, "
+                    + "then open Connections → Slack again to retry."
                 : nil
             let full = display == .full || display == .fullLive
             // The busy line must be seen, so the fold opens by itself (§4.4).

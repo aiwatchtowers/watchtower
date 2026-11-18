@@ -112,10 +112,11 @@ final class SlackConnectFlowModelTests: XCTestCase {
     func testSecondLinkWhileRunningIsRefused() async {
         let rig = await makeRig()
         inBrowser(rig)
-        let before = rig.sent
         rig.emit(.link(flow: "f2", teamID: "T0OTHER", clientID: "3333.4444"))
-        XCTAssertEqual(rig.sent, before, "sends nothing")
+        XCTAssertEqual(rig.sent, [startLine, #"{"cmd":"cancel","flow":"f2"}"#],
+                       "no confirm or start; the link that is not shown is cancelled")
         XCTAssertEqual(rig.model.step, .browser(flow: "f1", target: target, since: clock), "keeps the sheet")
+        let before = rig.sent
 
         // A start while the flow runs is refused too.
         XCTAssertFalse(rig.model.start(SlackConnectTarget(teamID: "T0OTHER", clientID: "3333.4444")))
@@ -128,7 +129,9 @@ final class SlackConnectFlowModelTests: XCTestCase {
         other.emit(.link(flow: "f1", teamID: "T0ACME", clientID: "1111.2222"))
         other.emit(.link(flow: "f2", teamID: "T0OTHER", clientID: "3333.4444"))
         XCTAssertEqual(other.model.step, .confirming(flow: "f1", target: target))
-        XCTAssertEqual(other.sent, [])
+        XCTAssertEqual(other.sent, [#"{"cmd":"cancel","flow":"f2"}"#])
+        other.emit(.failed(flow: "f2", reason: .cancelled, message: ""))
+        XCTAssertEqual(other.model.step, .confirming(flow: "f1", target: target), "its cancel answer shows nothing")
     }
 
     /// A link the child took just before our `start` reached it would refuse
@@ -398,5 +401,63 @@ final class SlackConnectFlowModelTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(SlackAccountsDocument.self, from: Data(#"{"builtin_app":true,"accounts":null}"#.utf8)),
                        doc([], builtin: true))
         XCTAssertEqual(SlackAccountsDocument.args, ["slack", "accounts", "--json"])
+    }
+
+    // MARK: - Fix round 1
+
+    /// A link while a cancelled start still waits for its answer is not shown: cancelled too.
+    func testLinkWhileCancelledStartAwaitsIsCancelled() async {
+        let rig = await makeRig()
+        XCTAssertTrue(rig.model.start(target))
+        rig.model.cancel()
+        rig.emit(.link(flow: "f7", teamID: "T0ACME", clientID: "1111.2222"))
+        XCTAssertEqual(rig.model.step, .idle)
+        XCTAssertEqual(rig.sent, [startLine, #"{"cmd":"cancel","flow":"f7"}"#])
+    }
+
+    /// A start the child began and then failed carries its flow id: it still answers the start.
+    func testFailedWithFlowWhileStartingAnswersStart() async {
+        let rig = await makeRig()
+        XCTAssertTrue(rig.model.start(target))
+        rig.emit(.failed(flow: "f1", reason: .other, message: "Watchtower could not start the connection."))
+        XCTAssertEqual(rig.model.step, .failed(.other("Watchtower could not start the connection"), retry: target))
+
+        // Cancelled before that answer: the answer clears the wait, nothing shows.
+        rig.model.dismiss()
+        XCTAssertTrue(rig.model.start(target))
+        rig.model.cancel()
+        XCTAssertFalse(rig.model.canStart)
+        rig.emit(.failed(flow: "f2", reason: .other, message: "x"))
+        XCTAssertEqual(rig.model.step, .idle)
+        XCTAssertTrue(rig.model.canStart)
+    }
+
+    /// A cancelled flow's late answer never lands on the next flow, and any
+    /// written account reloads the list even when its flow is not shown.
+    func testCancelledFlowKeepsItsAnswerAcrossANewStart() async {
+        let rig = await makeRig()
+        var written: [Int64] = []
+        rig.model.onConnected = { written.append($0.accountID) }
+        inBrowser(rig)
+        rig.model.cancel()
+        XCTAssertTrue(rig.model.start(target))
+        rig.emit(.failed(flow: "f1", reason: .cancelled, message: "This connection was cancelled in Watchtower."))
+        XCTAssertEqual(rig.model.step, .starting(target), "f1's answer is not the new start's")
+        rig.emit(.browser(flow: "f2"))
+        rig.emit(.connected(SlackConnectedAccount(flow: "zz", accountID: 8, teamID: "T0ACME", teamName: "acme", reboundFrom: "")))
+        XCTAssertEqual(rig.model.step, .browser(flow: "f2", target: target, since: clock))
+        XCTAssertEqual(written, [8])
+    }
+
+    /// A Reconnect that opens the pane asks before the pane mounts: the pane
+    /// takes the request once, on appear or on change.
+    func testConnectSectionRequestIsTakenOnce() async {
+        let rig = await makeRig()
+        XCTAssertFalse(rig.model.takeConnectSectionRequest())
+        rig.model.reconnect(.connectSection)
+        XCTAssertTrue(rig.model.takeConnectSectionRequest())
+        XCTAssertFalse(rig.model.takeConnectSectionRequest(), "a remounted pane does not unfold it again")
+        rig.model.reconnect(.connectSection)
+        XCTAssertTrue(rig.model.takeConnectSectionRequest())
     }
 }

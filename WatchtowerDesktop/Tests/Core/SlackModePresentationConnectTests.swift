@@ -32,6 +32,11 @@ extension SlackModePresentationTests {
         XCTAssertEqual(s.noAppYet, "No Watchtower app in your workspace yet?")
         XCTAssertEqual(s.setUpForCompany, "Set up for my company")
         XCTAssertEqual(s.foldButton, "Connect another workspace…")
+        XCTAssertEqual(s.disclosure, "Watchtower keeps a copy of what you can see in your workspace on this Mac and "
+            + "sends message text to your AI provider.")
+        XCTAssertEqual(s.disclosure, SlackDisclosureCopy.connectLine(workspace: "your workspace"))
+        XCTAssertEqual(s.privacyLink, "Privacy policy")
+        XCTAssertEqual(s.privacyURL, SlackDisclosureCopy.privacyURL)
         XCTAssertEqual(s.organizationRows, [])
         XCTAssertNil(s.portBusyLine)
         XCTAssertFalse(s.isFolded)
@@ -41,7 +46,7 @@ extension SlackModePresentationTests {
     func testPortBusyLine() {
         XCTAssertEqual(section(portBusy: true).portBusyLine,
                        "The connect link cannot reach Watchtower: port 18551 is busy. "
-                           + "Paste the link or the code here instead.")
+                           + "Quit the app holding port 18551, then open Connections → Slack again to retry.")
         XCTAssertNil(section(portBusy: false).portBusyLine)
     }
 

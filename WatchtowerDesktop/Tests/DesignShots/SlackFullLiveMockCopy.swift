@@ -65,7 +65,7 @@ enum SlackFullLiveMockCopy {
     static let connect = "Connect"
     static let pasteInvalid = "That is not a Watchtower connect link or code. Copy it again from the app's About tab in Slack."
     static let portBusy = "The connect link cannot reach Watchtower: port 18551 is busy. "
-        + "Paste the link or the code here instead."
+        + "Quit the app holding port 18551, then open Connections → Slack again to retry."
     static let orgTitle = "Set up by your organization"
     static let orgRow = "Workspace T0ACME"
     static let noAppYet = "No Watchtower app in your workspace yet?"

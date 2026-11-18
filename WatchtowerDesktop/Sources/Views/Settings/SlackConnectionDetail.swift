@@ -75,9 +75,12 @@ struct SlackConnectionDetail: View {
             // A10: a busy or stopped listener tries again when the pane opens.
             appState.slackConnectListener?.ensureRunning()
         }
-        .onChange(of: appState.slackConnectFlow?.connectSectionRequest) { _, _ in
-            connectExpanded = true
-            connectFieldFocused = true
+        // On appear too: a Reconnect that opened this pane asked before it mounted.
+        .task(id: appState.slackConnectFlow?.connectSectionRequest) {
+            if appState.slackConnectFlow?.takeConnectSectionRequest() == true {
+                connectExpanded = true
+                connectFieldFocused = true
+            }
         }
         .sheet(isPresented: connectSheetShown) { connectSheet }
         // The Workspaces list below enables/disables, removes and adds
@@ -487,16 +490,22 @@ struct SlackConnectionDetail: View {
             return
         }
         Task {
-            guard let route = await vm.reloginRoute(accountID: 1) else {
-                flow.reconnectResult = vm.error
+            let route: SlackReloginRoute
+            switch await vm.reloginRoute(accountID: 1) {
+            case let .failure(failure):
+                // Shown here only: the Workspaces list's error line stays its own.
+                flow.reconnectResult = failure.message
                 flow.reconnectSuccess = false
                 return
+            case let .success(found):
+                route = found
             }
-            if route == .builtin {
-                reconnectSlack()
-            } else if !connect.reconnect(route) {
+            let started = route == .builtin ? !connect.isRunning : connect.reconnect(route)
+            if !started {
                 flow.reconnectResult = "Another connection is already in progress."
                 flow.reconnectSuccess = false
+            } else if route == .builtin {
+                reconnectSlack()
             }
         }
     }

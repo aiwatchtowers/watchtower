@@ -103,6 +103,7 @@ struct SlackConnectSection: View {
 
     var body: some View {
         SettingsSection(title: section.title, caption: section.caption) {
+            disclosureLine
             if !section.organizationRows.isEmpty { organizationRows }
             if let busy = section.portBusyLine {
                 HStack(alignment: .top, spacing: Spacing.regular) {
@@ -133,6 +134,18 @@ struct SlackConnectSection: View {
                         .buttonStyle(.kitQuiet)
                         .managedByOrganization(blocked)
                 }
+            }
+        }
+    }
+
+    /// What connecting means for the workspace's data, above every way to
+    /// connect here (paste, MDM rows; Reconnect and Start again land here too).
+    private var disclosureLine: some View {
+        HStack(alignment: .top, spacing: Spacing.regular) {
+            Image(systemName: "info.circle").foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                Text(section.disclosure).font(.caption).fixedSize(horizontal: false, vertical: true)
+                Link(section.privacyLink, destination: section.privacyURL).font(.caption)
             }
         }
     }

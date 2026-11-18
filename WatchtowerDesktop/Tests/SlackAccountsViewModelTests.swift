@@ -295,4 +295,37 @@ extension SlackAccountsViewModelTests {
         vm.connectFlowWroteAccount(daemonPolicy: .deferred)
         XCTAssertEqual(daemon.restartCount, 1, "onboarding defers the restart")
     }
+
+    /// Fix round 1: the built-in route waits for a running connect flow too.
+    func testBuiltinReloginWhileTheFlowRunsIsRefused() async throws {
+        let cli = try accountsCLI(#"{"builtin_app":true,"accounts":[{"id":1,"team_id":"T0ACME","client_id":"5.6","#
+            + #""shared_app":false,"relogin":"builtin"}]}"#)
+        let (vm, daemon, pool) = try makeVM(cli: cli)
+        let (flow, child) = await connectFlow()
+        vm.connectFlow = flow
+        XCTAssertTrue(flow.start(SlackConnectTarget(teamID: "T0OTHER", clientID: "1.2")))
+        let account = try await insertAccount(pool)
+
+        let route = await vm.relogin(account)
+        XCTAssertNil(route)
+        XCTAssertEqual(vm.error, "Another connection is already in progress.")
+        XCTAssertEqual(child.writtenLines.count, 1, "only the running flow's start")
+        XCTAssertEqual(daemon.restartCount, 0)
+    }
+
+    /// A refused hand-off (a flow already runs) is not a route taken.
+    func testRefusedHandOffReturnsNil() async throws {
+        let cli = try accountsCLI(#"{"builtin_app":false,"accounts":[{"id":1,"team_id":"T0ACME","client_id":"1.2","#
+            + #""shared_app":false,"relogin":"connect"}]}"#)
+        let (vm, _, pool) = try makeVM(cli: cli)
+        let (flow, _) = await connectFlow()
+        vm.connectFlow = flow
+        XCTAssertTrue(flow.start(SlackConnectTarget(teamID: "T0OTHER", clientID: "3.4")))
+        let account = try await insertAccount(pool)
+
+        let route = await vm.relogin(account)
+        XCTAssertNil(route)
+        XCTAssertEqual(vm.error, "Another connection is already in progress.")
+        XCTAssertFalse(vm.isConnecting, "the route read ends its busy mark")
+    }
 }

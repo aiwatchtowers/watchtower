@@ -160,6 +160,9 @@ package final class SlackConnectFlowModel {
     /// Bumped when a Reconnect sends the owner to the connect section (no app
     /// to sign in with): the pane unfolds the section and focuses its field.
     package private(set) var connectSectionRequest = 0
+    /// The last request a pane acted on: a pane that mounts after the
+    /// Reconnect (it opened Connections → Slack) still sees it once.
+    @ObservationIgnored private var handledConnectSectionRequest = 0
 
     /// A link arrived and the confirm sheet is up: AppState brings the app
     /// forward on Connections → Slack.
@@ -174,9 +177,10 @@ package final class SlackConnectFlowModel {
     /// Cancel landed before the child named the started flow: cancel it once
     /// it does. Until then no new flow starts.
     @ObservationIgnored private var cancelAfterStart = false
-    /// The flow the owner cancelled: its late `connected` is still accepted
-    /// (the account was written), its `failed(cancelled)` is expected.
-    @ObservationIgnored private var cancelledFlow: String?
+    /// Flows the owner cancelled, until each one's answer arrives: a late
+    /// `connected` is still shown (the account was written), the expected
+    /// `failed(cancelled)` is not.
+    @ObservationIgnored private var cancelledFlows: Set<String> = []
 
     package init(host: SlackConnectListenerHost, now: @escaping () -> Date = Date.init) {
         self.host = host
@@ -222,7 +226,6 @@ package final class SlackConnectFlowModel {
     package func start(_ target: SlackConnectTarget) -> Bool {
         guard canStart else { return false }
         host.ensureRunning()
-        cancelledFlow = nil
         step = .starting(target)
         if !host.send(.start(teamID: target.teamID, clientID: target.clientID, accountID: target.accountID)) {
             step = .failed(.other(listenerDown), retry: target)
@@ -244,6 +247,14 @@ package final class SlackConnectFlowModel {
         }
     }
 
+    /// The pane's check on appear and on each request: true once per
+    /// request, so the section unfolds and its field takes focus once.
+    package func takeConnectSectionRequest() -> Bool {
+        guard connectSectionRequest > handledConnectSectionRequest else { return false }
+        handledConnectSectionRequest = connectSectionRequest
+        return true
+    }
+
     // MARK: - Sheet buttons
 
     /// The confirm's **Connect**.
@@ -261,7 +272,7 @@ package final class SlackConnectFlowModel {
     package func cancel() {
         switch step {
         case let .confirming(flow, _), let .browser(flow, _, _):
-            cancelledFlow = flow
+            cancelledFlows.insert(flow)
             host.send(.cancel(flow: flow))
         case .starting:
             cancelAfterStart = true
@@ -295,16 +306,16 @@ package final class SlackConnectFlowModel {
         case .portBusy:
             failRunning(.other("port 18551 is busy"))
         case let .link(flow, teamID, clientID):
-            // A second link while a flow runs: refused, the running sheet stays.
-            // The child keeps one flow too and answers such a link `busy`; only
-            // a link it took before our `start` reached it gets here, and that
-            // flow would refuse our start forever (no deadline, A22): cancel it.
-            if case .starting = step {
+            // A link while a flow runs (or waits for its start's answer) is
+            // refused and the running sheet stays. The child keeps one flow too
+            // and answers such a link `busy`; one it took before our `start`
+            // reached it would refuse that start forever (no deadline, A22), so
+            // a link that is not shown is always cancelled.
+            guard !isRunning else {
+                cancelledFlows.insert(flow)
                 host.send(.cancel(flow: flow))
                 return
             }
-            guard !isRunning else { return }
-            cancelledFlow = nil
             step = .confirming(flow: flow, target: SlackConnectTarget(teamID: teamID, clientID: clientID))
             onLink?()
         case let .browser(flow):
@@ -327,7 +338,7 @@ package final class SlackConnectFlowModel {
     private func browserOpened(_ flow: String) {
         if cancelAfterStart {
             cancelAfterStart = false
-            cancelledFlow = flow
+            cancelledFlows.insert(flow)
             host.send(.cancel(flow: flow))
             return
         }
@@ -336,16 +347,17 @@ package final class SlackConnectFlowModel {
     }
 
     private func connected(_ account: SlackConnectedAccount) {
+        // Any written account reloads the list, whoever's flow it was.
+        defer { onConnected?(account) }
         let ours: Bool = switch step {
         case let .browser(flow, _, _), let .confirming(flow, _): flow == account.flow
-        default: account.flow == cancelledFlow
+        default: cancelledFlows.contains(account.flow)
         }
-        guard ours else { return }
         // A connect that won the race with Cancel: the account is written.
-        cancelledFlow = nil
+        cancelledFlows.remove(account.flow)
+        guard ours else { return }
         let name = account.teamName.trimmingCharacters(in: .whitespacesAndNewlines)
         step = .connected(workspace: name.isEmpty ? account.teamID : name)
-        onConnected?(account)
     }
 
     private func failed(flow: String, reason: SlackConnectFailure, message: String) {
@@ -358,11 +370,17 @@ package final class SlackConnectFlowModel {
             }
             return
         }
-        if flow == cancelledFlow {
-            cancelledFlow = nil
+        if cancelledFlows.remove(flow) != nil { return }
+        if cancelAfterStart {
+            // The cancelled start's answer: the child began it, then failed it.
+            cancelAfterStart = false
             return
         }
         switch step {
+        case let .starting(target):
+            // A start the child began, then could not open (its flow id
+            // comes with the failure): it answers that start.
+            step = reason == .cancelled ? .idle : .failed(Self.failure(reason, message), retry: target)
         case let .browser(current, target, _) where current == flow,
              let .confirming(current, target) where current == flow:
             step = reason == .cancelled ? .idle : .failed(Self.failure(reason, message), retry: target)
@@ -374,7 +392,7 @@ package final class SlackConnectFlowModel {
     /// The child ended: a flow it held is gone (the restart has none).
     private func childEnded() {
         cancelAfterStart = false
-        cancelledFlow = nil
+        cancelledFlows = []
         failRunning(.other(listenerDown))
     }
 

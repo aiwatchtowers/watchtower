@@ -8,6 +8,16 @@ public enum ChatApprovalAnswer: Equatable, Sendable {
     case reject
 }
 
+/// How a Reconnect Slack ended, as the screen reports it to the card.
+public enum SlackReconnectOutcome: Equatable, Sendable {
+    /// The sign-in ran to its end without an error.
+    case signedIn
+    /// The sign-in continues elsewhere (the Mac's connect flow in the browser,
+    /// or its connect section): nothing is granted yet.
+    case handedOff
+    case failed(String)
+}
+
 /// The phone's relay verb for an answer (`chat_action_answer` carries no patch).
 public enum ChatApprovalDecision: Sendable, Equatable {
     case approve
@@ -68,8 +78,8 @@ public struct ChatApprovalServices {
     public var dismiss: ((ChatAgentAction) -> Void)?
     /// Approve every bulk-approvable card of a turn (**Approve all** under a reply).
     public var approveAll: ((_ turnID: String) -> Void)?
-    /// Re-consents a Slack account whose token lacks the send grant; returns why it failed, nil on success.
-    public var reconnectSlack: ((Int64) async -> String?)?
+    /// Re-consents a Slack account whose token lacks the send grant; says how it ended.
+    public var reconnectSlack: ((Int64) async -> SlackReconnectOutcome)?
     /// Follows an applied action to what it produced, in the app (`AgentActionDestination`); nil hides **Open →**.
     public var openDestination: ((AgentActionDestination) -> Void)?
     /// A session-applied call: whether the live chat session that proposed it still waits on it. Nil: it does not.
@@ -91,7 +101,7 @@ public struct ChatApprovalServices {
         retry: ((ChatAgentAction) -> Void)? = nil,
         dismiss: ((ChatAgentAction) -> Void)? = nil,
         approveAll: ((_ turnID: String) -> Void)? = nil,
-        reconnectSlack: ((Int64) async -> String?)? = nil,
+        reconnectSlack: ((Int64) async -> SlackReconnectOutcome)? = nil,
         openDestination: ((AgentActionDestination) -> Void)? = nil,
         sessionHoldsCall: ((ChatAgentAction) -> Bool)? = nil,
         title: ((ChatAgentAction) -> String?)? = nil,

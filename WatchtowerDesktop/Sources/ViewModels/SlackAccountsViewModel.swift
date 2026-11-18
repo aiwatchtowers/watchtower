@@ -111,47 +111,62 @@ final class SlackAccountsViewModel {
     /// --app-return`; a workspace app goes through the connect flow on the
     /// Desktop's running listener (a `slack login` would bind 18551, which
     /// that listener holds); no app to sign in with opens the connect section.
-    /// Returns the route taken; nil when the accounts could not be read.
+    /// Returns the route taken; nil when nothing started (`error` says why).
     @discardableResult
     func relogin(_ account: SlackAccount) async -> SlackReloginRoute? {
         guard let flow = connectFlow else {
             await runAuthFlow(args: Self.loginArgs(for: account), failurePrefix: "Re-login failed", daemonPolicy: .restart)
             return .builtin
         }
-        guard let route = await reloginRoute(accountID: Int64(account.id)) else { return nil }
+        let route: SlackReloginRoute
+        switch await reloginRoute(accountID: Int64(account.id)) {
+        case let .failure(failure):
+            error = failure.message
+            return nil
+        case let .success(found):
+            route = found
+        }
         guard route == .builtin else {
-            if !flow.reconnect(route) { error = "Another connection is already in progress." }
+            guard flow.reconnect(route) else {
+                error = "Another connection is already in progress."
+                return nil
+            }
             return route
+        }
+        // One flow at a time: the built-in sign-in waits for the connect flow too.
+        guard !flow.isRunning else {
+            error = "Another connection is already in progress."
+            return nil
         }
         await runAuthFlow(args: Self.loginArgs(for: account), failurePrefix: "Re-login failed", daemonPolicy: .restart)
         return route
     }
 
-    /// The route of account `accountID` from `slack accounts --json`; nil
-    /// (with `error` set) when the CLI cannot be run or its answer read.
-    func reloginRoute(accountID: Int64) async -> SlackReloginRoute? {
-        guard !isConnecting else {
-            error = "Another connection is already in progress."
-            return nil
-        }
-        guard let cliPath = cliPath() else {
-            error = "Watchtower CLI not found"
-            return nil
-        }
+    /// The route of account `accountID` from `slack accounts --json`, or why
+    /// it could not be read. Shown as connecting while it reads, so no other
+    /// sign-in starts meanwhile; leaves `error` to the caller.
+    func reloginRoute(accountID: Int64) async -> Result<SlackReloginRoute, RouteReadError> {
+        guard !isConnecting else { return .failure(RouteReadError("Another connection is already in progress.")) }
+        guard let cliPath = cliPath() else { return .failure(RouteReadError("Watchtower CLI not found")) }
+        isConnecting = true
         let result = await Self.runCLI(path: cliPath, arguments: SlackAccountsDocument.args)
+        isConnecting = false
         guard result.exitCode == 0 else {
-            error = "Could not read the Slack accounts: "
-                + (result.stderr.isEmpty ? "exit \(result.exitCode)" : String(result.stderr.prefix(200)))
-            return nil
+            return .failure(RouteReadError("Could not read the Slack accounts: "
+                + (result.stderr.isEmpty ? "exit \(result.exitCode)" : String(result.stderr.prefix(200)))))
         }
         do {
             let doc = try JSONDecoder().decode(SlackAccountsDocument.self, from: Data(result.stdout.utf8))
-            error = nil
-            return SlackReloginRoute.route(accountID: accountID, in: doc)
+            return .success(SlackReloginRoute.route(accountID: accountID, in: doc))
         } catch {
-            self.error = "Could not read the Slack accounts: \(error.localizedDescription)"
-            return nil
+            return .failure(RouteReadError("Could not read the Slack accounts: \(error.localizedDescription)"))
         }
+    }
+
+    /// Why the Re-login route could not be read, in the owner's words.
+    struct RouteReadError: Error, Equatable {
+        let message: String
+        init(_ message: String) { self.message = message }
     }
 
     /// The connect flow wrote an account: reload and re-wire the daemon, as
