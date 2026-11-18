@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -132,14 +133,24 @@ func say(t *testing.T, w *os.File, lines ...string) {
 }
 
 // awaitAck waits for the stub's ack: everything scripted before it was
-// emitted by the session.
+// emitted by the session. The ack FIFO carries one ack per writer, and the
+// stub may still hold the previous ack's writer open after its line was
+// read: an open that met only that stale writer sees EOF with no line once
+// the stub closes it, so it opens again and waits for the next writer
+// (#1899).
 func awaitAck(t *testing.T, fifo string) {
 	t.Helper()
-	f, err := os.Open(fifo + ".ack")
-	require.NoError(t, err)
-	defer func() { _ = f.Close() }()
-	_, err = bufio.NewReader(f).ReadString('\n')
-	require.NoError(t, err)
+	for {
+		f, err := os.Open(fifo + ".ack")
+		require.NoError(t, err)
+		line, err := bufio.NewReader(f).ReadString('\n')
+		_ = f.Close()
+		if errors.Is(err, io.EOF) && line == "" {
+			continue // the previous ack's writer closed
+		}
+		require.NoError(t, err)
+		return
+	}
 }
 
 func (g *liveRig) turn(e *Engine, conv int64, text string) chatstore.Started {
