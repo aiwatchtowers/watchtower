@@ -1019,12 +1019,14 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 		d.SetAgentLogDB(al, agentlogdb.PathFor(cfg.DBPath()))
 	}
 	d.SetPIDPath(pidFilePath(cfg))
-	d.SetSpecReviewLaunch(func(askID int64) error {
+	// The sweep's relaunch is background work: the reviewer carries its
+	// origin (D20 of #1886).
+	d.SetSpecReviewLaunch(func(ctx context.Context, askID int64) error {
 		exe, err := specReviewExe()
 		if err != nil {
 			return fmt.Errorf("locating the watchtower binary: %w", err)
 		}
-		return LaunchSpecReview(exe, askID, filepath.Join(cfg.WorkspaceDir(), "logs"))
+		return LaunchSpecReview(exe, askID, filepath.Join(cfg.WorkspaceDir(), "logs"), aiconsent.ChildEnv(ctx))
 	})
 	// Every pipeline is constructed unconditionally now (Task 3 demoted
 	// digest.enabled from a master switch to a per-phase gate) — each is a

@@ -27,6 +27,9 @@ var bgaiModelLeaves = map[string]bool{
 // runs in a spawned `ai session` child with the owner's origin. An import of
 // a model leaf here means an in-process call that the consent check would
 // refuse while background AI is paused.
+// A model call cmd hands in as a callback (the chat title hook) imports
+// nothing here; TestBGAI02_HostedCallbacksNameTheirOrigin (internal/daemon)
+// requires such a callback to mark its origin.
 func TestBGAI02_HubAndChatEngineMakeNoInProcessModelCall(t *testing.T) {
 	var offenders []string
 	for _, root := range []string{".", filepath.Join("..", "chatengine")} {

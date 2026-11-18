@@ -19,6 +19,7 @@ import (
 
 	"github.com/dop251/goja"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/automationstest"
 	"watchtower/internal/claude"
@@ -274,6 +275,23 @@ func TestShell_EnvHasRunMarkerAndNoSecrets(t *testing.T) {
 	r = runShell(t, `return shell("env").stdout`, shellCase{perms: []string{`shell:"env"`}, shell: sh, wb: folderWB(folder)})
 	if _, has := envLines(t, r.out)["LANG"]; has || slices.ContainsFunc(sh.Calls()[0].Env, func(kv string) bool { return strings.HasPrefix(kv, "LANG=") }) {
 		t.Fatalf("an unset LANG reached the child: %v", sh.Calls()[0].Env)
+	}
+}
+
+// BGAI-01 (#1886): a shell() child of a background run carries the run's
+// origin after the run marker, so a model call it makes is the run's; an
+// owner run's child carries none and is told by the marker's trigger.
+func TestShellEnv_CarriesOrigin(t *testing.T) {
+	run := &db.AutomationRun{ID: 42}
+	got := automations.ShellEnv(&automations.Env{Ctx: aiconsent.WithAdmitted(context.Background(), "run:42"), Run: run})
+	tail := got[len(got)-3:]
+	want := []string{"WATCHTOWER_AUTOMATION_RUN_ID=42", "WATCHTOWER_AI_ORIGIN=background", "WATCHTOWER_AI_ADMITTED=run:42"}
+	if !slices.Equal(tail, want) {
+		t.Fatalf("env tail = %q; want %q", tail, want)
+	}
+	owner := automations.ShellEnv(&automations.Env{Ctx: aiconsent.WithOwnerStarted(context.Background()), Run: run})
+	if slices.ContainsFunc(owner, func(kv string) bool { return strings.HasPrefix(kv, "WATCHTOWER_AI_") }) {
+		t.Fatalf("an owner run's shell env carries an origin: %q", owner)
 	}
 }
 
