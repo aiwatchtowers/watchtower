@@ -196,13 +196,31 @@ extension WorkbenchesViewModel {
         let name = folder.lastPathComponent
         let result: FolderResult
         do {
-            result = try await cli.folderAdd(workbenchID: projectID, path: folder.path)
+            result = try await runFolderAdd(cli, path: folder.path, projectID: projectID, addedBy: .owner)
         } catch {
             print("[WorkbenchFolders] workbench folder add for workbench \(projectID) failed: \(error)")
             putOnBenchErrors[projectID] = WorkbenchFolderPresentation.putOnBenchFailed(
                 name: name, reason: error.localizedDescription)
             return
         }
+        if result.ok || result.code == .alreadyHere { return }
+        putOnBenchErrors[projectID] = WorkbenchFolderPresentation.putOnBenchFailed(name: name, reason: result.reason)
+    }
+
+    /// The folder card's Put on Bench (spec §6.7): the same add as the
+    /// owner's, filed as the agent's suggestion. The card says how it went.
+    func addSuggestedFolder(path: String, projectID: Int64) async throws -> FolderResult {
+        guard let cli else { throw FolderSuggestionError.noCLI }
+        return try await runFolderAdd(cli, path: path, projectID: projectID, addedBy: .agentSuggestion)
+    }
+
+    /// `workbench folder add`, then FILES again: the folder it added (or
+    /// already was, `already_here`) is highlighted and opened, a new one's
+    /// install flag and git status read.
+    private func runFolderAdd(
+        _ cli: WorkbenchCLI, path: String, projectID: Int64, addedBy: FolderAddedBy
+    ) async throws -> FolderResult {
+        let result = try await cli.folderAdd(workbenchID: projectID, path: path, addedBy: addedBy)
         await loadBenchFolders(projectID: projectID)
         if result.ok || result.code == .alreadyHere, let added = result.folder {
             highlightedFolderRoot[projectID] = added.id
@@ -211,10 +229,8 @@ extension WorkbenchesViewModel {
             if result.ok, gitWatching.contains(projectID), let added = benchFolders[projectID]?.folder(added.id) {
                 await refreshGitStatus(root: folderRoot(added))
             }
-            return
         }
-        putOnBenchErrors[projectID] = WorkbenchFolderPresentation.putOnBenchFailed(
-            name: name, reason: result.error.isEmpty ? result.errorCode : result.error)
+        return result
     }
 
     /// Retry on a root whose install is missing: Re-run Setup installs into

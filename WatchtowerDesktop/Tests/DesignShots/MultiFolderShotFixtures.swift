@@ -480,21 +480,44 @@ private struct MultiFolderSuggestCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.tight) {
             Text("Waiting for you (1)").sidebarSectionLabel()
-            VStack(alignment: .leading, spacing: Spacing.compact) {
-                HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
-                    Image(systemName: "plus.rectangle.on.folder").foregroundStyle(Color.accentColor).frame(width: 16)
-                    VStack(alignment: .leading, spacing: Spacing.tight) {
-                        Text(MultiFolderMockCopy.suggestTitle)
-                        subtitle.font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                actions.padding(.leading, 16 + Spacing.compact)
+            if state == .merge {
+                mergeCard // §6.13's variant: Task 19 builds it.
+            } else {
+                // The production card (§6.7), on the presentation model's words.
+                FolderSuggestionCard(card: FolderSuggestionPresentation.card(
+                    Self.suggestion, sessionTitle: "Export reports to PDF", phase: phase, home: "/Users/owner"
+                ))
             }
-            .padding(Spacing.regular)
-            .card(fill: Fill.selected)
         }
         .padding(Spacing.medium)
         .panelBackground()
+    }
+
+    private static let suggestion = FolderSuggestionPayload(
+        path: "/Users/owner/code/billing", repoRoot: "/Users/owner/code/billing", touches: 3, why: "export lives there"
+    )
+
+    private var phase: FolderSuggestionPresentation.Phase {
+        switch state {
+        case .busy: .busy
+        case .error: .failed(FolderSuggestionPresentation.failed(name: "billing", reason: "the folder was moved or deleted."))
+        case .ready, .merge: .ready
+        }
+    }
+
+    private var mergeCard: some View {
+        VStack(alignment: .leading, spacing: Spacing.compact) {
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
+                Image(systemName: "plus.rectangle.on.folder").foregroundStyle(Color.accentColor).frame(width: 16)
+                VStack(alignment: .leading, spacing: Spacing.tight) {
+                    Text(MultiFolderMockCopy.suggestTitle)
+                    subtitle.font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            actions.padding(.leading, 16 + Spacing.compact)
+        }
+        .padding(Spacing.regular)
+        .card(fill: Fill.selected)
     }
 
     @ViewBuilder private var subtitle: some View {
@@ -563,30 +586,26 @@ private struct MultiFolderRemoveDialog: View {
         .detailBackground()
     }
 
-    private var title: String {
+    /// The production dialog's words (`WorkbenchFolderPresentation`).
+    private var dialog: WorkbenchFolderPresentation.RemoveDialog {
         switch kind {
-        case .confirm: MultiFolderMockCopy.removeTitle
-        case .sessionsRunning: "Can’t remove hub from the bench"
-        case .lastFolder: "Can’t remove app from the bench"
+        case .confirm: WorkbenchFolderPresentation.removeConfirm(name: "hub")
+        case .sessionsRunning: WorkbenchFolderPresentation.removeRefusedSessions(name: "hub", count: 2)
+        case .lastFolder: WorkbenchFolderPresentation.removeRefusedLast(name: "app")
         }
     }
 
-    private var message: String {
-        switch kind {
-        case .confirm: MultiFolderMockCopy.removeMessage
-        case .sessionsRunning: MultiFolderMockCopy.sessionsRunning
-        case .lastFolder: MultiFolderMockCopy.lastFolder
-        }
-    }
+    private var title: String { dialog.title }
+    private var message: String { dialog.message }
 
     @ViewBuilder private var buttons: some View {
-        if kind == .confirm {
+        if dialog.confirms {
             HStack(spacing: Spacing.regular) {
-                Button("Cancel") {}.buttonStyle(.kitSecondary)
-                Button("Remove") {}.buttonStyle(.kitDestructive)
+                Button(WorkbenchFolderPresentation.cancel) {}.buttonStyle(.kitSecondary)
+                Button(WorkbenchFolderPresentation.remove) {}.buttonStyle(.kitDestructive)
             }
         } else {
-            Button("OK") {}.buttonStyle(.kitPrimary)
+            Button(WorkbenchFolderPresentation.ok) {}.buttonStyle(.kitPrimary)
         }
     }
 }

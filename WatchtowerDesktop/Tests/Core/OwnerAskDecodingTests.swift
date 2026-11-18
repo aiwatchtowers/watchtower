@@ -94,12 +94,12 @@ final class OwnerAskDecodingTests: XCTestCase {
         XCTAssertEqual(folders.displayPath(ask.docPath, folderID: ask.docFolderID), "hub/docs/plan.md")
     }
 
-    /// The folder kind's labels until its own card (Task 16) takes over:
-    /// no plain answer actions, a folder icon.
+    /// The folder kind's labels: no plain answer actions (its card answers),
+    /// the Put on the Bench icon, the card's primary button as next step.
     func testFolderKindPresentation() {
         XCTAssertEqual(OwnerAskPresentation.answerActions(for: .folder), [])
-        XCTAssertEqual(OwnerAskPresentation.askKindIcon(.folder), "folder")
+        XCTAssertEqual(OwnerAskPresentation.askKindIcon(.folder), "plus.rectangle.on.folder")
         XCTAssertEqual(OwnerAskPresentation.askKindLabel(.folder), "Folder")
-        XCTAssertEqual(OwnerAskPresentation.folderNextStep, "Put on Bench?")
+        XCTAssertEqual(OwnerAskPresentation.folderNextStep, "Put on Bench")
     }
 }
