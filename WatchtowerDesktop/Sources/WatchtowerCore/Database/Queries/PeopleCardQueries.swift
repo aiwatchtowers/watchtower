@@ -51,4 +51,10 @@ package enum PeopleCardQueries {
             arguments: [from, to]
         )
     }
+
+    /// People whose cards the owner stopped (`watchtower people exclude`,
+    /// #1769): no card is made for them.
+    package static func fetchExcludedIDs(_ db: Database) throws -> Set<String> {
+        Set(try String.fetchAll(db, sql: "SELECT user_id FROM people_card_exclusions"))
+    }
 }

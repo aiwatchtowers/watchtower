@@ -141,6 +141,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(SlackAdaptiveSyncShotFixtures.shots)
     }
 
+    /// The Slack Developer Policy hygiene spec's mockups (#1769).
+    func testSlackPolicyShotsRender() throws {
+        try renderShots(SlackPolicyShotFixtures.shots)
+    }
+
     private func renderShots(_ shots: [DesignShot]) throws {
         guard let outputDir = ProcessInfo.processInfo.environment["DESKTOP_SHOTS_DIR"]
             .flatMap({ $0.isEmpty ? nil : URL(fileURLWithPath: $0, isDirectory: true) })

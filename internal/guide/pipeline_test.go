@@ -2,11 +2,16 @@ package guide
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
+	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,6 +23,8 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/llmusage"
+	"watchtower/internal/prompts"
+	"watchtower/internal/slack"
 )
 
 type mockGenerator struct {
@@ -75,6 +82,27 @@ func seedMessage(t *testing.T, database *db.DB, channelID, ts, userID, text stri
 	require.NoError(t, err)
 }
 
+// testOwnerRaw is the raw Slack id of the owner the people tests' users work
+// with. Only the owner's interaction partners get a card (spec 2026-11-17
+// §5.3, A13), so seedPartnerMessage stores a user's message together with the
+// owner's reply in its thread and registers the owner on the user's account.
+// The owner has no users row, so it gets no card of its own.
+const testOwnerRaw = "UOWNER"
+
+func seedPartnerMessage(t *testing.T, database *db.DB, channelID, ts, userID, text string) {
+	t.Helper()
+	seedMessage(t, database, channelID, ts, userID, text)
+	acct, _, ok := slack.SplitAccountID(userID)
+	require.True(t, ok, "a partner id is namespaced: %s", userID)
+	owner := fmt.Sprintf("%d:%s", acct, testOwnerRaw)
+	_, err := database.Exec(`INSERT OR IGNORE INTO slack_accounts (id, current_user_id) VALUES (?, ?)`, acct, owner)
+	require.NoError(t, err)
+	require.NoError(t, database.UpsertMessage(db.Message{
+		ChannelID: channelID, TS: ts + "1", UserID: owner, Text: "thanks",
+		ThreadTS: sql.NullString{String: ts, Valid: true},
+	}))
+}
+
 func seedDigestWithSignals(t *testing.T, database *db.DB, channelID string, from, to float64, signals string) {
 	t.Helper()
 	seedDigestFull(t, database, channelID, from, to, signals, "[]")
@@ -112,7 +140,7 @@ func TestPipeline_Run(t *testing.T) {
 	err := database.UpsertWorkspace(db.Workspace{ID: "W1", Name: "test"})
 	require.NoError(t, err)
 
-	seedUser(t, database, "U1", "alice")
+	seedUser(t, database, "1:U1", "alice")
 	seedChannel(t, database, "C1", "general")
 
 	from := float64(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC).Unix())
@@ -121,13 +149,13 @@ func TestPipeline_Run(t *testing.T) {
 	for i := range 5 {
 		ts := base + float64(i*60)
 		tsStr := fmt.Sprintf("%.6f", ts)
-		seedMessage(t, database, "C1", tsStr, "U1", "test message "+string(rune('a'+i)))
+		seedPartnerMessage(t, database, "C1", tsStr, "1:U1", "test message "+string(rune('a'+i)))
 	}
 
 	// Seed channel digest with situations for U1
 	seedDigestWithSituations(t, database, "C1", from, to,
 		`[]`,
-		`[{"topic":"Auth refactor","type":"collaboration","participants":[{"user_id":"U1","role":"lead"}],"dynamic":"Led auth refactor with team","outcome":"Refactor completed","red_flags":[],"observations":["proactive"],"message_refs":[]},{"topic":"Deployment docs","type":"knowledge_transfer","participants":[{"user_id":"U1","role":"author"}],"dynamic":"Shared deployment docs","outcome":"Docs published","red_flags":[],"observations":[],"message_refs":[]},{"topic":"API versioning","type":"decision_deadlock","participants":[{"user_id":"U1","role":"mediator"}],"dynamic":"Resolved API versioning debate","outcome":"Agreement reached","red_flags":[],"observations":[],"message_refs":[]}]`)
+		`[{"topic":"Auth refactor","type":"collaboration","participants":[{"user_id":"1:U1","role":"lead"}],"dynamic":"Led auth refactor with team","outcome":"Refactor completed","red_flags":[],"observations":["proactive"],"message_refs":[]},{"topic":"Deployment docs","type":"knowledge_transfer","participants":[{"user_id":"1:U1","role":"author"}],"dynamic":"Shared deployment docs","outcome":"Docs published","red_flags":[],"observations":[],"message_refs":[]},{"topic":"API versioning","type":"decision_deadlock","participants":[{"user_id":"1:U1","role":"mediator"}],"dynamic":"Resolved API versioning debate","outcome":"Agreement reached","red_flags":[],"observations":[],"message_refs":[]}]`)
 
 	mockResp := `{
 		"summary": "Alice is a proactive contributor",
@@ -152,7 +180,7 @@ func TestPipeline_Run(t *testing.T) {
 	assert.GreaterOrEqual(t, int(gen.calls.Load()), 1)
 
 	// Verify stored people card
-	card, err := database.GetLatestPeopleCard("U1")
+	card, err := database.GetLatestPeopleCard("1:U1")
 	require.NoError(t, err)
 	require.NotNil(t, card)
 	assert.Equal(t, "Alice is a proactive contributor", card.Summary)
@@ -175,7 +203,7 @@ func TestPipeline_SkipsExistingWindow(t *testing.T) {
 	err := database.UpsertWorkspace(db.Workspace{ID: "W1", Name: "test"})
 	require.NoError(t, err)
 
-	seedUser(t, database, "U1", "bob")
+	seedUser(t, database, "1:U1", "bob")
 	seedChannel(t, database, "C1", "general")
 
 	from := float64(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC).Unix())
@@ -184,12 +212,12 @@ func TestPipeline_SkipsExistingWindow(t *testing.T) {
 	for i := range 5 {
 		ts := base + float64(i*60)
 		tsStr := fmt.Sprintf("%.6f", ts)
-		seedMessage(t, database, "C1", tsStr, "U1", "message "+string(rune('a'+i)))
+		seedPartnerMessage(t, database, "C1", tsStr, "1:U1", "message "+string(rune('a'+i)))
 	}
 
 	// A batch-shaped reply naming U1, so the first run stores a real AI card —
 	// only an AI card completes the window (a fallback card does not).
-	gen := &mockGenerator{response: `[{"user_id":"U1","summary":"test","communication_style":"","decision_role":"","red_flags":[],"highlights":[],"accomplishments":[],"communication_guide":"","decision_style":"","tactics":[]}]`}
+	gen := &mockGenerator{response: `[{"user_id":"1:U1","summary":"test","communication_style":"","decision_role":"","red_flags":[],"highlights":[],"accomplishments":[],"communication_guide":"","decision_style":"","tactics":[]}]`}
 	pipe := New(database, cfg, gen, logger)
 	pipe.ForceRegenerate = true
 	cfg.AI.Workers = 1
@@ -249,7 +277,6 @@ func TestParseTeamSummaryResult(t *testing.T) {
 	result, err := parseTeamSummaryResult(raw)
 	require.NoError(t, err)
 	assert.Equal(t, "Team is healthy", result.Summary)
-	assert.Equal(t, []string{"Check on Bob"}, result.Attention)
 	assert.Equal(t, []string{"Use threads more"}, result.Tips)
 }
 
@@ -353,19 +380,6 @@ func TestGetPeopleSignals(t *testing.T) {
 	assert.Len(t, allSignals["U2"], 1)
 }
 
-func TestComputeTeamNorms(t *testing.T) {
-	stats := []db.UserStats{
-		{UserID: "U1", MessageCount: 20, ChannelsActive: 4, AvgMessageLength: 100, ThreadsInitiated: 3},
-		{UserID: "U2", MessageCount: 40, ChannelsActive: 6, AvgMessageLength: 80, ThreadsInitiated: 7},
-	}
-	norms := computeTeamNorms(stats)
-	assert.Equal(t, 2, norms.TotalUsers)
-	assert.InDelta(t, 30, norms.AvgMessages, 0.01)
-	assert.InDelta(t, 5, norms.AvgChannels, 0.01)
-	assert.InDelta(t, 90, norms.AvgMsgLength, 0.01)
-	assert.InDelta(t, 5, norms.AvgThreadsStart, 0.01)
-}
-
 func TestParseBatchCardResult(t *testing.T) {
 	raw := `[
 		{"user_id": "U1", "summary": "Active contributor", "communication_style": "collaborator", "decision_role": "contributor", "red_flags": [], "highlights": ["Fast responder"], "accomplishments": [], "communication_guide": "Be direct", "decision_style": "Quick", "tactics": ["Ping in thread"]},
@@ -441,8 +455,8 @@ type multiMockGenerator struct {
 func (m *multiMockGenerator) Generate(_ context.Context, sys, user, _ string) (string, *digest.Usage, string, error) {
 	m.calls.Add(1)
 	combined := sys + user
-	// Detect batch call by looking for USERS and TEAM NORMS markers in prompt.
-	if strings.Contains(combined, "=== USERS ===") && strings.Contains(combined, "=== TEAM NORMS ===") {
+	// Detect batch call by looking for the USERS marker in prompt.
+	if strings.Contains(combined, "=== USERS ===") {
 		return m.batchResponse, &digest.Usage{Tokens: llmusage.Tokens{Input: 200, Output: 100}}, "mock-session", m.batchErr
 	}
 	// Detect team summary call.
@@ -461,8 +475,8 @@ func TestPipeline_BatchProcessing(t *testing.T) {
 	err := database.UpsertWorkspace(db.Workspace{ID: "W1", Name: "test"})
 	require.NoError(t, err)
 
-	seedUser(t, database, "U1", "alice") // Will be low-data (batch)
-	seedUser(t, database, "U2", "bob")   // Will be full-data (individual)
+	seedUser(t, database, "1:U1", "alice") // Will be low-data (batch)
+	seedUser(t, database, "1:U2", "bob")   // Will be full-data (individual)
 	seedChannel(t, database, "C1", "general")
 
 	from := float64(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC).Unix())
@@ -472,21 +486,21 @@ func TestPipeline_BatchProcessing(t *testing.T) {
 	// U1: 4 messages (< MinSituationMessages=10), 1 situation (< MinSituations=3)  → batch
 	for i := range 4 {
 		ts := base + float64(i*60)
-		seedMessage(t, database, "C1", fmt.Sprintf("%.6f", ts), "U1", "msg "+string(rune('a'+i)))
+		seedPartnerMessage(t, database, "C1", fmt.Sprintf("%.6f", ts), "1:U1", "msg "+string(rune('a'+i)))
 	}
 	// U2: 12 messages (>= MinSituationMessages=10) → full-data
 	for i := range 12 {
 		ts := base + float64((i+10)*60)
-		seedMessage(t, database, "C1", fmt.Sprintf("%.6f", ts), "U2", "msg "+string(rune('a'+i)))
+		seedPartnerMessage(t, database, "C1", fmt.Sprintf("%.6f", ts), "1:U2", "msg "+string(rune('a'+i)))
 	}
 
 	// Seed situations: U1 gets 1 situation, U2 gets 3 situations
 	seedDigestWithSituations(t, database, "C1", from, to,
 		`[]`,
-		`[{"topic":"Topic A","type":"collaboration","participants":[{"user_id":"U1","role":"contributor"},{"user_id":"U2","role":"lead"}],"dynamic":"worked together","outcome":"done","red_flags":[],"observations":[],"message_refs":[]},{"topic":"Topic B","type":"knowledge_transfer","participants":[{"user_id":"U2","role":"author"}],"dynamic":"shared docs","outcome":"published","red_flags":[],"observations":[],"message_refs":[]},{"topic":"Topic C","type":"decision_deadlock","participants":[{"user_id":"U2","role":"mediator"}],"dynamic":"resolved debate","outcome":"agreed","red_flags":[],"observations":[],"message_refs":[]}]`)
+		`[{"topic":"Topic A","type":"collaboration","participants":[{"user_id":"1:U1","role":"contributor"},{"user_id":"1:U2","role":"lead"}],"dynamic":"worked together","outcome":"done","red_flags":[],"observations":[],"message_refs":[]},{"topic":"Topic B","type":"knowledge_transfer","participants":[{"user_id":"1:U2","role":"author"}],"dynamic":"shared docs","outcome":"published","red_flags":[],"observations":[],"message_refs":[]},{"topic":"Topic C","type":"decision_deadlock","participants":[{"user_id":"1:U2","role":"mediator"}],"dynamic":"resolved debate","outcome":"agreed","red_flags":[],"observations":[],"message_refs":[]}]`)
 
 	gen := &multiMockGenerator{
-		batchResponse:      `[{"user_id":"U1","summary":"Low activity contributor","communication_style":"observer","decision_role":"contributor","red_flags":[],"highlights":["Responsive"],"accomplishments":[],"communication_guide":"Use async","decision_style":"Limited data","tactics":["Follow up in thread"]},{"user_id":"U2","summary":"Active contributor","communication_style":"driver","decision_role":"decision-maker","red_flags":[],"highlights":["Led project"],"accomplishments":["Shipped v2"],"communication_guide":"Be direct","decision_style":"Quick","tactics":["Send summary"]}]`,
+		batchResponse:      `[{"user_id":"1:U1","summary":"Low activity contributor","communication_style":"observer","decision_role":"contributor","red_flags":[],"highlights":["Responsive"],"accomplishments":[],"communication_guide":"Use async","decision_style":"Limited data","tactics":["Follow up in thread"]},{"user_id":"1:U2","summary":"Active contributor","communication_style":"driver","decision_role":"decision-maker","red_flags":[],"highlights":["Led project"],"accomplishments":["Shipped v2"],"communication_guide":"Be direct","decision_style":"Quick","tactics":["Send summary"]}]`,
 		individualResponse: `{"summary":"Active contributor","communication_style":"driver","decision_role":"decision-maker","red_flags":[],"highlights":["Led project"],"accomplishments":["Shipped v2"],"communication_guide":"Be direct","decision_style":"Quick","tactics":["Send summary"]}`,
 		teamResponse:       `{"summary":"Team is healthy","attention":[],"tips":["Use threads"]}`,
 	}
@@ -503,7 +517,7 @@ func TestPipeline_BatchProcessing(t *testing.T) {
 	assert.Equal(t, int32(3), gen.calls.Load())
 
 	// Verify batch card (U1)
-	cardU1, err := database.GetLatestPeopleCard("U1")
+	cardU1, err := database.GetLatestPeopleCard("1:U1")
 	require.NoError(t, err)
 	require.NotNil(t, cardU1)
 	assert.Equal(t, "Low activity contributor", cardU1.Summary)
@@ -511,7 +525,7 @@ func TestPipeline_BatchProcessing(t *testing.T) {
 	assert.Equal(t, "active", cardU1.Status) // batch cards get active status
 
 	// Verify full-data batch card (U2)
-	cardU2, err := database.GetLatestPeopleCard("U2")
+	cardU2, err := database.GetLatestPeopleCard("1:U2")
 	require.NoError(t, err)
 	require.NotNil(t, cardU2)
 	assert.Equal(t, "Active contributor", cardU2.Summary)
@@ -527,8 +541,8 @@ func TestPipeline_BatchFallback(t *testing.T) {
 	err := database.UpsertWorkspace(db.Workspace{ID: "W1", Name: "test"})
 	require.NoError(t, err)
 
-	seedUser(t, database, "U1", "alice") // Low-data → batch
-	seedUser(t, database, "U2", "bob")   // Low-data → batch
+	seedUser(t, database, "1:U1", "alice") // Low-data → batch
+	seedUser(t, database, "1:U2", "bob")   // Low-data → batch
 	seedChannel(t, database, "C1", "general")
 
 	from := float64(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC).Unix())
@@ -538,17 +552,17 @@ func TestPipeline_BatchFallback(t *testing.T) {
 	// Both users: 4 messages, 0 situations → batch tier
 	for i := range 4 {
 		ts := base + float64(i*60)
-		seedMessage(t, database, "C1", fmt.Sprintf("%.6f", ts), "U1", "msg "+string(rune('a'+i)))
+		seedPartnerMessage(t, database, "C1", fmt.Sprintf("%.6f", ts), "1:U1", "msg "+string(rune('a'+i)))
 	}
 	for i := range 4 {
 		ts := base + float64((i+10)*60)
-		seedMessage(t, database, "C1", fmt.Sprintf("%.6f", ts), "U2", "msg "+string(rune('a'+i)))
+		seedPartnerMessage(t, database, "C1", fmt.Sprintf("%.6f", ts), "1:U2", "msg "+string(rune('a'+i)))
 	}
 
 	// Seed a digest with situations for neither user, just to pass the "no situations" skip
 	seedDigestWithSituations(t, database, "C1", from, to,
 		`[]`,
-		`[{"topic":"Topic X","type":"collaboration","participants":[{"user_id":"U3","role":"lead"}],"dynamic":"unrelated","outcome":"done","red_flags":[],"observations":[],"message_refs":[]}]`)
+		`[{"topic":"Topic X","type":"collaboration","participants":[{"user_id":"1:U3","role":"lead"}],"dynamic":"unrelated","outcome":"done","red_flags":[],"observations":[],"message_refs":[]}]`)
 
 	gen := &multiMockGenerator{
 		batchErr:     fmt.Errorf("AI overloaded"),
@@ -569,14 +583,372 @@ func TestPipeline_BatchFallback(t *testing.T) {
 	assert.Equal(t, int32(1), gen.calls.Load(), "one failed batch call, no team summary")
 
 	// Both users should get insufficient_data cards (fallback)
-	cardU1, err := database.GetLatestPeopleCard("U1")
+	cardU1, err := database.GetLatestPeopleCard("1:U1")
 	require.NoError(t, err)
 	require.NotNil(t, cardU1)
 	assert.Equal(t, "insufficient_data", cardU1.Status)
 	assert.Equal(t, "Insufficient data for analysis this period.", cardU1.Summary)
 
-	cardU2, err := database.GetLatestPeopleCard("U2")
+	cardU2, err := database.GetLatestPeopleCard("1:U2")
 	require.NoError(t, err)
 	require.NotNil(t, cardU2)
 	assert.Equal(t, "insufficient_data", cardU2.Status)
+}
+
+// TestPeopleCards_NoOwnerNoCards: active users but no Slack account with a
+// known owner → no stats, no AI call, no error; the run records the
+// owner-unknown outcome and HasData says there is nothing to do (A13: never
+// fall back to everyone).
+func TestPeopleCards_NoOwnerNoCards(t *testing.T) {
+	database := testDB(t)
+	from, to := (&Pipeline{}).currentWindow()
+	seedUser(t, database, "1:U1", "alice")
+	seedChannel(t, database, "C1", "general")
+	for i := range DefaultMinMessages + 1 {
+		seedMessage(t, database, "C1", fmt.Sprintf("%.6f", from+86400+float64(i*60)), "1:U1", "msg")
+	}
+	seedOutcomeSituation(t, database, from, to)
+	gen := &mockGenerator{response: outcomeBatchReply}
+	pipe := New(database, testConfig(), gen, testLogger())
+	pipe.ForceRegenerate = true
+
+	has, err := pipe.HasData()
+	require.NoError(t, err)
+	assert.False(t, has)
+	n, err := pipe.RunForWindow(context.Background(), from, to)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+	assert.Equal(t, OutcomeNoOwner, pipe.LastOutcome())
+	assert.Equal(t, int32(0), gen.calls.Load())
+	cards, err := database.GetPeopleCardsForWindow(from, to)
+	require.NoError(t, err)
+	assert.Empty(t, cards)
+}
+
+// TestPeopleExclude_BlocksFutureCards: a person excluded before any card is
+// made gets none on the next run; after include the next run makes one.
+func TestPeopleExclude_BlocksFutureCards(t *testing.T) {
+	database := testDB(t)
+	from, to := (&Pipeline{}).currentWindow()
+	seedOutcomeUser(t, database, from)
+	seedOutcomeSituation(t, database, from, to)
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	run := func() int {
+		pipe := New(database, cfg, &mockGenerator{response: outcomeBatchReply}, testLogger())
+		pipe.ForceRegenerate = true
+		n, err := pipe.RunForWindow(context.Background(), from, to)
+		require.NoError(t, err)
+		return n
+	}
+
+	require.NoError(t, database.ExcludePerson("1:U1"))
+	assert.Equal(t, 0, run())
+	card, err := database.GetLatestPeopleCard("1:U1")
+	require.NoError(t, err)
+	assert.Nil(t, card)
+
+	require.NoError(t, database.IncludePerson("1:U1"))
+	assert.Equal(t, 1, run())
+	card, err = database.GetLatestPeopleCard("1:U1")
+	require.NoError(t, err)
+	require.NotNil(t, card)
+}
+
+// excludingGenerator excludes a person while the run is generating, the race
+// between `people exclude` and an in-flight run.
+type excludingGenerator struct {
+	mockGenerator
+	database *db.DB
+	userID   string
+	after    func() // instead of excluding userID, when set
+}
+
+func (g *excludingGenerator) Generate(ctx context.Context, a, b, c string) (string, *digest.Usage, string, error) {
+	if g.calls.Load() == 0 {
+		if g.after != nil {
+			g.after()
+		} else if err := g.database.ExcludePerson(g.userID); err != nil {
+			return "", nil, "", err
+		}
+	}
+	return g.mockGenerator.Generate(ctx, a, b, c)
+}
+
+// TestPeopleExclude_DuringRunWritesNoCard: exclude lands between the stats
+// and the card write → the run succeeds and stores no card for the person.
+func TestPeopleExclude_DuringRunWritesNoCard(t *testing.T) {
+	database := testDB(t)
+	from, to := (&Pipeline{}).currentWindow()
+	seedOutcomeUser(t, database, from)
+	seedOutcomeSituation(t, database, from, to)
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	gen := &excludingGenerator{mockGenerator: mockGenerator{response: outcomeBatchReply}, database: database, userID: "1:U1"}
+	pipe := New(database, cfg, gen, testLogger())
+	pipe.ForceRegenerate = true
+
+	n, err := pipe.RunForWindow(context.Background(), from, to)
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), gen.calls.Load())
+	assert.Equal(t, 0, n, "a skipped person is not a generated card")
+	assert.Equal(t, OutcomeNoData, pipe.LastOutcome(), "nothing made: not a success to stamp")
+	card, err := database.GetLatestPeopleCard("1:U1")
+	require.NoError(t, err)
+	assert.Nil(t, card)
+}
+
+// TestPeopleExclude_DuringRunCountsOnlyWrittenCards: of two people, one is
+// excluded mid-run → the run reports one card, generated, and no failure.
+func TestPeopleExclude_DuringRunCountsOnlyWrittenCards(t *testing.T) {
+	database := testDB(t)
+	from, to := seedLowDataUsers(t, database)
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	gen := &excludingGenerator{
+		mockGenerator: mockGenerator{response: batchCardJSON("1:U1", "1:U2")},
+		database:      database, userID: "1:U2",
+	}
+	pipe := New(database, cfg, gen, testLogger())
+	pipe.ForceRegenerate = true
+
+	n, err := pipe.RunForWindow(context.Background(), from, to)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	assert.Equal(t, OutcomeGenerated, pipe.LastOutcome())
+	assert.Equal(t, "active", cardStatus(t, database, "1:U1"))
+	card, err := database.GetLatestPeopleCard("1:U2")
+	require.NoError(t, err)
+	assert.Nil(t, card)
+}
+
+// TestPeopleExclude_DuringRunLowDataPathsAreSkips: in the low-data batch
+// phase, a person excluded mid-run is a skip on the whole-batch error path
+// and on the AI-omitted path alike: an all-excluded batch ends with no data,
+// never a failure, and progress still reaches the total.
+func TestPeopleExclude_DuringRunLowDataPathsAreSkips(t *testing.T) {
+	for name, gen := range map[string]struct {
+		response string
+		err      error
+	}{
+		"batch error": {err: errors.New("model failed")},
+		"AI omitted":  {response: `[]`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			database := testDB(t)
+			from, to := seedLowDataUsers(t, database)
+			cfg := testConfig()
+			cfg.AI.Workers = 1
+			g := &excludingGenerator{mockGenerator: mockGenerator{response: gen.response, err: gen.err}, database: database}
+			g.after = func() {
+				require.NoError(t, database.ExcludePerson("1:U1"))
+				require.NoError(t, database.ExcludePerson("1:U2"))
+			}
+			pipe := New(database, cfg, g, testLogger())
+			pipe.ForceRegenerate = true
+			var lastDone, lastTotal int
+			pipe.OnProgress = func(done, total int, _ string) {
+				if total > 0 {
+					lastDone, lastTotal = done, total
+				}
+			}
+
+			n, err := pipe.RunForWindow(context.Background(), from, to)
+			require.NoError(t, err)
+			assert.Equal(t, 0, n)
+			assert.Equal(t, OutcomeNoData, pipe.LastOutcome())
+			assert.Equal(t, 2, lastTotal)
+			assert.Equal(t, lastTotal, lastDone, "progress reaches the total")
+			cards, err := database.GetPeopleCardsForWindow(from, to)
+			require.NoError(t, err)
+			assert.Empty(t, cards)
+		})
+	}
+}
+
+// TestPrunePreUpgradeCards_Helper: the shared entry-point helper prunes a
+// non-partner card and reports done.
+func TestPrunePreUpgradeCards_Helper(t *testing.T) {
+	database := testDB(t)
+	_, err := database.Exec(`INSERT INTO slack_accounts (id, current_user_id) VALUES (1, '1:UOWNER')`)
+	require.NoError(t, err)
+	_, err = database.UpsertPeopleCard(db.PeopleCard{UserID: "1:UREADONLY", PeriodFrom: 1, PeriodTo: 2, Summary: "old"})
+	require.NoError(t, err)
+	done, err := PrunePreUpgradeCards(context.Background(), database, testLogger())
+	require.NoError(t, err)
+	assert.True(t, done)
+	card, err := database.GetLatestPeopleCard("1:UREADONLY")
+	require.NoError(t, err)
+	assert.Nil(t, card)
+}
+
+// TestPeopleExclude_SkipRecordsNoStep: the progress event of a person
+// excluded mid-run carries no step metrics, so an OnProgress consumer that
+// records pipeline steps (cmd/people.go) records none for it, not the
+// previous card's.
+func TestPeopleExclude_SkipRecordsNoStep(t *testing.T) {
+	database := testDB(t)
+	from, to := seedLowDataUsers(t, database)
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	gen := &excludingGenerator{
+		mockGenerator: mockGenerator{response: batchCardJSON("1:U1", "1:U2")},
+		database:      database, userID: "1:U2",
+	}
+	pipe := New(database, cfg, gen, testLogger())
+	pipe.ForceRegenerate = true
+	var stepped, skippedEvents int
+	pipe.OnProgress = func(_, _ int, status string) {
+		switch {
+		case strings.Contains(status, "skipped"):
+			skippedEvents++
+			assert.Zero(t, pipe.LastStepMessageCount, status)
+			assert.Zero(t, pipe.LastStepDurationSeconds, status)
+			assert.Zero(t, pipe.LastStepInputTokens, status)
+			assert.Zero(t, pipe.LastStepOutputTokens, status)
+			assert.True(t, pipe.LastStepPeriodFrom.IsZero(), status)
+		case strings.Contains(status, "done (batch)"):
+			stepped++
+			assert.Positive(t, pipe.LastStepMessageCount, status)
+		}
+	}
+
+	n, err := pipe.RunForWindow(context.Background(), from, to)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	assert.Equal(t, 1, stepped)
+	assert.Equal(t, 1, skippedEvents)
+}
+
+// surveillanceReplyGenerator answers every people call with a reply that
+// still carries the dropped fields, and records the prompts it was sent.
+type surveillanceReplyGenerator struct {
+	mu       sync.Mutex
+	prompts  []string
+	batchErr error
+}
+
+func (g *surveillanceReplyGenerator) Generate(_ context.Context, sys, user, _ string) (string, *digest.Usage, string, error) {
+	combined := sys + user
+	g.mu.Lock()
+	g.prompts = append(g.prompts, combined)
+	g.mu.Unlock()
+	usage := &digest.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 5}}
+	switch {
+	case strings.Contains(combined, "=== USERS ==="):
+		if g.batchErr != nil {
+			return "", usage, "", g.batchErr
+		}
+		return `[{"user_id":"1:U1","summary":"Works on auth","communication_style":"driver","decision_role":"contributor",` +
+			`"red_flags":["Seems burned out"],"active_hours":{"9":3},"highlights":["Led auth"],"accomplishments":[],` +
+			`"communication_guide":"Be direct","decision_style":"Quick","tactics":[]}]`, usage, "", nil
+	case strings.Contains(combined, "=== PEOPLE CARDS ==="):
+		return `{"summary":"Auth work moved","attention":["Check on alice"],"tips":["Use threads"]}`, usage, "", nil
+	default:
+		return `{"summary":"Works on auth","communication_style":"driver","decision_role":"contributor",` +
+			`"red_flags":["Seems burned out"],"active_hours":{"9":3},"volume_change_pct":-40,"highlights":["Led auth"],` +
+			`"accomplishments":[],"communication_guide":"Be direct","decision_style":"Quick","tactics":[]}`, usage, "", nil
+	}
+}
+
+// TestPeopleCard_DropsSurveillanceFields pins #1769 (A12): a model reply that
+// still carries red_flags and active_hours is parsed and stored with the
+// dropped fields at their defaults, on the batch and the individual path;
+// the prompts carry no average length, volume change, active hours or team
+// norms; the team summary stores no attention list.
+func TestPeopleCard_DropsSurveillanceFields(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		batchErr error
+	}{
+		{"batch", nil},
+		{"individual", errors.New("batch down")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database := testDB(t)
+			require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "W1", Name: "test"}))
+			seedUser(t, database, "1:U1", "alice")
+			seedChannel(t, database, "C1", "general")
+			from := float64(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC).Unix())
+			to := float64(time.Date(2025, 1, 8, 0, 0, 0, 0, time.UTC).Unix())
+			for i := range 12 {
+				seedPartnerMessage(t, database, "C1", fmt.Sprintf("%.6f", from+86400+float64(i*60)), "1:U1", "auth work "+string(rune('a'+i)))
+			}
+			seedDigestWithSituations(t, database, "C1", from, to, `[]`,
+				`[{"topic":"Auth","type":"collaboration","participants":[{"user_id":"1:U1","role":"lead"}],"dynamic":"led","outcome":"done","red_flags":["tense"],"observations":[],"message_refs":[]}]`)
+
+			gen := &surveillanceReplyGenerator{batchErr: tc.batchErr}
+			cfg := testConfig()
+			cfg.AI.Workers = 1
+			pipe := New(database, cfg, gen, testLogger())
+			pipe.ForceRegenerate = true
+			_, err := pipe.RunForWindow(context.Background(), from, to)
+			require.NoError(t, err)
+
+			card, err := database.GetLatestPeopleCard("1:U1")
+			require.NoError(t, err)
+			require.NotNil(t, card)
+			assert.Equal(t, "active", card.Status)
+			assert.Equal(t, "Works on auth", card.Summary)
+			assert.Equal(t, "[]", card.RedFlags)
+			assert.Equal(t, "{}", card.ActiveHoursJSON)
+			assert.Zero(t, card.VolumeChangePct)
+			assert.Zero(t, card.AvgMessageLength)
+			assert.Equal(t, 12, card.MessageCount, "the basis counts stay")
+
+			var raw struct{ RedFlags, ActiveHours string }
+			require.NoError(t, database.QueryRow(`SELECT red_flags, active_hours_json FROM people_cards WHERE user_id = '1:U1'`).Scan(&raw.RedFlags, &raw.ActiveHours))
+			assert.Equal(t, "[]", raw.RedFlags)
+			assert.Equal(t, "{}", raw.ActiveHours)
+
+			summary, err := database.GetLatestPeopleCardSummary()
+			require.NoError(t, err)
+			require.NotNil(t, summary)
+			assert.Equal(t, "[]", summary.Attention)
+
+			gen.mu.Lock()
+			defer gen.mu.Unlock()
+			require.NotEmpty(t, gen.prompts)
+			for _, p := range gen.prompts {
+				for _, word := range []string{"Avg message length", "Volume change", "Volume:", "Active hours", "Team averages", "TEAM NORMS", "Red flags", "red_flags"} {
+					assert.NotContains(t, p, word)
+				}
+			}
+		})
+	}
+}
+
+// TestPeoplePrompt_CustomizedOldTemplateFallsBack (#1769): a customized
+// people.reduce/people.batch row written for v1 (one more %s, the team-norms
+// section) is never upgraded by Seed; the pipeline renders the v2 default
+// instead of shifting sections, so the A17 rule still applies. A customized
+// row with the right count (people.team keeps 5) keeps the owner's text.
+func TestPeoplePrompt_CustomizedOldTemplateFallsBack(t *testing.T) {
+	database := testDB(t)
+	store := prompts.New(database, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	require.NoError(t, store.Seed())
+	oldReduce := "OLD reduce" + strings.Repeat(" %s", 11)
+	oldBatch := "OLD batch" + strings.Repeat(" %s", 7)
+	ownTeam := "OWN team" + strings.Repeat(" %s", 5)
+	require.NoError(t, store.Update(prompts.PeopleReduce, oldReduce, "owner edit"))
+	require.NoError(t, store.Update(prompts.PeopleBatch, oldBatch, "owner edit"))
+	require.NoError(t, store.Update(prompts.PeopleTeam, ownTeam, "owner edit"))
+	// An owner-approved addition survives the fallback.
+	_, err := database.AddPromptAddition(prompts.PeopleReduce, "Keep cards short.", 0, time.Now())
+	require.NoError(t, err)
+
+	p := New(database, testConfig(), &mockGenerator{}, testLogger())
+	p.SetPromptStore(store)
+	for _, id := range []string{prompts.PeopleReduce, prompts.PeopleBatch} {
+		tmpl, version := p.getPrompt(id)
+		want := prompts.Defaults[id]
+		if id == prompts.PeopleReduce {
+			want = prompts.WithAdditions(want, []string{"Keep cards short."})
+		}
+		assert.Equal(t, want, tmpl, id)
+		assert.Zero(t, version, id)
+		assert.Contains(t, tmpl, "- Never infer or mention health", id)
+	}
+	tmpl, _ := p.getPrompt(prompts.PeopleTeam)
+	assert.Equal(t, ownTeam, tmpl)
 }

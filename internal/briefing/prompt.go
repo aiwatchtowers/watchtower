@@ -14,7 +14,7 @@ package briefing
 //   9. digestsCtx     — channel digests from last 24h
 //  10. dailyDigestCtx — latest daily rollup
 //  11. peopleCardsCtx — latest people cards
-//  12. peopleSummaryCtx — latest team summary
+//  12. peopleSummaryCtx — latest team summary (summary and tips; no attention list, #1769)
 //  13. profileCtx     — user profile (role, team, reports, etc.)
 //  14. jiraCtx        — Jira issues, sprint progress, stale/overdue signals
 //  15. workbenchesCtx — Watchtower workbenches with board/comment activity since the previous briefing

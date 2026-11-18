@@ -132,10 +132,14 @@ func say(t *testing.T, w *os.File, lines ...string) {
 }
 
 // awaitAck waits for the stub's ack: everything scripted before it was
-// emitted by the session.
+// emitted by the session. It opens the ack FIFO read-write: the stub may
+// still hold the previous ack's writer open after its line was read, and a
+// read-only open that met only that stale writer would see EOF once the
+// stub closes it (#1899). Holding a write end itself, the reader never sees
+// a no-writers EOF and waits for the next ack's line.
 func awaitAck(t *testing.T, fifo string) {
 	t.Helper()
-	f, err := os.Open(fifo + ".ack")
+	f, err := os.OpenFile(fifo+".ack", os.O_RDWR, 0)
 	require.NoError(t, err)
 	defer func() { _ = f.Close() }()
 	_, err = bufio.NewReader(f).ReadString('\n')

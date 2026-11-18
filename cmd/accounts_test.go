@@ -69,11 +69,11 @@ func TestAccountsPurgesJSONKeys(t *testing.T) {
 func TestAccountsPurgesTextEmpty(t *testing.T) {
 	writeActionsConfig(t)
 	out := runAccountsPurgesCmd(t)
-	assert.Equal(t, "Purge on revoked access: off (default)\nNo purges.\n", out)
+	assert.Equal(t, "Purge on revoked access: on (default)\nNo purges.\n", out)
 
 	var top map[string]any
 	require.NoError(t, json.Unmarshal([]byte(runAccountsPurgesCmd(t, "--json")), &top))
-	assert.Equal(t, false, top["enabled"])
+	assert.Equal(t, true, top["enabled"], "on by default (#1769, A1)")
 	assert.Equal(t, "default", top["enabled_by"])
 	assert.Equal(t, []any{}, top["purges"], "an empty ledger is an empty array, not null")
 }

@@ -127,3 +127,14 @@ func TestDayPlanRun_OptionsPromptReachesGenerator(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Contains(t, gen.system, "OVERRIDE-B")
 }
+
+// TestDayPlan_PeopleSectionHasNoRedFlags pins #1769 (A12): the day plan's
+// people block carries no red flags, even from a card written before the
+// migration.
+func TestDayPlan_PeopleSectionHasNoRedFlags(t *testing.T) {
+	got := formatPeopleSection([]db.PeopleCard{{UserID: "1:U1", CommunicationStyle: "driver", DecisionRole: "contributor",
+		Summary: "Works on auth", RedFlags: `["Seems burned out"]`}})
+	assert.Contains(t, got, "Works on auth")
+	assert.NotContains(t, got, "flags")
+	assert.NotContains(t, got, "burned out")
+}

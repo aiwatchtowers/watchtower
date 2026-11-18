@@ -277,3 +277,24 @@ func TestGatherTracks_TruncatesLongContext(t *testing.T) {
 	assert.Contains(t, got, "Track A")
 	assert.Contains(t, got, "...")
 }
+
+// TestBriefing_PeopleContextHasNoDroppedFields pins #1769 (A12): the people
+// cards and the team summary given to the briefing prompt carry no red flags
+// and no attention list, even from rows written before the migration.
+func TestBriefing_PeopleContextHasNoDroppedFields(t *testing.T) {
+	p := newTestPipeline(t)
+	_, err := p.db.UpsertPeopleCard(db.PeopleCard{UserID: "1:U1", PeriodFrom: 1, PeriodTo: 2, Summary: "Works on auth",
+		RedFlags: `["Seems burned out"]`, Highlights: `["Led auth"]`, ActiveHoursJSON: `{"9":3}`, VolumeChangePct: -40, Status: "active"})
+	require.NoError(t, err)
+	require.NoError(t, p.db.UpsertPeopleCardSummary(db.PeopleCardSummary{PeriodFrom: 1, PeriodTo: 2, Summary: "Auth moved",
+		Attention: `["Check on alice"]`, Tips: `["Use threads"]`}))
+
+	cards := p.gatherPeopleCards()
+	assert.Contains(t, cards, "Works on auth")
+	assert.NotContains(t, cards, "flags")
+	assert.NotContains(t, cards, "burned out")
+	summary := p.gatherPeopleSummary()
+	assert.Contains(t, summary, "Auth moved")
+	assert.NotContains(t, summary, "Attention")
+	assert.NotContains(t, summary, "Check on alice")
+}

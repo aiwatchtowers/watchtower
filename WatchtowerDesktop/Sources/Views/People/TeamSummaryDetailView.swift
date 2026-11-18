@@ -1,153 +1,71 @@
 import SwiftUI
 import WatchtowerCore
 
+/// The Team Summary: what the team worked on and tips for working with it.
+/// No list of people who "need attention" (#1769, A12).
 struct TeamSummaryDetailView: View {
     let summary: PeopleCardSummary
     var onClose: (() -> Void)?
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: Spacing.large) {
                 header
-                summarySection
-                attentionSection
+                if !summary.summary.isEmpty {
+                    Text(summary.summary).font(.callout).fixedSize(horizontal: false, vertical: true)
+                }
                 tipsSection
-                metadataSection
+                metadata
             }
-            .padding(20)
+            .controlSize(.small)
+            .padding(Spacing.page)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
+        .detailBackground()
     }
-
-    // MARK: - Header
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Image(systemName: "person.3.fill")
-                    .font(.largeTitle)
-                    .foregroundStyle(.orange)
-                VStack(alignment: .leading) {
-                    Text("Team Summary")
-                        .font(.title2)
-                        .fontWeight(.bold)
-                    Text("\(periodFromDate.formatted(.dateTime.month().day())) – \(periodToDate.formatted(.dateTime.month().day()))")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-
-                if let onClose {
-                    Button { onClose() } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .symbolRenderingMode(.hierarchical)
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.borderless)
-                }
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+            Text(PeopleCardCopy.teamSummaryTitle).font(.title2.weight(.semibold))
+            Text(PeopleCardCopy.period(
+                from: Date(timeIntervalSince1970: summary.periodFrom),
+                to: Date(timeIntervalSince1970: summary.periodTo)
+            ))
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            Spacer(minLength: Spacing.medium)
+            if let onClose {
+                Button { onClose() } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.kitIcon(isOn: false))
+                    .help(PeopleCardCopy.close)
             }
         }
     }
-
-    // MARK: - Summary
-
-    @ViewBuilder
-    private var summarySection: some View {
-        if !summary.summary.isEmpty {
-            GroupBox("Summary") {
-                Text(summary.summary)
-                    .font(.body)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(4)
-            }
-        }
-    }
-
-    // MARK: - Attention
-
-    @ViewBuilder
-    private var attentionSection: some View {
-        let items = summary.parsedAttention
-        if !items.isEmpty {
-            GroupBox {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(items, id: \.self) { item in
-                        HStack(alignment: .top, spacing: 6) {
-                            Image(systemName: "exclamationmark.circle.fill")
-                                .foregroundStyle(.orange)
-                                .font(.caption)
-                            Text(item)
-                                .font(.subheadline)
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(4)
-            } label: {
-                Label("Needs Attention", systemImage: "exclamationmark.circle")
-                    .foregroundStyle(.orange)
-            }
-        }
-    }
-
-    // MARK: - Tips
 
     @ViewBuilder
     private var tipsSection: some View {
         let items = summary.parsedTips
         if !items.isEmpty {
-            GroupBox {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(items, id: \.self) { tip in
-                        HStack(alignment: .top, spacing: 6) {
-                            Image(systemName: "lightbulb.fill")
-                                .foregroundStyle(.yellow)
-                                .font(.caption)
-                            Text(tip)
-                                .font(.subheadline)
-                        }
-                    }
+            PeopleSection(title: PeopleCardCopy.tipsTitle, icon: "lightbulb") {
+                ForEach(items, id: \.self) { tip in
+                    Text("• " + tip).font(.callout).fixedSize(horizontal: false, vertical: true)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(4)
-            } label: {
-                Label("Tips", systemImage: "lightbulb")
-                    .foregroundStyle(.yellow)
             }
         }
     }
 
-    // MARK: - Metadata
-
-    private var metadataSection: some View {
-        GroupBox {
-            HStack(spacing: 16) {
-                metadataItem(label: "Model", value: summary.model)
-                metadataItem(label: "Tokens", value: "\(summary.inputTokens + summary.outputTokens)")
-                metadataItem(label: "Cost", value: String(format: "$%.4f", summary.costUSD))
-            }
-            .padding(4)
-        }
-    }
-
-    private func metadataItem(label: String, value: String) -> some View {
-        VStack(spacing: 2) {
-            Text(value)
-                .font(.caption)
-                .fontWeight(.medium)
-            Text(label)
+    /// Model, tokens and cost of the run that wrote the summary.
+    @ViewBuilder
+    private var metadata: some View {
+        if !summary.model.isEmpty {
+            Text(PeopleCardCopy.runLine(
+                model: summary.model,
+                tokens: summary.inputTokens + summary.outputTokens,
+                costUSD: summary.costUSD
+            ))
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.tertiary)
+                .monospacedDigit()
         }
-    }
-
-    // MARK: - Helpers
-
-    private var periodFromDate: Date {
-        Date(timeIntervalSince1970: summary.periodFrom)
-    }
-
-    private var periodToDate: Date {
-        Date(timeIntervalSince1970: summary.periodTo)
     }
 }
