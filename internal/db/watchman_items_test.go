@@ -495,3 +495,63 @@ func TestPromoteWatchmanHandover_InsertKeepsGuards(t *testing.T) {
 		require.Nil(t, it, name)
 	}
 }
+
+func TestParkWatchmanGuard_EachDenialIsItsOwnItemOnItsNight(t *testing.T) {
+	d := openTestDB(t)
+	wmTestWorkbench(t, d, 1)
+	night1 := time.Date(2026, 11, 1, 2, 0, 0, 0, time.UTC)
+	night2 := night1.AddDate(0, 0, 1)
+	park := func(reason, line string, at time.Time) {
+		t.Helper()
+		require.NoError(t, d.ParkWatchmanGuard(WatchmanItem{WorkbenchID: 1, SessionID: 7, TargetID: 3, Question: line, ParkReason: reason}, at))
+	}
+	park("main_ref", "main_ref — Bash: git push origin main", night1)
+	park("main_ref", "main_ref — Bash: git push origin main", night2) // the same denial on the next night
+	rows, err := d.Query(`SELECT ` + watchmanItemCols + ` FROM watchman_items ORDER BY id`)
+	require.NoError(t, err)
+	defer rows.Close()
+	var items []*WatchmanItem
+	for rows.Next() {
+		it, err := scanWatchmanItem(rows)
+		require.NoError(t, err)
+		items = append(items, it)
+	}
+	require.NoError(t, rows.Err())
+	require.Len(t, items, 2)
+	for i, at := range []time.Time{night1, night2} {
+		it := items[i]
+		require.Equal(t, "guard", it.Kind)
+		require.Equal(t, "guard", it.RefKind)
+		require.Equal(t, int64(i+1), it.RefID)
+		require.Equal(t, int64(7), it.SessionID)
+		require.Equal(t, int64(3), it.TargetID)
+		require.Equal(t, "done", it.State)
+		require.Equal(t, "parked", it.Outcome)
+		require.True(t, it.Unsure)
+		require.Equal(t, "main_ref", it.ParkReason)
+		require.Equal(t, "main_ref — Bash: git push origin main", it.Question)
+		require.True(t, it.CreatedAt.Equal(at), "created on its night")
+		require.True(t, it.DecidedAt.Equal(at))
+	}
+	// A guard item never collides with another wait point's numbers.
+	_, ins, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: 1, Kind: "ask", RefKind: "ask", RefID: 1})
+	require.NoError(t, err)
+	require.True(t, ins)
+}
+
+func TestMigration00201_GuardRefKindKeepsRows(t *testing.T) {
+	d := openTestDB(t)
+	wmTestWorkbench(t, d, 1)
+	id := wmQueueAsk(t, d, 5)
+	var sql string
+	require.NoError(t, d.QueryRow(`SELECT sql FROM sqlite_master WHERE name = 'watchman_items'`).Scan(&sql))
+	require.Contains(t, sql, "'guard'))")
+	for _, idx := range []string{"idx_watchman_items_queue", "idx_watchman_items_wb", "idx_watchman_items_created"} {
+		var n int
+		require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?`, idx).Scan(&n))
+		require.Equal(t, 1, n, idx)
+	}
+	var q string
+	require.NoError(t, d.QueryRow(`SELECT question FROM watchman_items WHERE id = ?`, id).Scan(&q))
+	require.Equal(t, "q", q)
+}

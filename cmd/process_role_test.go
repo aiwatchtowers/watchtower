@@ -19,6 +19,7 @@ func TestProcessRole(t *testing.T) {
 		{"workbench ask-guard", nil, "hook:ask-guard"},
 		{"workbench brief", nil, "hook:brief"},
 		{"workbench check", nil, "hook:check"},
+		{"workbench watchman-guard", nil, "hook:watchman-guard"},
 		{"workbench cleanup", nil, "cli:workbench cleanup"},
 		{"sync stop", []string{"sync", "stop", "--daemon"}, "cli:sync stop"},
 		{"", nil, "cli"},

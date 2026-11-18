@@ -14,6 +14,7 @@
   "ask_guard": true,
   "ask_tool_block": true,
   "permission_wait": true,
+  "watchman_guard": true,
   "cleanup_permission": true,
   "group_prompt": true,
   "codex": {

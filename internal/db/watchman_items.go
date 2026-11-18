@@ -382,6 +382,28 @@ func (db *DB) watchmanMissedWaitPoints(session int64) ([]WatchmanItem, error) {
 	return out, rows.Err()
 }
 
+// ParkWatchmanGuard journals one denial of the guard hook (kind guard) as a
+// finished parked item, for Waiting for you on the night it happened
+// (created_at = decided_at = at). Each denial is its own row: ref_kind
+// 'guard' with ref_id the next number after the guard items before it, taken
+// in the same statement (00201). it.Question is the denial's line,
+// it.ParkReason names the limit.
+func (db *DB) ParkWatchmanGuard(it WatchmanItem, at time.Time) error {
+	q := []rune(it.Question)
+	if len(q) > watchmanQuestionMax {
+		q = q[:watchmanQuestionMax]
+	}
+	_, err := db.Exec(`INSERT INTO watchman_items (workbench_id, session_id, target_id, kind, ref_kind, ref_id, state, outcome,
+			question, park_reason, created_at, decided_at)
+		SELECT ?, ?, ?, 'guard', 'guard', COALESCE(MAX(ref_id), 0) + 1, 'done', 'parked', ?, ?, ?, ?
+		FROM watchman_items WHERE ref_kind = 'guard'`,
+		it.WorkbenchID, wmNullID(it.SessionID), wmNullID(it.TargetID), string(q), it.ParkReason, wmTime(at), wmTime(at))
+	if err != nil {
+		return fmt.Errorf("journalling the watchman guard denial of session %d: %w", it.SessionID, err)
+	}
+	return nil
+}
+
 // LeaseWatchmanItem takes the oldest queued item (not_before reached) or
 // deciding item whose lease expired that eligible accepts, and moves it to
 // deciding with attempts+1 and lease_until = now+lease. Nil when none. The

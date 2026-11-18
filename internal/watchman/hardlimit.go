@@ -17,6 +17,7 @@ type HardLimit string
 
 const (
 	LimitUnreadable    HardLimit = "unreadable"     // a command that cannot be read (an unterminated quote, a wrapper around nothing)
+	LimitSendPack      HardLimit = "send_pack"      // the plumbing push git send-pack, in any form (no pre-push hook sees it)
 	LimitMainRef       HardLimit = "main_ref"       // push to, or PR merge into, the default branch
 	LimitTag           HardLimit = "tag"            // creating, deleting or pushing a tag
 	LimitRelease       HardLimit = "release"        // a GitHub release
@@ -44,6 +45,10 @@ type PermissionAsk struct {
 	// Branch is the session's branch when the request was read; nil = not
 	// recorded (stored rows).
 	Branch *BranchInfo
+	// Cwd is the directory a live tool call starts in ("" = unknown, stored
+	// rows). It places a shell command's relative paths only; it is no
+	// directory change (a cd or -C in the command is).
+	Cwd string
 }
 
 // BranchInfo is the branch a session works on and the branches it shares
@@ -60,6 +65,7 @@ var hardLimits = []struct {
 	match func(PermissionAsk) bool
 }{
 	{LimitUnreadable, matchUnreadable},
+	{LimitSendPack, matchSendPack},
 	{LimitMainRef, matchMainRef},
 	{LimitTag, matchTag},
 	{LimitRelease, matchRelease},
@@ -417,6 +423,16 @@ func refDest(spec string) string {
 		spec = spec[i+1:]
 	}
 	return strings.TrimPrefix(spec, "refs/heads/")
+}
+
+// matchSendPack: git send-pack or git-send-pack, whatever it pushes. An
+// agent never needs the plumbing, and it bypasses the pre-push hook, so it
+// parks unconditionally.
+func matchSendPack(r PermissionAsk) bool {
+	return anyCmd(r, func(c shellCmd) bool {
+		_, ok := c.sub("git", "send-pack")
+		return ok || c.w[0] == "git-send-pack"
+	})
 }
 
 // stripRemote reduces origin/main, refs/heads/main and main to main.
@@ -811,11 +827,12 @@ func matchDeleteOutside(r PermissionAsk) bool {
 			if strings.HasPrefix(a, "-") {
 				continue
 			}
-			if !path.IsAbs(a) && c.cwd != "" {
-				if c.cwd == cwdUnknown {
+			base := cmp.Or(c.cwd, r.Cwd)
+			if !path.IsAbs(a) && base != "" {
+				if base == cwdUnknown {
 					return true
 				}
-				a = path.Join(c.cwd, a)
+				a = path.Join(base, a)
 			}
 			if !r.inside(a, false) {
 				return true
