@@ -35,10 +35,9 @@ type companyLinkEvent struct {
 // before the redirect) is the same link: no second event. Another bundle
 // waits until the app dismisses the first (company_dismiss).
 type pendingLinks struct {
-	mu      sync.Mutex
-	flow    string
-	wire    string
-	company string
+	mu   sync.Mutex
+	flow string
+	wire string
 	// shown is the company the /company/connected page names: the newest
 	// link the app was asked about, kept after it is dismissed so a reload
 	// of the page still reads right.
@@ -63,19 +62,18 @@ func (p *pendingLinks) offer(wire, company string) (string, linkOffer) {
 		}
 		return p.flow, linkBusy
 	}
-	p.flow, p.wire, p.company, p.shown = rand.Text(), wire, company, company
+	p.flow, p.wire, p.shown = rand.Text(), wire, company
 	return p.flow, linkFresh
 }
 
-// release ends the waiting link flow; false when flow is not the one waiting.
-func (p *pendingLinks) release(flow string) bool {
+// release ends the waiting link flow; another flow (already released, or
+// never this listener's) is a no-op.
+func (p *pendingLinks) release(flow string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if flow == "" || p.flow != flow {
-		return false
+	if flow != "" && p.flow == flow {
+		p.flow, p.wire = "", ""
 	}
-	p.flow, p.wire, p.company = "", "", ""
-	return true
 }
 
 func (p *pendingLinks) shownCompany() string {

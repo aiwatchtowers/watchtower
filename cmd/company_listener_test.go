@@ -73,24 +73,40 @@ func (l *syncLog) String() string {
 // noRedirect is a client that shows the listener's 302 instead of following it.
 var noRedirect = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 
-func (h *serveHarness) companyLink(t *testing.T, wire string) (*http.Response, string) {
+// reply is what the listener answered, its body already read and closed.
+type reply struct {
+	StatusCode int
+	Header     http.Header
+}
+
+func (h *serveHarness) companyLink(t *testing.T, wire string) (reply, string) {
 	t.Helper()
 	return h.do(t, http.MethodGet, companyConnectPath+"?b="+wire, "")
 }
 
-func (h *serveHarness) do(t *testing.T, method, pathAndQuery, host string) (*http.Response, string) {
+func (h *serveHarness) do(t *testing.T, method, pathAndQuery, host string) (reply, string) {
 	t.Helper()
-	req, err := http.NewRequestWithContext(context.Background(), method, h.base+pathAndQuery, nil)
+	r, body, err := h.fetch(method, pathAndQuery, host)
 	require.NoError(t, err)
+	return r, body
+}
+
+// fetch is do without the test's FailNow, for other goroutines.
+func (h *serveHarness) fetch(method, pathAndQuery, host string) (reply, string, error) {
+	req, err := http.NewRequestWithContext(context.Background(), method, h.base+pathAndQuery, nil)
+	if err != nil {
+		return reply{}, "", err
+	}
 	if host != "" {
 		req.Host = host
 	}
 	resp, err := noRedirect.Do(req)
-	require.NoError(t, err)
+	if err != nil {
+		return reply{}, "", err
+	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-	return resp, string(body)
+	return reply{StatusCode: resp.StatusCode, Header: resp.Header}, string(body), err
 }
 
 func TestCompanyListener_ValidLinkRedirectsClean(t *testing.T) {
@@ -253,8 +269,9 @@ func TestCompanyListener_DuplicateLinkWhilePendingIsOne(t *testing.T) {
 	statuses := make([]int, 4)
 	for i := range statuses {
 		wg.Go(func() {
-			resp, _ := h.companyLink(t, wire)
-			statuses[i] = resp.StatusCode
+			r, _, err := h.fetch(http.MethodGet, companyConnectPath+"?b="+wire, "")
+			assert.NoError(t, err)
+			statuses[i] = r.StatusCode
 		})
 	}
 	wg.Wait()
