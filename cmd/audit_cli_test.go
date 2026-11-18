@@ -219,7 +219,7 @@ var cliNoContentCommands = map[string]bool{
 	"company list":                     true,
 	"company profile":                  true, // a .mobileconfig of the stored company setup, no synced content
 	"company publish":                  true, // the company setup and its link, no synced content
-	"config init":                    true,
+	"config init":                      true,
 	"config set":                       true,
 	"config show":                      true,
 	"confluence access":                true,
