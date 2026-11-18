@@ -51,8 +51,8 @@ const (
 	recentOwnerWindow = 7 * 24 * time.Hour
 )
 
-// nestedScanBudget bounds W9's walk of one worktree; over it the worktree
-// is kept (check_failed).
+// nestedScanBudget bounds W9's walk of one worktree, and W10's; over it
+// the worktree is kept (check_failed).
 const nestedScanBudget = 20 * time.Second
 
 // worktreeCatch returns the reason a worktree is kept, "" to let it pass.
@@ -168,7 +168,7 @@ func catchUncommitted(ctx context.Context, b *builder, w worktree) (string, stri
 // (ignored.go, #1878). It runs after W9 so a nested worktree or repository
 // keeps its own reason; the sweep runs it too.
 func catchIgnoredWork(ctx context.Context, b *builder, w worktree) (string, string, error) {
-	first, err := b.repo.ignoredWork(ctx, w.Root)
+	first, err := b.ignoredWork(ctx, w.Root, nestedScanBudget)
 	if err != nil || first == "" {
 		return "", "", err
 	}

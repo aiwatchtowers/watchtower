@@ -203,6 +203,11 @@ type Deps struct {
 	// OrphanGrace is how long an apply waits for SIGTERMed orphans to exit
 	// before it keeps the worktree; 0 = 5 s (spec §7).
 	OrphanGrace time.Duration
+	// Integration renders the files Watchtower's workbench install writes
+	// into folder for the workbench (devpack.RenderWorkbenchFiles), keyed by
+	// slash path relative to folder. W10 lets an ignored file go only when
+	// its bytes equal the rendered ones (#1878); nil = no file is ours.
+	Integration func(ctx context.Context, workbenchID int64, folder string) (map[string][]byte, error)
 }
 
 // OrphansIn splits the processes inside one of roots into orphans and

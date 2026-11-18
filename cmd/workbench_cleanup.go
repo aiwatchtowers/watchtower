@@ -13,7 +13,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/db"
+	"watchtower/internal/devpack"
 	"watchtower/internal/sessioncleanup"
+	"watchtower/internal/workbenchmethod"
 )
 
 var workbenchCleanupCmd = &cobra.Command{
@@ -73,7 +75,30 @@ var cleanupDeps = func(database *db.DB) sessioncleanup.Deps {
 		Results: database,
 		// The projects directory the session feed reads (sessionfeed.Dirs).
 		ClaudeProjects: func() string { return sessioncleanup.ClaudeProjectsDir(agentsClaudeDir()) },
+		Integration: func(_ context.Context, id int64, folder string) (map[string][]byte, error) {
+			return renderCleanupIntegration(database, id, folder)
+		},
 	}
+}
+
+// renderCleanupIntegration is what the workbench install (workbench
+// worktree create, Repair) would write into folder now: the same options
+// as workbenchSetupOptions, read from the cleanup's own database handle
+// (opened read-only for a plan), so W10 lets only untouched copies go
+// (#1878). An unreadable preset or overlay is an error: the worktree is
+// then kept, never judged against a guess.
+func renderCleanupIntegration(database *db.DB, id int64, folder string) (map[string][]byte, error) {
+	o, err := workbenchInstallOptions(&db.Workbench{ID: id, FolderPath: folder})
+	if err != nil {
+		return nil, err
+	}
+	o.PresetNone = workbenchmethod.Resolve(database, id, folder).Preset == workbenchmethod.PresetNone
+	ov, err := database.AllSkillPackOverlays()
+	if err != nil {
+		return nil, fmt.Errorf("reading the pack skill additions: %w", err)
+	}
+	o.Overlays = devpack.Overlays(ov)
+	return devpack.RenderWorkbenchFiles(o)
 }
 
 func runWorkbenchCleanup(cmd *cobra.Command, _ []string) error {

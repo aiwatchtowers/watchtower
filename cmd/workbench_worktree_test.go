@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/db"
 	"watchtower/internal/gitbin"
 )
 
@@ -22,6 +23,7 @@ import (
 // CLI recording every call, and a fixed watchtower binary path.
 type worktreeFixture struct {
 	folder string
+	db     *db.DB
 	id     int64
 	idArg  string
 	mu     sync.Mutex
@@ -34,7 +36,7 @@ func newWorktreeFixture(t *testing.T) *worktreeFixture {
 	folder := gitBranchRepo(t)
 	id, err := database.CreateWorkbench("acme", folder)
 	require.NoError(t, err)
-	f := &worktreeFixture{folder: folder, id: id, idArg: strconv.FormatInt(id, 10)}
+	f := &worktreeFixture{folder: folder, db: database, id: id, idArg: strconv.FormatInt(id, 10)}
 	fake := useFakeWorkbenchClaude(t)
 	prevRun := workbenchCommandRunner
 	workbenchCommandRunner = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
@@ -235,4 +237,37 @@ func TestWorkbenchWorktree_UnknownAgentIsRefusedAsNotSupported(t *testing.T) {
 	}
 	assert.NoDirExists(t, path)
 	assert.Nil(t, codexFake.ctx, "no integration install for an unsupported agent")
+}
+
+// TestWorkbenchWorktree_CleanupRendersWhatCreateInstalled: the session
+// cleanup's renderer (W10, #1878) gives byte for byte the integration files
+// `worktree create` installed, so an untouched worktree's .claude files are
+// recognised as Watchtower's and never as the agent's work.
+func TestWorkbenchWorktree_CleanupRendersWhatCreateInstalled(t *testing.T) {
+	f := newWorktreeFixture(t)
+	created := f.create(t, "render")
+	require.True(t, created.Created)
+
+	rendered, err := renderCleanupIntegration(f.db, f.id, created.Cwd)
+	require.NoError(t, err)
+	installed := 0
+	for _, dir := range []string{".claude", ".agents"} {
+		err := filepath.WalkDir(filepath.Join(created.Cwd, dir), func(p string, d os.DirEntry, err error) error {
+			if os.IsNotExist(err) {
+				return filepath.SkipDir
+			}
+			if err != nil || !d.Type().IsRegular() {
+				return err
+			}
+			rel, err := filepath.Rel(created.Cwd, p)
+			require.NoError(t, err)
+			got, err := os.ReadFile(p) //nolint:gosec // G122: the test's own temp worktree
+			require.NoError(t, err)
+			assert.Equal(t, string(rendered[filepath.ToSlash(rel)]), string(got), rel)
+			installed++
+			return nil
+		})
+		require.NoError(t, err)
+	}
+	assert.Positive(t, installed, "create installed no integration files")
 }
