@@ -12,6 +12,13 @@ struct WatchmanArmSheet: View {
     let onCancel: () -> Void
     let onConfirm: () -> Void
 
+    /// At most six rows show; more scroll.
+    static let visibleRows = 6
+
+    static func listHeight(rows: Int) -> CGFloat {
+        CGFloat(min(rows, visibleRows)) * ListLayout.lineMinHeight
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.large) {
             VStack(alignment: .leading, spacing: Spacing.small) {
@@ -24,7 +31,16 @@ struct WatchmanArmSheet: View {
             if !content.sessions.isEmpty {
                 VStack(alignment: .leading, spacing: Spacing.small) {
                     Text(WatchmanArmingCopy.sessionsHeader(content.sessions.count)).font(.callout.weight(.semibold))
-                    ForEach(content.sessions, id: \.self) { Text($0).font(.callout).lineLimit(1) }
+                    // A long list scrolls (about six rows); the buttons stay on screen.
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(content.sessions, id: \.self) { session in
+                                Text(session).font(.callout).lineLimit(1).frame(minHeight: ListLayout.lineMinHeight)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(height: Self.listHeight(rows: content.sessions.count))
                 }
             }
             VStack(alignment: .leading, spacing: Spacing.medium) {

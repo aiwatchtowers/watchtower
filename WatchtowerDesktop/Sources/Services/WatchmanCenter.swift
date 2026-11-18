@@ -210,7 +210,9 @@ final class WatchmanCenter {
                 return false
             }
             guard reply.needsSheet else {
-                await arm(scope, only: reply.sessions ?? [])
+                // `--only` goes with every running session only (the CLI
+                // refuses it with --session or --target).
+                await arm(scope, only: scope == .allRunning ? reply.sessions ?? [] : [])
                 return false
             }
             let title = workbench.map(WatchmanArmingCopy.sheetTitle(workbench:)) ?? WatchmanArmingCopy.sheetTitleAllRunning
@@ -241,7 +243,8 @@ final class WatchmanCenter {
         confirming = true
         let check = await check(.allRunning)
         confirming = false
-        guard sheet == request else { return }
+        // Another sheet (or none) since the press: this confirm is void.
+        guard sheet?.token == request.token else { return }
         switch check {
         case let .failed(message):
             sheet = nil
@@ -299,7 +302,7 @@ final class WatchmanCenter {
         }
         armingHere.insert(scope)
         armNotices[scope] = nil
-        let onlyFlags = only.isEmpty ? [] : ["--only", only.map(String.init).joined(separator: ",")]
+        let onlyFlags = scope != .allRunning || only.isEmpty ? [] : ["--only", only.map(String.init).joined(separator: ",")]
         let outcome = await call(["watchman", "arm"] + scope.flags() + onlyFlags + ["--json"], timeout: Self.armTimeout)
         armingHere.remove(scope)
         let reply = try? JSONDecoder().decode(WatchmanArmReply.self, from: outcome.stdout)
@@ -392,5 +395,8 @@ struct WatchmanArmSheetRequest: Identifiable, Equatable {
     /// The sessions the check covered: the set the owner confirms.
     let sessions: [Int64]
     let content: WatchmanArmSheetContent
-    var id: WatchmanArmScope { scope }
+    /// Unique per presented sheet: a confirm acts only on the sheet it was
+    /// pressed on.
+    let token = UUID()
+    var id: UUID { token }
 }

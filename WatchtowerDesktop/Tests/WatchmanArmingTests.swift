@@ -1,3 +1,4 @@
+import DesignKit
 import SwiftUI
 import ViewInspector
 import XCTest
@@ -471,5 +472,73 @@ final class WatchmanArmingTests: XCTestCase {
         XCTAssertTrue(Copy.viaTargetHelp(target: 4, direct: true).contains("Take back here removes the direct hand-over"))
         XCTAssertEqual(Copy.takeBackDirectHelp(target: 4),
                        "Takes back only this session's own hand-over; #4 still hands it to Watchman")
+    }
+
+    /// The CLI's real `arm --session N --check --json` reply
+    /// (`cmd/testdata/watchman_arm_check_session.json`, written by
+    /// `TestWatchmanArm_CheckFixture`).
+    private static func goCheckReply() throws -> String {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerDesktop
+            .deletingLastPathComponent() // repo root
+            .appendingPathComponent("cmd/testdata/watchman_arm_check_session.json")
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    /// The strip and the panel never pass `--only` (the CLI refuses it with
+    /// --session or --target), though a real check reply lists `sessions`.
+    func testStripAndPanelArmWithoutOnly() async throws {
+        let real = try Self.goCheckReply()
+        let runner = ArmingRunner(status: Self.unarmed)
+        runner.reply("check", real)
+        let center = await center(runner)
+
+        // First time with a warning: the sheet, then the arm on confirm.
+        await center.handTo(.session(1), workbench: "acme")
+        XCTAssertEqual(center.sheet?.sessions, [1])
+        await center.confirmSheet()
+        XCTAssertEqual(runner.verbs.last, ["watchman", "arm", "--session", "1", "--json"])
+
+        // Learned, no warning: armed at once, still without --only.
+        let learned = real.replacingOccurrences(of: #""first_time": true"#, with: #""first_time": false"#)
+            .replacingOccurrences(of: "Could not read main's protection on GitHub — treat it as unprotected", with: "")
+        XCTAssertNotEqual(learned, real)
+        runner.reply("check", learned)
+        await center.handTo(.session(1), workbench: "acme")
+        XCTAssertNil(center.sheet)
+        XCTAssertEqual(runner.verbs.last, ["watchman", "arm", "--session", "1", "--json"])
+        await center.handTo(.target(4), workbench: "acme")
+        XCTAssertEqual(runner.verbs.last, ["watchman", "arm", "--target", "4", "--json"])
+        XCTAssertFalse(runner.verbs.contains { $0.contains("--only") })
+    }
+
+    /// A confirm acts only on the sheet it was pressed on: a newer sheet for
+    /// the same scope (same sessions) is not armed by the older press.
+    func testConfirmActsOnlyOnItsOwnSheet() async throws {
+        let runner = ArmingRunner(status: Self.unarmed)
+        runner.reply("check", #"{"ok":true,"first_time":true,"sessions":[5]}"#)
+        let center = await center(runner)
+        _ = await center.handAllRunning()
+        let first = try XCTUnwrap(center.sheet)
+
+        let gate = AsyncGate()
+        runner.holdNextCheck(gate)
+        let confirm = Task { await center.confirmSheet() }
+        await runner.checkEntered.wait()
+        center.sheet = nil                 // Not now
+        _ = await center.handAllRunning()  // the tray again: a new sheet, same set
+        let second = try XCTUnwrap(center.sheet)
+        XCTAssertNotEqual(first.token, second.token)
+        gate.release()
+        await confirm.value
+        XCTAssertEqual(center.sheet?.token, second.token, "the new sheet stays")
+        XCTAssertFalse(runner.verbs.contains { !$0.contains("--check") }, "nothing armed by the old press")
+    }
+
+    /// The sheet's session list shows at most six rows; more scroll.
+    func testSessionListIsBounded() {
+        XCTAssertEqual(WatchmanArmSheet.listHeight(rows: 3), 3 * ListLayout.lineMinHeight)
+        XCTAssertEqual(WatchmanArmSheet.listHeight(rows: 40), 6 * ListLayout.lineMinHeight)
     }
 }

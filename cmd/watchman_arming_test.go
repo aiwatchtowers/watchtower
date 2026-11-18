@@ -358,6 +358,46 @@ func TestWatchmanArm_AllRunningOnlyArmsTheConfirmedSet(t *testing.T) {
 	assert.Contains(t, out, "--only goes with --all-running")
 }
 
+// TestWatchmanArm_AllRunningEmptySets: a --check with nothing running says
+// so with an empty list (ok, read-only); an arm whose every --only id has
+// stopped fails and reports them all as dropped.
+func TestWatchmanArm_AllRunningEmptySets(t *testing.T) {
+	wb, _ := watchmanFixture(t)
+	_, _ = armSession(t, wb, "shell", nil, false) // never eligible
+	r, out, err := armCLI(t, "arm", "--all-running", "--check", "--json")
+	require.NoError(t, err, out)
+	assert.True(t, r.OK)
+	assert.Equal(t, []int64{}, r.Sessions)
+	assert.Empty(t, armingRows(t))
+
+	r, out, err = armCLI(t, "arm", "--all-running", "--only", "7,8", "--json")
+	require.Error(t, err)
+	assert.False(t, r.OK)
+	assert.Equal(t, "none of the confirmed sessions is still running", r.Error)
+	assert.Equal(t, []int64{7, 8}, r.Dropped, out)
+	assert.Empty(t, armingRows(t))
+}
+
+// TestWatchmanArm_CheckFixture writes testdata/watchman_arm_check_session.json
+// (with -update): a real `arm --session N --check --json` reply, which the
+// Desktop's WatchmanArmingTests replays on the strip's path.
+func TestWatchmanArm_CheckFixture(t *testing.T) {
+	wb, _ := watchmanFixture(t)
+	s1, _ := armSession(t, wb, "claude", nil, false)
+	_, out, err := armCLI(t, "arm", "--session", strconv.FormatInt(s1, 10), "--check", "--json")
+	require.NoError(t, err, out)
+	var reply map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &reply))
+	assert.Equal(t, []any{float64(s1)}, reply["sessions"])
+	path := filepath.Join("testdata", "watchman_arm_check_session.json")
+	if *updateSessionReportGolden {
+		require.NoError(t, os.WriteFile(path, []byte(out), 0o600))
+	}
+	want, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.JSONEq(t, string(want), out, "rerun with -update")
+}
+
 // countArmingNudges replaces the daemon nudge with a counter.
 func countArmingNudges(t *testing.T) *int {
 	t.Helper()

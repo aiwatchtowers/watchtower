@@ -320,6 +320,8 @@ func watchmanArm(cmd *cobra.Command, out *watchmanArmJSON) error {
 	defer database.Close()
 	rows, workbenches, err := watchmanArmRows(database)
 	if err != nil {
+		// Every confirmed session stopped: all of them are dropped.
+		out.Dropped = append(out.Dropped, watchmanArmFlagOnly...)
 		return err
 	}
 	for _, r := range rows {
@@ -459,6 +461,9 @@ func watchmanArmRows(database *db.DB) ([]db.WatchmanArming, []int64, error) {
 		return rows, wbs, nil
 	case watchmanArmFlagAllRunning && len(watchmanArmFlagOnly) > 0:
 		return nil, nil, errors.New("none of the confirmed sessions is still running")
+	case watchmanArmFlagAllRunning && watchmanArmFlagCheck:
+		// --check only reads: no running session is an answer (sessions: []).
+		return nil, nil, nil
 	case watchmanArmFlagAllRunning:
 		return nil, nil, errors.New("no running workbench agent session to hand to Watchman")
 	default:
