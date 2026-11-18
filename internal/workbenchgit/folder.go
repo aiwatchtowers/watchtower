@@ -202,6 +202,13 @@ func repoOf(path string) string {
 	return filepath.Clean(common)
 }
 
+// SameRepository reports whether paths a and b lie in work trees of one
+// repository (the main work tree or any linked worktree), read from the git
+// files only (repoOf: no git runs); false when either is in no work tree.
+func SameRepository(a, b string) bool {
+	return sameRepo(repoOf(a), repoOf(b))
+}
+
 // sameRepo reports whether two repoOf results name one repository; ""
 // (unknown) matches nothing.
 func sameRepo(a, b string) bool {

@@ -36,10 +36,16 @@ struct OwnerAskReviewBody: View {
 
     private var documents: OwnerAskReviewDocuments { asks.reviewDocuments }
 
+    /// The document's path in its folder (`doc_folder_id`, nil = home):
+    /// `<folder>/<rel>` on a bench of several folders (spec §6.11).
+    private var docLabel: String {
+        (asks.benchFolders[ask.projectID] ?? BenchFolders()).displayPath(ask.docPath, folderID: ask.docFolderID)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if !ask.docPath.isEmpty {
-                Label(ask.docPath, systemImage: "doc.text")
+                Label(docLabel, systemImage: "doc.text")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

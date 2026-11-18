@@ -102,6 +102,12 @@ package struct TerminalSession: Codable, FetchableRecord, Identifiable, Equatabl
     /// The automation run that started this session (00122); nil = the owner
     /// started it, or the run was deleted since.
     package var automationRunID: Int64?
+    /// The workbench folder the session was started for (00196); nil for a
+    /// standalone terminal. Its cwd is that folder or a worktree of it.
+    package var workbenchFolderID: Int64?
+    /// The session this one is a sub-session of (00196); nil = a top-level
+    /// session, or its parent was deleted since.
+    package var parentSessionID: Int64?
     // `closed_at` is a legacy column, no longer read or written: the Close
     // action was removed, so every row is just running or not running.
 
@@ -118,5 +124,7 @@ package struct TerminalSession: Codable, FetchableRecord, Identifiable, Equatabl
         case worktreeBranch = "worktree_branch"
         case worktreeBase = "worktree_base"
         case automationRunID = "automation_run_id"
+        case workbenchFolderID = "workbench_folder_id"
+        case parentSessionID = "parent_session_id"
     }
 }

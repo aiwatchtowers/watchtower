@@ -128,6 +128,87 @@ func readReviewDoc(folder, path string) (rel, text string, err error) {
 	return rel, string(data), nil
 }
 
+// reviewDoc is a review ask's document: the bench folder it lives in (id 0
+// = a bench with no folder row, stored as NULL = home), its folder-relative
+// path and its text.
+type reviewDoc struct {
+	FolderID  int64
+	Folder    string
+	Rel, Text string
+}
+
+// readSessionReviewDoc reads an ask_owner review's doc_path in its bench
+// folder (spec §6.11): a relative path in the filing session's own folder
+// (the home folder without a session); an absolute one in the live bench
+// folder holding it (the deepest), refused when no bench folder does.
+func readSessionReviewDoc(ctx context.Context, d *db.DB, p *db.Workbench, session sql.NullInt64, path string) (reviewDoc, error) {
+	var doc reviewDoc
+	var err error
+	if filepath.IsAbs(path) {
+		doc.FolderID, doc.Folder, err = benchFolderHolding(ctx, d, p, path)
+	} else {
+		doc.FolderID, doc.Folder, err = sessionDocFolder(ctx, d, p, session)
+	}
+	if err != nil {
+		return reviewDoc{}, err
+	}
+	doc.Rel, doc.Text, err = readReviewDoc(doc.Folder, path)
+	return doc, err
+}
+
+// sessionDocFolder is the folder a relative doc_path resolves in: session's
+// own bench folder, else the home folder (projects.folder_path, id 0, on a
+// bench with no folder row).
+func sessionDocFolder(ctx context.Context, d *db.DB, p *db.Workbench, session sql.NullInt64) (int64, string, error) {
+	var f *db.WorkbenchFolder
+	var err error
+	if session.Valid {
+		var id int64
+		if id, err = d.SessionFolderID(ctx, session.Int64); err == nil {
+			f, err = d.WorkbenchFolderByID(ctx, id)
+		}
+	} else {
+		f, err = d.HomeFolder(ctx, p.ID)
+	}
+	if errors.Is(err, db.ErrWorkbenchNotFound) {
+		return 0, p.FolderPath, nil
+	}
+	if err != nil {
+		return 0, "", err
+	}
+	return f.ID, f.FolderPath, nil
+}
+
+// benchFolderHolding is the live folder of bench p that holds the absolute
+// path (symlinks resolved when it exists), the deepest when folders nest.
+func benchFolderHolding(ctx context.Context, d *db.DB, p *db.Workbench, path string) (int64, string, error) {
+	folders, err := d.WorkbenchFolders(ctx, p.ID, false)
+	if err != nil {
+		return 0, "", err
+	}
+	if len(folders) == 0 {
+		return 0, p.FolderPath, nil // a bench with no folder row: its folder decides
+	}
+	target := filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(target); err == nil {
+		target = resolved
+	}
+	best := -1
+	for i, f := range folders {
+		rel, err := filepath.Rel(f.FolderPath, target)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if best < 0 || len(f.FolderPath) > len(folders[best].FolderPath) {
+			best = i
+		}
+	}
+	if best < 0 {
+		return 0, "", &ValidationError{Msg: fmt.Sprintf("doc_path: %s is not in a folder of this workbench", path)}
+	}
+	return folders[best].ID, folders[best].FolderPath, nil
+}
+
 var errNotRegularFile = errors.New("not a regular file")
 
 // readInsideFolder reads at most limit bytes of folder/rel through an
@@ -233,7 +314,7 @@ func NewAskOwner(sessionEnv func() string, launch SpecReviewLauncher) *Tool {
 			if err := json.Unmarshal(raw, &a); err != nil {
 				return &ValidationError{Msg: "invalid arguments"}
 			}
-			if err := scopeAskOwner(ctx, d, b, a); err != nil {
+			if err := scopeAskOwner(ctx, d, b, a, sessionEnv); err != nil {
 				return err
 			}
 			return planAfterSpec(ctx, d, b, a, sessionEnv)
@@ -248,7 +329,7 @@ func NewAskOwner(sessionEnv func() string, launch SpecReviewLauncher) *Tool {
 	}
 }
 
-func scopeAskOwner(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs) error {
+func scopeAskOwner(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEnv func() string) error {
 	p, err := workbenchOf(ctx, d, b)
 	if err != nil {
 		return err
@@ -294,9 +375,14 @@ func scopeAskOwner(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs) err
 	if open >= asks.MaxOpenPerWorkbench {
 		return &ValidationError{Msg: db.ErrTooManyOpenAsks.Error(), Err: db.ErrTooManyOpenAsks}
 	}
-	if a.Kind == asks.KindReview {
-		_, _, err = readReviewDoc(p.FolderPath, a.DocPath)
+	if a.Kind != asks.KindReview {
+		return nil
 	}
+	session, err := terminalSessionOf(d, p.ID, sessionEnv)
+	if err != nil {
+		return err
+	}
+	_, err = readSessionReviewDoc(ctx, d, p, session, a.DocPath)
 	return err
 }
 
@@ -342,17 +428,20 @@ func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEn
 		Changes: strings.TrimSpace(a.Changes), Payload: string(payloadJSON),
 		Level: level, Origin: asks.OriginAgent,
 	}
-	if a.Kind == asks.KindReview {
-		// Read before the write transaction opens.
-		if ask.DocPath, ask.DocSnapshot, err = readReviewDoc(p.FolderPath, a.DocPath); err != nil {
-			return nil, err
-		}
-		ask.DocType = string(specreview.ClassifyDoc(a.DocType, ask.DocPath))
-	}
-	reviewed := ask.DocType == string(specreview.Spec) || ask.DocType == string(specreview.Plan)
 	if ask.SessionID, err = terminalSessionOf(d, p.ID, sessionEnv); err != nil {
 		return nil, err
 	}
+	docFolder := p.FolderPath
+	if a.Kind == asks.KindReview {
+		// Read before the write transaction opens.
+		doc, err := readSessionReviewDoc(ctx, d, p, ask.SessionID, a.DocPath)
+		if err != nil {
+			return nil, err
+		}
+		ask.DocPath, ask.DocSnapshot, ask.DocFolderID, docFolder = doc.Rel, doc.Text, nullID(doc.FolderID), doc.Folder
+		ask.DocType = string(specreview.ClassifyDoc(a.DocType, ask.DocPath))
+	}
+	reviewed := ask.DocType == string(specreview.Spec) || ask.DocType == string(specreview.Plan)
 	// The loop (and review_replies' check, again: the previous loop may have
 	// been revealed since Scope) is decided before the insert supersedes the
 	// previous ask.
@@ -402,7 +491,7 @@ func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEn
 	if reviewed {
 		out["spec_review"] = launchSpecReview(d, id, launch, loop)
 	}
-	indexAndLinkFiledAsk(ctx, d, p, ask, out)
+	indexAndLinkFiledAsk(ctx, d, p, docFolder, ask, out)
 	return out, nil
 }
 
@@ -465,9 +554,9 @@ func openQuestionSeriesAsk(d *db.DB, ask db.OwnerAsk, previousAskID int64) (*db.
 // indexAndLinkFiledAsk indexes a filed review's document and links the ask's
 // target to its session, both best-effort: a failure lands in out as
 // index_warning or session_link_warning.
-func indexAndLinkFiledAsk(ctx context.Context, d *db.DB, p *db.Workbench, ask db.OwnerAsk, out map[string]any) {
+func indexAndLinkFiledAsk(ctx context.Context, d *db.DB, p *db.Workbench, docFolder string, ask db.OwnerAsk, out map[string]any) {
 	if ask.DocPath != "" {
-		set := kb.FileSet{Source: kb.WorkbenchDocSource, Container: p.ID, Root: p.FolderPath, Files: []string{ask.DocPath}}
+		set := kb.FileSet{Source: kb.WorkbenchDocSource, Container: p.ID, Root: docFolder, Files: []string{ask.DocPath}}
 		if _, _, err := kb.IndexFileSet(ctx, d, set); err != nil {
 			out["index_warning"] = fmt.Sprintf("the ask is filed, but %s is not in search yet: %v", ask.DocPath, err)
 		}

@@ -36,6 +36,10 @@ package enum TerminalSessionQueries {
         package var worktreeBase: String?
         /// The automation run starting this session (00122); nil = the owner.
         package var automationRunID: Int64?
+        /// The workbench folder (00196). nil on a workbench row = its home
+        /// folder: this insert is the no-CLI fallback, which only ever starts
+        /// in the home folder (`workbench session start` places every other).
+        package var workbenchFolderID: Int64?
 
         package init(
             projectID: Int64?,
@@ -46,7 +50,8 @@ package enum TerminalSessionQueries {
             claudeSessionID: String? = nil,
             worktreeBranch: String? = nil,
             worktreeBase: String? = nil,
-            automationRunID: Int64? = nil
+            automationRunID: Int64? = nil,
+            workbenchFolderID: Int64? = nil
         ) {
             self.projectID = projectID
             self.kind = kind
@@ -57,26 +62,33 @@ package enum TerminalSessionQueries {
             self.worktreeBranch = worktreeBranch
             self.worktreeBase = worktreeBase
             self.automationRunID = automationRunID
+            self.workbenchFolderID = workbenchFolderID
         }
     }
 
     /// Throws `missingSessionID` for a row of an agent whose id the app
     /// chooses (`AgentSessionCaps.appSessionID`: Claude Code) without one
     /// (the schema's CHECK would reject a NULL one; an empty one too, here).
+    /// A workbench row records its folder (00196): the given one, else the
+    /// home folder; a standalone terminal none.
     package static func create(_ db: Database, _ new: NewSession) throws -> TerminalSession {
         if new.kind.agent?.session.caps.appSessionID == true, new.claudeSessionID?.isEmpty ?? true {
             throw TerminalSessionQueryError.missingSessionID
+        }
+        var folderID = new.workbenchFolderID
+        if folderID == nil, let projectID = new.projectID {
+            folderID = try WorkbenchFolderQueries.homeFolderID(db, workbenchID: projectID)
         }
         try db.execute(
             sql: """
                 INSERT INTO terminal_sessions
                     (project_id, kind, title, target_id, folder_path, claude_session_id,
-                     worktree_branch, worktree_base, automation_run_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     worktree_branch, worktree_base, automation_run_id, workbench_folder_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
             arguments: [
                 new.projectID, new.kind.rawValue, new.title, new.targetID, new.folderPath,
-                new.claudeSessionID, new.worktreeBranch, new.worktreeBase, new.automationRunID
+                new.claudeSessionID, new.worktreeBranch, new.worktreeBase, new.automationRunID, folderID
             ]
         )
         let id = db.lastInsertedRowID
