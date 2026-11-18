@@ -22,7 +22,8 @@ final class SlackAccountsViewModel {
     private(set) var readError: String?
     /// The last successful remove's warning that Slack did not confirm the
     /// token revoke (`SlackRevokeNotice`, #1769); nil when it did. A
-    /// non-blocking notice, cleared by the next account command.
+    /// non-blocking notice, cleared by the next management command
+    /// (enable, disable, remove).
     private(set) var revokeNotice: String?
 
     /// The restart the last successful account change kicked off under
@@ -157,9 +158,10 @@ final class SlackAccountsViewModel {
         ["slack", "remove", String(account.id)]
     }
 
-    /// Removes `account` via `watchtower slack remove <id>`. Non-destructive:
-    /// the CLI deletes the token file and marks the row removed/disabled but
-    /// keeps already-synced messages, digests, and situations.
+    /// Removes `account` via `watchtower slack remove <id>`: the CLI revokes
+    /// the token at Slack, deletes the token file and marks the row
+    /// removed/disabled. The synced data stays for now; with account data
+    /// deletion on it is deleted 72 hours after Watchtower's next pass.
     func remove(_ account: SlackAccount, daemonPolicy: DaemonRestartPolicy = .restart) async {
         await runManagementCommand(
             args: Self.removeArgs(for: account),
