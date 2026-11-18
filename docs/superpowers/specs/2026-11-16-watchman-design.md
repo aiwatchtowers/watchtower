@@ -345,7 +345,7 @@ After implementation the real screens are rendered with the same names and compa
 | D43 | Phase 2 proceeds Sleep-only with every decision marked unsure; the go/stop gate (D32) no longer blocks it; Away mode stays gated on strong categories | ask #1578 |
 | D44 | Weekly backtest only in phase 2; the rerun after each morning's feedback is deferred (cost) | decided by the agent |
 | D45 | Three twin diff-review rounds on one session without an Approve park the review item for the owner, and the finish gate then passes | decided by the agent |
-| D46 | Twin never approves a spec/plan that may change a contract (Go check, fail closed: each line (list item, table row, prose line) naming a contract id parks unless that same line says the contract is not changed; a marker clears only its own line — "unchanged", "not changed", "no change", "does not change", "untouched", "stays as is"; inventory paths and guard-test names always park) | decided by the agent (plan review), §5 |
+| D46 | Twin never approves a spec/plan that may change a contract (Go check, fail closed: each line (list item, table row, prose line) naming a contract id parks unless it names exactly one id and says that contract is not changed; a line naming two or more ids always parks — "unchanged", "not changed", "no change", "does not change", "untouched", "stays as is"; inventory paths and guard-test names always park) | decided by the agent (plan review), §5 |
 
 ## 15. Left to the builder
 
