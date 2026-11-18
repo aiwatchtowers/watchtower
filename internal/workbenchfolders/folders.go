@@ -384,6 +384,10 @@ func Resolve(ctx context.Context, d *db.DB, workbenchID int64, ref string) (db.W
 		if err != nil {
 			return db.WorkbenchFolder{}, err //nolint:wrapcheck // db's message names the workbench
 		}
+		fallback, err := IsFallbackHome(ctx, d, *f)
+		if err != nil || fallback {
+			return *f, err
+		}
 		return onBench(*f)
 	}
 	all, err := d.WorkbenchFolders(ctx, workbenchID, true)
@@ -417,6 +421,24 @@ func Resolve(ctx context.Context, d *db.DB, workbenchID int64, ref string) (db.W
 		return onBench(*removed)
 	}
 	return db.WorkbenchFolder{}, &Refusal{Code: CodeNotFound, Detail: fmt.Sprintf("%s is not a folder of workbench %d.", ref, workbenchID)}
+}
+
+// IsFallbackHome reports whether f is a removed row that is still its
+// bench's home because the bench has no live folder at all: a legacy bench
+// whose only row migration 00196 marked removed (a case-insensitive
+// duplicate of another bench's folder; db.HomeFolder's fallback). Such a
+// bench keeps working in that folder as before the migration. q may be a
+// caller's transaction.
+func IsFallbackHome(ctx context.Context, q db.Querier, f db.WorkbenchFolder) (bool, error) {
+	if !f.RemovedAt.Valid {
+		return false, nil
+	}
+	var live bool
+	if err := q.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM workbench_folders WHERE workbench_id = ? AND removed_at IS NULL)`,
+		f.WorkbenchID).Scan(&live); err != nil {
+		return false, fmt.Errorf("reading the folders of workbench %d: %w", f.WorkbenchID, err)
+	}
+	return !live, nil
 }
 
 // onBench is f, or folder_removed when it left the bench.

@@ -366,9 +366,9 @@ func TestWorkbenchSessionStartRefusalJSON(t *testing.T) {
 		var ec *exitCodeError
 		require.ErrorAs(t, err, &ec, out)
 		assert.Equal(t, 1, ec.code)
-		var got sessionStartOutput
-		require.NoError(t, json.Unmarshal([]byte(out), &got), out)
-		assert.Equal(t, sessionStartOutput{ErrorCode: c.code, Error: c.text}, got)
+		var m map[string]any
+		require.NoError(t, json.Unmarshal([]byte(out), &m), out)
+		assert.Equal(t, map[string]any{"ok": false, "error_code": c.code, "error": c.text}, m, "no success fields")
 	}
 	var n int
 	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM terminal_sessions`).Scan(&n))

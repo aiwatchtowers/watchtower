@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -204,10 +205,23 @@ func TestStartRecordsParent(t *testing.T) {
 	require.NoError(t, err)
 	foreign, err := w.db.CreateTerminalSession(ctx, db.NewTerminalSession{WorkbenchID: other, Kind: "codex", Title: "other", FolderPath: "/x"})
 	require.NoError(t, err)
+	shell, err := w.db.CreateTerminalSession(ctx, db.NewTerminalSession{WorkbenchID: w.wb, Kind: "shell", Title: "sh", FolderPath: w.folder})
+	require.NoError(t, err)
 	before := w.rowCount()
 	_, err = Begin(ctx, w.deps(), handlers.StartRequest{Workbench: w.wb, ParentSessionID: foreign})
 	requireRefusal(t, err, CodeNotSameWorkbench)
 	_, err = Begin(ctx, w.deps(), handlers.StartRequest{Workbench: w.wb, ParentSessionID: foreign + 100})
+	requireRefusal(t, err, workbenchfolders.CodeNotFound)
+	_, err = Begin(ctx, w.deps(), handlers.StartRequest{Workbench: w.wb, ParentSessionID: shell})
+	requireRefusal(t, err, workbenchfolders.CodeNotFound)
+
+	// The parent is read before the host is reached: with the host down a
+	// bad parent is still its refusal, not the host's error.
+	down := w.deps()
+	down.Socket = droppingSocket(t)
+	_, err = Begin(ctx, down, handlers.StartRequest{Workbench: w.wb, ParentSessionID: foreign})
+	requireRefusal(t, err, CodeNotSameWorkbench)
+	_, err = Begin(ctx, down, handlers.StartRequest{Workbench: w.wb, ParentSessionID: foreign + 100})
 	requireRefusal(t, err, workbenchfolders.CodeNotFound)
 	assert.Equal(t, before, w.rowCount())
 }
@@ -221,8 +235,73 @@ func TestStartFailureLeavesNoRow(t *testing.T) {
 	d := w.deps()
 	d.Socket = droppingSocket(t)
 	_, err := Begin(ctx, d, handlers.StartRequest{Workbench: w.wb, ParentSessionID: parent, Brief: "go"})
-	require.Error(t, err)
+	require.ErrorContains(t, err, "the session host is not running")
 	_, err = Start(ctx, d, handlers.StartRequest{Workbench: w.wb, ParentSessionID: parent, Brief: "go"})
-	require.Error(t, err)
+	require.ErrorContains(t, err, "the session host is not running")
 	assert.Equal(t, 1, w.rowCount(), "only the parent")
+}
+
+// A legacy bench whose only folder row migration 00196 marked removed (a
+// case-insensitive duplicate) still starts in that fallback home, through
+// Begin and Finish alike.
+func TestALegacyBenchStartsInItsFallbackHome(t *testing.T) {
+	w := newWorld(t)
+	_, err := w.db.Exec(`UPDATE workbench_folders SET removed_at = '2026-01-01T00:00:00Z' WHERE workbench_id = ?`, w.wb)
+	require.NoError(t, err)
+	home, err := w.db.HomeFolder(context.Background(), w.wb)
+	require.NoError(t, err)
+	require.True(t, home.RemovedAt.Valid)
+	id := w.begin(handlers.StartRequest{Workbench: w.wb, Brief: "go"})
+	require.NoError(t, Finish(context.Background(), w.deps(), id, "auto", "go", false))
+	w.launched(id)
+	assert.Equal(t, w.folder, w.row(id).folder)
+	folder, _ := w.folderOf(id)
+	assert.Equal(t, sql.NullInt64{Int64: home.ID, Valid: true}, folder)
+}
+
+// A folder gone from disk between Begin and Finish fails the row with the
+// folder_missing refusal, not a launch failure.
+func TestFinishFailsARowWhoseFolderIsGone(t *testing.T) {
+	w := newWorld(t)
+	hub := w.addFolder(true)
+	id := w.begin(handlers.StartRequest{Workbench: w.wb, FolderID: hub.ID})
+	require.NoError(t, os.Rename(hub.FolderPath, hub.FolderPath+"-moved"))
+	err := Finish(context.Background(), w.deps(), id, "auto", "", false)
+	requireRefusal(t, err, CodeFolderMissing)
+	r := w.row(id)
+	assert.True(t, r.failed)
+	assert.True(t, strings.HasPrefix(r.agentError, "folder_missing: "), r.agentError)
+}
+
+// A folder re-pointed by Locate between Begin and Finish: the row follows
+// it and the session starts at the new path.
+func TestFinishFollowsALocatedFolder(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	hub := w.addFolder(true)
+	id := w.begin(handlers.StartRequest{Workbench: w.wb, FolderID: hub.ID})
+	moved := hub.FolderPath + "-moved"
+	require.NoError(t, os.Rename(hub.FolderPath, moved))
+	located, err := workbenchfolders.Locate(ctx, w.db, hub.ID, moved, nil)
+	require.NoError(t, err)
+	require.NoError(t, Finish(ctx, w.deps(), id, "folder", "", false))
+	w.launched(id)
+	assert.Equal(t, located.FolderPath, w.row(id).folder)
+	assert.Equal(t, realPath(t, moved), w.stubFile("cwd", id))
+}
+
+// The bench's worktree_setup runs only in worktrees of the home folder (v1
+// ruling): a worktree of another folder is launched without it.
+func TestWorktreeSetupIsTheHomeFoldersOnly(t *testing.T) {
+	w := newWorld(t)
+	_, err := w.db.Exec(`UPDATE projects SET worktree_setup = 'make deps' WHERE id = ?`, w.wb)
+	require.NoError(t, err)
+	hub := w.addFolder(true)
+	d := w.deps()
+	d.Shell = filepath.Join(w.stub, "no-such-shell")
+	id := w.begin(handlers.StartRequest{Workbench: w.wb, FolderID: hub.ID})
+	require.Error(t, Finish(context.Background(), d, id, "worktree", "", false))
+	r := w.row(id)
+	require.NotEmpty(t, r.branch, "placed in a worktree of hub")
+	assert.NotContains(t, w.notice(id), SetupNotRunPrefix)
 }

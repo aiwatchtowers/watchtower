@@ -162,7 +162,7 @@ func init() {
 // folder (its stored name) the session started for; Place is the placement
 // asked for (auto, folder or worktree — the outcome is the row's once the
 // detached finish ran); Worktree the worktree's path once the row is placed
-// in one, else "". A refusal is OK false with its code (spec D42).
+// in one, else "". A refusal is sessionStartRefusal instead.
 type sessionStartOutput struct {
 	OK             bool   `json:"ok"`
 	SessionID      int64  `json:"session_id"`
@@ -173,8 +173,14 @@ type sessionStartOutput struct {
 	Folder         string `json:"folder"`
 	Place          string `json:"place"`
 	Worktree       string `json:"worktree"`
-	ErrorCode      string `json:"error_code,omitempty"`
-	Error          string `json:"error,omitempty"`
+}
+
+// sessionStartRefusal is a refused start's answer: ok false, the refusal's
+// code and its "<code>: <sentence>" text (spec D42).
+type sessionStartRefusal struct {
+	OK        bool   `json:"ok"`
+	ErrorCode string `json:"error_code"`
+	Error     string `json:"error"`
 }
 
 type sessionStopOutput struct {
@@ -270,7 +276,7 @@ func sessionStartRefused(cmd *cobra.Command, err error) error {
 		return err
 	}
 	if sessionFlagJSON {
-		if werr := writeJSON(cmd.OutOrStdout(), sessionStartOutput{ErrorCode: r.Code, Error: r.Error()}); werr != nil {
+		if werr := writeJSON(cmd.OutOrStdout(), sessionStartRefusal{ErrorCode: r.Code, Error: r.Error()}); werr != nil {
 			return werr
 		}
 	}

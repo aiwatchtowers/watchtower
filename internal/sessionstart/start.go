@@ -209,7 +209,12 @@ func loadWorkbench(ctx context.Context, q *db.DB, id, folderID int64) (workbench
 		ref = strconv.FormatInt(folderID, 10)
 	}
 	if w.bench, err = workbenchfolders.Resolve(ctx, q, id, ref); err != nil {
-		return w, err //nolint:wrapcheck // a Refusal or db's message naming the workbench
+		// Finish names the folder by id: a legacy bench's fallback home
+		// (removed, no live folder) still starts there, as Resolve("") does.
+		var refused *workbenchfolders.Refusal
+		if !errors.As(err, &refused) || refused.Code != workbenchfolders.CodeFolderRemoved || !fallbackHome(ctx, q, id, w.bench) {
+			return w, err //nolint:wrapcheck // a Refusal or db's message naming the workbench
+		}
 	}
 	w.folder, w.home = w.bench.FolderPath, strings.EqualFold(w.bench.FolderPath, homePath)
 	if w.home {
@@ -218,13 +223,40 @@ func loadWorkbench(ctx context.Context, q *db.DB, id, folderID int64) (workbench
 	return w, nil
 }
 
+// fallbackHome reports whether f, removed, is still workbench wb's home
+// (workbenchfolders.IsFallbackHome and db.HomeFolder's pick); a read error is
+// logged by class and counts as no.
+func fallbackHome(ctx context.Context, q *db.DB, wb int64, f db.WorkbenchFolder) bool {
+	if f.WorkbenchID != wb {
+		return false
+	}
+	fallback, err := workbenchfolders.IsFallbackHome(ctx, q, f)
+	if err != nil {
+		log.Printf("sessionstart: workbench %d: the fallback home could not be read (%s)", wb, errClass(err))
+		return false
+	}
+	if !fallback {
+		return false
+	}
+	home, err := q.HomeFolderID(ctx, wb)
+	return err == nil && home == f.ID
+}
+
+// onDisk refuses a folder that is not on disk any more (folder_missing).
+func (w workbenchRow) onDisk() error {
+	if info, err := os.Stat(w.folder); err != nil || !info.IsDir() {
+		return &workbenchfolders.Refusal{Code: CodeFolderMissing, Folder: &w.bench,
+			Detail: fmt.Sprintf("%s is not at %s any more. Locate it or remove it from the bench.", w.bench.Name, w.folder)}
+	}
+	return nil
+}
+
 // checkFolder refuses a start in a folder that is not on disk
 // (folder_missing) or, other than the home folder, has no Watchtower install
 // for the workbench (not_installed): the home folder starts as it always did.
 func (w workbenchRow) checkFolder() error {
-	if info, err := os.Stat(w.folder); err != nil || !info.IsDir() {
-		return &workbenchfolders.Refusal{Code: CodeFolderMissing, Folder: &w.bench,
-			Detail: fmt.Sprintf("%s is not at %s any more. Locate it or remove it from the bench.", w.bench.Name, w.folder)}
+	if err := w.onDisk(); err != nil {
+		return err
 	}
 	if w.home {
 		return nil
@@ -414,10 +446,10 @@ func Finish(ctx context.Context, d Deps, sessionID int64, place, brief string, p
 		return err
 	}
 	var wbID, targetID, runID, folderID sql.NullInt64
-	var kind, claudeID string
+	var kind, claudeID, rowFolder string
 	err = d.DB.QueryRowContext(ctx, `SELECT project_id, kind, target_id, COALESCE(claude_session_id, ''), automation_run_id,
-		workbench_folder_id FROM terminal_sessions WHERE id = ? AND `+db.NotDeletingSQL, sessionID).
-		Scan(&wbID, &kind, &targetID, &claudeID, &runID, &folderID)
+		workbench_folder_id, folder_path FROM terminal_sessions WHERE id = ? AND `+db.NotDeletingSQL, sessionID).
+		Scan(&wbID, &kind, &targetID, &claudeID, &runID, &folderID, &rowFolder)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("terminal session %d: %w", sessionID, db.ErrTerminalSessionNotFound)
 	}
@@ -435,6 +467,20 @@ func Finish(ctx context.Context, d Deps, sessionID int64, place, brief string, p
 			st.markFailed(ctx, refused.Error())
 		}
 		return err
+	}
+	// The folder may have moved since Begin: gone from disk, the row fails
+	// with folder_missing; re-pointed by Locate, the row follows it before
+	// its place is decided (one short autocommit UPDATE).
+	if err := st.wb.onDisk(); err != nil {
+		st.markFailed(ctx, err.Error())
+		return err
+	}
+	if rowFolder != st.wb.folder {
+		if _, err := d.DB.ExecContext(ctx, `UPDATE terminal_sessions SET folder_path = ? WHERE id = ? AND worktree_branch IS NULL`,
+			st.wb.folder, sessionID); err != nil {
+			st.markFailed(ctx, "the session's folder could not be recorded")
+			return fmt.Errorf("moving session %d to its folder: %w", sessionID, err)
+		}
 	}
 	if targetID.Valid {
 		if t, err := loadTarget(ctx, d.DB, targetID.Int64, st.wb.id); err == nil {
@@ -514,6 +560,12 @@ func begin(ctx context.Context, d Deps, r handlers.StartRequest) (st *newStart, 
 		return nil, nil, res, err
 	}
 	if r.ParentSessionID != 0 {
+		// The parent is checked first (and again inside the insert's
+		// transaction): a bad parent is its refusal, never a host error.
+		if err := checkParent(ctx, d.DB, r.ParentSessionID, wb.id); err != nil {
+			release()
+			return nil, nil, res, err
+		}
 		// A sub-session's start that cannot reach the host leaves no row
 		// behind: the parent's tool call carries the error (spec §7).
 		if err := d.probeHost(ctx); err != nil {
@@ -611,7 +663,9 @@ func (s *newStart) firstPrompt(ctx context.Context, brief string, planFirst bool
 }
 
 // beforeInsert runs between a start's folder resolution and its row's
-// transaction (a test seam for the remove-vs-start race).
+// transaction (a test seam for the remove-vs-start race). It is package
+// state read by every start: a test that sets it must not run in parallel
+// (no t.Parallel) and resets it in t.Cleanup.
 var beforeInsert func()
 
 // insert writes the row in its bench folder (Starting…), in one short
@@ -672,24 +726,43 @@ func (s *newStart) recheck(ctx context.Context, tx *sql.Tx) error {
 		return fmt.Errorf("reading workbench folder %d: %w", s.wb.bench.ID, err)
 	}
 	if removed.Valid {
-		return &workbenchfolders.Refusal{Code: workbenchfolders.CodeFolderRemoved, Folder: &s.wb.bench,
-			Detail: s.wb.bench.Name + " was removed from the bench."}
+		// A legacy bench's fallback home (resolved removed, and the bench
+		// still has no live folder) starts there; any other removed folder
+		// left the bench since the start resolved it.
+		fallback := false
+		if s.wb.bench.RemovedAt.Valid {
+			if fallback, err = workbenchfolders.IsFallbackHome(ctx, tx, s.wb.bench); err != nil {
+				return err //nolint:wrapcheck // names the workbench
+			}
+		}
+		if !fallback {
+			return &workbenchfolders.Refusal{Code: workbenchfolders.CodeFolderRemoved, Folder: &s.wb.bench,
+				Detail: s.wb.bench.Name + " was removed from the bench."}
+		}
 	}
 	if s.parent == 0 {
 		return nil
 	}
+	return checkParent(ctx, tx, s.parent, s.wb.id)
+}
+
+// checkParent refuses a parent that is gone, being deleted or not an agent
+// session (not_found), or that is not a session of workbench wb
+// (not_same_workbench). q may be the insert's transaction.
+func checkParent(ctx context.Context, q db.Querier, parent, wb int64) error {
 	var project sql.NullInt64
-	err = tx.QueryRowContext(ctx, `SELECT project_id FROM terminal_sessions WHERE id = ? AND `+db.NotDeletingSQL,
-		s.parent).Scan(&project)
-	if errors.Is(err, sql.ErrNoRows) {
-		return &workbenchfolders.Refusal{Code: workbenchfolders.CodeNotFound, Detail: fmt.Sprintf("there is no session #%d.", s.parent)}
+	var kind string
+	err := q.QueryRowContext(ctx, `SELECT project_id, kind FROM terminal_sessions WHERE id = ? AND `+db.NotDeletingSQL,
+		parent).Scan(&project, &kind)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && kind == "shell") {
+		return &workbenchfolders.Refusal{Code: workbenchfolders.CodeNotFound, Detail: fmt.Sprintf("there is no agent session #%d.", parent)}
 	}
 	if err != nil {
-		return fmt.Errorf("reading session %d: %w", s.parent, err)
+		return fmt.Errorf("reading session %d: %w", parent, err)
 	}
-	if !project.Valid || project.Int64 != s.wb.id {
+	if !project.Valid || project.Int64 != wb {
 		return &workbenchfolders.Refusal{Code: CodeNotSameWorkbench,
-			Detail: fmt.Sprintf("session #%d is not a session of workbench %d.", s.parent, s.wb.id)}
+			Detail: fmt.Sprintf("session #%d is not a session of workbench %d.", parent, wb)}
 	}
 	return nil
 }
@@ -734,7 +807,10 @@ func (s *newStart) finish(ctx context.Context) error {
 	}
 	s.setNotice(ctx, notice)
 	setup, setupNotice := "", ""
-	if placed && strings.TrimSpace(s.wb.setup) != "" {
+	// The bench's worktree_setup is written for its home folder's
+	// repository: in v1 it runs only in worktrees of the home folder, and a
+	// worktree of any other bench folder runs no setup (multi-folder ruling).
+	if placed && s.wb.home && strings.TrimSpace(s.wb.setup) != "" {
 		setup = s.wb.setup
 		setupNotice = strings.TrimSpace(notice + " " + SetupNotRunPrefix + strings.TrimSpace(setup))
 	}
