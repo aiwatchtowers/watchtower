@@ -146,17 +146,20 @@ func (p *Processor) MailboxZones() ([]string, error) {
 // left there on standby are read now (repeats are answered from the ledger,
 // never applied twice).
 func (p *Processor) Rewind() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
 	boxes, err := p.mailboxes()
 	if err != nil {
 		return err
 	}
 	for _, g := range byZone(boxes) {
-		if err := p.cfg.Store.SetZoneToken(g.zone, 0); err != nil {
+		unlock := p.boxLock(g.zone) // never under a read that stores a later token
+		err := p.cfg.Store.SetZoneToken(g.zone, 0)
+		unlock()
+		if err != nil {
 			return err
 		}
 	}
+	p.mu.Lock()
 	p.staleSeen = nil
+	p.mu.Unlock()
 	return nil
 }
