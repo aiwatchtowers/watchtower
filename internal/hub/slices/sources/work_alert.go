@@ -356,7 +356,7 @@ func stopOf(k sessionKind) (event, body string, ok bool) {
 		return eventSessionStopped, "Waiting for you", true
 	case kindFailed:
 		return eventSessionFailed, "Failed", true
-	case kindNotStarted, kindRunning, kindWorking, kindNeedsApproval, kindWaitingOnAsk, kindBackground, kindReadyToCheck:
+	case kindNotStarted, kindRunning, kindWorking, kindNeedsApproval, kindWaitingOnAsk, kindBackground, kindReadyToCheck, kindSpecReview:
 	}
 	return "", "", false
 }
