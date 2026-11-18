@@ -13,7 +13,11 @@ const (
 	ReasonWorkbenchFolder    = "workbench_folder"
 	ReasonLocked             = "locked"
 	ReasonUncommittedChanges = "uncommitted_changes"
-	ReasonProcessRunning     = "process_running"
+	// ReasonIgnoredFiles: git-ignored files that are not a cache or
+	// Watchtower's integration (a plan ledger, notes); the first one's path
+	// is in detail (#1878).
+	ReasonIgnoredFiles   = "ignored_files"
+	ReasonProcessRunning = "process_running"
 	// ReasonProcessUnknown: a process of the current user whose cwd the
 	// scan could not see; it may be working inside, so the worktree stays.
 	ReasonProcessUnknown      = "process_unknown"
@@ -54,7 +58,7 @@ const nestedScanBudget = 20 * time.Second
 // worktreeCatch returns the reason a worktree is kept, "" to let it pass.
 type worktreeCatch func(ctx context.Context, b *builder, w worktree) (reason, detail string, err error)
 
-// worktreeCatches is W1–W9 in order (spec §5); the sweep swaps W2 for the
+// worktreeCatches is W1–W10 in order (spec §5; W10 #1878); the sweep swaps W2 for the
 // recent-owner rule, and a prunable worktree (its directory is gone) meets
 // the folder, ownership and unpushed catches: pruning drops its HEAD, which
 // may be the only ref to its commits.
@@ -67,7 +71,7 @@ func (b *builder) worktreeCatches(w worktree) []worktreeCatch {
 		return []worktreeCatch{catchClaudeHome, catchFolders, own, catchUnpushed}
 	}
 	return []worktreeCatch{catchClaudeHome, catchFolders, own, catchLocked, catchUncommitted, catchProcesses,
-		catchSessionInIt, catchUnpushed, catchOperation, catchNested}
+		catchSessionInIt, catchUnpushed, catchOperation, catchNested, catchIgnoredWork}
 }
 
 // catchClaudeHome keeps anything under the owner's ~/.claude, and every
@@ -158,6 +162,17 @@ func catchUncommitted(ctx context.Context, b *builder, w worktree) (string, stri
 		return "", "", err
 	}
 	return ReasonUncommittedChanges, "", nil
+}
+
+// catchIgnoredWork is W10: git-ignored files that are not regenerable
+// (ignored.go, #1878). It runs after W9 so a nested worktree or repository
+// keeps its own reason; the sweep runs it too.
+func catchIgnoredWork(ctx context.Context, b *builder, w worktree) (string, string, error) {
+	first, err := b.repo.ignoredWork(ctx, w.Root)
+	if err != nil || first == "" {
+		return "", "", err
+	}
+	return ReasonIgnoredFiles, "ignored file: " + first, nil
 }
 
 // catchProcesses is W5: a process inside that is not an orphan of this

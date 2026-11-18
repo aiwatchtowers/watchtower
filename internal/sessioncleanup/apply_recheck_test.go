@@ -126,7 +126,7 @@ func TestApply_GracePollScansProcessesOnly(t *testing.T) {
 	wantResultItem(t, res, "worktree:"+root, ActionRemove, "", true)
 	statuses := 0
 	for _, op := range log.list() {
-		if strings.HasPrefix(op, "git status") {
+		if strings.HasPrefix(op, "git status --porcelain --untracked-files") { // W4, not W10's listing
 			statuses++
 		}
 	}

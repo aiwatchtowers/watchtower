@@ -387,7 +387,7 @@ func (r *repoState) onRemote(ctx context.Context, sha string) (bool, error) {
 }
 
 // isDirty: `git status --porcelain` in the worktree lists modified, staged
-// or untracked files (ignored files do not count). A submodule has its own
+// or untracked files (ignored files are W4b's, ignored.go). A submodule has its own
 // config, which gitbin.ReadArgsIn never lists, so status does not recurse
 // into one (--ignore-submodules=all); `git worktree remove` itself refuses a
 // worktree holding a submodule.
