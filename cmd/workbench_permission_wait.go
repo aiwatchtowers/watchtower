@@ -18,8 +18,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/agentkind"
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/sessionagent"
+	"watchtower/internal/watchman"
 )
 
 // permissionPollEvery is how often permission-wait reads its request back
@@ -126,7 +128,7 @@ func waitPermissionDecision(ctx context.Context, stdin io.Reader, stderr io.Writ
 	if in.Event != "PermissionRequest" || in.SessionID == "" {
 		return "", nil
 	}
-	database, err := openHookDB()
+	cfg, database, err := openJiraCmdDB()
 	if err != nil {
 		return "", err
 	}
@@ -144,7 +146,31 @@ func waitPermissionDecision(ctx context.Context, stdin io.Reader, stderr io.Writ
 	if err != nil {
 		return "", err
 	}
+	queueWatchmanPermission(stderr, cfg, database, db.WatchmanItem{
+		WorkbenchID: workbenchID, SessionID: row.ID,
+		Kind: "permission", RefKind: "permission", RefID: id,
+		Question: watchman.ItemQuestion(db.WatchmanPermissionText(in.ToolName, summary)),
+	})
 	return pollPermissionRequest(ctx, stderr, database, id, workbenchID, in.SessionID)
+}
+
+// permissionWatchmanWake wakes the daemon for a prompt's queued item; a var
+// for tests.
+var permissionWatchmanWake = func(cfg *config.Config) { watchmanWaitPointWake(cfg)() }
+
+// queueWatchmanPermission queues the twin's item for a prompt of an armed
+// session (spec 2026-11-16-watchman-design §3, §4) and wakes the daemon for
+// a new one. A failure is one stderr line naming the request: the prompt
+// stays the owner's and the wait goes on as without Watchman (spec §7).
+func queueWatchmanPermission(stderr io.Writer, cfg *config.Config, database *db.DB, it db.WatchmanItem) {
+	_, inserted, err := database.QueueWatchmanWaitPoint(it)
+	if err != nil {
+		fmt.Fprintf(stderr, "watchtower: permission request %d was not queued for Watchman (it stays the owner's): %v\n", it.RefID, err)
+		return
+	}
+	if inserted {
+		permissionWatchmanWake(cfg)
+	}
 }
 
 // pollPermissionRequest reads request id back every permissionPollEvery

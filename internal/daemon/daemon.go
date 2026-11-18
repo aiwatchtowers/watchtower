@@ -129,6 +129,7 @@ type Daemon struct {
 	wakeCh              <-chan time.Duration // WatchWake: how long the machine slept
 	triggerCh           <-chan struct{}
 	automationWakeCh    <-chan struct{}  // AutomationWakeSignal watcher (WatchAutomationWake)
+	watchmanWakeCh      chan struct{}    // the twin's wake, ticked by every AutomationWakeSignal (forwardWakes)
 	automationScheduler AutomationRunner // nil = automations not wired
 	automationExecutor  AutomationRunner
 	automationEvents    AutomationEvents // nil = no event automations
@@ -533,10 +534,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return fmt.Errorf("writing pid file: %w", err)
 		}
 		defer RemovePID(d.pidPath)
-		// The wake watcher is installed above: advertise it — only when the
-		// scheduler and executor will run, so the CLI never signals a daemon
-		// that would drop the wake (or, built before automations, has no
-		// handler for it).
+		// The wake watcher is installed above: advertise it — the automations
+		// wake only when the scheduler and executor will run, so the CLI never
+		// signals a daemon that would drop the wake (or, built before
+		// automations, has no handler for it); the Watchman wake always.
 		defer d.advertiseCaps()()
 	}
 
@@ -590,6 +591,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// before Run returns (and before the PID file is removed).
 	stopAutomations := d.startAutomations(ctx)
 	defer stopAutomations()
+	// Stopped before the runners (defers run last-in first-out): it calls
+	// their Wake.
+	stopWakes := d.startWakeForwarder(ctx)
+	defer stopWakes()
 	stopPlanUsage := d.startPlanUsage(ctx)
 	defer stopPlanUsage()
 

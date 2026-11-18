@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -16,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 )
 
@@ -576,4 +578,70 @@ func TestPermissionSummary_ShapesWatchmanReads(t *testing.T) {
 	require.JSONEq(t, `{"file_path":"/w/a/x.go"}`, got)
 	got, _ = permissionSummary("Grep", json.RawMessage(`{"pattern":"x","path":"/w/a"}`))
 	require.JSONEq(t, `{"pattern":"x","path":"/w/a"}`, got)
+}
+
+// countPermissionWakes counts the Watchman wakes permission-wait sends.
+func countPermissionWakes(t *testing.T) *atomic.Int32 {
+	t.Helper()
+	var n atomic.Int32
+	prev := permissionWatchmanWake
+	permissionWatchmanWake = func(*config.Config) { n.Add(1) }
+	t.Cleanup(func() { permissionWatchmanWake = prev })
+	return &n
+}
+
+func armHookSession(t *testing.T, database *db.DB, row int64) {
+	t.Helper()
+	require.NoError(t, database.UpsertWatchmanArming(db.WatchmanArming{Scope: "session", RefID: row, ArmedAt: time.Now(), ArmedBy: "cli"}))
+}
+
+// A prompt of an armed session queues the twin's permission item and wakes
+// the daemon; the hook still waits for the decision as before.
+func TestPermissionWait_ArmedQueuesItem(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	armHookSession(t, database, row)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	fastPermissionPoll(t)
+	wakes := countPermissionWakes(t)
+	done := answerFromPhone(database, row, db.PermissionAllowed)
+
+	out, errOut := runPermissionWait(t, pid, permissionPayload(briefLaunchID))
+
+	require.NoError(t, <-done)
+	assert.Equal(t, permissionAllowJSON, out)
+	assert.Empty(t, errOut)
+	var reqID int64
+	require.NoError(t, database.QueryRow(`SELECT id FROM permission_requests`).Scan(&reqID))
+	it, err := database.WatchmanItemByRef("permission", reqID, "permission")
+	require.NoError(t, err)
+	require.NotNil(t, it)
+	assert.Equal(t, row, it.SessionID)
+	assert.Equal(t, pid, it.WorkbenchID)
+	assert.Equal(t, "Tool: Bash\nls -la\n# List files", it.Question)
+	assert.Equal(t, int32(1), wakes.Load())
+}
+
+// An insert that fails leaves the prompt the owner's (spec §7): one stderr
+// line naming the request, and the hook waits for the answer as before.
+func TestPermissionWait_QueueFailureStillWaits(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	armHookSession(t, database, row)
+	_, err := database.Exec(`CREATE TRIGGER wm_fail BEFORE INSERT ON watchman_items BEGIN SELECT RAISE(ABORT, 'database is locked'); END`)
+	require.NoError(t, err)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	fastPermissionPoll(t)
+	wakes := countPermissionWakes(t)
+	done := answerFromPhone(database, row, db.PermissionDenied)
+
+	out, errOut := runPermissionWait(t, pid, permissionPayload(briefLaunchID))
+
+	require.NoError(t, <-done)
+	assert.Equal(t, permissionDenyJSON, out)
+	assert.Equal(t, 1, strings.Count(errOut, "\n"), errOut)
+	var reqID int64
+	require.NoError(t, database.QueryRow(`SELECT id FROM permission_requests`).Scan(&reqID))
+	assert.Contains(t, errOut, fmt.Sprintf("permission request %d was not queued for Watchman", reqID))
+	assert.Zero(t, wakes.Load())
 }
