@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/oauthpage"
+	"watchtower/internal/slackmode"
 
 	watchtowerslack "watchtower/internal/slack"
 
@@ -78,6 +80,8 @@ func init() {
 	slackLoginCmd.Flags().Bool("no-open", false, "print the authorize URL instead of opening a browser")
 	slackLoginCmd.Flags().Bool("app-return", false, "bring the Watchtower app back to the front when done")
 	slackLoginCmd.Flags().Int64("account", 0, "existing account id to re-consent (default: account #1, created if it doesn't exist)")
+
+	slackAccountsCmd.Flags().Bool("json", false, "print the accounts as one JSON document")
 
 	slackAddCmd.Flags().String("label", "", "display name for this workspace")
 	slackAddCmd.Flags().Bool("no-open", false, "print the authorize URL instead of opening a browser")
@@ -209,6 +213,10 @@ func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.D
 			}
 		}
 		return slackIdentity{}, err
+	}
+	// A17: other rows still without a client id get one at every connect.
+	if _, err := slackmode.BackfillClientIDs(database); err != nil {
+		fmt.Fprintf(warnOut, "warning: %v\n", err)
 	}
 
 	if err := database.SetSlackAccountAuthState(id, "ok", ""); err != nil {
@@ -456,18 +464,79 @@ func runSlackAccounts(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
+	// A17: rows connected before the client id was recorded get it here.
+	if _, err := slackmode.BackfillClientIDs(database); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", err)
+	}
+
 	accounts, err := database.ListSlackAccounts()
 	if err != nil {
 		return fmt.Errorf("listing accounts: %w", err)
 	}
 
 	out := cmd.OutOrStdout()
+	if asJSON, _ := cmd.Flags().GetBool("json"); asJSON {
+		return writeSlackAccountsJSON(out, accounts)
+	}
 	if len(accounts) == 0 {
 		fmt.Fprintln(out, "No Slack accounts connected.")
 		fmt.Fprintln(out, "Run 'watchtower slack add' to connect one.")
 		return nil
 	}
 	printSlackAccounts(out, accounts)
+	return nil
+}
+
+// slackAccountsDoc is the `slack accounts --json` document.
+type slackAccountsDoc struct {
+	// BuiltinApp is true when the build has a Slack app to sign in with (a
+	// baked or env client id and secret, auth.BuiltinApp).
+	BuiltinApp bool                   `json:"builtin_app"`
+	Accounts   []slackAccountJSONItem `json:"accounts"`
+}
+
+type slackAccountJSONItem struct {
+	ID       int64  `json:"id"`
+	TeamID   string `json:"team_id"`
+	TeamName string `json:"team_name"`
+	Label    string `json:"label"`
+	Status   string `json:"status"`
+	Enabled  bool   `json:"enabled"`
+	ClientID string `json:"client_id"`
+	// SharedApp: the account is on the retired shared app
+	// (slackmode.SharedApp); false for a removed row.
+	SharedApp bool `json:"shared_app"`
+	// Relogin is slackmode.Relogin: "builtin" | "connect" | "move".
+	Relogin string `json:"relogin"`
+}
+
+// writeSlackAccountsJSON writes every account, removed rows included (the
+// Desktop filters them).
+func writeSlackAccountsJSON(out io.Writer, accounts []db.SlackAccount) error {
+	builtin, ok := auth.BuiltinApp()
+	builtinID := ""
+	if ok {
+		builtinID = builtin.ClientID
+	}
+	retired := auth.RetiredSharedClientID
+	doc := slackAccountsDoc{BuiltinApp: ok, Accounts: make([]slackAccountJSONItem, 0, len(accounts))}
+	for _, a := range accounts {
+		doc.Accounts = append(doc.Accounts, slackAccountJSONItem{
+			ID:        a.ID,
+			TeamID:    a.TeamID,
+			TeamName:  a.TeamName,
+			Label:     a.Label,
+			Status:    a.Status,
+			Enabled:   a.Enabled,
+			ClientID:  a.ClientID,
+			SharedApp: a.Status != "removed" && slackmode.SharedApp(a, retired),
+			Relogin:   slackmode.Relogin(a, retired, builtinID),
+		})
+	}
+	enc := json.NewEncoder(out)
+	if err := enc.Encode(doc); err != nil {
+		return fmt.Errorf("writing accounts: %w", err)
+	}
 	return nil
 }
 
