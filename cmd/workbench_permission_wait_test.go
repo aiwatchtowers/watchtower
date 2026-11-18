@@ -324,6 +324,15 @@ func TestPermissionSummary(t *testing.T) {
 	}
 }
 
+// Every line of a multi-line description is a `# ` comment: an unmarked
+// second line would read as a command (or open a quote) in the hard-limit
+// table.
+func TestPermissionSummary_EveryDescriptionLineIsAComment(t *testing.T) {
+	got, clipped := permissionSummary("Bash", json.RawMessage(`{"command":"go test ./...","description":"Run tests\nthen push"}`))
+	assert.Equal(t, "go test ./...\n# Run tests\n# then push", got)
+	assert.False(t, clipped)
+}
+
 // SIGTERM (the hook's timeout, Claude Code quitting) ends the wait: no
 // decision, and the request is closed expired, so the phone no longer
 // offers an answer nothing reads.

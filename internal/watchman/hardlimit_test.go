@@ -108,7 +108,7 @@ func TestParkedBy(t *testing.T) {
 		{"nice -n push", bash("nice -n 5 git push origin main"), LimitMainRef},
 		{"xargs -n rm", bash("ls | xargs -n 1 rm"), LimitDeleteOutside},
 		{"sudo -u feature push", bash("sudo -u build git push origin feat"), ""},
-		{"bare wrapper unresolved", bash("sudo -u"), LimitMainRef},
+		{"bare wrapper unresolved", bash("sudo -u"), LimitUnreadable},
 		{"cd or true rm", bash("cd /w/a || true; rm -rf x"), LimitDeleteOutside},
 		{"cd semicolon rm", bash("cd /w/a; rm -rf x"), LimitDeleteOutside},
 		{"cd and rm", bash("cd /w/a && rm -rf x"), ""},
@@ -150,14 +150,14 @@ func TestParkedBy(t *testing.T) {
 		{"quoted path inside", bash(`rm "/w/a/a b"`), ""},
 		{"double-quote escape", bash(`rm "/w/a/x\"y" /tmp/z`), LimitDeleteOutside},
 		{"single quote no escape", bash(`rm '/w/a/x\' /tmp/z`), LimitDeleteOutside},
-		{"unterminated quote", bash(`echo "abc`), LimitMainRef},
+		{"unterminated quote", bash(`echo "abc`), LimitUnreadable},
 		{"quoted separator", bash(`git commit -m "fix; tidy" && git push origin feat`), ""},
 		{"quoted separator hides no push", bash(`echo "a" ; git push origin main`), LimitMainRef},
 		{"comment line separator", bash("# Next step; git push origin main\ngo test ./..."), ""},
 		{"numeric file name", edit("Write", "123"), ""},
 		{"true file name", edit("Write", "true"), ""},
 		{"null file name", edit("Edit", "null"), ""},
-		{"json array fallback", edit("Edit", `["x"]`), LimitOutsideFolder},
+		{"json array is a file name", edit("Edit", `["x"]`), ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -188,4 +188,120 @@ func TestPermissionFlags(t *testing.T) {
 	f = permissionFlags(clipped)
 	require.True(t, *f.IsDecision)
 	require.True(t, *f.Parked, "a clipped summary hides its tail: it parks")
+}
+
+// expectParked runs ParkedBy over each case and checks the row it parks under
+// ("" = not parked).
+func expectParked(t *testing.T, cases []struct {
+	name  string
+	ask   PermissionAsk
+	limit HardLimit
+}) {
+	t.Helper()
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, parked := ParkedBy(c.ask)
+			require.Equal(t, c.limit != "", parked)
+			require.Equal(t, c.limit, got)
+		})
+	}
+}
+
+func TestParkedBy_ResetHardOnSharedLocalBranch(t *testing.T) {
+	onBranch := func(cmd string, b *BranchInfo) PermissionAsk {
+		r := bash(cmd)
+		r.Branch = b
+		return r
+	}
+	shared := []string{"main", "feature/watchman"}
+	expectParked(t, []struct {
+		name  string
+		ask   PermissionAsk
+		limit HardLimit
+	}{
+		{"checkout main then reset", bash("git checkout main && git reset --hard HEAD~1"), LimitResetShared},
+		{"switch master then reset", bash("git switch master; git reset --hard HEAD~1"), LimitResetShared},
+		{"checkout feature then reset", bash("git checkout feat && git reset --hard HEAD~1"), ""},
+		{"reset then checkout main", bash("git reset --hard HEAD~1 && git checkout main"), ""},
+		{"checkout file from main then reset", bash("git checkout feat -- a.go && git reset --hard HEAD~1"), ""},
+		{"checkout -B main", bash("git checkout -B main HEAD~2"), LimitResetShared},
+		{"branch -f main", bash("git branch -f main HEAD~2"), LimitResetShared},
+		{"branch --force master", bash("git branch --force master HEAD~2"), LimitResetShared},
+		{"branch -D main", bash("git branch -D main"), LimitResetShared},
+		{"branch -M main", bash("git branch -M main"), LimitResetShared},
+		{"branch -f feature", bash("git branch -f feat HEAD~2"), ""},
+		{"branch create", bash("git branch main2"), ""},
+		{"branch -f umbrella", onBranch("git branch -f feature/watchman HEAD~2", &BranchInfo{Current: "wt/session-3", Shared: shared}), LimitResetShared},
+		{"update-ref master", bash("git update-ref refs/heads/master abc"), LimitResetShared},
+		{"update-ref -d main", bash("git update-ref -d refs/heads/main"), LimitResetShared},
+		{"update-ref feature", bash("git update-ref refs/heads/feat abc"), ""},
+		{"update-ref stdin", bash("git update-ref --stdin"), LimitResetShared},
+		{"reset on shared current", onBranch("git reset --hard HEAD~1", &BranchInfo{Current: "feature/watchman", Shared: shared}), LimitResetShared},
+		{"reset on main current", onBranch("git reset --hard HEAD~1", &BranchInfo{Current: "main"}), LimitResetShared},
+		{"reset on session branch", onBranch("git reset --hard HEAD~1", &BranchInfo{Current: "wt/session-3", Shared: shared}), ""},
+		{"reset on unknown branch", onBranch("git reset --hard HEAD~1", &BranchInfo{Current: "", Shared: shared}), LimitResetShared},
+		{"reset branch not recorded", onBranch("git reset --hard HEAD~1", nil), ""},
+		{"soft reset on shared", onBranch("git reset --soft HEAD~1", &BranchInfo{Current: "main"}), ""},
+		{"switch away then reset", onBranch("git switch wt/session-3 && git reset --hard HEAD~1", &BranchInfo{Current: "main"}), ""},
+		{"switch -c then reset", onBranch("git switch -c wt/new && git reset --hard HEAD~1", &BranchInfo{Current: ""}), ""},
+	})
+}
+
+func TestParkedBy_InlineCommentApostrophe(t *testing.T) {
+	expectParked(t, []struct {
+		name  string
+		ask   PermissionAsk
+		limit HardLimit
+	}{
+		{"comment with apostrophe", bash("go test ./... # don't cache"), ""},
+		{"push with comment", bash("git push origin main # it's fine"), LimitMainRef},
+		{"hash inside quotes", bash(`echo "it's # not a comment" && git push origin main`), LimitMainRef},
+		{"hash inside a word", bash("echo a#b"), ""},
+		{"hash inside a word then push", bash("echo a#b; git push origin main"), LimitMainRef},
+		{"escaped hash", bash(`echo \# 'open`), LimitUnreadable},
+		{"comment hides separator", bash("go test ./... # then; git push origin main"), ""},
+		{"comment ends at newline", bash("go test ./... # don't\ngit push origin main"), LimitMainRef},
+	})
+}
+
+func TestParkedBy_DescriptionLinesAreComments(t *testing.T) {
+	expectParked(t, []struct {
+		name  string
+		ask   PermissionAsk
+		limit HardLimit
+	}{
+		{"two description lines", bash("go test ./...\n# Run tests\n# then don't push to main"), ""},
+		{"description names a push", bash("go test ./...\n# Run tests\n# git push origin main"), ""},
+	})
+}
+
+func TestParkedBy_JSONPathFieldsDecodedApart(t *testing.T) {
+	ask := func(tool, summary string) PermissionAsk {
+		return PermissionAsk{Tool: tool, Summary: summary, WorkbenchFolder: "/wb"}
+	}
+	expectParked(t, []struct {
+		name  string
+		ask   PermissionAsk
+		limit HardLimit
+	}{
+		{"read with numeric path", ask("Read", `{"file_path":"/wb/a.go","path":7}`), ""},
+		{"read numeric path only", ask("Read", `{"path":7}`), LimitOutsideFolder},
+		{"read outside with numeric path", ask("Read", `{"file_path":"/etc/hosts","path":7}`), LimitOutsideFolder},
+		{"grep relative path", ask("Grep", `{"pattern":"x","path":"src"}`), ""},
+		{"edit bracket file name", ask("Edit", "[1]"), ""},
+		{"edit object fallback", ask("Edit", `{"file_path":"/elsewhere/x","old_string":"a"}`), LimitOutsideFolder},
+	})
+}
+
+func TestParkedBy_UnreadableIsItsOwnRow(t *testing.T) {
+	expectParked(t, []struct {
+		name  string
+		ask   PermissionAsk
+		limit HardLimit
+	}{
+		{"bare sudo", bash("sudo"), LimitUnreadable},
+		{"env with only an assignment", bash("env FOO=1"), LimitUnreadable},
+		{"unterminated single quote", bash("echo 'open"), LimitUnreadable},
+		{"unreadable before push", bash("sudo; git push origin main"), LimitUnreadable},
+	})
 }

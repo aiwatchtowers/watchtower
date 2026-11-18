@@ -238,8 +238,8 @@ func expirePermissionRequest(database *db.DB, id int64) error {
 
 // permissionSummary is what a permission request shows the owner, at most
 // permissionSummaryRunes runes, and whether it was cut short (clipped): a
-// Bash command (and its description on the next line as a `# ` comment,
-// so it never reads as part of the command), the file an Edit, Write or
+// Bash command (and its description below it, every line a `# ` comment,
+// so no line of it reads as part of the command), the file an Edit, Write or
 // NotebookEdit touches, the URL a WebFetch reads, otherwise the tool input
 // as compact JSON.
 func permissionSummary(toolName string, toolInput json.RawMessage) (summary string, clipped bool) {
@@ -257,7 +257,9 @@ func permissionSummary(toolName string, toolInput json.RawMessage) (summary stri
 	case "Bash":
 		s = str("command")
 		if d := str("description"); s != "" && d != "" {
-			s += "\n# " + d
+			for _, line := range strings.Split(d, "\n") {
+				s += "\n# " + line
+			}
 		}
 	case "Edit", "Write", "NotebookEdit":
 		s = str("file_path")

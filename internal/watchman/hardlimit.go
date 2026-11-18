@@ -16,12 +16,13 @@ import (
 type HardLimit string
 
 const (
+	LimitUnreadable    HardLimit = "unreadable"     // a command that cannot be read (an unterminated quote, a wrapper around nothing)
 	LimitMainRef       HardLimit = "main_ref"       // push to, or PR merge into, the default branch
 	LimitTag           HardLimit = "tag"            // creating, deleting or pushing a tag
 	LimitRelease       HardLimit = "release"        // a GitHub release
 	LimitTestFlight    HardLimit = "testflight"     // an App Store Connect / TestFlight upload
 	LimitForcePush     HardLimit = "force_push"     // a forced push
-	LimitResetShared   HardLimit = "reset_shared"   // reset --hard onto a remote ref
+	LimitResetShared   HardLimit = "reset_shared"   // a forced move of a shared branch (reset --hard onto a remote ref or on a shared branch, branch -f, update-ref)
 	LimitDeleteOutside HardLimit = "delete_outside" // rm outside the session's worktrees
 	LimitOutward       HardLimit = "outward"        // a message or comment other people see
 	LimitStandingGrant HardLimit = "standing_grant" // an edit of the agent's own settings
@@ -40,12 +41,25 @@ type PermissionAsk struct {
 	// PRBase reports the base branch of a pull request; known=false when
 	// the base is not recorded. Nil means never known.
 	PRBase func(pr int) (base string, known bool)
+	// Branch is the session's branch when the request was read; nil = not
+	// recorded (stored rows).
+	Branch *BranchInfo
+}
+
+// BranchInfo is the branch a session works on and the branches it shares
+// with others. Current == "" is a live read that failed.
+type BranchInfo struct {
+	Current string
+	// Shared holds the default branches and the session's PR base/umbrella
+	// branch.
+	Shared []string
 }
 
 var hardLimits = []struct {
 	limit HardLimit
 	match func(PermissionAsk) bool
 }{
+	{LimitUnreadable, matchUnreadable},
 	{LimitMainRef, matchMainRef},
 	{LimitTag, matchTag},
 	{LimitRelease, matchRelease},
@@ -111,27 +125,26 @@ const unresolved = "<unresolved>"
 type commandPart struct{ text, sep string }
 
 // splitCommands splits a command line on ; && || | and newlines outside
-// quotes. A whole comment line (first non-blank character #) is dropped
-// first, so a separator inside it splits nothing. Quotes and backslashes
-// are kept for splitWords.
+// quotes. A comment (a # at the start of a word, outside quotes) is dropped
+// up to its newline first, so a quote or separator inside it counts for
+// nothing. Quotes and backslashes are kept for splitWords.
 func splitCommands(line string) []commandPart {
 	var out []commandPart
 	var cur strings.Builder
 	sep := ""
 	var quote byte
-	lineStart := true
+	wordStart := true // the previous byte ended a word, outside quotes
 	for i := 0; i < len(line); i++ {
-		if quote == 0 && lineStart {
-			lineStart = false
-			if rest := strings.TrimLeft(line[i:], " \t\r"); strings.HasPrefix(rest, "#") {
-				nl := strings.IndexByte(rest, '\n')
-				if nl < 0 {
-					break
-				}
-				i = len(line) - len(rest) + nl // the comment's newline
-			}
-		}
 		ch := line[i]
+		if quote == 0 && ch == '#' && wordStart {
+			nl := strings.IndexByte(line[i:], '\n')
+			if nl < 0 {
+				break
+			}
+			i += nl // the comment's newline
+			ch = '\n'
+		}
+		wordStart = quote == 0 && strings.IndexByte(" \t\r\n;&|()", ch) >= 0
 		switch {
 		case quote == '\'':
 			if ch == '\'' {
@@ -162,7 +175,6 @@ func splitCommands(line string) []commandPart {
 				cur.Reset()
 				sep = next
 				i += len(next) - 1
-				lineStart = ch == '\n'
 				continue
 			}
 		}
@@ -255,24 +267,17 @@ func stripWrappers(words []string, c *shellCmd) []string {
 	return nil
 }
 
-// commands splits a Bash summary into its commands. The `# ` line that
-// carries the request's description is cut off first. Only a cd joined to
-// the next command by && carries its directory on; after any other
-// separator the directory is unknown.
+// commands splits a Bash summary into its commands. The request's
+// description follows as `# ` comment lines (cmd.permissionSummary), which
+// splitCommands drops with every other comment. Only a cd joined to the
+// next command by && carries its directory on; after any other separator
+// the directory is unknown.
 func commands(summary string) []shellCmd {
-	// permissionSummary appends the description as a last `# ` line; an
-	// inner comment line is skipped below, never a cut.
-	if i := strings.LastIndex(summary, "\n"); i >= 0 && strings.HasPrefix(summary[i+1:], "# ") {
-		summary = summary[:i]
-	}
 	var out []shellCmd
 	cwd := ""
 	for _, part := range splitCommands(summary) {
 		if part.sep != "&&" && part.sep != "" && cwd != "" {
 			cwd = cwdUnknown
-		}
-		if strings.HasPrefix(strings.TrimSpace(part.text), "#") {
-			continue
 		}
 		words, ok := splitWords(part.text)
 		if !ok { // an unterminated quote: unreadable, so it parks
@@ -412,15 +417,17 @@ func prMergeNumber(args []string) (int, bool) {
 	return 0, false
 }
 
+// matchUnreadable: a command that cannot be read, so cannot be judged.
+func matchUnreadable(r PermissionAsk) bool {
+	return anyCmd(r, func(c shellCmd) bool { return c.w[0] == unresolved })
+}
+
 // matchMainRef: a push to, a rebase onto, or a PR merge into the default
 // branch. A plain `git push` with no refspec is not matched: its
 // destination is unknown here, and parking every plain push would drop
 // most push decisions (the live pre-push hook covers it).
 func matchMainRef(r PermissionAsk) bool {
 	return anyCmd(r, func(c shellCmd) bool {
-		if c.w[0] == unresolved { // an unreadable command: cannot be judged
-			return true
-		}
 		if _, pos, ok := pushArgs(c); ok {
 			for _, spec := range pos[min(1, len(pos)):] { // pos[0] is the remote
 				if isDefaultBranch(refDest(spec)) {
@@ -520,19 +527,116 @@ func matchForcePush(r PermissionAsk) bool {
 	})
 }
 
+// isShared reports a branch others build on: a default branch, or one the
+// request's BranchInfo lists as shared.
+func (r PermissionAsk) isShared(branch string) bool {
+	branch = strings.TrimPrefix(branch, "refs/heads/")
+	return isDefaultBranch(branch) || (r.Branch != nil && slices.Contains(r.Branch.Shared, branch))
+}
+
+// switchTarget is the branch a git checkout/switch moves to; forced is a
+// -B/-C that resets it. ok is false when the command switches nowhere
+// known to be a branch (a file checkout, a bare checkout); "-" (the
+// previous branch) is returned as is.
+func switchTarget(args []string) (branch string, forced, ok bool) {
+	var pos []string
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "--":
+			return "", false, false // paths follow: a file checkout
+		case (a == "-b" || a == "-c" || a == "--orphan") && i+1 < len(args):
+			return args[i+1], false, true
+		case (a == "-B" || a == "-C") && i+1 < len(args):
+			return args[i+1], true, true
+		case a != "-" && strings.HasPrefix(a, "-"):
+		default:
+			pos = append(pos, a)
+		}
+	}
+	if len(pos) != 1 { // none, or a tree-ish followed by paths
+		return "", false, false
+	}
+	return pos[0], false, true
+}
+
+// matchResetShared: a forced move of a branch others build on — reset
+// --hard onto a remote ref; reset --hard while on a shared branch (the
+// recorded one unless a checkout/switch earlier in the line moved away; a
+// failed live read counts as shared; a stored row records none); git
+// checkout -B, git branch -f/-D/-M or git update-ref naming a shared
+// branch.
 func matchResetShared(r PermissionAsk) bool {
+	onShared := r.Branch != nil && (r.Branch.Current == "" || r.isShared(r.Branch.Current))
 	return anyCmd(r, func(c shellCmd) bool {
+		for _, sub := range []string{"checkout", "switch"} {
+			if args, ok := c.sub("git", sub); ok {
+				branch, forced, ok := switchTarget(args)
+				if !ok {
+					return false
+				}
+				if forced && r.isShared(branch) {
+					return true
+				}
+				onShared = branch == "-" || r.isShared(branch) // "-" is unknown: fail closed
+				return false
+			}
+		}
+		if args, ok := c.sub("git", "branch"); ok {
+			return branchForceShared(r, args)
+		}
+		if args, ok := c.sub("git", "update-ref"); ok {
+			return updateRefShared(r, args, onShared)
+		}
 		args, ok := c.sub("git", "reset")
-		if !ok {
+		if !ok || !slices.Contains(args, "--hard") {
 			return false
 		}
-		if !slices.Contains(args, "--hard") {
-			return false
-		}
-		return slices.ContainsFunc(args, func(a string) bool {
+		return onShared || slices.ContainsFunc(args, func(a string) bool {
 			return strings.HasPrefix(a, "origin/") || strings.HasPrefix(a, "upstream/") || a == "@{u}" || a == "@{upstream}" || a == "FETCH_HEAD"
 		})
 	})
+}
+
+// branchForceShared reports a git branch -f (the branch it moves), -D or -M
+// (every branch named) on a shared branch.
+func branchForceShared(r PermissionAsk, args []string) bool {
+	var force, all bool
+	var pos []string
+	for _, a := range args {
+		switch {
+		case a == "-f" || a == "--force":
+			force = true
+		case a == "-D" || a == "-M":
+			force, all = true, true
+		case strings.HasPrefix(a, "-"):
+		default:
+			pos = append(pos, a)
+		}
+	}
+	if !force || len(pos) == 0 {
+		return false
+	}
+	if !all {
+		pos = pos[:1]
+	}
+	return slices.ContainsFunc(pos, r.isShared)
+}
+
+// updateRefShared reports a git update-ref of a shared branch, of HEAD
+// while on one, or from stdin (refs unknown).
+func updateRefShared(r PermissionAsk, args []string, onShared bool) bool {
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "--stdin":
+			return true
+		case a == "-m":
+			i++
+		case strings.HasPrefix(a, "-"):
+		default:
+			return (a == "HEAD" && onShared) || (strings.HasPrefix(a, "refs/heads/") && r.isShared(a))
+		}
+	}
+	return false
 }
 
 // roots are the folders the session may touch: its worktrees (the session
@@ -644,20 +748,24 @@ func filePath(r PermissionAsk) (p string, isFileTool, placed bool) {
 	case plainPathTools[r.Tool]:
 		p, _, _ = strings.Cut(r.Summary, "\n")
 		p = strings.TrimSpace(p)
-		// A JSON fallback summary (an object or array) is not a path; a
-		// file named 123, true or null is.
-		isJSON := strings.HasPrefix(p, "{") || strings.HasPrefix(p, "[")
-		return p, true, p != "" && !(isJSON && json.Valid([]byte(p)))
+		// The JSON fallback summary (the tool input, an object) is not a
+		// path; a file named 123, null or [1] is.
+		var obj map[string]json.RawMessage
+		isObject := strings.HasPrefix(p, "{") && json.Unmarshal([]byte(p), &obj) == nil
+		return p, true, p != "" && !isObject
 	case jsonPathTools[r.Tool]:
-		var in struct {
-			FilePath     string `json:"file_path"`
-			NotebookPath string `json:"notebook_path"`
-			Path         string `json:"path"`
-		}
+		var in map[string]json.RawMessage
 		if json.Unmarshal([]byte(r.Summary), &in) != nil {
 			return "", true, false
 		}
-		p = cmp.Or(in.FilePath, in.NotebookPath, in.Path)
+		// Each field is decoded on its own: a non-string value leaves that
+		// field empty without unplacing the others.
+		str := func(key string) string {
+			var s string
+			_ = json.Unmarshal(in[key], &s)
+			return s
+		}
+		p = cmp.Or(str("file_path"), str("notebook_path"), str("path"))
 		return p, true, p != ""
 	}
 	return "", false, false
