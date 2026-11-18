@@ -63,6 +63,8 @@ final class WatchmanJournalViewModel {
         let waiting: [Card]
         let decided: [Card]
         let sureLines: [Line]
+        /// Items the owner answered before the twin: lines, never counted.
+        let ownerFirst: [Line]
         let decidedCount: Int
         let decidedSummary: String
         let checks: [Line]
@@ -70,6 +72,9 @@ final class WatchmanJournalViewModel {
 
     /// How many nights the list reads.
     nonisolated static let nightLimit = 30
+    /// The reread while the journal is on screen: the daemon writes from
+    /// another process, which a GRDB observation does not see (as Home).
+    nonisolated static let tickInterval: Duration = .seconds(30)
 
     private(set) var phase: Phase = .loading
     private(set) var snapshot = Snapshot(nights: [], deciding: [])
@@ -84,6 +89,7 @@ final class WatchmanJournalViewModel {
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let calendar: Calendar
     @ObservationIgnored private let pool: DatabasePool?
+    @ObservationIgnored private let tick: @Sendable (Duration) async -> Void
     /// Bumped by every read: an older reply never overwrites a newer one.
     @ObservationIgnored private var readToken = 0
 
@@ -91,12 +97,14 @@ final class WatchmanJournalViewModel {
         read: @escaping @Sendable () async throws -> Snapshot,
         now: @escaping () -> Date = Date.init,
         calendar: Calendar = .current,
-        pool: DatabasePool? = nil
+        pool: DatabasePool? = nil,
+        tick: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) {
         self.read = read
         self.now = now
         self.calendar = calendar
         self.pool = pool
+        self.tick = tick
     }
 
     /// The journal over the app's database.
@@ -145,11 +153,26 @@ final class WatchmanJournalViewModel {
         await load()
     }
 
-    /// Reads now and again whenever the journal's tables change, until
-    /// the calling task ends (the pane's `.task`).
+    /// Reads now, again whenever this process changes the journal's tables
+    /// and every `tickInterval` (the daemon's writes), until the calling
+    /// task ends (the pane's `.task`: the journal left the screen).
     func watch() async {
         await load()
-        guard let pool else { return }
+        await withTaskGroup(of: Void.self) { group in
+            if let pool { group.addTask { await self.observe(pool) } }
+            group.addTask { await self.rereadOnTick() }
+        }
+    }
+
+    private func rereadOnTick() async {
+        while !Task.isCancelled {
+            await tick(Self.tickInterval)
+            guard !Task.isCancelled else { return }
+            await load()
+        }
+    }
+
+    private func observe(_ pool: DatabasePool) async {
         let regions: [any DatabaseRegionConvertible] = WatchmanJournalQueries.observedTables.map { Table($0) }
         let observation = ValueObservation.tracking(regions: regions) { _ in }
         do {
@@ -225,10 +248,12 @@ final class WatchmanJournalViewModel {
             span: WatchmanJournalCopy.nightSpan(night, live: live, calendar: calendar),
             gapLines: night.gaps.map { WatchmanJournalCopy.gapLine($0, calendar: calendar) },
             cost: WatchmanJournalCopy.cost(night.costUSD, tonight: isTonight(night)),
-            busyLine: live ? deciding.first.map { WatchmanJournalCopy.deciding($0.question) } : nil,
+            // Whatever night is open: something is being decided now.
+            busyLine: deciding.first.map { WatchmanJournalCopy.deciding($0.question) },
             waiting: night.waiting.map(waitingCard),
             decided: unsure.map(decidedCard),
             sureLines: sure.map(sureLine),
+            ownerFirst: night.ownerFirst.map(ownerFirstLine),
             decidedCount: night.decided.count,
             decidedSummary: WatchmanJournalCopy.decidedSummary(unsure: unsure.count, sure: sure.count),
             checks: night.checks.map(checkLine)
@@ -257,6 +282,11 @@ final class WatchmanJournalViewModel {
 
     private func sureLine(_ item: WatchmanItem) -> Line {
         Line(id: item.id, title: WatchmanJournalCopy.question(item), note: nil, meta: WatchmanJournalCopy.meta(item))
+    }
+
+    private func ownerFirstLine(_ item: WatchmanItem) -> Line {
+        Line(id: item.id, title: WatchmanJournalCopy.question(item), note: WatchmanJournalCopy.ownerFirst,
+             meta: WatchmanJournalCopy.place(item, calendar: calendar))
     }
 
     private func checkLine(_ item: WatchmanItem) -> Line {

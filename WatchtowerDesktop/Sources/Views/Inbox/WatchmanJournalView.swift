@@ -216,10 +216,11 @@ private struct WatchmanNightPage: View {
                     ForEach(page.waiting) { WatchmanWaitingCard(card: $0) }
                 }
             }
-            if page.decidedCount > 0 {
+            if page.decidedCount > 0 || !page.ownerFirst.isEmpty {
                 section(model.decidedTitle, count: page.decidedCount, trailing: page.decidedSummary) {
                     ForEach(page.decided) { WatchmanDecisionCard(card: $0, chose: model.choseLabel, leanedOn: model.leanedOn) }
                     if !page.sureLines.isEmpty { lines(page.sureLines, icon: "checkmark.circle.fill", tone: Tone.success) }
+                    if !page.ownerFirst.isEmpty { lines(page.ownerFirst, icon: "person.fill.checkmark", tone: .secondary) }
                 }
             }
             if !page.checks.isEmpty {

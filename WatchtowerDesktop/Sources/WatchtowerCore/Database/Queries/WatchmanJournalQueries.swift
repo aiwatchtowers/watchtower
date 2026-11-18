@@ -19,15 +19,22 @@ package enum WatchmanJournalQueries {
     /// night it was created in, and a sleep gap to every night it overlaps.
     package static func nights(_ db: Database, limit: Int, calendar: Calendar = .current) throws -> [WatchmanNight] {
         guard limit > 0 else { return [] }
-        let stamps = try String.fetchAll(db, sql: "SELECT created_at FROM watchman_items ORDER BY created_at DESC")
+        // One newest-item lookup per night, each below the last night's
+        // start: at most `limit` rows ever reach Swift.
         var starts: [Date] = []
-        for stamp in stamps {
+        var below = "9999-12-31T23:59:59Z"
+        while starts.count < limit {
+            let stamp = try String.fetchOne(db, sql: """
+                SELECT created_at FROM watchman_items WHERE created_at < ?
+                ORDER BY created_at DESC LIMIT 1
+                """, arguments: [below])
+            guard let stamp else { break }
             guard let created = AutomationDates.parse(stamp) else {
                 throw WatchmanItemError.badTime(column: "created_at", value: stamp)
             }
             let start = WatchmanNight.start(of: created, calendar: calendar)
-            if starts.last != start { starts.append(start) }
-            if starts.count == limit { break }
+            starts.append(start)
+            below = AutomationDates.format(start)
         }
         guard let oldest = starts.last else { return [] }
         let items = try WatchmanItem.fetchAll(db, sql: """
@@ -83,16 +90,16 @@ package enum WatchmanJournalQueries {
         return WatchmanInboxSummary(latest: latest.map(WatchmanNightCounts.init), waiting: waiting, updatedAt: updatedAt)
     }
 
-    /// Home's row: last night (or tonight, still running) when it decided
-    /// or parked anything; nil otherwise.
+    /// Home's row: the newer of tonight and last night that decided or
+    /// parked anything; nil when neither did.
     package static func homeNight(_ db: Database, now: Date, calendar: Calendar = .current) throws -> WatchmanNightCounts? {
         guard try db.tableExists("watchman_items") else { return nil }
-        guard let night = try nights(db, limit: 1, calendar: calendar).first else { return nil }
         let tonight = WatchmanNight.start(of: now, calendar: calendar)
-        let lastNight = calendar.date(byAdding: .day, value: -1, to: tonight) ?? tonight
-        guard night.date >= lastNight else { return nil }
-        let counts = WatchmanNightCounts(night)
-        return counts.decided + counts.waiting > 0 ? counts : nil
+        let lastNight = WatchmanNight.start(of: tonight.addingTimeInterval(-1), calendar: calendar)
+        return try nights(db, limit: 2, calendar: calendar)
+            .filter { $0.date >= lastNight }
+            .map(WatchmanNightCounts.init)
+            .first { $0.decided + $0.waiting > 0 }
     }
 
     // MARK: - Private
@@ -124,6 +131,8 @@ package enum WatchmanJournalQueries {
                 night.pending.append(item)
             } else if item.waitsForOwner {
                 night.waiting.append(item)
+            } else if item.outcome == "owner_first" {
+                night.ownerFirst.append(item)
             } else if item.kind == "check" {
                 if item.isCheckNobodyRan { night.checks.append(item) }
             } else {

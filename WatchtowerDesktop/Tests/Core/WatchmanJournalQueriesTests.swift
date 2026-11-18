@@ -162,4 +162,81 @@ final class WatchmanJournalQueriesTests: XCTestCase {
         let titles = try queue.read { try WatchmanJournalQueries.precedentTitles($0, ids: [7, 8]) }
         XCTAssertEqual(titles, [7: "Sidebar width per workbench"])
     }
+
+    /// Noon stays noon on DST days in Europe/Berlin: the spring-forward
+    /// night is 23 h, the fall-back night 25 h, and each night ends where
+    /// the next starts.
+    func testNightBoundaryOnDSTDays() throws {
+        var berlin = Calendar(identifier: .gregorian)
+        berlin.timeZone = try XCTUnwrap(TimeZone(identifier: "Europe/Berlin"))
+        // 2026-03-29 02:00 CET → 03:00 CEST.
+        let springStart = date("2026-03-28T11:00:00Z") // 12:00 CET
+        let springEnd = date("2026-03-29T10:00:00Z") // 12:00 CEST
+        XCTAssertEqual(WatchmanNight.start(of: date("2026-03-29T09:59:00Z"), calendar: berlin), springStart)
+        XCTAssertEqual(WatchmanNight.start(of: springEnd, calendar: berlin), springEnd)
+        XCTAssertEqual(WatchmanNight.end(of: springStart, calendar: berlin), springEnd)
+        XCTAssertEqual(springEnd.timeIntervalSince(springStart), 23 * 3600)
+        // 2026-10-25 03:00 CEST → 02:00 CET.
+        let fallStart = date("2026-10-24T10:00:00Z") // 12:00 CEST
+        let fallEnd = date("2026-10-25T11:00:00Z") // 12:00 CET
+        XCTAssertEqual(WatchmanNight.start(of: date("2026-10-25T10:59:00Z"), calendar: berlin), fallStart)
+        XCTAssertEqual(WatchmanNight.start(of: fallEnd, calendar: berlin), fallEnd)
+        XCTAssertEqual(WatchmanNight.end(of: fallStart, calendar: berlin), fallEnd)
+        XCTAssertEqual(fallEnd.timeIntervalSince(fallStart), 25 * 3600)
+    }
+
+    /// An empty tonight (only a queued item) does not hide last night.
+    func testHomeNightSkipsAnEmptyTonight() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let wb = try TestDatabase.insertWorkbench(db)
+            try item(db, workbench: wb, created: "2026-11-16T01:00:00Z") // last night
+            try item(db, workbench: wb, created: "2026-11-16T13:00:00Z", state: "queued", outcome: "") // tonight
+        }
+        let calendar = calendar
+        let counts = try queue.read {
+            try WatchmanJournalQueries.homeNight($0, now: self.date("2026-11-16T15:00:00Z"), calendar: calendar)
+        }
+        XCTAssertEqual(counts, WatchmanNightCounts(start: date("2026-11-15T11:00:00Z"), decided: 1, unsure: 1, waiting: 0))
+    }
+
+    /// The owner answered first: not a decision, not counted, listed apart.
+    func testOwnerFirstIsNotDecided() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let wb = try TestDatabase.insertWorkbench(db)
+            try item(db, workbench: wb, created: "2026-11-16T01:00:00Z", question: "decided")
+            try item(db, workbench: wb, created: "2026-11-16T01:30:00Z", outcome: "owner_first", question: "owner")
+        }
+        let night = try XCTUnwrap(nights(queue).first)
+        XCTAssertEqual(night.decided.map(\.question), ["decided"])
+        XCTAssertEqual(night.ownerFirst.map(\.question), ["owner"])
+        XCTAssertEqual(WatchmanNightCounts(night).decided, 1)
+    }
+
+    /// The bounded read still finds sparse nights in order and honours the limit.
+    func testNightsReadOnlyTheNightsAsked() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let wb = try TestDatabase.insertWorkbench(db)
+            for day in ["2026-11-01", "2026-11-05", "2026-11-05", "2026-11-09", "2026-11-12"] {
+                try item(db, workbench: wb, created: "\(day)T02:00:00Z")
+            }
+        }
+        let starts = try nights(queue, limit: 3).map(\.date)
+        XCTAssertEqual(starts, [date("2026-11-11T11:00:00Z"), date("2026-11-08T11:00:00Z"), date("2026-11-04T11:00:00Z")])
+        XCTAssertEqual(try nights(queue, limit: 3)[2].decided.count, 2)
+    }
+
+    /// A malformed `precedent_ids` reads as no precedents, the row still shows.
+    func testMalformedPrecedentsReadAsNone() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let wb = try TestDatabase.insertWorkbench(db)
+            let id = try item(db, workbench: wb, created: "2026-11-16T01:00:00Z")
+            try db.execute(sql: "UPDATE watchman_items SET precedent_ids = 'not json' WHERE id = ?", arguments: [id])
+        }
+        let night = try XCTUnwrap(nights(queue).first)
+        XCTAssertEqual(night.decided.first?.precedentIDs, [])
+    }
 }

@@ -172,12 +172,21 @@ package enum WatchmanJournalCopy {
         text.split(whereSeparator: \.isNewline).first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
     }
 
+    /// One formatter per pattern and zone, made once.
+    nonisolated(unsafe) private static var formatters: [String: DateFormatter] = [:]
+    private static let formattersLock = NSLock()
+
     private static func format(_ date: Date, _ pattern: String, _ calendar: Calendar) -> String {
+        formattersLock.lock()
+        defer { formattersLock.unlock() }
+        let key = "\(pattern)|\(calendar.timeZone.identifier)"
+        if let formatter = formatters[key] { return formatter.string(from: date) }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.calendar = calendar
         formatter.timeZone = calendar.timeZone
         formatter.dateFormat = pattern
+        formatters[key] = formatter
         return formatter.string(from: date)
     }
 }

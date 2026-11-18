@@ -97,7 +97,7 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
         choice = row["choice"]
         rationale = row["rationale"]
         let precedents: String = row["precedent_ids"] ?? "[]"
-        precedentIDs = (try? JSONDecoder().decode([Int64].self, from: Data(precedents.utf8))) ?? []
+        precedentIDs = Self.decodePrecedents(precedents)
         confidence = row["confidence"]
         category = row["category"]
         unsure = (row["unsure"] as Int64? ?? 1) != 0
@@ -112,6 +112,23 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
         decidedAt = AutomationDates.parse(row["decided_at"])
         feedback = row["feedback"]
         checkDoneAt = AutomationDates.parse(row["check_done_at"])
+    }
+
+    /// Malformed `precedent_ids` JSON is logged once per launch (never its
+    /// text) and reads as no precedents.
+    nonisolated(unsafe) private static var loggedBadPrecedents = false
+    private static let logLock = NSLock()
+
+    private static func decodePrecedents(_ text: String) -> [Int64] {
+        if text.isEmpty { return [] }
+        if let ids = try? JSONDecoder().decode([Int64].self, from: Data(text.utf8)) { return ids }
+        logLock.lock()
+        defer { logLock.unlock() }
+        if !loggedBadPrecedents {
+            loggedBadPrecedents = true
+            NSLog("WatchmanItem: a precedent_ids column is not a JSON id list; its precedents are not shown")
+        }
+        return []
     }
 
     /// Parked or handed back: the owner has to act.
@@ -139,6 +156,8 @@ package struct WatchmanNight: Identifiable, Equatable, Sendable {
     package var waiting: [WatchmanItem]
     /// Checks Watchman passed on that nobody has run.
     package var checks: [WatchmanItem]
+    /// Items the owner answered before the twin (`owner_first`): not decisions.
+    package var ownerFirst: [WatchmanItem]
     /// The other finished items: the twin's decisions.
     package var decided: [WatchmanItem]
     /// Items still queued or being decided.
@@ -154,6 +173,7 @@ package struct WatchmanNight: Identifiable, Equatable, Sendable {
         date: Date,
         waiting: [WatchmanItem] = [],
         checks: [WatchmanItem] = [],
+        ownerFirst: [WatchmanItem] = [],
         decided: [WatchmanItem] = [],
         pending: [WatchmanItem] = [],
         gaps: [ClosedRange<Date>] = [],
@@ -162,6 +182,7 @@ package struct WatchmanNight: Identifiable, Equatable, Sendable {
         self.date = date
         self.waiting = waiting
         self.checks = checks
+        self.ownerFirst = ownerFirst
         self.decided = decided
         self.pending = pending
         self.gaps = gaps
@@ -170,7 +191,7 @@ package struct WatchmanNight: Identifiable, Equatable, Sendable {
 
     /// Every item of the night, in creation order.
     package var items: [WatchmanItem] {
-        (waiting + checks + decided + pending).sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
+        (waiting + checks + ownerFirst + decided + pending).sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
     }
 
     /// The night with only `workbench`'s items (nil = all); the gaps and
@@ -181,6 +202,7 @@ package struct WatchmanNight: Identifiable, Equatable, Sendable {
         var night = self
         night.waiting = keep(waiting)
         night.checks = keep(checks)
+        night.ownerFirst = keep(ownerFirst)
         night.decided = keep(decided)
         night.pending = keep(pending)
         night.costUSD = night.items.reduce(0) { $0 + $1.costUSD }
@@ -189,16 +211,23 @@ package struct WatchmanNight: Identifiable, Equatable, Sendable {
 
     /// The start of the night `date` falls in: 12:00 of its day, or of the
     /// day before when it is earlier than noon.
+    /// Built from calendar components, so a day with a DST change still
+    /// starts and ends its night at 12:00 local.
     package static func start(of date: Date, calendar: Calendar) -> Date {
-        let day = calendar.startOfDay(for: date)
-        let noon = calendar.date(byAdding: .hour, value: 12, to: day) ?? day
+        let noon = noon(of: date, calendar: calendar)
         guard date < noon else { return noon }
-        return calendar.date(byAdding: .day, value: -1, to: noon) ?? noon
+        let dayBefore = calendar.date(byAdding: .day, value: -1, to: date) ?? date
+        return Self.noon(of: dayBefore, calendar: calendar)
     }
 
-    /// The end of the night that starts at `start`.
+    /// The end of the night that starts at `start`: the next night's start.
     package static func end(of start: Date, calendar: Calendar) -> Date {
-        calendar.date(byAdding: .day, value: 1, to: start) ?? start.addingTimeInterval(86_400)
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: start) ?? start.addingTimeInterval(86_400)
+        return noon(of: nextDay, calendar: calendar)
+    }
+
+    private static func noon(of date: Date, calendar: Calendar) -> Date {
+        calendar.date(bySettingHour: 12, minute: 0, second: 0, of: date) ?? date
     }
 }
 

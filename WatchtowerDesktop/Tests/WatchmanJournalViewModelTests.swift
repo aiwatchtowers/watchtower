@@ -139,4 +139,76 @@ final class WatchmanJournalViewModelTests: XCTestCase {
         XCTAssertEqual(vm.scopeTitle, "acme-web")
         XCTAssertEqual(vm.page?.decided.map(\.question), ["Other workbench"])
     }
+
+    /// The busy line shows while anything is deciding, whatever night is open.
+    func testBusyLineOnAnOlderNight() async {
+        let deciding = item(9, question: "Rename the Hold button?", state: "deciding")
+        let replies = Replies([.success(.init(nights: [night(decided: [item(1)])], deciding: [deciding]))])
+        let vm = model(replies, now: "2026-11-18T09:00:00Z")
+        await vm.load()
+        XCTAssertEqual(vm.page?.title, "Night of 16 Nov")
+        XCTAssertEqual(vm.page?.busyLine, "Deciding: Rename the Hold button?")
+    }
+
+    /// Owner-first items are lines under Decided, never counted.
+    func testOwnerFirstLines() async throws {
+        var owner = item(5, question: "Use a sheet?")
+        owner.outcome = "owner_first"
+        let night = WatchmanNight(date: date("2026-11-16T12:00:00Z"), ownerFirst: [owner], decided: [item(1)])
+        let replies = Replies([.success(.init(nights: [night], deciding: []))])
+        let vm = model(replies)
+        await vm.load()
+        let page = try XCTUnwrap(vm.page)
+        XCTAssertEqual(page.decidedCount, 1)
+        XCTAssertEqual(page.ownerFirst.map(\.title), ["Use a sheet?"])
+        XCTAssertEqual(page.ownerFirst.first?.note, "the owner answered first")
+    }
+
+    /// While on screen the journal rereads on every tick (the daemon writes
+    /// from another process); once the pane's task ends, it stops.
+    func testWatchRereadsOnTickUntilCancelled() async {
+        let ticker = ManualTick()
+        let snapshot = WatchmanJournalViewModel.Snapshot(nights: [night(decided: [item(1)])], deciding: [])
+        let reads = Counter()
+        let now = date("2026-11-17T09:00:00Z")
+        let tick: @Sendable (Duration) async -> Void = { _ in await ticker.wait() }
+        let read: @Sendable () async throws -> WatchmanJournalViewModel.Snapshot = { await reads.bump(); return snapshot }
+        let vm = WatchmanJournalViewModel(read: read, now: { now }, calendar: calendar, tick: tick)
+        let task = Task { await vm.watch() }
+        await until { ticker.waiting == 1 }
+        XCTAssertEqual(reads.value, 1)
+        ticker.fire()
+        await until { reads.value == 2 && ticker.waiting == 1 }
+        ticker.fire()
+        await until { reads.value == 3 && ticker.waiting == 1 }
+        task.cancel()
+        ticker.fire()
+        await task.value
+        XCTAssertEqual(reads.value, 3, "no read after the pane left")
+    }
+
+    /// Yields until `done` holds (no wall-clock wait).
+    private func until(_ done: () -> Bool) async {
+        for _ in 0..<10_000 where !done() { await Task.yield() }
+        XCTAssertTrue(done())
+    }
+}
+
+@MainActor
+private final class Counter {
+    private(set) var value = 0
+    func bump() { value += 1 }
+}
+
+/// A tick the test fires by hand.
+@MainActor
+private final class ManualTick {
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    var waiting: Int { waiters.count }
+    func wait() async { await withCheckedContinuation { waiters.append($0) } }
+    func fire() {
+        let all = waiters
+        waiters = []
+        all.forEach { $0.resume() }
+    }
 }
