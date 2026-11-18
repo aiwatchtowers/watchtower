@@ -20,6 +20,7 @@ import (
 	"watchtower/internal/devpack"
 	"watchtower/internal/hub/actions/handlers"
 	"watchtower/internal/sessionstart"
+	"watchtower/internal/workbenchfolders"
 )
 
 var workbenchSessionCmd = &cobra.Command{
@@ -29,7 +30,8 @@ var workbenchSessionCmd = &cobra.Command{
 		"session row (state starting) and prints it; a detached `session finish` then places it — the\n" +
 		"workbench folder, or its own git worktree when a live agent already works there (or as --place\n" +
 		"asks) — and launches it in the session host. The row shows the result: running in the host, or\n" +
-		"a failure with its reason. stop is the host's Stop request (the exit carries requested: no\n" +
+		"a failure with its reason. --folder starts it in another folder of the workbench (id, name or path;\n" +
+		"default the home folder) and --parent records the session it is a sub-session of. stop is the host's Stop request (the exit carries requested: no\n" +
 		"worktree cleanup); stopped: true means the session is not running any more (also when it was\n" +
 		"not). Inside an agent's terminal session only that session's workbench may be started or stopped.",
 }
@@ -46,6 +48,11 @@ var (
 	sessionFlagTitle         string
 	sessionFlagAutomationRun int64
 	sessionFlagBriefStdin    bool
+	// The bench folder a start is for (id, name or path; "" = the home
+	// folder) and the session starting it as a sub-session (spec 2026-11-18
+	// §6.4–6.5).
+	sessionFlagFolder string
+	sessionFlagParent int64
 )
 
 // maxBriefBytes bounds a brief read from stdin.
@@ -131,6 +138,8 @@ func init() {
 	start.Flags().StringVar(&sessionFlagPlace, "place", "auto", "folder, worktree or auto")
 	start.Flags().StringVar(&sessionFlagTitle, "title", "", "the session's title (default: the target's text, else New session · HH:MM)")
 	start.Flags().Int64Var(&sessionFlagAutomationRun, "automation-run", 0, "the automation run whose session() step starts it")
+	start.Flags().StringVar(&sessionFlagFolder, "folder", "", "the workbench folder to start in: id, name or path (default: the home folder)")
+	start.Flags().Int64Var(&sessionFlagParent, "parent", 0, "the session this one is a sub-session of (same workbench)")
 	finish := &cobra.Command{Use: "finish", Short: "Place and launch a row start wrote (run by start, detached)",
 		Hidden: true, Args: cobra.NoArgs, RunE: runWorkbenchSessionFinish}
 	finish.Flags().Int64Var(&sessionFlagSession, "session", 0, "terminal session id")
@@ -149,11 +158,23 @@ func init() {
 	workbenchCmd.AddCommand(workbenchSessionCmd)
 }
 
+// sessionStartOutput is start's answer. FolderID and Folder are the bench
+// folder (its stored name) the session started for; Place is the placement
+// asked for (auto, folder or worktree — the outcome is the row's once the
+// detached finish ran); Worktree the worktree's path once the row is placed
+// in one, else "". A refusal is OK false with its code (spec D42).
 type sessionStartOutput struct {
+	OK             bool   `json:"ok"`
 	SessionID      int64  `json:"session_id"`
 	State          string `json:"state"`
 	FolderPath     string `json:"folder_path"`
 	WorktreeBranch string `json:"worktree_branch"`
+	FolderID       int64  `json:"folder_id"`
+	Folder         string `json:"folder"`
+	Place          string `json:"place"`
+	Worktree       string `json:"worktree"`
+	ErrorCode      string `json:"error_code,omitempty"`
+	Error          string `json:"error,omitempty"`
 }
 
 type sessionStopOutput struct {
@@ -183,6 +204,14 @@ func runWorkbenchSessionStart(cmd *cobra.Command, _ []string) error {
 	if sessionFlagTarget > 0 {
 		r.Target = &sessionFlagTarget
 	}
+	r.ParentSessionID = sessionFlagParent
+	if sessionFlagFolder != "" {
+		f, err := workbenchfolders.Resolve(ctx, database, sessionFlagWorkbench, sessionFlagFolder)
+		if err != nil {
+			return sessionStartRefused(cmd, err)
+		}
+		r.FolderID = f.ID
+	}
 	d := sessionStartDeps(cfg, database)
 	res, err := sessionstart.Begin(ctx, d, r)
 	var notFound *handlers.AgentNotFoundError
@@ -196,7 +225,7 @@ func runWorkbenchSessionStart(cmd *cobra.Command, _ []string) error {
 		return &exitCodeError{code: sessionstart.AgentNotFoundExit, err: err}
 	}
 	if err != nil {
-		return err
+		return sessionStartRefused(cmd, err)
 	}
 	if res.State == sessionstart.StateStarting {
 		if err := workbenchSessionFinishSpawn(res.SessionID, sessionFlagPlace, brief); err != nil {
@@ -204,18 +233,48 @@ func runWorkbenchSessionStart(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 	}
-	out := sessionStartOutput{SessionID: res.SessionID, State: res.State}
+	out := sessionStartOutput{OK: true, SessionID: res.SessionID, State: res.State, Place: sessionFlagPlace}
+	if out.Place == "" {
+		out.Place = string(sessionstart.ChoiceAuto)
+	}
 	var branch sql.NullString
-	if err := database.QueryRowContext(ctx, `SELECT folder_path, worktree_branch FROM terminal_sessions WHERE id = ?`,
-		res.SessionID).Scan(&out.FolderPath, &branch); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	var folderID sql.NullInt64
+	if err := database.QueryRowContext(ctx, `SELECT folder_path, worktree_branch, workbench_folder_id FROM terminal_sessions WHERE id = ?`,
+		res.SessionID).Scan(&out.FolderPath, &branch, &folderID); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("reading session %d: %w", res.SessionID, err)
 	}
 	out.WorktreeBranch = branch.String
+	if branch.String != "" {
+		out.Worktree = out.FolderPath
+	}
+	if folderID.Valid {
+		f, err := database.WorkbenchFolderByID(ctx, folderID.Int64)
+		if err != nil {
+			return fmt.Errorf("reading session %d's folder: %w", res.SessionID, err)
+		}
+		out.FolderID, out.Folder = f.ID, f.Name
+	}
 	if sessionFlagJSON {
 		return writeJSON(cmd.OutOrStdout(), out)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "session: %d\nstate: %s\nfolder: %s\n", out.SessionID, out.State, out.FolderPath)
 	return nil
+}
+
+// sessionStartRefused answers a start's error: a folder or parent refusal
+// ("<code>: <sentence>", spec D42) with --json as an ok:false result with
+// its code, exit 1 either way; any other error as is.
+func sessionStartRefused(cmd *cobra.Command, err error) error {
+	var r *workbenchfolders.Refusal
+	if !errors.As(err, &r) {
+		return err
+	}
+	if sessionFlagJSON {
+		if werr := writeJSON(cmd.OutOrStdout(), sessionStartOutput{ErrorCode: r.Code, Error: r.Error()}); werr != nil {
+			return werr
+		}
+	}
+	return &exitCodeError{code: 1, err: r}
 }
 
 // runWorkbenchSessionFinish is the detached rest of a start: placement and

@@ -1053,7 +1053,21 @@ type NewTerminalSession struct {
 // capability (sessionagent.Caps.AppSessionID), never this layer by name
 // (LLMTRANSPORT-01).
 func (db *DB) CreateTerminalSession(ctx context.Context, n NewTerminalSession) (int64, error) {
-	res, err := db.ExecContext(ctx, `INSERT INTO terminal_sessions
+	return createTerminalSession(ctx, db, n)
+}
+
+// CreateTerminalSessionTx is CreateTerminalSession inside the caller's
+// transaction (a start re-checks its folder and parent in the same one).
+func CreateTerminalSessionTx(ctx context.Context, tx *sql.Tx, n NewTerminalSession) (int64, error) {
+	return createTerminalSession(ctx, tx, n)
+}
+
+type contextExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func createTerminalSession(ctx context.Context, q contextExecer, n NewTerminalSession) (int64, error) {
+	res, err := q.ExecContext(ctx, `INSERT INTO terminal_sessions
 		(project_id, kind, title, target_id, folder_path, claude_session_id,
 		 worktree_branch, worktree_base, automation_run_id, workbench_folder_id, parent_session_id)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,

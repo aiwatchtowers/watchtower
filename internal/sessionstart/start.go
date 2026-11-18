@@ -25,6 +25,7 @@ import (
 	"watchtower/internal/providers"
 	"watchtower/internal/sessionagent"
 	"watchtower/internal/sessionhost"
+	"watchtower/internal/workbenchfolders"
 	"watchtower/internal/workbenchgit"
 )
 
@@ -138,6 +139,18 @@ func (d Deps) lease(ctx context.Context) (*sessionhost.Client, func(error), erro
 	return c, func(error) { _ = c.Close() }, nil
 }
 
+// probeHost reaches the host (started first when none answers, as a lease
+// does) and lets go: a start that must not leave a row behind when the host
+// is down asks before it writes one.
+func (d Deps) probeHost(ctx context.Context) error {
+	_, done, err := d.lease(ctx)
+	if err != nil {
+		return err
+	}
+	done(nil)
+	return nil
+}
+
 // dialHost makes sure a host answers on socket (starting `exe session-host`
 // when none does) and connects to it.
 func dialHost(ctx context.Context, socket, exe string) (*sessionhost.Client, error) {
@@ -158,23 +171,73 @@ func dialHost(ctx context.Context, socket, exe string) (*sessionhost.Client, err
 	return c, nil
 }
 
-// workbenchRow is what a start reads of its workbench.
+// Start refusals of a folder or a parent (spec 2026-11-18 §6.5, §7), as
+// *workbenchfolders.Refusal ("<code>: <sentence>", D42) beside its own
+// not_found and folder_removed.
+const (
+	CodeNotInstalled     = "not_installed"
+	CodeFolderMissing    = "folder_missing"
+	CodeNotSameWorkbench = "not_same_workbench"
+)
+
+// workbenchRow is what a start reads of its workbench and of the bench
+// folder the session starts for: folder is that folder's path (the home
+// folder's is projects.folder_path), home whether it is the home folder.
 type workbenchRow struct {
 	id     int64
-	folder string
 	setup  string
+	folder string
+	bench  db.WorkbenchFolder
+	home   bool
 }
 
-func loadWorkbench(ctx context.Context, q *db.DB, id int64) (workbenchRow, error) {
+// loadWorkbench reads workbench id and its folder folderID (0 = the home
+// folder): not_found when the folder is not one of the bench's,
+// folder_removed when it left the bench.
+func loadWorkbench(ctx context.Context, q *db.DB, id, folderID int64) (workbenchRow, error) {
 	w := workbenchRow{id: id}
-	err := q.QueryRowContext(ctx, `SELECT folder_path, worktree_setup FROM projects WHERE id = ?`, id).Scan(&w.folder, &w.setup)
+	var homePath string
+	err := q.QueryRowContext(ctx, `SELECT folder_path, worktree_setup FROM projects WHERE id = ?`, id).Scan(&homePath, &w.setup)
 	if errors.Is(err, sql.ErrNoRows) {
 		return w, fmt.Errorf("workbench %d: %w", id, db.ErrWorkbenchNotFound)
 	}
 	if err != nil {
 		return w, fmt.Errorf("reading workbench %d: %w", id, err)
 	}
+	ref := ""
+	if folderID != 0 {
+		ref = strconv.FormatInt(folderID, 10)
+	}
+	if w.bench, err = workbenchfolders.Resolve(ctx, q, id, ref); err != nil {
+		return w, err //nolint:wrapcheck // a Refusal or db's message naming the workbench
+	}
+	w.folder, w.home = w.bench.FolderPath, strings.EqualFold(w.bench.FolderPath, homePath)
+	if w.home {
+		w.folder = homePath // the row's folder_path exactly as before
+	}
 	return w, nil
+}
+
+// checkFolder refuses a start in a folder that is not on disk
+// (folder_missing) or, other than the home folder, has no Watchtower install
+// for the workbench (not_installed): the home folder starts as it always did.
+func (w workbenchRow) checkFolder() error {
+	if info, err := os.Stat(w.folder); err != nil || !info.IsDir() {
+		return &workbenchfolders.Refusal{Code: CodeFolderMissing, Folder: &w.bench,
+			Detail: fmt.Sprintf("%s is not at %s any more. Locate it or remove it from the bench.", w.bench.Name, w.folder)}
+	}
+	if w.home {
+		return nil
+	}
+	ok, err := devpack.HasCoreStateHooks(w.folder, w.id)
+	if err != nil {
+		return fmt.Errorf("reading Watchtower's install in %s: %w", w.bench.Name, err)
+	}
+	if !ok {
+		return &workbenchfolders.Refusal{Code: CodeNotInstalled, Folder: &w.bench,
+			Detail: "Install Watchtower in " + w.bench.Name + " first"}
+	}
+	return nil
 }
 
 // targetRow is a start's target: its text and whether it is a group (it has
@@ -217,8 +280,8 @@ var inFlight = struct {
 }{targets: map[int64]bool{}, rows: map[int64]startingRow{}, turns: map[int64]*sync.Mutex{}}
 
 type startingRow struct {
-	workbench      int64
-	folder, branch string
+	workbench, benchFolder int64
+	folder, branch         string
 }
 
 func beginTarget(id int64) bool {
@@ -247,15 +310,15 @@ func setStarting(id int64, r *startingRow) {
 	inFlight.rows[id] = *r
 }
 
-// startingBefore lists the workbench's rows other starts of this process are
-// still placing or launching, with an id below id: a start begun later never
-// pushes an earlier one into a worktree.
-func startingBefore(wb, id int64) map[int64]startingRow {
+// startingBefore lists the rows of the workbench folder benchFolder other
+// starts of this process are still placing or launching, with an id below
+// id: a start begun later never pushes an earlier one into a worktree.
+func startingBefore(wb, benchFolder, id int64) map[int64]startingRow {
 	inFlight.Lock()
 	defer inFlight.Unlock()
 	out := map[int64]startingRow{}
 	for rid, r := range inFlight.rows {
-		if r.workbench == wb && rid < id {
+		if r.workbench == wb && r.benchFolder == benchFolder && rid < id {
 			out[rid] = r
 		}
 	}
@@ -280,9 +343,11 @@ func placementTurn(wb int64, fn func()) {
 // Start starts an agent session on a workbench, as the Desktop's New Session
 // and Work on It do (spec 2026-10-31 §11):
 //
-//  1. the row first, in **Starting…**, in the workbench folder;
-//  2. its place (Place, Prepare): its own worktree when a live agent already
-//     works in the folder (or as r.Place asks), with the .worktreeinclude
+//  1. the row first, in **Starting…**, in its bench folder (r.FolderID, 0 =
+//     the home folder) with r.ParentSessionID;
+//  2. its place (Place, Prepare): its own worktree of that folder's
+//     repository when a live agent already works in that folder (another
+//     folder's agents never count) or as r.Place asks, with the .worktreeinclude
 //     paths, the workbench's setup command before the agent's first start,
 //     and the integration (`claude mcp add`) installed in every new worktree;
 //  3. the launch argv (Launch, with `launch-args` for Codex);
@@ -305,7 +370,14 @@ func placementTurn(wb int64, fn func()) {
 // failure; `workbench cleanup` lists it). Refusals before any row:
 // handlers.ErrStartNotOnBoard, handlers.ErrStartInProgress,
 // *handlers.AgentNotFoundError (Codex without a codex binary), a policy
-// refusal of the agent, a bad agent or place.
+// refusal of the agent, a bad agent or place, and *workbenchfolders.Refusal:
+// a folder not on the bench (not_found), removed (folder_removed, also when
+// the remove commits just before the row), not on disk (folder_missing) or,
+// other than the home folder, without Watchtower's install (not_installed);
+// a parent that is gone (not_found) or another workbench's
+// (not_same_workbench). A sub-session's start (r.ParentSessionID) reaches the
+// host before its row: with the host down it returns the error and leaves
+// no row.
 func Start(ctx context.Context, d Deps, r handlers.StartRequest) (handlers.StartResult, error) {
 	st, done, res, err := begin(ctx, d, r)
 	if st == nil {
@@ -318,7 +390,7 @@ func Start(ctx context.Context, d Deps, r handlers.StartRequest) (handlers.Start
 	return handlers.StartResult{SessionID: st.id, State: StateRunning}, nil
 }
 
-// Begin writes a new session's row (Starting…, in the workbench folder) and
+// Begin writes a new session's row (Starting…, in its bench folder) and
 // answers {id, starting} at once, with Start's refusals; Finish places and
 // launches it. An OpenExisting start that finds the target's session is
 // answered as Start answers it.
@@ -332,7 +404,8 @@ func Begin(ctx context.Context, d Deps, r handlers.StartRequest) (handlers.Start
 }
 
 // Finish places and launches a row Begin wrote, rebuilt from the row:
-// its agent, target and Claude session id; brief (else the target's
+// its agent, target, bench folder (NULL = the home folder; one that left the
+// bench fails the row with its refusal) and Claude session id; brief (else the target's
 // work-on prompt) and planFirst make the first prompt. A row the host
 // already runs is refused. Failures are recorded on the row as Start's are.
 func Finish(ctx context.Context, d Deps, sessionID int64, place, brief string, planFirst bool) error {
@@ -340,10 +413,11 @@ func Finish(ctx context.Context, d Deps, sessionID int64, place, brief string, p
 	if err != nil {
 		return err
 	}
-	var wbID, targetID, runID sql.NullInt64
+	var wbID, targetID, runID, folderID sql.NullInt64
 	var kind, claudeID string
-	err = d.DB.QueryRowContext(ctx, `SELECT project_id, kind, target_id, COALESCE(claude_session_id, ''), automation_run_id
-		FROM terminal_sessions WHERE id = ? AND `+db.NotDeletingSQL, sessionID).Scan(&wbID, &kind, &targetID, &claudeID, &runID)
+	err = d.DB.QueryRowContext(ctx, `SELECT project_id, kind, target_id, COALESCE(claude_session_id, ''), automation_run_id,
+		workbench_folder_id FROM terminal_sessions WHERE id = ? AND `+db.NotDeletingSQL, sessionID).
+		Scan(&wbID, &kind, &targetID, &claudeID, &runID, &folderID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("terminal session %d: %w", sessionID, db.ErrTerminalSessionNotFound)
 	}
@@ -355,7 +429,11 @@ func Finish(ctx context.Context, d Deps, sessionID int64, place, brief string, p
 		return fmt.Errorf("terminal session %d is not a workbench agent session", sessionID)
 	}
 	st := &newStart{d: d, agent: agent, choice: choice, claudeID: claudeID, id: sessionID, automationRun: runID.Int64}
-	if st.wb, err = loadWorkbench(ctx, d.DB, wbID.Int64); err != nil {
+	if st.wb, err = loadWorkbench(ctx, d.DB, wbID.Int64, folderID.Int64); err != nil {
+		var refused *workbenchfolders.Refusal
+		if errors.As(err, &refused) {
+			st.markFailed(ctx, refused.Error())
+		}
 		return err
 	}
 	if targetID.Valid {
@@ -368,7 +446,7 @@ func Finish(ctx context.Context, d Deps, sessionID int64, place, brief string, p
 		return err
 	}
 	st.prompt = st.firstPrompt(ctx, brief, planFirst)
-	setStarting(sessionID, &startingRow{workbench: st.wb.id, folder: st.wb.folder})
+	setStarting(sessionID, &startingRow{workbench: st.wb.id, benchFolder: st.wb.bench.ID, folder: st.wb.folder})
 	defer setStarting(sessionID, nil)
 	return st.finish(ctx)
 }
@@ -395,7 +473,7 @@ func begin(ctx context.Context, d Deps, r handlers.StartRequest) (st *newStart, 
 	if err != nil {
 		return nil, nil, res, err
 	}
-	wb, err := loadWorkbench(ctx, d.DB, r.Workbench)
+	wb, err := loadWorkbench(ctx, d.DB, r.Workbench, r.FolderID)
 	if err != nil {
 		return nil, nil, res, err
 	}
@@ -431,8 +509,20 @@ func begin(ctx context.Context, d Deps, r handlers.StartRequest) (st *newStart, 
 			return nil, nil, res, err
 		}
 	}
+	if err := wb.checkFolder(); err != nil {
+		release()
+		return nil, nil, res, err
+	}
+	if r.ParentSessionID != 0 {
+		// A sub-session's start that cannot reach the host leaves no row
+		// behind: the parent's tool call carries the error (spec §7).
+		if err := d.probeHost(ctx); err != nil {
+			release()
+			return nil, nil, res, err
+		}
+	}
 	st = &newStart{d: d, wb: wb, target: target, agent: agent, choice: choice, title: strings.TrimSpace(r.Title),
-		automationRun: r.AutomationRunID}
+		automationRun: r.AutomationRunID, parent: r.ParentSessionID}
 	if st.codex, err = codexArgs(ctx, d, agent, wb.id); err != nil {
 		release()
 		return nil, nil, res, err
@@ -500,9 +590,10 @@ type newStart struct {
 	prompt   string
 	claudeID string
 	id       int64
-	// title "" = the default (Begin only); automationRun 0 = none.
+	// title "" = the default (Begin only); automationRun and parent 0 = none.
 	title         string
 	automationRun int64
+	parent        int64
 }
 
 // firstPrompt is the brief, else the work-on prompt (the group wording for a
@@ -519,10 +610,17 @@ func (s *newStart) firstPrompt(ctx context.Context, brief string, planFirst bool
 	return p
 }
 
-// insert writes the row in the workbench folder (Starting…).
+// beforeInsert runs between a start's folder resolution and its row's
+// transaction (a test seam for the remove-vs-start race).
+var beforeInsert func()
+
+// insert writes the row in its bench folder (Starting…), in one short
+// BEGIN IMMEDIATE transaction that re-reads the folder row first (a remove
+// that committed since the start resolved it is folder_removed, spec §7)
+// and the parent (gone: not_found; another workbench's: not_same_workbench).
 func (s *newStart) insert(ctx context.Context) error {
 	n := db.NewTerminalSession{WorkbenchID: s.wb.id, Kind: string(s.agent), FolderPath: s.wb.folder,
-		Title: ProvisionalTitle(s.d.now())}
+		Title: ProvisionalTitle(s.d.now()), WorkbenchFolderID: s.wb.bench.ID, ParentSessionID: s.parent}
 	if s.target != nil {
 		n.TargetID = s.target.id
 		n.Title = strings.TrimSpace(s.target.text)
@@ -538,12 +636,61 @@ func (s *newStart) insert(ctx context.Context) error {
 		s.claudeID = NewSessionID()
 		n.ClaudeSessionID = s.claudeID
 	}
-	id, err := s.d.DB.CreateTerminalSession(ctx, n)
+	if beforeInsert != nil {
+		beforeInsert()
+	}
+	tx, err := s.d.DB.BeginTx(ctx, nil) // BEGIN IMMEDIATE (db.Open's _txlock)
+	if err != nil {
+		return fmt.Errorf("beginning the start of a session: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := s.recheck(ctx, tx); err != nil {
+		return err
+	}
+	id, err := db.CreateTerminalSessionTx(ctx, tx, n)
 	if err != nil {
 		return err //nolint:wrapcheck // CreateTerminalSession wraps
 	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing the start of a session: %w", err)
+	}
 	s.id = id
-	setStarting(id, &startingRow{workbench: s.wb.id, folder: s.wb.folder})
+	setStarting(id, &startingRow{workbench: s.wb.id, benchFolder: s.wb.bench.ID, folder: s.wb.folder})
+	return nil
+}
+
+// recheck is insert's in-transaction check of the folder and the parent.
+func (s *newStart) recheck(ctx context.Context, tx *sql.Tx) error {
+	var removed sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT removed_at FROM workbench_folders WHERE id = ? AND workbench_id = ?`,
+		s.wb.bench.ID, s.wb.id).Scan(&removed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return &workbenchfolders.Refusal{Code: workbenchfolders.CodeNotFound,
+			Detail: fmt.Sprintf("%s is not a folder of workbench %d.", s.wb.bench.Name, s.wb.id)}
+	}
+	if err != nil {
+		return fmt.Errorf("reading workbench folder %d: %w", s.wb.bench.ID, err)
+	}
+	if removed.Valid {
+		return &workbenchfolders.Refusal{Code: workbenchfolders.CodeFolderRemoved, Folder: &s.wb.bench,
+			Detail: s.wb.bench.Name + " was removed from the bench."}
+	}
+	if s.parent == 0 {
+		return nil
+	}
+	var project sql.NullInt64
+	err = tx.QueryRowContext(ctx, `SELECT project_id FROM terminal_sessions WHERE id = ? AND `+db.NotDeletingSQL,
+		s.parent).Scan(&project)
+	if errors.Is(err, sql.ErrNoRows) {
+		return &workbenchfolders.Refusal{Code: workbenchfolders.CodeNotFound, Detail: fmt.Sprintf("there is no session #%d.", s.parent)}
+	}
+	if err != nil {
+		return fmt.Errorf("reading session %d: %w", s.parent, err)
+	}
+	if !project.Valid || project.Int64 != s.wb.id {
+		return &workbenchfolders.Refusal{Code: CodeNotSameWorkbench,
+			Detail: fmt.Sprintf("session #%d is not a session of workbench %d.", s.parent, s.wb.id)}
+	}
 	return nil
 }
 
@@ -738,7 +885,7 @@ func (s *newStart) place(ctx context.Context, c *sessionhost.Client) (dir string
 			return
 		}
 		placed = true
-		setStarting(s.id, &startingRow{workbench: s.wb.id, folder: prep.Dir, branch: prep.Worktree.Branch})
+		setStarting(s.id, &startingRow{workbench: s.wb.id, benchFolder: s.wb.bench.ID, folder: prep.Dir, branch: prep.Worktree.Branch})
 	})
 	return dir, placed, notice, err
 }
@@ -750,10 +897,11 @@ type agentRow struct {
 	cwdAt               string
 }
 
-// occupied reports whether a live agent already works in the workbench
-// folder (SessionStartPlacement.occupies over the live agent rows and the
-// earlier starts still launching) and how many such rows work on the
-// workbench at all (the worktree's session number is one more). A live run
+// occupied reports whether a live agent already works in the start's bench
+// folder (SessionStartPlacement.occupies over the live agent rows of that
+// folder and its earlier starts still launching; another folder's agents
+// never count, spec 2026-11-18 §6.4) and how many such rows work in it (the
+// worktree's session number is one more). A live run
 // of a kind this version does not know (a newer version's, adopted from the
 // host) may be an agent and counts too (A7b, TerminalCenter.liveAgentIDs'
 // mayRunAgent).
@@ -769,14 +917,15 @@ func (s *newStart) occupied(ctx context.Context, c *sessionhost.Client) (occupie
 			live[info.Row] = info
 		}
 	}
+	args := append(workbenchfolders.SessionRowsArgs(s.wb.bench, s.wb.home), s.id)
 	rows, err := s.d.DB.QueryContext(ctx, `SELECT id, folder_path, COALESCE(worktree_branch, ''),
 		COALESCE(agent_cwd, ''), COALESCE(agent_cwd_at, '')
-		FROM terminal_sessions WHERE project_id = ? AND kind <> 'shell' AND id <> ? AND `+db.NotDeletingSQL, s.wb.id, s.id)
+		FROM terminal_sessions WHERE `+workbenchfolders.SessionRowsSQL+` AND id <> ? AND `+db.NotDeletingSQL, args...)
 	if err != nil {
 		return false, 0, fmt.Errorf("reading the workbench's sessions: %w", err)
 	}
 	defer rows.Close()
-	starting := startingBefore(s.wb.id, s.id)
+	starting := startingBefore(s.wb.id, s.wb.bench.ID, s.id)
 	for rows.Next() {
 		var r agentRow
 		if err := rows.Scan(&r.id, &r.folder, &r.branch, &r.cwd, &r.cwdAt); err != nil {
@@ -815,12 +964,12 @@ func trustedCwd(r agentRow, info sessionhost.SessionInfo) string {
 
 // occupies is SessionStartPlacement.occupies without git: a trusted cwd
 // outside every session worktree is the folder; with none, a row not placed
-// in a worktree whose folder is the workbench folder is.
-func occupies(branch, folder, cwd, workbenchFolder string) bool {
+// in a worktree whose folder is sessionFolder (the start's bench folder) is.
+func occupies(branch, folder, cwd, sessionFolder string) bool {
 	if cwd != "" {
 		return WorktreeTop(cwd) == ""
 	}
-	return branch == "" && filepath.Clean(folder) == filepath.Clean(workbenchFolder)
+	return branch == "" && filepath.Clean(folder) == filepath.Clean(sessionFolder)
 }
 
 // hostDownReason is the row's reason when no host answers: a Linux start
