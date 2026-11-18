@@ -14,12 +14,14 @@ enum SpecReviewStateShotFixtures {
                             folderPath: "/tmp/acme", createdAt: "2026-11-18T09:00:00Z",
                             lastActiveAt: "2026-11-18T09:00:00Z")
         }
+        let readyForReview = SessionSwitcherPresentation.State.live(
+            .readyToCheck, openAsks: 1, oldestAskID: 12, openQuestionAsks: 0, openReviewAsks: 1
+        )
         let states: [(Int64, String, SessionSwitcherPresentation.State, String?)] = [
             (1, "acme invoice export spec", .init(kind: .specReview, live: true, specReviewRound: 1), "#41 · 0/4"),
             (2, "acme login redirect plan", .init(kind: .specReview, live: false, specReviewRound: 3), nil),
             (3, "acme billing export", .live(.working), "#42 · 3/5"),
-            (4, "acme onboarding copy", .live(.readyToCheck, openAsks: 1, oldestAskID: 12,
-                                               openQuestionAsks: 0, openReviewAsks: 1), "#43 · 5/5"),
+            (4, "acme onboarding copy", readyForReview, "#43 · 5/5"),
             (5, "acme release notes", .live(.stopped), nil)
         ]
         let actions = SessionRowActions(open: { _ in }, rename: { _ in }, delete: { _ in })
