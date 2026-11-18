@@ -208,6 +208,11 @@ func TestProj18_SubfolderIntegrationLetsTheWorktreeGo(t *testing.T) {
 	writeFile(t, filepath.Join(sub, "build", "out.bin"), "bin\n")
 
 	wantItem(t, f.plan(Request{}), "worktree:"+root, ActionRemove, "")
+	// The subfolder comes from the worktree list, not the include probe:
+	// a failed probe leaves the install's files the install's.
+	f.git = failGitOn("rev-parse", "--absolute-git-dir")
+	wantItem(t, f.plan(Request{}), "worktree:"+root, ActionRemove, "")
+	f.git = nil
 
 	writeFile(t, filepath.Join(root, "src", "build", "notes.txt"), "mine\n")
 	it := wantItem(t, f.plan(Request{}), "worktree:"+root, ActionKeep, ReasonIgnoredFiles)
@@ -301,6 +306,54 @@ func TestProj18_WorktreeIncludeComparesWithTheSourceCheckout(t *testing.T) {
 
 	writeFile(t, filepath.Join(root, ".env"), "TOKEN=linked\n")
 	wantItem(t, f.plan(Request{}), "worktree:"+root, ActionRemove, "")
+}
+
+// The include source is located through the cleanup's own git runner: a
+// probe that fails lets no ignored file pass as a copy (the worktree stays,
+// ignored_files), and subfolder integration files are still the install's.
+func TestProj18_FailedIncludeProbeLetsNoCopyPass(t *testing.T) {
+	t.Parallel()
+	f, root := ignoredFixture(t)
+	f.commit(f.repo, ".worktreeinclude", ".env\n")
+	gitIn(t, f.repo, "push", "-q", "origin", "main")
+	gitIn(t, root, "merge", "-q", "--no-edit", "origin/main")
+	gitIn(t, root, "push", "-q", "origin", "feat/x")
+	writeFile(t, filepath.Join(f.repo, ".env"), "TOKEN=placeholder\n")
+	writeFile(t, filepath.Join(root, ".env"), "TOKEN=placeholder\n")
+	wantItem(t, f.plan(Request{}), "worktree:"+root, ActionRemove, "")
+
+	f.git = failGitOn("rev-parse", "--absolute-git-dir")
+	it := wantItem(t, f.plan(Request{}), "worktree:"+root, ActionKeep, ReasonIgnoredFiles)
+	if it.Detail != "ignored file: .env" {
+		t.Fatalf("detail = %q", it.Detail)
+	}
+}
+
+// stallGit answers every git call only when its context ends.
+type stallGit struct{ SystemGit }
+
+func (stallGit) RunGit(ctx context.Context, _, _ string, args ...string) ([]byte, int, error) {
+	<-ctx.Done()
+	return nil, -1, fmt.Errorf("git %s: %w", strings.Join(args, " "), ctx.Err())
+}
+
+// A probe that stalls past the judge's budget is a failed judgement
+// (check_failed), not "no source"; the expired deadline means no wait.
+func TestIgnoredJudge_StalledIncludeProbeIsOverTheBudget(t *testing.T) {
+	t.Parallel()
+	root, source := t.TempDir(), t.TempDir()
+	gitIn(t, source, "init", "-q") // a repository, so the probe reaches git and stalls there
+	writeFile(t, filepath.Join(root, ".env"), "A\n")
+	info, err := os.Lstat(filepath.Join(root, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin, _ := gitbin.Locate()
+	j := overBudget(context.Background(), root)
+	j.git, j.folder = gitCmd{run: stallGit{}, bin: bin}, source
+	if _, err := j.includedCopy(".env", info); err == nil || !strings.Contains(err.Error(), "budget") {
+		t.Fatalf("err = %v, want the budget", err)
+	}
 }
 
 // A symlink in an ignored folder is judged as an entry and never followed:

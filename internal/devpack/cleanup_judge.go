@@ -1,6 +1,7 @@
 package devpack
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -187,10 +188,14 @@ func exactHookEntry(h any, spec hookSpec, workbenchID int64) bool {
 			return false
 		}
 	}
-	if t, ok := m["timeout"]; !ok || fmt.Sprint(t) != strconv.Itoa(spec.timeoutSec) {
+	// readSettings decodes numbers as json.Number: a string "30" is not
+	// the install's timeout, nor "true" its async.
+	if t, ok := m["timeout"].(json.Number); !ok || t.String() != strconv.Itoa(spec.timeoutSec) {
 		return false
 	}
-	if a, has := m["async"]; spec.async != has || (has && a != true) {
+	if a, has := m["async"]; spec.async != has {
+		return false
+	} else if b, isBool := a.(bool); has && (!isBool || !b) {
 		return false
 	}
 	cmd, ok := m["command"].(string)

@@ -34,7 +34,9 @@ const topLevelBuild = "build"
 type ignoredJudge struct {
 	ctx         context.Context
 	root        string
-	source      string   // the checkout .worktreeinclude copies come from; "" = unknown
+	folder      string // the workbench folder, symlink-resolved
+	source      string // the checkout .worktreeinclude copies come from; "" = unknown
+	sourceRead  bool
 	bases       []string // the integration's folders: "" (the root) and the workbench folder's subfolder
 	workbenchID int64
 	git         gitCmd
@@ -79,9 +81,18 @@ func (b *builder) ignoredWork(ctx context.Context, root string, budget time.Dura
 func (b *builder) newIgnoredJudge(ctx context.Context, root string, budget time.Duration) *ignoredJudge {
 	j := &ignoredJudge{ctx: ctx, root: root, bases: []string{""}, workbenchID: b.req.WorkbenchID,
 		git: b.repo.git, skills: map[string]bool{}, deadline: time.Now().Add(budget), budget: budget}
-	j.source = b.repo.includeSource(ctx)
-	if j.source != "" {
-		if rel, err := filepath.Rel(j.source, b.repo.folder); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+	j.folder = b.repo.folder
+	// The integration's subfolder base comes from the worktree list (the
+	// checkout holding the workbench folder), independent of the include
+	// probe, so a failed probe never turns those files into work.
+	holder := ""
+	for _, w := range b.repo.worktrees {
+		if !w.Prunable && pathWithin(b.repo.folder, w.Root) && len(w.Root) > len(holder) {
+			holder = w.Root
+		}
+	}
+	if holder != "" {
+		if rel, err := filepath.Rel(holder, b.repo.folder); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
 			j.bases = append(j.bases, filepath.ToSlash(rel))
 		}
 	}
@@ -152,16 +163,37 @@ func (j *ignoredJudge) entry(rel string) (string, error) {
 }
 
 // includeSource is the checkout session worktrees of the workbench folder
-// get their .worktreeinclude copies from (workbenchgit.IncludeSource, the
-// same lookup worktree creation makes), symlink-resolved; "" when it cannot
-// be told, so no ignored file passes as a copy. Read once per evaluation.
-func (r *repoState) includeSource(ctx context.Context) string {
-	r.srcOnce.Do(func() {
-		if top, err := workbenchgit.IncludeSource(ctx, workbenchgit.Options{Folder: r.folder}); err == nil {
-			r.src = resolvePath(top)
-		}
+// get their .worktreeinclude copies from: workbenchgit.IncludeSource, the
+// same probe worktree creation makes, run through the cleanup's own git
+// runner (gitCmd: its binary, its per-call timeout) and within the judge's
+// budget; symlink-resolved. Read once per worktree, when a copy is first
+// in question. A probe that fails leaves it "" (no ignored file passes as
+// a copy); one that ran out of the budget is an error (check_failed).
+func (j *ignoredJudge) includeSource() (string, error) {
+	if j.sourceRead {
+		return j.source, nil
+	}
+	j.sourceRead = true
+	ctx, cancel := context.WithDeadline(j.ctx, j.deadline)
+	defer cancel()
+	g := j.git
+	top, err := workbenchgit.IncludeSource(ctx, workbenchgit.Options{
+		Folder: j.folder,
+		Locate: func() (string, bool) { return g.bin, g.bin != "" },
+		Run: func(ctx context.Context, dir string, _ []byte, _ string, args ...string) ([]byte, int, error) {
+			ctx, cancel := context.WithTimeout(ctx, gitTimeout)
+			defer cancel()
+			return g.run.RunGit(ctx, dir, g.bin, args...)
+		},
 	})
-	return r.src
+	if err != nil {
+		if budgetErr := j.check(); budgetErr != nil {
+			return "", fmt.Errorf("locating the %s source: %w", workbenchgit.IncludeFile, budgetErr)
+		}
+		return "", nil
+	}
+	j.source = resolvePath(top)
+	return j.source, nil
 }
 
 // errStopWalk ends a walk at the first unsaved file or failed judgement.
@@ -297,8 +329,9 @@ func (j *ignoredJudge) integration(rel string) (bool, error) {
 // even one equal to another checkout's, is work; so is every one when the
 // source cannot be told.
 func (j *ignoredJudge) includedCopy(rel string, info fs.FileInfo) (bool, error) {
-	if j.source == "" || j.source == j.root {
-		return false, nil
+	source, err := j.includeSource()
+	if err != nil || source == "" || source == j.root {
+		return false, err
 	}
 	covered, err := j.includeCovers(rel)
 	if err != nil || !covered {

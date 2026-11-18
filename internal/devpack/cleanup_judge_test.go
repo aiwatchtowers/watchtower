@@ -5,9 +5,12 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
+
+var timeoutAsString = regexp.MustCompile(`"timeout": (\d+)`)
 
 func installAllHooks(t *testing.T, dir, bin string, id int64) {
 	t.Helper()
@@ -35,6 +38,8 @@ func TestSettingsOnlyOurs(t *testing.T) {
 		"owner command after":  {edit(` --workbench 7"`, ` --workbench 7; ./mine.sh"`), false},
 		"changed matcher":      {edit(`"matcher": "`, `"matcher": "Bash|`), false},
 		"changed timeout":      {edit(`"timeout": `, `"timeout": 9`), false},
+		"timeout as a string":  {func(s string) string { return timeoutAsString.ReplaceAllString(s, `"timeout": "$1"`) }, false},
+		"async as a string":    {edit(`"async": true`, `"async": "true"`), false},
 		"prompt hook":          {edit(`"type": "command"`, `"type": "prompt", "prompt": "[watchtower-workbench ask-guard 7]\nedited"`), false},
 		"another program":      {edit("/opt/a b/watchtower", "/opt/a b/other"), false},
 		"extra hook field":     {edit(`"type": "command"`, `"type": "command", "statusMessage": "mine"`), false},
