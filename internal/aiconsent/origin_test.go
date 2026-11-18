@@ -81,10 +81,15 @@ func TestOrigin_AutomationMarkerTakesRunTrigger(t *testing.T) {
 					t.Fatalf("got (%v, %v), want %v unadmitted", o, admitted, c.want)
 				}
 			}
-			if lookups != 1 || gotID != 7 {
-				t.Fatalf("lookups = %d for run %d, want one for run 7", lookups, gotID)
+			// A resolved trigger is read once; a lookup error is retried.
+			wantLookups, wantLines := 1, 0
+			if c.err != nil {
+				wantLookups, wantLines = 2, 2
 			}
-			if wantLines := map[bool]int{true: 1, false: 0}[c.err != nil]; len(*lines) != wantLines {
+			if lookups != wantLookups || gotID != 7 {
+				t.Fatalf("lookups = %d for run %d, want %d for run 7", lookups, gotID, wantLookups)
+			}
+			if len(*lines) != wantLines {
 				t.Fatalf("logged %q, want %d lines", *lines, wantLines)
 			}
 		})
@@ -157,6 +162,25 @@ func TestChildEnv_BackgroundAndAdmitted(t *testing.T) {
 	}
 }
 
+// TestChildEnv_OwnerChildOfBackgroundProcess: a process started with
+// EnvOrigin=background that serves an owner request builds its child's env as
+// append(OwnerEnv(os.Environ()), ChildEnv(ctx)...); the inherited origin is
+// stripped.
+func TestChildEnv_OwnerChildOfBackgroundProcess(t *testing.T) {
+	resetForTest(t)
+	parent := []string{"PATH=/bin", EnvOrigin + "=background", EnvAdmitted + "=run:7"}
+	InitProcess("cli", envOf(map[string]string{EnvOrigin: "background", EnvAdmitted: "run:7"}))
+	got := append(OwnerEnv(parent), ChildEnv(WithOwnerStarted(context.Background()))...)
+	if want := []string{"PATH=/bin"}; !slices.Equal(got, want) {
+		t.Fatalf("owner child env = %q, want %q", got, want)
+	}
+	got = append(OwnerEnv(parent), ChildEnv(WithAdmitted(context.Background(), "phase:digests"))...)
+	want := []string{"PATH=/bin", EnvOrigin + "=background", EnvAdmitted + "=phase:digests"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("background child env = %q, want %q", got, want)
+	}
+}
+
 func TestOwnerEnv_StripsOrigin(t *testing.T) {
 	in := []string{"PATH=/bin", EnvOrigin + "=background", EnvAdmitted + "=run:7", "HOME=/h", RunMarkerEnv + "=7"}
 	got := OwnerEnv(in)
@@ -170,13 +194,17 @@ func TestOwnerEnv_StripsOrigin(t *testing.T) {
 }
 
 // TestOverrideHookOnlyInTests: SetCurrentOverrideForTest makes every consent
-// read say "allowed", so no production file may call it. Only test files and
-// the aiconsenttest helper do.
+// read say "allowed", so no production file may reference it (a call, a
+// method value, anything) or import aiconsenttest. Only test files and the
+// aiconsenttest helper do.
 func TestOverrideHookOnlyInTests(t *testing.T) {
 	root := repoRoot(t)
 	allowed := filepath.Join(root, "internal", "aiconsent", "aiconsenttest")
 	skipDirs := map[string]bool{"WatchtowerDesktop": true, "WatchtowerKit": true, "WatchtowerMobile": true, "docs": true, "node_modules": true, "vendor": true, "testdata": true}
-	const name = "SetCurrentOverrideForTest"
+	const (
+		hook       = "SetCurrentOverrideForTest"
+		helperPath = "watchtower/internal/aiconsent/aiconsenttest"
+	)
 	var offenders []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -192,17 +220,22 @@ func TestOverrideHookOnlyInTests(t *testing.T) {
 			return nil
 		}
 		src, err := os.ReadFile(path) //nolint:gosec // G122: a test walking its own checkout
-		if err != nil || !bytes.Contains(src, []byte(name)) {
+		if err != nil || (!bytes.Contains(src, []byte(hook)) && !bytes.Contains(src, []byte(helperPath))) {
 			return err
 		}
 		f, err := parser.ParseFile(token.NewFileSet(), path, src, parser.SkipObjectResolution)
 		if err != nil {
 			return err
 		}
+		rel, _ := filepath.Rel(root, path)
+		for _, imp := range f.Imports {
+			if strings.Trim(imp.Path.Value, `"`) == helperPath {
+				offenders = append(offenders, rel+" imports aiconsenttest")
+			}
+		}
 		ast.Inspect(f, func(n ast.Node) bool {
-			if call, ok := n.(*ast.CallExpr); ok && calls(call.Fun, name) {
-				rel, _ := filepath.Rel(root, path)
-				offenders = append(offenders, rel)
+			if id, ok := n.(*ast.Ident); ok && id.Name == hook && !isDecl(f, id) {
+				offenders = append(offenders, rel+" references "+hook)
 			}
 			return true
 		})
@@ -212,16 +245,16 @@ func TestOverrideHookOnlyInTests(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(offenders) > 0 {
-		t.Fatalf("%s is called outside tests and aiconsenttest: %v", name, offenders)
+		t.Fatalf("the consent override is reachable from production code: %v", offenders)
 	}
 }
 
-func calls(fun ast.Expr, name string) bool {
-	switch f := fun.(type) {
-	case *ast.Ident:
-		return f.Name == name
-	case *ast.SelectorExpr:
-		return f.Sel.Name == name
+// isDecl reports whether id is the name of a top-level function declaration.
+func isDecl(f *ast.File, id *ast.Ident) bool {
+	for _, d := range f.Decls {
+		if fd, ok := d.(*ast.FuncDecl); ok && fd.Name == id {
+			return true
+		}
 	}
 	return false
 }

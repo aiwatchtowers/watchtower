@@ -54,31 +54,36 @@ func SetCurrentOverrideForTest(r Reader) {
 
 // Current resolves the owner's answer in config.yaml with the forced policy.
 // It stats the file on every call and re-parses only when the file changed.
-// An unreadable or unparsable file, an unknown value, or no config path at
-// all read as paused.
+// No config path, or a file that exists but cannot be read or parsed, reads
+// paused whatever the profile says (fail closed). A missing file is "not
+// answered"; an unknown value reads as not answered (logged once).
 func Current() State {
 	cur.mu.Lock()
 	if r := cur.override; r != nil {
 		cur.mu.Unlock()
 		return r()
 	}
-	answer, hasPath := readAnswerLocked()
+	answer, known := readAnswerLocked()
 	cur.mu.Unlock()
 
 	allow := policy.Current().Keys.AllowBackgroundAI
 	s := Resolve(answer, allow)
-	if !hasPath && s.Allowed() {
-		// A process that never learned its config path cannot know the
-		// owner's answer, so even a permissive profile reads paused.
+	if !known && s.Allowed() {
+		// The owner's answer cannot be known, so even a permissive profile
+		// (which stands in only for an owner who has not answered) reads
+		// paused.
 		s = Resolve(AnswerNone, nil)
 		s.Policy = allow
 	}
 	return s
 }
 
-// readAnswerLocked returns the cached answer, re-parsing when the file's
-// identity, mtime or size changed. Holds cur.mu.
-func readAnswerLocked() (Answer, bool) {
+// readAnswerLocked returns the owner's answer; known = false when it cannot
+// be known (no path, or a file that cannot be read or parsed). A clean read
+// is cached and re-parsed only when the file's identity, mode, mtime or size
+// changed; a failed read is never cached, so the next call retries. Holds
+// cur.mu.
+func readAnswerLocked() (answer Answer, known bool) {
 	if cur.path == "" {
 		return AnswerNone, false
 	}
@@ -88,20 +93,25 @@ func readAnswerLocked() (Answer, bool) {
 		if errors.Is(err, fs.ErrNotExist) {
 			// Not written yet: the owner has not answered. Not a failure.
 			cur.lastFail = ""
-		} else {
-			noteFailureLocked(fmt.Sprintf("aiconsent: cannot read %s (%v); background AI reads as paused", cur.path, err))
+			return AnswerNone, true
 		}
-		return AnswerNone, true
+		noteFailureLocked(fmt.Sprintf("aiconsent: cannot read %s (%v); background AI reads as paused", cur.path, err))
+		return AnswerNone, false
 	}
-	if prev := cur.info; prev != nil && os.SameFile(prev, st) &&
+	if prev := cur.info; prev != nil && os.SameFile(prev, st) && prev.Mode() == st.Mode() &&
 		prev.ModTime().Equal(st.ModTime()) && prev.Size() == st.Size() {
 		return cur.answer, true
 	}
 	parseHook()
-	answer, fail := parseAnswer(cur.path)
+	answer, msg, failed := parseAnswer(cur.path)
+	if failed {
+		cur.info, cur.answer = nil, AnswerNone
+		noteFailureLocked(msg)
+		return AnswerNone, false
+	}
 	cur.info, cur.answer = st, answer
-	if fail != "" {
-		noteFailureLocked(fail)
+	if msg != "" {
+		noteFailureLocked(msg)
 	} else {
 		cur.lastFail = ""
 	}
@@ -118,28 +128,29 @@ func noteFailureLocked(msg string) {
 }
 
 // parseAnswer reads ai.background_runs from the file. Keys match without
-// regard to case, as viper reads them. fail is the message to log, "" when
-// the file read cleanly (an absent key included).
-func parseAnswer(path string) (Answer, string) {
+// regard to case, as viper reads them. failed = the file could not be read or
+// parsed; msg is the line to log ("" for a clean read, an absent key
+// included; set for an unknown value, which reads as not answered).
+func parseAnswer(path string) (a Answer, msg string, failed bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return AnswerNone, fmt.Sprintf("aiconsent: cannot read %s (%v); background AI reads as paused", path, err)
+		return AnswerNone, fmt.Sprintf("aiconsent: cannot read %s (%v); background AI reads as paused", path, err), true
 	}
 	var root map[string]any
 	if err := yaml.Unmarshal(data, &root); err != nil {
-		return AnswerNone, fmt.Sprintf("aiconsent: cannot parse %s (%v); background AI reads as paused", path, err)
+		return AnswerNone, fmt.Sprintf("aiconsent: cannot parse %s (%v); background AI reads as paused", path, err), true
 	}
 	aiMap, _ := lookupFold(root, "ai").(map[string]any)
 	raw := lookupFold(aiMap, "background_runs")
 	if raw == nil {
-		return AnswerNone, ""
+		return AnswerNone, "", false
 	}
 	if s, ok := raw.(string); ok {
 		if a, known := ParseAnswer(s); known {
-			return a, ""
+			return a, "", false
 		}
 	}
-	return AnswerNone, fmt.Sprintf(`aiconsent: ai.background_runs = %v in %s is not "allowed" or "paused"; background AI reads as not answered (paused)`, raw, path)
+	return AnswerNone, fmt.Sprintf(`aiconsent: ai.background_runs = %v in %s is not "allowed" or "paused"; background AI reads as not answered`, raw, path), false
 }
 
 func lookupFold(m map[string]any, key string) any {

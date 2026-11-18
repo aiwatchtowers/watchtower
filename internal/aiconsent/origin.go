@@ -100,33 +100,45 @@ func BackgroundTrigger(trigger string) bool {
 
 // processMark returns the process default, resolving a pending run marker.
 // Fails closed: no lookup yet, an unparsable id or a lookup error read as
-// background (only a resolved answer is kept).
+// background. A resolved trigger and an unparsable id are kept; no lookup
+// and a lookup error are retried on the next call.
 func processMark() originMark {
-	proc.mu.Lock()
-	defer proc.mu.Unlock()
-	if proc.runID == "" {
-		return proc.mark
-	}
 	background := originMark{origin: OriginBackground}
-	if proc.lookup == nil {
+	proc.mu.Lock()
+	raw, lookup, mark := proc.runID, proc.lookup, proc.mark
+	if raw == "" || lookup == nil {
+		proc.mu.Unlock()
+		if raw == "" {
+			return mark
+		}
 		return background
 	}
-	raw := proc.runID
-	proc.runID, proc.mark = "", background
 	id, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
+		proc.runID, proc.mark = "", background
+		proc.mu.Unlock()
 		logf("aiconsent: %s=%q is not a run id (%v); its AI calls run as background", RunMarkerEnv, raw, err)
 		return background
 	}
-	trigger, err := proc.lookup(id)
+	proc.mu.Unlock()
+
+	// The lookup reads the database: run it outside the lock.
+	trigger, err := lookup(id)
 	if err != nil {
+		// Not cached: the next call retries.
 		logf("aiconsent: cannot read the trigger of automation run %d (%v); its AI calls run as background", id, err)
 		return background
 	}
+	resolved := background
 	if !BackgroundTrigger(trigger) {
-		proc.mark = originMark{origin: OriginOwner}
+		resolved = originMark{origin: OriginOwner}
 	}
-	return proc.mark
+	proc.mu.Lock()
+	if proc.runID == raw { // InitProcess did not run meanwhile
+		proc.runID, proc.mark = "", resolved
+	}
+	proc.mu.Unlock()
+	return resolved
 }
 
 func markOf(ctx context.Context) originMark {
@@ -163,7 +175,9 @@ func CheckWith(ctx context.Context, r Reader) error {
 
 // ChildEnv is the env a background ctx passes to a process it spawns:
 // EnvOrigin=background and, when admitted, EnvAdmitted=<unit>. nil for an
-// owner ctx.
+// owner ctx. Spawn sites build the child env as
+// append(OwnerEnv(os.Environ()), ChildEnv(ctx)...), so an owner child never
+// inherits this process's own EnvOrigin/EnvAdmitted.
 func ChildEnv(ctx context.Context) []string {
 	m := markOf(ctx)
 	if m.origin != OriginBackground {

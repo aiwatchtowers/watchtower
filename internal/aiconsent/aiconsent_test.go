@@ -292,3 +292,70 @@ func resetForTest(t *testing.T) {
 		logf, parseHook = savedLogf, savedParseHook
 	})
 }
+
+var orgAllows = map[string]any{policy.KeyAllowBackgroundAI: true}
+
+// A file that exists but cannot be read: the owner's answer is unknown, so a
+// permissive profile must not stand in for it.
+func TestCurrent_UnreadableConfigWithPermissiveProfileIsPaused(t *testing.T) {
+	resetForTest(t)
+	policytest.Set(t, orgAllows)
+	captureLog(t)
+	SetConfigPath(t.TempDir()) // a directory: stat works, reading fails
+	if s := Current(); s.Allowed() {
+		t.Fatalf("got %+v, want paused", s)
+	}
+}
+
+func TestCurrent_UnparsableConfigWithPermissiveProfileIsPaused(t *testing.T) {
+	resetForTest(t)
+	policytest.Set(t, orgAllows)
+	captureLog(t)
+	SetConfigPath(writeConfig(t, "ai: [background_runs: allowed\n  : :"))
+	if s := Current(); s.Allowed() {
+		t.Fatalf("got %+v, want paused", s)
+	}
+}
+
+func TestCurrent_MissingConfigWithPermissiveProfileIsAllowed(t *testing.T) {
+	resetForTest(t)
+	policytest.Set(t, orgAllows)
+	SetConfigPath(filepath.Join(t.TempDir(), "config.yaml"))
+	if s := Current(); !s.Allowed() || s.Reason != ReasonOrganization {
+		t.Fatalf("got %+v, want allowed by the organization", s)
+	}
+}
+
+func TestCurrent_FailedParseIsRetried(t *testing.T) {
+	resetForTest(t)
+	policytest.Set(t, nil)
+	lines := captureLog(t)
+	parses := 0
+	parseHook = func() { parses++ }
+	SetConfigPath(writeConfig(t, "ai: [background_runs: allowed\n  : :"))
+	Current()
+	Current()
+	if parses != 2 {
+		t.Fatalf("a failed parse must not be cached: %d parses after two calls, want 2", parses)
+	}
+	if len(*lines) != 1 {
+		t.Fatalf("the same failure logged %d times, want once: %q", len(*lines), *lines)
+	}
+}
+
+func TestCurrent_RereadsOnModeChange(t *testing.T) {
+	resetForTest(t)
+	policytest.Set(t, nil)
+	parses := 0
+	parseHook = func() { parses++ }
+	path := writeConfig(t, "ai: {background_runs: allowed}\n")
+	SetConfigPath(path)
+	Current()
+	if err := os.Chmod(path, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	Current()
+	if parses != 2 {
+		t.Fatalf("a mode change must re-read: %d parses, want 2", parses)
+	}
+}
