@@ -38,6 +38,9 @@ After this work:
 | D13 | The Live layer for Gmail/Calendar/Atlassian connectors (generalised Slack Live) is a separate project, not part of this spec | decided by the agent |
 | D19 | Every wizard step (Slack, Google, Atlassian, Linear, Microsoft) first looks for a company app the Mac already knows and reuses it; only when none is found does it ask **Create new** (default) / **We already have one**, with a hint for "don't know". Never a second app by accident | ask #1473 ("не только Slack. Так по всем конекторам") |
 | D21 | What IT controls through MDM is documented on the public website, one page for every key, linked from the app (the wizard's Publish step next to the `.mobileconfig`, and the **Organization policy** row in Settings → Privacy and in Connections) | conversation 2026-11-18 ("на сайте с ссылкой из приложения") |
+| D22 | An Atlassian API token that stops working (expired or revoked) puts the account in error, not revoked: no 72-hour purge; only the 30-day lease applies | ask #1476 |
+| D23 | Token accounts erase closed Atlassian people too, through a 7-day profile lookup, with the same erase as PDR (§6) | ask #1476 |
+| D24 | New MDM keys: `AllowAtlassianAPIToken` (bool, default true) and `AllowOwnGoogleProject` (bool, default true; the personal Google project path, §4, stays allowed unless IT turns it off). No key forcing company apps only | ask #1476 ("свой проект можно + настройка MDM") |
 | D15 | Sharing on our shared Atlassian app is turned off 30 days after company setup ships | ask #1455 |
 | D14 | Screens (wizard with the existing-app fork, confirmation, Connections rows, banners, the Atlassian API-token form, the MDM help links) get their own screens spec with DesignShotCatalog mockups for every state, as #1709 does for Slack. This spec holds no screen and no UI task: it fixes the behaviour, the data and the UI texts (in the models, tested — T3); the screens spec is a prerequisite of every UI task and the screen tasks are planned from it | decided by the agent |
 
@@ -113,9 +116,11 @@ What still needs the person: the one **Connect** press in Watchtower and each ve
 | `CompanyBundle` | The company bundle (§1): every connector's company app, the deny list; **Connect all** without a link | new here (T6) |
 | `AllowedSources` | Which connectors may run at all (`slack`, `google`, `imap` incl. Outlook, `caldav`, `jira` incl. Confluence, `linear`) | exists |
 | `PurgeRevokedData` | Revoked access wipes the account's data | exists |
+| `AllowAtlassianAPIToken` | `false` hides **Connect with an API token** and refuses `jira add --api-token-stdin`; existing token accounts stop syncing and keep their data (POLICY-03, like a forbidden source) | new (D24, T6) |
+| `AllowOwnGoogleProject` | `false` hides **Use my own Google project** and refuses `google add --client-id`; accounts already on an own project stop syncing and keep their data (POLICY-03) | new (D24, T6) |
 | `AllowedQuickConnections`, `AllowedAIProviders`, `AllowClaudeAITools`, `AllowAutomationShell`, `MobileSync` | Unchanged | exist |
 
-Further keys for connectors are pending the owner's answer (ask #1476). The public page (T14) lists every key with its type, default, effect and a sample profile, and is the one place IT reads; `docs/features/mdm-policy.md` stays the developer note and links to it; `watchtower policy show` names the page in its text output.
+Both new keys are booleans in `internal/policy` and its Swift twin, fail closed on a wrong type (POLICY-01), with rows in the POLICY-02 shared fixture. The public page (T14) lists every key with its type, default, effect and a sample profile, and is the one place IT reads; `docs/features/mdm-policy.md` stays the developer note and links to it; `watchtower policy show` names the page in its text output.
 
 **Connect code.** Connections → **Connect with a company code** takes the same base64url string; same flow without the browser hop.
 
@@ -132,8 +137,8 @@ Connections → Jira → **Connect with an API token**, beside the OAuth button;
 - **The person** creates a token at id.atlassian.com → Security → API tokens (a scoped token with today's `JiraScopes`, plus `ConfluenceScopes` for Confluence, is the one the step links to and recommends), pastes it with their Atlassian email and the site URL. Watchtower reads the site's `cloudId` from `https://<site>/_edge/tenant_info`, checks the token with `GET /rest/api/3/myself` (fills `owner_account_id`/`owner_email` as today) and stores the account.
 - **Data:** a migration adds `auth_kind TEXT NOT NULL DEFAULT 'oauth' CHECK (auth_kind IN ('oauth','api_token'))` to `jira_accounts` (mirrored as in §1). The email and token live in the account's token store where the OAuth tokens live today, same file permissions; nothing goes into the bundle.
 - **Client:** `internal/jira` sets one `Authorization` header per request today (`Bearer` from the token store). For `api_token` it sends `Basic base64(email:token)` instead and skips refresh; the base URL for each token kind (the `api.atlassian.com/ex/jira/<cloudId>` gateway for a scoped token, the site URL for a classic one) is fixed by spike S1. Confluence reuses the account's credentials, as with OAuth.
-- **Failures:** 401 → the existing revoke path (REVOKE/PURGE-01 unchanged) with the text **"The API token stopped working (expired or revoked) — paste a new one"**. No expiry field is asked for: Atlassian's API does not report a token's expiry and Atlassian emails the person before it expires; Watchtower learns of it only from the 401. 403 on a scope → "This token lacks <scope> — create one with the listed scopes". `--site` not an Atlassian Cloud site → refused before storing.
-- **PDR (§6) does not run for token accounts:** the Personal Data Reporting API belongs to apps; a token is the person's own access. Closed users in such an account are anonymised by Atlassian on the next sync and purge follows the usual retention.
+- **Failures:** 401 on an `api_token` account → status `error`, not `revoked` (D22): no 72-hour purge is scheduled and the data stays; the row says **"The API token stopped working (expired or revoked) — paste a new one"**. Only the 30-day lease (PURGE-01's lease rule, unchanged) can still purge it if no new token comes. A new token clears the error and stamps `access_ok_at`. No expiry field is asked for: Atlassian's API does not report a token's expiry and Atlassian emails the person before it expires; Watchtower learns of it only from the 401. 403 on a scope → "This token lacks <scope> — create one with the listed scopes". `--site` not an Atlassian Cloud site → refused before storing.
+- **Closed people on token accounts (D23):** the Personal Data Reporting API belongs to apps, so token accounts get the same result another way: the §6 phase, every 7 days, looks up the stored account ids with the token (`GET /rest/api/3/user/bulk`, chunks the API allows) and applies the §6 `closed` erase to every profile Atlassian reports as closed. Which response marks a closed account (the anonymised profile, `active`, not found) is fixed by spike S1; an ambiguous answer (403, error, not found without a closed marker) erases nothing.
 - **Company bundle:** unchanged. A company that prefers tokens publishes a bundle without an `atlassian` block; the connect chain then shows Jira as **Connect** in Connections, where the person picks OAuth or token.
 
 ## 5. What is retired
@@ -182,7 +187,8 @@ Test: a corp-flavored workspace fixture → bridge → public resolver gives eve
 | Corp install updates before the bridge ran | Stays on the gated feed until `company_migrated` | UpdateService test |
 | Reused Slack app, admin not a collaborator | "Ask the app's owner to add you as a collaborator"; step stays open; nothing created | wizard model test with an export fake returning the not-collaborator error |
 | Reused app's id pasted with a typo or from another workspace | Refused at the step (Slack: `team_id` of the export differs from the admin's workspace; others: dry authorize fails) | wizard model tests per vendor |
-| Atlassian API token expired or revoked | Account → revoked path, "paste a new one" | client test: 401 with `api_token` → revoked, no refresh attempt |
+| Atlassian API token expired or revoked | Account → `error`, "paste a new one", data kept, no 72 h purge; only the 30-day lease applies | client test: 401 with `api_token` → `error`, no refresh attempt; purge plan test: no revoked row for it |
+| Profile lookup ambiguous (403, error, not found without a closed marker) | Nothing erased; retried next cycle | phase test with fakes for each answer |
 | API token lacks a scope | 403 → named-scope hint, nothing erased | client test with a 403 fake |
 | Public build meets an untied account of an unknown client | **Re-login needed — open your company's link**, no silent failure | resolver + refresher test |
 | PDR erase interrupted | One transaction per account: all or nothing; the next cycle repeats it (idempotent) | kill-mid-erase test |
@@ -202,18 +208,18 @@ Test: a corp-flavored workspace fixture → bridge → public resolver gives eve
 |---|---|---|
 | Personal Gmail token outlives 7 days | S2 spike (before T8) | day-8 refresh on a real unverified project; result written into this spec |
 | Our Linear obligations known | S3 spike (Linear terms) | written finding; D12 holds or flips |
-| Atlassian callback URL count; Slack link rendering; manifest export/update on an existing app; API-token base URL per token kind | S1 spike (with the Slack spec's T1) | written finding |
+| Atlassian callback URL count; Slack link rendering; manifest export/update on an existing app; API-token base URL per token kind; which bulk-user answer marks a closed account | S1 spike (with the Slack spec's T1) | written finding |
 | One bundle format, Go and Swift alike | T1 bundle package + Swift twin | shared fixture in both |
 | Accounts know their company client | T1b migration `company_slug` + resolvers | `TestAllTablesExist`/golden, resolver order tests |
 | A localhost link connects every vendor (Slack, Google, Atlassian, Microsoft, Linear) after one press; a change needs Replace | T2 listener path + chain | listener + chain tests with a fake per vendor (Microsoft against the bundle's tenant), no-log test |
 | Admin sets up all vendors once; every UI text lives in a model | T3 wizard model and texts | wizard model + text tests (screens: the screens spec, D14) |
 | An existing company app is found and reused, never duplicated (D19) | T3 known-client discovery + reuse per vendor; T5 Slack reuse via `apps.manifest.export`/`update` | discovery test over every source in §2 "Look"; per-vendor reuse tests; Slack: no `apps.manifest.create` call when an app was chosen |
 | Slack page carries the link | T5 publish via `apps.manifest.update` | manifest fake |
-| MDM and code carry the same bundle | T6 `CompanyBundle` policy key + code paste | POLICY-02 fixture rows |
+| MDM and code carry the same bundle; IT can forbid API tokens and own Google projects | T6 `CompanyBundle`, `AllowAtlassianAPIToken`, `AllowOwnGoogleProject` policy keys + code paste | POLICY-02 fixture rows; CLI refusal tests; POLICY-03 keep-data test |
 | Per-account clients for Google, Atlassian, Linear, Microsoft | T7 credentials store + refreshers read it | per-vendor auth tests |
 | Company deny list applies | T7b `link_deny_hosts` into `media.RefusedHosts` | linkrule test |
 | Personal Gmail through own project | T8 personal Google path | store + CLI wrapper tests |
-| Jira and Confluence by an API token, as an option (D20) | T13 `auth_kind` migration, Basic-auth path in `internal/jira`, `jira add --api-token-stdin`, Connections option | migration golden; client header test per kind; CLI test (token never in argv/log); `myself` check; PDR skips `api_token` accounts |
+| Jira and Confluence by an API token, as an option (D20) | T13 `auth_kind` migration, Basic-auth path in `internal/jira`, `jira add --api-token-stdin`, Connections option | migration golden; client header test per kind; CLI test (token never in argv/log); `myself` check; token 401 → `error` (D22); the 7-day profile lookup erases a closed person on a token account (D23) |
 | Atlassian PDR, erasing memory and people data too | T9 daemon phase | fake endpoint tests; erase test over every table in §6 |
 | Shared Google = Calendar only; shared Jira retired; banners | T10 retirements | scope tests, banner model tests |
 | Corp installs move without breaking accounts | T11a bridge corp build (bundle from baked values, `company_slug`, `company_migrated` gate) | corp-workspace fixture test, UpdateService gate test |
@@ -223,7 +229,7 @@ Test: a corp-flavored workspace fixture → bridge → public resolver gives eve
 
 ## 10. Inventory touched
 
-POLICY-01/02 (new `CompanyBundle` key), the Jira/Confluence auth contracts in `docs/inventory/` (per-account client), the Slack spec's D13 (D10 here, approved in ask #1455), PURGE-01 unchanged. A further inventory entry the plan finds it must change gets its own ask before that task's review.
+POLICY-01/02 (new keys `CompanyBundle`, `AllowAtlassianAPIToken`, `AllowOwnGoogleProject`, approved in asks #1476 and D9), PURGE-01 untouched by D22 (a token 401 is an `error`, which the rule already holds), the Jira/Confluence auth contracts in `docs/inventory/` (per-account client), the Slack spec's D13 (D10 here, approved in ask #1455), PURGE-01 unchanged. A further inventory entry the plan finds it must change gets its own ask before that task's review.
 
 ## 11. Open
 
