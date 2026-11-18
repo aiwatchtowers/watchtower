@@ -2,6 +2,7 @@ package agentreport
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -433,11 +434,11 @@ func BuildSession(main *db.DB, al *agentlogdb.DB, workbenchID int64, sessionUUID
 		det.Lanes = append(det.Lanes, Lane{AgentID: "", Segments: nonNil(segs)})
 		det.Lanes = append(det.Lanes, b.lanes[sessionUUID]...)
 	}
-	wb, err := main.GetWorkbench(workbenchID)
+	folder, err := sessionFolder(main, workbenchID, all[i])
 	if err != nil {
 		return nil, err
 	}
-	ctx, skills, err := loadBlocks(al, all[i:i+1], by, wb.FolderPath) // the folder: C1's open_file fix
+	ctx, skills, err := loadBlocks(al, all[i:i+1], by, folder) // the folder: C1's open_file fix
 	if err != nil {
 		return nil, err
 	}
@@ -450,4 +451,34 @@ func BuildSession(main *db.DB, al *agentlogdb.DB, workbenchID int64, sessionUUID
 	det.Hints = nonNil(Hints(HintInput{Lang: lang, Context: ctx, Skills: skills, Trouble: trouble, Sessions: b.views, Tasks: tasks,
 		Targets: targets, Events: b.events, Now: now}))
 	return det, nil
+}
+
+// sessionFolder is the bench folder agent session s ran for (its terminal
+// row's folder, db.SessionFolderPath; spec §6.9): the folder whose CLAUDE.md
+// and rules the session's context block measures. A session with no
+// terminal row on the workbench reads the workbench folder.
+func sessionFolder(main *db.DB, workbenchID int64, s agentlogdb.AgentReportSession) (string, error) {
+	lookup := main.ClaudeTerminalSessionIDs
+	if s.Agent == string(agentkind.Codex) {
+		lookup = main.CodexTerminalSessionIDs
+	}
+	ids, err := lookup([]string{s.SessionUUID})
+	if err != nil {
+		return "", err
+	}
+	if id, ok := ids[s.SessionUUID]; ok {
+		row, err := main.GetTerminalSession(id)
+		if err != nil {
+			return "", err
+		}
+		if row.WorkbenchID.Valid && row.WorkbenchID.Int64 == workbenchID {
+			path, _, err := main.SessionFolderPath(context.Background(), id)
+			return path, err
+		}
+	}
+	wb, err := main.GetWorkbench(workbenchID)
+	if err != nil {
+		return "", err
+	}
+	return wb.FolderPath, nil
 }

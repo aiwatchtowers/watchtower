@@ -24,13 +24,13 @@ func TestIndexFileSet_IndexesOnlyTheGivenFiles(t *testing.T) {
 	runWorkbenchDocs(t, d)
 
 	writeWorkbenchFile(t, folder, "docs/new.md", "# New\nсвежий документ\n")
-	set := FileSet{Source: WorkbenchDocSource, Container: fixtureWorkbenchID, Root: folder, Files: []string{"docs/new.md"}}
+	set := FileSet{Source: WorkbenchDocSource, Container: fixtureWorkbenchID, Folder: fixtureWorkbenchID, Root: folder, Files: []string{"docs/new.md"}}
 	docs, changed, err := IndexFileSet(ctx, d, set)
 	require.NoError(t, err)
 	assert.Equal(t, 1, docs)
 	assert.Equal(t, 1, changed)
-	assert.Equal(t, []string{fixtureReadmeRef, "wbdoc:1:docs/new.md", fixturePlanRef}, indexedIDs(t, d))
-	assert.Contains(t, indexedText(t, d, "wbdoc:1:docs/new.md"), "свежий")
+	assert.Equal(t, []string{fixtureReadmeRef, "wbdoc:1:1:docs/new.md", fixturePlanRef}, indexedIDs(t, d))
+	assert.Contains(t, indexedText(t, d, "wbdoc:1:1:docs/new.md"), "свежий")
 
 	_, changed, err = IndexFileSet(ctx, d, set)
 	require.NoError(t, err)
@@ -46,7 +46,7 @@ func TestIndexFileSet_IndexesOnlyTheGivenFiles(t *testing.T) {
 	_, changed, err = IndexFileSet(ctx, d, set)
 	require.NoError(t, err)
 	assert.Equal(t, 1, changed, "an explicit trigger re-reads a file whose mtime did not move")
-	assert.Contains(t, indexedText(t, d, "wbdoc:1:docs/new.md"), "вторая")
+	assert.Contains(t, indexedText(t, d, "wbdoc:1:1:docs/new.md"), "вторая")
 }
 
 // An edit with an older mtime is re-indexed, and a file gone from disk
@@ -56,7 +56,7 @@ func TestIndexFileSet_OlderMtimeAndGoneFile(t *testing.T) {
 	d := db.OpenTestDB(t)
 	folder := seedWorkbenchDocs(t, d)
 	readme := filepath.Join(folder, "README.md")
-	set := FileSet{Source: WorkbenchDocSource, Container: fixtureWorkbenchID, Root: folder, Files: []string{"README.md"}}
+	set := FileSet{Source: WorkbenchDocSource, Container: fixtureWorkbenchID, Folder: fixtureWorkbenchID, Root: folder, Files: []string{"README.md"}}
 	_, _, err := IndexFileSet(ctx, d, set)
 	require.NoError(t, err)
 
@@ -83,13 +83,13 @@ func TestIndexFileSet_NamedPipeIsUnreadableNeverBlocking(t *testing.T) {
 	require.NoError(t, syscall.Mkfifo(filepath.Join(folder, "pipe.md"), 0o600))
 	done := make(chan error, 1)
 	go func() {
-		_, _, err := IndexFileSet(ctx, d, FileSet{Source: WorkbenchDocSource, Container: fixtureWorkbenchID, Root: folder, Files: []string{"pipe.md"}})
+		_, _, err := IndexFileSet(ctx, d, FileSet{Source: WorkbenchDocSource, Container: fixtureWorkbenchID, Folder: fixtureWorkbenchID, Root: folder, Files: []string{"pipe.md"}})
 		done <- err
 	}()
 	err := <-done
 	require.NoError(t, err)
 	var anchor string
-	require.NoError(t, d.QueryRow(`SELECT json_extract(anchor_json, '$.unreadable') FROM kb_documents WHERE id = 'wbdoc:1:pipe.md'`).Scan(&anchor))
+	require.NoError(t, d.QueryRow(`SELECT json_extract(anchor_json, '$.unreadable') FROM kb_documents WHERE id = 'wbdoc:1:1:pipe.md'`).Scan(&anchor))
 	assert.Equal(t, "not a regular file", anchor)
 }
 
@@ -100,7 +100,7 @@ func TestIndexFileSet_RefusesBadInput(t *testing.T) {
 	d := db.OpenTestDB(t)
 	folder := seedWorkbenchDocs(t, d)
 	for _, rel := range []string{"../x.md", "/etc/hosts", "", "."} {
-		_, _, err := IndexFileSet(ctx, d, FileSet{Source: WorkbenchDocSource, Container: fixtureWorkbenchID, Root: folder, Files: []string{"README.md", rel}})
+		_, _, err := IndexFileSet(ctx, d, FileSet{Source: WorkbenchDocSource, Container: fixtureWorkbenchID, Folder: fixtureWorkbenchID, Root: folder, Files: []string{"README.md", rel}})
 		assert.Error(t, err, rel)
 	}
 	_, _, err := IndexFileSet(ctx, d, FileSet{Source: "jira", Container: 1, Root: folder, Files: []string{"README.md"}})

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -113,6 +114,43 @@ var workbenchSessionFinishSpawn = func(sessionID int64, place, brief string) err
 		}
 	}
 	return c.Process.Release() //nolint:wrapcheck // never fails for a started process
+}
+
+// maxStartStderr bounds the stderr a failed sub-session start reports.
+const maxStartStderr = 2000
+
+// runSubSessionStart is start_session's start (spec 2026-11-18 §6.5): this
+// binary's `workbench session start <args>` with the brief on stdin, under
+// this process's environment, so checkSessionCaller confines it to the
+// calling session's workbench. It answers stdout (the --json answer, a
+// refusal's included) and, when the start failed, an error carrying its
+// stderr.
+func runSubSessionStart(ctx context.Context, args []string, brief string) ([]byte, error) {
+	bin, err := workbenchExecutable()
+	if err != nil {
+		return nil, fmt.Errorf("determining the watchtower binary path: %w", err)
+	}
+	full := append([]string{"workbench", "session", "start"}, args...)
+	full = append(full, "--config", flagConfig)
+	if flagWorkspace != "" {
+		full = append(full, "--workspace", flagWorkspace)
+	}
+	c := exec.CommandContext(ctx, bin, full...)
+	c.Stdin = strings.NewReader(brief)
+	var stderr strings.Builder
+	c.Stderr = &stderr
+	out, err := c.Output()
+	if err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if len(msg) > maxStartStderr {
+			msg = msg[len(msg)-maxStartStderr:]
+		}
+		if msg != "" {
+			return out, fmt.Errorf("%w: %s", err, msg)
+		}
+		return out, err //nolint:wrapcheck // the exit status is the message
+	}
+	return out, nil
 }
 
 // readBrief is the brief on stdin when --brief-stdin was given, else "".

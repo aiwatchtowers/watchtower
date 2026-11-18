@@ -58,6 +58,8 @@ var lookupByID = map[string]allowedRead{
 	"internal/db/session_report.go:DB.SessionLeafOwners":                       {1, "session report history: who last stamped each leaf (spec §4)"},
 	"internal/db/session_report.go:DB.SessionBindings":                         {1, "session report history: target bindings (spec §4)"},
 	"internal/db/session_ticket.go:DB.SessionTicket":                           {1, "one row's target by id"},
+	"internal/db/session_folder.go:DB.SessionFolderPath":                       {2, "one row's bench folder by id (both column variants)"},
+	"internal/db/session_folder.go:DB.SessionFolderID":                         {1, "one row's bench folder by id"},
 	"internal/db/terminal_agent_turns.go:DB.TerminalAgentTurns":                {1, "one row's turns by id (hooks)"},
 	"internal/db/terminal_agent_turns.go:DB.RecordTerminalAgentTurn":           {1, "one row by id in the hook's write"},
 	"internal/db/terminal_session_agent_sessions.go:DB.AgentSessionIDs":        {1, "one row's agent session ids by id (cleanup adoption)"},

@@ -126,6 +126,33 @@ func TestStartDefaultsToTheHomeFolder(t *testing.T) {
 	assert.False(t, parent.Valid)
 }
 
+// installHome installs Watchtower's hooks in the home folder, as a
+// sub-session's start needs (spec §6.5).
+func (w *world) installHome() {
+	w.t.Helper()
+	_, err := devpack.InstallStateHooks(w.folder, "/usr/local/bin/watchtower", w.wb)
+	require.NoError(w.t, err)
+}
+
+// A sub-session needs Watchtower's install in every folder, the home folder
+// included: refused not_installed before any row, while an ordinary start in
+// the uninstalled home folder still starts.
+func TestSubSessionRefusesAnUninstalledHome(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	parent := w.begin(handlers.StartRequest{Workbench: w.wb})
+	home, err := w.db.HomeFolder(ctx, w.wb)
+	require.NoError(t, err)
+	_, err = Begin(ctx, w.deps(), handlers.StartRequest{Workbench: w.wb, ParentSessionID: parent})
+	requireRefusal(t, err, CodeNotInstalled)
+	assert.EqualError(t, err, "not_installed: Install Watchtower in "+home.Name+" first")
+	assert.Equal(t, 1, w.rowCount(), "only the parent")
+
+	w.installHome()
+	w.begin(handlers.StartRequest{Workbench: w.wb, ParentSessionID: parent})
+	assert.Equal(t, 2, w.rowCount())
+}
+
 // A folder without Watchtower's install is refused before any row.
 func TestStartRefusesNotInstalled(t *testing.T) {
 	w := newWorld(t)
@@ -196,6 +223,7 @@ func TestStartRefusesAnotherBenchsFolder(t *testing.T) {
 // and writes nothing.
 func TestStartRecordsParent(t *testing.T) {
 	w := newWorld(t)
+	w.installHome()
 	ctx := context.Background()
 	parent := w.begin(handlers.StartRequest{Workbench: w.wb})
 	child := w.begin(handlers.StartRequest{Workbench: w.wb, ParentSessionID: parent})
@@ -231,6 +259,7 @@ func TestStartRecordsParent(t *testing.T) {
 // row (spec §7 "sub-session start"), on both start paths.
 func TestStartFailureLeavesNoRow(t *testing.T) {
 	w := newWorld(t)
+	w.installHome()
 	ctx := context.Background()
 	parent := w.begin(handlers.StartRequest{Workbench: w.wb})
 	d := w.deps()

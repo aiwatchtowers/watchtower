@@ -3,7 +3,6 @@ package sessionreport
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -34,53 +33,59 @@ type Summary struct {
 
 // Summaries is the row line of every agent session (Claude Code or Codex;
 // never a shell) of workbench workbenchID, in session id order, from the DB and
-// the PR cache only.
+// the PR cache only — each session's from its own folder's cache.
 func Summaries(ctx context.Context, d *db.DB, workbenchID int64) ([]Summary, error) {
 	sessions, err := agentSessions(ctx, d, workbenchID)
 	if err != nil {
 		return nil, err
 	}
-	states, err := homePRStates(ctx, d, workbenchID)
-	if err != nil {
-		return nil, err
+	states := map[int64]map[string]db.PRState{}
+	for _, f := range sessionFolders(sessions) {
+		if states[f.id], err = folderPRStates(d, workbenchID, f.id); err != nil {
+			return nil, err
+		}
 	}
 	return summarize(sessions, states, nil), nil
 }
 
-// homePRStates is the PR cache of workbench workbenchID's home folder: every
-// report reads it until a session's own folder is passed in (#2003 Task 6).
-// A workbench with no folder row has no cache: an empty map, never a failed
-// report.
-func homePRStates(ctx context.Context, d *db.DB, workbenchID int64) (map[string]db.PRState, error) {
-	folderID, err := d.HomeFolderID(ctx, workbenchID)
-	if errors.Is(err, db.ErrWorkbenchNotFound) {
-		return map[string]db.PRState{}, nil
+// sessionFolders is the bench folders of sessions, each once, in order of
+// first appearance.
+func sessionFolders(sessions []agentSession) []benchFolder {
+	var out []benchFolder
+	seen := map[int64]bool{}
+	for _, as := range sessions {
+		if !seen[as.folder.id] {
+			seen[as.folder.id] = true
+			out = append(out, as.folder)
+		}
 	}
-	if err != nil {
-		return nil, err
-	}
-	return d.PRStates(workbenchID, folderID)
+	return out
 }
 
 // RefreshedSummaries is Summaries after a refresh of the merge verdicts
-// every agent session's counts read (board #986): git only — opts.Network
-// is ignored, gh never runs — within opts.Budget (0 = SummaryRefreshBudget),
-// each cache write waiting at most summaryWriteWait for the write lock (d's
-// busy_timeout during the writes, restored after). A verdict read but
-// not saved still counts in the rows. The board and the cache are each read
-// once. The result's note says what could not be refreshed.
+// every agent session's counts read (board #986), each in the session's own
+// folder (one refresh per folder, in order of first appearance, sharing the
+// budget): git only — opts.Network is ignored, gh never runs — within
+// opts.Budget (0 = SummaryRefreshBudget), each cache write waiting at most
+// summaryWriteWait for the write lock (d's busy_timeout during the writes,
+// restored after). A verdict read but not saved still counts in the rows.
+// The board and each folder's cache are read once. The result's note says
+// what could not be refreshed.
 func RefreshedSummaries(ctx context.Context, d *db.DB, workbenchID int64, opts RefreshOptions) ([]Summary, RefreshResult, error) {
 	sessions, err := agentSessions(ctx, d, workbenchID)
 	if err != nil {
 		return nil, RefreshResult{}, err
 	}
-	var refs []string
+	refs := map[int64][]string{}
 	for _, as := range sessions {
-		refs = append(refs, as.sc.mergeRefs()...)
+		refs[as.folder.id] = append(refs[as.folder.id], as.sc.mergeRefs()...)
 	}
 	opts.Network = false
 	if opts.Budget <= 0 {
 		opts.Budget = SummaryRefreshBudget
+	}
+	if opts.Now == nil {
+		opts.Now = time.Now
 	}
 	// The short write wait is the handle's busy_timeout while the refresh
 	// writes; the caller's own wait comes back after. Without a readable one
@@ -90,41 +95,64 @@ func RefreshedSummaries(ctx context.Context, d *db.DB, workbenchID int64, opts R
 		opts.writeWait = summaryWriteWait
 		defer func() { _ = d.SetBusyTimeout(time.Duration(prevMS) * time.Millisecond) }()
 	}
-	res, states, unchecked := refresh(ctx, d, workbenchID, refs, opts)
-	if states == nil {
-		if states, err = homePRStates(ctx, d, workbenchID); err != nil {
-			return nil, res, err
+	deadline := opts.Now().Add(opts.Budget)
+	states := map[int64]map[string]db.PRState{}
+	unchecked := map[int64]map[string]bool{}
+	var notes []string
+	for _, f := range sessionFolders(sessions) {
+		fo := opts
+		fo.Budget = deadline.Sub(opts.Now())
+		var res RefreshResult
+		var cache map[string]db.PRState
+		var left map[string]bool
+		if fo.Budget > 0 {
+			res, cache, left = refresh(ctx, d, workbenchID, f, refs[f.id], fo)
+		} else {
+			res.Note = fmt.Sprintf("the %s time budget ran out; %d ref(s) keep their cached state", opts.Budget, len(refs[f.id]))
 		}
-		// Nothing was checked.
-		unchecked = map[string]bool{}
-		for _, ref := range refs {
-			unchecked[ref] = true
+		if res.Note != "" {
+			notes = append(notes, res.Note)
 		}
+		if cache == nil {
+			if cache, err = folderPRStates(d, workbenchID, f.id); err != nil {
+				return nil, RefreshResult{Note: strings.Join(notes, "; ")}, err
+			}
+			// Nothing was checked.
+			left = map[string]bool{}
+			for _, ref := range refs[f.id] {
+				left[ref] = true
+			}
+		}
+		states[f.id], unchecked[f.id] = cache, left
 	}
-	return summarize(sessions, states, unchecked), res, nil
+	return summarize(sessions, states, unchecked), RefreshResult{Note: strings.Join(notes, "; ")}, nil
 }
 
-// summarize is each session's row line from the PR cache states; a
-// session whose Merged reads a ref in unchecked has MergedStale.
-func summarize(sessions []agentSession, states map[string]db.PRState, unchecked map[string]bool) []Summary {
+// summarize is each session's row line from its folder's PR cache (states,
+// by folder id); a session whose Merged reads a ref unchecked in its folder
+// (unchecked, by folder id) has MergedStale.
+func summarize(sessions []agentSession, states map[int64]map[string]db.PRState, unchecked map[int64]map[string]bool) []Summary {
 	out := []Summary{}
 	for _, as := range sessions {
 		s := as.row
-		p := as.sc.counts(states)
+		folderStates := states[as.folder.id]
+		p := as.sc.counts(folderStates)
 		s.Done, s.Total, s.Merged = p.Done, p.Total, p.Merged
-		if len(unchecked) > 0 {
-			s.MergedStale = slices.ContainsFunc(as.sc.countedMergeRefs(), func(ref string) bool { return unchecked[ref] })
+		if left := unchecked[as.folder.id]; len(left) > 0 {
+			s.MergedStale = slices.ContainsFunc(as.sc.countedMergeRefs(), func(ref string) bool { return left[ref] })
 		}
-		s.PRLine = as.sc.prLine(as.sc.prs(states))
+		s.PRLine = as.sc.prLine(as.sc.prs(folderStates))
 		out = append(out, s)
 	}
 	return out
 }
 
-// agentSession is one agent session's row fields (no counts yet) and scope.
+// agentSession is one agent session's row fields (no counts yet), scope and
+// bench folder.
 type agentSession struct {
-	row Summary
-	sc  scope
+	row    Summary
+	sc     scope
+	folder benchFolder
 }
 
 // agentSessions is every agent session of workbench workbenchID with its
@@ -142,8 +170,13 @@ func agentSessions(ctx context.Context, d *db.DB, workbenchID int64) ([]agentSes
 	if err != nil {
 		return nil, err
 	}
-	rows, err := d.QueryContext(ctx, `SELECT id, target_id, finished_at FROM terminal_sessions
-		WHERE project_id = ? AND kind IN `+agentkind.SQLKinds()+` ORDER BY id`, workbenchID)
+	home, err := homeFolder(ctx, d, workbenchID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := d.QueryContext(ctx, `SELECT s.id, s.target_id, s.finished_at, f.id, f.folder_path
+		FROM terminal_sessions s LEFT JOIN workbench_folders f ON f.id = s.workbench_folder_id
+		WHERE s.project_id = ? AND s.kind IN `+agentkind.SQLKinds()+` ORDER BY s.id`, workbenchID)
 	if err != nil {
 		return nil, fmt.Errorf("listing workbench %d sessions: %w", workbenchID, err)
 	}
@@ -152,12 +185,19 @@ func agentSessions(ctx context.Context, d *db.DB, workbenchID int64) ([]agentSes
 	for rows.Next() {
 		var s Summary
 		var target sql.NullInt64
-		var finishedAt sql.NullString
-		if err := rows.Scan(&s.SessionID, &target, &finishedAt); err != nil {
+		var finishedAt, folderPath sql.NullString
+		var folderID sql.NullInt64
+		if err := rows.Scan(&s.SessionID, &target, &finishedAt, &folderID, &folderPath); err != nil {
 			return nil, fmt.Errorf("listing workbench %d sessions: %w", workbenchID, err)
 		}
 		s.TargetID, s.FinishedAt = nullableInt(target), finishedAt.String
-		out = append(out, agentSession{row: s, sc: newScope(b, s.SessionID, target, links[s.SessionID], owners)})
+		folder := home // a row with no folder reads as the home folder (db.SessionFolderID)
+		if folderID.Valid {
+			folder = benchFolder{id: folderID.Int64, path: folderPath.String}
+		}
+		sc := newScope(b, s.SessionID, target, links[s.SessionID], owners)
+		sc.folder, sc.home = folder.id, home.id
+		out = append(out, agentSession{row: s, sc: sc, folder: folder})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("listing workbench %d sessions: %w", workbenchID, err)

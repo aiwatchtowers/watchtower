@@ -440,6 +440,8 @@ var cliNoContentCommands = map[string]bool{
 	"workbench git switch":             true,
 	"workbench launch-args":            true,
 	"workbench list":                   true,
+	"workbench message dismiss":        true, // prints an id only
+	"workbench message send":           true, // prints an id and a state only
 	"workbench methodology":            true,
 	"workbench permission-wait":        true,
 	"workbench resync":                 true,

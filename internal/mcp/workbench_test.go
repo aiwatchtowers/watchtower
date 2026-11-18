@@ -20,7 +20,7 @@ import (
 func newWorkbenchSession(t *testing.T, database *db.DB, workbenchID int64) *mcpsdk.ClientSession {
 	t.Helper()
 	reg := tools.New(database)
-	for _, tool := range append(tools.WorkbenchTools(workbenchfiles.New(t.TempDir()), nil), tools.ReadTools()...) {
+	for _, tool := range append(tools.WorkbenchTools(workbenchfiles.New(t.TempDir()), nil, tools.SessionDeps{}), tools.ReadTools()...) {
 		if err := reg.Register(tool); err != nil {
 			t.Fatal(err)
 		}
@@ -139,7 +139,7 @@ func workbenchToolsListed(t *testing.T, cs *mcpsdk.ClientSession) map[string]str
 		t.Fatal(err)
 	}
 	workbench := map[string]bool{}
-	for _, tool := range tools.WorkbenchTools(workbenchfiles.Store{}, nil) {
+	for _, tool := range tools.WorkbenchTools(workbenchfiles.Store{}, nil, tools.SessionDeps{}) {
 		workbench[tool.Name] = true
 	}
 	out := map[string]string{}
@@ -156,14 +156,14 @@ func workbenchToolsListed(t *testing.T, cs *mcpsdk.ClientSession) map[string]str
 }
 
 // Spec 2026-10-02 §5.2 (extends DEV-06): `mcp --workbench N` lists the
-// twenty-one workbench tools under their current names only, with no
+// twenty-four workbench tools under their current names only, with no
 // description or input schema pointing at a pre-rename name.
-func TestWorkbenchMode_ListsTwentyOneToolsUnderTheCurrentNames(t *testing.T) {
+func TestWorkbenchMode_ListsTwentyFourToolsUnderTheCurrentNames(t *testing.T) {
 	database := seedDB(t)
 	pid := seedMCPWorkbench(t, database)
 	listed := workbenchToolsListed(t, newWorkbenchSession(t, database, pid))
-	if len(listed) != 21 {
-		t.Errorf("want 21 workbench tools, got %d: %v", len(listed), listed)
+	if len(listed) != 24 {
+		t.Errorf("want 24 workbench tools, got %d: %v", len(listed), listed)
 	}
 	renamed := map[string]string{
 		"project_info": tools.WorkbenchInfoTool, "project_board": tools.WorkbenchBoardTool,

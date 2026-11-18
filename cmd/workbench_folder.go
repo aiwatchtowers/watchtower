@@ -15,6 +15,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/kb"
 	"watchtower/internal/sessionhost"
 	"watchtower/internal/workbenchfolders"
 )
@@ -309,7 +310,6 @@ func runWorkbenchFolderRemove(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return folderRefused(cmd, database, err)
 	}
-	wasHome := strings.EqualFold(p.FolderPath, f.FolderPath)
 	f, err = workbenchfolders.Remove(ctx, database, f.ID, folderLiveSessions(cfg, database))
 	if err != nil {
 		return folderRefused(cmd, database, err)
@@ -325,11 +325,11 @@ func runWorkbenchFolderRemove(cmd *cobra.Command, _ []string) error {
 	for _, h := range devpack.OutsideFolderHints(rerr) {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", h)
 	}
-	if wasHome {
-		// The index is keyed by the workbench and read from its home folder
-		// until the key gains the folder (PROJ-08): re-reading the new home
-		// drops what only the old one listed.
-		indexWorkbenchDocs(cmd, cfg.Knowledge.Enabled, database, p.ID)
+	// The index is keyed by folder (PROJ-08): the folder's entries go, the
+	// other folders' stay. Done with knowledge search off too, so nothing of
+	// the folder is left behind to show when it is turned back on.
+	if _, err := kb.DropWorkbenchFolderDocs(ctx, database, p.ID, f.ID); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: dropping %s's documents from search failed: %v (the next index pass drops them)\n", f.Name, err)
 	}
 	return folderDone(cmd, database, f, step, fmt.Sprintf("Removed %s from workbench %d.", f.Name, p.ID))
 }
@@ -349,7 +349,6 @@ func runWorkbenchFolderLocate(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return folderRefused(cmd, database, err)
 	}
-	wasHome := strings.EqualFold(p.FolderPath, f.FolderPath)
 	f, err = workbenchfolders.Locate(ctx, database, f.ID, folderFlagTo, workbenchProtectedDirs())
 	if err != nil {
 		return folderRefused(cmd, database, err)
@@ -359,9 +358,7 @@ func runWorkbenchFolderLocate(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: installing Watchtower in %s failed: %s (retry: watchtower workbench resync %d)\n",
 			f.FolderPath, step.Error, p.ID)
 	}
-	if wasHome {
-		indexWorkbenchDocs(cmd, cfg.Knowledge.Enabled, database, p.ID)
-	}
+	indexWorkbenchDocs(cmd, cfg.Knowledge.Enabled, database, p.ID)
 	return folderDone(cmd, database, f, step, fmt.Sprintf("Workbench %d's folder %s is now at %s.", p.ID, f.Name, f.FolderPath))
 }
 

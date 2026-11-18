@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"watchtower/internal/db"
+	"watchtower/internal/devpack"
 	"watchtower/internal/workbenchfiles"
 	"watchtower/internal/workbenchmethod"
 )
@@ -26,14 +27,15 @@ const maxBatchTargets = 100
 
 // WorkbenchTools returns every workbench tool (surface "project"), in the order
 // buildToolRegistry registers them. files stores the images attached to
-// targets.
-func WorkbenchTools(files workbenchfiles.Store, launch SpecReviewLauncher) []*Tool {
-	return workbenchTools(files, processTerminalSession, launch)
+// targets; sessions reaches the session host, the daemon and the CLI for
+// agent messages and sub-sessions.
+func WorkbenchTools(files workbenchfiles.Store, launch SpecReviewLauncher, sessions SessionDeps) []*Tool {
+	return workbenchTools(files, processTerminalSession, launch, sessions)
 }
 
 // workbenchTools is WorkbenchTools with the terminal session env read through
 // sessionEnv — tests inject their own.
-func workbenchTools(files workbenchfiles.Store, sessionEnv func() string, launch SpecReviewLauncher) []*Tool {
+func workbenchTools(files workbenchfiles.Store, sessionEnv func() string, launch SpecReviewLauncher, sessions SessionDeps) []*Tool {
 	return []*Tool{
 		NewWorkbenchInfo(), NewWorkbenchBoard(), NewUpdateWorkbench(),
 		NewAddWorkbenchSource(), NewRemoveWorkbenchSource(),
@@ -42,7 +44,8 @@ func workbenchTools(files workbenchfiles.Store, sessionEnv func() string, launch
 		NewAskOwner(sessionEnv, launch), NewGetAsk(), NewGetReview(), NewGetSpecReview(),
 		NewAnnotateChanges(sessionEnv), NewReplyReviewComment(), NewAnswerReviewQuestion(sessionEnv),
 		NewListAsks(sessionEnv), NewWithdrawAsk(),
-		NewFinishSession(sessionEnv), NewSetSessionTarget(sessionEnv),
+		NewFinishSession(sessionEnv, sessions), NewSetSessionTarget(sessionEnv),
+		NewSendToSession(sessionEnv, sessions), NewStartSession(sessionEnv, sessions), NewListSessions(sessions),
 	}
 }
 
@@ -150,6 +153,19 @@ type workbenchInfoView struct {
 	// left out when the board defines none and hides nothing.
 	Columns        []db.BoardColumn `json:"columns,omitempty"`
 	HiddenStatuses []string         `json:"hidden_statuses,omitempty"`
+	// Folders are the bench's folders by position (spec 2026-11-18 §5); never
+	// null.
+	Folders []folderView `json:"folders"`
+}
+
+// folderView is one bench folder: its stored name (what start_session,
+// create_targets and update_target take), its path, whether it is the home
+// folder and whether Watchtower's install for this workbench is in it.
+type folderView struct {
+	Name      string `json:"name"`
+	Path      string `json:"path"`
+	Home      bool   `json:"home"`
+	Installed bool   `json:"installed"`
 }
 
 // NewWorkbenchInfo describes the bound workbench: what it is, its sources and
@@ -162,7 +178,8 @@ func NewWorkbenchInfo() *Tool {
 			"workbench is not set up yet (run the setup of the Watchtower skill in this folder). It also shows the methodology this " +
 			"workbench runs under (preset, ask guard, finish check and where each comes from); only the owner changes it. When the " +
 			"owner defined board columns, it lists them (columns, each with the description of when a card goes there) and the " +
-			"statuses turned off on this board (hidden_statuses).",
+			"statuses turned off on this board (hidden_statuses). It lists the bench's folders (name, path, whether it is " +
+			"the home folder and whether Watchtower is installed in it); start_session takes a folder's name.",
 		InputSchema: mustSchema[emptyArgs](WorkbenchInfoTool),
 		Access:      AccessRead,
 		Surfaces:    workbenchSurfaces,
@@ -171,12 +188,12 @@ func NewWorkbenchInfo() *Tool {
 			if err != nil {
 				return nil, err
 			}
-			return buildWorkbenchInfo(d, p)
+			return buildWorkbenchInfo(ctx, d, p)
 		},
 	}
 }
 
-func buildWorkbenchInfo(d *db.DB, p *db.Workbench) (*workbenchInfoView, error) {
+func buildWorkbenchInfo(ctx context.Context, d *db.DB, p *db.Workbench) (*workbenchInfoView, error) {
 	sources, err := d.ListWorkbenchSources(p.ID)
 	if err != nil {
 		return nil, fmt.Errorf("listing sources: %w", err)
@@ -205,7 +222,26 @@ func buildWorkbenchInfo(d *db.DB, p *db.Workbench) (*workbenchInfoView, error) {
 		return nil, fmt.Errorf("reading board columns: %w", err)
 	}
 	v.Columns, v.HiddenStatuses = columns.Columns, columns.Hidden // empty ones are left out
+	if v.Folders, err = benchFolders(ctx, d, p); err != nil {
+		return nil, err
+	}
 	return v, nil
+}
+
+// benchFolders is workbench p's folders on the bench, by position; never
+// nil. Unreadable install settings read as not installed.
+func benchFolders(ctx context.Context, d *db.DB, p *db.Workbench) ([]folderView, error) {
+	folders, err := d.WorkbenchFolders(ctx, p.ID, false)
+	if err != nil {
+		return nil, fmt.Errorf("listing folders: %w", err)
+	}
+	out := make([]folderView, 0, len(folders))
+	for _, f := range folders {
+		installed, _ := devpack.HasCoreStateHooks(f.FolderPath, p.ID)
+		out = append(out, folderView{Name: f.Name, Path: f.FolderPath,
+			Home: strings.EqualFold(f.FolderPath, p.FolderPath), Installed: installed})
+	}
+	return out, nil
 }
 
 func countStatuses(nodes []db.BoardNode, into map[string]int) {
