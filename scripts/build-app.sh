@@ -239,6 +239,13 @@ if ! $DEV_MODE && [ -n "$NOTARIZE_PROFILE" ] && { [ -z "$FLAVOR" ] || [ "$FLAVOR
     echo "ERROR: a public release must set RETIRED_SLACK_CLIENT_ID (recognises accounts on the retired shared Slack app)" >&2
     exit 1
 fi
+# The value lands unquoted inside -ldflags, so any build rejects a value with whitespace in it.
+case "$RETIRED_SLACK_CLIENT_ID" in
+    *[[:space:]]*)
+        echo "ERROR: RETIRED_SLACK_CLIENT_ID must be a single token without whitespace (it is passed to -ldflags unquoted)" >&2
+        exit 1
+        ;;
+esac
 # END retired-slack-id-check
 
 # Without create-dmg the DMG silently degrades to a bare hdiutil image (no

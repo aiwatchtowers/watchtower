@@ -23,7 +23,13 @@ run() {
     out=$(DEV_MODE="$dev" FLAVOR="$flavor" NOTARIZE_PROFILE="$notarize" RETIRED_SLACK_CLIENT_ID="$id" \
         bash -c 'source "$1"; echo reached' _ "$WORK_DIR/block.sh" 2>&1)
     rc=$?
-    if [ "$expect" = fail ]; then
+    if [ "$expect" = wsfail ]; then
+        if [ "$rc" -eq 1 ] && [[ "$out" == *"must be a single token"* ]] && [[ "$out" != *reached* ]]; then
+            echo "ok: $name"
+        else
+            echo "FAIL: $name (rc=$rc)"; echo "$out"; FAILURES=$((FAILURES + 1))
+        fi
+    elif [ "$expect" = fail ]; then
         if [ "$rc" -eq 1 ] && [[ "$out" == *"$WANT_ERR"* ]] && [[ "$out" != *reached* ]]; then
             echo "ok: $name"
         else
@@ -41,6 +47,8 @@ run() {
 run "public release, empty id fails (flavor empty)" fail false "" notarize-prof ""
 run "public release, empty id fails (flavor dev)" fail false dev notarize-prof ""
 run "public release with id passes" pass false "" notarize-prof placeholder-id
+run "whitespace-only id fails" wsfail false "" notarize-prof "   "
+run "embedded-space id fails" wsfail false "" notarize-prof "abc def"
 run "corp release passes without id" pass false corp notarize-prof ""
 run "--dev passes without id" pass true "" notarize-prof ""
 run "non-release passes without id" pass false "" "" ""
