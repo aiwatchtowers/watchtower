@@ -26,7 +26,7 @@ type watchmanTestGen struct{ calls int }
 
 func (g *watchmanTestGen) Generate(context.Context, string, string, string) (string, *digest.Usage, string, error) {
 	g.calls++
-	return `["scope"]`, &digest.Usage{}, "", nil
+	return `[{"category": "scope", "decision": true, "parked": false}]`, &digest.Usage{}, "", nil
 }
 
 // stubWatchman replaces the generator, git and the feed reader; it returns
@@ -174,6 +174,24 @@ func TestPhaseWatchmanBacktest_SkipsHalfLearned(t *testing.T) {
 	d.phaseWatchmanBacktest(context.Background())
 	assert.Equal(t, []int64{learned}, *launched)
 	assert.True(t, readUnixStamp(d.watchmanBacktestLaunchedPath(learning)).IsZero(), "nothing stamped for the learning one")
+}
+
+// A workbench whose earlier precedents are still being relabelled is not
+// due: no child, no launch stamp.
+func TestPhaseWatchmanBacktest_SkipsWhileRelabelPending(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	stubWatchman(t)
+	launched := stubBacktestLaunch(d)
+	wb := enabledWatchmanWorkbench(t, database, "acme")
+	seedDesignPrecedents(t, database, wb) // stored unflagged: pending
+	d.phaseWatchmanBacktest(context.Background())
+	assert.Empty(t, *launched)
+	assert.True(t, readUnixStamp(d.watchmanBacktestLaunchedPath(wb)).IsZero(), "no launch stamp")
+
+	_, err := database.Exec(`UPDATE watchman_precedents SET flags_at = '2026-11-02T09:00:00Z' WHERE workbench_id = ?`, wb)
+	require.NoError(t, err)
+	d.phaseWatchmanBacktest(context.Background())
+	assert.Equal(t, []int64{wb}, *launched, "launched once the pass is done")
 }
 
 // The weekly phase never runs a backtest in-process: it launches one

@@ -48,7 +48,8 @@
       "learning": {
         "written": 6,
         "estimated": 120,
-        "done": false
+        "done": false,
+        "relabel_pending": 5
       },
       "backtest": {
         "id": 2,

@@ -53,20 +53,34 @@ func listRows(wb int64, source string, n int, category string) []db.WatchmanPrec
 	return out
 }
 
-// fakeLabeler labels every item with label and records what it was asked.
+// fakeLabeler labels every item with label, as a decision that is not
+// parked, and records what it was asked. reply, when set, answers instead
+// (call counts from 1).
 type fakeLabeler struct {
 	label string
 	got   []LabelItem
+	calls [][]LabelItem
+	reply func(call int, items []LabelItem) ([]Label, error)
 }
 
-func (f *fakeLabeler) Label(_ context.Context, items []LabelItem) ([]string, error) {
+func (f *fakeLabeler) Label(_ context.Context, items []LabelItem) ([]Label, error) {
 	f.got = append(f.got, items...)
-	out := make([]string, len(items))
-	for i := range out {
-		out[i] = f.label
+	f.calls = append(f.calls, items)
+	if f.reply != nil {
+		return f.reply(len(f.calls), items)
 	}
-	return out, nil
+	return repeatLabels(f.label, wmBool(true), wmBool(false), len(items)), nil
 }
+
+func repeatLabels(category string, decision, parked *bool, n int) []Label {
+	out := make([]Label, n)
+	for i := range out {
+		out[i] = Label{Category: category, Decision: decision, Parked: parked}
+	}
+	return out
+}
+
+func wmBool(b bool) *bool { return &b }
 
 func fixedNow() time.Time { return learnT0 }
 
@@ -154,7 +168,7 @@ func TestLearn_MarksLearnedWhenAllSourcesDone(t *testing.T) {
 	assert.Equal(t, learnT0.Format(time.RFC3339), at)
 }
 
-func TestLearn_LabelsOnlyUnlabelled(t *testing.T) {
+func TestLearn_CategorisesOnlyUnlabelled(t *testing.T) {
 	d, wb := learnDB(t)
 	rows := listRows(wb, SourceAsk, 4, CategoryReviewDoc)
 	rows[1].Category, rows[3].Category = "", ""
@@ -163,7 +177,12 @@ func TestLearn_LabelsOnlyUnlabelled(t *testing.T) {
 	lab := &fakeLabeler{label: CategoryDesign}
 	st, err := Learn(context.Background(), d, wb, LearnOptions{Now: fixedNow, Sources: []Source{&listSource{name: SourceAsk, rows: rows}}, Labeler: lab})
 	require.NoError(t, err)
-	assert.Equal(t, []LabelItem{{Situation: "which cache", Choice: "yes"}, {Situation: "which name", Choice: "yes\nshort names"}}, lab.got)
+	assert.Equal(t, []LabelItem{
+		{Situation: "situation 0", Choice: "yes"},
+		{Situation: "which cache", Choice: "yes", NeedCategory: true},
+		{Situation: "situation 2", Choice: "yes"},
+		{Situation: "which name", Choice: "yes\nshort names", NeedCategory: true},
+	}, lab.got, "every ask goes for its flags; only the uncategorised ones need a category")
 	assert.Equal(t, 2, st.Labelled)
 	cats := map[string]string{}
 	qs, err := d.Query(`SELECT source_key, category FROM watchman_precedents`)
@@ -212,9 +231,9 @@ func (g *labelGen) Generate(ctx context.Context, system, user, _ string) (string
 
 func repeatLabel(label string) func(int) string {
 	return func(n int) string {
-		out := make([]string, n)
+		out := make([]map[string]any, n)
 		for i := range out {
-			out[i] = label
+			out[i] = map[string]any{"category": label, "decision": true, "parked": false}
 		}
 		b, _ := json.Marshal(out)
 		return string(b)
@@ -232,7 +251,7 @@ func TestLLMLabeler_BatchesOf20(t *testing.T) {
 	assert.Equal(t, []int{20, 20, 5}, g.calls)
 	assert.Len(t, got, 45)
 	for _, c := range got {
-		assert.Equal(t, CategoryTests, c)
+		assert.Equal(t, Label{Category: CategoryTests, Decision: wmBool(true), Parked: wmBool(false)}, c)
 	}
 	assert.Equal(t, []string{prompts.WatchmanLabel, prompts.WatchmanLabel, prompts.WatchmanLabel}, g.sources)
 	assert.Equal(t, prompts.Defaults[prompts.WatchmanLabel], g.system)
@@ -243,15 +262,15 @@ func TestLLMLabeler_BatchesOf20(t *testing.T) {
 }
 
 func TestLLMLabeler_WrongLengthLeavesTheBatchUnlabelled(t *testing.T) {
-	g := &labelGen{reply: func(int) string { return `["design"]` }}
+	g := &labelGen{reply: func(int) string { return `[{"category":"design","decision":true,"parked":false}]` }}
 	got, err := NewLLMLabeler(g, nil).Label(context.Background(), []LabelItem{{Situation: "a"}, {Situation: "b"}})
 	require.NoError(t, err)
-	assert.Equal(t, []string{"", ""}, got)
+	assert.Equal(t, []Label{{}, {}}, got)
 
 	g.reply = func(int) string { return "not json" }
 	got, err = NewLLMLabeler(g, nil).Label(context.Background(), []LabelItem{{Situation: "a"}})
 	require.NoError(t, err)
-	assert.Equal(t, []string{""}, got)
+	assert.Equal(t, []Label{{}}, got)
 }
 
 // A generator failure is an outage, not an answer: an error, retried later.
@@ -290,13 +309,15 @@ func TestLearn_NonJSONLabelReplyDoesNotStall(t *testing.T) {
 
 	st, err = Learn(context.Background(), d, wb, opts)
 	require.NoError(t, err)
-	assert.Equal(t, []int{3}, g.calls, "nothing new reaches the model")
+	assert.Equal(t, []int{3, 3}, g.calls, "nothing new reaches the model (the first pass retried the missing flags once)")
 	assert.Zero(t, st.Unlabelled)
 }
 
 func TestLearn_UnknownLabelSkippedAndCounted(t *testing.T) {
 	d, wb := learnDB(t)
-	g := &labelGen{reply: func(int) string { return "```json\n[\"design\", \"bogus\"]\n```" }}
+	g := &labelGen{reply: func(int) string {
+		return "```json\n[{\"category\": \"design\", \"decision\": true, \"parked\": false}, {\"category\": \"bogus\", \"decision\": true, \"parked\": false}]\n```"
+	}}
 	src := &listSource{name: "turn", rows: listRows(wb, "turn", 2, "")}
 	opts := LearnOptions{Now: fixedNow, Sources: []Source{src}, Labeler: NewLLMLabeler(g, nil)}
 	st, err := Learn(context.Background(), d, wb, opts)
@@ -374,4 +395,211 @@ func TestEstimate_NotARepositoryHasNoCommits(t *testing.T) {
 	got, err := Estimate(context.Background(), d, ExecGit, wb)
 	require.NoError(t, err)
 	assert.Equal(t, LearnEstimate{}, got)
+}
+
+// storedFlags reads one precedent's flags, flags_at and category.
+type storedFlags struct {
+	Decision, Parked *bool
+	FlagsAt          *string
+	Category         string
+}
+
+func flagsOf(t *testing.T, d *db.DB, wb int64, source, key string) storedFlags {
+	t.Helper()
+	var f storedFlags
+	require.NoError(t, d.QueryRow(`SELECT is_decision, parked, flags_at, category FROM watchman_precedents
+		WHERE workbench_id = ? AND source = ? AND source_key = ?`, wb, source, key).Scan(&f.Decision, &f.Parked, &f.FlagsAt, &f.Category))
+	return f
+}
+
+func pendingOf(t *testing.T, d *db.DB, wb int64) int {
+	t.Helper()
+	n, err := d.WatchmanFlagsPending(wb)
+	require.NoError(t, err)
+	return n
+}
+
+// seedUnflagged stores precedents as phase 1 left them: no flags.
+func seedUnflagged(t *testing.T, d *db.DB, ps []db.WatchmanPrecedent) {
+	t.Helper()
+	tx, err := d.Begin()
+	require.NoError(t, err)
+	require.NoError(t, d.UpsertWatchmanPrecedents(tx, ps))
+	require.NoError(t, tx.Commit())
+}
+
+func TestLearn_NewAskGetsFlags(t *testing.T) {
+	d, wb := learnDB(t)
+	lab := &fakeLabeler{reply: func(_ int, items []LabelItem) ([]Label, error) {
+		return repeatLabels(CategoryScope, wmBool(false), wmBool(true), len(items)), nil
+	}}
+	src := &listSource{name: SourceAsk, rows: listRows(wb, SourceAsk, 1, "")}
+	_, err := Learn(context.Background(), d, wb, LearnOptions{Now: fixedNow, Sources: []Source{src}, Labeler: lab})
+	require.NoError(t, err)
+	f := flagsOf(t, d, wb, SourceAsk, "ask-0")
+	assert.Equal(t, wmBool(false), f.Decision)
+	assert.Equal(t, wmBool(true), f.Parked)
+	assert.NotNil(t, f.FlagsAt)
+	assert.Equal(t, CategoryScope, f.Category)
+	assert.Len(t, lab.calls, 1, "flags given: no retry, nothing left for the relabel pass")
+}
+
+// A review ask's category is set by Go: the labeller is asked only for its
+// flags, and a category it returns anyway is ignored.
+func TestLearn_ReviewAskKeepsGoCategory(t *testing.T) {
+	d, wb := learnDB(t)
+	lab := &fakeLabeler{reply: func(_ int, items []LabelItem) ([]Label, error) {
+		return repeatLabels(CategoryDesign, wmBool(true), wmBool(true), len(items)), nil
+	}}
+	src := &listSource{name: SourceAsk, rows: listRows(wb, SourceAsk, 1, CategoryReviewDoc)}
+	_, err := Learn(context.Background(), d, wb, LearnOptions{Now: fixedNow, Sources: []Source{src}, Labeler: lab})
+	require.NoError(t, err)
+	require.Len(t, lab.got, 1)
+	assert.False(t, lab.got[0].NeedCategory)
+	f := flagsOf(t, d, wb, SourceAsk, "ask-0")
+	assert.Equal(t, CategoryReviewDoc, f.Category)
+	assert.Equal(t, wmBool(true), f.Parked)
+}
+
+func TestLearn_FlagsMissingRetriedOnceThenCandidate(t *testing.T) {
+	d, wb := learnDB(t)
+	// First call: categories, no flags. The retry: flags for the first
+	// item only.
+	lab := &fakeLabeler{reply: func(call int, items []LabelItem) ([]Label, error) {
+		if call == 1 {
+			return repeatLabels(CategoryTests, nil, nil, len(items)), nil
+		}
+		out := repeatLabels("", nil, nil, len(items))
+		out[0].Decision, out[0].Parked = wmBool(true), wmBool(false)
+		return out, nil
+	}}
+	src := &listSource{name: "turn", rows: listRows(wb, "turn", 2, "")}
+	st, err := Learn(context.Background(), d, wb, LearnOptions{Now: fixedNow, Sources: []Source{src}, Labeler: lab})
+	require.NoError(t, err)
+	require.Len(t, lab.calls, 2, "the items without flags are sent once more, then never again")
+	assert.Len(t, lab.calls[1], 2)
+	assert.Equal(t, 2, st.Written)
+
+	got := flagsOf(t, d, wb, "turn", "turn-0")
+	assert.Equal(t, storedFlags{Decision: wmBool(true), Parked: wmBool(false), FlagsAt: got.FlagsAt, Category: CategoryTests}, got, "flags on the retry are stored")
+	assert.NotNil(t, got.FlagsAt)
+	got = flagsOf(t, d, wb, "turn", "turn-1")
+	assert.Nil(t, got.Decision)
+	assert.Nil(t, got.Parked)
+	assert.NotNil(t, got.FlagsAt, "tried: a candidate, not labelled again")
+	assert.Equal(t, CategoryTests, got.Category)
+	assert.Zero(t, pendingOf(t, d, wb))
+}
+
+func TestLearn_RelabelErrorDoesNotStopSources(t *testing.T) {
+	d, wb := learnDB(t)
+	seedUnflagged(t, d, listRows(wb, "turn", 3, CategoryScope))
+	// The source's new asks label fine; the relabel pass's call fails.
+	lab := &fakeLabeler{reply: func(_ int, items []LabelItem) ([]Label, error) {
+		if !items[0].NeedCategory && strings.HasPrefix(items[0].Situation, "situation") && len(items) == 3 {
+			return nil, errors.New("provider limit: the owner's text here")
+		}
+		return repeatLabels(CategoryDesign, wmBool(true), wmBool(false), len(items)), nil
+	}}
+	src := &listSource{name: SourceAsk, rows: listRows(wb, SourceAsk, 2, "")}
+	st, err := Learn(context.Background(), d, wb, LearnOptions{Now: fixedNow, Sources: []Source{src}, Labeler: lab})
+	require.NoError(t, err, "a relabel error never fails the pass")
+	assert.Equal(t, 2, st.Written)
+	assert.Zero(t, st.Relabelled)
+	at, _ := learnedThrough(t, d, wb)
+	assert.Equal(t, learnT0.Format(time.RFC3339), at, "learned_through as before")
+	assert.Equal(t, 3, pendingOf(t, d, wb), "the earlier rows stay pending")
+}
+
+func TestRelabel_FlagsExistingRowsOnce(t *testing.T) {
+	d, wb := learnDB(t)
+	old := append(listRows(wb, SourceAsk, 13, CategoryScope), listRows(wb, "turn", 12, CategoryDesign)...)
+	seedUnflagged(t, d, old)
+	require.Equal(t, 25, pendingOf(t, d, wb))
+	lab := &fakeLabeler{reply: func(_ int, items []LabelItem) ([]Label, error) {
+		return repeatLabels(CategoryFinish, wmBool(true), wmBool(false), len(items)), nil
+	}}
+	opts := LearnOptions{Now: fixedNow, Labeler: lab}
+
+	st, err := Learn(context.Background(), d, wb, opts)
+	require.NoError(t, err)
+	assert.Equal(t, 25, st.Relabelled)
+	require.Len(t, lab.calls, 2)
+	assert.Len(t, lab.calls[0], 20)
+	assert.Len(t, lab.calls[1], 5)
+	for _, it := range lab.got {
+		assert.False(t, it.NeedCategory, "the relabel pass never asks for a category")
+	}
+	assert.Zero(t, pendingOf(t, d, wb))
+	for _, p := range old {
+		f := flagsOf(t, d, wb, p.Source, p.SourceKey)
+		assert.Equal(t, p.Category, f.Category, "the stored category is unchanged")
+		assert.Equal(t, wmBool(true), f.Decision)
+	}
+
+	_, err = Learn(context.Background(), d, wb, opts)
+	require.NoError(t, err)
+	assert.Len(t, lab.calls, 2, "a second cycle calls the labeller 0 times")
+}
+
+func TestRelabel_ResumesAfterFailure(t *testing.T) {
+	d, wb := learnDB(t)
+	seedUnflagged(t, d, listRows(wb, "turn", 25, CategoryScope))
+	fail := true
+	lab := &fakeLabeler{reply: func(call int, items []LabelItem) ([]Label, error) {
+		if call == 2 && fail {
+			return nil, errors.New("provider limit")
+		}
+		return repeatLabels("", wmBool(true), wmBool(false), len(items)), nil
+	}}
+	opts := LearnOptions{Now: fixedNow, Labeler: lab}
+
+	st, err := Learn(context.Background(), d, wb, opts)
+	require.NoError(t, err)
+	assert.Equal(t, 20, st.Relabelled, "the first batch is flagged")
+	assert.Equal(t, 5, pendingOf(t, d, wb))
+
+	fail = false
+	st, err = Learn(context.Background(), d, wb, opts)
+	require.NoError(t, err)
+	assert.Equal(t, 5, st.Relabelled)
+	require.Len(t, lab.calls, 3)
+	assert.Len(t, lab.calls[2], 5, "the next cycle sends the remaining 5 only")
+	assert.Zero(t, pendingOf(t, d, wb))
+}
+
+// Permission rows are flagged by the hard-limit table, never the labeller;
+// a row whose request is gone counts as parked.
+func TestRelabel_PermissionRowsByTable(t *testing.T) {
+	d := openSourceDB(t)
+	require.NoError(t, d.EnableWatchmanWorkbench(1, learnT0, 0))
+	s := seedSession(t, d, 1, nil)
+	at := srcT0
+	push := seedPermission(t, d, s, 1, "Bash", "git push origin main", "allowed", &at)
+	test := seedPermission(t, d, s, 1, "Bash", "go test ./...", "allowed", &at)
+	rows := listRows(1, SourcePermission, 3, CategoryPermission)
+	rows[0].SourceKey = strconv.FormatInt(push, 10)
+	rows[1].SourceKey = strconv.FormatInt(test, 10)
+	rows[2].SourceKey = "999999" // its request row is gone
+	seedUnflagged(t, d, rows)
+	lab := &fakeLabeler{}
+
+	st, err := Learn(context.Background(), d, 1, LearnOptions{Now: fixedNow, Labeler: lab})
+	require.NoError(t, err)
+	assert.Equal(t, 3, st.Relabelled)
+	assert.Empty(t, lab.calls, "no labeller call for permission rows")
+	for key, parked := range map[string]bool{rows[0].SourceKey: true, rows[1].SourceKey: false, "999999": true} {
+		f := flagsOf(t, d, 1, SourcePermission, key)
+		assert.Equal(t, wmBool(true), f.Decision, key)
+		assert.Equal(t, wmBool(parked), f.Parked, key)
+	}
+}
+
+func TestEstimate_CountsRelabelPending(t *testing.T) {
+	d := openWatchmanDB(t)
+	wb := addWorkbench(t, d, t.TempDir())
+	seedUnflagged(t, d, listRows(wb, "turn", 4, CategoryScope))
+	got, err := Estimate(context.Background(), d, ExecGit, wb)
+	require.NoError(t, err)
+	assert.Equal(t, LearnEstimate{NeedLabels: 4, Tokens: 4 * labelTokensPerItem}, got)
 }

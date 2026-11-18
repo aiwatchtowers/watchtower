@@ -72,6 +72,20 @@ func (db *DB) SetWatchmanPrecedentFlags(tx *sql.Tx, flags []WatchmanPrecedentFla
 	return nil
 }
 
+// MarkWatchmanFlagsTried sets flags_at = at on the given precedents of one
+// source that have none yet: the labeller was asked (and retried once) but
+// gave no flags, so the rows stay candidates and are not relabelled.
+func (db *DB) MarkWatchmanFlagsTried(tx *sql.Tx, workbenchID int64, source string, keys []string, at time.Time) error {
+	for _, k := range keys {
+		if _, err := tx.Exec(`UPDATE watchman_precedents SET flags_at = ?
+			WHERE workbench_id = ? AND source = ? AND source_key = ? AND flags_at IS NULL`,
+			wmTime(at), workbenchID, source, k); err != nil {
+			return fmt.Errorf("marking watchman precedent %s/%s tried: %w", source, k, err)
+		}
+	}
+	return nil
+}
+
 // WatchmanFlagsPending counts the workbench's ask/turn/permission precedents
 // the relabel pass has not tried yet.
 func (db *DB) WatchmanFlagsPending(workbenchID int64) (int, error) {

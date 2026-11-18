@@ -263,6 +263,9 @@ func runWatchmanStatus(cmd *cobra.Command, _ []string) error {
 			fmt.Fprintf(out, "learning… %d of ~%d", min(wb.Learning.Written, wb.Learning.Estimated), wb.Learning.Estimated)
 		}
 		fmt.Fprintln(out, bySourceText(sourceWritten(wb.Sources)))
+		if wb.Learning.RelabelPending > 0 {
+			fmt.Fprintf(out, "  relabelling earlier decisions: %d left\n", wb.Learning.RelabelPending)
+		}
 		if wb.SleepWindow != "" {
 			fmt.Fprintf(out, "  Sleep window: %s\n", wb.SleepWindow)
 		}

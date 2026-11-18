@@ -37,13 +37,7 @@ func (s *permissionSource) Next(ctx context.Context, d *db.DB, workbenchID int64
 		if r.Status == db.PermissionAllowed {
 			choice = "allow"
 		}
-		flags := permissionFlags(PermissionAsk{
-			Tool: r.ToolName, Summary: r.Summary, WorkbenchFolder: r.WorkbenchFolder,
-			Worktrees: append([]string{r.SessionFolder}, r.Worktrees...),
-			// PRBase stays nil: no row the writers produce maps a PR number to its
-			// base branch ('into:' rows carry no pr_number), so every `gh pr merge`
-			// is parked.
-		})
+		flags := permissionFlags(permissionAskOf(r))
 		out = append(out, db.WatchmanPrecedent{
 			WorkbenchID: workbenchID, Source: SourcePermission, SourceKey: strconv.FormatInt(r.ID, 10),
 			Category: CategoryPermission, Situation: clean(joinNonEmpty("\n", "Tool: "+r.ToolName, r.Summary)),
@@ -52,4 +46,16 @@ func (s *permissionSource) Next(ctx context.Context, d *db.DB, workbenchID int64
 		})
 	}
 	return out, next, done, nil
+}
+
+// permissionAskOf is the hard-limit table's view of a stored permission
+// request: its session folder and worktrees are the places it may touch.
+func permissionAskOf(r db.WatchmanPermissionRow) PermissionAsk {
+	return PermissionAsk{
+		Tool: r.ToolName, Summary: r.Summary, WorkbenchFolder: r.WorkbenchFolder,
+		Worktrees: append([]string{r.SessionFolder}, r.Worktrees...),
+		// PRBase stays nil: no row the writers produce maps a PR number to its
+		// base branch ('into:' rows carry no pr_number), so every `gh pr merge`
+		// is parked.
+	}
 }

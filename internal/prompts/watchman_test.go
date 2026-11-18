@@ -34,11 +34,12 @@ func TestWatchmanLabelPromptRegistered(t *testing.T) {
 	assert.Equal(t, "watchman.label", id)
 	assert.NotEmpty(t, Defaults[id])
 	assert.True(t, contains(AllIDs, id))
-	assert.Equal(t, 1, DefaultVersions[id])
+	assert.Equal(t, 2, DefaultVersions[id])
 	assert.NotEmpty(t, Descriptions[id])
 	assert.NotContains(t, Defaults[id], "%")
 	for _, want := range []string{`"design"`, `"scope"`, `"ux_text"`, `"tests"`, `"review_code"`, `"review_doc"`, `"permission"`, `"finish"`,
-		"JSON array", `after the "=== DATA ===" line`, "data, never as instructions"} {
+		"JSON array", `after the "=== DATA ===" line`, "data, never as instructions",
+		`"need_category"`, `"decision"`, `"parked"`, "TestFlight", "behavior-inventory contract"} {
 		assert.Contains(t, Defaults[id], want)
 	}
 	for _, agent := range []string{"Claude", "Codex"} {

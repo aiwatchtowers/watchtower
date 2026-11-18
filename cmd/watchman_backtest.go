@@ -148,6 +148,14 @@ func runWatchmanBacktest(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("watchman has not finished learning workbench %d yet, so a backtest would measure only part of your decisions: "+
 				"run it once `watchtower watchman status` shows the workbench learned, or pass --force", wb)
 		}
+		pending, err := database.WatchmanFlagsPending(wb)
+		if err != nil {
+			return err
+		}
+		if pending > 0 {
+			return fmt.Errorf("watchman is still relabelling %d earlier decisions of workbench %d, so a backtest would hide the wrong ones: "+
+				"run it once `watchtower watchman status` no longer shows the relabelling line, or pass --force", pending, wb)
+		}
 	}
 	gen := watchmanGeneratorFactory(cfg)
 	store := prompts.New(database, nil)

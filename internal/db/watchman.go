@@ -578,6 +578,36 @@ func (db *DB) WatchmanPermissionDecisions(workbenchID int64, from *WatchmanMark,
 	if err != nil {
 		return nil, fmt.Errorf("reading permission decisions of workbench %d: %w", workbenchID, err)
 	}
+	return scanWatchmanPermissionRows(rows)
+}
+
+// WatchmanPermissionRequests returns the workbench's decided permission
+// requests with the given ids, by id; an id with no such row (deleted, its
+// session gone, undecided, another workbench) is absent from the map.
+func (db *DB) WatchmanPermissionRequests(workbenchID int64, ids []int64) (map[int64]WatchmanPermissionRow, error) {
+	out := map[int64]WatchmanPermissionRow{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	args := []any{workbenchID}
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	rows, err := db.Query(`SELECT * FROM (`+wmPermissionSQL+`) WHERE wm_id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")+`)`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("reading permission requests of workbench %d: %w", workbenchID, err)
+	}
+	list, err := scanWatchmanPermissionRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range list {
+		out[r.ID] = r
+	}
+	return out, nil
+}
+
+func scanWatchmanPermissionRows(rows *sql.Rows) ([]WatchmanPermissionRow, error) {
 	defer rows.Close()
 	var out []WatchmanPermissionRow
 	for rows.Next() {

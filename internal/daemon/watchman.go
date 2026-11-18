@@ -71,9 +71,9 @@ func (d *Daemon) phaseWatchmanLearn(ctx context.Context) {
 			sources = append(sources, watchman.GitSource(watchmanGit))
 			st, err := watchman.Learn(ctx, d.db, wb, watchman.LearnOptions{Budget: left, Sources: sources, Labeler: labeler})
 			stats.items += st.Written
-			if st.Written+st.Unlabelled+st.Skipped > 0 || st.Incomplete {
-				d.logger.Printf("watchman learn: workbench %d: %d written, %d labelled, %d unlabelled, %d unreadable, incomplete=%v",
-					wb, st.Written, st.Labelled, st.Unlabelled, st.Skipped, st.Incomplete)
+			if st.Written+st.Unlabelled+st.Skipped+st.Relabelled > 0 || st.Incomplete {
+				d.logger.Printf("watchman learn: workbench %d: %d written, %d labelled, %d unlabelled, %d unreadable, %d relabelled, incomplete=%v",
+					wb, st.Written, st.Labelled, st.Unlabelled, st.Skipped, st.Relabelled, st.Incomplete)
 			}
 			if err != nil {
 				if isBenignShutdownErr(ctx, err) {
@@ -209,8 +209,9 @@ func (d *Daemon) watchmanBacktestLaunchedPath(workbenchID int64) string {
 // A workbench is due when its success stamp (watchman.BacktestStampPath,
 // written by the child on a finished run, a manual run included) is a week
 // old or missing and no launch was tried for it in the last day. A workbench
-// still learning (learned_through unset) is not due: a backtest over part of
-// its history would measure the wrong thing. Nothing is launched while a
+// still learning (learned_through unset) or still relabelling earlier
+// precedents (spec §9.1) is not due: a backtest over part of its history, or
+// over unflagged rows, would measure the wrong thing. Nothing is launched while a
 // backtest holds the lock.
 func (d *Daemon) phaseWatchmanBacktest(ctx context.Context) {
 	if d.db == nil || d.watchmanBacktestLaunch == nil || ctx.Err() != nil {
@@ -233,6 +234,14 @@ func (d *Daemon) phaseWatchmanBacktest(ctx context.Context) {
 			continue
 		}
 		if st == nil || st.LearnedThrough == nil {
+			continue
+		}
+		pending, err := d.db.WatchmanFlagsPending(wb)
+		if err != nil {
+			d.logger.Printf("watchman backtest: workbench %d: %v", wb, err)
+			continue
+		}
+		if pending > 0 {
 			continue
 		}
 		if last := readUnixStamp(watchman.BacktestStampPath(dir, wb)); !last.IsZero() && now.Sub(last) < watchmanProfileInterval {

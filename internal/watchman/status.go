@@ -61,11 +61,13 @@ type EstimateStatus struct {
 
 // LearningStatus is the learning progress: Written = precedents + the
 // decisions that got no category, Estimated = the estimate taken at start,
-// Done = every source finished its backfill.
+// Done = every source finished its backfill, RelabelPending = the earlier
+// precedents the relabel pass has not flagged yet (the backtest waits for 0).
 type LearningStatus struct {
-	Written   int  `json:"written"`
-	Estimated int  `json:"estimated"`
-	Done      bool `json:"done"`
+	Written        int  `json:"written"`
+	Estimated      int  `json:"estimated"`
+	Done           bool `json:"done"`
+	RelabelPending int  `json:"relabel_pending"`
 }
 
 // BacktestStatus is one backtest run.
@@ -180,7 +182,11 @@ func workbenchStatus(ctx context.Context, d *db.DB, wb db.Workbench, o StatusOpt
 	} else {
 		at := state.EnabledAt.UTC().Format(time.RFC3339)
 		s.EnabledAt = &at
-		s.Learning = &LearningStatus{Written: written + state.Unlabelled, Estimated: state.EstimatedDecisions, Done: done}
+		pending, err := d.WatchmanFlagsPending(wb.ID)
+		if err != nil {
+			return s, err
+		}
+		s.Learning = &LearningStatus{Written: written + state.Unlabelled, Estimated: state.EstimatedDecisions, Done: done, RelabelPending: pending}
 	}
 	latest, rows, err := d.LatestWatchmanBacktest(wb.ID)
 	if err != nil {
