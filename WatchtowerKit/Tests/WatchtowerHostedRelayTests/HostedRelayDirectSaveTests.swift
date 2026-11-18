@@ -28,6 +28,31 @@ final class HostedRelayDirectSaveTests: HostedRelayScenarioCase {
         XCTAssertEqual(page.changed.first?.clientModifiedAtMs, 1_700_000_000_000)
     }
 
+    /// Through the device's session (live link R2): over its socket while live, its own record met again after a
+    /// socket lost mid-save is success, and the mailbox holds the farewell once.
+    func testSaveDirectlyThroughTheSessionRidesTheSocket() async throws {
+        let relay = try requireFake("cuts the socket mid-op (fake only, R15)")
+        let (mac, phone) = try await hub(mac: 62, phone: 63)
+        let session = HostedRelaySession(client: phone)
+        let owner = SessionOwner()
+        await session.attach(owner: ObjectIdentifier(owner), zones: []) { _ in }
+        while await session.connection?.isLive != true {
+            pump()
+            await Task.yield()
+        }
+        relay.cutSocketAfterNext("save")
+
+        try await HostedRelayTransport.saveDirectly(record("farewell"), session: session, macDeviceID: mac.deviceID)
+        await session.detach(owner: ObjectIdentifier(owner))
+
+        guard case .changes(let page) = try await mac.perform(Self.changesOp(mailbox(mac, phone))).result else {
+            return XCTFail("the Mac reads its mailbox with the phone")
+        }
+        XCTAssertEqual(page.changed.map(\.name), ["farewell"])
+        let saves = relay.log.filter { if case .save = $0 { return true } else { return false } }
+        XCTAssertEqual(saves.count, 2, "the socket's save, then its resend over HTTPS")
+    }
+
     private func mailbox(_ mac: HostedRelayClient, _ phone: HostedRelayClient) -> String {
         HostedRelayZones.mailbox(mac: mac.deviceID, phone: phone.deviceID)
     }

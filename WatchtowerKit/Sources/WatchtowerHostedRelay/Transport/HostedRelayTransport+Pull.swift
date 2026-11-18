@@ -74,7 +74,7 @@ extension HostedRelayTransport {
             energy?.record(zone == .data ? .dataZonePoll : .relayZonePoll)
             let page: Relay_V1_ChangesResult
             do {
-                page = try await call(zone) { try await self.client.changes(request) }
+                page = try await call(zone) { try await self.session.changes(request) }
             } catch HostedRelayError.server(code: .tokenExpired, _) where since > 0 {
                 if resync, isLoad, !restarted {
                     // A load, not a resync after TOKEN_EXPIRED: the first pull restarts from 0 at once, as it

@@ -258,7 +258,79 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
         XCTAssertEqual(tally.dials, 1, "no stop and start")
     }
 
+    // MARK: - Ops over the socket (live link R2)
+
+    /// With the socket live, a pull and a conditional save go over it: HTTPS sees no `changes` or `save`.
+    func testOpsUseTheSocketWhenLive() async throws {
+        let http = HTTPBox()
+        let (phone, _, macs) = try await paired(macs: [1], wrapHTTP: http.wrap)
+        let session = HostedRelaySession(client: phone)
+        let store = try TransportStore.inMemory()
+        let hub = try transport(session, mac: macs[0], store: store)
+        await hub.start()
+        _ = await until { await session.connection?.isLive == true }
+        let mark = try http.ops().count
+
+        try await save(macs[0], dataZone(macs[0]), "from-the-mac")
+        _ = await until {
+            (try? store.changes(in: .data, since: nil).changed.map(\.recordName))?.contains("from-the-mac") == true
+        }
+        let outcomes = try await hub.save([ConditionalSave(record: Self.record("from-the-phone"), expect: .absent)])
+        guard case .saved? = outcomes.first else { return XCTFail("not saved: \(outcomes)") }
+        try await hub.pull()
+
+        let overHTTPS = try http.ops().dropFirst(mark).filter { ["changes", "save", "delete"].contains($0) }
+        XCTAssertEqual(overHTTPS, [], "ops over the socket")
+        XCTAssertTrue(backend.opLog.contains { if case .save = $0 { return true } else { return false } })
+    }
+
+    /// Without a socket the same ops go over HTTPS.
+    func testOpsFallBackToHTTPSWithoutSocket() async throws {
+        let http = HTTPBox()
+        let (phone, tally, macs) = try await paired(macs: [1], wrapHTTP: http.wrap)
+        let session = HostedRelaySession(client: phone)
+        let hub = try transport(session, mac: macs[0])
+
+        try await hub.pull()
+        let outcomes = try await hub.save([ConditionalSave(record: Self.record("no-socket"), expect: .absent)])
+        guard case .saved? = outcomes.first else { return XCTFail("not saved: \(outcomes)") }
+        let direct = try await session.changes(Self.changes(mailbox(macs[0], phone)))
+        XCTAssertEqual(direct.changed.map(\.name), ["no-socket"])
+
+        let ops = try http.ops()
+        XCTAssertTrue(ops.contains("changes"))
+        XCTAssertEqual(ops.filter { $0 == "save" }.count, 1)
+        XCTAssertEqual(tally.dials, 0, "no socket")
+    }
+
     // MARK: - Helpers
+
+    /// The phone's `InterceptingRelayHTTP`, once `paired` built it.
+    final class HTTPBox: @unchecked Sendable {
+        private let lock = OSAllocatedUnfairLock<InterceptingRelayHTTP?>(initialState: nil)
+
+        func wrap(_ base: any RelayHTTP) -> any RelayHTTP {
+            let http = InterceptingRelayHTTP(base)
+            lock.withLock { $0 = http }
+            return http
+        }
+
+        func ops() throws -> [String] {
+            try XCTUnwrap(lock.withLock { $0 }).ops
+        }
+    }
+
+    static func record(_ name: String) -> CloudRecord {
+        CloudRecord(
+            recordName: name, zone: .relay, kind: WireKind.envelope, modifiedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            payload: Data("envelope-\(name)".utf8))
+    }
+
+    static func changes(_ zone: String) -> Relay_V1_Changes {
+        var changes = Relay_V1_Changes()
+        changes.zone = zone
+        return changes
+    }
 
     /// Re-checks `condition` (pumping the fake's clock) until it holds; no wall-clock cap.
     private func until(_ condition: @escaping () async -> Bool) async -> Bool {
@@ -339,7 +411,9 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
     }
 
     /// A paying phone (seed 2) whose dials are counted, paired with the Macs of `seeds`.
-    private func paired(macs seeds: [UInt8]) async throws -> (HostedRelayClient, SocketTally, [HostedRelayClient]) {
+    private func paired(
+        macs seeds: [UInt8], wrapHTTP: ((any RelayHTTP) -> any RelayHTTP)? = nil
+    ) async throws -> (HostedRelayClient, SocketTally, [HostedRelayClient]) {
         let tally = SocketTally()
         let signer = try backend.signer(seed: 2)
         let clock = backend.clock
@@ -348,7 +422,7 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
             signer: signer,
             kind: .phone,
             attestor: RelayAttestor(attest: fakeAttest(seed: 2), keys: InMemoryAppAttestKeyStore(), clock: clock),
-            http: backend.http,
+            http: wrapHTTP?(backend.http) ?? backend.http,
             sockets: CountingDialer(base: backend.sockets, tally: tally),
             clock: clock,
             backoff: Self.quickBackoff
