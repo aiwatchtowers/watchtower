@@ -35,6 +35,7 @@ struct WorkbenchFilesSection: View {
                 notices(files)
                 CodeFileTreeList(
                     tree: tree,
+                    rootLine: CodeFilesRootLine(root: root, status: vm.gitStatus[root]),
                     activeFile: files.tabs(for: root).active,
                     git: files.git(for: root),
                     edit: $edit,
@@ -93,69 +94,26 @@ struct WorkbenchFilesSection: View {
     }
 
     private func header(_ tree: CodeFileTree) -> some View {
-        HStack(spacing: 4) {
-            Button {
-                withAnimation(.easeOut(duration: 0.15)) { isExpanded.toggle() }
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
-                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    Text(root.filesCaption).sidebarSectionLabel()
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .help(root.isMain ? "" : "The worktree the session on screen works in:\n\(root.folder.path)")
-                    Spacer(minLength: 0)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(isExpanded ? "Collapse files" : "Expand files")
-            if isExpanded {
-                Menu {
-                    Button("New File…") { startCreate(folder: false, in: "", tree: tree) }
-                    Button("New Folder…") { startCreate(folder: true, in: "", tree: tree) }
-                } label: {
-                    Image(systemName: "plus")
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("New file or folder")
-                .accessibilityLabel("New file or folder")
-                Button {
-                    tree.collapseAll()
-                } label: {
-                    Image(systemName: "rectangle.compress.vertical")
-                }
-                .buttonStyle(.borderless)
-                .help("Collapse all folders")
-                .accessibilityLabel("Collapse all folders")
-                Button {
-                    tree.reloadAll()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .buttonStyle(.borderless)
-                .help("Reload the tree")
-                .accessibilityLabel("Reload the tree")
-            }
-        }
-        .font(.caption)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        CodeFilesHeader(
+            root: root,
+            isExpanded: isExpanded,
+            toggle: { withAnimation(Motion.toggle) { isExpanded.toggle() } },
+            newEntry: { folder in startCreate(folder: folder, in: "", tree: tree) },
+            collapseAll: tree.collapseAll,
+            reload: tree.reloadAll
+        )
     }
 
     @ViewBuilder
     private func notices(_ files: CodeFilesCenter) -> some View {
         if let error = files.watchErrors[root] {
-            Text(error).font(.caption2).foregroundStyle(.orange).padding(.horizontal, 12)
+            Text(error).font(.caption2).foregroundStyle(Tone.warning).padding(.horizontal, Spacing.medium)
         }
         if let error = files.gitErrors[root] {
             Text("Git status unavailable — the marks may be out of date.")
                 .font(.caption2)
-                .foregroundStyle(.orange)
-                .padding(.horizontal, 12)
+                .foregroundStyle(Tone.warning)
+                .padding(.horizontal, Spacing.medium)
                 .help(error)
         }
     }
@@ -236,7 +194,7 @@ struct WorkbenchFilesSection: View {
     /// The open section's top edge: drag up to grow it.
     private var resizeHandle: some View {
         Divider()
-            .padding(.vertical, 3)
+            .padding(.vertical, Spacing.tight)
             .contentShape(Rectangle())
             .onHover { inside in
                 if inside, !cursorPushed {
@@ -281,10 +239,101 @@ struct CodeTreeEdit: Equatable {
     var isCommitting = false
 }
 
-/// The tree's visible rows: folders toggle on click; a file opens in a
-/// preview tab on a single click and in a kept tab on a double click.
-/// Uncommitted files carry their git mark, and a folder holding one a dot.
-/// A folder that could not be read says so under its row.
+/// The FILES header: the section's toggle under a sidebar-style caption
+/// (`FILES`, or `FILES — ⑂ name` in a worktree), and while open its icon
+/// buttons — new entry, collapse all, reload — always on view.
+struct CodeFilesHeader: View {
+    let root: CodeRoot
+    let isExpanded: Bool
+    let toggle: () -> Void
+    let newEntry: (_ folder: Bool) -> Void
+    let collapseAll: () -> Void
+    let reload: () -> Void
+
+    var body: some View {
+        HStack(spacing: Spacing.tight) {
+            Button(action: toggle) {
+                HStack(spacing: Spacing.compact) {
+                    CodeTreeChevron(isExpanded: isExpanded)
+                    Text(root.filesCaption).sidebarSectionLabel()
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(CodeFilesHeaderCopy.captionHelp(root))
+                    Spacer(minLength: 0)
+                }
+                .frame(minHeight: IconSize.tile)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isExpanded ? CodeFilesHeaderCopy.collapse : CodeFilesHeaderCopy.expand)
+            .accessibilityAddTraits(.isHeader)
+            if isExpanded {
+                Menu {
+                    Button(CodeFilesHeaderCopy.newFile) { newEntry(false) }
+                    Button(CodeFilesHeaderCopy.newFolder) { newEntry(true) }
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .menuStyle(.button)
+                .buttonStyle(.kitIcon(isOn: false))
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help(CodeFilesHeaderCopy.newEntry)
+                .accessibilityLabel(CodeFilesHeaderCopy.newEntry)
+                Button(action: collapseAll) {
+                    Image(systemName: "rectangle.compress.vertical")
+                }
+                .buttonStyle(.kitIcon(isOn: false))
+                .help(CodeFilesHeaderCopy.collapseAll)
+                .accessibilityLabel(CodeFilesHeaderCopy.collapseAll)
+                Button(action: reload) {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.kitIcon(isOn: false))
+                .help(CodeFilesHeaderCopy.reload)
+                .accessibilityLabel(CodeFilesHeaderCopy.reload)
+            }
+        }
+        .padding(.leading, Spacing.medium)
+        .padding(.trailing, Spacing.compact)
+        .padding(.vertical, Spacing.tight)
+    }
+}
+
+/// A disclosure chevron of the tree: small, tertiary, turned down when open.
+private struct CodeTreeChevron: View {
+    let isExpanded: Bool
+
+    var body: some View {
+        Image(systemName: "chevron.right")
+            .font(.system(size: IconSize.chevron, weight: .semibold))
+            .foregroundStyle(.tertiary)
+            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+            .frame(width: Spacing.cozy)
+            .accessibilityHidden(true)
+    }
+}
+
+/// The tree's indentation: every row at `depth` starts its chevron slot at
+/// `leading(depth)`; text under a row (an error, the empty folder) lines up
+/// with the icon of a row one level deeper.
+private enum CodeTreeIndent {
+    static func leading(_ depth: Int) -> CGFloat {
+        Spacing.compact + CGFloat(depth) * Spacing.medium
+    }
+
+    /// Where a row's icon starts: past the chevron slot.
+    static func icon(_ depth: Int) -> CGFloat {
+        leading(depth) + Spacing.cozy + Spacing.small
+    }
+}
+
+/// The tree's visible rows under its root row (the folder, its branch and
+/// git status on the right; closing it hides the tree): folders toggle on
+/// click; a file opens in a preview tab on a single click and in a kept tab
+/// on a double click. Uncommitted files carry their git mark and tint, a
+/// folder holding one a dot. A folder that could not be read says so under
+/// its row; an empty root says so under the root row.
 struct CodeFileTreeList: View {
     struct Actions {
         let open: (CodeFileEntry, _ preview: Bool) -> Void
@@ -296,6 +345,7 @@ struct CodeFileTreeList: View {
     }
 
     let tree: CodeFileTree
+    let rootLine: CodeFilesRootLine
     let activeFile: String?
     let git: GitStatusSnapshot
     @Binding var edit: CodeTreeEdit?
@@ -304,36 +354,129 @@ struct CodeFileTreeList: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-                if let error = tree.errors[""] {
-                    Text(error).font(.caption).foregroundStyle(.red).padding(8)
-                }
-                if case .create(_, "")? = edit?.kind { nameField(depth: 0) }
-                ForEach(tree.rows, id: \.entry.relPath) { row in
-                    let path = row.entry.relPath
-                    if case .rename(path)? = edit?.kind {
-                        nameField(depth: row.depth)
-                    } else {
-                        CodeFileTreeRow(
-                            row: row, isOpen: activeFile == path, root: actions.root,
-                            status: git.files[path], holdsChanges: row.entry.isDirectory && git.dirtyDirectories.contains(path),
-                            actions: actions
-                        )
+                CodeFilesRootRow(line: rootLine, isExpanded: tree.isRootExpanded) { tree.toggle("") }
+                if tree.isRootExpanded {
+                    if let error = tree.errors[""] {
+                        note(error, depth: 0, tone: Tone.error)
+                    } else if tree.listings[""]?.isEmpty == true, !isCreatingAtRoot {
+                        note(CodeFilesRootLine.emptyFolder, depth: 0, tone: nil)
                     }
-                    if row.isExpanded, let error = tree.errors[path] {
-                        Text(error)
-                            .font(.caption2)
-                            .foregroundStyle(.red)
-                            .padding(.leading, 34 + CGFloat(row.depth) * 12)
+                    if isCreatingAtRoot { nameField(depth: 1) }
+                    ForEach(tree.rows, id: \.entry.relPath) { row in
+                        rowView(row)
                     }
-                    if row.entry.isDirectory, case .create(_, path)? = edit?.kind { nameField(depth: row.depth + 1) }
                 }
             }
-            .padding(.bottom, 6)
+            .padding(.horizontal, Spacing.compact)
+            .padding(.bottom, Spacing.compact)
         }
+    }
+
+    private var isCreatingAtRoot: Bool {
+        if case .create(_, "")? = edit?.kind { return true }
+        return false
+    }
+
+    @ViewBuilder
+    private func rowView(_ row: CodeFileTree.Row) -> some View {
+        // The root row sits at depth 0, so the tree's rows start one deeper.
+        let depth = row.depth + 1
+        let path = row.entry.relPath
+        if case .rename(path)? = edit?.kind {
+            nameField(depth: depth)
+        } else {
+            CodeFileTreeRow(
+                row: row, depth: depth, isOpen: activeFile == path, root: actions.root,
+                status: git.files[path], holdsChanges: row.entry.isDirectory && git.dirtyDirectories.contains(path),
+                actions: actions
+            )
+        }
+        if row.isExpanded, let error = tree.errors[path] {
+            note(error, depth: depth, tone: Tone.error)
+        }
+        if row.entry.isDirectory, case .create(_, path)? = edit?.kind { nameField(depth: depth + 1) }
+    }
+
+    private func note(_ text: String, depth: Int, tone: Color?) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(tone.map(AnyShapeStyle.init) ?? AnyShapeStyle(.tertiary))
+            .padding(.leading, CodeTreeIndent.icon(depth + 1))
+            .padding(.trailing, Spacing.regular)
+            .padding(.vertical, Spacing.tight)
     }
 
     private func nameField(depth: Int) -> some View {
         CodeTreeNameField(edit: $edit, depth: depth, onCommit: actions.commit)
+    }
+}
+
+/// The root row: chevron, folder, the folder's name in semibold; on the
+/// right the branch, a dot for uncommitted changes and the ahead/behind
+/// counters, or nothing without git.
+private struct CodeFilesRootRow: View {
+    let line: CodeFilesRootLine
+    let isExpanded: Bool
+    let toggle: () -> Void
+    @State private var isHovering = false
+
+    var body: some View {
+        HStack(spacing: Spacing.small) {
+            CodeTreeChevron(isExpanded: isExpanded)
+            Image(systemName: "folder.fill")
+                .font(.callout)
+                .foregroundStyle(Color.accentColor)
+                .frame(width: IconSize.header)
+            Text(line.name)
+                .font(.callout.weight(.semibold))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(line.path)
+            Spacer(minLength: Spacing.regular)
+            if let branch = line.branch {
+                branchCaption(branch)
+            }
+        }
+        .padding(.leading, CodeTreeIndent.leading(0))
+        .padding(.trailing, Spacing.compact)
+        .padding(.vertical, Spacing.small)
+        .background(
+            RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                .fill(isHovering ? Fill.hover : .clear)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture(perform: toggle)
+        .onHover { isHovering = $0 }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(line.accessibilityLabel)
+        .accessibilityValue(CodeFilesRootLine.accessibilityValue(expanded: isExpanded))
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { toggle() }
+    }
+
+    private func branchCaption(_ branch: WorkbenchBranchPresentation.ButtonLabel) -> some View {
+        HStack(spacing: Spacing.small) {
+            Image(systemName: "arrow.triangle.branch")
+                .foregroundStyle(.tertiary)
+            if branch.style == .detachedHash {
+                Text(branch.text).monospaced()
+            } else {
+                Text(branch.text)
+            }
+            if line.dirty {
+                Circle()
+                    .fill(Tone.warning)
+                    .frame(width: IconSize.stateDot, height: IconSize.stateDot)
+                    .help(CodeFilesRootLine.dirtyHelp)
+            }
+            if let counters = line.counters {
+                Text(counters).monospacedDigit()
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+        .truncationMode(.middle)
     }
 }
 
@@ -346,29 +489,28 @@ private struct CodeTreeNameField: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 4) {
+        VStack(alignment: .leading, spacing: Spacing.tight) {
+            HStack(spacing: Spacing.small) {
                 Image(systemName: icon)
-                    .font(.system(size: 11))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
-                    .frame(width: 14)
+                    .frame(width: IconSize.header)
                 TextField(placeholder, text: Binding(
                     get: { edit?.text ?? "" },
                     set: { edit?.text = $0; edit?.error = nil }
                 ))
-                .textFieldStyle(.roundedBorder)
-                .font(.callout)
+                .textFieldStyle(.kit)
                 .focused($focused)
                 .onSubmit(onCommit)
                 .onExitCommand { edit = nil }
             }
             if let error = edit?.error {
-                Text(error).font(.caption2).foregroundStyle(.red)
+                Text(error).font(.caption2).foregroundStyle(Tone.error)
             }
         }
-        .padding(.leading, 20 + CGFloat(depth) * 12)
-        .padding(.trailing, 8)
-        .padding(.vertical, 2)
+        .padding(.leading, CodeTreeIndent.icon(depth))
+        .padding(.trailing, Spacing.compact)
+        .padding(.vertical, Spacing.tight)
         .onAppear { focused = true }
         .onChange(of: focused) { _, isFocused in
             if !isFocused, edit?.error == nil, edit?.isCommitting != true { edit = nil }
@@ -391,6 +533,8 @@ private struct CodeTreeNameField: View {
 
 private struct CodeFileTreeRow: View {
     let row: CodeFileTree.Row
+    /// The row's depth under the root row.
+    let depth: Int
     let isOpen: Bool
     let root: URL
     let status: GitFileStatus?
@@ -399,22 +543,16 @@ private struct CodeFileTreeRow: View {
     @State private var isHovering = false
 
     var body: some View {
-        HStack(spacing: 4) {
-            Group {
-                if row.entry.isDirectory {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 8, weight: .semibold))
-                        .rotationEffect(.degrees(row.isExpanded ? 90 : 0))
-                        .foregroundStyle(.secondary)
-                } else {
-                    Color.clear
-                }
+        HStack(spacing: Spacing.small) {
+            if row.entry.isDirectory {
+                CodeTreeChevron(isExpanded: row.isExpanded)
+            } else {
+                Color.clear.frame(width: Spacing.cozy)
             }
-            .frame(width: 10)
             Image(systemName: row.entry.isDirectory ? "folder" : "doc")
-                .font(.system(size: 11))
-                .foregroundStyle(row.entry.isDirectory ? Color.accentColor : .secondary)
-                .frame(width: 14)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .frame(width: IconSize.header)
             Text(row.entry.name)
                 .font(.callout)
                 .foregroundStyle(status.map(GitMark.color) ?? .primary)
@@ -428,15 +566,17 @@ private struct CodeFileTreeRow: View {
                     .help("Not committed")
             } else if holdsChanges {
                 Circle()
-                    .fill(Color.orange)
-                    .frame(width: 5, height: 5)
+                    .fill(Tone.warning)
+                    .frame(width: IconSize.stateDot, height: IconSize.stateDot)
                     .help("Holds uncommitted changes")
             }
         }
-        .padding(.leading, 10 + CGFloat(row.depth) * 12)
-        .padding(.trailing, 8)
-        .padding(.vertical, 2)
-        .background(background)
+        .padding(.leading, CodeTreeIndent.leading(depth))
+        .padding(.trailing, Spacing.compact)
+        .padding(.vertical, Spacing.tight)
+        .background(
+            RoundedRectangle(cornerRadius: Radius.control, style: .continuous).fill(background)
+        )
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { if !row.entry.isDirectory { actions.open(row.entry, false) } }
         .simultaneousGesture(TapGesture().onEnded { actions.open(row.entry, true) })
@@ -462,7 +602,7 @@ private struct CodeFileTreeRow: View {
     }
 
     private var background: Color {
-        if isOpen { return Color.accentColor.opacity(0.18) }
-        return isHovering ? Color.primary.opacity(0.05) : .clear
+        if isOpen { return Fill.selected }
+        return isHovering ? Fill.hover : .clear
     }
 }
