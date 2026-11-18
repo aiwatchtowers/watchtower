@@ -33,3 +33,4 @@ Each shot `workbench-multifolder-<name>` is saved here as `<name>-light.png` and
 | `feed-parent` | Parent's Workchat feed: sub-session started, message to, message from, sub-session finished, and a waiting message with `Open` | §6.6 |
 | `strip-child` | A sub-session's strip: `📁 hub › ⑂ export-api › ⎇ wt/export-api` ending with `↖ from “Export reports to PDF”` | §6.5 |
 | `board-card-folder` | Board cards with a folder chip before the branch, and a target whose folder left the bench (`folder removed`) | §6.10, §8 PROJ-07 |
+| `message-in-prompt` | A session whose agent message sits typed in its prompt: the sessions-panel row's state line `Idle · Agent message waiting in the prompt` (second part Tone warning), and the pane top with the notice `An agent's message is in the prompt. Press Return in the terminal to send it.` and `Show in Terminal` | §6.6 |
