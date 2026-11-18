@@ -17,17 +17,22 @@ package enum WatchmanJournalQueries {
     /// The newest `limit` nights that have an item, newest first. A night
     /// runs from 12:00 local to 12:00 the next day; an item belongs to the
     /// night it was created in, and a sleep gap to every night it overlaps.
-    package static func nights(_ db: Database, limit: Int, calendar: Calendar = .current) throws -> [WatchmanNight] {
+    /// `since`/`before` keep only items created in that range.
+    package static func nights(
+        _ db: Database, limit: Int, since: Date? = nil, before: Date? = nil, calendar: Calendar = .current
+    ) throws -> [WatchmanNight] {
         guard limit > 0 else { return [] }
+        let from = since.map(AutomationDates.format) ?? "0000-01-01T00:00:00Z"
+        let until = before.map(AutomationDates.format) ?? "9999-12-31T23:59:59Z"
         // One newest-item lookup per night, each below the last night's
         // start: at most `limit` rows ever reach Swift.
         var starts: [Date] = []
-        var below = "9999-12-31T23:59:59Z"
+        var below = until
         while starts.count < limit {
             let stamp = try String.fetchOne(db, sql: """
-                SELECT created_at FROM watchman_items WHERE created_at < ?
+                SELECT created_at FROM watchman_items WHERE created_at < ? AND created_at >= ?
                 ORDER BY created_at DESC LIMIT 1
-                """, arguments: [below])
+                """, arguments: [below, from])
             guard let stamp else { break }
             guard let created = AutomationDates.parse(stamp) else {
                 throw WatchmanItemError.badTime(column: "created_at", value: stamp)
@@ -40,9 +45,9 @@ package enum WatchmanJournalQueries {
         let items = try WatchmanItem.fetchAll(db, sql: """
             SELECT \(itemColumns)
             FROM watchman_items i LEFT JOIN projects p ON p.id = i.workbench_id
-            WHERE i.created_at >= ?
+            WHERE i.created_at >= ? AND i.created_at < ?
             ORDER BY i.created_at, i.id
-            """, arguments: [AutomationDates.format(oldest)])
+            """, arguments: [AutomationDates.format(max(oldest, since ?? oldest)), until])
         let gaps = try self.gaps(db, endingAfter: oldest)
         return starts.map { start in
             night(start, items: items.filter { WatchmanNight.start(of: $0.createdAt, calendar: calendar) == start },
@@ -96,8 +101,10 @@ package enum WatchmanJournalQueries {
         guard try db.tableExists("watchman_items") else { return nil }
         let tonight = WatchmanNight.start(of: now, calendar: calendar)
         let lastNight = WatchmanNight.start(of: tonight.addingTimeInterval(-1), calendar: calendar)
-        return try nights(db, limit: 2, calendar: calendar)
-            .filter { $0.date >= lastNight }
+        // Only [last night, tonight]: an item stamped after tonight (a clock
+        // that went back) never shows as Home's night.
+        return try nights(db, limit: 2, since: lastNight, before: WatchmanNight.end(of: tonight, calendar: calendar),
+                          calendar: calendar)
             .map(WatchmanNightCounts.init)
             .first { $0.decided + $0.waiting > 0 }
     }

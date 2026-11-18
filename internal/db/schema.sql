@@ -4001,6 +4001,7 @@ CREATE TABLE IF NOT EXISTS watchman_items (
 );
 CREATE INDEX IF NOT EXISTS idx_watchman_items_queue ON watchman_items(state, not_before);
 CREATE INDEX IF NOT EXISTS idx_watchman_items_wb ON watchman_items(workbench_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_watchman_items_created ON watchman_items(created_at);
 
 CREATE TABLE IF NOT EXISTS watchman_gaps (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,

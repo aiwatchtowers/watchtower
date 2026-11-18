@@ -239,4 +239,20 @@ final class WatchmanJournalQueriesTests: XCTestCase {
         let night = try XCTUnwrap(nights(queue).first)
         XCTAssertEqual(night.decided.first?.precedentIDs, [])
     }
+
+    /// A night after tonight (an item stamped before the clock went back)
+    /// is not Home's night; last night still is.
+    func testHomeNightIgnoresAFutureNight() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let wb = try TestDatabase.insertWorkbench(db)
+            try item(db, workbench: wb, created: "2026-11-16T01:00:00Z") // last night
+            try item(db, workbench: wb, created: "2026-11-18T01:00:00Z", outcome: "parked") // a future night
+        }
+        let calendar = calendar
+        let counts = try queue.read {
+            try WatchmanJournalQueries.homeNight($0, now: self.date("2026-11-16T15:00:00Z"), calendar: calendar)
+        }
+        XCTAssertEqual(counts, WatchmanNightCounts(start: date("2026-11-15T11:00:00Z"), decided: 1, unsure: 1, waiting: 0))
+    }
 }
