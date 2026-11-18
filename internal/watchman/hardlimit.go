@@ -45,6 +45,10 @@ type PermissionAsk struct {
 	// Branch is the session's branch when the request was read; nil = not
 	// recorded (stored rows).
 	Branch *BranchInfo
+	// Cwd is the directory a live tool call starts in ("" = unknown, stored
+	// rows). It places a shell command's relative paths only; it is no
+	// directory change (a cd or -C in the command is).
+	Cwd string
 }
 
 // BranchInfo is the branch a session works on and the branches it shares
@@ -823,11 +827,12 @@ func matchDeleteOutside(r PermissionAsk) bool {
 			if strings.HasPrefix(a, "-") {
 				continue
 			}
-			if !path.IsAbs(a) && c.cwd != "" {
-				if c.cwd == cwdUnknown {
+			base := cmp.Or(c.cwd, r.Cwd)
+			if !path.IsAbs(a) && base != "" {
+				if base == cwdUnknown {
 					return true
 				}
-				a = path.Join(c.cwd, a)
+				a = path.Join(base, a)
 			}
 			if !r.inside(a, false) {
 				return true

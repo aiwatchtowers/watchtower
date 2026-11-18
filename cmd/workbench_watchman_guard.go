@@ -186,8 +186,9 @@ func (g *watchmanGuardRun) deny(limit watchman.HardLimit) {
 // row read. Armed, a tool call the hard-limit table or the owner's limits
 // cover (watchman.CheckLimits) is denied and journalled for Waiting for you;
 // a journal failure still denies. Armed, it fails closed with `unreadable`:
-// a hook input it cannot read, owner's limits it cannot read, a sidecar
-// that exists but cannot be read, a panic. The database not read within
+// a hook input it cannot read, owner's limits it cannot read (from the
+// database, or a sidecar marked limits-unavailable), a sidecar that exists
+// but cannot be read, a panic. The database not read within
 // watchmanGuardReadBudget → the arm sidecar decides (with the owner's
 // limits it carries), and nothing is journalled.
 func runWatchmanGuard(stdin io.Reader, stdout, stderr io.Writer, agent agentkind.Kind, deps watchmanGuardDeps) {
@@ -240,6 +241,7 @@ func runWatchmanGuard(stdin io.Reader, stdout, stderr io.Writer, agent agentkind
 			g.armed, unreadable = true, true
 		} else {
 			g.armed = slices.Contains(sc.Sessions, rowID) || sc.TargetsArmed
+			unreadable = unreadable || sc.LimitsUnavailable // not all the owner's limits are in it
 		}
 		ask.Worktrees, extra = sidecarWorktreesOf(sc, in.Cwd), sc.Limits
 	} else {
@@ -262,7 +264,10 @@ func runWatchmanGuard(stdin io.Reader, stdout, stderr io.Writer, agent agentkind
 		deny, limit = true, watchman.LimitUnreadable
 		ask.Tool, ask.Summary = cmp.Or(in.ToolName, "(unknown tool)"), "the hook input or the owner's limits could not be read"
 	} else {
-		ask.Tool, ask.Summary = in.ToolName, watchmanGuardSummary(in, ask.Worktrees)
+		ask.Tool, ask.Summary = in.ToolName, watchmanGuardSummary(in)
+		if filepath.IsAbs(in.Cwd) {
+			ask.Cwd = filepath.Clean(in.Cwd)
+		}
 		if ask.Tool == "Bash" { // only shell commands read the branch
 			gctx, gcancel := context.WithTimeout(context.Background(), watchmanGuardGitWait)
 			ask.Branch = &watchman.BranchInfo{Current: deps.branch(gctx, dir)}
@@ -287,24 +292,15 @@ func runWatchmanGuard(stdin io.Reader, stdout, stderr io.Writer, agent agentkind
 	}
 }
 
-// watchmanGuardSummary is the tool call as the hard-limit table reads it,
-// placed by the call's working directory cwd: a file tool's relative path
-// is made absolute against cwd, and a shell command run from a directory
-// outside every worktree is read as starting with a cd there, so its
-// relative paths are judged where they land.
-func watchmanGuardSummary(in hookEvent, worktrees []string) string {
-	cwd := in.Cwd
-	if cwd == "" || !filepath.IsAbs(cwd) {
+// watchmanGuardSummary is the tool call as the hard-limit table reads it:
+// a file tool's relative path is made absolute against the call's working
+// directory cwd. A shell command keeps its text; its start directory goes
+// to the table as PermissionAsk.Cwd.
+func watchmanGuardSummary(in hookEvent) string {
+	if in.ToolName == "Bash" || in.Cwd == "" || !filepath.IsAbs(in.Cwd) {
 		return permissionSummaryText(in.ToolName, in.ToolInput)
 	}
-	if in.ToolName != "Bash" {
-		return permissionSummaryText(in.ToolName, absToolPaths(in.ToolInput, cwd))
-	}
-	s := permissionSummaryText(in.ToolName, in.ToolInput)
-	if slices.ContainsFunc(worktrees, func(w string) bool { return w != "" && pathWithin(cwd, w) }) {
-		return s
-	}
-	return "cd '" + strings.ReplaceAll(cwd, "'", `'\''`) + "' && " + s
+	return permissionSummaryText(in.ToolName, absToolPaths(in.ToolInput, in.Cwd))
 }
 
 // absToolPaths rewrites a tool input's relative file_path, notebook_path

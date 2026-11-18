@@ -377,3 +377,26 @@ func TestParkedBy_UnreadableIsItsOwnRow(t *testing.T) {
 		{"unreadable before push", bash("sudo; git push origin main"), LimitUnreadable},
 	})
 }
+
+// The call's start directory places a relative path but is no directory
+// change: a local reset on a private branch from outside the worktrees is
+// not reset_shared, while a relative delete there is outside.
+func TestParkedBy_StartDirPlacesOnly(t *testing.T) {
+	ask := func(cmd string) PermissionAsk {
+		return PermissionAsk{Tool: "Bash", Summary: cmd, Worktrees: []string{"/wt"}, Cwd: "/elsewhere",
+			Branch: &BranchInfo{Current: "feature/x"}}
+	}
+	_, parked := ParkedBy(ask("git reset --hard HEAD~1"))
+	require.False(t, parked)
+	l, parked := ParkedBy(ask("rm -rf build"))
+	require.True(t, parked)
+	require.Equal(t, LimitDeleteOutside, l)
+	inside := ask("rm -rf build")
+	inside.Cwd = "/wt/sub"
+	_, parked = ParkedBy(inside)
+	require.False(t, parked)
+	// A cd in the command itself still counts as a move.
+	l, parked = ParkedBy(ask("cd /tmp && git reset --hard HEAD~1"))
+	require.True(t, parked)
+	require.Equal(t, LimitResetShared, l)
+}

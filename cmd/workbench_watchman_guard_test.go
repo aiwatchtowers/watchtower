@@ -472,6 +472,10 @@ func TestWatchmanGuard_RelativePathsResolvedAgainstCwd(t *testing.T) {
 		{"Read", map[string]string{"file_path": "notes.txt"}, elsewhere, "outside_folder"},
 		{"Bash", map[string]string{"command": "rm -rf build"}, folder, ""},
 		{"Bash", map[string]string{"command": "rm -rf build"}, elsewhere, "delete_outside"},
+		// The start directory is no directory change: a local reset on the
+		// private branch from outside the worktrees is not reset_shared.
+		{"Bash", map[string]string{"command": "git reset --hard HEAD~1"}, elsewhere, ""},
+		{"Bash", map[string]string{"command": "cd /tmp && git reset --hard HEAD~1"}, folder, "reset_shared"},
 	} {
 		out, _ := runGuardHook(deps, guardInput(t, tc.tool, tc.input, tc.cwd))
 		want := ""
@@ -511,4 +515,20 @@ func TestWatchmanGuard_UnreadableSidecarDenies(t *testing.T) {
 	deps.open = func() (watchmanGuardStore, error) { return nil, errors.New("unable to open database file") }
 	out, _ := runGuardHook(deps, guardInput(t, "Bash", map[string]string{"command": "go test ./..."}, folder))
 	assert.Equal(t, "Parked for the owner: unreadable — continue with other work", guardDenial(t, out))
+}
+
+// A sidecar whose owner's limits are not all in it (limits-unavailable):
+// an armed session's calls are denied as unreadable; an unarmed one runs.
+func TestWatchmanGuard_SidecarLimitsUnavailableDenies(t *testing.T) {
+	id, folder := guardSession(t, false)
+	deps := defaultWatchmanGuardDeps()
+	deps.open = func() (watchmanGuardStore, error) { return nil, errors.New("unable to open database file") }
+	call := guardInput(t, "Bash", map[string]string{"command": "go test ./..."}, folder)
+	bad := []db.WatchmanExtraLimit{{Kind: "command", Pattern: "make\ndeploy"}}
+	require.NoError(t, watchmanact.WriteSidecar(testSidecarPath(t), []db.ArmedSession{{SessionID: id, Folder: folder}}, false, bad...))
+	out, _ := runGuardHook(deps, call)
+	assert.Equal(t, "Parked for the owner: unreadable — continue with other work", guardDenial(t, out))
+	require.NoError(t, watchmanact.WriteSidecar(testSidecarPath(t), nil, false, bad...))
+	out, _ = runGuardHook(deps, call)
+	assert.Empty(t, out)
 }
