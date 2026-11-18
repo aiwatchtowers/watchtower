@@ -587,6 +587,80 @@ final class HostedRelayConnectionTests: XCTestCase {
         await connection.close()
     }
 
+    /// A's send stays blocked while the socket is retired: the cancelled writes queued behind it stop waiting for it
+    /// (their chain settles) before A is released.
+    func testARetiredSocketEndsTheSkippedWritesWaits() async throws {
+        try await assertSkippedWritesEnd { connection in
+            guard let generation = connection.liveGeneration else { return XCTFail("no live socket") }
+            connection.detach(generation)
+        }
+    }
+
+    /// The same when the connection is closed with A's send still blocked.
+    func testACloseEndsTheSkippedWritesWaits() async throws {
+        try await assertSkippedWritesEnd { await $0.close() }
+    }
+
+    private func assertSkippedWritesEnd(
+        after end: (HostedRelayConnection) async -> Void, line: UInt = #line
+    ) async throws {
+        let harness = try RelayClientHarness()
+        let socket = ScriptedRelaySocket(stuckWrites: true)
+        harness.sockets.script([.socket(socket)])
+        let connection = await harness.client.connect(zones: [])
+        let events = EventProbe(connection)
+        _ = await events.next()
+        defer { socket.releaseStuck() }
+
+        let first = Task { try await connection.request(RelayClientHarness.removeSlot) }
+        let second = Task<Relay_V1_Response, any Error> {
+            _ = await self.settles { socket.stuckCount == 1 }
+            return try await connection.request(RelayClientHarness.removeSlot)
+        }
+        let queued = await settles { socket.stuckCount == 1 && connection.pendingRequests == 2 }
+        XCTAssertTrue(queued, "B was not queued behind A", line: line)
+        second.cancel()
+        _ = await second.result
+        XCTAssertFalse(connection.lastWriteSettled, "B's skipped write still waits for A", line: line)
+
+        await end(connection)
+
+        let settled = await settles { connection.lastWriteSettled }
+        XCTAssertTrue(settled, "the skipped write still waits for A's blocked send", line: line)
+        XCTAssertEqual(socket.stuckCount, 1, "A's send is still blocked", line: line)
+        socket.releaseStuck()
+        _ = await first.result
+        // A detached socket is no longer the connection's to close: end its reader so `close()` returns.
+        socket.closeFromServer(1006)
+        await connection.close()
+    }
+
+    /// A body that ignores the cancel and finishes before the race sees it: the cancelled caller still gets no
+    /// value, which goes to `discard` (whichever of the two the race meets first).
+    func testACancelledDeadlineDiscardsAValueItsBodyReturnsAnyway() async throws {
+        let harness = try RelayClientHarness()
+        let connection = await harness.client.connect(zones: [])
+        let held = OSAllocatedUnfairLock<CheckedContinuation<Void, Never>?>(initialState: nil)
+        let caller = OSAllocatedUnfairLock<Task<Int?, any Error>?>(initialState: nil)
+        let discarded = OSAllocatedUnfairLock<[Int]>(initialState: [])
+        let race = Task {
+            try await connection.deadline(.seconds(7), discard: { (value: Int) in discarded.withLock { $0.append(value) } }, {
+                await withCheckedContinuation { continuation in held.withLock { $0 = continuation } }
+                // Cancels its own caller and returns at once.
+                caller.withLock { $0 }?.cancel()
+                return 7
+            })
+        }
+        caller.withLock { $0 = race }
+        let out = await settles { held.withLock { $0 != nil } }
+        XCTAssertTrue(out, "the body never started")
+        held.withLock { $0 }?.resume()
+        let result = await race.result
+        XCTAssertThrowsError(try result.get(), "a cancelled caller gets no value")
+        XCTAssertEqual(discarded.withLock { $0 }, [7])
+        await connection.close()
+    }
+
     /// A `deadline` whose caller is cancelled while its body (a dial) is still out hands the value the body returns
     /// later to `discard`: a late socket is closed, not dropped open.
     func testACancelledDeadlineDiscardsWhatItsBodyReturnsLate() async throws {

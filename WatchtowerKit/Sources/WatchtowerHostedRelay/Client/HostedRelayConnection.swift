@@ -218,6 +218,8 @@ public final class HostedRelayConnection: Sendable {
     public func close() async {
         let (runner, live, redial, replacement, pending) = state.withLock { state in
             state.closed = true
+            // As `retire` does: what only waits to keep this socket's writes in order ends with it.
+            state.live?.retired.fire()
             defer {
                 state.live = nil
                 state.redial = nil
@@ -847,6 +849,12 @@ public final class HostedRelayConnection: Sendable {
         return ids.compactMap { state.pending.removeValue(forKey: $0) }
     }
 
+    /// Whether the newest request write's place in the chain is settled (written, failed or skipped): the next
+    /// write would not wait. Internal for tests.
+    var lastWriteSettled: Bool {
+        state.withLock { $0.lastWrite?.done.fired ?? true }
+    }
+
     /// The requests waiting for an answer. Internal for tests.
     var pendingRequests: Int {
         state.withLock { $0.pending.count }
@@ -886,7 +894,12 @@ public final class HostedRelayConnection: Sendable {
             }
             defer { group.cancelAll() }
             do {
-                if case .done(let value)? = try await group.next() { return value }
+                if case .done(let value)? = try await group.next() {
+                    // A body that ignored the cancel and finished first: the cancelled caller gets no value.
+                    guard Task.isCancelled else { return value }
+                    await discard?(value)
+                    throw CancellationError()
+                }
             } catch {
                 await socket?.close(code: Self.closeNormal)
                 await Self.drain(&group, into: discard)
