@@ -230,7 +230,9 @@ func TestDeviceRecordOnTheRelayRewindStripsTheProof(t *testing.T) {
 	// The row's relay id moved, so the mailbox is no longer listed under it:
 	// read the zone the record is in by the processor's own path.
 	b := mailbox{id: w.phone.ID(), zone: w.phone.Zone(), queue: w.phone.Zone(), link: w.device(w.phone).LinkNonce}
-	if err := w.proc.readMailbox(w.ctx, b, w.proc.newPass()); err != nil {
+	if err := w.proc.readMailboxWith(w.ctx, b, w.proc.newPass(), func(apply func(transport.Batch) error) error {
+		return w.proc.pull(w.ctx, b.zone, apply)
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if got := w.device(w.phone).RelayDeviceID; got != "moved-away" {
