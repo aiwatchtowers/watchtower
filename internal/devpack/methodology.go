@@ -13,8 +13,8 @@ import (
 )
 
 // v8CoreSHA256 and v9CoreSHA256 are the digests of the single-file v8 and v9
-// watchtower-workbench skills we shipped, v10CoreSHA256 … v20CoreSHA256 of
-// the v10 … v20 cores (testdata/watchtower-workbench-v8.md … -v20.md, pinned by
+// watchtower-workbench skills we shipped, v10CoreSHA256 … v21CoreSHA256 of
+// the v10 … v21 cores (testdata/watchtower-workbench-v8.md … -v21.md, pinned by
 // TestShippedCoreDigestsAreTheFixtures). A copy with these exact bytes and no
 // sidecar (a crash between the write and the sidecar) is ours: spec
 // 2026-10-15 §4.3 "the shipped bytes".
@@ -32,6 +32,7 @@ const (
 	v18CoreSHA256 = "7eb919aeef7cc0792c9425c93db8ed7f1430772979ddccde85148c116505a3d3"
 	v19CoreSHA256 = "054a2d327088514b442fcc996367b19c8a69b72a23bc616cdf253248f8af4a0c"
 	v20CoreSHA256 = "a879b48a7fc0ed8465c7c9c8f8247aebe8a1b65f315f8e03bf5951433617ef75"
+	v21CoreSHA256 = "dd1ab1fdc90baf3632f103338f4a73d7ecc90129e31e78516b572d3789da48d3"
 )
 
 // The exclude lines of the preset in each agent's skills directory.
@@ -41,7 +42,7 @@ const (
 )
 
 // adoptShippedSingleFile records the digest beside a core skill in skillsDir
-// that is byte-identical to a v8 … v20 we shipped but has no sidecar, so
+// that is byte-identical to a v8 … v21 we shipped but has no sidecar, so
 // the upgrade takes it as ours.
 func adoptShippedSingleFile(skillsDir string) error {
 	dir := filepath.Join(skillsDir, WorkbenchSkillName)
@@ -61,7 +62,7 @@ func adoptShippedSingleFile(skillsDir string) error {
 		digest == v10CoreSHA256 || digest == v11CoreSHA256 || digest == v12CoreSHA256 ||
 		digest == v13CoreSHA256 || digest == v14CoreSHA256 || digest == v15CoreSHA256 ||
 		digest == v16CoreSHA256 || digest == v17CoreSHA256 || digest == v18CoreSHA256 ||
-		digest == v19CoreSHA256 || digest == v20CoreSHA256 {
+		digest == v19CoreSHA256 || digest == v20CoreSHA256 || digest == v21CoreSHA256 {
 		return writeShippedDigest(dir, digest)
 	}
 	return nil

@@ -133,5 +133,4 @@ func TestFlowSkill_ApprovedReviewRoundFinishesTheBranch(t *testing.T) {
 func TestWorkbenchFlowSkill_WatchmanMergeRule(t *testing.T) {
 	rule := "In a session handed to Watchman, a Watchman **Approve** on the review round counts as the owner's approval for merging this session's PR into its feature or umbrella branch, never into `main`; check CI is green first."
 	assert.Contains(t, skillSection(t, string(mustFlow()), "What `in_review` means"), rule)
-	assert.Contains(t, rule, "never into `main`")
 }
