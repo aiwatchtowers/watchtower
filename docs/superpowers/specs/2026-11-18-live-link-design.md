@@ -103,10 +103,13 @@ comment. Other kinds keep today's chip.
 When the app becomes active:
 
 1. Screens render from the local replica at once (as today).
-2. The socket is pinged; if no pong comes within 300 ms a second socket is dialled in parallel and whichever is ready
-   first carries on (the other is closed): a slow network costs at most an extra dial, never a wait. The session
-   token is reused while valid. 300 ms is a starting value (named constant), tuned from R7's `wake_ms`.
-3. The `changes` reads of all its zones go out at once over that socket, pipelined, current kinds' zones first.
+2. The socket is pinged; if no pong comes within 300 ms the silent socket is retired at once (its waiting requests
+   fail as lost, new ones go over HTTPS) and the wake returns; a second socket is dialled in the background and
+   carries on once it is up. The relay's 1001 close of the old socket is then a handover, not a drop (no backoff). A
+   slow network costs at most an extra dial, never a wait. The session token is reused while valid. 300 ms is a
+   starting value (named constant), tuned from R7's `wake_ms`.
+3. The `changes` reads of all its zones go out at once, pipelined (over the socket, or over HTTPS while the redial
+   runs), current kinds' zones first.
 
 ### R7. Measurements first
 
@@ -181,3 +184,6 @@ Replica/Relay), phone app (`HubSession` wake, overlays). Order: relay (R1, R2 al
 - R5 optimistic apply — decided by the agent (it is what makes a tap feel instant; the owner closed stage 6 under the
   assumption that live results replace it). Owner approved the spec with it (ask #1535).
 - Frame budget 256 KiB, 300 ms wake ping, 10-min overlay expiry — decided by the agent, starting values tuned from R7.
+- R6 race (a second socket in parallel, whichever is ready first carries on) simplified during implementation: no pong
+  in 300 ms retires the silent socket at once, reads go over HTTPS, the redial runs in the background and hands over;
+  the relay's 1001 close of the old socket is a handover — decided by the agent (Task 10 review).
