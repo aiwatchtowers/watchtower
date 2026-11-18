@@ -18,6 +18,7 @@ import (
 
 	"encoding/json"
 	"watchtower/internal/agentlogdb"
+	"watchtower/internal/atlassianpdr"
 	"watchtower/internal/briefing"
 	"watchtower/internal/caldav"
 	"watchtower/internal/calendar"
@@ -1446,6 +1447,23 @@ func wireJiraSyncers(ctx context.Context, d *daemon.Daemon, cfg *config.Config, 
 		wireJiraAccountSyncers(ctx, d, cfg, database, accounts, clients, logger)
 	}
 	wireExternalSync(d, cfg, database, accounts, clients, logger)
+	d.SetAtlassianPDR(atlassianPDRAccounts(accounts, clients))
+}
+
+// atlassianPDRAccounts lists the accounts that run Personal Data Reporting
+// (#1887 §6): every account with an OAuth client, the shared app's included.
+// An API-token account cannot call the report API (it needs an app's token);
+// its own lookup is separate.
+func atlassianPDRAccounts(accounts []db.JiraAccount, clients map[int64]*jira.Client) []daemon.PDRAccount {
+	var out []daemon.PDRAccount
+	for _, acct := range accounts {
+		client := clients[acct.ID]
+		if client == nil || acct.AuthKind == "api_token" {
+			continue
+		}
+		out = append(out, daemon.PDRAccount{ID: acct.ID, Reporter: atlassianpdr.ClientReporter{Client: client}})
+	}
+	return out
 }
 
 // buildAtlassianClients builds one *jira.Client per enabled account with a

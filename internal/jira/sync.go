@@ -919,13 +919,27 @@ func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int, fie
 	return dbIssue, links
 }
 
-// ensureUserMap creates a user map entry if it doesn't exist.
+// ensureUserMap creates a user map entry if it doesn't exist, and refreshes
+// the stored name and email of one whose profile Atlassian now answers
+// differently (a profile change, which Personal Data Reporting reports as
+// "updated", #1887 §6). The Slack mapping is kept; an email Atlassian no
+// longer shows is not blanked.
 func (s *Syncer) ensureUserMap(u *User) {
 	if u == nil || u.AccountID == "" {
 		return
 	}
 	existing, _ := s.db.GetJiraUserMapByAccountID(u.AccountID)
 	if existing != nil {
+		fresh := *existing
+		if u.DisplayName != "" {
+			fresh.DisplayName = u.DisplayName
+		}
+		if u.EmailAddress != "" {
+			fresh.Email = u.EmailAddress
+		}
+		if fresh != *existing {
+			_ = s.db.UpsertJiraUserMap(fresh)
+		}
 		return
 	}
 	_ = s.db.UpsertJiraUserMap(db.JiraUserMap{

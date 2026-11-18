@@ -164,6 +164,8 @@ type Daemon struct {
 	gmailSyncers     []mailSyncer
 	imapSyncers      []mailSyncer
 	jiraSyncers      []jiraAccountSyncer
+	pdrAccounts      []PDRAccount     // Atlassian Personal Data Reporting (atlassian_pdr.go)
+	pdrNow           func() time.Time // its clock, nil = time.Now; a seam for tests
 	externalSync     ExternalSyncRunner
 	mediaPipe        *media.Pipeline
 	dayPlanPipeline  DayPlanRunner
@@ -685,6 +687,10 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	d.phaseLinearSync(fetchCtx)
 	d.markFetchProgress()
 	d.observePhase(fetchCtx, automations.ConfluenceSource(d.db), func() { d.phaseExternalSync(fetchCtx) })
+	d.markFetchProgress()
+	// After the Jira and Confluence syncs, so a profile they just re-wrote
+	// for a closed account is erased in the same cycle (#1887 §6).
+	d.phaseAtlassianPDR(fetchCtx)
 	d.markFetchProgress()
 	// Lease purges are scheduled only now, after every source sync had its
 	// chance to prove access this cycle (#601).
