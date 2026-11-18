@@ -220,7 +220,7 @@ func checkPermissionRequest(stderr io.Writer, database *db.DB, id, workbenchID i
 		(row.AgentStateAt.Before(req.CreatedAt) || row.AgentState.String == agentStateApproval) {
 		return "", false, nil
 	}
-	closed, err := database.ClosePermissionRequest(id, db.PermissionAnsweredOnMac, hookNow())
+	closed, err := database.ClosePermissionRequest(id, db.PermissionAnsweredOnMac, "", hookNow())
 	if err == nil && !closed {
 		// The phone's answer landed after the Mac's: Claude Code keeps the Mac's.
 		fmt.Fprintf(stderr, "watchtower: permission request %d: the phone answered after the Mac; the Mac's answer stands\n", id)
@@ -232,7 +232,7 @@ func checkPermissionRequest(stderr io.Writer, database *db.DB, id, workbenchID i
 // more. The database calls take no context, so a cancelled wait still
 // writes it, under the busy timeout already set.
 func expirePermissionRequest(database *db.DB, id int64) error {
-	_, err := database.ClosePermissionRequest(id, db.PermissionExpired, hookNow())
+	_, err := database.ClosePermissionRequest(id, db.PermissionExpired, "", hookNow())
 	return err
 }
 

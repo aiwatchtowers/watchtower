@@ -3495,7 +3495,7 @@ CREATE TABLE IF NOT EXISTS permission_requests (
     status              TEXT NOT NULL CHECK (status IN ('pending','allowed','denied','answered_on_mac','expired')),
     created_at          TEXT NOT NULL,                       -- agent-state stamp layout
     decided_at          TEXT,
-    decided_by          TEXT                                 -- the phone's name; NULL otherwise
+    decided_by          TEXT                                 -- the phone's name, or 'watchman'; NULL otherwise
 );
 CREATE INDEX IF NOT EXISTS idx_permission_requests_session ON permission_requests(terminal_session_id, status);
 

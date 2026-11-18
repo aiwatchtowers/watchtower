@@ -34,7 +34,7 @@ type PermissionRequest struct {
 	Status            string
 	CreatedAt         time.Time
 	DecidedAt         sql.NullString // agent-state stamp layout
-	DecidedBy         sql.NullString // the phone's name, or "Mac" for the Desktop's Workchat card; NULL otherwise
+	DecidedBy         sql.NullString // the phone's name, "Mac" for the Desktop's Workchat card, "watchman" for the twin; NULL otherwise
 }
 
 // OpenPermissionRequest records the session's agent state `approval` at time at
@@ -97,11 +97,14 @@ func (db *DB) GetPermissionRequest(id int64) (*PermissionRequest, error) {
 	return &r, nil
 }
 
-// ClosePermissionRequest sets a pending request to status, stamped at; false when
-// it no longer is pending (compare-and-set: the first answer wins).
-func (db *DB) ClosePermissionRequest(id int64, status string, at time.Time) (bool, error) {
-	res, err := db.Exec(`UPDATE permission_requests SET status = ?, decided_at = ?
-		WHERE id = ? AND status = ?`, status, AgentStateStamp(at), id, PermissionPending)
+// ClosePermissionRequest sets a pending request to status, stamped at and
+// decided by decidedBy ("" stores NULL: the hook's own closes, expired and
+// answered on the Mac); false when it no longer is pending (compare-and-set:
+// the first answer wins).
+func (db *DB) ClosePermissionRequest(id int64, status, decidedBy string, at time.Time) (bool, error) {
+	by := sql.NullString{String: decidedBy, Valid: decidedBy != ""}
+	res, err := db.Exec(`UPDATE permission_requests SET status = ?, decided_at = ?, decided_by = ?
+		WHERE id = ? AND status = ?`, status, AgentStateStamp(at), by, id, PermissionPending)
 	if err != nil {
 		return false, fmt.Errorf("closing permission request %d: %w", id, err)
 	}

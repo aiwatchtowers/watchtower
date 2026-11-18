@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"watchtower/internal/agentkind"
+	"watchtower/internal/askanswer"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/secure"
@@ -137,7 +138,7 @@ const DefaultTimeout = 30 * time.Second
 
 // submitSettle is the pause between a line's paste and its Return (both agent
 // profiles, PROJ-12).
-const submitSettle = 500 * time.Millisecond
+const submitSettle = askanswer.SubmitSettle
 
 // CannotTypeMessage is a no_paste_mode line's echo on a host without a fresh
 // Desktop heartbeat (spec §8 p. 4b).
@@ -191,17 +192,23 @@ type Deps struct {
 	// has no chat (the organization's workbench_only policy): every chat_*
 	// kind is refused not_supported.
 	Chat *ChatDeps
+	// Answerer is the one answer path of asks and permission requests
+	// (shared with Watchman by the daemon); nil = Register builds one over
+	// DB, Sessions, Store (the held answers' ledger) and Clock.
+	Answerer *askanswer.Answerer
 }
 
 // Handlers is the registered handler set: its in-memory state (asks being
-// answered, answers held for their session) lives as long as the hub.
+// answered, the phone lines) lives as long as the hub; the answers held for
+// their session live in the Answerer.
 type Handlers struct {
 	d Deps
 
 	mu        sync.Mutex
 	answering map[int64]bool
-	held      []heldAnswer
 	lines     lineState
+	// releaseHooks clears this set's hooks on the Answerer (ReleaseAnswerer).
+	releaseHooks func()
 	// chatWG tracks the chat work run after an answer (chatAsync).
 	chatWG sync.WaitGroup
 }
@@ -226,8 +233,18 @@ func Register(d *actions.Dispatcher, deps Deps) *Handlers {
 			}
 		}
 	}
+	if deps.Answerer == nil {
+		ad := askanswer.Deps{DB: deps.DB, Sessions: deps.Sessions, Clock: deps.Clock}
+		if deps.Store != nil {
+			ad.Held = deps.Store
+		}
+		deps.Answerer = askanswer.New(ad)
+	}
 	h := &Handlers{d: deps, answering: map[int64]bool{}}
-	h.loadHeld()
+	// Every line the Answerer submits counts for the phone lines' busy
+	// window; a line the host cannot paste goes to the clipboard on a
+	// desktop host.
+	h.releaseHooks = deps.Answerer.SetHooks(askanswer.Hooks{Submitted: h.lines.noteSubmit, NoPasteMode: h.copyLine})
 	h.startHeldLines()
 	reg := func(kind string, fn actions.Handler) {
 		if len(NudgeTable[kind]) == 0 {
@@ -261,6 +278,11 @@ func Register(d *actions.Dispatcher, deps Deps) *Handlers {
 	}
 	return h
 }
+
+// ReleaseAnswerer clears this set's delivery hooks on its Answerer when the
+// hub stops — only while they are still this set's (a later hub's Register
+// owns them then).
+func (h *Handlers) ReleaseAnswerer() { h.releaseHooks() }
 
 func nudgeNames(kind string) []string {
 	out := make([]string, 0, len(NudgeTable[kind]))

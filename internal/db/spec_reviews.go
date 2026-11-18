@@ -57,12 +57,13 @@ const SpecReviewMarkNotUseful = "not_useful"
 
 // SpecReviewMark is the owner's mark on one item (Desktop-written). About is
 // a comment's finding text, kept so a comment whose finding a re-run drops
-// still says what it was about. AskID and Key are set where a mark travels
-// alone (specreview.AnswerMarks); ListSpecReviewMarks leaves them zero, its
-// map key being the item key.
+// still says what it was about. AskID is set where a mark travels alone
+// (specreview.AnswerMarks); ListSpecReviewMarks leaves it zero.
 type SpecReviewMark struct {
-	AskID                         int64
-	Key                           string
+	AskID int64
+	// ItemKey is spec_review_marks.item_key (ListSpecReviewMarks also keys
+	// its map by it).
+	ItemKey                       string
 	State, Body, About, UpdatedAt string
 }
 
@@ -288,12 +289,11 @@ func (db *DB) ListSpecReviewMarks(askID int64) (map[string]SpecReviewMark, error
 	defer rows.Close()
 	marks := map[string]SpecReviewMark{}
 	for rows.Next() {
-		var key string
 		var m SpecReviewMark
-		if err := rows.Scan(&key, &m.State, &m.Body, &m.About, &m.UpdatedAt); err != nil {
+		if err := rows.Scan(&m.ItemKey, &m.State, &m.Body, &m.About, &m.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning spec review mark: %w", err)
 		}
-		marks[key] = m
+		marks[m.ItemKey] = m
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("listing spec review marks: %w", err)

@@ -145,7 +145,7 @@ func TestAnswerMarks_DropsUnknownKeys(t *testing.T) {
 		{Key: "bs:1", State: "not_useful"},
 	}
 	ans, marks := AnswerMarks(7, result, nil, twin, "changes", snapshot, answerAt)
-	if len(marks) != 2 || marks[0].Key != "ag:1" || marks[1].Key != "bs:1" {
+	if len(marks) != 2 || marks[0].ItemKey != "ag:1" || marks[1].ItemKey != "bs:1" {
 		t.Fatalf("marks = %+v", marks)
 	}
 	if len(ans.Comments) != 1 || ans.Comments[0].ItemKey != "ag:1" {
@@ -186,7 +186,7 @@ func TestAnswerMarks_CommentsMatchBuildAnswer(t *testing.T) {
 	ans, marks := AnswerMarks(3, result, nil, twin, "approved", snapshot, answerAt)
 	stored := map[string]db.SpecReviewMark{}
 	for _, m := range marks {
-		stored[m.Key] = m
+		stored[m.ItemKey] = m
 	}
 	want := BuildAnswer(result, stored, nil, asks.Answer{}, "approved", snapshot)
 	got, _ := json.Marshal(ans)
@@ -197,7 +197,7 @@ func TestAnswerMarks_CommentsMatchBuildAnswer(t *testing.T) {
 	if len(marks) != 3 || len(ans.Comments) != 3 {
 		t.Fatalf("marks %d comments %d", len(marks), len(ans.Comments))
 	}
-	if marks[0].Key != "ck:1" || marks[1].Key != "ag:1" || marks[1].State != "comment" || marks[1].Body != "second click wins" {
+	if marks[0].ItemKey != "ck:1" || marks[1].ItemKey != "ag:1" || marks[1].State != "comment" || marks[1].Body != "second click wins" {
 		t.Fatalf("marks = %+v", marks)
 	}
 }

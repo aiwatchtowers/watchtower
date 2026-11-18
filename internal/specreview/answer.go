@@ -70,7 +70,7 @@ func AnswerMarks(askID int64, result *Result, loop []LedgerEntry, twin []TwinMar
 		if !ok || (t.State != "ok" && t.State != "comment" && t.State != db.SpecReviewMarkNotUseful) {
 			continue
 		}
-		m := db.SpecReviewMark{AskID: askID, Key: t.Key, State: t.State, Body: t.Body, UpdatedAt: stamp}
+		m := db.SpecReviewMark{AskID: askID, ItemKey: t.Key, State: t.State, Body: t.Body, UpdatedAt: stamp}
 		if t.State == "comment" {
 			m.About = text
 		}
