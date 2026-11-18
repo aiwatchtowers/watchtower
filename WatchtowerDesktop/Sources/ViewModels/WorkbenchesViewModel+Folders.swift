@@ -21,6 +21,13 @@ struct FilesRootItem: Identifiable, Equatable {
     var id: Int64 { folder.id }
 }
 
+/// A FILES root chosen by opening one of its files, and the page session
+/// it was chosen under.
+struct FilesRootSelection: Equatable {
+    let root: CodeRoot
+    let sessionID: Int64?
+}
+
 /// What Put on the Bench… did with the picked folder.
 enum PutOnBenchStep: Equatable {
     /// The add ran (its outcome is in FILES).
@@ -235,6 +242,8 @@ extension WorkbenchesViewModel {
     ) async throws -> FolderResult {
         let result = try await cli.folderAdd(workbenchID: projectID, path: path, addedBy: addedBy)
         await loadBenchFolders(projectID: projectID)
+        // Added, but the CLI named no folder: nothing to highlight (and,
+        // being ok, no error either).
         if result.ok || result.code == .alreadyHere, let added = result.folder {
             highlightedFolderRoot[projectID] = added.id
             expandedFolderRoots[projectID, default: []].insert(added.id)

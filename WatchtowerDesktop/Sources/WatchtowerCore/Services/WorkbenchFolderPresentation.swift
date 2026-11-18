@@ -65,6 +65,9 @@ package enum WorkbenchFolderPresentation {
     package static let hintLead = "Task touches another repo?"
     package static let hint = "\(hintLead) \(putOnBenchTitle)"
 
+    /// The reason of a refusal the CLI gave no words for.
+    package static let noReason = "the command gave no reason."
+
     /// An add that failed or was refused, under the FILES header.
     package static func putOnBenchFailed(name: String, reason: String) -> String {
         "Couldn’t put \(name) on the bench: \(reason)"

@@ -103,9 +103,10 @@ struct ReviewAgentChatPanel: View {
         }
         .onAppear(perform: onShown)
         .task(id: ReviewedFolderKey(model: model, sessionID: chat.sessionID)) {
-            // A read pending never shows the last one's status: the folder
-            // may be on another branch now.
-            reviewedFolder = nil
+            // A read pending never shows another folder's last status: that
+            // folder may be on another branch now. Home's status is the
+            // page's own, so a home session never flickers to a spinner.
+            if case .other = reviewedFolder { reviewedFolder = nil }
             reviewedFolder = await chat.vm.reviewedFolder(sessionID: chat.sessionID, projectID: chat.projectID)
         }
     }

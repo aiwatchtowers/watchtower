@@ -149,7 +149,7 @@ func (r *liveReader) claudeLine(line []byte) {
 	if rec.Type == "user" && !rec.IsMeta && !rec.IsCompact {
 		if e, ok := userEntry(rec); ok {
 			r.recognized = true
-			if e.Kind == KindOwner || e.Kind == KindAskAnswer || e.Kind == KindWatchtower {
+			if e.Kind == KindOwner || e.Kind == KindAskAnswer || e.Kind == KindWatchtower || e.Kind == KindPeer {
 				r.reset(at)
 			}
 		}

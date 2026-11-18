@@ -627,6 +627,9 @@ final class WorkbenchesViewModel {
     /// The root Put on the Bench… pointed at (`already_here`, a new folder),
     /// highlighted in FILES until another one is.
     var highlightedFolderRoot: [Int64: Int64] = [:]
+    /// The FILES root a file was opened from when it is not the page
+    /// session's (#2003), per workbench; stale once the session changes.
+    var selectedFilesRoot: [Int64: FilesRootSelection] = [:]
     /// The last Put on the Bench… failure per workbench, under the FILES header.
     var putOnBenchErrors: [Int64: String] = [:]
     /// Workbenches with a Put on the Bench… add in flight.

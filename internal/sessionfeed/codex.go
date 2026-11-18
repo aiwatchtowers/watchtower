@@ -44,13 +44,16 @@ type codexEvent struct {
 // startOffset) and returns the chat entries they produce, like Parse does for
 // a Claude Code transcript. Two dialects are read per line: paginated
 // `event_msg` `item_completed` (UserMessage / AgentMessage items) and legacy
-// `event_msg` `user_message` / `agent_message`. `response_item` and
-// `compacted` lines repeat that text and are skipped. r carries rollout text:
+// `event_msg` `user_message` / `agent_message`. `compacted` lines
+// repeat that text and are skipped; `response_item` function calls of
+// send_to_session / start_session (and their outputs) become outgoing peer
+// entries, the only part of them the chat shows. r carries rollout text:
 // a compressed file is decompressed by the caller (rollout.Open, as Build
 // does).
 func ParseCodex(r io.Reader, startOffset int64, conv string) (*Result, error) {
 	res := &Result{Offset: startOffset, Unknown: map[string]int{}}
 	br := bufio.NewReaderSize(r, 64<<10)
+	peers := newPeerTracker(res, conv)
 	for {
 		lineStart := res.Offset
 		raw, n, complete, err := agentfiles.NextLine(br, maxLineBytes)
@@ -70,10 +73,14 @@ func ParseCodex(r io.Reader, startOffset int64, conv string) (*Result, error) {
 			res.Unknown["<invalid>"]++
 			continue
 		}
+		at, _ := time.Parse(time.RFC3339Nano, l.Timestamp)
+		if l.Type == "response_item" {
+			peers.codexLine(l.Payload, at)
+			continue
+		}
 		if l.Type != "event_msg" {
 			continue
 		}
-		at, _ := time.Parse(time.RFC3339Nano, l.Timestamp)
 		if e, ok := codexEntry(l.Payload, lineStart); ok {
 			e.At, e.Conversation = at, conv
 			res.Entries = append(res.Entries, e)
