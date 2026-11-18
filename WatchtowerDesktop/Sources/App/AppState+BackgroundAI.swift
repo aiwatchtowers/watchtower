@@ -28,6 +28,17 @@ extension AppState {
         sharedConfig.reloadBackgroundRuns()
     }
 
+    /// The readiness inputs read `backgroundAI` under observation, so an
+    /// answer or a profile change re-evaluates the AI features' states at once.
+    func makeLiveReadinessEnvironment() -> LiveReadinessEnvironment {
+        LiveReadinessEnvironment(
+            daemon: daemonManager, visibility: featureVisibility,
+            // An AppState gone has no screen left to show a state on.
+            backgroundAI: { [weak self] in self?.backgroundAI ?? .allowedByOwner },
+            workspaceDir: { Constants.activeWorkspaceDir() }
+        )
+    }
+
     func makeBackgroundAIRefresher() -> BackgroundAIConsentRefresher {
         BackgroundAIConsentRefresher(center: .default, activation: NSApplication.didBecomeActiveNotification) { [weak self] in
             self?.reloadBackgroundAI()

@@ -21,6 +21,8 @@ protocol ReadinessEnvironment: AnyObject {
     /// `sync.backfill_days` as written in config.yaml; nil = unset (Go's
     /// default, 30, so the backfill is on).
     var backfillDays: Int? { get }
+    /// The background AI consent (`AppState.backgroundAI`, #1886).
+    var backgroundAI: BackgroundAIConsent.State { get }
     /// A stamp file in the active workspace directory; missing or garbage → nil.
     func stamp(_ fileName: String) -> Date?
 }
@@ -195,7 +197,8 @@ final class ReadinessCenter {
             runningBackfillStarts: snapshot.runningBackfillStarts,
             memoryHasRun: snapshot.memoryHasRun,
             backfillOff: environment.backfillDays.map { $0 <= 0 } ?? false,
-            jiraBoardsSelected: snapshot.jiraBoardsSelected
+            jiraBoardsSelected: snapshot.jiraBoardsSelected,
+            backgroundAI: environment.backgroundAI
         )
     }
 }
@@ -209,6 +212,7 @@ final class LiveReadinessEnvironment: ReadinessEnvironment {
     private let visibility: FeatureVisibilityStore
     private let workspaceDir: () -> String?
     private let configPath: String
+    private let consent: () -> BackgroundAIConsent.State
     /// One parse of config.yaml serves the three reads of a refresh.
     private var config: ConfigService?
     private var configReadAt = Date.distantPast
@@ -218,11 +222,13 @@ final class LiveReadinessEnvironment: ReadinessEnvironment {
         daemon: DaemonManager,
         visibility: FeatureVisibilityStore,
         configPath: String = Constants.configPath,
+        backgroundAI: @escaping () -> BackgroundAIConsent.State,
         workspaceDir: @escaping () -> String?
     ) {
         self.daemon = daemon
         self.visibility = visibility
         self.configPath = configPath
+        self.consent = backgroundAI
         self.workspaceDir = workspaceDir
     }
 
@@ -236,6 +242,8 @@ final class LiveReadinessEnvironment: ReadinessEnvironment {
     var briefingHour: Int { currentConfig().briefingHour }
     var pollInterval: String? { currentConfig().syncInterval }
     var backfillDays: Int? { currentConfig().backfillDays }
+    /// Observed: an answer or a profile change re-evaluates at once.
+    var backgroundAI: BackgroundAIConsent.State { consent() }
 
     /// Stamp files are a dual-path contract with Go's `saveLastPeople`,
     /// `saveLastBriefing`, `saveLastIdeas`, `saveLastStreams`

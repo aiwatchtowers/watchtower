@@ -59,10 +59,7 @@ final class AppState {
     /// `readinessEnvironmentOverride`, set before first use, replaces the
     /// live environment in tests.
     @ObservationIgnored private(set) lazy var readinessCenter = ReadinessCenter(
-        environment: readinessEnvironmentOverride
-            ?? LiveReadinessEnvironment(daemon: daemonManager, visibility: featureVisibility) {
-                Constants.activeWorkspaceDir()
-            }
+        environment: readinessEnvironmentOverride ?? makeLiveReadinessEnvironment()
     )
 
     /// The Home snapshot and the Getting ready memory, here so a read
