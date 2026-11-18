@@ -199,6 +199,34 @@ func (p *Port) Interrupt(ctx context.Context, sessionID int64, run uint64) error
 	return nil
 }
 
+// PromptState reads whether the prompt of the session's run holds text not
+// submitted (the host writes nothing), within sessionhost.PromptStateTimeout.
+// known is false on every error: a run that is not this one
+// (ErrNotRunning), a host without the request (sessionhost.ErrFeatureMissing,
+// never sent there), a timeout or a dropped connection — none of them is an
+// empty prompt.
+func (p *Port) PromptState(ctx context.Context, sessionID int64, run uint64) (holds, known bool, err error) {
+	ctx, cancel := context.WithTimeout(ctx, sessionhost.PromptStateTimeout)
+	defer cancel()
+	info, ok, err := p.find(ctx, sessionID)
+	if err != nil {
+		return false, false, err
+	}
+	if !ok || info.Exited || info.Launch != run {
+		return false, false, ErrNotRunning
+	}
+	c, err := p.control.get(ctx)
+	if err != nil {
+		return false, false, err
+	}
+	r, err := c.PromptState(ctx, sessionhost.PromptStateMsg{Row: info.Row, Run: info.Run, Launch: info.Launch})
+	p.control.done(c, err)
+	if err != nil {
+		return false, false, fmt.Errorf("reading session %d's prompt: %w", sessionID, err)
+	}
+	return r.HoldsText, r.Known, nil
+}
+
 // Start starts a session (Start) and answers once its launch was checked,
 // as the Swift handler's launchCheck and launch watch do: a refused launch,
 // an unreachable host or a failed placement is an error (failed

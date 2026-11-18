@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 )
 
 // MaxPayload is the largest frame payload the codec accepts.
@@ -54,19 +55,41 @@ const (
 	Stopping          FrameType = 0x8C
 )
 
+// PromptStateReq / PromptStateReply read whether a session's prompt holds
+// text not submitted; the host writes nothing to the PTY. Only a host whose
+// HelloOK lists FeaturePromptState answers them: an older host skips an
+// unknown frame and never replies, so a client never sends one there.
+const (
+	PromptStateReq   FrameType = 0x0D
+	PromptStateReply FrameType = 0x8D
+)
+
+// FeaturePromptState is the HelloOK feature of a host that answers
+// PromptStateReq.
+const FeaturePromptState = "prompt_state"
+
+// PromptStateTimeout bounds one PromptState call: a host that has not
+// answered by then leaves the prompt's state unknown, never empty.
+const PromptStateTimeout = 2 * time.Second
+
 // ProtocolVersion is the protocol version this host speaks. The protocol
 // only grows additively: a v2 host accepts v1 and v2 hellos and answers
-// with ProtocolVersion.
+// with ProtocolVersion. A request added within a version is announced in
+// HelloOK's Features instead of a bump: the client treats any host below its
+// own version as v1 (ErrHostV1), which would restart every adopted host.
 const ProtocolVersion = 2
 
 // minProtocolVersion is the oldest client hello the host accepts.
 const minProtocolVersion = 1
 
 // HelloMsg is the payload of Hello (client: version) and HelloOK (host:
-// version and pid).
+// version, pid and the optional requests it answers).
 type HelloMsg struct {
 	Version int `json:"version"`
 	Pid     int `json:"pid,omitempty"`
+	// Features names the optional requests the host answers
+	// (FeaturePromptState); absent from an older host's HelloOK.
+	Features []string `json:"features,omitempty"`
 }
 
 // ErrorMsg is the payload of an Error frame.
@@ -168,6 +191,24 @@ type PromptHintMsg struct {
 	Row    int64  `json:"row"`
 	Run    string `json:"run"`
 	Dialog bool   `json:"dialog"`
+}
+
+// PromptStateMsg asks whether the prompt of a session's run holds text not
+// submitted; Row, Run and Launch must all match a running session.
+type PromptStateMsg struct {
+	Row    int64  `json:"row"`
+	Run    string `json:"run"`
+	Launch uint64 `json:"launch"`
+}
+
+// PromptStateReplyMsg is the host's answer: HoldsText is the prompt state's
+// holdsText (the owner's draft, a line left typed, a line in its pause).
+// Known is set on every answer; a call that got none (a timeout, a dropped
+// connection, a host without the feature) reports Known false, which a
+// caller never reads as an empty prompt.
+type PromptStateReplyMsg struct {
+	HoldsText bool `json:"holds_text"`
+	Known     bool `json:"known"`
 }
 
 // StoppingMsg is the payload of a Stopping frame. AlreadyExited: the run had
