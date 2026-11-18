@@ -738,7 +738,8 @@ func matchUnreadable(r PermissionAsk) bool {
 var limitWords = regexp.MustCompile(`(?i)(^|[^a-z0-9_])(merges?|mergepullrequest|automerge|push|tags?|release|send-pack|reset|rebase|update-ref|altool|testflight|itmstransporter|pilot|upload_to_testflight|mail|mailx|sendmail|mutt|comment|review)([^a-z0-9_]|$)|rm\s+-[a-z]*[rf]|(^|[^a-z0-9_])rm(\s+-\S+)*\s+['"]?(/|\.\.|~)|(branch|checkout|switch)\s+-[a-z]*[fdmcb]`)
 
 // lenientScanText is what the guard's mode scans for limitWords: the
-// command text (commandText) with each commit-message idiom blanked — a
+// command text (comments and description lines dropped by splitCommands)
+// with each commit-message idiom blanked — a
 // "$(cat <<'D' … D)" argument (quoted delimiter, so its body is literal
 // text) of a command that runs no string itself and has no other hidden
 // shape (heredocArgsBlanked).
@@ -828,16 +829,6 @@ func isQuotedHeredocCat(w string) bool {
 	return false
 }
 
-// commandText is summary without its comments and description lines.
-func commandText(summary string) string {
-	parts := splitCommands(summary)
-	lines := make([]string, 0, len(parts))
-	for _, p := range parts {
-		lines = append(lines, p.text)
-	}
-	return strings.Join(lines, "\n")
-}
-
 // mergeWords and mergeTools are the backstop's two halves: a merge word
 // (merge, merges, mergePullRequest, an auto-merge) and a tool that can
 // merge a pull request.
@@ -849,14 +840,16 @@ var (
 // mergeBackstop is the coarse check after the parser (fail closed): a
 // shell request whose text has a merge word and a tool that can merge a
 // pull request parks, however the command is shaped. A strict request is
-// read whole, comments included; a lenient one (the guard) without them.
+// read whole, comments included; a lenient one (the guard) as its word
+// scan reads it (lenientScanText: no comments, a plain heredoc argument
+// blanked).
 func mergeBackstop(r PermissionAsk) bool {
 	if !isBash(r) {
 		return false
 	}
 	text := r.Summary
-	if r.Lenient {
-		text = commandText(text)
+	if r.Lenient { // comments dropped, the plain heredoc idiom blanked
+		text = lenientScanText(text)
 	}
 	return mergeWords.MatchString(text) && mergeTools.MatchString(text)
 }

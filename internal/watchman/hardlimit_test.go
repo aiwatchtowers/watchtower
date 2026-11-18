@@ -684,5 +684,17 @@ func TestParkedBy_HeredocIdiomAndMoreHiddenShapes(t *testing.T) {
 	both("braced variable program", "${GIT} status", "")
 	both("function definition", "f() { git push origin main; }; f", LimitUnreadable)
 	both("function keyword", "function f { make; }", "")
+	// The guard's merge backstop reads the blanked text too; the twin's
+	// reads it whole.
+	prBody := "gh pr create --title \"Fix\" --body \"$(cat <<'EOF'\nmerge it into feature/x after the review\nEOF\n)\""
+	add("strict PR body says merge", bash(prBody), LimitUnreadable)
+	add("lenient PR body says merge", lenient(prBody), "")
+	add("lenient gh pr merge", lenient("gh pr merge 1"), LimitMainRef)
+	add("lenient sh -c heredoc merge", lenient("sh -c \"$(cat <<'EOF'\ngh pr merge 1\nEOF\n)\""), LimitUnreadable)
 	expectParked(t, cases)
+	// The strict backstop alone (the unreadable row comes first above).
+	r := bash(prBody)
+	require.True(t, mergeBackstop(r), "the twin's backstop reads the body")
+	r.Lenient = true
+	require.False(t, mergeBackstop(r), "the guard's backstop skips the plain body")
 }

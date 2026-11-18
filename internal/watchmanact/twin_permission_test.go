@@ -514,3 +514,17 @@ func TestTwin_PermissionLiveReadsForBranchCommands(t *testing.T) {
 		t.Fatalf("live reads = %q, want %q twice", run.calls, want)
 	}
 }
+
+// The twin is strict: a PR body heredoc that the guard lets through is
+// parked for the owner, the model never asked.
+func TestTwin_PermissionHeredocBodyParks(t *testing.T) {
+	e := newTwinEnv(t)
+	e.withPermRun(&permRun{branches: []string{"feature/x"}})
+	reqID, itemID := e.permission("Bash", "gh pr create --title \"Fix\" --body \"$(cat <<'EOF'\nmerge it into feature/x after the review\nEOF\n)\"", false)
+	e.run()
+	wantOutcome(t, e.item(itemID), OutcomeParked)
+	e.wantPermission(reqID, db.PermissionDenied, askanswer.ByWatchman)
+	if e.decideCalls() != 0 {
+		t.Fatal("Decide ran on a hidden shape")
+	}
+}

@@ -527,6 +527,10 @@ func TestWatchmanGuard_HiddenShapesNeedALimitWord(t *testing.T) {
 		{"git commit -m \"$(cat <<EOF\n$(git push)\nEOF\n)\"", "Parked for the owner: unreadable — continue with other work"},
 		{"echo 'git push' | sh", "Parked for the owner: unreadable — continue with other work"},
 		{"$G push origin feat", "Parked for the owner: unreadable — continue with other work"},
+		// The merge backstop reads the blanked body too (round 6 ruling).
+		{"gh pr create --title \"Fix\" --body \"$(cat <<'EOF'\nmerge it into feature/x after the review\nEOF\n)\"", ""},
+		{"gh pr merge 1", "Parked for the owner: main_ref — continue with other work"},
+		{"sh -c \"$(cat <<'EOF'\ngh pr merge 1\nEOF\n)\"", "Parked for the owner: unreadable — continue with other work"},
 		{"x $(git push origin HEAD:main)", "Parked for the owner: unreadable — continue with other work"},
 		{"true & gh pr merge 1", "Parked for the owner: unreadable — continue with other work"},
 		{`echo "open`, "Parked for the owner: unreadable — continue with other work"},
