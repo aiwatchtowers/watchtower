@@ -85,43 +85,108 @@ type shellCmd struct {
 
 const cwdUnknown = "?"
 
-var wrappers = map[string]bool{"sudo": true, "command": true, "time": true, "nohup": true, "env": true, "exec": true, "nice": true, "xcrun": true, "xargs": true}
+// wrappers maps each wrapper program to the options that take an operand.
+var wrappers = map[string]map[string]bool{
+	"sudo":    {"-u": true, "-g": true, "-h": true, "-p": true, "-C": true, "-D": true, "-R": true, "-T": true, "-U": true, "--user": true, "--group": true, "--host": true, "--prompt": true, "--chdir": true, "--chroot": true},
+	"command": {},
+	"time":    {"-f": true, "-o": true, "--format": true, "--output": true},
+	"nohup":   {},
+	"env":     {"-u": true, "-C": true, "-S": true, "--unset": true, "--chdir": true, "--split-string": true},
+	"exec":    {"-a": true},
+	"nice":    {"-n": true, "--adjustment": true},
+	"xcrun":   {"--sdk": true, "-sdk": true, "--toolchain": true, "-toolchain": true},
+	"xargs":   {"-n": true, "-L": true, "-I": true, "-P": true, "-s": true, "-d": true, "-E": true, "-a": true, "--max-args": true, "--max-lines": true, "--max-procs": true, "--max-chars": true, "--delimiter": true, "--arg-file": true, "--replace": true, "--eof": true},
+}
 
-// commands splits a Bash summary on ; && || | and newlines. The `# ` line
-// that carries the request's description is not a command.
+// unresolved stands for a wrapper that wraps nothing readable; it parks.
+const unresolved = "<unresolved>"
+
+// commandPart is one simple command of a line and the separator before it.
+type commandPart struct{ text, sep string }
+
+// splitCommands splits a command line on ; && || | and newlines.
+func splitCommands(line string) []commandPart {
+	var out []commandPart
+	start, sep := 0, ""
+	for i := 0; i < len(line); {
+		var next string
+		switch {
+		case strings.HasPrefix(line[i:], "&&"):
+			next = "&&"
+		case strings.HasPrefix(line[i:], "||"):
+			next = "||"
+		case line[i] == ';' || line[i] == '|' || line[i] == '\n':
+			next = line[i : i+1]
+		}
+		if next == "" {
+			i++
+			continue
+		}
+		out = append(out, commandPart{line[start:i], sep})
+		i += len(next)
+		start, sep = i, next
+	}
+	return append(out, commandPart{line[start:], sep})
+}
+
+// stripWrappers removes leading env assignments and wrappers, with their
+// options and the options' operands.
+func stripWrappers(words []string, c *shellCmd) []string {
+	wrapped := false
+	for len(words) > 0 {
+		w := words[0]
+		if i := strings.Index(w, "="); i > 0 && !strings.ContainsAny(w[:i], "/-") {
+			words = words[1:]
+			continue
+		}
+		valued, ok := wrappers[path.Base(w)]
+		if !ok {
+			return words
+		}
+		wrapped = true
+		if path.Base(w) == "xargs" {
+			c.xargs = true
+		}
+		words = words[1:]
+		for len(words) > 0 && strings.HasPrefix(words[0], "-") {
+			opt := words[0]
+			words = words[1:]
+			if valued[opt] && len(words) > 0 {
+				words = words[1:]
+			}
+		}
+	}
+	if wrapped {
+		return []string{unresolved}
+	}
+	return nil
+}
+
+// commands splits a Bash summary into its commands. The `# ` line that
+// carries the request's description is cut off first. Only a cd joined to
+// the next command by && carries its directory on; after any other
+// separator the directory is unknown.
 func commands(summary string) []shellCmd {
-	line := strings.NewReplacer("&&", "\n", "||", "\n", ";", "\n", "|", "\n").Replace(summary)
+	if i := strings.LastIndex(summary, "\n# "); i >= 0 {
+		summary = summary[:i]
+	}
 	var out []shellCmd
 	cwd := ""
-	for _, part := range strings.Split(line, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(part), "#") {
+	for _, part := range splitCommands(summary) {
+		if part.sep != "&&" && part.sep != "" && cwd != "" {
+			cwd = cwdUnknown
+		}
+		if strings.HasPrefix(strings.TrimSpace(part.text), "#") {
 			continue
 		}
 		var words []string
-		for _, w := range strings.Fields(part) {
+		for _, w := range strings.Fields(part.text) {
 			if w = strings.Trim(w, `"'`); w != "" {
 				words = append(words, w)
 			}
 		}
 		c := shellCmd{cwd: cwd}
-		// Strip leading env assignments and wrappers (with their flags).
-		for len(words) > 0 {
-			w := words[0]
-			if i := strings.Index(w, "="); i > 0 && !strings.ContainsAny(w[:i], "/-") {
-				words = words[1:]
-				continue
-			}
-			if !wrappers[path.Base(w)] {
-				break
-			}
-			if path.Base(w) == "xargs" {
-				c.xargs = true
-			}
-			words = words[1:]
-			for len(words) > 0 && strings.HasPrefix(words[0], "-") {
-				words = words[1:]
-			}
-		}
+		words = stripWrappers(words, &c)
 		if len(words) == 0 {
 			continue
 		}
@@ -218,9 +283,12 @@ func stripRemote(ref string) string {
 // rebaseOnDefault reports a git rebase whose upstream (or --onto) is the
 // default branch.
 func rebaseOnDefault(args []string) bool {
+	valued := map[string]bool{"-s": true, "-X": true, "-x": true, "-C": true, "--exec": true, "--strategy": true, "--strategy-option": true}
 	var pos []string
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; {
+		case valued[a]:
+			i++
 		case a == "--onto" && i+1 < len(args):
 			return isDefaultBranch(stripRemote(args[i+1]))
 		case strings.HasPrefix(a, "--onto="):
@@ -256,6 +324,9 @@ func prMergeNumber(args []string) (int, bool) {
 // most push decisions (the live pre-push hook covers it).
 func matchMainRef(r PermissionAsk) bool {
 	return anyCmd(r, func(c shellCmd) bool {
+		if c.w[0] == unresolved { // a wrapper around nothing readable: cannot be judged
+			return true
+		}
 		if _, pos, ok := pushArgs(c); ok {
 			for _, spec := range pos[min(1, len(pos)):] { // pos[0] is the remote
 				if isDefaultBranch(refDest(spec)) {
@@ -413,12 +484,13 @@ func matchDeleteOutside(r PermissionAsk) bool {
 		if c.w[0] != "rm" {
 			return false
 		}
-		n := 0
+		if c.xargs { // xargs appends paths from stdin
+			return true
+		}
 		for _, a := range c.w[1:] {
 			if strings.HasPrefix(a, "-") {
 				continue
 			}
-			n++
 			if !path.IsAbs(a) && c.cwd != "" {
 				if c.cwd == cwdUnknown {
 					return true
@@ -429,7 +501,7 @@ func matchDeleteOutside(r PermissionAsk) bool {
 				return true
 			}
 		}
-		return c.xargs && n == 0 // the paths come from stdin
+		return false
 	})
 }
 
@@ -477,7 +549,8 @@ func filePath(r PermissionAsk) (p string, isFileTool, placed bool) {
 	case plainPathTools[r.Tool]:
 		p, _, _ = strings.Cut(r.Summary, "\n")
 		p = strings.TrimSpace(p)
-		return p, true, p != ""
+		// A JSON fallback summary is not a path.
+		return p, true, p != "" && !strings.HasPrefix(p, "{") && !strings.HasPrefix(p, "[")
 	case jsonPathTools[r.Tool]:
 		var in struct {
 			FilePath     string `json:"file_path"`
