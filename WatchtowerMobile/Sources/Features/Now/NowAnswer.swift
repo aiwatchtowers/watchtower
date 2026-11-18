@@ -45,7 +45,12 @@ enum NowAnswer: Equatable {
     ) -> Self {
         let entity = AskAnswerer.recordName(ask.id)
         let label = overlay?.answerLabel
-        guard let row = pending.last(where: { $0.action.kind == .askAnswer && $0.entityRecordName == entity }) else {
+        let newest = pending.last { $0.action.kind == .askAnswer && $0.entityRecordName == entity }
+        // A live overlay newer than the newest row (a resend after a refusal, before its row exists) decides.
+        let row = newest.flatMap { row in
+            overlay.map { $0.actionID != row.id && $0.createdAt > row.action.createdAt } == true ? nil : row
+        }
+        guard let row else {
             if writing || overlay != nil { return .sending(WorkbenchReplicaSnapshot.sendingCaption(sendingText, answer: label)) }
             return chipsOrForm(ask.quick?.options.map { InlineAskOption(id: $0.label, label: $0.label, isRecommended: $0.recommended) })
         }

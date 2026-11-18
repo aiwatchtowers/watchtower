@@ -27,8 +27,9 @@ struct WorkbenchReplicaSnapshot: Equatable {
     var pending: [PendingAction] = []
     /// The phone's optimistic writes shown over the replica (live link R5, `applying(_:)`); empty in a read.
     var overlays: [PendingOverlay] = []
-    /// The phone's creates and comments whose records already show before their echo: their pending rows go.
-    var matchedActionIDs: Set<String> = []
+    /// The phone's creates and comments whose records already show before their echo (action id → that record):
+    /// their pending rows go where the record shows.
+    var matchedRecords: [String: Int64] = [:]
     /// Undecodable records per kind in this read; kinds without any are
     /// absent.
     var skippedRecords: [SliceKind: Int] = [:]

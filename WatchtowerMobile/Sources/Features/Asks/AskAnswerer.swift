@@ -122,16 +122,16 @@ final class AskAnswerer {
         let sent = try await sendGuard.run(entity) {
             // The answer shows as sent at the tap; a save that throws takes it back.
             let id = UUID().uuidString
-            if let overlays {
-                overlays.add(overlays.overlay(
-                    actionID: id, entityID: ask.id, expected: .askAnswer(label: Self.answerLabel(answer)), createdAt: tappedAt))
-            }
+            let overlay = overlays?.overlay(
+                actionID: id, entityID: ask.id, expected: .askAnswer(label: Self.answerLabel(answer)), createdAt: tappedAt)
+            if let overlay { overlays?.add(overlay) }
             do {
                 _ = try await enqueue(entity, params, id)
             } catch {
                 overlays?.remove(actionID: id)
                 throw error
             }
+            if let overlay { overlays?.supersede(by: overlay) }
         }
         guard sent else { return false }
         for id in stale {

@@ -411,13 +411,6 @@ struct BoardModel {
         let created = query.isEmpty
             ? Self.createdCards(workbenchID: workbenchID, snapshot: snapshot, now: now).filter { filter.matches($0.target, signals) }
             : []
-        // A create shown as a card, or whose record already shows before its echo, is not listed again.
-        let shownCreates = Set(created.map(\.overlay.actionID)).union(snapshot.matchedActionIDs)
-        pendingCreates = BoardWriteRow.rows(in: snapshot, now: now) {
-            $0.action.kind == .boardTargetCreate
-                && (try? BoardTargetCreateParams(wireParams: $0.action.params).workbenchID) == workbenchID
-                && !shownCreates.contains($0.id)
-        }
         if query.isEmpty {
             let pool = board.filter { $0.archived == (filter == .archive) }
             let shown = tree.build(pool: pool) { filter.matches($0, signals) }
@@ -439,6 +432,16 @@ struct BoardModel {
                 lanes.append(BoardLane(title: "Archived", nodes: archived.roots, kind: .archived))
             }
             self.lanes = lanes
+        }
+        // A create shown as a card, or whose record already shows on this board (it beat the echo and passes the
+        // filter), is not listed again.
+        let visible = visibleIDs
+        let shownCreates = Set(created.map(\.overlay.actionID))
+            .union(snapshot.matchedRecords.filter { visible.contains($0.value) }.keys)
+        pendingCreates = BoardWriteRow.rows(in: snapshot, now: now) {
+            $0.action.kind == .boardTargetCreate
+                && (try? BoardTargetCreateParams(wireParams: $0.action.params).workbenchID) == workbenchID
+                && !shownCreates.contains($0.id)
         }
     }
 

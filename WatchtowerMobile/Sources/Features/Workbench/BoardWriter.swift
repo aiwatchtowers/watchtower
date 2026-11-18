@@ -239,16 +239,15 @@ final class BoardWriter {
         let tappedAt = now()
         return try await sendGuard.run(Self.key(kind, entity)) {
             let id = UUID().uuidString
-            let overlays = expected == nil ? nil : overlays
-            if let overlays, let expected {
-                overlays.add(overlays.overlay(actionID: id, entityID: entityID, expected: expected, createdAt: tappedAt))
-            }
+            let overlay = expected.flatMap { overlays?.overlay(actionID: id, entityID: entityID, expected: $0, createdAt: tappedAt) }
+            if let overlay { overlays?.add(overlay) }
             do {
                 _ = try await enqueue(kind, entity, params, id)
             } catch {
-                overlays?.remove(actionID: id)
+                if overlay != nil { overlays?.remove(actionID: id) }
                 throw error
             }
+            if let overlay { overlays?.supersede(by: overlay) }
         }
     }
 

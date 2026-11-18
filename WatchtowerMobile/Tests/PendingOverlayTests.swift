@@ -247,6 +247,86 @@ final class PendingOverlayTests: XCTestCase {
         XCTAssertEqual(back.targets.first { $0.id == 416 }?.status, .todo)
     }
 
+    /// Fix round 2, 1: a newer write whose save throws leaves the older, acked write showing.
+    func testAFailedNewerSaveLeavesTheOlderWriteShowing() async throws {
+        let book = book()
+        let (writer, store) = try writer(book)
+        let todo = try XCTUnwrap(try replica().targets.first { $0.id == 416 })
+        try await writer.setStatus(.inProgress, on: todo)
+        let first = try XCTUnwrap(book.overlays.first).actionID
+        book.receiveEcho(echo(first, .boardTargetStatus, entity: 416), now: t0.addingTimeInterval(0.2))
+        try store.dismissAction(id: first)
+        let moved = shown(try replica(), book, at: t0.addingTimeInterval(0.3))
+
+        struct SaveFailed: Error {}
+        let clock = { self.t0 }
+        let failing = BoardWriter(enqueue: { _, _, _, _ in throw SaveFailed() }, remove: { _ in }, overlays: book, now: clock)
+        do {
+            try await failing.setStatus(.blocked, on: try XCTUnwrap(moved.targets.first { $0.id == 416 }))
+            XCTFail("the save threw")
+        } catch is SaveFailed {}
+        XCTAssertEqual(book.overlays.map(\.actionID), [first])
+        XCTAssertEqual(shown(try replica(), book, at: t0.addingTimeInterval(0.4)).targets.first { $0.id == 416 }?.status, .inProgress)
+    }
+
+    /// Fix round 2, 2: the first of two identical comments is confirmed and done; its record stays its own, so the
+    /// second still waits.
+    func testAConfirmedRecordIsNeverTakenByItsTwin() async throws {
+        let book = book()
+        let (writer, store) = try writer(book)
+        let target = try XCTUnwrap(try replica().targets.first { $0.id == 415 })
+        _ = try await writer.addComment("Looks good.", on: target)
+        _ = try await writer.addComment("Looks good.", on: target)
+        let pending = try store.pendingActions()
+        _ = book.reconcile(with: try replica(pending: pending), now: t0)
+        book.receiveEcho(echo(pending[0].id, .boardCommentAdd, entity: 415, result: ["comment_id": .integer(900)]), now: t0.addingTimeInterval(0.2))
+        try store.dismissAction(id: pending[0].id)
+
+        let record = try mirror(WorkbenchComment.self, DemoSeed.JSON.comment(
+            900, workbench: DemoSeed.acmeID, target: 415, ["author": "owner", "body": "Looks good."]))
+        let rows = try store.pendingActions()
+        _ = book.reconcile(with: try replica(comments: [record], pending: rows), now: t0.addingTimeInterval(0.4))
+        let again = shown(try replica(comments: [record], pending: rows), book, at: t0.addingTimeInterval(0.5))
+        XCTAssertEqual(book.overlays.map(\.actionID), [pending[1].id])
+        XCTAssertTrue(book.matched.isEmpty, "900 is the first comment's, not its twin's")
+        let thread = try XCTUnwrap(BoardTargetDetailModel(targetID: 415, snapshot: again, now: t0)).thread
+        XCTAssertEqual(thread.filter { $0.id.hasPrefix("action-") }.map(\.id), ["action-\(pending[1].id)"])
+    }
+
+    /// Fix round 2, 3: a create whose record beat its echo but which the filter hides keeps its pending row.
+    func testAMatchedCreateHiddenByTheFilterKeepsItsPendingRow() async throws {
+        let book = book()
+        let (writer, store) = try writer(book)
+        var draft = NewBoardTargetDraft(workbenchID: DemoSeed.acmeID)
+        draft.title = "Fix login timeout"
+        try await writer.create(draft)
+        let pending = try store.pendingActions()
+        _ = book.reconcile(with: try replica(pending: pending), now: t0)
+        let arrived = shown(
+            try replica(targets: { $0.append(try self.newTarget(900, title: "Fix login timeout")) }, pending: pending),
+            book, at: t0.addingTimeInterval(0.4))
+        XCTAssertEqual(BoardModel(workbenchID: DemoSeed.acmeID, snapshot: arrived, filter: .high, now: t0).pendingCreates.count, 1)
+        XCTAssertTrue(BoardModel(workbenchID: DemoSeed.acmeID, snapshot: arrived, filter: .all, now: t0).pendingCreates.isEmpty)
+    }
+
+    /// Fix round 2, 4: a resend after a refused answer shows the new answer at the tap, not the old refusal.
+    func testANewerAnswerBeatsTheOldRefusal() async throws {
+        let book = book()
+        let store = try TestPhone.replica()
+        let outbox = ActionOutbox(transport: try TestPhone.transport(), store: store, deviceID: DemoSeed.device.deviceID)
+        _ = try await outbox.enqueue(kind: .askAnswer, entityRecordName: AskAnswerer.recordName(110), id: "old")
+        try await outbox.applyEcho(echo("old", .askAnswer, entity: 110, .failed))
+        let refusedAt = try XCTUnwrap(store.pendingActions().first).action.createdAt
+        let tap = refusedAt.addingTimeInterval(5)
+        book.add(book.overlay(actionID: "new", entityID: 110, expected: .askAnswer(label: "Approved"), createdAt: tap))
+        let snapshot = try replica(pending: try store.pendingActions(), at: tap)
+        let shown = shown(snapshot, book, at: tap)
+        let ask = try XCTUnwrap(snapshot.asks.first { $0.id == 110 })
+        XCTAssertEqual(AskFormModel.status(ask, snapshot: shown, now: tap, applied: nil), .sending("Sending… · Approved"))
+        XCTAssertEqual(NowModel(snapshot: shown, linked: true, now: tap).waitingForYou.first { $0.id == .ask(110) }?.answer,
+                       .sending("Sending answer… · Approved"))
+    }
+
     /// Review fix 5: a new card shows only under a filter that would show it; otherwise its pending row stays.
     func testANewCardFollowsTheBoardFilter() throws {
         let book = book()

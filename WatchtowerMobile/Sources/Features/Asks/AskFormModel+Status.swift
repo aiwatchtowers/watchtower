@@ -8,8 +8,6 @@ extension AskFormModel {
     static func status(
         _ ask: OwnerAsk, snapshot: WorkbenchReplicaSnapshot, now: Date, applied: AppliedAnswer?
     ) -> Status {
-        let entity = AskAnswerer.recordName(ask.id)
-        let rows = snapshot.pending.filter { $0.action.kind == .askAnswer && $0.entityRecordName == entity }
         // Live link R5: while the answer's overlay lives, the caption names the answer it sends.
         let overlay = snapshot.answerOverlay(ask.id)
         let sending = {
@@ -17,7 +15,7 @@ extension AskFormModel {
             return Status.sending(WorkbenchReplicaSnapshot.sendingCaption(
                 online ? BoardWriteText.sending : BoardWriteText.waitingForMac, answer: overlay?.answerLabel))
         }
-        guard let row = rows.last else {
+        guard let row = snapshot.answerRow(ask.id) else {
             if let applied { return .applied(applied.text) }
             // The echo removed the row and its delivery has not reached the answerer yet: still on its way.
             return overlay == nil ? .none : sending()
