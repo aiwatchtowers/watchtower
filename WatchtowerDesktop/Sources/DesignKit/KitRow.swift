@@ -4,19 +4,19 @@ import SwiftUI
 /// plate, accent-tinted when selected, a neutral tint under the pointer.
 /// A row with a status (a warning, say) passes its `Tone` as `tint`: the
 /// plate keeps that tone at `ChipTint.fillOpacity`, hovered or not.
-public struct KitRow: ViewModifier {
+struct KitRow: ViewModifier {
     let isSelected: Bool
     var tint: Color?
     @State private var isHovered = false
 
     /// The plate's fill: selection wins over a tint, a tint over hover.
-    public static func fill(isSelected: Bool, isHovered: Bool, tint: Color? = nil) -> Color {
+    static func fill(isSelected: Bool, isHovered: Bool, tint: Color? = nil) -> Color {
         if isSelected { return Fill.selected }
         if let tint { return tint.opacity(ChipTint.fillOpacity) }
         return isHovered ? Fill.hover : .clear
     }
 
-    public func body(content: Content) -> some View {
+    func body(content: Content) -> some View {
         let plate = RoundedRectangle(cornerRadius: Radius.row, style: .continuous)
         content
             .padding(.vertical, Spacing.compact)

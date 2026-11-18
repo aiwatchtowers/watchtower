@@ -451,7 +451,7 @@ private struct CodeFilesRootRow: View {
         .padding(.vertical, Spacing.small)
         .background(
             RoundedRectangle(cornerRadius: Radius.row, style: .continuous)
-                .fill(KitRow.fill(isSelected: false, isHovered: isHovering))
+                .fill(isHovering ? Fill.hover : .clear)
         )
         .contentShape(Rectangle())
     }
@@ -584,7 +584,7 @@ private struct CodeFileTreeRow: View {
         .padding(.vertical, Spacing.tight)
         .background(
             RoundedRectangle(cornerRadius: Radius.row, style: .continuous)
-                .fill(KitRow.fill(isSelected: isOpen, isHovered: isHovering))
+                .fill(isOpen ? Fill.selected : isHovering ? Fill.hover : .clear)
         )
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { if !row.entry.isDirectory { actions.open(row.entry, false) } }
