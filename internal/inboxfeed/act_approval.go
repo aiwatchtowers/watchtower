@@ -128,49 +128,94 @@ func (a actor) decided(row *db.AgentAction) (api.ActResult, error) {
 // --force). An older row of a button whose newer proposal is open is never
 // retried (AGENT-05).
 func (a actor) retry(ctx context.Context, reg *tools.Registry, id int64, hub bool) (api.ActResult, error) {
-	row, err := a.row(id)
+	row, res, run, err := RetryAction(a.c.DB, reg, id, a.now())
 	if err != nil {
-		return api.ActResult{}, err
+		return api.ActResult{}, a.refusal(err)
 	}
-	newer, err := a.c.DB.NewerOpenButtonProposal(row)
-	if err != nil {
-		return api.ActResult{}, err
-	}
-	if newer != 0 {
-		return api.ActResult{}, a.refuse(api.CodeChanged, "")
-	}
-	if t, known := reg.Get(row.Tool); known && t.AppliedBySession {
-		return api.ActResult{}, a.refuse(api.CodeUnsupported, "it runs only in its chat on the Mac.")
-	}
-	switch row.Status {
-	case "approved", "failed":
-	case "executing":
-		if !a.stuck(row) {
-			return api.ActResult{Already: true, Status: statusApplying}, nil
-		}
-		ok, err := a.c.DB.TransitionAgentAction(id, []string{"executing"}, "failed", "", interruptedApply)
-		if err != nil {
-			return api.ActResult{}, err
-		}
-		if !ok {
-			return api.ActResult{}, a.refuse(api.CodeChanged, "")
-		}
-	case "applied":
-		return api.ActResult{Already: true, Status: statusApplied}, nil
-	default:
-		return api.ActResult{}, a.refuse(api.CodeChanged, "")
+	if !run {
+		return res, nil
 	}
 	return a.runTool(ctx, reg, row, hub), nil
 }
 
+// refusal maps a RetryAction or DismissAction refusal onto inbox.act's
+// sentence; any other error passes through.
+func (a actor) refusal(err error) error {
+	var r *ActionRefusal
+	if errors.As(err, &r) {
+		return a.refuse(r.Code, r.Reason)
+	}
+	return err
+}
+
+// ActionRefusal is RetryAction's and DismissAction's refusal: the inbox.act
+// refusal code and its narrower reason ("" = the code's own).
+type ActionRefusal struct {
+	Code   api.RefusalCode
+	Reason string
+}
+
+func (r *ActionRefusal) Error() string { return string(r.Code) + ": " + r.Reason }
+
+// reasonSessionOnly refuses a Retry of a session-applied call.
+const reasonSessionOnly = "it runs only in its chat on the Mac."
+
+// RetryAction is the one retry rule of an approval row for the owner,
+// shared by inbox.act's approval retry and the hub's chat_action_answer
+// retry (mobile Inbox spec §12.9): a failed or approved row is ready to run
+// (run true: the caller applies it, Registry.Apply claims it, so two retries
+// never both run the tool); a stuck Inbox target row's executing claim is
+// reclaimed first; executing (not stuck) or applied is already, with its
+// state; an older row of a button whose newer proposal is open, a rejected
+// row and a session-applied call are refused (*ActionRefusal). A missing
+// row is refused not_found.
+func RetryAction(d *db.DB, reg *tools.Registry, id int64, now time.Time) (*db.AgentAction, api.ActResult, bool, error) {
+	row, err := d.GetAgentAction(id)
+	if err != nil {
+		return nil, api.ActResult{}, false, err
+	}
+	if row == nil {
+		return nil, api.ActResult{}, false, &ActionRefusal{Code: api.CodeNotFound}
+	}
+	newer, err := d.NewerOpenButtonProposal(row)
+	if err != nil {
+		return nil, api.ActResult{}, false, err
+	}
+	if newer != 0 {
+		return nil, api.ActResult{}, false, &ActionRefusal{Code: api.CodeChanged}
+	}
+	if t, known := reg.Get(row.Tool); known && t.AppliedBySession {
+		return nil, api.ActResult{}, false, &ActionRefusal{Code: api.CodeUnsupported, Reason: reasonSessionOnly}
+	}
+	switch row.Status {
+	case "approved", "failed":
+	case "executing":
+		if !stuck(row, now) {
+			return row, api.ActResult{Already: true, Status: statusApplying}, false, nil
+		}
+		ok, err := d.TransitionAgentAction(id, []string{"executing"}, "failed", "", interruptedApply)
+		if err != nil {
+			return nil, api.ActResult{}, false, err
+		}
+		if !ok {
+			return nil, api.ActResult{}, false, &ActionRefusal{Code: api.CodeChanged}
+		}
+	case "applied":
+		return row, api.ActResult{Already: true, Status: statusApplied}, false, nil
+	default:
+		return nil, api.ActResult{}, false, &ActionRefusal{Code: api.CodeChanged}
+	}
+	return row, api.ActResult{}, true, nil
+}
+
 // stuck is an Inbox target button's row executing past targetStuckAfter
 // since its decision: the state the card offers Try again for.
-func (a actor) stuck(row *db.AgentAction) bool {
+func stuck(row *db.AgentAction, now time.Time) bool {
 	if row.ContextType != db.InboxButtonContextType {
 		return false
 	}
 	decided, err := time.Parse(time.RFC3339Nano, row.DecidedAt)
-	return err == nil && a.now().Sub(decided) >= targetStuckAfter
+	return err == nil && now.Sub(decided) >= targetStuckAfter
 }
 
 // runTool applies row id (Apply claims it, so two applies never both run
@@ -296,9 +341,26 @@ func (a actor) reject(reg *tools.Registry, id int64) (api.ActResult, error) {
 // dismissCall is Dismiss on a session call whose outcome is unknown
 // (DismissSessionCall); a row already dismissed is already.
 func (a actor) dismissCall(reg *tools.Registry, id int64) (api.ActResult, error) {
-	row, err := a.row(id)
+	res, err := DismissAction(a.c.DB, reg, id)
+	if err != nil {
+		return api.ActResult{}, a.refusal(err)
+	}
+	return res, nil
+}
+
+// DismissAction is the one dismiss rule of an approval row for the owner,
+// shared by inbox.act's approval dismiss and the hub's chat_action_answer
+// dismiss (mobile Inbox spec §12.9): only a session call whose outcome is
+// unknown (Registry.DismissSessionCall); a row already dismissed answers
+// already and writes nothing; any other row is refused changed, a missing
+// one not_found (*ActionRefusal).
+func DismissAction(d *db.DB, reg *tools.Registry, id int64) (api.ActResult, error) {
+	row, err := d.GetAgentAction(id)
 	if err != nil {
 		return api.ActResult{}, err
+	}
+	if row == nil {
+		return api.ActResult{}, &ActionRefusal{Code: api.CodeNotFound}
 	}
 	if row.DismissedAt != "" {
 		return already, nil
@@ -306,9 +368,9 @@ func (a actor) dismissCall(reg *tools.Registry, id int64) (api.ActResult, error)
 	err = reg.DismissSessionCall(id)
 	switch {
 	case errors.Is(err, tools.ErrNotFound):
-		return api.ActResult{}, a.refuse(api.CodeNotFound, "")
+		return api.ActResult{}, &ActionRefusal{Code: api.CodeNotFound}
 	case errors.Is(err, tools.ErrBadTransition):
-		return api.ActResult{}, a.refuse(api.CodeChanged, "")
+		return api.ActResult{}, &ActionRefusal{Code: api.CodeChanged}
 	}
 	return api.ActResult{}, err
 }
