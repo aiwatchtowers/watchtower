@@ -47,10 +47,22 @@ type LearnStats struct {
 	Relabelled int
 }
 
-// flaggedByLabel are the sources whose precedents the labeller flags as
-// decision / parked (spec §9.1); permission rows are flagged by the hard-limit
-// table, the other sources are always decisions and never flagged.
-var flaggedByLabel = map[string]bool{SourceAsk: true, "turn": true}
+// flagNeed is which flags the labeller is asked for an item.
+type flagNeed int
+
+const (
+	noFlags flagNeed = iota
+	// parkedOnly: an ask is always a decision (spec §9.1); only parked is
+	// read from the reply, decision is forced true.
+	parkedOnly
+	// bothFlags: a turn takes decision and parked from the reply.
+	bothFlags
+)
+
+// labelFlags are the sources whose precedents the labeller flags (spec
+// §9.1); permission rows are flagged by the hard-limit table, the other
+// sources are always decisions and never flagged.
+var labelFlags = map[string]flagNeed{SourceAsk: parkedOnly, "turn": bothFlags}
 
 // relabelSources are the sources the relabel pass walks.
 var relabelSources = []string{SourceAsk, "turn", SourcePermission}
@@ -102,15 +114,15 @@ func Learn(ctx context.Context, d *db.DB, workbenchID int64, o LearnOptions) (Le
 		n, err := relabel(ctx, d, workbenchID, o, start)
 		st.Relabelled = n
 		if cerr := ctx.Err(); cerr != nil {
-			return st, cerr
+			return st, errors.Join(append(errs, cerr)...)
 		}
 		if err != nil {
 			// Never fails the pass nor touches learned_through: the
-			// backtest waits on the pending count alone. Counts only: the
-			// error may quote a reply or a provider message.
+			// backtest waits on the pending count alone. The error may
+			// quote a reply or a folder: only its fingerprint (FILES-01).
 			left, _ := d.WatchmanFlagsPending(workbenchID) // best effort: the line is informational
-			log.Printf("watchman learn: workbench %d: the relabel pass stopped after %d precedents, %d left for the next cycle",
-				workbenchID, n, left)
+			log.Printf("watchman learn: %v", logredact.Errorf("workbench %d: the relabel pass stopped after %d precedents, %d left for the next cycle: %s",
+				workbenchID, n, left, logredact.Text(err.Error())))
 		}
 	}
 	return st, errors.Join(errs...)
@@ -182,10 +194,13 @@ func labelPrecedents(ctx context.Context, l Labeler, ps []db.WatchmanPrecedent) 
 	ps = slices.Clone(ps) // the source's slice is not ours to change
 	var need []int
 	var items []LabelItem
-	var wantFlags []bool
+	var wantFlags []flagNeed
 	for i, p := range ps {
-		flags := flaggedByLabel[p.Source] && p.IsDecision == nil && p.Parked == nil
-		if p.Category == "" || flags {
+		flags := noFlags
+		if p.IsDecision == nil && p.Parked == nil {
+			flags = labelFlags[p.Source]
+		}
+		if p.Category == "" || flags != noFlags {
 			need = append(need, i)
 			items = append(items, LabelItem{Situation: p.Situation, Choice: joinNonEmpty("\n", p.Choice, p.OwnerWords), NeedCategory: p.Category == ""})
 			wantFlags = append(wantFlags, flags)
@@ -217,9 +232,9 @@ func labelPrecedents(ctx context.Context, l Labeler, ps []db.WatchmanPrecedent) 
 			p.Category = lb.Category
 			labelled++
 		}
-		if asked && wantFlags[k] {
+		if asked && wantFlags[k] != noFlags {
 			p.IsDecision, p.Parked = lb.Decision, lb.Parked
-			if p.IsDecision == nil || p.Parked == nil {
+			if p.IsDecision == nil {
 				unflagged = append(unflagged, p.SourceKey)
 			}
 		}
@@ -234,17 +249,24 @@ func labelPrecedents(ctx context.Context, l Labeler, ps []db.WatchmanPrecedent) 
 
 // labelWithRetry labels items and sends the ones whose wanted flags are
 // missing once more (spec §9.1 Failures); the retry fills only what the
-// first reply lacked. A reply shorter than the items leaves the rest empty.
-func labelWithRetry(ctx context.Context, l Labeler, items []LabelItem, wantFlags []bool) ([]Label, error) {
+// first reply lacked. An ask's decision is forced true, never read from the
+// reply. A flag pair still incomplete after the retry comes back as both nil
+// (the item stays a candidate). A reply shorter than the items leaves the
+// rest empty.
+func labelWithRetry(ctx context.Context, l Labeler, items []LabelItem, wantFlags []flagNeed) ([]Label, error) {
 	got, err := l.Label(ctx, items)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]Label, len(items))
 	copy(out, got)
+	yes := true
 	var again []int
-	for k, lb := range out {
-		if wantFlags[k] && (lb.Decision == nil || lb.Parked == nil) {
+	for k := range out {
+		if wantFlags[k] == parkedOnly {
+			out[k].Decision = &yes
+		}
+		if wantFlags[k] != noFlags && (out[k].Decision == nil || out[k].Parked == nil) {
 			again = append(again, k)
 		}
 	}
@@ -260,17 +282,19 @@ func labelWithRetry(ctx context.Context, l Labeler, items []LabelItem, wantFlags
 		return nil, err
 	}
 	for j, k := range again {
-		if j >= len(got) {
-			break
+		if j < len(got) {
+			if !decideCategories[out[k].Category] {
+				out[k].Category = got[j].Category
+			}
+			if out[k].Decision == nil {
+				out[k].Decision = got[j].Decision
+			}
+			if out[k].Parked == nil {
+				out[k].Parked = got[j].Parked
+			}
 		}
-		if !decideCategories[out[k].Category] {
-			out[k].Category = got[j].Category
-		}
-		if out[k].Decision == nil {
-			out[k].Decision = got[j].Decision
-		}
-		if out[k].Parked == nil {
-			out[k].Parked = got[j].Parked
+		if out[k].Decision == nil || out[k].Parked == nil {
+			out[k].Decision, out[k].Parked = nil, nil
 		}
 	}
 	return out, nil
@@ -366,6 +390,7 @@ func relabelFlags(ctx context.Context, d *db.DB, workbenchID int64, l Labeler, r
 	var ids []int64
 	var asked []int
 	var items []LabelItem
+	var want []flagNeed
 	for i, p := range rows {
 		if p.Source == SourcePermission {
 			if id, err := strconv.ParseInt(p.SourceKey, 10, 64); err == nil {
@@ -375,6 +400,7 @@ func relabelFlags(ctx context.Context, d *db.DB, workbenchID int64, l Labeler, r
 		}
 		asked = append(asked, i)
 		items = append(items, LabelItem{Situation: p.Situation, Choice: joinNonEmpty("\n", p.Choice, p.OwnerWords)})
+		want = append(want, labelFlags[p.Source])
 	}
 	reqs, err := d.WatchmanPermissionRequests(workbenchID, ids)
 	if err != nil {
@@ -382,10 +408,6 @@ func relabelFlags(ctx context.Context, d *db.DB, workbenchID int64, l Labeler, r
 	}
 	out := make([]db.WatchmanPrecedentFlags, len(rows))
 	if len(items) > 0 {
-		want := make([]bool, len(items))
-		for k := range want {
-			want[k] = true
-		}
 		got, err := labelWithRetry(ctx, l, items, want)
 		if err != nil {
 			return nil, err
@@ -420,7 +442,8 @@ type LearnEstimate struct {
 // Estimate sizes a workbench's learning without walking a source: the
 // database sources' row counts, the workbench's agent sessions ×
 // turnsPerSession owner turns, and its folder's non-merge commits.
-// NeedLabels = questions + turns + commits + the precedents the relabel
+// NeedLabels = asks (review asks too: their parked flag) + turns + commits
+// + the precedents the relabel
 // pass has not flagged yet; Tokens = NeedLabels ×
 // labelTokensPerItem.
 func Estimate(ctx context.Context, d *db.DB, git GitRunner, workbenchID int64) (LearnEstimate, error) {
@@ -450,6 +473,6 @@ func Estimate(ctx context.Context, d *db.DB, git GitRunner, workbenchID int64) (
 		return LearnEstimate{}, fmt.Errorf("watchman estimate: %w", err)
 	}
 	turns := c.Sessions * turnsPerSession
-	need := c.Questions + turns + commits + pending
+	need := c.Asks + turns + commits + pending
 	return LearnEstimate{Decisions: c.Decided + turns + commits, NeedLabels: need, Tokens: need * labelTokensPerItem}, nil
 }

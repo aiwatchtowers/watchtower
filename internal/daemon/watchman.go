@@ -70,7 +70,7 @@ func (d *Daemon) phaseWatchmanLearn(ctx context.Context) {
 			}
 			sources = append(sources, watchman.GitSource(watchmanGit))
 			st, err := watchman.Learn(ctx, d.db, wb, watchman.LearnOptions{Budget: left, Sources: sources, Labeler: labeler})
-			stats.items += st.Written
+			stats.items += st.Written + st.Relabelled
 			if st.Written+st.Unlabelled+st.Skipped+st.Relabelled > 0 || st.Incomplete {
 				d.logger.Printf("watchman learn: workbench %d: %d written, %d labelled, %d unlabelled, %d unreadable, %d relabelled, incomplete=%v",
 					wb, st.Written, st.Labelled, st.Unlabelled, st.Skipped, st.Relabelled, st.Incomplete)

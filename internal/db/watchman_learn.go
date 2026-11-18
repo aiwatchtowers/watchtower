@@ -8,9 +8,9 @@ import (
 // WatchmanSourceCounts is what the learning estimate reads from the
 // database: no source is walked.
 type WatchmanSourceCounts struct {
-	Decided   int // rows of the four database sources (asks, review, spec marks, permissions)
-	Questions int // of them, asks other than review asks: they need a label
-	Sessions  int // the workbench's agent sessions (their owner turns need labels)
+	Decided  int // rows of the four database sources (asks, review, spec marks, permissions)
+	Asks     int // of them, asks: each goes to the labeller (a category, or a review ask's parked flag)
+	Sessions int // the workbench's agent sessions (their owner turns need labels)
 }
 
 // WatchmanCounts counts the rows the database sources would offer for a
@@ -27,7 +27,7 @@ func (db *DB) WatchmanCounts(workbenchID int64) (WatchmanSourceCounts, error) {
 		{`SELECT COUNT(*) FROM (` + wmReviewSQL + `)`, []any{wb, wb, wb, wb}, nil},
 		{`SELECT COUNT(*) FROM (` + wmSpecMarksSQL + `)`, []any{wb}, nil},
 		{`SELECT COUNT(*) FROM (` + wmPermissionSQL + `)`, []any{wb}, nil},
-		{`SELECT COUNT(*) FROM (` + wmAsksSQL + `) WHERE kind != 'review'`, []any{wb}, &c.Questions},
+		{`SELECT COUNT(*) FROM (` + wmAsksSQL + `)`, []any{wb}, &c.Asks},
 		{`SELECT COUNT(*) FROM terminal_sessions WHERE project_id = ? AND kind IN ('claude','codex') AND ` + NotDeletingSQL, []any{wb}, &c.Sessions},
 	} {
 		var n int

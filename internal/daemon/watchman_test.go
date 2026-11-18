@@ -258,3 +258,21 @@ func TestPhaseWatchmanBacktest_FailedLaunchTriedOnceADay(t *testing.T) {
 	assert.Equal(t, 1, tries)
 	assert.Equal(t, 1, strings.Count(logs.String(), "launching: no binary"))
 }
+
+// The pipeline run counts the rows the relabel pass flagged.
+func TestPhaseWatchmanLearn_RunCountsRelabelled(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	stubWatchman(t)
+	wb, err := database.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, database.EnableWatchmanWorkbench(wb, time.Now(), 0))
+	seedDesignPrecedents(t, database, wb) // five unflagged asks
+
+	d.phaseWatchmanLearn(context.Background())
+	var items int
+	require.NoError(t, database.QueryRow(`SELECT items_found FROM pipeline_runs WHERE pipeline = 'watchman-learn'`).Scan(&items))
+	assert.Equal(t, 5, items)
+	pending, err := database.WatchmanFlagsPending(wb)
+	require.NoError(t, err)
+	assert.Zero(t, pending)
+}

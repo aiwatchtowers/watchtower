@@ -15,6 +15,11 @@ import (
 // labelBatch is how many items one model call labels.
 const labelBatch = 20
 
+// labelReplyVersion is the first watchman.label version whose reply carries
+// the decision / parked flags: an older stored template (a customised v1 row
+// Seed does not upgrade) would answer in the v1 shape.
+const labelReplyVersion = 2
+
 // LabelItem is one decision the labeller looks at. NeedCategory is set when
 // the source could not place it in a category; otherwise only its flags are
 // read (spec §9.1: a category Go set is never replaced).
@@ -91,8 +96,14 @@ func (l llmLabeler) labelBatch(ctx context.Context, items []LabelItem) ([]Label,
 	// json.Marshal escapes '<' and '>', so no item text can close the fence.
 	user := "=== DATA ===\n<data>\n" + string(body) + "\n</data>\n"
 	// Known-safe ignore: on a failed or empty store read Resolve still hands
-	// back the built-in template (the Decide precedent).
-	tmpl, _, _ := prompts.Resolve(l.store, prompts.WatchmanLabel, "")
+	// back the built-in template at version 0 (the Decide precedent).
+	tmpl, version, _ := prompts.Resolve(l.store, prompts.WatchmanLabel, "")
+	if version > 0 && version < labelReplyVersion { // 0 = the built-in template, current
+		// An error, not an unlabelled batch: nothing is marked tried, the
+		// rows wait until the owner resets the prompt.
+		return nil, fmt.Errorf("watchman label: the stored %s template is v%d, older than the v%d reply shape: reset it in Settings → Prompts",
+			prompts.WatchmanLabel, version, labelReplyVersion)
+	}
 	raw, _, _, err := l.gen.Generate(digest.WithSource(ctx, prompts.WatchmanLabel), tmpl, user, "")
 	if err != nil {
 		return nil, fmt.Errorf("watchman label: generating: %w", err)
