@@ -83,6 +83,7 @@ func init() {
 	slackAppAdoptCmd.Flags().String("app-id", "", "the app's App ID (Basic Information page), when Watchtower does not know it")
 	slackAppAdoptCmd.Flags().String("confirm-app-id", "", "repeat --app-id after checking the app's name (confirm_app)")
 	slackAppLinkCmd.Flags().String("team", "", "the workspace's team id (default: the token's workspace)")
+	slackAppAdoptCmd.Flags().String("team", "", "the workspace the app must be in; another workspace's token changes nothing (wrong_team)")
 	slackAppPendingCmd.Flags().String("team", "", "the workspace's team id (required)")
 	slackAppPendingCmd.Flags().Bool("clear", false, "no Watchtower app exists: drop the pending setup")
 	slackAppPendingCmd.Flags().Bool("attach", false, "the app exists: record its --app-id and --client-id")
@@ -141,8 +142,9 @@ func runSlackAppCreate(cmd *cobra.Command, _ []string) error {
 func runSlackAppAdopt(cmd *cobra.Command, _ []string) error {
 	appID, _ := cmd.Flags().GetString("app-id")
 	confirm, _ := cmd.Flags().GetString("confirm-app-id")
+	team, _ := cmd.Flags().GetString("team")
 	return runSlackAppSetup(cmd, func(ctx context.Context, r *slackapp.Runner, tok string) (slackapp.Result, error) {
-		return r.Adopt(ctx, tok, strings.TrimSpace(appID), strings.TrimSpace(confirm))
+		return r.Adopt(ctx, tok, strings.TrimSpace(team), strings.TrimSpace(appID), strings.TrimSpace(confirm))
 	})
 }
 

@@ -53,6 +53,7 @@ struct SlackConnectionDetail: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.large) {
                 modeSection
+                SlackSetupRecordRows(model: appState.slackAppSetup, blocked: sourceBlocked)
                 connectSection
                 workspaceSection
                 FileVaultLine()
@@ -75,6 +76,7 @@ struct SlackConnectionDetail: View {
             // A10: a busy or stopped listener tries again when the pane opens.
             appState.slackConnectListener?.ensureRunning()
         }
+        .task(id: appState.databaseManager?.dbPool.path) { await appState.slackAppSetup.reloadRecords() }
         // On appear too: a Reconnect that opened this pane asked before it mounted.
         .task(id: appState.slackConnectFlow?.connectSectionRequest) {
             if appState.slackConnectFlow?.takeConnectSectionRequest() == true {
@@ -82,13 +84,17 @@ struct SlackConnectionDetail: View {
                 connectFieldFocused = true
             }
         }
-        .sheet(isPresented: connectSheetShown) { connectSheet }
+        .sheet(isPresented: Bindable(appState.slackAppSetup).isPresented) {
+            SlackAppSetupSheet(model: appState.slackAppSetup).frame(width: 520)
+        }
+        .background { Color.clear.sheet(isPresented: connectSheetShown) { connectSheet } }
         // The Workspaces list below enables/disables, removes and adds
         // accounts through its own VM; re-derive the Workspace status from the
         // table whenever that list changes, or it goes stale (e.g. "Slack
         // connected" after the last account is removed).
         .onChange(of: appState.slackAccountsViewModel?.accounts) { _, _ in
             Task { await slackAuth.refreshStatus() }
+            appState.slackAppSetup.accountsChanged() // a setup's stage derives from the accounts
         }
         // A refresh can take the disconnect target away while the confirm
         // dialog is open; there is then nothing left to confirm.
@@ -135,14 +141,16 @@ struct SlackConnectionDetail: View {
 
     @ViewBuilder private var connectSection: some View {
         if let section = connectPresentation, !section.isFolded, let flow = appState.slackConnectFlow {
-            // Set up for my company opens its sheet once the setup lands (plan B Task 13).
-            SlackConnectSection(section: section, flow: flow, blocked: sourceBlocked, setUpForCompany: nil,
+            SlackConnectSection(section: section, flow: flow, blocked: sourceBlocked,
+                                setUpForCompany: { appState.slackAppSetup.present() },
                                 fieldFocused: $connectFieldFocused)
         }
     }
 
     private var connectSheetShown: Binding<Bool> {
-        Binding(get: { appState.slackConnectFlow?.showsSheet ?? false }, set: { _ in })
+        // The setup sheet mirrors its admin connect as a step: no second sheet over it.
+        Binding(get: { (appState.slackConnectFlow?.showsSheet ?? false) && !appState.slackAppSetup.isPresented },
+                set: { _ in })
     }
 
     /// The flow's sheet; its buttons drive the flow (no swipe-away: Cancel

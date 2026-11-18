@@ -333,3 +333,15 @@ func TestAppSetup_PendingAttachHumanNextStep(t *testing.T) {
 	assert.Contains(t, out.String(), "slack app link")
 	assert.NotContains(t, out.String(), "ready")
 }
+
+func TestAppSetup_AdoptWrongTeamCLI(t *testing.T) {
+	setupSlackAppWorkspace(t)
+	fake := &fakeSlackAppServer{}
+	fake.serve(t)
+	c, out, _ := slackAppTestCmd(slackAppTestToken+"\n", map[string]string{"json": "true", "team": "T0OTHER"})
+	require.NoError(t, runSlackAppAdopt(c, nil))
+	lines := jsonLines(t, out.String())
+	assert.Equal(t, "wrong_team", lines[len(lines)-1]["result"])
+	assert.Equal(t, []string{"auth.test"}, fake.calls, "nothing exported or updated")
+	require.NotNil(t, slackAppAdoptCmd.Flags().Lookup("team"), "the Desktop passes --team to adopt")
+}

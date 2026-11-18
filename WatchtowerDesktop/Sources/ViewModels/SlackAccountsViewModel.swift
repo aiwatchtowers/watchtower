@@ -131,6 +131,7 @@ final class SlackAccountsViewModel {
                 error = "Another connection is already in progress."
                 return nil
             }
+            error = nil // handed off: an earlier failure no longer applies
             return route
         }
         // One flow at a time: the built-in sign-in waits for the connect flow too.

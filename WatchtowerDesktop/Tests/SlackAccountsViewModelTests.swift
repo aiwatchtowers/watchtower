@@ -328,4 +328,18 @@ extension SlackAccountsViewModelTests {
         XCTAssertEqual(vm.error, "Another connection is already in progress.")
         XCTAssertFalse(vm.isConnecting, "the route read ends its busy mark")
     }
+
+    /// Fix round 2: a hand-off clears an earlier failure's line.
+    func testHandOffClearsAnEarlierError() async throws {
+        let cli = try accountsCLI(#"{"builtin_app":false,"accounts":[{"id":1,"team_id":"T0ACME","client_id":"1.2","#
+            + #""shared_app":false,"relogin":"connect"}]}"#)
+        let (vm, _, pool) = try makeVM(cli: cli)
+        let (flow, _) = await connectFlow()
+        vm.connectFlow = flow
+        vm.error = "Re-login failed (exit 1)"
+        let account = try await insertAccount(pool)
+        let route = await vm.relogin(account)
+        XCTAssertEqual(route, .flow(SlackConnectTarget(teamID: "T0ACME", clientID: "1.2", accountID: Int64(account.id))))
+        XCTAssertNil(vm.error)
+    }
 }

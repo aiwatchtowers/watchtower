@@ -151,7 +151,9 @@ package final class SlackConnectFlowModel {
         case failed(Failure, retry: SlackConnectTarget)
     }
 
-    package private(set) var step: Step = .idle
+    package private(set) var step: Step = .idle {
+        didSet { settleRun() }
+    }
     /// The connect section's field.
     package var pasteText = "" {
         didSet { if pasteText != oldValue { pasteError = nil } }
@@ -351,7 +353,9 @@ package final class SlackConnectFlowModel {
         defer { onConnected?(account) }
         let ours: Bool = switch step {
         case let .browser(flow, _, _), let .confirming(flow, _): flow == account.flow
-        default: cancelledFlows.contains(account.flow)
+        // A cancelled flow's late success shows only while nothing newer runs.
+        case .starting: false
+        default: cancelledFlows.contains(account.flow) && !cancelAfterStart
         }
         // A connect that won the race with Cancel: the account is written.
         cancelledFlows.remove(account.flow)
@@ -414,6 +418,35 @@ package final class SlackConnectFlowModel {
             while text.hasSuffix(".") { text.removeLast() }
             return .other(text.isEmpty ? "Slack did not finish the sign-in" : text)
         }
+    }
+
+    // MARK: - The setup's admin connect (plan B A4, Task 13)
+
+    /// The flow a caller awaits (`run`), resumed when it ends.
+    @ObservationIgnored private var runWaiter: CheckedContinuation<Bool, Never>?
+
+    /// Starts `target` skip-confirm and returns once that flow ends: true when
+    /// it connected, false when it failed, was cancelled or could not start.
+    /// The ended flow leaves no sheet behind (the caller shows its own state).
+    package func run(_ target: SlackConnectTarget) async -> Bool {
+        guard runWaiter == nil, start(target) else { return false }
+        return await withCheckedContinuation { waiter in
+            runWaiter = waiter
+            settleRun()
+        }
+    }
+
+    private func settleRun() {
+        guard let waiter = runWaiter else { return }
+        let connected: Bool
+        switch step {
+        case .confirming, .starting, .browser: return
+        case .connected: connected = true
+        case .idle, .failed: connected = false
+        }
+        runWaiter = nil
+        if step != .idle { step = .idle }
+        waiter.resume(returning: connected)
     }
 
     // MARK: - Strings (screens spec §4.2–§4.4)

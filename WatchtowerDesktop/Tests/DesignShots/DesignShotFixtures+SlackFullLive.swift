@@ -16,6 +16,7 @@ enum SlackFullLiveShotFixtures {
     enum Pane: String, CaseIterable {
         case full, fullLive, live, off, loading, checking, probeFailed, readFailed, liveProblems
         case sharedApp, portBusy, pasteInvalid, organization, setupInstall, setupApproval, linkMissing
+        case setupPending
     }
 
     /// The Set up for my company sheet and the Add the link sheet.
@@ -23,6 +24,7 @@ enum SlackFullLiveShotFixtures {
         case empty, ready, progress, success, badToken, notAllowed, linkFailed, approval
         case addLinkEmpty, addLinkBusy, addLinkError, addLinkDone
         case adopt, adoptAppId, adoptNotCollaborator
+        case pendingCreate, pendingConfirmClear, adoptConfirm, adoptAppIdProblem, busy
     }
 
     /// Connecting from a link or a pasted code.
@@ -49,11 +51,11 @@ enum SlackFullLiveShotFixtures {
             }
         ] + Setup.allCases.map { frame in
             DesignShot(name: "slack-fl-setup-\(frame.rawValue)", size: NSSize(width: 520, height: 0)) {
-                AnyView(SlackSetupSheetMock(frame: frame))
+                AnyView(SlackSetupShotFixture.sheet(frame))
             }
         } + [
             DesignShot(name: "slack-fl-setup-ready-narrow", size: NSSize(width: 380, height: 0)) {
-                AnyView(SlackSetupSheetMock(frame: .ready))
+                AnyView(SlackSetupShotFixture.sheet(.ready))
             }
         ] + Connect.allCases.map { frame in
             DesignShot(name: "slack-fl-connect-\(frame.rawValue)", size: NSSize(width: 440, height: 0)) {
@@ -111,7 +113,7 @@ private struct SlackPaneMock: View {
         VStack(alignment: .leading, spacing: Spacing.large) {
             if pane == .sharedApp { sharedBanner }
             modeSection
-            if let record { recordRow(record) }
+            SlackSetupRecordRows(model: SlackSetupShotFixture.rowsModel(pane))
             if showsConnect { connectSection }
             if hasAccount { workspaces }
         }
@@ -138,26 +140,6 @@ private struct SlackPaneMock: View {
             flow: SlackConnectShotFlow.make(paste: pane == .pasteInvalid ? "https://acme.slack.com/apps/A0ACME" : nil),
             setUpForCompany: {},
             fieldFocused: $fieldFocused)
-    }
-
-    private var record: (String, String, Bool)? {
-        switch pane {
-        case .setupInstall: (Copy.recordInstall, Copy.continueSetup, true)
-        case .setupApproval: (Copy.recordApproval, Copy.checkAgain, false)
-        case .linkMissing: (Copy.recordLinkMissing, Copy.addLink, true)
-        default: nil
-        }
-    }
-
-    private func recordRow(_ record: (String, String, Bool)) -> some View {
-        HStack(alignment: .center, spacing: Spacing.medium) {
-            Image(systemName: record.2 ? "wrench.and.screwdriver" : "hourglass").foregroundStyle(Tone.warning)
-            Text(record.0).font(.callout).fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: Spacing.medium)
-            Button(record.1) {}.buttonStyle(.kitPrimary)
-        }
-        .padding(Spacing.medium)
-        .card()
     }
 
     private var sharedBanner: some View {
@@ -194,182 +176,91 @@ private struct SlackPaneMock: View {
     }
 }
 
-// MARK: - Set up for my company / Add the link
+// MARK: - Set up for my company / Add the link (the real sheet, plan B Task 13)
 
-private struct SlackSetupSheetMock: View {
-    let frame: SlackFullLiveShotFixtures.Setup
+/// `SlackAppSetupModel` in each frame's state, for the real
+/// `SlackAppSetupSheet` and `SlackSetupRecordRows`.
+@MainActor
+enum SlackSetupShotFixture {
+    typealias Model = SlackAppSetupModel
+    static let token = "xoxe.xoxp-1-sample-token"
+    static let acme = SlackSetupTarget(teamID: "T0ACME", teamName: "acme", appID: "A0ACME", clientID: "1111.2222",
+                                       linkWritten: true)
 
-    private var isAddLink: Bool { frame.rawValue.hasPrefix("addLink") }
-
-    private var token: String {
-        switch frame {
-        case .empty, .addLinkEmpty: ""
-        default: "xoxe.xoxp-1-sample-token"
-        }
+    static func sheet(_ frame: SlackFullLiveShotFixtures.Setup) -> some View {
+        let empty = frame == .empty || frame == .addLinkEmpty
+        return SlackAppSetupSheet(model: model(frame), token: empty ? "" : token)
     }
 
-    private var isBusy: Bool { frame == .progress || frame == .addLinkBusy }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.large) {
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                Text(isAddLink ? Copy.addLinkTitle : Copy.setupTitle).font(.title3.weight(.semibold))
-                Text(isAddLink ? Copy.addLinkIntro : Copy.setupIntro)
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            if showsForm { form }
-            if frame == .progress { progress }
-            outcome
-            buttons
-        }
-        .controlSize(.small)
-        .padding(Spacing.page)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground()
-    }
-
-    private var showsForm: Bool {
-        [.empty, .ready, .badToken, .notAllowed, .addLinkEmpty, .addLinkBusy, .addLinkError,
-         .adopt, .adoptAppId, .adoptNotCollaborator].contains(frame)
-    }
-
-    private var form: some View {
-        VStack(alignment: .leading, spacing: Spacing.medium) {
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                Text(Copy.setupStep1).font(.headline)
-                Text(Copy.setupStep1Help)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Button(Copy.openTokenPage) {}.buttonStyle(.kitSecondary)
-            }
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                Text(Copy.setupStep2).font(.headline)
-                SecureField(Copy.tokenPlaceholder, text: .constant(token)).textFieldStyle(.kit).disabled(isBusy)
-                Text(Copy.tokenNote).font(.caption).foregroundStyle(.secondary)
-            }
-        }
-        .padding(Spacing.medium)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
-    }
-
-    private var progress: some View {
-        VStack(alignment: .leading, spacing: Spacing.regular) {
-            ForEach(Array(Copy.progressSteps.enumerated()), id: \.offset) { index, step in
-                HStack(spacing: Spacing.regular) {
-                    Group {
-                        if index < 2 {
-                            Image(systemName: "checkmark.circle.fill").foregroundStyle(Tone.success)
-                        } else if index == 2 {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Image(systemName: "circle").foregroundStyle(.tertiary)
-                        }
-                    }
-                    .frame(width: ListLayout.markColumn)
-                    Text(step).font(.callout).foregroundStyle(index > 2 ? .secondary : .primary)
-                }
-            }
-            Text(Copy.progressCaption)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(Spacing.medium)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
-    }
-
-    @ViewBuilder private var outcome: some View {
-        switch frame {
-        case .success:
-            notice(icon: "checkmark.circle.fill", tone: Tone.success, title: Copy.successTitle, body: Copy.successBody)
-        case .badToken, .addLinkError:
-            notice(icon: "exclamationmark.triangle.fill", tone: Tone.warning, title: nil, body: Copy.badToken)
-        case .notAllowed:
-            notice(icon: "exclamationmark.triangle.fill", tone: Tone.warning, title: nil, body: Copy.notAllowed)
-        case .linkFailed:
-            notice(icon: "exclamationmark.triangle.fill", tone: Tone.warning, title: Copy.successTitle, body: Copy.linkFailed)
-        case .approval:
-            notice(icon: "hourglass", tone: Tone.warning, title: nil, body: Copy.approval)
-        case .addLinkBusy:
-            HStack(spacing: Spacing.regular) {
-                ProgressView().controlSize(.small)
-                Text(Copy.addLinkBusy).font(.caption).foregroundStyle(.secondary)
-            }
-        case .addLinkDone:
-            notice(icon: "checkmark.circle.fill", tone: Tone.success, title: nil, body: Copy.addLinkDone)
-        case .adopt:
-            notice(icon: "arrow.triangle.2.circlepath", tone: Tone.status("blue"), title: Copy.adoptTitle, body: Copy.adoptBody)
-        case .adoptAppId:
-            VStack(alignment: .leading, spacing: Spacing.medium) {
-                notice(icon: "arrow.triangle.2.circlepath", tone: Tone.status("blue"),
-                       title: Copy.adoptTitle, body: Copy.adoptBody)
-                VStack(alignment: .leading, spacing: Spacing.small) {
-                    TextField(Copy.adoptAppIDLabel, text: .constant("")).textFieldStyle(.kit)
-                    Text(Copy.adoptAppIDHelp).font(.caption).foregroundStyle(.secondary)
-                }
-            }
+    static func model(_ frame: SlackFullLiveShotFixtures.Setup) -> Model {
+        let link = Model.Form.addLink(acme)
+        let adopt = Model.Adopt(target: acme)
+        var needsID = adopt
+        needsID.needsAppID = true
+        return switch frame {
+        case .empty, .ready: Model(streamer: nil)
+        case .progress: Model(streamer: nil, phase: .running, steps: progressSteps)
+        case .success: Model(streamer: nil, phase: .finished(.success(acme)))
+        case .badToken: Model(streamer: nil, phase: .finished(.problem(.badToken)))
+        case .notAllowed: Model(streamer: nil, phase: .finished(.problem(.notAllowed(workspace: "acme"))))
+        case .linkFailed: Model(streamer: nil, phase: .finished(.linkFailed(acme)))
+        case .approval: Model(streamer: nil, phase: .finished(.approval(acme)))
+        case .addLinkEmpty: Model(streamer: nil, form: link)
+        case .addLinkBusy: Model(streamer: nil, form: link, phase: .running)
+        case .addLinkError: Model(streamer: nil, form: link, phase: .finished(.problem(.badToken)))
+        case .addLinkDone: Model(streamer: nil, form: link, phase: .finished(.linkDone))
+        case .adopt: Model(streamer: nil, form: .adopt(adopt))
+        case .adoptAppId: Model(streamer: nil, form: .adopt(needsID))
         case .adoptNotCollaborator:
-            notice(icon: "exclamationmark.triangle.fill", tone: Tone.warning, title: Copy.adoptTitle,
-                   body: Copy.notCollaborator)
-        default:
-            EmptyView()
+            Model(streamer: nil, form: .adopt(adopt), phase: .finished(.problem(.notCollaborator(workspace: "acme"))))
+        case .pendingCreate, .pendingConfirmClear, .adoptConfirm, .adoptAppIdProblem, .busy: reviewModel(frame, adopt: needsID)
         }
     }
 
-    private func notice(icon: String, tone: Color, title: String?, body: String) -> some View {
-        HStack(alignment: .top, spacing: Spacing.regular) {
-            Image(systemName: icon).foregroundStyle(tone)
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                if let title { Text(title).font(.headline) }
-                Text(body).font(.callout).fixedSize(horizontal: false, vertical: true)
-            }
+    /// The states added after the plan B Task 13 review.
+    private static func reviewModel(_ frame: SlackFullLiveShotFixtures.Setup, adopt: Model.Adopt) -> Model {
+        var confirm = adopt
+        confirm.confirm = ("A0ACME", "Watchtower")
+        var problem = adopt
+        problem.appIDProblem = .format
+        let pending = Model.Form.pending(SlackSetupTarget(teamID: "T0ACME", teamName: "acme"))
+        if frame == .pendingConfirmClear {
+            let model = Model(streamer: nil, form: pending)
+            model.clearPending() // the first press asks to check Slack's app page first
+            return model
         }
-        .padding(Spacing.medium)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
+        return switch frame {
+        case .pendingCreate: Model(streamer: nil, form: pending)
+        case .adoptConfirm: Model(streamer: nil, form: .adopt(confirm))
+        case .adoptAppIdProblem: Model(streamer: nil, form: .adopt(problem))
+        default: Model(streamer: nil, phase: .finished(.problem(.busy)))
+        }
     }
 
-    private var buttons: some View {
-        HStack(spacing: Spacing.regular) {
-            Spacer()
-            switch frame {
-            case .empty, .ready:
-                Button(Copy.cancel) {}.buttonStyle(.kitSecondary)
-                Button(Copy.createApp) {}.buttonStyle(.kitPrimary).disabled(token.isEmpty)
-            case .progress:
-                Button(Copy.close) {}.buttonStyle(.kitSecondary)
-            case .badToken:
-                Button(Copy.cancel) {}.buttonStyle(.kitSecondary)
-                Button(Copy.tryAgain) {}.buttonStyle(.kitPrimary)
-            case .notAllowed, .adoptNotCollaborator:
-                Button(Copy.cancel) {}.buttonStyle(.kitSecondary)
-                Button(Copy.copyAdminNote) {}.buttonStyle(.kitSecondary)
-                Button(Copy.tryAgain) {}.buttonStyle(.kitPrimary)
-            case .adopt, .adoptAppId:
-                Button(Copy.cancel) {}.buttonStyle(.kitSecondary)
-                Button(Copy.adoptAction) {}.buttonStyle(.kitPrimary).disabled(frame == .adoptAppId)
-            case .success:
-                Button(Copy.copyCode) {}.buttonStyle(.kitSecondary)
-                Button(Copy.done) {}.buttonStyle(.kitPrimary)
-            case .linkFailed:
-                Button(Copy.close) {}.buttonStyle(.kitSecondary)
-                Button(Copy.addLink) {}.buttonStyle(.kitPrimary)
-            case .approval:
-                Button(Copy.close) {}.buttonStyle(.kitSecondary)
-                Button(Copy.checkAgain) {}.buttonStyle(.kitPrimary)
-            case .addLinkEmpty, .addLinkBusy:
-                Button(Copy.cancel) {}.buttonStyle(.kitSecondary)
-                Button(Copy.addLinkAction) {}.buttonStyle(.kitPrimary).disabled(token.isEmpty || isBusy)
-            case .addLinkError:
-                Button(Copy.cancel) {}.buttonStyle(.kitSecondary)
-                Button(Copy.tryAgain) {}.buttonStyle(.kitPrimary)
-            case .addLinkDone:
-                Button(Copy.done) {}.buttonStyle(.kitPrimary)
-            }
+    private static var progressSteps: [Model.StepLine] {
+        let marks: [Model.StepMark] = [.done, .done, .running, .waiting]
+        return zip(Model.createSteps, marks).map { line, mark in
+            var line = line
+            line.mark = mark
+            return line
         }
+    }
+
+    /// The pane's unfinished-setup row for the record frames, none otherwise.
+    static func rowsModel(_ pane: SlackFullLiveShotFixtures.Pane) -> Model {
+        let stage: String? = switch pane {
+        case .setupInstall: "install"
+        case .setupApproval: "approval"
+        case .linkMissing: "link_missing"
+        case .setupPending: "pending_create"
+        default: nil
+        }
+        let records = stage.map { stage in
+            [SlackSetupRecord(teamID: "T0ACME", teamName: "acme", appID: "A0ACME", clientID: "1111.2222",
+                              connected: stage == "link_missing", linkWritten: stage != "link_missing",
+                              installRequested: stage == "approval", stage: stage)]
+        } ?? []
+        return Model(streamer: nil, records: records)
     }
 }
 

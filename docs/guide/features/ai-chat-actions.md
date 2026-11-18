@@ -112,7 +112,7 @@ The card can be approved only while that reply is still running. Once the chat's
 
 ## When it's empty or wrong
 
-- **The send fails with "sign in again to grant send".** Your Slack workspace was connected before send existed. Click **Reconnect Slack** on the card, approve Slack's page in the browser, then **Retry**.
+- **The send fails with "sign in again to grant send".** Your Slack workspace was connected before send existed. Click **Reconnect Slack** on the card, approve Slack's page in the browser, then **Retry**. If your workspace connects through its own Watchtower app, the card says to finish in Connections → Slack instead: Watchtower opens that pane, where you finish connecting (or paste your workspace's connect link), then come back and click **Retry**.
 - **The assistant says it cannot edit Confluence.** The site needs **Allow editing** in **Connections → Jira → Confluence**. If Confluence sync is off, that section says "Confluence sync is turned off"; click its **Enable** button first.
 - **An archived page.** It can be read but not edited; restore it in Confluence first.
 - **A Confluence card says the edit "may have been saved".** The page moved one version but not to this edit. Ask the assistant to read the page again before trying again.

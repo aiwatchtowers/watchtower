@@ -98,7 +98,8 @@ final class AppState {
     var settingsAnchor: SettingsAnchor?
     /// The Connections tab's open service (nil: the overview), so a link opens a service.
     var selectedConnection: ConnectionService?
-    @ObservationIgnored private(set) lazy var slackAuthFlow = SlackAuthFlowState() // a Slack connect survives leaving the tab
+    @ObservationIgnored private(set) lazy var slackAuthFlow = SlackAuthFlowState() // a connect survives leaving the tab
+    @ObservationIgnored private(set) lazy var slackAppSetup = SlackAppSetupModel { ProcessCLILineStream.makeDefault() } // #1709 S3
     @ObservationIgnored var connectionAccountsReadAt: Date? // `refreshConnectionAccountsIfStale`'s clock
     /// The one config.yaml copy Settings and the Connections tab edit (no stale overwrite); a test may set it.
     @ObservationIgnored weak var observedProviderConnection: ProviderConnection?
@@ -376,8 +377,7 @@ final class AppState {
     private(set) var workbenchNotificationCenter: WorkbenchNotificationCenter?
     /// Claude plan limits (menu bar text, tray rows, Usage tab); nil until the database is open.
     private(set) var planUsageCenter: PlanUsageCenter?
-    /// The account purge ledger (board #601): red lines, Home banner, notices.
-    var accountPurgeCenter: AccountPurgeCenter?
+    var accountPurgeCenter: AccountPurgeCenter? // the account purge ledger (board #601): red lines, Home banner, notices
     let fileVault = FileVaultWatch() // `fdesetup status` at launch and on activation (#1769)
     var slackLiveStatusCenter: SlackLiveStatusCenter? // the Slack Live probe's verdicts (Connections → Slack)
     var slackConnectListener: SlackConnectListenerHost? // `slack connect serve` on 18551 (#1709); none under XCTest

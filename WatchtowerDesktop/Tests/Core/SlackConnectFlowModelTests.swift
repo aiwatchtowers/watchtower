@@ -460,4 +460,48 @@ final class SlackConnectFlowModelTests: XCTestCase {
         rig.model.reconnect(.connectSection)
         XCTAssertTrue(rig.model.takeConnectSectionRequest())
     }
+
+    // MARK: - Fix round 2
+
+    /// A cancelled flow's late success while a newer start runs: the list
+    /// reloads, the newer attempt keeps its sheet.
+    func testLateSuccessOfCancelledFlowLeavesNewerStart() async {
+        let rig = await makeRig()
+        var written: [Int64] = []
+        rig.model.onConnected = { written.append($0.accountID) }
+        inBrowser(rig)
+        rig.model.cancel()
+        XCTAssertTrue(rig.model.start(target))
+        rig.emit(.connected(SlackConnectedAccount(flow: "f1", accountID: 5, teamID: "T0ACME", teamName: "acme", reboundFrom: "")))
+        XCTAssertEqual(rig.model.step, .starting(target))
+        XCTAssertEqual(written, [5])
+    }
+
+    /// The setup's admin connect awaits its flow to the end, through the
+    /// real flow model, and leaves no sheet behind.
+    func testSetupConnectorAwaitsTheFlow() async {
+        let rig = await makeRig()
+        let connector = SlackSetupConnector(flow: rig.model)
+        let run = Task { await connector.connectForSetup(teamID: "T0ACME", clientID: "1111.2222") }
+        await untilObserved { rig.model.step == .starting(self.target) }
+        XCTAssertEqual(rig.sent, [startLine], "skip-confirm, straight to Slack")
+        rig.emit(.browser(flow: "f1"))
+        rig.emit(.connected(SlackConnectedAccount(flow: "f1", accountID: 2, teamID: "T0ACME", teamName: "acme", reboundFrom: "")))
+        let outcome = await run.value
+        XCTAssertEqual(outcome, .connected)
+        XCTAssertEqual(rig.model.step, .idle)
+
+        let failed = Task { await connector.connectForSetup(teamID: "T0ACME", clientID: "1111.2222") }
+        await untilObserved { rig.model.step == .starting(self.target) }
+        rig.emit(.browser(flow: "f2"))
+        rig.emit(.failed(flow: "f2", reason: .denied, message: ""))
+        let notConnected = await failed.value
+        XCTAssertEqual(notConnected, .notConnected)
+        XCTAssertEqual(rig.model.step, .idle)
+
+        // A flow already running: nothing starts.
+        rig.emit(.link(flow: "f3", teamID: "T0ACME", clientID: "1111.2222"))
+        let refused = await connector.connectForSetup(teamID: "T0ACME", clientID: "1111.2222")
+        XCTAssertEqual(refused, .notConnected)
+    }
 }

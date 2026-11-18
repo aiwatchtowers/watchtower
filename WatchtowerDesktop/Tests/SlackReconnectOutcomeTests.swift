@@ -2,6 +2,7 @@ import ChatUI
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerTestSupport
 
 /// A card's Reconnect Slack (plan B Task 14 fix round 1): only a finished
 /// built-in sign-in is "done"; the connect flow's hand-off says where to finish.
@@ -20,5 +21,23 @@ final class SlackReconnectOutcomeTests: XCTestCase {
         let appState = AppState.isolated()
         let outcome = await appState.reconnectSlack(accountID: 3)
         XCTAssertEqual(outcome, .failed("Slack accounts are not loaded yet — open Connections → Slack."))
+    }
+
+    /// Set up for my company's admin connect is wired to the real connect
+    /// flow on the listener (plan B A4).
+    func testSetupConnectorRunsOnTheConnectFlow() async throws {
+        let appState = AppState.isolated()
+        let fake = FakeCLILineStream()
+        let host = SlackConnectListenerHost(streamer: fake)
+        let flow = appState.makeSlackConnectFlow(host: host)
+        let connector = try XCTUnwrap(appState.slackAppSetup.connector as? SlackSetupConnector)
+        let run = Task { await connector.connectForSetup(teamID: "T0ACME", clientID: "1111.2222") }
+        let child = await fake.session(number: 1)
+        await untilObserved { flow.step == .starting(SlackConnectTarget(teamID: "T0ACME", clientID: "1111.2222")) }
+        XCTAssertEqual(child.writtenLines, [#"{"client_id":"1111.2222","cmd":"start","team_id":"T0ACME"}"#])
+        flow.cancel()
+        child.emit(#"{"event":"failed","flow":"","reason":"cancelled","message":""}"#)
+        let outcome = await run.value
+        XCTAssertEqual(outcome, .notConnected)
     }
 }

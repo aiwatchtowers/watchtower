@@ -26,7 +26,7 @@ const (
 	KindBadIDs          = "bad_ids"          // pending --attach: an id is malformed (Code says which)
 	KindNoApp           = "no_app"           // adopt: the team has no live account on a company app
 	KindNoRecord        = "no_record"        // link: the team has no setup record
-	KindWrongTeam       = "wrong_team"       // link: --team names another workspace than the token
+	KindWrongTeam       = "wrong_team"       // link, adopt: --team names another workspace than the token
 	KindNeedAppID       = "need_app_id"      // adopt: the App ID is unknown or does not fit (Code says which; A19)
 	KindNotCollaborator = "not_collaborator" // the token's owner is not a collaborator on the app (Q11)
 	KindAppNotFound     = "app_not_found"
@@ -413,11 +413,16 @@ func adoptAppID(acct db.SlackAccount, appIDFlag string) (appID string, fromFlag 
 // changing nothing, until confirmAppID repeats that App ID; then
 // check_token → read_app → update_app. The record (link written) is
 // inserted only after the update succeeded.
-func (r *Runner) Adopt(ctx context.Context, cfgToken, appIDFlag, confirmAppID string) (Result, error) {
+func (r *Runner) Adopt(ctx context.Context, cfgToken, team, appIDFlag, confirmAppID string) (Result, error) {
 	return r.locked(func() (Result, error) {
 		teamID, teamName, fail := r.team(ctx, cfgToken)
 		if fail != nil {
 			return *fail, nil
+		}
+		// The sheet names the workspace it offered to update: a token of
+		// another workspace changes nothing there.
+		if team != "" && team != teamID {
+			return Result{Kind: KindWrongTeam, TeamID: teamID, TeamName: teamName}, nil
 		}
 		if s, ok, err := r.record(teamID); err != nil {
 			return Result{}, err

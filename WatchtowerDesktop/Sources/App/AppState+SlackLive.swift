@@ -34,7 +34,7 @@ extension AppState {
     /// brings the app forward on Connections → Slack with the confirm; a
     /// written account reloads the list and re-wires the daemon. One flow at
     /// a time with the legacy sign-ins (`SlackAuthFlowState`, `slack login`).
-    private func makeSlackConnectFlow(host: SlackConnectListenerHost) -> SlackConnectFlowModel {
+    func makeSlackConnectFlow(host: SlackConnectListenerHost) -> SlackConnectFlowModel {
         let flow = SlackConnectFlowModel(host: host)
         flow.onLink = { [weak self] in
             self?.openConnections(.slack)
@@ -51,6 +51,8 @@ extension AppState {
         // The accounts VM exists by now (wireOnboardingDatabase runs before
         // wireAppDatabase on every launch path); its Re-login routes here.
         slackAccountsViewModel?.connectFlow = flow
+        // Set up for my company's admin connect runs on this flow too (A4).
+        slackAppSetup.connector = SlackSetupConnector(flow: flow)
         return flow
     }
 }

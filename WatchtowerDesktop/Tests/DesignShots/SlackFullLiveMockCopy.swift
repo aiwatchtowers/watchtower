@@ -183,4 +183,23 @@ enum SlackFullLiveMockCopy {
     static let onboardingLiveHint = "No app in your workspace? Chats can still read Slack through Live "
         + "in your Claude or ChatGPT account."
     static let skip = "Skip"
+
+    // MARK: Plan B Task 13 review: the lost create, the App ID check, a refusal
+
+    static let pendingBody = "Slack did not answer when Watchtower asked it to create the app in acme, so the app may "
+        + "exist. Look for “Watchtower” on api.slack.com/apps. If it is there, enter its App ID and Client ID from its "
+        + "Basic Information page, then paste a fresh configuration token to add the connect link; if not, start again."
+    static let confirmClear = "Watchtower may have created the app already. Check Slack's app page first: if “Watchtower” "
+        + "is there, enter its ids and use it. Start again only if it is not there, or the workspace gets a second "
+        + "Watchtower app."
+    static let confirmClearAction = "Nothing there: start again"
+    static let clientIDLabel = "Client ID"
+    static let openAppsPage = "Open Slack's app page"
+    static let pendingStartAgain = "Start again"
+    static let pendingUseApp = "Use this app"
+    static let recordPending = "Setup is not finished: Slack did not confirm Watchtower's app in acme. "
+        + "Check api.slack.com/apps before going on."
+    static let adoptConfirm = "App A0ACME is called “Watchtower”. Update it only if it is your workspace's Watchtower app."
+    static let appIDFormat = "That is not an App ID: it starts with A."
+    static let busy = "Another setup is already running on this Mac. Try again once it has finished."
 }
