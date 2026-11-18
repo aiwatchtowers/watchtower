@@ -39,6 +39,8 @@ const (
 	// EventLink: a connect link started a flow that waits for Confirm.
 	EventLink EventKind = "link"
 	// EventBusy: a link arrived while Flow was running; nothing started.
+	// `slack connect serve` reports it as link_busy (a refused start is its
+	// own busy).
 	EventBusy EventKind = "busy"
 	// EventCallback: Slack's redirect ended Flow; Result says how. For
 	// OutcomeConnected, Reply is set and the owner answers on it exactly once

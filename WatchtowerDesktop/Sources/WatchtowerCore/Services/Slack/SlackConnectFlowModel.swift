@@ -54,13 +54,26 @@ package struct SlackAccountsDocument: Decodable, Equatable, Sendable {
         package let sharedApp: Bool
         /// "builtin" | "connect" | "move" (`slackmode.Relogin`).
         package let relogin: String
+        /// The team a connect Re-login signs into: the home team of the
+        /// account's stored data (Go `slackAccountConnectTeam`); nil from an
+        /// older CLI, then `teamID`.
+        package let homeTeamID: String?
 
-        package init(id: Int64, teamID: String, clientID: String, sharedApp: Bool = false, relogin: String) {
+        package init(
+            id: Int64, teamID: String, clientID: String, sharedApp: Bool = false, relogin: String, homeTeamID: String? = nil
+        ) {
             self.id = id
             self.teamID = teamID
             self.clientID = clientID
             self.sharedApp = sharedApp
             self.relogin = relogin
+            self.homeTeamID = homeTeamID
+        }
+
+        /// The team a connect Re-login targets (review m4).
+        package var connectTeamID: String {
+            guard let homeTeamID, !homeTeamID.isEmpty else { return teamID }
+            return homeTeamID
         }
 
         private enum CodingKeys: String, CodingKey {
@@ -68,6 +81,7 @@ package struct SlackAccountsDocument: Decodable, Equatable, Sendable {
             case teamID = "team_id"
             case clientID = "client_id"
             case sharedApp = "shared_app"
+            case homeTeamID = "home_team_id"
         }
     }
 
@@ -114,10 +128,11 @@ package enum SlackReloginRoute: Equatable, Sendable {
         case "builtin":
             return .builtin
         case "connect":
-            guard ManagedPolicy.isSlackTeamID(account.teamID), ManagedPolicy.isSlackClientID(account.clientID) else {
+            let team = account.connectTeamID
+            guard ManagedPolicy.isSlackTeamID(team), ManagedPolicy.isSlackClientID(account.clientID) else {
                 return .connectSection
             }
-            return .flow(SlackConnectTarget(teamID: account.teamID, clientID: account.clientID, accountID: account.id))
+            return .flow(SlackConnectTarget(teamID: team, clientID: account.clientID, accountID: account.id))
         default:
             return .connectSection
         }
@@ -310,7 +325,7 @@ package final class SlackConnectFlowModel {
         case let .link(flow, teamID, clientID):
             // A link while a flow runs (or waits for its start's answer) is
             // refused and the running sheet stays. The child keeps one flow too
-            // and answers such a link `busy`; one it took before our `start`
+            // and answers such a link `link_busy`; one it took before our `start`
             // reached it would refuse that start forever (no deadline, A22), so
             // a link that is not shown is always cancelled.
             guard !isRunning else {
@@ -326,9 +341,12 @@ package final class SlackConnectFlowModel {
             connected(account)
         case let .failed(flow, reason, message):
             failed(flow: flow, reason: reason, message: message)
+        case .linkBusy:
+            // The child refused a link while a flow runs; its page told the
+            // visitor. Nothing of ours changes (review m5).
+            break
         case .busy:
-            // The answer to our start: another flow holds the child. (A link
-            // opened during our flow answers busy too; it is not ours to show.)
+            // The answer to our start: another flow holds the child.
             if case let .starting(target) = step {
                 step = .failed(.other("another Slack connection is still running"), retry: target)
             } else if cancelAfterStart {
@@ -344,7 +362,15 @@ package final class SlackConnectFlowModel {
             host.send(.cancel(flow: flow))
             return
         }
-        guard case let .starting(target) = step else { return } // an unknown flow
+        guard case let .starting(target) = step else {
+            // Our confirmed link already shows; a flow we do not own (the late
+            // answer to a start we gave up on) is cancelled: with no deadline
+            // (A22) it would hold the child's one flow until quit (review m5).
+            // It is not one the owner cancelled: its late success shows nothing.
+            if case let .browser(current, _, _) = step, current == flow { return }
+            if !cancelledFlows.contains(flow) { host.send(.cancel(flow: flow)) }
+            return
+        }
         step = .browser(flow: flow, target: target, since: now())
     }
 

@@ -49,12 +49,16 @@ package enum SlackConnectEvent: Codable, Equatable, Sendable {
     case browser(flow: String)
     case connected(SlackConnectedAccount)
     case failed(flow: String, reason: SlackConnectFailure, message: String)
-    /// A second start was refused; `flow` is the running one.
+    /// A start was refused; `flow` is the running one.
     case busy(flow: String)
+    /// A link that arrived while `flow` runs was refused; never the answer
+    /// to a start (review m5).
+    case linkBusy(flow: String)
 
     private enum Kind: String, Codable {
         case listening, link, browser, connected, failed, busy
         case portBusy = "port_busy"
+        case linkBusy = "link_busy"
     }
 
     private enum Keys: String, CodingKey {
@@ -93,6 +97,7 @@ package enum SlackConnectEvent: Codable, Equatable, Sendable {
                 message: try box.decodeIfPresent(String.self, forKey: .message) ?? ""
             )
         case .busy: self = .busy(flow: try box.decode(String.self, forKey: .flow))
+        case .linkBusy: self = .linkBusy(flow: try box.decode(String.self, forKey: .flow))
         }
     }
 
@@ -127,6 +132,9 @@ package enum SlackConnectEvent: Codable, Equatable, Sendable {
             try box.encode(message, forKey: .message)
         case let .busy(flow):
             try box.encode(Kind.busy, forKey: .event)
+            try box.encode(flow, forKey: .flow)
+        case let .linkBusy(flow):
+            try box.encode(Kind.linkBusy, forKey: .event)
             try box.encode(flow, forKey: .flow)
         }
     }
