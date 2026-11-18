@@ -78,19 +78,4 @@ package enum SpecReviewLoopQueries {
                        round: $0["round"], docType: $0["doc_type"])
         }
     }
-
-    /// Session id → the round of its open asks' author loops (the highest
-    /// when a session has more than one).
-    package static func progress(_ db: Database) throws -> [Int64: Int] {
-        let rows = try Row.fetchAll(db, sql: """
-            SELECT a.session_id, MAX(sr.round) AS round
-            FROM spec_reviews sr
-            JOIN owner_asks a ON a.id = sr.ask_id
-            WHERE sr.loop = 'author' AND a.status = 'open' AND a.session_id IS NOT NULL
-            GROUP BY a.session_id
-            """)
-        var out: [Int64: Int] = [:]
-        for row in rows { out[row["session_id"]] = row["round"] }
-        return out
-    }
 }

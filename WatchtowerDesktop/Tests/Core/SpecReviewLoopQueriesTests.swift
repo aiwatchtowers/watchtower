@@ -57,20 +57,4 @@ final class SpecReviewLoopQueriesTests: XCTestCase {
             ])
         }
     }
-
-    func testProgressBySession() throws {
-        try db.write { d in
-            let p = try TestDatabase.insertWorkbench(d)
-            let s1 = try session(d, projectID: p)
-            let s2 = try session(d, projectID: p)
-            let s3 = try session(d, projectID: p)
-            _ = try Self.insertLoopAsk(d, projectID: p, sessionID: s1, round: 1)
-            _ = try Self.insertLoopAsk(d, projectID: p, sessionID: s1, status: "running", round: 2)
-            _ = try Self.insertLoopAsk(d, projectID: p, sessionID: s2, status: "queued", round: 3)
-            _ = try Self.insertLoopAsk(d, projectID: p, sessionID: s3, loop: "owner", round: 3)
-            _ = try Self.insertLoopAsk(d, projectID: p, sessionID: s3, askStatus: "withdrawn", withdrawnReason: "superseded")
-
-            XCTAssertEqual(try SpecReviewLoopQueries.progress(d), [s1: 2, s2: 3])
-        }
-    }
 }

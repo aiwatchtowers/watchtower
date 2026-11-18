@@ -141,6 +141,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(SlackAdaptiveSyncShotFixtures.shots)
     }
 
+    /// The session's Spec review state mockups (board #1945).
+    func testSpecReviewStateShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("session-state-spec-review") })
+    }
+
     /// The Slack Developer Policy hygiene spec's mockups (#1769).
     func testSlackPolicyShotsRender() throws {
         try renderShots(SlackPolicyShotFixtures.shots)

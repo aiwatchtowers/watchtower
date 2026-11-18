@@ -72,6 +72,9 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
     /// `compressed` or `unreadable`; nil = watched, or a database without
     /// the column.
     package var agentWatchIssue: String?
+    /// The highest round among the session's open asks hidden in the spec
+    /// review author loop (`SpecLoopRoundSQL` in Go); 0 = none in the loop.
+    package var specReviewRound: Int
 
     package init(
         id: Int64,
@@ -95,7 +98,8 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         chatQuestionAt: String? = nil,
         agentCwdAt: String? = nil,
         kind: String? = nil,
-        agentWatchIssue: String? = nil
+        agentWatchIssue: String? = nil,
+        specReviewRound: Int = 0
     ) {
         self.id = id
         self.projectID = projectID
@@ -121,6 +125,7 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         self.agentCwdAt = agentCwdAt
         self.kind = kind
         self.agentWatchIssue = agentWatchIssue
+        self.specReviewRound = specReviewRound
     }
 
     package var stored: SessionAgentState? { agentState.flatMap(SessionAgentState.init(rawValue:)) }
@@ -150,6 +155,7 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         case agentCwdAt = "agent_cwd_at"
         case kind
         case agentWatchIssue = "agent_watch_issue"
+        case specReviewRound = "spec_review_round"
     }
 }
 
@@ -239,19 +245,20 @@ package struct SessionAgentStatus: Equatable, Sendable {
             oldestAskID: row.openAsks > 0 ? row.oldestOpenAskID : nil,
             backgroundAgents: background?.agents ?? 0, backgroundShells: background?.shells ?? 0,
             openQuestionAsks: row.openQuestionAsks, openReviewAsks: row.openReviewAsks,
-            watchIssue: row.agentWatchIssue
+            watchIssue: row.agentWatchIssue, specReviewRound: row.specReviewRound
         )
     }
 
     /// The order's tail, once no hook state of the run claims the row:
     /// ready to check (open asks, none a question — #534) > finished > open
-    /// ask > stopped > running > not started.
+    /// ask > spec review (a hidden author-loop ask) > stopped > running > not started.
     private static func restingKind(
         _ row: SessionAgentStateRow, turnEnded: Bool, live: Bool
     ) -> SessionSwitcherPresentation.State.Kind {
         if row.openAsks > 0 && row.openQuestionAsks == 0 { return .readyToCheck }
         if row.finishedAt != nil { return .finished }
         if row.openAsks > 0 { return .waitingOnAsk }
+        if row.specReviewRound > 0 { return .specReview }
         if turnEnded { return .stopped }
         return live ? .running : .notStarted
     }
@@ -293,7 +300,7 @@ package struct SessionAgentStatus: Equatable, Sendable {
     package var isAtPrompt: Bool {
         guard state.live, at != nil else { return false }
         switch state.kind {
-        case .stopped, .failed, .finished, .waitingOnAsk, .readyToCheck, .background: return true
+        case .stopped, .failed, .finished, .waitingOnAsk, .readyToCheck, .background, .specReview: return true
         case .notStarted, .running, .working, .needsApproval: return false
         }
     }

@@ -24,7 +24,8 @@ final class SessionAgentStatusTests: XCTestCase {
         reviews: Int = 0,
         background: Int? = nil,
         backgroundAt: String? = nil,
-        shells: Int? = nil
+        shells: Int? = nil,
+        specReviewRound: Int = 0
     ) -> SessionAgentStateRow {
         // `questions` defaults to `openAsks`: a fixture that names no ask
         // kinds holds questions only, the one kind every ask was read as
@@ -34,7 +35,7 @@ final class SessionAgentStatusTests: XCTestCase {
                              finishedAt: finishedAt, agentFailedAt: failedAt, agentError: error, openAsks: openAsks,
                              openQuestionAsks: questions ?? openAsks, openReviewAsks: reviews,
                              agentBackground: background, agentBackgroundAt: backgroundAt,
-                             agentBackgroundShells: shells)
+                             agentBackgroundShells: shells, specReviewRound: specReviewRound)
     }
 
     private func effective(
@@ -72,7 +73,7 @@ final class SessionAgentStatusTests: XCTestCase {
 
     /// PROJ-11 (amended 2026-10-03, #411, #534): §4b's order, the first
     /// match winning — approval > error > working > background > ready to
-    /// check > finished > open ask > stopped > running > not started.
+    /// check > finished > open ask > spec review > stopped > running > not started.
     /// Finished, ready to check and open asks are not run-scoped; the hook
     /// states, background among them, are. The rows before #534 name no
     /// ask kinds, so their asks are questions (the `row` helper's default)
@@ -106,6 +107,14 @@ final class SessionAgentStatusTests: XCTestCase {
             ("finished beats an open ask and a turn end",
              row("waiting", at: now, finishedAt: done, openAsks: 1), true, .live(.finished, openAsks: 1)),
             ("an open ask beats a turn end", row("waiting", at: now, openAsks: 3), true, .live(.waitingOnAsk, openAsks: 3)),
+            ("a spec review loop beats a turn end",
+             row("waiting", at: now, specReviewRound: 2), true, .live(.specReview, specReviewRound: 2)),
+            ("an open ask beats a spec review loop",
+             row("waiting", at: now, openAsks: 1, specReviewRound: 2), true,
+             .live(.waitingOnAsk, openAsks: 1)),
+            ("working beats a spec review loop", row("working", at: now, specReviewRound: 2), true, .live(.working)),
+            ("not live + a spec review loop: a ring", row("waiting", at: old, specReviewRound: 3), false,
+             State(kind: .specReview, live: false, specReviewRound: 3)),
             ("a turn end", row("waiting", at: now), true, .live(.stopped)),
             ("a failure flag of an older write is not this turn's error",
              row("waiting", at: now, failedAt: old, error: "rate_limit"), true, .live(.stopped)),
@@ -149,7 +158,15 @@ final class SessionAgentStatusTests: XCTestCase {
                            expected, name)
         }
         let kinds = Set(cases.map(\.3.kind))
-        XCTAssertEqual(kinds.count, 10, "every §4b kind is covered")
+        XCTAssertEqual(kinds.count, 11, "every §4b kind is covered")
+    }
+
+    /// A loop ask makes a session that reported nothing yet Spec review too:
+    /// the loop outranks plain running, as it outranks stopped.
+    func testSpecReviewOutranksRunning() {
+        XCTAssertEqual(SessionAgentStatus.effective(row: row(nil, at: nil, specReviewRound: 1), live: true,
+                                                    startedAt: started, now: readAt),
+                       .live(.specReview, specReviewRound: 1))
     }
 
     /// PROJ-11 (#411, ruling F3): error outranks background on the row shape
