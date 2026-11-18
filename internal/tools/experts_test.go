@@ -147,3 +147,29 @@ func TestFindExperts_RequiresAnInput(t *testing.T) {
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr)
 }
+
+// TestFindExperts_NoActiveHours pins #1769 (A16): no candidate carries
+// active hours, even when the person's card still holds them; the card's
+// decision role and communication guide still come through.
+func TestFindExperts_NoActiveHours(t *testing.T) {
+	d := openDB(t)
+	seedExpertsFixture(t, d)
+	_, err := d.UpsertPeopleCard(db.PeopleCard{UserID: "1:U1", PeriodFrom: 1, PeriodTo: 2, Status: "active",
+		DecisionRole: "approver", CommunicationGuide: "Ask in thread", ActiveHoursJSON: `{"9":3}`})
+	require.NoError(t, err)
+	reg := New(d)
+	require.NoError(t, reg.Register(NewFindExperts()))
+	raw := callReadString(t, reg, "find_experts", `{"topic":"payments"}`)
+
+	var env struct {
+		Candidates []map[string]json.RawMessage `json:"candidates"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(raw), &env))
+	require.NotEmpty(t, env.Candidates)
+	for _, c := range env.Candidates {
+		_, has := c["active_hours"]
+		assert.False(t, has)
+	}
+	assert.Contains(t, raw, `"decision_role":"approver"`)
+	assert.NotContains(t, raw, "active_hours")
+}

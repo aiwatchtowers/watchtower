@@ -1,6 +1,5 @@
 import Foundation
 import GRDB
-import WatchtowerInterface
 import Observation
 import WatchtowerChatText
 
@@ -27,15 +26,16 @@ package final class ArtifactPanelModel {
     package private(set) var keepDisabledReason: String?
     /// Called after a keep / unkeep landed, so the card badges follow.
     @ObservationIgnored package var onKnowledgeChanged: (() -> Void)?
+    /// Reads the panel's rows; every write goes through `writer` (the engine, D19).
     @ObservationIgnored private let db: any DatabaseReader
-    @ObservationIgnored private let chatWrites: ChatWrites
+    @ObservationIgnored private let writer: any ChatArtifactWriting
 
-    package init(db: any DatabaseReader, writes: ChatWrites, conversationID: Int64, key: String) {
+    package init(db: any DatabaseReader, writer: any ChatArtifactWriting, conversationID: Int64, key: String) {
         self.db = db
-        self.chatWrites = writes
+        self.writer = writer
         self.conversationID = conversationID
         self.key = key
-        comments = ArtifactCommentsModel(db: db, writes: writes, conversationID: conversationID, key: key)
+        comments = ArtifactCommentsModel(db: db, writer: writer, conversationID: conversationID, key: key)
         reload()
     }
 
@@ -97,7 +97,7 @@ package final class ArtifactPanelModel {
         editText = ""
     }
 
-    /// Stores the edit as a new version off the main thread (board #670).
+    /// Stores the edit as a new version (the engine writes it).
     /// The editor stays open and editable meanwhile; it closes once the
     /// version landed, unless the owner typed on since — then it stays open
     /// over the new version with that text.
@@ -108,17 +108,10 @@ package final class ArtifactPanelModel {
             cancelEdit()
             return
         }
-        var draft = base.asDraft
-        draft.content = text
         isSavingEdit = true
         defer { isSavingEdit = false }
-        let (chatWrites, conversationID, messageID, saved) = (chatWrites, conversationID, base.messageID, draft)
         do {
-            let _: ChatArtifactSaveEditResponse = try await chatWrites.perform(.chatArtifactSaveEdit) {
-                ChatArtifactSaveEditRequest(requestID: $0, conversationID: conversationID, messageID: messageID,
-                                            artifactKey: saved.key, kind: saved.kind, title: saved.title,
-                                            content: saved.content, meta: saved.meta.isEmpty ? nil : saved.meta)
-            }
+            try await writer.edit(conversationID: conversationID, key: key, version: base.version, content: text)
             selectedVersion = nil
             if editText == text { cancelEdit() }
             reload()
@@ -136,8 +129,6 @@ package final class ArtifactPanelModel {
     }
 
     package static let liveSlackReason = "Built on Live Slack answers, which are not kept"
-    /// Go's `chat.artifact.keep` refusal for a Live Slack chat (LIVE-01).
-    package static let liveSlackRefusal = "This chat used Live Slack, so its artifacts can't be kept in Knowledge."
 
     /// Why the shown control cannot keep this version (LIVE-01); `nil` when it
     /// can. Remove is never blocked: an earlier pin can always be dropped.
@@ -161,21 +152,15 @@ package final class ArtifactPanelModel {
 
     private func writeKnowledge(remove: Bool) async {
         guard let shown = selectedArtifact else { return }
-        let (chatWrites, conversationID, key, version) = (chatWrites, conversationID, key, shown.version)
         do {
             if remove {
-                let _: ChatDone = try await chatWrites.perform(.chatArtifactUnkeep) {
-                    ChatArtifactUnkeepRequest(requestID: $0, conversationID: conversationID, artifactKey: key)
-                }
+                try await writer.unkeep(conversationID: conversationID, key: key)
             } else {
-                let _: ChatDone = try await chatWrites.perform(.chatArtifactKeep) {
-                    ChatArtifactKeepRequest(requestID: $0, conversationID: conversationID, artifactKey: key,
-                                            version: Int64(version))
-                }
+                try await writer.keep(conversationID: conversationID, key: key, version: shown.version)
             }
             reload()
             onKnowledgeChanged?()
-        } catch let error as ChatWriteError where error.sentence == Self.liveSlackRefusal {
+        } catch let refused as ChatArtifactWriteRefused where refused.isLiveSlack && !remove {
             keepDisabledReason = Self.liveSlackReason
         } catch {
             errorMessage = "Could not update Knowledge: \(error.localizedDescription)"

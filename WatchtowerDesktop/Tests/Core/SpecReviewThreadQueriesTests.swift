@@ -161,8 +161,7 @@ final class SpecReviewThreadQueriesTests: XCTestCase {
             let main = ids[0]
             XCTAssertEqual(try ChatConversationQueries.fetchStandalone(d).map(\.id), [main])
             XCTAssertEqual(try ChatConversationQueries.search(d, query: "Mute").map(\.id), [main])
-            XCTAssertEqual(Set(try ChatSearchQueries.search(d, query: "Mute").map(\.conversationID)), [main])
-            XCTAssertEqual(try ChatHistoryQueries.panelRows(d, projectID: nil).map(\.conversation.id), [main])
+            // The main chat's list and search are the engine's now (`ReadList`/`chat_search`, main chats only).
         }
     }
 

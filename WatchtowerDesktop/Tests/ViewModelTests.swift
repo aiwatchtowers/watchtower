@@ -331,20 +331,6 @@ final class PeopleViewModelTests: XCTestCase {
     }
 
     @MainActor
-    func testRedFlagCount() throws {
-        try dbManager.dbPool.write { db in
-            try TestDatabase.insertPeopleCard(db, userID: "U001", periodFrom: 100, periodTo: 200, redFlags: #"["Issue"]"#)
-            try TestDatabase.insertPeopleCard(db, userID: "U002", periodFrom: 100, periodTo: 200, redFlags: "[]")
-            try TestDatabase.insertPeopleCard(db, userID: "U003", periodFrom: 100, periodTo: 200, redFlags: #"["A","B"]"#)
-        }
-
-        let vm = PeopleViewModel(dbManager: dbManager)
-        vm.load()
-
-        XCTAssertEqual(vm.redFlagCount, 2)
-    }
-
-    @MainActor
     func testCardHistory() throws {
         try dbManager.dbPool.write { db in
             try TestDatabase.insertPeopleCard(db, userID: "U001", periodFrom: 100, periodTo: 200, messageCount: 50)
@@ -501,107 +487,6 @@ final class TracksViewModelTests: XCTestCase {
         // No workspace loaded — teamID is nil, so URL should be nil
         let url = vm.slackMessageURL(channelID: "C001", messageTS: "123.456")
         XCTAssertNil(url)
-    }
-}
-
-// MARK: - ChatHistoryViewModel
-
-final class ChatHistoryViewModelTests: XCTestCase {
-    private var dbManager: DatabaseManager!
-    private var dbPath: String!
-
-    override func setUp() {
-        super.setUp()
-        do {
-            (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
-        } catch {
-            XCTFail("setUp failed: \(error)")
-        }
-    }
-
-    override func tearDown() {
-        TestDatabase.cleanup(path: dbPath)
-        super.tearDown()
-    }
-
-    /// A chat row (Go's `chat.new` in the app), then the panel re-read.
-    @MainActor
-    private func createConversation(_ vm: ChatHistoryViewModel, title: String = "") async -> ChatConversation? {
-        let conv = try? await dbManager.dbPool.write { try ChatConversationQueries.create($0, title: title) }
-        await withCheckedContinuation { done in vm.reloadRows { done.resume() } }
-        return conv
-    }
-
-    @MainActor
-    func testDeleteConversation() async throws {
-        let vm = ChatHistoryViewModel(dbManager: dbManager)
-        let convRow = await createConversation(vm)
-        let conv = try XCTUnwrap(convRow)
-        XCTAssertEqual(vm.conversations.count, 1)
-
-        await vm.deleteConversation(conv.id)
-        XCTAssertTrue(vm.conversations.isEmpty)
-        XCTAssertNil(vm.selectedConversationID)
-    }
-
-    @MainActor
-    /// Deleting the selected chat selects no other (none is marked read
-    /// without being shown; the view lands).
-    func testDeleteSelectedClearsTheSelection() async throws {
-        let vm = ChatHistoryViewModel(dbManager: dbManager)
-        let conv1Row = await createConversation(vm)
-        let conv1 = try XCTUnwrap(conv1Row)
-        let conv2Row = await createConversation(vm)
-        let conv2 = try XCTUnwrap(conv2Row)
-        vm.selectedConversationID = conv2.id
-
-        await vm.deleteConversation(conv2.id)
-
-        XCTAssertEqual(vm.conversations.map(\.id), [conv1.id])
-        XCTAssertNil(vm.selectedConversationID)
-    }
-
-    @MainActor
-    func testFilteredConversations() async {
-        let vm = ChatHistoryViewModel(dbManager: dbManager)
-        _ = await createConversation(vm, title: "Slack discussion")
-        _ = await createConversation(vm, title: "Meeting notes")
-
-        vm.searchText = "slack"
-        XCTAssertEqual(vm.filteredConversations.count, 1)
-        XCTAssertEqual(vm.filteredConversations[0].title, "Slack discussion")
-    }
-
-    @MainActor
-    func testFilteredConversationsEmptySearch() async {
-        let vm = ChatHistoryViewModel(dbManager: dbManager)
-        _ = await createConversation(vm)
-        _ = await createConversation(vm)
-
-        vm.searchText = ""
-        XCTAssertEqual(vm.filteredConversations.count, 2)
-    }
-
-    @MainActor
-    func testLoad() throws {
-        // Create conversations directly in DB
-        try dbManager.dbPool.write { db in
-            try ChatConversationQueries.create(db, title: "Chat A")
-            try ChatConversationQueries.create(db, title: "Chat B")
-        }
-
-        let vm = ChatHistoryViewModel(dbManager: dbManager)
-        XCTAssertTrue(vm.conversations.isEmpty)
-
-        vm.reloadRows()
-
-        // load() is async via Task.detached, give it a moment
-        let expectation = XCTestExpectation(description: "load completes")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            XCTAssertEqual(vm.conversations.count, 2)
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 2)
     }
 }
 

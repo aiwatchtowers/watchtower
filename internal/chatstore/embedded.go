@@ -34,7 +34,8 @@ type EmbeddedTurn struct {
 // BeginEmbedded is ChatMessageQueries.beginEmbeddedTurn: in one
 // transaction, the owner row (nil ownerText: none) and the reply's empty
 // `partial` row recording provider ("" = NULL). ErrConversationGone when the
-// conversation does not exist.
+// conversation does not exist, ErrNotEmbedded (nothing written) when it is a
+// main chat.
 func (s *Store) BeginEmbedded(ctx context.Context, conv int64, ownerText *string, turnID, provider string) (*EmbeddedTurn, error) {
 	now := seconds(s.now())
 	et := &EmbeddedTurn{s: s, conv: conv, turnID: turnID}
@@ -43,11 +44,10 @@ func (s *Store) BeginEmbedded(ctx context.Context, conv int64, ownerText *string
 		return nil, fmt.Errorf("starting embedded chat turn: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	var one int
-	if err := tx.QueryRow(`SELECT 1 FROM chat_conversations WHERE id = ?`, conv).Scan(&one); errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrConversationGone
-	} else if err != nil {
-		return nil, fmt.Errorf("reading chat conversation %d: %w", conv, err)
+	// An embedded chat only: a main chat's rows are the chat engine's, and
+	// a turn written here would race its per-conversation turn lock.
+	if err := requireEmbeddedTx(tx, conv); err != nil {
+		return nil, err
 	}
 	if ownerText != nil {
 		res, err := tx.Exec(`INSERT INTO chat_messages (conversation_id, role, text, created_at, turn_id) VALUES (?, 'user', ?, ?, ?)`,

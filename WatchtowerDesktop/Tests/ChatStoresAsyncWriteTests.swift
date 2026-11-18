@@ -27,9 +27,6 @@ final class ChatStoresAsyncWriteTests: XCTestCase {
         try await pool.read { try ChatMessageRecord.fetchOne($0, sql: "SELECT * FROM chat_messages WHERE id = ?", arguments: [id]) }
     }
 
-    // The main chat's finished turn staying shown until its write landed
-    // is `ChatTurnDriverTests.testTextStreamsAndTheTurnEndsAtTurnSaved`.
-
     // MARK: - Embedded chat engine
 
     private func engine(ai: ScriptedAIService, conversationID: Int64) -> EmbeddedChatEngine {
@@ -150,7 +147,7 @@ final class ChatStoresAsyncWriteTests: XCTestCase {
             return (conv, msg)
         }
         XCTAssertGreaterThan(msg, 0)
-        let model = ArtifactPanelModel(db: pool, conversationID: conv, key: "q3")
+        let model = ArtifactPanelModel(db: pool, writer: DatabaseArtifactWriter(db: pool), conversationID: conv, key: "q3")
         model.beginEdit()
         model.editText = "v1 edited"
         let held = HeldWriter(pool)

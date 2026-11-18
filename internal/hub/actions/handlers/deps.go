@@ -235,7 +235,7 @@ func Register(d *actions.Dispatcher, deps Deps) *Handlers {
 	h.loadHeld()
 	h.startHeldLines()
 	reg := func(kind string, fn actions.Handler) {
-		if len(NudgeTable[kind]) == 0 {
+		if n, ok := NudgeTable[kind]; !ok || (len(n) == 0 && !EchoOnlyKinds[kind]) {
 			panic("handlers: " + kind + " has no NudgeTable entry")
 		}
 		d.Register(kind, fn, actions.KindOptions{Nudges: nudgeNames(kind)})

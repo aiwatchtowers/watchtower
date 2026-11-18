@@ -1,40 +1,36 @@
+import ChatUI
+import ChatWire
 import SwiftUI
 import WatchtowerCore
 
-/// ⌘K (spec §3.1): FTS over chat history with highlighted snippets.
+/// ⌘K (spec §3.1): full-text search over the chats, through the engine (`chat_search`), with the matched words
+/// marked in the shared results view.
 struct ChatSearchView: View {
-    let search: (String) -> [ChatSearchHit]
-    let onOpen: (ChatSearchHit) -> Void
+    let list: ChatListModel
+    let onOpen: (ChatSearch.Hit) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
-    @State private var hits: [ChatSearchHit] = []
 
     var body: some View {
         VStack(spacing: 0) {
             TextField("Search chats", text: $query)
                 .textFieldStyle(.roundedBorder)
                 .padding(12)
-                .onSubmit { if let first = hits.first { open(first) } }
-                .onChange(of: query) { hits = search(query) }
+                .onSubmit { if let first = list.searchResult?.hits.first { open(first) } }
             Divider()
-            List(hits) { hit in
-                Button { open(hit) } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(hit.title.isEmpty ? "New Chat" : hit.title).font(.headline)
-                        if hit.messageID != nil {
-                            Text(hit.attributedSnippet).font(.callout).foregroundStyle(.secondary).lineLimit(2)
-                        }
-                    }
+            ScrollView {
+                if let result = list.searchResult, !query.trimmingCharacters(in: .whitespaces).isEmpty {
+                    ChatSearchResultsView(search: result, onOpen: open)
+                        .padding(Spacing.cozy)
                 }
-                .buttonStyle(.plain)
             }
-            .listStyle(.plain)
         }
         .frame(width: 560, height: 420)
+        .task(id: query) { await list.search(query) }
         .onExitCommand { dismiss() }
     }
 
-    private func open(_ hit: ChatSearchHit) {
+    private func open(_ hit: ChatSearch.Hit) {
         onOpen(hit)
         dismiss()
     }

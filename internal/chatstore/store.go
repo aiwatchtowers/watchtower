@@ -35,6 +35,10 @@ var (
 	ErrNotFound          = errors.New("chatstore: message not found")
 	ErrInvalid           = errors.New("chatstore: invalid request")
 	ErrAttachmentMissing = errors.New("chatstore: attachment missing")
+	// ErrDuplicateClientKey: the request's client key is already on a row of
+	// the conversation (the unique index refused the insert); nothing was
+	// written, and the caller answers with the existing turn.
+	ErrDuplicateClientKey = errors.New("chatstore: client key already applied")
 )
 
 // Start modes.
@@ -42,7 +46,22 @@ const (
 	ModeSend       = "send"
 	ModeRegenerate = "regenerate"
 	ModeEdit       = "edit"
+	// ModeRetry is a regenerate of a reply whose error a retry can help
+	// (Swift ChatViewModel.retry, ChatErrorText.isRetryable).
+	ModeRetry = "retry"
+	// ModeContinue sends ContinueText after the active branch's last reply
+	// when that reply was cut (`partial`) and not by an exhausted quota
+	// (Swift ChatViewModel.continueStopped).
+	ModeContinue = "continue"
 )
+
+// ContinueText is the owner text a continue sends.
+const ContinueText = "Continue"
+
+// notRetryable are the error codes a retry cannot help (Swift
+// ChatErrorText.isRetryable).
+var notRetryable = map[string]bool{codeQuotaExhausted: true, chat.CodeAuth: true,
+	chat.CodeAttachmentUnsupported: true, chat.CodeWorkDirUnsafe: true}
 
 // Store writes the hub's chat turns.
 type Store struct {
@@ -98,36 +117,34 @@ type Routing struct {
 // StartRequest is one turn to start.
 type StartRequest struct {
 	ConversationID int64
-	Mode           string // send | regenerate | edit
-	// MessageID: the assistant message to regenerate, or the owner message to edit.
-	MessageID int64
-	// ReuseOwnerMessageID names a regenerate by its owner message instead
-	// (the Mac's reuseUserMessageID): that row is reused, and nothing else
-	// of the owner side is written. Exactly one of the two names a regenerate.
-	ReuseOwnerMessageID int64
-	Text                string
-	// TitleText (send only), when set, says Text is the owner text as the
-	// client's composer stores it (the Mac's ChatTurnComposer, with its
-	// skill line and mentions): Text is stored unchanged and TitleText — the
-	// owner's own words — is the prefix title's source. nil: Text is the
-	// owner's words and is composed here (the phone's path).
-	TitleText *string
-	// Quotes (send only) is the "Send N comments" batch: its open artifact
-	// comments turn `sent` in the owner row's transaction (the Mac's
-	// alsoWrite → ArtifactCommentQueries.markSent), so a sent message never
-	// leaves them open and a refused one never marks them.
-	Quotes        []Quote
+	Mode           string // send | regenerate | edit | retry | continue
+	// MessageID: the assistant message to regenerate or retry, the owner
+	// message to edit, or the last reply a continue follows.
+	MessageID     int64
+	Text          string
 	AttachmentIDs []int64  // send only: the conversation's pending files
 	TurnID        string   // "" = a new UUID
 	Routing       *Routing // nil = keep the conversation's
 	// ContinuousLeafID is the last message the live session answered (nil
 	// for a new session): ChatContinuity decides Replay from it.
 	ContinuousLeafID *int64
-}
-
-// Quote is one artifact comment of a quote batch.
-type Quote struct {
-	CommentID int64
+	// ClientKey ("" = none) is the client's id of this request, stored in
+	// chat_messages.client_key (unique per conversation) on the new owner
+	// row, or on the new reply for a regenerate (which reuses its owner
+	// row), so a repeated request is found and never applied twice.
+	ClientKey string
+	// Compose (send only, nil = none) is the composer's skill, mentions and
+	// quote batch around Text (ComposeOwnerText).
+	Compose *Compose
+	// ArtifactCommentIDs (send only, with no Text and no Compose) are open
+	// comments of one artifact of the conversation, in the order to send:
+	// they are composed into the owner text (ComposeArtifactComments) and
+	// turn `sent` in the start transaction, sent_at = the owner row's
+	// created_at. Any one not open refuses the start (ErrInvalid).
+	ArtifactCommentIDs []int64
+	// ProviderPrefix ("" = none) is put before the turn command's text only,
+	// never stored (the help popup's current-screen block).
+	ProviderPrefix string
 }
 
 // Started is a turn whose rows are on disk.
@@ -145,13 +162,10 @@ type Started struct {
 	Routing     Routing // the session config the turn runs with
 	ProjectID   *int64  // the conversation's chat project at start
 	// The prefix commands' results (send and edit only): the remember
-	// outcome ("" = not a remember message) and the line it added (0 =
-	// none), the chat-born idea written by a knowledge prefix (0 = none) and
-	// its kind, and the first failure of either.
+	// outcome ("" = not a remember message), the chat-born idea written by a
+	// knowledge prefix (0 = none) and the first failure of either.
 	RememberOutcome string
-	RememberLineID  int64
 	IdeaID          int64
-	IdeaKind        string
 	PrefixErr       error
 }
 
@@ -169,18 +183,26 @@ type msgRow struct {
 	turnID    string
 	createdAt float64
 	errorCode sql.NullString
+	status    string
 }
 
 // Start writes a turn's starting rows in one BEGIN IMMEDIATE transaction
 // (ChatViewModel.persistTurnStart): the lease claim first — refused, nothing
 // is written —, then the owner row (regenerate reuses it), its attachments,
 // the prefix title, the routing and the empty `partial` assistant row
-// (CHAT-01), with the quote batch marked sent in the same transaction.
-// Every insert moves the active leaf and updated_at. The prefix
+// (CHAT-01). Every insert moves the active leaf and updated_at. The prefix
 // commands run after the commit, for a new owner row only.
 func (s *Store) Start(ctx context.Context, r StartRequest) (Started, error) {
 	text := strings.TrimSpace(r.Text)
-	if err := validateStart(r, text); err != nil {
+	var compose Compose
+	if r.Compose != nil {
+		compose = *r.Compose
+	}
+	// A send's owner text: the quote batch, then the skill and REFERENCED
+	// lines (ComposeOwnerText); the prefix title takes the quoted text.
+	quoted := quotedText(r.Text, compose.Quotes)
+	composed := composeTurn(quoted, compose.Skill, liveMentions(quoted, compose.Mentions))
+	if err := validateStart(r, text, composed); err != nil {
 		return Started{}, err
 	}
 	turnID := r.TurnID
@@ -189,10 +211,6 @@ func (s *Store) Start(ctx context.Context, r StartRequest) (Started, error) {
 	}
 	now := s.now()
 	st := Started{ConversationID: r.ConversationID, TurnID: turnID}
-	// userText is the stored owner text (the composer's format); titleText
-	// the prefix title's source: the owner's own words for a send, the
-	// stored text for an edit (the Mac's titleText ?? userText).
-	var userText, titleText string
 	wroteUser := false
 
 	tx, err := s.db.BeginTx(ctx, nil) // BEGIN IMMEDIATE (_txlock=immediate)
@@ -230,100 +248,26 @@ func (s *Store) Start(ctx context.Context, r StartRequest) (Started, error) {
 		byID[m.id] = m
 	}
 	createdAt := seconds(now)
-	var historyTip *int64
-	var outcomes string
-
-	switch r.Mode {
-	case ModeSend:
-		path := activePath(all, conv.leaf)
-		if len(path) > 0 {
-			historyTip = &path[len(path)-1].id
-		}
-		// The floor is the previous owner message, and it alone.
-		if floor, ok := lastOwnerCreatedAt(path); ok {
-			outcomes, _ = outcomesBlockTx(tx, r.ConversationID, floor) // a failed read sends no block, as on the Mac
-		}
-		atts, err := pendingAttachmentsTx(tx, r.ConversationID, r.AttachmentIDs)
-		if err != nil {
-			return Started{}, err
-		}
-		st.Attachments = atts
-		userText, titleText = composeOwnerText(r.Text), text
-		if r.TitleText != nil {
-			userText, titleText = r.Text, *r.TitleText
-		}
-	case ModeRegenerate:
-		owner, err := regenerateOwner(byID, r)
-		if err != nil {
-			return Started{}, err
-		}
-		st.UserMessageID = owner.id
-		historyTip = nullable(owner.parent)
-		userText = owner.text
-		if st.Attachments, err = messageAttachmentsTx(tx, owner.id); err != nil {
-			return Started{}, err
-		}
-	case ModeEdit:
-		m, ok := byID[r.MessageID]
-		if !ok {
-			return Started{}, ErrNotFound
-		}
-		if m.role != "user" {
-			return Started{}, ErrInvalid
-		}
-		historyTip = nullable(m.parent)
-		userText = recompose(m.text, r.Text) // keeps the original's skill and REFERENCED lines
-		titleText = userText
-		// The files are sent again; their rows stay on the original message (v1 limit).
-		if st.Attachments, err = messageAttachmentsTx(tx, m.id); err != nil {
-			return Started{}, err
-		}
+	in := startInput{r: r, conv: conv, all: all, byID: byID, quoted: quoted, composed: composed}
+	pl, err := prepareTx(tx, in, &st)
+	if err != nil {
+		return Started{}, err
 	}
-
-	if r.Mode != ModeRegenerate {
-		// A legacy owner question that never got a reply gets an empty
-		// partial reply, so the new owner message never sits right under it.
-		if historyTip != nil {
-			if tip, ok := byID[*historyTip]; ok && tip.role == "user" {
-				id, err := insertMessageTx(tx, newMessage{conv: r.ConversationID, parent: historyTip, role: "assistant",
-					turnID: tip.turnID, status: "partial", provider: sql.NullString{String: routing.Provider, Valid: true},
-					createdAt: createdAt})
-				if err != nil {
-					return Started{}, err
-				}
-				historyTip = &id
-			}
-		}
-		id, err := insertMessageTx(tx, newMessage{conv: r.ConversationID, parent: historyTip, role: "user", text: userText,
-			turnID: turnID, status: "complete", createdAt: createdAt})
-		if err != nil {
+	reusesOwner := r.Mode == ModeRegenerate || r.Mode == ModeRetry
+	if !reusesOwner {
+		if st.UserMessageID, err = insertOwnerTx(tx, in, &pl, routing, turnID, createdAt); err != nil {
 			return Started{}, err
 		}
-		st.UserMessageID = id
 		wroteUser = true
-		// An edit's files stay linked to the original message (the Mac's
-		// link of them is a no-op), so only a send links.
-		if err := linkAttachmentsTx(tx, r.AttachmentIDs, id); err != nil {
-			return Started{}, err
-		}
-		if err := setPrefixTitleTx(tx, r.ConversationID, titleText); err != nil {
-			return Started{}, err
-		}
-		if err := markQuotesSentTx(tx, r.ConversationID, r.Quotes, createdAt); err != nil {
-			return Started{}, err
-		}
 	}
 	if err := writeRoutingTx(tx, r.ConversationID, conv, r.Routing, routing); err != nil {
 		return Started{}, err
 	}
-	provider, model := sql.NullString{String: "", Valid: true}, sql.NullString{}
-	if !routing.Automatic {
-		provider.String = routing.Provider
-		model = sql.NullString{String: routing.Model, Valid: routing.Model != ""}
+	replyKey := ""
+	if reusesOwner {
+		replyKey = r.ClientKey // the reused owner row keeps its own key
 	}
-	userID := st.UserMessageID
-	asst, err := insertMessageTx(tx, newMessage{conv: r.ConversationID, parent: &userID, role: "assistant",
-		turnID: turnID, status: "partial", provider: provider, model: model, createdAt: createdAt})
+	asst, err := insertReplyTx(tx, r.ConversationID, st.UserMessageID, routing, turnID, createdAt, replyKey)
 	if err != nil {
 		return Started{}, err
 	}
@@ -334,35 +278,214 @@ func (s *Store) Start(ctx context.Context, r StartRequest) (Started, error) {
 	st.AssistantMessageID = asst
 	st.Routing = routing
 	st.ProjectID = nullable(conv.projectID)
-	st.Replay = r.Mode != ModeSend || !sameID(historyTip, r.ContinuousLeafID)
-	st.SendText = composeTurnText(userText, outcomes)
+	st.Replay = (r.Mode != ModeSend && r.Mode != ModeContinue) || !sameID(pl.historyTip, r.ContinuousLeafID)
+	st.SendText = composeTurnText(pl.userText, pl.outcomes)
+	if r.ProviderPrefix != "" {
+		st.SendText = r.ProviderPrefix + "\n\n" + st.SendText
+	}
 	if wroteUser {
 		// Remember and the knowledge prefixes get the owner's own words,
 		// never the skill or REFERENCED lines.
-		_, body, _ := displayParts(userText)
+		_, body, _ := displayParts(pl.userText)
 		s.runPrefixes(&st, body)
 	}
 	return st, nil
 }
 
-func validateStart(r StartRequest, text string) error {
-	if r.ConversationID <= 0 {
+// startInput is what a turn's start read before its per-mode step.
+type startInput struct {
+	r                StartRequest
+	conv             *convRow
+	all              []msgRow
+	byID             map[int64]msgRow
+	quoted, composed string // a send's quote-composed and stored texts
+}
+
+// turnPlan is a start's per-mode result: userText is the stored owner text
+// (the composer's format); titleText the prefix title's source — the
+// owner's own words for a send, the stored text for an edit (the Mac's
+// titleText ?? userText); historyTip the new owner row's parent; outcomes
+// the actions-outcome block (a new message only).
+type turnPlan struct {
+	userText, titleText string
+	historyTip          *int64
+	outcomes            string
+}
+
+// prepareTx is a start's per-mode step: it checks the named message and
+// fills the plan and st's reused owner row and attachments.
+func prepareTx(tx *sql.Tx, in startInput, st *Started) (turnPlan, error) {
+	switch in.r.Mode {
+	case ModeSend, ModeContinue:
+		return prepareSendTx(tx, in, st)
+	case ModeRegenerate, ModeRetry:
+		return prepareRegenerateTx(tx, in, st)
+	default: // ModeEdit (validateStart refused every other mode)
+		return prepareEditTx(tx, in, st)
+	}
+}
+
+// prepareSendTx: a send (or a continue, after its check) on the active
+// branch's tip; its owner text is the composer's, the comments' or
+// ContinueText.
+func prepareSendTx(tx *sql.Tx, in startInput, st *Started) (turnPlan, error) {
+	r := in.r
+	var pl turnPlan
+	path := activePath(in.all, in.conv.leaf)
+	if len(path) > 0 {
+		pl.historyTip = &path[len(path)-1].id
+	}
+	if r.Mode == ModeContinue && !continuable(path, r.MessageID) {
+		return pl, ErrInvalid
+	}
+	// The floor is the previous owner message, and it alone.
+	if floor, ok := lastOwnerCreatedAt(path); ok {
+		pl.outcomes, _ = outcomesBlockTx(tx, r.ConversationID, floor) // a failed read sends no block, as on the Mac
+	}
+	atts, err := pendingAttachmentsTx(tx, r.ConversationID, r.AttachmentIDs)
+	if err != nil {
+		return pl, err
+	}
+	st.Attachments = atts
+	switch {
+	case r.Mode == ModeContinue:
+		pl.userText, pl.titleText = ContinueText, ContinueText
+	case len(r.ArtifactCommentIDs) > 0:
+		msg, err := artifactCommentsTextTx(tx, r.ConversationID, r.ArtifactCommentIDs)
+		if err != nil {
+			return pl, err
+		}
+		pl.userText, pl.titleText = composeTurn(msg, "", nil), swiftTrim(msg)
+	default:
+		pl.userText, pl.titleText = in.composed, swiftTrim(in.quoted)
+	}
+	return pl, nil
+}
+
+// continuable: messageID is the branch's last row, a cut (`partial`) reply
+// not stopped by an exhausted quota.
+func continuable(path []msgRow, messageID int64) bool {
+	if len(path) == 0 {
+		return false
+	}
+	last := path[len(path)-1]
+	return last.id == messageID && last.role == "assistant" && last.status == "partial" &&
+		last.errorCode.String != codeQuotaExhausted
+}
+
+// prepareRegenerateTx: a regenerate (or a retry of a retryable error)
+// reuses the reply's owner row and its files.
+func prepareRegenerateTx(tx *sql.Tx, in startInput, st *Started) (turnPlan, error) {
+	var pl turnPlan
+	m, ok := in.byID[in.r.MessageID]
+	if !ok {
+		return pl, ErrNotFound
+	}
+	owner, hasOwner := in.byID[m.parent.Int64]
+	if m.role != "assistant" || !m.parent.Valid || !hasOwner || owner.role != "user" ||
+		m.errorCode.String == codeQuotaExhausted || (in.r.Mode == ModeRetry && notRetryable[m.errorCode.String]) {
+		return pl, ErrInvalid
+	}
+	st.UserMessageID = owner.id
+	pl.historyTip = nullable(owner.parent)
+	pl.userText = owner.text
+	var err error
+	st.Attachments, err = messageAttachmentsTx(tx, owner.id)
+	return pl, err
+}
+
+// prepareEditTx: a new owner sibling with the edited body, keeping the
+// original's skill and REFERENCED lines and sending its files again (their
+// rows stay on the original message, v1 limit).
+func prepareEditTx(tx *sql.Tx, in startInput, st *Started) (turnPlan, error) {
+	var pl turnPlan
+	m, ok := in.byID[in.r.MessageID]
+	if !ok {
+		return pl, ErrNotFound
+	}
+	if m.role != "user" {
+		return pl, ErrInvalid
+	}
+	pl.historyTip = nullable(m.parent)
+	pl.userText = recompose(m.text, in.r.Text)
+	pl.titleText = pl.userText
+	var err error
+	st.Attachments, err = messageAttachmentsTx(tx, m.id)
+	return pl, err
+}
+
+// insertOwnerTx writes a new owner row (after an empty reply under a legacy
+// unanswered owner question, so the new row never sits right under it),
+// links a send's files, marks its artifact comments sent and sets the
+// prefix title; pl.historyTip moves to the row's parent.
+func insertOwnerTx(tx *sql.Tx, in startInput, pl *turnPlan, routing Routing, turnID string, createdAt float64) (int64, error) {
+	r := in.r
+	if pl.historyTip != nil {
+		if tip, ok := in.byID[*pl.historyTip]; ok && tip.role == "user" {
+			id, err := insertMessageTx(tx, newMessage{conv: r.ConversationID, parent: pl.historyTip, role: "assistant",
+				turnID: tip.turnID, status: "partial", provider: sql.NullString{String: routing.Provider, Valid: true},
+				createdAt: createdAt})
+			if err != nil {
+				return 0, err
+			}
+			pl.historyTip = &id
+		}
+	}
+	id, err := insertMessageTx(tx, newMessage{conv: r.ConversationID, parent: pl.historyTip, role: "user", text: pl.userText,
+		turnID: turnID, status: "complete", createdAt: createdAt, ClientKey: r.ClientKey})
+	if err != nil {
+		return 0, duplicateKey(err, r.ClientKey)
+	}
+	// An edit's files stay linked to the original message (the Mac's link
+	// of them is a no-op), so only a send links.
+	if err := linkAttachmentsTx(tx, r.AttachmentIDs, id); err != nil {
+		return 0, err
+	}
+	if err := markCommentsSentTx(tx, r.ConversationID, r.ArtifactCommentIDs, createdAt); err != nil {
+		return 0, err
+	}
+	return id, setPrefixTitleTx(tx, r.ConversationID, pl.titleText)
+}
+
+// insertReplyTx writes the turn's empty `partial` reply under userID with
+// the turn's provider and model (none for an automatic turn).
+func insertReplyTx(tx *sql.Tx, conv, userID int64, routing Routing, turnID string, createdAt float64, key string) (int64, error) {
+	provider, model := sql.NullString{String: "", Valid: true}, sql.NullString{}
+	if !routing.Automatic {
+		provider.String = routing.Provider
+		model = sql.NullString{String: routing.Model, Valid: routing.Model != ""}
+	}
+	id, err := insertMessageTx(tx, newMessage{conv: conv, parent: &userID, role: "assistant",
+		turnID: turnID, status: "partial", provider: provider, model: model, createdAt: createdAt, ClientKey: key})
+	if err != nil {
+		return 0, duplicateKey(err, key)
+	}
+	return id, nil
+}
+
+func validateStart(r StartRequest, text, composed string) error {
+	if r.ConversationID <= 0 || !r.Compose.Valid() {
 		return ErrInvalid
 	}
-	// Quotes and a client-composed text belong to a new message only, and a
-	// reused owner message to a regenerate only.
-	newMessageOnly := len(r.AttachmentIDs) > 0 || len(r.Quotes) > 0 || r.TitleText != nil
+	if r.Mode != ModeSend && (!r.Compose.empty() || len(r.ArtifactCommentIDs) > 0) {
+		return ErrInvalid
+	}
 	switch r.Mode {
 	case ModeSend:
-		if text == "" && len(r.AttachmentIDs) == 0 || r.ReuseOwnerMessageID != 0 {
+		if len(r.ArtifactCommentIDs) > 0 {
+			// The comments are the whole message (the Mac's "Send N comments").
+			if text != "" || !r.Compose.empty() || hasDuplicate(r.ArtifactCommentIDs) {
+				return ErrInvalid
+			}
+		} else if composed == "" && len(r.AttachmentIDs) == 0 {
 			return ErrInvalid
 		}
-	case ModeRegenerate:
-		if (r.MessageID > 0) == (r.ReuseOwnerMessageID > 0) || newMessageOnly {
+	case ModeRegenerate, ModeRetry, ModeContinue:
+		if r.MessageID <= 0 || len(r.AttachmentIDs) > 0 {
 			return ErrInvalid
 		}
 	case ModeEdit:
-		if r.MessageID <= 0 || text == "" || newMessageOnly || r.ReuseOwnerMessageID != 0 {
+		if r.MessageID <= 0 || text == "" || len(r.AttachmentIDs) > 0 {
 			return ErrInvalid
 		}
 	default:
@@ -370,44 +493,6 @@ func validateStart(r StartRequest, text string) error {
 	}
 	if r.Routing != nil && !r.Routing.Automatic && !knownProvider(r.Routing.Provider) {
 		return ErrInvalid
-	}
-	return nil
-}
-
-// regenerateOwner is the owner message a regenerate answers again: the one
-// it names (ReuseOwnerMessageID), or the parent of the assistant message it
-// names — never under a quota-exhausted reply (the Mac's menu rule).
-func regenerateOwner(byID map[int64]msgRow, r StartRequest) (msgRow, error) {
-	if r.ReuseOwnerMessageID > 0 {
-		owner, ok := byID[r.ReuseOwnerMessageID]
-		if !ok {
-			return msgRow{}, ErrNotFound
-		}
-		if owner.role != "user" {
-			return msgRow{}, ErrInvalid
-		}
-		return owner, nil
-	}
-	m, ok := byID[r.MessageID]
-	if !ok {
-		return msgRow{}, ErrNotFound
-	}
-	owner, hasOwner := byID[m.parent.Int64]
-	if m.role != "assistant" || !m.parent.Valid || !hasOwner || owner.role != "user" ||
-		m.errorCode.String == codeQuotaExhausted {
-		return msgRow{}, ErrInvalid
-	}
-	return owner, nil
-}
-
-// markQuotesSentTx is ArtifactCommentQueries.markSent for a quote batch:
-// only open comments, and only this conversation's.
-func markQuotesSentTx(tx *sql.Tx, conv int64, quotes []Quote, sentAt float64) error {
-	for _, q := range quotes {
-		if _, err := tx.Exec(`UPDATE chat_artifact_comments SET status = 'sent', sent_at = ?
-			WHERE id = ? AND conversation_id = ? AND status = 'open'`, sentAt, q.CommentID, conv); err != nil {
-			return fmt.Errorf("marking artifact comment %d sent: %w", q.CommentID, err)
-		}
 	}
 	return nil
 }
@@ -483,7 +568,7 @@ func readConversationTx(tx *sql.Tx, id int64) (*convRow, error) {
 }
 
 func loadMessagesTx(tx *sql.Tx, conv int64) ([]msgRow, error) {
-	rows, err := tx.Query(`SELECT id, parent_id, role, text, turn_id, created_at, error_code
+	rows, err := tx.Query(`SELECT id, parent_id, role, text, turn_id, created_at, error_code, status
 		FROM chat_messages WHERE conversation_id = ? ORDER BY id`, conv)
 	if err != nil {
 		return nil, fmt.Errorf("reading chat messages of %d: %w", conv, err)
@@ -492,7 +577,7 @@ func loadMessagesTx(tx *sql.Tx, conv int64) ([]msgRow, error) {
 	var out []msgRow
 	for rows.Next() {
 		var m msgRow
-		if err := rows.Scan(&m.id, &m.parent, &m.role, &m.text, &m.turnID, &m.createdAt, &m.errorCode); err != nil {
+		if err := rows.Scan(&m.id, &m.parent, &m.role, &m.text, &m.turnID, &m.createdAt, &m.errorCode, &m.status); err != nil {
 			return nil, fmt.Errorf("reading chat messages of %d: %w", conv, err)
 		}
 		out = append(out, m)
@@ -548,13 +633,15 @@ type newMessage struct {
 	turnID, status  string
 	provider, model sql.NullString
 	createdAt       float64
+	ClientKey       string // "" = NULL
 }
 
 // insertMessageTx is ChatTreeQueries.insert: the row, then the conversation's
 // active leaf and updated_at.
 func insertMessageTx(tx *sql.Tx, m newMessage) (int64, error) {
-	res, err := tx.Exec(`INSERT INTO chat_messages (conversation_id, parent_id, role, text, created_at, turn_id, status, provider, model)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, m.conv, m.parent, m.role, m.text, m.createdAt, m.turnID, m.status, m.provider, m.model)
+	key := sql.NullString{String: m.ClientKey, Valid: m.ClientKey != ""}
+	res, err := tx.Exec(`INSERT INTO chat_messages (conversation_id, parent_id, role, text, created_at, turn_id, status, provider, model, client_key)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, m.conv, m.parent, m.role, m.text, m.createdAt, m.turnID, m.status, m.provider, m.model, key)
 	if err != nil {
 		return 0, fmt.Errorf("inserting chat message: %w", err)
 	}
@@ -567,6 +654,15 @@ func insertMessageTx(tx *sql.Tx, m newMessage) (int64, error) {
 		return 0, fmt.Errorf("moving the chat leaf: %w", err)
 	}
 	return id, nil
+}
+
+// duplicateKey is an insert's error, as ErrDuplicateClientKey when key
+// is set and the client-key index refused it.
+func duplicateKey(err error, key string) error {
+	if key != "" && strings.Contains(err.Error(), "UNIQUE constraint failed: chat_messages.conversation_id, chat_messages.client_key") {
+		return ErrDuplicateClientKey
+	}
+	return err
 }
 
 // setPrefixTitleTx is ChatConversationQueries.setPrefixTitle: the first 80
@@ -644,12 +740,13 @@ func composeTurnText(userText, outcomes string) string {
 // ErrNotFound for a message of a Discuss chat: the phone reaches main chats
 // only (iPhone chat spec §1).
 func (s *Store) SelectBranch(ctx context.Context, messageID int64) error {
-	return s.inTx(ctx, "selecting chat branch", func(tx *sql.Tx) error { return selectBranchTx(tx, messageID) })
-}
-
-func selectBranchTx(tx *sql.Tx, messageID int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("selecting chat branch: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
 	var conv int64
-	err := tx.QueryRow(`SELECT m.conversation_id FROM chat_messages m
+	err = tx.QueryRow(`SELECT m.conversation_id FROM chat_messages m
 		JOIN chat_conversations c ON c.id = m.conversation_id
 		WHERE m.id = ? AND c.context_type IS NULL`, messageID).Scan(&conv)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -666,7 +763,7 @@ func selectBranchTx(tx *sql.Tx, messageID int64) error {
 		newestLeaf(all, messageID), conv); err != nil {
 		return fmt.Errorf("selecting chat branch: %w", err)
 	}
-	return nil
+	return tx.Commit()
 }
 
 // newestLeaf is ChatTree.newestLeaf: the largest id among the leaves of
@@ -706,11 +803,7 @@ func newestLeaf(all []msgRow, id int64) int64 {
 // A positive messageID bounds the answer to ids ≤ messageID (what the phone
 // showed), so an answer that finished after it stays unread.
 func (s *Store) MarkRead(ctx context.Context, conv, messageID int64) error {
-	return s.inTx(ctx, "marking a chat read", func(tx *sql.Tx) error { return markReadTx(tx, conv, messageID) })
-}
-
-func markReadTx(tx *sql.Tx, conv, messageID int64) error {
-	if _, err := tx.Exec(`WITH RECURSIVE path(message_id) AS (
+	_, err := s.db.ExecContext(ctx, `WITH RECURSIVE path(message_id) AS (
 			SELECT active_leaf_message_id FROM chat_conversations WHERE id = ?1 AND active_leaf_message_id IS NOT NULL
 			UNION
 			SELECT m.parent_id FROM path JOIN chat_messages m ON m.id = path.message_id WHERE m.parent_id IS NOT NULL
@@ -726,7 +819,8 @@ func markReadTx(tx *sql.Tx, conv, messageID int64) error {
 			END
 		)
 		UPDATE chat_conversations SET read_at = MAX(COALESCE(read_at, 0), (SELECT m.created_at FROM chat_messages m JOIN answer a ON m.id = a.id))
-		WHERE id = ?1 AND (SELECT id FROM answer) IS NOT NULL`, conv, messageID); err != nil {
+		WHERE id = ?1 AND (SELECT id FROM answer) IS NOT NULL`, conv, messageID)
+	if err != nil {
 		return fmt.Errorf("marking chat %d read: %w", conv, err)
 	}
 	return nil

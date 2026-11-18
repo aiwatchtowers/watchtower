@@ -5,6 +5,7 @@ import os
 import WatchtowerCore
 import WatchtowerInterface
 import WatchtowerSync
+import ChatUI
 
 @MainActor
 @Observable
@@ -246,12 +247,18 @@ final class AppState {
 
     @ObservationIgnored var modelCatalogLaunchOverride: (@MainActor () async -> Void)? // tests: no CLI at launch
 
-    /// Persistent chat ViewModels — survive tab switches.
+    /// The main chat's window state — survives tab switches. The chat itself
+    /// runs in the daemon's engine (unified chat spec §6.2).
     private(set) var chatViewModel: ChatViewModel?
-    private(set) var chatHistoryViewModel: ChatHistoryViewModel?
-    /// App-wide warm chat sessions (spec §1.4) — owns every running main-chat
-    /// turn, so turns survive navigation. Created once the DB is open.
-    private(set) var chatSessionPool: ChatSessionPool?
+    private(set) var chatPanelModel: ChatPanelModel?
+    /// The one connection to the engine (`chat.sock`), shared by the chat
+    /// window, the ⌘/ panel and the quit's `chat_shutdown`.
+    private(set) var chatClient: SocketChatClient?
+    /// Re-reads the Inbox strip when a chat's state changes (`followChatForActionStrip`).
+    @ObservationIgnored var chatActionStripWatch: Task<Void, Never>?
+    /// Every main chat's running turn, from the engine's list (`followChatForActionStrip`): the Inbox strip's
+    /// "the session still holds this call" for any chat, shown or not, Chat tab opened or not.
+    var chatRunningTurns: [Int64: String] = [:]
     /// Settings → Profile → claude.ai tools (#737); `AppState+Chat.swift`.
     @ObservationIgnored private(set) lazy var claudeAIConnectors = makeClaudeAIConnectors()
 
@@ -373,13 +380,12 @@ final class AppState {
     private(set) var planUsageCenter: PlanUsageCenter?
     /// The account purge ledger (board #601): red lines, Home banner, notices.
     var accountPurgeCenter: AccountPurgeCenter?
+    let fileVault = FileVaultWatch() // `fdesetup status` at launch and on activation (#1769)
     /// The Slack Live probe's verdicts (Connections → Slack).
     var slackLiveStatusCenter: SlackLiveStatusCenter?
-    /// The live workbench sessions' agent states (board #312), polled while
-    /// a `claude` session runs, whatever tab is shown.
+    /// The live workbench sessions' agent states (board #312), polled while a `claude` session runs, whatever tab is shown.
     private(set) var sessionAgentStateCenter: SessionAgentStateCenter?
-    /// The Go hub over its control socket (heartbeat, view inputs, status;
-    /// go hub plan 3 Task 14); none under XCTest.
+    /// The Go hub over its control socket (heartbeat, view inputs, status; go hub plan 3 Task 14); none under XCTest.
     var hubCenter: HubCenter? // set by replaceHubCenter (AppState+MobileSettings)
     /// The one-time v1-host restart (go hub spec §8 p. 4b), made by `startHostRestart`; the
     /// adoption awaits its `waitUntilSettled()` (order: migrate → compact → restart → adoption).
@@ -496,6 +502,9 @@ final class AppState {
     @ObservationIgnored var launchDatabaseStepsRunning = false
     /// A restart the launch's database steps refused (`restoreDaemonStoppedForCompaction`).
     @ObservationIgnored var deferredRestartDuringLaunch = false
+    /// Quit or the data wipe is ending the chat and stopping the daemon:
+    /// every daemon start is refused (`shutdownChat(forGood:)`).
+    @ObservationIgnored var stoppingForGood = false
 
     /// Test seams for the two steps of finishing onboarding that spawn CLI
     /// children or ask macOS for permissions; nil runs the real thing
@@ -510,6 +519,8 @@ final class AppState {
     /// The tower's queued daemon start; a second Retry waits for it.
     @ObservationIgnored var towerDaemonStart: Task<Void, Never>?
     @ObservationIgnored var wireAppDatabaseOverride: ((DatabaseManager) -> Void)?
+    /// `shutdownChat()`'s CLI fallback; tests record it instead.
+    @ObservationIgnored var chatShutdownCLI: @MainActor () async -> Void = { await DaemonManager.chatShutdownBounded() }
     /// Test seam: the readiness inputs without the live config, workspace
     /// directory and stamps.
     @ObservationIgnored var readinessEnvironmentOverride: (any ReadinessEnvironment)?
@@ -578,31 +589,46 @@ final class AppState {
         }
     }
 
-    /// Ensures chat ViewModels exist (lazy init, called from ChatView).
+    /// Ensures the chat's client and view models exist (lazy, from the Chat
+    /// tab, the ⌘/ panel or a link into a chat).
     func ensureChatViewModels() {
         guard let db = databaseManager, chatViewModel == nil else { return }
-        let cvm = makeMainChatViewModel(db)
-        // Once per launch, before anything is shown or listed.
-        cvm.cleanUpUntouchedConversations()
-        let hvm = ChatHistoryViewModel(dbManager: db, writes: chatWrites)
-        hvm.reloadRows()
-        hvm.startObserving()
-        Self.wireChat(cvm, history: hvm)
-        wireActionStripRefresh(cvm, history: hvm)
+        let client = ensureChatClient(db)
+        let cvm = makeMainChatViewModel(db, client: client)
+        let panel = ChatPanelModel(list: cvm.list, workspace: db.dbPool.path)
+        Self.wireChat(cvm, panel: panel)
+        cvm.onStartDaemon = { [weak self] in self?.startChatDaemon() }
+        onboardingGoals.onProviderSwitched = { [weak cvm] provider in
+            cvm?.routing.selectProvider(AIProvider.fromConfig(provider).rawValue)
+        }
+        cvm.start()
         chatViewModel = cvm
-        chatHistoryViewModel = hvm
+        chatPanelModel = panel
     }
 
+    /// The engine's client for this workspace: `<workspace>/chat.sock` (or its
+    /// short fallback), the stopped marker beside it, and the app's start
+    /// chain for an outage (D11).
     @discardableResult
-    func ensureChatSessionPool(_ db: DatabaseManager) -> ChatSessionPool {
-        if let chatSessionPool { return chatSessionPool }
-        let pool = ChatSessionPool(dbPool: db.dbPool)
-        let writes = chatWrites
-        Task { await Self.releaseEarlierLaunchesChatLeases(writes) }
-        pool.holdAdmissionUntil { _ = await Constants.resolvedEnvironmentAsync() }
-        pool.startPolicy() // CHAT-03: an idle session dies within TTL + one 30 s poll.
-        chatSessionPool = pool
-        return pool
+    func ensureChatClient(_ db: DatabaseManager) -> SocketChatClient {
+        if let chatClient { return chatClient }
+        let workspace = (db.dbPool.path as NSString).deletingLastPathComponent
+        let client = SocketChatClient(
+            socketPath: ChatSocketPaths.socketPath(workspace: workspace, tempDir: NSTemporaryDirectory()),
+            markerPath: (workspace as NSString).appendingPathComponent(ChatReachabilityPolicy.stoppedMarkerName),
+            startDaemon: { @MainActor [weak self] in self?.startDaemonFromBanner() },
+            clock: SystemChatClientClock(),
+            partKinds: Array(ChatPartRegistry.registered)
+        )
+        chatClient = client
+        followChatForActionStrip(client)
+        return client
+    }
+
+    /// Retry / Start on the chat's state line: the start chain, and the client
+    /// tries at once.
+    func startChatDaemon() {
+        chatClient?.startDaemonNow()
     }
 
     /// The editor panel's chat for one automation: its engine comes from
@@ -823,6 +849,7 @@ final class AppState {
         Constants.prewarmResolvedEnvironment()
         // Before anything a key decides starts (the mobile hub, the pickers).
         managedPolicy.start(activation: NSApplication.didBecomeActiveNotification)
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil { fileVault.start() }
         // Text older versions handed the CLI through temp files (now stdin).
         Task.detached(priority: .utility) {
             StaleTempSweep.run(in: FileManager.default.temporaryDirectory)
@@ -867,40 +894,6 @@ final class AppState {
         // the sidebar/navigation/banner read.
         wireFeatureVisibility()
         Task { await featureManager.load() }
-    }
-
-    /// The launch's database steps, then the daemon (after the compaction
-    /// step; `--no-sync` until onboarding finishes). A fresh install has no
-    /// workspace yet: `openDatabaseForOnboarding` starts it.
-    func openDatabaseAndStartDaemon() async {
-        do {
-            let manager = try await migrateCompactOpen().get()
-            ambiguousWorkspaces = []
-            // Before the splash hides, so Day Plan / Briefings never flash
-            // the no-owner state on an install that has one.
-            await wireOnboardingDatabase(manager)
-            await reconcileOnboarding(dbPool: manager.dbPool)
-            profileComplete = !needsOnboarding
-            // Pre-load sidebar badge counts so they're already visible when the splash hides.
-            // Skipped when onboarding is needed — the onboarding view replaces the sidebar entirely.
-            if !needsOnboarding {
-                initAutomations(dbPool: manager.dbPool)
-                sidebarCountsViewModel = await startedSidebarCounts(manager.dbPool)
-            }
-            isLoading = false
-            // During onboarding only the account view models run (above):
-            // the rest (watchers that ask for notification permission,
-            // meeting reminders, polling) waits for completeOnboarding().
-            if !needsOnboarding {
-                wireAppDatabase(manager)
-                autoDownloadTranscriptionModel()
-            }
-            // The daemon's cycle generates everything itself: a launch needs
-            // nothing more than a fresh daemon of the current binary.
-            ensureDaemonRunning(noSync: daemonRunsWithoutSync)
-        } catch {
-            await handleLaunchDatabaseFailure(error)
-        }
     }
 
     /// Sync the out-of-bundle CLI copy before anything spawns the CLI, so
@@ -1344,7 +1337,12 @@ final class AppState {
     /// Builds the Automations view model once and starts its poll (the
     /// sidebar badge reads it). Once: a second call (a setup re-run) keeps
     /// the in-flight runs and dry runs.
-    private func initAutomations(dbPool: DatabasePool) {
+    /// The sidebar's badge counts, started over `pool` (the launch's step).
+    func loadSidebarCounts(_ pool: DatabasePool) async {
+        sidebarCountsViewModel = await startedSidebarCounts(pool)
+    }
+
+    func initAutomations(dbPool: DatabasePool) {
         guard automationsViewModel == nil else { return }
         let runner: any CLIRunnerProtocol = ProcessCLIRunner.makeDefault() ?? UnresolvedCLIRunner()
         let cli = AutomationsCLI(runner: runner)
@@ -1553,7 +1551,7 @@ final class AppState {
 
     /// The rest of the database wiring, once per process: on launch when no
     /// onboarding is pending, else at its completion.
-    private func wireAppDatabase(_ manager: DatabaseManager) {
+    func wireAppDatabase(_ manager: DatabaseManager) {
         guard !appDatabaseWired else { return }
         appDatabaseWired = true
         if let override = wireAppDatabaseOverride {
@@ -1596,11 +1594,9 @@ final class AppState {
         readinessCenter.start(pool: manager.dbPool)
         homeCenter.beginReading(pool: manager.dbPool)
         startLearn(pool: manager.dbPool)
-        // So the quit path always has a pool to close, even before the Chat
-        // tab was ever opened — `closeAll()` on an empty pool is a no-op, and
-        // creating the pool here only starts its idle-eviction poll; it never
-        // spawns a session process (that happens on select/prewarm/send).
-        ensureChatSessionPool(manager)
+        // The engine's client from launch, so the quit's `chat_shutdown` has a
+        // connection even before the Chat tab was ever opened.
+        ensureChatClient(manager)
     }
 
     /// Not marked `private` (the `initIdeas` precedent) so XCTest can mount

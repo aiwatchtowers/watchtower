@@ -75,23 +75,6 @@ final class ChatKnowledgeCenter {
         }
     }
 
-    /// A main-chat owner message whose turn started: Go wrote its knowledge
-    /// item in the start (`started.idea_id`), so only the mark is set here
-    /// (mobile Inbox spec §8).
-    func record(_ started: ChatStarted, text: String) async {
-        guard let parsed = KnowledgePrefix.parse(text) else { return }
-        let messageID = started.ownerMessageID
-        if parsed.body.isEmpty {
-            marks[messageID] = .empty
-        } else if started.ideaID > 0 {
-            await loadMark(conversationID: started.conversationID, messageID: messageID)
-        } else {
-            marks[messageID] = .failed(started.prefixError.isEmpty ? Self.notSaved : started.prefixError)
-        }
-    }
-
-    static let notSaved = "Watchtower couldn't save this."
-
     /// Deletes the item this message wrote while it is untouched; otherwise
     /// the mark says it changed (the view then opens it in the Inbox).
     func undo(messageID: Int64) async {

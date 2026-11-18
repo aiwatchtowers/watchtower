@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import ChatUI
 
 /// How the reading pane draws an automation card's body (spec "Today's
 /// Inbox"): a card without blocks keeps its markdown body and its own button

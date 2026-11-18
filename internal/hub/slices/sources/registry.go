@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"watchtower/internal/agentkind"
+	"watchtower/internal/chatengine"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions/handlers"
 	"watchtower/internal/hub/platform"
@@ -62,12 +63,15 @@ type Config struct {
 	Location  *time.Location
 
 	// ChatWatches (nil = a new registry, returned in Set.ChatWatches) is
-	// what the chat handlers write and the chat sources publish; ChatLive
-	// (nil = none) is the hub runner's live turn text; ChatModels (nil =
-	// RegistryChatModels) is the composer's model list.
+	// what the chat handlers write and the chat sources publish; ChatEngine
+	// (nil = chat off: the chat sources publish nothing) is the daemon's
+	// chat engine they read; ChatModels (nil = RegistryChatModels) is the
+	// composer's model list; ChatRouting (nil = no `routing` on chat_list)
+	// reads the routing pill's catalog.
 	ChatWatches *ChatWatches
-	ChatLive    LiveText
+	ChatEngine  ChatReader
 	ChatModels  func() []ChatModel
+	ChatRouting func(context.Context) *chatengine.RoutingCatalog
 
 	// InboxFeed (nil = no Inbox on the phone) builds the Inbox feed for
 	// inbox_folder and inbox_card (published only under "allowed").
@@ -117,7 +121,11 @@ var WorkbenchOnlyKinds = []slices.Kind{
 // to the kinds it feeds (the hub's data_version watch, spec §9). The
 // runner-fed kinds (session_chat, session_report), the sidecar-backed
 // recording_job and the request-fed chat_page and chat_search (built once
-// per request) are not here: their own loops and nudges publish them.
+// per request) are not here: their own loops and nudges publish them. No
+// chat_* table is here either (unified chat §6.4): every chat write goes
+// through the daemon's engine, whose OnChange publishes chat_list and
+// chat_feed; agent_actions stays, as a tool's proposal is written by the
+// session's MCP process, not the engine.
 var ChangeTables = withInboxTables(map[string][]slices.Kind{
 	"projects":                 {"workbench"},
 	"automations":              {"workbench"},
@@ -135,13 +143,6 @@ var ChangeTables = withInboxTables(map[string][]slices.Kind{
 	"meeting_prep_cache":       {"calendar_event"},
 	"meeting_transcripts":      {"calendar_event", "meeting_transcript"},
 	"meeting_recaps":           {"meeting_transcript"},
-	"chat_conversations":       {slices.KindChatList, slices.KindChatFeed},
-	"chat_messages":            {slices.KindChatList, slices.KindChatFeed},
-	"chat_turn_steps":          {slices.KindChatFeed},
-	"chat_attachments":         {slices.KindChatFeed},
-	"chat_artifacts":           {slices.KindChatFeed},
-	"chat_turn_leases":         {slices.KindChatList, slices.KindChatFeed},
-	"chat_projects":            {slices.KindChatList, slices.KindChatFeed},
 	"agent_actions":            {slices.KindChatList, slices.KindChatFeed},
 })
 
@@ -247,11 +248,11 @@ func All(c Config) (*Set, error) {
 		if watches == nil {
 			watches = NewChatWatches()
 		}
-		feed := ChatFeedOptions{Watches: watches, Grant: c.Store.AnyChatPhone, Live: c.ChatLive, Now: now}
+		feed := ChatFeedOptions{Watches: watches, Grant: c.Store.AnyChatPhone, Now: now}
 		set.ChatWatches = watches
 		set.Sources = append(set.Sources,
-			ChatList(c.DB, ChatListOptions{Grant: c.Store.AnyChatPhone, Models: c.ChatModels, Now: now}),
-			ChatFeed(c.DB, feed), ChatPage(c.DB, feed), ChatSearch(c.DB, feed))
+			ChatList(c.ChatEngine, ChatListOptions{Grant: c.Store.AnyChatPhone, Models: c.ChatModels, Routing: c.ChatRouting}),
+			ChatFeed(c.ChatEngine, feed), ChatPage(c.ChatEngine, feed), ChatSearch(c.ChatEngine, feed))
 		if c.InboxFeed != nil {
 			set.Sources = append(set.Sources, InboxSource(c.InboxFeed, now)...)
 		}

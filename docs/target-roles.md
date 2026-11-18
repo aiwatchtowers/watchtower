@@ -99,8 +99,8 @@
 |---|---|---|
 | Cross-team decisions | **Tracks** | Automatically groups discussions from different channels into a single narrative |
 | Architectural decisions | **Decisions** filtered by channel | What was decided in #architecture, #backend, #infra |
-| Who's blocking | **People Cards** → red_flags + **Tracks** → blockers | AI identifies blockers and red flags from communication patterns |
-| Team overview | **Team Summary** | Overall dynamics: collaborations, conflicts, bottlenecks |
+| Who's blocking | **Tracks** → blockers | AI identifies blockers from the discussions (People Cards hold no red flags since #1769) |
+| Team overview | **Team Summary** | What the team worked on, with tips |
 | Design review prep | **Meeting Prep** | Context on participants, open questions, related tracks |
 | Trends | **Weekly Trends** | Strategic patterns for the week |
 

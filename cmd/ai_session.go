@@ -13,7 +13,6 @@ import (
 
 	"watchtower/internal/ai"
 	"watchtower/internal/chat"
-	"watchtower/internal/chatstore"
 	"watchtower/internal/claude"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -29,6 +28,7 @@ var (
 	aiSessionFlagProjectID    int64
 	aiSessionFlagResume       string
 	aiSessionFlagDBPath       string
+	aiSessionFlagListen       string
 )
 
 var aiSessionCmd = &cobra.Command{
@@ -38,7 +38,13 @@ var aiSessionCmd = &cobra.Command{
 as JSON lines ({"type":"turn"|"cancel"|"close", ...}); protocol-v2 events go
 to stdout as NDJSON. With the claude provider one warm claude process serves
 every turn. The system prompt is built here and passed by file; message text
-and attachment paths travel on stdin, never on argv.`,
+and attachment paths travel on stdin, never on argv.
+
+--listen <socket> moves the same protocol from stdin/stdout onto a unix
+socket (0600, its folder 0700) the chat engine connects to: the session then
+outlives the daemon that started it, replays its current turn to the engine
+that attaches next, and exits 10 minutes after its turn with no engine
+attached. Only this team's watchtower CLI may connect.`,
 	Args: cobra.NoArgs,
 	RunE: runAISession,
 }
@@ -56,6 +62,7 @@ func init() {
 	f.StringVar(&aiSessionFlagResume, "resume", "", "ignored: chats replay their history instead of resuming")
 	_ = f.MarkHidden("resume")
 	f.StringVar(&aiSessionFlagDBPath, "db-path", "", "SQLite database path (overrides the workspace default)")
+	f.StringVar(&aiSessionFlagListen, "listen", "", "serve the session on this unix socket instead of stdin/stdout (the chat engine's)")
 }
 
 func runAISession(cmd *cobra.Command, _ []string) error {
@@ -69,14 +76,6 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 	}
 	if aiSessionFlagSurface != "main" && aiSessionFlagSurface != "target" {
 		return fail(chat.CodeInternal, "--surface must be main or target")
-	}
-	var leaseOwner db.ChatLeaseOwner
-	var leaseOwnerID string
-	if aiSessionFlagPersist {
-		var err error
-		if leaseOwner, leaseOwnerID, err = persistLeaseOwner(); err != nil {
-			return fail(chat.CodeInternal, err.Error())
-		}
 	}
 
 	cfg, database, dbPath, conv, err := openAISessionConversation(aiSessionFlagConversation, aiSessionFlagDBPath)
@@ -104,10 +103,7 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 	}
 	mcpArgs := sessionMCPArgs(aiSessionFlagSurface, conv, turnFile, chatProjectID)
 
-	var backend chat.Backend = stubSessionBackend{reply: aiSessionFlagStubReply}
-	if aiSessionFlagStubReply == "" {
-		backend, err = aiSessionBackend(cmd, cfg, database, dbPath, conv, turnFile, project, chatProjectID, mcpArgs, cancel)
-	}
+	backend, err := routedSessionBackend(cmd, cfg, database, dbPath, conv, turnFile, project, chatProjectID, mcpArgs, cancel)
 	if err != nil {
 		return fail(chat.CodeProviderUnavailable, err.Error())
 	}
@@ -118,18 +114,11 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 	_, s.Model = providers.ResolveModelsFor(cfg, cfg.AI.Provider)
 
 	s.TurnFile = turnFile
-	if !aiSessionFlagPersist {
-		return s.Run(ctx, cmd.InOrStdin())
+	if aiSessionFlagListen != "" {
+		return chat.ServeListen(ctx, chat.ListenOptions{Path: aiSessionFlagListen}, s)
 	}
-	p := &sessionPersister{ctx: ctx, database: database, conv: conv.ID, owner: leaseOwner, ownerID: leaseOwnerID,
-		now: aiSessionPersistNow, out: out, queue: newEventQueue(),
-		store: chatstore.New(database, leaseOwner, leaseOwnerID, chatstore.WithClock(aiSessionPersistNow),
-			chatstore.WithPreferredProvider(cfg.AI.ConfiguredProviderID()))}
-	return runPersistedSession(ctx, s, p, cmd.InOrStdin())
+	return s.Run(ctx, cmd.InOrStdin())
 }
-
-// aiSessionBackend builds the session's provider backend; tests replace it.
-var aiSessionBackend = routedSessionBackend
 
 // openAISessionConversation loads the config, opens the database and reads
 // the conversation the session serves. The caller closes the database.

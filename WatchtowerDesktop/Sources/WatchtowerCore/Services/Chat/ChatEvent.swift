@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 
 /// Wire error codes — raw values mirror `internal/chat/events.go`'s `Code*`.
 package enum ChatErrorCode: String, Equatable, Sendable {
@@ -150,45 +151,25 @@ package struct ChatRoutingMetadata: Equatable, Sendable {
     }
 }
 
-/// A persisting session's `started` (mobile Inbox spec §8): the turn's
-/// starting rows are committed, with what its prefix commands did (remember,
-/// a knowledge prefix — Go runs them for a new owner row).
+/// `ai query --persist`'s `started` (mobile Inbox spec §8): an embedded
+/// turn's starting rows are committed.
 package struct ChatStarted: Equatable, Sendable {
     package let conversationID: Int64
     /// 0: no owner row was written (a regenerate reuses its owner message).
     package let ownerMessageID: Int64
     package let assistantMessageID: Int64
     package let turnID: String
-    /// "" = not a remember message; else added, already_present, too_long,
-    /// empty or not_owner_text.
-    package let rememberOutcome: String
-    package let rememberLineID: Int64
-    /// The chat-born idea a knowledge prefix wrote (0 = none), and its kind.
-    package let ideaID: Int64
-    package let ideaKind: String
-    /// The first failure of the prefix commands ("" = none).
-    package let prefixError: String
 
     package init(
         conversationID: Int64,
         ownerMessageID: Int64,
         assistantMessageID: Int64,
-        turnID: String,
-        rememberOutcome: String = "",
-        rememberLineID: Int64 = 0,
-        ideaID: Int64 = 0,
-        ideaKind: String = "",
-        prefixError: String = ""
+        turnID: String
     ) {
         self.conversationID = conversationID
         self.ownerMessageID = ownerMessageID
         self.assistantMessageID = assistantMessageID
         self.turnID = turnID
-        self.rememberOutcome = rememberOutcome
-        self.rememberLineID = rememberLineID
-        self.ideaID = ideaID
-        self.ideaKind = ideaKind
-        self.prefixError = prefixError
     }
 }
 
@@ -301,10 +282,7 @@ package enum ChatEvent: Equatable, Sendable {
         case "started":
             return .started(ChatStarted(
                 conversationID: fields.int64("conversation_id"), ownerMessageID: fields.int64("owner_message_id"),
-                assistantMessageID: fields.int64("assistant_message_id"), turnID: fields.string("turn_id"),
-                rememberOutcome: fields.string("remember_outcome"), rememberLineID: fields.int64("remember_line_id"),
-                ideaID: fields.int64("idea_id"), ideaKind: fields.string("idea_kind"),
-                prefixError: fields.string("prefix_error")))
+                assistantMessageID: fields.int64("assistant_message_id"), turnID: fields.string("turn_id")))
         case "refused":
             return .refused(ChatRefusal(turnID: fields.optional("turn_id"), reason: fields.string("reason"),
                                         holder: fields.string("holder")))

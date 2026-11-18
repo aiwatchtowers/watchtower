@@ -44,6 +44,7 @@ import (
 	"sync"
 	"time"
 
+	"watchtower/internal/chatengine"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
@@ -175,15 +176,17 @@ type Options struct {
 	// transport must have the relay's get_account_state.
 	RelayOnlyRules bool
 	// The AI chat from the phone (iPhone chat §4.5), set by the daemon:
-	// ChatTools approves the chat's actions and runs the ones no chat
-	// session runs (nil = a registry with no tools); ChatTitle names a
-	// conversation after its first complete answer with the light-tier
-	// generator (`watchtower chat title`'s code; nil = no AI title);
-	// ChatPreferredProvider is the automatic routing's preferred provider
-	// (the config the Mac's automatic routing reads).
-	ChatTools             *tools.Registry
-	ChatTitle             func(ctx context.Context, conv int64) error
-	ChatPreferredProvider string
+	// ChatEngine is the daemon's chat engine (unified chat §4: started
+	// before the hub, stopped after it; nil = chat off, runner_down; its AI
+	// titles and preferred provider are its own config); ChatTools approves
+	// the chat's actions and runs the ones no chat session runs (nil = a
+	// registry with no tools).
+	ChatEngine *chatengine.Engine
+	ChatTools  *tools.Registry
+	// ChatRouting reads the routing pill's catalog for the chat_list record
+	// (unified chat T17): the providers, their pair and capability rows and
+	// the routing status, read on every build. nil leaves `routing` out.
+	ChatRouting func(context.Context) *chatengine.RoutingCatalog
 	// Tower is the daemon's tower (the socket's): the phone Inbox's feed
 	// (inbox.feed) and writes (inbox.act, as the hub) go through it. nil =
 	// no Inbox on the phone and no inbox capability in the heartbeat.

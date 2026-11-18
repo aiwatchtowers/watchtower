@@ -1,25 +1,23 @@
+import ChatWire
 import Foundation
 import GRDB
 import Observation
 import WatchtowerCore
-import WatchtowerInterface
 
 /// The chat project page (spec §6.1): name, instructions (debounced save),
 /// pinned sources, files, and the project's chats. The page is short-lived
 /// and its only async state is a pending instructions save, which `flush()`
 /// writes on disappear — so the VM can be view-local.
 ///
-/// Edits reach the assistant on each chat's next turn: the project block and
-/// first-turn files are read by `ai session` at spawn, so every write that
-/// changes them drops the chats' stored sessions (the `chat.project.*`
-/// commands, in Go) and reports `onPromptChanged`, whose owner retires the
-/// warm processes.
+/// It reads its rows itself (D19); every write is the engine's
+/// (`project_manage`), which also retires the project's chats' warm sessions
+/// so the next turn reads the new prompt.
 @MainActor
 @Observable
 final class ProjectDetailViewModel {
     let projectID: Int64
     private(set) var project: ChatProject?
-    private(set) var sources: [ChatProjectSource] = []
+    private(set) var sources: [WatchtowerCore.ChatProjectSource] = []
     private(set) var files: [ChatAttachment] = []
     private(set) var chats: [ChatConversation] = []
     private(set) var errorMessage: String?
@@ -41,30 +39,18 @@ final class ProjectDetailViewModel {
     var knowledge: [ProjectKnowledgeItem] { ProjectKnowledgeItem.merged(files: files, sources: sources) }
 
     private let dbPool: DatabasePool
-    private let chatWrites: ChatWrites
-    /// Every write of this view model, in order (board #670).
+    private let client: any ChatClient
+    /// Every write of this view model, in order.
     @ObservationIgnored private let writes = SerialWrites()
-    /// One pending delete (board #670).
+    /// One pending delete.
     private let pendingWrites = PendingWrites()
     private let debounce: Duration
-    private let importFile: (URL, Int64) async throws -> ChatAttachment
-    /// After a committed write that changes the project's prompt.
-    private let onPromptChanged: (Int64) -> Void
 
-    init(
-        projectID: Int64,
-        dbPool: DatabasePool,
-        writes: ChatWrites,
-        debounce: Duration = .milliseconds(500),
-        importFile: @escaping (URL, Int64) async throws -> ChatAttachment,
-        onPromptChanged: @escaping (Int64) -> Void = { _ in }
-    ) {
+    init(projectID: Int64, dbPool: DatabasePool, client: any ChatClient, debounce: Duration = .milliseconds(500)) {
         self.projectID = projectID
         self.dbPool = dbPool
-        self.chatWrites = writes
+        self.client = client
         self.debounce = debounce
-        self.importFile = importFile
-        self.onPromptChanged = onPromptChanged
     }
 
     /// Reads everything and resets both drafts from the stored row.
@@ -145,60 +131,53 @@ final class ProjectDetailViewModel {
     }
 
     func rename(_ name: String) async {
-        let id = projectID
-        let _: ChatDone? = await write(.chatProjectRename) { ChatProjectRenameRequest(requestID: $0, projectID: id, name: name) }
+        await write(ChatProjectRequest(op: .update, projectID: projectID, name: name))
         // Text typed while the rename waited stays.
         if nameDraft == name { nameDraft = project?.name ?? nameDraft }
     }
 
+    /// A picked entity pinned as a source (a Jira issue is not pinned: its project is).
     func addSource(_ hit: ChatEntityHit) async {
-        guard let kind = ChatProjectSource.Kind(entity: hit.kind) else { return }
-        let (ref, label) = (hit.ref, hit.label)
-        let id = projectID
-        let added: ChatChanged? = await write(.chatProjectAddSource) {
-            ChatProjectAddSourceRequest(requestID: $0, projectID: id, kind: kind.rawValue, ref: ref, label: label)
-        }
-        if added?.changed == true { onPromptChanged(projectID) }
+        guard let kind = Self.sourceKind(hit.kind) else { return }
+        await write(ChatProjectRequest(op: .sourceAdd, projectID: projectID,
+                                       sources: [ChatWire.ChatProjectSource(kind: kind, ref: hit.id, label: hit.label)]))
     }
 
-    func removeSource(_ source: ChatProjectSource) async {
-        let sourceID = source.id
-        let removed: ChatChanged? = await write(.chatProjectRemoveSource) {
-            ChatProjectSourceRequest(requestID: $0, sourceID: sourceID)
-        }
-        if removed?.changed == true { onPromptChanged(projectID) }
+    func removeSource(_ source: WatchtowerCore.ChatProjectSource) async {
+        await write(ChatProjectRequest(op: .sourceRemove, sourceID: source.id))
     }
 
-    /// Copied and recorded off the main thread, in this view model's chain
-    /// (board #670); the list shows them once stored.
+    /// The project source kind of a picker hit (`chat_project_sources.kind`); nil for an issue.
+    static func sourceKind(_ entity: String) -> String? {
+        switch entity {
+        case "person": "person"
+        case "channel": "slack_channel"
+        case "jira_project": "jira_project"
+        case "confluence_space": "confluence_space"
+        case "target": "target"
+        case "track": "track"
+        default: nil
+        }
+    }
+
+    /// Each file is copied by the engine (`file_add`, the app passes the path it holds); the list shows them once
+    /// stored.
     func addFiles(_ urls: [URL]) async {
-        let (importFile, projectID) = (importFile, projectID)
-        let failures = await writes.run { () -> [String] in
-            var failures: [String] = []
-            for url in urls {
-                do {
-                    _ = try await importFile(url, projectID)
-                } catch {
-                    failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
-                }
+        var failures: [String] = []
+        for url in urls {
+            if let failure = await apply(ChatProjectRequest(op: .fileAdd, projectID: projectID, path: url.path)) {
+                failures.append("\(url.lastPathComponent): \(failure)")
             }
-            return failures
         }
-        if failures.count < urls.count { onPromptChanged(projectID) }
         guard refresh() else { return }
         errorMessage = failures.isEmpty ? nil : failures.joined(separator: "\n")
     }
 
     func removeFile(_ file: ChatAttachment) async {
-        let fileID = file.id
-        do {
-            let result: ChatChanged = try await chained(.chatProjectRemoveFile) {
-                ChatAttachmentRequest(requestID: $0, attachmentID: fileID)
-            }
-            if result.changed { onPromptChanged(projectID) }
-            if refresh() { errorMessage = nil }
-        } catch {
-            errorMessage = "Could not remove \(file.name): \(error.localizedDescription)"
+        if let failure = await apply(ChatProjectRequest(op: .fileRemove, fileID: file.id)) {
+            errorMessage = "Could not remove \(file.name): \(failure)"
+        } else if refresh() {
+            errorMessage = nil
         }
     }
 
@@ -213,18 +192,14 @@ final class ProjectDetailViewModel {
         pendingSave?.cancel()
         pendingSave = nil
         // The delete is in the chain: a save asked for before it lands first.
-        do {
-            let id = projectID
-            // Go removes the project's files after its commit.
-            let _: ChatDone = try await chained(.chatProjectDelete) { ChatProjectRequest(requestID: $0, projectID: id) }
-            // Nothing is left to save into: the page's closing flush must not
-            // write an unsaved draft to the deleted row.
-            draftsLoaded = false
-            return true
-        } catch {
-            errorMessage = "Could not delete the project: \(error.localizedDescription)"
+        if let failure = await apply(ChatProjectRequest(op: .delete, projectID: projectID)) {
+            errorMessage = "Could not delete the project: \(failure)"
             return false
         }
+        // Nothing is left to save into: the page's closing flush must not
+        // write an unsaved draft to the deleted row.
+        draftsLoaded = false
+        return true
     }
 
     /// Re-reads the row and lists without touching the drafts, so a rename or
@@ -267,64 +242,42 @@ final class ProjectDetailViewModel {
             pendingSave = nil
             return true
         }
-        let id = projectID
-        do {
-            // Already in the chain: the tower directly, or it would wait for itself.
-            let _: ChatDone = try await chatWrites.perform(.chatProjectInstructions) {
-                ChatProjectInstructionsRequest(requestID: $0, projectID: id, instructions: text)
-            }
-            pendingSave = nil
-            savedInstructions = text
-            onPromptChanged(id)
-            return true
-        } catch {
-            // flush() runs as the page goes away, where the banner is gone
-            // too: keep a trace as well.
-            NSLog("ProjectDetailViewModel: could not save instructions: %@", error.localizedDescription)
-            errorMessage = "Could not save instructions: \(error.localizedDescription)"
+        if let failure = await send(ChatProjectRequest(op: .update, projectID: projectID, instructions: text)) {
+            // flush() runs as the page goes away, where the banner is gone too: keep a trace as well.
+            NSLog("ProjectDetailViewModel: could not save instructions (%@)", failure)
+            errorMessage = "Could not save instructions: \(failure)"
             return false
         }
+        pendingSave = nil
+        savedInstructions = text
+        return true
     }
 
-    /// The write's answer, nil when it was not applied.
+    /// One project write, then the page re-reads; false (and `errorMessage`) when the engine did not apply it.
     @discardableResult
-    private func write<Resp: Decodable & Sendable, Params: Encodable & Sendable>(
-        _ command: TowerCommand, _ params: @escaping @Sendable (String) -> Params
-    ) async -> Resp? {
-        do {
-            let value: Resp = try await chained(command, params)
-            if refresh() { errorMessage = nil }
-            return value
-        } catch {
-            errorMessage = error.localizedDescription
-            return nil
+    private func write(_ request: ChatProjectRequest) async -> Bool {
+        if let failure = await apply(request) {
+            errorMessage = failure
+            return false
         }
-    }
-}
-
-extension ProjectDetailViewModel {
-    enum ImportError: LocalizedError {
-        case noWorkspace
-        var errorDescription: String? { "Attachments need an active workspace" }
+        if refresh() { errorMessage = nil }
+        return true
     }
 
-    /// The production importer: the shared attachment store (validation,
-    /// 0600 copy under `chat_files/projects/<id>/`). Without an active
-    /// workspace every import fails with a visible reason.
-    static func storeImporter(
-        dbPool: DatabasePool, rootDir: URL?, writes: ChatWrites
-    ) -> (URL, Int64) async throws -> ChatAttachment {
-        guard let rootDir else { return { _, _ in throw ImportError.noWorkspace } }
-        let store = ChatAttachmentStore(db: dbPool, rootDir: rootDir, writes: writes)
-        return { url, projectID in try await store.importFile(url: url, projectID: projectID) }
+    /// One project write in this view model's chain: nil once applied, else why not.
+    private func apply(_ request: ChatProjectRequest) async -> String? {
+        await writes.run { await self.send(request) }
     }
 
-    /// A chat write in this view model's chain (board #670): it is sent
-    /// only once every write asked for before it finished.
-    private func chained<Resp: Decodable & Sendable, Params: Encodable & Sendable>(
-        _ command: TowerCommand, _ params: @escaping @Sendable (String) -> Params
-    ) async throws -> Resp {
-        let chatWrites = chatWrites
-        return try await writes.runThrowing { try await chatWrites.perform(command, params) }
+    /// The engine's answer to one project write (already in the chain): nil once applied, else why not.
+    private func send(_ request: ChatProjectRequest) async -> String? {
+        do {
+            switch try await client.send(.project(request)) {
+            case .applied: return nil
+            case let .refused(_, message): return message.isEmpty ? "The change was refused." : message
+            }
+        } catch {
+            return "Couldn't reach Watchtower: \(error.localizedDescription)"
+        }
     }
 }

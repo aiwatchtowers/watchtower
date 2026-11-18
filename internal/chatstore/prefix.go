@@ -1,7 +1,6 @@
 package chatstore
 
 import (
-	"watchtower/internal/db"
 	"watchtower/internal/ideas"
 	"watchtower/internal/instructions"
 )
@@ -22,38 +21,31 @@ const (
 // failure never undoes the turn, it lands in st.PrefixErr.
 func (s *Store) runPrefixes(st *Started, text string) {
 	if line, ok := instructions.ParseRemember(text); ok {
-		st.RememberOutcome, st.RememberLineID, st.PrefixErr = s.remember(line, st.ConversationID, st.UserMessageID)
+		st.RememberOutcome, st.PrefixErr = s.remember(line, st.ConversationID, st.UserMessageID)
 	}
 	if kind, body, ok := ideas.ParseKnowledgePrefix(text); ok && body != "" {
 		id, err := s.db.CreateIdeaFromChat(kind, body, st.ConversationID, st.UserMessageID)
 		st.IdeaID = id
-		if id != 0 {
-			st.IdeaKind = kind
-		}
 		if st.PrefixErr == nil {
 			st.PrefixErr = err
 		}
 	}
 }
 
-// remember returns the outcome and, for an added line, its id.
-func (s *Store) remember(line string, conv, messageID int64) (string, int64, error) {
+func (s *Store) remember(line string, conv, messageID int64) (string, error) {
 	if line == "" {
-		return RememberEmpty, 0, nil
+		return RememberEmpty, nil
 	}
 	own, err := s.db.LiveSlackOwnerLineOK(conv, messageID, line)
 	if err != nil {
-		return "", 0, err
+		return "", err
 	}
 	if !own {
-		return RememberNotOwnerText, 0, nil
+		return RememberNotOwnerText, nil
 	}
-	row, outcome, err := s.db.RememberChatLine(line, conv, messageID, s.now(), instructions.MaxRunes)
+	_, outcome, err := s.db.RememberChatLine(line, conv, messageID, s.now(), instructions.MaxRunes)
 	if err != nil {
-		return "", 0, err
+		return "", err
 	}
-	if outcome != db.RememberAdded {
-		return string(outcome), 0, nil
-	}
-	return string(outcome), row.ID, nil
+	return string(outcome), nil
 }

@@ -3,6 +3,7 @@ import GRDB
 import WatchtowerCore
 @testable import WatchtowerDesktop
 import WatchtowerTestSupport
+import WatchtowerChatText
 
 /// Briefings, Day Plan, Tracks and Ideas left the sidebar for the Inbox (C1
 /// Task 11), and its filters for the root's legacy entries (inbox builder

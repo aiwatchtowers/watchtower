@@ -1,5 +1,6 @@
 import XCTest
 @testable import WatchtowerCore
+import WatchtowerChatText
 
 /// `path:line` citations in a code answer (spec 2026-10-02 §9.2) become
 /// links that open the file in the Files pane; fenced code is left alone.

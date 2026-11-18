@@ -3,6 +3,7 @@ import AppKit
 import GRDB
 import UserNotifications
 import WatchtowerCore
+import ChatUI
 
 /// Allows notifications to display as banners even when the app is in the foreground,
 /// and handles notification click actions to navigate within the running app.

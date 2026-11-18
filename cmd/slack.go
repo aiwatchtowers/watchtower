@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"strconv"
+	"time"
 
 	"watchtower/internal/auth"
 	"watchtower/internal/config"
@@ -14,6 +15,7 @@ import (
 
 	watchtowerslack "watchtower/internal/slack"
 
+	slackgo "github.com/slack-go/slack"
 	"github.com/spf13/cobra"
 )
 
@@ -61,10 +63,12 @@ var slackDisableCmd = &cobra.Command{
 
 var slackRemoveCmd = &cobra.Command{
 	Use:   "remove <account-id>",
-	Short: "Disconnect a Slack workspace (non-destructive: keeps synced data)",
-	Long: "Deletes the account's stored OAuth token and marks it removed so it stops\n" +
-		"syncing. Its synced messages, channels, digests, tracks, situations, and\n" +
-		"memory are deliberately kept — removal is a soft delete, not a purge.",
+	Short: "Disconnect a Slack workspace (revokes its token; synced data kept for now)",
+	Long: "Revokes the account's token at Slack, deletes its stored OAuth token and\n" +
+		"marks it removed so it stops syncing. Its synced messages, channels, digests,\n" +
+		"tracks, situations, and memory are kept by the remove itself; with account\n" +
+		"data deletion on (the default) they are deleted 72 hours after Watchtower's\n" +
+		"next pass, unless the workspace is added again.",
 	Args: cobra.ExactArgs(1),
 	RunE: runSlackRemove,
 }
@@ -505,24 +509,74 @@ func runSlackRemove(cmd *cobra.Command, args []string) error {
 	}
 	defer database.Close()
 
-	if err := removeSlackAccount(cfg, database, id); err != nil {
+	out := cmd.OutOrStdout()
+	if err := removeSlackAccount(cmd.Context(), cfg, database, id, out, cmd.ErrOrStderr()); err != nil {
 		return fmt.Errorf("removing account: %w", err)
 	}
-	out := cmd.OutOrStdout()
-	fmt.Fprintf(out, "Removed account %d. Its synced data was kept.\n", id)
+	fmt.Fprintf(out, "Removed account %d. Its synced data was kept. %s\n", id, slackRemovedDataDeletion)
 	return nil
 }
 
-// removeSlackAccount disconnects account id: deletes its stored OAuth token
-// file and marks the row removed/disabled so it stops syncing. Deliberately
-// non-destructive — the account's synced messages/channels/digests/tracks/
-// situations/memory are kept (SetSlackAccountRemoved, NOT a cascade delete),
-// per the plan's v1 decision.
-func removeSlackAccount(cfg *config.Config, database *db.DB, id int64) error {
-	if _, err := database.GetSlackAccount(id); err != nil {
+// slackRevokeAPIURL is the Slack Web API base `slack remove` revokes the token
+// at; tests point it at a local server.
+var slackRevokeAPIURL = slackgo.APIURL
+
+// slackRevokeTimeout bounds the auth.revoke call of a remove.
+const slackRevokeTimeout = 10 * time.Second
+
+// slackRevokeWarning is printed when Slack did not confirm the revoke. The
+// Desktop finds it in the output by this exact text
+// (SlackRevokeNotice.cliWarning, pinned by TestSlackRevokeWarning_MatchesDesktopModel).
+const slackRevokeWarning = "Slack did not confirm the token was revoked; it may stay valid until a workspace admin removes the app"
+
+// slackRemovedDataDeletion says when a removed workspace's kept data goes
+// with the purge on (A2: zero lease, 72 h after the next pass).
+const slackRemovedDataDeletion = "With account data deletion on, it is deleted 72 hours after Watchtower's next pass."
+
+// removeSlackAccount disconnects account id: revokes its OAuth token at Slack
+// (auth.revoke; a failure prints slackRevokeWarning to warnOut, logs the
+// cause to logOut and never stops the remove, A25), cancels the account's
+// scheduled purge rows when it was not removed yet (a lease row scheduled
+// while it was live would keep its old due date and cut the 72 h notice; the
+// next pass schedules a fresh one; a retry keeps the removed account's row),
+// deletes its stored OAuth token file and marks the row
+// removed/disabled so it stops syncing. Deliberately non-destructive — the
+// account's synced messages/channels/digests/tracks/situations/memory are
+// kept (SetSlackAccountRemoved, NOT a cascade delete), per the plan's v1
+// decision.
+func removeSlackAccount(ctx context.Context, cfg *config.Config, database *db.DB, id int64, warnOut, logOut io.Writer) error {
+	acct, err := database.GetSlackAccount(id)
+	if err != nil {
 		return err
 	}
-	if err := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), id).Delete(); err != nil {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	store := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), id)
+	tok, loadErr := store.Load()
+	logger := log.New(logOut, "[slack] ", log.LstdFlags)
+	switch {
+	case loadErr != nil:
+		logger.Printf("revoking slack account %d: reading its token: %v", id, loadErr)
+		fmt.Fprintln(warnOut, slackRevokeWarning)
+	case tok != nil && tok.AccessToken != "":
+		rctx, cancel := context.WithTimeout(ctx, slackRevokeTimeout)
+		err := watchtowerslack.NewClientWithAPIURL(tok.AccessToken, slackRevokeAPIURL).RevokeToken(rctx)
+		cancel()
+		if err != nil {
+			logger.Printf("revoking slack account %d: %v", id, err)
+			fmt.Fprintln(warnOut, slackRevokeWarning)
+		}
+	}
+	// Only the live → removed transition cancels: a retry on a removed
+	// account keeps its zero-lease row and due date, or repeated removes
+	// would postpone the deletion forever.
+	if acct.Status != "removed" {
+		if _, err := database.CancelScheduledAccountPurges("slack", id); err != nil {
+			return err
+		}
+	}
+	if err := store.Delete(); err != nil {
 		return fmt.Errorf("deleting token file: %w", err)
 	}
 	return database.SetSlackAccountRemoved(id)

@@ -18,8 +18,8 @@ import (
 	"time"
 
 	"watchtower/internal/fsutil"
-	"watchtower/internal/hub/platform"
 	"watchtower/internal/ownerconfirm"
+	"watchtower/internal/platform"
 	"watchtower/internal/tower/api"
 )
 
@@ -53,9 +53,10 @@ var peerUID = func(c net.Conn) (int, error) {
 	return platform.PeerUID(uc)
 }
 
-// peerPID is the pid at the other end of a connection (LOCAL_PEERPID,
-// ownerconfirm's own read); a test replaces it.
-var peerPID = ownerconfirm.PeerPID
+// peerToken is the audit token of the process at the other end of a
+// connection (LOCAL_PEERTOKEN, ownerconfirm's own read, as the chat socket
+// reads it); a test replaces it.
+var peerToken = ownerconfirm.ReadPeerToken
 
 // SocketPath is where the daemon of workspace serves the tower:
 // <workspace>/tower.sock when that fits sun_path (SunPathMax), else
@@ -333,35 +334,37 @@ func (s *server) serveConn(c net.Conn) {
 var errNoDesktopCheck = errors.New("tower: this tower checks no Desktop signature")
 
 // desktopCheck is the connection's Origin.Desktop. Each owner gesture
-// reads the peer pid again (peerPID): on macOS LOCAL_PEERPID names the last
-// process that used the socket, so a connection handed to another process
-// (an inherited descriptor) is seen. The verdict is kept per pid, so the
-// signed Desktop is checked once and a new pid is checked again; a check
-// cut short by its context (cancelled, timed out) is not kept.
+// reads the peer's audit token again (peerToken) and checks the process
+// image it names, not a pid: a peer that exec'd after it connected no
+// longer matches its token, and a connection now used by another process
+// (an inherited descriptor) names another token. The verdict is kept per
+// token, so the signed Desktop is checked once and a new token is checked
+// again; a check cut short by its context (cancelled, timed out) is not
+// kept.
 func (s *server) desktopCheck(c net.Conn) func(context.Context) error {
 	var (
 		mu       sync.Mutex
-		verdicts = map[int]error{}
+		verdicts = map[ownerconfirm.PeerToken]error{}
 	)
 	return func(ctx context.Context) error {
 		verify := s.t.opts.VerifyDesktop
 		if verify == nil {
 			return errNoDesktopCheck
 		}
-		pid, err := peerPID(c)
+		peer, err := peerToken(c)
 		if err != nil {
 			return err
 		}
 		mu.Lock()
 		defer mu.Unlock()
-		if v, ok := verdicts[pid]; ok {
+		if v, ok := verdicts[peer]; ok {
 			return v
 		}
-		err = verify(ctx, pid)
+		err = verify(ctx, peer)
 		if err != nil && (ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 			return err
 		}
-		verdicts[pid] = err
+		verdicts[peer] = err
 		return err
 	}
 }

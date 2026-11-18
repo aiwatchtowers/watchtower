@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/ownerconfirm"
 )
 
 // Origin says where a call came from.
@@ -45,10 +46,11 @@ type Options struct {
 	// Changes is the change watch a Watch command streams from (watch.go);
 	// New wires Changed to also publish into it. nil refuses Watch commands.
 	Changes *Changes
-	// VerifyDesktop checks that the socket peer pid is the signed Watchtower
-	// Desktop (the daemon passes ownerconfirm.VerifyDesktop); nil trusts no
+	// VerifyDesktop checks that the process image a socket peer's audit
+	// token names is the signed Watchtower Desktop (the daemon passes
+	// ownerconfirm.VerifyDesktopPeer, the chat socket's check); nil trusts no
 	// peer as the Desktop, so the owner gestures are refused over the socket.
-	VerifyDesktop func(ctx context.Context, pid int) error
+	VerifyDesktop func(ctx context.Context, peer ownerconfirm.PeerToken) error
 	// Sentence words a handler's fault (not a refusal) for the refusal shown
 	// to the owner; nil means a fixed sentence (FaultSentence), never the
 	// error's own text.

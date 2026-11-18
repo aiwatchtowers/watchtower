@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"watchtower/internal/chatengine"
 	"watchtower/internal/chatstore"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/secure"
@@ -17,7 +18,8 @@ import (
 // IntakeRecording): the phone's file for a chat message arrives as a
 // chat_attachment upload with its sealed asset. The hub opens it in memory,
 // checks the Mac's limits (chatstore.ValidateAttachment, the shared fixture
-// with Swift's AttachmentValidator), and stores it as a pending
+// with Swift's AttachmentValidator), and hands the bytes to the daemon's
+// chat engine (Engine.AttachBytes), which stores them as a pending
 // chat_attachments row of the conversation (0600 under
 // <workspace>/chat_files/conversations/<id>/, deduplicated by sha256 within
 // the conversation). A failure writes no row and leaves no file: the phone
@@ -56,13 +58,11 @@ func (h *Handlers) IntakeChatAttachment(ctx context.Context, in actions.ChatAtta
 		return *outcome
 	}
 	defer clear(data)
-	kind, rej := chatstore.ValidateAttachment(data, in.Name)
-	if rej != nil {
-		return failed(reasonInvalidParams, rej.Message())
-	}
-	id, err := chatstore.SaveAttachment(ctx, h.d.DB, c.FilesDir, in.ConversationID, in.Name, kind, data,
-		float64(h.d.Clock().UnixNano())/1e9)
+	id, err := c.Engine.AttachBytes(ctx, in.ConversationID, in.Name, data)
+	var rej *chatengine.AttachError
 	switch {
+	case errors.As(err, &rej):
+		return failed(reasonInvalidParams, rej.Error())
 	case errors.Is(err, chatstore.ErrConversationGone):
 		return failed(reasonNotFound, chatGoneMessage)
 	case err != nil:

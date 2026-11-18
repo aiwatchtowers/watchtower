@@ -1,4 +1,5 @@
 import SwiftUI
+import ChatUI
 import WatchtowerCore
 
 struct TargetDetailView: View {
@@ -966,10 +967,12 @@ struct TargetDetailView: View {
             ChatComposerBar(input: ChatComposerField(
                 text: $assistantInput,
                 isStreaming: false,
-                onSend: { submitAssistantInput() },
-                placeholder: "Ask the assistant about this target…",
-                dictationTargetID: "chat.target-assistant.\(target.id)"
-            ))
+                config: ChatComposerFieldConfig(
+                    placeholder: "Ask the assistant about this target…",
+                    dictationTargetID: "chat.target-assistant.\(target.id)"
+                )
+            ) { submitAssistantInput() })
+            .macComposerStyle()
         }
     }
 

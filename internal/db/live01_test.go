@@ -158,13 +158,11 @@ var displayOnlyReaders = map[string]string{
 // never into the bare-name list above; a key whose function the scan no
 // longer sees fails the test.
 var displayOnlyReadersAt = map[string]string{
-	"tools/chat_history.go:boundConversation": "reads the bound conversation's context_type to refuse isolated threads; no text. The chat-history tools hand a chat its own rows for its next answer, like ActiveChatPath",
-	"db/chat_lease.go:markSessionLostSQL":     "writes the error code of a dead turn's reply (MarkChatTurnSessionLost, chat.recover, chat.release_launches); reads no text",
+	"tools/chat_history.go:boundConversation":  "reads the bound conversation's context_type to refuse isolated threads; no text. The chat-history tools hand a chat its own rows for its next answer, like ActiveChatPath",
+	"db/chat_lease.go:MarkChatTurnSessionLost": "writes the error code of a dead hub turn's reply; reads no text",
 	// internal/hub chat_answer push: ids, status and the conversation title only.
-	"hub/chat_turn_watch.go:send":            "the chat_answer push reads a conversation title, never message text into a store",
-	"hub/chat_turn_watch.go:assistantStatus": "the chat_answer push reads one turn row's status, no text",
-	"hub/chat_turn_watch.go:desktopLeases":   "the chat_answer push: lease ids of main chats, no text",
-	"hub/chat_turn_watch.go:pendingActions":  "the chat_answer push: pending action ids of main chats, no text",
+	"hub/chat_turn_watch.go:send":           "the chat_answer push reads a conversation title, never message text into a store",
+	"hub/chat_turn_watch.go:pendingActions": "the chat_answer push: pending action ids of main chats, no text",
 	// The tower's ideas.delete (plan Task 9): IdeaQueries.delete's Go twin.
 	"db/screen_writes.go:DeleteIdeaTx": "deletes a deleted idea's Discuss chat by id; reads no text",
 	"inboxfeed/screens.go:tablesIdeas": "the ideas commands' ChangeTables, table names only",
@@ -174,10 +172,11 @@ var displayOnlyReadersAt = map[string]string{
 	"chatstore/store.go:readConversationTx": "the turn store reads its own conversation row (routing, leaf, title)",
 	"chatstore/store.go:loadMessagesTx":     "the turn store's own branch walk for the next turn",
 	"chatstore/store.go:insertMessageTx":    "writes a turn's message rows",
+	"chatstore/store.go:duplicateKey":       "matches an insert error naming the client-key index; reads nothing",
 	"chatstore/store.go:setPrefixTitleTx":   "writes the prefix title",
 	"chatstore/store.go:writeRoutingTx":     "routing columns only",
-	"chatstore/store.go:selectBranchTx":     "moves the active leaf",
-	"chatstore/store.go:markReadTx":         "read_at from a created_at, no text",
+	"chatstore/store.go:SelectBranch":       "moves the active leaf",
+	"chatstore/store.go:MarkRead":           "read_at from a created_at, no text",
 	"chatstore/turn.go:recordActual":        "routing columns of the turn's own rows",
 	"chatstore/turn.go:recordSession":       "session id only",
 	"chatstore/turn.go:requireMessageTx":    "existence probe of the turn's own row",
@@ -196,50 +195,56 @@ var displayOnlyReadersAt = map[string]string{
 	"chatstore/embedded.go:Finalize":      "writes the turn's own reply (text, status, tokens) and the conversation's updated_at",
 	// The phone's chat actions (iPhone chat §4.5): conversation rows the
 	// Mac's Chats panel writes too, and the attachment intake's row.
-	"chatstore/conversations.go:newConversationTx":  "inserts an empty conversation row",
+	"chatstore/conversations.go:NewConversation":    "inserts an empty conversation row",
 	"chatstore/conversations.go:ConversationExists": "an existence count, no text",
-	"chatstore/conversations.go:pinTx":              "the pinned flag",
-	"chatstore/conversations.go:renameTx":           "writes the owner's title",
-	"chatstore/conversations.go:deleteTx":           "delete only",
-	// The chat.* tower commands (mobile-inbox spec §8): the Desktop's
-	// conversation-level writes, ported from its GRDB writers. They write
-	// rows and read ids, flags and counts, never text into a store.
+	"chatstore/conversations.go:Pin":                "the pinned flag",
+	"chatstore/conversations.go:Rename":             "writes the owner's title",
+	"chatstore/conversations.go:Delete":             "delete only",
+	"chatstore/conversations.go:Archive":            "the archived_at column, no text",
+	"chatstore/conversations.go:DeleteIfUntouched":  "delete only, existence checks, no text",
+	"chatstore/conversations.go:Move":               "the project column, an existence count, no text",
+	"chatstore/conversations.go:UsePreferred":       "routing columns only (Use preferred, #1822 T17), no text",
+	"chatstore/attachments.go:SaveAttachment":       "inserts an attachment row of an existing conversation, no text read",
+	// The chat.* tower commands (mobile-inbox spec §8): the embedded chats'
+	// writes, ported from the Desktop's GRDB writers. They write rows and
+	// read ids, flags and counts, never text into a store.
 	"chatstore/commands.go:tConversations":                "table names of a command's ChangeTables, no read",
-	"chatstore/commands.go:tProjects":                     "table names of a command's ChangeTables, no read",
-	"chatstore/commands.go:tSources":                      "table names of a command's ChangeTables, no read",
-	"chatstore/commands.go:tLeases":                       "table names of a command's ChangeTables, no read",
-	"chatstore/commands.go:RegisterCommands":              "registration and short writes: archive, ChangeTables names",
+	"chatstore/commands.go:RegisterCommands":              "registration: ChangeTables names",
+	"chatstore/commands.go:refuseMainChatTx":              "reads a conversation's context_type by id (main chat or not), no text",
+	"chatstore/commands.go:chatDelete":                    "deletes an embedded chat of a context type, no read",
 	"chatstore/commands.go:requireEmbeddedTx":             "reads a conversation's context_type by id (embedded or not), no text",
 	"chatstore/commands.go:chatMessageAppend":             "inserts an embedded chat's notice row; reads no chat text",
 	"chatstore/commands.go:chatReplyFinish":               "writes an embedded chat's reply end and updated_at; reads no chat text",
-	"chatstore/commands.go:registerProjectCommands":       "ChangeTables names of the project commands",
 	"chatstore/commands.go:chatNew":                       "finds a context's chat id and inserts a conversation row",
 	"chatstore/commands.go:insertContextChatTx":           "inserts an empty conversation row",
 	"chatstore/commands.go:chatSetTitle":                  "writes an automatic title",
-	"chatstore/commands.go:chatDeleteUntouched":           "deletes an untouched draft (existence checks only)",
-	"chatstore/commands.go:chatSetProject":                "the project column and the session id",
-	"chatstore/commands.go:chatSetRouting":                "routing columns only",
 	"chatstore/commands.go:chatSetModel":                  "provider and model columns only",
 	"chatstore/commands.go:chatContext":                   "moves a draft chat to its context (existence checks only)",
 	"chatstore/commands.go:chatDeleteEmptyCodeQuestions":  "deletes empty code questions",
 	"chatstore/commands.go:emptyCodeQuestionsTx":          "ids of code questions with no message, no text",
-	"chatstore/commands.go:chatAttach":                    "inserts an attachment row of an existing conversation, no text read",
-	"db/chat_artifact_keep.go:KeepChatArtifactTx":         "reads the LIVE-01 mark itself to refuse a keep; no text",
-	"db/chat_projects.go:DropChatProjectSessionsTx":       "clears session ids, no text",
 	"db/meeting_transcripts.go:DeleteMeetingTranscriptTx": "deletes a recording's meeting chat (meetings.delete), no text read",
-	"chatstore/attachments.go:SaveAttachment":             "inserts an attachment row of an existing conversation, no text read",
 	// The phone's chat (iPhone chat spec §4.6): the hub's chat slices and the
 	// Go port of the Mac's ⌘K search show chat text on the phone and store
 	// nothing (the slices live in memory and the sealed relay records only).
-	"db/chat_search.go:chatTitleMatches":                     "the ⌘K search port: title hits shown on the phone",
-	"db/chat_search.go:chatMessageMatches":                   "the ⌘K search port: message hits shown on the phone",
-	"hub/slices/sources/chat_list.go:chatListRows":           "the phone's chat list (titles, states, last lines)",
-	"hub/slices/sources/chat_feed.go:chatFeedConversationTx": "the phone's chat feed: the conversation's meta",
-	"hub/slices/sources/chat_feed.go:chatBranchTx":           "the phone's chat feed: the active branch's ids",
-	"hub/slices/sources/chat_feed.go:chatFeedMessageRowsTx":  "the phone's chat feed: the messages shown",
-	"hub/slices/sources/chat_feed.go:chatFeedActionsTx":      "the phone's chat feed: the actions of the turns shown",
-	"hub/slices/sources/chat_feed.go:buildChatPage":          "the phone's chat page: older messages shown",
-	"hub/slices/sources/registry.go:ChangeTables":            "table names of the hub's data_version watch, no read",
+	"db/chat_search.go:chatTitleMatches":   "the ⌘K search port: title hits shown on the phone",
+	"db/chat_search.go:chatMessageMatches": "the ⌘K search port: message hits shown on the phone",
+	// The chat engine's reads (unified chat #1822): the feed, list and page
+	// every client shows, built in memory and never stored.
+	"chatengine/list.go:chatListRows":           "the chat list (titles, states, last lines)",
+	"chatengine/feed.go:chatFeedConversationTx": "the chat feed: the conversation's meta",
+	"chatengine/feed.go:chatBranchTx":           "the chat feed: the active branch's ids",
+	"chatengine/feed.go:chatFeedMessageRowsTx":  "the chat feed: the messages shown",
+	"chatengine/feed.go:chatFeedActionsTx":      "the chat feed: the actions of the turns shown",
+	"chatengine/engine.go:clientKeyEcho":        "ids and the turn id of the row a client key started, no text",
+	"chatengine/engine.go:SelectBranch":         "the selected message's conversation id, no text",
+	"chatengine/reattach.go:heldTurnOf":         "a reattached turn's reply id, parent id and project id, no text",
+	"chatstore/resend.go:Resend":                "the owner's own turn text, resent to that turn's own session (no lasting store)",
+	// The engine's Mac operations (unified chat #1822 T2): project and
+	// artifact panel writes.
+	"chatengine/artifacts.go:artifactWriteTx":        "keep reads the conversation's LIVE-01 mark to refuse a marked chat; no text",
+	"chatengine/projects.go:deleteProject":           "the deleted project's conversation ids, no text",
+	"chatengine/projects.go:dropSessionsTx":          "clears the session id of a project's chats",
+	"chatstore/attachments.go:SaveProjectAttachment": "inserts a project file row and clears the project chats' session ids, no text read",
 }
 
 // TestLIVE01_ReaderList fails when a non-test function in internal/ mentions

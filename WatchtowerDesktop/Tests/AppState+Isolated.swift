@@ -47,6 +47,7 @@ extension AppState {
         appState.findWipeLLMRunner = { wipe } // never wipes a real workspace
         appState.daemonStartQueue = DaemonStartQueue()
         appState.wireAppDatabaseOverride = { _ in }
+        appState.chatShutdownCLI = {} // never `watchtower chat shutdown` on this Mac
         appState.readinessEnvironmentOverride = FakeReadinessEnvironment()
         appState.homeDefaultsOverride = defaults
         appState.compactionDBPathOverride = { "/isolated/watchtower.db" }
@@ -217,6 +218,8 @@ struct NotDueCompactionCLI: CompactionCLI {
             due: false, reason: "", dbBytes: 0, walBytes: 0, freeDiskBytes: 0, needsDiskBytes: 0, diskOk: true
         )
     }
+
+    func chatShutdown() async {}
 
     func startCompact(onPhase: @escaping @Sendable (CompactionRunPhase) -> Void) throws -> any CompactionChild {
         throw Unexpected()

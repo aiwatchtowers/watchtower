@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 
 /// The chat's right-side inspector shows one of two panels.
 package enum ChatInspectorMode: String, CaseIterable, Equatable, Sendable {

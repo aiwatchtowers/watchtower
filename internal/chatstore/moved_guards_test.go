@@ -5,14 +5,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/chat"
-	"watchtower/internal/tower/api"
 )
 
 // The guards of the Desktop's Swift turn store (ChatTurnStore, deleted by
@@ -108,7 +106,7 @@ func TestChat02WaitingStepIsVisibleUntilItEnds(t *testing.T) {
 	assert.Equal(t, sql.NullBool{Bool: true, Valid: true}, rows[1].OK)
 }
 
-func liveMark(t *testing.T, s *Store, conv int64) sql.NullInt64 {
+func liveMarkOf(t *testing.T, s *Store, conv int64) sql.NullInt64 {
 	t.Helper()
 	var mark sql.NullInt64
 	require.NoError(t, s.db.QueryRow(`SELECT live_slack_since FROM chat_conversations WHERE id = ?`, conv).Scan(&mark))
@@ -140,7 +138,7 @@ func TestFinalizeMarksConversationOnSlackStep(t *testing.T) {
 	insertStep(t, s, st.AssistantMessageID, 0, "search_knowledge")
 	insertStep(t, s, st.AssistantMessageID, 1, "claude_ai_Slack:slack_search_public")
 	finishTurn(t, turn, st)
-	assert.Equal(t, sql.NullInt64{Int64: st.AssistantMessageID, Valid: true}, liveMark(t, s, conv))
+	assert.Equal(t, sql.NullInt64{Int64: st.AssistantMessageID, Valid: true}, liveMarkOf(t, s, conv))
 }
 
 // TestStepStartMarksWithoutFinalize (BEHAVIOR LIVE-01): a Slack step marks
@@ -151,9 +149,9 @@ func TestStepStartMarksWithoutFinalize(t *testing.T) {
 	st := send(t, s, conv, "hi")
 	turn := s.Turn(st)
 	require.NoError(t, turn.Apply(toolStart(st.TurnID, "a", "search_knowledge")))
-	assert.False(t, liveMark(t, s, conv).Valid)
+	assert.False(t, liveMarkOf(t, s, conv).Valid)
 	require.NoError(t, turn.Apply(toolStart(st.TurnID, "b", "codex_apps:slack.slack_search_public")))
-	assert.Equal(t, sql.NullInt64{Int64: st.AssistantMessageID, Valid: true}, liveMark(t, s, conv))
+	assert.Equal(t, sql.NullInt64{Int64: st.AssistantMessageID, Valid: true}, liveMarkOf(t, s, conv))
 }
 
 // TestFinalizeMarksConversationOnCodexSlackStep (BEHAVIOR LIVE-01).
@@ -164,7 +162,7 @@ func TestFinalizeMarksConversationOnCodexSlackStep(t *testing.T) {
 	turn := s.Turn(st)
 	insertStep(t, s, st.AssistantMessageID, 0, "codex_apps:slack.slack_read_channel")
 	finishTurn(t, turn, st)
-	assert.Equal(t, sql.NullInt64{Int64: st.AssistantMessageID, Valid: true}, liveMark(t, s, conv))
+	assert.Equal(t, sql.NullInt64{Int64: st.AssistantMessageID, Valid: true}, liveMarkOf(t, s, conv))
 }
 
 // TestFinalizeLeavesUnmarkedWithoutSlackStep (BEHAVIOR LIVE-01): other
@@ -178,7 +176,7 @@ func TestFinalizeLeavesUnmarkedWithoutSlackStep(t *testing.T) {
 		insertStep(t, s, st.AssistantMessageID, i, name)
 	}
 	finishTurn(t, turn, st)
-	assert.False(t, liveMark(t, s, conv).Valid)
+	assert.False(t, liveMarkOf(t, s, conv).Valid)
 }
 
 // TestFirstMarkIsKept (BEHAVIOR LIVE-01): a marked conversation keeps its first mark.
@@ -191,7 +189,7 @@ func TestFirstMarkIsKept(t *testing.T) {
 	_, err := d.Exec(`UPDATE chat_conversations SET live_slack_since = 1 WHERE id = ?`, conv)
 	require.NoError(t, err)
 	finishTurn(t, turn, st)
-	assert.Equal(t, sql.NullInt64{Int64: 1, Valid: true}, liveMark(t, s, conv))
+	assert.Equal(t, sql.NullInt64{Int64: 1, Valid: true}, liveMarkOf(t, s, conv))
 }
 
 // TestEveryGoSlackStepNameMarks (BEHAVIOR LIVE-01): every Slack connector
@@ -210,37 +208,13 @@ func TestEveryGoSlackStepNameMarks(t *testing.T) {
 		conv := newConversation(t, d)
 		st := send(t, s, conv, "start "+name)
 		require.NoError(t, s.Turn(st).Apply(toolStart(st.TurnID, "a", name)))
-		assert.True(t, liveMark(t, s, conv).Valid, "step start: %s", name)
+		assert.True(t, liveMarkOf(t, s, conv).Valid, "step start: %s", name)
 
 		conv2 := newConversation(t, d)
 		st2 := send(t, s, conv2, "end "+name)
 		turn := s.Turn(st2)
 		insertStep(t, s, st2.AssistantMessageID, 0, name)
 		finishTurn(t, turn, st2)
-		assert.True(t, liveMark(t, s, conv2).Valid, "finalize: %s", name)
+		assert.True(t, liveMarkOf(t, s, conv2).Valid, "finalize: %s", name)
 	}
-}
-
-// TestKeepRefusedForLiveConversation (BEHAVIOR LIVE-01): keeping an
-// artifact of a conversation that used Live Slack is refused, nothing kept.
-func TestKeepRefusedForLiveConversation(t *testing.T) {
-	tw, d, _ := chatTower(t)
-	conv := newConversation(t, d)
-	_, err := d.Exec(`INSERT INTO chat_messages (id, conversation_id, role, text, created_at, turn_id, status)
-		VALUES (9, ?, 'assistant', 'x', 1, 't', 'complete')`, conv)
-	require.NoError(t, err)
-	keep := func(id string) api.Response {
-		return callChat(t, tw, "chat.artifact.keep", id, json.RawMessage(`{"conversation_id":`+strconv.FormatInt(conv, 10)+`,"artifact_key":"plan","version":1}`), "socket")
-	}
-	require.Equal(t, api.StatusOK, keep("k1").Status)
-	unkeep := callChat(t, tw, "chat.artifact.unkeep", "u1", json.RawMessage(`{"conversation_id":`+strconv.FormatInt(conv, 10)+`,"artifact_key":"plan"}`), "socket")
-	require.Equal(t, api.StatusOK, unkeep.Status)
-	_, err = d.Exec(`UPDATE chat_conversations SET live_slack_since = 9 WHERE id = ?`, conv)
-	require.NoError(t, err)
-	resp := keep("k2")
-	require.Equal(t, api.StatusRefused, resp.Status)
-	assert.Equal(t, api.CodeNotPermitted, resp.Refusal.Code)
-	var kept int
-	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM chat_knowledge_artifacts WHERE conversation_id = ?`, conv).Scan(&kept))
-	assert.Zero(t, kept)
 }

@@ -928,6 +928,8 @@ git commit -m "feat(chat): chat.* tower commands and their Go writers (#1170)"
 
 ### Task 18: Desktop chat on `--persist` and `TowerClient`
 
+> **Superseded for the main chat (2026-11-18, ask #1469):** the main-chat half of this task (`ai session --persist`, the desktop lease, the main chat's `chat.*` commands and their Swift wiring) was retired when main's unified chat (#1822) was merged in; its engine writes the main chat. The embedded chats' half (`ai query --persist`, their `chat.*` commands, drafts, `meetings.delete`) stays. Spec §8 carries the same note.
+
 **Depends on:** Task 4, Task 5 (`AppState.towerClient`, launch wiring), Task 17
 
 **Files:**

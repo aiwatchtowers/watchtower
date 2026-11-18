@@ -227,8 +227,8 @@ func TestNudgeTableCoversEveryRegisteredKind(t *testing.T) {
 		registered = append(registered, k)
 	}
 	for _, k := range registered {
-		if len(NudgeTable[k]) == 0 {
-			t.Fatalf("%s has no nudge", k)
+		if n, ok := NudgeTable[k]; !ok || (len(n) == 0) != EchoOnlyKinds[k] {
+			t.Fatalf("%s: nudge %v, echo-only %v", k, n, EchoOnlyKinds[k])
 		}
 		func() {
 			defer func() {

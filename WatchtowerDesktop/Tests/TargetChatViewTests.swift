@@ -144,7 +144,7 @@ final class TargetChatViewTests: XCTestCase {
         chat.actionFeed.refresh()
         let owner = try XCTUnwrap(chat.engine.messages.first { $0.message.isUser })
         let reply = try XCTUnwrap(chat.engine.messages.first { $0.message.isAssistant })
-        XCTAssertEqual(try TargetChatProposals(chatVM: chat, item: owner).inspect().findAll(AgentActionCardView.self).count, 0)
-        XCTAssertEqual(try TargetChatProposals(chatVM: chat, item: reply).inspect().findAll(AgentActionCardView.self).count, 1)
+        XCTAssertEqual(try TargetChatProposals(chatVM: chat, item: owner).inspect().findAll(MacAgentActionCard.self).count, 0)
+        XCTAssertEqual(try TargetChatProposals(chatVM: chat, item: reply).inspect().findAll(MacAgentActionCard.self).count, 1)
     }
 }

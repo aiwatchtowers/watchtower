@@ -1,3 +1,4 @@
+import ChatWire
 import DesignKit
 import GRDB
 @testable import WatchtowerDesktop
@@ -11,8 +12,9 @@ import XCTest
 /// `internal/inboxfeed/testdata` (Go runs them in
 /// `TestApprovalText_SharedCases` and `TestTargetState_SharedCases`):
 /// - `approval_text_cases.json`: the native approval card's title, body
-///   lines and edit (`AgentActionCardView.title`/`summaryLines`, the Slack
-///   and connector branches of its body); `SaveAutomationProposalPane`
+///   lines and edit (`MacAgentActionCard.title`/`summaryLines` over
+///   ChatWire's `Actions/` rules, the Slack and connector branches of its
+///   body); `SaveAutomationProposalPane`
 ///   draws Go's own lines since Task 11d-b, so its case checks they come
 ///   through the pane's split unchanged;
 /// - `target_button_cases.json`: an Inbox target button's state, Go's since
@@ -83,7 +85,7 @@ final class ApprovalTextParityTests: XCTestCase {
 
     /// A proposal's card as the Inbox reading pane draws it: a pending
     /// save_automation as `SaveAutomationProposalPane` (its name, then For /
-    /// When / It may, Open Draft), else `AgentActionCardView` (its title; a
+    /// When / It may, Open Draft), else `MacAgentActionCard` (its title; a
     /// save_automation's `SaveAutomationCardDetails` text: the scope line,
     /// the model's lines, the dry-run summary; a connector call's connector,
     /// tool and input with Edit Input; a Slack send's recipient and text
@@ -106,14 +108,14 @@ final class ApprovalTextParityTests: XCTestCase {
             let summary = SaveAutomationProposalSummary(approval: approval)
             return (summary.name, summary.lines.map { "\($0.label): \($0.value)" }, approval.editOnMac)
         }
-        let title = AgentActionCardView.title(for: action)
+        let title = MacAgentActionCard.title(for: action)
         if let connector = ConnectorCallProposal(action: action) {
             return (title, ["Connector: \(connector.server)", "Tool: \(connector.toolName)", connector.inputJSON], true)
         }
-        if SlackSendProposal(action: action) != nil, let lines = AgentActionCardView.slackSummaryLines(for: action) {
+        if SlackSendProposal(action: action) != nil, let lines = ActionSummaryLines.slackSummaryLines(for: action) {
             return (title, lines, true)
         }
-        return (title, AgentActionCardView.summaryLines(for: action), false)
+        return (title, MacAgentActionCard.summaryLines(for: action), false)
     }
 
     /// SaveAutomationCardDetails' recipe disclosure on a save_automation

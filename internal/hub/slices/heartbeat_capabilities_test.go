@@ -125,9 +125,9 @@ func TestHeartbeatCarriesTheChatCapability(t *testing.T) {
 	if c := capabilitiesOf(t, onlyItem(t, src).Payload); c == nil || c.Chat != "on" || c.ChatReason != "" {
 		t.Fatalf("capabilities = %+v", c)
 	}
-	on, reason = false, wire.ChatOffDesktopTooOld
+	on, reason = false, wire.ChatOffRunnerDown
 	now = now.Add(time.Second)
-	if c := capabilitiesOf(t, onlyItem(t, src).Payload); c == nil || c.Chat != "off" || c.ChatReason != wire.ChatOffDesktopTooOld {
+	if c := capabilitiesOf(t, onlyItem(t, src).Payload); c == nil || c.Chat != "off" || c.ChatReason != wire.ChatOffRunnerDown {
 		t.Fatalf("capabilities = %+v", c)
 	}
 }

@@ -422,7 +422,6 @@ func TestPrefix_RememberAndIdeaRun(t *testing.T) {
 	st := send(t, s, conv, "remember: answer in   short bullets")
 	require.NoError(t, st.PrefixErr)
 	assert.Equal(t, string(db.RememberAdded), st.RememberOutcome)
-	assert.NotZero(t, st.RememberLineID, "the added line's id (the Mac's Undo)")
 	got, err := d.GetOwnerInstructions()
 	require.NoError(t, err)
 	assert.Contains(t, got.Chat, "answer in short bullets")
@@ -430,7 +429,6 @@ func TestPrefix_RememberAndIdeaRun(t *testing.T) {
 	st = send(t, s, newConversation(t, d), "решили: ship on Monday\nQA signed off")
 	require.NoError(t, st.PrefixErr)
 	require.NotZero(t, st.IdeaID)
-	assert.Equal(t, "decision", st.IdeaKind)
 	var kind, essence string
 	var chatBorn int
 	require.NoError(t, d.QueryRow(`SELECT kind, essence, chat_born FROM ideas WHERE id = ?`, st.IdeaID).Scan(&kind, &essence, &chatBorn))
@@ -628,166 +626,11 @@ func TestPrefix_RememberInLiveChatOnlyOwnerText(t *testing.T) {
 	require.NoError(t, st.PrefixErr)
 	assert.Equal(t, string(db.RememberAdded), st.RememberOutcome, "the owner's own words")
 
-	outcome, _, err := s.remember("the launch moved to Friday", conv, st.UserMessageID)
+	outcome, err := s.remember("the launch moved to Friday", conv, st.UserMessageID)
 	require.NoError(t, err)
 	assert.Equal(t, RememberNotOwnerText, outcome)
 	got, err := d.GetOwnerInstructions()
 	require.NoError(t, err)
 	assert.NotContains(t, got.Chat, "launch moved")
 	assert.Contains(t, got.Chat, "answer in short bullets")
-}
-
-func insertMsg(t *testing.T, d *db.DB, conv int64, parent any, role, text, turn string) int64 {
-	t.Helper()
-	res, err := d.Exec(`INSERT INTO chat_messages (conversation_id, parent_id, role, text, created_at, turn_id, status)
-		VALUES (?, ?, ?, ?, 1, ?, 'complete')`, conv, parent, role, text, turn)
-	require.NoError(t, err)
-	id, err := res.LastInsertId()
-	require.NoError(t, err)
-	return id
-}
-
-func insertComment(t *testing.T, d *db.DB, conv int64, status string) int64 {
-	t.Helper()
-	var sentAt any
-	if status == "sent" {
-		sentAt = 1.0
-	}
-	res, err := d.Exec(`INSERT INTO chat_artifact_comments (conversation_id, artifact_key, artifact_version, body, anchor_quote, status, created_at, sent_at)
-		VALUES (?, 'doc', 1, 'why?', 'a passage', ?, 1, ?)`, conv, status, sentAt)
-	require.NoError(t, err)
-	id, err := res.LastInsertId()
-	require.NoError(t, err)
-	return id
-}
-
-// TestStart_QuoteBatchRows: the "Send N comments" batch turns its open
-// comments sent in the owner row's transaction (the Mac's alsoWrite →
-// ArtifactCommentQueries.markSent); a comment already sent or resolved, or
-// one of another conversation, is left alone; a refused start writes none.
-func TestStart_QuoteBatchRows(t *testing.T) {
-	d, s, clock := newStore(t)
-	conv := newConversation(t, d)
-	other := newConversation(t, d)
-	open1, open2 := insertComment(t, d, conv, "open"), insertComment(t, d, conv, "open")
-	resolved := insertComment(t, d, conv, "resolved")
-	foreign := insertComment(t, d, other, "open")
-	untouched := insertComment(t, d, conv, "open")
-
-	composed := "About the doc:\n> a passage\nwhy?"
-	title := "About the doc"
-	st, err := s.Start(context.Background(), StartRequest{ConversationID: conv, Mode: ModeSend, Text: composed, TitleText: &title,
-		TurnID: "t1", Quotes: []Quote{{CommentID: open1}, {CommentID: open2}, {CommentID: resolved}, {CommentID: foreign}}})
-	require.NoError(t, err)
-	owner, ok := message(t, d, st.UserMessageID)
-	require.True(t, ok)
-	assert.Equal(t, composed, owner.Text, "the client-composed text is stored as given")
-	var convTitle string
-	require.NoError(t, d.QueryRow(`SELECT title FROM chat_conversations WHERE id = ?`, conv).Scan(&convTitle))
-	assert.Equal(t, title, convTitle, "the prefix title comes from title_text")
-
-	status := func(id int64) (string, sql.NullFloat64) {
-		var st string
-		var at sql.NullFloat64
-		require.NoError(t, d.QueryRow(`SELECT status, sent_at FROM chat_artifact_comments WHERE id = ?`, id).Scan(&st, &at))
-		return st, at
-	}
-	for _, id := range []int64{open1, open2} {
-		got, at := status(id)
-		assert.Equal(t, "sent", got)
-		assert.InDelta(t, seconds(clock.now()), at.Float64, 0.001)
-	}
-	got, _ := status(resolved)
-	assert.Equal(t, "resolved", got)
-	got, _ = status(foreign)
-	assert.Equal(t, "open", got, "a comment of another conversation is never marked")
-	got, _ = status(untouched)
-	assert.Equal(t, "open", got)
-
-	// A refused start (the lease is held) writes no comment.
-	_, err = s.Start(context.Background(), StartRequest{ConversationID: conv, Mode: ModeSend, Text: "again", TurnID: "t2",
-		Quotes: []Quote{{CommentID: untouched}}})
-	require.ErrorIs(t, err, ErrBusy)
-	got, _ = status(untouched)
-	assert.Equal(t, "open", got)
-
-	// Quotes and title_text belong to a new message only.
-	for _, r := range []StartRequest{
-		{ConversationID: conv, Mode: ModeEdit, MessageID: st.UserMessageID, Text: "x", Quotes: []Quote{{CommentID: untouched}}},
-		{ConversationID: conv, Mode: ModeEdit, MessageID: st.UserMessageID, Text: "x", TitleText: &title},
-		{ConversationID: conv, Mode: ModeRegenerate, MessageID: st.AssistantMessageID, Quotes: []Quote{{CommentID: untouched}}},
-	} {
-		_, err := s.Start(context.Background(), r)
-		assert.ErrorIs(t, err, ErrInvalid)
-	}
-}
-
-// TestStart_RegenerateReusesTheOwnerMessage: a regenerate named by its owner
-// message (the Mac's reuseUserMessageID) writes no owner row, no placeholder
-// and no title: only the new partial reply under the reused message, which
-// resends its files and replays.
-func TestStart_RegenerateReusesTheOwnerMessage(t *testing.T) {
-	d, s, _ := newStore(t)
-	conv := newConversation(t, d)
-	u1 := insertMsg(t, d, conv, nil, "user", "first question", "t0")
-	a1 := insertMsg(t, d, conv, u1, "assistant", "first answer", "t0")
-	_, err := d.Exec(`INSERT INTO chat_attachments (conversation_id, message_id, name, mime, size, path, sha256, created_at)
-		VALUES (?, ?, 'a.png', 'image/png', 1, '/tmp/a.png', 'sha', 1)`, conv, u1)
-	require.NoError(t, err)
-
-	st, err := s.Start(context.Background(), StartRequest{ConversationID: conv, Mode: ModeRegenerate, ReuseOwnerMessageID: u1, TurnID: "t1"})
-	require.NoError(t, err)
-	assert.Equal(t, u1, st.UserMessageID)
-	assert.True(t, st.Replay)
-	assert.Equal(t, "first question", st.SendText)
-	require.Len(t, st.Attachments, 1)
-	assert.Equal(t, "a.png", st.Attachments[0].Name)
-
-	var n int
-	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM chat_messages WHERE conversation_id = ?`, conv).Scan(&n))
-	assert.Equal(t, 3, n, "only the new reply")
-	var parent int64
-	require.NoError(t, d.QueryRow(`SELECT parent_id FROM chat_messages WHERE id = ?`, st.AssistantMessageID).Scan(&parent))
-	assert.Equal(t, u1, parent)
-	assert.NotEqual(t, a1, st.AssistantMessageID)
-
-	require.NoError(t, s.Turn(st).Finalize(StatusComplete, nil)) // releases the lease
-	// Not an owner message, unknown, or both targets at once: refused.
-	_, err = s.Start(context.Background(), StartRequest{ConversationID: conv, Mode: ModeRegenerate, ReuseOwnerMessageID: a1})
-	assert.ErrorIs(t, err, ErrInvalid)
-	_, err = s.Start(context.Background(), StartRequest{ConversationID: conv, Mode: ModeRegenerate, ReuseOwnerMessageID: 9999})
-	assert.ErrorIs(t, err, ErrNotFound)
-	_, err = s.Start(context.Background(), StartRequest{ConversationID: conv, Mode: ModeRegenerate, ReuseOwnerMessageID: u1, MessageID: a1})
-	assert.ErrorIs(t, err, ErrInvalid)
-}
-
-// TestStart_EditReusesAndWritesThePlaceholder: an edit keeps the original's
-// files and parent; when that parent is a legacy owner question nobody
-// answered, its empty partial reply is written first and the edited
-// sibling sits under it (persistTurnStart's answerIfOwnerMessage).
-func TestStart_EditReusesAndWritesThePlaceholder(t *testing.T) {
-	d, s, _ := newStore(t, WithPreferredProvider("claude"))
-	conv := newConversation(t, d)
-	legacy := insertMsg(t, d, conv, nil, "user", "a legacy question", "old")
-	u1 := insertMsg(t, d, conv, legacy, "user", "the original", "t0")
-	_, err := d.Exec(`INSERT INTO chat_attachments (conversation_id, message_id, name, mime, size, path, sha256, created_at)
-		VALUES (?, ?, 'a.pdf', 'application/pdf', 1, '/tmp/a.pdf', 'sha', 1)`, conv, u1)
-	require.NoError(t, err)
-
-	st, err := s.Start(context.Background(), StartRequest{ConversationID: conv, Mode: ModeEdit, MessageID: u1, Text: "the edit", TurnID: "t1"})
-	require.NoError(t, err)
-	require.Len(t, st.Attachments, 1, "the original's files are sent again")
-
-	var placeholder int64
-	var role, text, status, turn, provider string
-	require.NoError(t, d.QueryRow(`SELECT id, role, text, status, turn_id, provider FROM chat_messages WHERE parent_id = ? AND role = 'assistant'`, legacy).
-		Scan(&placeholder, &role, &text, &status, &turn, &provider))
-	assert.Equal(t, []string{"assistant", "", "partial", "old", "claude"}, []string{role, text, status, turn, provider})
-	var parent int64
-	require.NoError(t, d.QueryRow(`SELECT parent_id FROM chat_messages WHERE id = ?`, st.UserMessageID).Scan(&parent))
-	assert.Equal(t, placeholder, parent, "the edited sibling sits under the placeholder")
-	assert.NotEqual(t, u1, st.UserMessageID)
-	var link int64
-	require.NoError(t, d.QueryRow(`SELECT message_id FROM chat_attachments WHERE conversation_id = ?`, conv).Scan(&link))
-	assert.Equal(t, u1, link, "the files stay on the original")
 }

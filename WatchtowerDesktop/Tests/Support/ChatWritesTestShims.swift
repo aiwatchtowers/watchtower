@@ -13,24 +13,6 @@ extension ChatWrites {
     }
 }
 
-extension ArtifactPanelModel {
-    package convenience init(db: any DatabaseWriter, conversationID: Int64, key: String) {
-        self.init(db: db, writes: .fake(db), conversationID: conversationID, key: key)
-    }
-}
-
-extension ArtifactCommentsModel {
-    package convenience init(db: any DatabaseWriter, conversationID: Int64, key: String) {
-        self.init(db: db, writes: .fake(db), conversationID: conversationID, key: key)
-    }
-}
-
-extension ChatAttachmentStore {
-    package convenience init(db: any DatabaseWriter, rootDir: URL) {
-        self.init(db: db, rootDir: rootDir, writes: .fake(db))
-    }
-}
-
 extension DatabaseEmbeddedChatStore {
     package convenience init(dbPool: DatabasePool, conversationID: Int64) {
         self.init(dbPool: dbPool, writes: .fake(dbPool), conversationID: conversationID)

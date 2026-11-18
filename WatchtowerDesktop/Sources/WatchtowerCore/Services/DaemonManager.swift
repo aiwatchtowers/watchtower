@@ -191,7 +191,7 @@ package final class DaemonManager {
         guard let path = watchtowerPath else { return }
 
         do {
-            let status = try await Self.runProcess(path: path, arguments: ["sync", "stop"])
+            let status = try await Self.runProcess(path: path, arguments: ["sync", "stop", "--internal"])
             if status == 0 {
                 isRunning = false
                 errorMessage = nil
@@ -349,7 +349,7 @@ package final class DaemonManager {
 
         var stopStatus: Int32 = 1
         do {
-            stopStatus = try await runProcess(path: path, arguments: ["sync", "stop"])
+            stopStatus = try await runProcess(path: path, arguments: ["sync", "stop", "--internal"])
         } catch {
             NSLog("DaemonManager: restart: `sync stop` failed to spawn: %@", error.localizedDescription)
         }
@@ -422,7 +422,9 @@ package final class DaemonManager {
     /// gives up and says so.
     nonisolated private static let sigtermGrace: Duration = .milliseconds(250)
 
-    /// Stop the daemon with a bounded wait: `sync stop` (the daemon gets up to
+    /// Stop the daemon with a bounded wait: `sync stop --internal` (an app
+    /// stop: no stopped marker, chat sessions left to whoever ends them —
+    /// spec §7; the daemon gets up to
     /// 10 s of SIGTERM grace from the CLI) under an outer watchdog. If the CLI
     /// hangs, the watchdog terminates the subprocess once the timeout expires,
     /// so no caller can block forever — the next launch adopts or replaces the
@@ -438,15 +440,42 @@ package final class DaemonManager {
         cliPath: String? = Constants.findCLIPath(),
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) async {
+        await runBounded(["sync", "stop", "--internal"], timeout: timeout, cliPath: cliPath, sleep: sleep)
+    }
+
+    /// `watchtower chat shutdown` with a short `chat.sock` step: the app has
+    /// already asked the engine (or, at compaction, needs the sessions gone
+    /// whatever the engine does), so the direct reap — cancel and close over
+    /// each session socket, 2 s, SIGTERM, SIGKILL 3 s later — always runs
+    /// inside the watchdog: about 1 + 5 s of the 12.
+    package static let chatShutdownArguments = ["chat", "shutdown", "--socket-timeout", "1s"]
+
+    /// `chatShutdownArguments` under the same watchdog as the bounded stop:
+    /// the chat's stop when the engine could not end it (spec §7).
+    package nonisolated static func chatShutdownBounded(
+        timeout: Duration = .seconds(12),
+        cliPath: String? = Constants.findCLIPath(),
+        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    ) async {
+        await runBounded(chatShutdownArguments, timeout: timeout, cliPath: cliPath, sleep: sleep)
+    }
+
+    nonisolated private static func runBounded(
+        _ arguments: [String],
+        timeout: Duration,
+        cliPath: String?,
+        sleep: @escaping @Sendable (Duration) async -> Void
+    ) async {
         guard let path = cliPath else { return }
 
-        let process = makeProcess(path: path, arguments: ["sync", "stop"])
+        let verb = arguments.prefix(2).joined(separator: " ")
+        let process = makeProcess(path: path, arguments: arguments)
         let exit = ProcessExitSignal()
         process.terminationHandler = { _ in exit.fire() }
         do {
             try process.run()
         } catch {
-            NSLog("DaemonManager: could not spawn `sync stop` at %@: %@", path, error.localizedDescription)
+            NSLog("DaemonManager: could not spawn `%@` at %@: %@", verb, path, error.localizedDescription)
             return
         }
 
@@ -459,7 +488,7 @@ package final class DaemonManager {
         // and a child that ignores it is worth a line in the log.
         if await exit.wait(orSleep: sigtermGrace, sleep: sleep) { return }
         if process.isRunning {
-            NSLog("DaemonManager: `sync stop` (pid %d) survived SIGTERM; leaving it to the OS", pid)
+            NSLog("DaemonManager: `%@` (pid %d) survived SIGTERM; leaving it to the OS", verb, pid)
         }
     }
 

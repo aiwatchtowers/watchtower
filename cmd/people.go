@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -42,14 +43,82 @@ var peopleGenerateCmd = &cobra.Command{
 	RunE:  runPeopleGenerate,
 }
 
+var (
+	peopleExcludeFlagUser string
+	peopleExcludeFlagJSON bool
+)
+
+var peopleExcludeCmd = &cobra.Command{
+	Use:   "exclude",
+	Short: "Stop people cards for a person",
+	Long: "Stop people cards for a person: their cards are deleted and no new card is made for them " +
+		"until `watchtower people include`.",
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, _ []string) error { return runPeopleExclude(cmd, true) },
+}
+
+var peopleIncludeCmd = &cobra.Command{
+	Use:   "include",
+	Short: "Make people cards for a person again",
+	Long:  "Make people cards for a person again after `watchtower people exclude`; the next people run may make one.",
+	Args:  cobra.NoArgs,
+	RunE:  func(cmd *cobra.Command, _ []string) error { return runPeopleExclude(cmd, false) },
+}
+
 func init() {
 	rootCmd.AddCommand(peopleCmd)
 	peopleCmd.AddCommand(peopleGenerateCmd)
+	for _, c := range []*cobra.Command{peopleExcludeCmd, peopleIncludeCmd} {
+		peopleCmd.AddCommand(c)
+		c.Flags().StringVar(&peopleExcludeFlagUser, "user", "", "the person's user id as stored (\"<account>:<user id>\")")
+		c.Flags().BoolVar(&peopleExcludeFlagJSON, "json", false, "output as JSON")
+	}
 	peopleCmd.Flags().StringVar(&peopleFlagUser, "user", "", "show card for a specific user (@username)")
 	peopleCmd.Flags().BoolVar(&peopleFlagPrevious, "previous", false, "show previous 7-day window")
 	peopleCmd.Flags().IntVar(&peopleFlagWeeks, "weeks", 1, "number of weeks to show")
 	peopleGenerateCmd.Flags().IntVar(&peopleFlagWorkers, "workers", 0, "override ai.workers for this run")
 	peopleGenerateCmd.Flags().BoolVar(&peopleGenFlagProgressJSON, "progress-json", false, "output progress as JSON lines")
+}
+
+// peopleExcludeResult is the --json answer of `people exclude|include`.
+type peopleExcludeResult struct {
+	OK       bool   `json:"ok"`
+	UserID   string `json:"user_id"`
+	Excluded bool   `json:"excluded"`
+}
+
+func runPeopleExclude(cmd *cobra.Command, excluded bool) error {
+	userID := strings.TrimSpace(peopleExcludeFlagUser)
+	if userID == "" {
+		return errors.New("give the person's id with --user")
+	}
+	database, err := openDBFromConfig()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	// A Desktop click: wait out the daemon's write lock (ownerWriteBusyTimeout).
+	if err := database.SetBusyTimeout(ownerWriteBusyTimeout); err != nil {
+		return fmt.Errorf("setting the busy timeout: %w", err)
+	}
+	if excluded {
+		err = database.ExcludePerson(userID)
+	} else {
+		err = database.IncludePerson(userID)
+	}
+	if err != nil {
+		return err
+	}
+	out := cmd.OutOrStdout()
+	if peopleExcludeFlagJSON {
+		return writeJSON(out, peopleExcludeResult{OK: true, UserID: userID, Excluded: excluded})
+	}
+	if excluded {
+		fmt.Fprintf(out, "Stopped people cards for %s\n", userID)
+	} else {
+		fmt.Fprintf(out, "People cards for %s can be made again\n", userID)
+	}
+	return nil
 }
 
 func runPeople(cmd *cobra.Command, args []string) error {
@@ -137,16 +206,6 @@ func showPeopleList(_ *cobra.Command, out io.Writer, database *db.DB, _ *config.
 		fmt.Fprintln(&buf)
 		fmt.Fprintf(&buf, "%s\n\n", ps.Summary)
 
-		var attention []string
-		if err := json.Unmarshal([]byte(ps.Attention), &attention); err == nil && len(attention) > 0 {
-			fmt.Fprintln(&buf, "**Needs Attention:**")
-			fmt.Fprintln(&buf)
-			for _, item := range attention {
-				fmt.Fprintf(&buf, "- %s\n", item)
-			}
-			fmt.Fprintln(&buf)
-		}
-
 		var tips []string
 		if err := json.Unmarshal([]byte(ps.Tips), &tips); err == nil && len(tips) > 0 {
 			fmt.Fprintln(&buf, "**Tips:**")
@@ -172,26 +231,11 @@ func showPeopleList(_ *cobra.Command, out io.Writer, database *db.DB, _ *config.
 		}
 
 		fmt.Fprintf(&buf, "### @%s %s\n", userName, badges)
-		fmt.Fprintf(&buf, "%d msgs | %d channels", c.MessageCount, c.ChannelsActive)
-		if c.ThreadsInitiated > 0 || c.ThreadsReplied > 0 {
-			fmt.Fprintf(&buf, " | %d threads started | %d replied", c.ThreadsInitiated, c.ThreadsReplied)
-		}
-		if c.VolumeChangePct != 0 {
-			fmt.Fprintf(&buf, " | volume: %+.0f%%", c.VolumeChangePct)
-		}
-		fmt.Fprintln(&buf)
+		fmt.Fprintln(&buf, peopleBasisLine(c))
 		fmt.Fprintln(&buf)
 
 		if c.Summary != "" {
 			fmt.Fprintf(&buf, "%s\n\n", c.Summary)
-		}
-
-		var redFlags []string
-		if err := json.Unmarshal([]byte(c.RedFlags), &redFlags); err == nil && len(redFlags) > 0 {
-			for _, rf := range redFlags {
-				fmt.Fprintf(&buf, "- **!** %s\n", rf)
-			}
-			fmt.Fprintln(&buf)
 		}
 
 		var highlights []string
@@ -205,6 +249,12 @@ func showPeopleList(_ *cobra.Command, out io.Writer, database *db.DB, _ *config.
 
 	fmt.Fprint(out, ui.RenderMarkdown(buf.String()))
 	return nil
+}
+
+// peopleBasisLine says what a card rests on — counts only as its basis, no
+// activity score (#1769, spec §5.1 rule 2).
+func peopleBasisLine(c db.PeopleCard) string {
+	return fmt.Sprintf("Based on %d messages in %d channels", c.MessageCount, c.ChannelsActive)
 }
 
 func showUserDetail(out io.Writer, database *db.DB, username string, fromUnix, toUnix float64) error {
@@ -242,18 +292,12 @@ func showUserDetail(out io.Writer, database *db.DB, username string, fromUnix, t
 			fmt.Fprintln(&buf, "*Insufficient data for full analysis this period.*")
 		}
 
-		// Stats table
-		fmt.Fprintln(&buf, "| Metric | Value |")
-		fmt.Fprintln(&buf, "|--------|-------|")
-		fmt.Fprintf(&buf, "| Messages | %d |\n", c.MessageCount)
-		fmt.Fprintf(&buf, "| Channels active | %d |\n", c.ChannelsActive)
-		fmt.Fprintf(&buf, "| Threads started | %d |\n", c.ThreadsInitiated)
-		fmt.Fprintf(&buf, "| Threads replied | %d |\n", c.ThreadsReplied)
-		fmt.Fprintf(&buf, "| Avg message length | %.0f chars |\n", c.AvgMessageLength)
-		fmt.Fprintf(&buf, "| Volume change | %+.0f%% |\n", c.VolumeChangePct)
-		fmt.Fprintf(&buf, "| Style | %s |\n", c.CommunicationStyle)
-		fmt.Fprintf(&buf, "| Decision role | %s |\n", c.DecisionRole)
+		// The basis line, no stats grid (#1769, A12).
+		fmt.Fprintln(&buf, peopleBasisLine(c))
 		fmt.Fprintln(&buf)
+		if c.CommunicationStyle != "" || c.DecisionRole != "" {
+			fmt.Fprintf(&buf, "**Style:** %s | **Decision role:** %s\n\n", c.CommunicationStyle, c.DecisionRole)
+		}
 
 		if c.Summary != "" {
 			fmt.Fprintf(&buf, "**Summary:** %s\n\n", c.Summary)
@@ -265,16 +309,6 @@ func showUserDetail(out io.Writer, database *db.DB, username string, fromUnix, t
 
 		if c.DecisionStyle != "" {
 			fmt.Fprintf(&buf, "**Decision Style:** %s\n\n", c.DecisionStyle)
-		}
-
-		var redFlags []string
-		if err := json.Unmarshal([]byte(c.RedFlags), &redFlags); err == nil && len(redFlags) > 0 {
-			fmt.Fprintln(&buf, "**Red Flags:**")
-			fmt.Fprintln(&buf)
-			for _, rf := range redFlags {
-				fmt.Fprintf(&buf, "- %s\n", rf)
-			}
-			fmt.Fprintln(&buf)
 		}
 
 		var highlights []string
@@ -348,6 +382,10 @@ func runPeopleGenerate(cmd *cobra.Command, args []string) error {
 
 	if peopleFlagWorkers > 0 {
 		cfg.AI.Workers = peopleFlagWorkers
+	}
+	// The one-time upgrade pass deleting cards of non-partners (A13).
+	if _, err := guide.PrunePreUpgradeCards(cmdContext(cmd), database, logger); err != nil {
+		return err
 	}
 	gen, savePool := cliPooledGenerator(cfg)
 	defer savePool()
