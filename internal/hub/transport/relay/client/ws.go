@@ -35,8 +35,6 @@ var ErrDisconnected = errors.New("relay: websocket disconnected")
 
 // ErrNotSent is the ErrDisconnected of a request refused before any of it was written (no socket
 // at the time): the server never saw it, so it may be sent another way. It matches ErrDisconnected.
-// Local to this copy until the relay repo's client carries it (upstreamed in the live link relay
-// branch, #1992), so a re-pin by make relay-go keeps it.
 var ErrNotSent = fmt.Errorf("%w: request not sent", ErrDisconnected)
 
 // errUnauthenticated: the server refused the session at hello.
@@ -216,13 +214,14 @@ func (k *Conn) Subscribe(ctx context.Context, zones ...string) error {
 }
 
 // Send performs one operation over the WebSocket. Errors are as for Client.Do, plus ErrDisconnected
-// (ErrNotSent when the request was never written); an operation answered UNAVAILABLE is retried as
+// (ErrNotSent when no attempt of the request was ever written); an operation answered UNAVAILABLE is retried as
 // in Client.Do.
 func (k *Conn) Send(ctx context.Context, req *relayv1.Request) (*relayv1.Response, error) {
-	return k.c.retryUnavailable(ctx, func() (*relayv1.Response, error) { return k.sendOnce(ctx, req) })
+	written := false // whether an attempt of this Send reached a socket: then the server may have seen it
+	return k.c.retryUnavailable(ctx, func() (*relayv1.Response, error) { return k.sendOnce(ctx, req, &written) })
 }
 
-func (k *Conn) sendOnce(ctx context.Context, req *relayv1.Request) (*relayv1.Response, error) {
+func (k *Conn) sendOnce(ctx context.Context, req *relayv1.Request, written *bool) (*relayv1.Response, error) {
 	req = proto.Clone(req).(*relayv1.Request)
 	req.Id = k.nextID.Add(1)
 	b, err := proto.Marshal(&relayv1.Frame{Kind: &relayv1.Frame_Request{Request: req}})
@@ -237,8 +236,12 @@ func (k *Conn) sendOnce(ctx context.Context, req *relayv1.Request) (*relayv1.Res
 	}
 	k.mu.Unlock()
 	if ws == nil {
+		if *written {
+			return nil, ErrDisconnected
+		}
 		return nil, ErrNotSent
 	}
+	*written = true
 	defer func() {
 		k.mu.Lock()
 		delete(k.pending, req.Id)
