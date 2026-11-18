@@ -85,7 +85,7 @@ final class ApprovalTextParityTests: XCTestCase {
 
     /// A proposal's card as the Inbox reading pane draws it: a pending
     /// save_automation as `SaveAutomationProposalPane` (its name, then For /
-    /// When / It may, Open Draft), else `AgentActionCardView` (its title; a
+    /// When / It may, Open Draft), else `MacAgentActionCard` (its title; a
     /// save_automation's `SaveAutomationCardDetails` text: the scope line,
     /// the model's lines, the dry-run summary; a connector call's connector,
     /// tool and input with Edit Input; a Slack send's recipient and text
