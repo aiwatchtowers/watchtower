@@ -62,9 +62,31 @@ type messageSendOutput struct {
 	Warning   string `json:"warning,omitempty"`
 }
 
+// messageDismissOutput is dismiss's --json answer, the shape the Desktop
+// decodes: {"ok":true}, or ok false with the refusal's code and its
+// "<code>: <sentence>" text (spec D42).
 type messageDismissOutput struct {
-	MessageID int64 `json:"message_id"`
-	Dismissed bool  `json:"dismissed"`
+	OK        bool   `json:"ok"`
+	ErrorCode string `json:"error_code,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+// Dismiss refusal codes.
+const (
+	dismissNotFound   = "not_found"
+	dismissNotAllowed = "not_allowed"
+)
+
+// dismissRefused answers a refused dismiss: with --json ok false, its code
+// and "<code>: <sentence>"; exit 1 either way.
+func dismissRefused(cmd *cobra.Command, code, sentence string) error {
+	err := fmt.Errorf("%s: %s", code, sentence)
+	if messageFlagJSON {
+		if werr := writeJSON(cmd.OutOrStdout(), messageDismissOutput{ErrorCode: code, Error: err.Error()}); werr != nil {
+			return werr
+		}
+	}
+	return &exitCodeError{code: 1, err: err}
 }
 
 func runWorkbenchMessageSend(cmd *cobra.Command, _ []string) error {
@@ -139,7 +161,8 @@ func runWorkbenchMessageDismiss(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if caller != 0 {
-		return usageError("dismiss is the owner's, from the app: refused inside terminal session %d", caller)
+		return dismissRefused(cmd, dismissNotAllowed,
+			fmt.Sprintf("dismiss is the owner's, from the app: refused inside terminal session %d.", caller))
 	}
 	_, database, err := openJiraCmdDB()
 	if err != nil {
@@ -149,23 +172,22 @@ func runWorkbenchMessageDismiss(cmd *cobra.Command, _ []string) error {
 	var wb int64
 	err = database.QueryRowContext(cmdContext(cmd), `SELECT workbench_id FROM session_messages WHERE id = ?`, messageFlagID).Scan(&wb)
 	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("session message %d: not found", messageFlagID)
+		return dismissRefused(cmd, dismissNotFound, fmt.Sprintf("there is no agent message #%d.", messageFlagID))
 	}
 	if err != nil {
 		return fmt.Errorf("reading session message %d: %w", messageFlagID, err)
 	}
 	// Under an AI agent's marker with no session of its own: refused.
 	if err := checkSessionCaller(database, wb); err != nil {
-		return err
+		return dismissRefused(cmd, dismissNotAllowed, err.Error()+".")
 	}
 	if err := database.ClearPromptFlag(cmdContext(cmd), messageFlagID, time.Now()); err != nil {
 		return err //nolint:wrapcheck // ClearPromptFlag names the message
 	}
-	out := messageDismissOutput{MessageID: messageFlagID, Dismissed: true}
 	if messageFlagJSON {
-		return writeJSON(cmd.OutOrStdout(), out)
+		return writeJSON(cmd.OutOrStdout(), messageDismissOutput{OK: true})
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "message %d dismissed\n", out.MessageID)
+	fmt.Fprintf(cmd.OutOrStdout(), "message %d dismissed\n", messageFlagID)
 	return nil
 }
 

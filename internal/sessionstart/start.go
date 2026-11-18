@@ -437,7 +437,7 @@ func tellParentOfFailedStart(ctx context.Context, d Deps, id int64, startErr err
 	ctx = context.WithoutCancel(ctx)
 	var reason string
 	err := d.DB.QueryRowContext(ctx, `SELECT COALESCE(agent_error, '') FROM terminal_sessions
-		WHERE id = ? AND parent_session_id IS NOT NULL`, id).Scan(&reason)
+		WHERE id = ? AND parent_session_id IS NOT NULL AND `+db.NotDeletingSQL, id).Scan(&reason)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && reason == "") {
 		return // no parent, the row is gone, or no failure recorded
 	}

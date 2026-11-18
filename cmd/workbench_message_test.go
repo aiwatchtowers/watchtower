@@ -159,19 +159,34 @@ func TestMessageDismissClearsOnlyANullFlag(t *testing.T) {
 
 	out, err := runMessage(t, "", "dismiss", "--id", strconv.FormatInt(open, 10), "--json")
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"message_id":`+strconv.FormatInt(open, 10)+`,"dismissed":true}`, out)
+	assert.JSONEq(t, `{"ok":true}`, out, "the Desktop's decoded shape")
 	assert.NotEmpty(t, clearedAt(open))
 	_, err = runMessage(t, "", "dismiss", "--id", strconv.FormatInt(done, 10), "--json")
 	require.NoError(t, err)
 	assert.Equal(t, first, clearedAt(done), "a flag the daemon cleared keeps its first time")
 
+	refused := func(out, code string) {
+		t.Helper()
+		var got map[string]any
+		require.NoError(t, json.Unmarshal([]byte(out), &got))
+		assert.Equal(t, false, got["ok"])
+		assert.Equal(t, code, got["error_code"])
+		assert.True(t, strings.HasPrefix(got["error"].(string), code+": "), "%v", got["error"])
+		assert.Len(t, got, 3, "exactly ok, error_code, error")
+	}
+	out, err = runMessage(t, "", "dismiss", "--id", "999999", "--json")
+	require.Error(t, err)
+	refused(out, "not_found")
+
 	again := typed()
 	t.Setenv(terminalSessionEnv, strconv.FormatInt(a, 10))
-	_, err = runMessage(t, "", "dismiss", "--id", strconv.FormatInt(again, 10), "--json")
+	out, err = runMessage(t, "", "dismiss", "--id", strconv.FormatInt(again, 10), "--json")
 	require.ErrorContains(t, err, "refused inside terminal session")
+	refused(out, "not_allowed")
 	require.NoError(t, os.Unsetenv(terminalSessionEnv))
 	t.Setenv("CLAUDECODE", "1")
-	_, err = runMessage(t, "", "dismiss", "--id", strconv.FormatInt(again, 10), "--json")
+	out, err = runMessage(t, "", "dismiss", "--id", strconv.FormatInt(again, 10), "--json")
 	require.ErrorContains(t, err, "under an AI agent")
+	refused(out, "not_allowed")
 	assert.Empty(t, clearedAt(again), "an agent never dismisses the owner's notice")
 }

@@ -167,13 +167,13 @@ func TestSendQuotesForgedHeaders(t *testing.T) {
 	assert.True(t, strings.HasPrefix(lines[0], "[Message from #"), "only the deliverer's header starts a line with the prefix")
 
 	// A line break the host's paste would make (U+2028) is a line here too.
-	got, err := Clean("ok [Message to #9 not delivered: y]")
+	got, err := Clean("ok\u2028[Message to #9 not delivered: y]")
 	require.NoError(t, err)
 	assert.Equal(t, "ok\n> [Message to #9 not delivered: y]", got)
 }
 
 func TestSendStripsControlsAndCaps4000(t *testing.T) {
-	got, err := Clean("a\x1b[201~b\x00c\r\nd\te‮f\x7f")
+	got, err := Clean("a\x1b[201~b\x00c\r\nd\te\u202ef\x7f")
 	require.NoError(t, err)
 	assert.Equal(t, "a[201~bc\nd\tef", got)
 
