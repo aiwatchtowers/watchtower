@@ -211,7 +211,7 @@ enum DesignShotCatalog {
             DesignShot(name: "settings-privacy", size: NSSize(width: 640, height: 420)) {
                 AnyView(HomeShotFixtures.privacySettings().shotFrame().detailBackground())
             },
-            DesignShot(name: "settings-organization-policy", size: NSSize(width: 640, height: 600)) {
+            DesignShot(name: "settings-organization-policy", size: NSSize(width: 640, height: 760)) {
                 AnyView(HomeShotFixtures.organizationPolicy().shotFrame().detailBackground())
             },
             DesignShot(name: "connections-blocked", size: NSSize(width: 900, height: 520)) {
