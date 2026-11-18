@@ -79,8 +79,10 @@ func needStand(t *testing.T) string {
 // wireTap records every byte both ways of every TCP connection the hub's
 // and the phone's relay clients open (HTTP ops and the WebSocket), so the
 // E2E check sees exactly what left the process. Compression is off, so the
-// bytes are the frames as sent (WebSocket frames a client sends are masked:
-// those carry only subscribe and ping, every op goes over HTTP).
+// bytes are the frames as sent. WebSocket frames a client sends are masked
+// and, since the live link (R2), carry every op: streams and outStreams add
+// each such connection's messages unmasked (wsMessagesSent), so the checks
+// see them too.
 type wireTap struct {
 	mu    sync.Mutex
 	conns []*tappedConn
@@ -136,9 +138,25 @@ func (w *wireTap) streams() [][]byte {
 	for _, c := range w.conns {
 		c.mu.Lock()
 		out = append(out, bytes.Clone(c.in.Bytes()), bytes.Clone(c.out.Bytes()))
+		out = append(out, wsMessagesSent(c.out.Bytes())...)
 		c.mu.Unlock()
 	}
 	return out
+}
+
+// wsMessagesSent is the data messages, unmasked, of a client's WebSocket
+// byte stream (an HTTP upgrade request, then RFC 6455 frames); nil for any
+// other connection.
+func wsMessagesSent(out []byte) [][]byte {
+	end := bytes.Index(out, []byte("\r\n\r\n"))
+	if !bytes.HasPrefix(out, []byte("GET ")) || end < 0 ||
+		!bytes.Contains(bytes.ToLower(out[:end]), []byte("upgrade: websocket")) {
+		return nil
+	}
+	var msgs [][]byte
+	f := wsFrames{on: func(m []byte) { msgs = append(msgs, m) }}
+	f.feed(slices.Clone(out[end+4:]))
+	return msgs
 }
 
 // ---- the hub's transport, seen from the test ----

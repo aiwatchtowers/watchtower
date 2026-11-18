@@ -499,3 +499,9 @@ Relay links rotate their epoch every 7 days (iCloud links keep 90 days). Each ro
 ## iPhone chat on the relay (2026-11-15, board #1791)
 
 Chat is relay-only: the hub's heartbeat says `capabilities.chat: "on"` only on the relay (`not_relay` otherwise), and only an explicit `"on"` shows the Chats tab. The phone's `chat_attachment` upload frame is a relay record kind sealed with `ChunkedAssetCipher` like a recording upload, and `chat_answer` pushes travel as work alerts. A turn's rows are written by the lease holder's store, Swift or Go. See [iphone-chat.md](iphone-chat.md).
+
+## Live link (2026-11-18, #1992)
+
+The phone's half of the live link — every op over the socket (R2, "Ops over the socket" above), the wake ping and
+background redial (R6, "Wake (live link R6)" above), inline records (R3) and the optimistic overlays (R5, in the app)
+— together with the relay and hub halves, the failure behaviour and the stand numbers: [live-link.md](live-link.md).

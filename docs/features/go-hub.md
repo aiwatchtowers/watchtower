@@ -816,3 +816,10 @@ The hub runs phone-started chat turns: `internal/chatstore` (the Go turn store) 
   epoch rotation's abort counts neither way. The heartbeat restamps at once when the value changes. `last_publish_at`
   keeps its meaning (moves when any kind finished). The phone's use of it is in
   [mobile-companion.md](mobile-companion.md) ("The data's age").
+
+## Live link (2026-11-18, #1992)
+
+The hub's half of the live link — relay ops over the open socket (R2), inline records applied without a read (R3),
+the mailbox event lane, the early nudge and the in-cycle `PublishNow` (R4), and the `event_read`/`nudge_saved`
+timings (R7) — is described in place above; how the parts fit with the relay and the phone, the failure behaviour
+and the stand numbers are in [live-link.md](live-link.md).
