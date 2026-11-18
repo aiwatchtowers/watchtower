@@ -123,6 +123,12 @@ public struct HeartbeatCapabilities: Codable, Equatable, Sendable {
     public let inbox: String?
     /// Why `inbox` is off ("policy"); absent while on.
     public let inboxReason: String?
+    /// The chat approval decisions beyond approve and reject (mobile Inbox spec §12.9): "retry_dismiss" while
+    /// `chat_action_answer` takes retry and dismiss; absent from an older hub, whose chat offers neither.
+    public let chatActions: String?
+
+    /// The hub's `chat_action_answer` takes retry and dismiss.
+    public var chatRetryAndDismiss: Bool { chatActions == "retry_dismiss" }
 
     /// `chatReason` as a typed value; nil while absent.
     public var chatOffReason: ChatOffReason? { chatReason.map(ChatOffReason.init(rawValue:)) }
@@ -132,13 +138,15 @@ public struct HeartbeatCapabilities: Codable, Equatable, Sendable {
         chat: String? = nil,
         chatReason: String? = nil,
         inbox: String? = nil,
-        inboxReason: String? = nil
+        inboxReason: String? = nil,
+        chatActions: String? = nil
     ) {
         self.recordings = recordings
         self.chat = chat
         self.chatReason = chatReason
         self.inbox = inbox
         self.inboxReason = inboxReason
+        self.chatActions = chatActions
     }
 }
 

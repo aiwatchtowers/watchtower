@@ -111,7 +111,7 @@ func (h *heartbeatSource) Items(ctx context.Context) ([]Item, error) {
 	}
 	if h.f.Chat != nil {
 		if on, reason := h.f.Chat(); on {
-			caps.Chat = "on"
+			caps.Chat, caps.ChatActions = "on", wire.ChatActionsRetryDismiss
 		} else {
 			caps.Chat, caps.ChatReason = "off", reason
 		}

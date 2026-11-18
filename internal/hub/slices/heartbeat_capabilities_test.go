@@ -122,12 +122,14 @@ func TestHeartbeatCarriesTheChatCapability(t *testing.T) {
 	f := heartbeatFacts(func() time.Time { return now }, nil)
 	f.Chat = func() (bool, string) { return on, reason }
 	src := HeartbeatSource(f)
-	if c := capabilitiesOf(t, onlyItem(t, src).Payload); c == nil || c.Chat != "on" || c.ChatReason != "" {
+	if c := capabilitiesOf(t, onlyItem(t, src).Payload); c == nil || c.Chat != "on" || c.ChatReason != "" ||
+		c.ChatActions != wire.ChatActionsRetryDismiss {
 		t.Fatalf("capabilities = %+v", c)
 	}
 	on, reason = false, wire.ChatOffRunnerDown
 	now = now.Add(time.Second)
-	if c := capabilitiesOf(t, onlyItem(t, src).Payload); c == nil || c.Chat != "off" || c.ChatReason != wire.ChatOffRunnerDown {
+	if c := capabilitiesOf(t, onlyItem(t, src).Payload); c == nil || c.Chat != "off" || c.ChatReason != wire.ChatOffRunnerDown ||
+		c.ChatActions != "" {
 		t.Fatalf("capabilities = %+v", c)
 	}
 }
