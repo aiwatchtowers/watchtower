@@ -65,7 +65,14 @@ final class CompanySetupMockCopyTests: XCTestCase {
 
     func testShippedTextsMatchTheApp() {
         XCTAssertEqual(Copy.blockedTitle, SourceBlockedNotice.title)
+        XCTAssertEqual(Copy.blockedBody, SourceBlockedNotice.message)
         XCTAssertEqual(Copy.connectionsTitle, "Connections")
+        // D21: the IT guide link's words live in ManagedPolicyHelp.
+        XCTAssertEqual(Copy.itGuideLink, ManagedPolicyHelp.label)
+        XCTAssertEqual(Copy.itGuideRow, ManagedPolicyHelp.rowTitle)
+        XCTAssertEqual(Copy.itGuideCaption, ManagedPolicyHelp.rowCaption)
+        XCTAssertEqual(Copy.policyTitle, OrganizationPolicySection.title)
+        XCTAssertEqual(Copy.policyFooter, OrganizationPolicySection.footer)
     }
 
     func testEveryFrameHasAShotAndNamesAreUnique() {
