@@ -68,6 +68,7 @@ var lookupByID = map[string]allowedRead{
 	"internal/db/terminal_session_worktrees.go:DB.ListTerminalSessionActivity": {1, "cleanup in-use/recent-owner catches: a deleting row still protects what it holds until it goes (fail closed), except that W6 skips a deleting row whose terminal is not live (ask #1389), so it returns the flag"},
 	"internal/db/terminal_sessions.go:DB.GetTerminalSession":                   {1, "one row by id"},
 	"internal/db/terminal_sessions.go:DB.terminalBackgroundShells":             {1, "one row by id"},
+	"internal/db/terminal_sessions.go:DB.terminalFolderLinks":                  {1, "one row by id"},
 	"internal/db/terminal_sessions.go:DB.TerminalTranscriptPath":               {1, "one row by id"},
 	"internal/db/terminal_sessions.go:DB.PlacedSessions":                       {1, "a workbench delete cleans every placed row's worktree, deleting rows included"},
 	"internal/db/terminal_sessions.go:DB.HeldWorktreeBranches":                 {1, "a deleting row still reserves its worktree branch name"},

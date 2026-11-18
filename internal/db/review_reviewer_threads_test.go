@@ -18,8 +18,8 @@ func insertReviewerThread(t *testing.T, d *DB, projectID int64, branch string) i
 	require.NoError(t, err)
 	_, err = d.Exec(`INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (?, 'user', 'what breaks?', 0)`, id)
 	require.NoError(t, err)
-	_, err = d.Exec(`INSERT INTO review_reviewer_threads (project_id, branch, conversation_id) VALUES (?, ?, ?)`,
-		projectID, branch, id)
+	_, err = d.Exec(`INSERT INTO review_reviewer_threads (project_id, workbench_folder_id, branch, conversation_id)
+		VALUES (?, ?, ?, ?)`, projectID, homeFolderID(t, d, projectID), branch, id)
 	require.NoError(t, err)
 	return id
 }
@@ -47,13 +47,18 @@ func TestReviewerThreads_DeletedWithTheirWorkbench(t *testing.T) {
 	assert.Equal(t, 1, n)
 }
 
-// One thread per (workbench, branch); an empty branch is refused.
+// One thread per (workbench, folder, branch); an empty branch is refused.
 func TestReviewerThreads_KeyAndBranchCheck(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)
+	home := homeFolderID(t, d, pid)
 	conv := insertReviewerThread(t, d, pid, "feature/a")
-	_, err := d.Exec(`INSERT INTO review_reviewer_threads (project_id, branch, conversation_id) VALUES (?, 'feature/a', ?)`, pid, conv)
-	require.Error(t, err, "a second thread for the same branch")
-	_, err = d.Exec(`INSERT INTO review_reviewer_threads (project_id, branch, conversation_id) VALUES (?, '', ?)`, pid, conv)
-	require.Error(t, err, "an empty branch")
+	insert := `INSERT INTO review_reviewer_threads (project_id, workbench_folder_id, branch, conversation_id) VALUES (?, ?, ?, ?)`
+	_, err := d.Exec(insert, pid, home, "feature/a", conv)
+	require.ErrorContains(t, err, "UNIQUE", "a second thread for the same branch")
+	_, err = d.Exec(insert, pid, home, "", conv)
+	require.ErrorContains(t, err, "CHECK", "an empty branch")
+	hub := addTestFolder(t, d, pid, "/tmp/code/hub", "hub", 1)
+	_, err = d.Exec(insert, pid, hub, "feature/a", conv)
+	require.NoError(t, err, "another folder's branch of the same name is its own thread")
 }

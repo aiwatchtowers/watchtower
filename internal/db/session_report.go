@@ -7,9 +7,11 @@ import (
 )
 
 // PRState is a workbench_pr_states row: the cached state of a PR or branch a
-// session report names. Go is its only reader and writer.
+// session report names, per workbench folder (00196). Go is its only reader
+// and writer.
 type PRState struct {
 	WorkbenchID int64
+	FolderID    int64         // the workbench folder whose repository Ref is of
 	Ref         string        // pr:<number> | branch:<name>
 	State       string        // merged | open | closed | none | unknown
 	PRNumber    sql.NullInt64 // set for a pr ref, and for a branch whose PR gh found
@@ -209,26 +211,28 @@ func (db *DB) FinishTerminalSession(sessionID int64, summary string, at time.Tim
 	return nil
 }
 
-// UpsertPRState stores s, replacing the cached row of the same workbench and
-// ref.
+// UpsertPRState stores s, replacing the cached row of the same workbench,
+// folder and ref.
 func (db *DB) UpsertPRState(s PRState) error {
 	_, err := db.Exec(`INSERT INTO workbench_pr_states
-		(project_id, ref, state, pr_number, title, additions, deletions, merged_at, checked_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT (project_id, ref) DO UPDATE SET state = excluded.state, pr_number = excluded.pr_number,
+		(project_id, workbench_folder_id, ref, state, pr_number, title, additions, deletions, merged_at, checked_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (project_id, workbench_folder_id, ref) DO UPDATE SET state = excluded.state, pr_number = excluded.pr_number,
 			title = excluded.title, additions = excluded.additions, deletions = excluded.deletions,
 			merged_at = excluded.merged_at, checked_at = excluded.checked_at`,
-		s.WorkbenchID, s.Ref, s.State, s.PRNumber, s.Title, s.Additions, s.Deletions, s.MergedAt, s.CheckedAt)
+		s.WorkbenchID, s.FolderID, s.Ref, s.State, s.PRNumber, s.Title, s.Additions, s.Deletions, s.MergedAt, s.CheckedAt)
 	if err != nil {
 		return fmt.Errorf("storing PR state %q of workbench %d: %w", s.Ref, s.WorkbenchID, err)
 	}
 	return nil
 }
 
-// PRStates is workbench workbenchID's cached PR states by ref.
-func (db *DB) PRStates(workbenchID int64) (map[string]PRState, error) {
-	rows, err := db.Query(`SELECT project_id, ref, state, pr_number, title, additions, deletions, merged_at, checked_at
-		FROM workbench_pr_states WHERE project_id = ?`, workbenchID)
+// PRStates is the cached PR states by ref of folder folderID of workbench
+// workbenchID.
+func (db *DB) PRStates(workbenchID, folderID int64) (map[string]PRState, error) {
+	rows, err := db.Query(`SELECT project_id, workbench_folder_id, ref, state, pr_number, title, additions, deletions,
+		merged_at, checked_at
+		FROM workbench_pr_states WHERE project_id = ? AND workbench_folder_id = ?`, workbenchID, folderID)
 	if err != nil {
 		return nil, fmt.Errorf("reading PR states of workbench %d: %w", workbenchID, err)
 	}
@@ -236,7 +240,7 @@ func (db *DB) PRStates(workbenchID int64) (map[string]PRState, error) {
 	out := map[string]PRState{}
 	for rows.Next() {
 		var s PRState
-		if err := rows.Scan(&s.WorkbenchID, &s.Ref, &s.State, &s.PRNumber, &s.Title, &s.Additions, &s.Deletions,
+		if err := rows.Scan(&s.WorkbenchID, &s.FolderID, &s.Ref, &s.State, &s.PRNumber, &s.Title, &s.Additions, &s.Deletions,
 			&s.MergedAt, &s.CheckedAt); err != nil {
 			return nil, fmt.Errorf("reading PR states of workbench %d: %w", workbenchID, err)
 		}

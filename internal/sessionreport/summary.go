@@ -39,11 +39,21 @@ func Summaries(ctx context.Context, d *db.DB, workbenchID int64) ([]Summary, err
 	if err != nil {
 		return nil, err
 	}
-	states, err := d.PRStates(workbenchID)
+	states, err := homePRStates(ctx, d, workbenchID)
 	if err != nil {
 		return nil, err
 	}
 	return summarize(sessions, states, nil), nil
+}
+
+// homePRStates is the PR cache of workbench workbenchID's home folder: every
+// report reads it until a session's own folder is passed in (#2003 Task 6).
+func homePRStates(ctx context.Context, d *db.DB, workbenchID int64) (map[string]db.PRState, error) {
+	folderID, err := d.HomeFolderID(ctx, workbenchID)
+	if err != nil {
+		return nil, err
+	}
+	return d.PRStates(workbenchID, folderID)
 }
 
 // RefreshedSummaries is Summaries after a refresh of the merge verdicts
@@ -76,7 +86,7 @@ func RefreshedSummaries(ctx context.Context, d *db.DB, workbenchID int64, opts R
 	}
 	res, states, unchecked := refresh(ctx, d, workbenchID, refs, opts)
 	if states == nil {
-		if states, err = d.PRStates(workbenchID); err != nil {
+		if states, err = homePRStates(ctx, d, workbenchID); err != nil {
 			return nil, res, err
 		}
 		// Nothing was checked.

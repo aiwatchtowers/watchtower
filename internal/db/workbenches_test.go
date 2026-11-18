@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -16,6 +17,17 @@ import (
 func newTestWorkbench(t *testing.T, d *DB) int64 {
 	t.Helper()
 	id, err := d.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	return id
+}
+
+// newOldSchemaWorkbench plants a bare projects row, for a test that migrated
+// down below 00196 (CreateWorkbench writes workbench_folders too).
+func newOldSchemaWorkbench(t *testing.T, d *DB) int64 {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO projects (name, folder_path) VALUES ('acme', ?)`, t.TempDir())
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
 	require.NoError(t, err)
 	return id
 }
@@ -218,8 +230,16 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 			VALUES (?, '/tmp/acme/.claude/worktrees/x', ?, '2026-10-12T12:00:00.000Z')`, row.session, row.branch)
 		require.NoError(t, err)
 	}
-	require.NoError(t, d.UpsertPRState(PRState{WorkbenchID: pid, Ref: "pr:7", State: "open", CheckedAt: "2026-10-03T10:00:00Z"}))
-	require.NoError(t, d.UpsertPRState(PRState{WorkbenchID: keep, Ref: "pr:7", State: "open", CheckedAt: "2026-10-03T10:00:00Z"}))
+	require.NoError(t, d.UpsertPRState(PRState{WorkbenchID: pid, FolderID: homeFolderID(t, d, pid), Ref: "pr:7", State: "open", CheckedAt: "2026-10-03T10:00:00Z"}))
+	require.NoError(t, d.UpsertPRState(PRState{WorkbenchID: keep, FolderID: homeFolderID(t, d, keep), Ref: "pr:7", State: "open", CheckedAt: "2026-10-03T10:00:00Z"}))
+	// Multi-folder rows (#2003): a second folder, a decline and a session message.
+	_, err = d.Exec(`INSERT INTO workbench_folders (workbench_id, folder_path, position, added_by, name)
+		VALUES (?, '/tmp/code/hub', 1, 'owner', 'hub')`, pid)
+	require.NoError(t, err)
+	require.NoError(t, d.DeclineFolder(context.Background(), pid, "/tmp/code/site"))
+	_, err = d.InsertSessionMessage(context.Background(), SessionMessage{WorkbenchID: pid, FromSessionID: nullID(sid),
+		ToSessionID: nullID(sid), Kind: "message", Text: "hello"})
+	require.NoError(t, err)
 	// The folder files' search index entries (PROJ-08), this project's and another's.
 	for _, doc := range []struct {
 		id  string
@@ -254,6 +274,9 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 		`SELECT COUNT(*) FROM project_target_images WHERE project_id = ?`,
 		`SELECT COUNT(*) FROM owner_asks WHERE project_id = ?`,
 		`SELECT COUNT(*) FROM workbench_pr_states WHERE project_id = ?`,
+		`SELECT COUNT(*) FROM workbench_folders WHERE workbench_id = ?`,
+		`SELECT COUNT(*) FROM workbench_folder_declines WHERE workbench_id = ?`,
+		`SELECT COUNT(*) FROM session_messages WHERE workbench_id = ?`,
 		`SELECT COUNT(*) FROM terminal_session_targets l JOIN targets t ON t.id = l.target_id WHERE t.project_id = ?`,
 	} {
 		var n int

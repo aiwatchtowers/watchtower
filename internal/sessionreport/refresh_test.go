@@ -205,7 +205,7 @@ func countGit(t *testing.T) func() int {
 
 func states(t *testing.T, d *db.DB, id int64) map[string]db.PRState {
 	t.Helper()
-	m, err := d.PRStates(id)
+	m, err := d.PRStates(id, homeID(t, d, id))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,12 +214,22 @@ func states(t *testing.T, d *db.DB, id int64) map[string]db.PRState {
 
 func seed(t *testing.T, d *db.DB, id int64, ref, state string, age time.Duration) db.PRState {
 	t.Helper()
-	s := db.PRState{WorkbenchID: id, Ref: ref, State: state, Title: "cached " + ref,
+	s := db.PRState{WorkbenchID: id, FolderID: homeID(t, d, id), Ref: ref, State: state, Title: "cached " + ref,
 		CheckedAt: refreshNow.Add(-age).Format(time.RFC3339)}
 	if err := d.UpsertPRState(s); err != nil {
 		t.Fatal(err)
 	}
 	return s
+}
+
+// homeID is workbench id's home folder, whose PR cache every report reads.
+func homeID(t *testing.T, d *db.DB, id int64) int64 {
+	t.Helper()
+	folder, err := d.HomeFolderID(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return folder
 }
 
 func n64(v int64) sql.NullInt64 { return sql.NullInt64{Int64: v, Valid: true} }
@@ -247,7 +257,7 @@ func TestRefresh_PullRequestAndBranchStatesFromGH(t *testing.T) {
 		t.Fatalf("rows %v, want %d", got, len(want))
 	}
 	for ref, w := range want {
-		w.WorkbenchID, w.Ref, w.CheckedAt = id, ref, at
+		w.WorkbenchID, w.FolderID, w.Ref, w.CheckedAt = id, homeID(t, d, id), ref, at
 		if got[ref] != w {
 			t.Errorf("%s: %+v, want %+v", ref, got[ref], w)
 		}
@@ -421,7 +431,7 @@ func TestRefresh_OfflineKeepsGHBranchState(t *testing.T) {
 	calls := ghStub(t)
 	d, id := newWorkbench(t, dir)
 	closed := func(ref string) db.PRState {
-		s := db.PRState{WorkbenchID: id, Ref: ref, State: "closed", PRNumber: n64(7), Title: "Closed PR",
+		s := db.PRState{WorkbenchID: id, FolderID: homeID(t, d, id), Ref: ref, State: "closed", PRNumber: n64(7), Title: "Closed PR",
 			Additions: n64(3), Deletions: n64(1), CheckedAt: refreshNow.Add(-11 * time.Minute).Format(time.RFC3339)}
 		if err := d.UpsertPRState(s); err != nil {
 			t.Fatal(err)

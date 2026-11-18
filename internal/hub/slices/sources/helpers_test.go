@@ -57,7 +57,9 @@ func lastID(t *testing.T, res sql.Result) int64 {
 
 func insertWorkbench(t *testing.T, d *db.DB, name, folder string) int64 {
 	t.Helper()
-	return lastID(t, exec(t, d, `INSERT INTO projects (name, folder_path) VALUES (?, ?)`, name, folder))
+	id := lastID(t, exec(t, d, `INSERT INTO projects (name, folder_path) VALUES (?, ?)`, name, folder))
+	db.SeedTestHomeFolders(t, d)
+	return id
 }
 
 type targetSeed struct {

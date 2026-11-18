@@ -33,6 +33,7 @@ func mergedFixture(t *testing.T) *db.DB {
 	t.Helper()
 	d := db.OpenTestDB(t)
 	runSQL(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme');
+		INSERT INTO workbench_folders (id, workbench_id, folder_path, position, added_by, name) VALUES (1, 1, '/tmp/acme', 0, 'owner', 'acme');
 		INSERT INTO targets (id, text, period_start, period_end, parent_id, status, project_id, branch) VALUES
 		(100, 'Epic', '2026-09-28', '2026-10-05', NULL, 'in_progress', 1, 'feature/x'),
 		(110, 'Group', '2026-09-28', '2026-10-05', 100, 'in_progress', 1, ''),
@@ -47,15 +48,15 @@ func mergedFixture(t *testing.T) *db.DB {
 		(122, 'h', '2026-09-28', '2026-10-05', 120, 'todo', 1, 'feature/x-ui');
 		INSERT INTO terminal_sessions (id, project_id, kind, title, target_id, folder_path, claude_session_id) VALUES
 		(1, 1, 'claude', 'S1', 100, '/tmp/acme', 'u1');
-		INSERT INTO workbench_pr_states (project_id, ref, state, checked_at) VALUES
-		(1, 'into:feature/x:wt/a', 'merged', '2026-10-02T12:00:00Z'),
-		(1, 'into:feature/x:wt/b', 'merged', '2026-10-02T12:00:00Z'),
-		(1, 'into:feature/x:wt/c', 'merged', '2026-10-02T12:00:00Z'),
-		(1, 'into:feature/x:feature/x', 'merged', '2026-10-02T12:00:00Z'),
-		(1, 'into:feature/x:wt/f', 'open', '2026-10-02T12:00:00Z'),
-		(1, 'into:feature/x-ui:wt/g', 'merged', '2026-10-02T12:00:00Z'),
-		(1, 'into:feature/x:wt/g', 'open', '2026-10-02T12:00:00Z'),
-		(1, 'into:feature/x:feature/x-ui', 'merged', '2026-10-02T12:00:00Z')`)
+		INSERT INTO workbench_pr_states (project_id, workbench_folder_id, ref, state, checked_at) VALUES
+		(1, 1, 'into:feature/x:wt/a', 'merged', '2026-10-02T12:00:00Z'),
+		(1, 1, 'into:feature/x:wt/b', 'merged', '2026-10-02T12:00:00Z'),
+		(1, 1, 'into:feature/x:wt/c', 'merged', '2026-10-02T12:00:00Z'),
+		(1, 1, 'into:feature/x:feature/x', 'merged', '2026-10-02T12:00:00Z'),
+		(1, 1, 'into:feature/x:wt/f', 'open', '2026-10-02T12:00:00Z'),
+		(1, 1, 'into:feature/x-ui:wt/g', 'merged', '2026-10-02T12:00:00Z'),
+		(1, 1, 'into:feature/x:wt/g', 'open', '2026-10-02T12:00:00Z'),
+		(1, 1, 'into:feature/x:feature/x-ui', 'merged', '2026-10-02T12:00:00Z')`)
 	return d
 }
 
@@ -458,6 +459,7 @@ func siblingsBoard(t *testing.T, n int) (*db.DB, []string) {
 	t.Helper()
 	d := db.OpenTestDB(t)
 	runSQL(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme');
+		INSERT INTO workbench_folders (id, workbench_id, folder_path, position, added_by, name) VALUES (1, 1, '/tmp/acme', 0, 'owner', 'acme');
 		INSERT INTO targets (id, text, period_start, period_end, parent_id, status, project_id, branch) VALUES
 		(100, 'Epic', '2026-09-28', '2026-10-05', NULL, 'in_progress', 1, 'feature/x'),
 		(110, 'Group', '2026-09-28', '2026-10-05', 100, 'in_progress', 1, '');

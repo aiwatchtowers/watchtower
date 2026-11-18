@@ -57,8 +57,8 @@ func TestSummaries_NoPRYetAndEmpty(t *testing.T) {
 	assert.Nil(t, list[2].TargetID)
 	assert.Equal(t, 0, list[2].Total)
 
-	_, err = d.Exec(`INSERT INTO workbench_pr_states (project_id, ref, state, checked_at)
-		VALUES (1, 'branch:feat/linked', 'none', '2026-10-02T12:00:00.000Z')`)
+	_, err = d.Exec(`INSERT INTO workbench_pr_states (project_id, workbench_folder_id, ref, state, checked_at)
+		VALUES (1, 1, 'branch:feat/linked', 'none', '2026-10-02T12:00:00.000Z')`)
 	require.NoError(t, err)
 	list, err = Summaries(context.Background(), d, 1)
 	require.NoError(t, err)

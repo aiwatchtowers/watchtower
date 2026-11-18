@@ -1,6 +1,7 @@
 -- A session target with a review leaf and three phases of 7, 5 and 2 leaves,
 -- one of them blocked: 14 of 15 leaves done.
 INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme');
+INSERT INTO workbench_folders (id, workbench_id, folder_path, position, added_by, name) VALUES (1, 1, '/tmp/acme', 0, 'owner', 'acme');
 
 INSERT INTO targets (id, text, period_start, period_end, parent_id, status, priority, project_id, branch, pr) VALUES
     (314, 'Session report feature', '2026-09-28', '2026-10-05', NULL, 'in_progress', 'medium', 1, 'feature/session-report', '147'),
@@ -50,5 +51,5 @@ INSERT INTO terminal_sessions (id, project_id, kind, title, target_id, folder_pa
     (1, 1, 'claude', 'Session report', 314, '/tmp/acme', 'uuid-1',
      '2026-09-28T07:00:00Z', '2026-10-02T15:00:00Z', 'waiting', '2026-10-02T15:00:01.000Z');
 
-INSERT INTO workbench_pr_states (project_id, ref, state, pr_number, title, additions, deletions, merged_at, checked_at) VALUES
-    (1, 'pr:147', 'open', 147, 'Session report', 1200, 80, '', '2026-10-02T15:05:00Z');
+INSERT INTO workbench_pr_states (project_id, workbench_folder_id, ref, state, pr_number, title, additions, deletions, merged_at, checked_at) VALUES
+    (1, 1, 'pr:147', 'open', 147, 'Session report', 1200, 80, '', '2026-10-02T15:05:00Z');

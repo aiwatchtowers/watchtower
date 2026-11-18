@@ -124,7 +124,7 @@ func Build(ctx context.Context, d *db.DB, workbenchID, sessionID int64, opts Opt
 	if err != nil {
 		return Report{}, err
 	}
-	states, err := d.PRStates(workbenchID)
+	states, err := homePRStates(ctx, d, workbenchID)
 	if err != nil {
 		return Report{}, err
 	}

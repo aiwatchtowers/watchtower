@@ -34,7 +34,7 @@ func TestMigration00101_DownUpKeepsOtherRows(t *testing.T) {
 	target := insertWorkbenchTargetRow(t, d, pid, "feature")
 	sid := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
 	require.NoError(t, d.LinkSessionTarget(sid, target))
-	require.NoError(t, d.UpsertPRState(PRState{WorkbenchID: pid, Ref: "pr:7", State: "open", CheckedAt: "2026-10-03T10:00:00Z"}))
+	require.NoError(t, d.UpsertPRState(PRState{WorkbenchID: pid, FolderID: homeFolderID(t, d, pid), Ref: "pr:7", State: "open", CheckedAt: "2026-10-03T10:00:00Z"}))
 
 	// DownTo(100), not a bare Down: a later migration can move the tip past 00101.
 	require.NoError(t, gooseDownTo(d.DB, "migrations", 100))
@@ -115,25 +115,31 @@ func TestPRStates_UpsertAndRead(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)
 	other := newTestWorkbench(t, d)
-	open := PRState{WorkbenchID: pid, Ref: "pr:7", State: "open", PRNumber: sql.NullInt64{Int64: 7, Valid: true},
+	home := homeFolderID(t, d, pid)
+	hub := addTestFolder(t, d, pid, "/tmp/code/hub", "hub", 1)
+	open := PRState{WorkbenchID: pid, FolderID: home, Ref: "pr:7", State: "open", PRNumber: sql.NullInt64{Int64: 7, Valid: true},
 		Title: "Add login", Additions: sql.NullInt64{Int64: 12, Valid: true}, Deletions: sql.NullInt64{Int64: 3, Valid: true},
 		CheckedAt: "2026-10-03T10:00:00Z"}
 	require.NoError(t, d.UpsertPRState(open))
-	require.NoError(t, d.UpsertPRState(PRState{WorkbenchID: pid, Ref: "branch:feature/x", State: "none", CheckedAt: "2026-10-03T10:00:00Z"}))
-	require.NoError(t, d.UpsertPRState(PRState{WorkbenchID: other, Ref: "pr:7", State: "closed", CheckedAt: "2026-10-03T10:00:00Z"}))
+	require.NoError(t, d.UpsertPRState(PRState{WorkbenchID: pid, FolderID: home, Ref: "branch:feature/x", State: "none", CheckedAt: "2026-10-03T10:00:00Z"}))
+	require.NoError(t, d.UpsertPRState(PRState{WorkbenchID: other, FolderID: homeFolderID(t, d, other), Ref: "pr:7", State: "closed", CheckedAt: "2026-10-03T10:00:00Z"}))
+	require.NoError(t, d.UpsertPRState(PRState{WorkbenchID: pid, FolderID: hub, Ref: "pr:7", State: "closed", CheckedAt: "2026-10-03T10:00:00Z"}))
 
 	merged := open
 	merged.State, merged.MergedAt, merged.CheckedAt = "merged", "2026-10-03T11:00:00Z", "2026-10-03T11:05:00Z"
 	require.NoError(t, d.UpsertPRState(merged))
 
-	got, err := d.PRStates(pid)
+	got, err := d.PRStates(pid, home)
 	require.NoError(t, err)
 	require.Len(t, got, 2)
 	assert.Equal(t, merged, got["pr:7"], "an upsert replaces the row")
 	assert.Equal(t, "none", got["branch:feature/x"].State)
 	assert.False(t, got["branch:feature/x"].PRNumber.Valid)
+	hubStates, err := d.PRStates(pid, hub)
+	require.NoError(t, err)
+	assert.Equal(t, "closed", hubStates["pr:7"].State, "another folder's ref is its own row")
 
-	none, err := d.PRStates(pid + 100)
+	none, err := d.PRStates(pid+100, home)
 	require.NoError(t, err)
 	assert.Empty(t, none)
 }
@@ -141,9 +147,10 @@ func TestPRStates_UpsertAndRead(t *testing.T) {
 func TestPRStates_CheckRejectsUnknownState(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)
-	assert.Error(t, d.UpsertPRState(PRState{WorkbenchID: pid, Ref: "pr:1", State: "draft", CheckedAt: "2026-10-03T10:00:00Z"}))
+	home := homeFolderID(t, d, pid)
+	assert.Error(t, d.UpsertPRState(PRState{WorkbenchID: pid, FolderID: home, Ref: "pr:1", State: "draft", CheckedAt: "2026-10-03T10:00:00Z"}))
 	for _, s := range []string{"merged", "open", "closed", "none", "unknown"} {
-		assert.NoError(t, d.UpsertPRState(PRState{WorkbenchID: pid, Ref: "pr:1", State: s, CheckedAt: "2026-10-03T10:00:00Z"}), s)
+		assert.NoError(t, d.UpsertPRState(PRState{WorkbenchID: pid, FolderID: home, Ref: "pr:1", State: s, CheckedAt: "2026-10-03T10:00:00Z"}), s)
 	}
 }
 

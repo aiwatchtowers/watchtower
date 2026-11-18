@@ -390,6 +390,7 @@ func progressFixture(t *testing.T) *db.DB {
 		(1, 10, '2026-10-01T10:00:00Z', '2026-10-01T10:00:00Z'),
 		(1, 20, '2026-10-01T10:00:00Z', '2026-10-01T10:00:00Z')`)
 	require.NoError(t, err)
+	db.SeedTestHomeFolders(t, d)
 	return d
 }
 

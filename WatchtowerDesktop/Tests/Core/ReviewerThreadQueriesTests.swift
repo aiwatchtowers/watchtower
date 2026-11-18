@@ -18,6 +18,15 @@ final class ReviewerThreadQueriesTests: XCTestCase {
         XCTAssertEqual(first, again, "a second session on the branch shares the thread")
         XCTAssertNotEqual(first, other, "a renamed or another branch starts a new thread")
         XCTAssertEqual(try db.read { try ReviewerThreadQueries.conversationID($0, projectID: project, branch: "feature/a") }, first)
+        let keyFolder = try db.read {
+            try Int64.fetchOne($0, sql: "SELECT workbench_folder_id FROM review_reviewer_threads WHERE conversation_id = ?",
+                               arguments: [first])
+        }
+        let home = try db.read {
+            try Int64.fetchOne($0, sql: "SELECT id FROM workbench_folders WHERE workbench_id = ?", arguments: [project])
+        }
+        XCTAssertNotNil(home)
+        XCTAssertEqual(keyFolder, home, "the thread is keyed by the workbench's home folder (00196)")
 
         let conversation = try XCTUnwrap(try db.read { try ChatConversationQueries.fetchByID($0, id: first) })
         XCTAssertEqual(conversation.contextType, "review_reviewer")
