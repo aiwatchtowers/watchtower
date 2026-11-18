@@ -168,7 +168,7 @@ public actor HostedRelaySession {
     /// `get_account_state`: an entitlement that does not pay is `.entitlementInactive`.
     func readAccountState() async {
         do {
-            let state = try await client.accountState()
+            let state = try await accountState()
             let inactive: [Relay_V1_EntitlementKind] = [Relay_V1_EntitlementKind.none, .expired, .revoked]
             if inactive.contains(state.entitlement.state) { publish(.entitlementInactive) }
         } catch {

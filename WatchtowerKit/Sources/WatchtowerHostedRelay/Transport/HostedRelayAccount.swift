@@ -76,7 +76,7 @@ public struct HostedRelayAccount: Sendable {
     }
 
     public func state() async throws -> RelayAccountState {
-        let answer = try await refusing("getAccountState") { try await client.accountState() }
+        let answer = try await refusing("getAccountState") { try await session.accountState() }
         return RelayAccountState(
             entitlement: Self.entitlement(answer.entitlement.state),
             until: answer.entitlement.untilMs > 0 ? Date(timeIntervalSince1970: TimeInterval(answer.entitlement.untilMs) / 1000) : nil,

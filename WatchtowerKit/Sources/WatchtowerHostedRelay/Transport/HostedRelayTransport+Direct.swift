@@ -18,8 +18,9 @@ extension HostedRelayTransport {
     /// `expected_seq` of the copy it was refused for, so a farewell that lands late never replaces
     /// a relink's record (#261) — that copy's change refuses it (`.refused`). A save cancelled while
     /// the first try ran never tries again. Throws the relay's error; an answer that does not
-    /// account for the record throws `HostedRelayError.undecodable(status: 200)`.
-    public static func saveDirectly(_ record: CloudRecord, client: HostedRelayClient, macDeviceID: String) async throws {
+    /// account for the record throws `HostedRelayError.undecodable(status: 200)`. Internal: the app saves
+    /// through its session (`saveDirectly(_:session:macDeviceID:)`), so a caller cannot skip the socket.
+    static func saveDirectly(_ record: CloudRecord, client: HostedRelayClient, macDeviceID: String) async throws {
         try await saveDirectly(record, client: client, macDeviceID: macDeviceID) {}
     }
 

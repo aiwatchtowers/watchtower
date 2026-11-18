@@ -1,4 +1,5 @@
 import Foundation
+import os
 @testable import WatchtowerHostedRelay
 import WatchtowerHostedRelayTesting
 import WatchtowerRelayProto
@@ -32,14 +33,17 @@ final class HostedRelayDirectSaveTests: HostedRelayScenarioCase {
     /// socket lost mid-save is success, and the mailbox holds the farewell once.
     func testSaveDirectlyThroughTheSessionRidesTheSocket() async throws {
         let relay = try requireFake("cuts the socket mid-op (fake only, R15)")
-        let (mac, phone) = try await hub(mac: 62, phone: 63)
+        let box = OSAllocatedUnfairLock<InterceptingRelayHTTP?>(initialState: nil)
+        let (mac, phone) = try await hub(mac: 62, phone: 63) { base in
+            let http = InterceptingRelayHTTP(base)
+            box.withLock { $0 = http }
+            return http
+        }
+        let http = try XCTUnwrap(box.withLock { $0 })
         let session = HostedRelaySession(client: phone)
         let owner = SessionOwner()
         await session.attach(owner: ObjectIdentifier(owner), zones: []) { _ in }
-        while await session.connection?.isLive != true {
-            pump()
-            await Task.yield()
-        }
+        await waitUntilLive(session)
         relay.cutSocketAfterNext("save")
 
         try await HostedRelayTransport.saveDirectly(record("farewell"), session: session, macDeviceID: mac.deviceID)
@@ -51,6 +55,7 @@ final class HostedRelayDirectSaveTests: HostedRelayScenarioCase {
         XCTAssertEqual(page.changed.map(\.name), ["farewell"])
         let saves = relay.log.filter { if case .save = $0 { return true } else { return false } }
         XCTAssertEqual(saves.count, 2, "the socket's save, then its resend over HTTPS")
+        XCTAssertEqual(http.ops.filter { $0 == "save" }.count, 1, "the first save rode the socket, only the resend HTTPS")
     }
 
     private func mailbox(_ mac: HostedRelayClient, _ phone: HostedRelayClient) -> String {

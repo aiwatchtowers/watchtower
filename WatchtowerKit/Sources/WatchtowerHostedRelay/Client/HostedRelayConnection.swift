@@ -39,6 +39,8 @@ public final class HostedRelayConnection: Sendable {
     static let closeGoingAway = 1001
     static let closeUnsupportedVersion = 4000
     static let closeUnauthenticated = 4001
+    /// How long a request waits for its answer after the write: the HTTPS client's request timeout.
+    static let requestTimeout = Duration.seconds(URLSessionRelayHTTP.requestTimeout)
 
     private static var logger: Logger {
         HostedRelayClient.logger
@@ -510,7 +512,8 @@ public final class HostedRelayConnection: Sendable {
     // MARK: - Requests
 
     /// One `Request` frame on `socket`, answered by id. `SocketLoss.notSent` when the socket is no
-    /// longer the live one, `.lost` when it drops (or fails the write) before the answer.
+    /// longer the live one, `.lost` when it drops (or fails the write) before the answer, or when no
+    /// answer comes within `requestTimeout` of the write (a relay that still pongs but never answers).
     private func roundTrip(_ op: Relay_V1_Request.OneOf_Op, on socket: any RelaySocket, generation: Int) async throws -> Relay_V1_Response {
         let id = state.withLock { state in
             state.nextID += 1
@@ -520,6 +523,8 @@ public final class HostedRelayConnection: Sendable {
         frame.request.id = id
         frame.request.op = op
         let data = try frame.serializedData()
+        let writer = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
+        defer { writer.withLock { $0?.cancel() } }
         let response: Relay_V1_Response = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 let refusal: (any Error)? = state.withLock { state in
@@ -529,13 +534,18 @@ public final class HostedRelayConnection: Sendable {
                     return nil
                 }
                 if let refusal { return continuation.resume(throwing: refusal) }
-                Task {
+                let task = Task {
                     do {
                         try await socket.send(data)
                     } catch {
-                        self.fail(id, with: SocketLoss.lost)
+                        return self.fail(id, with: SocketLoss.lost)
                     }
+                    // Cancelled once the request is answered or failed.
+                    do { try await self.clock.sleep(for: Self.requestTimeout) } catch { return }
+                    Self.logger.error("relay socket: \(HostedRelayClient.name(op), privacy: .public) got no answer in time")
+                    self.fail(id, with: SocketLoss.lost)
                 }
+                writer.withLock { $0 = task }
             }
         } onCancel: {
             fail(id, with: CancellationError())

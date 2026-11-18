@@ -268,7 +268,7 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
         let store = try TransportStore.inMemory()
         let hub = try transport(session, mac: macs[0], store: store)
         await hub.start()
-        _ = await until { await session.connection?.isLive == true }
+        await waitUntilLive(session)
         let mark = try http.ops().count
 
         try await save(macs[0], dataZone(macs[0]), "from-the-mac")
@@ -301,6 +301,30 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
         XCTAssertTrue(ops.contains("changes"))
         XCTAssertEqual(ops.filter { $0 == "save" }.count, 1)
         XCTAssertEqual(tally.dials, 0, "no socket")
+    }
+
+    /// A connection that is not live (its dials refused) refuses the frame before any write: even an
+    /// unconditional save then goes over HTTPS.
+    func testANotSentRequestFallsBackForAnyOp() async throws {
+        let relay = try requireFake("refuses dials (fake only, R15)")
+        let http = HTTPBox()
+        let (phone, _, macs) = try await paired(macs: [1], wrapHTTP: http.wrap)
+        relay.refuseNextDial(status: 503, times: 1_000)
+        let session = HostedRelaySession(client: phone)
+        _ = await probe(session, zones: [])
+        let connection = await session.connection
+        XCTAssertEqual(connection?.isLive, false, "a connection, not live")
+        var item = Relay_V1_SaveItem()
+        item.record.zone = mailbox(macs[0], phone)
+        item.record.name = "plain"
+        item.record.envelope = Data("plain".utf8)
+        var save = Relay_V1_Save()
+        save.items = [item]
+
+        let result = try await session.save(save)
+
+        XCTAssertEqual(result.saved.map(\.name), ["plain"])
+        XCTAssertEqual(try http.ops().filter { $0 == "save" }.count, 1)
     }
 
     // MARK: - Helpers
