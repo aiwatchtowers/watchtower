@@ -152,6 +152,22 @@ final class OwnerAsksViewModel {
     /// Why the last answer to an ask failed, apart from the reads: a good
     /// reload never hides it; the next answer that saves clears it.
     private(set) var answerErrors: [Int64: String] = [:]
+    /// A folder suggestion card's phase by ask id (#2003, spec §6.7): busy
+    /// while its add runs, failed with its line until `OK`. Absent = ready.
+    private(set) var folderPhases: [Int64: FolderSuggestionPresentation.Phase] = [:]
+    /// Folder asks answered with a failed add, as they were: their card
+    /// stays on screen with the reason until `OK` (`folderCardDone`).
+    private(set) var heldFolderAsks: [Int64: OwnerAsk] = [:]
+    /// Folder cards with an action running (Put on Bench, Not Now, Never,
+    /// Retry), claimed before its first await: one action per card at a time.
+    private(set) var folderWorking: Set<Int64> = []
+    /// `workbench folder quiet|decline` for the folder cards (Go writes
+    /// `session_outside_touches.quiet` and `workbench_folder_declines`; the
+    /// Desktop never does). Set by `WorkbenchesViewModel`.
+    @ObservationIgnored var folderCLI: WorkbenchCLI?
+    /// Put on Bench's `workbench folder add` (`agent_suggestion`), which also
+    /// refreshes FILES; set by `WorkbenchesViewModel`.
+    @ObservationIgnored var addSuggestedFolder: ((_ path: String, _ projectID: Int64) async throws -> FolderResult)?
     /// Each workbench's open asks the app saw bound to a session that has
     /// since been deleted (board #542): in the DB they are session-less like
     /// one filed outside the app; only this run of the app tells them apart.
@@ -894,6 +910,139 @@ final class OwnerAsksViewModel {
             break
         }
         return result
+    }
+
+    // MARK: - Folder suggestions (#2003, spec §6.7)
+
+    /// Put on Bench on a folder card: Open Folder…'s TCC-sensitive location
+    /// asks first, unchanged (`PutOnBenchStep.confirmLocation`); any other
+    /// folder is added now (`putSuggestedFolderOnBench`).
+    @discardableResult
+    func putOnBench(
+        _ ask: OwnerAsk,
+        home: String = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath().path
+    ) async -> PutOnBenchStep {
+        guard let suggestion = ask.folderSuggestion else { return .done }
+        if let location = WorkbenchFolderPolicy.tccSensitiveLocation(path: suggestion.path, home: home) {
+            return .confirmLocation(location)
+        }
+        await putSuggestedFolderOnBench(ask)
+        return .done
+    }
+
+    /// `workbench folder add --added-by agent_suggestion` as the owner's
+    /// action (§6.1), then the answer: the folder's stored name and how to
+    /// start there. A refused or failed add (another bench's folder
+    /// included — its merge variant is §6.13's) answers the agent with the
+    /// reason (`sendFolderFailure`).
+    func putSuggestedFolderOnBench(_ ask: OwnerAsk) async {
+        guard let suggestion = ask.folderSuggestion, claimFolderCard(ask.id) else { return }
+        defer { folderWorking.remove(ask.id) }
+        let name = FolderSuggestionPresentation.folderName(suggestion.path)
+        folderPhases[ask.id] = .busy
+        let reason: String
+        do {
+            guard let addSuggestedFolder else { throw FolderSuggestionError.noCLI }
+            let result = try await addSuggestedFolder(suggestion.path, ask.projectID)
+            if result.ok || result.code == .alreadyHere {
+                folderPhases[ask.id] = nil
+                let stored = result.folder?.name ?? name
+                await answer(ask, with: OwnerAskAnswer(note: FolderSuggestionPresentation.addedAnswer(name: stored)))
+                return
+            }
+            reason = result.reason
+        } catch {
+            if error is CancellationError { folderPhases[ask.id] = nil; return }
+            NSLog("OwnerAsks: putting %@ on bench %lld failed: %@", suggestion.path, ask.projectID, error.localizedDescription)
+            reason = error.localizedDescription
+        }
+        await sendFolderFailure(ask, line: FolderSuggestionPresentation.failed(name: name, reason: reason))
+    }
+
+    /// Retry on a card whose failure answer was not saved: that answer again.
+    func retryFolderAnswer(_ ask: OwnerAsk) async {
+        guard case let .unsent(line) = folderPhases[ask.id], claimFolderCard(ask.id) else { return }
+        defer { folderWorking.remove(ask.id) }
+        await sendFolderFailure(ask, line: line)
+    }
+
+    /// The failure line as the agent's answer. Saved (or the ask closed
+    /// meanwhile): the card shows the line with `OK` until dismissed. Not
+    /// saved: the card keeps the line with an answer-only Retry.
+    private func sendFolderFailure(_ ask: OwnerAsk, line: String) async {
+        switch await answer(ask, with: OwnerAskAnswer(note: line)) {
+        case .delivered, .notOpen:
+            folderPhases[ask.id] = .failed(line)
+            heldFolderAsks[ask.id] = ask
+        case .busy, .invalid, .failed:
+            folderPhases[ask.id] = .unsent(line)
+        }
+    }
+
+    /// Not Now: the outside-bench hook stays quiet for the root for the rest
+    /// of the session (`workbench folder quiet`; best effort — the hook
+    /// nudges once per session and root anyway), then the answer.
+    func notNow(_ ask: OwnerAsk) async {
+        guard let suggestion = ask.folderSuggestion, claimFolderCard(ask.id) else { return }
+        defer { folderWorking.remove(ask.id) }
+        if let sessionID = ask.sessionID, let folderCLI {
+            let root = suggestion.repoRoot.isEmpty ? suggestion.path : suggestion.repoRoot
+            do {
+                let ack = try await folderCLI.folderQuiet(sessionID: sessionID, root: root)
+                if !ack.ok { NSLog("OwnerAsks: workbench folder quiet for ask #%lld refused: %@", ask.id, ack.error) }
+            } catch {
+                NSLog("OwnerAsks: workbench folder quiet for ask #%lld failed: %@", ask.id, error.localizedDescription)
+            }
+        }
+        await answer(ask, with: OwnerAskAnswer(note: FolderSuggestionPresentation.notNowAnswer))
+    }
+
+    /// Never for This Folder: `workbench folder decline` writes the decline
+    /// (Go is its only writer), then the answer. A decline that did not
+    /// happen answers nothing: the card says why and stays.
+    func never(_ ask: OwnerAsk) async {
+        guard let suggestion = ask.folderSuggestion, claimFolderCard(ask.id) else { return }
+        defer { folderWorking.remove(ask.id) }
+        let name = FolderSuggestionPresentation.folderName(suggestion.path)
+        do {
+            guard let folderCLI else { throw FolderSuggestionError.noCLI }
+            let ack = try await folderCLI.folderDecline(workbenchID: ask.projectID, path: suggestion.path)
+            guard ack.ok else {
+                answerErrors[ask.id] = WorkbenchRefusalCode.sentence(ack.error, code: ack.errorCode)
+                return
+            }
+        } catch {
+            answerErrors[ask.id] = error.localizedDescription
+            return
+        }
+        await answer(ask, with: OwnerAskAnswer(note: FolderSuggestionPresentation.neverAnswer(name: name)))
+    }
+
+    /// Whether a folder card's buttons wait: one of its actions (or an
+    /// answer to it) is running.
+    func isFolderCardWorking(_ askID: Int64) -> Bool {
+        folderWorking.contains(askID) || isAnswering(askID)
+    }
+
+    /// Takes the card for one action, before any await: a second click —
+    /// Never during Put on Bench, or the reverse — does nothing.
+    private func claimFolderCard(_ askID: Int64) -> Bool {
+        guard !isFolderCardWorking(askID) else { return false }
+        folderWorking.insert(askID)
+        return true
+    }
+
+    /// `OK` on a failed card: it goes (the agent already has the reason).
+    func folderCardDone(_ askID: Int64) {
+        folderPhases[askID] = nil
+        heldFolderAsks[askID] = nil
+    }
+
+    /// The workbench's folder cards answered with a failed add, oldest
+    /// first, shown until `OK`; one still open shows in the stack itself.
+    func heldFolderCards(projectID: Int64) -> [OwnerAsk] {
+        let open = Set((openAsks[projectID] ?? []).map(\.id))
+        return heldFolderAsks.values.filter { $0.projectID == projectID && !open.contains($0.id) }.sorted { $0.id < $1.id }
     }
 
     /// Whether an answer to `askID` was written (its notice says where the

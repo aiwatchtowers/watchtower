@@ -312,12 +312,10 @@ func (d *Deliverer) fail(ctx context.Context, m db.SessionMessage, reason string
 }
 
 // settleRow settles one row; false when it was not settled here.
-func (d *Deliverer) settleRow(ctx context.Context, id int64, state, reason string, at time.Time) bool {
+func (d *Deliverer) settleRow(ctx context.Context, id int64, state, reason string, at time.Time) {
 	if err := d.DB.SettleSessionMessage(ctx, id, state, reason, at); err != nil {
 		d.logf("%v", err)
-		return false
 	}
-	return true
 }
 
 // tellSender queues line to the sender of m (a failure row, delivered

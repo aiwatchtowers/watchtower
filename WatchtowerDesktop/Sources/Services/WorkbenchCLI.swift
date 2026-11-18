@@ -410,6 +410,10 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// up before it lacks it until a Repair; a CLI that does not send the
     /// key has none to install.
     let cleanupPermission: Bool
+    /// The `PostToolUse` entry counting the agent's touches of folders off
+    /// the bench (#2003, spec §6.7). A folder set up before it lacks it
+    /// until a Repair; a CLI that does not send the key has none to install.
+    var outsideTouch = true
     let mcp: Bool
     let claudeFound: Bool
     /// The folder was set up before the Workbench rename and still holds
@@ -544,6 +548,7 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         case askToolBlock = "ask_tool_block"
         case permissionWait = "permission_wait"
         case cleanupPermission = "cleanup_permission"
+        case outsideTouch = "outside_touch"
         case claudeFound = "claude_found"
         case legacySkill = "legacy_skill"
         case currentMCP = "current_mcp"
@@ -622,6 +627,7 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         permissionWait = try c.decodeIfPresent(Bool.self, forKey: .permissionWait) ?? true
         // Nor one without the cleanup permission (board #535).
         cleanupPermission = try c.decodeIfPresent(Bool.self, forKey: .cleanupPermission) ?? true
+        outsideTouch = try c.decodeIfPresent(Bool.self, forKey: .outsideTouch) ?? true
         mcp = try c.decode(Bool.self, forKey: .mcp)
         // An older CLI without the key could always check the registration.
         claudeFound = try c.decodeIfPresent(Bool.self, forKey: .claudeFound) ?? true
@@ -717,7 +723,7 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// `legacy` sees only those files, so one Repair settles them.
     var claudeNeedsRepair: Bool {
         legacy || skill == "missing" || skill == "updated" || !hook || !stopHook || !stateHooks
-            || !askGuard || !askToolBlock || !permissionWait || !cleanupPermission
+            || !askGuard || !askToolBlock || !permissionWait || !cleanupPermission || !outsideTouch
             || (claudeFound && (!mcp || missesCurrentMCP))
     }
 

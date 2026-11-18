@@ -50,7 +50,8 @@ final class SessionFeedStoreTests: XCTestCase {
 
     func testPhoneKindsExcludeEvent() {
         XCTAssertFalse(SessionFeedEntry.phoneKinds.contains("event"))
-        XCTAssertEqual(SessionFeedEntry.phoneKinds.union(["event"]), SessionFeedEntry.knownKinds)
+        XCTAssertFalse(SessionFeedEntry.phoneKinds.contains("peer"), "the phone shows no peer bubbles in v1")
+        XCTAssertEqual(SessionFeedEntry.phoneKinds.union(["event", "peer"]), SessionFeedEntry.knownKinds)
     }
 
     func testDecodesPinnedPayload() throws {

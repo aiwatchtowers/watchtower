@@ -19,14 +19,15 @@ import (
 // nineteen, plus set_session_target since 2026-10-31: twenty, plus
 // answer_review_question since 2026-11-08: twenty-one, plus send_to_session since
 // 2026-11-18: twenty-two, plus start_session and list_sessions since
-// 2026-11-18: twenty-four). The old names are only
+// 2026-11-18: twenty-four, plus suggest_workbench_folder since 2026-11-18:
+// twenty-five). The old names are only
 // resolved, never registered or served.
 func TestCanonicalToolName_MapsTheRenamedWorkbenchTools(t *testing.T) {
 	var names []string
 	for _, tool := range WorkbenchTools(workbenchfiles.Store{}, nil, SessionDeps{}) {
 		names = append(names, tool.Name)
 	}
-	require.Len(t, names, 24)
+	require.Len(t, names, 25)
 	require.Len(t, preRenameWorkbenchToolNames, 5)
 	for oldName, newName := range preRenameWorkbenchToolNames {
 		assert.Contains(t, names, newName)

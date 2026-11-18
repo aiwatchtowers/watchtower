@@ -220,6 +220,40 @@ func (db *DB) OpenSpecAskOfSession(sessionID int64) (int64, error) {
 	return id, nil
 }
 
+// FolderAskPayload is a folder ask's payload (00196, spec 2026-11-18 §4 item
+// 4): the folder the agent suggests, its repository root, how many tool
+// calls of the session touched it, the agent's reason and, when the folder
+// is on another bench, that bench (the card offers the merge).
+type FolderAskPayload struct {
+	Path       string           `json:"path"`
+	RepoRoot   string           `json:"repo_root"`
+	Touches    int              `json:"touches"`
+	Why        string           `json:"why"`
+	OtherBench *FolderAskOthers `json:"other_bench,omitempty"`
+}
+
+// FolderAskOthers is the bench a suggested folder is on.
+type FolderAskOthers struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+// OpenFolderAsk is the id of workbench workbenchID's open folder ask for
+// path (its payload's path, compared NOCASE), read inside tx; 0 when there
+// is none. One open folder ask per bench and path (spec §6.7).
+func (db *DB) OpenFolderAsk(tx *sql.Tx, workbenchID int64, path string) (int64, error) {
+	var id int64
+	err := tx.QueryRow(`SELECT id FROM owner_asks WHERE project_id = ? AND kind = 'folder' AND status = 'open'
+		AND json_extract(payload, '$.path') = ? COLLATE NOCASE ORDER BY id LIMIT 1`, workbenchID, path).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("finding the open folder ask of workbench %d for %s: %w", workbenchID, path, err)
+	}
+	return id, nil
+}
+
 // CountOpenOwnerAsks returns how many asks of workbench workbenchID are open —
 // for a refusal before anything is recorded; InsertOwnerAsk enforces the cap.
 func (db *DB) CountOpenOwnerAsks(workbenchID int64) (int, error) {

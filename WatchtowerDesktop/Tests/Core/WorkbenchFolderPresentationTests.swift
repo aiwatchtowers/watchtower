@@ -31,6 +31,11 @@ final class WorkbenchFolderPresentationTests: XCTestCase {
         XCTAssertEqual(Copy.hintLead, "Task touches another repo?")
     }
 
+    func testNoReason() {
+        XCTAssertEqual(Copy.putOnBenchFailed(name: "billing", reason: Copy.noReason),
+                       "Couldn’t put billing on the bench: the command gave no reason.")
+    }
+
     func testPutOnBenchFailed() {
         XCTAssertEqual(Copy.putOnBenchFailed(name: "billing", reason: "the folder was moved or deleted."),
                        "Couldn’t put billing on the bench: the folder was moved or deleted.")

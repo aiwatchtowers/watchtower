@@ -100,8 +100,39 @@ extension WorkbenchesViewModel {
     /// navigation work in (spec D6, §6.3): the root of the session the
     /// layout holds (`codeRoot(sessionID:project:)`); with only the Files pane
     /// on screen, the workbench's active live session's; else the main folder.
+    /// A file opened from another bench folder's FILES root (#2003, spec
+    /// §6.8 "or the selected FILES root") makes that root the page's until
+    /// the page's session changes.
     func activeCodeRoot(project: Workbench) -> CodeRoot {
-        codeRoot(sessionID: pageSessionID(projectID: project.id), project: project)
+        let sessionID = pageSessionID(projectID: project.id)
+        if let selected = selectedFilesRoot[project.id], selected.sessionID == sessionID,
+           isLiveFolderRoot(selected.root, projectID: project.id) {
+            return selected.root
+        }
+        return codeRoot(sessionID: sessionID, project: project)
+    }
+
+    /// A file of `root` was opened from FILES: the pane, the branch crumb,
+    /// switch and fetch work in `root` until the page's session changes. The
+    /// session's own root clears the choice; the folder it leaves stays open.
+    func selectFilesRoot(_ root: CodeRoot, project: Workbench) {
+        let sessionID = pageSessionID(projectID: project.id)
+        guard root != codeRoot(sessionID: sessionID, project: project) else {
+            selectedFilesRoot[project.id] = nil
+            return
+        }
+        let current = activeCodeRoot(project: project)
+        guard root != current else { return }
+        if let left = current.folderID ?? benchFolders[project.id]?.homeID {
+            expandedFolderRoots[project.id, default: []].insert(left)
+        }
+        selectedFilesRoot[project.id] = FilesRootSelection(root: root, sessionID: sessionID)
+    }
+
+    /// The root's folder is still on the bench (home always is).
+    private func isLiveFolderRoot(_ root: CodeRoot, projectID: Int64) -> Bool {
+        guard let folderID = root.folderID else { return true }
+        return benchFolders[projectID]?.folder(folderID).map { !$0.isRemoved } ?? false
     }
 
     /// The root a session's agent works in: its worktree when its place is
