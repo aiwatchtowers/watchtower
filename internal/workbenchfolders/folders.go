@@ -240,19 +240,21 @@ func Add(ctx context.Context, d *db.DB, workbenchID int64, path, addedBy string,
 // Running sessions: live (the session host's answer, asked before the
 // transaction — never host I/O inside it) is advisory. Inside the
 // transaction the rows are recounted from terminal_sessions alone
-// (countLiveRows): with an answer from live, only the rows a start may have
-// inserted since — newer than the mark taken before asking, or never
-// reported by a hook yet — so a start committed first is seen; without one
-// (nil, or it failed), every live-looking row counts.
+// (countLiveRows): with an answer from live, only the rows a start or a
+// resume may have touched since the snapshot taken before asking — so a
+// start or resume committed first is seen; without one (nil, or it
+// failed), every live-looking row counts. Removing the home folder pins the
+// rows naming it by NULL (homePins) to it before the home moves.
 func Remove(ctx context.Context, d *db.DB, folderID int64, live LiveSessions) (db.WorkbenchFolder, error) {
 	f, err := byID(ctx, d, folderID)
 	if err != nil {
 		return f, err
 	}
-	hostCount, mark, asked := 0, int64(0), false
+	hostCount, asked := 0, false
+	var snap liveSnapshot
 	if live != nil {
-		if err := d.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM terminal_sessions WHERE `+db.NotDeletingSQL).Scan(&mark); err != nil {
-			return f, fmt.Errorf("reading the terminal sessions: %w", err)
+		if snap, err = takeLiveSnapshot(ctx, d); err != nil {
+			return f, err
 		}
 		if n, err := live(ctx, folderID); err == nil {
 			hostCount, asked = n, true
@@ -277,7 +279,7 @@ func Remove(ctx context.Context, d *db.DB, folderID int64, live LiveSessions) (d
 		if others == 0 {
 			return &Refusal{Code: CodeLastFolder, Detail: "A workbench needs at least one folder.", Folder: &f}
 		}
-		running, err := countLiveRows(ctx, tx, f, home, asked, mark)
+		running, err := countLiveRows(ctx, tx, f, home, asked, snap)
 		if err != nil {
 			return err
 		}
@@ -290,6 +292,12 @@ func Remove(ctx context.Context, d *db.DB, folderID int64, live LiveSessions) (d
 		}
 		if !home {
 			return nil
+		}
+		// The rows naming the home folder by NULL keep naming this one
+		// (a target reads "· folder removed", drift folder_removed), not
+		// the next home.
+		if err := pinHomeRows(ctx, tx, f.WorkbenchID, f.ID); err != nil {
+			return err
 		}
 		var next string
 		if err := tx.QueryRowContext(ctx, `SELECT folder_path FROM workbench_folders WHERE workbench_id = ? AND removed_at IS NULL
@@ -308,20 +316,14 @@ func Remove(ctx context.Context, d *db.DB, folderID int64, live LiveSessions) (d
 	return byID(ctx, d, folderID)
 }
 
-// countLiveRows counts f's session rows (SessionRowsSQL) that may be running
-// (F2): not being deleted, not finished and not failed to launch; with
-// asked, only those newer than mark or never reported by a hook.
-func countLiveRows(ctx context.Context, tx *sql.Tx, f db.WorkbenchFolder, home, asked bool, mark int64) (int, error) {
-	q := `SELECT COUNT(*) FROM terminal_sessions WHERE ` + SessionRowsSQL + ` AND ` + db.NotDeletingSQL +
-		` AND finished_at IS NULL AND agent_failed_at IS NULL`
-	args := SessionRowsArgs(f, home)
-	if asked {
-		// The host answered for what ran before the mark; a start since
-		// (or one still launching: no hook has reported it) is the race
-		// the recount closes (spec §7 row 4).
-		q += ` AND (id > ? OR agent_state IS NULL)`
-		args = append(args, mark)
-	}
+// countLiveRows counts f's session rows (SessionRowsSQL), not being
+// deleted, that may be running (F2, liveSnapshot.mayRunSQL): with asked,
+// only a start or a resume since snap — the race the recount closes (spec
+// §7 row 4).
+func countLiveRows(ctx context.Context, tx *sql.Tx, f db.WorkbenchFolder, home, asked bool, snap liveSnapshot) (int, error) {
+	cond, condArgs := snap.mayRunSQL(asked)
+	q := `SELECT COUNT(*) FROM terminal_sessions WHERE ` + SessionRowsSQL + ` AND ` + db.NotDeletingSQL + cond
+	args := append(SessionRowsArgs(f, home), condArgs...)
 	var n int
 	if err := tx.QueryRowContext(ctx, q, args...).Scan(&n); err != nil {
 		return 0, fmt.Errorf("counting the sessions of folder %d: %w", f.ID, err)
