@@ -75,7 +75,7 @@ struct InboxListRow: View {
         case .proposal(let action):
             let title = action.tool == SaveAutomationCardModel.tool
                 ? SaveAutomationCardModel(action: action).title
-                : AgentActionCardView.title(for: action)
+                : MacAgentActionCard.title(for: action)
             let prefix = proposalLabel ?? "Assistant proposal"
             let source = AutomationDates.parse(action.createdAt)
                 .map { InboxCardTexts.stamped(prefix, at: $0, now: now) } ?? prefix

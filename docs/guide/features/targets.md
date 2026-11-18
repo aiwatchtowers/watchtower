@@ -10,13 +10,15 @@ Slack and mail make promises easy and tracking them hard. A target keeps the pro
 
 ## How it works
 <!-- learn
-id: targets-from-anything
+id: targets-make-a-task
 title: Turn anything into a target
-text: Press **Create Target** on a track, digest, briefing item or meeting note; it keeps a link to its source.
+text: Press **Make a Task** on a track, briefing item, idea or Inbox card; the target keeps a link to its source.
+replaces: [targets-from-anything]
+changed: The button is now called **Make a Task**.
 area: tasks
 level: next
 kind: tip
-since: 0.24.0
+since: 0.28.4
 action: nav:targets
 -->
 <!-- learn
@@ -117,7 +119,7 @@ On a **NEXT STEP** card, the refresh button regenerates it on demand. After you 
 
 ## When it's empty or wrong
 
-- **"No targets yet"** is normal on a new install: targets appear when you, a button or a ✅ reaction creates one. Use **New target** or **Create Target** on a track.
+- **"No targets yet"** is normal on a new install: targets appear when you, a button or a ✅ reaction creates one. Use **New target** or **Make a Task** on a track.
 - **No next step on a target.** Only To Do, In Progress and Blocked targets get one. The daemon must be running, **Next Step Suggestions** must be on in Settings → Features (it is by default), and a target that failed 3 times today waits until tomorrow. **Generate** works at any time.
 - **A card from the assistant didn't change anything.** Cards apply only after **Approve**. A proposal aimed outside the target's own line fails with an explanation instead of writing elsewhere.
 - **A snoozed target hasn't come back.** It returns on the first daemon cycle after its date.

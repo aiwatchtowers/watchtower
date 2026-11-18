@@ -86,12 +86,14 @@ final class ViewDatabaseWriteCallSiteTests: XCTestCase {
         XCTAssertEqual(manager, 1, "DatabaseManager.swift moved: point the scan at it")
     }
 
-    /// Board #670 phase 2b-2: the stores the chats write through — the main
-    /// chat's turn store and session client, the embedded chats' store and
+    /// Board #670 phase 2b-2: the stores the chats write through — the
+    /// embedded chats' store and
     /// engine, attachments, artifact panels and comments, the surfaces that
     /// create a chat's conversation — and the Inbox action strip.
     func testNoSynchronousDatabaseWriteInChatStores() throws {
-        let folders = ["WatchtowerCore/Services/Chat", "Services/Chat", "Services/ChatSurfaces"]
+        // `Services/Chat` (the main chat's pool and session client) went with
+        // the Swift writer (unified chat T8): the engine writes the main chat.
+        let folders = ["WatchtowerCore/Services/Chat", "Services/ChatSurfaces"]
         var total = 0
         for folder in folders {
             let (scanned, _) = try scan(Self.sources.appendingPathComponent(folder)) { $0.pathExtension == "swift" }

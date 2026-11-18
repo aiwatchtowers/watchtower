@@ -24,7 +24,8 @@ final class AccountPurgeNoticePolicyTests: XCTestCase {
     }
 
     func testLeaseLineOfARemovedAccount() {
-        let removed = AccountPurge(id: 1, source: "slack", accountID: 2, accountLabel: "Acme",
+        // A removed Slack workspace has a zero lease (testZeroLeaseRemovedLine).
+        let removed = AccountPurge(id: 1, source: "jira", accountID: 2, accountLabel: "Acme",
                                    accountStatus: "removed", accessOkAt: access, reason: "lease", dueAt: due)
         XCTAssertEqual(
             AccountPurgeNoticePolicy.line(removed, zone: utc),
@@ -116,5 +117,56 @@ final class AccountPurgeNoticePolicyTests: XCTestCase {
         let result = AccountPurgeNoticePolicy.notices(rows: [], sent: ["5:scheduled", "6:done"], zone: utc)
         XCTAssertTrue(result.notices.isEmpty)
         XCTAssertEqual(result.sent, [])
+    }
+
+    /// #1769, A2: a removed Slack workspace has a zero lease, so its line has
+    /// no "has not been reached since" (SlackPolicyMockCopy.removedLine).
+    func testZeroLeaseRemovedLine() {
+        let row = AccountPurge(id: 1, source: "slack", accountID: 2, accountLabel: "acme", accountStatus: "removed",
+                               accessOkAt: access, reason: "lease",
+                               dueAt: PlanUsageDates.parse("2026-11-20T14:00:00Z"))
+        XCTAssertEqual(
+            AccountPurgeNoticePolicy.line(row, zone: utc),
+            "acme was removed. Its data will be deleted on Nov 20, 14:00 unless you add it again.")
+    }
+
+    /// #1769, spec §9: a verify failure (`left: …`) holds a revoked or removed
+    /// account — no new attempt until a Re-login or adding it back. A live
+    /// account and a chunk failure keep the "new notice" line.
+    func testFailedLineOfAHeldAccount() {
+        let revoked = AccountPurge(id: 7, source: "slack", accountID: 1, accountLabel: "Acme", accountStatus: "revoked",
+                                   state: "failed", error: "left: messages=3")
+        XCTAssertEqual(
+            AccountPurgeNoticePolicy.failedLine(revoked, zone: utc),
+            "Watchtower could not finish deleting Acme's data (left: messages=3). "
+                + "No new attempt is made until you Re-login.")
+        let removed = AccountPurge(id: 8, source: "jira", accountID: 2, accountLabel: "acme.example.com",
+                                   accountStatus: "removed", reason: "lease", state: "failed", error: "left: issues=1")
+        XCTAssertEqual(
+            AccountPurgeNoticePolicy.failedLine(removed, zone: utc),
+            "Watchtower could not finish deleting acme.example.com's data (left: issues=1). "
+                + "No new attempt is made until you add it again.")
+        let notice = AccountPurgeNoticePolicy.notices(rows: [revoked], sent: [], zone: utc).notices.first
+        XCTAssertEqual(notice?.body, AccountPurgeNoticePolicy.failedLine(revoked, zone: utc))
+
+        let live = AccountPurge(id: 9, source: "jira", accountID: 3, accountLabel: "Acme", accountStatus: "ok",
+                                reason: "lease", state: "failed", error: "left: issues=1")
+        XCTAssertEqual(
+            AccountPurgeNoticePolicy.failedLine(live, zone: utc),
+            "Watchtower could not finish deleting Acme's data (left: issues=1). Any new attempt comes with a new notice.")
+        let chunk = AccountPurge(id: 10, source: "slack", accountID: 1, accountLabel: "Acme", accountStatus: "revoked",
+                                 state: "failed", error: "disk full")
+        XCTAssertTrue(AccountPurgeNoticePolicy.failedLine(chunk, zone: utc).hasSuffix("Any new attempt comes with a new notice."))
+    }
+
+    /// Fix round 1: only a `removed` account is held (Go's `purge.VerifyHeld`);
+    /// a gone row ("" status) keeps the "new notice" line.
+    func testFailedLineOfAGoneRowIsNotHeld() {
+        let gone = AccountPurge(id: 11, source: "jira", accountID: 4, accountStatus: "", reason: "lease",
+                                state: "failed", error: "left: issues=1")
+        XCTAssertEqual(
+            AccountPurgeNoticePolicy.failedLine(gone, zone: utc),
+            "Watchtower could not finish deleting Jira account #4's data (left: issues=1). "
+                + "Any new attempt comes with a new notice.")
     }
 }

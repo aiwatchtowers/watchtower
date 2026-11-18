@@ -1,4 +1,6 @@
+import ChatUI
 import GRDB
+import WatchtowerChatText
 import SwiftUI
 @testable import WatchtowerDesktop
 import WatchtowerCore
@@ -28,7 +30,8 @@ enum RaisedAskShotFixtures {
         let ask = raised(summary: summary)
         return VStack(alignment: .leading, spacing: 8) {
             OwnerAskHeaderCard(ask: ask)
-            ChatQuestionCardView(card: ChatQuestionCard(questions: ask.payload.questions), answerText: nil, onAnswer: nil)
+            QuestionPartView(card: ChatQuestionCard(questions: ask.payload.questions), answerText: nil, onAnswer: nil)
+                .macChatStyle(hooks: ChatMacArtifactHooks(), look: .ask)
         }
     }
 

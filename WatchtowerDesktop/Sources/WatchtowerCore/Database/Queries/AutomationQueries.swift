@@ -388,17 +388,20 @@ package enum AutomationQueries {
 
     /// A session of run `runID` that no step names: the app created it but
     /// did not attach it (a crash between the two), so it is adopted rather
-    /// than a second one launched. The oldest such row.
+    /// than a second one launched. The oldest such row. A row the owner
+    /// deleted (`delete_requested_at`, board #1716) is never adopted: the
+    /// run's poll launches a new session for the step, as after a delete.
     package static func unattachedSession(_ db: Database, runID: Int64) throws -> TerminalSession? {
         try TerminalSession.fetchOne(db, sql: """
-            SELECT * FROM terminal_sessions s WHERE \(unattachedSessionsWhere)
+            SELECT * FROM terminal_sessions s WHERE \(unattachedSessionsWhere) AND s.delete_requested_at IS NULL
             ORDER BY s.id LIMIT 1
             """, arguments: [runID])
     }
 
     /// Takes the run marker off run `runID`'s sessions that no step names —
     /// the row a refused launch left — so no later poll adopts one (Go
-    /// attaches only a session of the step's run). The rows stay; returns
+    /// attaches only a session of the step's run). Deleting rows too: a
+    /// Resume must never make one adoptable later. The rows stay; returns
     /// their ids.
     @discardableResult
     package static func disownUnattachedSessions(_ db: Database, runID: Int64) throws -> [Int64] {
@@ -415,7 +418,8 @@ package enum AutomationQueries {
 
     /// The `session()` steps still waiting on a session attached to them,
     /// their run still waiting: the sessions whose end the app reports. A
-    /// session that finished or failed, or whose row is gone, is left out —
+    /// session that finished or failed, or whose row is gone or deleting
+    /// (board #1716), is left out —
     /// the run's wait reads those ends itself (spec §13.1).
     package static func waitingSessionSteps(_ db: Database) throws -> [(stepID: Int64, sessionID: Int64)] {
         let rows = try Row.fetchAll(db, sql: """
@@ -423,7 +427,7 @@ package enum AutomationQueries {
             JOIN terminal_sessions s ON s.id = st.session_id
             WHERE st.kind = 'session' AND st.status = 'waiting'
               AND st.finished_at IS NULL AND r.status = 'waiting'
-              AND s.finished_at IS NULL AND s.agent_failed_at IS NULL
+              AND s.finished_at IS NULL AND s.agent_failed_at IS NULL AND s.delete_requested_at IS NULL
             ORDER BY st.id
             """)
         return rows.map { (stepID: $0["id"], sessionID: $0["session_id"]) }

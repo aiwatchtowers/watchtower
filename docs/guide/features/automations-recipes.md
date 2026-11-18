@@ -1,5 +1,5 @@
 # Automations: recipes and templates
-A recipe is one Markdown file you can read in full. This page covers its parts and the five ready-made templates. How confirmation, budgets and runs work is on [Automations](automations.md).
+A recipe is one Markdown file you can read in full. This page covers its parts and the six ready-made templates. How confirmation, budgets and runs work is on [Automations](automations.md).
 
 ## Why use it
 A template is a working recipe to adapt; the parts show what you confirm.
@@ -101,14 +101,14 @@ action: nav:automations
 |---|---|---|---|
 | `new-mail-summary` | personal | after a mail sync brings new mail | summarises new mail, at most 600 messages per mailbox per run |
 | `jira-state-report` | personal | Mondays 09:00 | weekly Jira report to reports and the briefing, on your active projects |
-| `team-performance-report` | personal | Fridays 17:00 | report from Jira, people cards and Slack |
+| `team-week-summary` | personal | Fridays 17:00 | report from Jira, people cards and Slack |
 | `on-reaction` | personal | you react with an emoji you pick | puts that Slack message in your Inbox (text for recent ones only) |
 | `pr-review-rounds` | workbench | weekdays 10:00 and 16:00 | lists open pull requests with `gh` and opens a review session for each changed one, at most 10 per round; the rest wait for the next round |
 | `release-buttons` | workbench | by hand | three recipes (release, deploy to test, deploy to stage), each running one `make` target and asking before it acts |
 
 `new-mail-summary` runs on its own after a Gmail or IMAP sync brings new mail. A run by hand or on a schedule has no mail event, so put your mailboxes' labels or addresses in `scheduledAccounts` in the script. Late-synced mail counts only under two days old.
 
-`jira-state-report` picks its projects when you install it: every synced Jira project with an open issue assigned to you or reported by you. The form says which ("Covers: PAY, OPS"). Each project gets its own `jira:read@…` permission and an entry in the script's `projects` list; to add or drop one later, change both.
+`jira-state-report` picks its projects when you install it: every synced Jira project with an open issue assigned to you or reported by you. Or name them in **Jira project key**. Each project gets its own `jira:read@…` permission and an entry in the script's `projects` list; to add or drop one later, change both.
 
 ### Finding your way around
 <!-- learn
@@ -137,7 +137,7 @@ action: nav:automations
 - The sidebar button (**⌥⌘0**) hides the draft column for the chat; press it again, or **Save…** (shown while the hidden draft can be saved), to bring it back.
 
 ## When it's empty or wrong
-- **"No templates yet."** The command-line tool is older than the app; update.
+- **No templates to pick.** The command-line tool is older than the app; update.
 - **Install refused.** A recipe with that name already exists (a removed one counts), or a symlink is in the way. Nothing is half-installed.
 - **The Jira state report won't install.** It needs a synced Jira project with an open issue assigned to or reported by you. Connect Jira, let it sync, try again.
 - **A workbench template's button is off.** Add a workbench first.

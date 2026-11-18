@@ -105,6 +105,9 @@ CREATE INDEX idx_chat_attachments_project ON chat_attachments(project_id)
 index	idx_chat_conversations_project
 CREATE INDEX idx_chat_conversations_project ON chat_conversations(project_id)
 
+index	idx_chat_messages_client_key
+CREATE UNIQUE INDEX idx_chat_messages_client_key ON chat_messages(conversation_id, client_key) WHERE client_key IS NOT NULL
+
 index	idx_chat_messages_conversation
 CREATE INDEX idx_chat_messages_conversation ON chat_messages(conversation_id)
 
@@ -427,6 +430,9 @@ CREATE INDEX idx_memory_retrieve_shadow_surface ON memory_retrieve_shadow(surfac
 
 index	idx_messages_channel_ts_unix
 CREATE INDEX idx_messages_channel_ts_unix ON messages(channel_id, ts_unix)
+
+index	idx_messages_synced_at
+CREATE INDEX idx_messages_synced_at ON messages(CASE WHEN synced_at = 0 THEN ts_unix ELSE synced_at END)
 
 index	idx_messages_thread
 CREATE INDEX idx_messages_thread ON messages(channel_id, thread_ts)
@@ -752,6 +758,12 @@ ended_at TEXT NOT NULL,
 reported_cost_usd REAL
 )
 
+table	agent_session_tombstones
+CREATE TABLE agent_session_tombstones (
+agent_session_id TEXT PRIMARY KEY,
+deleted_at TEXT NOT NULL
+)
+
 table	automation_draft_cache
 CREATE TABLE automation_draft_cache (
 conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
@@ -1015,7 +1027,7 @@ channel_id TEXT PRIMARY KEY REFERENCES channels(id) ON DELETE CASCADE,
 is_muted_for_llm INTEGER NOT NULL DEFAULT 0,
 is_favorite INTEGER NOT NULL DEFAULT 0,
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-)
+, sync_excluded INTEGER NOT NULL DEFAULT 0, excluded_at TEXT NOT NULL DEFAULT '', catchup_from REAL, catchup_to REAL, muted_by_exclusion INTEGER NOT NULL DEFAULT 0, muted_at TEXT NOT NULL DEFAULT '')
 
 table	channels
 CREATE TABLE channels (
@@ -1130,7 +1142,7 @@ text TEXT NOT NULL,
 created_at REAL NOT NULL,
 turn_id TEXT NOT NULL DEFAULT ''
 , status TEXT NOT NULL DEFAULT 'complete'
-CHECK(status IN ('complete','partial','error')), provider TEXT, model TEXT, tokens_in INTEGER, tokens_out INTEGER, parent_id INTEGER REFERENCES chat_messages(id) ON DELETE CASCADE, error_code TEXT, error_message TEXT)
+CHECK(status IN ('complete','partial','error')), provider TEXT, model TEXT, tokens_in INTEGER, tokens_out INTEGER, parent_id INTEGER REFERENCES chat_messages(id) ON DELETE CASCADE, error_code TEXT, error_message TEXT, client_key TEXT)
 
 table	chat_project_sources
 CREATE TABLE "chat_project_sources" (
@@ -2521,7 +2533,7 @@ is_deleted INTEGER NOT NULL DEFAULT 0,
 subtype TEXT NOT NULL DEFAULT '',
 permalink TEXT NOT NULL DEFAULT '',
 ts_unix REAL GENERATED ALWAYS AS (CASE WHEN INSTR(ts, '.') > 0 THEN CAST(SUBSTR(ts, 1, INSTR(ts, '.') - 1) AS REAL) ELSE CAST(ts AS REAL) END) STORED,
-raw_json TEXT NOT NULL DEFAULT '{}',
+raw_json TEXT NOT NULL DEFAULT '{}', synced_at REAL NOT NULL DEFAULT 0,
 PRIMARY KEY (channel_id, ts)
 )
 
@@ -2598,6 +2610,12 @@ meta_json TEXT,
 started_at REAL NOT NULL,
 transcribed_at REAL
 , private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1)), upload_id TEXT)
+
+table	people_card_exclusions
+CREATE TABLE people_card_exclusions (
+user_id TEXT PRIMARY KEY,
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+)
 
 table	people_card_summaries
 CREATE TABLE people_card_summaries (
@@ -3076,7 +3094,7 @@ error TEXT NOT NULL DEFAULT '',
 enabled INTEGER NOT NULL DEFAULT 1,
 search_last_date TEXT NOT NULL DEFAULT '',
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at TEXT NOT NULL DEFAULT '', company_slug TEXT NOT NULL DEFAULT '')
+, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at TEXT NOT NULL DEFAULT '', first_cycle_at TEXT NOT NULL DEFAULT '', emoji_scope_missing INTEGER NOT NULL DEFAULT 0, people_prune_done_at TEXT NOT NULL DEFAULT '', company_slug TEXT NOT NULL DEFAULT '')
 
 table	slack_live_status
 CREATE TABLE slack_live_status (
@@ -3287,7 +3305,7 @@ chat_question_at TEXT,
 agent_turns TEXT,
 agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT, worktree_branch TEXT, worktree_base TEXT, automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, target_bound_at TEXT, agent_watch_issue TEXT
 CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), agent_watch_issue_at TEXT, start_notice TEXT, agent_background_shells INTEGER
-CHECK (agent_background_shells IS NULL OR agent_background_shells >= 0),
+CHECK (agent_background_shells IS NULL OR agent_background_shells >= 0), delete_requested_at TEXT,
 CHECK (title != '' AND folder_path != ''),
 CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 )
@@ -3608,6 +3626,17 @@ domain TEXT NOT NULL DEFAULT '',
 synced_at TEXT, -- ISO8601 timestamp of last sync
 inbox_last_processed_ts REAL NOT NULL DEFAULT 0 -- Unix timestamp of last inbox pipeline run
 , secretary_profile TEXT NOT NULL DEFAULT '', compose_last_run_ts REAL NOT NULL DEFAULT 0, style_profile TEXT NOT NULL DEFAULT '', style_profile_updated_at TEXT NOT NULL DEFAULT '', memory_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0, memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0, memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0, memory_focus_fingerprint TEXT NOT NULL DEFAULT '', memory_last_interaction_id INTEGER NOT NULL DEFAULT 0, ideas_digest_floor INTEGER NOT NULL DEFAULT 0, ideas_stream_digest_floor INTEGER NOT NULL DEFAULT 0, ideas_transcript_floor INTEGER NOT NULL DEFAULT 0, digest_fastforward_ts REAL NOT NULL DEFAULT 0, ideas_chat_floor INTEGER NOT NULL DEFAULT 0)
+
+trigger	agent_session_tombstones_bd
+CREATE TRIGGER agent_session_tombstones_bd BEFORE DELETE ON terminal_sessions
+BEGIN
+INSERT OR IGNORE INTO agent_session_tombstones (agent_session_id, deleted_at)
+SELECT agent_session_id, strftime('%Y-%m-%dT%H:%M:%SZ','now')
+FROM terminal_session_agent_sessions WHERE terminal_session_id = OLD.id;
+INSERT OR IGNORE INTO agent_session_tombstones (agent_session_id, deleted_at)
+SELECT OLD.claude_session_id, strftime('%Y-%m-%dT%H:%M:%SZ','now')
+WHERE OLD.claude_session_id IS NOT NULL;
+END
 
 trigger	automation_runs_replay_cleanup
 CREATE TRIGGER automation_runs_replay_cleanup AFTER UPDATE OF status ON automation_runs
@@ -4360,6 +4389,10 @@ GROUP BY up.ancestor
 10	ended_at	TEXT	notnull=1	dflt=NULL	pk=0
 11	reported_cost_usd	REAL	notnull=0	dflt=NULL	pk=0
 
+## agent_session_tombstones
+0	agent_session_id	TEXT	notnull=0	dflt=NULL	pk=1
+1	deleted_at	TEXT	notnull=1	dflt=NULL	pk=0
+
 ## automation_draft_cache
 0	conversation_id	INTEGER	notnull=1	dflt=NULL	pk=1
 1	seq	INTEGER	notnull=1	dflt=NULL	pk=2
@@ -4598,6 +4631,12 @@ GROUP BY up.ancestor
 1	is_muted_for_llm	INTEGER	notnull=1	dflt=0	pk=0
 2	is_favorite	INTEGER	notnull=1	dflt=0	pk=0
 3	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+4	sync_excluded	INTEGER	notnull=1	dflt=0	pk=0
+5	excluded_at	TEXT	notnull=1	dflt=''	pk=0
+6	catchup_from	REAL	notnull=0	dflt=NULL	pk=0
+7	catchup_to	REAL	notnull=0	dflt=NULL	pk=0
+8	muted_by_exclusion	INTEGER	notnull=1	dflt=0	pk=0
+9	muted_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## channels
 0	id	TEXT	notnull=0	dflt=NULL	pk=1
@@ -4715,6 +4754,7 @@ GROUP BY up.ancestor
 11	parent_id	INTEGER	notnull=0	dflt=NULL	pk=0
 12	error_code	TEXT	notnull=0	dflt=NULL	pk=0
 13	error_message	TEXT	notnull=0	dflt=NULL	pk=0
+14	client_key	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## chat_project_sources
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -5914,6 +5954,7 @@ GROUP BY up.ancestor
 8	subtype	TEXT	notnull=1	dflt=''	pk=0
 9	permalink	TEXT	notnull=1	dflt=''	pk=0
 10	raw_json	TEXT	notnull=1	dflt='{}'	pk=0
+11	synced_at	REAL	notnull=1	dflt=0	pk=0
 
 ## messages_fts
 0	text		notnull=0	dflt=NULL	pk=0
@@ -5991,6 +6032,10 @@ GROUP BY up.ancestor
 6	transcribed_at	REAL	notnull=0	dflt=NULL	pk=0
 7	private	INTEGER	notnull=1	dflt=0	pk=0
 8	upload_id	TEXT	notnull=0	dflt=NULL	pk=0
+
+## people_card_exclusions
+0	user_id	TEXT	notnull=0	dflt=NULL	pk=1
+1	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 
 ## people_card_summaries
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -6402,7 +6447,10 @@ GROUP BY up.ancestor
 14	deletion_sweep_day	TEXT	notnull=1	dflt=''	pk=0
 15	access_ok_at	TEXT	notnull=1	dflt=''	pk=0
 16	revoked_at	TEXT	notnull=1	dflt=''	pk=0
-17	company_slug	TEXT	notnull=1	dflt=''	pk=0
+17	first_cycle_at	TEXT	notnull=1	dflt=''	pk=0
+18	emoji_scope_missing	INTEGER	notnull=1	dflt=0	pk=0
+19	people_prune_done_at	TEXT	notnull=1	dflt=''	pk=0
+20	company_slug	TEXT	notnull=1	dflt=''	pk=0
 
 ## slack_live_status
 0	team_id	TEXT	notnull=1	dflt=NULL	pk=1
@@ -6593,6 +6641,7 @@ GROUP BY up.ancestor
 34	agent_watch_issue_at	TEXT	notnull=0	dflt=NULL	pk=0
 35	start_notice	TEXT	notnull=0	dflt=NULL	pk=0
 36	agent_background_shells	INTEGER	notnull=0	dflt=NULL	pk=0
+37	delete_requested_at	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## tool_trust
 0	tool	TEXT	notnull=1	dflt=NULL	pk=1

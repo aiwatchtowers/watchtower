@@ -10,6 +10,7 @@ import (
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/transport/relay"
 	"watchtower/internal/hub/wire"
 )
 
@@ -234,6 +235,7 @@ func errClass(err error) string {
 		err   error
 		class string
 	}{
+		{relay.ErrRelayInternal, "relay_internal"},
 		{transport.ErrUnavailable, "unavailable"}, {transport.ErrRateLimited, "rate_limited"},
 		{transport.ErrMailboxQuota, "mailbox_quota"}, {transport.ErrHubQuota, "hub_quota"},
 		{transport.ErrRecordTooLarge, "record_too_large"}, {transport.ErrForbidden, "forbidden"},
@@ -252,6 +254,9 @@ func errClass(err error) string {
 	}
 	if droppable(err) {
 		return "malformed"
+	}
+	if c := relay.CodeClass(err); c != "" {
+		return c
 	}
 	return "other"
 }

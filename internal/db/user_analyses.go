@@ -310,9 +310,24 @@ func (db *DB) ComputeUserStats(userID string, from, to float64) (*UserStats, err
 	return s, nil
 }
 
-// ComputeAllUserStats computes stats for all active (non-bot, non-deleted) users
-// in the given time window using bulk SQL queries. Returns only users with at least minMessages.
-func (db *DB) ComputeAllUserStats(from, to float64, minMessages int) ([]UserStats, error) {
+// ComputeAllUserStats computes stats for the active (non-bot, non-deleted)
+// users the owner works with in the given time window, using bulk SQL
+// queries (spec 2026-11-17 §5.3, A13). owners maps a Slack account id to that
+// account's namespaced owner id (SlackOwnersByAccount); a person qualifies
+// only through the owner of the same account (InteractionPartners), and each
+// owner qualifies for their own card. An account missing from owners makes
+// no cards; an empty map returns nothing, never everyone. The window is
+// [from, to), the partners' window too. Returns only users with at least
+// minMessages.
+func (db *DB) ComputeAllUserStats(from, to float64, minMessages int, owners map[int64]string) ([]UserStats, error) {
+	qualified, err := db.PeopleCardCandidates(from, to, owners)
+	if err != nil {
+		return nil, err
+	}
+	if len(qualified) == 0 {
+		return nil, nil
+	}
+
 	// 1. Core stats for all users in a single query
 	rows, err := db.Query(`
 		SELECT m.user_id,
@@ -322,7 +337,7 @@ func (db *DB) ComputeAllUserStats(from, to float64, minMessages int) ([]UserStat
 		FROM messages m
 		JOIN users u ON u.id = m.user_id
 		JOIN channels c ON c.id = m.channel_id
-		WHERE m.ts_unix >= ? AND m.ts_unix <= ?
+		WHERE m.ts_unix >= ? AND m.ts_unix < ?
 			AND m.is_deleted = 0 AND m.text != ''
 			AND m.user_id != ''
 			AND u.is_bot = 0 AND u.is_deleted = 0
@@ -342,6 +357,9 @@ func (db *DB) ComputeAllUserStats(from, to float64, minMessages int) ([]UserStat
 		if err := rows.Scan(&s.UserID, &s.MessageCount, &s.ChannelsActive, &s.AvgMessageLength); err != nil {
 			return nil, fmt.Errorf("scanning core stats: %w", err)
 		}
+		if !qualified[s.UserID] {
+			continue
+		}
 		statsMap[s.UserID] = &s
 		userOrder = append(userOrder, s.UserID)
 	}
@@ -357,7 +375,7 @@ func (db *DB) ComputeAllUserStats(from, to float64, minMessages int) ([]UserStat
 		SELECT m.user_id, COUNT(*) FROM messages m
 		JOIN users u ON u.id = m.user_id
 		JOIN channels c ON c.id = m.channel_id
-		WHERE m.ts_unix >= ? AND m.ts_unix <= ?
+		WHERE m.ts_unix >= ? AND m.ts_unix < ?
 			AND m.reply_count > 0 AND m.thread_ts IS NULL
 			AND m.user_id != '' AND u.is_bot = 0 AND u.is_deleted = 0
 			AND c.type NOT IN ('dm', 'group_dm')
@@ -385,7 +403,7 @@ func (db *DB) ComputeAllUserStats(from, to float64, minMessages int) ([]UserStat
 		SELECT m.user_id, COUNT(DISTINCT m.thread_ts) FROM messages m
 		JOIN users u ON u.id = m.user_id
 		JOIN channels c ON c.id = m.channel_id
-		WHERE m.ts_unix >= ? AND m.ts_unix <= ?
+		WHERE m.ts_unix >= ? AND m.ts_unix < ?
 			AND m.thread_ts IS NOT NULL
 			AND m.user_id != '' AND u.is_bot = 0 AND u.is_deleted = 0
 			AND c.type NOT IN ('dm', 'group_dm')
@@ -416,7 +434,7 @@ func (db *DB) ComputeAllUserStats(from, to float64, minMessages int) ([]UserStat
 		FROM messages m
 		JOIN users u ON u.id = m.user_id
 		JOIN channels c ON c.id = m.channel_id
-		WHERE m.ts_unix >= ? AND m.ts_unix <= ?
+		WHERE m.ts_unix >= ? AND m.ts_unix < ?
 			AND m.user_id != '' AND u.is_bot = 0 AND u.is_deleted = 0
 			AND c.type NOT IN ('dm', 'group_dm')
 		GROUP BY m.user_id, hour
@@ -456,7 +474,7 @@ func (db *DB) ComputeAllUserStats(from, to float64, minMessages int) ([]UserStat
 			SELECT m.user_id, COUNT(*) FROM messages m
 			JOIN users u ON u.id = m.user_id
 			JOIN channels c ON c.id = m.channel_id
-			WHERE m.ts_unix >= ? AND m.ts_unix <= ?
+			WHERE m.ts_unix >= ? AND m.ts_unix < ?
 				AND m.user_id != '' AND u.is_bot = 0 AND u.is_deleted = 0
 				AND c.type NOT IN ('dm', 'group_dm')
 			GROUP BY m.user_id`, prevFrom, prevTo)

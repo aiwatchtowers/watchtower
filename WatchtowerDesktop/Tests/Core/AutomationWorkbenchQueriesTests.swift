@@ -162,6 +162,47 @@ final class AutomationWorkbenchQueriesTests: XCTestCase {
         XCTAssertEqual(steps.map(\.sessionID), [sessionID])
     }
 
+    /// Board #1716: the run marker comes off a deleting unattached row too,
+    /// so a Resume never makes it adoptable later.
+    func testDisownClearsDeletingRowsToo() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let p = try TestDatabase.insertWorkbench(db)
+            let a = try TestDatabase.insertAutomation(db, workbenchID: p)
+            let run = try TestDatabase.insertAutomationRun(db, automationID: a, status: "waiting", waitingReason: "app")
+            let deleting = try session(db, projectID: p, runID: run)
+            try TerminalSessionQueries.markDeleteRequested(db, ids: [deleting.id], at: Date())
+            XCTAssertNil(try AutomationQueries.unattachedSession(db, runID: run), "never adopted")
+
+            XCTAssertEqual(try AutomationQueries.disownUnattachedSessions(db, runID: run), [deleting.id])
+
+            try TerminalSessionQueries.clearDeleteRequested(db, id: deleting.id)
+            XCTAssertNil(try AutomationQueries.unattachedSession(db, runID: run), "a Resume does not make it adoptable")
+        }
+    }
+
+    /// Board #1716: a session step whose session is being deleted is not
+    /// reported by the app: Go's wait treats the deleting row as gone.
+    func testWaitingSessionStepsSkipDeletingRow() throws {
+        let queue = try TestDatabase.create()
+        let kept = try queue.write { db -> Int64 in
+            let p = try TestDatabase.insertWorkbench(db)
+            let a = try TestDatabase.insertAutomation(db, workbenchID: p)
+            let run = try TestDatabase.insertAutomationRun(db, automationID: a, status: "waiting",
+                                                           waitingReason: "session")
+            let live = try session(db, projectID: p, runID: run)
+            let kept = try TestDatabase.insertAutomationStep(db, runID: run, seq: 1, kind: "session", argsJSON: args(),
+                                                             status: "waiting", sessionID: live.id)
+            let deleting = try session(db, projectID: p, runID: run)
+            try TestDatabase.insertAutomationStep(db, runID: run, seq: 2, kind: "session", argsJSON: args(),
+                                                  status: "waiting", sessionID: deleting.id)
+            try TerminalSessionQueries.markDeleteRequested(db, ids: [deleting.id], at: Date())
+            return kept
+        }
+        let steps = try queue.read { try AutomationQueries.waitingSessionSteps($0) }
+        XCTAssertEqual(steps.map(\.stepID), [kept])
+    }
+
     func testHeaderButtonsStatesAndSlugOrder() throws {
         let queue = try TestDatabase.create()
         let button = { (label: String, confirm: Bool) in

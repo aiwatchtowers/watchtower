@@ -50,28 +50,34 @@ final class TeamSummaryDetailViewTests: XCTestCase {
         XCTAssertThrowsError(try view.inspect().find(text: "Summary"))
     }
 
-    /// Attention items парсятся из JSON и рендерятся.
-    func testAttentionItemsRendered() throws {
+    /// No "needs attention" list of people (#1769, A12): stored attention
+    /// items are never shown, nor is any section for them.
+    func testNoAttentionSection() throws {
         let attention = #"["Alice is overloaded","Slack noise increased"]"#
         let view = TeamSummaryDetailView(summary: makeSummary(attention: attention))
-        XCTAssertNoThrow(try view.inspect().find(text: "Alice is overloaded"))
-        XCTAssertNoThrow(try view.inspect().find(text: "Slack noise increased"))
+        XCTAssertThrowsError(try view.inspect().find(text: "Alice is overloaded"))
+        XCTAssertThrowsError(try view.inspect().find(text: "Slack noise increased"))
+        XCTAssertThrowsError(try view.inspect().find(text: "Needs Attention"))
     }
 
-    /// Tips items парсятся и рендерятся.
+    /// Tips items парсятся и рендерятся (one "• " line each, under Tips).
     func testTipsItemsRendered() throws {
         let tips = #"["Schedule 1:1","Reduce meetings"]"#
         let view = TeamSummaryDetailView(summary: makeSummary(tips: tips))
-        XCTAssertNoThrow(try view.inspect().find(text: "Schedule 1:1"))
-        XCTAssertNoThrow(try view.inspect().find(text: "Reduce meetings"))
+        XCTAssertNoThrow(try view.inspect().find(text: PeopleCardCopy.tipsTitle))
+        XCTAssertNoThrow(try view.inspect().find(text: "• Schedule 1:1"))
+        XCTAssertNoThrow(try view.inspect().find(text: "• Reduce meetings"))
     }
 
-    /// Metadata показывает модель и токены.
+    /// Metadata показывает модель и токены — one run line.
     func testMetadataShowsModelAndTokens() throws {
         let view = TeamSummaryDetailView(summary: makeSummary())
-        XCTAssertNoThrow(try view.inspect().find(text: "claude-sonnet-4-6"))
         // input + output = 2100
-        XCTAssertNoThrow(try view.inspect().find(text: "2100"))
+        XCTAssertNoThrow(try view.inspect().find(text: "claude-sonnet-4-6 · 2100 tokens · $0.0123"))
+        XCTAssertEqual(
+            PeopleCardCopy.runLine(model: "claude-sonnet-4-6", tokens: 2100, costUSD: 0.0123),
+            "claude-sonnet-4-6 · 2100 tokens · $0.0123"
+        )
     }
 
     /// onClose=nil → кнопка закрытия не строится.

@@ -225,6 +225,9 @@ func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 		authoring.NewListAutomations(authoringDeps), authoring.NewGetAutomation(authoringDeps))
 	// Slack channel list (spec 2026-10-24 §7): main chat and editor chat only.
 	regTools = append(regTools, tools.NewListSlackChannels())
+	// The chat's own history and artifacts: the replay keeps only the newest
+	// part of a long chat, so these open the rest of the bound conversation.
+	regTools = append(regTools, tools.NewGetChatHistory(), tools.NewListChatArtifacts(), tools.NewGetChatArtifact())
 	// The Inbox menu's folders (inbox builder B, Task 15): the editor chat
 	// only, so its folder suggestion reuses an existing folder.
 	regTools = append(regTools, tools.NewListInboxFolders())

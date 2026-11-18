@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import WatchtowerChatText
 
 /// One unsent review comment: the passage of the ask's `doc_snapshot` it
 /// anchors on and the owner's text.

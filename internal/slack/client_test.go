@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1266,4 +1267,318 @@ func TestLimitedBody_LatchesTooLarge(t *testing.T) {
 		}
 	}
 	assert.Equal(t, 250, total, "exactly the limit is delivered")
+}
+
+// fakeSlack is an http.RoundTripper standing in for Slack inside a synctest
+// bubble: no sockets, so the bubble's clock alone paces the retry chain. It
+// answers 429 with Retry-After for the first limited calls, then ok, and
+// keeps each request's form.
+type fakeSlack struct {
+	mu         sync.Mutex
+	fail       error  // when set, every call fails on the wire with it
+	limited    int    // 429s still to answer
+	retryAfter string // their Retry-After
+	body       string // the ok answer
+	calls      int
+	forms      map[string]url.Values // by API method
+}
+
+func (f *fakeSlack) RoundTrip(r *http.Request) (*http.Response, error) {
+	_ = r.ParseForm()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.forms == nil {
+		f.forms = map[string]url.Values{}
+	}
+	f.forms[path.Base(r.URL.Path)] = r.Form
+	if f.fail != nil {
+		return nil, f.fail
+	}
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Request: r}
+	if f.limited > 0 {
+		f.limited--
+		resp.StatusCode = http.StatusTooManyRequests
+		resp.Header.Set("Retry-After", f.retryAfter)
+		resp.Body = io.NopCloser(strings.NewReader(""))
+		return resp, nil
+	}
+	resp.Header.Set("Content-Type", "application/json")
+	body := f.body
+	if body == "" {
+		body = `{"ok":true}`
+	}
+	resp.Body = io.NopCloser(strings.NewReader(body))
+	return resp, nil
+}
+
+// newFakeSlackClient is a rate-limited client whose calls go to f.
+func newFakeSlackClient(f *fakeSlack) *Client {
+	c := NewClientWithAPIURL("xoxp-test-token", "https://slack.test/api/")
+	c.http.Transport = f
+	return c
+}
+
+const searchOK = `{"ok":true,"messages":{"matches":[],"paging":{"page":1,"pages":1},"total":0}}`
+
+// Five 429s in a row do not fail a call made under a deadline: it waits out
+// every hold and succeeds.
+func TestAdaptive_RetryChainPushesThrough(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := &fakeSlack{limited: 5, retryAfter: "30", body: searchOK}
+		c := newFakeSlackClient(f)
+		c.SetDeadline(time.Now().Add(10 * time.Minute))
+
+		start := time.Now()
+		_, err := c.SearchMessages(context.Background(), "q", 1)
+		elapsed := time.Since(start)
+
+		require.NoError(t, err)
+		assert.Equal(t, 6, f.calls)
+		assert.GreaterOrEqual(t, elapsed, 150*time.Second, "five 30 s holds")
+		assert.LessOrEqual(t, elapsed, 5*30*time.Second*5/4, "plus at most a quarter of jitter each")
+		_, retries := c.APIStats()
+		assert.Equal(t, 5, retries)
+		assert.True(t, c.HoldUntil().IsZero(), "no hold left after the success")
+	})
+}
+
+// Holds that would end past the deadline stop the chain with
+// ErrFetchDeadline, which still reads as a rate-limit error.
+func TestAdaptive_DeadlineStopsChain(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := &fakeSlack{limited: 100, retryAfter: "120", body: searchOK}
+		c := newFakeSlackClient(f)
+		deadline := time.Now().Add(5 * time.Minute)
+		c.SetDeadline(deadline)
+
+		_, err := c.SearchMessages(context.Background(), "q", 1)
+
+		require.ErrorIs(t, err, ErrFetchDeadline)
+		var rlErr *goslack.RateLimitedError
+		require.ErrorAs(t, err, &rlErr)
+		assert.False(t, time.Now().After(deadline), "never waits past the deadline")
+		assert.Less(t, f.calls, 5, "the chain stops once a hold outlasts the deadline")
+		assert.False(t, c.HoldUntil().IsZero(), "the hold stays for every later call")
+	})
+}
+
+// Without SetDeadline a call keeps today's cap: three retries, then the 429.
+func TestDoRequest_NoDeadlineKeepsThreeRetries(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := &fakeSlack{limited: 100, retryAfter: "1", body: searchOK}
+		c := newFakeSlackClient(f)
+
+		_, err := c.SearchMessages(context.Background(), "q", 1)
+
+		var rlErr *goslack.RateLimitedError
+		require.ErrorAs(t, err, &rlErr)
+		require.NotErrorIs(t, err, ErrFetchDeadline)
+		assert.Equal(t, 4, f.calls, "one call and three retries")
+
+		// A deadline reset to zero restores the cap.
+		time.Sleep(time.Minute) // past the last hold
+		c.SetDeadline(time.Now().Add(time.Hour))
+		c.SetDeadline(time.Time{})
+		_, err = c.SearchMessages(context.Background(), "q", 1)
+		require.ErrorAs(t, err, &rlErr)
+		require.NotErrorIs(t, err, ErrFetchDeadline)
+		assert.Equal(t, 8, f.calls, "again one call and three retries")
+	})
+}
+
+// A hold past the deadline stops every call that would wait on it, not only
+// the one that got the 429: a later call returns at once without a request,
+// and a call already waiting gives up when the hold is extended past it.
+func TestAdaptive_DeadlineStopsWaitingCalls(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := &fakeSlack{limited: 1, retryAfter: "600", body: searchOK}
+		c := newFakeSlackClient(f)
+		c.SetDeadline(time.Now().Add(5 * time.Minute))
+
+		_, err := c.SearchMessages(context.Background(), "q", 1)
+		require.ErrorIs(t, err, ErrFetchDeadline)
+
+		start := time.Now()
+		_, err = c.GetChannelReadCursor(context.Background(), "C0JUNK")
+		require.ErrorIs(t, err, ErrFetchDeadline)
+		var rlErr *goslack.RateLimitedError
+		require.ErrorAs(t, err, &rlErr)
+		assert.Positive(t, rlErr.RetryAfter)
+		assert.Zero(t, time.Since(start), "no wait for a hold past the deadline")
+		assert.Equal(t, 1, f.calls, "the second call made no request")
+	})
+}
+
+func TestAdaptive_DeadlineStopsCallWhenHoldExtended(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := &fakeSlack{body: searchOK}
+		c := newFakeSlackClient(f)
+		c.SetDeadline(time.Now().Add(5 * time.Minute))
+		c.rateLimiter.HandleRateLimit(Tier2, time.Minute) // within the deadline
+
+		start := time.Now()
+		errc := make(chan error, 1)
+		go func() {
+			_, err := c.SearchMessages(context.Background(), "q", 1)
+			errc <- err
+		}()
+		synctest.Wait() // the call waits on the 1-minute hold
+		c.rateLimiter.HandleRateLimit(Tier3, 10*time.Minute)
+
+		err := <-errc
+		require.ErrorIs(t, err, ErrFetchDeadline)
+		assert.LessOrEqual(t, time.Since(start), time.Minute*5/4, "gives up when the first hold ends")
+		assert.Zero(t, f.calls)
+	})
+}
+
+// Only an answer from Slack is a success for the rate: calls that fail on
+// the wire are counted but never step the rate up.
+func TestAIMD_TransportErrorsAreNoSuccess(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := &fakeSlack{fail: errors.New("connection reset")}
+		c := newFakeSlackClient(f)
+
+		for range 2 * aimdStepEvery {
+			_, err := c.SearchMessages(context.Background(), "q", 1)
+			require.Error(t, err)
+		}
+		assert.InDelta(t, 20.0, c.rateLimiter.rate(Tier2), 1e-9, "no step up")
+		counts, _ := c.APIStats()
+		assert.Equal(t, 2*aimdStepEvery, counts[Tier2], "every request still counted")
+
+		f.fail = nil
+		for range aimdStepEvery {
+			_, err := c.SearchMessages(context.Background(), "q", 1)
+			require.NoError(t, err)
+		}
+		assert.InDelta(t, 21.0, c.rateLimiter.rate(Tier2), 1e-9, "answers step it up")
+	})
+}
+
+// Every paginated read asks for Slack's largest page.
+func TestPageSizes_Max(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := &fakeSlack{}
+		c := newFakeSlackClient(f)
+		ctx := context.Background()
+
+		f.body = `{"ok":true,"members":[],"response_metadata":{"next_cursor":""}}`
+		_, err := c.GetUsers(ctx)
+		require.NoError(t, err)
+		f.body = `{"ok":true,"channels":[],"response_metadata":{"next_cursor":""}}`
+		_, err = c.GetChannels(ctx, nil)
+		require.NoError(t, err)
+		f.body = `{"ok":true,"messages":[],"has_more":false}`
+		_, err = c.GetConversationHistory(ctx, HistoryOptions{ChannelID: "C0JUNK"})
+		require.NoError(t, err)
+		_, err = c.GetConversationReplies(ctx, "C0JUNK", "1.0")
+		require.NoError(t, err)
+		f.body = searchOK
+		_, err = c.SearchMessages(ctx, "q", 1)
+		require.NoError(t, err)
+
+		assert.Equal(t, "1000", f.forms["users.list"].Get("limit"))
+		assert.Equal(t, "1000", f.forms["conversations.list"].Get("limit"))
+		assert.Equal(t, "999", f.forms["conversations.history"].Get("limit"))
+		assert.Equal(t, "999", f.forms["conversations.replies"].Get("limit"))
+		assert.Equal(t, "100", f.forms["search.messages"].Get("count"))
+	})
+}
+
+// rateLimitedCalls counts every 429 over the client's lifetime, the ones the
+// retry chain pushed through included, so a caller comparing two readings
+// sees whether its run met a rate limit.
+func TestRateLimitedCalls_CountsRetried429s(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := &fakeSlack{limited: 2, retryAfter: "1", body: searchOK}
+		c := newFakeSlackClient(f)
+		c.SetDeadline(time.Now().Add(10 * time.Minute))
+
+		_, err := c.SearchMessages(context.Background(), "q", 1)
+		require.NoError(t, err)
+		assert.Equal(t, uint64(2), c.rateLimitedCalls())
+	})
+}
+
+// Under a deadline the chain runs only through holds Slack states: a 429
+// without a usable Retry-After (missing or 0) keeps the three-retry cap, so
+// a server that never says how long to wait is not hammered until the
+// deadline.
+func TestAdaptive_UnstatedRetryAfterKeepsThreeRetries(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := &fakeSlack{limited: 100, retryAfter: "0", body: searchOK}
+		c := newFakeSlackClient(f)
+		c.SetDeadline(time.Now().Add(10 * time.Minute))
+
+		_, err := c.SearchMessages(context.Background(), "q", 1)
+
+		var rlErr *goslack.RateLimitedError
+		require.ErrorAs(t, err, &rlErr)
+		require.NotErrorIs(t, err, ErrFetchDeadline)
+		assert.Equal(t, 4, f.calls, "one call and three retries")
+	})
+}
+
+// CountRateLimits counts only the 429s of calls made under its context: a
+// run's counter does not see a 429 a concurrent caller (the chat, a media
+// fetch) met on the same client, while rateLimitedCalls sees both.
+func TestCountRateLimits_OnlyCallsUnderTheContext(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := &fakeSlack{limited: 1, retryAfter: "1", body: searchOK}
+		c := newFakeSlackClient(f)
+
+		runCtx, runLimited := CountRateLimits(context.Background())
+		_, err := c.SearchMessages(context.Background(), "q", 1) // another caller's 429
+		require.NoError(t, err)
+		assert.Zero(t, runLimited())
+
+		f.limited = 2
+		_, err = c.SearchMessages(runCtx, "q", 1)
+		require.NoError(t, err)
+		assert.Equal(t, uint64(2), runLimited())
+		assert.Equal(t, uint64(3), c.rateLimitedCalls())
+	})
+}
+
+func TestDeadlinePassed(t *testing.T) {
+	c := NewClientWithAPIURLUnlimited("xoxp-test", "http://127.0.0.1:0/")
+	assert.False(t, c.DeadlinePassed(), "no deadline set")
+	c.SetDeadline(time.Now().Add(time.Hour))
+	assert.False(t, c.DeadlinePassed())
+	c.SetDeadline(time.Now().Add(-time.Second))
+	assert.True(t, c.DeadlinePassed())
+	c.SetDeadline(time.Time{})
+	assert.False(t, c.DeadlinePassed(), "the zero time clears it")
+}
+
+func TestRevokeToken(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body string
+		want error
+		any  bool
+	}{
+		"revoked":     {body: `{"ok":true,"revoked":true}`},
+		"not revoked": {body: `{"ok":true,"revoked":false}`, want: ErrTokenNotRevoked},
+		"slack error": {body: `{"ok":false,"error":"invalid_auth"}`, any: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/auth.revoke", func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "Bearer xoxp-test-token", r.Header.Get("Authorization"))
+				_, _ = w.Write([]byte(tc.body))
+			})
+			err := newTestClient(t, mux).RevokeToken(context.Background())
+			switch {
+			case tc.any:
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "invalid_auth")
+			case tc.want != nil:
+				assert.ErrorIs(t, err, tc.want)
+			default:
+				assert.NoError(t, err)
+			}
+		})
+	}
 }

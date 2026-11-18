@@ -13,6 +13,10 @@ package final class SlackAuthService {
     /// error, never a disconnect failure.
     package var error: String? { disconnectError ?? statusError }
     private var disconnectError: String?
+    /// The last successful logout's warning that Slack did not confirm the
+    /// token revoke (`SlackRevokeNotice`, #1769); nil when it did. A
+    /// non-blocking notice, not an error.
+    package private(set) var revokeNotice: String?
     private var statusError: String?
 
     private var dbPool: DatabasePool?
@@ -27,10 +31,11 @@ package final class SlackAuthService {
 
     // MARK: - Disconnect
 
-    /// Runs `auth logout`: removes the Slack token (config + token file) and
-    /// marks account #1 removed/disabled so syncing stops. Non-destructive —
-    /// already-synced Slack data and the AI products built on it are KEPT
-    /// (mirrors the `slack remove` / `removeSlackAccount` semantics).
+    /// Runs `auth logout`: the `slack remove` of account #1
+    /// (`removeSlackAccount`) — revokes the token at Slack, removes it (config
+    /// + token file) and marks the account removed/disabled so syncing stops.
+    /// Its synced data is kept for now; with the purge on it is deleted 72 h
+    /// after the next purge pass (PURGE-01, A2).
     /// Returns whether the logout itself succeeded — the CLI result, never the
     /// combined `error`, which also carries status-read failures.
     @discardableResult
@@ -40,12 +45,14 @@ package final class SlackAuthService {
             return false
         }
         let result = await Self.runCLI(path: cliPath, arguments: ["auth", "logout"])
-        return await applyDisconnectResult(exitCode: result.exitCode, stderr: result.stderr)
+        return await applyDisconnectResult(exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr)
     }
 
     /// Records a finished `auth logout`; split out of `disconnect()` so the
-    /// bookkeeping is testable without a CLI.
-    package func applyDisconnectResult(exitCode: Int32, stderr: String) async -> Bool {
+    /// bookkeeping is testable without a CLI. A logout whose revoke Slack did
+    /// not confirm still exits 0 and prints the warning on stdout.
+    package func applyDisconnectResult(exitCode: Int32, stdout: String, stderr: String) async -> Bool {
+        revokeNotice = exitCode == 0 ? SlackRevokeNotice.notice(inCLIOutput: stdout) : nil
         guard exitCode == 0 else {
             disconnectError = stderr.isEmpty
                 ? "Disconnect failed (exit \(exitCode))"

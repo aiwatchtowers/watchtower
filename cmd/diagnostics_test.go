@@ -594,6 +594,14 @@ func TestDiagnostics_BusyKeepsFileParts(t *testing.T) {
 	shortDBBudgets()
 	diagWrite(t, filepath.Join(in.ws, "last_sync.json"), `{"finished_at":"2026-11-01T09:30:00Z","error":"deadline exceeded"}`)
 	holdExclusive(t, in.dbPath)
+	// The setup's own opens (migrations, the holder's exclusive transaction)
+	// may already have logged a slow transaction there — on a loaded machine
+	// a migration past the 200 ms threshold does. Only the command's lines
+	// count, so start from no file.
+	sink := filepath.Join(in.ws, lockmetrics.FileName)
+	if err := os.Remove(sink); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
 	out, code := runDiag(t, diagArgs(in.cfgPath, "", "--iphone", "off")...)
 	if code != 0 {
 		t.Fatalf("exit %d", code)
@@ -601,7 +609,7 @@ func TestDiagnostics_BusyKeepsFileParts(t *testing.T) {
 	assertBusyLines(t, out)
 	// The holder's db.Open pointed the process's lock-metrics sink here; the
 	// command's busy open still writes no dblock.jsonl line.
-	if _, err := os.Stat(filepath.Join(in.ws, lockmetrics.FileName)); !os.IsNotExist(err) {
+	if _, err := os.Stat(sink); !os.IsNotExist(err) {
 		t.Errorf("dblock.jsonl written: %v", err)
 	}
 }

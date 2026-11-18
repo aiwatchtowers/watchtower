@@ -384,3 +384,15 @@ func TestEncodeRequestLimitIsTheWholeLine(t *testing.T) {
 func TestMaxRequestBytesMatchesTheDesktop(t *testing.T) {
 	assert.Equal(t, 8<<20, MaxRequestBytes)
 }
+
+// The app and the CLI requirements name their own identifiers as well as
+// the team: neither is a team-only match, and they differ, so the CLI in the
+// app bundle never passes as the app (nor the app as the CLI).
+func TestRequirementsNameIdentifierAndTeam(t *testing.T) {
+	app, cli := appRequirement("ABCDE12345"), cliRequirement("ABCDE12345")
+	assert.NotEqual(t, app, cli)
+	assert.Equal(t, `identifier "com.watchtower.desktop" and anchor apple generic and certificate leaf[subject.OU] = "ABCDE12345"`, app)
+	assert.Equal(t, `identifier "watchtower" and anchor apple generic and certificate leaf[subject.OU] = "ABCDE12345"`, cli)
+	assert.Equal(t, "="+app, desktopRequirement("ABCDE12345"), "codesign's form of the same requirement")
+	assert.Equal(t, `identifier "com.watchtower.desktop"`, appRequirement(""), "a development build checks the identifier only")
+}

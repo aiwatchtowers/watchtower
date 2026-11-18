@@ -38,6 +38,9 @@ public struct HeartbeatPayload: Codable, Equatable, Sendable {
     public let hubKind: HubKind?
     /// The host's switches (protocol §9); nil from an older hub.
     public let capabilities: HeartbeatCapabilities?
+    /// When the oldest kind the hub still cannot publish whole (a failed save, a refused or oversized record)
+    /// first failed (#1873); nil while every kind goes through, and from an older hub.
+    public let stuckSince: Date?
 
     /// Whether the phone offers recording: on unless the hub says `off` (an older hub, an absent key and an
     /// unknown value read as on).
@@ -69,6 +72,7 @@ public struct HeartbeatPayload: Codable, Equatable, Sendable {
         case sharing
         case hubKind
         case capabilities
+        case stuckSince
     }
 
     public init(
@@ -85,7 +89,8 @@ public struct HeartbeatPayload: Codable, Equatable, Sendable {
         ownerUser: String,
         sharing: HubSharing,
         hubKind: HubKind? = nil,
-        capabilities: HeartbeatCapabilities? = nil
+        capabilities: HeartbeatCapabilities? = nil,
+        stuckSince: Date? = nil
     ) {
         self.updatedAt = updatedAt
         self.appVersion = appVersion
@@ -101,6 +106,7 @@ public struct HeartbeatPayload: Codable, Equatable, Sendable {
         self.sharing = sharing
         self.hubKind = hubKind
         self.capabilities = capabilities
+        self.stuckSince = stuckSince
     }
 }
 

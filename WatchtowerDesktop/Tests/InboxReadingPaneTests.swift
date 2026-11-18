@@ -5,6 +5,7 @@ import ViewInspector
 @testable import WatchtowerDesktop
 @testable import WatchtowerCore
 import WatchtowerTestSupport
+@testable import ChatUI
 
 /// The pane with the day, track and idea placeholders (before Tasks 8–10).
 private typealias PlaceholderPane = InboxReadingPane<
@@ -209,7 +210,7 @@ final class InboxReadingPaneTests: XCTestCase {
         return [
             (.output(output), [output.title]),
             (.reminder(reminder()), ["Ping Ann"]),
-            (.proposal(proposal()), [AgentActionCardView.title(for: proposal())]),
+            (.proposal(proposal()), [MacAgentActionCard.title(for: proposal())]),
             (.day(try dayCard()), ["Morning brief", "Your day · Wed 22 Oct"]),
             (.track(try trackCard()), ["Launch of acme v2", "Track · 09:30"]),
             (.idea(idea()), ["A shared glossary", "Idea · proposed"]),
@@ -224,7 +225,7 @@ final class InboxReadingPaneTests: XCTestCase {
             let sut = InboxReadingPane(
                 item: item, navScreens: [], targets: InboxTargetButtonSource(), now: try local(10, 30), onCommand: { _ in },
                 proposalCard: { action in
-                    AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+                    MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
                 })
             XCTAssertThrowsError(try sut.inspect().find(text: "Select a card"), "\(item.id)")
             for text in texts {
@@ -408,8 +409,8 @@ final class InboxReadingPaneTests: XCTestCase {
         XCTAssertThrowsError(try sut.inspect().vStack().sheet())
     }
 
-    private static func proposalCard(_ action: AgentAction) -> AgentActionCardView {
-        AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+    private static func proposalCard(_ action: AgentAction) -> MacAgentActionCard {
+        MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
     }
 
     // MARK: - Chat attachments

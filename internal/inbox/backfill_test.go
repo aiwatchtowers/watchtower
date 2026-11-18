@@ -366,3 +366,32 @@ func TestBackfillMentions_AlreadyAnsweredSkip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, items, "an already-answered mention must not create an inbox item")
 }
+
+// The backfill window is post time, whenever the message was stored: a
+// mention posted inside the window but stored late (synced_at = now) is
+// recovered, and one posted before the window is not, however recently the
+// sync stored it.
+func TestBackfillMentions_WindowIsPostTimeNotStoredTime(t *testing.T) {
+	d := testDB(t)
+	seedWorkspaceAndUser(t, d, "1:U_ME1")
+	insertChannel(t, d, "1:C1", "public")
+
+	since := time.Now().Add(-10 * 24 * time.Hour)
+	storedNow := float64(time.Now().Unix())
+	insideTS := recentTS(5 * 24 * 60)
+	outsideTS := recentTS(15 * 24 * 60)
+	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: "1:C1", TS: insideTS, UserID: "1:U_OTHER",
+		Text: "Hey <@U_ME1> inside please", SyncedAt: storedNow}))
+	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: "1:C1", TS: outsideTS, UserID: "1:U_OTHER2",
+		Text: "Hey <@U_ME1> outside please", SyncedAt: storedNow}))
+
+	p := New(d, testConfig(), nil, log.Default())
+	result, err := p.BackfillMentions(context.Background(), since, false)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, result.TotalCandidates)
+	items, err := d.GetInboxItems(db.InboxFilter{})
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.Equal(t, insideTS, items[0].MessageTS)
+}

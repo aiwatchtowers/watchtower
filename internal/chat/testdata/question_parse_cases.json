@@ -1,0 +1,344 @@
+[
+  {
+    "name": "no fence",
+    "text": "Just text.\nTwo lines.",
+    "final": true,
+    "rest": "Just text.\nTwo lines.",
+    "card": null,
+    "readable": "Just text.\nTwo lines."
+  },
+  {
+    "name": "valid card final",
+    "text": "Pick one.\n```watchtower-question\n{\"questions\":[{\"id\":\"scope\",\"question\":\"Which release?\",\"options\":[{\"label\":\"v1\",\"description\":\"New\",\"recommended\":true},{\"label\":\"v2\"}]}]}\n```",
+    "final": true,
+    "rest": "Pick one.",
+    "card": {
+      "questions": [
+        {
+          "id": "scope",
+          "question": "Which release?",
+          "multi": false,
+          "options": [
+            {
+              "label": "v1",
+              "description": "New",
+              "recommended": true
+            },
+            {
+              "label": "v2",
+              "description": "",
+              "recommended": false
+            }
+          ]
+        }
+      ]
+    },
+    "readable": "Pick one.\n\nWhich release?\n- v1 (recommended)\n- v2"
+  },
+  {
+    "name": "valid card while streaming has no card yet",
+    "text": "Pick one.\n```watchtower-question\n{\"questions\":[{\"id\":\"scope\",\"question\":\"Which release?\",\"options\":[{\"label\":\"v1\",\"description\":\"New\",\"recommended\":true},{\"label\":\"v2\"}]}]}\n```",
+    "final": false,
+    "rest": "Pick one.",
+    "card": null,
+    "readable": "Pick one.\n\nWhich release?\n- v1 (recommended)\n- v2"
+  },
+  {
+    "name": "text after the card is kept",
+    "text": "Pick one.\n```watchtower-question\n{\"questions\":[{\"id\":\"scope\",\"question\":\"Which release?\",\"options\":[{\"label\":\"v1\",\"description\":\"New\",\"recommended\":true},{\"label\":\"v2\"}]}]}\n```\nThanks.",
+    "final": true,
+    "rest": "Pick one.\n\nThanks.",
+    "card": {
+      "questions": [
+        {
+          "id": "scope",
+          "question": "Which release?",
+          "multi": false,
+          "options": [
+            {
+              "label": "v1",
+              "description": "New",
+              "recommended": true
+            },
+            {
+              "label": "v2",
+              "description": "",
+              "recommended": false
+            }
+          ]
+        }
+      ]
+    },
+    "readable": "Pick one.\n\nThanks.\n\nWhich release?\n- v1 (recommended)\n- v2"
+  },
+  {
+    "name": "unclosed block hidden while streaming",
+    "text": "Pick one.\n```watchtower-question\n{\"questions\":[{\"id\":\"a\"",
+    "final": false,
+    "rest": "Pick one.",
+    "card": null,
+    "readable": "Pick one.\n```watchtower-question\n{\"questions\":[{\"id\":\"a\""
+  },
+  {
+    "name": "unclosed block visible once final",
+    "text": "Pick one.\n```watchtower-question\n{\"questions\":[{\"id\":\"a\"",
+    "final": true,
+    "rest": "Pick one.\n```watchtower-question\n{\"questions\":[{\"id\":\"a\"",
+    "card": null,
+    "readable": "Pick one.\n```watchtower-question\n{\"questions\":[{\"id\":\"a\""
+  },
+  {
+    "name": "fence line without a newline after it",
+    "text": "```watchtower-question",
+    "final": false,
+    "rest": "",
+    "card": null,
+    "readable": "```watchtower-question"
+  },
+  {
+    "name": "fence line without a newline after it final",
+    "text": "```watchtower-question",
+    "final": true,
+    "rest": "```watchtower-question",
+    "card": null,
+    "readable": "```watchtower-question"
+  },
+  {
+    "name": "invalid JSON stays in the text",
+    "text": "Pick one.\n```watchtower-question\n{\"questions\": nope}\n```",
+    "final": true,
+    "rest": "Pick one.\n```watchtower-question\n{\"questions\": nope}\n```",
+    "card": null,
+    "readable": "Pick one.\n```watchtower-question\n{\"questions\": nope}\n```"
+  },
+  {
+    "name": "one option is no card",
+    "text": "Pick one.\n```watchtower-question\n{\"questions\":[{\"question\":\"Q?\",\"options\":[{\"label\":\"A\"}]}]}\n```",
+    "final": true,
+    "rest": "Pick one.\n```watchtower-question\n{\"questions\":[{\"question\":\"Q?\",\"options\":[{\"label\":\"A\"}]}]}\n```",
+    "card": null,
+    "readable": "Pick one.\n```watchtower-question\n{\"questions\":[{\"question\":\"Q?\",\"options\":[{\"label\":\"A\"}]}]}\n```"
+  },
+  {
+    "name": "duplicate labels are no card",
+    "text": "Go.\n```watchtower-question\n{\"questions\":[{\"question\":\"Q?\",\"options\":[{\"label\":\"A\"},{\"label\":\"A\"}]}]}\n```",
+    "final": true,
+    "rest": "Go.\n```watchtower-question\n{\"questions\":[{\"question\":\"Q?\",\"options\":[{\"label\":\"A\"},{\"label\":\"A\"}]}]}\n```",
+    "card": null,
+    "readable": "Go.\n```watchtower-question\n{\"questions\":[{\"question\":\"Q?\",\"options\":[{\"label\":\"A\"},{\"label\":\"A\"}]}]}\n```"
+  },
+  {
+    "name": "five options are no card",
+    "text": "Go.\n```watchtower-question\n{\"questions\":[{\"question\":\"Q?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"},{\"label\":\"C\"},{\"label\":\"D\"},{\"label\":\"E\"}]}]}\n```",
+    "final": true,
+    "rest": "Go.\n```watchtower-question\n{\"questions\":[{\"question\":\"Q?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"},{\"label\":\"C\"},{\"label\":\"D\"},{\"label\":\"E\"}]}]}\n```",
+    "card": null,
+    "readable": "Go.\n```watchtower-question\n{\"questions\":[{\"question\":\"Q?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"},{\"label\":\"C\"},{\"label\":\"D\"},{\"label\":\"E\"}]}]}\n```"
+  },
+  {
+    "name": "five questions are no card",
+    "text": "Go.\n```watchtower-question\n{\"questions\":[{\"question\":\"Q1?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]},{\"question\":\"Q2?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]},{\"question\":\"Q3?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]},{\"question\":\"Q4?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]},{\"question\":\"Q5?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]}]}\n```",
+    "final": true,
+    "rest": "Go.\n```watchtower-question\n{\"questions\":[{\"question\":\"Q1?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]},{\"question\":\"Q2?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]},{\"question\":\"Q3?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]},{\"question\":\"Q4?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]},{\"question\":\"Q5?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]}]}\n```",
+    "card": null,
+    "readable": "Go.\n```watchtower-question\n{\"questions\":[{\"question\":\"Q1?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]},{\"question\":\"Q2?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]},{\"question\":\"Q3?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]},{\"question\":\"Q4?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]},{\"question\":\"Q5?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]}]}\n```"
+  },
+  {
+    "name": "no questions is no card",
+    "text": "Go.\n```watchtower-question\n{\"questions\":[]}\n```",
+    "final": true,
+    "rest": "Go.\n```watchtower-question\n{\"questions\":[]}\n```",
+    "card": null,
+    "readable": "Go.\n```watchtower-question\n{\"questions\":[]}\n```"
+  },
+  {
+    "name": "ids default to position, labels and questions are trimmed, multi kept",
+    "text": "Go.\n```watchtower-question\n{\"questions\":[{\"question\":\"First?\",\"multi\":true,\"options\":[{\"label\":\" A \",\"recommended\":true},{\"label\":\"B\"}]},{\"id\":\"\",\"question\":\"Second?\",\"options\":[{\"label\":\"X\"},{\"label\":\"Y\"},{\"label\":\"Z\"}]}]}\n```",
+    "final": true,
+    "rest": "Go.",
+    "card": {
+      "questions": [
+        {
+          "id": "1",
+          "question": "First?",
+          "multi": true,
+          "options": [
+            {
+              "label": "A",
+              "description": "",
+              "recommended": true
+            },
+            {
+              "label": "B",
+              "description": "",
+              "recommended": false
+            }
+          ]
+        },
+        {
+          "id": "2",
+          "question": "Second?",
+          "multi": false,
+          "options": [
+            {
+              "label": "X",
+              "description": "",
+              "recommended": false
+            },
+            {
+              "label": "Y",
+              "description": "",
+              "recommended": false
+            },
+            {
+              "label": "Z",
+              "description": "",
+              "recommended": false
+            }
+          ]
+        }
+      ]
+    },
+    "readable": "Go.\n\nFirst?\n- A (recommended)\n- B\n\nSecond?\n- X\n- Y\n- Z"
+  },
+  {
+    "name": "duplicate question ids are no card",
+    "text": "Go.\n```watchtower-question\n{\"questions\":[{\"id\":\"a\",\"question\":\"One?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]},{\"id\":\"a\",\"question\":\"Two?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]}]}\n```",
+    "final": true,
+    "rest": "Go.\n```watchtower-question\n{\"questions\":[{\"id\":\"a\",\"question\":\"One?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]},{\"id\":\"a\",\"question\":\"Two?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]}]}\n```",
+    "card": null,
+    "readable": "Go.\n```watchtower-question\n{\"questions\":[{\"id\":\"a\",\"question\":\"One?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]},{\"id\":\"a\",\"question\":\"Two?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]}]}\n```"
+  },
+  {
+    "name": "a missing question is no card",
+    "text": "Go.\n```watchtower-question\n{\"questions\":[{\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]}]}\n```",
+    "final": true,
+    "rest": "Go.\n```watchtower-question\n{\"questions\":[{\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]}]}\n```",
+    "card": null,
+    "readable": "Go.\n```watchtower-question\n{\"questions\":[{\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]}]}\n```"
+  },
+  {
+    "name": "a missing label is no card",
+    "text": "Go.\n```watchtower-question\n{\"questions\":[{\"question\":\"Q?\",\"options\":[{\"description\":\"d\"},{\"label\":\"B\"}]}]}\n```",
+    "final": true,
+    "rest": "Go.\n```watchtower-question\n{\"questions\":[{\"question\":\"Q?\",\"options\":[{\"description\":\"d\"},{\"label\":\"B\"}]}]}\n```",
+    "card": null,
+    "readable": "Go.\n```watchtower-question\n{\"questions\":[{\"question\":\"Q?\",\"options\":[{\"description\":\"d\"},{\"label\":\"B\"}]}]}\n```"
+  },
+  {
+    "name": "a blank question is no card",
+    "text": "Go.\n```watchtower-question\n{\"questions\":[{\"question\":\"  \",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]}]}\n```",
+    "final": true,
+    "rest": "Go.\n```watchtower-question\n{\"questions\":[{\"question\":\"  \",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]}]}\n```",
+    "card": null,
+    "readable": "Go.\n```watchtower-question\n{\"questions\":[{\"question\":\"  \",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]}]}\n```"
+  },
+  {
+    "name": "the last valid block is the card, earlier ones stay",
+    "text": "First.\n```watchtower-question\n{\"questions\":[{\"id\":\"scope\",\"question\":\"Which release?\",\"options\":[{\"label\":\"v1\",\"description\":\"New\",\"recommended\":true},{\"label\":\"v2\"}]}]}\n```\nMiddle.\n```watchtower-question\n{\"questions\":[{\"id\":\"z\",\"question\":\"Later?\",\"options\":[{\"label\":\"Yes\"},{\"label\":\"No\"}]}]}\n```",
+    "final": true,
+    "rest": "First.\n```watchtower-question\n{\"questions\":[{\"id\":\"scope\",\"question\":\"Which release?\",\"options\":[{\"label\":\"v1\",\"description\":\"New\",\"recommended\":true},{\"label\":\"v2\"}]}]}\n```\nMiddle.",
+    "card": {
+      "questions": [
+        {
+          "id": "z",
+          "question": "Later?",
+          "multi": false,
+          "options": [
+            {
+              "label": "Yes",
+              "description": "",
+              "recommended": false
+            },
+            {
+              "label": "No",
+              "description": "",
+              "recommended": false
+            }
+          ]
+        }
+      ]
+    },
+    "readable": "First.\n```watchtower-question\n{\"questions\":[{\"id\":\"scope\",\"question\":\"Which release?\",\"options\":[{\"label\":\"v1\",\"description\":\"New\",\"recommended\":true},{\"label\":\"v2\"}]}]}\n```\nMiddle.\n\nLater?\n- Yes\n- No"
+  },
+  {
+    "name": "a fence inside a line is not a block",
+    "text": "See ```watchtower-question\n{\"questions\":[{\"id\":\"scope\",\"question\":\"Which release?\",\"options\":[{\"label\":\"v1\",\"description\":\"New\",\"recommended\":true},{\"label\":\"v2\"}]}]}\n```",
+    "final": true,
+    "rest": "See ```watchtower-question\n{\"questions\":[{\"id\":\"scope\",\"question\":\"Which release?\",\"options\":[{\"label\":\"v1\",\"description\":\"New\",\"recommended\":true},{\"label\":\"v2\"}]}]}\n```",
+    "card": null,
+    "readable": "See ```watchtower-question\n{\"questions\":[{\"id\":\"scope\",\"question\":\"Which release?\",\"options\":[{\"label\":\"v1\",\"description\":\"New\",\"recommended\":true},{\"label\":\"v2\"}]}]}\n```"
+  },
+  {
+    "name": "an empty block is no card",
+    "text": "Go.\n```watchtower-question\n```",
+    "final": true,
+    "rest": "Go.\n```watchtower-question\n```",
+    "card": null,
+    "readable": "Go.\n```watchtower-question\n```"
+  },
+  {
+    "name": "a closing line with extra characters does not close",
+    "text": "Go.\n```watchtower-question\n{\"questions\":[{\"id\":\"scope\",\"question\":\"Which release?\",\"options\":[{\"label\":\"v1\",\"description\":\"New\",\"recommended\":true},{\"label\":\"v2\"}]}]}\n```x\nmore",
+    "final": true,
+    "rest": "Go.\n```watchtower-question\n{\"questions\":[{\"id\":\"scope\",\"question\":\"Which release?\",\"options\":[{\"label\":\"v1\",\"description\":\"New\",\"recommended\":true},{\"label\":\"v2\"}]}]}\n```x\nmore",
+    "card": null,
+    "readable": "Go.\n```watchtower-question\n{\"questions\":[{\"id\":\"scope\",\"question\":\"Which release?\",\"options\":[{\"label\":\"v1\",\"description\":\"New\",\"recommended\":true},{\"label\":\"v2\"}]}]}\n```x\nmore"
+  },
+  {
+    "name": "only the card",
+    "text": "```watchtower-question\n{\"questions\":[{\"id\":\"scope\",\"question\":\"Which release?\",\"options\":[{\"label\":\"v1\",\"description\":\"New\",\"recommended\":true},{\"label\":\"v2\"}]}]}\n```",
+    "final": true,
+    "rest": "",
+    "card": {
+      "questions": [
+        {
+          "id": "scope",
+          "question": "Which release?",
+          "multi": false,
+          "options": [
+            {
+              "label": "v1",
+              "description": "New",
+              "recommended": true
+            },
+            {
+              "label": "v2",
+              "description": "",
+              "recommended": false
+            }
+          ]
+        }
+      ]
+    },
+    "readable": "Which release?\n- v1 (recommended)\n- v2"
+  },
+  {
+    "name": "unknown keys are ignored",
+    "text": "Go.\n```watchtower-question\n{\"questions\":[{\"question\":\"Q?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}],\"extra\":{\"k\":1}}],\"other\":true}\n```",
+    "final": true,
+    "rest": "Go.",
+    "card": {
+      "questions": [
+        {
+          "id": "1",
+          "question": "Q?",
+          "multi": false,
+          "options": [
+            {
+              "label": "A",
+              "description": "",
+              "recommended": false
+            },
+            {
+              "label": "B",
+              "description": "",
+              "recommended": false
+            }
+          ]
+        }
+      ]
+    },
+    "readable": "Go.\n\nQ?\n- A\n- B"
+  }
+]

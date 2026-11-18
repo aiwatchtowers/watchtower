@@ -1,74 +1,18 @@
+import ChatUI
+import ChatWire
 import ImageIO
 import UIKit
 import UniformTypeIdentifiers
+import WatchtowerChatText
 import WatchtowerKit
 import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
 
-/// The phone's attachment rules (spec §4.5): the Mac's limits through the shared `attachment_limit_cases.json`,
-/// HEIC → JPEG, images over 5 MB downsized, and the 30 MB a message carries.
+/// The phone's attachment rules (spec §4.5): HEIC → JPEG, images over 5 MB downsized, and the 30 MB a message
+/// carries. The Mac's limits through the shared `attachment_limit_cases.json` are ChatWire's
+/// `ChatAttachmentLimitsTests`.
 final class ChatAttachmentPickerTests: XCTestCase {
-    private struct Fixture: Decodable {
-        struct Case: Decodable {
-            struct Expect: Decodable {
-                let ok: Bool
-                let mime: String?
-                let ext: String?
-                let reason: String?
-                let limit: Int64?
-                let message: String?
-            }
-
-            let name: String
-            let fileName: String
-            let headHex: String
-            let fill: String
-            let size: Int
-            let expect: Expect
-        }
-
-        let cases: [Case]
-    }
-
-    private static let fixture = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .appendingPathComponent("internal/chatstore/testdata/attachment_limit_cases.json")
-
-    private func bytes(_ item: Fixture.Case) -> Data {
-        var data = Data()
-        var hex = Substring(item.headHex)
-        while hex.count >= 2 {
-            data.append(UInt8(hex.prefix(2), radix: 16) ?? 0)
-            hex = hex.dropFirst(2)
-        }
-        let fill = UInt8(item.fill.utf8.first ?? 0x61)
-        if data.count < item.size { data.append(Data(repeating: fill, count: item.size - data.count)) }
-        return data
-    }
-
-    func testTheSharedLimitCases() throws {
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let fixture = try decoder.decode(Fixture.self, from: Data(contentsOf: Self.fixture))
-        XCTAssertGreaterThan(fixture.cases.count, 20)
-        for item in fixture.cases {
-            switch ChatAttachmentLimits.validate(data: bytes(item), fileName: item.fileName) {
-            case let .success(kind):
-                XCTAssertTrue(item.expect.ok, item.name)
-                XCTAssertEqual(kind.mime, item.expect.mime, item.name)
-                XCTAssertEqual(kind.fileExtension(fallbackName: item.fileName), item.expect.ext, item.name)
-            case let .failure(rejection):
-                XCTAssertFalse(item.expect.ok, item.name)
-                XCTAssertEqual(rejection.reason, item.expect.reason, item.name)
-                let limit = item.expect.limit.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? ""
-                XCTAssertEqual(rejection.message, item.expect.message?.replacingOccurrences(of: "{limit}", with: limit), item.name)
-            }
-        }
-    }
-
     /// A square image of random pixels (nothing for a codec to squeeze), encoded as `type`.
     private func image(side: Int, type: UTType) throws -> Data {
         var pixels = [UInt8](repeating: 0, count: side * side * 4)
@@ -122,6 +66,37 @@ final class ChatAttachmentPickerTests: XCTestCase {
         let retried = file.retried()
         XCTAssertNotEqual(retried.id, "u1")
         XCTAssertEqual(retried.state, .ready)
+    }
+}
+
+/// The draft's files as the shared composer's chips (#1822 T13): the upload state and Retry come through
+/// `ChatComposerShellFiles`.
+@MainActor
+final class ChatDraftFileChipTests: XCTestCase {
+    func testDraftFilesRenderAsSharedChipsWithUploadState() throws {
+        let center = ChatsCenter(sender: ChatSender { _, _ in "" }) { _ in }
+        XCTAssertNil(center.attach(data: Data("notes".utf8), fileName: "notes.md", conversation: 7))
+        XCTAssertNil(center.attach(data: Data("log".utf8), fileName: "build.log", conversation: 7))
+        center.drafts.update(7) { draft in
+            draft.attachments[0].state = .uploading
+            draft.attachments[1].state = .failed("refused")
+        }
+        let failedID = center.drafts.draft(7).attachments[1].id
+        let files = try XCTUnwrap(ChatConversationView.draftFiles(center.drafts.draft(7).attachments, center: center,
+                                                                  conversation: 7))
+        XCTAssertEqual(files.attachments.map(\.name), ["notes.md", "build.log"])
+        XCTAssertEqual(files.progress.uploading, [0], "an upload in flight shows progress")
+        XCTAssertEqual(files.progress.failed, [1])
+        let chips = AttachmentChipsView(attachments: files.attachments, onRemove: files.onRemove, onRetry: files.onRetry,
+                                        progress: files.progress).chips
+        XCTAssertEqual(chips.map(\.state), [.importing, .failed])
+        XCTAssertTrue(chips[0].removeDisabled, "an uploading file cannot be removed")
+        XCTAssertNil(chips[0].onRetry)
+        chips[1].onRetry?()
+        let retried = center.drafts.draft(7).attachments[1]
+        XCTAssertNotEqual(retried.id, failedID, "Retry is the center's: a fresh upload id")
+        XCTAssertEqual(retried.state, .ready)
+        XCTAssertNil(ChatConversationView.draftFiles([], center: center, conversation: 7))
     }
 }
 
@@ -305,8 +280,12 @@ final class PhoneArtifactChat05ScanTests: XCTestCase {
             .deletingLastPathComponent() // Tests
             .deletingLastPathComponent() // WatchtowerMobile
         let files = [
-            app.appendingPathComponent("Sources/Features/Chats/ChatArtifactSheet.swift"),
-            app.appendingPathComponent("Sources/Features/Chats/SandboxedArtifactWebView.swift"),
+            // The phone's artifact sheet is ChatUI's viewer and its iOS parts (unified chat T9; the phone's own copies
+            // are gone).
+            app.deletingLastPathComponent().appendingPathComponent("WatchtowerChat/Sources/ChatUI/Artifacts/ArtifactViewer.swift"),
+            app.deletingLastPathComponent().appendingPathComponent("WatchtowerChat/Sources/ChatUI/Platform/iOS/ArtifactViewerParts.swift"),
+            app.deletingLastPathComponent()
+                .appendingPathComponent("WatchtowerChat/Sources/ChatUI/Platform/iOS/SandboxedArtifactWebView.swift"),
             // The artifact links the reply resolves (shared with the Mac).
             app.deletingLastPathComponent()
                 .appendingPathComponent("WatchtowerChatText/Sources/WatchtowerChatText/ArtifactLinks.swift")
@@ -321,16 +300,18 @@ final class PhoneArtifactChat05ScanTests: XCTestCase {
     }
 
     func testTheHTMLPolicyBlocksEveryRemoteLoad() throws {
-        let rules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(ArtifactHTMLPolicy.contentRules.utf8)) as? [[String: Any]])
+        // The phone's page gets the Mac's chat-artifact rules (one policy, `HTMLPreviewPolicy`, unified chat F20).
+        let contentRules = HTMLPreviewPolicy.contentRules(allowFiles: false)
+        let rules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentRules.utf8)) as? [[String: Any]])
         let first = try XCTUnwrap(rules.first)
         XCTAssertEqual((first["action"] as? [String: String])?["type"], "block")
         XCTAssertEqual((first["trigger"] as? [String: String])?["url-filter"], ".*")
         let allowed = rules.dropFirst().compactMap { ($0["trigger"] as? [String: String])?["url-filter"] }
         XCTAssertEqual(allowed, ["^about:", "^data:", "^blob:"])
-        XCTAssertTrue(ArtifactHTMLPolicy.allowsNavigation(to: URL(string: "about:blank")))
-        XCTAssertFalse(ArtifactHTMLPolicy.allowsNavigation(to: URL(string: "https://example.com")))
-        XCTAssertFalse(ArtifactHTMLPolicy.allowsNavigation(to: URL(string: "file:///etc/hosts")))
-        XCTAssertFalse(ArtifactHTMLPolicy.allowsNavigation(to: nil))
+        XCTAssertTrue(HTMLPreviewPolicy.allowsNavigation(to: URL(string: "about:blank"), isMainFrame: true, page: nil))
+        XCTAssertFalse(HTMLPreviewPolicy.allowsNavigation(to: URL(string: "https://example.com"), isMainFrame: true, page: nil))
+        XCTAssertFalse(HTMLPreviewPolicy.allowsNavigation(to: URL(string: "file:///etc/hosts"), isMainFrame: true, page: nil))
+        XCTAssertFalse(HTMLPreviewPolicy.allowsNavigation(to: nil, isMainFrame: true, page: nil))
     }
 }
 
@@ -340,13 +321,17 @@ final class ChatArtifactActionsTests: XCTestCase {
         ChatArtifactContent(key: "k", kind: kind, title: "Design review", version: 2, meta: meta, content: content, contentCut: false)
     }
 
+    private func table(_ artifact: ChatArtifactContent, timeZone: TimeZone = .current) -> ChatArtifactActions {
+        ChatArtifactActions(artifact.draft, timeZone: timeZone)
+    }
+
     private func query(_ url: URL) -> [String: String] {
         Dictionary((URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []).map { ($0.name, $0.value ?? "") }) { $1 }
     }
 
     func testEmailOpensAMailtoWithEverythingEncoded() throws {
         let meta = ["to": "vendor@example.com", "subject": "Re: renewal & terms"]
-        let actions = ChatArtifactActions(artifact("email", meta: meta, content: "Hello, a+b"))
+        let actions = table(artifact("email", meta: meta, content: "Hello, a+b"))
         XCTAssertEqual(actions.buttons.map(\.title), ["Open in Mail", "Copy", "Share"])
         guard case let .open(url) = actions.buttons[0].effect else { return XCTFail("open") }
         XCTAssertTrue(url.absoluteString.hasPrefix("mailto:vendor%40example.com?"))
@@ -357,8 +342,8 @@ final class ChatArtifactActionsTests: XCTestCase {
 
     func testEventOpensTheGoogleCalendarTemplate() throws {
         let utc = try XCTUnwrap(TimeZone(identifier: "UTC"))
-        let actions = ChatArtifactActions(artifact("event", meta: ["start": "2026-09-30T10:00:00+03:00", "location": "Room 4"], content: "Agenda"),
-                                          timeZone: utc)
+        let event = artifact("event", meta: ["start": "2026-09-30T10:00:00+03:00", "location": "Room 4"], content: "Agenda")
+        let actions = table(event, timeZone: utc)
         guard case let .open(url) = actions.buttons[0].effect else { return XCTFail("open") }
         XCTAssertTrue(url.absoluteString.hasPrefix("https://calendar.google.com/calendar/render?action=TEMPLATE&"))
         XCTAssertEqual(query(url)["text"], "Design review")
@@ -367,19 +352,19 @@ final class ChatArtifactActionsTests: XCTestCase {
     }
 
     func testSlackCopiesTheTextAndOpensTheSlackApp() {
-        let actions = ChatArtifactActions(artifact("slack", meta: ["channel": "#release"], content: "Release 1.4 is out"))
+        let actions = table(artifact("slack", meta: ["channel": "#release"], content: "Release 1.4 is out"))
         XCTAssertEqual(actions.buttons[0].effect, .copyThenOpen(text: "Release 1.4 is out", url: URL(string: "slack://open")))
-        let permalink = ChatArtifactActions(artifact("slack", meta: ["permalink": "https://acme.slack.com/archives/C1/p1"], content: "x"))
+        let permalink = table(artifact("slack", meta: ["permalink": "https://acme.slack.com/archives/C1/p1"], content: "x"))
         XCTAssertEqual(permalink.buttons[0].effect, .copyThenOpen(text: "x", url: URL(string: "https://acme.slack.com/archives/C1/p1")))
     }
 
     func testCopyAndShareOnEveryKind() {
         for kind in ["document", "table", "code", "html", "email", "event", "slack"] {
-            let titles = ChatArtifactActions(artifact(kind)).buttons.map(\.title)
+            let titles = table(artifact(kind)).buttons.map(\.title)
             XCTAssertEqual(Array(titles.suffix(2)), ["Copy", "Share"], kind)
         }
-        XCTAssertEqual(ChatArtifactActions(artifact("document")).buttons.count, 2, "a document only copies and shares")
-        XCTAssertEqual(ChatArtifactActions.markdown(artifact("code", meta: ["language": "go"], content: "x := 1")), "```go\nx := 1\n```")
+        XCTAssertEqual(table(artifact("document")).buttons.count, 2, "a document only copies and shares")
+        XCTAssertEqual(ChatArtifactActions.markdown(artifact("code", meta: ["language": "go"], content: "x := 1").draft), "```go\nx := 1\n```")
     }
 }
 

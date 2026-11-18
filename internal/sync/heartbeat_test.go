@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -82,4 +83,27 @@ func TestWriteSyncProgress_CreatesAPrivateDirectory(t *testing.T) {
 	info, err := os.Stat(dir)
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+}
+
+// A run waiting out a Slack Retry-After hold says so: the snapshot carries
+// the hold's end, and the heartbeat reports it with the time left.
+func TestHeartbeat_ReportsRateLimitWait(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var hold time.Time
+		p := NewProgress()
+		p.SetRateLimitHold(func() time.Time { return hold })
+		p.SetPhase(PhaseDiscovery)
+		p.SetDiscovery(3, 40, 0, 0)
+
+		beat := ProgressFromSnapshot(p.Snapshot())
+		assert.True(t, beat.RateLimitedUntil.IsZero(), "no hold, nothing reported")
+		assert.Equal(t, "page 3/40", beat.Detail)
+
+		hold = time.Now().Add(90 * time.Second)
+		snap := p.Snapshot()
+		assert.Equal(t, hold, snap.RateLimitedUntil)
+		beat = ProgressFromSnapshot(snap)
+		assert.Equal(t, hold, beat.RateLimitedUntil)
+		assert.Equal(t, "page 3/40 · Slack rate limit, retrying in 1m30s", beat.Detail)
+	})
 }

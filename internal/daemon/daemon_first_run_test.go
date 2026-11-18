@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,18 +50,29 @@ func firstRunDayStart() time.Time {
 	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 }
 
-// seedFirstRunMessages seeds U1 and U2 as active users inside people Run's
-// 7-day window.
+// seedFirstRunMessages seeds 1:U1 (the owner of Slack account 1) and 1:U2,
+// who mentions the owner, as active users inside people Run's 7-day window;
+// only the owner and their interaction partners get cards.
 func seedFirstRunMessages(t *testing.T, database *db.DB) {
 	t.Helper()
+	seedPeopleOwnerAndPartner(t, database, firstRunDayStart().Add(-3*24*time.Hour))
+}
+
+// seedPeopleOwnerAndPartner makes Slack account 1 owned by 1:U1 (creating
+// or updating its row) and seeds two
+// active users from base on: 1:U1 and 1:U2, whose messages mention the owner.
+func seedPeopleOwnerAndPartner(t *testing.T, database *db.DB, base time.Time) {
+	t.Helper()
 	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "general", Type: "public"}))
-	base := firstRunDayStart().Add(-3 * 24 * time.Hour)
-	for u, id := range []string{"U1", "U2"} {
+	_, err := database.Exec(`INSERT INTO slack_accounts (id, current_user_id) VALUES (1, '1:U1')
+		ON CONFLICT(id) DO UPDATE SET current_user_id = excluded.current_user_id`)
+	require.NoError(t, err)
+	for u, id := range []string{"1:U1", "1:U2"} {
 		require.NoError(t, database.UpsertUser(db.User{ID: id, Name: id, DisplayName: id}))
 		for i := range 4 {
 			ts := float64(base.Add(time.Duration(u*100+i) * time.Minute).Unix())
 			require.NoError(t, database.UpsertMessage(db.Message{
-				ChannelID: "C1", TS: fmt.Sprintf("%.6f", ts), UserID: id, Text: "msg",
+				ChannelID: "C1", TS: fmt.Sprintf("%.6f", ts), UserID: id, Text: "msg <@U1>",
 			}))
 		}
 	}
@@ -82,7 +95,7 @@ func seedFirstRunSituationAt(t *testing.T, database *db.DB, from, to time.Time) 
 		PeriodFrom: float64(from.Unix()),
 		PeriodTo:   float64(to.Unix()),
 		Summary:    "d", Topics: "[]", Decisions: "[]", ActionItems: "[]", PeopleSignals: "[]",
-		Situations:   `[{"topic":"X","type":"collaboration","participants":[{"user_id":"U1","role":"lead"}],"dynamic":"d","outcome":"o","red_flags":[],"observations":[],"message_refs":[]}]`,
+		Situations:   `[{"topic":"X","type":"collaboration","participants":[{"user_id":"1:U1","role":"lead"}],"dynamic":"d","outcome":"o","red_flags":[],"observations":[],"message_refs":[]}]`,
 		MessageCount: 8,
 	})
 	require.NoError(t, err)
@@ -374,4 +387,50 @@ func TestShouldRunDayPlan_FreshBudgetExhaustedFalse(t *testing.T) {
 	}
 
 	assert.False(t, d.shouldRunDayPlan(now, firstRunOwner))
+}
+
+// TestDaemon_PeopleNoOwnerSaysWhy: active users but no Slack account with a
+// known user → no run, no AI call, and one log line naming the reason, once
+// a day.
+func TestDaemon_PeopleNoOwnerSaysWhy(t *testing.T) {
+	d, database := firstRunTestSetup(t)
+	var logs bytes.Buffer
+	d.SetLogger(log.New(&logs, "", 0))
+	gen := attachPeoplePipeline(d, database)
+	seedFirstRunMessages(t, database)
+	seedFirstRunSituation(t, database)
+	_, err := database.Exec(`UPDATE slack_accounts SET current_user_id = ''`)
+	require.NoError(t, err)
+
+	d.phasePeopleCards(context.Background())
+	d.phasePeopleCards(context.Background())
+
+	assert.Equal(t, 0, peopleRunCount(t, database))
+	assert.Equal(t, 0, gen.calls)
+	assert.Equal(t, 1, strings.Count(logs.String(), "people skipped: no Slack account with a known user"), logs.String())
+}
+
+// TestDaemon_PeoplePruneRunsWithoutData: the one-time prune of non-partner
+// cards runs even when the cycle makes no cards (no data, people off), and
+// once done it is not repeated.
+func TestDaemon_PeoplePruneRunsWithoutData(t *testing.T) {
+	d, database := firstRunTestSetup(t)
+	d.config.People.Enabled = false
+	_, err := database.Exec(`INSERT INTO slack_accounts (id, current_user_id) VALUES (1, '1:U1')`)
+	require.NoError(t, err)
+	_, err = database.UpsertPeopleCard(db.PeopleCard{UserID: "1:UREADONLY", PeriodFrom: 1, PeriodTo: 2, Summary: "old"})
+	require.NoError(t, err)
+
+	d.phasePeopleCards(context.Background())
+	card, err := database.GetLatestPeopleCard("1:UREADONLY")
+	require.NoError(t, err)
+	assert.Nil(t, card)
+	assert.True(t, d.peoplePruneDone)
+
+	_, err = database.UpsertPeopleCard(db.PeopleCard{UserID: "1:UREADONLY", PeriodFrom: 1, PeriodTo: 2, Summary: "later"})
+	require.NoError(t, err)
+	d.phasePeopleCards(context.Background())
+	card, err = database.GetLatestPeopleCard("1:UREADONLY")
+	require.NoError(t, err)
+	assert.NotNil(t, card, "the pass does not repeat")
 }

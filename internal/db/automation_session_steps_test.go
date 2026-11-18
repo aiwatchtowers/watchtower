@@ -231,3 +231,48 @@ func TestSessionEnded_NeedsRunWaiting(t *testing.T) {
 		t.Fatalf("step = %+v, %v; want unchanged %+v", after, err, before)
 	}
 }
+
+// A session the owner deleted is gone for a session() wait as soon as its
+// delete is requested (#1716): the step ends instead of waiting while the
+// background cleanup runs, or forever on a Not fully cleaned row.
+func TestAutomationSessionStep_DeletingRowIsGone(t *testing.T) {
+	d := openTestDB(t)
+	wb, run, step := seedSessionStepRun(t, d, "review")
+	sess := seedRunSession(t, d, wb, run)
+	if !mustAttach(t, d, step, sess) {
+		t.Fatal("attach lost")
+	}
+	if got, err := d.GetAutomationSessionStep(step); err != nil || got.SessionGone {
+		t.Fatalf("step = %+v, %v; want the session present", got, err)
+	}
+	setDeleteRequestedForTest(t, d, sess, "2026-11-10T12:00:00Z")
+	if got, err := d.GetAutomationSessionStep(step); err != nil || !got.SessionGone || got.SessionID != sess {
+		t.Fatalf("step = %+v, %v; want session %d gone", got, err, sess)
+	}
+}
+
+func TestSessionEnds_DeletingRowNotFound(t *testing.T) {
+	d := openTestDB(t)
+	wb, run, _ := seedSessionStepRun(t, d, "review")
+	sess := seedRunSession(t, d, wb, run)
+	if _, err := d.SessionEnds(sess); err != nil {
+		t.Fatalf("SessionEnds of a live row: %v", err)
+	}
+	setDeleteRequestedForTest(t, d, sess, "2026-11-10T12:00:00Z")
+	if _, err := d.SessionEnds(sess); !errors.Is(err, ErrTerminalSessionNotFound) {
+		t.Fatalf("SessionEnds of a deleting row err = %v; want ErrTerminalSessionNotFound", err)
+	}
+}
+
+func TestAttachAutomationSessionStep_RefusesDeletingRow(t *testing.T) {
+	d := openTestDB(t)
+	wb, run, step := seedSessionStepRun(t, d, "review")
+	deleting, live := seedRunSession(t, d, wb, run), seedRunSession(t, d, wb, run)
+	setDeleteRequestedForTest(t, d, deleting, "2026-11-10T12:00:00Z")
+	if mustAttach(t, d, step, deleting) {
+		t.Fatal("a deleting session row attached")
+	}
+	if !mustAttach(t, d, step, live) {
+		t.Fatal("the run's live session did not attach after the refused one")
+	}
+}

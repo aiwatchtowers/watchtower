@@ -1,3 +1,4 @@
+import ChatWire
 import Foundation
 import WatchtowerKit
 import WatchtowerSync
@@ -56,6 +57,7 @@ struct ChatsGateModel: Equatable {
     static let errorTitle = "Couldn't load chats"
     static let retry = "Retry"
     static let emptyTitle = "No chats yet"
+    static let newChatLabel = "New chat"
     static let relayUnreachableLine = "Relay isn't answering. You can read chats; sending works when it is back."
 
     let state: State
@@ -75,7 +77,7 @@ struct ChatsGateModel: Equatable {
         switch action {
         case .switchToRelay: Self.switchToRelay
         case .retry: Self.retry
-        case .newChat: ChatListModel.newChatLabel
+        case .newChat: Self.newChatLabel
         case nil: nil
         }
     }

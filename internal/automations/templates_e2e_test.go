@@ -115,7 +115,7 @@ var personalDryRuns = []personalDryRun{
 		read:    []string{"PAY-1", "PAY-5", "Fraud check timeout"},
 	},
 	{
-		name: "team-performance-report",
+		name: "team-week-summary",
 		steps: "tool(list_jira_issues):ok,tool(get_jira_time_in_status):ok,tool(list_people):ok," +
 			"tool(list_messages):ok,tool(list_messages):ok,llm(strong):ok,output(report):dry_run",
 		toolArg: map[string]string{"list_messages": `"person":"1:U1`},

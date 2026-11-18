@@ -3,6 +3,7 @@ import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerChatText
+@testable import ChatUI
 
 final class AllowedURLSchemesTests: XCTestCase {
 

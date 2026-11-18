@@ -24,6 +24,8 @@ func TestSessionAgent_AppSessionID(t *testing.T) {
 func TestSessionAgent_AnalyticsContext(t *testing.T) {
 	assert.True(t, claudeAdapter{}.Caps().AnalyticsContext)
 	assert.False(t, codexAdapter{}.Caps().AnalyticsContext)
+	assert.True(t, claudeAdapter{}.Caps().ClaudeSessionFiles)
+	assert.False(t, codexAdapter{}.Caps().ClaudeSessionFiles)
 }
 
 // Each adapter's start command is the one sessionstart.Launch built by kind

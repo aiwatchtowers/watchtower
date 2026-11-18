@@ -81,7 +81,7 @@ func (h *Handlers) chatSearch(ctx context.Context, r actions.Request) actions.Ou
 
 // chatExists refuses not_found for a chat that is not there.
 func (h *Handlers) chatExists(ctx context.Context, c *ChatDeps, conv int64) *actions.Outcome {
-	ok, err := c.Store.ConversationExists(ctx, conv)
+	ok, err := c.Engine.ConversationExists(ctx, conv)
 	if err != nil {
 		log.Printf("hub chat: reading chat %d failed (%s)", conv, errClass(err))
 		o := failed(reasonWriteFailed, chatWriteFailedMessage)

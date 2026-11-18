@@ -44,6 +44,7 @@ import (
 	"sync"
 	"time"
 
+	"watchtower/internal/chatengine"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
@@ -58,6 +59,7 @@ import (
 	"watchtower/internal/hub/switcher"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/cloudkit"
+	"watchtower/internal/hub/transport/relay"
 	"watchtower/internal/policy"
 	"watchtower/internal/sessionhost"
 	"watchtower/internal/sessionstart"
@@ -173,15 +175,17 @@ type Options struct {
 	// transport must have the relay's get_account_state.
 	RelayOnlyRules bool
 	// The AI chat from the phone (iPhone chat §4.5), set by the daemon:
-	// ChatTools approves the chat's actions and runs the ones no chat
-	// session runs (nil = a registry with no tools); ChatTitle names a
-	// conversation after its first complete answer with the light-tier
-	// generator (`watchtower chat title`'s code; nil = no AI title);
-	// ChatPreferredProvider is the automatic routing's preferred provider
-	// (the config the Mac's automatic routing reads).
-	ChatTools             *tools.Registry
-	ChatTitle             func(ctx context.Context, conv int64) error
-	ChatPreferredProvider string
+	// ChatEngine is the daemon's chat engine (unified chat §4: started
+	// before the hub, stopped after it; nil = chat off, runner_down; its AI
+	// titles and preferred provider are its own config); ChatTools approves
+	// the chat's actions and runs the ones no chat session runs (nil = a
+	// registry with no tools).
+	ChatEngine *chatengine.Engine
+	ChatTools  *tools.Registry
+	// ChatRouting reads the routing pill's catalog for the chat_list record
+	// (unified chat T17): the providers, their pair and capability rows and
+	// the routing status, read on every build. nil leaves `routing` out.
+	ChatRouting func(context.Context) *chatengine.RoutingCatalog
 
 	// Test seams (zero = production).
 	newTransport func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error)
@@ -785,6 +789,7 @@ func errClass(err error) string {
 		class string
 	}{
 		{context.Canceled, "canceled"}, {context.DeadlineExceeded, "timeout"},
+		{relay.ErrRelayInternal, "relay_internal"},
 		{transport.ErrUnavailable, "unavailable"}, {transport.ErrForbidden, "forbidden"},
 		{transport.ErrEntitlementInactive, "entitlement_inactive"}, {transport.ErrRateLimited, "rate_limited"},
 		{transport.ErrTokenExpired, "token_expired"}, {transport.ErrUnsupportedVersion, "unsupported_version"},
@@ -797,6 +802,9 @@ func errClass(err error) string {
 		if errors.Is(err, c.err) {
 			return c.class
 		}
+	}
+	if c := relay.CodeClass(err); c != "" {
+		return c
 	}
 	return "other"
 }

@@ -14,7 +14,7 @@ import (
 )
 
 // slackPageSize is the number of messages to request per Slack API call.
-const slackPageSize = 200
+const slackPageSize = 999
 
 // syncMessages builds a priority-ordered channel queue and uses the worker pool
 // to sync message history for each channel in parallel.
@@ -146,6 +146,11 @@ func (o *Orchestrator) buildChannelQueue(opts SyncOptions) ([]SyncTask, error) {
 			if !filterSet[strings.ToLower(ch.Name)] && !filterSet[strings.ToLower(ch.ID)] {
 				continue
 			}
+		}
+
+		// Stop syncing (SYNCEX-01) wins even over an explicit --channels.
+		if o.syncExcluded[ch.ID] {
+			continue
 		}
 
 		// Skip archived channels unless explicitly requested
@@ -410,6 +415,7 @@ func (o *Orchestrator) upsertMessagePage(ctx context.Context, channelID string, 
 			IsDeleted:  false,
 			Subtype:    msg.SubType,
 			Permalink:  "", // permalink generated at query time by the renderer
+			SyncedAt:   o.stampSyncedAt(slackTSUnix(msg.Timestamp)),
 		})
 	}
 
