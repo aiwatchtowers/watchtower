@@ -2841,6 +2841,8 @@ Entry format:
 - weak-dimension: 6. Both lanes reviewed the YAML's branching on `runner.environment` but not whether the suite passes on macOS.
 - rule-gap (candidate, dim 9): *self-hosted runners on a public repository ship with the fork-PR approval policy applied by the setup code itself, not by a README step.* The fix round in the working tree does this.
 
+- outcome: TBD
+
 ## 2026-11-10 — fix/1714-chat-table-wrap (#1714 / ask #1197: chat tables wrap instead of scrolling; `MarkdownTableColumns` in WatchtowerCore, `NSTextTable` run view, streaming `MarkdownTableGrid` Layout; 13 files; panel: prosecutor (5) + codex (0); pr-review-toolkit specialists unavailable; judge verified fabdd38f8 by reading, no runs) — verdict: approve
 
 - contested: F1 (the size reported to SwiftUI was the sum of floored column widths, and the frame set to it laid out different columns). The fix does not make `widths()` stable; it reports exactly the proposed width when wrapping and the ceil'd natural width when the table fits, so the frame width always equals the probe width. Checked that `Metrics.natural` is ceil'd in `buildMetrics`, so the fits-branch round trip cannot fall into the wrap path. [6]

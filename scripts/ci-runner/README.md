@@ -24,10 +24,12 @@ exactly as before. Nothing else changes for contributors.
   error or a timeout keeps everything in the cloud.
 - On the Mac the jobs run as a separate standard macOS user, `ci`, so a
   branch's code cannot reach the owner's Keychain, `~/.config/watchtower` or
-  the live database. Six runners (`actions-runner-general-1..6` in `ci`'s
-  home, named `wt-mac-general-N`, label `wt-general`), each a LaunchAgent in
-  `ci`'s GUI session: one run's Mac jobs fit at once, and a second run
-  queues instead of piling onto the cores.
+  the live database. Eight general runners (`actions-runner-general-1..8`
+  in `ci`'s home, named `wt-mac-general-N`, label `wt-general`) and one
+  `wt-mac-swift` (`actions-runner-swift`, label `wt-swift`), each a
+  LaunchAgent in `ci`'s GUI session. No job asks for `wt-swift` while the
+  runners have no window server (below); it is kept registered for Swift
+  Test.
 - Where a job differs on the Mac it checks `runner.environment`: no
   `apt-get`, no `setup-xcode` (the runners' `.env` sets `DEVELOPER_DIR`),
   no setup-go / golangci-lint caches (the `ci` user's own caches persist),
@@ -50,6 +52,15 @@ them off is not settled. If a later setup gives them a window server, the
 probe is: build a window, post a mouse event with its `windowNumber`, and
 check `event.window` is that window.
 
+Measured again on 2026-11-18 (PR #750's run 44402149563), with `ci` logged in
+at the console (switched out), the runners running in its session: on both
+`wt-general` and `wt-swift`, no CGSession, window number 0, the event finds no
+window, and a new simulator sat at "Waiting on Data Migration" for the
+probe's five minutes (`simctl bootstatus` timed out). Fast User Switching
+with `ci` in the background is not enough: a job that needs a window server
+or a simulator (Swift Test, Mobile App) needs runners that run inside `ci`'s
+Aqua GUI session, which these do not (`cgsession=false`).
+
 ## One-time setup (owner)
 
 1. **Close your home folder to other users** (the setup script refuses to go
@@ -69,11 +80,11 @@ check `event.window` is that window.
    It creates the standard user `ci`, installs swiftlint with Homebrew if it
    is missing, accepts the Xcode license (`/Applications/Xcode.app`; another
    one with `--xcode <path>`), downloads actions/runner (pinned version,
-   checksum checked), registers the six runners and installs their
+   checksum checked), registers the nine runners and installs their
    LaunchAgents. Your own `xcode-select` choice is not touched: the runners
    use `DEVELOPER_DIR`. Running it again is safe; it restarts the runners and
    removes every other runner folder in `ci`'s home (`ci` is for these
-   runners only; from earlier setups: `wt-swift`, `general-7`, `general-8`),
+   runners only),
    so run it while no job is running.
 
 3. **Log in as `ci` once and leave it logged in.** Turn on Fast User
@@ -122,7 +133,7 @@ check `event.window` is that window.
    request workflows from contributors* → *Require approval for all external
    contributors*). Read a fork PR's workflow changes before approving it.
 
-7. **Check:** Settings → Actions → Runners lists `wt-mac-general-1..6` as
+7. **Check:** Settings → Actions → Runners lists `wt-mac-general-1..8` and `wt-mac-swift` as
    Idle. Push a branch: the gate's *pick* step logs
    `runs-on: linux=["self-hosted","wt-general"] …`.
 
@@ -135,8 +146,8 @@ check `event.window` is that window.
 - **Disk:** `ci` keeps the Go build cache, golangci-lint's cache and the Kit's
   SwiftPM build in its home. To reclaim space, delete `~ci/Library/Caches` as
   root while no job runs; the next run rebuilds. An earlier setup's Swift Test
-  `.build` (~11 GB) and phone DerivedData go with the setup script's removal
-  of the wt-swift runner and with `~ci/Library/Developer/Xcode/DerivedData`.
+  `.build` (~11 GB) under `actions-runner-swift` and phone DerivedData
+  (`~ci/Library/Developer/Xcode/DerivedData`) can go the same way.
 - **Logs:** each runner logs to
   `~ci/Library/Logs/actions.runner.aiwatchtowers-watchtower.wt-mac-<name>/`
   and to `_diag/` inside its folder.
@@ -154,9 +165,9 @@ check `event.window` is that window.
 - **The critical path stays in the cloud.** Swift Test (~8–12 min on
   `macos-26`) is the longest job, so the Mac shortens the Go side of a run,
   not its total.
-- **One home for every job.** Jobs share `ci`'s home and run six at a
+- **One home for every job.** Jobs share `ci`'s home and run eight at a
   time, so a test that writes to the real home (rather than a temp folder)
   sees what other jobs and earlier runs left there.
 - **No spill-over.** A class goes to the Mac whenever one of its runners is
-  online, busy or not; concurrent runs queue for the six runners rather
+  online, busy or not; concurrent runs queue for the eight general runners rather
   than overflow to the cloud.

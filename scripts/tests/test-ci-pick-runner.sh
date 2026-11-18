@@ -10,7 +10,7 @@
 #   - no token                                   → cloud, no gh call
 #   - gh fails, hangs, prints junk or JSON without a runner list → cloud
 #   - no runner online, only offline runners    → cloud
-#   - only a retired wt-swift runner online      → cloud
+#   - only the wt-swift runner online      → cloud
 #   - the token reaches gh as GH_TOKEN; the script always exits 0
 set -euo pipefail
 
@@ -125,7 +125,7 @@ pick "JSON without a runner list" push "" tok '{"message":"Bad credentials"}' "$
 pick "no runners" push "" tok "$EMPTY" "$LINUX_CLOUD" "$MACOS_CLOUD" 1 "no runner online"
 pick "all offline" push "" tok "$ALL_OFFLINE" "$LINUX_CLOUD" "$MACOS_CLOUD" 1 "no runner online"
 pick "another label online" push "" tok "$OTHER_LABEL" "$LINUX_CLOUD" "$MACOS_CLOUD" 1
-pick "only a retired wt-swift runner online" push "" tok "$SWIFT_ONLY" "$LINUX_CLOUD" "$MACOS_CLOUD" 1
+pick "only the wt-swift runner online" push "" tok "$SWIFT_ONLY" "$LINUX_CLOUD" "$MACOS_CLOUD" 1
 
 if [ "$FAILURES" -gt 0 ]; then
     echo "$FAILURES failure(s)"
