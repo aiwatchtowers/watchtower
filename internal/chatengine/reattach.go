@@ -18,7 +18,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -26,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/chat"
 	"watchtower/internal/chatstore"
 	"watchtower/internal/db"
@@ -315,13 +315,15 @@ func readLineRaw(r io.Reader) ([]byte, error) {
 
 // listenStart spawns `<exe> argv...` (argv carries --listen <socket>) in its
 // own session and process group, with no stdio (the daemon may exit long
-// before it), and connects to its socket once it bound it.
+// before it) and the owner's origin (aiconsent.OwnerEnv: it serves one owner
+// turn), and connects to its socket once it bound it.
 func (e *Engine) listenStart(argv []string) (Process, error) {
 	path := flagValue(argv, "--listen")
 	if e.c.Exe == "" || path == "" {
 		return nil, errors.New("chatengine: no watchtower executable or session socket")
 	}
-	cmd := exec.Command(e.c.Exe, argv...)
+	cmd := newCmd(e.c.Exe, argv...)
+	cmd.Env = aiconsent.OwnerEnv(os.Environ())
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return nil, err //nolint:wrapcheck // classified by the caller's log
