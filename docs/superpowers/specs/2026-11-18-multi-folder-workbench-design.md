@@ -319,7 +319,7 @@ under them (the panel is too narrow for three).
   bench.`
 
 ### 6.8 Git per folder
-Header branch crumb, branch switch (PROJ-10), fetch, refs watcher and the 5 s poll follow the
+Header branch crumb, branch switch (PROJ-10), fetch, refs watcher and the 15 s poll follow the
 active session's folder (or the selected FILES root); each FILES root polls its own status at
 the existing cadence. `workbench git … --folder` resolves against the folder that contains the
 path (`ResolveFolder` gets the folder list).
@@ -332,8 +332,9 @@ the spec-review document reads use the session's folder as the main repository. 
 
 ### 6.10 Board
 `create_targets`/`update_target` accept `folder` (name or path of a bench folder); when a branch
-or PR is set without it, the caller session's folder is stored. Drift (PROJ-07) and the merged
-progress share run git/`gh` in the target's folder (NULL → home folder). Cards show a folder chip
+or PR is set without it, the caller session's folder is stored. Drift (PROJ-07) runs git/`gh` in the target's folder (NULL → home folder). The merged progress
+share belongs to the session report (`internal/sessionreport`), so it runs in the session's
+folder (§6.9). Cards show a folder chip
 before the branch when the bench has more than one folder.
 
 ### 6.11 Documents, search, automations
