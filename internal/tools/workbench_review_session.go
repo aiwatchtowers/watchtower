@@ -6,7 +6,6 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/reviewdiff"
-	"watchtower/internal/workbenchfolders"
 	"watchtower/internal/workbenchgit"
 )
 
@@ -23,29 +22,31 @@ func CheckSessionOnWorkbench(d *db.DB, p *db.Workbench, sessionID int64) error {
 }
 
 // reviewSessionPlace is the root of the folder the session's agent works in
-// (its worktree when it has one, else the workbench folder) plus whether the
+// (its worktree when it has one, else the session's own bench folder — the
+// one it was started for, db.SessionFolderPath; spec §6.9) plus whether the
 // agent's folder no longer exists (a worktree removed by the #535 cleanup):
-// the folder is then the workbench folder.
+// the folder is then the session's bench folder. The repository is the
+// session row's folder, never one picked from the agent's cwd: a session
+// whose agent has recorded no cwd yet still reviews its own folder.
 func reviewSessionPlace(ctx context.Context, d *db.DB, p *db.Workbench, sessionID int64) (folder string, missing bool, err error) {
 	if err := CheckSessionOnWorkbench(d, p, sessionID); err != nil {
+		return "", false, err
+	}
+	main, _, err := d.SessionFolderPath(ctx, sessionID)
+	if err != nil {
 		return "", false, err
 	}
 	cwd, err := d.TerminalAgentCwd(sessionID)
 	if err != nil {
 		return "", false, err
 	}
-	folders, err := workbenchfolders.GitFolders(ctx, d, p.ID, p.FolderPath)
-	if err != nil {
-		return "", false, err
-	}
-	// The bench folder holding the agent's folder is the main repository.
-	resolved, err := workbenchgit.ResolveFolder(ctx, workbenchgit.Options{Folders: folders}, cwd.Path)
+	resolved, err := workbenchgit.ResolveFolder(ctx, workbenchgit.Options{Folder: main}, cwd.Path)
 	if err != nil {
 		return "", false, err
 	}
 	missing = resolved.Scope == workbenchgit.ScopeMissing
 	if resolved.Root == "" {
-		return p.FolderPath, missing, nil
+		return main, missing, nil
 	}
 	return resolved.Root, missing, nil
 }

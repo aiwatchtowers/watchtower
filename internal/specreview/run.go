@@ -100,7 +100,7 @@ func run(ctx context.Context, d Deps, askID int64) (db.SpecReview, error) {
 	if ask.Kind != "review" || (t != Spec && t != Plan) {
 		return db.SpecReview{}, fmt.Errorf("ask %d is not a spec or plan review", askID)
 	}
-	folder, err := ReadFolder(d.DB, ask)
+	folder, err := ReadFolder(ctx, d.DB, ask)
 	if err != nil {
 		return db.SpecReview{}, err
 	}
@@ -186,33 +186,81 @@ func advanceLoop(d *db.DB, ask *db.OwnerAsk, row *db.SpecReview, res Result, out
 	return nil
 }
 
-// ReadFolder is where the reviewer reads: the session's working directory (its
-// worktree) when it is recorded and still a directory, else the workbench
-// folder, which must be a directory too: the reviewer never runs without one.
-// A Discuss thread reads the same folder (`ai query --read-folder-ask`).
-func ReadFolder(d *db.DB, ask *db.OwnerAsk) (string, error) {
-	if ask.SessionID.Valid {
-		cwd, err := d.TerminalAgentCwd(ask.SessionID.Int64)
-		if err != nil {
-			return "", err
-		}
-		if cwd.Path != "" {
-			if st, err := os.Stat(cwd.Path); err == nil && st.IsDir() {
-				return cwd.Path, nil
-			}
-		}
-	}
-	wb, err := d.GetWorkbench(ask.WorkbenchID)
+// ReadFolder is where the reviewer reads: the bench folder the ask's document
+// lives in (doc_folder_id; NULL = the home folder, spec §4 item 9) — or the
+// filing session's working directory (its worktree) when the document is in
+// that session's own folder and the directory is recorded and still there.
+// The document's folder must be a directory: the reviewer never runs without
+// one. A Discuss thread reads the same folder (`ai query --read-folder-ask`).
+func ReadFolder(ctx context.Context, d *db.DB, ask *db.OwnerAsk) (string, error) {
+	docFolderID, docFolder, err := askDocFolder(ctx, d, ask)
 	if err != nil {
 		return "", err
 	}
-	if wb.FolderPath == "" {
+	if ask.SessionID.Valid {
+		cwd, err := sessionCwdIn(ctx, d, ask.SessionID.Int64, docFolderID)
+		if err != nil {
+			return "", err
+		}
+		if cwd != "" {
+			if st, err := os.Stat(cwd); err == nil && st.IsDir() {
+				return cwd, nil
+			}
+		}
+	}
+	if docFolder == "" {
 		return "", fmt.Errorf("workbench %d has no folder to read", ask.WorkbenchID)
 	}
-	if st, err := os.Stat(wb.FolderPath); err != nil || !st.IsDir() {
-		return "", fmt.Errorf("the workbench folder %s is not a readable directory", wb.FolderPath)
+	if st, err := os.Stat(docFolder); err != nil || !st.IsDir() {
+		return "", fmt.Errorf("the workbench folder %s is not a readable directory", docFolder)
 	}
-	return wb.FolderPath, nil
+	return docFolder, nil
+}
+
+// askDocFolder is the bench folder ask's doc_path is relative to: its
+// doc_folder_id row, else the workbench's home folder (id 0 and
+// projects.folder_path for a bench with no folder row).
+func askDocFolder(ctx context.Context, d *db.DB, ask *db.OwnerAsk) (id int64, path string, err error) {
+	if ask.DocFolderID.Valid {
+		f, err := d.WorkbenchFolderByID(ctx, ask.DocFolderID.Int64)
+		if err != nil {
+			return 0, "", err
+		}
+		return f.ID, f.FolderPath, nil
+	}
+	f, err := d.HomeFolder(ctx, ask.WorkbenchID)
+	if err == nil {
+		return f.ID, f.FolderPath, nil
+	}
+	if !errors.Is(err, db.ErrWorkbenchNotFound) {
+		return 0, "", err
+	}
+	wb, err := d.GetWorkbench(ask.WorkbenchID)
+	if err != nil {
+		return 0, "", err
+	}
+	return 0, wb.FolderPath, nil
+}
+
+// sessionCwdIn is session sessionID's recorded working directory when the
+// session was started in bench folder folderID; "" otherwise, or when the
+// session row is gone.
+func sessionCwdIn(ctx context.Context, d *db.DB, sessionID, folderID int64) (string, error) {
+	id, err := d.SessionFolderID(ctx, sessionID)
+	if errors.Is(err, db.ErrTerminalSessionNotFound) || errors.Is(err, db.ErrWorkbenchNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if id != folderID {
+		return "", nil
+	}
+	cwd, err := d.TerminalAgentCwd(sessionID)
+	if err != nil {
+		return "", err
+	}
+	return cwd.Path, nil
 }
 
 // oneLine is err's text on one line, clipped for the screen.

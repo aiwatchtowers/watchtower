@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -94,4 +96,54 @@ func TestProj14_LaneTicketEditedStillFindsTheOverview(t *testing.T) {
 	renamed := WithLaneIntent(in.Intent, []reviewai.IntentItem{{Text: "ABC-1 Login with a passkey", Source: reviewai.SourceLane}})
 	assert.Equal(t, reviewai.IntentHash(made, in.Notes), reviewai.IntentHash(renamed, in.Notes))
 	mustApply(t, reg, wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
+}
+
+// TestReviewSourceUsesTheSessionsFolder (spec §6.9): a hub session's round
+// reads the hub's repository — from its folder row, before its agent has
+// recorded a working directory, and from a subfolder of the hub after —
+// while a home session keeps reading the home folder.
+func TestReviewSourceUsesTheSessionsFolder(t *testing.T) {
+	ctx := context.Background()
+	fx, wb, homeSession, _ := repoSession(t)
+	p, err := fx.d.GetWorkbench(wb)
+	require.NoError(t, err)
+	hub, dir, _ := hubFolder(t, fx.d, wb)
+	session := folderSession(t, fx.d, wb, hub, dir, 0)
+
+	src, _, err := ResolveReviewSource(ctx, fx.d, p, session)
+	require.NoError(t, err)
+	assert.Equal(t, dir, src.Folder, "no cwd yet: the session's own folder, never home")
+	assert.False(t, src.FolderMissing)
+
+	sub := filepath.Join(dir, "pkg")
+	require.NoError(t, os.MkdirAll(sub, 0o755))
+	_, err = fx.d.Exec(`UPDATE terminal_sessions SET agent_cwd = ? WHERE id = ?`, sub, session)
+	require.NoError(t, err)
+	src, _, err = ResolveReviewSource(ctx, fx.d, p, session)
+	require.NoError(t, err)
+	assert.Equal(t, dir, src.Folder, "a subfolder of the hub reviews the hub")
+
+	src, _, err = ResolveReviewSource(ctx, fx.d, p, homeSession)
+	require.NoError(t, err)
+	assert.Equal(t, reviewFolder(t, fx.d, wb), src.Folder)
+}
+
+// TestReviewLockPathPerFolder (spec §6.9): the overview run lock is keyed
+// by the session's review folder, so two folders' runs never wait on each
+// other.
+func TestReviewLockPathPerFolder(t *testing.T) {
+	ctx := context.Background()
+	fx, wb, homeSession, _ := repoSession(t)
+	p, err := fx.d.GetWorkbench(wb)
+	require.NoError(t, err)
+	hub, dir, _ := hubFolder(t, fx.d, wb)
+	hubSession := folderSession(t, fx.d, wb, hub, dir, 0)
+
+	paths := map[string]bool{}
+	for _, s := range []int64{homeSession, hubSession} {
+		src, _, err := ResolveReviewSource(ctx, fx.d, p, s)
+		require.NoError(t, err)
+		paths[reviewai.LockPath("/ws", wb, src.Folder)] = true
+	}
+	assert.Len(t, paths, 2, "two folders, two lock paths")
 }

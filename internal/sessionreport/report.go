@@ -124,7 +124,11 @@ func Build(ctx context.Context, d *db.DB, workbenchID, sessionID int64, opts Opt
 	if err != nil {
 		return Report{}, err
 	}
-	states, err := homePRStates(ctx, d, workbenchID)
+	folder, err := folderOf(ctx, d, workbenchID, sessionID)
+	if err != nil {
+		return Report{}, err
+	}
+	states, err := folderPRStates(d, workbenchID, folder.id)
 	if err != nil {
 		return Report{}, err
 	}

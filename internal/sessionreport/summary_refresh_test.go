@@ -224,3 +224,28 @@ func TestRefreshedSummaries_RestoresTheBusyTimeout(t *testing.T) {
 	require.NoError(t, d.QueryRow("PRAGMA busy_timeout").Scan(&ms))
 	assert.Equal(t, int64(7000), ms)
 }
+
+// TestRefreshedSummaries_EachSessionInItsOwnFolder (spec §6.9, §6.10): git
+// reads each session's merge verdicts in its own folder's repository and
+// stores them under that folder: wt/open is merged in the hub, not at home.
+func TestRefreshedSummaries_EachSessionInItsOwnFolder(t *testing.T) {
+	d, id, _, _ := repoBoard(t)
+	hubDir := newFeatureRepo(t)
+	gitRun(t, hubDir, "checkout", "-q", "feature/x")
+	gitRun(t, hubDir, "merge", "-q", "--no-ff", "-m", "merge open", "wt/open")
+	gitRun(t, hubDir, "checkout", "-q", "main")
+	runSQL(t, d, `INSERT INTO workbench_folders (id, workbench_id, folder_path, position, added_by, name)
+		VALUES (99, ?, ?, 1, 'owner', 'hub')`, id, hubDir)
+	runSQL(t, d, `INSERT INTO terminal_sessions (id, project_id, kind, title, target_id, folder_path, claude_session_id,
+		workbench_folder_id, parent_session_id) VALUES (2, ?, 'claude', 'Hub', 100, ?, 'u2', 99, 1)`, id, hubDir)
+
+	rows, _, err := RefreshedSummaries(context.Background(), d, id, RefreshOptions{Now: fixedNow})
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	assert.Equal(t, 1, rows[0].Merged, "home: wt/m only")
+	assert.Equal(t, 2, rows[1].Merged, "hub: wt/m and wt/open")
+	assert.Equal(t, "open", states(t, d, id)["into:feature/x:wt/open"].State)
+	hub, err := d.PRStates(id, 99)
+	require.NoError(t, err)
+	assert.Equal(t, "merged", hub["into:feature/x:wt/open"].State)
+}
