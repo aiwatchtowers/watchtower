@@ -24,7 +24,7 @@ No production code changes with this spec. The mockups are design-only SwiftUI s
 | §3.1–§3.2 the Slack-only **Set up for my company** sheet | the wizard's **Slack** step (§2.5 here), on a page instead of a sheet (owner, ask #1490; supersedes Slack spec decision 13 for the setup). Its token form, its progress marks, `badToken`, `notAllowed` and `approval` states keep their texts. Its **Success** ("Copy connect code") moves to **Publish** (§2.10): the code is now the company code | parent D7: one setup for every vendor |
 | §3.3 **Add the link to the app** sheet | the wizard's **Publish** step with a fresh token (`publish-tokenExpired`, §2.10). The sheet goes | parent §2 step 8: Publish writes the link |
 | §3.4 the setup-record rows on Connections → Slack | kept. **Continue setup** and **Check again** open the wizard at the Slack step; **Add the link to the app** opens it at Publish | the record still exists (Slack spec T7); only the button target changes |
-| §3.5 `SlackAppSetupModel` | kept as the Slack step's engine (create, reuse, link write), driven by `CompanySetupWizardModel` (§9); it owns no sheet of its own any more | one wizard model owns the frame |
+| §3.5 `SlackAppSetupModel` | the Slack step's engine (create, reuse, link write), driven by `CompanySetupWizardModel` (§9); it owns no sheet of its own. **It does not exist yet** (the Slack screens spec is not implemented): the company plan builds it first, as task **C0** (Slack spec §3.5 without the sheet, over Slack plan B's T7 CLI); the Slack screens plan's task S3 then reuses it and adds only the setup-record rows | one wizard model owns the frame; the company plan does not wait for the Slack screens plan |
 | §4.1 the About page text | written by Publish: "Watchtower for <company> — connect: <company link>" and the company code (parent §2 step 8). The listener keeps serving `/slack/connect` for About pages written before | parent §2; old pages must not break |
 | §4.2 the connect field "Connect link or code" | also accepts a company link or code; one opens **Connect Acme?** (§3.1) | one field, never "wrong field" |
 | §4.3 the Slack connect sheets | kept for a `/slack/connect` link; a company link uses §3 here | parent §3 |
@@ -61,8 +61,9 @@ Every entry opens the same page; with a draft it opens at the draft's step.
 
 The wizard is a **page in the Connections detail area**, like Jira's drill-in (owner, ask #1490), not a sheet: the detail shows it in place of a service, with **‹ Connections** (quiet, top left) as the way back. Under it: title "Set up Watchtower for your company" and the intro "One pass for every service your company uses. Each step can be skipped; Watchtower keeps your progress, so you can leave this page and come back." Left: the **step rail** — **Services**, then one row per service ticked on the Services step (in the order Slack, Google, Atlassian, Linear, Microsoft 365), then Link deny list and Publish — each with a mark (done ✓, skipped –, not started ○) and a word (**Done**, **Reused**, **Skipped**); the current step is the selected row; under the rail a quiet **Change services** (from the second step on). Right: the step's title and content. Bottom row (right): **Skip this step** (quiet, vendor steps only), **Back**, and the step's one prominent action.
 
-- **Narrow** (under 520 pt): the rail folds into one line "Step 3 of 8 · Google" (`company-wizard-services-narrow`, `company-wizard-google-create-narrow`, `company-wizard-publish-done-narrow`).
+- **Narrow** (under 520 pt): the rail folds into one line "Step 3 of 8 · Google". One narrow frame per distinct step layout (§12): `services`, `slack-found` (the choices), `slack-create` (the token form), `google-create` (guide + drop zone), `atlassian-create` (guide + fields; Linear and Microsoft share it), `publish-done` (the values).
 - **Leaving the page** (‹ Connections, another service, another tab, quitting): the draft (`<workspace>/company/draft.json`, parent §2) is saved at the current step — every field typed so far, secrets included (0600), except the Slack configuration token, which is never stored. A check or create in flight keeps running on `AppState.companySetup`; its result lands in the draft. The Companies zone then shows "Setup in progress: … — **Continue setup**". Coming back opens at the draft's step with the line "Continuing the setup you started on Nov 17." and a quiet **Discard setup** (`company-wizard-resume`). **Discard setup** asks first (a system confirmation, not mocked): "Discard this setup? The draft and the secrets in it are deleted from this Mac. Apps you created stay in Slack, Google, Atlassian, Linear and Microsoft." — **Discard** (destructive) / **Keep**.
+- **An unreadable draft** (`draft.json` that cannot be decoded — a third state, never folded into "no draft"): the page opens on Services with the warning "Your unfinished setup could not be read — start again" / "Watchtower kept the file as draft.json.bad-<timestamp> next to your company setups, so nothing you typed is lost; Discard or Publish deletes it." and a quiet **Show file in Finder** (`company-wizard-draftUnreadable`). The file is renamed, never deleted, so typed secrets are not silently lost; the renamed file keeps 0600 and is deleted by **Discard setup** or a successful Publish, like the draft. The Companies zone shows "Setup in progress" only for a readable draft.
 - A rail row is clickable once its step was reached; the admin can go back to any earlier step. **Skip this step** marks a vendor step Skipped and moves on (the company has the service but sets it up later); a skipped step can be reopened from the rail.
 
 ### 2.3 Services: "What does your company use?" (first step)
@@ -120,20 +121,24 @@ Slack not used or skipped: Publish cannot write an About page; its text says so 
 | State | Shot | What shows | Buttons |
 |---|---|---|---|
 | Create new | `company-wizard-google-create` (+ `-narrow`) | numbered guide, each line with **Open** (a deep link): "Create a project"; "Turn on the Gmail API and the Google Calendar API"; "OAuth consent screen: user type Internal"; "Credentials → Create OAuth client → Desktop app, then download its JSON"; then the drop zone "Drop the client JSON here, or paste it" | **Continue** (disabled until a JSON is in) |
-| Checking (busy) | `company-wizard-google-checking` | the dropped file ("client_secret_….json · project acme-watchtower") + "Checking the client with Google…" | **Continue** disabled |
+| Checking (busy) | `company-wizard-google-checking` | the dropped file ("client_secret_….json · project acme-watchtower") + "Finish in your browser: sign in to Google with this client. Watchtower only checks the client id and secret; nothing is kept." | **Continue** disabled |
 | Rejected | `company-wizard-google-checkFailed` | "Google does not accept this client: invalid_client. Download the JSON again from Credentials." + **Try again** | **Continue** disabled |
 | Network error | (layout of `google-checkFailed`) | "Could not reach Google: the request timed out. Nothing was saved." + **Try again** | — |
 | Done | rail ✓ | the check also records the Workspace domain (parent §2 step 3) | — |
+
+**The Google check is the admin's own sign-in** (decision A25): a dry authorize URL proves the client id exists but never sends the secret, so a wrong secret would reach every colleague. The step therefore runs the admin's loopback sign-in with the dropped client and exchanges the code: a token back means id, secret and redirect work. The tokens are thrown away (revoked when Google allows it), not stored — the admin connects for real through **Connect this Mac** like any colleague, so no account exists before the bundle does.
 
 ### 2.7 Atlassian
 
 | State | Shot | What shows | Buttons |
 |---|---|---|---|
-| Create new | `company-wizard-atlassian-create` | guide: "Create an OAuth 2.0 integration"; "Permissions: add the Jira API and the Confluence API with Watchtower's scopes, and report:personal-data" (+ **Copy scopes**); "Authorization: add Watchtower's callback URLs" (+ **Copy callback URLs**); "Distribution: turn Sharing on and answer Yes to “Does your app store personal data?”"; "Add a second admin as an owner, so the app outlives one person" (D6); fields Client ID, Client secret | **Continue** |
+| Create new | `company-wizard-atlassian-create` (+ `-narrow`) | guide: "Create an OAuth 2.0 integration"; "Permissions: add the Jira API and the Confluence API with Watchtower's scopes, and report:personal-data" (+ **Copy scopes**); "Authorization: add Watchtower's callback URLs" (+ **Copy callback URLs**); "Distribution: turn Sharing on and answer Yes to “Does your app store personal data?”"; "Add a second admin as an owner, so the app outlives one person" (D6); fields Client ID, Client secret | **Check by signing in** |
 | Confirm (new and reused) | `company-wizard-atlassian-confirm` | "Confirm the app's settings" / "Atlassian gives Watchtower no way to read these. Check each one in the developer console, then tick it." Three checkboxes, each with **Open**: "Sharing is on (Distribution)", "“Does your app store personal data?” is Yes", "report:personal-data is among the permissions" | **Continue** (disabled until all three) |
+| Checking (busy) | `company-wizard-atlassian-signin` | "Finish in your browser: sign in to Atlassian with this app. Watchtower checks the client id, the secret and the callback URLs by your own sign-in; nothing is kept." | **Check by signing in** disabled |
+| Sign-in failed | `company-wizard-atlassian-signinFailed` | "Atlassian refused the sign-in: invalid_client. Check the client id and secret, and that Watchtower's callback URLs are in the app's Authorization settings." (a wrong callback shows Atlassian's own reason in place of `invalid_client`) | **Try again** |
 | Resumed draft | `company-wizard-resume` | the Create-new content under the resume line | — |
 
-Atlassian has no dry check for a client id and secret (no API without a user); a wrong pair shows at the first login of the chain (§3.2 "failed"), which the admin runs right after Publish.
+**The Atlassian check is the admin's own 3LO sign-in** (review, ask #1496): Atlassian has no dry check for a client id and secret, so the step runs the admin's sign-in with the entered pair and exchanges the code. The step completes only when a token comes back (then the confirm checklist follows); the tokens are thrown away, as for Google (decision A25). Until then **Publish** is disabled with the reason "Publish waits for the Atlassian check: sign in on the Atlassian step, or skip Atlassian." — skipping or unticking Atlassian removes the reason. A bad pair therefore never reaches Slack's About page. The Publish summary line reads "Atlassian · client 9f3a…c21 · acme.atlassian.net · Confluence on · checked by your sign-in".
 
 ### 2.8 Linear and Microsoft 365
 
@@ -144,7 +149,7 @@ Atlassian has no dry check for a client id and secret (no API without a user); a
 | Microsoft rejected | `company-wizard-microsoft-checkFailed` | "Microsoft does not accept this client in tenant 0000-acme: AADSTS700016. Check both ids on the app's Overview page." + **Try again** | **Continue** disabled |
 | Checking / network / Linear rejected | (layouts of `google-checking`, `google-checkFailed`) | "Checking the client with Microsoft…" / "…with Linear…"; "Could not reach <vendor>: <error>. Nothing was saved." | — |
 
-Both are checked by a dry authorize URL (parent §2.4 names Google and Microsoft; Linear gets the same check, decision A9).
+Both are checked by a dry authorize URL (parent §2.4 names Microsoft; Linear gets the same check, decision A9). That is enough for these two: both are public clients with PKCE and no secret, so the id, the tenant and the redirect are all the authorize step can get wrong, and it checks all three.
 
 ### 2.9 Link deny list
 
@@ -155,6 +160,7 @@ Both are checked by a dry authorize URL (parent §2.4 names Google and Microsoft
 | State | Shot | What shows | Buttons |
 |---|---|---|---|
 | Ready | `company-wizard-publish-ready` | "Company name" (prefilled, editable), "Colleagues see “Connect Acme?”. Taken from your Slack workspace; change it if people know the company by another name."; the summary, one line per supported service ("Slack · Watchtower (A0ACME) in acme", "Linear · skipped: colleagues use Watchtower's shared Linear app", the "not used" lines of §2.3, …); "Writes the connect link and code to the About page of Watchtower's app in Slack." | **Back**, **Publish** |
+| Ready, Atlassian not checked | (layout of `publish-ready`) | the reason line "Publish waits for the Atlassian check: sign in on the Atlassian step, or skip Atlassian." in place of the caption | **Publish** disabled |
 | Ready, token gone (resumed draft) | (layout of `publish-tokenExpired`) | "Paste a configuration token to write the link to the Slack page. It is used once and never stored." + the token field | **Publish** |
 | Busy | `company-wizard-publish-busy` | "Packing the company setup" ✓, "Writing the link to the Slack app's About page" … | **Publish** disabled |
 | Done | `company-wizard-publish-done` (+ `-narrow`) | green "Acme is set up" / "Colleagues open Watchtower's app in Slack, go to About and click the link. Without Slack, send them the code, or give IT the profile. You connect like any colleague."; rows **Connect link** (Copy), **Connect code** (Copy), **Configuration profile for IT** "Acme-Watchtower.mobileconfig" (**Save…**, a save panel); the quiet link **What IT can set** (§8) | **Done**, **Connect this Mac** (opens §3.1 for this bundle) |
@@ -364,6 +370,10 @@ Views (new): `Views/Company/CompanySetupPage.swift` (in the Connections detail, 
 | Path | Failure | Behaviour | Test |
 |---|---|---|---|
 | Wizard | the admin leaves the page mid-step (another service, tab, ‹ Connections) | draft saved at the step; a running check or create goes on and lands in the draft; the Companies zone shows "Setup in progress — Continue setup"; reopen lands on the step with the resume line | `CompanySetupWizardModelTests.testLeavingPageKeepsDraftAndResumesAtStep`, `testCheckInFlightLandsInDraft`, `CompanyConnectionsPresentationTests.testSetupInProgressRow` |
+| Wizard | Atlassian sign-in fails (`invalid_client`, wrong callback) | error with **Try again** on the step; the step stays open; Publish disabled with its reason | `testAtlassianStepNeedsSignInToken`, `testPublishDisabledUntilAtlassianChecked` (exchange fake returning `invalid_client`) |
+| Wizard | the admin leaves the page during the Atlassian or Google sign-in | the sign-in keeps waiting on `AppState.companySetup`; a token that comes back marks the step checked in the draft (the token itself is thrown away); a sign-in that never returns leaves the step at **Check by signing in** on return | `testLeavingDuringSignInStoresNothing` |
+| Wizard | Google secret wrong | the sign-in's code exchange fails: the rejected state | `testGoogleCheckIsSignIn` |
+| Wizard | `draft.json` unreadable | page opens on Services with the warning and **Show file in Finder**; the file is renamed `draft.json.bad-<ts>`, never deleted; Discard or Publish deletes it | `testUnreadableDraftIsRenamedNotDeleted`, `testUnreadableDraftIsNotNoDraft`, Go `TestCompanyDraft_CorruptRenamed` |
 | Wizard | Services: nothing ticked | **Continue** disabled | `testServicesNeedOneTicked` |
 | Wizard | Services: discovery found an app | that service pre-ticked with "Found on this Mac" | `testDiscoveredServicesArePreTicked` |
 | Wizard | Services: unticking a service whose step holds entries | the in-place warning; **Drop** removes its entries from the draft, **Keep** changes nothing; an empty step drops silently | `testUntickFilledStepAsksFirst`, `testUntickEmptyStepDropsSilently` |
@@ -397,7 +407,8 @@ Views (new): `Views/Company/CompanySetupPage.swift` (in the Connections detail, 
 
 | Data | Writers | Rule | Screen |
 |---|---|---|---|
-| `company/draft.json` (incl. the ticked `services`) | only the wizard (through the CLI, secrets on stdin) | one wizard run at a time (`AppState.companySetup`); the CLI takes the file's flock | the wizard re-reads it on open |
+| `company/draft.json` (incl. the ticked `services` and the Slack `app_id` reference) | only the wizard (through the CLI, secrets on stdin) | one wizard run at a time (`AppState.companySetup`); the CLI takes the file's flock | the wizard re-reads it on open |
+| The Slack setup record (Slack spec §3.4, T7: app id, client id, stage, link written) | only `slack app create` / `link` / reuse through `SlackAppSetupModel` | **the record is the one source of truth for the Slack app**; the draft holds only a reference (`slack.app_id`), never a copy of its ids or stage; on resume the Slack step reads the record by that id (a missing record → the step starts at **Look** again) | the Slack step re-reads the record each time it opens (tests `CompanySetupWizardModelTests.testSlackStepReadsSetupRecordNotDraft`, `testMissingRecordRestartsSlackStep`) |
 | `company/<slug>.json` | link confirm, code paste, publish, **Replace** (parent §8) | per-file flock, last confirmed write wins | the Companies zone re-reads on appear and when a flow ends |
 | Account rows, `company_slug`, `auth_kind` | Go only (parent §8) | — | the account view models re-read on appear (existing) |
 | A running chain | link, code, MDM **Connect all**, **Connect the rest**, **Re-login** | one at a time (`CompanyConnectFlowModel`, sharing the guard with `SlackAuthFlowState`) | the running sheet stays |
@@ -405,6 +416,8 @@ Views (new): `Views/Company/CompanySetupPage.swift` (in the Connections detail, 
 ## 12. Mockups
 
 Design-only SwiftUI scenes in `DesignShotCatalog` (`CompanySetupShotFixtures`, `WatchtowerDesktop/Tests/DesignShots/DesignShotFixtures+CompanySetup.swift`, `+CompanySetupWizard.swift`, `+CompanySetupBlocks.swift`), built from the design kit (`SettingsSection`, `SettingRow`, `Chip`, `OutlineTag`, `.card()`, `.kitRow`, `.kit*` buttons, `ManagedByOrganizationBadge`, `Tone`) and, on the overview, the real `ConnectionCard` and `ConnectionAttentionBanner`. Each frame is data drawn by one renderer. Every string comes from `CompanySetupMockCopy` (`Tests/DesignShots/CompanySetupMockCopy.swift`), pinned by `CompanySetupMockCopyTests` — including that the parent's verbatim texts are verbatim, that `blockedTitle` equals the shipped `SourceBlockedNotice.title`, that every overview frame and wizard scene has a shot, and that every screen has a narrow frame. Rendered by `DesignShotsTests.testCompanySetupShotsRender` (`make desktop-shots` renders them with the rest), light and dark, committed under `docs/design/mockups/company-setup/` as `<shot>-light.png` / `<shot>-dark.png`. Sample data only (`Acme`, `acme`, `example.com`, made-up ids).
+
+Narrow frames — exactly this set, asserted by `CompanySetupMockCopyTests` (`CompanySetupShotFixtures.narrowShots`): one per screen family (connect confirmation, Companies overview, Google detail, Jira detail, own Google project page, API-token sheet) and one per distinct wizard step layout (`services`, `slack-found`, `slack-create`, `google-create`, `atlassian-create`, `publish-done`). Every other frame shares one of these layouts, so its narrow form adds nothing; the remaining frames of a family differ in content, not in layout.
 
 Light frames linked; each has a `-dark` twin. The vendor-step shots show a company with all five services ticked, so their rail lists Services, the five services, Link deny list and Publish.
 
@@ -416,10 +429,13 @@ Light frames linked; each has a `-dark` twin. The vendor-step shots show a compa
 | [`company-wizard-services-narrow`](../../design/mockups/company-setup/company-wizard-services-narrow-light.png) | the same at 420 pt |
 | [`company-wizard-services-found`](../../design/mockups/company-setup/company-wizard-services-found-light.png) | Slack and Atlassian pre-ticked from discovery |
 | [`company-wizard-services-change`](../../design/mockups/company-setup/company-wizard-services-change-light.png) | **Change services**: unticking a filled step asks first |
+| [`company-wizard-draftUnreadable`](../../design/mockups/company-setup/company-wizard-draftUnreadable-light.png) | error: the draft cannot be read, kept as `.bad-<ts>` |
 | [`company-wizard-looking`](../../design/mockups/company-setup/company-wizard-looking-light.png) | loading: looking for known apps |
 | [`company-wizard-slack-notFound`](../../design/mockups/company-setup/company-wizard-slack-notFound-light.png) | empty: first open, nothing found |
 | [`company-wizard-slack-found`](../../design/mockups/company-setup/company-wizard-slack-found-light.png) | found one: **Use Watchtower** / **Create new** |
+| [`company-wizard-slack-found-narrow`](../../design/mockups/company-setup/company-wizard-slack-found-narrow-light.png) | the choices at 420 pt |
 | [`company-wizard-slack-create`](../../design/mockups/company-setup/company-wizard-slack-create-light.png) | configuration token |
+| [`company-wizard-slack-create-narrow`](../../design/mockups/company-setup/company-wizard-slack-create-narrow-light.png) | the token form at 420 pt |
 | [`company-wizard-slack-existing`](../../design/mockups/company-setup/company-wizard-slack-existing-light.png) | **We already have one**, wrong link |
 | [`company-wizard-slack-progress`](../../design/mockups/company-setup/company-wizard-slack-progress-light.png) | busy: reading the reused app |
 | [`company-wizard-slack-manifestDiff`](../../design/mockups/company-setup/company-wizard-slack-manifestDiff-light.png) | reused app differs, update shown first |
@@ -431,9 +447,12 @@ Light frames linked; each has a `-dark` twin. The vendor-step shots show a compa
 | [`company-wizard-google-reuseSecret`](../../design/mockups/company-setup/company-wizard-google-reuseSecret-light.png) | reuse: secret asked |
 | [`company-wizard-google-create`](../../design/mockups/company-setup/company-wizard-google-create-light.png) | create new: guide + drop zone |
 | [`company-wizard-google-create-narrow`](../../design/mockups/company-setup/company-wizard-google-create-narrow-light.png) | the same at 420 pt |
-| [`company-wizard-google-checking`](../../design/mockups/company-setup/company-wizard-google-checking-light.png) | busy: dry check |
+| [`company-wizard-google-checking`](../../design/mockups/company-setup/company-wizard-google-checking-light.png) | busy: the admin's own sign-in |
 | [`company-wizard-google-checkFailed`](../../design/mockups/company-setup/company-wizard-google-checkFailed-light.png) | error, **Try again** |
 | [`company-wizard-atlassian-create`](../../design/mockups/company-setup/company-wizard-atlassian-create-light.png) | create new |
+| [`company-wizard-atlassian-create-narrow`](../../design/mockups/company-setup/company-wizard-atlassian-create-narrow-light.png) | guide + fields at 420 pt (Linear, Microsoft share it) |
+| [`company-wizard-atlassian-signin`](../../design/mockups/company-setup/company-wizard-atlassian-signin-light.png) | busy: the admin's own sign-in |
+| [`company-wizard-atlassian-signinFailed`](../../design/mockups/company-setup/company-wizard-atlassian-signinFailed-light.png) | error: `invalid_client`, **Try again** |
 | [`company-wizard-atlassian-confirm`](../../design/mockups/company-setup/company-wizard-atlassian-confirm-light.png) | confirm checklist, two of three ticked |
 | [`company-wizard-resume`](../../design/mockups/company-setup/company-wizard-resume-light.png) | resumed draft (Google skipped) |
 | [`company-wizard-linear-create`](../../design/mockups/company-setup/company-wizard-linear-create-light.png) | Linear |
@@ -530,9 +549,13 @@ Screen tasks (C) follow the parent's tasks they need.
 
 | Promise | Task | Needs | Test |
 |---|---|---|---|
+| The Slack step's engine exists before the wizard needs it | **C0** `SlackAppSetupModel` (Slack screens spec §3.5, no sheet) — first task of the company plan; Slack screens S3 reuses it | Slack plan B T7 | `SlackAppSetupModelTests` (Slack spec §3.5's list) |
+| A bad Atlassian or Google client never reaches Publish: the step checks it by the admin's own sign-in, Publish waits for it | C1 | T3, T7 | `testAtlassianStepNeedsSignInToken`, `testPublishDisabledUntilAtlassianChecked`, `testGoogleCheckIsSignIn`, `testCheckTokensAreNotStored` |
+| An unreadable draft is kept, not lost, and the wizard starts again | C1 | T3 | `testUnreadableDraftIsRenamedNotDeleted`, `testUnreadableDraftIsNotNoDraft` |
+| The Slack app has one source of truth (the setup record); the draft only references it | C0, C1 | T7 | `testSlackStepReadsSetupRecordNotDraft` |
 | The wizard is a page in Connections; leaving it keeps the draft and the Companies zone offers **Continue setup** | C1 `CompanySetupWizardModel` + `CompanySetupPage` | T3 | `testLeavingPageKeepsDraftAndResumesAtStep`, `testSetupInProgressRow` |
 | The first step picks the services; only ticked ones become steps; discovery pre-ticks; other tools point to Quick Connections | C1 | T3 | `testServicesNeedOneTicked`, `testDiscoveredServicesArePreTicked`, `testRailListsOnlyTickedServices`, `testUntickFilledStepAsksFirst`, `CompanyVendorGuideTests.testMCPNoteOpensQuickConnections` |
-| The wizard with a step per ticked vendor, skippable, resumable, with every state above | C1 `CompanySetupWizardModel` + `CompanyVendorGuide` | T3, T5 | `CompanySetupWizardModelTests`, `CompanyVendorGuideTests` |
+| The wizard with a step per ticked vendor, skippable, resumable, with every state above | C1 `CompanySetupWizardModel` + `CompanyVendorGuide` | C0, T3, T5 | `CompanySetupWizardModelTests`, `CompanyVendorGuideTests` |
 | Existing apps first, never a second app (D19) | C1 | T3, T5 | `testFoundAppIsDefault`, `testResumeAfterCreateOffersReuse`, `testNotCollaboratorKeepsStepOpen`, parent discovery tests |
 | Publish shows link, code, profile and the IT guide; token expiry keeps the setup | C1 | T5, T6, T14 | `testPublishDoneOffersLinkCodeProfile`, `testPublishTokenExpiredKeepsSetup` |
 | One press connects every ticked vendor; cancelled vendors wait in Connections | C2 `CompanyConnectFlowModel` + the sheet | T2 | `CompanyConnectFlowModelTests` |
@@ -545,6 +568,7 @@ Screen tasks (C) follow the parent's tasks they need.
 | The two banners, not attention items | C3 | T10 | `testSharedGoogleBanner`, `testSharedAtlassianBanner`, `testBannersAreNotAttention` |
 | The IT guide link everywhere from one constant (D21) | C6 `ManagedPolicyHelp` + Privacy rows + lock links | T6, T14 | `ManagedPolicyHelpTests`, `OrganizationPolicyPresentationTests` |
 | Every UI text in a model with a test (parent T3) | C1–C6 | — | the model tests above pin every string of §2–§8 |
+| Each screen family has a narrow frame, and each distinct wizard step layout | C1–C6 | — | `CompanySetupMockCopyTests.testEveryFrameHasAShotAndNamesAreUnique` (the exact set) |
 | Each new screen looked at before merge | C1–C6 | — | the implementation re-renders the same shot names from the real views (`DesignShotsTests.testCompanySetupShotsRender`) |
 | The guide says all of this | C7 docs: `docs/guide/` connections pages (with parent T12), `docs/features/connections-tab.md`, `mdm-policy.md` | C1–C6 | `go test ./docs/guide` |
 
@@ -554,6 +578,9 @@ Screen tasks (C) follow the parent's tasks they need.
 
 | # | Decision | Source |
 |---|---|---|
+| S21 | The Atlassian step is checked by the admin's own 3LO sign-in; Publish is disabled with a named reason until it succeeds or Atlassian is skipped | ask #1496 (spec review round 1) |
+| S22 | An unreadable draft is kept as `draft.json.bad-<ts>`, not deleted; the wizard starts again on Services | ask #1496 |
+| S23 | The Slack setup record owns the Slack app; the draft keeps only its `app_id` | ask #1496 |
 | S1 | One **Set up for my company** for every vendor; the Slack-only setup becomes its Slack step | parent D7 (ask #1440) |
 | S2 | Each step first looks for a known app; found → "Use <app>" default + **Create new**; none → **Create new** default / **We already have one** + "Not sure?" | parent D19 (ask #1473) |
 | S3 | Reused Slack app, not a collaborator: the error, the step stays open, nothing created | parent §2, D19 (ask #1473) |
@@ -601,6 +628,9 @@ Screen tasks (C) follow the parent's tasks they need.
 | A21 | Changed ids in the replace warning are shortened to first 4 + last 3 characters |
 | A23 | The per-step "Skipped: …" notes are gone; what an unused or skipped service means for colleagues is said once, in the Publish summary |
 | A24 | The services' order and their one-line descriptions; the drop warning appears in place on the Services step, **Keep** prominent |
+| A25 | Google is checked by the admin's own sign-in too (a dry authorize never tests the secret); Microsoft and Linear keep the dry authorize (public clients, no secret). The check's tokens are thrown away, not stored: the admin connects for real through **Connect this Mac** |
+| A26 | The company plan builds `SlackAppSetupModel` first (C0) instead of waiting for the Slack screens plan |
+| A27 | An unreadable draft is renamed `draft.json.bad-<ts>` (0600) and shown with **Show file in Finder**; Discard or Publish deletes it |
 
 ## 15. Needs the owner
 

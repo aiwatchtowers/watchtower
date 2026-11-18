@@ -65,6 +65,10 @@ enum CompanySetupMockCopy {
         + "An app you created stays in Atlassian."
     static let dropService = "Drop Atlassian"
     static let keepService = "Keep"
+    static let draftUnreadableTitle = "Your unfinished setup could not be read — start again"
+    static let draftUnreadableBody = "Watchtower kept the file as draft.json.bad-20261118-0412 next to your company "
+        + "setups, so nothing you typed is lost; Discard or Publish deletes it."
+    static let showInFinder = "Show file in Finder"
     static let resumeLine = "Continuing the setup you started on Nov 17."
     static let discardSetup = "Discard setup"
     static let discardConfirm = "Discard this setup? The draft and the secrets in it are deleted from this Mac. "
@@ -140,7 +144,8 @@ enum CompanySetupMockCopy {
     ]
     static let dropJSON = "Drop the client JSON here, or paste it"
     static let droppedJSON = "client_secret_1234-abcd.json · project acme-watchtower"
-    static let checkingGoogle = "Checking the client with Google…"
+    static let checkingGoogle = "Finish in your browser: sign in to Google with this client. Watchtower only checks "
+        + "the client id and secret; nothing is kept."
     static let googleRejected = "Google does not accept this client: invalid_client. Download the JSON again from Credentials."
     static let googleNetwork = "Could not reach Google: the request timed out. Nothing was saved."
 
@@ -154,6 +159,13 @@ enum CompanySetupMockCopy {
         "Add a second admin as an owner, so the app outlives one person"
     ]
     static let copyScopes = "Copy scopes"
+    static let atlassianSigninWait = "Finish in your browser: sign in to Atlassian with this app. Watchtower checks "
+        + "the client id, the secret and the callback URLs by your own sign-in; nothing is kept."
+    static let atlassianSigninFailed = "Atlassian refused the sign-in: invalid_client. Check the client id and secret, "
+        + "and that Watchtower's callback URLs are in the app's Authorization settings."
+    static let checkBySignin = "Check by signing in"
+    static let publishWaitsAtlassian = "Publish waits for the Atlassian check: sign in on the Atlassian step, or skip "
+        + "Atlassian."
     static let copyCallbacks = "Copy callback URLs"
     static let clientID = "Client ID"
     static let confirmTitle = "Confirm the app's settings"
@@ -203,7 +215,7 @@ enum CompanySetupMockCopy {
     static let publishSummary = [
         "Slack · Watchtower (A0ACME) in acme",
         "Google · acme-watchtower · example.com",
-        "Atlassian · client 9f3a…c21 · acme.atlassian.net · Confluence on",
+        "Atlassian · client 9f3a…c21 · acme.atlassian.net · Confluence on · checked by your sign-in",
         "Linear · skipped: colleagues use Watchtower's shared Linear app",
         "Microsoft 365 · client 4b1e…77a · tenant 0000-acme",
         "Link deny list · 2 hosts"

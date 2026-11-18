@@ -206,6 +206,12 @@ enum CompanyWizardScenes {
             WizardScene(services: "services-found", ticked: ["Slack", "Atlassian"], [
                 .caption(Copy.servicesBody), serviceChecks(found: [0, 2], ticked: [0, 2])
             ] + mcpNote + [servicesFooter(disabled: false)]),
+            WizardScene(services: "draftUnreadable", ticked: [], [
+                .notice(MockNotice(icon: "exclamationmark.triangle.fill", tone: Tone.warning,
+                                   title: Copy.draftUnreadableTitle, body: Copy.draftUnreadableBody)),
+                .buttons(leading: [MockButton(title: Copy.showInFinder, kind: .quiet)], trailing: []),
+                .caption(Copy.servicesBody), serviceChecks(found: [], ticked: [])
+            ] + mcpNote + [servicesFooter(disabled: true)]),
             WizardScene(services: "services-change", ticked: all, done: [.reused, .done, .done], [
                 .caption(Copy.servicesBody),
                 serviceChecks(found: [0], ticked: [0, 1, 3, 4]),
@@ -287,7 +293,14 @@ enum CompanyWizardScenes {
     private static var laterScenes: [WizardScene] {
         let atlassianRail: [RailState] = [.reused, .done, .current, .todo, .todo, .todo, .todo]
         return [
-            WizardScene("atlassian-create", step: 2, rail: atlassianRail, [atlassianGuide, atlassianFields, footer()]),
+            WizardScene("atlassian-create", step: 2, rail: atlassianRail, [atlassianGuide, atlassianFields,
+                                                                           footer(Copy.checkBySignin)]),
+            WizardScene("atlassian-signin", step: 2, rail: atlassianRail, [
+                atlassianFields, .busy(Copy.atlassianSigninWait), footer(Copy.checkBySignin, disabled: true)
+            ]),
+            WizardScene("atlassian-signinFailed", step: 2, rail: atlassianRail, [
+                atlassianFields, .problem(Copy.atlassianSigninFailed, nil), footer(Copy.tryAgain)
+            ]),
             WizardScene("atlassian-confirm", step: 2, rail: atlassianRail, [
                 .body(Copy.confirmTitle),
                 .caption(Copy.confirmBody),

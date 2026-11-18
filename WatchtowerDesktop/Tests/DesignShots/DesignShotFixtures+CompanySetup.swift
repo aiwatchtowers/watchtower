@@ -17,6 +17,18 @@ enum CompanySetupShotFixtures {
         case companies, mdm, relogin, empty, loading, readFailed, codePaste, portBusy, setupInProgress
     }
 
+    /// One narrow wizard frame per distinct step layout: the services checklist,
+    /// the found/not-found choices, the Slack token form, a guide with a drop zone,
+    /// a guide with fields (Atlassian, Linear, Microsoft share it), and Publish's
+    /// values. Every other wizard step reuses one of these layouts.
+    static let narrowWizardSteps = ["services", "slack-found", "slack-create", "google-create", "atlassian-create", "publish-done"]
+
+    /// Every screen family with its narrow frame (the exact set the spec lists).
+    static let narrowShots = narrowWizardSteps.map { "company-wizard-\($0)-narrow" } + [
+        "company-connect-confirm-narrow", "company-overview-companies-narrow", "company-google-detail-narrow",
+        "company-jira-detail-narrow", "company-ownGoogle-empty-narrow", "company-token-empty-narrow"
+    ]
+
     static var shots: [DesignShot] {
         wizardShots + connectShots + pageShots + overviewShots + paneShots + sheetShots + policyShots
     }
@@ -28,7 +40,7 @@ enum CompanySetupShotFixtures {
     private static var wizardShots: [DesignShot] {
         let scenes = CompanyWizardScenes.scenes
         var shots = scenes.map { scene in shot("wizard-\(scene.name)", 720) { CompanyWizardMock(scene: scene) } }
-        for name in ["services", "google-create", "publish-done"] {
+        for name in narrowWizardSteps {
             if let scene = scenes.first(where: { $0.name == name }) {
                 shots.append(shot("wizard-\(name)-narrow", 420) { CompanyWizardMock(scene: scene, narrow: true) })
             }

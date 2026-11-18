@@ -29,6 +29,8 @@ final class CompanySetupMockCopyTests: XCTestCase {
         }
         XCTAssertTrue(Copy.notCollaborator.contains("Ask the app's owner to add you as a collaborator"))
         XCTAssertEqual(Copy.confirmChecks.count, 3)
+        XCTAssertTrue(Copy.publishSummary[2].hasSuffix("checked by your sign-in"))
+        XCTAssertTrue(Copy.draftUnreadableTitle.hasSuffix("start again"))
     }
 
     func testFailureCopySaysWhatIsKept() {
@@ -67,13 +69,12 @@ final class CompanySetupMockCopyTests: XCTestCase {
         for scene in CompanyWizardScenes.scenes {
             XCTAssertTrue(names.contains("company-wizard-\(scene.name)"))
         }
-        // The owner's rule: every screen has a narrow frame.
-        for scene in ["services", "services-found", "services-change"] {
+        for scene in ["services", "services-found", "services-change", "draftUnreadable", "atlassian-signin",
+                      "atlassian-signinFailed"] {
             XCTAssertTrue(names.contains("company-wizard-\(scene)"), scene)
         }
-        for screen in ["wizard-services", "wizard-google-create", "connect-confirm", "overview-companies", "google-detail", "jira-detail",
-                       "ownGoogle-empty", "token-empty"] {
-            XCTAssertTrue(names.contains("company-\(screen)-narrow"), screen)
-        }
+        // Narrow frames: exactly the set the spec lists (§12) — one per screen
+        // family, and one per distinct wizard step layout.
+        XCTAssertEqual(Set(names.filter { $0.hasSuffix("-narrow") }), Set(CompanySetupShotFixtures.narrowShots))
     }
 }
