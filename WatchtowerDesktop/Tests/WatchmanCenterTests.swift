@@ -206,4 +206,14 @@ final class WatchmanCenterTests: XCTestCase {
         XCTAssertEqual(runner.invocations.count, 2)
         XCTAssertTrue(runner.invocations.allSatisfy { $0 == ["watchman", "status", "--json"] })
     }
+
+    func testPollsWhileRelabellingAndStopsWhenIdle() async {
+        let runner = ScriptedWatchmanRunner(status: Fixtures.relabelling)
+        let center = WatchmanCenter(runner: runner)
+        await center.load()
+        XCTAssertTrue(center.needsPolling)
+        runner.setStatus(Fixtures.results)
+        await center.load()
+        XCTAssertFalse(center.needsPolling)
+    }
 }

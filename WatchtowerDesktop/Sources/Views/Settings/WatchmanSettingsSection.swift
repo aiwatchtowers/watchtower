@@ -176,6 +176,7 @@ struct WatchmanSettingsContent: View {
                 table(lastDone).opacity(isRunning ? 0.6 : 1)
                 note(Copy.barNote)
             }
+            // Shown only once learning is done: the backtest is unreachable before, and the learning row shows progress.
             if row.isRelabelling { relabellingLine(row.relabelLeft) }
             if !row.analyticsOn { note(Copy.analyticsOffNote(name: row.name)) }
             if let notice = notices[row.workbench] {

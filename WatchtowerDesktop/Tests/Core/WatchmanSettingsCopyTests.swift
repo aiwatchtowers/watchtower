@@ -34,7 +34,8 @@ final class WatchmanSettingsCopyTests: XCTestCase {
     func testBarNoteNamesTheBars() {
         XCTAssertEqual(Copy.barNote, "Strong: 5 % or less of its decisions bad (ones you would have had to undo) "
             + "and none bad while sure; a different but reasonable decision does not count against it. "
-            + "Below that Watchman marks every night decision unsure. Under 30 decisions: not measured.")
+            + "Below that Watchman marks every night decision unsure. "
+            + "Under 30 decisions, or fewer than 20 left after the ones handed to you: not measured.")
     }
 
     func testEstimateAndLearningLines() throws {
