@@ -246,25 +246,37 @@ func TestDBAccounts_LiveOnlySlackRowKeepsTheCap(t *testing.T) {
 	}
 }
 
-// An unreadable probe row costs only that row: the accounts still read, and
-// the other provider's ok still makes the Live row.
-func TestDBAccounts_LiveRowSurvivesAnUnreadableProbeRow(t *testing.T) {
+// An unreadable probe row fails the accounts read (skipping it could drop a
+// newer failed check, SLACKMODE-01); the heartbeat then keeps the last
+// accounts it read.
+func TestDBAccounts_UnreadableProbeRowKeepsTheLastAccounts(t *testing.T) {
 	d := db.OpenTestDB(t)
-	if _, err := d.Exec(`INSERT INTO slack_live_status (team_id, provider, status, error_class, connector_id, checked_at)
-VALUES ('', 'codex', 'ok', '', '', 'yesterday')`); err != nil {
-		t.Fatal(err)
-	}
-	got, err := DBAccounts(d)(context.Background())
-	if err != nil || len(got) != 0 {
-		t.Fatalf("only an unreadable row: accounts = %+v %v", got, err)
-	}
 	if err := d.UpsertSlackLiveStatus(db.SlackLiveStatus{
 		TeamID: "T1", Provider: "claude", Status: "ok", CheckedAt: time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	got, err = DBAccounts(d)(context.Background())
-	if err != nil || !slices.Equal(got, []wire.HeartbeatAccount{{Kind: "slack", Label: "Slack", Status: "live"}}) {
-		t.Fatalf("accounts = %+v %v", got, err)
+	src := HeartbeatSource(heartbeatFacts(func() time.Time { return time.Unix(1_800_000_100, 0) }, DBAccounts(d)))
+	live := []wire.HeartbeatAccount{{Kind: "slack", Label: "Slack", Status: "live"}}
+	accountsOf := func() []wire.HeartbeatAccount {
+		var hb wire.Heartbeat
+		if err := json.Unmarshal(onlyItem(t, src).Payload, &hb); err != nil {
+			t.Fatal(err)
+		}
+		return hb.Accounts
+	}
+	if got := accountsOf(); !slices.Equal(got, live) {
+		t.Fatalf("first read = %+v", got)
+	}
+
+	if _, err := d.Exec(`INSERT INTO slack_live_status (team_id, provider, status, error_class, connector_id, checked_at)
+VALUES ('', 'claude', 'not_connected', '', '', 'yesterday')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DBAccounts(d)(context.Background()); err == nil {
+		t.Fatal("an unreadable checked_at must fail the read")
+	}
+	if got := accountsOf(); !slices.Equal(got, live) {
+		t.Fatalf("after a failed read = %+v, want the last accounts", got)
 	}
 }

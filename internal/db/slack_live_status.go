@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 )
 
@@ -46,8 +45,8 @@ func (db *DB) ListSlackLiveStatus() ([]SlackLiveStatus, error) {
 }
 
 // ListSlackLiveStatusContext is ListSlackLiveStatus bound to ctx. A row whose
-// checked_at does not parse is skipped and logged: one bad row never fails
-// the read (the hub heartbeat reads it with every account list).
+// checked_at does not parse fails the read: skipping it could drop a newer
+// failed check and let an older ok turn Live back on (SLACKMODE-01).
 func (db *DB) ListSlackLiveStatusContext(ctx context.Context) ([]SlackLiveStatus, error) {
 	rows, err := db.QueryContext(ctx, `SELECT team_id, provider, status, error_class, connector_id, checked_at
 FROM slack_live_status ORDER BY checked_at DESC, team_id, provider`)
@@ -64,9 +63,7 @@ FROM slack_live_status ORDER BY checked_at DESC, team_id, provider`)
 		}
 		t, err := time.Parse(slackLiveTimeLayout, at)
 		if err != nil {
-			log.Printf("slack live status: skipping the %s row of team %q: unreadable checked_at %q",
-				s.Provider, s.TeamID, at)
-			continue
+			return nil, fmt.Errorf("parse slack live checked_at %q: %w", at, err)
 		}
 		s.CheckedAt = t
 		out = append(out, s)
