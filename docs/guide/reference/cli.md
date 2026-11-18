@@ -101,7 +101,7 @@ Commands for a [headless host](../features/headless-host.md): a Linux box or a M
 | `watchtower hub status` | The hub's state and reason, its host kind and mode, and the number of phones |
 | `watchtower hub pair` | Link a phone from this terminal: a QR code, a link, then **Confirm code 1234 on your phone? [y/N]**. Scripts use `--json --stream` |
 | `watchtower hub phones` | Linked phones with their device ids and grants |
-| `watchtower hub diagnostics [--days N]` | How long the hub took to apply phone actions and save what they changed, p50 and p90 per step and transport over the last 1–7 days (7 by default), and how many alerts were dropped because too many were waiting. Timings only, kept on this machine; works without a running hub |
+| `watchtower hub diagnostics [--days N]` | How long the hub took to apply phone actions and save what they changed, p50 and p90 per step and transport (and per kind of action) over the last 1–7 days (7 by default), and how many alerts were dropped because too many were waiting. Timings only, kept on this machine; works without a running hub |
 | `watchtower hub allow <device> typing\|permissions\|start_sessions` | Let a phone type into sessions, answer permission prompts or start sessions; `--revoke` takes it back |
 | `watchtower hub unlink <device>` | Unlink a phone |
 | `watchtower hub name <name>` | The name phones show for this host (the hostname by default) |
@@ -116,6 +116,9 @@ Commands for a [headless host](../features/headless-host.md): a Linux box or a M
 | Command | What it does |
 |---|---|
 | `watchtower ai models` | Models per provider and tier |
+| `watchtower ai background status [--json]` | Whether [background AI](../concepts/features-on-and-off.md#paused-is-not-off-background-ai) may run and who decided: you, nobody yet, or your organization (`effective`, `reason`, `answer`, `policy`) |
+| `watchtower ai background allow [--yes]` | Let Watchtower run AI on its own. On a terminal it shows what runs and asks **Allow background AI? [y/N]**; without a terminal it needs `--yes`. Refused when your organization turned background AI off. Wakes the running daemon |
+| `watchtower ai background pause` | Pause it; sync and everything you start yourself keep running |
 | `watchtower ai which --provider claude\|codex --json` | The claude or codex executable Watchtower would run (`provider`, `path`, `found`); the Desktop app asks it |
 | `watchtower usage plan` | Claude plan limits (5-hour, weekly) |
 | `watchtower usage plans --json [--now] [--provider all\|claude\|codex]` | Separate subscription snapshots; `--now` refreshes selected sources, with partial results on failure |
@@ -123,6 +126,8 @@ Commands for a [headless host](../features/headless-host.md): a Linux box or a M
 | `watchtower prompts`, `tune` | Prompt templates and feedback-based tuning |
 | `--provider claude\|codex\|ollama` | Per-command provider override |
 
-`terminal`, `dictate` and `chat` are helpers the Desktop app calls; `ai` is too, apart from `ai models`.
+`terminal`, `dictate` and `chat` are helpers the Desktop app calls; `ai` is too, apart from `ai models` and `ai background`.
+
+A daemon started without the app (a [headless host](../features/headless-host.md) included) keeps background AI paused until you run `watchtower ai background allow`; `watchtower status` prints a **Background AI:** line. `config set ai.background_runs` is refused: use `ai background`.
 
 For `usage plans`, `--provider` selects subscriptions, independently of the AI backend. Read-only calls return saved data without creating or migrating a database. Refresh exits 3 when **Subscription plan limits** is off; source/read failures exit 1 with partial JSON, and SIGINT/SIGTERM use 130/143 when a partial response can be written.

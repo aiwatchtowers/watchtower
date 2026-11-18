@@ -22,6 +22,9 @@ package final class AIModelCatalog {
         package var error: String?
         /// The transport's capability row; nil from a CLI older than A2.
         package var capabilities: ProviderCapabilities?
+        /// The owner's own plan this provider's runs draw on; nil for one
+        /// with none (a model server) or from an older CLI.
+        package var subscription: Subscription?
 
         enum CodingKeys: String, CodingKey {
             case id
@@ -35,6 +38,34 @@ package final class AIModelCatalog {
             case models
             case error
             case capabilities
+            case subscription
+        }
+    }
+
+    /// How the background AI consent names a provider that runs on the
+    /// owner's own plan: the Go registry's `providers.Subscription`, read
+    /// from `ai models --json` (LLMTRANSPORT-01: no Swift copy by name).
+    package struct Subscription: Decodable, Equatable, Sendable {
+        /// The agent the owner runs ("Claude Code").
+        package let agentName: String
+        /// The plan its runs draw on ("your Claude subscription").
+        package let plan: String
+        /// Completes "These runs use …": the plan and the limits the runs
+        /// count toward.
+        package let usage: String
+        /// Whose usage limit a switch to the reserve follows ("Claude's").
+        package let limit: String
+
+        package init(agentName: String, plan: String, usage: String, limit: String) {
+            self.agentName = agentName
+            self.plan = plan
+            self.usage = usage
+            self.limit = limit
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case agentName = "agent_name"
+            case plan, usage, limit
         }
     }
 
@@ -118,6 +149,12 @@ package final class AIModelCatalog {
         case "ollama": "Ollama / Local"
         default: id
         }
+    }
+
+    /// Provider id's plan facts; nil for a provider with no plan of the
+    /// owner's, an unknown id, or before the catalog is read.
+    package func subscription(_ id: String) -> Subscription? {
+        provider(id)?.subscription
     }
 
     /// Provider id's capability row; `.none` (offers nothing) for an

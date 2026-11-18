@@ -17,6 +17,7 @@ package enum SessionCleanupPresentation {
         .workbenchFolder: "a workbench folder",
         .locked: "locked",
         .uncommittedChanges: "uncommitted changes",
+        .ignoredFiles: "unsaved ignored files",
         .processRunning: "a process is running in it",
         .processUnknown: "a process could not be checked",
         .sessionInIt: "another session works in it",

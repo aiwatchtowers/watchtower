@@ -26,6 +26,13 @@ var chatTitleGeneratorFactory = func(cfg *config.Config) digest.Generator {
 	return cliGenerator(cfg)
 }
 
+// daemonChatTitleGenerator is chatTitleGeneratorFactory's generator for the
+// daemon's chat engine: the consent check runs per call (the daemon process
+// is background), so the caller marks the owner's chat aiconsent.WithOwnerStarted.
+var daemonChatTitleGenerator = func(cfg *config.Config) digest.Generator {
+	return routedGenerator(cfg, checkedGenerator(cfg), nil, 0)
+}
+
 var chatTitleFlagDBPath string
 
 var chatCmd = &cobra.Command{

@@ -20,6 +20,12 @@
         "claude_ai_tools": true,
         "reserve_peer": "codex",
         "quota": true
+      },
+      "subscription": {
+        "agent_name": "Claude Code",
+        "plan": "your Claude subscription",
+        "usage": "your own Claude subscription and count toward its usage limits, the same as when you use Claude Code yourself",
+        "limit": "Claude's"
       }
     },
     {
@@ -42,6 +48,12 @@
         "claude_ai_tools": false,
         "reserve_peer": "claude",
         "quota": true
+      },
+      "subscription": {
+        "agent_name": "Codex",
+        "plan": "your ChatGPT plan",
+        "usage": "your own ChatGPT plan and count toward its Codex usage limits, the same as when you use Codex yourself",
+        "limit": "Codex's"
       }
     },
     {

@@ -2,6 +2,7 @@ import Foundation
 import GRDB
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerTestSupport
 
 /// `workbench session start` as Go's Begin answers it (Go hub 3 Task 8): the
 /// row written in the workbench folder — title, target and automation run

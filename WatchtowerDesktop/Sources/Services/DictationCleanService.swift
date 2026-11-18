@@ -73,7 +73,7 @@ struct DictationCleanService {
 
     func clean(transcript: String, mode: DictationCleanMode) async throws -> DictationCleanResult {
         let args = ["dictate", "clean", "--mode", mode.rawValue, "--transcript-file", "-"]
-        let data = try await runner.run(args: args, stdin: Data(transcript.utf8))
+        let data = try await runner.runModel(args: args, origin: .owner, timeout: nil, stdin: Data(transcript.utf8))
         let envelope = try JSONDecoder().decode(Envelope.self, from: data)
 
         switch mode {

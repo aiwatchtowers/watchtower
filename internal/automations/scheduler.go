@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/db"
 	"watchtower/internal/fsutil"
 )
@@ -32,7 +33,10 @@ const clockBackwardsReprime = 24 * time.Hour
 // one within ScheduleGrace of now is on time and queues a `schedule` run
 // (older missed ones are folded into it); otherwise `missed: run_once` queues
 // one `catch_up` run for the latest missed time and `missed: skip` queues
-// none (AUTO-10). last_scheduled_for advances to that latest due time in the
+// none (AUTO-10). While background AI is paused, a due time of an AI recipe
+// (AutomationUsesAI) queues nothing and only advances last_scheduled_for, as
+// `missed: skip` does, so allowing again never catches up on the paused
+// window (AUTO-10, spec §4.2). last_scheduled_for advances to that latest due time in the
 // same transaction as the insert, so a crash or restart never repeats it.
 type Scheduler struct {
 	db     *db.DB
@@ -59,6 +63,9 @@ type Scheduler struct {
 	// the clock's time at its start. Only Run's goroutine touches them.
 	holding   bool
 	heldSince time.Time
+	// consent reads the background-AI state once per Tick (SetConsent);
+	// nil reads aiconsent.Current.
+	consent aiconsent.Reader
 }
 
 // NewScheduler returns a scheduler over d. ix rescans the personal and
@@ -90,6 +97,10 @@ func (s *Scheduler) SetFullWakeProbe(probe func() (caps uint32, full bool)) {
 	}
 	s.fullWake = probe
 }
+
+// SetConsent sets the background-AI consent reader; nil (the default) reads
+// aiconsent.Current, which fails closed. Call it before Run.
+func (s *Scheduler) SetConsent(r aiconsent.Reader) { s.consent = r }
 
 // SetLogger sets where Run reports tick errors (the daemon's logger);
 // log.Default() until called. Call it before Run.
@@ -168,13 +179,18 @@ func (s *Scheduler) Tick(ctx context.Context, now time.Time) error {
 		return errors.Join(append(errs, fmt.Errorf("scheduler tick: %w", err))...)
 	}
 	loc := s.zone()
+	read := s.consent
+	if read == nil {
+		read = aiconsent.Current
+	}
+	paused := !read().Allowed()
 	inserted := false
 	for _, a := range list {
 		if err := ctx.Err(); err != nil {
 			errs = append(errs, err)
 			break
 		}
-		ins, err := s.scheduleOne(a, loc, now)
+		ins, err := s.scheduleOne(a, loc, now, paused)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("scheduling automation %d (%s): %w", a.ID, a.Slug, err))
 		}
@@ -266,7 +282,9 @@ func (s *Scheduler) retireLeftFolders(ctx context.Context, wb db.Workbench) ([]s
 // the last_scheduled_for read with the row: when another writer (a confirm,
 // an enable, the indexer) moved it meanwhile, the row is skipped this tick —
 // nothing written, no run — and the next tick decides from the new value.
-func (s *Scheduler) scheduleOne(a db.Automation, loc *time.Location, now time.Time) (bool, error) {
+// paused (background AI not allowed) turns a due run of an AI recipe into no
+// run: last_scheduled_for still advances to the due time.
+func (s *Scheduler) scheduleOne(a db.Automation, loc *time.Location, now time.Time, paused bool) (bool, error) {
 	var spec triggerSpec
 	if err := json.Unmarshal([]byte(a.TriggerSpec), &spec); err != nil {
 		return false, fmt.Errorf("decoding trigger_spec: %w", err)
@@ -276,6 +294,9 @@ func (s *Scheduler) scheduleOne(a db.Automation, loc *time.Location, now time.Ti
 		return false, err
 	}
 	dec := planSchedule(cs, a.LastScheduledFor, MissedPolicy(a.MissedPolicy), now)
+	if paused && dec.trigger != "" && AutomationUsesAI(&a) {
+		dec.trigger = ""
+	}
 	last := a.LastScheduledFor
 	if dec.advanceTo != nil {
 		last = dec.advanceTo

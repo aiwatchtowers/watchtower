@@ -586,6 +586,23 @@ func (db *DB) CancelQueuedNotRunnable(runID int64, now time.Time) error {
 	return requireRunTransition(db, res, runID, ErrRunNotQueued)
 }
 
+// CancelQueuedBackgroundPaused ends a queued background run of an AI recipe
+// that the executor holds while background AI is paused: cancelled with
+// error_kind='cancelled' and the exact text "Background AI is paused".
+// ErrRunNotQueued when the run was claimed or ended meanwhile.
+func (db *DB) CancelQueuedBackgroundPaused(runID int64, now time.Time) error {
+	if err := requireRunTime(now, fmt.Sprintf("cancelling paused automation run %d", runID)); err != nil {
+		return err
+	}
+	res, err := db.Exec(`UPDATE automation_runs SET status = 'cancelled', error_kind = 'cancelled',
+		error = 'Background AI is paused', finished_at = ?
+		WHERE id = ? AND status = 'queued'`, formatAutomationTime(now), runID)
+	if err != nil {
+		return fmt.Errorf("cancelling paused automation run %d: %w", runID, err)
+	}
+	return requireRunTransition(db, res, runID, ErrRunNotQueued)
+}
+
 // requireRunTransition maps a conditional update that touched no row to
 // ErrAutomationRunNotFound or to notMatched.
 func requireRunTransition(q interface {

@@ -55,7 +55,7 @@ struct TransportFactory: Sendable {
                     try await CloudKitTransport.saveDirectly(record, scope: scope, hubID: hubID)
                 case .hostedRelay(let macDeviceID):
                     guard let session = try relay.session() else { throw UnsupportedRouteError(route: route) }
-                    try await HostedRelayTransport.saveDirectly(record, client: session.client, macDeviceID: macDeviceID)
+                    try await HostedRelayTransport.saveDirectly(record, session: session, macDeviceID: macDeviceID)
                 }
             },
             wake: CloudKitPushWake()

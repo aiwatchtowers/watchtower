@@ -50,6 +50,9 @@ package enum EmptyStateAction: Equatable, Sendable {
     case openBuiltin(id: String, label: String)
     /// The tab's own existing action (e.g. "Build a recap").
     case tabAction(label: String)
+    /// Opens the background AI consent screen; shown only when readiness is
+    /// `.backgroundAIPaused(managed: false)` (#1886).
+    case allowBackgroundAI
 }
 
 /// The per-tab copy (first-run spec §1.5). UI text is English only.

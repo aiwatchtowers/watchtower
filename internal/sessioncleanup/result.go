@@ -77,6 +77,7 @@ var reasonPhrases = map[string]string{
 	ReasonWorkbenchFolder:      "a workbench folder",
 	ReasonLocked:               "locked",
 	ReasonUncommittedChanges:   "uncommitted changes",
+	ReasonIgnoredFiles:         "unsaved ignored files",
 	ReasonProcessRunning:       "a process is running in it",
 	ReasonProcessUnknown:       "a process could not be checked",
 	ReasonSessionInIt:          "another session works in it",

@@ -50,8 +50,11 @@ type HeartbeatFacts struct {
 	Recordings func() bool
 	// Chat says whether the AI chat is on and, when off, why (wire.ChatOff*);
 	// nil carries no chat capability.
-	Chat  func() (on bool, reason string)
-	Clock func() time.Time
+	Chat func() (on bool, reason string)
+	// BackgroundAI is a wire.BackgroundAI* value ("" or nil: absent); a
+	// change restamps the heartbeat at once, as caps does (#1886).
+	BackgroundAI func() string
+	Clock        func() time.Time
 }
 
 // HeartbeatSource is the hub's liveness record, record "heartbeat". It is
@@ -78,6 +81,7 @@ type heartbeatSource struct {
 	accounts []wire.HeartbeatAccount    // what the current payload carries
 	caps     wire.HeartbeatCapabilities // what the current payload carries (zero = none)
 	stuck    time.Time                  // the stuck_since the current payload carries (zero = none)
+	bgAI     string                     // the background_ai the current payload carries ("" = none)
 	payload  []byte
 	stamped  time.Time
 	failing  bool // the accounts read failed last time (logged once per streak)
@@ -118,13 +122,17 @@ func (h *heartbeatSource) Items(ctx context.Context) ([]Item, error) {
 			stuck = at
 		}
 	}
-	changed = changed || caps != h.caps || !stuck.Equal(h.stuck)
+	var bgAI string
+	if h.f.BackgroundAI != nil {
+		bgAI = h.f.BackgroundAI()
+	}
+	changed = changed || caps != h.caps || !stuck.Equal(h.stuck) || bgAI != h.bgAI
 	if h.payload == nil || changed || now.Sub(h.stamped) >= HeartbeatInterval {
-		payload, err := wire.Marshal(h.build(now, accounts, caps, stuck))
+		payload, err := wire.Marshal(h.build(now, accounts, caps, stuck, bgAI))
 		if err != nil {
 			return nil, fmt.Errorf("slices: encoding the heartbeat: %w", err)
 		}
-		h.payload, h.accounts, h.caps, h.stuck, h.stamped = payload, accounts, caps, stuck, now
+		h.payload, h.accounts, h.caps, h.stuck, h.bgAI, h.stamped = payload, accounts, caps, stuck, bgAI, now
 	}
 	return []Item{{Payload: h.payload}}, nil
 }
@@ -145,7 +153,7 @@ func (h *heartbeatSource) readAccounts(ctx context.Context) ([]wire.HeartbeatAcc
 	return out, nil
 }
 
-func (h *heartbeatSource) build(now time.Time, accounts []wire.HeartbeatAccount, caps wire.HeartbeatCapabilities, stuck time.Time) wire.Heartbeat {
+func (h *heartbeatSource) build(now time.Time, accounts []wire.HeartbeatAccount, caps wire.HeartbeatCapabilities, stuck time.Time, bgAI string) wire.Heartbeat {
 	if accounts == nil {
 		accounts = []wire.HeartbeatAccount{} // the Kit's accounts is not optional: [] never null
 	}
@@ -153,7 +161,7 @@ func (h *heartbeatSource) build(now time.Time, accounts []wire.HeartbeatAccount,
 		UpdatedAt: wire.Time{Time: now}, AppVersion: h.f.AppVersion, HubID: h.f.HubID,
 		MacName: wire.ClipMacName(h.f.MacName), Flavor: h.f.Flavor, Accounts: accounts,
 		EnabledAt: wire.Time{Time: h.f.EnabledAt}, OwnerUser: "", Sharing: wire.SharingNone,
-		HubKind: h.f.HubKind,
+		HubKind: h.f.HubKind, BackgroundAI: bgAI,
 	}
 	if caps != (wire.HeartbeatCapabilities{}) {
 		hb.Capabilities = &caps

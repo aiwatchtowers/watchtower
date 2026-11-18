@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/coach"
 	"watchtower/internal/db"
 )
@@ -86,7 +87,7 @@ func TestRepoMeasureFrom_SetOnceAtCommit(t *testing.T) {
 	assert.True(t, measureFrom(t, database, id2).IsZero())
 }
 
-// The phase runs the check once a day, before its weekly gate.
+// The cycle's coach step runs the check once a day, before its weekly gate.
 func TestRepoMeasureFrom_DailyInThePhase(t *testing.T) {
 	d, database := coachDaemon(t)
 	stubCoach(t, nil)
@@ -94,12 +95,26 @@ func TestRepoMeasureFrom_DailyInThePhase(t *testing.T) {
 	commitGit(t, folder, "commit", "-q", "-am", "owner commits")
 	d.lastCoach = time.Now() // the weekly part is not due
 	d.lastCoachCommits = time.Now().Add(-time.Hour)
-	d.phaseCoach(context.Background())
+	d.coachPhases(context.Background())
 	assert.True(t, measureFrom(t, database, id).IsZero(), "checked an hour ago")
 
 	d.lastCoachCommits = time.Now().Add(-25 * time.Hour)
-	d.phaseCoach(context.Background())
+	d.coachPhases(context.Background())
 	assert.False(t, measureFrom(t, database, id).IsZero())
+}
+
+// #1886: the commit check calls no model, so background AI paused stops
+// only the weekly proposing pass, never the check.
+func TestRepoMeasureFrom_RunsWhilePaused(t *testing.T) {
+	d, database := coachDaemon(t)
+	c := stubCoach(t, nil)
+	d.SetConsent(func() aiconsent.State { return aiconsent.Resolve(aiconsent.AnswerPaused, nil) })
+	folder, id := acceptedRepoEdit(t, database)
+	commitGit(t, folder, "commit", "-q", "-am", "owner commits")
+
+	d.coachPhases(context.Background())
+	assert.False(t, measureFrom(t, database, id).IsZero(), "the check ran while paused")
+	assert.Equal(t, coachCalls{}, *c, "the weekly pass waits for consent")
 }
 
 func TestRepoMeasureFrom_RolledBackSkipped(t *testing.T) {
@@ -154,7 +169,7 @@ func TestRepoMeasureFrom_CancelledCheckRetriedNextCycle(t *testing.T) {
 	assert.False(t, d.coachCommitCheck(ctx, time.Now()))
 	assert.True(t, measureFrom(t, database, id).IsZero())
 
-	d.phaseCoach(context.Background())
+	d.phaseCoachCommits(context.Background())
 	assert.False(t, d.lastCoachCommits.IsZero(), "a full pass stamps the day")
 	assert.False(t, measureFrom(t, database, id).IsZero())
 }

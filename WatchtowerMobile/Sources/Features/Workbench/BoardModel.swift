@@ -280,8 +280,21 @@ struct BoardNode: Equatable, Identifiable {
     /// Done or archived: drawn greyed.
     let isDimmed: Bool
     let children: [Self]
+    /// The phone's write on this card (live link R5): a live overlay's caption, or a refused status or priority
+    /// write with Dismiss.
+    var caption: BoardCardCaption?
+    /// False for a new target the phone just asked for: there is no record to open yet.
+    var opensDetail = true
 
     var hasDisclosure: Bool { !children.isEmpty }
+}
+
+/// The line under a board card: "Sending…" / "Waiting for your tower" while the phone's own change shows before
+/// the replica does, or a refusal (or conflict) of a status or priority write, whose `row` Dismiss removes.
+struct BoardCardCaption: Equatable {
+    let state: BoardWriteRow.State
+    /// The refused write; nil for an overlay's caption.
+    let row: BoardWriteRow?
 }
 
 /// One lane of the board: the top-level targets sharing a column or status
@@ -364,7 +377,8 @@ struct BoardModel {
     /// Targets matching the search; 0 when not searching.
     let matchCount: Int
     /// New targets the phone asked this workbench's Mac to add, until
-    /// hydration delivers them (or the Mac refuses).
+    /// hydration delivers them (or the Mac refuses); one shown as a card in
+    /// its lane (a live top-level create overlay) is not listed again.
     let pendingCreates: [BoardWriteRow]
     /// The phone's replies on this workbench whose thread is not in the
     /// replica at all, so no target can show them.
@@ -374,10 +388,6 @@ struct BoardModel {
     init(
         workbenchID: Int64, snapshot: WorkbenchReplicaSnapshot, filter: BoardFilter? = nil, query: String = "", now: Date = Date()
     ) {
-        pendingCreates = BoardWriteRow.rows(in: snapshot, now: now) {
-            $0.action.kind == .boardTargetCreate
-                && (try? BoardTargetCreateParams(wireParams: $0.action.params).workbenchID) == workbenchID
-        }
         unplacedReplies = BoardWriteRow.rows(in: snapshot, now: now) {
             $0.action.kind == .boardCommentReply
                 && (try? BoardCommentReplyParams(wireParams: $0.action.params).workbenchID) == workbenchID
@@ -396,14 +406,20 @@ struct BoardModel {
         self.query = query
         let columns = snapshot.workbench(workbenchID)?.boardColumns
 
-        let tree = BoardTree(snapshot: snapshot, signals: signals)
+        let online = MacStatus(heartbeat: snapshot.heartbeat, now: now).isOnline
+        let tree = BoardTree(snapshot: snapshot, signals: signals, captions: Self.captions(board, snapshot: snapshot, now: now))
+        let created = query.isEmpty
+            ? Self.createdCards(workbenchID: workbenchID, snapshot: snapshot, now: now).filter { filter.matches($0.target, signals) }
+            : []
         if query.isEmpty {
             let pool = board.filter { $0.archived == (filter == .archive) }
             let shown = tree.build(pool: pool) { filter.matches($0, signals) }
             roots = shown.roots
             visibleIDs = shown.visible
             matchCount = 0
-            lanes = BoardLane.lanes(shown.roots, columns: columns)
+            let meta = snapshot.workbench(workbenchID)?.name
+            let newCards = created.map { Self.createdNode($0.overlay, $0.target, workbench: meta, macOnline: online) }
+            lanes = BoardLane.lanes(shown.roots + newCards, columns: columns)
         } else {
             let match = { (target: WorkbenchTarget) in Self.matches(target, query: query) }
             let live = tree.build(pool: board.filter { !$0.archived }, match: match)
@@ -417,9 +433,77 @@ struct BoardModel {
             }
             self.lanes = lanes
         }
+        // A create shown as a card, or whose record already shows on this board (it beat the echo and passes the
+        // filter), is not listed again.
+        let visible = visibleIDs
+        let shownCreates = Set(created.map(\.overlay.actionID))
+            .union(snapshot.matchedRecords.filter { visible.contains($0.value) }.keys)
+        pendingCreates = BoardWriteRow.rows(in: snapshot, now: now) {
+            $0.action.kind == .boardTargetCreate
+                && (try? BoardTargetCreateParams(wireParams: $0.action.params).workbenchID) == workbenchID
+                && !shownCreates.contains($0.id)
+        }
     }
 
     var isSearching: Bool { !query.isEmpty }
+
+    /// Each target's card line: its newest live status or priority overlay's caption, else its newest refused
+    /// status or priority write.
+    private static func captions(
+        _ board: [WorkbenchTarget], snapshot: WorkbenchReplicaSnapshot, now: Date
+    ) -> [Int64: BoardCardCaption] {
+        let online = MacStatus(heartbeat: snapshot.heartbeat, now: now).isOnline
+        var captions: [Int64: BoardCardCaption] = [:]
+        let refused = BoardWriteRow.rows(in: snapshot, now: now) {
+            $0.state == .failed && [.boardTargetStatus, .boardTargetPriority].contains($0.action.kind)
+        }
+        for row in refused {
+            guard let id = row.pending.action.entityID.flatMap(Int64.init) else { continue }
+            captions[id] = BoardCardCaption(state: row.state, row: row)
+        }
+        for target in board {
+            if let overlay = snapshot.fieldOverlay(on: target.id) {
+                captions[target.id] = BoardCardCaption(state: overlay.caption(macOnline: online), row: nil)
+            }
+        }
+        return captions
+    }
+
+    /// The live top-level create overlays of this workbench, each with the target it will be (a placeholder id
+    /// below zero), which the board's filter judges like any other. A sub-target's stays a pending row: its
+    /// parent's tree is the Mac's.
+    private static func createdCards(
+        workbenchID: Int64, snapshot: WorkbenchReplicaSnapshot, now: Date
+    ) -> [(overlay: PendingOverlay, target: WorkbenchTarget)] {
+        let creates = snapshot.overlays.filter {
+            if case let .create(workbench, parent, _, _) = $0.expected { return workbench == workbenchID && parent == nil }
+            return false
+        }
+        return creates.enumerated().compactMap { index, overlay in
+            guard case let .create(_, _, title, priority) = overlay.expected else { return nil }
+            let target = WorkbenchTarget.provisional(
+                id: -Int64(index + 1), workbenchID: workbenchID, parentID: nil, text: title, priority: priority, at: overlay.createdAt)
+            return (overlay, target)
+        }
+    }
+
+    /// A new target's card before its record exists: Todo, no number (the meta line names the workbench and the
+    /// priority, mockup 1), nothing to open.
+    private static func createdNode(
+        _ overlay: PendingOverlay, _ target: WorkbenchTarget, workbench: String?, macOnline: Bool
+    ) -> BoardNode {
+        let label = BoardRowModel.statusLabel(.todo)
+        let meta = ([workbench].compactMap { $0 } + [BoardRowModel.priorityName(target.priority)]).joined(separator: " · ")
+        return BoardNode(
+            id: target.id, status: .todo, label: label,
+            card: BoardCardModel(
+                number: nil, title: target.text, status: .todo, statusText: label, priority: target.priority,
+                unnumbered: meta, compact: true, statusChip: false
+            ),
+            isDimmed: false, children: [],
+            caption: BoardCardCaption(state: overlay.caption(macOnline: macOnline), row: nil), opensDetail: false
+        )
+    }
 
     /// Groups and lanes fold (and remember it) only under All; a narrower
     /// filter or a search shows every match open, so no fold hides one.
@@ -499,6 +583,7 @@ struct BoardModel {
 private struct BoardTree {
     let snapshot: WorkbenchReplicaSnapshot
     let signals: BoardSignals
+    let captions: [Int64: BoardCardCaption]
 
     func build(pool: [WorkbenchTarget], match: (WorkbenchTarget) -> Bool) -> (roots: [BoardNode], visible: Set<Int64>) {
         let byID = Dictionary(pool.map { ($0.id, $0) }) { first, _ in first }
@@ -517,7 +602,8 @@ private struct BoardTree {
                 id: target.id, status: target.status, label: BoardRowModel.label(target),
                 card: card(target, lane: lane, subtree: subtree(target, allChildren)),
                 isDimmed: target.archived || target.status == .done,
-                children: (childrenByParent[target.id] ?? []).map { node($0, lane: lane) }
+                children: (childrenByParent[target.id] ?? []).map { node($0, lane: lane) },
+                caption: captions[target.id]
             )
         }
         let roots = shown.filter { $0.parentID.map(visible.contains) != true }.map { node($0, lane: BoardRowModel.label($0)) }

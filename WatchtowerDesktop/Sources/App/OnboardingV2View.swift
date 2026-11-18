@@ -1,7 +1,7 @@
 import SwiftUI
 import WatchtowerCore
 
-/// Onboarding v2: Goals → Connect, driven by
+/// Onboarding v2: Goals → Connect → Background AI, driven by
 /// `AppState.onboarding` (`OnboardingStateMachineV2`); leaving the last step
 /// the route runs finishes onboarding.
 struct OnboardingV2View: View {
@@ -10,6 +10,10 @@ struct OnboardingV2View: View {
     let onRetry: () -> Void
 
     @Environment(AppState.self) private var appState
+    /// Back from the consent step: Connect, unless this route skips it.
+    private var consentBackStep: OnboardingV2Step {
+        appState.onboardingRoute.skips(.connect) ? .purpose : .connect
+    }
 
     var body: some View {
         VStack(spacing: 20) {
@@ -21,12 +25,22 @@ struct OnboardingV2View: View {
 
             switch appState.onboarding.currentStep {
             case .purpose:
-                OnboardingGoalsStepView { route in await leave(.purpose, route: route) }
+                // The saved goals plus whether the consent step is due.
+                OnboardingGoalsStepView { _ in await leave(.purpose, route: appState.onboardingRoute) }
             case .connect:
                 OnboardingConnectStepView(
                     onBack: { back(to: .purpose) },
                     onContinue: { await leave(.connect, route: appState.onboardingRoute) }
                 )
+            case .aiConsent:
+                ScrollView {
+                    BackgroundAIConsentStep {
+                        back(to: consentBackStep)
+                    } onAnswered: {
+                        await appState.answerBackgroundAIConsentStep(onRetry: onRetry)
+                    }
+                }
+                .scrollBounceBehavior(.basedOnSize)
             case .complete:
                 EmptyView()
             }

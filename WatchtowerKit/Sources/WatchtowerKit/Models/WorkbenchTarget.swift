@@ -108,3 +108,35 @@ public struct WorkbenchTarget: SliceMirror, Identifiable {
         case lastStatusAt, lastStatusActor, workOnPrompt, workOnPromptClipped, createdAt, updatedAt
     }
 }
+
+extension WorkbenchTarget {
+    /// This target as the phone shows it while its own write is pending (live link R5): the requested status (its
+    /// lane follows the status, so the Mac's column goes) or priority; everything else as the replica has it.
+    public func overlaid(status: WorkbenchTargetStatus? = nil, priority: WorkbenchTargetPriority? = nil) -> Self {
+        Self(
+            id: id, workbenchID: workbenchID, parentID: parentID, text: text, textClipped: textClipped, intent: intent,
+            intentClipped: intentClipped, status: status ?? self.status, priority: priority ?? self.priority,
+            progress: progress, branch: branch, branchClipped: branchClipped, pr: pr, prClipped: prClipped,
+            archived: archived, column: status == nil ? column : nil, childrenCount: childrenCount,
+            openComments: openComments, unreadForOwner: unreadForOwner, openAsks: openAsks, sessionIDs: sessionIDs,
+            sessionIDsMore: sessionIDsMore, lastStatusAt: lastStatusAt, lastStatusActor: lastStatusActor,
+            workOnPrompt: workOnPrompt, workOnPromptClipped: workOnPromptClipped, createdAt: createdAt,
+            updatedAt: updatedAt
+        )
+    }
+
+    /// A new target the phone asked for, before its record exists (live link R5): `id` is the phone's own
+    /// placeholder (never a record's), status todo, nothing else yet. The board's filters and cards treat it like
+    /// any target.
+    public static func provisional(
+        id: Int64, workbenchID: Int64, parentID: Int64?, text: String, priority: WorkbenchTargetPriority, at: Date
+    ) -> Self {
+        Self(
+            id: id, workbenchID: workbenchID, parentID: parentID, text: text, textClipped: nil, intent: "",
+            intentClipped: nil, status: .todo, priority: priority, progress: 0, branch: "", branchClipped: nil, pr: "",
+            prClipped: nil, archived: false, column: nil, childrenCount: 0, openComments: 0, unreadForOwner: 0,
+            openAsks: 0, sessionIDs: [], sessionIDsMore: nil, lastStatusAt: nil, lastStatusActor: nil, workOnPrompt: "",
+            workOnPromptClipped: nil, createdAt: at, updatedAt: at
+        )
+    }
+}
