@@ -860,37 +860,53 @@ func (l *laneFake) Pull(ctx context.Context, zone string, apply func(transport.B
 // is read from its mailbox event and applied (the event lane, live link R4)
 // before that pass returns.
 func TestRuntime_MailboxEventNotQueuedBehindBackstopPass(t *testing.T) {
-	bubble(t, func(t *testing.T) {
-		applied := make(chan struct{}, 4)
-		var lf *laneFake
-		e := runEndToEnd(t, "", func(o *Options) {
-			newTransport := o.newTransport
-			o.newTransport = func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error) {
-				tr, err := newTransport(ctx, id, st, zones)
-				if err != nil {
-					return nil, err
-				}
-				lf = &laneFake{Fake: tr.(*memfake.Fake), tokens: map[string]uint64{}}
-				return lf, nil
+	bubble(t, func(t *testing.T) { laneWhileBackstopWaits(t, 0) })
+}
+
+// TestRuntime_DataZoneEchoesDoNotBlockTheLane: the hub's own data-zone
+// writes come back as events (one per slice save); far more of them than
+// work() takes while a backstop pass waits never hold up a mailbox event.
+func TestRuntime_DataZoneEchoesDoNotBlockTheLane(t *testing.T) {
+	bubble(t, func(t *testing.T) { laneWhileBackstopWaits(t, 200) })
+}
+
+// laneWhileBackstopWaits links a second phone whose mailbox the backstop
+// pass reads slowly, sends echoes data-zone write events while that read
+// waits, then has the first phone act: its action must be applied before
+// the read is released.
+func laneWhileBackstopWaits(t *testing.T, echoes int) {
+	applied := make(chan struct{}, 4)
+	var lf *laneFake
+	e := runEndToEnd(t, "", func(o *Options) {
+		newTransport := o.newTransport
+		o.newTransport = func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error) {
+			tr, err := newTransport(ctx, id, st, zones)
+			if err != nil {
+				return nil, err
 			}
-			o.Register = func(d *actions.Dispatcher) {
-				d.Register("lane_probe", func(context.Context, actions.Request) actions.Outcome {
-					applied <- struct{}{}
-					return actions.Outcome{Status: wire.StatusApplied}
-				}, actions.KindOptions{})
-			}
-		})
-		status, err := ReadStatus(e.dir)
-		if err != nil {
-			t.Fatal(err)
+			lf = &laneFake{Fake: tr.(*memfake.Fake), tokens: map[string]uint64{}}
+			return lf, nil
 		}
-		slow := linkPhoneDirectly(t, e.dir) // a second phone, whose mailbox the backstop reads slowly
-		entered, release := lf.hold(transport.MailboxZone(status.RelayDeviceID, slow.RelayDeviceID()))
-		<-entered // a backstop pass (the pass ticker's) is reading it
-		if _, err := e.phone.Act("lane_probe"); err != nil {
-			t.Fatal(err)
+		o.Register = func(d *actions.Dispatcher) {
+			d.Register("lane_probe", func(context.Context, actions.Request) actions.Outcome {
+				applied <- struct{}{}
+				return actions.Outcome{Status: wire.StatusApplied}
+			}, actions.KindOptions{})
 		}
-		<-applied // the phone's mailbox event, applied while the pass still waits
-		close(release)
 	})
+	status, err := ReadStatus(e.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slow := linkPhoneDirectly(t, e.dir) // a second phone, whose mailbox the backstop reads slowly
+	entered, release := lf.hold(transport.MailboxZone(status.RelayDeviceID, slow.RelayDeviceID()))
+	<-entered // a backstop pass (the pass ticker's) is reading it
+	for range echoes {
+		lf.SendEvent(transport.Event{Zone: transport.DataZone(status.RelayDeviceID), Seq: 1})
+	}
+	if _, err := e.phone.Act("lane_probe"); err != nil {
+		t.Fatal(err)
+	}
+	<-applied // the phone's mailbox event, applied while the pass still waits
+	close(release)
 }

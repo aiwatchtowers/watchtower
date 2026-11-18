@@ -212,6 +212,8 @@ type lanePuller struct {
 	*memfake.Fake
 	onePage bool
 	hook    func(zone string, n int, applied bool)
+	// saving, when set, runs as a Save of zone starts.
+	saving func(zone string)
 
 	mu       sync.Mutex
 	tokens   map[string]uint64
@@ -244,6 +246,13 @@ func (l *lanePuller) wantMonotonic(t *testing.T) {
 	if len(l.backward) > 0 {
 		t.Fatalf("a zone token went back: %v", l.backward)
 	}
+}
+
+func (l *lanePuller) Save(ctx context.Context, items []transport.SaveItem) ([]transport.Outcome, error) {
+	if l.saving != nil && len(items) > 0 {
+		l.saving(items[0].Record.Zone())
+	}
+	return l.Fake.Save(ctx, items)
 }
 
 func (l *lanePuller) OwnWrites(transport.Event) bool { return false }
@@ -348,8 +357,9 @@ func TestProcessor_NudgeBeforeFlush(t *testing.T) {
 }
 
 // TestProcessor_ConcurrentEventAndPassApplyOnce: a record the backstop pass
-// is reading and an event carries inline at the same time is applied once:
-// the event waits for the mailbox's lock, then finds it read.
+// is reading and an event carries inline at the same time is applied once
+// (the ledger's guarantee; the event, here waiting for the mailbox's lock,
+// then finds it read).
 func TestProcessor_ConcurrentEventAndPassApplyOnce(t *testing.T) {
 	w := newWorld(t, transport.KindRelay)
 	lp := newLanePuller(w.fake)
@@ -493,5 +503,48 @@ func TestProcessor_EventReadOnlyWhenTheEventReads(t *testing.T) {
 	}
 	if want := []eventReadCall{{"relay", fresh.ArrivedAt, w.clock()}}; !slices.Equal(lat.events, want) {
 		t.Fatalf("event_read stamps %+v, want %+v", lat.events, want)
+	}
+}
+
+// TestProcessor_EventFlushNotBehindAnotherMailboxsWrite: while the backstop
+// pass's queue write to one phone's mailbox hangs, an event for another
+// phone's mailbox writes that phone's echo: queue writes are ordered per
+// mailbox, not across the hub.
+func TestProcessor_EventFlushNotBehindAnotherMailboxsWrite(t *testing.T) {
+	w := newWorld(t, transport.KindRelay)
+	lp := newLanePuller(w.fake)
+	w.use(lp)
+	other := w.addPhone()
+	w.act("test_noop") // the first phone's echo is what the backstop writes
+	slow := w.phone.Zone()
+	writing, release := make(chan struct{}), make(chan struct{})
+	written := make(chan struct{}, 4)
+	var once sync.Once
+	lp.saving = func(zone string) {
+		switch zone {
+		case slow:
+			once.Do(func() {
+				close(writing)
+				<-release
+			})
+		case other.Zone():
+			written <- struct{}{}
+		}
+	}
+	passed := make(chan error, 1)
+	go func() { _, err := w.proc.Pass(w.ctx); passed <- err }()
+	<-writing
+	if _, err := other.Act("board_comment_add"); err != nil {
+		t.Fatal(err)
+	}
+	evDone := make(chan error, 1)
+	go func() { _, err := w.proc.PassEvent(w.ctx, transport.Event{Zone: other.Zone()}); evDone <- err }()
+	<-written // the other phone's echo, while the first phone's write still waits
+	close(release)
+	if err := <-passed; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-evDone; err != nil {
+		t.Fatal(err)
 	}
 }

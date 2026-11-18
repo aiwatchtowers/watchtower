@@ -81,19 +81,21 @@ type Latency interface {
 // mailbox's read → apply → token move holds that mailbox's lock (boxLock),
 // so two readers never read one mailbox at once and its token only moves
 // forward; mu is held only while a page's records are applied (the ledger,
-// the handlers, the queue steps), never across a mailbox read; flushMu keeps
-// the queue writes in order. Lock order: run, a mailbox's lock, mu, flushMu.
+// the handlers, the queue steps), never across a mailbox read but one: the
+// read back of held uploads a restart left (recoverHeld); a queue's flush
+// lock (flushLock) keeps that queue's writes in order, and another queue's
+// write goes on. Lock order: run, a mailbox's lock, mu, a queue's flush lock.
 type Processor struct {
 	cfg Config
 	mu  sync.Mutex
 	// run is held shared by every pass and FlushControls, exclusively by
 	// Hygiene and by PauseFor (which only waits for the running ones).
 	run sync.RWMutex
-	// boxMu guards zones, the per-zone mailbox locks (boxLock).
-	boxMu sync.Mutex
-	zones map[string]*sync.Mutex
-	// flushMu serializes the control queue writes (flushAll, flushBox).
-	flushMu sync.Mutex
+	// boxMu guards zones, the per-zone mailbox locks (boxLock), and
+	// queues, the per-queue flush locks (flushLock).
+	boxMu  sync.Mutex
+	zones  map[string]*sync.Mutex
+	queues map[string]*sync.Mutex
 	// boxWait, when set (tests), is called when a mailbox's lock is found
 	// held, before waiting for it.
 	boxWait func(zone string)
@@ -408,7 +410,7 @@ func (p *Processor) PassEvent(ctx context.Context, ev transport.Event) (PassRepo
 		// An event an earlier read already took reads nothing: no sample.
 		p.eventRead(ev, readAt)
 	}
-	return p.finish(ctx, ps, p.passError(b, err, nil))
+	return p.finish(ctx, ps, p.passError(b, err, nil), b.queue)
 }
 
 // readEvent reads what ev stands for in b's own mailbox, under its mailbox
@@ -425,8 +427,8 @@ func (p *Processor) readEvent(ctx context.Context, ep EventPuller, ev transport.
 	if !unread && ep.OwnWrites(ev) {
 		return true, time.Time{}, nil
 	}
-	start := p.cfg.Clock()
 	err = p.readBox(ctx, b, ps, func(apply func(transport.Batch) error) error {
+		start := p.cfg.Clock() // after the held drain: the read itself
 		seen := func(batch transport.Batch) error {
 			readAt = start
 			return apply(batch)
@@ -440,11 +442,11 @@ func (p *Processor) readEvent(ctx context.Context, ep EventPuller, ev transport.
 }
 
 // finish ends a pass: the nudge of the kinds it applied first, then the
-// control queues, so the slices' save starts ahead of the echoes' (live
-// link R4).
-func (p *Processor) finish(ctx context.Context, ps *pass, errs []error) (PassReport, error) {
+// control queues (queue first, when set: an event's own mailbox), so the
+// slices' save starts ahead of the echoes' (live link R4).
+func (p *Processor) finish(ctx context.Context, ps *pass, errs []error, first string) (PassReport, error) {
 	p.nudge(ps)
-	written, _, err := p.flushAll(ctx)
+	written, _, err := p.flushAll(ctx, first)
 	ps.report.ControlsWritten = written
 	return ps.report, errors.Join(append(errs, err)...)
 }
@@ -463,16 +465,7 @@ func (p *Processor) eventRead(ev transport.Event, readAt time.Time) {
 // at once, so its token only moves forward, while another mailbox's read
 // goes on.
 func (p *Processor) boxLock(zone string) (unlock func()) {
-	p.boxMu.Lock()
-	if p.zones == nil {
-		p.zones = map[string]*sync.Mutex{}
-	}
-	m := p.zones[zone]
-	if m == nil {
-		m = &sync.Mutex{}
-		p.zones[zone] = m
-	}
-	p.boxMu.Unlock()
+	m := p.keyed(&p.zones, zone)
 	if !m.TryLock() {
 		if p.boxWait != nil {
 			p.boxWait(zone)
@@ -480,6 +473,29 @@ func (p *Processor) boxLock(zone string) (unlock func()) {
 		m.Lock()
 	}
 	return m.Unlock
+}
+
+// flushLock locks control queue key for one write of its rows and returns
+// its unlock: rows of one queue go out in order, another queue's go on.
+func (p *Processor) flushLock(queue string) (unlock func()) {
+	m := p.keyed(&p.queues, queue)
+	m.Lock()
+	return m.Unlock
+}
+
+// keyed is locks' mutex for key, made on first use.
+func (p *Processor) keyed(locks *map[string]*sync.Mutex, key string) *sync.Mutex {
+	p.boxMu.Lock()
+	defer p.boxMu.Unlock()
+	if *locks == nil {
+		*locks = map[string]*sync.Mutex{}
+	}
+	m := (*locks)[key]
+	if m == nil {
+		m = &sync.Mutex{}
+		(*locks)[key] = m
+	}
+	return m
 }
 
 // readBox reads b's own mailbox through read, its held actions next in line
@@ -539,7 +555,7 @@ func (p *Processor) passBoxes(ctx context.Context, boxes []mailbox, ps *pass) (P
 	for _, g := range p.withHelloZone(byZone(boxes), false) {
 		errs = p.readZone(ctx, g, ps, errs)
 	}
-	return p.finish(ctx, ps, errs)
+	return p.finish(ctx, ps, errs, "")
 }
 
 // readZone reads g under its mailbox lock, adding what stopped a phone to
