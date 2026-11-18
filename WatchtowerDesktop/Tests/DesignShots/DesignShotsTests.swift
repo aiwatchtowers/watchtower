@@ -93,6 +93,11 @@ final class DesignShotsTests: XCTestCase {
         })
     }
 
+    /// The plan limits without a token spec's mockups (#1885).
+    func testPlanLimitsNoTokenShotsRender() throws {
+        try renderShots(PlanLimitsNoTokenShotFixtures.shots)
+    }
+
     /// The Slack Full / Live screens spec's mockups (#1779).
     func testSlackFullLiveShotsRender() throws {
         try renderShots(SlackFullLiveShotFixtures.shots)

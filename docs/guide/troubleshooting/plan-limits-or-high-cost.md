@@ -10,7 +10,7 @@ Claude or Codex runs out of subscription quota sooner than expected, a forecast 
 
 ## Why
 
-Each subscription has its own account-wide allowances. Watchtower's background jobs, chats, Workbench sessions and your own use draw from the provider's windows; Claude and Codex percentages are never added together. Watchtower reads each source independently every five minutes, with a longer retry delay after errors, and never refreshes Claude Code's sign-in itself.
+Each subscription has its own account-wide allowances. Watchtower's background jobs, chats, Workbench sessions and your own use draw from the provider's windows; Claude and Codex percentages are never added together. Watchtower reads each source independently every five minutes, with a longer retry delay after errors, and never reads Claude Code's sign-in.
 
 If you enable a [reserve AI provider](../concepts/ai-providers-and-cost.md#a-reserve-provider-for-quota-limits), scheduled Slack digest batches and people card batches keep their unfinished input window when both providers are waiting for quota. They try the missing work on a later regular sync cycle; already saved digests and cards stay saved. Other background jobs keep their own retry schedules.
 
@@ -21,7 +21,7 @@ If you enable a [reserve AI provider](../concepts/ai-providers-and-cost.md#a-res
 3. In **Statistics**, **Mute for AI** on noisy channels or bots. Muted channels are skipped by digests, tracks and the briefing.
 4. Lower the load per call: set **Light model** and **Strong model** in **Settings → System → AI**, or use Codex or a local Ollama model, which bills nothing.
 5. Reduce parallel calls with **Workers** under **Settings → System → AI** (default 5).
-6. **Sign-in expired:** use Claude Code once so it refreshes its sign-in; the numbers return within 5 minutes, or press **Refresh** on the tab.
+6. **Claude Code not signed in with a plan:** sign in to Claude Code with your Claude plan; the numbers return within 5 minutes, or press **Refresh** on the tab. If Claude Code is missing or too old, install or update it. With an API key or a cloud provider, plan limits don't apply.
 7. **Rate limit in the chat:** wait a moment and press **Retry**.
 8. Notifications about limits are the **Claude plan limits** switch in **Settings → Features → Notifications**.
 
