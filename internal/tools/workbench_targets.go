@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/instructions"
 	"watchtower/internal/workbenchfiles"
+	"watchtower/internal/workbenchfolders"
 )
 
 // ---- create_targets ----------------------------------------------------
@@ -27,6 +28,7 @@ type newTargetItem struct {
 	Images    []string `json:"images,omitempty" jsonschema:"absolute paths of image files (PNG, JPEG, GIF or WebP, at most 5 MB each) to attach, e.g. a screenshot the owner shared in the message this target comes from; Watchtower keeps its own copy"`
 	Branch    string   `json:"branch,omitempty" jsonschema:"the local git branch the work happens on (e.g. feature/x, no origin/ prefix), if already known"`
 	PR        string   `json:"pr,omitempty" jsonschema:"the pull request (number or URL), if already open"`
+	Folder    string   `json:"folder,omitempty" jsonschema:"the bench folder the work is in (its name or path, from workbench_info); default with a branch or pr: this session's folder"`
 }
 
 type createTargetsArgs struct {
@@ -52,7 +54,7 @@ func NewCreateTargets(store workbenchfiles.Store, sessionEnv func() string) *Too
 			"workbench) or parent_key (the key of an earlier item in the same call). Optional priority " +
 			"high | medium | low (default medium). Optional images: absolute paths of image files to " +
 			"attach to that target (PNG, JPEG, GIF or WebP, at most 5 MB each); the git branch / pull request " +
-			"carrying the work (branch, pr). Applied immediately.",
+			"carrying the work (branch, pr) and the bench folder it is in (folder; default this session's). Applied immediately.",
 		InputSchema: mustSchema[createTargetsArgs]("create_targets"),
 		Access:      AccessWrite,
 		Surfaces:    workbenchSurfaces,
@@ -70,12 +72,16 @@ func NewCreateTargets(store workbenchfiles.Store, sessionEnv func() string) *Too
 			}
 			return scopeTargetItems(ctx, d, a.Items, b)
 		},
-		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
+		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			var a createTargetsArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, fmt.Errorf("decoding create_targets args: %w", err)
 			}
-			created, err := insertTargetItems(d, store, call.Binding.WorkbenchID, a.Items)
+			folders, err := itemFolders(ctx, d, call.Binding.WorkbenchID, sessionEnv, a.Items)
+			if err != nil {
+				return nil, err
+			}
+			created, err := insertTargetItems(d, store, call.Binding.WorkbenchID, a.Items, folders)
 			if err != nil {
 				return nil, err
 			}
@@ -169,12 +175,16 @@ func validBranchName(b string) bool {
 	return b != "@"
 }
 
-// scopeTargetItems checks every parent_id belongs to the bound workbench.
+// scopeTargetItems checks every parent_id belongs to the bound workbench
+// and every folder is one on its bench.
 func scopeTargetItems(ctx context.Context, d *db.DB, items []newTargetItem, b Binding) error {
 	if _, err := workbenchOf(ctx, d, b); err != nil {
 		return err
 	}
 	for _, it := range items {
+		if _, err := benchFolder(ctx, d, b.WorkbenchID, it.Folder); err != nil {
+			return err
+		}
 		if it.ParentID == 0 {
 			continue
 		}
@@ -185,13 +195,65 @@ func scopeTargetItems(ctx context.Context, d *db.DB, items []newTargetItem, b Bi
 	return nil
 }
 
+// benchFolder resolves ref (a folder's name or path, spec 2026-11-18 §6.10)
+// to a live folder of workbench workbenchID; "" is no folder (invalid). A
+// folder not on the bench, or removed from it, is the model's error to fix
+// ("<code>: <sentence>", D42).
+func benchFolder(ctx context.Context, d *db.DB, workbenchID int64, ref string) (sql.NullInt64, error) {
+	if strings.TrimSpace(ref) == "" {
+		return sql.NullInt64{}, nil
+	}
+	f, err := workbenchfolders.Resolve(ctx, d, workbenchID, ref)
+	var refusal *workbenchfolders.Refusal
+	if errors.As(err, &refusal) {
+		return sql.NullInt64{}, &ValidationError{Msg: refusal.Error(), Err: refusal}
+	}
+	if err != nil {
+		return sql.NullInt64{}, fmt.Errorf("resolving folder %q: %w", ref, err)
+	}
+	return sql.NullInt64{Int64: f.ID, Valid: true}, nil
+}
+
+// targetFolder is the folder a write stores on a target: ref resolved when
+// given; otherwise, when the write links git work (gitLinked), the folder
+// of the terminal session sessionEnv names. ok is false when nothing is to
+// be stored (the target keeps its folder; a new one is the home folder's).
+func targetFolder(ctx context.Context, d *db.DB, workbenchID int64, sessionEnv func() string, ref string, gitLinked bool) (folder sql.NullInt64, ok bool, err error) {
+	if strings.TrimSpace(ref) != "" {
+		folder, err = benchFolder(ctx, d, workbenchID, ref)
+		return folder, err == nil, err
+	}
+	if !gitLinked || sessionEnv == nil {
+		return sql.NullInt64{}, false, nil
+	}
+	s, err := terminalSessionRow(d, workbenchID, sessionEnv)
+	if err != nil || s == nil || !s.WorkbenchFolderID.Valid {
+		return sql.NullInt64{}, false, err
+	}
+	return s.WorkbenchFolderID, true, nil
+}
+
+// itemFolders is targetFolder for every item, in order (invalid = none).
+func itemFolders(ctx context.Context, d *db.DB, workbenchID int64, sessionEnv func() string, items []newTargetItem) ([]sql.NullInt64, error) {
+	out := make([]sql.NullInt64, len(items))
+	for i, it := range items {
+		f, _, err := targetFolder(ctx, d, workbenchID, sessionEnv, it.Folder,
+			strings.TrimSpace(it.Branch) != "" || strings.TrimSpace(it.PR) != "")
+		if err != nil {
+			return nil, err
+		}
+		out[i] = f
+	}
+	return out, nil
+}
+
 // insertTargetItems copies every item's images in, then inserts the batch
 // and the image rows in one transaction through db.CreateWorkbenchTargetsTx,
 // which also rolls progress up into every parent. A parent_key becomes the
 // 1-based BatchParent of the earlier item holding that key
 // (validateTargetItems guaranteed it is earlier). On a failed write the
 // copies no row names are removed again.
-func insertTargetItems(d *db.DB, store workbenchfiles.Store, workbenchID int64, items []newTargetItem) ([]createdTarget, error) {
+func insertTargetItems(d *db.DB, store workbenchfiles.Store, workbenchID int64, items []newTargetItem, folders []sql.NullInt64) ([]createdTarget, error) {
 	var paths []string
 	for _, it := range items {
 		paths = append(paths, it.Images...)
@@ -200,7 +262,7 @@ func insertTargetItems(d *db.DB, store workbenchfiles.Store, workbenchID int64, 
 	if err != nil {
 		return nil, err
 	}
-	inputs := targetInputs(items)
+	inputs := targetInputs(items, folders)
 	var ids []int64
 	err = d.WithTx(func(tx *sql.Tx) error {
 		var err error
@@ -228,12 +290,14 @@ func insertTargetItems(d *db.DB, store workbenchfiles.Store, workbenchID int64, 
 	return created, nil
 }
 
-func targetInputs(items []newTargetItem) []db.WorkbenchTargetInput {
+// targetInputs is the db batch of items; folders[i] is item i's folder
+// (itemFolders).
+func targetInputs(items []newTargetItem, folders []sql.NullInt64) []db.WorkbenchTargetInput {
 	position := map[string]int{} // key -> 1-based batch position
 	inputs := make([]db.WorkbenchTargetInput, 0, len(items))
 	for i, it := range items {
 		in := db.WorkbenchTargetInput{Title: strings.TrimSpace(it.Text), Intent: strings.TrimSpace(it.Intent), Priority: it.Priority,
-			Branch: it.Branch, PR: it.PR}
+			Branch: it.Branch, PR: it.PR, FolderID: folders[i]}
 		if it.ParentKey != "" {
 			in.BatchParent = position[it.ParentKey]
 		} else if it.ParentID != 0 {
@@ -264,6 +328,7 @@ type updateTargetArgs struct {
 	AddImages      []string `json:"add_images,omitempty" jsonschema:"absolute paths of image files (PNG, JPEG, GIF or WebP, at most 5 MB each) to attach"`
 	Branch         *string  `json:"branch,omitempty" jsonschema:"the local git branch carrying the work (e.g. feature/x, no origin/ prefix); \"\" clears it"`
 	PR             *string  `json:"pr,omitempty" jsonschema:"the pull request (number or URL); \"\" clears it"`
+	Folder         string   `json:"folder,omitempty" jsonschema:"the bench folder the work is in (its name or path, from workbench_info); setting a branch or pr without it stores this session's folder"`
 	RemoveImageIDs []int64  `json:"remove_image_ids,omitempty" jsonschema:"ids of this target's images to detach (from get_target)"`
 	Reason         string   `json:"reason" jsonschema:"one sentence: why, e.g. 'task 3 passed review'"`
 }
@@ -279,7 +344,8 @@ func NewUpdateTarget(store workbenchfiles.Store, sessionEnv func() string) *Tool
 			"dismissed; in_review while the work is being reviewed), progress (0..1), title, intent or priority (high, medium, low); " +
 			"attach images (add_images: absolute paths of PNG, JPEG, GIF or WebP files, at most 5 MB each) or detach them " +
 			"(remove_image_ids, from get_target); set the git branch / pull request carrying the work (branch, pr; " +
-			"\"\" clears one); move it under another target of this workbench (parent_id; 0 = top level — never under " +
+			"\"\" clears one) and the bench folder it is in (folder: a name or path; a branch or pr set without it takes this " +
+			"session's folder); move it under another target of this workbench (parent_id; 0 = top level — never under " +
 			"itself or one of its sub-targets); move the card to a board column the owner defined (column: its title or id; it sets " +
 			"the status too). Applied immediately.",
 		InputSchema: mustSchema[updateTargetArgs]("update_target"),
@@ -310,14 +376,26 @@ func NewUpdateTarget(store workbenchfiles.Store, sessionEnv func() string) *Tool
 			if err := scopeTargetMove(d, b.WorkbenchID, a); err != nil {
 				return err
 			}
+			if _, err := benchFolder(ctx, d, b.WorkbenchID, a.Folder); err != nil {
+				return err
+			}
 			return scopeImageIDs(d, a.TargetID, a.RemoveImageIDs)
 		},
-		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
+		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			var a updateTargetArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, fmt.Errorf("decoding update_target args: %w", err)
 			}
-			out, statusWritten, err := applyTargetUpdate(d, store, call.Binding.WorkbenchID, a)
+			folder, setFolder, err := targetFolder(ctx, d, call.Binding.WorkbenchID, sessionEnv, a.Folder,
+				strings.TrimSpace(deref(a.Branch)) != "" || strings.TrimSpace(deref(a.PR)) != "")
+			if err != nil {
+				return nil, err
+			}
+			var folderWrite *sql.NullInt64
+			if setFolder {
+				folderWrite = &folder
+			}
+			out, statusWritten, err := applyTargetUpdate(d, store, call.Binding.WorkbenchID, a, folderWrite)
 			if err != nil {
 				return nil, err
 			}
@@ -352,7 +430,7 @@ func addTargetProcedure(d *db.DB, workbenchID int64, a updateTargetArgs, out map
 
 func validateTargetUpdate(a updateTargetArgs) error {
 	if nothingToUpdate(a) {
-		return &ValidationError{Msg: "give at least one of status, column, progress, text, intent, priority, parent_id, add_images, remove_image_ids, branch, pr"}
+		return &ValidationError{Msg: "give at least one of status, column, progress, text, intent, priority, parent_id, add_images, remove_image_ids, branch, pr, folder"}
 	}
 	if a.ParentID != nil && *a.ParentID < 0 {
 		return &ValidationError{Msg: "parent_id must be a target id, or 0 for the top level"}
@@ -380,15 +458,16 @@ func validateTargetUpdate(a updateTargetArgs) error {
 
 func nothingToUpdate(a updateTargetArgs) bool {
 	return a.Status == "" && a.Column == nil && a.Progress == nil && a.Priority == "" && a.ParentID == nil && len(a.AddImages) == 0 && len(a.RemoveImageIDs) == 0 &&
-		a.Branch == nil && a.PR == nil && strings.TrimSpace(a.Text) == "" && strings.TrimSpace(a.Intent) == ""
+		a.Branch == nil && a.PR == nil && strings.TrimSpace(a.Text) == "" && strings.TrimSpace(a.Intent) == "" && strings.TrimSpace(a.Folder) == ""
 }
 
 // applyTargetUpdate copies add_images in, then moves the target, writes
 // title/intent and priority, then status, then progress — status first because a status
 // change re-derives a leaf's progress — and the image rows in one
 // transaction, so a failure part-way leaves the target untouched. A detached
-// image's copy is removed once no row names it.
-func applyTargetUpdate(d *db.DB, store workbenchfiles.Store, workbenchID int64, a updateTargetArgs) (out map[string]any, statusWritten bool, err error) {
+// image's copy is removed once no row names it. folder, when not nil, is the
+// target's new folder (targetFolder).
+func applyTargetUpdate(d *db.DB, store workbenchfiles.Store, workbenchID int64, a updateTargetArgs, folder *sql.NullInt64) (out map[string]any, statusWritten bool, err error) {
 	t, err := targetInWorkbench(d, workbenchID, a.TargetID)
 	if err != nil {
 		return nil, false, err
@@ -408,6 +487,11 @@ func applyTargetUpdate(d *db.DB, store workbenchfiles.Store, workbenchID int64, 
 		written, err := applyTargetFields(d, tx, t, a, move)
 		if err != nil {
 			return err
+		}
+		if folder != nil {
+			if err := d.SetTargetFolderTx(tx, int64(t.ID), *folder); err != nil {
+				return fmt.Errorf("setting the folder: %w", err)
+			}
 		}
 		statusWritten = written
 		for _, id := range a.RemoveImageIDs {
