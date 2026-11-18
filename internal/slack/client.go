@@ -561,7 +561,7 @@ func (c *Client) RevokeToken(ctx context.Context) error {
 	})
 }
 
-// ErrTokenNotRevoked: auth.revoke answered ok but did not revoke the token.
+// ErrTokenNotRevoked is returned when auth.revoke answers ok but did not revoke the token.
 var ErrTokenNotRevoked = errors.New("slack: auth.revoke did not revoke the token")
 
 // postAPI posts a form to one Web API method with the token as a bearer
