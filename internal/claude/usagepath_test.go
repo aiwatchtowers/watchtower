@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -20,7 +19,8 @@ import (
 func testPathCache(shell func(context.Context) (string, bool)) *usagePathCache {
 	now := time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC)
 	return &usagePathCache{shell: shell, fallback: func() string { return "" },
-		inherited: func() string { return "" }, now: func() time.Time { return now }}
+		inherited: func() string { return "" }, wellKnown: func() []string { return nil },
+		now: func() time.Time { return now }}
 }
 
 func writeCLI(t *testing.T, dir string) string {
@@ -43,25 +43,24 @@ func pathOf(t *testing.T, env []string) string {
 	return ""
 }
 
-// A configured CLI never starts the login shell.
-func TestUsageCommand_OverrideRunsNoShell(t *testing.T) {
+// A configured CLI is used as is; its child PATH carries the login shell's
+// PATH so a `#!/usr/bin/env node` CLI finds a node only the profile adds.
+func TestUsageCommand_OverrideChildGetsLoginPATH(t *testing.T) {
 	dir := t.TempDir()
 	cli := filepath.Join(dir, "claude-cli")
 	if err := os.WriteFile(cli, []byte("#!/bin/sh\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	var calls atomic.Int32
-	c := testPathCache(func(context.Context) (string, bool) { calls.Add(1); return "/x", true })
+	login := t.TempDir()
+	writeCLI(t, login) // never chosen over the configured CLI
+	c := testPathCache(func(context.Context) (string, bool) { return login, true })
 	c.fallback = func() string { return "/usr/bin:/bin" }
 	bin, env := c.command(t.Context(), cli)
 	if bin != cli {
 		t.Fatalf("bin = %q, want %q", bin, cli)
 	}
-	if got := filepath.SplitList(pathOf(t, env)); !slices.Contains(got, dir) {
-		t.Errorf("PATH %v lacks the CLI's folder", got)
-	}
-	if calls.Load() != 0 {
-		t.Errorf("login shell ran %d times for a configured CLI", calls.Load())
+	if got, want := pathOf(t, env), dir+":"+login+":/usr/bin:/bin"; got != want {
+		t.Errorf("PATH = %q, want %q", got, want)
 	}
 }
 
@@ -162,10 +161,31 @@ func TestUsageCommand_InheritedPATHFirst(t *testing.T) {
 	inherited, login := t.TempDir(), t.TempDir()
 	want := writeCLI(t, inherited)
 	writeCLI(t, login)
-	c := testPathCache(func(context.Context) (string, bool) { return login, true })
+	var calls atomic.Int32
+	c := testPathCache(func(context.Context) (string, bool) { calls.Add(1); return login, true })
 	c.inherited = func() string { return inherited }
 	if bin, _ := c.command(t.Context(), ""); bin != want {
 		t.Fatalf("bin = %q, want the inherited PATH's %q", bin, want)
+	}
+	if calls.Load() != 0 {
+		t.Errorf("login shell ran %d times although claude is on the inherited PATH", calls.Load())
+	}
+}
+
+// After the inherited PATH: the login shell's PATH, then wellKnownDirs in
+// FindBinary's order.
+func TestUsageCommand_LoginThenWellKnownOrder(t *testing.T) {
+	login, first, second := t.TempDir(), t.TempDir(), t.TempDir()
+	writeCLI(t, second)
+	want := writeCLI(t, first)
+	c := testPathCache(func(context.Context) (string, bool) { return login, true })
+	c.wellKnown = func() []string { return []string{first, second} }
+	if bin, _ := c.command(t.Context(), ""); bin != want {
+		t.Fatalf("bin = %q, want the first well-known folder's %q", bin, want)
+	}
+	want = writeCLI(t, login)
+	if bin, _ := c.command(t.Context(), ""); bin != want {
+		t.Fatalf("bin = %q, want the login PATH's %q", bin, want)
 	}
 }
 
@@ -195,8 +215,8 @@ func TestUsageCommand_MissRefreshesLoginPATH(t *testing.T) {
 	if bin != want {
 		t.Fatalf("bin = %q after the retry interval, want %q", bin, want)
 	}
-	if pathOf(t, env) != old+":"+added {
-		t.Errorf("PATH = %q, want the refreshed login PATH", pathOf(t, env))
+	if pathOf(t, env) != added+":"+old {
+		t.Errorf("PATH = %q, want the CLI's folder and the refreshed login PATH", pathOf(t, env))
 	}
 	if calls.Load() != 2 {
 		t.Errorf("shell calls = %d, want 2", calls.Load())

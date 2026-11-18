@@ -21,11 +21,12 @@ const (
 )
 
 // usagePaths caches the login shell's PATH once a shell has answered.
-// shell, fallback, inherited and now are seams for tests.
+// shell, fallback, inherited, wellKnown and now are seams for tests.
 var usagePaths = &usagePathCache{
 	shell:     func(ctx context.Context) (string, bool) { return loginShellPATHUntil(ctx, loginShell()) },
 	fallback:  fallbackPATH,
 	inherited: func() string { return os.Getenv("PATH") },
+	wellKnown: wellKnownDirs,
 	now:       time.Now,
 }
 
@@ -33,6 +34,7 @@ type usagePathCache struct {
 	shell     func(context.Context) (string, bool)
 	fallback  func() string
 	inherited func() string
+	wellKnown func() []string
 	now       func() time.Time
 
 	mu    sync.Mutex
@@ -66,14 +68,19 @@ func (c *usagePathCache) loginPATH(ctx context.Context, refresh bool) string {
 }
 
 // UsageCommand is the binary and environment for ReadUsage, resolved on
-// every poll. A configured CLI (override naming a file) runs no shell: its
-// PATH is its own folder plus the well-known tool folders. Otherwise claude
-// is looked up in FindBinary's order — the inherited PATH, the login shell's
-// PATH (bounded by ctx, see usageShellBudget), the well-known folders — so
-// the poll runs the claude the AI calls run, and a CLI installed after the
-// daemon started is found on a later poll; not found is a bare "claude",
-// which ReadUsage reports as cli_missing. The child's PATH is RichPATH's
-// order: login shell, well-known folders, inherited.
+// every poll in FindBinary's order, so the poll runs the claude the AI calls
+// run:
+//   - a configured CLI (override naming a file) is used as is; the child's
+//     PATH is its folder, the login shell's PATH (bounded, cached) and the
+//     well-known tool folders, so a `#!/usr/bin/env node` CLI finds a node
+//     only the login profile adds;
+//   - else claude on the inherited PATH, with no shell started;
+//   - else the login shell's PATH (bounded by ctx and usageShellBudget,
+//     cached once answered), then wellKnownDirs; after a miss the shell is
+//     asked again at most once per usageShellRetry, so a CLI installed later
+//     is found on a later poll.
+//
+// Not found is a bare "claude", which ReadUsage reports as cli_missing.
 func UsageCommand(ctx context.Context, override string) (bin string, env []string) {
 	return usagePaths.command(ctx, override)
 }
@@ -81,21 +88,26 @@ func UsageCommand(ctx context.Context, override string) (bin string, env []strin
 func (c *usagePathCache) command(ctx context.Context, override string) (string, []string) {
 	if override != "" {
 		if info, err := os.Stat(override); err == nil && !info.IsDir() {
-			return override, withPATH(mergePATH(filepath.Dir(override), c.fallback()))
+			login := c.loginPATH(ctx, false)
+			return override, withPATH(mergePATH(filepath.Dir(override), login, c.fallback()))
 		}
 	}
+	if bin := lookPathIn("claude", c.inherited()); bin != "" {
+		return bin, withPATH(mergePATH(filepath.Dir(bin), c.fallback()))
+	}
+	wellKnown := strings.Join(c.wellKnown(), string(filepath.ListSeparator))
 	login := c.loginPATH(ctx, false)
-	bin := lookPathIn("claude", mergePATH(c.inherited(), login, c.fallback()))
+	bin := lookPathIn("claude", mergePATH(login, wellKnown))
 	if bin == "" {
 		if fresh := c.loginPATH(ctx, true); fresh != login {
 			login = fresh
-			bin = lookPathIn("claude", mergePATH(c.inherited(), login, c.fallback()))
+			bin = lookPathIn("claude", mergePATH(login, wellKnown))
 		}
 	}
 	if bin == "" {
-		bin = "claude"
+		return "claude", withPATH(mergePATH(login, c.fallback()))
 	}
-	return bin, withPATH(mergePATH(login, c.fallback()))
+	return bin, withPATH(mergePATH(filepath.Dir(bin), login, c.fallback()))
 }
 
 // withPATH is the daemon's environment with PATH replaced (the last entry of

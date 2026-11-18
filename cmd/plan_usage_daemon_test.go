@@ -89,7 +89,8 @@ done
 }
 
 // The production Claude provider reads the CLI named by claude_path in the
-// config, through the get_usage control request.
+// config, through the get_usage control request, with the login shell's PATH
+// in the child's environment.
 func TestPlanProviders_ClaudeReadsConfiguredCLI(t *testing.T) {
 	if os.Getenv("WT_PLAN_USAGE_CLAUDE_HELPER") == "1" {
 		cfg, err := config.Load(flagConfig)
@@ -117,10 +118,15 @@ func TestPlanProviders_ClaudeReadsConfiguredCLI(t *testing.T) {
 	pidFile := filepath.Join(home, "claude.pid")
 	answer := `{"type":"control_response","response":{"subtype":"success","request_id":"wt-usage","response":` +
 		`{"subscription_type":"max","rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":12,"resets_at":null}}}}}`
-	script := "#!/bin/sh\necho $$ > '" + pidFile + "'\n" +
+	// The configured CLI needs an interpreter that only the login profile's
+	// PATH has (an npm install's `#!/usr/bin/env node`).
+	runtimeDir := filepath.Join(home, "profile-only", "bin")
+	require.NoError(t, os.MkdirAll(runtimeDir, 0700))
+	runtime := "#!/bin/sh\necho $$ > '" + pidFile + "'\n" +
 		"while IFS= read -r message; do\n  case \"$message\" in\n    *'\"subtype\":\"get_usage\"'*) printf '%s\\n' '" + answer + "' ;;\n  esac\ndone\n"
+	require.NoError(t, os.WriteFile(filepath.Join(runtimeDir, "wt-test-claude-runtime"), []byte(runtime), 0700))
 	cli := filepath.Join(home, "claude-cli")
-	require.NoError(t, os.WriteFile(cli, []byte(script), 0700))
+	require.NoError(t, os.WriteFile(cli, []byte("#!/usr/bin/env wt-test-claude-runtime\n"), 0700))
 	t.Cleanup(func() {
 		if b, err := os.ReadFile(pidFile); err == nil {
 			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 0 {
@@ -128,10 +134,11 @@ func TestPlanProviders_ClaudeReadsConfiguredCLI(t *testing.T) {
 			}
 		}
 	})
-	// A configured CLI must never run shell startup, which may hang.
+	// The login shell prints a banner, then the marked PATH (the shape the
+	// bounded login-shell lookup reads).
 	loginShell := filepath.Join(home, "login-shell")
-	shellCall := filepath.Join(home, "shell-called")
-	require.NoError(t, os.WriteFile(loginShell, []byte("#!/bin/sh\nprintf called > '"+shellCall+"'\nexit 1\n"), 0700))
+	require.NoError(t, os.WriteFile(loginShell, []byte("#!/bin/sh\necho 'profile banner'\n"+
+		"printf '\\n__WATCHTOWER_PATH__\\n%s\\n' '"+runtimeDir+":/usr/bin:/bin'\n"), 0700))
 	configDir := filepath.Join(home, ".config", "watchtower")
 	require.NoError(t, os.MkdirAll(configDir, 0700))
 	configPath := filepath.Join(configDir, "config.yaml")
@@ -152,6 +159,4 @@ func TestPlanProviders_ClaudeReadsConfiguredCLI(t *testing.T) {
 	})
 	output, err := child.CombinedOutput()
 	require.NoError(t, err, "%s", output)
-	_, shellErr := os.Stat(shellCall)
-	require.ErrorIs(t, shellErr, os.ErrNotExist, "plan usage read ran shell startup for a configured CLI")
 }
