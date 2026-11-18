@@ -172,18 +172,11 @@ func runAuthLogout(cmd *cobra.Command, _ []string) error {
 
 // resolveOAuthConfig reads OAuth credentials from env or build-time defaults.
 func resolveOAuthConfig() (auth.OAuthConfig, error) {
-	clientID := os.Getenv("WATCHTOWER_OAUTH_CLIENT_ID")
-	clientSecret := os.Getenv("WATCHTOWER_OAUTH_CLIENT_SECRET")
-	if clientID == "" {
-		clientID = auth.DefaultClientID
-	}
-	if clientSecret == "" {
-		clientSecret = auth.DefaultClientSecret
-	}
-	if clientID == "" || clientSecret == "" {
+	cfg, ok := auth.BuiltinApp()
+	if !ok {
 		return auth.OAuthConfig{}, fmt.Errorf("OAuth credentials not configured. Set WATCHTOWER_OAUTH_CLIENT_ID and WATCHTOWER_OAUTH_CLIENT_SECRET environment variables, or use an official release build")
 	}
-	return auth.OAuthConfig{ClientID: clientID, ClientSecret: clientSecret}, nil
+	return cfg, nil
 }
 
 // authResultInfo holds the workspace info after saving config.
