@@ -129,6 +129,39 @@ func splitCommands(line string) []commandPart {
 	return append(out, commandPart{line[start:], sep})
 }
 
+// splitWords splits a command on blanks, keeping a quoted string as one
+// word with its quotes removed.
+func splitWords(text string) []string {
+	var words []string
+	var cur strings.Builder
+	var quote rune
+	has := false
+	for _, ch := range text {
+		switch {
+		case quote != 0:
+			if ch == quote {
+				quote = 0
+			} else {
+				cur.WriteRune(ch)
+			}
+		case ch == '"' || ch == '\'':
+			quote, has = ch, true
+		case ch == ' ' || ch == '\t' || ch == '\r':
+			if has || cur.Len() > 0 {
+				words = append(words, cur.String())
+			}
+			cur.Reset()
+			has = false
+		default:
+			cur.WriteRune(ch)
+		}
+	}
+	if has || cur.Len() > 0 {
+		words = append(words, cur.String())
+	}
+	return words
+}
+
 // stripWrappers removes leading env assignments and wrappers, with their
 // options and the options' operands.
 func stripWrappers(words []string, c *shellCmd) []string {
@@ -167,7 +200,9 @@ func stripWrappers(words []string, c *shellCmd) []string {
 // the next command by && carries its directory on; after any other
 // separator the directory is unknown.
 func commands(summary string) []shellCmd {
-	if i := strings.LastIndex(summary, "\n# "); i >= 0 {
+	// permissionSummary appends the description as a last `# ` line; an
+	// inner comment line is skipped below, never a cut.
+	if i := strings.LastIndex(summary, "\n"); i >= 0 && strings.HasPrefix(summary[i+1:], "# ") {
 		summary = summary[:i]
 	}
 	var out []shellCmd
@@ -179,12 +214,7 @@ func commands(summary string) []shellCmd {
 		if strings.HasPrefix(strings.TrimSpace(part.text), "#") {
 			continue
 		}
-		var words []string
-		for _, w := range strings.Fields(part.text) {
-			if w = strings.Trim(w, `"'`); w != "" {
-				words = append(words, w)
-			}
-		}
+		words := splitWords(part.text)
 		c := shellCmd{cwd: cwd}
 		words = stripWrappers(words, &c)
 		if len(words) == 0 {
@@ -550,7 +580,7 @@ func filePath(r PermissionAsk) (p string, isFileTool, placed bool) {
 		p, _, _ = strings.Cut(r.Summary, "\n")
 		p = strings.TrimSpace(p)
 		// A JSON fallback summary is not a path.
-		return p, true, p != "" && !strings.HasPrefix(p, "{") && !strings.HasPrefix(p, "[")
+		return p, true, p != "" && !json.Valid([]byte(p))
 	case jsonPathTools[r.Tool]:
 		var in struct {
 			FilePath     string `json:"file_path"`
