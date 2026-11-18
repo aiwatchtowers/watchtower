@@ -106,6 +106,16 @@ const PrimitiveAttentionWaiting = "attention.waiting"
 // (Inbox builder B).
 const PrimitiveApprovalsList = "approvals.list"
 
+// PrimitiveUsesAI declares, for every engine primitive, whether it calls a
+// model (spec §4.2): a builtin: entry of an AI primitive makes the manifest
+// grant AI, so its background runs hold while background AI is paused.
+// TestBuiltin_EveryPrimitiveDeclaresAI fails on a primitive missing here.
+var PrimitiveUsesAI = map[string]bool{
+	"brief.compose": true, "plan.compose": true, "tracks.extract": true, "ideas.consolidate": true,
+	"reaction.compose": true, "track.scan": true,
+	PrimitiveAttentionWaiting: false, PrimitiveApprovalsList: false,
+}
+
 // ReadPrimitiveNames are the built-in primitives that only read: they take
 // no argument (no prompt), call no model and are journalled as a tool step,
 // outside the run's meter (sdk_builtin.go callRead). A dry run calls them
@@ -411,6 +421,56 @@ func (m *Manifest) FeedsSourcesToLLM() bool {
 		}
 		return p.Verb == "read" || p.Verb == VerbLive
 	})
+}
+
+// BackgroundAIPausedMessage is the error a background run of an AI recipe
+// ends with when the executor holds it (aiconsent.ErrPaused's text).
+const BackgroundAIPausedMessage = "Background AI is paused"
+
+// UsesAI reports whether the manifest grants a model call: llm:, agent:run,
+// session:start[@kind], track:scan, or builtin:<p> of an AI primitive
+// (PrimitiveUsesAI). Its background runs hold while background AI is paused.
+func (m *Manifest) UsesAI() bool {
+	return m != nil && slices.ContainsFunc(m.entries, func(p Permission) bool { return entryUsesAI(p.Capability, p.Verb) })
+}
+
+// PermissionsUseAI is UsesAI over raw manifest entries, the rule the
+// Desktop mirrors (shared fixture testdata/uses_ai_cases.json). An entry is
+// read by its capability and verb alone, so one that does not parse counts
+// only when it names an AI capability.
+func PermissionsUseAI(entries []string) bool {
+	return slices.ContainsFunc(entries, func(e string) bool {
+		head, rest, _ := strings.Cut(strings.TrimSpace(e), ":")
+		verb, _, _ := strings.Cut(rest, "@")
+		return entryUsesAI(strings.ToLower(head), strings.ToLower(verb))
+	})
+}
+
+// entryUsesAI is the per-entry rule of UsesAI.
+func entryUsesAI(capability, verb string) bool {
+	switch capability {
+	case "llm":
+		return true
+	case "agent":
+		return verb == "run"
+	case "session":
+		return verb == "start"
+	case "track":
+		return verb == "scan"
+	case "builtin":
+		return PrimitiveUsesAI[verb]
+	}
+	return false
+}
+
+// AutomationUsesAI reports whether a's indexed manifest grants AI; a
+// permissions_json that does not decode reads as AI (fail closed).
+func AutomationUsesAI(a *db.Automation) bool {
+	var entries []string
+	if err := json.Unmarshal([]byte(a.PermissionsJSON), &entries); err != nil {
+		return true
+	}
+	return PermissionsUseAI(entries)
 }
 
 // SlackLive reports whether the manifest lists slack:live: agent() may see

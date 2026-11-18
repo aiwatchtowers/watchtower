@@ -1473,6 +1473,40 @@
         "is_mac": true,
         "stuck_since": 1730000050
       }
+    },
+    {
+      "name": "background_ai_organization",
+      "json": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "background_ai": "organization",
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "expect": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "background_ai": "organization",
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "kit": {
+        "recordings_offered": true,
+        "is_mac": true,
+        "background_ai": "organization"
+      }
     }
   ],
   "upload_echo": [
@@ -1661,7 +1695,9 @@
         "epoch": 3,
         "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
         "id": "DDDDDDDD-0000-4000-8000-000000000006",
-        "keybox": {"grant": {}},
+        "keybox": {
+          "grant": {}
+        },
         "kind": "transport_switched",
         "target": "relay"
       },

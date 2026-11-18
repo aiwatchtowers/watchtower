@@ -111,6 +111,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         process.executableURL = URL(fileURLWithPath: cliPath)
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         process.arguments = ["ai", "test"] + (override.map { ["--provider", $0] } ?? [])
+        process.environment = Self.ownerEnvironment
 
         let output = await ProcessPipes.run(process)
         if output.exitCode == -1 {
@@ -161,6 +162,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         process.executableURL = URL(fileURLWithPath: binary)
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         process.arguments = args
+        process.environment = Self.ownerEnvironment
         let output = await ProcessPipes.run(process)
         return decodeTestResult(output)
     }
@@ -361,6 +363,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         process.executableURL = URL(fileURLWithPath: cliPath)
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         process.arguments = args
+        process.environment = Self.ownerEnvironment
 
         let stdout = Pipe()
         let stderr = Pipe()
@@ -443,6 +446,15 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
             return path
         }
         throw WatchtowerAIError.cliNotFound
+    }
+}
+
+extension WatchtowerAIService {
+    /// The app's environment for the `ai query` / `ai test` children: each
+    /// serves the owner's own chat turn or connection test (#1886), so an
+    /// inherited background marker never reaches them.
+    static var ownerEnvironment: [String: String] {
+        CLIOrigin.owner.environment(ProcessInfo.processInfo.environment)
     }
 }
 

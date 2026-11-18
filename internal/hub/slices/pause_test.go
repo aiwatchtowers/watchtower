@@ -112,7 +112,7 @@ func TestRunHandsAFailedSaveToOnError(t *testing.T) {
 	seen := make(chan error, 4)
 	ft := newFakeTime()
 	p := r.publisherWith(Config{Clock: ft.Now, OnError: func(err error) { seen <- err }}, src)
-	p.mono, p.timer = ft.Now, ft.Timer
+	ft.drive(p)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- p.Run(ctx) }()

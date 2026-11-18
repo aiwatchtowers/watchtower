@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/automations"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -329,4 +330,25 @@ func TestAutomationAgent_LedgerPurpose(t *testing.T) {
 	assert.Equal(t, "done", res.Text)
 	require.Len(t, sink.calls, 1)
 	assert.Equal(t, automationAgentSource, sink.calls[0].Purpose)
+}
+
+// BGAI-01 (#1886): an agent() child of a background run carries the run's
+// origin, so the watchtower server it starts is the run's too; an owner
+// run's child carries none (its run marker names the trigger).
+func TestAutomationAgentEnv_CarriesOrigin(t *testing.T) {
+	env := automationAgentEnv(aiconsent.WithAdmitted(context.Background(), "run:7"), 7)
+	assert.Contains(t, env, "WATCHTOWER_AUTOMATION_RUN_ID=7")
+	assert.Contains(t, env, aiconsent.EnvOrigin+"=background")
+	assert.Contains(t, env, aiconsent.EnvAdmitted+"=run:7")
+
+	owner := automationAgentEnv(aiconsent.WithOwnerStarted(context.Background()), 7)
+	for _, kv := range owner {
+		assert.False(t, strings.HasPrefix(kv, aiconsent.EnvOrigin+"=") || strings.HasPrefix(kv, aiconsent.EnvAdmitted+"="), kv)
+	}
+}
+
+// Codex starts its MCP servers with a filtered environment: the agent's
+// watchtower server gets the origin only when codex is told to pass it.
+func TestCodexAgentServerEnv_NamesOrigin(t *testing.T) {
+	assert.Equal(t, []string{automations.RunEnvMarker, aiconsent.EnvOrigin, aiconsent.EnvAdmitted}, codexAgentServerEnv)
 }

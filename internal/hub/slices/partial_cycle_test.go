@@ -171,7 +171,7 @@ func TestPermanentFailureBacksOffPerKind(t *testing.T) {
 	target.set(item("1", `{"v":0}`))
 	ft := newFakeTime()
 	p := r.publisherWith(Config{Clock: ft.Now, Transport: tr}, ask, target)
-	p.mono, p.timer = ft.Now, ft.Timer
+	ft.drive(p)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- p.Run(ctx) }()
@@ -315,7 +315,7 @@ func TestResumeAfterASwitchDropsTheOldTransportsRetries(t *testing.T) {
 	other.set(item("1", `{"v":0}`))
 	ft := newFakeTime()
 	p := r.publisherWith(Config{Clock: ft.Now, Transport: tr}, held, other)
-	p.mono, p.timer = ft.Now, ft.Timer
+	ft.drive(p)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- p.Run(ctx) }()
@@ -389,7 +389,7 @@ func TestPartlySavedThenFailedKindIsRetried(t *testing.T) {
 	ft := newFakeTime()
 	seen := make(chan error, 4)
 	p := r.publisherWith(Config{Clock: ft.Now, Transport: tr, OnError: func(err error) { seen <- err }}, target)
-	p.mono, p.timer = ft.Now, ft.Timer
+	ft.drive(p)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- p.Run(ctx) }()

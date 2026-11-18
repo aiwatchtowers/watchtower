@@ -537,7 +537,8 @@ final class CatchUpViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
-        process.environment = await Constants.resolvedEnvironmentAsync()
+        // Every CLIRun follows the owner's Run, Regenerate or rating.
+        process.environment = CLIOrigin.owner.environment(await Constants.resolvedEnvironmentAsync())
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         return await ProcessPipes.run(process).trimmed
     }

@@ -14,15 +14,18 @@ struct CLIStreamedRun: Sendable {
 
 /// Starts a `watchtower` command whose stdout is read as it arrives. The
 /// production conformer is `ProcessCLIRunner` over `CodeCLIProcess` (own
-/// process group, always reaped); tests script it.
+/// process group, always reaped); tests script it. Its one command, `workbench
+/// review overview`, calls a model, so `origin` is required as on
+/// `CLIRunnerProtocol.runModel` (#1886).
 protocol CLIStreamingRunner {
-    func stream(args: [String]) async throws -> CLIStreamedRun
+    func stream(args: [String], origin: CLIOrigin) async throws -> CLIStreamedRun
 }
 
 extension ProcessCLIRunner: CLIStreamingRunner {
-    func stream(args: [String]) async throws -> CLIStreamedRun {
+    func stream(args: [String], origin: CLIOrigin) async throws -> CLIStreamedRun {
         let process = try CodeCLIProcess.launch(
-            executable: binaryPath, arguments: args, environment: await Constants.resolvedEnvironmentAsync()
+            executable: binaryPath, arguments: args,
+            environment: origin.environment(await Constants.resolvedEnvironmentAsync())
         )
         return CLIStreamedRun(
             output: process.output,
@@ -98,7 +101,8 @@ extension WorkbenchCLI {
                     return
                 }
                 do {
-                    let run = try await streamer.stream(args: args)
+                    // The owner's overview: the review view they opened or its Generate.
+                    let run = try await streamer.stream(args: args, origin: .owner)
                     box.set(run.stop)
                     try await Self.pump(run, into: continuation)
                 } catch {

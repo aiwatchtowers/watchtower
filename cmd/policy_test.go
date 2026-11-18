@@ -41,7 +41,7 @@ func TestPolicyShow_JSONKeys(t *testing.T) {
 	keys, ok := m["keys"].(map[string]any)
 	require.True(t, ok)
 	wantKeys(t, keys, "AllowedSources", "MobileSync", "AllowedQuickConnections", "AllowAutomationShell",
-		"AllowedAIProviders", "AllowClaudeAITools", "PurgeRevokedData")
+		"AllowedAIProviders", "AllowClaudeAITools", "PurgeRevokedData", "AllowBackgroundAI")
 	assert.Equal(t, true, m["managed"])
 	assert.Equal(t, "com.watchtower.desktop", m["domain"])
 	assert.Equal(t, "off", keys["MobileSync"])
@@ -85,6 +85,14 @@ func TestPolicyShow_PlainNoProfile(t *testing.T) {
 	out := runPolicyShow(t)
 	assert.Contains(t, out, "Managed by your organization: no (domain com.watchtower.desktop)\n")
 	assert.Contains(t, out, "PurgeRevokedData: not set\n")
+	assert.Contains(t, out, "AllowBackgroundAI: not set\n")
 	assert.NotContains(t, out, "Not enforced")
 	assert.NotContains(t, out, "Profile problems")
+}
+
+func TestPolicyShow_PlainBackgroundAI(t *testing.T) {
+	policytest.Set(t, map[string]any{"AllowBackgroundAI": false})
+	assert.Contains(t, runPolicyShow(t), "AllowBackgroundAI: not allowed\n")
+	policytest.Set(t, map[string]any{"AllowBackgroundAI": true})
+	assert.Contains(t, runPolicyShow(t), "AllowBackgroundAI: allowed\n")
 }

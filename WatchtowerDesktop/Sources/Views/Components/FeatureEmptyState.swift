@@ -55,7 +55,16 @@ struct FeatureEmptyState<Extra: View>: View {
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 420)
             }
-            if let line = Self.readinessLine(readiness) {
+            if let readiness, case .backgroundAIPaused(let managed) = readiness {
+                // Background AI paused (#1886): a quiet line, the lock when the
+                // organization decided; none where the tab's own action builds
+                // what it shows (Catch-Up tops up digests itself).
+                if !Self.ownerActionLeads(copy) {
+                    Label(FeatureReadiness.line(readiness), systemImage: managed ? "lock.fill" : "pause.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else if let line = Self.readinessLine(readiness) {
                 Text(line)
                     .font(.callout)
             }
@@ -64,9 +73,13 @@ struct FeatureEmptyState<Extra: View>: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            if let action = Self.visibleAction(
-                copy: copy, readiness: readiness, turnOnError: turnOnError, turnOnFeatureID: turnOnFeatureID
-            ) {
+            let visibleAction = Self.visibleAction(
+                copy: copy, readiness: readiness, turnOnError: turnOnError, turnOnFeatureID: turnOnFeatureID)
+            if visibleAction == .allowBackgroundAI {
+                Button(BackgroundAIConsentCopy.allowAction) { onAction(.allowBackgroundAI) }
+                    .buttonStyle(.kitSecondary)
+                    .controlSize(.small)
+            } else if let action = visibleAction {
                 HStack(spacing: 8) {
                     Button(Self.label(for: action, retry: turnOnError != nil, ownFeatureID: copy.feature?.featureID)) {
                         onAction(action)
@@ -127,6 +140,15 @@ struct FeatureEmptyState<Extra: View>: View {
             return turnOnID.map { .turnOn(featureID: $0) }
         case .needsSource(let source):
             return .connect(source)
+        // Allow opens the consent screen; no button when the organization
+        // decided (#1886). A failed Turn on keeps its retry, and the tab's
+        // own action (Catch-Up's Build a recap) is the owner's and still runs.
+        case .backgroundAIPaused(let managed):
+            if turnOnError != nil, let featureID = turnOnID {
+                return .turnOn(featureID: featureID)
+            }
+            if ownerActionLeads(copy) { return copy.primaryAction }
+            return managed ? nil : .allowBackgroundAI
         default:
             if turnOnError != nil, let featureID = turnOnID {
                 return .turnOn(featureID: featureID)
@@ -150,12 +172,20 @@ struct FeatureEmptyState<Extra: View>: View {
         case .connect(let source): source.actionTitle
         case .openSettings(_, let label), .openBuiltin(_, let label): label
         case .tabAction(let label): label
+        case .allowBackgroundAI: BackgroundAIConsentCopy.allowAction
         }
+    }
+
+    /// The tab's own action (Catch-Up's Build a recap) is an owner gesture
+    /// that runs whatever background AI is set to (#1886).
+    static func ownerActionLeads(_ copy: EmptyStateCopy) -> Bool {
+        if case .tabAction = copy.primaryAction { return true }
+        return false
     }
 
     private static func isStateGated(_ action: EmptyStateAction) -> Bool {
         switch action {
-        case .turnOn, .connect: true
+        case .turnOn, .connect, .allowBackgroundAI: true
         case .openSettings, .openBuiltin, .tabAction: false
         }
     }

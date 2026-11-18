@@ -77,6 +77,26 @@ final class WorkbenchSessionsOrderTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(menu.sections.first { $0.title == "Ended" }).rows.contains { $0.id == 31 })
     }
 
+    /// A spec review session (#1945) groups by `live` like any state with no
+    /// group of its own: Working while live, Ended once it is not.
+    func testASpecReviewSessionGroupsByLive() throws {
+        let menu = try menu(extra: [
+            DemoSeed.JSON.session(32, workbench: DemoSeed.acmeID, [
+                "title": "Live review", "state_kind": "spec_review", "state_caption": "Spec review · round 1",
+                "state_tone": "green", "state_glyph": "doc.text.magnifyingglass", "live": true
+            ]),
+            DemoSeed.JSON.session(33, workbench: DemoSeed.acmeID, [
+                "title": "Gone review", "state_kind": "spec_review", "state_caption": "Spec review · round 1",
+                "state_tone": "green", "state_glyph": "doc.text.magnifyingglass", "live": false, "is_ring": true,
+                "last_active_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-60))
+            ])
+        ])
+        XCTAssertTrue(try XCTUnwrap(menu.sections.first { $0.title == "Working" }).rows.contains { $0.id == 32 })
+        XCTAssertFalse(menu.sections.first { $0.title == "Waiting for you" }?.rows.contains { $0.id == 32 || $0.id == 33 } ?? false)
+        XCTAssertTrue(try XCTUnwrap(menu.sections.first { $0.title == "Ended" }).rows.contains { $0.id == 33 })
+        XCTAssertFalse(menu.sections.first { $0.title == "Working" }?.rows.contains { $0.id == 33 } ?? false)
+    }
+
     func testEmptySectionsAreLeftOut() throws {
         var snapshot = try demoSnapshot(now: now)
         snapshot.sessions.removeAll { $0.workbenchID == DemoSeed.acmeID && $0.id != 10 }

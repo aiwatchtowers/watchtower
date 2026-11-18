@@ -28,6 +28,7 @@ const (
 	KeyAllowedAIProviders      = "AllowedAIProviders"
 	KeyAllowClaudeAITools      = "AllowClaudeAITools"
 	KeyPurgeRevokedData        = "PurgeRevokedData"
+	KeyAllowBackgroundAI       = "AllowBackgroundAI"
 )
 
 // The reserved keys: read and shown, not enforced in this version.
@@ -40,7 +41,7 @@ const (
 // Keys are the v1 keys, in display order.
 var Keys = []string{
 	KeyAllowedSources, KeyMobileSync, KeyAllowedQuickConnections, KeyAllowAutomationShell,
-	KeyAllowedAIProviders, KeyAllowClaudeAITools, KeyPurgeRevokedData,
+	KeyAllowedAIProviders, KeyAllowClaudeAITools, KeyPurgeRevokedData, KeyAllowBackgroundAI,
 }
 
 // ReservedKeys are named now and enforced by their own boards later.
@@ -83,6 +84,7 @@ type Keyset struct {
 	AllowedAIProviders      []string `json:"AllowedAIProviders"`
 	AllowClaudeAITools      *bool    `json:"AllowClaudeAITools"`
 	PurgeRevokedData        *bool    `json:"PurgeRevokedData"`
+	AllowBackgroundAI       *bool    `json:"AllowBackgroundAI"`
 }
 
 // Policy is the normalized policy, also the pinned `policy show --json`
@@ -129,6 +131,9 @@ func Normalize(raw map[string]any) Policy {
 	}
 	if v, ok := raw[KeyPurgeRevokedData]; ok {
 		ks.PurgeRevokedData = n.boolean(KeyPurgeRevokedData, v, true)
+	}
+	if v, ok := raw[KeyAllowBackgroundAI]; ok {
+		ks.AllowBackgroundAI = n.boolean(KeyAllowBackgroundAI, v, false)
 	}
 	n.reserved(raw)
 	return n.p

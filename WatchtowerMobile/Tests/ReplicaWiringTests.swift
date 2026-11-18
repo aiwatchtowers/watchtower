@@ -21,7 +21,7 @@ final class ReplicaWiringTests: XCTestCase {
         .heartbeat: 1,
         .deviceGrant: 1,
         .workbench: 3,
-        .terminalSession: 10,
+        .terminalSession: 11,
         .ownerAsk: 6,
         .workbenchTarget: 16,
         .workbenchComment: 3,

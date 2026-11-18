@@ -1,5 +1,6 @@
 import XCTest
 import WatchtowerCore
+import WatchtowerTestSupport
 
 /// Settings → claude.ai tools switches (#737): written through
 /// `watchtower config set`, then the main chat's idle sessions retire.

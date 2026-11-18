@@ -34,6 +34,12 @@ struct OrganizationPolicyPresentationTests {
         ])
     }
 
+    @Test("Background AI in plain words")
+    func backgroundAIInPlainWords() {
+        #expect(text(["AllowBackgroundAI": true]) == ["Background AI: Allowed by your organization"])
+        #expect(text(["AllowBackgroundAI": false]) == ["Background AI: Turned off by your organization"])
+    }
+
     @Test("reserved keys and profile problems are listed")
     func problemsAndReservedListed() {
         #expect(text(["RetentionDays": 30, "AllowAutomationShell": 1]) == [

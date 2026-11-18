@@ -81,9 +81,9 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
     func makeVM(runner: any CLIRunnerProtocol = FakeCLIRunner()) -> WorkbenchesViewModel {
         let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults,
                                       terminalCenter: center)
-        vm.titleService = { [weak self] id in
+        vm.titleService = { [weak self] row in
             guard let self else { throw CancellationError() }
-            titleCalls.append(id)
+            titleCalls.append(row.id)
             return try titleResult.get()
         }
         vm.now = { [weak self] in self?.clock ?? Date() }

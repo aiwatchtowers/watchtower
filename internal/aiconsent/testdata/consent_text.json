@@ -1,0 +1,142 @@
+[
+  {
+    "agent": "claude",
+    "reserve": "",
+    "poll_minutes": 15,
+    "backfill_days": 30,
+    "title": "Let Watchtower run AI in the background?",
+    "intro": "Watchtower uses Claude Code on this Mac to write your digests, briefings, tracks and people cards, and to run your automations. Most of this starts on its own, on a schedule or after each sync, without you asking each time.",
+    "plan": "These runs use your own Claude subscription and count toward its usage limits, the same as when you use Claude Code yourself. Watchtower never pays for, sees or shares your sign-in.",
+    "reserve_line": null,
+    "what_runs_title": "What can run on its own",
+    "what_runs": [
+      "After each sync, about every 15 min: channel digests, tracks, memory, next steps, image and link descriptions",
+      "Every few hours: ideas, Jira and mail digests",
+      "Once a day: the morning briefing, day plan and people cards. Once a week: agent coaching",
+      "After you connect a source: its last 30 days of history, a little at each sync",
+      "Your automations that use AI, at the times and on the events you set"
+    ],
+    "user_started": "Chats, Catch-Up, Run now and anything else you start yourself always run, whatever you pick here.",
+    "change_later": "You can change this any time in Settings → System → AI → Background AI."
+  },
+  {
+    "agent": "codex",
+    "reserve": "claude",
+    "poll_minutes": 5,
+    "backfill_days": 7,
+    "title": "Let Watchtower run AI in the background?",
+    "intro": "Watchtower uses Codex on this Mac to write your digests, briefings, tracks and people cards, and to run your automations. Most of this starts on its own, on a schedule or after each sync, without you asking each time.",
+    "plan": "These runs use your own ChatGPT plan and count toward its Codex usage limits, the same as when you use Codex yourself. Watchtower never pays for, sees or shares your sign-in.",
+    "reserve_line": "When Codex's usage limit is reached, runs switch to Claude Code and use your Claude subscription.",
+    "what_runs_title": "What can run on its own",
+    "what_runs": [
+      "After each sync, about every 5 min: channel digests, tracks, memory, next steps, image and link descriptions",
+      "Every few hours: ideas, Jira and mail digests",
+      "Once a day: the morning briefing, day plan and people cards. Once a week: agent coaching",
+      "After you connect a source: its last 7 days of history, a little at each sync",
+      "Your automations that use AI, at the times and on the events you set"
+    ],
+    "user_started": "Chats, Catch-Up, Run now and anything else you start yourself always run, whatever you pick here.",
+    "change_later": "You can change this any time in Settings → System → AI → Background AI."
+  },
+  {
+    "agent": "claude",
+    "reserve": "codex",
+    "poll_minutes": 5,
+    "backfill_days": 7,
+    "title": "Let Watchtower run AI in the background?",
+    "intro": "Watchtower uses Claude Code on this Mac to write your digests, briefings, tracks and people cards, and to run your automations. Most of this starts on its own, on a schedule or after each sync, without you asking each time.",
+    "plan": "These runs use your own Claude subscription and count toward its usage limits, the same as when you use Claude Code yourself. Watchtower never pays for, sees or shares your sign-in.",
+    "reserve_line": "When Claude's usage limit is reached, runs switch to Codex and use your ChatGPT plan.",
+    "what_runs_title": "What can run on its own",
+    "what_runs": [
+      "After each sync, about every 5 min: channel digests, tracks, memory, next steps, image and link descriptions",
+      "Every few hours: ideas, Jira and mail digests",
+      "Once a day: the morning briefing, day plan and people cards. Once a week: agent coaching",
+      "After you connect a source: its last 7 days of history, a little at each sync",
+      "Your automations that use AI, at the times and on the events you set"
+    ],
+    "user_started": "Chats, Catch-Up, Run now and anything else you start yourself always run, whatever you pick here.",
+    "change_later": "You can change this any time in Settings → System → AI → Background AI."
+  },
+  {
+    "agent": "ollama",
+    "reserve": "",
+    "poll_minutes": 5,
+    "backfill_days": 7,
+    "title": "Let Watchtower run AI in the background?",
+    "intro": "Watchtower uses Ollama / Local on this Mac to write your digests, briefings, tracks and people cards, and to run your automations. Most of this starts on its own, on a schedule or after each sync, without you asking each time.",
+    "plan": "These runs use Ollama / Local, the model server set in Settings → AI.",
+    "reserve_line": null,
+    "what_runs_title": "What can run on its own",
+    "what_runs": [
+      "After each sync, about every 5 min: channel digests, tracks, memory, next steps, image and link descriptions",
+      "Every few hours: ideas, Jira and mail digests",
+      "Once a day: the morning briefing, day plan and people cards. Once a week: agent coaching",
+      "After you connect a source: its last 7 days of history, a little at each sync",
+      "Your automations that use AI, at the times and on the events you set"
+    ],
+    "user_started": "Chats, Catch-Up, Run now and anything else you start yourself always run, whatever you pick here.",
+    "change_later": "You can change this any time in Settings → System → AI → Background AI."
+  },
+  {
+    "agent": "ollama",
+    "reserve": "codex",
+    "poll_minutes": 15,
+    "backfill_days": 30,
+    "title": "Let Watchtower run AI in the background?",
+    "intro": "Watchtower uses Ollama / Local on this Mac to write your digests, briefings, tracks and people cards, and to run your automations. Most of this starts on its own, on a schedule or after each sync, without you asking each time.",
+    "plan": "These runs use Ollama / Local, the model server set in Settings → AI.",
+    "reserve_line": null,
+    "what_runs_title": "What can run on its own",
+    "what_runs": [
+      "After each sync, about every 15 min: channel digests, tracks, memory, next steps, image and link descriptions",
+      "Every few hours: ideas, Jira and mail digests",
+      "Once a day: the morning briefing, day plan and people cards. Once a week: agent coaching",
+      "After you connect a source: its last 30 days of history, a little at each sync",
+      "Your automations that use AI, at the times and on the events you set"
+    ],
+    "user_started": "Chats, Catch-Up, Run now and anything else you start yourself always run, whatever you pick here.",
+    "change_later": "You can change this any time in Settings → System → AI → Background AI."
+  },
+  {
+    "agent": "claude",
+    "reserve": "ollama",
+    "poll_minutes": 15,
+    "backfill_days": 30,
+    "title": "Let Watchtower run AI in the background?",
+    "intro": "Watchtower uses Claude Code on this Mac to write your digests, briefings, tracks and people cards, and to run your automations. Most of this starts on its own, on a schedule or after each sync, without you asking each time.",
+    "plan": "These runs use your own Claude subscription and count toward its usage limits, the same as when you use Claude Code yourself. Watchtower never pays for, sees or shares your sign-in.",
+    "reserve_line": null,
+    "what_runs_title": "What can run on its own",
+    "what_runs": [
+      "After each sync, about every 15 min: channel digests, tracks, memory, next steps, image and link descriptions",
+      "Every few hours: ideas, Jira and mail digests",
+      "Once a day: the morning briefing, day plan and people cards. Once a week: agent coaching",
+      "After you connect a source: its last 30 days of history, a little at each sync",
+      "Your automations that use AI, at the times and on the events you set"
+    ],
+    "user_started": "Chats, Catch-Up, Run now and anything else you start yourself always run, whatever you pick here.",
+    "change_later": "You can change this any time in Settings → System → AI → Background AI."
+  },
+  {
+    "agent": "codex",
+    "reserve": "codex",
+    "poll_minutes": 15,
+    "backfill_days": 30,
+    "title": "Let Watchtower run AI in the background?",
+    "intro": "Watchtower uses Codex on this Mac to write your digests, briefings, tracks and people cards, and to run your automations. Most of this starts on its own, on a schedule or after each sync, without you asking each time.",
+    "plan": "These runs use your own ChatGPT plan and count toward its Codex usage limits, the same as when you use Codex yourself. Watchtower never pays for, sees or shares your sign-in.",
+    "reserve_line": null,
+    "what_runs_title": "What can run on its own",
+    "what_runs": [
+      "After each sync, about every 15 min: channel digests, tracks, memory, next steps, image and link descriptions",
+      "Every few hours: ideas, Jira and mail digests",
+      "Once a day: the morning briefing, day plan and people cards. Once a week: agent coaching",
+      "After you connect a source: its last 30 days of history, a little at each sync",
+      "Your automations that use AI, at the times and on the events you set"
+    ],
+    "user_started": "Chats, Catch-Up, Run now and anything else you start yourself always run, whatever you pick here.",
+    "change_later": "You can change this any time in Settings → System → AI → Background AI."
+  }
+]

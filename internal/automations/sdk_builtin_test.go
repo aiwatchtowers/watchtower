@@ -2,6 +2,7 @@ package automations_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -37,11 +38,19 @@ func (f *exFixture) seedBuiltin(t *testing.T, text string, confirmed bool) db.Au
 	if err != nil {
 		t.Fatalf("parse built-in: %v", err)
 	}
+	m, err := automations.ParseManifest(r.Permissions, r.Outputs, scope)
+	if err != nil {
+		t.Fatalf("built-in manifest: %v", err)
+	}
+	perms, err := json.Marshal(m.Normalized())
+	if err != nil {
+		t.Fatal(err)
+	}
 	a := db.Automation{
 		BuiltinID: testBuiltinID, Slug: testBuiltinID, Name: r.Name,
 		TriggerKind: db.TriggerKindSync, TriggerSpec: `{"sync":"morning_brief"}`,
 		Concurrency: r.Concurrency, BudgetTokens: r.Budget.Tokens, BudgetMinutes: r.Budget.Minutes,
-		PauseTimeoutHours: r.PauseTimeoutHours, PermissionsJSON: `[]`, OutputsJSON: `["inbox"]`,
+		PauseTimeoutHours: r.PauseTimeoutHours, PermissionsJSON: string(perms), OutputsJSON: `["inbox"]`,
 		RecipeText: text, ContentHash: automations.ContentHash([]byte(text)), ApprovalHash: automations.ApprovalHash(r),
 	}
 	id, err := f.d.UpsertBuiltinAutomation(a)

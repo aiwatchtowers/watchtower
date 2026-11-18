@@ -15,6 +15,7 @@ import (
 
 	"watchtower/internal/agentkind"
 	"watchtower/internal/ai"
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/chat"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -481,7 +482,12 @@ func runAITest(_ *cobra.Command, _ []string) error {
 		}
 		leafCfg.ClaudePath, leafCfg.CodexPath = aiTestCLIPath, aiTestCLIPath
 	}
-	gen := transport.For(cfg.AI.Provider).NewGenerator(transport.Options{Config: &leafCfg, Model: model, IsolatedChild: true})
+	// Consent and the policy per call (BGAI-02): the owner's own test runs;
+	// a background child of this command is refused while paused.
+	gen := policyCheckedGenerator{
+		inner:    transport.For(cfg.AI.Provider).NewGenerator(transport.Options{Config: &leafCfg, Model: model, IsolatedChild: true}),
+		provider: cfg.AI.Provider,
+	}
 	ctx, shutdown := notifyShutdownContext(context.Background(), stderrLogf)
 	defer shutdown()
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
@@ -512,6 +518,9 @@ func connectionTestCode(err error) providers.ErrorCategory {
 }
 
 func connectionTestError(err error) string {
+	if errors.Is(err, aiconsent.ErrPaused) {
+		return aiconsent.ErrPaused.Error() + "."
+	}
 	if errors.Is(err, errProbeNonceMissing) { // error_code stays invalid_output
 		return "Codex answered but ignored Watchtower's instructions. Update the Codex CLI, or check its config, and test again."
 	}
@@ -529,6 +538,19 @@ type aiModelsProvider struct {
 	ResolvedStrong string   `json:"resolved_strong"`
 	Models         []string `json:"models,omitempty"`
 	Error          string   `json:"error,omitempty"`
+	// Subscription is the registry's plan facts (providers.Subscription)
+	// for a provider that runs on the owner's own plan: the Desktop's
+	// background AI consent copy reads them from here, never from a Swift
+	// copy keyed by provider name (LLMTRANSPORT-01).
+	Subscription *aiModelsSubscription `json:"subscription,omitempty"`
+}
+
+// aiModelsSubscription is providers.Subscription on the wire.
+type aiModelsSubscription struct {
+	AgentName string `json:"agent_name"`
+	Plan      string `json:"plan"`
+	Usage     string `json:"usage"`
+	Limit     string `json:"limit"`
 }
 
 // aiModelsOutput is the JSON envelope of `ai models --json`.
@@ -555,6 +577,9 @@ func runAIModels(cmd *cobra.Command, _ []string) error {
 		entry := aiModelsProvider{Provider: p}
 		entry.ResolvedLight, entry.ResolvedStrong = providers.ResolveModelsFor(cfg, p.ID)
 		entry.Models = p.KnownModels
+		if sub := p.Subscription; sub != (providers.Subscription{}) {
+			entry.Subscription = &aiModelsSubscription{AgentName: sub.AgentName, Plan: sub.Plan, Usage: sub.Usage, Limit: sub.Limit}
+		}
 		if p.LiveModels {
 			// Best-effort: an unreachable server yields an empty list plus an
 			// error string, never a failing command.

@@ -378,7 +378,7 @@ final class IdeasViewModel {
         // run that already committed ideas to the DB, and those must not
         // stay invisible until some unrelated reload.
         do {
-            let data = try await runner.run(args: args)
+            let data = try await runner.runModel(args: args, origin: .owner)
             isBackfilling = false
             backfillStartedAt = nil
             if Task.isCancelled {

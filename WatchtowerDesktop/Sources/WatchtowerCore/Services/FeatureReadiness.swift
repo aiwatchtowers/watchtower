@@ -2,8 +2,8 @@ import Foundation
 
 /// Per-feature readiness, pure: every input (the clock included) comes in
 /// `ReadinessInputs`. Precedence is fixed: off > needsSource > ready >
-/// needsSource(.jiraBoards) > needsDigests > daemonStopped > preparing > error >
-/// waitingForSync > scheduled.
+/// needsSource(.jiraBoards) > needsDigests > backgroundAIPaused > daemonStopped >
+/// preparing > error > waitingForSync > scheduled.
 package enum FeatureReadiness {
     /// A `running` row older than this is a dead process's leftover
     /// (`reapStalePipelineRuns` only reaps it after 24 h), not a run.
@@ -57,6 +57,9 @@ package enum FeatureReadiness {
         if feature.runsOnlyWithDigests, let digests = ReadinessFeature.digests.featureID,
            inputs.disabledFeatureIDs.contains(digests) {
             return .needsDigests
+        }
+        if feature.usesBackgroundAI, !inputs.backgroundAI.isAllowed {
+            return .backgroundAIPaused(managed: inputs.backgroundAI.reason == .organization)
         }
         if isDaemonDown(running: inputs.daemonRunning, since: inputs.daemonNotRunningSince, now: inputs.now) {
             return .daemonStopped
@@ -205,6 +208,8 @@ package enum FeatureReadiness {
         case .needsSource(let source): "\(source.actionTitle) to get this"
         // Every place that shows it follows it with a Turn on Slack Digests button.
         case .needsDigests: "Needs Slack Digests"
+        case .backgroundAIPaused(let managed):
+            managed ? BackgroundAIConsentCopy.readinessOrg : BackgroundAIConsentCopy.readinessPaused
         case .ready: "Ready — Open"
         case .daemonStopped: "Watchtower isn't running"
         case .preparing(let detail): withDetail("Preparing now", detail)

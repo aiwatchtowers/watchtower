@@ -1,0 +1,417 @@
+package aiconsent
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"watchtower/internal/policy"
+	"watchtower/internal/policy/policytest"
+)
+
+type consentCase struct {
+	Name      string          `json:"name"`
+	Answer    *string         `json:"answer"`
+	PolicyRaw json.RawMessage `json:"policy_raw"`
+	Want      struct {
+		Effective string `json:"effective"`
+		Reason    string `json:"reason"`
+		Prompt    bool   `json:"prompt"`
+		Locked    bool   `json:"locked"`
+	} `json:"want"`
+}
+
+func TestBGAI03_SharedFixture(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "consent_cases.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []consentCase
+	if err := json.Unmarshal(data, &cases); err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) != 8 {
+		t.Fatalf("fixture has %d rows, spec §3.2 has 8", len(cases))
+	}
+	for _, c := range cases {
+		t.Run(c.Name, func(t *testing.T) {
+			raw := map[string]any{}
+			if len(c.PolicyRaw) > 0 {
+				var v any
+				if err := json.Unmarshal(c.PolicyRaw, &v); err != nil {
+					t.Fatal(err)
+				}
+				raw[policy.KeyAllowBackgroundAI] = v
+			}
+			answerRaw := ""
+			if c.Answer != nil {
+				answerRaw = *c.Answer
+			}
+			a, _ := ParseAnswer(answerRaw)
+			got := Resolve(a, policy.Normalize(raw).Keys.AllowBackgroundAI)
+			if string(got.Effective) != c.Want.Effective || string(got.Reason) != c.Want.Reason ||
+				got.Prompt != c.Want.Prompt || got.Locked != c.Want.Locked {
+				t.Fatalf("got %+v, want %+v", got, c.Want)
+			}
+			if got.Allowed() != (c.Want.Effective == "allowed") {
+				t.Fatalf("Allowed() = %v for effective %q", got.Allowed(), c.Want.Effective)
+			}
+		})
+	}
+}
+
+func TestParseAnswer(t *testing.T) {
+	for raw, want := range map[string]struct {
+		a     Answer
+		known bool
+	}{
+		"":        {AnswerNone, true},
+		"allowed": {AnswerAllowed, true},
+		"paused":  {AnswerPaused, true},
+		"yes":     {AnswerNone, false},
+		"Allowed": {AnswerNone, false},
+	} {
+		a, known := ParseAnswer(raw)
+		if a != want.a || known != want.known {
+			t.Errorf("ParseAnswer(%q) = (%q, %v), want (%q, %v)", raw, a, known, want.a, want.known)
+		}
+	}
+}
+
+func TestLogLine(t *testing.T) {
+	const tail = ` — sync keeps running; allow it in Watchtower or with "watchtower ai background allow"`
+	f := false
+	for _, c := range []struct {
+		s    State
+		want string
+	}{
+		{Resolve(AnswerAllowed, nil), ""},
+		{Resolve(AnswerNone, nil), "background AI: paused (not answered yet)" + tail},
+		{Resolve(AnswerPaused, nil), "background AI: paused (paused by you)" + tail},
+		{Resolve(AnswerAllowed, &f), "background AI: paused (turned off by your organization)" + tail},
+	} {
+		if got := LogLine(c.s); got != c.want {
+			t.Errorf("LogLine(%+v) = %q, want %q", c.s, got, c.want)
+		}
+	}
+}
+
+// captureLog swaps the package logger for one that records each line.
+func captureLog(t *testing.T) *[]string {
+	t.Helper()
+	var lines []string
+	logf = func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+	return &lines
+}
+
+func writeConfig(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestCurrent_UnreadableConfigIsPaused(t *testing.T) {
+	resetForTest(t)
+	policytest.Set(t, nil)
+	lines := captureLog(t)
+	SetConfigPath(writeConfig(t, "ai: [background_runs: allowed\n  : :"))
+	s := Current()
+	if s.Effective != EffectivePaused || s.Reason != ReasonUnanswered {
+		t.Fatalf("got %+v, want paused/unanswered", s)
+	}
+	if len(*lines) != 1 {
+		t.Fatalf("logged %d lines, want 1: %q", len(*lines), *lines)
+	}
+}
+
+func TestCurrent_UnknownValueReadsAbsent(t *testing.T) {
+	resetForTest(t)
+	policytest.Set(t, nil)
+	lines := captureLog(t)
+	SetConfigPath(writeConfig(t, "ai: {background_runs: yes}\n"))
+	for range 2 {
+		s := Current()
+		if s.Answer != AnswerNone || s.Effective != EffectivePaused {
+			t.Fatalf("got %+v, want no answer, paused", s)
+		}
+	}
+	if len(*lines) != 1 {
+		t.Fatalf("logged %d lines after two calls, want 1: %q", len(*lines), *lines)
+	}
+}
+
+func TestCurrent_ReadsAnswer(t *testing.T) {
+	resetForTest(t)
+	policytest.Set(t, nil)
+	SetConfigPath(writeConfig(t, "ai:\n  provider: claude\n  background_runs: allowed\n"))
+	if s := Current(); !s.Allowed() || s.Reason != ReasonOwner {
+		t.Fatalf("got %+v, want allowed by the owner", s)
+	}
+}
+
+func TestCurrent_MissingFileIsUnanswered(t *testing.T) {
+	resetForTest(t)
+	policytest.Set(t, nil)
+	lines := captureLog(t)
+	SetConfigPath(filepath.Join(t.TempDir(), "config.yaml"))
+	if s := Current(); s.Effective != EffectivePaused || s.Reason != ReasonUnanswered || !s.Prompt {
+		t.Fatalf("got %+v, want paused/unanswered with a prompt", s)
+	}
+	if len(*lines) != 0 {
+		t.Fatalf("a missing config is not a failure, logged %q", *lines)
+	}
+}
+
+func TestCurrent_NoPathIsPaused(t *testing.T) {
+	resetForTest(t)
+	policytest.Set(t, map[string]any{policy.KeyAllowBackgroundAI: true})
+	if s := Current(); s.Allowed() {
+		t.Fatalf("no config path must read paused even with a permissive profile, got %+v", s)
+	}
+}
+
+func TestCurrent_PolicyApplies(t *testing.T) {
+	resetForTest(t)
+	policytest.Set(t, map[string]any{policy.KeyAllowBackgroundAI: false})
+	SetConfigPath(writeConfig(t, "ai: {background_runs: allowed}\n"))
+	if s := Current(); s.Allowed() || !s.Locked || s.Answer != AnswerAllowed {
+		t.Fatalf("got %+v, want paused and locked by the organization", s)
+	}
+}
+
+func TestCurrent_RereadsOnlyOnMtimeChange(t *testing.T) {
+	resetForTest(t)
+	policytest.Set(t, nil)
+	parses := 0
+	parseHook = func() { parses++ }
+	path := writeConfig(t, "ai: {background_runs: paused}\n")
+	SetConfigPath(path)
+	Current()
+	Current()
+	if parses != 1 {
+		t.Fatalf("two calls parsed %d times, want 1", parses)
+	}
+	if err := os.WriteFile(path, []byte("ai: {background_runs: allowed}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	later := time.Now().Add(time.Hour)
+	if err := os.Chtimes(path, later, later); err != nil {
+		t.Fatal(err)
+	}
+	if s := Current(); !s.Allowed() {
+		t.Fatalf("after the rewrite got %+v, want allowed", s)
+	}
+	if parses != 2 {
+		t.Fatalf("after an mtime change parsed %d times, want 2", parses)
+	}
+}
+
+func pausedReader() State { return Resolve(AnswerNone, nil) }
+
+func TestCheck_NoopOutsideTheDaemon(t *testing.T) {
+	resetForTest(t)
+	InitProcess("cli", func(string) string { return "" })
+	if err := CheckWith(context.Background(), pausedReader); err != nil {
+		t.Fatalf("an owner process must not be gated, got %v", err)
+	}
+}
+
+func TestCheck_OwnerStartedPasses(t *testing.T) {
+	resetForTest(t)
+	InitProcess("daemon", func(string) string { return "" })
+	if err := CheckWith(WithOwnerStarted(context.Background()), pausedReader); err != nil {
+		t.Fatalf("an owner-started call must pass, got %v", err)
+	}
+}
+
+func TestCheck_DaemonBackgroundIsRefused(t *testing.T) {
+	resetForTest(t)
+	InitProcess("daemon", func(string) string { return "" })
+	err := CheckWith(context.Background(), pausedReader)
+	if !errors.Is(err, ErrPaused) || err.Error() != "Background AI is paused" {
+		t.Fatalf("got %v, want ErrPaused", err)
+	}
+	allowed := func() State { return Resolve(AnswerAllowed, nil) }
+	if err := CheckWith(context.Background(), allowed); err != nil {
+		t.Fatalf("allowed: got %v", err)
+	}
+}
+
+func TestCheck_NilReaderReadsCurrent(t *testing.T) {
+	resetForTest(t)
+	policytest.Set(t, nil)
+	InitProcess("daemon", func(string) string { return "" })
+	if err := CheckWith(context.Background(), nil); !errors.Is(err, ErrPaused) {
+		t.Fatalf("nil reader with no config path must fail closed, got %v", err)
+	}
+	if err := Check(context.Background()); !errors.Is(err, ErrPaused) {
+		t.Fatalf("Check with no config path must fail closed, got %v", err)
+	}
+}
+
+func TestOverrideWinsOverConfig(t *testing.T) {
+	resetForTest(t)
+	SetCurrentOverrideForTest(func() State { return Resolve(AnswerAllowed, nil) })
+	if !Current().Allowed() {
+		t.Fatal("the test override must answer Current")
+	}
+	SetCurrentOverrideForTest(nil)
+	if Current().Allowed() {
+		t.Fatal("clearing the override must restore the config read")
+	}
+}
+
+// resetForTest clears the package state (config read, process origin, test
+// hooks) and restores it when the test ends.
+func resetForTest(t *testing.T) {
+	t.Helper()
+	cur.mu.Lock()
+	savedPath, savedOverride, savedInfo, savedAnswer, savedFail := cur.path, cur.override, cur.info, cur.answer, cur.lastFail
+	cur.path, cur.override, cur.info, cur.answer, cur.lastFail = "", nil, nil, AnswerNone, ""
+	cur.mu.Unlock()
+	proc.mu.Lock()
+	savedMark, savedRunID, savedLookup := proc.mark, proc.runID, proc.lookup
+	proc.mark, proc.runID, proc.lookup = originMark{}, "", nil
+	proc.mu.Unlock()
+	savedLogf, savedParseHook := logf, parseHook
+	t.Cleanup(func() {
+		cur.mu.Lock()
+		cur.path, cur.override, cur.info, cur.answer, cur.lastFail = savedPath, savedOverride, savedInfo, savedAnswer, savedFail
+		cur.mu.Unlock()
+		proc.mu.Lock()
+		proc.mark, proc.runID, proc.lookup = savedMark, savedRunID, savedLookup
+		proc.mu.Unlock()
+		logf, parseHook = savedLogf, savedParseHook
+	})
+}
+
+var orgAllows = map[string]any{policy.KeyAllowBackgroundAI: true}
+
+// A file that exists but cannot be read: the owner's answer is unknown, so a
+// permissive profile must not stand in for it.
+func TestCurrent_UnreadableConfigWithPermissiveProfileIsPaused(t *testing.T) {
+	resetForTest(t)
+	policytest.Set(t, orgAllows)
+	captureLog(t)
+	SetConfigPath(t.TempDir()) // a directory: stat works, reading fails
+	if s := Current(); s.Allowed() {
+		t.Fatalf("got %+v, want paused", s)
+	}
+}
+
+func TestCurrent_UnparsableConfigWithPermissiveProfileIsPaused(t *testing.T) {
+	resetForTest(t)
+	policytest.Set(t, orgAllows)
+	captureLog(t)
+	SetConfigPath(writeConfig(t, "ai: [background_runs: allowed\n  : :"))
+	if s := Current(); s.Allowed() {
+		t.Fatalf("got %+v, want paused", s)
+	}
+}
+
+func TestCurrent_MissingConfigWithPermissiveProfileIsAllowed(t *testing.T) {
+	resetForTest(t)
+	policytest.Set(t, orgAllows)
+	SetConfigPath(filepath.Join(t.TempDir(), "config.yaml"))
+	if s := Current(); !s.Allowed() || s.Reason != ReasonOrganization {
+		t.Fatalf("got %+v, want allowed by the organization", s)
+	}
+}
+
+func TestCurrent_FailedParseIsRetried(t *testing.T) {
+	resetForTest(t)
+	policytest.Set(t, nil)
+	lines := captureLog(t)
+	parses := 0
+	parseHook = func() { parses++ }
+	SetConfigPath(writeConfig(t, "ai: [background_runs: allowed\n  : :"))
+	Current()
+	Current()
+	if parses != 2 {
+		t.Fatalf("a failed parse must not be cached: %d parses after two calls, want 2", parses)
+	}
+	if len(*lines) != 1 {
+		t.Fatalf("the same failure logged %d times, want once: %q", len(*lines), *lines)
+	}
+}
+
+func TestCurrent_RereadsOnModeChange(t *testing.T) {
+	resetForTest(t)
+	policytest.Set(t, nil)
+	parses := 0
+	parseHook = func() { parses++ }
+	path := writeConfig(t, "ai: {background_runs: allowed}\n")
+	SetConfigPath(path)
+	Current()
+	if err := os.Chmod(path, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	Current()
+	if parses != 2 {
+		t.Fatalf("a mode change must re-read: %d parses, want 2", parses)
+	}
+}
+
+// Two keys that differ only in case leave the answer ambiguous: Go's map order
+// and the Desktop could pick different ones, so both read it as unreadable
+// (paused, even under a permissive profile) instead of picking (BGAI-03).
+func TestCurrent_AmbiguousKeyCaseIsPaused(t *testing.T) {
+	for name, cfg := range map[string]string{
+		"section, no exact key":   "AI: {background_runs: allowed}\nAi: {background_runs: paused}\n",
+		"section, with exact key": "ai: {background_runs: allowed}\nAI: {model: m}\n",
+		"answer key":              "ai: {Background_Runs: allowed, BACKGROUND_RUNS: paused}\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			resetForTest(t)
+			policytest.Set(t, orgAllows)
+			lines := captureLog(t)
+			SetConfigPath(writeConfig(t, cfg))
+			s := Current()
+			if s.Allowed() || s.Answer != AnswerNone {
+				t.Fatalf("got %+v, want paused with no answer", s)
+			}
+			if len(*lines) != 1 || !strings.Contains((*lines)[0], "more than once") {
+				t.Fatalf("logged %q, want one ambiguity line", *lines)
+			}
+		})
+	}
+}
+
+func TestCurrent_SingleCaseVariantReads(t *testing.T) {
+	resetForTest(t)
+	policytest.Set(t, nil)
+	SetConfigPath(writeConfig(t, "AI: {Background_Runs: allowed}\n"))
+	if s := Current(); !s.Allowed() || s.Reason != ReasonOwner {
+		t.Fatalf("got %+v, want allowed by the owner", s)
+	}
+}
+
+func TestCheckUnambiguous(t *testing.T) {
+	for _, ok := range []string{
+		"", "a: 1\n", "ai: {background_runs: allowed}\n", "AI: {Background_Runs: paused}\n",
+	} {
+		if err := CheckUnambiguous([]byte(ok)); err != nil {
+			t.Errorf("%q: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{
+		"AI: {provider: claude}\nai: {background_runs: allowed}\n",
+		"ai: {background_runs: paused, Background_Runs: allowed}\n",
+	} {
+		if err := CheckUnambiguous([]byte(bad)); !errors.Is(err, ErrAmbiguousConfig) {
+			t.Errorf("%q: got %v, want ErrAmbiguousConfig", bad, err)
+		}
+	}
+	if err := CheckUnambiguous([]byte("not: [yaml\n")); err == nil || errors.Is(err, ErrAmbiguousConfig) {
+		t.Errorf("unparsable: got %v, want a parse error", err)
+	}
+}

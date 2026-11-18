@@ -78,7 +78,7 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertTrue(kind.isKnown)
         XCTAssertEqual(tone, .purple)
         XCTAssertTrue(tone.isKnown)
-        XCTAssertEqual(TerminalSessionState.Kind.knownValues.last, .readyToCheck)
+        XCTAssertEqual(TerminalSessionState.Kind.knownValues.last, .specReview)
         XCTAssertEqual(TerminalSessionState.Tone.knownValues.last, .purple)
     }
 
@@ -99,7 +99,7 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
             TerminalSessionState.Kind.knownValues.map(\.rawValue),
             [
                 "working", "running", "waiting_on_ask", "needs_approval", "finished", "stopped", "failed", "not_started",
-                "ready_to_check"
+                "ready_to_check", "spec_review"
             ]
         )
         XCTAssertEqual(
@@ -290,6 +290,25 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
             let caps = try XCTUnwrap(AgentSessionCapabilities.of(kind), kind)
             XCTAssertEqual(TerminalSessionState.PhoneCaps(caps), want, kind)
         }
+    }
+
+    /// #1945: a session in the spec review author loop decodes as a known
+    /// `.specReview`, its caption carrying the round and no ask named.
+    func testTerminalSessionInSpecReviewDecodes() throws {
+        var json = try object("terminal_session")
+        json["state_kind"] = "spec_review"
+        json["state_caption"] = "Spec review · round 2"
+        json["state_glyph"] = "doc.text.magnifyingglass"
+        json["state_tone"] = "green"
+        json["open_asks"] = 0
+        json.removeValue(forKey: "oldest_ask_id")
+        let session = try TerminalSessionState.decode(payload: try data(json))
+        XCTAssertEqual(session.stateKind, .specReview)
+        XCTAssertTrue(session.stateKind.isKnown)
+        XCTAssertEqual(session.stateCaption, "Spec review · round 2")
+        XCTAssertEqual(session.stateTone, .green)
+        XCTAssertEqual(session.openAsks, 0)
+        XCTAssertNil(session.oldestAskID)
     }
 
     /// A record from a Mac older than G5 has no `watch_issue`: it still

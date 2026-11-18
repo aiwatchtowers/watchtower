@@ -73,16 +73,16 @@ final class ReviewScriptedRunner: CLIRunnerProtocol, CLIStreamingRunner, @unchec
         await signal.until { [self] in processes.count >= count }
     }
 
-    func run(args: [String], timeout: TimeInterval) async throws -> Data {
-        lock.withLock { timeouts[args[2], default: []].append(timeout) }
-        return try await run(args: args)
+    func run(args: [String], timeout: TimeInterval) async throws -> Data { try await answer(args, timeout, model: false) }
+    func run(args: [String]) async throws -> Data { try await answer(args, nil, model: false) }
+    /// `runModel` is in ReviewScriptedRunner+Model.swift; generic entries refuse a model command (#1886).
+    func answer(_ args: [String], _ timeout: TimeInterval?, model: Bool) async throws -> Data {
+        if !model { try CLIRunnerError.refuseModelCommand(args) }
+        if let timeout { lock.withLock { timeouts[args[2], default: []].append(timeout) } }
+        return Data(try await serve(args).utf8)
     }
 
-    func run(args: [String]) async throws -> Data {
-        Data(try await serve(args).utf8)
-    }
-
-    func stream(args: [String]) async throws -> CLIStreamedRun {
+    func stream(args: [String], origin _: CLIOrigin) async throws -> CLIStreamedRun {
         if liveStreams {
             let process = FakeOverviewProcess(args: args)
             lock.withLock {

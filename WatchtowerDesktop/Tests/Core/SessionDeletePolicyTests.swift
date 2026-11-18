@@ -10,7 +10,7 @@ final class SessionDeletePolicyTests: XCTestCase {
         switch kind {
         case .finished, .stopped, .failed:
             return true
-        case .notStarted, .running, .working, .needsApproval, .waitingOnAsk, .readyToCheck, .background:
+        case .notStarted, .running, .working, .needsApproval, .waitingOnAsk, .readyToCheck, .background, .specReview:
             return false
         }
     }
@@ -20,6 +20,10 @@ final class SessionDeletePolicyTests: XCTestCase {
             SessionSwitcherPresentation.State(kind: kind, live: live, openAsks: kind == .waitingOnAsk ? 1 : 0),
             isWorkbenchSession: workbench
         )
+    }
+
+    func testLiveSpecReviewIsNotQuick() {
+        XCTAssertFalse(isQuick(.specReview, live: true, workbench: true), "the agent still owes the loop an answer")
     }
 
     /// PROJ-17: a live session whose agent may still be working is deleted

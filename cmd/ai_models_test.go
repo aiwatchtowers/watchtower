@@ -178,6 +178,7 @@ func TestAIModels_JSONCarriesCapabilities(t *testing.T) {
 			DisplayName  string          `json:"display_name"`
 			Kind         string          `json:"kind"`
 			Capabilities json.RawMessage `json:"capabilities"`
+			Subscription json.RawMessage `json:"subscription,omitempty"`
 		} `json:"providers"`
 	}
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &parsed), "output: %s", buf.String())
@@ -187,6 +188,7 @@ func TestAIModels_JSONCarriesCapabilities(t *testing.T) {
 		DisplayName  string          `json:"display_name"`
 		Kind         string          `json:"kind"`
 		Capabilities json.RawMessage `json:"capabilities"`
+		Subscription json.RawMessage `json:"subscription,omitempty"`
 	}
 	rows := make([]row, 0, len(parsed.Providers))
 	for _, p := range parsed.Providers {
