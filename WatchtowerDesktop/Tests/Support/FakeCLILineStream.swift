@@ -124,7 +124,7 @@ package final class FakeCLILineSession: CLILineSession, @unchecked Sendable {
 
     /// The stdin writes as text lines.
     package var writtenLines: [String] {
-        writes.flatMap { String(decoding: $0, as: UTF8.self).split(separator: "\n").map(String.init) }
+        writes.flatMap { (String(bytes: $0, encoding: .utf8) ?? "").split(separator: "\n").map(String.init) }
     }
 
     package var inputClosed: Bool {

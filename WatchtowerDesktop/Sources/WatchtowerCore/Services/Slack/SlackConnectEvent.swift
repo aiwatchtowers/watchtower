@@ -18,6 +18,24 @@ package enum SlackConnectFailure: String, Codable, Equatable, Sendable {
     }
 }
 
+/// A `connected` event's payload: the account is written.
+package struct SlackConnectedAccount: Equatable, Sendable {
+    package let flow: String
+    package let accountID: Int64
+    package let teamID: String
+    package let teamName: String
+    /// The client id the row was on before (a rebind), or "".
+    package let reboundFrom: String
+
+    package init(flow: String, accountID: Int64, teamID: String, teamName: String, reboundFrom: String) {
+        self.flow = flow
+        self.accountID = accountID
+        self.teamID = teamID
+        self.teamName = teamName
+        self.reboundFrom = reboundFrom
+    }
+}
+
 /// One stdout line of `watchtower slack connect serve` (plan B Task 7): the
 /// Swift twin of the Go events, one case per `event` value.
 package enum SlackConnectEvent: Codable, Equatable, Sendable {
@@ -29,8 +47,7 @@ package enum SlackConnectEvent: Codable, Equatable, Sendable {
     case link(flow: String, teamID: String, clientID: String)
     /// The authorize URL was opened in the browser.
     case browser(flow: String)
-    /// The account is written; `reboundFrom` is the old client id, or "".
-    case connected(flow: String, accountID: Int64, teamID: String, teamName: String, reboundFrom: String)
+    case connected(SlackConnectedAccount)
     case failed(flow: String, reason: SlackConnectFailure, message: String)
     /// A second start was refused; `flow` is the running one.
     case busy(flow: String)
@@ -62,13 +79,13 @@ package enum SlackConnectEvent: Codable, Equatable, Sendable {
             )
         case .browser: self = .browser(flow: try box.decode(String.self, forKey: .flow))
         case .connected:
-            self = .connected(
+            self = .connected(SlackConnectedAccount(
                 flow: try box.decode(String.self, forKey: .flow),
                 accountID: try box.decode(Int64.self, forKey: .accountID),
                 teamID: try box.decode(String.self, forKey: .teamID),
                 teamName: try box.decode(String.self, forKey: .teamName),
                 reboundFrom: try box.decodeIfPresent(String.self, forKey: .reboundFrom) ?? ""
-            )
+            ))
         case .failed:
             self = .failed(
                 flow: try box.decode(String.self, forKey: .flow),
@@ -96,13 +113,13 @@ package enum SlackConnectEvent: Codable, Equatable, Sendable {
         case let .browser(flow):
             try box.encode(Kind.browser, forKey: .event)
             try box.encode(flow, forKey: .flow)
-        case let .connected(flow, accountID, teamID, teamName, reboundFrom):
+        case let .connected(account):
             try box.encode(Kind.connected, forKey: .event)
-            try box.encode(flow, forKey: .flow)
-            try box.encode(accountID, forKey: .accountID)
-            try box.encode(teamID, forKey: .teamID)
-            try box.encode(teamName, forKey: .teamName)
-            try box.encode(reboundFrom, forKey: .reboundFrom)
+            try box.encode(account.flow, forKey: .flow)
+            try box.encode(account.accountID, forKey: .accountID)
+            try box.encode(account.teamID, forKey: .teamID)
+            try box.encode(account.teamName, forKey: .teamName)
+            try box.encode(account.reboundFrom, forKey: .reboundFrom)
         case let .failed(flow, reason, message):
             try box.encode(Kind.failed, forKey: .event)
             try box.encode(flow, forKey: .flow)

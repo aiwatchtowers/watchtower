@@ -14,7 +14,7 @@ final class CLILineStreamTests: XCTestCase {
         super.tearDown()
     }
 
-    private let shell = ProcessCLILineStream(binaryPath: "/bin/sh", environment: { ["PATH": "/usr/bin:/bin"] })
+    private let shell = ProcessCLILineStream(binaryPath: "/bin/sh") { ["PATH": "/usr/bin:/bin"] }
 
     private func collect(_ stream: AsyncThrowingStream<String, Error>) async -> (lines: [String], error: Error?) {
         var lines: [String] = []
@@ -55,7 +55,7 @@ final class CLILineStreamTests: XCTestCase {
     }
 
     func testLaunchFailureThrows() async {
-        let missing = ProcessCLILineStream(binaryPath: "/nonexistent/watchtower", environment: { [:] })
+        let missing = ProcessCLILineStream(binaryPath: "/nonexistent/watchtower") { [:] }
         let result = await collect(missing.lines(args: [], stdin: nil))
         guard case .launchFailed? = result.error as? CLIRunnerError else {
             return XCTFail("expected launchFailed, got \(String(describing: result.error))")

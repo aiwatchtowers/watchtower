@@ -17,7 +17,9 @@ final class SlackConnectListenerHostTests: XCTestCase {
     /// The Go side's fixture (plan B Task 7 writes it): every line decodes.
     func testDecodesEveryEvent() throws {
         let fixture = URL(fileURLWithPath: #filePath) // …/WatchtowerDesktop/Tests/Core/<this file>
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("internal/slackconnect/testdata/serve_events.jsonl")
         let lines = try String(contentsOf: fixture, encoding: .utf8).split(separator: "\n")
@@ -41,7 +43,7 @@ final class SlackConnectListenerHostTests: XCTestCase {
     func testDecodesFieldValues() throws {
         let line = #"{"event":"connected","flow":"f1","account_id":7,"team_id":"T0ACME","team_name":"Acme","rebound_from":""}"#
         let event = try JSONDecoder().decode(SlackConnectEvent.self, from: Data(line.utf8))
-        XCTAssertEqual(event, .connected(flow: "f1", accountID: 7, teamID: "T0ACME", teamName: "Acme", reboundFrom: ""))
+        XCTAssertEqual(event, .connected(SlackConnectedAccount(flow: "f1", accountID: 7, teamID: "T0ACME", teamName: "Acme", reboundFrom: "")))
         let link = #"{"event":"link","flow":"f2","team_id":"T0ACME","client_id":"1111.2222"}"#
         XCTAssertEqual(try JSONDecoder().decode(SlackConnectEvent.self, from: Data(link.utf8)),
                        .link(flow: "f2", teamID: "T0ACME", clientID: "1111.2222"))
@@ -53,15 +55,17 @@ final class SlackConnectListenerHostTests: XCTestCase {
                        .failed(flow: "f", reason: .other, message: "m"))
     }
 
+    private func text(_ cmd: SlackConnectCommand) throws -> String? {
+        String(bytes: try cmd.line(), encoding: .utf8)
+    }
+
     func testCommandLines() throws {
-        XCTAssertEqual(String(decoding: try SlackConnectCommand.start(teamID: "T0ACME", clientID: "1.2", accountID: 4).line(), as: UTF8.self),
+        XCTAssertEqual(try text(.start(teamID: "T0ACME", clientID: "1.2", accountID: 4)),
                        #"{"account_id":4,"client_id":"1.2","cmd":"start","team_id":"T0ACME"}"# + "\n")
-        XCTAssertEqual(String(decoding: try SlackConnectCommand.start(teamID: "T0ACME", clientID: "1.2", accountID: nil).line(), as: UTF8.self),
+        XCTAssertEqual(try text(.start(teamID: "T0ACME", clientID: "1.2", accountID: nil)),
                        #"{"client_id":"1.2","cmd":"start","team_id":"T0ACME"}"# + "\n")
-        XCTAssertEqual(String(decoding: try SlackConnectCommand.confirm(flow: "f1").line(), as: UTF8.self),
-                       #"{"cmd":"confirm","flow":"f1"}"# + "\n")
-        XCTAssertEqual(String(decoding: try SlackConnectCommand.cancel(flow: "f1").line(), as: UTF8.self),
-                       #"{"cmd":"cancel","flow":"f1"}"# + "\n")
+        XCTAssertEqual(try text(.confirm(flow: "f1")), #"{"cmd":"confirm","flow":"f1"}"# + "\n")
+        XCTAssertEqual(try text(.cancel(flow: "f1")), #"{"cmd":"cancel","flow":"f1"}"# + "\n")
     }
 
     // MARK: Host
@@ -95,7 +99,7 @@ final class SlackConnectListenerHostTests: XCTestCase {
         XCTAssertTrue(host.send(.cancel(flow: "f1")))
         XCTAssertEqual(child.writtenLines, [
             #"{"client_id":"1.2","cmd":"start","team_id":"T0ACME"}"#,
-            #"{"cmd":"cancel","flow":"f1"}"#,
+            #"{"cmd":"cancel","flow":"f1"}"#
         ])
     }
 
