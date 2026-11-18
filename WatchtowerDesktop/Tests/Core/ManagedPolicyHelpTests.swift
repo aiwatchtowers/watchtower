@@ -20,11 +20,16 @@ final class ManagedPolicyHelpTests: XCTestCase {
             if text.contains(url) { holders.append(file.lastPathComponent) }
         }
         XCTAssertEqual(holders, ["ManagedPolicyHelp.swift"])
+        // Both link sites of this version draw the shared link.
+        for file in ["Views/Settings/OrganizationPolicySection.swift", "Views/Settings/ConnectionsSettings.swift"] {
+            let text = try String(contentsOf: sources.appendingPathComponent(file), encoding: .utf8)
+            XCTAssertTrue(text.contains("ITGuideLink()"), file)
+        }
     }
 
     func testURLEqualsGoConstant() throws {
         let site = desktop.deletingLastPathComponent().appendingPathComponent("docs/mdm/site.json")
-        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: site)) as? [String: String])
-        XCTAssertEqual(ManagedPolicyHelp.itGuideURL.absoluteString, json["url"])
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: site)) as? [String: Any])
+        XCTAssertEqual(ManagedPolicyHelp.itGuideURL.absoluteString, json["url"] as? String)
     }
 }
