@@ -58,12 +58,23 @@ enum DesktopProcessLaunchSites {
         "Views/Settings/JiraBoardsSettingsView.swift": Site(launch: .noModel, reason: "jira boards select/deselect"),
         "Views/Settings/JiraUserMappingSettingsView.swift": Site(launch: .noModel, reason: "jira users map/resolve"),
         "Services/GoogleAuthService.swift": Site(launch: .noModel, reason: "google/calendar login"),
-        "Services/GoogleConnectFlow.swift": Site(launch: .noModel, reason: "google login")
+        "Services/GoogleConnectFlow.swift": Site(launch: .noModel, reason: "google login"),
+        "Services/CodeSearchRun.swift": Site(launch: .noModel, reason: "code search over the code index (CodeCLIProcess)"),
+        "Services/CodeIndexCenter.swift": Site(launch: .noModel, reason: "code index builds (CodeCLIProcess)")
     ]
 
-    /// Files whose string-array literal starts like a model command path but
-    /// is not an argv, with the reason (`testLiteralModelArgsUseRunModel`).
-    static let nonArgvLiterals: [String: String] = [
-        "Views/Workbench/Asks/SpecReview/SpecReviewView.swift": "[\"ask\", \"target\", \"comment\"]: anchor kinds"
+    /// Scopes (`<path>#<func or var name>`) holding a model-path literal with
+    /// no origin in the same body, each with why that is safe
+    /// (`testLiteralModelArgsUseRunModel`). A path alone exempts the whole file.
+    static let literalExemptions: [String: String] = [
+        "WatchtowerCore/Services/ModelCommands.swift": "the model-command list itself",
+        "Views/Workbench/Asks/SpecReview/SpecReviewView.swift#refLabel":
+            "[\"ask\", \"target\", \"comment\"]: anchor kinds, not an argv",
+        "WatchtowerCore/Services/Automations/AutomationsCLI.swift#args":
+            "the argv builder of every op; dryRun and preview launch it through runModel",
+        "Services/WorkbenchCLI.swift#review":
+            "the generic review prefix: its runner refuses a model subcommand; overview and lessons propose use "
+            + "reviewModel (WorkbenchCLIReviewTests.testEveryModelArgvOfTheReviewFamilyGoesThroughRunModel)",
+        "Services/WorkbenchCLI.swift#args": "SessionStartRequest.args: sessionStart launches it through runModel"
     ]
 }

@@ -61,13 +61,22 @@ package enum ModelCommands {
         ["workbench", "spec-review", "start"]
     ]
 
+    /// The root's persistent flags that take a value (`cmd/root.go`:
+    /// `--workspace`, `--config`, `--provider`), plus `--db`, which the brief's
+    /// launchers put first. Their value is consumed wherever the flag stands,
+    /// so it is never read as a command word (`--workspace digest sync`).
+    /// `ModelCommandsTests.testGlobalValueFlagsMatchTheGoRoot` keeps the root's
+    /// string flags in this set.
+    package static let globalValueFlags: Set<String> = ["--workspace", "--config", "--provider", "--db"]
+
     /// The model command `argv` runs, as its space-joined path ("digest
     /// generate"), or nil. A path is a prefix (`meeting-prep` covers every
     /// `meeting-prep …` command, as the Go list means it). Flags are skipped
-    /// wherever they stand, as cobra skips them: the leading `--config <path>`
-    /// / `--db <path>`, and inner ones such as `jira --account 3 boards
-    /// analyze`. A token after a `--flag` (no `=`) that is not the next path
-    /// word is taken as that flag's value. `--` ends the command words.
+    /// wherever they stand, as cobra skips them: a global value flag
+    /// (`globalValueFlags`) with its value, `--name=value` alone, and any other
+    /// `--flag`, after which a token that is not the next path word is taken as
+    /// that flag's value (`jira --account 3 boards analyze`). `--` ends the
+    /// command words.
     package static func match(_ argv: [String]) -> String? {
         paths.first { matches($0, argv) }.map { $0.joined(separator: " ") }
     }
@@ -75,9 +84,16 @@ package enum ModelCommands {
     private static func matches(_ path: [String], _ argv: [String]) -> Bool {
         var next = 0
         var afterFlag = false
-        for token in argv {
-            if next == path.count { return true }
+        var index = argv.startIndex
+        while index < argv.endIndex, next < path.count {
+            let token = argv[index]
+            index += 1
             if token == "--" { return false }
+            if globalValueFlags.contains(token) {
+                index += 1 // its value
+                afterFlag = false
+                continue
+            }
             if token.count > 1, token.hasPrefix("-") {
                 afterFlag = !token.contains("=")
                 continue

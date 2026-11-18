@@ -26,9 +26,11 @@ final class DesktopModelLaunchSitesTests: XCTestCase {
         return out
     }
 
-    /// A file that finds the CLI binary and builds a `Process` of its own.
+    /// A file that finds the CLI binary and builds a `Process` of its own
+    /// (directly or through `CodeCLIProcess.launch`).
     private static func launchesCLI(_ text: String) -> Bool {
-        text.contains("findCLIPath") && (text.contains("Process()") || text.contains(".executableURL"))
+        text.contains("findCLIPath")
+            && (text.contains("Process()") || text.contains(".executableURL") || text.contains("CodeCLIProcess.launch"))
     }
 
     func testEveryProcessLaunchOfTheCLIIsListed() throws {
@@ -63,41 +65,74 @@ final class DesktopModelLaunchSitesTests: XCTestCase {
             }
             XCTAssertTrue(Self.launchesCLI(text), "DesktopProcessLaunchSites lists \(path), which no longer launches the CLI")
         }
-        for path in DesktopProcessLaunchSites.nonArgvLiterals.keys {
-            XCTAssertNotNil(files[path], "nonArgvLiterals lists \(path), which no longer exists")
+    }
+
+    /// The round-1 string scan, kept as an extra net: a string-array literal
+    /// that starts with a model command path — or is a proper prefix of one
+    /// composed with `+` (`["workbench", "review"] + args`) — sits in a body
+    /// (the enclosing `func`, `init` or computed `var`) that passes an origin:
+    /// `runModel(` or `origin: .`. Listed `Process` launch sites that run a
+    /// model are covered by `testEveryProcessLaunchOfTheCLIIsListed`; anything
+    /// else is in `DesktopProcessLaunchSites.literalExemptions` with a reason.
+    func testLiteralModelArgsUseRunModel() throws {
+        let files = try Self.sourceFiles()
+        let patterns = try Self.literalPatterns()
+        let scopeStart = try NSRegularExpression(
+            pattern: #"\b(?:func\s+([A-Za-z_][A-Za-z0-9_]*)|(init)\s*\(|var\s+([A-Za-z_][A-Za-z0-9_]*)\s*:[^=\n]*\{)"#)
+        var found = 0
+        var usedExemptions: Set<String> = []
+        for (path, text) in files {
+            let ns = text as NSString
+            let whole = NSRange(location: 0, length: ns.length)
+            let scopes = scopeStart.matches(in: text, range: whole)
+            for pattern in patterns {
+                for literal in pattern.matches(in: text, range: whole) {
+                    found += 1
+                    if DesktopProcessLaunchSites.literalExemptions[path] != nil {
+                        usedExemptions.insert(path)
+                        continue
+                    }
+                    if let site = DesktopProcessLaunchSites.sites[path], site.launch != .noModel { continue }
+                    let before = scopes.last { $0.range.location <= literal.range.location }
+                    let after = scopes.first { $0.range.location > literal.range.location }
+                    let from = before?.range.location ?? 0
+                    let body = ns.substring(with: NSRange(location: from, length: (after?.range.location ?? ns.length) - from))
+                    let name = before.flatMap { scope in
+                        (1...3).lazy.compactMap { i -> String? in
+                            let r = scope.range(at: i)
+                            return r.location == NSNotFound ? nil : ns.substring(with: r)
+                        }.first
+                    } ?? "-"
+                    let key = "\(path)#\(name)"
+                    if DesktopProcessLaunchSites.literalExemptions[key] != nil {
+                        usedExemptions.insert(key)
+                        continue
+                    }
+                    XCTAssertTrue(body.contains("runModel(") || body.contains("origin: ."),
+                                  "\(key) builds a model command's argv (\(ns.substring(with: literal.range))) "
+                                  + "with no origin in the same body: launch it through runModel(args:origin:…)")
+                }
+            }
+        }
+        XCTAssertGreaterThan(found, 10, "the literal scan found almost nothing: is the pattern broken?")
+        for key in DesktopProcessLaunchSites.literalExemptions.keys {
+            XCTAssertTrue(usedExemptions.contains(key), "literalExemptions lists \(key), which holds no model-path literal any more")
         }
     }
 
-    /// The round-1 string scan, kept as an extra net: a file with a
-    /// string-array literal that starts with a model command path launches it
-    /// through an entry that takes an origin — `runModel(`, or the review
-    /// stream's `stream(args:origin:)` — or is a listed `Process` launch site
-    /// that runs a model, whose origin `testEveryProcessLaunchOfTheCLIIsListed`
-    /// checks.
-    /// File-scoped: the literal is often built in one function and launched in
-    /// another (`MeetingPrepViewModel.start`, `AutomationsCLI.args`).
-    func testLiteralModelArgsUseRunModel() throws {
-        let files = try Self.sourceFiles()
-        let patterns = try ModelCommands.paths.map { path -> NSRegularExpression in
+    /// A full model path opening a literal, and each proper prefix of one
+    /// closed and composed with `+`.
+    private static func literalPatterns() throws -> [NSRegularExpression] {
+        var patterns: [NSRegularExpression] = []
+        for path in ModelCommands.paths {
             let words = path.map { NSRegularExpression.escapedPattern(for: "\"\($0)\"") }
-            return try NSRegularExpression(pattern: #"\[\s*"# + words.joined(separator: #"\s*,\s*"#) + #"(\s*[,\]])"#)
+            let sep = #"\s*,\s*"#
+            patterns.append(try NSRegularExpression(pattern: #"\[\s*"# + words.joined(separator: sep) + #"\s*[,\]]"#))
+            for count in 1..<path.count {
+                let prefix = words.prefix(count).joined(separator: sep)
+                patterns.append(try NSRegularExpression(pattern: #"\[\s*"# + prefix + #"\s*\]\s*\+"#))
+            }
         }
-        var found = 0
-        for (path, text) in files {
-            let range = NSRange(text.startIndex..., in: text)
-            guard patterns.contains(where: { $0.firstMatch(in: text, range: range) != nil }) else { continue }
-            found += 1
-            if DesktopProcessLaunchSites.nonArgvLiterals[path] != nil { continue }
-            if let site = DesktopProcessLaunchSites.sites[path], site.launch != .noModel { continue }
-            XCTAssertTrue(text.contains("runModel(") || text.contains("stream(args: args, origin: ."),
-                          "\(path) builds a model command's argv but never calls runModel(args:origin:…)")
-        }
-        XCTAssertGreaterThan(found, 10, "the literal scan found almost nothing: is the pattern broken?")
-        for path in DesktopProcessLaunchSites.nonArgvLiterals.keys {
-            let text = files[path] ?? ""
-            let range = NSRange(text.startIndex..., in: text)
-            XCTAssertTrue(patterns.contains { $0.firstMatch(in: text, range: range) != nil },
-                          "nonArgvLiterals lists \(path), which holds no model-like literal any more")
-        }
+        return patterns
     }
 }

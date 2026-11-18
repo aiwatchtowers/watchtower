@@ -759,7 +759,7 @@ extension WorkbenchesViewModel {
               notYetTitledStreak[sessionID, default: 0] < Self.maxNotYetTitledPolls,
               row.claudeSessionID != nil, terminalCenter?.hasTranscript(row) ?? true else { return }
         do {
-            if try await titleService(sessionID).written {
+            if try await titleService(row).written {
                 notYetTitledStreak[sessionID] = nil
                 await loadSessions(projectID: row.projectID)
             } else {

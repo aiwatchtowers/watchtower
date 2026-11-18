@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import WatchtowerCore
+import WatchtowerTestSupport
 
 @Suite("CLIRunner")
 struct CLIRunnerTests {

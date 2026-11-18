@@ -1004,19 +1004,26 @@ struct WorkbenchCLI {
 
     /// Every review call prints one envelope; a refusal is `ok: false` with
     /// `error` at exit 0, not a throw.
-    /// `origin` is given for the subcommands that call a model (`lessons
-    /// propose`); nil runs the generic entry, which refuses a model command.
-    func review(_ args: [String], timeout: TimeInterval? = nil, origin: CLIOrigin? = nil) async throws
-        -> ReviewEnvelope {
+    /// The generic entry refuses a model command (`overview`, `lessons
+    /// propose`): those go through `reviewModel`.
+    func review(_ args: [String], timeout: TimeInterval? = nil) async throws -> ReviewEnvelope {
         let full = ["workbench", "review"] + args + ["--json"]
         let data: Data
-        if let origin {
-            data = try await runner.runModel(args: full, origin: origin, timeout: timeout, stdin: nil)
-        } else if let timeout {
+        if let timeout {
             data = try await runner.run(args: full, timeout: timeout)
         } else {
             data = try await runner.run(args: full)
         }
+        return try Self.decodeReview(data)
+    }
+
+    /// `review` for the subcommands that call a model; `origin` has no default.
+    func reviewModel(_ args: [String], origin: CLIOrigin, timeout: TimeInterval?) async throws -> ReviewEnvelope {
+        let full = ["workbench", "review"] + args + ["--json"]
+        return try Self.decodeReview(try await runner.runModel(args: full, origin: origin, timeout: timeout, stdin: nil))
+    }
+
+    private static func decodeReview(_ data: Data) throws -> ReviewEnvelope {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(ReviewEnvelope.self, from: data)
@@ -1060,8 +1067,10 @@ struct WorkbenchCLI {
     /// `cachedOnly` reads only a cached overview and never calls the model (Quick mode, board #585).
     func reviewOverview(projectID: Int64, roundID: Int64, cachedOnly: Bool = false) async throws -> ReviewEnvelope {
         let args = ["overview", "--workbench", String(projectID), "--round", String(roundID)]
-        if cachedOnly { return try await review(args + ["--cached-only"]) }
-        return try await review(args, timeout: Self.reviewAITimeout)
+        // `overview` is a model command even when it only reads the cache
+        // (the shared list names the path); both follow the owner's review.
+        if cachedOnly { return try await reviewModel(args + ["--cached-only"], origin: .owner, timeout: nil) }
+        return try await reviewModel(args, origin: .owner, timeout: Self.reviewAITimeout)
     }
 
     /// Undoes one hunk of the round's diff in the working tree (never the index).
@@ -1080,7 +1089,7 @@ struct WorkbenchCLI {
         let workbench = ["--workbench", String(projectID)]
         switch action {
         case .propose:
-            return try await review(["lessons", "propose"] + workbench, timeout: Self.reviewAITimeout, origin: .owner)
+            return try await reviewModel(["lessons", "propose"] + workbench, origin: .owner, timeout: Self.reviewAITimeout)
         case .accept(let id):
             return try await review(["lessons", "accept"] + workbench + ["--lesson", String(id)])
         case .dismiss(let id):
@@ -1095,6 +1104,9 @@ struct WorkbenchCLI {
     /// `WorkbenchCLIError.agentNotFound`; a call past `timeout` seconds is
     /// ended and thrown as the runner's timeout.
     func sessionStart(_ r: SessionStartRequest, timeout: TimeInterval = 30) async throws -> SessionStartResult {
+        // Owner origin: a start the owner asked for. One carrying
+        // `--automation-run` was admitted with its run (spec §2.2), and Go
+        // reads the run's trigger from that marker.
         let data: Data
         do {
             if let stdin = r.stdin {

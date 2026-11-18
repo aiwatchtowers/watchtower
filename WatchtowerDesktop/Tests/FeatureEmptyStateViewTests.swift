@@ -3,6 +3,7 @@ import SwiftUI
 import ViewInspector
 import WatchtowerCore
 @testable import WatchtowerDesktop
+import WatchtowerTestSupport
 
 @MainActor
 final class FeatureEmptyStateViewTests: XCTestCase {

@@ -36,6 +36,34 @@ final class ModelCommandsTests: XCTestCase {
         XCTAssertEqual(ModelCommands.match(["meeting-prep", "evt-1", "--json"]), "meeting-prep")
     }
 
+    /// A global flag's value is never a command word (codex review, #1886).
+    func testGlobalFlagValuesAreConsumed() {
+        XCTAssertEqual(ModelCommands.match(["--workspace", "digest", "digest", "generate"]), "digest generate")
+        XCTAssertNil(ModelCommands.match(["--workspace", "ask", "sync", "--now"]))
+        XCTAssertNil(ModelCommands.match(["--provider", "tune", "config", "get"]))
+        XCTAssertEqual(ModelCommands.match(["digest", "--config", "generate", "generate"]), "digest generate")
+    }
+
+    /// Every string persistent flag of the Go root takes a value: each is in
+    /// `globalValueFlags`.
+    func testGlobalValueFlagsMatchTheGoRoot() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Core
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerDesktop
+            .deletingLastPathComponent() // repo root
+            .appendingPathComponent("cmd/root.go")
+        let text = try String(contentsOf: root, encoding: .utf8)
+        let pattern = try NSRegularExpression(pattern: #"PersistentFlags\(\)\.String(?:VarP?|P?)\([^"]*"([a-z-]+)""#)
+        let names = pattern.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap {
+            Range($0.range(at: 1), in: text).map { "--" + text[$0] }
+        }
+        XCTAssertFalse(names.isEmpty, "no string persistent flag found in cmd/root.go: is the pattern broken?")
+        for name in names {
+            XCTAssertTrue(ModelCommands.globalValueFlags.contains(name), "\(name) takes a value: add it to globalValueFlags")
+        }
+    }
+
     func testNonModelCommandsDoNotMatch() {
         XCTAssertNil(ModelCommands.match([]))
         XCTAssertNil(ModelCommands.match(["sync", "--now"]))

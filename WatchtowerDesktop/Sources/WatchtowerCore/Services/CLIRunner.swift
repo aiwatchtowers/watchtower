@@ -76,15 +76,9 @@ extension CLIRunnerProtocol {
         throw CLIRunnerError.launchFailed(underlying: CocoaError(.featureUnsupported))
     }
 
-    /// For test doubles that launch nothing: forwards to the generic entries
-    /// and drops `origin`. A runner that launches (`ProcessCLIRunner`) or
-    /// wraps one (`InstalledCLIRunner`) implements it; one that relied on
-    /// this would have its model command refused by the runner underneath.
-    package func runModel(args: [String], origin: CLIOrigin, timeout: TimeInterval?, stdin: Data?) async throws -> Data {
-        if let stdin { return try await run(args: args, stdin: stdin) }
-        if let timeout { return try await run(args: args, timeout: timeout) }
-        return try await run(args: args)
-    }
+    // No default `runModel(args:origin:timeout:stdin:)` here: every
+    // production runner implements it. Test doubles get one from
+    // `WatchtowerTestSupport` (`CLIRunnerTestDefaults.swift`).
 
     /// `runModel` with no timeout and no stdin.
     package func runModel(args: [String], origin: CLIOrigin) async throws -> Data {
