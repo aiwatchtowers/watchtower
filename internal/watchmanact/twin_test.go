@@ -959,3 +959,114 @@ func TestTwin_OwnerFirstAfterAParkClearsIt(t *testing.T) {
 		t.Fatalf("item = %+v, want the park cleared", it)
 	}
 }
+
+func TestTwin_SummaryHardLimitParks(t *testing.T) {
+	e := newTwinEnv(t)
+	payload := `{"questions":[{"id":"a","question":"OK to proceed?","options":[{"label":"Yes"},{"label":"No"}]}]}`
+	askID, itemID := e.fileAsk(asks.KindQuestion, "Release prep", payload, "ask")
+	_, err := e.db.Exec(`UPDATE owner_asks SET summary = 'I''ll merge this into main' WHERE id = ?`, askID)
+	e.must(err)
+	e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) { return decision("Yes"), nil }
+	e.run()
+	e.wantParked(askID, itemID, "a merge, push or rebase onto main")
+}
+
+// continueEnv is an armed env whose handover the twin continues, with a
+// scripted session start.
+func continueEnv(t *testing.T, start func() error) (*twinEnv, int64) {
+	e := newTwinEnv(t)
+	_, itemID := e.fileAsk(asks.KindQuestion, "Left: the CSV import", oneQuestion, "handover")
+	e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
+		return decision(HandoverContinue), nil
+	}
+	e.twin.d.StartSession = func(_ context.Context, wb, target int64, brief string) error {
+		e.mu.Lock()
+		e.started = append(e.started, startCall{wb, target, brief})
+		e.mu.Unlock()
+		return start()
+	}
+	return e, itemID
+}
+
+func (e *twinEnv) startCount() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.started)
+}
+
+func TestTwin_HandoverStartTwoPassesNeverStartTwice(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		e, itemID := continueEnv(t, func() error { <-release; return nil })
+		ctx := context.Background()
+		e.twin.RunOnce(ctx)
+		synctest.Wait() // the start runs (claimed)
+		e.twin.RunOnce(ctx)
+		e.twin.RunOnce(ctx)
+		if n := e.startCount(); n != 1 {
+			t.Fatalf("starts = %d while the first runs, want 1", n)
+		}
+		close(release)
+		e.twin.Wait()
+		e.run()
+		if n, err := e.startCount(), e.item(itemID).Error; n != 1 || err != "" {
+			t.Fatalf("starts = %d, error %q", n, err)
+		}
+	})
+}
+
+func TestTwin_HandoverStartClaimedAtACrashIsNotRetried(t *testing.T) {
+	e, itemID := continueEnv(t, func() error { return nil })
+	e.run()
+	// As if the daemon died between the claim and the start's answer.
+	_, err := e.db.Exec(`UPDATE watchman_items SET error = ? WHERE id = ?`, startingMark, itemID)
+	e.must(err)
+	e.run()
+	if n := e.startCount(); n != 1 || e.item(itemID).Error != mayHaveStarted {
+		t.Fatalf("starts = %d, error %q; want no second start and the check-the-workbench error", n, e.item(itemID).Error)
+	}
+}
+
+func TestTwin_HandoverStartStopsWhenDisarmed(t *testing.T) {
+	e, itemID := continueEnv(t, func() error { return errors.New("host busy") })
+	e.run()
+	if e.item(itemID).Error != pendingStart {
+		t.Fatalf("error = %q", e.item(itemID).Error)
+	}
+	e.disarm()
+	e.run()
+	if n := e.startCount(); n != 1 || e.item(itemID).Error != startTakenBack {
+		t.Fatalf("starts = %d, error %q; want no start after Take back", n, e.item(itemID).Error)
+	}
+}
+
+func TestTwin_HandoverStartGivesUpAfterMaxAttempts(t *testing.T) {
+	e, itemID := continueEnv(t, func() error { return errors.New("host busy") })
+	for range MaxAttempts + 2 {
+		e.run()
+	}
+	if n := e.startCount(); n != MaxAttempts {
+		t.Fatalf("starts = %d, want %d", n, MaxAttempts)
+	}
+	if got := e.item(itemID).Error; got != startFailedPrefix+"host busy" {
+		t.Fatalf("error = %q", got)
+	}
+}
+
+func TestTwin_OwnerFirstOnAContinueOwesNoStart(t *testing.T) {
+	e, itemID := continueEnv(t, func() error { return nil })
+	askID := int64(0)
+	e.must(e.db.QueryRow(`SELECT ref_id FROM watchman_items WHERE id = ?`, itemID).Scan(&askID))
+	e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
+		_, err := e.db.Exec(`UPDATE owner_asks SET status = 'answered', answer = '{"answers":[{"id":"a","labels":["SQLite"],"other":""}]}', answered_at = '2026-11-18T08:00:00Z' WHERE id = ?`, askID)
+		e.must(err)
+		return decision(HandoverContinue), nil
+	}
+	e.run()
+	e.run()
+	it := e.item(itemID)
+	wantOutcome(t, it, OutcomeOwnerFirst)
+	if it.Error != "" || e.startCount() != 0 {
+		t.Fatalf("error = %q, starts %d; want no start owed", it.Error, e.startCount())
+	}
+}

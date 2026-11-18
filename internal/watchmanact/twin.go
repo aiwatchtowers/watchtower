@@ -220,6 +220,10 @@ func (j *job) finishTx(tx *sql.Tx, o db.WatchmanOutcome) error {
 	if err == nil && !done {
 		err = errLeaseLost
 	}
+	if err == nil && o.Error == pendingStart {
+		// From here attempts counts the owed start's tries (startNext).
+		err = j.t.d.DB.ResetWatchmanItemAttemptsTx(tx, j.it.ID)
+	}
 	return err
 }
 
@@ -242,7 +246,7 @@ func (j *job) finishAlone(o db.WatchmanOutcome) {
 // superseded with its choice kept.
 func (j *job) lostRace(o db.WatchmanOutcome) {
 	parked := o.Outcome == OutcomeParked
-	o.ParkReason = ""
+	o.ParkReason, o.Error = "", "" // no park, and no session start owed
 	ask, err := j.t.d.DB.GetOwnerAskByID(j.it.RefID)
 	if errors.Is(err, db.ErrAskNotFound) || (err == nil && ask.Status == "withdrawn") {
 		if j.dec == nil {
@@ -291,7 +295,8 @@ func (j *job) fail(ctx context.Context, err error) {
 // release gives the item back to the queue as if this attempt never ran.
 func (j *job) release() {
 	log.Printf("watchman twin: item %d: released", j.it.ID)
-	if _, err := j.t.d.DB.ReleaseWatchmanItem(j.it.ID, j.lease); err != nil {
+	// The released attempt's calls stay on the item's cost.
+	if _, err := j.t.d.DB.ReleaseWatchmanItem(j.it.ID, j.lease, j.outcome("").CostUSD); err != nil {
 		log.Printf("watchman twin: %v", err)
 	}
 }
