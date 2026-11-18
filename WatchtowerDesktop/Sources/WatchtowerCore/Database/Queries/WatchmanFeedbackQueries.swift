@@ -58,9 +58,7 @@ package enum WatchmanFeedbackQueries {
         try db.execute(sql: """
             UPDATE watchman_items SET owner_done_at = ?
             WHERE id = ? AND owner_done_at IS NULL AND state = 'done'
-              AND (outcome IN ('parked', 'handed')
-                   OR (kind = 'handover' AND outcome = 'answered' AND error != ''
-                       AND error NOT IN ('next session not started yet', 'next session starting')))
+              AND (outcome IN ('parked', 'handed') OR \(WatchmanItem.failedStepSQL))
             """, arguments: [AutomationDates.format(now), itemID])
         return db.changesCount > 0
     }

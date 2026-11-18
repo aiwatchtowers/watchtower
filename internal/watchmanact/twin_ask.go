@@ -65,7 +65,7 @@ const (
 	mayHaveStarted = "next session may have started — check the workbench"
 	// startTakenBack ends an owed start whose session and target are no
 	// longer armed.
-	startTakenBack    = "Watchman was taken back"
+	startTakenBack    = "Next session not started: Watchman was taken back"
 	startFailedPrefix = "starting the next session: "
 	handoverBriefHead = "The previous session on this target handed its work over to a new session:\n\n"
 )

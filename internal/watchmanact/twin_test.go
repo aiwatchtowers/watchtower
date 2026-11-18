@@ -1160,3 +1160,18 @@ func TestTwin_DeliveryNoteKeepsAStartDone(t *testing.T) {
 		t.Fatalf("starts = %d, error %q; want one start", n, got)
 	}
 }
+
+// A deleted session's arming row is pruned even with a start owed: the start
+// ends taken back, nothing starts.
+func TestTwin_HandoverStartOfADeletedSessionIsTakenBack(t *testing.T) {
+	e, itemID := continueEnv(t, func() error { return errors.New("host busy") })
+	e.run()
+	_, err := e.db.Exec(`UPDATE terminal_sessions SET finished_at = ?, delete_requested_at = ? WHERE id = ?`,
+		db.AgentStateStamp(time.Now()), db.AgentStateStamp(time.Now()), e.session)
+	e.must(err)
+	e.prune()
+	e.run()
+	if n, got := e.startCount(), e.item(itemID).Error; n != 1 || got != startTakenBack {
+		t.Fatalf("starts = %d, error %q; want no second start, taken back", n, got)
+	}
+}

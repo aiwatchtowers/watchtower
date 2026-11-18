@@ -650,29 +650,36 @@ const (
 	WatchmanStartClaimed = "next session starting"
 )
 
-// watchmanHandoverArmed is a watchman_items row's arming as a handover
-// reads it, finished session or not: its session's own arming row, or an
-// armed target covering the item's target.
-const watchmanHandoverArmed = `(watchman_items.session_id IN (SELECT ref_id FROM watchman_arming WHERE scope = 'session')
-	OR watchman_items.target_id IN (WITH RECURSIVE sub(id) AS (
+// watchmanArmedTargets is every target an armed target covers (its subtree).
+const watchmanArmedTargets = `WITH RECURSIVE sub(id) AS (
 			SELECT ref_id FROM watchman_arming WHERE scope = 'target'
 			UNION
 			SELECT t.id FROM targets t JOIN sub ON t.parent_id = sub.id
-		) SELECT id FROM sub))`
+		) SELECT id FROM sub`
+
+// watchmanHandoverArmed is a watchman_items row's arming as a handover
+// reads it, finished session or not: its session's own arming row, or an
+// armed target covering the item's target or its session's target.
+const watchmanHandoverArmed = `(watchman_items.session_id IN (SELECT ref_id FROM watchman_arming WHERE scope = 'session')
+	OR watchman_items.target_id IN (` + watchmanArmedTargets + `)
+	OR (SELECT ts.target_id FROM terminal_sessions ts WHERE ts.id = watchman_items.session_id) IN (` + watchmanArmedTargets + `))`
 
 // WatchmanItemArmed reports whether the twin may still act for an item of
-// session and target: the session armed directly, or the target or one of
-// its ancestors armed (the session itself may have ended).
+// session and target: the session armed directly, or the item's target, the
+// session's target or one of their ancestors armed (the session itself may
+// have ended).
 func (db *DB) WatchmanItemArmed(sessionID, targetID int64) (bool, error) {
 	var n int
 	err := db.QueryRow(`WITH RECURSIVE up(id) AS (
 			SELECT ? WHERE ? > 0
 			UNION
+			SELECT target_id FROM terminal_sessions WHERE id = ? AND target_id IS NOT NULL
+			UNION
 			SELECT t.parent_id FROM targets t JOIN up ON t.id = up.id WHERE t.parent_id IS NOT NULL
 		)
 		SELECT COUNT(*) FROM watchman_arming
 		WHERE (scope = 'session' AND ref_id = ?) OR (scope = 'target' AND ref_id IN (SELECT id FROM up))`,
-		targetID, targetID, sessionID).Scan(&n)
+		targetID, targetID, sessionID, sessionID).Scan(&n)
 	if err != nil {
 		return false, fmt.Errorf("checking watchman arming of session %d / target %d: %w", sessionID, targetID, err)
 	}

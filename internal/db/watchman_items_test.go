@@ -793,3 +793,48 @@ func TestLeaseArmedWatchmanItem_HandoverOfAFinishedSession(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, again)
 }
+
+// A session being deleted, or gone, keeps no arming row, open handover or not.
+func TestPruneWatchmanArming_DeletedSessionGoesWithItsHandover(t *testing.T) {
+	for _, gone := range []string{"deleting", "deleted"} {
+		t.Run(gone, func(t *testing.T) {
+			d := openTestDB(t)
+			wb := newTestWorkbench(t, d)
+			s := newTestSession(t, d, wb)
+			wmArmSession(t, d, s)
+			_, _, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "handover", RefKind: "ask", RefID: 9, Question: "q"})
+			require.NoError(t, err)
+			if gone == "deleting" {
+				_, err = d.Exec(`UPDATE terminal_sessions SET finished_at = '2026-11-18T02:00:00Z', delete_requested_at = '2026-11-18T02:01:00Z' WHERE id = ?`, s)
+			} else {
+				_, err = d.Exec(`DELETE FROM terminal_sessions WHERE id = ?`, s)
+			}
+			require.NoError(t, err)
+			_, err = d.PruneWatchmanArming()
+			require.NoError(t, err)
+			var left int
+			require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM watchman_arming WHERE ref_id = ?`, s).Scan(&left))
+			require.Zero(t, left)
+		})
+	}
+}
+
+// A handover whose item names no target is still covered through its
+// session's target.
+func TestWatchmanItemArmed_SessionsTargetCovers(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	tg := insertWorkbenchTargetRow(t, d, wb, "Export")
+	s := newTestSession(t, d, wb)
+	_, err := d.Exec(`UPDATE terminal_sessions SET target_id = ?, finished_at = '2026-11-18T02:00:00Z' WHERE id = ?`, tg, s)
+	require.NoError(t, err)
+	require.NoError(t, d.UpsertWatchmanArming(WatchmanArming{Scope: "target", RefID: tg, ArmedAt: time.Now(), ArmedBy: "cli"}))
+	armed, err := d.WatchmanItemArmed(s, 0)
+	require.NoError(t, err)
+	require.True(t, armed)
+	_, _, err = d.QueueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "handover", RefKind: "ask", RefID: 9, Question: "q"})
+	require.NoError(t, err)
+	it, err := d.LeaseArmedWatchmanItem(time.Now(), time.Minute, wmAll)
+	require.NoError(t, err)
+	require.NotNil(t, it, "leased through the session's armed target")
+}

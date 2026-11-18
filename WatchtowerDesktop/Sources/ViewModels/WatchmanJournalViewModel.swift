@@ -372,7 +372,9 @@ final class WatchmanJournalViewModel {
     /// Mark done on a check nobody ran (it was run), or on a waiting item
     /// (the owner dealt with it): either leaves its list.
     func markDone(_ itemID: Int64) async {
-        let waiting = item(itemID)?.isWaitingKind == true
+        // Every Waiting for you item (parked, handed, a failed handover start)
+        // is cleared with owner_done_at; only a check takes check_done_at.
+        let waiting = item(itemID).map { $0.isWaitingKind || $0.hasFailedStep } == true
         await save(waiting ? .ownerDone(itemID) : .checkDone(itemID))
     }
 

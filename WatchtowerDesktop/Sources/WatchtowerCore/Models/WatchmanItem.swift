@@ -153,9 +153,10 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
     }
 
     /// The `error` values of a "Continue" handover whose session start is
-    /// still owed (Go `db.WatchmanStartPending`, `db.WatchmanStartClaimed`):
-    /// not a failure the owner sees.
-    package static let startOwedErrors: Set<String> = ["next session not started yet", "next session starting"]
+    /// still owed (Go `db.WatchmanStartPending`, `db.WatchmanStartClaimed`,
+    /// pinned by `internal/db/testdata/watchman_start_markers.golden`): not a
+    /// failure the owner sees.
+    package static let startOwedErrors = ["next session not started yet", "next session starting"]
 
     /// Parked or handed back, or a handover whose next session did not
     /// start: the owner has to act.
@@ -176,11 +177,18 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
             && !errorText.isEmpty && !Self.startOwedErrors.contains(errorText)
     }
 
-    /// The SQL twin of `hasFailedStep` / `waitsForOwner` (alias-free columns).
+    /// The SQL twin of `hasFailedStep` (alias-free columns), built from
+    /// `startOwedErrors`.
+    package static let failedStepSQL =
+        "(kind = 'handover' AND outcome = 'answered' AND error != '' AND error NOT IN (\(startOwedSQLList)))"
+
+    private static let startOwedSQLList = startOwedErrors
+        .map { "'" + $0.replacingOccurrences(of: "'", with: "''") + "'" }
+        .joined(separator: ", ")
+
+    /// The SQL twin of `waitsForOwner` (alias-free columns).
     package static let waitingSQL = """
-        state = 'done' AND owner_done_at IS NULL AND ((outcome IN ('parked', 'handed') AND feedback = '')
-          OR (kind = 'handover' AND outcome = 'answered' AND error != ''
-              AND error NOT IN ('next session not started yet', 'next session starting')))
+        state = 'done' AND owner_done_at IS NULL AND ((outcome IN ('parked', 'handed') AND feedback = '') OR \(failedStepSQL))
         """
 
     /// The owner corrected it and the correction never reached a session.
