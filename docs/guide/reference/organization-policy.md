@@ -8,7 +8,7 @@ Deploy a Custom Settings payload for the preference domain `com.watchtower.deskt
 
 The app re-reads the policy at launch, when it comes to the front and every minute; the command line and the sync daemon read it at least every 30 seconds. Tightening a key never deletes data and never rewrites anyone's settings: they come back when you remove the key.
 
-A full example with every key and placeholder values is in the repository at `docs/examples/watchtower-policy.mobileconfig`.
+Every key with its type, default and effect, and a sample profile with placeholder values, is on the website's [MDM keys for IT](https://aiwatchtowers.com/guide/mdm/) page; the same sample is in the repository at `docs/examples/watchtower-policy.mobileconfig`.
 
 ## The keys
 

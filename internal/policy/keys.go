@@ -1,12 +1,12 @@
 package policy
 
 // ITGuideURL is the public page that documents every key for IT (D21): the
-// app links to it and `policy show` names it. Task 31 publishes the page and
-// sets the real address; TestITGuideURL_NotPlaceholder keeps the placeholder
-// out of main.
-const ITGuideURL = itGuidePlaceholder
+// app links to it and `policy show` names it. The website renders its key
+// table from docs/mdm/keys.json; TestITGuideURL_NotPlaceholder keeps the
+// placeholder below from coming back.
+const ITGuideURL = "https://aiwatchtowers.com/guide/mdm/"
 
-// itGuidePlaceholder is the address until the page exists.
+// itGuidePlaceholder is the address used before the page existed.
 const itGuidePlaceholder = "https://example.com/mdm"
 
 // KeyDoc is one key as `policy keys --json` prints it and docs/mdm/keys.json

@@ -64,6 +64,8 @@ The stamp always runs and goes into the guide commit. For each new `##` heading 
 
 Then run `go test ./docs/guide/ ./internal/learn/ ./internal/kb/ ./internal/chat/` (guide links, catalogue, page size, the guide knowledge source, the prompt golden). If the guide's catalogue changed (a page added, renamed or re-titled), regenerate the chat prompt golden with `go test ./internal/chat -run TestBuildSystemPrompt_Golden -update` and commit it with the guide edits. Any other failure halts the release.
 
+Then check the IT page's key list: if `docs/mdm/keys.json` changed since the previous tag (`git diff --quiet "$prev" -- docs/mdm/keys.json || echo changed`), tell the user the website needs a rebuild — in the website repository, `python3 scripts/sync-mdm.py v<version>` after the tag is pushed (or `main`), then `python3 scripts/build-guide.py`, a PR, and a deploy — so https://aiwatchtowers.com/guide/mdm/ lists the same keys as the release. This never blocks the release.
+
 ## Step 4: Update Version in Code
 
 Update the `Version` variable in `cmd/version.go` to the new version.
