@@ -45,6 +45,7 @@
 - `cmd/workbench_spec_review_launch_test.go::TestLaunchSpecReview_SweepSetsOrigin`
 - `cmd/workbench_spec_review_test.go::TestSpecReviewRun_BackgroundOriginPausedLeavesQueued`
 - `cmd/builtin_upgrade_test.go::TestCustomTracksUpgrade_PausedStaysPaused`
+- `WatchtowerDesktop/Tests/Core/DesktopModelLaunchSitesTests.swift::testEveryProcessLaunchOfTheCLIIsListed`, `::testNoStaleEntries`, `::testLiteralModelArgsUseRunModel` (every Desktop launch of a model command names its origin, plan Decision 11)
 
 **Locked since:** 2026-11-18
 
@@ -90,3 +91,4 @@
 ## Changelog
 
 - 2026-11-18 (board #1886, ask #1452): BGAI-01..03 added.
+- 2026-11-18 (board #1886, ask #1452, review #1484): BGAI-01 gains the Desktop launch-site guards (`DesktopModelLaunchSitesTests`, Task 18): a strengthening, no guard weakened. Feature note: `docs/features/background-ai-consent.md`.

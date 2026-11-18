@@ -4,7 +4,9 @@ Board: #276 and its subtargets (#279–#299). The eight-step onboarding
 (Slack OAuth → Settings → Claude check → role questionnaire + AI interview →
 team form → LLM profile → feature splash) is gone: two steps, no LLM,
 no source required. The third step, About you (role, manager, reports,
-peers), was removed on 2026-10-14 (owner decision, #758). Step-by-step walkthrough: [`docs/onboarding-flow.md`](../onboarding-flow.md).
+peers), was removed on 2026-10-14 (owner decision, #758). A last step,
+Background AI (`aiConsent`), was added on 2026-11-18 (#1886) and is skipped
+once the answer is decided. Step-by-step walkthrough: [`docs/onboarding-flow.md`](../onboarding-flow.md).
 UI text is English only.
 
 ## Contracts
@@ -169,6 +171,25 @@ before that first cycle, so a calendar connected here shows events within
 about a minute instead of after the first Slack sync (#740). A daemon that fails to come up
 shows a banner over the tab setup landed on.
 
+**Background AI step** (#1886, [background-ai-consent.md](background-ai-consent.md)).
+`OnboardingV2Step.aiConsent` (raw value `aiConsent`, indicator "Background AI")
+sits between `connect` and `complete`. `OnboardingRoute(goals:consentPrompt:)`
+skips it when `AppState.backgroundAI.prompt` is false — answered, or decided
+by the `AllowBackgroundAI` policy — so a re-run never asks again. Connect's
+Continue (Goals' on a Development-only route) moves to it; Goals' Continue
+leaves with `appState.onboardingRoute` (saved goals plus the consent flag).
+The step (`BackgroundAIConsentStep` over `BackgroundAIConsentView`) shows
+Back, **Not now** (`ai background pause`) and **Allow background AI**
+(`ai background allow --yes`); a failed write shows "Couldn't save your
+choice: …" and the step stays. Once saved,
+`answerBackgroundAIConsentStep` re-reads the answer and runs
+`leaveOnboardingStep(.aiConsent)`, the finish that used to follow Connect; a
+failed finish shows **Try again**, which retries the finish only. A
+`config.yaml` that cannot be read shows "Watchtower can't read config.yaml"
+with Back and **Try again** (re-reads the file, `BackgroundAIConsentStepLoad`).
+The daemon therefore starts only after the answer is saved; an install that
+answered Not now starts it paused.
+
 **Workspace without Slack.** Goals' Continue runs `watchtower workspace init
 --json` (at most once per app session, only while no Slack account exists):
 directory, migrated database and `active_workspace`, idempotent. A later
@@ -217,8 +238,13 @@ complete, anything else → Goals) and the legacy keys are dropped. The DB's
 `onboarding_done` wins over a local step at launch; an unreadable profile
 skips onboarding for that launch only. A stored `aboutYou` (someone parked
 on the removed step when they upgraded) resumes at Connect, whose Continue
-finishes; when the saved goals are Development only, Connect is skipped and
-launch goes back to Goals as for any skipped step with nothing after it.
+goes on to Background AI when it is due, else finishes; when the saved goals
+are Development only, Connect is skipped and launch goes back to Goals as for
+any skipped step with nothing after it. An install parked on `connect` by an
+older build gets the Background AI step at the end; an install already
+`complete` gets the one-time upgrade sheet instead. A launch parked on
+`aiConsent` after the answer was saved goes back to Goals (the skipped-step
+rule).
 
 **Assistant language.** One setting, `digest.language`, an English language
 name. A fresh install starts from the first macOS preferred language
