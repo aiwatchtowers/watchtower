@@ -203,6 +203,7 @@
 		8946EF2CD8CF8C89B01CC292 /* DeviceIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = C68A6FC9A37EB91641EBFCAB /* DeviceIdentity.swift */; };
 		896ABDD37A15173649E62958 /* SwipeRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A5DA6C998498C912D2D36C9 /* SwipeRow.swift */; };
 		89AB9D775F2DF39C5E7D5EDB /* WelcomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DD07929D977D2F7FEA3B461 /* WelcomeView.swift */; };
+		89E9E51C2677DEFFB7F77FDF /* ChatApprovalCardModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4A16D1B8EF2CB08D36BF772 /* ChatApprovalCardModelTests.swift */; };
 		8EE51E7A85C5FE1C582B4761 /* Pill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8273B56D197DE1234DF9D87B /* Pill.swift */; };
 		8FB166E987D0412D7DDBC10E /* HubSession+ReaderStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4856D6B222E9182B2632BE9B /* HubSession+ReaderStatus.swift */; };
 		8FECCC9474F30F5548A93588 /* LinkSeams.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D4AE5C921A6AC94DFAB6997 /* LinkSeams.swift */; };
@@ -682,6 +683,7 @@
 		B1C359565330A7E52F22BF8B /* WatchtowerMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchtowerMobileApp.swift; sourceTree = "<group>"; };
 		B217981668550F76482FCC9E /* ChatConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatConversationView.swift; sourceTree = "<group>"; };
 		B49C9F3C607137081E616A5F /* ReviewAskView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewAskView.swift; sourceTree = "<group>"; };
+		B4A16D1B8EF2CB08D36BF772 /* ChatApprovalCardModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatApprovalCardModelTests.swift; sourceTree = "<group>"; };
 		B6761AE7B60B6C8501900869 /* WorkchatModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkchatModel.swift; sourceTree = "<group>"; };
 		B7D8BB14D242560434FB94E9 /* OrderedActionsWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrderedActionsWiringTests.swift; sourceTree = "<group>"; };
 		B8929F28520AC73CF61CD217 /* AskFormTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskFormTests.swift; sourceTree = "<group>"; };
@@ -915,6 +917,7 @@
 				A726D48C0E150B13F9CC3511 /* BoardWriteWiringTests.swift */,
 				D467487E4F392B60617E94FE /* CachingPhoneKeyStoreTests.swift */,
 				4A19A75AFD15E6FBEE8798CB /* CalendarWiringTests.swift */,
+				B4A16D1B8EF2CB08D36BF772 /* ChatApprovalCardModelTests.swift */,
 				80E5D6B23496B65F60CFCFF5 /* ChatArtifactWebRTCTests.swift */,
 				207AD03EB0C7C699C05F5DDC /* ChatAttachmentAndCopyTests.swift */,
 				32F45134607AC2E66721BD45 /* ChatListRetryTests.swift */,
@@ -1822,6 +1825,7 @@
 				D727E454FC516499DCFF3DC0 /* BoardWriteWiringTests.swift in Sources */,
 				FCD29A2F591EE6CBFA85E2E2 /* CachingPhoneKeyStoreTests.swift in Sources */,
 				3F6F9974DD5384B247B7FCDD /* CalendarWiringTests.swift in Sources */,
+				89E9E51C2677DEFFB7F77FDF /* ChatApprovalCardModelTests.swift in Sources */,
 				9DB9E7FF799F88B24C683675 /* ChatArtifactWebRTCTests.swift in Sources */,
 				6CD7A33E0E86A47C3F9D7ECC /* ChatAttachmentAndCopyTests.swift in Sources */,
 				DE1904A97495CEA25039C059 /* ChatFakes.swift in Sources */,

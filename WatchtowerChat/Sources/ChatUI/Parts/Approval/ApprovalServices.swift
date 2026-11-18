@@ -12,6 +12,10 @@ public enum ChatApprovalAnswer: Equatable, Sendable {
 public enum ChatApprovalDecision: Sendable, Equatable {
     case approve
     case reject
+    /// Re-run a failed action (mobile Inbox spec §12.9).
+    case retry
+    /// Dismiss a session call whose outcome is unknown (§12.9).
+    case dismiss
 }
 
 /// How an approval card's decision row stands, as the screen knows it: whether Approve and Reject show at all (the

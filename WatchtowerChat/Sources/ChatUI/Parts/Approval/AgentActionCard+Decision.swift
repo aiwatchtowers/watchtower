@@ -25,7 +25,7 @@ extension AgentActionCard {
     }
 
     /// Whether the pending decision buttons show, and whether they are live.
-    enum Availability: Equatable {
+    public enum Availability: Equatable {
         case live
         /// Shown but off: no answer can go now (offline, an answer on its way, a CLI call in flight).
         case disabled
@@ -62,13 +62,13 @@ extension AgentActionCard {
 
     /// What a row no longer pending draws: its offer, the note that says where to act instead (no grant, an older hub;
     /// mobile Inbox spec §12.4), or nothing.
-    enum SettledRow: Equatable {
+    public enum SettledRow: Equatable {
         case offer(SettledOffer)
         case note(String)
         case none
     }
 
-    static func settledRow(
+    public static func settledRow(
         for action: ChatAgentAction, services: ChatApprovalServices, offersRetry: Bool, state: ChatApprovalState?
     ) -> SettledRow {
         let offered: SettledOffer = switch settledOffer(for: action) {
@@ -81,7 +81,7 @@ extension AgentActionCard {
     }
 
     /// The state line under the row: on a pending row, and on a settled one that offers (or notes) Retry or Dismiss.
-    static func shownLine(
+    public static func shownLine(
         for action: ChatAgentAction, services: ChatApprovalServices, offersRetry: Bool, state: ChatApprovalState?
     ) -> String? {
         guard let line = state?.line else { return nil }
@@ -89,7 +89,7 @@ extension AgentActionCard {
         return settledRow(for: action, services: services, offersRetry: offersRetry, state: state) == .none ? nil : line
     }
 
-    static func availability(_ state: ChatApprovalState?) -> Availability {
+    public static func availability(_ state: ChatApprovalState?) -> Availability {
         guard let state else { return .live }
         if !state.showsButtons { return .hidden }
         return state.canAnswer && !state.inFlight ? .live : .disabled
