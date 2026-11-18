@@ -135,6 +135,9 @@ final class ReadinessCenterTests: XCTestCase {
         let environment = FakeReadinessEnvironment()
         environment.consentRead = { box.state }
         let center = ReadinessCenter(environment: environment)
+        // The 30 s poll is held shut: only the observation can re-evaluate.
+        let ticks = HandOpenedSleeps()
+        center.tickSleep = { _ in await ticks.sleep() }
         center.start(pool: try makePool())
         defer { center.stop() }
         await waitUntil(center) { !$0.isEmpty }
