@@ -17,7 +17,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"watchtower/internal/auth"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/slackapp"
@@ -280,11 +279,44 @@ func TestAppSetup_LostCreateAnswerCLI(t *testing.T) {
 	assert.Contains(t, sout.String(), `"stage":"pending_create"`)
 }
 
-func TestAppSetup_RetiredIDWired(t *testing.T) {
-	old := auth.RetiredSharedClientID
-	auth.RetiredSharedClientID = "9999.0000"
-	t.Cleanup(func() { auth.RetiredSharedClientID = old })
-	assert.Equal(t, "9999.0000", slackAppRetiredClientID())
+func TestAppSetup_RetiredAndBuiltinIDsWired(t *testing.T) {
+	cfg, _ := setupSlackAppWorkspace(t)
+	setSlackBuild(t, "5555.6666", "test-secret", "9999.0000")
+	c, _, _ := slackAppTestCmd("", nil)
+	r, _ := newSlackAppRunner(c, cfg, nil, false)
+	assert.Equal(t, "9999.0000", r.RetiredClientID)
+	assert.Equal(t, "5555.6666", r.BuiltinClientID)
+	setSlackBuild(t, "5555.6666", "", "")
+	r, _ = newSlackAppRunner(c, cfg, nil, false)
+	assert.Empty(t, r.BuiltinClientID, "an id without a secret is no built-in app")
+}
+
+// A corp build adopting its own baked app (review M1): refused with the
+// builtin_app_pkce_deferred kind even with --enable-pkce; nothing is read
+// or changed on Slack's side.
+func TestAppSetup_AdoptBuiltinAppDeferredCLI(t *testing.T) {
+	cfg, _ := setupSlackAppWorkspace(t)
+	setSlackBuild(t, "5555.6666", "test-secret", "")
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	id, err := database.CreateSlackAccount(db.SlackAccount{TeamID: "T0ACME", TeamName: "Acme", CurrentUserID: "1:U1"})
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE slack_accounts SET client_id = '5555.6666', app_id = 'A0CORP', status = 'ok' WHERE id = ?`, id)
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+	fake := &fakeSlackAppServer{manifest: `{"display_information":{"name":"Acme Watchtower"},"oauth_config":{"scopes":{"user":[]}}}`}
+	fake.serve(t)
+
+	c, out, _ := slackAppTestCmd(slackAppTestToken+"\n", map[string]string{"json": "true", "team": "T0ACME", "enable-pkce": "true"})
+	require.NoError(t, runSlackAppAdopt(c, nil))
+	lines := jsonLines(t, out.String())
+	assert.Equal(t, "builtin_app_pkce_deferred", lines[len(lines)-1]["result"])
+	assert.Equal(t, []string{"auth.test"}, fake.calls, "nothing exported or updated")
+
+	c, _, _ = slackAppTestCmd(slackAppTestToken+"\n", map[string]string{"team": "T0ACME", "enable-pkce": "true"})
+	err = runSlackAppAdopt(c, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "later Watchtower update")
 }
 
 func TestAppSetup_PendingCLI(t *testing.T) {

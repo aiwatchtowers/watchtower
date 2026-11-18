@@ -796,3 +796,35 @@ func TestAdopt_WrongTeam(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, KindOK, res.Kind, "the named team matches: the update runs")
 }
+
+// The team's app is the one this build signs in through: adopt refuses even
+// with --enable-pkce, and create never offers the adopt (review M1). Turning
+// PKCE on would break the build's own sign-in (no PKCE, client secret); the
+// build's app switches with a later update.
+func TestAdopt_BuiltinAppPKCEDeferred(t *testing.T) {
+	h := newHarness(t)
+	h.r.BuiltinClientID = "5555.6666"
+	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
+	h.api.manifests["A0CORP"] = theirManifest()
+
+	for _, enablePKCE := range []bool{true, false} {
+		h.steps = nil
+		res, err := h.r.Adopt(context.Background(), cfgToken, "T0ACME", "", "", enablePKCE)
+		require.NoError(t, err)
+		assert.Equal(t, Result{Kind: KindBuiltinPKCEDeferred, TeamID: "T0ACME", TeamName: "Acme", AppID: "A0CORP", ClientID: "5555.6666"}, res)
+		assert.Equal(t, []Step{{StepCheckToken, StateRunning}, {StepCheckToken, StateDone}}, h.steps, "nothing read or changed")
+	}
+	assert.Zero(t, h.api.updates)
+	assert.Empty(t, h.setups(t))
+
+	res, err := h.r.Create(context.Background(), cfgToken)
+	require.NoError(t, err)
+	assert.Equal(t, KindBuiltinPKCEDeferred, res.Kind, "create does not offer the adopt")
+	assert.Zero(t, h.api.creates)
+
+	// Another company app in a build with its own app adopts as before.
+	h.r.BuiltinClientID = "7777.8888"
+	res, err = h.r.Adopt(context.Background(), cfgToken, "T0ACME", "", "", true)
+	require.NoError(t, err)
+	assert.Equal(t, KindOK, res.Kind)
+}
