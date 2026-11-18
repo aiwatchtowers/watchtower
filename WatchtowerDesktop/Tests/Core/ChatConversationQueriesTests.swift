@@ -68,26 +68,6 @@ final class ChatConversationQueriesTests: XCTestCase {
         }
     }
 
-    /// A resumed Claude session keeps the prompt it started with, so a real
-    /// move drops the stored session; a same-project "move" keeps it.
-    func testSetProjectClearsTheStoredSessionOnlyOnARealMove() throws {
-        let db = try TestDatabase.create()
-        try db.write { d in
-            try d.execute(sql: "INSERT INTO chat_projects (name, created_at, updated_at) VALUES ('P', 0, 0)")
-            let project = d.lastInsertedRowID
-            let conv = try ChatConversationQueries.create(d, projectID: project)
-            try d.execute(sql: "UPDATE chat_conversations SET session_id = 'sess-1' WHERE id = ?", arguments: [conv.id])
-
-            try ChatConversationQueries.setProject(d, id: conv.id, projectID: project)
-            XCTAssertEqual(try ChatConversationQueries.fetchByID(d, id: conv.id)?.sessionID, "sess-1")
-
-            try ChatConversationQueries.setProject(d, id: conv.id, projectID: nil)
-            let moved = try XCTUnwrap(ChatConversationQueries.fetchByID(d, id: conv.id))
-            XCTAssertNil(moved.projectID)
-            XCTAssertNil(moved.sessionID)
-        }
-    }
-
     /// `chat title` fires once: after the FIRST completed assistant reply,
     /// and never over an owner rename.
     func testNeedsAITitleOnlyAfterTheFirstCompletedReply() throws {
@@ -174,7 +154,6 @@ final class ChatConversationQueriesTests: XCTestCase {
             let byID = Dictionary(uniqueKeysWithValues: try ChatConversationQueries.fetchStandalone(d).map { ($0.id, $0) })
             XCTAssertEqual(byID[plain]?.hasAttachments, false)
             XCTAssertEqual(byID[withFile]?.hasAttachments, true)
-            XCTAssertEqual(ChatLandingPolicy.recents(Array(byID.values)).map(\.id), [withFile])
             XCTAssertEqual(try ChatAttachmentQueries.fetchPending(d, conversationID: withFile).count, 1)
             XCTAssertTrue(try ChatAttachmentQueries.fetchPending(d, conversationID: plain).isEmpty)
         }

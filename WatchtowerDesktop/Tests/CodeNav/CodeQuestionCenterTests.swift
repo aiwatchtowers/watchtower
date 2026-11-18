@@ -3,6 +3,7 @@ import WatchtowerCore
 import WatchtowerTestSupport
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerChatText
 
 /// The page side of a code question, recorded.
 @MainActor

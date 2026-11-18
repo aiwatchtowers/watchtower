@@ -29,14 +29,14 @@ final class AgentActionCardStuckTargetTests: XCTestCase {
     /// The card as the feed draws it: Go's target state of the row, which
     /// is creating until `decided_at` + 2 min (`target_until`), then stuck.
     private func card(_ action: AgentAction, inFlight: Bool = false, onRetry: @escaping () -> Void = {})
-        -> AgentActionCardView {
+        -> MacAgentActionCard {
         let decided = ISO8601DateFormatter().date(from: action.decidedAt) ?? now
         let until = decided.addingTimeInterval(120)
         var approval = TestInboxFeeds.approval(title: "Create task", target: until > now ? "creating" : "stuck")
         approval.targetUntil = until > now ? ISO8601DateFormatter().string(from: until) : ""
         var button = InboxTargetButton(approval: approval)
         button?.inFlight = inFlight
-        return AgentActionCardView(
+        return MacAgentActionCard(
             action: action, inFlight: inFlight, onApprove: {}, onReject: {}, onRetry: onRetry,
             targetButtonState: button.map { TargetButtonStateResolver.state($0, now: now) })
     }
@@ -72,15 +72,15 @@ final class AgentActionCardStuckTargetTests: XCTestCase {
         for status in ["approved", "executing"] {
             let action = try row(status, decidedAgo: 600)
             var retried = 0
-            let sut = AgentActionCardView(
+            let sut = MacAgentActionCard(
                 action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: { retried += 1 },
                 targetButtonState: .failed(message: "database is locked"))
             try sut.inspect().find(ArtifactTargetStuckLine.self).find(button: "Try again").tap()
             XCTAssertEqual(retried, 1, status)
         }
         let failed = try row("failed", decidedAgo: 600)
-        let sut = AgentActionCardView(action: failed, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
-                                      targetButtonState: .failed(message: "closed"))
+        let sut = MacAgentActionCard(action: failed, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                                     targetButtonState: .failed(message: "closed"))
         XCTAssertThrowsError(try sut.inspect().find(ArtifactTargetStuckLine.self))
         XCTAssertNoThrow(try sut.inspect().find(button: "Retry"))
     }
@@ -88,7 +88,7 @@ final class AgentActionCardStuckTargetTests: XCTestCase {
     /// An older row of a button whose newest row is another one offers no Retry.
     func testSupersededRowOffersNoRetry() throws {
         let action = try row("failed", decidedAgo: 600)
-        let offered = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        let offered = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
         XCTAssertNoThrow(try offered.inspect().find(button: "Retry"))
         var hidden = offered
         hidden.offersRetry = false

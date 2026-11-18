@@ -1,3 +1,4 @@
+import ChatWire
 import Foundation
 import GRDB
 
@@ -27,11 +28,10 @@ package enum SlackDeepLink {
     }
 
     /// `https://slack.com/archives/<raw>/p<ts without dot>` — Slack's generic
-    /// host, no workspace domain needed. A namespaced id would 404.
+    /// host, no workspace domain needed. A namespaced id would 404. One
+    /// builder with the approval card's (`ChatWire.SlackMessageRef`).
     package static func archives(channelID: String, messageTS: String) -> URL? {
-        let raw = SlackAccountID.raw(channelID)
-        guard !raw.isEmpty, !messageTS.isEmpty else { return nil }
-        return URL(string: "https://slack.com/archives/\(raw)/p\(messageTS.replacingOccurrences(of: ".", with: ""))")
+        SlackMessageRef.archivesURL(channelID: channelID, messageTS: messageTS)
     }
 
     /// `https://slack.com/app_redirect?channel=<raw>` — a channel with no message.

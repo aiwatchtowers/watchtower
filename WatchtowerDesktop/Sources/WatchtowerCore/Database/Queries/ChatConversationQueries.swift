@@ -2,11 +2,6 @@ import Foundation
 import GRDB
 
 package enum ChatConversationQueries {
-    package static func fetchAll(_ db: Database) throws -> [ChatConversation] {
-        try ChatConversation.fetchAll(db, sql: """
-            SELECT * FROM chat_conversations ORDER BY updated_at DESC
-        """)
-    }
 
     /// The main chat's list; `has_attachments` lets a message-less chat
     /// that holds unsent files stay visible in the history.

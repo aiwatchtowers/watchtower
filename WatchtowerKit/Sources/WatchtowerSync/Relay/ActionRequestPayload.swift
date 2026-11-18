@@ -78,6 +78,11 @@ public enum ActionKind: String, Codable, CaseIterable {
     case chatManage = "chat_manage"
     /// No entity; params `action_id`, `decision`, `args_sha256`; needs the permissions grant too.
     case chatActionAnswer = "chat_action_answer"
+    /// No entity; params `query`, `kinds`. Idempotent: the `@` picker's hits come back in the applied echo's
+    /// result (`hits`).
+    case chatEntitySearch = "chat_entity_search"
+    /// No entity; no params. Idempotent: the `/` picker's skills come back in the applied echo's result (`skills`).
+    case chatSkillsList = "chat_skills_list"
     /// The phone Inbox (mobile Inbox spec §6). No entity; params are the generated `inbox.act` request
     /// (`request_id`, `target`, `verb`, `params`). Idempotent or not by verb (`inbox_act_idempotency` in the hub
     /// contract fixture); approve, retry and dismiss of an approval, `make_task` and a target press need the

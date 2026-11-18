@@ -1,8 +1,10 @@
+import ChatUI
+import ChatWire
 import Foundation
 import GRDB
-import WatchtowerCore
+import Observation
 import WatchtowerChatText
-import WatchtowerInterface
+import WatchtowerCore
 
 struct ChatMessage: Identifiable, Equatable {
     let id: UUID
@@ -44,657 +46,374 @@ enum AIProvider: String, CaseIterable, Identifiable {
     }
 }
 
-/// The main AI Chat (spec §1.4, §2.3). An action surface (AGENT-04): the Go
-/// session mounts the registry's write tools for `--surface main`, and Go
-/// builds the system prompt (`internal/chat`) — Swift sends only turns.
-///
-/// Ownership: running turns live in `ChatSessionPool` (app-wide), which
-/// persists them. This view model only starts turns and renders — so it can
-/// be released or switched mid-turn without losing a byte (CHAT-01).
-///
-/// Invariant: a new owner message never sits directly under another owner
-/// message. Every turn writes its owner row and its (empty, `partial`)
-/// assistant row in one transaction, and a legacy unanswered question gets
-/// an empty `partial` reply first — Go's `HistoryBefore` drops one trailing
-/// owner row, which must only ever be the question being re-sent.
+/// The main AI Chat's window shell (unified chat spec §6.2): the chat itself runs in the daemon's engine and reaches
+/// the app over chat.sock (`SocketChatClient`); its feed, list, composer and turn operations are ChatUI's models
+/// (`ChatConversationModel`, `ChatComposerModel`, `ChatListModel`). What stays here is the window: which chat, the
+/// landing or a project page is shown, the inspector (artifact panel, sources), the provider pill and the ⌘/ panel's
+/// screen context. Nothing here writes a chat row (D3): every write is an engine operation.
 @MainActor
 @Observable
 final class ChatViewModel {
-    private(set) var conversationID: Int64?
-    private(set) var currentConversation: ChatConversation?
-    /// Finished rows of the active branch. Never mutated by a streaming
-    /// delta — the live message is `liveTurn` (render isolation).
-    private(set) var thread: [ChatThreadItem] = []
-    var draft = ""
-    /// Quote batches ("Ask about this" on a selection in the feed), per
-    /// conversation: quotes wait here (with the
-    /// owner's comments) and go out together with the typed text as ONE owner
-    /// turn in `sendDraft` — never one by one (owner rule).
-    private(set) var quoteBatches: [Int64: [ChatQuoteDraft]] = [:]
-    /// A new value puts the keyboard in the composer (a quote was just
-    /// added: the owner types the follow-up next).
+    @ObservationIgnored let client: any ChatClient
+    let list: ChatListModel
+    /// The conversation on screen (nil id: the landing or a project page, whose first send creates one).
+    private(set) var conversation: ChatConversationModel
+    private(set) var composer: ChatComposerModel
+    /// The open chat's agent actions (approvals stay on the Mac's `actions approve|reject`, D12).
+    let actionFeed: AgentActionFeed
+    @ObservationIgnored let artifactWriter: ChatArtifactWriter
+
+    /// The landing (new-chat composer + recent chats) is shown instead of a conversation; a project page is the
+    /// landing too, bound to its project.
+    private(set) var isOnLanding = true
+    private(set) var openProjectID: Int64?
+    /// The project the landing's first send makes its chat in (the project page, or `+`/⌘N in the panel's project).
+    private(set) var landingProjectID: Int64?
+    /// A new value puts the keyboard in the composer.
     private(set) var composerFocusRequest: UUID?
-    /// Shown by the thread view only, so an error steps an expanded panel
-    /// aside (#786).
+    /// A project New Project… just made: its page opens with the name field focused.
+    var projectNameFocusRequest: Int64?
+    /// The shell's own error line (a failed project write, an attachment that could not be staged).
     var errorMessage: String? {
         didSet { if errorMessage != nil { isInspectorExpanded = false } }
     }
-    private(set) var selectedProvider: AIProvider
-    private(set) var automaticRouting = true
-    private var configuredPreferred: AIProvider
+
+    // MARK: Routing
+
+    /// The provider/model pill, its lines and fallback card (ChatUI's, shared with the phone): the landing's pick and
+    /// an open chat's live with its composer. Its catalog is `ai models` and `ai routing-status`, re-read on a chat
+    /// change, on app activation and at a turn's end (`refreshRoutingStatus`).
+    let routing: ChatRoutingModel
     @ObservationIgnored private let preferredProviderSource: (() -> AIProvider)?
+    @ObservationIgnored private var configuredPreferred: AIProvider
     private var preferredProvider: AIProvider { preferredProviderSource?() ?? configuredPreferred }
-    private(set) var isChangingRouting = false
-    private(set) var reviewedActionIDs: [Int64] = []
-    private(set) var reviewedMessageID: Int64?
-    private(set) var routingStatus: ChatRoutingStatus?
-    private(set) var routingStatusError: String?
-    private var readingRoutingStatus = false
-    @ObservationIgnored private var lastRoutingRevision: String?
+    @ObservationIgnored private var readingRoutingStatus = false
 
-    var routingPresentation: ChatRoutingPresentation? {
-        let provider = automaticRouting ? preferredProvider : selectedProvider
-        let catalog = AIModelCatalog.shared
-        // The routing card belongs to a provider with a reserve peer (its
-        // capability row, U3); before the catalog is read no pair is known,
-        // so the line shows without the card.
-        let pair = catalog.fallbackPair(preferred: provider.rawValue)
-        let driver = pool.client(for: conversationID)?.driver
-        let actualProvider = driver?.actualProvider ?? currentConversation?.actualProvider
-        return ChatRoutingPresentation(pair: pair, automatic: automaticRouting,
-                                       actualProvider: actualProvider,
-                                       actualModel: driver?.actualModel ?? currentConversation?.actualModel,
-                                       reason: driver?.routing?.reason ?? currentConversation?.routingReason,
-                                       health: routingStatus, busy: isBusy,
-                                       actualDisplayName: actualProvider.flatMap { catalog.provider($0)?.displayName },
-                                       capabilities: providerCapabilities)
-    }
+    // MARK: Inspector
 
-    /// The capability row of the provider this chat runs on: the session's
-    /// own (its session_ready), else the catalog's for the provider the next
-    /// turn runs on: a pinned chat's choice; an automatic chat's preferred
-    /// provider, or its last actual provider when that is the preferred
-    /// one's reserve and fallback is not known off (Go keeps a chat on the
-    /// reserve until the owner switches or turns fallback off); nil while
-    /// neither is known.
-    var providerCapabilities: ProviderCapabilities? {
-        let driver = pool.client(for: conversationID)?.driver
-        if let capabilities = driver?.actualCapabilities { return capabilities }
-        let catalog = AIModelCatalog.shared
-        guard catalog.isLoaded else { return nil }
-        let provider = automaticRouting ? preferredProvider : selectedProvider
-        let history = currentConversation?.actualProvider.flatMap { actual in
-            automaticRouting && routingStatus?.enabled != false
-                && actual == catalog.reservePeer(of: provider.rawValue) ? actual : nil
-        }
-        let id = driver?.actualProvider ?? history ?? provider.rawValue
-        return catalog.capabilities(for: id)
-    }
-
-    /// Why the composer takes no images or PDFs here (U1); nil when it does
-    /// or the provider's row is not known yet.
-    var attachUnavailableReason: String? { providerCapabilities?.attachUnavailableReason }
-    /// Why the composer refuses a PDF from a provider that takes images only.
-    var pdfUnavailableReason: String? { providerCapabilities?.pdfUnavailableReason }
-
-    /// Refresh only local metadata on chat/lifecycle/turn events; never an upstream probe.
-    func refreshRoutingStatus() async {
-        guard !readingRoutingStatus, let cliRunner else { return }
-        readingRoutingStatus = true
-        defer { readingRoutingStatus = false }
-        do {
-            let data = try await cliRunner.run(args: ["ai", "routing-status"], timeout: 5)
-            let status = try ChatRoutingStatus.parse(data)
-            if let previous = lastRoutingRevision, previous != status.revision { pool.retireRoutingSessions() }
-            lastRoutingRevision = status.revision
-            routingStatus = status
-            if let provider = AIProvider(rawValue: routingStatus?.preferredProvider ?? "") {
-                configuredPreferred = provider
-            }
-            routingStatusError = nil
-        } catch {
-            routingStatus = nil
-            routingStatusError = "Couldn't read provider availability: \(error.localizedDescription)"
-        }
-    }
-    /// Model override; "" = the provider's resolved strong model (the CLI resolves it).
-    var selectedModel = "" {
-        didSet {
-            if selectedModel != oldValue, !applyingConversationSettings {
-                automaticRouting = false
-                recycleSession()
-            }
-        }
-    }
-    var scrollTarget: Int64?
-    var editingMessageID: Int64?
-    /// History list refresh (conversation order, titles written by Go).
-    @ObservationIgnored var onConversationsChanged: (() -> Void)?
-    /// The landing's first turn started in this conversation: the thread
-    /// takes over and the view makes it the history selection. Fired only
-    /// by `send`, never by other ways of leaving the landing.
-    @ObservationIgnored var onLandingTurnStarted: ((Int64) -> Void)?
-    /// Any conversation's turn ended, after this VM's own refresh. The Inbox
-    /// strip re-reads then: a connector call it shows was claimed and run
-    /// inside that turn, and its live "session holds it" just turned false.
-    @ObservationIgnored var onTurnFinished: ((Int64) -> Void)?
-    /// A turn started with a new owner message: what its prefix commands
-    /// did (remember, a knowledge prefix — Go ran them in the start), with
-    /// the owner's typed words, for the marks under the message.
-    @ObservationIgnored var onOwnerMessageStarted: ((ChatStarted, String) -> Void)?
-    /// A turn of that conversation waits on an approval card (`tool_wait`).
-    @ObservationIgnored var onActionAwaited: ((Int64) -> Void)?
-
-    let actionFeed: AgentActionFeed
-    let pool: ChatSessionPool
-    /// The composer's not-yet-sent attachments (Task 21). nil `store` (no
-    /// active workspace) still renders — `add`/`addPasted` just report
-    /// "Attachments need an active workspace".
-    let composerAttachments: ComposerAttachments
-    /// The composer's @-picker and the current draft's picked mentions
-    /// (Task 25).
-    let composer: ComposerPickerModel
-
-    /// The artifact side panel for the current conversation; nil = closed.
-    /// Survives navigation only within the same conversation — switching or
-    /// forgetting a conversation closes it (CHAT-05 storage has no notion of
-    /// "panel for a conversation not on screen").
     private(set) var artifactPanel: ArtifactPanelModel? {
         didSet { collapseInspectorIfClosed() }
     }
-    /// The sources panel (one finished answer's sources); nil = closed. It
-    /// shares the inspector with `artifactPanel` under `ChatInspectorPolicy`
-    /// and closes with it on a conversation switch.
     private(set) var sourcesPanel: ChatSourcesSelection? {
         didSet { collapseInspectorIfClosed() }
     }
-    /// The inspector tab opened last; see `inspectorMode` for what shows.
     var preferredInspectorMode: ChatInspectorMode = .artifacts
-    /// The open panel takes the chat's whole width in place of the
-    /// conversation (#786); it falls back to the column once both panels close.
     private(set) var isInspectorExpanded = false
-    /// Non-edited version numbers per message, for the card badges — reloaded
-    /// with the thread (`reload()`).
-    private(set) var artifactVersionsByMessage: [Int64: [String: Int]] = [:]
-    /// Artifact keys of the open chat pinned as knowledge (card badges).
-    private(set) var keptArtifactKeys: Set<String> = []
     private(set) var gmailConnected = false
     private(set) var slackLinks: SlackLinkResolver?
-    /// The project page open in the detail area, or nil when a conversation
-    /// (or the landing) is shown.
-    private(set) var openProjectID: Int64?
-    /// The landing (new-chat composer + recent chats) is shown instead of a
-    /// thread. It may already hold a fresh, message-less conversation — made
-    /// on the first keystroke so its session prewarms — and stays up until
-    /// that conversation's first turn starts or another one is opened.
-    /// A project page is the landing too, bound to its project
-    /// (`openProject`): its composer is this one, and the page is shown
-    /// in the landing's place while `openProjectID` is set.
-    private(set) var isOnLanding = true
-    /// The conversation the landing made (or reused) for its draft. Left for
-    /// anything but its own first turn, it is deleted while still untouched.
-    /// Persisted per workspace database, so a draft abandoned by quitting is
-    /// found — and only that one is deleted — at the next launch. Its
-    /// `created_at` travels with the id: a database reset at the same path
-    /// can reissue the id, never the pair.
-    @ObservationIgnored private var landingDraft: LandingDraft? {
+    /// Keys the owner closed the panel for during the current turn: a streaming turn does not reopen them.
+    @ObservationIgnored private var dismissedArtifactKeys: Set<String> = []
+
+    /// The whole text of a reply the feed cut at its 40 000-character cap (`textCut`): the Mac shows whole answers,
+    /// as before the engine. Read from the database once the reply is final.
+    private(set) var fullTexts: [Int64: String] = [:]
+    /// The last read of cut replies' whole texts (tests await it).
+    @ObservationIgnored private(set) var fullTextLoad: Task<Void, Never>?
+    /// Drafts of the chats left with text in the composer.
+    @ObservationIgnored private var drafts: [Int64: String] = [:]
+    @ObservationIgnored private var landingDraftText = ""
+    /// The chat the landing made on its first keystroke (so its session warms up) and has not sent in yet: it is
+    /// discarded (deleted only while untouched) when the landing leaves it. Kept per workspace, so one abandoned by
+    /// quitting goes at the next launch.
+    private(set) var landingDraftID: Int64? {
         didSet {
-            if let landingDraft {
-                defaults.set(landingDraft.stored, forKey: landingDraftKey)
+            if let landingDraftID {
+                defaults.set(Int(landingDraftID), forKey: landingDraftKey)
             } else {
                 defaults.removeObject(forKey: landingDraftKey)
             }
         }
     }
-    var landingDraftID: Int64? { landingDraft?.id }
-    /// The project the landing's composer makes its conversation in; nil =
-    /// outside any project. Only two places set it (controller ruling on
-    /// spec 2026-10-26 §4/§7): the project page's composer (`openProject`)
-    /// and `+` / ⌘N while the visible panel shows that project
-    /// (`showLanding(inProject:)`). It clears on opening any chat, on the
-    /// landing's first turn, when the page closes, and when the panel
-    /// leaves the project (`panelLevelChanged`, the fallback included).
-    private(set) var landingProjectID: Int64?
+    @ObservationIgnored private var makingLandingDraft = false
+    @ObservationIgnored private var engineCalls: [Task<Void, Never>] = []
+    @ObservationIgnored private var turnIDLoad: Task<Void, Never>?
     @ObservationIgnored private let defaults: UserDefaults
-    private var landingDraftKey: String { "chat.landingDraft.\(dbManager.dbPool.path)" }
-    private var storedLandingDraft: LandingDraft? {
-        (defaults.string(forKey: landingDraftKey)).flatMap(LandingDraft.init(stored:))
-    }
-    /// Active (unarchived) projects for the sidebar.
-    private(set) var projects: [ChatProject] = []
-    /// A project New Project… just made (`createProject`): its page opens
-    /// with the name field focused, and clears this (spec 2026-10-26 §7).
-    var projectNameFocusRequest: Int64?
-    /// Keys the owner closed the panel for during the CURRENT turn — a
-    /// streaming turn does not reopen a panel the owner just dismissed.
-    /// Cleared at the start of every new turn.
-    @ObservationIgnored private var dismissedArtifactKeys: Set<String> = []
-
-    /// A send is being handed to its session (its chat made first on the
-    /// landing): milliseconds, never the wait for `started`.
-    private var handingTurns = 0
-    private var isHandingTurn: Bool { handingTurns > 0 }
-    /// Turns handed to their session and waiting for its `started` (the
-    /// session writes their rows, or the turn is held for a free slot), by
-    /// conversation, with the owner's message shown meanwhile (nil: none, a
-    /// regenerate). Only the shown chat's entry blocks its composer; every
-    /// other chat stays usable (ask #1361).
-    private var awaitingStart: [Int64: AwaitingStart] = [:]
-    private struct AwaitingStart {
-        let bubble: String?
-        /// Handed to its session client (after any `chat.recover` wait).
-        var onClient = false
-        /// Stop pressed before that: the turn is stopped at its `started`.
-        var stopRequested = false
-    }
-    /// The shown chat's turn is being handed over or waits for `started`:
-    /// its send is refused meanwhile, so one Enter never sends twice.
-    var isStartingTurn: Bool {
-        isHandingTurn || conversationID.map { awaitingStart[$0] != nil } == true
-    }
-    /// The owner's message shown at once while the shown chat's turn waits
-    /// for `started` (mobile Inbox spec §8: the bubble never waits for the
-    /// write); the stored row replaces it at `started`.
-    var pendingOwnerText: String? {
-        conversationID.flatMap { awaitingStart[$0]?.bubble }
-    }
-    /// A sent turn with no `started` by then gives up: the draft comes back
-    /// and "session ended" shows (spec §9).
-    nonisolated static let startedTimeout: Duration = ChatSessionClient.defaultStartedTimeout
-    /// Sends waiting for the files dropped or pasted just before them
-    /// (board #670), each with the chat it was pressed in.
-    private var attachmentWaits: [UUID: (conversationID: Int64?, fromLanding: Bool)] = [:]
-    /// The shown chat's send waits for its files: the composer says so, and
-    /// a second Enter there does nothing. Another chat is not affected.
-    var isWaitingForAttachments: Bool {
-        attachmentWaits.values.contains { wait in
-            wait.conversationID == conversationID || (wait.fromLanding && isOnLanding)
+    private var landingDraftKey: String { "chat.landingDraft.engine.\(dbPool.path)" }
+    /// Draft chats left behind whose discard the engine has not answered yet (kept per workspace, so neither a
+    /// quit nor a crash leaves an empty chat): sent again on every `.connected` and at the next start.
+    private(set) var draftsToDiscard: Set<Int64> {
+        get { Set((defaults.array(forKey: draftsToDiscardKey) as? [Int] ?? []).map(Int64.init)) }
+        set {
+            if newValue.isEmpty {
+                defaults.removeObject(forKey: draftsToDiscardKey)
+            } else {
+                defaults.set(newValue.sorted().map(Int.init), forKey: draftsToDiscardKey)
+            }
         }
     }
-    /// A turn is running or about to: what the composer and the actions
-    /// that start a turn wait for.
-    /// A turn the hub runs for the phone holds the open chat (spec 2026-11-15
-    /// §5) counts too: Send is off until its release.
-    var isBusy: Bool { isStreaming || isStartingTurn || isFinishingTurn || isChangingRouting || foreignTurn.blocksSend }
-    /// The open chat's turn run on the phone, read from its lease
-    /// (`refreshForeignTurn`); its `line` stands over the composer.
-    private(set) var foreignTurn = ChatForeignTurnModel()
-    /// Every write of this view model, one after another (board #670).
-    @ObservationIgnored private let writes = SerialWrites()
-    /// `chat.recover` of a turn whose session died, per conversation: the
-    /// next turn there waits for it, so its lease is free (spec §9).
-    @ObservationIgnored private var recovering: [Int64: Task<Void, Never>] = [:]
-    /// The composer's conversation being created: one at a time, so a
-    /// keystroke, a paperclip and a send in quick succession make one row.
-    @ObservationIgnored private var creatingConversation: Task<Int64?, Never>?
-    /// Pastes being attached (on the landing, after its conversation).
-    @ObservationIgnored private var pastesInFlight: [UUID: Task<Bool, Never>] = [:]
-    /// A paste is still being attached.
-    var isPasting: Bool { !pastesInFlight.isEmpty }
+    private var draftsToDiscardKey: String { "chat.landingDraftsToDiscard.engine.\(dbPool.path)" }
+    /// The latest discard pass; the next one starts after it, so passes never overlap and none is skipped.
+    @ObservationIgnored private var discardFlush: Task<Void, Never>?
+    @ObservationIgnored private var reachabilityWatch: Task<Void, Never>?
 
-    @ObservationIgnored private let dbManager: DatabaseManager
-    /// Every chat write: the `chat.*` tower commands (Go writes the rows).
-    @ObservationIgnored let chatWrites: ChatWrites
+    /// The reply whose actions "Review actions" shows, and those actions' ids.
+    private(set) var reviewedMessageID: Int64?
+    private(set) var reviewedActionIDs: [Int64] = []
+    /// The turn ids of the chat's stored messages: a proposal whose turn has none is from an interrupted turn.
+    private(set) var messageTurnIDs: Set<String> = []
+
+    @ObservationIgnored private let dbPool: DatabasePool
     @ObservationIgnored private let cliRunner: CLIRunnerProtocol?
-    @ObservationIgnored private let makeTurnID: () -> String
-    @ObservationIgnored private let leaseClock: () -> Date
-    @ObservationIgnored private var titleRequests: Set<Int64> = []
-    /// The last `chat title` request started (a test seam).
-    @ObservationIgnored private(set) var titleTask: Task<Void, Never>?
-    @ObservationIgnored private var applyingConversationSettings = false
+    @ObservationIgnored private let uiClock: any ChatUIClock
+    /// Retry / Start on the state line: the app's start chain.
+    @ObservationIgnored var onStartDaemon: (() -> Void)? {
+        didSet { conversation.onStartDaemon = onStartDaemon }
+    }
 
     init(
-        dbManager: DatabaseManager,
-        pool: ChatSessionPool,
-        writes: ChatWrites,
+        client: any ChatClient,
+        dbPool: DatabasePool,
         provider: AIProvider = .claude,
         cliRunner: CLIRunnerProtocol? = nil,
         preferredProviderSource: (() -> AIProvider)? = nil,
-        defaults: UserDefaults = .standard,
-        attachmentsRoot: URL? = ChatAttachmentStore.defaultRootDir(),
-        makeTurnID: @escaping () -> String = { UUID().uuidString },
-        leaseClock: @escaping () -> Date = Date.init
+        clock: any ChatUIClock = ContinuousChatUIClock(),
+        defaults: UserDefaults = .standard
     ) {
+        self.client = client
         self.defaults = defaults
-        self.chatWrites = writes
-        self.leaseClock = leaseClock
-        self.dbManager = dbManager
-        self.pool = pool
-        self.selectedProvider = provider
+        self.dbPool = dbPool
+        self.cliRunner = cliRunner
+        self.uiClock = clock
         self.configuredPreferred = provider
         self.preferredProviderSource = preferredProviderSource
-        self.cliRunner = cliRunner
-        self.makeTurnID = makeTurnID
-        self.actionFeed = AgentActionFeed(dbPool: dbManager.dbPool, cliRunner: cliRunner)
-        self.composerAttachments = ComposerAttachments(
-            store: attachmentsRoot.map { ChatAttachmentStore(db: dbManager.dbPool, rootDir: $0, writes: writes) }
-        )
-        let dbPool = dbManager.dbPool
-        self.composer = ComposerPickerModel(
-            searchMentions: { query in
-                do {
-                    return try dbPool.read { try MentionSearch.search($0, query: query) }
-                } catch {
-                    NSLog("ChatViewModel: mention search failed: %@", error.localizedDescription)
-                    return []
-                }
-            },
-            skills: { SkillsCatalog.pickerSkills(contextType: "main") }
-        )
-        pool.onTurnFinished = { [weak self] id in self?.turnFinished(conversationID: id) }
-        pool.onActionAwaited = { [weak self] id in self?.actionAwaited(conversationID: id) }
-        pool.onTurnLost = { [weak self] id, turnID in self?.recover(conversationID: id, turnID: turnID) }
-        reloadProjects()
+        list = ChatListModel(client: client, clock: clock)
+        let conversation = ChatConversationModel(client: client, conversationID: nil, clock: clock)
+        self.conversation = conversation
+        let composer = ChatComposerModel(conversation: conversation)
+        self.composer = composer
+        let owner = ChatViewModelRef()
+        routing = ChatRoutingModel(client: client, composer: { owner.vm?.composer ?? composer },
+                                   onRefresh: { await owner.vm?.refreshRoutingStatus() })
+        actionFeed = AgentActionFeed(dbPool: dbPool, cliRunner: cliRunner)
+        artifactWriter = ChatArtifactWriter(client: client)
+        owner.vm = self
+        routing.configuredPreferred = preferredProvider.rawValue
+        routing.catalog = routingCatalog(status: nil, statusError: nil)
+        wire(conversation)
     }
 
-    /// The streaming message of the shown conversation — its own observable,
-    /// throttled to ≤30 fps, slower as the text grows (`LiveTurn`); only the
-    /// row showing it re-renders.
-    var liveTurn: LiveTurn? { pool.client(for: conversationID)?.liveTurn }
-    /// A turn is running — or held by the pool waiting for a session.
-    var isStreaming: Bool { liveTurn?.isRunning == true }
-    /// The shown chat's turn ended and its final state is being written
-    /// (board #670): nothing can stop it, and the next send waits for it.
-    var isFinishingTurn: Bool { pool.client(for: conversationID)?.driver.isFinishing == true }
-    /// The shown chat's session could not save its latest reply: the thread
-    /// says so (the reply on disk may be stale or empty).
-    var sessionPersistenceError: String? { pool.client(for: conversationID)?.saveError }
-    /// Whether the composer offers Stop: never while the turn's end is
-    /// being written — nothing could stop it then. A turn waiting for its
-    /// `started` (held, or being written) can be stopped: it is stopped at
-    /// its start (`ChatSessionClient.cancel`).
-    var canStop: Bool { !isHandingTurn && !isFinishingTurn }
-    /// Every live session is busy with another conversation's turn: this
-    /// turn is held (not lost) until one finishes. The UI says so.
-    var isWaitingForSession: Bool {
-        guard let client = pool.client(for: conversationID) else { return false }
-        return client.isPending && client.isBusy
+    // MARK: - Derived state
+
+    var conversationID: Int64? { conversation.conversationID }
+
+    /// The list's row of the chat on screen.
+    var currentConversation: ChatList.Conversation? {
+        guard let id = conversationID else { return nil }
+        return list.store.list?.conversations.first { $0.id == id }
+    }
+
+    /// The chat on screen's title: the feed's, else the list's.
+    var title: String? {
+        let feedTitle = conversation.feed?.conversation.title ?? ""
+        return feedTitle.isEmpty ? currentConversation?.title : feedTitle
+    }
+
+    var projects: [ChatList.Project] { list.store.list?.projects ?? [] }
+
+    /// A turn runs in the chat on screen (whoever started it), or a send is on its way.
+    var isBusy: Bool { conversation.isTurnRunning || composer.isSending }
+
+    /// The feed's messages, a cut reply's whole text put back.
+    var messages: [ChatFeed.Message] {
+        conversation.messages.map { message in
+            guard message.textCut, let full = fullTexts[message.id] else { return message }
+            return Self.replacingText(of: message, with: full)
+        }
+    }
+
+    /// A turn of `id` runs now (the panel's answering state, the Inbox strip's "the session holds it").
+    func isAnswering(conversationID id: Int64) -> Bool {
+        if id == conversationID, conversation.isTurnRunning { return true }
+        return list.store.list?.conversations.first { $0.id == id }?.state == .answering
+    }
+
+    /// The running turn's id of `id`'s chat: the feed's for the chat on screen, else the engine's list row (every
+    /// main chat with a turn running names it).
+    func runningTurnID(conversationID id: Int64) -> String? {
+        if id == conversationID, let turn = conversation.runningTurnID { return turn }
+        return list.store.list.flatMap { AppState.runningTurns(in: $0)[id] }
+    }
+
+    /// Whether the live session that proposed `action` still holds it: its chat runs that very turn.
+    func holdsSessionCall(_ action: AgentAction) -> Bool {
+        ConnectorCallProposal.sessionHolds(action, runningTurnID: runningTurnID(conversationID: action.conversationID))
+    }
+
+    /// The conversation is the one on screen: shown, not the landing or a project page.
+    func isShowing(conversationID id: Int64) -> Bool {
+        !isOnLanding && openProjectID == nil && conversationID == id
+    }
+
+    /// Text, quotes or attachments typed but not sent.
+    var hasUnsentInput: Bool {
+        !composer.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !composer.attachments.isEmpty
+            || !composer.quotes.isEmpty
+    }
+
+    // MARK: - Lifecycle
+
+    /// Starts the list and the open chat's subscriptions (the window opened).
+    func start() {
+        list.start()
+        conversation.start()
+        // A landing draft abandoned by quitting: gone, unless a message or a file was added since.
+        // A landing draft left by a quit or a crash: discarded first (the engine deletes it only while it has no
+        // message and no attachment); its id is dropped only once the engine answered.
+        if let stale = defaults.object(forKey: landingDraftKey) as? Int {
+            defaults.removeObject(forKey: landingDraftKey)
+            draftsToDiscard.insert(Int64(stale))
+        }
+        let reachability = client.reachability
+        reachabilityWatch?.cancel()
+        reachabilityWatch = Task { [weak self] in
+            for await state in reachability where state == .connected {
+                guard let self else { return }
+                await self.flushDiscards()
+            }
+        }
+        // Only a leftover from an earlier run: a discard queued later starts its own pass.
+        if !draftsToDiscard.isEmpty {
+            engineCalls.append(Task { [weak self] in await self?.flushDiscards() })
+        }
+    }
+
+    /// The first keystroke (or an open chat): the landing makes its chat now and the engine starts its session, so
+    /// the first answer does not wait for a spawn; an open chat's session is warmed too. Never evicts anything.
+    func draftStarted() async {
+        if let id = conversationID {
+            if !isOnLanding || id == landingDraftID { warm(id) }
+            return
+        }
+        guard isOnLanding, !makingLandingDraft else { return }
+        makingLandingDraft = true
+        defer { makingLandingDraft = false }
+        composer.projectID = landingProjectID
+        composer.routing = routing.request
+        guard let id = await composer.prepareConversation() else { return }
+        landingDraftID = id
+        warm(id)
+    }
+
+    private func warm(_ id: Int64) {
+        let request = conversationID == nil || id == landingDraftID ? routing.request : nil
+        fireAndForget(.warm(conversationID: id, routing: request))
+    }
+
+    /// The landing's draft chat, left without a send: discarded by the engine while it is untouched.
+    private func discardLandingDraft(except keep: Int64? = nil) {
+        guard let draft = landingDraftID, draft != keep else { return }
+        draftsToDiscard.insert(draft)
+        landingDraftID = nil
+        engineCalls.append(Task { [weak self] in await self?.flushDiscards() })
+    }
+
+    /// Sends every pending discard; an id leaves the list once the engine answered it (applied, or the chat is
+    /// gone already). A lost connection keeps it for the next `.connected`. A pass already under way is awaited
+    /// first, then this one runs over what is still pending: returning means every earlier pass has finished.
+    func flushDiscards() async {
+        let previous = discardFlush
+        let pass = Task { [weak self] in
+            await previous?.value
+            await self?.sendDiscards()
+        }
+        discardFlush = pass
+        await pass.value
+    }
+
+    private func sendDiscards() async {
+        for id in draftsToDiscard.sorted() {
+            switch try? await client.send(.manage(conversationID: id, op: .discard, title: nil, projectID: nil)) {
+            case .applied?, .refused("not_found", _)?:
+                draftsToDiscard.remove(id)
+            case .refused?, nil:
+                continue
+            }
+        }
+    }
+
+    /// An engine operation nobody waits for (a warm-up, a draft's discard); a failure changes nothing on screen.
+    private func fireAndForget(_ op: ChatOperation) {
+        let client = client
+        engineCalls.append(Task { _ = try? await client.send(op) })
+    }
+
+    /// Returns once every fire-and-forget operation so far was answered (tests).
+    func engineCallsSettled() async {
+        let calls = engineCalls
+        engineCalls = []
+        for call in calls { await call.value }
+        await turnIDLoad?.value
+        if !engineCalls.isEmpty { await engineCallsSettled() }
     }
 
     // MARK: - Conversations
 
+    /// Shows `id`; the composer's draft of the chat left behind is kept for it.
     func select(conversationID id: Int64) {
         discardLandingDraft(except: id)
         openProjectID = nil
         isOnLanding = false
         landingProjectID = nil
-        let switching = id != conversationID
-        conversationID = id
-        editingMessageID = nil
-        reload()
-        guard switching else { return }
-        errorMessage = nil
-        foreignTurn.reset()
-        restorePendingAttachments(conversationID: id)
-        artifactPanel = nil
-        sourcesPanel = nil
-        dismissedArtifactKeys = []
-        applyConversationSettings()
-        actionFeed.start(conversationID: id)
-        prewarm()
+        guard id != conversationID else { return }
+        show(id)
+        warm(id)
     }
 
+    /// A new chat now (the Inbox's Discuss): created by the engine, then shown.
     @discardableResult
     func newConversation(projectID: Int64? = nil) async -> Int64? {
         do {
-            let conv = try await writeNewConversation(projectID: projectID)
-            select(conversationID: conv.id)
-            reloadConversations()
-            return conv.id
+            switch try await client.send(.new(projectID: projectID, routing: routing.request)) {
+            case .applied(.conversation(let id)):
+                select(conversationID: id)
+                return id
+            case let .refused(_, message):
+                errorMessage = "Couldn't start a new chat: \(message)"
+            case .applied:
+                errorMessage = "Couldn't start a new chat."
+            }
         } catch {
             errorMessage = "Couldn't start a new chat: \(error.localizedDescription)"
-            return nil
         }
+        return nil
     }
 
-    /// A new conversation row (`chat.new`), in this view model's chain.
-    private func writeNewConversation(projectID: Int64?) async throws -> ChatConversation {
-        let created: ChatNewResponse = try await write(.chatNew) { ChatNewRequest(requestID: $0, projectID: projectID) }
-        guard let conv = try conversation(created.conversationID) else {
-            throw ChatWriteError(sentence: "This chat no longer exists.", isGone: true)
-        }
-        return conv
-    }
-
-    /// One row, read at once.
-    private func conversation(_ id: Int64) throws -> ChatConversation? {
-        try dbManager.dbPool.read { try ChatConversationQueries.fetchByID($0, id: id) }
-    }
-
-    /// One chat write in this view model's chain: it is sent once every
-    /// write asked for before it finished.
-    private func write<Resp: Decodable & Sendable, Params: Encodable & Sendable>(
-        _ command: TowerCommand, _ params: @escaping @Sendable (String) -> Params
-    ) async throws -> Resp {
-        let chatWrites = chatWrites
-        return try await writes.runThrowing { try await chatWrites.perform(command, params) }
-    }
-
-    /// A conversation is being deleted: close its session; stop showing it
-    /// (the landing takes its place).
-    func forget(conversationID id: Int64) {
-        quoteBatches[id] = nil
-        pool.close(conversationID: id)
-        if id == landingDraftID { landingDraft = nil }
-        guard id == conversationID else { return }
-        isOnLanding = true
-        clearShownConversation()
-    }
-
-    /// Entering the Chat tab (owner decision 2026-09-28): reopen the last
-    /// conversation when `ChatLandingPolicy` says so, otherwise the landing.
-    /// `rememberedConversationID`/`lastViewedAt` are what the view stored on
-    /// leaving — they matter after a relaunch, when nothing is shown yet. An
-    /// open project page is left as it is; so is the landing while it holds
-    /// unsent text or attachments, which otherwise force a resume.
-    func enterTab(rememberedConversationID: Int64?, lastViewedAt: Date?, now: Date) {
-        guard openProjectID == nil else { return }
-        let unsent = hasUnsentInput
-        if isOnLanding, unsent { return }
-        let id = conversationID ?? rememberedConversationID
-        let viewedAt = id == rememberedConversationID ? lastViewedAt : nil
-        let last = id.flatMap(landingSnapshot(conversationID:))
-        switch ChatLandingPolicy.decide(last: last, lastViewedAt: viewedAt, hasUnsentInput: unsent, now: now) {
-        case .resume(let id): select(conversationID: id)
-        case .landing: showLanding(inProject: landingProjectID)
-        }
-    }
-
-    /// The landing: ⌘N, New Chat, and a tab entry outside the resume
-    /// window. The session of the conversation left behind stays warm
-    /// (the pool's idle TTL). The landing's own still-untouched draft stays
-    /// its draft, so no second empty row is made; any other chat is let go
-    /// (never adopted as a draft — it is not the landing's to delete).
-    /// `projectID` is where the landing's chat is made; a draft made for
-    /// another project is not shown (the next keystroke makes a new one and
-    /// the old draft goes when it is selected).
+    /// The landing: ⌘N, New Chat, and a tab entry outside the resume window. `projectID` is where its first send
+    /// makes the chat.
     func showLanding(inProject projectID: Int64? = nil) {
+        if let draft = landingDraftID, conversationID == draft, composer.projectID == projectID {
+            // The landing's own draft in this project stays its draft.
+            openProjectID = nil
+            isOnLanding = true
+            return
+        }
+        discardLandingDraft()
         openProjectID = nil
         isOnLanding = true
         landingProjectID = projectID
-        if let id = conversationID, id == landingDraftID, landingDraft?.projectID == projectID { return }
-        clearShownConversation()
-    }
-
-    /// The conversation is the one on this view model's screen: shown, not
-    /// the landing or a project page (whether the Chats tab itself is on
-    /// screen is the caller's to know).
-    func isShowing(conversationID id: Int64) -> Bool {
-        !isOnLanding && openProjectID == nil && conversationID == id
-    }
-
-    /// A turn of that conversation is running now (the panel's "Answering"
-    /// state). Reads the pool's observable `clients`, so a view asking at
-    /// render time follows it.
-    func isAnswering(conversationID id: Int64) -> Bool {
-        pool.runningTurnID(conversationID: id) != nil
-    }
-
-    /// Text or attachments typed but not sent.
-    var hasUnsentInput: Bool {
-        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !composerAttachments.pending.isEmpty
-    }
-
-    /// App launch: drop the draft a landing left behind by quitting, while
-    /// it is still untouched. Nothing is shown yet, so it is not on screen;
-    /// no other chat is ever swept.
-    func cleanUpUntouchedConversations() {
-        guard let stale = storedLandingDraft else {
-            defaults.removeObject(forKey: landingDraftKey) // unreadable: forget it, delete nothing
+        guard conversationID != nil else {
+            composer.projectID = projectID
             return
         }
-        landingDraft = stale
-        discardLandingDraft()
+        show(nil)
     }
 
-    /// Leaving the landing for anything but its own first turn: its draft
-    /// conversation goes, unless it gained a message or an attachment (the
-    /// delete re-checks that in the same statement), and so does its session.
-    private func discardLandingDraft(except keep: Int64? = nil) {
-        guard let draft = landingDraft, draft.id != keep else { return }
-        landingDraft = nil
-        discardIfUntouched(draft)
-    }
-
-    /// Deletes a conversation nobody wrote into (in the chain; best effort,
-    /// a failure is logged), and its session with it.
-    /// Queued right away: the caller (a selection, the launch cleanup) is
-    /// synchronous.
-    private func discardIfUntouched(_ draft: LandingDraft) {
-        let chatWrites = chatWrites
-        writes.start { [weak self] in
-            do {
-                let result: ChatChanged = try await chatWrites.perform(.chatDeleteUntouched) {
-                    ChatDeleteUntouchedRequest(requestID: $0, conversationID: draft.id, createdAt: draft.createdAt,
-                                               projectID: draft.projectID)
-                }
-                guard result.changed, let self else { return }
-                self.pool.close(conversationID: draft.id)
-                self.reloadConversations()
-            } catch {
-                NSLog("ChatViewModel: discarding the landing's unused chat failed: %@", error.localizedDescription)
-            }
-        }
-    }
-
-    /// Returns once every write queued so far has landed or failed (tests:
-    /// a synchronous caller queued one, e.g. a landing draft's discard).
-    func writesSettled() async {
-        await writes.idle()
-    }
-
-    /// The composer's first keystroke: prewarm the session. On the landing
-    /// that first needs a conversation, made without leaving the landing.
-    func draftStarted() async {
-        if conversationID == nil {
-            _ = await conversationIDCreatingIfNeeded()
-        } else {
-            prewarm()
-        }
-    }
-
-    private func landingSnapshot(conversationID id: Int64) -> ChatLandingPolicy.LastConversation? {
-        do {
-            guard let conv = try dbManager.dbPool.read({ try ChatConversationQueries.fetchByID($0, id: id) }) else {
-                return nil // deleted
-            }
-            return ChatLandingPolicy.LastConversation(conv, isStreaming: pool.client(for: id)?.isBusy == true)
-        } catch {
-            // Unreadable: the landing is the safe place; the chat is still in the history.
-            NSLog("ChatViewModel: reading the last chat failed: %@", error.localizedDescription)
-            return nil
-        }
-    }
-
-    /// Pending files belong to their own conversation: opening another chat
-    /// shows that chat's unsent files, never carries the previous ones along.
-    private func restorePendingAttachments(conversationID id: Int64?) {
-        guard let id else {
-            composerAttachments.replacePending(with: [])
-            return
-        }
-        do {
-            let pending = try dbManager.dbPool.read { try ChatAttachmentQueries.fetchPending($0, conversationID: id) }
-            composerAttachments.replacePending(with: pending, conversationID: id)
-        } catch {
-            composerAttachments.replacePending(with: [], conversationID: id)
-            errorMessage = "Couldn't load this chat's unsent files: \(error.localizedDescription)"
-        }
-    }
-
-    private func clearShownConversation() {
-        restorePendingAttachments(conversationID: nil)
-        conversationID = nil
-        currentConversation = nil
-        applyingConversationSettings = true
-        automaticRouting = true
-        selectedProvider = preferredProvider
-        selectedModel = ""
-        applyingConversationSettings = false
-        thread = []
-        editingMessageID = nil
-        errorMessage = nil
-        artifactPanel = nil
-        sourcesPanel = nil
-        dismissedArtifactKeys = []
-        actionFeed.stop()
-    }
-
-    func reloadConversations() {
-        onConversationsChanged?()
-    }
-
-    // MARK: - Projects
-
-    func reloadProjects() {
-        do {
-            projects = try dbManager.dbPool.read { try ChatProjectQueries.fetchActive($0) }
-        } catch {
-            errorMessage = "Couldn't load projects: \(error.localizedDescription)"
-        }
-    }
-
-    @discardableResult
-    func createProject(name: String) async -> Int64? {
-        do {
-            let project: ChatProjectCreateResponse = try await write(.chatProjectCreate) {
-                ChatProjectCreateRequest(requestID: $0, name: name)
-            }
-            reloadProjects()
-            projectNameFocusRequest = project.projectID
-            openProject(project.projectID)
-            return project.projectID
-        } catch {
-            errorMessage = "Couldn't create the project: \(error.localizedDescription)"
-            return nil
-        }
-    }
-
-    /// Shows a project page; the chat's artifact panel closes with the chat.
-    /// The page's composer is the landing's, in this project (spec
-    /// 2026-10-26 §7): its first keystroke makes the conversation there and
-    /// the page stays until that chat's first turn starts. A draft the
-    /// landing already made in this project stays its draft; any other one
-    /// goes, and a chat on screen is let go, so the page's composer never
-    /// writes into it.
+    /// A project page; its composer is the landing's, in this project.
     func openProject(_ id: Int64) {
-        let keepsDraft = conversationID != nil && conversationID == landingDraftID && landingDraft?.projectID == id
+        let keepsDraft = conversationID != nil && conversationID == landingDraftID && composer.projectID == id
         if !keepsDraft {
             discardLandingDraft()
-            clearShownConversation()
+            if conversationID != nil { show(nil) }
         }
         openProjectID = id
         isOnLanding = true
         landingProjectID = id
+        composer.projectID = id
         artifactPanel = nil
         sourcesPanel = nil
     }
 
-    /// The Chats panel's level changed (`ChatHistoryViewModel.onLevelChanged`:
-    /// ‹, ⌘[, the switcher, the fallback when the project is gone): a
-    /// landing — or project page — in another project gives way to the
-    /// landing outside any project, so nothing is made in a project the
-    /// panel no longer shows.
+    /// The Chats panel's level changed: a landing or project page in another project gives way to the plain landing.
     func panelLevelChanged(to projectID: Int64?) {
         guard let landing = landingProjectID, landing != projectID else { return }
         if isOnLanding {
@@ -704,191 +423,224 @@ final class ChatViewModel {
         }
     }
 
-    /// The ⌘/ popup opens over this chat (spec 2026-10-26 §2: it behaves
-    /// as before the panel, outside any project): a landing or project page
-    /// in a project becomes the plain landing first — the popup's composer
-    /// never makes a chat in a project —, then, with nothing shown, the
-    /// tab's resume decision runs (`enterTab`).
+    /// Entering the Chat tab (owner decision 2026-09-28): reopen the last conversation when `ChatLandingPolicy` says
+    /// so, otherwise the landing. An open project page, and a landing with unsent input, stay.
+    func enterTab(rememberedConversationID: Int64?, lastViewedAt: Date?, now: Date) {
+        guard openProjectID == nil else { return }
+        let unsent = hasUnsentInput
+        if isOnLanding, unsent { return }
+        let id = conversationID ?? rememberedConversationID
+        let viewedAt = id == rememberedConversationID ? lastViewedAt : nil
+        let last = id.flatMap { id in
+            list.store.list?.conversations.first { $0.id == id }.map {
+                ChatLandingPolicy.LastConversation($0, isStreaming: isAnswering(conversationID: id))
+            }
+        }
+        switch ChatLandingPolicy.decide(last: last, lastViewedAt: viewedAt, hasUnsentInput: unsent, now: now) {
+        case .resume(let id): select(conversationID: id)
+        case .landing: showLanding(inProject: landingProjectID)
+        }
+    }
+
+    /// The ⌘/ popup opens over this chat: outside any project, then the tab's resume decision.
     func enterHelpPopup(rememberedConversationID: Int64?, lastViewedAt: Date?, now: Date) {
         if isOnLanding, landingProjectID != nil { showLanding(inProject: nil) }
         guard conversationID == nil else { return }
         enterTab(rememberedConversationID: rememberedConversationID, lastViewedAt: lastViewedAt, now: now)
     }
 
-    /// Called by the project page after a write that changes the project's
-    /// prompt (instructions, sources, files): the write dropped the chats'
-    /// stored sessions, so their warm processes go too and the shown chat
-    /// rereads its row — the next turn starts fresh with the new prompt.
-    func projectPromptChanged(_ id: Int64) {
-        pool.retireSessions(projectID: id, deleted: false)
-        if currentConversation?.projectID == id { reload() }
+    /// A conversation was deleted or archived: stop showing it (the landing takes its place).
+    func forget(conversationID id: Int64) {
+        drafts[id] = nil
+        guard id == conversationID else { return }
+        isOnLanding = true
+        show(nil)
     }
 
-    /// Called by the project page after it deleted its project: its chats
-    /// are detached (`ON DELETE SET NULL`), so the shown one reloads too.
+    /// Opens a search hit's chat and brings its message into view: the conversation's focus (ChatUI's
+    /// `followFocus`, run by the thread view whenever the loaded messages change) pages back until it is loaded.
+    func open(_ hit: ChatSearch.Hit) {
+        select(conversationID: hit.conversationID)
+        conversation.focusMessageID = hit.messageID
+    }
+
+    // MARK: - Turns
+
+    /// Sends the composer (its model sends the picked mentions still in the text and the `/` skill); the ⌘/ panel's
+    /// `screen` is prefixed to the provider text only and never stored.
+    func sendDraft(screen: ScreenContext? = nil) async {
+        let wasLanding = isOnLanding
+        if conversationID == nil { composer.routing = routing.request }
+        let before = conversation
+        let sent = await composer.send(screenContext: screen?.block)
+        guard sent else { return }
+        if conversationID == landingDraftID { landingDraftID = nil }
+        dismissedArtifactKeys = []
+        if wasLanding, before === conversation, let id = conversationID {
+            // The landing's first send made the chat: it is the one on screen now.
+            isOnLanding = false
+            openProjectID = nil
+            landingProjectID = nil
+            onConversationCreated?(id)
+        }
+    }
+
+    /// The chat on screen was made by the landing's first send (the panel selects it).
+    @ObservationIgnored var onConversationCreated: ((Int64) -> Void)?
+
+    /// The composer's Stop.
+    func stop() {
+        Task { await conversation.cancelTurn() }
+    }
+
+    /// ↑ in an empty field: edits the last owner message.
+    func beginEditingLast() {
+        composer.beginEditingLast()
+    }
+
+    func requestComposerFocus() {
+        composerFocusRequest = UUID()
+    }
+
+    /// "Ask about this" on a selected passage: it joins the next message's quotes.
+    func addQuote(_ quote: String) {
+        composer.addQuote(quote)
+        requestComposerFocus()
+    }
+
+    /// Files from the open panel or a drop: the engine copies each one it takes.
+    func attachFiles(_ urls: [URL]) {
+        Task {
+            for url in urls { await composer.attach(.path(url.path)) }
+        }
+    }
+
+    /// A paste (or an Inbox card) as a file: written to a private temp file the engine copies (`attach` takes a
+    /// path, spec §5.2), then removed. Whether the engine took it.
+    func attachPasted(_ data: Data, name: String) async -> Bool {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("wt-chat-paste-\(UUID().uuidString)")
+        let file = dir.appendingPathComponent(name.isEmpty ? "pasted.txt" : name)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            try data.write(to: file, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        } catch {
+            errorMessage = "Couldn't attach the pasted text: \(error.localizedDescription)"
+            return false
+        }
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let before = composer.attachments.count
+        await composer.attach(.path(file.path))
+        return composer.attachments.count > before
+    }
+
+    // MARK: - Projects
+
+    @discardableResult
+    func createProject(name: String) async -> Int64? {
+        do {
+            switch try await client.send(.project(ChatProjectRequest(op: .create, name: name))) {
+            case .applied(.id(let id)):
+                projectNameFocusRequest = id
+                openProject(id)
+                return id
+            case let .refused(_, message):
+                errorMessage = "Couldn't create the project: \(message)"
+            case .applied:
+                errorMessage = "Couldn't create the project."
+            }
+        } catch {
+            errorMessage = "Couldn't create the project: \(error.localizedDescription)"
+        }
+        return nil
+    }
+
+    /// The project page deleted its project: a landing in it leaves it.
     func projectDeleted(_ id: Int64) {
-        pool.retireSessions(projectID: id, deleted: true)
         if landingProjectID == id { landingProjectID = nil }
-        // The landing's draft in that project now sits outside any project
-        // (`ON DELETE SET NULL`): it stays the landing's draft there, so it
-        // is still reused or discarded.
-        if let draft = landingDraft, draft.projectID == id {
-            landingDraft = LandingDraft(id: draft.id, createdAt: draft.createdAt)
-        }
-        reloadProjects()
+        if composer.projectID == id { composer.projectID = nil }
         if openProjectID == id { showLanding() }
-        // The shown chat — or the landing's kept draft — is detached now.
-        reload()
-        reloadConversations()
     }
 
-    /// Moves a chat into a project (or out, with nil). The next turn gets a
-    /// session spawned for the new project (`ChatSessionConfig.projectID` is
-    /// part of `isCompatible`), and the stored Claude session is dropped so
-    /// that turn starts fresh with the new project prompt and replays.
     func moveConversation(_ conversationID: Int64, toProject projectID: Int64?) async {
-        do {
-            let _: ChatDone = try await write(.chatSetProject) {
-                ChatSetProjectRequest(requestID: $0, conversationID: conversationID, projectID: projectID)
-            }
-            if conversationID == self.conversationID { reload() }
-            reloadConversations()
-        } catch {
-            errorMessage = "Couldn't move the chat: \(error.localizedDescription)"
-        }
+        await list.move(conversationID, toProject: projectID)
+        if let notice = list.notice { errorMessage = notice }
     }
 
-    func reload() {
-        guard let id = conversationID else {
-            thread = []
-            currentConversation = nil
-            artifactVersionsByMessage = [:]
-            keptArtifactKeys = []
-            return
-        }
-        do {
-            let (conv, items, versions, kept, gmail, slack) = try dbManager.dbPool.read { db in
-                let conv = try ChatConversationQueries.fetchByID(db, id: id)
-                let items = try ChatTreeQueries.thread(db, conversationID: id)
-                let versions = try ChatArtifactQueries.versionsByMessage(db, messageIDs: items.map(\.id))
-                let kept = try ChatArtifactQueries.keptKeys(db, conversationID: id)
-                let gmail = try GoogleAccountQueries.hasConnectedGmailAccount(db)
-                let slack = try SlackLinkResolver.load(db)
-                return (conv, items, versions, kept, gmail, slack)
-            }
-            currentConversation = conv
-            if items != thread { thread = items }
-            let refreshedSources = sourcesPanel?.refreshed(in: items)
-            if refreshedSources != sourcesPanel { sourcesPanel = refreshedSources }
-            artifactVersionsByMessage = versions
-            keptArtifactKeys = kept
-            gmailConnected = gmail
-            slackLinks = slack
-        } catch {
-            errorMessage = "Couldn't load the conversation: \(error.localizedDescription)"
-        }
-    }
+    // MARK: - Routing
 
-    /// Opening a conversation or the first keystroke: spawn the session now.
-    func prewarm() {
-        guard let id = conversationID else { return }
-        pool.prewarm(conversationID: id, config: sessionConfig(conversationID: id))
-    }
+    /// Why the composer cannot attach a file to the provider the chat runs (or would run) on; nil before `ai models`
+    /// is read.
+    var attachUnavailableReason: String? { routing.capabilities?.attachUnavailableReason }
+    var pdfUnavailableReason: String? { routing.capabilities?.pdfUnavailableReason }
 
-    func switchProvider(_ provider: AIProvider) {
-        guard !isBusy, !isChangingRouting else { return }
-        automaticRouting = false
-        guard provider != selectedProvider else { recycleSession(); return }
-        selectedProvider = provider
-        selectedModel = ""
-        recycleSession()
-    }
-
-    /// The combined choice explicitly removes BOTH historical pins. No global preference is written.
-    func requestAutomaticRouting() { Task { await useAutomaticRouting() } }
-
-    func useAutomaticRouting() async {
-        guard !isBusy, !isChangingRouting else { return }
-        isChangingRouting = true
-        defer { isChangingRouting = false }
-        let changedConversationID = conversationID
-        if let id = changedConversationID {
-            guard await pool.closeIdleAndWait(conversationID: id) else { return }
+    /// Reads the local provider availability (`ai routing-status`; never an upstream probe) and puts it, with the
+    /// `ai models` catalog, under the routing pill.
+    func refreshRoutingStatus() async {
+        var status = routing.catalog?.status
+        var statusError = routing.catalog?.statusError
+        if let cliRunner, !readingRoutingStatus {
+            readingRoutingStatus = true
+            defer { readingRoutingStatus = false }
             do {
-                let _: ChatDone = try await write(.chatSetRouting) {
-                    ChatSetRoutingRequest(requestID: $0, conversationID: id, routing: ChatRouting(automatic: true))
-                }
+                let data = try await cliRunner.run(args: ["ai", "routing-status"], timeout: 5)
+                let read = try ChatRoutingStatus.parse(data)
+                if let provider = AIProvider(rawValue: read.preferredProvider) { configuredPreferred = provider }
+                status = read
+                statusError = nil
             } catch {
-                errorMessage = "Couldn't change provider choice: \(error.localizedDescription)"
-                return
+                status = nil
+                statusError = "Couldn't read provider availability: \(error.localizedDescription)"
             }
         }
-        guard conversationID == changedConversationID else { return }
-        applyingConversationSettings = true
-        selectedProvider = preferredProvider
-        selectedModel = ""
-        automaticRouting = true
-        applyingConversationSettings = false
-        reload()
+        routing.configuredPreferred = preferredProvider.rawValue
+        routing.catalog = routingCatalog(status: status, statusError: statusError)
     }
 
-    func reviewActions(messageID: Int64) {
-        guard let item = thread.first(where: { $0.id == messageID }) else { return }
-        actionFeed.refresh()
-        reviewedMessageID = messageID
-        reviewedActionIDs = actionFeed.rows.filter { $0.turnID == item.message.turnID }.map(\.id)
-        isInspectorExpanded = false
-        scrollTarget = messageID
+    /// The Mac's routing catalog: the providers the chat's menu offers, from `ai models`.
+    private func routingCatalog(status: ChatRoutingStatus?, statusError: String?) -> ChatRoutingCatalog {
+        let models = AIModelCatalog.shared
+        let current = AIProvider(rawValue: routing.provider) ?? preferredProvider
+        return ChatRoutingCatalog(models: models, offered: AIProvider.offered(by: models, current: current).map(\.rawValue),
+                                  status: status, statusError: statusError)
     }
 
     // MARK: - Artifacts
 
-    /// Opens (or re-focuses) the panel for `key` in the current conversation.
+    /// Opens (or re-focuses) the panel for `key` in the chat on screen.
     func openArtifact(key: String) {
         guard let conversationID else { return }
         preferredInspectorMode = .artifacts
         guard artifactPanel?.key != key else { return }
-        let panel = ArtifactPanelModel(db: dbManager.dbPool, writes: chatWrites, conversationID: conversationID, key: key)
-        panel.onKnowledgeChanged = { [weak self] in self?.reload() }
-        artifactPanel = panel
+        artifactPanel = ArtifactPanelModel(db: dbPool, writer: artifactWriter, conversationID: conversationID, key: key)
     }
 
-    /// The owner closed the panel: remember the key so a still-streaming turn
-    /// does not reopen it for the rest of this turn.
+    /// The owner closed the panel: a still-streaming turn does not reopen it.
     func closeArtifactPanel() {
         if let key = artifactPanel?.key { dismissedArtifactKeys.insert(key) }
         artifactPanel = nil
     }
 
-    /// "Send N comments" in the artifact panel: the unsent comments go out as
-    /// one ordinary owner turn, and exactly those rows turn `sent` in the
-    /// transaction that persists that message — a refused or failed send
-    /// leaves them unsent, a sent message never leaves them open. The button
-    /// is disabled while an answer streams; a click that races the stream's
-    /// start is refused out loud, never silently.
+    /// "Send N comments": the unsent comments go as the owner's message (CHAT-05); the engine composes them and
+    /// marks exactly those sent with the owner row. A refused send leaves them unsent.
     func sendArtifactComments() async {
         guard let comments = artifactPanel?.comments, let outgoing = comments.outgoing() else { return }
-        // The answer — or the reason it was not sent — shows in the
-        // conversation, which an expanded panel covers (#786).
         isInspectorExpanded = false
         guard !isBusy else {
             errorMessage = "Wait for the current answer to finish, then send the comments."
             return
         }
-        guard await send(text: outgoing.text, quotes: outgoing.ids) else { return }
-        comments.reload()
+        if await composer.sendArtifactComments(outgoing.ids) { comments.reload() }
     }
 
     // MARK: - Inspector
 
-    /// The panel the inspector shows, or nil when it is closed.
     var inspectorMode: ChatInspectorMode? {
         ChatInspectorPolicy.visibleMode(preferred: preferredInspectorMode, artifactOpen: artifactPanel != nil,
                                         sourcesOpen: sourcesPanel != nil)
     }
 
-    /// Shows one finished answer's sources; an open artifact stays open
-    /// behind its tab.
     func openSources(messageID: Int64, sources: [ChatSource]) {
         guard !sources.isEmpty else { return }
         sourcesPanel = ChatSourcesSelection(messageID: messageID, sources: sources)
@@ -899,23 +651,17 @@ final class ChatViewModel {
         sourcesPanel = nil
     }
 
-    /// The whole inspector was dismissed: both panels close.
     func closeInspector() {
         closeArtifactPanel()
         closeSourcesPanel()
     }
 
-    /// The panel's expand button: the open panel takes the chat's width, or
-    /// goes back to the inspector column.
     func toggleInspectorExpanded() {
         isInspectorExpanded = inspectorMode != nil && !isInspectorExpanded
     }
 
-    /// The inspector column is on screen: a panel is open and not expanded.
     var showsInspectorColumn: Bool { inspectorMode != nil && !isInspectorExpanded }
 
-    /// The inspector column was dismissed. Expanding hides the column too,
-    /// which must not close the panel it moves.
     func inspectorColumnDismissed() {
         guard !isInspectorExpanded else { return }
         closeInspector()
@@ -925,614 +671,150 @@ final class ChatViewModel {
         if inspectorMode == nil { isInspectorExpanded = false }
     }
 
-    /// Fed by the thread view whenever `liveTurn?.text` changes (the view
-    /// observes `LiveTurn` directly — there is no per-delta VM hook, deltas
-    /// go straight from the pool into `LiveTurn`, preflight A38): opens the
-    /// panel for a block that just started streaming and forwards the latest
-    /// draft to it.
-    func updateLiveArtifacts(streamingText: String) {
-        guard conversationID != nil else { return }
-        let drafts = ArtifactParser.parse(streamingText, final: false).artifacts
-        if let key = ArtifactPanelModel.keyToAutoOpen(drafts: drafts, currentKey: artifactPanel?.key,
-                                                      dismissedKeys: dismissedArtifactKeys) {
-            openArtifact(key: key)
-        }
-        artifactPanel?.applyStreaming(drafts)
-    }
-
-    // MARK: - Turns
-
-    /// Sends the composer text + the pending quote batch + any pending
-    /// attachments as one owner turn; clears them only when the turn really
-    /// started (a failed send keeps them for retry). `screen` is the help
-    /// popup's per-turn screen block: sent with the turn, never stored.
-    ///
-    /// The turn's rows are written off the main thread (board #670), so the
-    /// text leaves the composer at once, as it always did: what is typed
-    /// while they are written is the next message's. A send that fails puts
-    /// its text back ahead of it, and only the files that went out leave
-    /// the composer.
-    func sendDraft(screen: ScreenContext? = nil) async {
-        guard !isWaitingForAttachments else { return }
-        let shown = conversationID
-        let fromLanding = isOnLanding
-        // Files dropped, pasted or removed just before Enter land first
-        // (board #670); the composer says the send waits for them.
-        if composerAttachments.isBusy || !pastesInFlight.isEmpty {
-            let wait = UUID()
-            attachmentWaits[wait] = (shown, fromLanding)
-            for paste in pastesInFlight.values { _ = await paste.value }
-            await composerAttachments.settled()
-            attachmentWaits[wait] = nil
-        }
-        // The owner opened another chat meanwhile: nothing goes out, and the
-        // text stays where the switch left it, as for a switch before Enter.
-        guard conversationID == shown || (fromLanding && isOnLanding) else { return }
-        let attachments = composerAttachments.pending
-        let batchID = conversationID
-        let typed = draft
-        let text = ChatQuoteReply.compose(quotes: pendingQuotes, typed: typed) ?? typed
-        draft = ""
-        if await send(text: text, attachments: attachments, mentions: composer.mentions, skill: composer.skill,
-                      screen: screen) {
-            composerAttachments.removeSent(attachments.map(\.id))
-            if let batchID { quoteBatches[batchID] = nil }
+    /// The feed changed: a streaming reply's artifact opens the panel and feeds it its draft; a reply that ended
+    /// shows the stored version; a cut reply's whole text is read; the sources panel follows the active branch.
+    func feedChanged() {
+        let messages = conversation.messages
+        if let live = messages.last(where: { $0.role == "assistant" && $0.status == ChatMessageStatus.pending }) {
+            let drafts = ArtifactParser.parse(live.text, final: false).artifacts
+            if let key = ArtifactPanelModel.keyToAutoOpen(drafts: drafts, currentKey: artifactPanel?.key,
+                                                          dismissedKeys: dismissedArtifactKeys) {
+                openArtifact(key: key)
+            }
+            artifactPanel?.applyStreaming(drafts)
+        } else if artifactPanel?.liveDraft != nil {
+            artifactPanel?.turnFinished()
         } else {
-            draft = draft.isEmpty ? typed : "\(typed)\n\(draft)"
+            artifactPanel?.reload()
         }
-    }
-
-    /// The current conversation's quote batch (empty on the landing).
-    var pendingQuotes: [ChatQuoteDraft] {
-        conversationID.flatMap { quoteBatches[$0] } ?? []
-    }
-
-    /// "Ask about this" on a selected passage: one more quote in the batch,
-    /// and the composer takes the keyboard. Nothing is sent or stored until
-    /// the owner sends the draft.
-    func addQuote(_ quote: String, comment: String) {
-        guard let id = conversationID, !quote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        quoteBatches[id, default: []].append(ChatQuoteDraft(quote: quote, comment: comment))
-        requestComposerFocus()
-    }
-
-    /// The composer takes the keyboard (a quote added, ⌘/ on the AI Chat tab).
-    func requestComposerFocus() {
-        composerFocusRequest = UUID()
-    }
-
-    func updateQuoteComment(id quoteID: UUID, comment: String) {
-        guard let id = conversationID, let index = quoteBatches[id]?.firstIndex(where: { $0.id == quoteID }) else { return }
-        quoteBatches[id]?[index].comment = comment
-    }
-
-    func removeQuote(id quoteID: UUID) {
-        guard let id = conversationID else { return }
-        quoteBatches[id]?.removeAll { $0.id == quoteID }
-        if quoteBatches[id]?.isEmpty == true { quoteBatches[id] = nil }
-    }
-
-    func attachFiles(_ urls: [URL]) {
-        if let conversationID {
-            composerAttachments.add(urls: urls, conversationID: conversationID)
-            return
+        if let selection = sourcesPanel, !messages.contains(where: { $0.id == selection.messageID }) {
+            sourcesPanel = nil
         }
-        Task {
-            guard let id = await conversationIDCreatingIfNeeded() else { return }
-            composerAttachments.add(urls: urls, conversationID: id)
-        }
+        loadFullTexts(messages)
+        loadMessageTurnIDs()
     }
 
-    /// A paste the composer turned into a file (screenshot, PDF data, long
-    /// text — board #534); true once attached. On the landing its
-    /// conversation is written first; a failure there (the chat's error says
-    /// why) attaches nothing and answers false, so a long paste stays in the
-    /// field.
-    ///
-    /// A send waits for the pastes under way (`sendDraft`), so a paste
-    /// followed at once by Enter goes out with that message.
-    @discardableResult
-    func attachPasted(_ data: Data, name: String) async -> Bool {
-        let key = UUID()
-        let paste = Task { [self] () -> Bool in
-            guard let id = await conversationIDCreatingIfNeeded() else { return false }
-            return await composerAttachments.addPasted(data, name: name, conversationID: id)
-        }
-        pastesInFlight[key] = paste
-        defer { pastesInFlight[key] = nil }
-        return await paste.value
-    }
-
-    /// `mentions` are the composer's picked candidates (Task 25); only those
-    /// still present as `@Label` in `text` are kept (`liveMentions`) and
-    /// composed into the stored/sent owner text along with `skill`
-    /// (`ChatTurnComposer`, spec §4.3, preflight A31). Clears the composer's
-    /// pending mentions/skill once the turn actually starts — unless
-    /// `keepsComposer`: a turn sent from elsewhere (a question card's answer)
-    /// leaves the owner's half-written draft and its picks alone.
-    ///
-    /// One at a time (`isStartingTurn`): a send while one is being written
-    /// does nothing and returns false.
-    @discardableResult
-    func send(
-        text: String,
-        attachments: [ChatAttachment] = [],
-        mentions: [MentionCandidate] = [],
-        skill: String? = nil,
-        keepsComposer: Bool = false,
-        quotes: [Int64] = [],
-        screen: ScreenContext? = nil
-    ) async -> Bool {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let live = MentionTokenizer.liveMentions(text: text, mentions: mentions)
-        let turnText = ChatTurnComposer.compose(text: text, skill: skill, mentions: live)
-        // A message may carry only attachments (no text) — the ChatComposerField canSend twin.
-        guard !turnText.isEmpty || !attachments.isEmpty, !isBusy else { return false }
-        let handing = handTurn()
-        defer { handing() }
-        let fromLanding = isOnLanding
-        guard let id = await conversationIDCreatingIfNeeded() else { return false }
-        if !keepsComposer { composer.reset() }
-        var leftLanding: LandingState?
-        // The actions-outcome block is Go's (its start reads it, floored at
-        // the previous owner message); the screen block goes as is.
-        let started = await startTurn(conversationID: id, text: turnText, start: ChatTurnStart(
-            mode: .send, attachmentIDs: attachments.map(\.id), quotes: quotes, titleText: trimmed,
-            screen: screen?.block), bubble: turnText) { [self] in
-            handing()
-            // The landing's own turn only: a landing left meanwhile is not.
-            // It leaves at Send, so the chat shows the owner's message, the
-            // waiting line and Stop while the session writes the turn.
-            guard fromLanding, isOnLanding, conversationID == id else { return }
-            leftLanding = LandingState(draft: landingDraft, openProjectID: openProjectID,
-                                       landingProjectID: landingProjectID)
-            landingDraft = nil
-            isOnLanding = false
-            openProjectID = nil
-            landingProjectID = nil
-        }
-        guard let left = leftLanding else { return started }
-        if started {
-            // Still the chat on screen: a start that answers after the owner
-            // opened another chat does not move the history selection.
-            if conversationID == id { onLandingTurnStarted?(id) }
-        } else if conversationID == id, !isOnLanding {
-            // The landing's first send failed: nothing was written, so the
-            // owner is back on the landing with the text (the caller puts it
-            // back), and the empty chat is its untouched draft again —
-            // discarded on leave, never left in the history.
-            landingDraft = left.draft
-            openProjectID = left.openProjectID
-            landingProjectID = left.landingProjectID
-            isOnLanding = true
-        }
-        return started
-    }
-
-    /// The conversation a turn/attachment writes into, creating one on first
-    /// use (a paperclip click before any text still needs somewhere to land).
-    /// Made from the landing, it keeps the landing up until the first turn.
-    /// One creation at a time: callers meanwhile get the same conversation.
-    private func conversationIDCreatingIfNeeded() async -> Int64? {
-        if let conversationID { return conversationID }
-        if let creatingConversation { return await creatingConversation.value }
-        let task = Task { [self] in
-            defer { creatingConversation = nil }
-            return await createConversationForComposer()
-        }
-        creatingConversation = task
-        return await task.value
-    }
-
-    private func createConversationForComposer() async -> Int64? {
-        guard isOnLanding else { return await newConversation() }
-        // The landing's own earlier draft, still untouched and in the same
-        // project, is reused rather than a second empty row made.
-        let projectID = landingProjectID
-        let reusable: Int64?
-        do {
-            let previous = landingDraft ?? storedLandingDraft
-            reusable = try previous.flatMap { draft in
-                try dbManager.dbPool.read {
-                    try ChatConversationQueries.fetchUntouched(
-                        $0, id: draft.id, createdAt: draft.createdAt, projectID: projectID
-                    )?.id
-                }
+    private func loadFullTexts(_ messages: [ChatFeed.Message]) {
+        let cut = messages.filter { $0.textCut && $0.status != ChatMessageStatus.pending && fullTexts[$0.id] == nil }
+        guard !cut.isEmpty else { return }
+        let ids = cut.map(\.id)
+        let pool = dbPool
+        fullTextLoad = Task { [weak self] in
+            let rows = try? await pool.read { db in
+                try Row.fetchAll(db, sql: "SELECT id, text FROM chat_messages WHERE id IN (\(ids.map { _ in "?" }.joined(separator: ",")))",
+                                 arguments: StatementArguments(ids))
             }
-        } catch {
-            NSLog("ChatViewModel: looking up an untouched chat failed: %@", error.localizedDescription)
-            reusable = nil
-        }
-        let id: Int64
-        if let reusable {
-            id = reusable
-        } else {
-            let conv: ChatConversation
-            do {
-                conv = try await writeNewConversation(projectID: projectID)
-            } catch {
-                errorMessage = "Couldn't start a new chat: \(error.localizedDescription)"
-                return nil
-            }
-            // The owner left the landing (or moved it to another project)
-            // while the row was written: it is not the landing's draft any
-            // more, and nobody wrote into it.
-            guard isOnLanding, conversationID == nil, landingProjectID == projectID else {
-                discardIfUntouched(LandingDraft(id: conv.id, createdAt: conv.createdAt, projectID: conv.projectID))
-                return nil
-            }
-            id = conv.id
-            reloadConversations()
-        }
-        // A project page (and the landing's project) stays until the
-        // draft's first turn.
-        let page = openProjectID
-        select(conversationID: id)
-        isOnLanding = true
-        openProjectID = page
-        landingProjectID = projectID
-        landingDraft = currentConversation.map {
-            LandingDraft(id: $0.id, createdAt: $0.createdAt, projectID: $0.projectID)
-        }
-        return id
-    }
-
-    /// Stops the open chat's turn: the Mac's own through its session, the
-    /// phone's by setting its lease's cancel (the hub stops it within 1 s).
-    func stop() {
-        if let id = conversationID, let waiting = awaitingStart[id], !waiting.onClient {
-            // Not handed to its session yet (it waits for `chat.recover`):
-            // the Stop goes with it, and the turn is stopped at its start.
-            awaitingStart[id]?.stopRequested = true
-            return
-        }
-        guard let turnID = foreignTurn.turnID, let id = conversationID else {
-            pool.client(for: conversationID)?.cancel()
-            return
-        }
-        Task {
-            do {
-                let _: ChatChanged = try await write(.chatStop) {
-                    ChatTurnRequest(requestID: $0, conversationID: id, turnID: turnID)
-                }
-            } catch {
-                errorMessage = "Couldn't stop the answer: \(error.localizedDescription)"
-            }
+            guard let self, let rows else { return }
+            for row in rows { self.fullTexts[row["id"]] = row["text"] }
         }
     }
 
-    /// One read of the open chat's lease (spec 2026-11-15 §5): while the hub
-    /// holds it the thread is re-read, and once more at its release; the
-    /// Chats panel follows when it starts or ends.
-    func refreshForeignTurn() async {
-        guard let id = conversationID else {
-            foreignTurn.reset()
-            return
+    /// Re-reads the Gmail and Slack facts the artifact actions need.
+    func loadArtifactContext() async {
+        let read = try? await dbPool.read { db in
+            (try GoogleAccountQueries.hasConnectedGmailAccount(db), try SlackLinkResolver.load(db))
         }
-        let lease: ChatLease?
-        do {
-            lease = try await dbManager.dbPool.read { db in try ChatLeaseQueries.fetch(db, conversationID: id) }
-        } catch {
-            NSLog("ChatViewModel: reading the chat lease failed: %@", error.localizedDescription)
-            return
+        if let read {
+            gmailConnected = read.0
+            slackLinks = read.1
         }
-        // Another chat was opened while it was read.
-        guard conversationID == id else { return }
-        let tick = foreignTurn.observe(lease, nowMS: ChatLease.milliseconds(leaseClock()))
-        if tick.reloadThread { reload() }
-        if tick.reloadPanel { reloadConversations() }
-    }
-
-    /// The chat view's task: reads the open chat's lease every
-    /// `ChatForeignTurnModel.pollInterval` until the task ends.
-    func watchForeignTurns() async {
-        while !Task.isCancelled {
-            await refreshForeignTurn()
-            do { try await Task.sleep(for: ChatForeignTurnModel.pollInterval) } catch { return }
-        }
-    }
-
-    func retry(messageID: Int64) async {
-        guard let item = thread.first(where: { $0.id == messageID }),
-              ChatErrorPresentation.isRetryable(item.message.errorCode) else { return }
-        await regenerate(messageID: messageID)
-    }
-
-    /// "Stopped" + Continue: asks the model to carry on from its partial reply.
-    func continueStopped(messageID: Int64) async {
-        guard let last = thread.last?.message, last.id == messageID, last.isAssistant, last.status == "partial",
-              last.errorCode != ChatErrorCode.quotaExhausted.rawValue else { return }
-        await send(text: "Continue")
-    }
-
-    /// A new assistant sibling under the same owner message (spec §2.3). The
-    /// provider session's transcript holds the old answer, so it replays.
-    /// Replay is text-only, so the owner message's files are sent again with
-    /// it — a retried/regenerated turn about an image or PDF still sees it.
-    func regenerate(messageID: Int64) async {
-        guard !isBusy, let id = conversationID,
-              let index = thread.firstIndex(where: { $0.message.id == messageID }), index > 0,
-              thread[index].message.isAssistant, thread[index - 1].message.isUser,
-              thread[index].message.errorCode != ChatErrorCode.quotaExhausted.rawValue else { return }
-        let owner = thread[index - 1]
-        await startTurnBusy(conversationID: id, text: owner.message.text,
-                            start: ChatTurnStart(mode: .regenerate, parentID: owner.message.id), bubble: nil)
-    }
-
-    /// A new owner sibling under the original's parent, then a fresh reply.
-    /// The edited body keeps the original message's skill line and REFERENCED
-    /// tokens (`ChatTurnComposer.recompose`, Review Focus 3), and its files are
-    /// sent again (the edit changes only the text). The attachment rows stay
-    /// linked to the original message — the edited sibling does not show them
-    /// (v1 limit).
-    func edit(messageID: Int64, newText: String) async {
-        let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !isBusy, let id = conversationID,
-              let item = thread.first(where: { $0.message.id == messageID }), item.message.isUser else { return }
-        editingMessageID = nil
-        // Go keeps the original's skill line and REFERENCED tokens (its
-        // `recompose`); the bubble shows the same text meanwhile.
-        await startTurnBusy(conversationID: id, text: trimmed,
-                            start: ChatTurnStart(mode: .edit, editMessageID: messageID),
-                            bubble: ChatTurnComposer.recompose(stored: item.message.text, newBody: trimmed))
-    }
-
-    /// ↑ in an empty composer (spec §3.5).
-    func beginEditingLast() {
-        editingMessageID = thread.last { $0.message.isUser }?.message.id
-    }
-
-    func selectVariant(messageID: Int64) async {
-        guard let id = conversationID else { return }
-        do {
-            let _: ChatDone = try await write(.chatBranch) { ChatBranchRequest(requestID: $0, messageID: messageID) }
-            // Another chat opened meanwhile keeps its own thread on screen.
-            guard conversationID == id else { return }
-            reload()
-        } catch {
-            guard conversationID == id else { return }
-            errorMessage = "Couldn't switch the variant: \(error.localizedDescription)"
-        }
-    }
-
-    /// ⌘K hit: open the conversation, make the hit's branch active, scroll to it.
-    func open(_ hit: ChatSearchHit) async {
-        // The hit shows in the conversation, which an expanded panel covers.
-        isInspectorExpanded = false
-        select(conversationID: hit.conversationID)
-        guard let messageID = hit.messageID else { return }
-        await selectVariant(messageID: messageID)
-        guard conversationID == hit.conversationID else { return }
-        scrollTarget = messageID
-    }
-
-    /// Called by the thread view once it has jumped to `scrollTarget`, so
-    /// reopening the same hit changes the target again and jumps again.
-    func consumeScrollTarget() {
-        scrollTarget = nil
-    }
-
-    /// The sibling `offset` steps from `messageID` (‹ = -1, › = +1), nil at an
-    /// end. A read failure also answers nil: the arrow simply does nothing.
-    func variant(of messageID: Int64, offset: Int) -> Int64? {
-        guard let siblings = try? dbManager.dbPool.read({ db in try ChatTreeQueries.siblings(db, messageID: messageID) }),
-              let index = siblings.firstIndex(where: { $0.id == messageID }) else { return nil }
-        let target = index + offset
-        return siblings.indices.contains(target) ? siblings[target].id : nil
     }
 
     // MARK: - Private
 
-    /// `startTurn` for a regenerate or an edit, which `isStartingTurn`
-    /// guards like a send.
-    @discardableResult
-    private func startTurnBusy(conversationID: Int64, text: String, start: ChatTurnStart, bubble: String?) async -> Bool {
-        let handing = handTurn()
-        defer { handing() }
-        return await startTurn(conversationID: conversationID, text: text, start: start, bubble: bubble) {
-            handing()
+    /// Puts `id` (nil: the landing) on screen with its own models; the left chat's draft is kept for it.
+    private func show(_ id: Int64?) {
+        if let old = conversationID {
+            drafts[old] = composer.draft
+        } else {
+            landingDraftText = composer.draft
         }
+        let routing = composer.routing
+        conversation.stop()
+        let next = ChatConversationModel(client: client, conversationID: id, clock: uiClock)
+        conversation = next
+        composer = ChatComposerModel(conversation: next)
+        composer.draft = id.map { drafts[$0] ?? "" } ?? landingDraftText
+        composer.projectID = id == nil ? landingProjectID : nil
+        composer.routing = id == nil ? routing : nil
+        wire(next)
+        next.start()
+        artifactPanel = nil
+        sourcesPanel = nil
+        dismissedArtifactKeys = []
+        errorMessage = nil
+        fullTexts = [:]
+        reviewedMessageID = nil
+        reviewedActionIDs = []
+        messageTurnIDs = []
+        if let id { actionFeed.start(conversationID: id) }
     }
 
-    /// One send being handed to its session (`isHandingTurn`); the returned
-    /// release counts once, whichever of its hand-over or its end comes
-    /// first, so another send's late end never clears this one.
-    private func handTurn() -> () -> Void {
-        handingTurns += 1
-        var released = false
-        return { [weak self] in
-            guard !released else { return }
-            released = true
-            self?.handingTurns -= 1
+    // MARK: - Agent actions (the Mac's cards, D12)
+
+    /// "Review actions" on a reply the quota stopped: its turn's actions show under it.
+    func reviewActions(messageID: Int64) async {
+        let turn = try? await dbPool.read { db in
+            try String.fetchOne(db, sql: "SELECT turn_id FROM chat_messages WHERE id = ?", arguments: [messageID])
         }
+        guard let turn else { return }
+        actionFeed.refresh()
+        reviewedMessageID = messageID
+        reviewedActionIDs = actionFeed.rows.filter { $0.turnID == turn }.map(\.id)
+        isInspectorExpanded = false
+        conversation.focusMessageID = messageID
     }
 
-    /// What the landing was when its first send left it.
-    private struct LandingState {
-        let draft: LandingDraft?
-        let openProjectID: Int64?
-        let landingProjectID: Int64?
+    /// The proposals of a turn that stored no message (an interrupted turn): no approval part shows them.
+    var unattachedActions: [AgentAction] {
+        AgentActionFeed.unattached(rows: actionFeed.rows, messageTurnIDs: messageTurnIDs)
     }
 
-    /// Sends the turn to the chat's session, which writes its rows and
-    /// answers `started` (CHAT-01: the owner row commits before the provider
-    /// runs). `bubble` shows at once as the owner's message until then. True
-    /// once started; false — nothing was written — when the session refused
-    /// it (the phone's turn holds the chat), could not save it, died or
-    /// stayed silent for `startedTimeout`: the caller puts the text back.
-    /// The turn goes out whichever chat is on screen by then; only the
-    /// screen's own state follows the shown conversation.
-    @discardableResult
-    private func startTurn(
-        conversationID id: Int64,
-        text: String,
-        start: ChatTurnStart,
-        bubble: String?,
-        handed: () -> Void = {}
-    ) async -> Bool {
-        let config = sessionConfig(conversationID: id)
-        let command = ChatTurnCommand(turnID: makeTurnID(), text: text, attachments: [], replay: false, start: start)
-        awaitingStart[id] = AwaitingStart(bubble: bubble)
-        defer { awaitingStart[id] = nil }
-        handed()
-        if let recovery = recovering[id] { await recovery.value }
-        let client = pool.session(for: id, config: config)
-        awaitingStart[id]?.onClient = true
-        let stopRequested = awaitingStart[id]?.stopRequested == true
-        switch await client.startTurn(command, stopped: stopRequested) {
-        case .started(let started):
-            awaitingStart[id] = nil
-            if conversationID == id {
-                errorMessage = nil
-                dismissedArtifactKeys = []
-                reload()
+    /// A card a running turn waits on (its action is pending in the turn that runs): outlined.
+    func isAwaited(_ action: AgentAction) -> Bool {
+        (action.isPending && !action.turnID.isEmpty && action.turnID == conversation.runningTurnID)
+            || reviewedActionIDs.contains(action.id)
+    }
+
+    private func loadMessageTurnIDs() {
+        guard let id = conversationID else { return }
+        let pool = dbPool
+        turnIDLoad = Task { [weak self] in
+            let turns = try? await pool.read { db in
+                try String.fetchSet(db, sql: "SELECT DISTINCT turn_id FROM chat_messages WHERE conversation_id = ? AND turn_id != ''",
+                                    arguments: [id])
             }
-            if started.ownerMessageID > 0, start.mode != .regenerate {
-                // Remember gets the owner's typed words, never the skill/REFERENCED lines.
-                onOwnerMessageStarted?(started, ChatTurnComposer.displayParts(bubble ?? text).body)
-            }
-            reloadConversations()
-            return true
-        case .refused:
-            // The phone's turn holds the chat: nothing was written or sent;
-            // the composer shows its line and keeps the text.
-            guard conversationID == id else { return false }
-            await refreshForeignTurn()
-            if conversationID == id, foreignTurn.line == nil {
-                errorMessage = ChatBusyError().localizedDescription
-            }
-            return false
-        case .failed(let failure):
-            // A held turn the owner stopped is not an error to show.
-            if conversationID == id, failure.code != .interrupted { errorMessage = failure.message }
-            return false
+            guard let self, let turns, self.conversationID == id else { return }
+            if turns != self.messageTurnIDs { self.messageTurnIDs = turns }
         }
     }
 
-    /// A session died after `started` without letting go of its turn: the
-    /// turn's rows are marked `session_lost` and its lease freed
-    /// (`chat.recover`, spec §9). A failed call is logged; the next app
-    /// launch's `chat.release_launches` does it then.
-    private func recover(conversationID id: Int64, turnID: String) {
-        let chatWrites = chatWrites
-        let task = Task { [weak self] in
-            do {
-                let _: ChatRecoverResponse = try await chatWrites.perform(.chatRecover) {
-                    ChatTurnRequest(requestID: $0, conversationID: id, turnID: turnID)
-                }
-            } catch {
-                NSLog("ChatViewModel: recovering chat turn %@ failed: %@", turnID, error.localizedDescription)
-            }
-            self?.recovering[id] = nil
-            guard let self, self.conversationID == id else { return }
-            self.reload()
-        }
-        recovering[id] = task
-    }
-
-    private func sessionConfig(conversationID id: Int64) -> ChatSessionConfig {
-        // No provider resumes a stored session: a new session replays the
-        // history from the database (#604 G11).
-        ChatSessionConfig(conversationID: id, provider: selectedProvider.rawValue,
-                          model: selectedModel.isEmpty ? nil : selectedModel,
-                          automatic: automaticRouting, projectID: currentConversation?.projectID)
-    }
-
-    /// A conversation remembers the provider/model it last ran with; a new
-    /// one keeps the current picker selection.
-    private func applyConversationSettings() {
-        guard let conv = currentConversation else { return }
-        automaticRouting = conv.isAutomatic
-        let raw = conv.isAutomatic ? preferredProvider.rawValue : conv.provider ?? preferredProvider.rawValue
-        applyingConversationSettings = true
-        defer { applyingConversationSettings = false }
-        if let provider = AIProvider(rawValue: raw) { selectedProvider = provider }
-        selectedModel = conv.isAutomatic ? "" : conv.model ?? ""
-    }
-
-    /// The live process was spawned for the old provider/model: close it; the
-    /// next turn spawns a matching one, which replays the history. Never
-    /// mid-turn — the picker is disabled while streaming.
-    private func recycleSession() {
-        guard !applyingConversationSettings, !isBusy, let id = conversationID else { return }
-        pool.close(conversationID: id)
-    }
-
-    /// The turn is blocked on a proposal the session subprocess just wrote:
-    /// surface its card now, not at the turn boundary it is waiting for.
-    private func actionAwaited(conversationID id: Int64) {
-        if id == conversationID { actionFeed.refresh() }
-        onActionAwaited?(id)
-    }
-
-    private func turnFinished(conversationID id: Int64) {
-        if id == conversationID {
-            reload()
-            // Proposals were written by the MCP subprocess, which the feed's
-            // ValueObservation cannot see — the turn boundary surfaces them.
-            actionFeed.refresh()
-            // The session's terminal write already versioned this turn's
-            // artifacts in the same transaction as the message (`turn_saved`
-            // came after it); drop the live draft and show what was stored.
-            artifactPanel?.turnFinished()
-            // A failed or cut-off turn rolls the panel back to the stored
-            // version; its error and Retry live in the conversation (#786).
-            if thread.last?.message.status != "complete" { isInspectorExpanded = false }
-        }
-        reloadConversations()
-        requestTitleIfNeeded(conversationID: id)
-        onTurnFinished?(id)
-    }
-
-    /// Fire-and-forget `watchtower chat title` after the first completed
-    /// exchange (spec §4.4). Go writes the title; the list reloads after.
-    private func requestTitleIfNeeded(conversationID id: Int64) {
-        guard let cliRunner, !titleRequests.contains(id) else { return }
-        let needed: Bool
-        do {
-            needed = try dbManager.dbPool.read { db in try ChatConversationQueries.needsAITitle(db, id: id) }
-        } catch {
-            return // an unreadable count only skips the optional AI title; the prefix title stands
-        }
-        guard needed else { return }
-        // At most once per conversation per app run: a failed call is not
-        // retried on later turns (the prefix title stands).
-        titleRequests.insert(id)
-        titleTask = Task { [weak self] in
-            // ProcessCLIRunner logs a failure (CLILog); the prefix title stays, which is still correct.
-            _ = try? await cliRunner.run(args: ["chat", "title", String(id)])
+    private func wire(_ model: ChatConversationModel) {
+        model.onStartDaemon = onStartDaemon
+        model.onConversationCreated = { [weak self] id in
             guard let self else { return }
-            self.reloadConversations()
-            if self.conversationID == id { self.reload() }
+            self.actionFeed.start(conversationID: id)
+            self.landingDraftText = ""
         }
+    }
+
+    static func replacingText(of message: ChatFeed.Message, with text: String) -> ChatFeed.Message {
+        let parts = message.parts?.map { part -> ChatPart in
+            guard part.kind == ChatPartKind.text else { return part }
+            return ChatPart(kind: ChatPartKind.text,
+                            payload: .object(["text": .string(text), "text_cut": .bool(false)]),
+                            fallback: ChatPartFallback(text: text))
+        }
+        return ChatFeed.Message(
+            id: message.id, role: message.role, text: text, textCut: false, status: message.status,
+            errorCode: message.errorCode, errorMessage: message.errorMessage, createdAt: message.createdAt,
+            siblings: message.siblings, attachments: message.attachments, steps: message.steps, parts: parts
+        )
     }
 }
 
-/// The landing's draft as persisted: `"<id>|<created_at>"`, plus
-/// `"|<project_id>"` for a draft made in a project (an older two-part value
-/// reads as outside any project).
-struct LandingDraft: Equatable {
-    let id: Int64
-    let createdAt: Double
-    let projectID: Int64?
-
-    init(id: Int64, createdAt: Double, projectID: Int64? = nil) {
-        self.id = id
-        self.createdAt = createdAt
-        self.projectID = projectID
-    }
-
-    init?(stored: String) {
-        let parts = stored.split(separator: "|", omittingEmptySubsequences: false)
-        guard parts.count == 2 || parts.count == 3,
-              let id = Int64(parts[0]), let createdAt = Double(parts[1]) else { return nil }
-        var projectID: Int64?
-        if parts.count == 3 {
-            guard let project = Int64(parts[2]) else { return nil }
-            projectID = project
-        }
-        self.init(id: id, createdAt: createdAt, projectID: projectID)
-    }
-
-    var stored: String { projectID.map { "\(id)|\(createdAt)|\($0)" } ?? "\(id)|\(createdAt)" }
+/// The routing model's way back to the chat's current composer and refresh, without a strong cycle.
+@MainActor
+private final class ChatViewModelRef {
+    weak var vm: ChatViewModel?
 }

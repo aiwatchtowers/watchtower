@@ -49,6 +49,15 @@ const (
 	EventSaveError = "save_error"
 )
 
+// The `ai session --listen` socket's own events (unified chat spec §7):
+// the greeting the session sends before the client may write, and the
+// line that ends an attach's replay, naming the turn the replay held ("" =
+// none). The protocol-v2 events between them are unchanged.
+const (
+	EventListenReady = "listen_ready"
+	EventAttached    = "attached"
+)
+
 // turn_done statuses.
 const (
 	StatusComplete    = "complete"
@@ -74,6 +83,10 @@ const (
 	CommandTurn   = "turn"
 	CommandCancel = "cancel"
 	CommandClose  = "close"
+	// CommandAttach (listen mode only) makes the sender the session's one
+	// client: the current turn's events are replayed to it from the turn's
+	// start, then it gets every event live.
+	CommandAttach = "attach"
 )
 
 // Event is one NDJSON line on the session's stdout.
@@ -234,28 +247,99 @@ type EventWriter struct {
 	// Observe, when set before the first Emit, hears every event after it
 	// is written (the Slack Live status watcher); it must not block.
 	Observe func(Event)
+
+	// Listen mode (ServeListen): buf keeps the current turn for the next
+	// attach; w is nil while no client is attached; undelivered is set when
+	// an event was kept that no client has seen.
+	buf         *TurnBuffer
+	undelivered bool
 }
 
 // NewEventWriter wraps w.
 func NewEventWriter(w io.Writer) *EventWriter { return &EventWriter{w: w} }
 
-// Emit writes one event line.
+// Emit writes one event line. In listen mode the event is also kept in the
+// turn buffer, and with no client attached it is only kept; a client whose
+// write fails is dropped (its reader sees the connection end).
 func (w *EventWriter) Emit(e Event) error {
 	if e.Type == EventSessionReady && e.Provider != "" && e.Capabilities == nil {
 		if c, ok := providers.CapsFor(e.Provider); ok {
 			e.Capabilities = &c
 		}
 	}
-	b, err := json.Marshal(e)
+	b, err := encodeEvent(e)
 	if err != nil {
-		return fmt.Errorf("encoding %s event: %w", e.Type, err)
+		return err
 	}
-	b = append(b, '\n')
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	_, err = w.w.Write(b)
+	if w.buf != nil {
+		w.buf.Add(e)
+		if w.w == nil {
+			w.undelivered = true
+		}
+	}
+	if w.w != nil {
+		_, err = w.w.Write(b)
+		if err != nil && w.buf != nil {
+			w.w, w.undelivered, err = nil, true, nil
+		}
+	}
 	if w.Observe != nil {
 		w.Observe(e)
 	}
 	return err
+}
+
+func encodeEvent(e Event) ([]byte, error) {
+	b, err := json.Marshal(e)
+	if err != nil {
+		return nil, fmt.Errorf("encoding %s event: %w", e.Type, err)
+	}
+	return append(b, '\n'), nil
+}
+
+// listen switches w to listen mode: every event is kept for the next
+// attach, and none is written until a client attached.
+func (w *EventWriter) listen() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.buf, w.w = &TurnBuffer{}, nil
+}
+
+// attach makes c the client: the buffered turn is replayed to it, then the
+// attached line, then every event live. Under w's lock, so no event is lost
+// or sent twice in between.
+func (w *EventWriter) attach(c io.Writer) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	replay := w.buf.Replay()
+	replay = append(replay, Event{Type: EventAttached, TurnID: w.buf.TurnID()})
+	for _, e := range replay {
+		b, err := encodeEvent(e)
+		if err != nil {
+			return err
+		}
+		if _, err := c.Write(b); err != nil {
+			return fmt.Errorf("replaying to the client: %w", err)
+		}
+	}
+	w.w, w.undelivered = c, false
+	return nil
+}
+
+// detach drops c when it is the client.
+func (w *EventWriter) detach(c io.Writer) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.w == c {
+		w.w = nil
+	}
+}
+
+// pending: an event was kept that no client has seen.
+func (w *EventWriter) pending() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.undelivered
 }

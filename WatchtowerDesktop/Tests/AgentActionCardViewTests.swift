@@ -1,3 +1,5 @@
+@testable import ChatUI
+import ChatWire
 import XCTest
 import GRDB
 import SwiftUI
@@ -19,8 +21,8 @@ final class AgentActionCardViewTests: XCTestCase {
         let action = try row { db in
             try TestDatabase.insertAgentAction(db, tool: "create_jira_issue", external: true, argsJSON: args)
         }
-        XCTAssertEqual(AgentActionCardView.title(for: action), "Create a Jira issue")
-        let lines = AgentActionCardView.summaryLines(for: action)
+        XCTAssertEqual(MacAgentActionCard.title(for: action), "Create a Jira issue")
+        let lines = MacAgentActionCard.summaryLines(for: action)
         XCTAssertEqual(lines, ["Project: ABC · Task", "Summary: Fix login", "Description: body", "Labels: a, b"])
     }
 
@@ -28,8 +30,8 @@ final class AgentActionCardViewTests: XCTestCase {
         let action = try row { db in
             try TestDatabase.insertAgentAction(db, argsJSON: #"{"text":"Call Vasya","due":"2026-09-05T16:00","priority":"high","reason":"r"}"#)
         }
-        XCTAssertEqual(AgentActionCardView.title(for: action), "Create a target")
-        XCTAssertEqual(AgentActionCardView.summaryLines(for: action), ["Call Vasya", "Due: 2026-09-05T16:00 · Priority: high"])
+        XCTAssertEqual(MacAgentActionCard.title(for: action), "Create a target")
+        XCTAssertEqual(MacAgentActionCard.summaryLines(for: action), ["Call Vasya", "Due: 2026-09-05T16:00 · Priority: high"])
     }
 
     /// The card names a tool with the shared human name the Inbox cheat
@@ -38,8 +40,8 @@ final class AgentActionCardViewTests: XCTestCase {
         let action = try row { db in
             try TestDatabase.insertAgentAction(db, tool: "brief_context", argsJSON: #"{"summary":"s"}"#)
         }
-        XCTAssertEqual(AgentActionCardView.title(for: action), "Brief me")
-        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        XCTAssertEqual(MacAgentActionCard.title(for: action), "Brief me")
+        let view = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
         XCTAssertNoThrow(try view.inspect().find(text: "Brief me"))
     }
 
@@ -51,20 +53,20 @@ final class AgentActionCardViewTests: XCTestCase {
         let action = try row { db in
             try TestDatabase.insertAgentAction(db, tool: "dismiss_tracks", argsJSON: args)
         }
-        XCTAssertEqual(AgentActionCardView.title(for: action), "Dismiss tracks")
-        XCTAssertEqual(AgentActionCardView.summaryLines(for: action), [
+        XCTAssertEqual(MacAgentActionCard.title(for: action), "Dismiss tracks")
+        XCTAssertEqual(MacAgentActionCard.summaryLines(for: action), [
             "Dismiss 7 tracks (keeping #9)", "• One", "• Two", "• Three", "• Four", "• Five", "…and 2 more"
         ])
     }
 
     func testUnknownToolTitleFallsBackToTheToolID() throws {
         let action = try row { db in try TestDatabase.insertAgentAction(db, tool: "frobnicate") }
-        XCTAssertEqual(AgentActionCardView.title(for: action), "frobnicate")
+        XCTAssertEqual(MacAgentActionCard.title(for: action), "frobnicate")
     }
 
     func testPendingCardShowsApproveAndReject() throws {
         let action = try row { db in try TestDatabase.insertAgentAction(db) }
-        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        let view = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
         XCTAssertNoThrow(try view.inspect().find(button: "Approve"))
         XCTAssertNoThrow(try view.inspect().find(button: "Reject"))
         XCTAssertThrowsError(try view.inspect().find(button: "Retry"))
@@ -74,7 +76,7 @@ final class AgentActionCardViewTests: XCTestCase {
         let action = try row { db in
             try TestDatabase.insertAgentAction(db, tool: "create_jira_issue", external: true, status: "failed", error: "boom")
         }
-        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        let view = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
         XCTAssertNoThrow(try view.inspect().find(button: "Retry"))
         XCTAssertNoThrow(try view.inspect().find(text: "boom"))
         // swiftlint:disable:next trailing_closure
@@ -88,9 +90,9 @@ final class AgentActionCardViewTests: XCTestCase {
         let action = try row { db in try TestDatabase.insertAgentAction(db) }
         var approved = 0
         var retried = 0
-        let view = AgentActionCardView(action: action, inFlight: false,
-                                       onApprove: { approved += 1 }, onReject: {}, onRetry: { retried += 1 },
-                                       gestureError: .init(verb: "approve", message: "database is locked (5) (SQLITE_BUSY)"))
+        let view = MacAgentActionCard(action: action, inFlight: false,
+                                      onApprove: { approved += 1 }, onReject: {}, onRetry: { retried += 1 },
+                                      gestureError: .init(verb: "approve", message: "database is locked (5) (SQLITE_BUSY)"))
         // swiftlint:disable:next trailing_closure
         XCTAssertNoThrow(try view.inspect().find(textWhere: { text, _ in text.contains("SQLITE_BUSY") }))
         XCTAssertThrowsError(try view.inspect().find(button: "Approve"))
@@ -105,8 +107,8 @@ final class AgentActionCardViewTests: XCTestCase {
     /// just tried to refuse.
     func testFailedRejectKeepsApproveLabel() throws {
         let action = try row { db in try TestDatabase.insertAgentAction(db) }
-        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
-                                       gestureError: .init(verb: "reject", message: "SQLITE_BUSY"))
+        let view = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                                      gestureError: .init(verb: "reject", message: "SQLITE_BUSY"))
         XCTAssertNoThrow(try view.inspect().find(button: "Approve"))
         XCTAssertNoThrow(try view.inspect().find(button: "Reject"))
         XCTAssertThrowsError(try view.inspect().find(button: "Retry"))
@@ -120,8 +122,8 @@ final class AgentActionCardViewTests: XCTestCase {
             try TestDatabase.insertAgentAction(db, tool: "create_jira_issue", external: true, status: "failed", error: "boom")
         }
         for message in ["boom", #"recording failure "boom": disk full"#] {
-            let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
-                                           gestureError: .init(verb: "approve", message: message))
+            let view = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                                          gestureError: .init(verb: "approve", message: message))
             // swiftlint:disable:next trailing_closure
             let hits = try view.inspect().findAll(ViewType.Text.self, where: { try $0.string().contains("boom") })
             XCTAssertEqual(hits.count, 1, message)
@@ -133,8 +135,8 @@ final class AgentActionCardViewTests: XCTestCase {
     /// drops the stale red line rather than contradict its status.
     func testTerminalRowHidesAStaleGestureError() throws {
         let action = try row { db in try TestDatabase.insertAgentAction(db, status: "applied") }
-        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
-                                       gestureError: .init(verb: "approve", message: "SQLITE_BUSY"))
+        let view = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                                      gestureError: .init(verb: "approve", message: "SQLITE_BUSY"))
         XCTAssertThrowsError(try view.inspect().find(text: "SQLITE_BUSY"))
     }
 
@@ -142,7 +144,7 @@ final class AgentActionCardViewTests: XCTestCase {
     /// report it, never offer a second decision on it.
     func testExecutingCardShowsNoButtons() throws {
         let action = try row { db in try TestDatabase.insertAgentAction(db, status: "executing") }
-        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        let view = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
         XCTAssertThrowsError(try view.inspect().find(button: "Approve"))
         XCTAssertThrowsError(try view.inspect().find(button: "Reject"))
         XCTAssertThrowsError(try view.inspect().find(button: "Retry"))
@@ -156,7 +158,7 @@ final class AgentActionCardViewTests: XCTestCase {
         let action = try row { db in
             try TestDatabase.insertAgentAction(db, tool: "create_jira_issue", external: true, status: "approved")
         }
-        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        let view = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
         XCTAssertNoThrow(try view.inspect().find(button: "Retry"))
         XCTAssertThrowsError(
             // swiftlint:disable:next trailing_closure
@@ -175,7 +177,7 @@ final class AgentActionCardViewTests: XCTestCase {
         let action = try row { db in
             try TestDatabase.insertAgentAction(db, tool: "create_jira_issue", status: "applied", resultJSON: result)
         }
-        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        let view = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
         let link = try view.inspect().find(ViewType.Link.self)
         XCTAssertEqual(try link.labelView().text().string(), "ABC-7")
         XCTAssertEqual(try link.url().absoluteString, "https://acme.atlassian.net/browse/ABC-7")
@@ -188,8 +190,8 @@ final class AgentActionCardViewTests: XCTestCase {
                                                status: "applied", resultJSON: #"{"idea_id":42}"#)
         }
         var opened: AgentActionDestination?
-        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
-                                       onOpen: { opened = $0 })
+        let view = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                                      onOpen: { opened = $0 })
         try view.inspect().find(button: "Open →").tap()
         XCTAssertEqual(opened, .idea(42))
     }
@@ -199,7 +201,7 @@ final class AgentActionCardViewTests: XCTestCase {
         let action = try row { db in
             try TestDatabase.insertAgentAction(db, status: "applied", resultJSON: #"{"target_id":7}"#)
         }
-        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        let view = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
         XCTAssertThrowsError(try view.inspect().find(button: "Open →"))
         XCTAssertNoThrow(try view.inspect().find(text: "Task #7 created"))
     }
@@ -209,8 +211,8 @@ final class AgentActionCardViewTests: XCTestCase {
             try TestDatabase.insertAgentAction(db, tool: "create_idea", argsJSON: #"{"essence":"e"}"#,
                                                resultJSON: #"{"idea_id":42}"#)
         }
-        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
-                                       onOpen: { _ in })
+        let view = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                                      onOpen: { _ in })
         XCTAssertThrowsError(try view.inspect().find(button: "Open →"))
     }
 
@@ -219,8 +221,8 @@ final class AgentActionCardViewTests: XCTestCase {
             try TestDatabase.insertAgentAction(db, tool: "brief_context", argsJSON: #"{"summary":"proposed"}"#,
                                                status: "applied", resultJSON: #"{"summary":"The thread agreed to ship Friday."}"#)
         }
-        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
-                                       onOpen: { _ in })
+        let view = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                                      onOpen: { _ in })
         XCTAssertNoThrow(try view.inspect().find(text: "The thread agreed to ship Friday."))
         XCTAssertThrowsError(try view.inspect().find(button: "Open →"), "a brief has nothing to open")
     }
@@ -230,7 +232,7 @@ final class AgentActionCardViewTests: XCTestCase {
             try TestDatabase.insertAgentAction(db, tool: "create_track", argsJSON: #"{"text":"Watch the rollout"}"#,
                                                contextType: "reaction", contextID: "2:C0ABC@1740000000.123456")
         }
-        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        let view = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
         let link = try view.inspect().find(ViewType.Link.self)
         XCTAssertEqual(try link.labelView().text().string(), "Slack message ↗")
         XCTAssertEqual(try link.url().absoluteString, "https://slack.com/archives/C0ABC/p1740000000123456")
@@ -241,13 +243,13 @@ final class AgentActionCardViewTests: XCTestCase {
         let action = try row { db in
             try TestDatabase.insertAgentAction(db, tool: "create_track", argsJSON: #"{"title":"stale","text":"Watch the rollout"}"#)
         }
-        XCTAssertEqual(AgentActionCardView.summaryLines(for: action), ["Watch the rollout"])
+        XCTAssertEqual(MacAgentActionCard.summaryLines(for: action), ["Watch the rollout"])
     }
 
     func testJiraIssueWriteSummaryLines() throws {
         func lines(_ tool: String, _ args: String) throws -> [String] {
             let action = try row { db in try TestDatabase.insertAgentAction(db, tool: tool, external: true, argsJSON: args) }
-            return AgentActionCardView.summaryLines(for: action)
+            return MacAgentActionCard.summaryLines(for: action)
         }
         XCTAssertEqual(try lines("add_jira_comment", #"{"key":"ABC-7","body":"Ship it","reason":"r"}"#),
                        ["Issue: ABC-7", "Ship it"])
@@ -273,7 +275,7 @@ final class AgentActionCardViewTests: XCTestCase {
     func testLinearWriteSummaryLines() throws {
         func lines(_ tool: String, _ args: String) throws -> [String] {
             let action = try row { db in try TestDatabase.insertAgentAction(db, tool: tool, external: true, argsJSON: args) }
-            return AgentActionCardView.summaryLines(for: action)
+            return MacAgentActionCard.summaryLines(for: action)
         }
         XCTAssertEqual(
             try lines("create_linear_issue", #"{"team":"ENG","team_id":"t-1","title":"Fix","labels":["a","b"],"label_ids":["x"],"priority":"High"}"#),
@@ -301,7 +303,7 @@ final class AgentActionCardViewTests: XCTestCase {
                                                resultJSON: #"{"key":"ABC-7","url":"https://acme.atlassian.net/browse/ABC-7","label":"ABC-7 → Done"}"#,
                                                appliedAt: "2026-09-26T10:00:00Z")
         }
-        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        let view = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
         let link = try view.inspect().find(ViewType.Link.self)
         XCTAssertEqual(try link.labelView().text().string(), "ABC-7 → Done")
         XCTAssertEqual(try link.url(), URL(string: "https://acme.atlassian.net/browse/ABC-7"))
@@ -313,7 +315,7 @@ final class AgentActionCardViewTests: XCTestCase {
                                                resultJSON: #"{"key":"ABC-8","url":"https://acme.atlassian.net/browse/ABC-8"}"#,
                                                appliedAt: "2026-09-26T10:00:00Z")
         }
-        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        let view = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
         XCTAssertEqual(try view.inspect().find(ViewType.Link.self).labelView().text().string(), "ABC-8")
     }
 
@@ -327,7 +329,7 @@ final class AgentActionCardViewTests: XCTestCase {
                                                    resultJSON: #"{"key":"ABC-7","url":"\#(url)"}"#,
                                                    appliedAt: "2026-09-26T10:00:00Z")
             }
-            let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+            let view = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
             XCTAssertThrowsError(try view.inspect().find(ViewType.Link.self), "\(url) must not render a Link")
         }
     }
@@ -342,8 +344,8 @@ final class AgentActionCardViewTests: XCTestCase {
             try TestDatabase.insertAgentAction(db, tool: "send_slack_message", external: true, argsJSON: Self.slackArgs,
                                                status: "applied")
         }
-        XCTAssertEqual(AgentActionCardView.title(for: action), "Send to Slack")
-        XCTAssertEqual(AgentActionCardView.summaryLines(for: action), ["To: #ops in Acme", "build is green"])
+        XCTAssertEqual(MacAgentActionCard.title(for: action), "Send to Slack")
+        XCTAssertEqual(MacAgentActionCard.summaryLines(for: action), ["To: #ops in Acme", "build is green"])
     }
 
     /// Where the host wires edits (main chat, Inbox strip) the pending card
@@ -352,13 +354,13 @@ final class AgentActionCardViewTests: XCTestCase {
         let action = try row { db in
             try TestDatabase.insertAgentAction(db, tool: "send_slack_message", external: true, argsJSON: Self.slackArgs)
         }
-        let editable = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
-                                           onApproveEdited: { _ in })
+        let editable = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                                          onApproveEdited: { _ in })
         XCTAssertNoThrow(try editable.inspect().find(button: "Approve & send"))
         XCTAssertNoThrow(try editable.inspect().find(ViewType.TextEditor.self))
         XCTAssertNoThrow(try editable.inspect().find(button: "Reject"))
 
-        let plain = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        let plain = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
         XCTAssertNoThrow(try plain.inspect().find(button: "Approve"))
         XCTAssertThrowsError(try plain.inspect().find(ViewType.TextEditor.self))
         XCTAssertNoThrow(try plain.inspect().find(text: "build is green"))
@@ -371,8 +373,8 @@ final class AgentActionCardViewTests: XCTestCase {
                                                status: "failed", error: error)
         }
         let reconnected = expectation(description: "reconnect called with the pinned account")
-        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
-                                       onReconnectSlack: { id in
+        let view = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                                      onReconnectSlack: { id in
                                            XCTAssertEqual(id, 3)
                                            reconnected.fulfill()
                                            return nil
@@ -397,8 +399,8 @@ final class AgentActionCardViewTests: XCTestCase {
         }
         var plain = 0
         var edited: [String] = []
-        let view = AgentActionCardView(action: action, inFlight: false, onApprove: { plain += 1 }, onReject: {}, onRetry: {},
-                                       onApproveEdited: { edited.append($0) })
+        let view = MacAgentActionCard(action: action, inFlight: false, onApprove: { plain += 1 }, onReject: {}, onRetry: {},
+                                      onApproveEdited: { edited.append($0) })
         try view.inspect().find(button: "Approve & send").tap()
         XCTAssertEqual(plain, 1)
         XCTAssertEqual(edited, [])
@@ -409,9 +411,28 @@ final class AgentActionCardViewTests: XCTestCase {
         let ambiguous = try row { db in
             try TestDatabase.insertAgentAction(db, tool: "send_slack_message", external: true, argsJSON: candidates)
         }
-        let picker = AgentActionCardView(action: ambiguous, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
-                                         onApproveEdited: { _ in })
+        let picker = MacAgentActionCard(action: ambiguous, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                                        onApproveEdited: { _ in })
         XCTAssertTrue(try picker.inspect().find(button: "Approve & send").isDisabled(), "no workspace picked yet")
+    }
+
+    /// A Slack send still waiting for a workspace, on a Mac surface without the picker (the target chat, the automation
+    /// editor: no `onApproveEdited`), says where the pick is — not "on the Mac", where the owner already is — and
+    /// offers no Approve (unified chat T16 carry).
+    func testSlackPickLineOnAMacSurfaceWithoutThePickerPointsToTheInbox() throws {
+        let candidates = ##"{"text":"hi","candidates":["## +
+            ##"{"account_id":1,"workspace":"A","channel_id":"C1","label":"#g"},"## +
+            ##"{"account_id":2,"workspace":"B","channel_id":"C2","label":"#g"}]}"##
+        let ambiguous = try row { db in
+            try TestDatabase.insertAgentAction(db, tool: "send_slack_message", external: true, argsJSON: candidates)
+        }
+        let card = MacAgentActionCard(action: ambiguous, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        XCTAssertNoThrow(try card.inspect().find(text: "Choose a workspace in Inbox › Needs approval before approving"))
+        // swiftlint:disable:next trailing_closure
+        XCTAssertThrowsError(try card.inspect().find(textWhere: { text, _ in text.contains("on the Mac") }))
+        XCTAssertThrowsError(try card.inspect().find(button: "Approve"))
+        XCTAssertThrowsError(try card.inspect().find(button: "Approve & send"))
+        XCTAssertNoThrow(try card.inspect().find(button: "Reject"))
     }
 
     /// A DM's pinned identity is its own secondary Text, apart from the
@@ -422,8 +443,8 @@ final class AgentActionCardViewTests: XCTestCase {
         let action = try row { db in
             try TestDatabase.insertAgentAction(db, tool: "send_slack_message", external: true, argsJSON: dm)
         }
-        let card = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
-                                       onApproveEdited: { _ in })
+        let card = MacAgentActionCard(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                                      onApproveEdited: { _ in })
         XCTAssertNoThrow(try card.inspect().find(text: "To: @Alice (Alice Example) in Acme"))
         XCTAssertNoThrow(try card.inspect().find(text: "@alice · U123"))
 
@@ -433,10 +454,60 @@ final class AgentActionCardViewTests: XCTestCase {
         let ambiguous = try row { db in
             try TestDatabase.insertAgentAction(db, tool: "send_slack_message", external: true, argsJSON: candidates)
         }
-        let picker = AgentActionCardView(action: ambiguous, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
-                                         onApproveEdited: { _ in })
+        let picker = MacAgentActionCard(action: ambiguous, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                                        onApproveEdited: { _ in })
         XCTAssertNoThrow(try picker.inspect().find(text: "@Alice in A"))
         XCTAssertNoThrow(try picker.inspect().find(text: "@alice · U1"))
         XCTAssertNoThrow(try picker.inspect().find(text: "@alice.b · U2"))
+    }
+
+    // MARK: - Settled elsewhere (unified chat T15)
+
+    /// A gesture's error stays while the row is still open, and goes once the row settles (here: applied).
+    func testGestureErrorHiddenOnceRowSettles() throws {
+        let error = AgentActionFeed.RowError(verb: "approve", message: "the owner-confirm window timed out")
+        let pending = try row { db in try TestDatabase.insertAgentAction(db) }
+        let open = MacAgentActionCard(action: pending, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                                      gestureError: error)
+        XCTAssertNoThrow(try open.inspect().find(text: error.message))
+        let applied = try row { db in try TestDatabase.insertAgentAction(db, status: "applied") }
+        let settled = MacAgentActionCard(action: applied, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                                         gestureError: error)
+        XCTAssertThrowsError(try settled.inspect().find(text: error.message))
+        XCTAssertThrowsError(try settled.inspect().find(button: "Retry"))
+    }
+
+    /// The owner edits a pending Slack send, then the row changes under the card — rejected elsewhere, or its args
+    /// re-pinned: the edits belonged to the row as it was, so they are dropped and nothing approves them.
+    func testSlackEditDroppedWhenRowSettlesElsewhere() throws {
+        var answers: [ChatApprovalAnswer] = []
+        var services = ChatApprovalServices(approveEdited: true)
+        services.decide = { answers.append($1) }
+        let shown = AgentAction(id: 5, tool: "send_slack_message", external: true, argsJSON: Self.slackArgs)
+        let key = ChatUI.AgentActionCard.draftKey(shown)
+        let edits = ChatUI.AgentActionCard.CardDrafts(key: key, slack: "an edit the owner made")
+        func card(_ action: AgentAction) -> some View {
+            ChatUI.AgentActionCard(action: action, services: services, fallbackTitle: nil, drafts: edits)
+                .environment(\.chatUIStyle, DesignKitChatStyle())
+        }
+        // The row the edits were made on: the editor holds them and Approve & send carries them.
+        XCTAssertEqual(try card(shown).inspect().find(ViewType.TextEditor.self).input(), "an edit the owner made")
+        try card(shown).inspect().find(button: "Approve & send").tap()
+        guard case .approve(let patch?) = answers.last else { return XCTFail("the edit travels as a patch") }
+        XCTAssertTrue(patch.contains("an edit the owner made"))
+
+        // The same row with its args re-pinned: the editor shows the new text, and Approve & send is plain.
+        let repinned = AgentAction(id: 5, tool: "send_slack_message", external: true,
+                                   argsJSON: Self.slackArgs.replacingOccurrences(of: "build is green", with: "build is red again"))
+        XCTAssertEqual(try card(repinned).inspect().find(ViewType.TextEditor.self).input(), "build is red again")
+        answers = []
+        try card(repinned).inspect().find(button: "Approve & send").tap()
+        XCTAssertEqual(answers, [.approve(patch: nil)])
+
+        // Rejected elsewhere: no editor and no Approve & send.
+        let rejected = AgentAction(id: 5, tool: "send_slack_message", external: true, argsJSON: Self.slackArgs,
+                                   status: "rejected")
+        XCTAssertThrowsError(try card(rejected).inspect().find(ViewType.TextEditor.self))
+        XCTAssertThrowsError(try card(rejected).inspect().find(button: "Approve & send"))
     }
 }

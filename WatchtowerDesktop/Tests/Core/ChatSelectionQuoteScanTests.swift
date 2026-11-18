@@ -6,7 +6,9 @@ import XCTest
 /// 2026-10-24 §5b (ask #539) the one text view is a finished answer's run
 /// of prose (`MarkdownTextRun.swift`), never the streaming reply's — and
 /// neither the selection overlay nor the batch view can send: the batch
-/// goes out only through the chat's own send.
+/// goes out only through the chat's own send. The markdown view and the
+/// selection overlay live in ChatUI's macOS part since unified chat T7, and
+/// the row and feed are ChatUI's since T12 (every chat draws them).
 final class ChatSelectionQuoteScanTests: XCTestCase {
     private func source(_ path: String) throws -> String {
         let sources = URL(fileURLWithPath: #filePath)
@@ -18,20 +20,25 @@ final class ChatSelectionQuoteScanTests: XCTestCase {
     }
 
     func testThreadRowsNeverHostATextView() throws {
-        for file in ["Views/Chat/ChatMessageRow.swift", "Views/Chat/ChatThreadView.swift", "Views/Chat/MarkdownView.swift",
-                     "Views/Chat/ChatFeedView.swift"] {
+        for file in ["../../WatchtowerChat/Sources/ChatUI/Feed/ChatMessageRow.swift", "Views/Chat/ChatThreadView.swift",
+                     "../../WatchtowerChat/Sources/ChatUI/Platform/macOS/MarkdownView.swift",
+                     "../../WatchtowerChat/Sources/ChatUI/Feed/ChatFeedView.swift"] {
             let text = try source(file)
             for token in ["NSTextView", "DocumentTextView", "NSViewRepresentable"] {
                 XCTAssertFalse(text.contains(token), "\(file) must not reference \(token): the run view is MarkdownTextRun's")
             }
         }
-        // Only a finished answer draws native text; the streaming one stays SwiftUI.
-        let row = try source("Views/Chat/ChatMessageRow.swift")
-        XCTAssertTrue(row.contains("if isRunning {\n                                MarkdownView(text: markdown)"))
+        // Only a finished answer draws native text; the streaming one stays SwiftUI (ChatUI's answer text, which
+        // every row draws its text parts through).
+        let row = try source("../../WatchtowerChat/Sources/ChatUI/Platform/macOS/MarkdownTextRun.swift")
+        XCTAssertTrue(row.contains("} else if isFinal {\n            NativeMarkdownView(text: text)"))
+        XCTAssertTrue(row.contains("} else {\n            MarkdownView(text: text)\n        }"))
     }
 
     func testTheSelectionOverlayAndTheBatchViewNeverSend() throws {
-        for file in ["Views/Chat/ChatSelectionQuote.swift", "Views/Chat/QuoteBatchView.swift"] {
+        // The batch view is ChatUI's since unified chat T13 (both devices draw it).
+        for file in ["../../WatchtowerChat/Sources/ChatUI/Platform/macOS/ChatSelectionQuote.swift",
+                     "../../WatchtowerChat/Sources/ChatUI/Composer/QuoteBatchView.swift"] {
             let text = try source(file)
             for token in [".send(", "sendDraft", "startTurn", "ChatSessionPool", "Process(", "URLSession"] {
                 XCTAssertFalse(text.contains(token), "\(file) must not reference \(token)")

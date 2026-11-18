@@ -48,4 +48,17 @@ package enum ChatArtifactQueries {
             SELECT artifact_key FROM chat_knowledge_artifacts WHERE conversation_id = ?
             """, arguments: [conversationID]))
     }
+    package static func fetch(_ db: Database, id: Int64) throws -> ChatArtifact {
+        guard let artifact = try ChatArtifact.fetchOne(db, sql: "SELECT * FROM chat_artifacts WHERE id = ?", arguments: [id]) else {
+            throw DatabaseError(message: "chat artifact \(id) missing right after write")
+        }
+        return artifact
+    }
+
+}
+
+/// Why an artifact cannot be pinned as knowledge.
+package enum ChatArtifactKeepError: Error {
+    /// The conversation used the Live Slack connector (LIVE-01).
+    case liveSlack
 }

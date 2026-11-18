@@ -1,6 +1,7 @@
 import GRDB
 import SwiftUI
 import WatchtowerCore
+import ChatUI
 
 /// The Inbox read like mail (spec B1, C1 §6.1): the list on the left —
 /// Needs your decision, Today, Earlier, for the legacy entry the root opened
@@ -13,7 +14,7 @@ import WatchtowerCore
 struct InboxSplitView<EmptyList: View>: View {
     let vm: ActionStripViewModel
     /// A proposal's card in the reading pane.
-    let proposalCard: (AgentAction) -> AgentActionCardView
+    let proposalCard: (AgentAction) -> MacAgentActionCard
     /// A pending `save_automation` proposal in the reading pane.
     let saveProposal: ((AgentAction) -> SaveAutomationProposalPane)?
     /// The workbenches a card's agent press can go to.
@@ -50,7 +51,7 @@ struct InboxSplitView<EmptyList: View>: View {
 
     init(
         vm: ActionStripViewModel,
-        proposalCard: @escaping (AgentAction) -> AgentActionCardView,
+        proposalCard: @escaping (AgentAction) -> MacAgentActionCard,
         saveProposal: ((AgentAction) -> SaveAutomationProposalPane)? = nil,
         workbenches: [Workbench] = [],
         onRetryBuiltin: ((String) -> Void)? = nil,

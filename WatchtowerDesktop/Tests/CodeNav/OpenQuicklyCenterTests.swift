@@ -4,6 +4,7 @@ import WatchtowerCore
 import WatchtowerTestSupport
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerChatText
 
 /// Open Quickly's center and session (spec §8.1): only with a workbench on
 /// screen, ⇧⌘F opens on Text, the panel keeps the index shown (R25), ↩ / ⌥↩

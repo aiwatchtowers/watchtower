@@ -171,10 +171,10 @@ type Heartbeat struct {
 // HeartbeatCapabilities is the heartbeat's capabilities object. Recordings
 // is "on" or "off"; an unknown value reads as not off. Chat is the AI chat
 // from the phone (iPhone chat §4.8): "on" only while the hub runs on the
-// relay with its chat runner and no Desktop app that ignores the chat lease
-// runs; the phone shows chat only on an explicit "on" (an absent key is an
-// older hub). ChatReason says why it is "off": not_relay, runner_down,
-// desktop_too_old or policy.
+// relay with the daemon's chat engine; the phone shows chat only on an
+// explicit "on" (an absent key is an older hub). ChatReason says why it is
+// "off": not_relay, runner_down or policy (an older hub may still send
+// desktop_too_old, which the phone keeps reading).
 //
 // Inbox is the phone Inbox (mobile Inbox spec §6): InboxOn, or
 // InboxPolicyOff with InboxReason InboxOffPolicy under the organization's
@@ -196,10 +196,9 @@ const (
 
 // The chat capability's off reasons.
 const (
-	ChatOffNotRelay      = "not_relay"
-	ChatOffRunnerDown    = "runner_down"
-	ChatOffDesktopTooOld = "desktop_too_old"
-	ChatOffPolicy        = "policy"
+	ChatOffNotRelay   = "not_relay"
+	ChatOffRunnerDown = "runner_down"
+	ChatOffPolicy     = "policy"
 )
 
 // RecordingsCapability is the capabilities object for the switch: "on" or

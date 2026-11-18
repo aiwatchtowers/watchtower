@@ -25,6 +25,13 @@ packages:
   # shared with the Mac. Foundation only.
   WatchtowerInterface:
     path: ../WatchtowerInterface
+  # The chat shared with the Mac (unified chat spec §6.1): ChatWire carries the
+  # chat wire models, operations and stores; the relay conformances of its
+  # models are the app's (Sources/Features/Chats/ChatWireKitConformances.swift).
+  # ChatUI draws the Chats tab's conversation, list rows and search hits over
+  # the app's RelayChatClient (unified chat spec §6.3).
+  WatchtowerChat:
+    path: ../WatchtowerChat
   # GRDB is transitive through WatchtowerKit, but the app and its tests use
   # its types directly (`ValueObservation`, `Database`). A testability build
   # dead-strips the autolink hint, so the app would fail with undefined GRDB
@@ -85,6 +92,10 @@ targets:
         product: WatchtowerChatText
       - package: WatchtowerInterface
         product: WatchtowerInterface
+      - package: WatchtowerChat
+        product: ChatWire
+      - package: WatchtowerChat
+        product: ChatUI
       - package: GRDB
         product: GRDB
       - package: SwiftProtobuf
@@ -222,6 +233,8 @@ targets:
       # The relay identity's real-Keychain test. Test target only for now.
       - package: WatchtowerKit
         product: WatchtowerHostedRelay
+      - package: WatchtowerChat
+        product: ChatWire
       - package: GRDB
         product: GRDB
       - package: SwiftProtobuf

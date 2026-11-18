@@ -29,7 +29,7 @@ final class DatabaseCompactionLaunchTests: XCTestCase {
         await untilTurn { due.appState.databaseCompactionInProgress && self.calls.items.contains("startCompact") }
         child.exit(status: 0, stdout: #"{"compacted":true,"reason":"migration:134"}"#)
         _ = await launch.value
-        XCTAssertEqual(calls.items, ["migrate", "check", "stopDaemon", "startCompact", "open"])
+        XCTAssertEqual(calls.items, ["migrate", "check", "chatShutdown", "stopDaemon", "startCompact", "open"])
 
         let notDueCalls = LaunchLog()
         let notDue = makeAppState(due: false, calls: notDueCalls)
@@ -104,7 +104,7 @@ final class DatabaseCompactionLaunchTests: XCTestCase {
         XCTAssertFalse(calls.items.contains("stopDaemon"), "the stop waits for the start already running")
         blocker.releaseAll()
         await untilTurn { self.calls.items.contains("startCompact") }
-        XCTAssertEqual(calls.items, ["migrate", "check", "stopDaemon", "startCompact"])
+        XCTAssertEqual(calls.items, ["migrate", "check", "chatShutdown", "stopDaemon", "startCompact"])
         try await restart.value
         let disconnected = await disconnect.value
         await appState.daemonStartChain?.value
@@ -225,7 +225,9 @@ final class DatabaseCompactionLaunchTests: XCTestCase {
         XCTAssertEqual(child.terminateCount, 1)
         _ = await launch.value
         let items = calls.items
-        XCTAssertEqual(Array(items.prefix(5)), ["migrate", "check", "stopDaemon", "startCompact", "terminate"])
+        XCTAssertEqual(
+            Array(items.prefix(6)), ["migrate", "check", "chatShutdown", "stopDaemon", "startCompact", "terminate"]
+        )
         XCTAssertLessThan(
             try XCTUnwrap(items.firstIndex(of: "terminate")), try XCTUnwrap(items.firstIndex(of: "quitStopDaemon")),
             "the child goes before the daemon stop"
@@ -395,6 +397,10 @@ private struct LaunchFakeCLI: CompactionCLI {
             freeDiskBytes: 10 * dbBytes, needsDiskBytes: 2 * dbBytes, diskOk: true,
             ftsRebuildPending: ftsRebuildPending
         )
+    }
+
+    func chatShutdown() async {
+        calls.append("chatShutdown")
     }
 
     func startCompact(onPhase: @escaping @Sendable (CompactionRunPhase) -> Void) throws -> any CompactionChild {

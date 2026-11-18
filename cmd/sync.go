@@ -22,6 +22,8 @@ import (
 	"watchtower/internal/caldav"
 	"watchtower/internal/calendar"
 	"watchtower/internal/chat"
+	"watchtower/internal/chatengine"
+	"watchtower/internal/chatstore"
 	"watchtower/internal/coach"
 	"watchtower/internal/config"
 	"watchtower/internal/customtracks"
@@ -45,8 +47,12 @@ import (
 	"watchtower/internal/logredact"
 	"watchtower/internal/media"
 	"watchtower/internal/ownerconfirm"
+	"watchtower/internal/platform"
 	"watchtower/internal/powerstate"
 	"watchtower/internal/prompts"
+	"watchtower/internal/providerhealth"
+	"watchtower/internal/providerrouting"
+	"watchtower/internal/skills"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/sync"
 	"watchtower/internal/targets"
@@ -75,6 +81,7 @@ var (
 	syncFlagUsersOnly    bool
 	syncFlagAccount      int64
 	syncStopFlagForce    bool
+	syncStopFlagInternal bool
 )
 
 var syncCmd = &cobra.Command{
@@ -101,13 +108,21 @@ account has phase "Done", or carries "error".`,
 var syncStopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stop a running detached daemon",
-	RunE:  runSyncStopCmd,
+	Long: `Stops the running daemon. The owner's stop first ends the chat (every running
+chat turn is stopped and its session closed) and, once the daemon is gone,
+writes <workspace>/daemon.stopped so the app shows the chat as stopped
+instead of starting the daemon again; the next daemon start removes it.
+
+--internal is the app's own restart: chat turns keep running in their
+sessions (the next daemon reattaches to them) and no marker is written.`,
+	RunE: runSyncStopCmd,
 }
 
 func init() {
 	rootCmd.AddCommand(syncCmd)
 	syncCmd.AddCommand(syncStopCmd)
 	syncStopCmd.Flags().BoolVar(&syncStopFlagForce, "force", false, "if the daemon does not stop within the grace period, escalate to SIGKILL")
+	syncStopCmd.Flags().BoolVar(&syncStopFlagInternal, "internal", false, "the app's own restart: leave chat turns running and write no stopped marker")
 	syncCmd.Flags().BoolVar(&syncFlagFull, "full", false, "re-fetch all history within the initial history window")
 	syncCmd.Flags().BoolVar(&syncFlagDaemon, "daemon", false, "run in daemon mode with periodic syncing")
 	syncCmd.Flags().BoolVar(&syncFlagDetach, "detach", false, "start daemon in the background (requires --daemon)")
@@ -135,7 +150,7 @@ func runSyncStopCmd(cmd *cobra.Command, args []string) error {
 	if err := cfg.ValidateWorkspace(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
 	}
-	return runSyncStop(cfg, syncStopFlagForce)
+	return runSyncStopOpts(cfg, syncStopFlagForce, syncStopFlagInternal)
 }
 
 func pidFilePath(cfg *config.Config) string {
@@ -268,7 +283,30 @@ func reapPIDFile(pidPath string) {
 	_, _ = daemon.FindProcess(pidPath)
 }
 
+// runSyncStop is the owner's stop (`sync stop`, `sync --stop`).
 func runSyncStop(cfg *config.Config, force bool) error {
+	return runSyncStopOpts(cfg, force, false)
+}
+
+// The owner's stop's chat steps and marker (unified chat spec §7; test
+// seams).
+var (
+	requestChatShutdown  = chatengine.RequestShutdown
+	shutdownChatSessions = chatengine.ShutdownSessions
+	writeStoppedMarker   = daemon.WriteStoppedMarker
+)
+
+// chatShutdownBudget bounds the owner's stop's chat step (every session's
+// close, 2 s, SIGTERM, 3 s, SIGKILL).
+const chatShutdownBudget = 15 * time.Second
+
+// runSyncStopOpts stops the daemon. The owner's stop (not internal) first
+// ends the chat — chat_shutdown on chat.sock, or the sessions reaped
+// directly when no engine answers — then sends SIGTERM, and once the
+// daemon is gone writes the stopped marker. An internal stop (the app's
+// restart chains) only stops the daemon: its chat sessions run on and the
+// next daemon reattaches to them (D23).
+func runSyncStopOpts(cfg *config.Config, force, internal bool) error {
 	pidPath := pidFilePath(cfg)
 	pid, err := daemon.FindConfirmedProcess(pidPath)
 	if err != nil {
@@ -277,6 +315,47 @@ func runSyncStop(cfg *config.Config, force bool) error {
 		}
 		return fmt.Errorf("reading pid file: %w", err)
 	}
+	if !internal {
+		if err := shutdownChat(cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "chat shutdown: %v\n", err)
+		}
+	}
+	err = stopDaemonPID(pidPath, pid, force)
+	if err == nil && !internal {
+		if err := writeStoppedMarker(cfg.WorkspaceDir(), time.Now(), "cli"); err != nil {
+			fmt.Fprintf(os.Stderr, "sync stop: %v\n", err)
+		}
+	}
+	return err
+}
+
+// shutdownChat ends every chat turn and session before the owner's stop:
+// through the engine on chat.sock, else (no daemon answers) directly, each
+// step on its own budget. An error means a session may still run.
+func shutdownChat(cfg *config.Config) error {
+	return shutdownChatWithin(cfg, chatShutdownBudget)
+}
+
+// shutdownChatWithin is shutdownChat with socketBudget for the chat.sock
+// step: the app, which has already asked the engine, passes a short one
+// (`chat shutdown --socket-timeout`) so the direct reap runs inside its
+// watchdog.
+func shutdownChatWithin(cfg *config.Config, socketBudget time.Duration) error {
+	ws, tmp := cfg.WorkspaceDir(), os.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), socketBudget)
+	err := requestChatShutdown(ctx, chatengine.SocketPath(ws, tmp))
+	cancel()
+	if err == nil {
+		return nil
+	}
+	ctx, cancel = context.WithTimeout(context.Background(), chatShutdownBudget)
+	defer cancel()
+	return shutdownChatSessions(ctx, ws, tmp)
+}
+
+// stopDaemonPID sends the daemon pid (0 = none running) SIGTERM and waits
+// for it; force escalates.
+func stopDaemonPID(pidPath string, pid int, force bool) error {
 	if pid == 0 {
 		fmt.Println("No daemon is running.")
 		return nil
@@ -890,6 +969,11 @@ func migrateJiraFeatureKeys(cfg *config.Config, logger *log.Logger) *config.Conf
 // wireImapSyncers/wireCalDAVSyncers — so one broken account never blocks the
 // rest of the daemon from starting.
 func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, logger *log.Logger, orchestrators []*sync.Orchestrator) error {
+	// Every daemon start removes the owner's stopped marker first, so it
+	// never outlives a running daemon (unified chat spec §7).
+	if err := daemon.RemoveStoppedMarker(cfg.WorkspaceDir()); err != nil {
+		logger.Printf("chat: the stopped marker was not removed (%s)", chatStartClass(err))
+	}
 	// A CLI-only install has no Desktop launch to run db migrate (BACKUP-01).
 	applyBackupExclusion()
 	// The daemon's one connection holds the page cache every cycle reads
@@ -1060,15 +1144,140 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 		DisabledFeatures: towerDisabledFeatures(cfg, logger),
 		Act:              towerActDeps(cfg, database, d.WakeAutomations, bg.run),
 	}, logger)
-	// Go hub, phase 1: only behind WATCHTOWER_HUB_DIR in a hubtest-* workspace.
-	defer startGoHub(ctx, cfg, database, tw, logger)()
-	// The tower request ledger: pruned at start and hourly, hub or no hub;
-	// the loop has returned before the database closes.
-	defer tower.StartPrune(ctx, database, time.Now)()
-	// The tower socket, hub or no hub: stopped (its calls waited for) before
-	// the database closes.
-	defer serveTower(ctx, ws, tw, logger)()
-	return d.Run(ctx)
+	// The chat engine before the Go hub, stopped after it (unified chat §7):
+	// chat.sock is served whatever the hub does. The hub gets the tower too
+	// (the phone Inbox). Stop order: the tower socket, the prune loop, the
+	// hub, the engine, then the background runs and the reads above.
+	return withChatAndHub(ctx, cfg, database, tw, logger, func() error {
+		// The tower request ledger: pruned at start and hourly, hub or no
+		// hub; the loop has returned before the database closes.
+		defer tower.StartPrune(ctx, database, time.Now)()
+		// The tower socket, hub or no hub: stopped (its calls waited for)
+		// before the database closes.
+		defer serveTower(ctx, ws, tw, logger)()
+		return d.Run(ctx)
+	})
+}
+
+// The daemon's chat engine and Go hub starters (test seams).
+var (
+	startChatEngineFn = startChatEngine
+	startGoHubFn      = startGoHub
+)
+
+// withChatAndHub starts the chat engine, then the Go hub with it and the
+// tower tw, runs run, then stops the hub and after it the engine (unified
+// chat spec §7).
+func withChatAndHub(ctx context.Context, cfg *config.Config, database *db.DB, tw *tower.Tower, logger *log.Logger, run func() error) error {
+	eng, stopChat := startChatEngineFn(ctx, cfg, logger)
+	defer stopChat()
+	defer startGoHubFn(ctx, cfg, database, tw, eng, logger)()
+	return run()
+}
+
+// chatEngineCloseBudget bounds the engine's detach at the daemon's stop
+// (each running turn's last flush).
+const chatEngineCloseBudget = 10 * time.Second
+
+// startChatEngine starts the main chat's engine on its own database handles
+// (chatengine.OpenHandles) and serves it on chat.sock for the signed app;
+// the returned stop closes chat.sock, then detaches the engine from its
+// sessions (they run on), then closes its handles. A
+// database that cannot be opened leaves the chat off (nil engine: the hub
+// then says runner_down); a socket another process serves leaves the engine
+// to the hub alone.
+func startChatEngine(ctx context.Context, cfg *config.Config, logger *log.Logger) (*chatengine.Engine, func()) {
+	ws, dbPath := cfg.WorkspaceDir(), cfg.DBPath()
+	write, read, err := chatengine.OpenHandles(dbPath)
+	if err != nil {
+		logger.Printf("chat: off (%s)", chatStartClass(err))
+		return nil, func() {}
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		logger.Printf("chat: off (%s)", chatStartClass(err))
+		_ = write.Close()
+		_ = read.Close()
+		return nil, func() {}
+	}
+	// Sessions run detached on their sockets (Workspace): a restart leaves
+	// the turns running and the next engine reattaches (D23).
+	eng := chatengine.New(chatengine.Config{Exe: exe, DBPath: dbPath, Dir: filepath.Join(ws, "chatengine"),
+		Workspace: ws, TempDir: os.TempDir(),
+		DB: write, Read: read, FilesDir: filepath.Join(ws, chatstore.FilesDirName), SkillsDir: skills.Dir(ws),
+		// The AI title after a chat's first complete answer, `watchtower chat
+		// title`'s code; the automatic routing's preferred provider is the
+		// config the Mac's automatic routing reads.
+		Title: func(ctx context.Context, conv int64) error {
+			_, err := chat.GenerateTitle(ctx, write, cfg, chatTitleGeneratorFactory(cfg), conv)
+			return err
+		},
+		PreferredProvider: cfg.AI.ConfiguredProviderID()})
+	if err := eng.Start(ctx); err != nil {
+		logger.Printf("chat: the startup sweep failed (%s)", chatStartClass(err))
+	}
+	// chat.sock lives until stop, not until ctx: the hub stops first.
+	srvCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	served := make(chan struct{})
+	if l, err := chatengine.Listen(chatengine.SocketPath(ws, os.TempDir())); err != nil {
+		logger.Printf("chat: chat.sock not served (%s)", chatStartClass(err))
+		close(served)
+	} else {
+		go func() {
+			defer close(served)
+			if err := chatengine.NewServer(eng, chatengine.ServerOptions{}).Serve(srvCtx, l); err != nil {
+				logger.Printf("chat: chat.sock stopped (%s)", chatStartClass(err))
+			}
+		}()
+		logger.Printf("chat: serving chat.sock")
+	}
+	return eng, func() {
+		cancel()
+		<-served
+		// Detach, never Close: the sessions and their turns run on; only
+		// chat_shutdown (the owner's stops) ends them.
+		closeCtx, done := context.WithTimeout(context.Background(), chatEngineCloseBudget)
+		if err := eng.Detach(closeCtx); err != nil {
+			logger.Printf("chat: detaching the engine failed (%s)", chatStartClass(err))
+		}
+		done()
+		_ = write.Close()
+		_ = read.Close()
+	}
+}
+
+// chatStartClass is a chat start or stop failure's class for the log (no
+// paths or text, FILES-01).
+func chatStartClass(err error) string {
+	switch {
+	case errors.Is(err, platform.ErrSocketBusy):
+		return "socket_busy"
+	case errors.Is(err, os.ErrNotExist):
+		return "no_database"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, os.ErrPermission):
+		return "permission"
+	}
+	return "error"
+}
+
+// chatRoutingCatalog reads the phone's routing pill catalog over the current
+// AI config (re-read, so a Settings change shows on the next chat_list; the
+// daemon's cfg when the file cannot be read) and the installation's provider
+// health, as `ai routing-status` does.
+func chatRoutingCatalog(cfg *config.Config) func(context.Context) *chatengine.RoutingCatalog {
+	return func(ctx context.Context) *chatengine.RoutingCatalog {
+		cur := cfg
+		if c, err := config.Load(flagConfig); err == nil {
+			if flagWorkspace != "" {
+				c.ActiveWorkspace = flagWorkspace
+			}
+			cur = c
+		}
+		health, _ := providerhealth.Installation() // nil: the status read fails, the catalog says so
+		return chatengine.ReadRoutingCatalog(ctx, cur, &providerrouting.Router{Health: health})
+	}
 }
 
 // openTowerReads opens the tower's read handle (tower.OpenReads). A handle
@@ -1105,7 +1314,7 @@ func newDaemonTower(ws string, database, reads *db.DB, noSync bool, deps command
 		Changes:   tower.NewChanges(database, tower.PollInterval),
 		// AGENT-07 over the socket: an owner gesture is the signed
 		// Desktop's only, checked as owner-confirm.sock's peer is.
-		VerifyDesktop: ownerconfirm.VerifyDesktop,
+		VerifyDesktop: ownerconfirm.VerifyDesktopPeer,
 		// A fault's own text goes to the log; the owner reads a sentence.
 		Sentence: func(command string, err error) string {
 			logger.Printf("tower: %s: %v", command, err)
@@ -1180,8 +1389,9 @@ func towerDisabledFeatures(start *config.Config, logger *log.Logger) func() []st
 
 // startGoHub starts the Go hub beside the daemon when hub.Resolve says so
 // and logs whether it did; the returned func stops it and waits. Its cycle
-// tick is the daemon's poll interval.
-func startGoHub(ctx context.Context, cfg *config.Config, database *db.DB, tw *tower.Tower, logger *log.Logger) (stop func()) {
+// tick is the daemon's poll interval; tw is the daemon's tower (the phone
+// Inbox), eng the daemon's chat engine (nil = chat off on the phone).
+func startGoHub(ctx context.Context, cfg *config.Config, database *db.DB, tw *tower.Tower, eng *chatengine.Engine, logger *log.Logger) (stop func()) {
 	o, err := hub.Resolve(cfg, database, hostProbe())
 	if err != nil {
 		logger.Printf("hub: off (%s)", hub.Refusal(err))
@@ -1195,15 +1405,11 @@ func startGoHub(ctx context.Context, cfg *config.Config, database *db.DB, tw *to
 	sd := sessionStartDeps(cfg, database)
 	sd.Socket = o.SessionStart.Socket
 	o.SessionStart = sd
-	// The AI chat from the phone: approvals through the same registry as
-	// `watchtower actions approve`, titles through `watchtower chat title`'s
-	// code, automatic routing's preferred provider from the config.
+	// The AI chat from the phone: the daemon's chat engine (nil = chat off),
+	// approvals through the same registry as `watchtower actions approve`.
 	o.ChatTools = buildToolRegistry(cfg, database)
-	o.ChatTitle = func(ctx context.Context, conv int64) error {
-		_, err := chat.GenerateTitle(ctx, database, cfg, chatTitleGeneratorFactory(cfg), conv)
-		return err
-	}
-	o.ChatPreferredProvider = cfg.AI.ConfiguredProviderID()
+	o.ChatEngine = eng
+	o.ChatRouting = chatRoutingCatalog(cfg)
 	ctx, cancel := context.WithCancel(ctx)
 	interval := cfg.Sync.PollInterval
 	if interval < time.Minute {

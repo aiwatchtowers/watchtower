@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerChatText
 
 /// Wire error codes — raw values mirror `internal/chat/events.go`'s `Code*`.
 package enum ChatErrorCode: String, Equatable, Sendable {

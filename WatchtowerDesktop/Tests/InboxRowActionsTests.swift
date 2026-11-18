@@ -1,3 +1,4 @@
+import ChatWire
 import XCTest
 import GRDB
 @testable import WatchtowerDesktop
@@ -194,7 +195,7 @@ final class InboxRowActionsTests: XCTestCase {
         XCTAssertTrue(summary.contains("ACME"), summary)
         XCTAssertTrue(summary.contains("Fix the link"), summary)
         let action = try XCTUnwrap(vm.feed.proposals.first { $0.id == id })
-        XCTAssertFalse(summary.contains(AgentActionCardView.title(for: action)), summary)
+        XCTAssertFalse(summary.contains(MacAgentActionCard.title(for: action)), summary)
         XCTAssertEqual(content.state, .idle)
         XCTAssertNotNil(hooks.hooks.nativeFooter(ArtifactRef(kind: .action, id: id), .inbox),
                         "an idle proposal row draws its summary under the line")
@@ -205,7 +206,7 @@ final class InboxRowActionsTests: XCTestCase {
         let id = Kind.connectorUnreadable.rawValue
         let vm = try await actionKinds()
         let action = try XCTUnwrap(vm.feed.proposals.first { $0.id == id })
-        XCTAssertEqual(AgentActionCardView.rowSummary(for: action), AgentActionCardView.title(for: action))
+        XCTAssertEqual(MacAgentActionCard.rowSummary(for: action), MacAgentActionCard.title(for: action))
     }
 
     /// A pending `save_automation` is saved in the editor only: Open Draft and Reject, never Approve.

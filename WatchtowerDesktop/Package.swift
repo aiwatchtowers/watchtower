@@ -31,6 +31,11 @@ let package = Package(
         // The tower interface's Swift side (types generated from
         // internal/tower/api), shared with the phone. Foundation only.
         .package(path: "../WatchtowerInterface"),
+        // The chat shared with the phone (unified chat spec §6.1): Core takes
+        // ChatWire (Foundation only, imports nothing of ours), never ChatUI or
+        // the Kit (pinned by PublicAPISurfaceTests); the app takes ChatUI (its
+        // views and the Mac's answer text, D10).
+        .package(path: "../WatchtowerChat"),
         // Pinned to 0.18.x: WhisperKitEngine uses 0.18.0-specific API surface
         // (including the misspelled `detectLangauge(audioArray:)`).
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", .upToNextMinor(from: "0.18.0")),
@@ -57,6 +62,7 @@ let package = Package(
                 .product(name: "Markdown", package: "swift-markdown"),
                 .product(name: "WatchtowerChatText", package: "WatchtowerChatText"),
                 .product(name: "WatchtowerInterface", package: "WatchtowerInterface"),
+                .product(name: "ChatWire", package: "WatchtowerChat"),
             ],
             path: "Sources/WatchtowerCore"
         ),
@@ -135,6 +141,7 @@ let package = Package(
                 .product(name: "WatchtowerSync", package: "WatchtowerKit"),
                 // AppState's TowerClient (the tray's Pause Sync).
                 .product(name: "WatchtowerInterface", package: "WatchtowerInterface"),
+                .product(name: "ChatUI", package: "WatchtowerChat"),
                 "CloudBridgeCore",
             ],
             path: "Sources",
@@ -157,6 +164,7 @@ let package = Package(
                 // (FakeChatTower) speak the generated commands.
                 .product(name: "WatchtowerInterface", package: "WatchtowerInterface"),
                 .product(name: "WatchtowerChatText", package: "WatchtowerChatText"),
+                .product(name: "ChatWire", package: "WatchtowerChat"),
             ],
             path: "Tests/Support"
         ),
@@ -168,6 +176,7 @@ let package = Package(
                 .product(name: "GRDB", package: "GRDB.swift"),
                 // The Inbox's tests read canned tower feeds (TestInboxFeeds, ScriptedFeedTransport).
                 .product(name: "WatchtowerInterface", package: "WatchtowerInterface"),
+                .product(name: "ChatWire", package: "WatchtowerChat"),
             ],
             path: "Tests/Core",
             exclude: ["Fixtures"]
@@ -187,6 +196,7 @@ let package = Package(
                 "WatchtowerTestSupport",
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "ViewInspector", package: "ViewInspector"),
+                .product(name: "ChatUI", package: "WatchtowerChat"),
                 // The hub tests drive it on the Kit's InMemoryCloudTransport.
                 .product(name: "WatchtowerSync", package: "WatchtowerKit"),
                 // F25: the test hub and phone (fixed pairing) that seal and open what the hub publishes.

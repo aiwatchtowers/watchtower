@@ -54,7 +54,18 @@ var NudgeTable = map[string][]slices.Kind{
 	// The phone Inbox (mobile Inbox spec §6): a write moves its cards and
 	// its folders' counts.
 	"inbox_act": {slices.KindInboxCard, slices.KindInboxFolder},
+	// The composer's pickers answer in the echo: nothing to republish
+	// (EchoOnlyKinds).
+	"chat_entity_search": {},
+	"chat_skills_list":   {},
 }
+
+// EchoOnlyKinds are the kinds whose whole result is the applied echo's
+// result (the composer's pickers): their NudgeTable entry is empty on
+// purpose, so a keystroke republishes no slice and the phone times no
+// effect for them (ActionEffectKinds.swift mirrors it with empty lists).
+// Every other kind has a non-empty nudge.
+var EchoOnlyKinds = map[string]bool{"chat_entity_search": true, "chat_skills_list": true}
 
 // chatSlices are the records a chat write changes: the conversation's feed
 // and the chat list's row.

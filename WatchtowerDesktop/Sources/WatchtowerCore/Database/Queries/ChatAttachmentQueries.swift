@@ -45,4 +45,7 @@ package enum ChatAttachmentQueries {
             """, arguments: [conversationID])
     }
 
+    package static func referenceCount(_ db: Database, path: String) throws -> Int {
+        try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM chat_attachments WHERE path = ?", arguments: [path]) ?? 0
+    }
 }

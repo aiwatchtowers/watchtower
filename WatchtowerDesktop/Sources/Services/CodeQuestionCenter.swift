@@ -4,6 +4,7 @@ import GRDB
 import Observation
 import WatchtowerCore
 import WatchtowerInterface
+import WatchtowerChatText
 
 /// Code questions (spec §9.2–§9.4), per workbench, on `AppState`: the ✦
 /// button's timing (`AskAIButtonSchedule`), the popover's question

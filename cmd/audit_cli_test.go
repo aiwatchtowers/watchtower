@@ -198,6 +198,7 @@ var cliNoContentCommands = map[string]bool{
 	"channels":                         true,
 	"channels exclude":                 true,
 	"channels include":                 true,
+	"chat shutdown":                    true,
 	"chat title":                       true,
 	"code index":                       true,
 	"coach accept":                     true,

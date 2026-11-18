@@ -55,10 +55,8 @@ struct IdeaDiscussSection: View {
                     .foregroundStyle(.red)
             }
             if let engine = state.engine(idea: idea, mentions: mentions, dbManager: dbManager, center: center) {
-                LazyVStack(alignment: .leading, spacing: ChatDensity.compact.rowSpacing) {
-                    EmbeddedChatRows(engine: engine)
-                }
-                .padding(.top, 6)
+                EmbeddedChatRows(engine: engine)
+                    .padding(.top, Spacing.compact)
                 .embeddedChatVisibility(engine.spec.key, in: center)
             }
         }

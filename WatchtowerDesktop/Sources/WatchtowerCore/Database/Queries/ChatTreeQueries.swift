@@ -6,10 +6,6 @@ import GRDB
 /// leaf is NULL reads in id order here too, the same fallback Go's
 /// `ActiveChatPath` applies.
 package enum ChatTreeQueries {
-    package static func activePath(_ db: Database, conversationID: Int64) throws -> [ChatMessageRecord] {
-        let all = try allMessages(db, conversationID: conversationID)
-        return try resolvePath(db, conversationID: conversationID, all: all).path
-    }
 
     package static func thread(_ db: Database, conversationID: Int64) throws -> [ChatThreadItem] {
         let all = try allMessages(db, conversationID: conversationID)
@@ -59,7 +55,7 @@ package enum ChatTreeQueries {
         ChatTree.Node(id: m.id, parentID: m.parentID)
     }
 
-    private static func resolvePath(
+    package static func resolvePath(
         _ db: Database, conversationID: Int64, all: [ChatMessageRecord]
     ) throws -> (path: [ChatMessageRecord], tree: ChatTree?) {
         let leaf = try Int64.fetchOne(

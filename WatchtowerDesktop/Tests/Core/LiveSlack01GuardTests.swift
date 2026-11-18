@@ -28,12 +28,13 @@ final class LiveSlack01GuardTests: XCTestCase {
         TestDatabase.cleanup(path: path)
     }
 
-    // The mark itself (the turn's start and end, every Go step name, the
-    // keep refusal) is written by Go now: `TestFinalizeMarksConversationOnSlackStep`,
-    // `TestStepStartMarksWithoutFinalize`, `TestFinalizeMarksConversationOnCodexSlackStep`,
-    // `TestFinalizeLeavesUnmarkedWithoutSlackStep`, `TestFirstMarkIsKept`,
-    // `TestEveryGoSlackStepNameMarks` and `TestKeepRefusedForLiveConversation`
-    // in internal/chatstore/moved_guards_test.go. The panel's side stays here.
+    // The mark itself (the turn's start and end, every Go step name, the first mark kept, the keep refusal) is
+    // written by Go now, guarded twice: `TestLIVE01_GoStore*` (`internal/chatstore/live01_test.go`) and keep's
+    // refusal `TestChatengine_ArtifactKeepWritesKnowledgeRow` (the engine, unified chat), and
+    // `TestFinalizeMarksConversationOnSlackStep`, `TestStepStartMarksWithoutFinalize`,
+    // `TestFinalizeMarksConversationOnCodexSlackStep`, `TestFinalizeLeavesUnmarkedWithoutSlackStep`,
+    // `TestFirstMarkIsKept`, `TestEveryGoSlackStepNameMarks` and `TestKeepRefusedForLiveConversation`
+    // (`internal/chatstore/moved_guards_test.go`, #1170). The panel's side stays here.
 
     @MainActor
     func testPanelExplainsWhyKeepIsDisabled() throws {
@@ -42,7 +43,7 @@ final class LiveSlack01GuardTests: XCTestCase {
             let draft = ArtifactDraft(key: "plan", kind: "document", title: "Plan", meta: [:], content: "x", isComplete: true)
             _ = try ChatArtifactQueries.saveVersion(d, conversationID: conv, messageID: msg, draft: draft, edited: false)
         }
-        let model = ArtifactPanelModel(db: pool, conversationID: conv, key: "plan")
+        let model = ArtifactPanelModel(db: pool, writer: DatabaseArtifactWriter(db: pool), conversationID: conv, key: "plan")
         XCTAssertNil(model.keepDisabledReason)
         try pool.write { try $0.execute(sql: "UPDATE chat_conversations SET live_slack_since = ? WHERE id = ?", arguments: [msg, conv]) }
         model.reload()
@@ -58,7 +59,7 @@ final class LiveSlack01GuardTests: XCTestCase {
             let draft = ArtifactDraft(key: "plan", kind: "document", title: "Plan", meta: [:], content: "x", isComplete: true)
             _ = try ChatArtifactQueries.saveVersion(d, conversationID: conv, messageID: msg, draft: draft, edited: false)
         }
-        let model = ArtifactPanelModel(db: pool, conversationID: conv, key: "plan")
+        let model = ArtifactPanelModel(db: pool, writer: DatabaseArtifactWriter(db: pool), conversationID: conv, key: "plan")
         XCTAssertEqual(model.knowledgeState, .add)
         XCTAssertNil(model.knowledgeKeepBlocked)
         try await pool.write { try ChatArtifactQueries.keep($0, conversationID: conv, artifactKey: "plan", version: 1) }
@@ -85,19 +86,17 @@ final class LiveSlack01GuardTests: XCTestCase {
         "ChatMessageQueries.swift": "messages shown in the chat",
         "ChatTreeQueries.swift": "the chat's own branch tree and turn rows",
         "ChatStepQueries.swift": "tool steps shown under an answer",
-        "ChatHistoryQueries.swift": "the history list",
-        "ChatSearchQueries.swift": "search inside the chat screens",
         "ChatProjectQueries.swift": "project grouping of chats",
         "CodeQuestionList.swift": "workbench Questions tab, never leaves it",
         "ChatSurfaceSpec.swift": "surface wiring, no read of text",
         "ChatToolCatalog.swift": "names the chat-history tools in step labels, no read",
         "EmbeddedChatReplay.swift": "names the chat-history tools in the replay hint, no read",
         "AutomationListSections.swift": "automation editor chats list",
+        "ChatViewModel.swift": "the whole text of a reply the feed cut, shown in the chat",
         "CodeQuestionSurface.swift": "workbench Questions tab, never leaves it",
         "IdeaChatSurface.swift": "Discuss-an-idea chat, never mined",
         "DatabaseManager.swift": "table list of the database",
         "LearnQueries.swift": "an existence signal, no text",
-        "ChatCommand.swift": "comment only",
         "ChatModels.swift": "row types and comments",
         "CodeQuestionContext.swift": "comment only",
         "MeetingChatSurface.swift": "meeting chat surface wiring",

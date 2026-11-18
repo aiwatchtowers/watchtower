@@ -1,6 +1,7 @@
 import AppKit
 import GRDB
 import WatchtowerCore
+import WatchtowerChatText
 
 extension AppState {
     /// Starts Home's Learn zone on the open database. The version memory is

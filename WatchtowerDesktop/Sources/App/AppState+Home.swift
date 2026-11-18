@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import WatchtowerCore
+import ChatUI
 
 extension AppState {
     /// Feed sources with no tab or feature of their own to follow.

@@ -1,5 +1,6 @@
-import SwiftUI
 import AppKit
+import ChatUI
+import SwiftUI
 import WatchtowerCore
 
 /// The ⌘/ popup: the main AI Chat (same `ChatViewModel`, feed and composer)
@@ -14,27 +15,35 @@ struct HelpChatPanel: View {
             header
             Divider()
             ChatThreadView(chatVM: chatVM, ownerName: appState.owner.displayName)
+            if let line = chatVM.composer.stateLine {
+                ChatStateLineView(content: line) { chatVM.conversation.performStateAction() }
+                    .padding(.horizontal, Spacing.medium)
+            }
             ChatComposerBar(input: ChatComposerField(
-                text: $chatVM.draft,
+                text: Binding(get: { chatVM.composer.draft }, set: { chatVM.composer.draft = $0 }),
                 isStreaming: chatVM.isBusy,
+                config: ChatComposerFieldConfig(
+                    placeholder: "Ask how Watchtower works…",
+                    maxHeight: 120,
+                    autoFocus: true,
+                    sendBlocked: chatVM.conversation.reachability != .connected || chatVM.conversation.isGone
+                ),
                 onSend: send,
-                // Nothing to stop while the turn's rows or its end are written.
-                onStop: chatVM.canStop ? { chatVM.stop() } : nil,
-                placeholder: "Ask how Watchtower works…",
-                maxHeight: 120,
+                onStop: chatVM.conversation.canStop ? { chatVM.stop() } : nil,
                 // Esc stops a running answer first, then closes the panel.
-                onEscape: escape,
-                autoFocus: true
+                onEscape: escape
             ))
+            .macComposerStyle()
         }
         .frame(width: 420, height: 560)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.12)))
         .shadow(radius: 12, y: 4)
         .onExitCommand(perform: escape)
-        .onChange(of: chatVM.draft) { old, new in
+        .onChange(of: chatVM.composer.draft) { old, new in
             if old.isEmpty, !new.isEmpty { Task { await chatVM.draftStarted() } }
         }
+        .macChatStyle(hooks: .app)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Ask Watchtower")
     }
@@ -45,7 +54,7 @@ struct HelpChatPanel: View {
             Spacer()
             // The tab's own New: no empty conversation row until a send.
             Button("New") { chatVM.showLanding() }
-                .disabled(chatVM.isStreaming)
+                .disabled(chatVM.isBusy)
             Button("Open in Chats") {
                 appState.selectedDestination = .chat
                 close()
@@ -60,7 +69,7 @@ struct HelpChatPanel: View {
     }
 
     private func escape() {
-        if chatVM.isStreaming { chatVM.stop() } else { close() }
+        if chatVM.conversation.isTurnRunning { chatVM.stop() } else { close() }
     }
 
     private func close() { appState.isHelpChatShown = false }

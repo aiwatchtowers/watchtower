@@ -25,6 +25,8 @@ import (
 	"net"
 	"path/filepath"
 	"time"
+
+	"watchtower/internal/platform"
 )
 
 // FileName is the socket's name in the workspace directory, next to
@@ -114,7 +116,11 @@ func Ask(ctx context.Context, socketPath string, req Request) (Reply, error) {
 		return Reply{}, fmt.Errorf("%w: %v", ErrNoDesktop, err)
 	}
 	defer func() { _ = conn.Close() }()
-	pid, err := PeerPID(conn)
+	uc, ok := conn.(*net.UnixConn)
+	if !ok {
+		return Reply{}, fmt.Errorf("%w: not a unix socket", ErrUntrustedPeer)
+	}
+	pid, err := platform.PeerPID(uc)
 	if err != nil {
 		return Reply{}, fmt.Errorf("%w: %v", ErrUntrustedPeer, err)
 	}

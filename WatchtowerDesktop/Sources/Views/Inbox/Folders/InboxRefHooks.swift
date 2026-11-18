@@ -11,7 +11,7 @@ struct InboxRefHooks {
     let vm: ActionStripViewModel
     let navScreens: Set<String>
     var workbenches: [Workbench] = []
-    /// `AgentActionCardView.sessionHoldsCall` for a proposal (a connector call).
+    /// `MacAgentActionCard.sessionHoldsCall` for a proposal (a connector call).
     var sessionHoldsCall: (AgentAction) -> Bool = { _ in false }
     /// The idea verdicts' `IdeasViewModel` is there; without it an idea
     /// row's buttons are drawn disabled.
@@ -146,9 +146,9 @@ struct InboxRefHooks {
             return feed.reminders.contains { $0.id == ref.id } ? .reminder : nil
         case .action:
             guard let action = feed.proposals.first(where: { $0.id == ref.id }) else { return nil }
-            let buttons = AgentActionCardView.rowButtons(
+            let buttons = MacAgentActionCard.rowButtons(
                 for: action, sessionHolds: sessionHoldsCall(action), offersRetry: !vm.isSupersededButtonRow(action))
-            return .action(summary: AgentActionCardView.rowSummary(for: action), buttons: buttons)
+            return .action(summary: MacAgentActionCard.rowSummary(for: action), buttons: buttons)
         }
     }
 
@@ -234,7 +234,7 @@ struct InboxRowActionHandler {
     var onEditAction: (Int64) -> Void = { _ in }
     /// **Open Draft** on a pending `save_automation` (`AppState.openSaveProposalDraft`).
     var onOpenSaveDraft: (SaveAutomationCardModel) -> Void = { _ in }
-    /// `AgentActionCardView.sessionHoldsCall` for a proposal (a connector call).
+    /// `MacAgentActionCard.sessionHoldsCall` for a proposal (a connector call).
     var sessionHoldsCall: (AgentAction) -> Bool = { _ in false }
     var navScreens: Set<String> = []
     var now: () -> Date = { Date() }
@@ -282,7 +282,7 @@ struct InboxRowActionHandler {
                   let action = vm.feed.proposals.first(where: { $0.id == ref.id }),
                   let again = InboxRowActionsContent.actionRetry(
                       verb: verb,
-                      buttons: AgentActionCardView.rowButtons(
+                      buttons: MacAgentActionCard.rowButtons(
                           for: action, sessionHolds: sessionHoldsCall(action),
                           offersRetry: !vm.isSupersededButtonRow(action)))
             else { return }

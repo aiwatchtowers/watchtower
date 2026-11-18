@@ -186,6 +186,9 @@ package protocol CompactionCLI: Sendable {
     /// Spawns `db compact --if-due --json` with no timeout. `onPhase` gets
     /// each phase line as it arrives, on a background thread.
     func startCompact(onPhase: @escaping @Sendable (CompactionRunPhase) -> Void) throws -> any CompactionChild
+    /// `watchtower chat shutdown`, bounded: ends every chat turn and session
+    /// before the daemon stops for a compaction (spec §7).
+    func chatShutdown() async
 }
 
 package struct CompactionOutputError: Error, LocalizedError {
@@ -328,6 +331,11 @@ package final class DatabaseCompactionStep {
             return
         }
 
+        // Spec §7: sessions a crashed app left alive still write (routing
+        // columns, `agent_actions`); they end before the database is
+        // compacted. The daemon's own stop is `--internal` and leaves them.
+        await cli.chatShutdown()
+        guard !quitRequested else { return }
         await serializeDaemonStop(stopDaemon)
         stoppedDaemon = true
         guard !quitRequested else { return }

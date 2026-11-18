@@ -9,10 +9,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"unicode/utf8"
 
 	"watchtower/internal/db"
@@ -43,6 +45,8 @@ const (
 	RejectUnsupported = "unsupported_type"
 	RejectTooLarge    = "too_large"
 	RejectNotUTF8     = "not_utf8"
+	RejectUnreadable  = "unreadable"
+	RejectFolder      = "folder"
 )
 
 // Rejection is why a file cannot be attached; Message is the Mac's text.
@@ -62,6 +66,10 @@ func (r *Rejection) Message() string {
 		return r.FileName + " is larger than " + limitText[r.Limit]
 	case RejectNotUTF8:
 		return r.FileName + " is not a UTF-8 text file"
+	case RejectUnreadable:
+		return r.FileName + " could not be read"
+	case RejectFolder:
+		return r.FileName + " is a folder; attach the files inside it instead"
 	default:
 		return r.FileName + ": only images, PDFs and text files can be attached"
 	}
@@ -94,6 +102,52 @@ func ValidateAttachment(data []byte, fileName string) (AttachmentKind, *Rejectio
 		return AttachmentKind{}, &Rejection{Reason: RejectNotUTF8, FileName: fileName}
 	}
 	return kind, nil
+}
+
+// ReadAttachmentFile is AttachmentValidator.validate(url:) and the read
+// that follows it, for a file the app holds: a folder, a symlink, a missing
+// or unreadable path and anything not a regular file are refused before a
+// byte is read; the kind comes from the first 16 bytes and the name, and a
+// file over its kind's limit is refused before it is read whole. The data
+// still needs ValidateAttachment (UTF-8 for text).
+func ReadAttachmentFile(path string) (name string, data []byte, rej *Rejection) {
+	name = filepath.Base(path)
+	unreadable := &Rejection{Reason: RejectUnreadable, FileName: name}
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return name, nil, unreadable
+	}
+	if fi.IsDir() {
+		return name, nil, &Rejection{Reason: RejectFolder, FileName: name}
+	}
+	if !fi.Mode().IsRegular() {
+		return name, nil, unreadable
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return name, nil, unreadable
+	}
+	defer f.Close()
+	if fi, err = f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		return name, nil, unreadable
+	}
+	head := make([]byte, 16)
+	n, err := io.ReadFull(f, head)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return name, nil, unreadable
+	}
+	_, limit, ok := classifyAttachment(head[:n], name)
+	if !ok {
+		return name, nil, &Rejection{Reason: RejectUnsupported, FileName: name}
+	}
+	if fi.Size() > limit {
+		return name, nil, &Rejection{Reason: RejectTooLarge, FileName: name, Limit: limit}
+	}
+	rest, err := io.ReadAll(io.LimitReader(f, limit+1-int64(n)))
+	if err != nil {
+		return name, nil, unreadable
+	}
+	return name, append(head[:n], rest...), nil
 }
 
 func classifyAttachment(data []byte, fileName string) (AttachmentKind, int64, bool) {
@@ -198,6 +252,21 @@ func RemoveConversationFiles(root string, conv int64) error {
 	return os.RemoveAll(filepath.Join(root, filepath.FromSlash(ConversationDir(conv))))
 }
 
+// ProjectDir is ChatAttachmentOwner.project(id).directoryName.
+func ProjectDir(project int64) string {
+	return "projects/" + strconv.FormatInt(project, 10)
+}
+
+// RemoveProjectFiles is ChatAttachmentStore.removeFiles(for: .project(id)):
+// the project's whole folder, after its delete committed. A missing folder
+// is no error.
+func RemoveProjectFiles(root string, project int64) error {
+	if root == "" {
+		return nil
+	}
+	return os.RemoveAll(filepath.Join(root, filepath.FromSlash(ProjectDir(project))))
+}
+
 // SaveAttachment is ChatAttachmentStore.store for a conversation's file:
 // the bytes go 0600 under <root>/conversations/<id>/ (0700), reusing a file
 // of the same conversation with the same sha256 that is still on disk, and a
@@ -206,83 +275,93 @@ func RemoveConversationFiles(root string, conv int64) error {
 // row cannot be written. ErrConversationGone when the conversation does not
 // exist or is not a main chat (spec §1).
 func SaveAttachment(ctx context.Context, d *db.DB, root string, conv int64, name string, kind AttachmentKind, data []byte, now float64) (int64, error) {
-	f, err := prepareAttachmentFile(ctx, d, root, attachmentOwner{id: conv}, kind.FileExtension(name), data)
-	if err != nil {
-		return 0, err
-	}
-	res, err := d.ExecContext(ctx, `INSERT INTO chat_attachments (conversation_id, project_id, name, mime, size, path, sha256, created_at)
+	return saveAttachment(ctx, d, root, attachmentOwner{dir: ConversationDir(conv), column: "conversation_id", id: conv,
+		insert: `INSERT INTO chat_attachments (conversation_id, project_id, name, mime, size, path, sha256, created_at)
 		SELECT id, NULL, ?, ?, ?, ?, ?, ? FROM chat_conversations WHERE id = ? AND context_type IS NULL`,
-		name, kind.Mime, len(data), f.path, f.sha, now, conv)
-	if err == nil {
-		var n int64
-		if n, err = res.RowsAffected(); err == nil && n == 0 {
-			err = ErrConversationGone
+		gone: ErrConversationGone}, name, kind, data, now)
+}
+
+// SaveProjectAttachment is ChatAttachmentStore.store for a chat project's
+// file (under <root>/projects/<id>/): the row, and in its transaction the
+// project chats' stored sessions dropped (ChatProjectQueries.dropSessions),
+// since the project prompt changed. ErrProjectGone when the project does
+// not exist.
+func SaveProjectAttachment(ctx context.Context, d *db.DB, root string, project int64, name string, kind AttachmentKind, data []byte, now float64) (int64, error) {
+	return saveAttachment(ctx, d, root, attachmentOwner{dir: ProjectDir(project), column: "project_id", id: project,
+		insert: `INSERT INTO chat_attachments (conversation_id, project_id, name, mime, size, path, sha256, created_at)
+		SELECT NULL, id, ?, ?, ?, ?, ?, ? FROM chat_projects WHERE id = ?`,
+		after: `UPDATE chat_conversations SET session_id = NULL WHERE project_id = ?`,
+		gone:  ErrProjectGone}, name, kind, data, now)
+}
+
+// attachmentOwner is a conversation's or a project's side of saveAttachment.
+type attachmentOwner struct {
+	dir, column   string
+	id            int64
+	insert, after string // after ("" = none) runs in the insert's transaction with id
+	gone          error
+}
+
+func saveAttachment(ctx context.Context, d *db.DB, root string, o attachmentOwner, name string, kind AttachmentKind, data []byte, now float64) (int64, error) {
+	sum := sha256.Sum256(data)
+	sha := hex.EncodeToString(sum[:])
+	var existing sql.NullString
+	err := d.QueryRowContext(ctx, `SELECT path FROM chat_attachments WHERE `+o.column+` = ? AND sha256 = ? ORDER BY id LIMIT 1`,
+		o.id, sha).Scan(&existing)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return 0, fmt.Errorf("reading chat attachments: %w", err)
+	}
+	path, fresh := "", false
+	if existing.Valid {
+		if _, err := os.Stat(existing.String); err == nil {
+			path = existing.String
 		}
 	}
+	if path == "" {
+		if path, err = writeAttachmentFile(root, o.dir, kind.FileExtension(name), data); err != nil {
+			return 0, err
+		}
+		fresh = true
+	}
+	id, err := insertAttachment(ctx, d, o, name, kind.Mime, len(data), path, sha, now)
 	if err != nil {
-		f.discard()
-		if errors.Is(err, ErrConversationGone) {
+		if fresh {
+			_ = os.Remove(path)
+		}
+		if errors.Is(err, o.gone) {
 			return 0, err
 		}
 		return 0, fmt.Errorf("saving a chat attachment: %w", err)
 	}
-	return res.LastInsertId()
+	return id, nil
 }
 
-// attachmentOwner is ChatAttachmentOwner: a conversation, or a project.
-type attachmentOwner struct {
-	projectID bool
-	id        int64
-}
-
-func (o attachmentOwner) project() bool { return o.projectID }
-
-// dir is ChatAttachmentOwner.directoryName.
-func (o attachmentOwner) dir() string {
-	if o.projectID {
-		return "projects/" + strconv.FormatInt(o.id, 10)
+func insertAttachment(ctx context.Context, d *db.DB, o attachmentOwner, name, mime string, size int, path, sha string, now float64) (int64, error) {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
 	}
-	return ConversationDir(o.id)
-}
-
-// attachmentFile is a stored file a new chat_attachments row will point at.
-type attachmentFile struct {
-	path, sha string
-	fresh     bool // written now: removed again when its row is not written
-}
-
-func (f attachmentFile) discard() {
-	if f.fresh {
-		_ = os.Remove(f.path)
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx, o.insert, name, mime, size, path, sha, now, o.id)
+	if err != nil {
+		return 0, err
 	}
-}
-
-// prepareAttachmentFile is ChatAttachmentStore.store up to the row: a file
-// of the same owner with the same sha256 still on disk is reused, else the
-// bytes go 0600 under <root>/<owner dir>/ (0700).
-func prepareAttachmentFile(ctx context.Context, d *db.DB, root string, o attachmentOwner, ext string, data []byte) (attachmentFile, error) {
-	sum := sha256.Sum256(data)
-	f := attachmentFile{sha: hex.EncodeToString(sum[:])}
-	existingPath := `SELECT path FROM chat_attachments WHERE conversation_id = ? AND sha256 = ? ORDER BY id LIMIT 1`
-	if o.projectID {
-		existingPath = `SELECT path FROM chat_attachments WHERE project_id = ? AND sha256 = ? ORDER BY id LIMIT 1`
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		if err == nil {
+			err = o.gone
+		}
+		return 0, err
 	}
-	var existing sql.NullString
-	err := d.QueryRowContext(ctx, existingPath, o.id, f.sha).Scan(&existing)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return f, fmt.Errorf("reading chat attachments: %w", err)
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
 	}
-	if existing.Valid {
-		if _, err := os.Stat(existing.String); err == nil {
-			f.path = existing.String
-			return f, nil
+	if o.after != "" {
+		if _, err := tx.ExecContext(ctx, o.after, o.id); err != nil {
+			return 0, err
 		}
 	}
-	if f.path, err = writeAttachmentFile(root, o.dir(), ext, data); err != nil {
-		return f, err
-	}
-	f.fresh = true
-	return f, nil
+	return id, tx.Commit()
 }
 
 func writeAttachmentFile(root, ownerDir, ext string, data []byte) (string, error) {
