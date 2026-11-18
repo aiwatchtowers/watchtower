@@ -367,10 +367,10 @@ func TestSlackRemove_HoldsTheTokenLockThroughRevoke(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetOut(&bytes.Buffer{})
 	require.NoError(t, runSlackRemove(cmd, []string{strconv.FormatInt(id, 10)}))
-	close(held)
+	srv.Close() // waits for in-flight handlers: every send is done
 	var heldDuringRevoke []bool
-	for h := range held {
-		heldDuringRevoke = append(heldDuringRevoke, h)
+	for len(held) > 0 {
+		heldDuringRevoke = append(heldDuringRevoke, <-held)
 	}
 	assert.Equal(t, []bool{true}, heldDuringRevoke, "auth.revoke runs under the account's token lock")
 
