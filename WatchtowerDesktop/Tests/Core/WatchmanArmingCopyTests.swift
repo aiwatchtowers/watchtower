@@ -30,9 +30,8 @@ final class WatchmanArmingCopyTests: XCTestCase {
     func testBuilderCopy() {
         XCTAssertEqual(Copy.notNow, "Not now")
         XCTAssertEqual(Copy.limitsLine, "Merging to main, messages to people and releases stay yours: Watchman parks them.")
-        // Spec §5 item 4: the accepted residual risk is named on the sheet.
-        XCTAssertEqual(Copy.residualRisk, "Not caught: deleting files outside the worktree from a script, "
-            + "or messaging people from a script with its own token.")
+        // Spec §5 item 4: the sheet points to the guide's list of residual risks.
+        XCTAssertEqual(Copy.residualRisk, "Some ways around the guard remain — see Hand a session to Watchman in the guide.")
         XCTAssertTrue(Copy.sheetBody.hasPrefix("Watchman answers for you in the sessions you hand it"))
         XCTAssertEqual(Copy.sheetTitle(workbench: "acme-api"), "Hand acme-api to Watchman?")
         XCTAssertEqual(Copy.targetUnarmedCaption(target: 1820),

@@ -19,7 +19,7 @@ since: next
 
 Watchman reads only your own decisions in one workbench: asks you answered, your comments and verdicts in diff and spec reviews, permission prompts you allowed or denied, your own lines to agents (needs **Agent analytics** on, and Start Learning turns it on), and your own commits (made with the folder's git email) and merged pull requests in the workbench folder. Automations, dismissed asks, colleagues' and agents' commits are left out. Secrets are blanked and each stored text is cut to 2,048 characters.
 
-Each decision is filed under one of eight categories: design, scope, UX text, tests, code review, document review, permission and finish. Where a source does not say which, a light AI model labels it, so learning costs tokens. A decision it cannot place is counted and not stored.
+Each decision is filed under one of eight categories: design, scope, UX text, tests, code review, document review, permission and finish. Where a source does not say which, a light AI model labels it, so learning costs tokens; one it cannot place is not stored.
 
 Once a week the daemon turns each category's recent decisions into a short list of rules and works out your sleep window, the usual quiet stretch between 20:00 and 12:00 from your activity in the last 28 days (it needs seven active days).
 
@@ -53,7 +53,7 @@ since: next
 
 Under **What Watchman learned**, **Edit** opens a category's rules (one per line, at most 20); **Save** pins them, so the weekly rebuild leaves them alone until you press **Unpin**. The sleep window edits the same way, as `HH:MM-HH:MM`. Under **Your hard limits**, **Add a Limit…** takes a command's first words (`terraform apply`) or a tool's name (`create_jira_issue`), and Watchman parks it for you. **Remove** takes only your own rows; the built-in ones stay.
 
-From a terminal, `watchtower watchman learn --workbench N` prints the estimate (add `--start` to begin), `watchman profile --workbench N` shows the learned rules and sleep window, `watchman limits list|add|remove` manages your limits, and `watchman backtest --workbench N` runs a backtest (it waits for learning to finish; `--force` runs it earlier). Starting and backtesting are yours to run: an AI agent's session is refused.
+From a terminal, `watchtower watchman learn --workbench N` prints the estimate (add `--start` to begin), `watchman profile --workbench N` shows the learned rules and sleep window, `watchman limits list|add|remove` manages your limits, and `watchman backtest --workbench N` runs a backtest once learning is done (`--force` runs it earlier). An AI agent's session is refused.
 
 ### Hand a session to Watchman
 <!-- learn
@@ -66,7 +66,9 @@ kind: feature
 since: next
 -->
 
-**Hand to Watchman** on a session's strip hands that session over; on a target's panel it hands every session under the target, also ones started later; **Hand all running sessions to Watchman** in the menu bar hands every running agent session. Until you press **Take back**, Watchman answers their asks, permission prompts and spec reviews, and reviews a session's changes before it may finish, whether you are at the Mac or not. The strip reads "Watchman · Sleep since 01:40".
+**Hand to Watchman** on a session's strip hands that session over; on a target's panel, every session under the target, also later ones; **Hand all running sessions to Watchman** in the menu bar, every running agent session. Until you press **Take back**, Watchman answers their asks and spec reviews (and permission prompts in Claude Code sessions) and reviews a session's changes before it may finish, whether you are at the Mac or not. The strip reads "Watchman · Sleep since 01:40".
+
+**Take back** stops new decisions; one already under way still finishes. On a session also handed over through its target, Take back on the strip removes only the direct hand-over.
 
 The first time on a workbench a sheet shows what turns on: Agent analytics and learning, with its estimate; until learning finishes, Watchman parks everything for you. It warns when main is not protected on GitHub or the git guard cannot go into a repository. Merging pull requests, pushing to main, tags, releases, messages to people and your own limits stay yours: Watchman parks them, and a guard stops the agent doing them itself. Not caught: deletes or messages from a script, code the agent writes that runs later (hooks, tests, Makefiles), and commands hidden from the guard.
 
@@ -104,9 +106,8 @@ since: next
 
 ## When it's empty or wrong
 
-- **No night yet** in the journal: no session was handed to Watchman yet, so nothing was decided.
-
-- **Not measured** on a category: fewer than 30 decisions exist there, or fewer than 20 are left to score after the ones handed to you. It fills as you keep working.
+- **No night yet** in the journal: no session was handed to Watchman yet.
+- **Not measured** on a category: too few decisions yet. It fills as you keep working.
 - Finish looks thin: a handover ask is learned as an ordinary question and is not always filed under finish.
 - A commit by an agent that left out its `Co-Authored-By` line can count as yours.
 - Your sleep window is a rough guess from sparse activity; an edge near 20:00 or 12:00 can be off.

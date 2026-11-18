@@ -38,7 +38,7 @@ Two modes read the same table: the twin and the backtest are **strict** (every s
 
 **Status:** Enforced (Go).
 
-**Observable:** The twin writes only through `askanswer.Answerer` (asks, spec review verdicts with their marks, permission requests, typed lines) and the review-round functions in `internal/db` (`SendReviewRoundTx`, `ApproveReviewRoundTx`). Every write is a compare-and-set on the row's open state (`owner_asks.status = 'open'`, `permission_requests.status = 'pending'`, the round's open-state guard), and the item's outcome, spec marks and review comments are written in the **same transaction** as the answer. The loser writes nothing, types nothing and runs no `Also`; the item is journalled `owner_first` (`the owner answered first`). An answer the owner gives himself wins any race, at the Mac or from the phone.
+**Observable:** The twin writes only through `askanswer.Answerer` (asks, spec review verdicts with their marks, permission requests, typed lines) and the review-round functions in `internal/db` (`SendReviewRoundTx`, `ApproveReviewRoundTx`). Every write is a compare-and-set on the row's open state (`owner_asks.status = 'open'`, `permission_requests.status = 'pending'`, the round's open-state guard), and the item's outcome, spec marks and review comments are written in the **same transaction** as the answer. The loser writes nothing, types nothing and runs no `Also`; the item is journalled `owner_first` (`the owner answered first`). The twin never overwrites an answer the owner stored first, at the Mac or from the phone; the first stored answer wins.
 
 **Why locked:** The owner's own answer is the ground truth; a twin that overwrote it, or wrote marks or comments for an answer it lost, would put words in his mouth.
 
