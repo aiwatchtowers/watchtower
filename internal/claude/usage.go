@@ -18,8 +18,10 @@ import (
 
 // UsageError is ReadUsage's failure: Code is one of cli_missing,
 // unsupported_cli, unsupported_auth, cloud_bedrock, cloud_vertex,
-// cloud_foundry, no_credentials, network, parse, timeout, cancelled. It
-// never carries the child's output.
+// cloud_foundry, no_credentials, network, parse, timeout, cancelled (the
+// constants and the sets they belong to — public, stored, account-level,
+// quiet — live in internal/planusage/codes.go). It never carries the
+// child's output.
 type UsageError struct{ Code string }
 
 func (e *UsageError) Error() string { return "claude usage: " + e.Code }

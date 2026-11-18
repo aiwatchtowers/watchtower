@@ -167,10 +167,6 @@ func (p *Provider) Disable(ctx context.Context) error {
 	return nil
 }
 
-// quietCodes are steady states that persist until the user changes something;
-// Run logs each once per change instead of on every poll.
-var quietCodes = map[string]bool{"cli_missing": true, "unsupported_cli": true, "no_credentials": true, "unsupported_auth": true, "cloud_bedrock": true, "cloud_vertex": true, "cloud_foundry": true}
-
 func (p *Provider) logPoll(code string, next time.Duration) {
 	if p.Logger != nil {
 		p.Logger.Printf("%s plan usage: %s (next poll in %s)", p.Name, code, next)
@@ -261,8 +257,8 @@ func (p *CodexPoller) PollOnce(ctx context.Context) (time.Duration, error) {
 	}
 	code := ErrorCode(err)
 	delay := pollInterval
-	switch code {
-	case "no_credentials", "unsupported_auth", "cli_missing", "unsupported_cli":
+	switch {
+	case cliCodes[code] || accountCodes[code]:
 		p.failures = 0
 	default:
 		p.failures++

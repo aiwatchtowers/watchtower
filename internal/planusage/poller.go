@@ -67,7 +67,7 @@ func (p *Poller) PollOnce(ctx context.Context) (time.Duration, error) {
 	if ctx.Err() != nil {
 		return pollInterval, ctx.Err()
 	}
-	code := "parse"
+	code := CodeParse
 	if err == nil {
 		u, perr := usageFromSnapshot(snap)
 		if perr == nil {
@@ -78,12 +78,12 @@ func (p *Poller) PollOnce(ctx context.Context) (time.Duration, error) {
 		code = ErrorCode(err)
 	}
 	delay := pollInterval
-	switch code {
-	case "cli_missing", "unsupported_cli":
+	switch {
+	case cliCodes[code]:
 		// Nothing is known about the account: its data stays, hidden by the state.
 		p.failures = 0
 		st.State = "unavailable"
-	case "no_credentials", "unsupported_auth", "cloud_bedrock", "cloud_vertex", "cloud_foundry":
+	case accountCodes[code]:
 		// Account-level: no plan limits apply, so the old account's label and
 		// numbers must not survive into a later state. Samples stay.
 		p.failures = 0
@@ -94,8 +94,10 @@ func (p *Poller) PollOnce(ctx context.Context) (time.Duration, error) {
 		delay = backoff(p.failures)
 		st.State = "error"
 	}
+	// last_error names the stored reason, so the two never disagree (a config
+	// failure, code storage, is stored and worded as network).
 	st.Reason = safeStoredReason(code)
-	st.LastError, st.LastErrorAt = "Claude usage: "+code, &now
+	st.LastError, st.LastErrorAt = "Claude usage: "+st.Reason, &now
 	if err := p.Store.UpsertPlanUsageStatusContext(ctx, st); err != nil {
 		return delay, fmt.Errorf("planusage: write status: %w (while handling: %s)", err, code)
 	}

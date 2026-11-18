@@ -225,7 +225,7 @@ func TestPollOnce_Reasons(t *testing.T) {
 			st, _ := d.GetPlanUsageStatus()
 			assert.Equal(t, c.state, st.State)
 			assert.Equal(t, c.want, st.Reason)
-			assert.Equal(t, "Claude usage: "+c.code, st.LastError)
+			assert.Equal(t, "Claude usage: "+c.want, st.LastError, "last_error names the stored reason")
 			require.NotNil(t, st.LastErrorAt)
 		})
 	}
