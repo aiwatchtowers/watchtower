@@ -25,6 +25,13 @@ func seedPermission(t *testing.T, d *db.DB, session, wb int64, tool, summary, st
 	return id
 }
 
+// clipPermission marks a seeded request's summary as cut short.
+func clipPermission(t *testing.T, d *db.DB, id int64) {
+	t.Helper()
+	_, err := d.Exec(`UPDATE permission_requests SET summary_clipped = 1 WHERE id = ?`, id)
+	require.NoError(t, err)
+}
+
 func TestPermissionSource_MapsRows(t *testing.T) {
 	d := openSourceDB(t)
 	s := seedSession(t, d, 1, nil)
@@ -84,4 +91,41 @@ func TestPermissionSource_MissingStampCounted(t *testing.T) {
 	require.Equal(t, []string{strconv.FormatInt(keep, 10)}, keys(ps))
 	require.Equal(t, 1, src.Skipped())
 	require.Contains(t, logs.String(), "watchman: permission "+strconv.FormatInt(bad, 10)+" skipped: no readable decided_at")
+}
+
+func TestPermissionSource_SetsParkedFromTable(t *testing.T) {
+	d := openSourceDB(t)
+	s := seedSession(t, d, 1, nil)
+	at := srcT0
+	push := seedPermission(t, d, s, 1, "Bash", "git push origin main", "allowed", &at)
+	test := seedPermission(t, d, s, 1, "Bash", "go test ./...", "allowed", &at)
+
+	ps, _, _, err := (&permissionSource{}).Next(context.Background(), d, 1, "", 10)
+	require.NoError(t, err)
+	byKey := map[string]db.WatchmanPrecedent{}
+	for _, p := range ps {
+		byKey[p.SourceKey] = p
+	}
+	for _, id := range []int64{push, test} {
+		p := byKey[strconv.FormatInt(id, 10)]
+		require.NotNil(t, p.IsDecision)
+		require.True(t, *p.IsDecision)
+		require.NotNil(t, p.Parked)
+	}
+	require.True(t, *byKey[strconv.FormatInt(push, 10)].Parked)
+	require.False(t, *byKey[strconv.FormatInt(test, 10)].Parked)
+}
+
+func TestPermissionSource_ClippedSummaryParks(t *testing.T) {
+	d := openSourceDB(t)
+	s := seedSession(t, d, 1, nil)
+	at := srcT0
+	id := seedPermission(t, d, s, 1, "Bash", "go test ./...", "allowed", &at)
+	clipPermission(t, d, id)
+
+	ps, _, _, err := (&permissionSource{}).Next(context.Background(), d, 1, "", 10)
+	require.NoError(t, err)
+	require.Len(t, ps, 1)
+	require.NotNil(t, ps[0].Parked)
+	require.True(t, *ps[0].Parked, "the clipped tail may be what parks it")
 }

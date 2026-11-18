@@ -34,7 +34,7 @@ func (g *watchmanLabelGen) Generate(_ context.Context, _, user, _ string) (strin
 	if g.err != nil {
 		return "", nil, "", g.err
 	}
-	return `["scope"]`, &digest.Usage{}, "", nil
+	return `[{"category": "scope", "decision": true, "parked": false}]`, &digest.Usage{}, "", nil
 }
 
 // watchmanFixture is a workbench with one answered question ask (it needs a
@@ -220,14 +220,14 @@ func TestWatchmanStatus_JSONKeysPinned(t *testing.T) {
 	assert.Equal(t, "null", string(w["estimate"]))
 	var learning, bt map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(w["learning"], &learning))
-	assert.Equal(t, []string{"done", "estimated", "written"}, mapKeys(learning))
+	assert.Equal(t, []string{"done", "estimated", "relabel_pending", "written"}, mapKeys(learning))
 	require.NoError(t, json.Unmarshal(w["backtest"], &bt))
 	assert.Equal(t, []string{"categories", "cost_usd", "error", "finished_at", "id", "progress", "started_at", "status", "verdict"}, mapKeys(bt))
 	assert.JSONEq(t, `"interrupted"`, string(bt["status"]))
 	var cats []map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(bt["categories"], &cats))
 	require.Len(t, cats, 1)
-	assert.Equal(t, []string{"acceptable", "agree", "bad", "baseline", "category", "cost_usd", "rec_baseline", "status", "total",
+	assert.Equal(t, []string{"acceptable", "agree", "bad", "baseline", "category", "cost_usd", "handed", "rec_baseline", "status", "total",
 		"wrong_high"}, mapKeys(cats[0]))
 	var src map[string]map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(w["sources"], &src))
@@ -257,4 +257,21 @@ func TestWatchmanStatus_RunningWhileLocked(t *testing.T) {
 	out, err = runWatchman(t, "status")
 	require.NoError(t, err)
 	assert.Contains(t, out, "Watchman is off; ~4 decisions to learn from.")
+}
+
+func TestStatus_TextShowsRelabelLeft(t *testing.T) {
+	wb, _ := watchmanFixture(t)
+	_, err := runWatchman(t, "learn", "--workbench", strconv.FormatInt(wb, 10), "--start")
+	require.NoError(t, err)
+	out, err := runWatchman(t, "status", "--workbench", strconv.FormatInt(wb, 10))
+	require.NoError(t, err)
+	assert.NotContains(t, out, "relabelling earlier decisions", "nothing pending: no line")
+
+	var path string
+	d := openAgentsTestMain(t, &path)
+	_, err = d.Exec(`UPDATE watchman_precedents SET flags_at = NULL WHERE workbench_id = ?`, wb)
+	require.NoError(t, err)
+	out, err = runWatchman(t, "status", "--workbench", strconv.FormatInt(wb, 10))
+	require.NoError(t, err)
+	assert.Contains(t, out, "relabelling earlier decisions: 1 left")
 }

@@ -219,8 +219,8 @@ func TestStatus_Fixture(t *testing.T) {
 	require.NoError(t, d.PinWatchmanProfile(on, SleepWindowKey, "23:00-07:00", learnT0))
 	fin := learnT0.Add(time.Hour)
 	insertBacktest(t, d, on, "done", learnT0, &fin,
-		db.WatchmanBacktestRow{Category: "permission", Total: 30, Agree: 26, Acceptable: 3, Bad: 1, Status: "strong",
-			CostUSD: 0.75, Baseline: 0.6, RecBaseline: 0.7})
+		db.WatchmanBacktestRow{Category: "permission", Total: 28, Agree: 24, Acceptable: 3, Bad: 1, Status: "strong",
+			CostUSD: 0.75, Baseline: 0.6, RecBaseline: 0.7, Handed: 2})
 	insertBacktest(t, d, on, "running", learnT0.Add(2*time.Hour), nil)
 	off, err := d.CreateWorkbench("acme-docs", "/tmp/acme-docs")
 	require.NoError(t, err)

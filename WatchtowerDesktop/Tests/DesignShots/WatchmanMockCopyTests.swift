@@ -12,6 +12,7 @@ final class WatchmanMockCopyTests: XCTestCase {
     func testJournalCopy() {
         XCTAssertEqual(Copy.journalTitle, "Watchman")
         XCTAssertEqual(Copy.parkedReason, "Parked: merging to main is yours")
+        XCTAssertTrue(Copy.handedReason.hasPrefix("Handed to you: "))
         XCTAssertTrue(Copy.unsure1Rationale.contains("#1201, #1288"))
         XCTAssertEqual(Copy.unsure1Meta, "confidence low · design · strong 84 %")
         XCTAssertEqual([Copy.ok, Copy.correct, Copy.openSession], ["OK", "Correct…", "Open session"])
@@ -30,7 +31,7 @@ final class WatchmanMockCopyTests: XCTestCase {
     }
 
     func testHomeAndArmingCopy() {
-        XCTAssertEqual(Copy.homeRow, "Overnight Watchman decided 14 — 2 unsure, 1 waiting for you")
+        XCTAssertEqual(Copy.homeRow, "Overnight Watchman decided 14 — 2 unsure, 2 waiting for you")
         XCTAssertEqual(Copy.armedChip, "Watchman · Sleep since 01:40")
         XCTAssertEqual([Copy.takeBack, Copy.handTo], ["Take back", "Hand to Watchman"])
         XCTAssertEqual(Copy.armAnalytics, "Agent analytics turned on — Watchman learns from your sessions")
@@ -44,7 +45,7 @@ final class WatchmanMockCopyTests: XCTestCase {
         XCTAssertEqual(Copy.trayGoingToSleep, "Going to sleep")
         XCTAssertEqual(Copy.trayWatchmanStatus, "Watchman · Sleep · 3 sessions")
         XCTAssertEqual(Copy.targetArmed, "Watchman has this target · Sleep since 01:40")
-        XCTAssertEqual(Copy.inboxWatchmanSummary, "1 waiting")
+        XCTAssertEqual(Copy.inboxWatchmanSummary, "2 waiting")
     }
 
     func testNotLearnedCopy() {

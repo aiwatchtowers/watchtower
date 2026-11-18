@@ -48,7 +48,8 @@
       "learning": {
         "written": 6,
         "estimated": 120,
-        "done": false
+        "done": false,
+        "relabel_pending": 5
       },
       "backtest": {
         "id": 2,
@@ -73,15 +74,16 @@
         "categories": [
           {
             "category": "permission",
-            "total": 30,
-            "agree": 26,
+            "total": 28,
+            "agree": 24,
             "acceptable": 3,
             "bad": 1,
             "wrong_high": 0,
             "status": "strong",
             "cost_usd": 0.75,
             "baseline": 0.6,
-            "rec_baseline": 0.7
+            "rec_baseline": 0.7,
+            "handed": 2
           }
         ]
       },

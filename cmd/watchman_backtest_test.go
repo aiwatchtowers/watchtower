@@ -51,6 +51,7 @@ func watchmanBacktestFixture(t *testing.T) (int64, *watchmanBacktestGen, string)
 	tx, err := d.Begin()
 	require.NoError(t, err)
 	var ps []db.WatchmanPrecedent
+	yes, no := true, false // flagged: the relabel pass has nothing left
 	for i := 0; i < watchman.HiddenPerCategory; i++ {
 		situation, choice := "Tool: Bash go test "+strconv.Itoa(i), "allow"
 		if i%3 == 0 { // a third denied: the base rate is 2/3
@@ -58,7 +59,7 @@ func watchmanBacktestFixture(t *testing.T) (int64, *watchmanBacktestGen, string)
 		}
 		ps = append(ps, db.WatchmanPrecedent{WorkbenchID: wb, Source: "permission", SourceKey: fmt.Sprint(i + 1),
 			Category: "permission", Situation: situation, Choice: choice,
-			DecidedAt: time.Date(2026, 10, 1, i, 0, 0, 0, time.UTC), Weight: 1})
+			DecidedAt: time.Date(2026, 10, 1, i, 0, 0, 0, time.UTC), Weight: 1, IsDecision: &yes, Parked: &no})
 	}
 	require.NoError(t, d.UpsertWatchmanPrecedents(tx, ps))
 	require.NoError(t, tx.Commit())
@@ -91,7 +92,8 @@ func TestWatchmanBacktest_JSONKeysPinned(t *testing.T) {
 	wb, gen, dir := watchmanBacktestFixture(t)
 	out, err := runWatchmanBacktestCmd(t, wb, "--json")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"backtest_id", "categories", "cost_usd", "ok", "status", "verdict", "workbench"}, jsonKeys(t, out))
+	assert.Equal(t, []string{"backtest_id", "categories", "cost_usd", "ok", "report_error", "report_path", "status", "verdict", "workbench"},
+		jsonKeys(t, out))
 	var raw struct {
 		Categories []map[string]any `json:"categories"`
 	}
@@ -102,7 +104,7 @@ func TestWatchmanBacktest_JSONKeysPinned(t *testing.T) {
 		keys = append(keys, k)
 	}
 	assert.ElementsMatch(t, []string{"category", "total", "agree", "acceptable", "bad", "wrong_high", "cost_usd", "baseline",
-		"rec_baseline", "status"}, keys)
+		"rec_baseline", "status", "handed"}, keys)
 	var r watchmanBacktestJSON
 	require.NoError(t, json.Unmarshal([]byte(out), &r))
 	assert.True(t, r.OK)
@@ -110,6 +112,13 @@ func TestWatchmanBacktest_JSONKeysPinned(t *testing.T) {
 	assert.Positive(t, r.BacktestID)
 	assert.Equal(t, "done", r.Status)
 	assert.Equal(t, "stop", r.Verdict, "one strong category is not go")
+	var dbPath string
+	b, _, err := openAgentsTestMain(t, &dbPath).WatchmanBacktestByID(wb, r.BacktestID)
+	require.NoError(t, err)
+	require.NotNil(t, b)
+	assert.Equal(t, watchman.BacktestReportPath(dir, r.BacktestID, b.StartedAt), r.ReportPath, "the run report lives in the workspace folder")
+	assert.Empty(t, r.ReportError)
+	assert.FileExists(t, r.ReportPath)
 	for _, c := range r.Categories {
 		if c.Category == "permission" {
 			assert.InDelta(t, 2.0/3, c.Baseline, 1e-9)
@@ -125,10 +134,32 @@ func TestWatchmanBacktest_JSONKeysPinned(t *testing.T) {
 
 	out, err = runWatchmanBacktestCmd(t, wb)
 	require.NoError(t, err)
-	assert.Contains(t, out, "permission   strong: 30 same / 0 acceptable / 0 bad (0 bad while sure) · recommended-pick 0 % (~$0.00)")
+	assert.Contains(t, out, "permission   strong: 30 same / 0 acceptable / 0 bad (0 bad while sure) · 0 handed · recommended-pick 0 % (~$0.00)")
 	assert.Contains(t, out, "Review approvals, hunk undos, merges and your own rewrites are not measured in phase 1")
 	assert.Contains(t, out, "review_code is measured on your review comments only")
 	assert.Contains(t, out, "Verdict: stop (cost ~$0.00, an estimate")
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	last := lines[len(lines)-1]
+	assert.True(t, strings.HasPrefix(last, "Report: "+filepath.Join(dir, "watchman", fmt.Sprintf("backtest-%d-", r.BacktestID+1))) &&
+		strings.HasSuffix(last, ".jsonl"), "the text output ends with the report path: %q", out)
+}
+
+// TestWatchmanBacktest_ReportErrorShown: a report that cannot be written
+// leaves report_path empty and report_error set; the run is kept.
+func TestWatchmanBacktest_ReportErrorShown(t *testing.T) {
+	wb, _, dir := watchmanBacktestFixture(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "watchman"), []byte("not a folder"), 0o600))
+	out, err := runWatchmanBacktestCmd(t, wb, "--json")
+	require.NoError(t, err)
+	var r watchmanBacktestJSON
+	require.NoError(t, json.Unmarshal([]byte(out), &r))
+	assert.Equal(t, "done", r.Status)
+	assert.Empty(t, r.ReportPath)
+	assert.Contains(t, r.ReportError, "writing the backtest report")
+
+	out, err = runWatchmanBacktestCmd(t, wb)
+	require.NoError(t, err)
+	assert.Contains(t, out, "Report not written: writing the backtest report")
 }
 
 func readStampFile(t *testing.T, path string) time.Time {
@@ -193,4 +224,32 @@ func TestWatchmanBacktest_RefusedUntilLearned(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, out, `"status": "done"`)
 	assert.Positive(t, gen.calls)
+}
+
+func TestWatchmanBacktest_RefusesWhileRelabelPending(t *testing.T) {
+	wb, gen, _ := watchmanBacktestFixture(t)
+	var path string
+	d := openAgentsTestMain(t, &path)
+	_, err := d.Exec(`UPDATE watchman_precedents SET flags_at = NULL WHERE workbench_id = ? AND source_key IN ('1', '2')`, wb)
+	require.NoError(t, err)
+	_, err = runWatchmanBacktestCmd(t, wb, "--json")
+	require.ErrorContains(t, err, "relabelling 2 earlier decisions")
+	require.ErrorContains(t, err, "watchman status")
+	require.ErrorContains(t, err, "--force")
+	assert.Zero(t, gen.calls)
+
+	out, err := runWatchmanBacktestCmd(t, wb, "--json", "--force")
+	require.NoError(t, err)
+	assert.Contains(t, out, `"status": "done"`)
+	assert.Positive(t, gen.calls)
+}
+
+// --force overrides both refusals, so its help names both.
+func TestWatchmanBacktest_ForceHelpNamesBothOverrides(t *testing.T) {
+	c, _, err := rootCmd.Find([]string{"watchman", "backtest"})
+	require.NoError(t, err)
+	f := c.Flags().Lookup("force")
+	require.NotNil(t, f)
+	assert.Contains(t, f.Usage, "learning")
+	assert.Contains(t, f.Usage, "relabelling")
 }

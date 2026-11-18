@@ -31,7 +31,7 @@ final class WatchmanStatusDecodingTests: XCTestCase {
         XCTAssertEqual(first.sleepWindow, "23:00-07:00")
         XCTAssertTrue(first.sleepWindowPinned)
         XCTAssertNil(first.estimate)
-        XCTAssertEqual(first.learning, WatchmanLearning(written: 6, estimated: 120, done: false))
+        XCTAssertEqual(first.learning, WatchmanLearning(written: 6, estimated: 120, done: false, relabelPending: 5))
         XCTAssertTrue(first.running)
         let running = try XCTUnwrap(first.backtest)
         XCTAssertEqual(running.id, 2)
@@ -44,8 +44,8 @@ final class WatchmanStatusDecodingTests: XCTestCase {
         XCTAssertEqual(done.verdict, "go")
         XCTAssertEqual(done.costUSD, 1.25)
         XCTAssertEqual(done.categories, [WatchmanBacktestCategory(
-            category: "permission", total: 30, agree: 26, acceptable: 3, bad: 1, wrongHigh: 0, costUSD: 0.75,
-            baseline: 0.6, recBaseline: 0.7, status: "strong")])
+            category: "permission", total: 28, agree: 24, acceptable: 3, bad: 1, wrongHigh: 0, handed: 2,
+            costUSD: 0.75, baseline: 0.6, recBaseline: 0.7, status: "strong")])
         guard case let .running(progress) = WatchmanWorkbenchPhase.of(first) else {
             return XCTFail("row 1 must be running")
         }
@@ -145,5 +145,33 @@ final class WatchmanStatusDecodingTests: XCTestCase {
         guard case .failed = WatchmanSettingsState.of(status) else {
             return XCTFail("interrupted must show as failed")
         }
+    }
+
+    func testDecodesHanded() throws {
+        let status = try WatchmanStatusFixtures.decode(WatchmanStatusFixtures.results)
+        let rows = try XCTUnwrap(status.workbenches.first?.lastDone).categories
+        XCTAssertEqual(rows.last?.category, "finish")
+        XCTAssertEqual(rows.last?.handed, 18)
+        XCTAssertEqual(rows.first?.handed, 0)
+    }
+
+    func testHandedMissingIsZero() throws {
+        let status = try WatchmanStatusFixtures.decode(#"""
+        {"ok": true, "workbenches": [{"workbench": 1, "name": "acme", "enabled_at": "2026-11-02T09:00:00Z",
+          "analytics_on": true, "running": false, "last_done": {"id": 1, "status": "done", "cost_usd": 0,
+          "categories": [{"category": "permission", "total": 30, "agree": 26, "wrong_high": 1,
+                          "status": "strong", "cost_usd": 0.75}]}}]}
+        """#)
+        XCTAssertEqual(status.workbenches[0].lastDone?.categories.first?.handed, 0)
+    }
+
+    func testDecodesRelabelPending() throws {
+        let relabelling = try WatchmanStatusFixtures.decode(WatchmanStatusFixtures.relabelling)
+        XCTAssertEqual(relabelling.workbenches[0].learning?.relabelPending, 340)
+        XCTAssertTrue(relabelling.workbenches[0].isRelabelling)
+        // A learning object without the key (an older CLI) is not relabelling.
+        let plain = try WatchmanStatusFixtures.decode(WatchmanStatusFixtures.results)
+        XCTAssertEqual(plain.workbenches[0].learning?.relabelPending, 0)
+        XCTAssertFalse(plain.workbenches[0].isRelabelling)
     }
 }

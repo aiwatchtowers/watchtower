@@ -223,3 +223,29 @@ func TestLiveContext(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, profile)
 }
+
+func TestDecide_HandoffParsed(t *testing.T) {
+	d, wb, _ := decideFixture(t)
+	gen := &decideGen{out: reply(t, map[string]any{"handoff": "owner_only"})}
+	dec, err := Decide(context.Background(), d, gen, nil, decideItem(wb))
+	require.NoError(t, err)
+	require.Equal(t, HandoffOwnerOnly, dec.Handoff)
+	require.Equal(t, "keep sqlite", dec.Choice, "a handed item still carries its choice")
+}
+
+func TestDecide_HandoffMissingIsNone(t *testing.T) {
+	d, wb, _ := decideFixture(t)
+	gen := &decideGen{out: reply(t, nil)}
+	dec, err := Decide(context.Background(), d, gen, nil, decideItem(wb))
+	require.NoError(t, err)
+	require.Equal(t, HandoffNone, dec.Handoff)
+}
+
+func TestDecide_HandoffUnknownIsBadReply(t *testing.T) {
+	d, wb, _ := decideFixture(t)
+	gen := &decideGen{out: reply(t, map[string]any{"handoff": "maybe"})}
+	dec, err := Decide(context.Background(), d, gen, nil, decideItem(wb))
+	require.ErrorIs(t, err, ErrBadReply)
+	require.ErrorContains(t, err, `unknown handoff "maybe"`)
+	require.NotNil(t, dec.Usage)
+}

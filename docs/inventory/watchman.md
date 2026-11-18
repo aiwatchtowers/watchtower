@@ -49,3 +49,4 @@ WATCHMAN-01, -02, -04 and -05 of the spec arrive with phase 2; this file holds t
 - 2026-11-16 (phase 1, board #1823): file created with WATCHMAN-03 and WATCHMAN-06 (new, beyond the spec's five).
 - 2026-11-16 (final review fixes): WATCHMAN-03 tightened — git commits count only for the folder's `user.email`, automation-started sessions leave the turn source; guards added.
 - 2026-11-17 (Task 12, asks #1422/#1423): the backtest's metric changed (judge grades, strong = ≤ 5 % bad and none bad while sure, go needs `permission`, `design` or `scope`); WATCHMAN-03 and WATCHMAN-06 unchanged.
+- 2026-11-18 (phase 1b): the backtest measures decisions only, with handoffs and a 20-scored floor; WATCHMAN-03 and WATCHMAN-06 unchanged.

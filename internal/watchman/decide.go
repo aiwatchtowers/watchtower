@@ -48,13 +48,22 @@ type Item struct {
 	Instructions  string
 }
 
+// The twin's handoff values (spec §4 "Hand to the owner", D35): owner_only
+// when the step needs the owner's own hands (a token, a sign-in, a command
+// on his side, his device, a payment); none for everything else.
+const (
+	HandoffNone      = "none"
+	HandoffOwnerOnly = "owner_only"
+)
+
 // Decision is the twin's validated answer. Confidence is low, medium or high;
-// Importance is low or high. PrecedentIDs holds only ids that were retrieved
+// Importance is low or high; Handoff is HandoffNone or HandoffOwnerOnly (a
+// reply without it is none). PrecedentIDs holds only ids that were retrieved
 // for the item.
 type Decision struct {
-	Choice, Rationale, Category, Confidence, Importance string
-	PrecedentIDs                                        []int64
-	Usage                                               *digest.Usage
+	Choice, Rationale, Category, Confidence, Importance, Handoff string
+	PrecedentIDs                                                 []int64
+	Usage                                                        *digest.Usage
 }
 
 // LiveContext returns the stored profile text of category and the owner's
@@ -117,6 +126,7 @@ type decideReply struct {
 	Confidence   string  `json:"confidence"`
 	Category     string  `json:"category"`
 	Importance   string  `json:"importance"`
+	Handoff      string  `json:"handoff"`
 }
 
 // Decide retrieves the item's precedents, asks the model on the strong tier
@@ -180,7 +190,10 @@ func parseDecision(raw string, options []string, ps []db.WatchmanPrecedent) (Dec
 	}
 	dec := Decision{
 		Choice: strings.TrimSpace(r.Choice), Rationale: strings.TrimSpace(r.Rationale),
-		Category: r.Category, Confidence: r.Confidence, Importance: r.Importance,
+		Category: r.Category, Confidence: r.Confidence, Importance: r.Importance, Handoff: r.Handoff,
+	}
+	if dec.Handoff == "" {
+		dec.Handoff = HandoffNone
 	}
 	switch {
 	case dec.Choice == "":
@@ -191,6 +204,8 @@ func parseDecision(raw string, options []string, ps []db.WatchmanPrecedent) (Dec
 		return Decision{}, fmt.Errorf("watchman decide: unknown confidence %q", dec.Confidence)
 	case dec.Importance != "low" && dec.Importance != "high":
 		return Decision{}, fmt.Errorf("watchman decide: unknown importance %q", dec.Importance)
+	case dec.Handoff != HandoffNone && dec.Handoff != HandoffOwnerOnly:
+		return Decision{}, fmt.Errorf("watchman decide: unknown handoff %q", dec.Handoff)
 	}
 	if len(options) > 0 {
 		offered := ""

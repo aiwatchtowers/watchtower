@@ -50,6 +50,12 @@ package enum WatchmanStatusFixtures {
                 backtest: lastDone, lastDone: lastDone)
     ])
 
+    /// acme-web is learned; the relabel pass still sorts 340 earlier decisions.
+    package static let relabelling = report([
+        enabled(1, "acme-web", analyticsOn: false, sleep: "00:30-07:45", learning: (317, 320, true),
+                relabelPending: 340, backtest: lastDone, lastDone: lastDone)
+    ])
+
     // MARK: - Builders
 
     private static let lastDone = backtest(
@@ -57,7 +63,7 @@ package enum WatchmanStatusFixtures {
         categories: [
             Row("design", 30, 25, 1, "strong"), Row("scope", 30, 24, 1, "strong"), Row("ux_text", 30, 18, 3, "weak"),
             Row("tests", 30, 26, 0, "strong"), Row("review_code", 30, 24, 2, "weak"), Row("review_doc", 30, 25, 1, "strong"),
-            Row("permission", 30, 29, 0, "strong"), Row("finish", 12, 0, 0, "not_measured")
+            Row("permission", 30, 29, 0, "strong"), Row("finish", 12, 0, 0, "not_measured", handed: 18)
         ]
     )
 
@@ -80,17 +86,19 @@ package enum WatchmanStatusFixtures {
         analyticsOn: Bool,
         sleep: String,
         learning: (Int, Int, Bool),
+        relabelPending: Int? = nil,
         backtest: String = "null",
         lastDone: String = "null",
         running: Bool = false
     ) -> String {
-        """
+        let relabel = relabelPending.map { ", \"relabel_pending\": \($0)" } ?? ""
+        return """
         {"workbench": \(id), "name": "\(name)", "enabled_at": "2026-11-08T21:04:00Z", "analytics_on": \(analyticsOn),
          "precedents": {"design": 41, "scope": 35, "ux_text": 31, "tests": 40, "review_code": 37,
                         "review_doc": 33, "permission": 88, "finish": 12},
          "sources": {"ask": {"written": 120, "done": true}, "git": {"written": 64, "done": true}},
          "sleep_window": "\(sleep)", "sleep_window_pinned": false, "estimate": null,
-         "learning": {"written": \(learning.0), "estimated": \(learning.1), "done": \(learning.2)},
+         "learning": {"written": \(learning.0), "estimated": \(learning.1), "done": \(learning.2)\(relabel)},
          "backtest": \(backtest), "last_done": \(lastDone), "running": \(running)}
         """
     }
@@ -101,9 +109,11 @@ package enum WatchmanStatusFixtures {
         let agree: Int
         let wrong: Int
         let rating: String
+        let handed: Int
 
-        init(_ name: String, _ total: Int, _ agree: Int, _ wrong: Int, _ rating: String) {
+        init(_ name: String, _ total: Int, _ agree: Int, _ wrong: Int, _ rating: String, handed: Int = 0) {
             (self.name, self.total, self.agree, self.wrong, self.rating) = (name, total, agree, wrong, rating)
+            self.handed = handed
         }
     }
 
@@ -117,7 +127,7 @@ package enum WatchmanStatusFixtures {
     ) -> String {
         let rows = categories.map { row in
             #"{"category": "\#(row.name)", "total": \#(row.total), "agree": \#(row.agree), "#
-                + #""wrong_high": \#(row.wrong), "cost_usd": \#(row.rating == "not_measured" ? 0 : 0.4), "#
+                + #""wrong_high": \#(row.wrong), "handed": \#(row.handed), "cost_usd": \#(row.rating == "not_measured" ? 0 : 0.4), "#
                 + #""baseline": \#(row.rating == "not_measured" ? 0 : 0.5), "#
                 + #""status": "\#(row.rating)"}"#
         }

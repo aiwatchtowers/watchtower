@@ -3874,6 +3874,9 @@ CREATE TABLE IF NOT EXISTS watchman_precedents (
     owner_words  TEXT NOT NULL DEFAULT '',
     decided_at   TEXT NOT NULL,
     weight       REAL NOT NULL DEFAULT 1,
+    is_decision  INTEGER,  -- §9.1: NULL = not flagged yet (a candidate), 0/1 set by the learner's relabel pass
+    parked       INTEGER,  -- §9.1: NULL/0 = usable, 1 = parked out of the backtest
+    flags_at     TEXT,     -- §9.1: when the relabel pass tried the row (even if both flags stayed NULL)
     UNIQUE (workbench_id, source, source_key)
 );
 CREATE INDEX IF NOT EXISTS idx_watchman_precedents_wb ON watchman_precedents(workbench_id, category, decided_at);
@@ -3938,6 +3941,7 @@ CREATE TABLE IF NOT EXISTS watchman_backtest_rows (
     acceptable  INTEGER NOT NULL DEFAULT 0,  -- a different but reasonable decision
     bad         INTEGER NOT NULL DEFAULT 0,  -- a decision the owner would have had to undo; strong = bad <= 5 % and wrong_high = 0
     rec_baseline REAL NOT NULL DEFAULT 0,    -- share of decisions where the owner picked the agent's recommended option (informational)
+    handed      INTEGER NOT NULL DEFAULT 0,  -- §9.1: decisions the twin handed to the owner (not scored)
     PRIMARY KEY (backtest_id, category)
 );
 

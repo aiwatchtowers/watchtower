@@ -75,6 +75,10 @@ package struct WatchmanWorkbenchStatus: Decodable, Equatable, Sendable {
 
     package var isEnabled: Bool { !(enabledAt ?? "").isEmpty }
     package var isLearned: Bool { isEnabled && (learning?.done ?? false) }
+    /// Earlier decisions the relabel pass still sorts; above 0 the backtest
+    /// cannot start (the CLI refuses it).
+    package var relabelLeft: Int { learning?.relabelPending ?? 0 }
+    package var isRelabelling: Bool { relabelLeft > 0 }
 }
 
 package struct WatchmanSourceProgress: Decodable, Equatable, Sendable {
@@ -97,6 +101,29 @@ package struct WatchmanLearning: Decodable, Equatable, Sendable {
     package let written: Int
     package let estimated: Int
     package let done: Bool
+    /// Rows the relabel pass (phase 1b) has not flagged yet; the backtest
+    /// waits for 0. Missing in the JSON → 0.
+    package let relabelPending: Int
+
+    enum CodingKeys: String, CodingKey {
+        case written, estimated, done
+        case relabelPending = "relabel_pending"
+    }
+
+    package init(written: Int, estimated: Int, done: Bool, relabelPending: Int = 0) {
+        self.written = written
+        self.estimated = estimated
+        self.done = done
+        self.relabelPending = relabelPending
+    }
+
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        written = try container.decode(Int.self, forKey: .written)
+        estimated = try container.decode(Int.self, forKey: .estimated)
+        done = try container.decode(Bool.self, forKey: .done)
+        relabelPending = try container.decodeIfPresent(Int.self, forKey: .relabelPending) ?? 0
+    }
 }
 
 package struct WatchmanBacktest: Decodable, Equatable, Sendable {
@@ -146,6 +173,9 @@ package struct WatchmanBacktestCategory: Decodable, Equatable, Sendable {
     package let bad: Int
     /// Bad decisions taken while the twin's confidence was high.
     package let wrongHigh: Int
+    /// Decisions handed to the owner (justified handoffs), not scored.
+    /// Missing in the JSON → 0.
+    package let handed: Int
     package let costUSD: Double
     /// The share of the hidden decisions that always giving the owner's most
     /// common choice would get right (informational).
@@ -158,6 +188,7 @@ package struct WatchmanBacktestCategory: Decodable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case category, total, agree, acceptable, bad, status, baseline
+        case handed
         case wrongHigh = "wrong_high", costUSD = "cost_usd", recBaseline = "rec_baseline"
     }
 
@@ -168,6 +199,7 @@ package struct WatchmanBacktestCategory: Decodable, Equatable, Sendable {
         acceptable: Int = 0,
         bad: Int = 0,
         wrongHigh: Int,
+        handed: Int = 0,
         costUSD: Double,
         baseline: Double = 0,
         recBaseline: Double = 0,
@@ -179,6 +211,7 @@ package struct WatchmanBacktestCategory: Decodable, Equatable, Sendable {
         self.acceptable = acceptable
         self.bad = bad
         self.wrongHigh = wrongHigh
+        self.handed = handed
         self.costUSD = costUSD
         self.baseline = baseline
         self.recBaseline = recBaseline
@@ -193,6 +226,7 @@ package struct WatchmanBacktestCategory: Decodable, Equatable, Sendable {
         acceptable = try container.decodeIfPresent(Int.self, forKey: .acceptable) ?? 0
         bad = try container.decodeIfPresent(Int.self, forKey: .bad) ?? 0
         wrongHigh = try container.decode(Int.self, forKey: .wrongHigh)
+        handed = try container.decodeIfPresent(Int.self, forKey: .handed) ?? 0
         costUSD = try container.decodeIfPresent(Double.self, forKey: .costUSD) ?? 0
         baseline = try container.decodeIfPresent(Double.self, forKey: .baseline) ?? 0
         recBaseline = try container.decodeIfPresent(Double.self, forKey: .recBaseline) ?? 0

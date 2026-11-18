@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -24,6 +25,10 @@ type WatchmanPrecedent struct {
 	OwnerWords  string
 	DecidedAt   time.Time
 	Weight      float64
+	// IsDecision and Parked are the relabel pass's flags (nil = unset; an
+	// unset row still counts as a backtest candidate). On upsert a nil flag
+	// keeps the stored one.
+	IsDecision, Parked *bool
 }
 
 // WatchmanProfile is one learned profile entry; Key is a category or
@@ -62,6 +67,7 @@ type WatchmanBacktestRow struct {
 	CostUSD     float64
 	Baseline    float64 // share of the most common owner choice among the hidden items (informational)
 	RecBaseline float64 // share of the decisions where the owner picked the agent's recommended option (informational)
+	Handed      int     // hidden items the twin justly handed to the owner (their questions not scored)
 }
 
 func wmTime(t time.Time) string { return t.UTC().Format(time.RFC3339) }
@@ -71,15 +77,24 @@ func wmTime(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 // another workbench.
 func (db *DB) UpsertWatchmanPrecedents(tx *sql.Tx, ps []WatchmanPrecedent) error {
 	for _, p := range ps {
+		var flagsAt any
+		if p.IsDecision != nil || p.Parked != nil {
+			flagsAt = wmTime(time.Now())
+		}
 		_, err := tx.Exec(`INSERT INTO watchman_precedents
-			(workbench_id, source, source_key, category, situation, choice, owner_words, decided_at, weight)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			(workbench_id, source, source_key, category, situation, choice, owner_words, decided_at, weight,
+				is_decision, parked, flags_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(workbench_id, source, source_key) DO UPDATE SET
 				category = excluded.category,
 				situation = excluded.situation, choice = excluded.choice,
 				owner_words = excluded.owner_words, decided_at = excluded.decided_at,
-				weight = excluded.weight`,
-			p.WorkbenchID, p.Source, p.SourceKey, p.Category, p.Situation, p.Choice, p.OwnerWords, wmTime(p.DecidedAt), p.Weight)
+				weight = excluded.weight,
+				is_decision = COALESCE(excluded.is_decision, is_decision),
+				parked = COALESCE(excluded.parked, parked),
+				flags_at = COALESCE(excluded.flags_at, flags_at)`,
+			p.WorkbenchID, p.Source, p.SourceKey, p.Category, p.Situation, p.Choice, p.OwnerWords, wmTime(p.DecidedAt), p.Weight,
+			wmFlag(p.IsDecision), wmFlag(p.Parked), flagsAt)
 		if err != nil {
 			return fmt.Errorf("upserting watchman precedent %s/%s: %w", p.Source, p.SourceKey, err)
 		}
@@ -287,7 +302,7 @@ func (db *DB) watchmanBacktestWhere(where string, workbenchID int64) (*WatchmanB
 		t, _ := time.Parse(time.RFC3339, fin.String)
 		b.FinishedAt = &t
 	}
-	rows, err := db.Query(`SELECT category, total, agree, acceptable, bad, wrong_high, status, cost_usd, baseline, rec_baseline
+	rows, err := db.Query(`SELECT category, total, agree, acceptable, bad, wrong_high, status, cost_usd, baseline, rec_baseline, handed
 		FROM watchman_backtest_rows WHERE backtest_id = ? ORDER BY category`, b.ID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading watchman backtest rows %d: %w", b.ID, err)
@@ -297,7 +312,7 @@ func (db *DB) watchmanBacktestWhere(where string, workbenchID int64) (*WatchmanB
 	for rows.Next() {
 		var r WatchmanBacktestRow
 		if err := rows.Scan(&r.Category, &r.Total, &r.Agree, &r.Acceptable, &r.Bad, &r.WrongHigh, &r.Status, &r.CostUSD,
-			&r.Baseline, &r.RecBaseline); err != nil {
+			&r.Baseline, &r.RecBaseline, &r.Handed); err != nil {
 			return nil, nil, fmt.Errorf("scanning watchman backtest row: %w", err)
 		}
 		out = append(out, r)
@@ -398,9 +413,13 @@ const (
 			AND a.automation_run_id IS NULL AND s.automation_run_id IS NULL
 			AND (s.id IS NULL OR s.` + NotDeletingSQL + `)
 			AND m.state IN ('ok','comment','not_useful')`
-	wmPermissionSQL = `SELECT COALESCE(strftime(` + wmAtFormat + `, decided_at), '') AS wm_at, id AS wm_id, '' AS wm_sub, tool_name, summary, status
-		FROM permission_requests
-		WHERE workbench_id = ? AND status IN ('allowed','denied')`
+	wmPermissionSQL = `SELECT COALESCE(strftime(` + wmAtFormat + `, r.decided_at), '') AS wm_at, r.id AS wm_id, '' AS wm_sub, r.tool_name, r.summary, r.summary_clipped, r.status,
+			s.folder_path, COALESCE(p.folder_path, ''),
+			(SELECT COALESCE(json_group_array(w.root), '[]') FROM terminal_session_worktrees w WHERE w.session_id = r.terminal_session_id)
+		FROM permission_requests r
+		JOIN terminal_sessions s ON s.id = r.terminal_session_id AND s.` + NotDeletingSQL + `
+		LEFT JOIN projects p ON p.id = r.workbench_id
+		WHERE r.workbench_id = ? AND r.status IN ('allowed','denied')`
 )
 
 // wmPage wraps inner, which selects wm_at, wm_id and wm_sub first, in the
@@ -543,6 +562,10 @@ type WatchmanPermissionRow struct {
 	Mark                      WatchmanMark
 	ID                        int64
 	ToolName, Summary, Status string
+	SummaryClipped            bool     // the summary was cut short
+	SessionFolder             string   // terminal_sessions.folder_path
+	WorkbenchFolder           string   // the workbench's project folder; '' = unknown
+	Worktrees                 []string // terminal_session_worktrees roots of the session
 }
 
 // WatchmanPermissionDecisions pages the workbench's allowed and denied
@@ -556,12 +579,48 @@ func (db *DB) WatchmanPermissionDecisions(workbenchID int64, from *WatchmanMark,
 	if err != nil {
 		return nil, fmt.Errorf("reading permission decisions of workbench %d: %w", workbenchID, err)
 	}
+	return scanWatchmanPermissionRows(rows)
+}
+
+// WatchmanPermissionRequests returns the workbench's decided permission
+// requests with the given ids, by id; an id with no such row (deleted, its
+// session gone or deleting, undecided, another workbench) is absent from the
+// map.
+func (db *DB) WatchmanPermissionRequests(workbenchID int64, ids []int64) (map[int64]WatchmanPermissionRow, error) {
+	out := map[int64]WatchmanPermissionRow{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	args := []any{workbenchID}
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	rows, err := db.Query(`SELECT * FROM (`+wmPermissionSQL+`) WHERE wm_id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")+`)`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("reading permission requests of workbench %d: %w", workbenchID, err)
+	}
+	list, err := scanWatchmanPermissionRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range list {
+		out[r.ID] = r
+	}
+	return out, nil
+}
+
+func scanWatchmanPermissionRows(rows *sql.Rows) ([]WatchmanPermissionRow, error) {
 	defer rows.Close()
 	var out []WatchmanPermissionRow
 	for rows.Next() {
 		var r WatchmanPermissionRow
-		if err := rows.Scan(&r.Mark.At, &r.Mark.ID, &r.Mark.Sub, &r.ToolName, &r.Summary, &r.Status); err != nil {
+		var worktrees string
+		if err := rows.Scan(&r.Mark.At, &r.Mark.ID, &r.Mark.Sub, &r.ToolName, &r.Summary, &r.SummaryClipped, &r.Status,
+			&r.SessionFolder, &r.WorkbenchFolder, &worktrees); err != nil {
 			return nil, fmt.Errorf("scanning permission decision: %w", err)
+		}
+		if err := json.Unmarshal([]byte(worktrees), &r.Worktrees); err != nil {
+			return nil, fmt.Errorf("decoding worktrees of permission request %d: %w", r.Mark.ID, err)
 		}
 		r.ID = r.Mark.ID
 		out = append(out, r)
