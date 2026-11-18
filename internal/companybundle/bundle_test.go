@@ -245,6 +245,15 @@ func TestParse_DenyHostsRejectsNonHosts(t *testing.T) {
 			t.Errorf("%q: err = %v, want damaged", h, err)
 		}
 	}
+	// DenyHost agrees with Parse on every one of them.
+	for _, h := range hostile {
+		if _, ok := DenyHost(h); ok {
+			t.Errorf("DenyHost(%q) accepted a host Parse refuses", h)
+		}
+	}
+	if h, ok := DenyHost(" Intranet.Example.com "); !ok || h != "intranet.example.com" {
+		t.Errorf("DenyHost = %q, %v", h, ok)
+	}
 	// An accepted list is already in linkrule's normalized form, so it can
 	// only add hosts to media.RefusedHosts, never be dropped from it.
 	ok := []string{"Intranet.Example.com", " wiki.example.com", "xn--exmple-cua.example.com", "a-b.example.co.uk"}

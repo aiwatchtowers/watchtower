@@ -3,6 +3,23 @@ import Security
 import Testing
 @testable import WatchtowerDesktop
 
+/// Collects a launch step's log lines across threads.
+private final class LockedReports: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [String] = []
+    var items: [String] { lock.withLock { stored } }
+    func append(_ line: String) { lock.withLock { stored.append(line) } }
+}
+
+/// The channel of an install the company bridge has not migrated.
+private func unmigrated(
+    flavor: String, feedURL: String?, clientID: String?, clientSecret: String?
+) -> UpdateService.UpdateChannel {
+    UpdateService.resolveChannel(
+        flavor: flavor, feedURL: feedURL, clientID: clientID, clientSecret: clientSecret, companyMigrated: false
+    )
+}
+
 @Suite("UpdateService Pure Helpers")
 struct UpdateServicePureTests {
     @Test("isNewer compares semantic versions")
@@ -149,35 +166,103 @@ struct UpdateServicePureTests {
 struct UpdateChannelTests {
     @Test("public flavor routes to GitHub")
     func publicChannel() {
-        #expect(UpdateService.resolveChannel(flavor: "", feedURL: nil, clientID: nil, clientSecret: nil) == .publicGitHub)
+        #expect(unmigrated(flavor: "", feedURL: nil, clientID: nil, clientSecret: nil) == .publicGitHub)
         // Even with stray keys present, a flavorless build stays on GitHub.
-        #expect(UpdateService.resolveChannel(flavor: "", feedURL: "https://x", clientID: "a", clientSecret: "b") == .publicGitHub)
+        #expect(unmigrated(flavor: "", feedURL: "https://x", clientID: "a", clientSecret: "b") == .publicGitHub)
     }
 
     @Test("dev flavor never updates, keys or not")
     func devDisabled() {
-        #expect(UpdateService.resolveChannel(flavor: "dev", feedURL: nil, clientID: nil, clientSecret: nil) == .disabled)
-        #expect(UpdateService.resolveChannel(flavor: "dev", feedURL: "https://feed.example", clientID: "a", clientSecret: "b") == .disabled)
+        #expect(unmigrated(flavor: "dev", feedURL: nil, clientID: nil, clientSecret: nil) == .disabled)
+        #expect(unmigrated(flavor: "dev", feedURL: "https://feed.example", clientID: "a", clientSecret: "b") == .disabled)
     }
 
     @Test("flavored build without complete keys is disabled — never falls back to public")
     func flavoredMissingKeys() {
-        #expect(UpdateService.resolveChannel(flavor: "corp", feedURL: nil, clientID: nil, clientSecret: nil) == .disabled)
-        #expect(UpdateService.resolveChannel(flavor: "corp", feedURL: "https://feed.example", clientID: "a", clientSecret: nil) == .disabled)
-        #expect(UpdateService.resolveChannel(flavor: "corp", feedURL: "https://feed.example", clientID: "", clientSecret: "b") == .disabled)
-        #expect(UpdateService.resolveChannel(flavor: "corp", feedURL: nil, clientID: "a", clientSecret: "b") == .disabled)
+        #expect(unmigrated(flavor: "corp", feedURL: nil, clientID: nil, clientSecret: nil) == .disabled)
+        #expect(unmigrated(flavor: "corp", feedURL: "https://feed.example", clientID: "a", clientSecret: nil) == .disabled)
+        #expect(unmigrated(flavor: "corp", feedURL: "https://feed.example", clientID: "", clientSecret: "b") == .disabled)
+        #expect(unmigrated(flavor: "corp", feedURL: nil, clientID: "a", clientSecret: "b") == .disabled)
     }
 
     @Test("flavored build with full keys gets the gated channel")
     func flavoredGated() {
-        let ch = UpdateService.resolveChannel(flavor: "corp", feedURL: "https://feed.example/p", clientID: "id", clientSecret: "sec")
+        let ch = unmigrated(flavor: "corp", feedURL: "https://feed.example/p", clientID: "id", clientSecret: "sec")
         #expect(ch == .gated(feedURL: URL(string: "https://feed.example/p")!, clientID: "id", clientSecret: "sec"))
+    }
+
+    @Test("corp build stays gated until the company bridge has migrated it (#1887 §5)")
+    func corpStaysGatedUntilMigrated() {
+        let gated = UpdateService.resolveChannel(
+            flavor: "corp", feedURL: "https://feed.example/p", clientID: "id", clientSecret: "sec", companyMigrated: false
+        )
+        #expect(gated == .gated(feedURL: URL(string: "https://feed.example/p")!, clientID: "id", clientSecret: "sec"))
+        #expect(UpdateService.resolveChannel(
+            flavor: "corp", feedURL: nil, clientID: nil, clientSecret: nil, companyMigrated: false
+        ) == .disabled)
+    }
+
+    @Test("a migrated corp build may take the public feed; dev never updates")
+    func corpMayTakePublicFeedAfterMigrated() {
+        #expect(UpdateService.resolveChannel(
+            flavor: "corp", feedURL: "https://feed.example/p", clientID: "id", clientSecret: "sec", companyMigrated: true
+        ) == .publicGitHub)
+        #expect(UpdateService.resolveChannel(
+            flavor: "corp", feedURL: nil, clientID: nil, clientSecret: nil, companyMigrated: true
+        ) == .publicGitHub)
+        #expect(UpdateService.resolveChannel(
+            flavor: "dev", feedURL: nil, clientID: nil, clientSecret: nil, companyMigrated: true
+        ) == .disabled)
+    }
+
+    @Test("the service reads the marker only for a flavored build")
+    func serviceReadsMarker() async {
+        await MainActor.run {
+            let svc = UpdateService()
+            var reads = 0
+            svc.companyMigrated = { reads += 1; return true }
+            svc.buildFlavor = ""
+            #expect(svc.channel == .publicGitHub)
+            svc.buildFlavor = "dev"
+            #expect(svc.channel == .disabled)
+            #expect(reads == 0)
+            svc.buildFlavor = "corp"
+            #expect(svc.channel == .publicGitHub)
+            #expect(reads == 1)
+            svc.companyMigrated = { false }
+            #expect(svc.channel == .disabled, "no gated keys and not migrated")
+        }
+    }
+
+    @Test("the bridge runs only on a flavored build other than dev")
+    func bridgeAppliesToCorpOnly() {
+        #expect(!CompanyBridgeLaunch.applies(flavor: ""))
+        #expect(!CompanyBridgeLaunch.applies(flavor: "dev"))
+        #expect(CompanyBridgeLaunch.applies(flavor: "corp"))
+        var ran = false
+        CompanyBridgeLaunch.run(flavor: "", cliPath: { ran = true; return nil }()) { _ in }
+        #expect(!ran, "the public build never resolves the CLI")
+
+        let reports = LockedReports()
+        CompanyBridgeLaunch.run(flavor: "corp", cliPath: nil) { reports.append($0) }
+        #expect(reports.items == ["Company bridge skipped: the watchtower CLI was not found"])
+    }
+
+    @Test("the launch migrates first, then bridges (the bridge needs the company columns)")
+    func migrateThenBridgeOrder() {
+        var steps: [String] = []
+        CompanyBridgeLaunch.migrateThenBridge(migrate: { steps.append("migrate") }, bridge: { steps.append("bridge") })
+        #expect(steps == ["migrate", "bridge"])
     }
 
     @Test("non-https or malformed feed URL is disabled")
     func badFeedURL() {
-        #expect(UpdateService.resolveChannel(flavor: "corp", feedURL: "http://feed.example", clientID: "a", clientSecret: "b") == .disabled)
-        #expect(UpdateService.resolveChannel(flavor: "corp", feedURL: "not a url", clientID: "a", clientSecret: "b") == .disabled)
+        #expect(UpdateService.resolveChannel(
+            flavor: "corp", feedURL: "http://feed.example", clientID: "a", clientSecret: "b", companyMigrated: false
+        ) == .disabled)
+        #expect(UpdateService.resolveChannel(
+            flavor: "corp", feedURL: "not a url", clientID: "a", clientSecret: "b", companyMigrated: false
+        ) == .disabled)
     }
 
     @Test("expected public asset name derives from the release tag")

@@ -207,6 +207,7 @@ var cliNoContentCommands = map[string]bool{
 	"coach rollback":                   true,
 	"coach run":                        true,
 	"coach status":                     true,
+	"company bridge":                   true, // the corp build's own clients and account ties, no synced content
 	"company confirm":                  true,
 	"company discover":                 true, // app ids and where they came from, no synced content
 	"company draft discard":            true,

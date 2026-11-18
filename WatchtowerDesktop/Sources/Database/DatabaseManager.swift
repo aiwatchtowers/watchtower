@@ -148,13 +148,25 @@ final class DatabaseManager: Sendable {
         cliPath: String? = Constants.findCLIPath(),
         report: @escaping @Sendable (String) -> Void = { NSLog("[Watchtower] %@", $0) }
     ) {
+        runCLILaunchStep(["db", "migrate"], label: "CLI migration", cliPath: cliPath, report: report)
+    }
+
+    /// One launch-time CLI step (`arguments`, logged as `label`) under
+    /// `runCLIMigrations`' rules: up to 30 s, off the main actor and the
+    /// concurrency pool, stdout dropped, a failure reported with its stderr.
+    static func runCLILaunchStep(
+        _ arguments: [String],
+        label: String,
+        cliPath: String?,
+        report: @escaping @Sendable (String) -> Void
+    ) {
         guard let cliPath else {
-            report("CLI migration skipped: the watchtower CLI was not found")
+            report("\(label) skipped: the watchtower CLI was not found")
             return
         }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
-        process.arguments = ["db", "migrate"]
+        process.arguments = arguments
         process.environment = Constants.resolvedEnvironment()
         process.standardOutput = nil
         let stderrPipe = Pipe()
@@ -162,7 +174,7 @@ final class DatabaseManager: Sendable {
         do {
             try process.run()
         } catch {
-            report("CLI migration could not start: \(error.localizedDescription)")
+            report("\(label) could not start: \(error.localizedDescription)")
             return
         }
         // SB3: drain stderr while the child runs — an unread pipe fills at
@@ -186,7 +198,7 @@ final class DatabaseManager: Sendable {
         // EOF, which a grandchild still holding stderr could postpone.
         Task.detached {
             let stderr = String(data: await stderrRead.value, encoding: .utf8) ?? ""
-            report("CLI migration \(what): \(CLILog.detail(stderr))")
+            report("\(label) \(what): \(CLILog.detail(stderr))")
         }
     }
 

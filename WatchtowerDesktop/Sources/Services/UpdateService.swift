@@ -43,11 +43,16 @@ final class UpdateService {
 
     // MARK: - Channel Routing & Helpers
 
+    /// `companyMigrated`: the corp build's company bridge has stored its
+    /// company and tied its accounts (`CompanyBridgeLaunch`, #1887 §5) — from
+    /// then on the public build serves the install, so the flavored build
+    /// takes the public feed. Until then it never does.
     nonisolated static func resolveChannel(
-        flavor: String, feedURL: String?, clientID: String?, clientSecret: String?
+        flavor: String, feedURL: String?, clientID: String?, clientSecret: String?, companyMigrated: Bool
     ) -> UpdateChannel {
         if flavor.isEmpty { return .publicGitHub }
         if flavor == "dev" { return .disabled }
+        if companyMigrated { return .publicGitHub }
         guard let feedURL, let url = URL(string: feedURL), url.scheme == "https",
               let clientID, !clientID.isEmpty,
               let clientSecret, !clientSecret.isEmpty else { return .disabled }
@@ -94,7 +99,9 @@ final class UpdateService {
     /// from the public release feed — every public release would silently
     /// replace it with the default-credential build (same signer, so the
     /// Team-ID pin would pass). Gated-channel keys route flavored builds to
-    /// their own update feed instead of disabling updates outright.
+    /// their own update feed instead of disabling updates outright. The one
+    /// exception is a corp install the company bridge has migrated
+    /// (`companyMigrated`): its accounts no longer need the baked clients.
     /// Instance property so tests can inject a flavor.
     var buildFlavor: String =
         (Bundle.main.object(forInfoDictionaryKey: "WTBuildFlavor") as? String) ?? ""
@@ -108,9 +115,15 @@ final class UpdateService {
     var updateClientSecret: String? =
         Bundle.main.object(forInfoDictionaryKey: "WTUpdateClientSecret") as? String
 
+    /// Whether the workspace carries the company bridge's marker; read only
+    /// for a flavored build. Instance property so tests can inject it.
+    var companyMigrated: () -> Bool = { CompanyBridgeLaunch.workspaceMigrated() }
+
     var channel: UpdateChannel {
-        Self.resolveChannel(flavor: buildFlavor, feedURL: updateFeedURL,
-                            clientID: updateClientID, clientSecret: updateClientSecret)
+        let migrated = CompanyBridgeLaunch.applies(flavor: buildFlavor) && companyMigrated()
+        return Self.resolveChannel(flavor: buildFlavor, feedURL: updateFeedURL,
+                                   clientID: updateClientID, clientSecret: updateClientSecret,
+                                   companyMigrated: migrated)
     }
 
     /// False when this build has no update channel at all (dev, or a flavored

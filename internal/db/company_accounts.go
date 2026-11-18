@@ -73,6 +73,38 @@ func (db *DB) SetAccountCompany(source string, id int64, slug string) error {
 	return nil
 }
 
+// RetieAccounts moves every account in refs from company from to company to
+// (an empty slug is the shared client) in one write transaction — the corp bridge's tie
+// and its undo (#1887 T11a). A row already on to counts as moved. A row on
+// a third company, a missing row, or an unknown source fails the whole call
+// and changes nothing.
+func (db *DB) RetieAccounts(refs []CompanyAccountRef, from, to string) error {
+	ctx := context.Background()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("retying accounts: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, r := range refs {
+		t, err := companyTable(r.Source)
+		if err != nil {
+			return fmt.Errorf("retying accounts: %w", err)
+		}
+		res, err := tx.ExecContext(ctx, `UPDATE `+t.table+` SET company_slug = ?
+			WHERE id = ? AND company_slug IN (?, ?)`+t.filter, to, r.ID, from, to)
+		if err != nil {
+			return fmt.Errorf("retying %s account %d: %w", r.Source, r.ID, err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return fmt.Errorf("retying accounts: %s account %d is gone or tied to another company", r.Source, r.ID)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("retying accounts: commit: %w", err)
+	}
+	return nil
+}
+
 // AccountsByCompany returns every account tied to slug, whatever its status,
 // in CompanyAccountSources order and by id within a source. An empty slug is
 // refused: it is the shared client, not a company.
