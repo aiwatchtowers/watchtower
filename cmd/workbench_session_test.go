@@ -14,7 +14,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/db"
+	"watchtower/internal/devpack"
 	"watchtower/internal/sessionhost"
+	"watchtower/internal/workbenchfolders"
 )
 
 // sessionHostForTest serves an in-process session-host on a short socket,
@@ -71,6 +74,7 @@ func runSession(t *testing.T, args ...string) (string, error) {
 	sessionFlagWorkbench, sessionFlagTarget, sessionFlagSession = 0, 0, 0
 	sessionFlagAgent, sessionFlagPlace, sessionFlagJSON = "", "auto", false
 	sessionFlagTitle, sessionFlagAutomationRun, sessionFlagBriefStdin = "", 0, false
+	sessionFlagFolder, sessionFlagParent = "", 0
 	return out, err
 }
 
@@ -107,9 +111,17 @@ func TestWorkbenchSessionStartJSONKeys(t *testing.T) {
 	require.NoError(t, err, out)
 	var m map[string]any
 	require.NoError(t, json.Unmarshal([]byte(out), &m), out)
-	assert.Equal(t, sorted("session_id", "state", "folder_path", "worktree_branch"), keysOf(m))
+	assert.Equal(t, sorted("ok", "session_id", "state", "folder_path", "worktree_branch", "folder_id", "folder", "place", "worktree"),
+		keysOf(m))
+	assert.Equal(t, true, m["ok"])
 	assert.Equal(t, "starting", m["state"])
 	assert.Equal(t, "", m["worktree_branch"])
+	assert.Equal(t, "auto", m["place"])
+	assert.Equal(t, "", m["worktree"])
+	home, err := database.HomeFolder(context.Background(), wb)
+	require.NoError(t, err)
+	assert.Equal(t, float64(home.ID), m["folder_id"], "the home folder by default")
+	assert.Equal(t, home.Name, m["folder"])
 	sid := int64(m["session_id"].(float64))
 	assert.Equal(t, []string{strconv.FormatInt(sid, 10) + " auto"}, *spawned)
 
@@ -301,4 +313,64 @@ func TestWorkbenchSessionFinishRecordsAMissingAgent(t *testing.T) {
 	var failure string
 	require.NoError(t, database.QueryRow(`SELECT agent_error FROM terminal_sessions WHERE id = ?`, sid).Scan(&failure))
 	assert.Equal(t, "claude was not found", failure)
+}
+
+// --folder (by name) and --parent reach the row and the answer; the finish
+// is handed the same place.
+func TestWorkbenchSessionStartInAFolderWithAParent(t *testing.T) {
+	database := writeActionsConfig(t)
+	ctx := context.Background()
+	wb, err := database.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	hub, err := workbenchfolders.Add(ctx, database, wb, t.TempDir(), workbenchfolders.AddedByOwner, nil)
+	require.NoError(t, err)
+	_, err = devpack.InstallStateHooks(hub.FolderPath, "/usr/local/bin/watchtower", wb)
+	require.NoError(t, err)
+	parent, err := database.CreateTerminalSession(ctx, db.NewTerminalSession{WorkbenchID: wb, Kind: "codex", Title: "p", FolderPath: "/x"})
+	require.NoError(t, err)
+	sessionHostForTest(t)
+	spawned := spawnedFinishes(t)
+
+	out, err := runSession(t, "start", "--workbench", strconv.FormatInt(wb, 10), "--agent", "claude",
+		"--folder", strings.ToUpper(hub.Name), "--parent", strconv.FormatInt(parent, 10), "--place", "worktree", "--json")
+	require.NoError(t, err, out)
+	var got sessionStartOutput
+	require.NoError(t, json.Unmarshal([]byte(out), &got), out)
+	assert.Equal(t, sessionStartOutput{OK: true, SessionID: got.SessionID, State: "starting", FolderPath: hub.FolderPath,
+		FolderID: hub.ID, Folder: hub.Name, Place: "worktree"}, got)
+	assert.Equal(t, []string{strconv.FormatInt(got.SessionID, 10) + " worktree"}, *spawned)
+	var folderID, parentID int64
+	require.NoError(t, database.QueryRow(`SELECT workbench_folder_id, parent_session_id FROM terminal_sessions WHERE id = ?`,
+		got.SessionID).Scan(&folderID, &parentID))
+	assert.Equal(t, hub.ID, folderID)
+	assert.Equal(t, parent, parentID)
+}
+
+// A refused start answers ok:false with its code (spec D42), exit 1, and
+// writes no row.
+func TestWorkbenchSessionStartRefusalJSON(t *testing.T) {
+	database := writeActionsConfig(t)
+	ctx := context.Background()
+	wb, err := database.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	hub, err := workbenchfolders.Add(ctx, database, wb, t.TempDir(), workbenchfolders.AddedByOwner, nil)
+	require.NoError(t, err)
+	sessionHostForTest(t)
+	spawnedFinishes(t)
+
+	for _, c := range []struct{ folder, code, text string }{
+		{hub.Name, "not_installed", "not_installed: Install Watchtower in " + hub.Name + " first"},
+		{"no-such-folder", "not_found", "not_found: no-such-folder is not a folder of workbench " + strconv.FormatInt(wb, 10) + "."},
+	} {
+		out, err := runSession(t, "start", "--workbench", strconv.FormatInt(wb, 10), "--folder", c.folder, "--json")
+		var ec *exitCodeError
+		require.ErrorAs(t, err, &ec, out)
+		assert.Equal(t, 1, ec.code)
+		var m map[string]any
+		require.NoError(t, json.Unmarshal([]byte(out), &m), out)
+		assert.Equal(t, map[string]any{"ok": false, "error_code": c.code, "error": c.text}, m, "no success fields")
+	}
+	var n int
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM terminal_sessions`).Scan(&n))
+	assert.Zero(t, n)
 }
