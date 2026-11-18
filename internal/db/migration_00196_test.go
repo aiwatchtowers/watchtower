@@ -206,6 +206,40 @@ func TestMigration00196_OldReviewThreadsAndPRStatesResolveForTheHomeFolder(t *te
 	assert.Equal(t, 1, mfCount(t, raw, `SELECT COUNT(*) FROM chat_conversations WHERE id = 50`))
 }
 
+// One file's new key can be another's old key: under home folder 1,
+// README.md becomes wbdoc:1:1:README.md, the old key of 1:README.md. Both
+// survive, rekeyed and searchable, and Down gives both their old keys back.
+func TestMigration00196_RekeyWithKeysThatCollideOneByOne(t *testing.T) {
+	t.Parallel()
+	raw := openRawDBAtVersion(t, 195)
+	tcExec(t, raw, `INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/code/app')`)
+	tcExec(t, raw, `INSERT INTO kb_documents (id, source, title) VALUES
+		('wbdoc:1:README.md', 'project_doc', 'readme'), ('wbdoc:1:1:README.md', 'project_doc', 'odd name')`)
+	tcExec(t, raw, `INSERT INTO kb_chunks (doc_id, idx, body) VALUES
+		('wbdoc:1:README.md', 0, 'alpha'), ('wbdoc:1:1:README.md', 0, 'bravo')`)
+	tcExec(t, raw, `INSERT INTO kb_dirty (source, key) VALUES
+		('project_doc', 'wbdoc:1:README.md'), ('project_doc', 'wbdoc:1:1:README.md')`)
+
+	applyNextMigration(t, raw)
+	assertNoFKViolations(t, raw)
+	require.Equal(t, 1, mfCount(t, raw, `SELECT id FROM workbench_folders WHERE workbench_id = 1`))
+	assert.Equal(t, []string{"wbdoc:1:1:1:README.md odd name", "wbdoc:1:1:README.md readme"},
+		mfDump(t, raw, `SELECT id, title FROM kb_documents ORDER BY id`))
+	for word, key := range map[string]string{"alpha": "wbdoc:1:1:README.md", "bravo": "wbdoc:1:1:1:README.md"} {
+		assert.Equal(t, []string{key}, mfDump(t, raw, `SELECT c.doc_id FROM kb_fts JOIN kb_chunks c ON c.id = kb_fts.rowid
+			WHERE kb_fts MATCH ?`, word), word)
+	}
+	assert.Equal(t, []string{"wbdoc:1:1:1:README.md", "wbdoc:1:1:README.md"},
+		mfDump(t, raw, `SELECT key FROM kb_dirty ORDER BY key`))
+
+	require.NoError(t, gooseDownTo(raw, "migrations", 195))
+	assertNoFKViolations(t, raw)
+	assert.Equal(t, []string{"wbdoc:1:1:README.md odd name", "wbdoc:1:README.md readme"},
+		mfDump(t, raw, `SELECT id, title FROM kb_documents ORDER BY id`))
+	assert.Equal(t, []string{"wbdoc:1:1:README.md", "wbdoc:1:README.md"},
+		mfDump(t, raw, `SELECT doc_id FROM kb_chunks ORDER BY doc_id`))
+}
+
 // Entries indexed from a privacy-protected folder are never rebuilt by the
 // daemon: the migration rekeys every wbdoc row in place, searchable.
 func TestMigration00196_RekeysWorkbenchDocIndexRows(t *testing.T) {

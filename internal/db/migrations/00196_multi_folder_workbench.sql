@@ -191,12 +191,18 @@ FROM kb_documents d JOIN workbench_folders f ON f.id = (
     WHERE f2.workbench_id = CAST(substr(d.id, 7, instr(substr(d.id, 7), ':') - 1) AS INTEGER)
     ORDER BY f2.position, f2.id LIMIT 1)
 WHERE d.id LIKE 'wbdoc:%' AND instr(substr(d.id, 7), ':') > 1;
-UPDATE kb_chunks SET doc_id = (SELECT new_id FROM wbdoc_rekey WHERE old_id = kb_chunks.doc_id)
-WHERE doc_id IN (SELECT old_id FROM wbdoc_rekey);
-UPDATE kb_documents SET id = (SELECT new_id FROM wbdoc_rekey WHERE old_id = kb_documents.id)
-WHERE id IN (SELECT old_id FROM wbdoc_rekey);
-UPDATE kb_dirty SET key = (SELECT new_id FROM wbdoc_rekey WHERE old_id = kb_dirty.key)
-WHERE source = 'project_doc' AND key IN (SELECT old_id FROM wbdoc_rekey);
+-- Two steps through a disjoint wbdoc-tmp: namespace: uniqueness is checked
+-- row by row, and one row's new key can be another's old key (README.md and
+-- 1:README.md under folder 1).
+UPDATE kb_chunks SET doc_id = 'wbdoc-tmp:' || doc_id WHERE doc_id IN (SELECT old_id FROM wbdoc_rekey);
+UPDATE kb_documents SET id = 'wbdoc-tmp:' || id WHERE id IN (SELECT old_id FROM wbdoc_rekey);
+UPDATE kb_dirty SET key = 'wbdoc-tmp:' || key WHERE source = 'project_doc' AND key IN (SELECT old_id FROM wbdoc_rekey);
+UPDATE kb_chunks SET doc_id = (SELECT new_id FROM wbdoc_rekey WHERE 'wbdoc-tmp:' || old_id = kb_chunks.doc_id)
+WHERE doc_id LIKE 'wbdoc-tmp:%';
+UPDATE kb_documents SET id = (SELECT new_id FROM wbdoc_rekey WHERE 'wbdoc-tmp:' || old_id = kb_documents.id)
+WHERE id LIKE 'wbdoc-tmp:%';
+UPDATE kb_dirty SET key = (SELECT new_id FROM wbdoc_rekey WHERE 'wbdoc-tmp:' || old_id = kb_dirty.key)
+WHERE source = 'project_doc' AND key LIKE 'wbdoc-tmp:%';
 DROP TABLE wbdoc_rekey;
 
 COMMIT;
@@ -240,12 +246,18 @@ SELECT id AS old_id, 'wbdoc:' || pid || ':' || substr(rest, instr(rest, ':') + 1
 FROM (SELECT id, substr(id, 7, instr(substr(id, 7), ':') - 1) AS pid, substr(id, 7 + instr(substr(id, 7), ':')) AS rest
       FROM kb_documents WHERE id LIKE 'wbdoc:%' AND instr(substr(id, 7), ':') > 1)
 WHERE instr(rest, ':') > 1;
-UPDATE kb_chunks SET doc_id = (SELECT new_id FROM wbdoc_rekey WHERE old_id = kb_chunks.doc_id)
-WHERE doc_id IN (SELECT old_id FROM wbdoc_rekey);
-UPDATE kb_documents SET id = (SELECT new_id FROM wbdoc_rekey WHERE old_id = kb_documents.id)
-WHERE id IN (SELECT old_id FROM wbdoc_rekey);
-UPDATE kb_dirty SET key = (SELECT new_id FROM wbdoc_rekey WHERE old_id = kb_dirty.key)
-WHERE source = 'project_doc' AND key IN (SELECT old_id FROM wbdoc_rekey);
+-- Two steps through a disjoint wbdoc-tmp: namespace: uniqueness is checked
+-- row by row, and one row's new key can be another's old key (README.md and
+-- 1:README.md under folder 1).
+UPDATE kb_chunks SET doc_id = 'wbdoc-tmp:' || doc_id WHERE doc_id IN (SELECT old_id FROM wbdoc_rekey);
+UPDATE kb_documents SET id = 'wbdoc-tmp:' || id WHERE id IN (SELECT old_id FROM wbdoc_rekey);
+UPDATE kb_dirty SET key = 'wbdoc-tmp:' || key WHERE source = 'project_doc' AND key IN (SELECT old_id FROM wbdoc_rekey);
+UPDATE kb_chunks SET doc_id = (SELECT new_id FROM wbdoc_rekey WHERE 'wbdoc-tmp:' || old_id = kb_chunks.doc_id)
+WHERE doc_id LIKE 'wbdoc-tmp:%';
+UPDATE kb_documents SET id = (SELECT new_id FROM wbdoc_rekey WHERE 'wbdoc-tmp:' || old_id = kb_documents.id)
+WHERE id LIKE 'wbdoc-tmp:%';
+UPDATE kb_dirty SET key = (SELECT new_id FROM wbdoc_rekey WHERE 'wbdoc-tmp:' || old_id = kb_dirty.key)
+WHERE source = 'project_doc' AND key LIKE 'wbdoc-tmp:%';
 DROP TABLE wbdoc_rekey;
 
 DROP TABLE session_outside_touches;
