@@ -1,0 +1,183 @@
+package cmd
+
+import (
+	"context"
+	"errors"
+	"io"
+	"log"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/aiconsent"
+	"watchtower/internal/aiconsent/aiconsenttest"
+	"watchtower/internal/automations"
+	"watchtower/internal/chat"
+	"watchtower/internal/config"
+	"watchtower/internal/db"
+	"watchtower/internal/planusage"
+	"watchtower/internal/policy/policytest"
+	"watchtower/internal/tools"
+)
+
+var backgroundEnv = map[string]string{aiconsent.EnvOrigin: "background"}
+
+// fakeChatServer is an OpenAI-compatible endpoint that counts the model
+// calls it answers.
+func fakeChatServer(t *testing.T) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"done"}}],` +
+			`"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &calls
+}
+
+// BGAI-02: a process a background unit started (EnvOrigin=background) is
+// refused by every wrapper while paused, in any process role; admitted, it
+// runs.
+func TestPolicyCheckedGenerator_RefusesBackgroundOriginInAnyProcess(t *testing.T) {
+	policytest.Set(t, nil)
+	aiconsenttest.Use(t, "cli", backgroundEnv, false)
+	inner := &countingGenerator{}
+	gen := policyCheckedGenerator{inner: inner, provider: "claude"}
+	_, _, _, err := gen.Generate(context.Background(), "", "", "")
+	require.ErrorIs(t, err, aiconsent.ErrPaused)
+	_, _, err = gen.GenerateWithImage(context.Background(), "", "", "", "")
+	require.ErrorIs(t, err, aiconsent.ErrPaused)
+	assert.Equal(t, 0, inner.calls)
+
+	prov := policyCheckedProvider{inner: newRefusedProvider(errors.New("inner must not run")), provider: "claude"}
+	_, _, err = prov.QuerySync(context.Background(), "", "", "")
+	require.ErrorIs(t, err, aiconsent.ErrPaused)
+	chunks, errs, ids := prov.Query(context.Background(), "", "", "")
+	for range chunks {
+	}
+	for range ids {
+	}
+	require.ErrorIs(t, <-errs, aiconsent.ErrPaused)
+
+	backend := &fakeTurnBackend{}
+	var events []chat.Event
+	err = policyCheckedBackend{Backend: backend, provider: "claude"}.Turn(context.Background(), chat.Command{TurnID: "t1"},
+		func(e chat.Event) { events = append(events, e) })
+	require.ErrorIs(t, err, aiconsent.ErrPaused)
+	assert.Equal(t, 0, backend.turns)
+	require.NotEmpty(t, events)
+	assert.Equal(t, chat.EventError, events[len(events)-1].Type)
+	assert.Equal(t, "t1", events[len(events)-1].TurnID)
+
+	aiconsenttest.Use(t, "cli", map[string]string{aiconsent.EnvOrigin: "background", aiconsent.EnvAdmitted: "phase:digests"}, false)
+	_, _, _, err = gen.Generate(context.Background(), "", "", "")
+	require.NoError(t, err)
+	assert.Equal(t, 1, inner.calls)
+}
+
+// BGAI-02: a command the owner typed is an owner call; paused does not stop
+// the `digest generate` generator chain.
+func TestBGAI02_TypedCommandNotGated(t *testing.T) {
+	policytest.Set(t, nil)
+	aiconsenttest.Use(t, "cli", nil, false)
+	t.Setenv("HOME", t.TempDir())
+	srv, calls := fakeChatServer(t)
+	cfg := &config.Config{ActiveWorkspace: "test"}
+	cfg.AI.Provider, cfg.AI.OllamaURL = "ollama", srv.URL
+
+	gen, cleanup := cliPooledGenerator(cfg)
+	t.Cleanup(cleanup)
+	text, _, _, err := gen.Generate(context.Background(), "sys", "user", "")
+	require.NoError(t, err)
+	assert.Equal(t, "done", text)
+	assert.Equal(t, int32(1), calls.Load())
+}
+
+// Decision 3, fail-closed side: in the daemon a call nobody marked is
+// background and refused while paused; a request marked owner runs.
+func TestBGAI02_DaemonUnmarkedCallStaysGated(t *testing.T) {
+	policytest.Set(t, nil)
+	aiconsenttest.Use(t, "daemon", nil, false)
+	inner := &countingGenerator{}
+	gen := policyCheckedGenerator{inner: inner, provider: "claude"}
+	_, _, _, err := gen.Generate(context.Background(), "", "", "")
+	require.ErrorIs(t, err, aiconsent.ErrPaused)
+	assert.Equal(t, 0, inner.calls)
+
+	_, _, _, err = gen.Generate(aiconsent.WithOwnerStarted(context.Background()), "", "", "")
+	require.NoError(t, err)
+	assert.Equal(t, 1, inner.calls)
+}
+
+// A paused, unadmitted agent() spawns no child and meters nothing, on both
+// runners.
+func TestCLIAgentRunner_PausedSpawnsNothing(t *testing.T) {
+	policytest.Set(t, nil)
+	aiconsenttest.Use(t, "daemon", nil, false)
+	bin, marker := writeMarkerStub(t)
+	cfg := &config.Config{ClaudePath: bin, CodexPath: bin, ActiveWorkspace: "test"}
+	cfg.AI.Provider = "claude"
+	metered := 0
+	req := automations.AgentRequest{Instruction: "triage", Tools: []string{}, Deadline: time.Now().Add(time.Minute),
+		BeforeModelCall: func() error { metered++; return nil }, AfterModelCall: func(int, int) {}}
+
+	_, err := (&cliAgentRunner{cfg: cfg, provider: "claude", prepared: true}).Run(context.Background(), req)
+	var sdkErr *automations.SDKError
+	require.ErrorAs(t, err, &sdkErr)
+	assert.Equal(t, automations.ErrNamePolicy, sdkErr.Name)
+	assert.Equal(t, aiconsent.ErrPaused.Error(), sdkErr.Message)
+	_, statErr := os.Stat(marker)
+	assert.True(t, errors.Is(statErr, os.ErrNotExist), "no agent child started")
+
+	srv, calls := fakeChatServer(t)
+	ollamaCfg := &config.Config{}
+	ollamaCfg.AI.Provider, ollamaCfg.AI.OllamaURL = "ollama", srv.URL
+	_, err = (&runtimeBAgentRunner{cfg: ollamaCfg, reg: tools.NewReadRegistry(db.OpenTestDB(t))}).Run(context.Background(), req)
+	require.ErrorAs(t, err, &sdkErr)
+	assert.Equal(t, aiconsent.ErrPaused.Error(), sdkErr.Message)
+	assert.Equal(t, int32(0), calls.Load())
+	assert.Equal(t, 0, metered)
+}
+
+type planCreds struct{}
+
+func (planCreds) Load(context.Context) (planusage.Credentials, error) {
+	return planusage.Credentials{AccessToken: "tok", ExpiresAt: time.Now().Add(time.Hour), Plan: "max"}, nil
+}
+
+type planFetch struct {
+	body  []byte
+	calls int
+}
+
+func (f *planFetch) Fetch(context.Context, string) ([]byte, error) {
+	f.calls++
+	return f.body, nil
+}
+
+// D17: the plan-limit read is no model call; paused never stops it.
+func TestPlanUsagePoller_NotGatedByConsent(t *testing.T) {
+	aiconsenttest.Use(t, "daemon", nil, false)
+	body, err := os.ReadFile(filepath.Join("..", "internal", "planusage", "testdata", "usage_full.json"))
+	require.NoError(t, err)
+	database := db.OpenTestDB(t)
+	poller := newPlanUsagePoller(database, log.New(io.Discard, "", 0))
+	fetch := &planFetch{body: body}
+	poller.Creds, poller.Client = planCreds{}, fetch
+
+	_, err = poller.PollOnce(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, fetch.calls)
+	st, err := database.GetPlanUsageStatus()
+	require.NoError(t, err)
+	require.NotNil(t, st)
+	assert.Equal(t, "ok", st.State)
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/chat"
 	"watchtower/internal/config"
 	"watchtower/internal/digest"
@@ -47,13 +48,18 @@ func (r refusedProvider) QuerySync(context.Context, string, string, string) (str
 // client (the daemon's Jira board analyzer, the tool registry's) follows a
 // profile installed, changed or removed while it runs. Interactive paths keep
 // newAIClient's construction-time check, which leaves the client's own
-// type (its MCP setters) intact.
+// type (its MCP setters) intact. Before the policy, every call asks
+// aiconsent: an unadmitted background call while background AI is paused
+// fails with aiconsent.ErrPaused (BGAI-02).
 type policyCheckedProvider struct {
 	inner    ai.Provider
 	provider string
 }
 
 func (p policyCheckedProvider) Query(ctx context.Context, systemPrompt, userMessage, sessionID string) (<-chan ai.StreamChunk, <-chan error, <-chan string) {
+	if err := aiconsent.Check(ctx); err != nil {
+		return newRefusedProvider(err).Query(ctx, systemPrompt, userMessage, sessionID)
+	}
 	if err := providers.Allowed(p.provider); err != nil {
 		return newRefusedProvider(err).Query(ctx, systemPrompt, userMessage, sessionID)
 	}
@@ -61,6 +67,9 @@ func (p policyCheckedProvider) Query(ctx context.Context, systemPrompt, userMess
 }
 
 func (p policyCheckedProvider) QuerySync(ctx context.Context, systemPrompt, userMessage, sessionID string) (string, *ai.Usage, error) {
+	if err := aiconsent.Check(ctx); err != nil {
+		return "", nil, err
+	}
 	if err := providers.Allowed(p.provider); err != nil {
 		return "", nil, err
 	}
@@ -80,13 +89,17 @@ func checkedAIClient(cfg *config.Config, dbPath string) ai.Provider {
 
 // policyCheckedGenerator asks the policy before every call: a long-lived
 // generator (the daemon's pipelines) follows a profile installed or changed
-// while it runs, through the policy's 30 s cache.
+// while it runs, through the policy's 30 s cache. Like policyCheckedProvider
+// it asks aiconsent first.
 type policyCheckedGenerator struct {
 	inner    digest.Generator
 	provider string
 }
 
 func (g policyCheckedGenerator) Generate(ctx context.Context, systemPrompt, userMessage, sessionID string) (string, *digest.Usage, string, error) {
+	if err := aiconsent.Check(ctx); err != nil {
+		return "", nil, "", err
+	}
 	if err := providers.Allowed(g.provider); err != nil {
 		return "", nil, "", err
 	}
@@ -106,6 +119,9 @@ func (g policyCheckedGenerator) ImageCapability() bool {
 	return ok
 }
 func (g policyCheckedGenerator) GenerateWithImage(ctx context.Context, system, user, path, media string) (string, *digest.Usage, error) {
+	if err := aiconsent.Check(ctx); err != nil {
+		return "", nil, err
+	}
 	if err := providers.Allowed(g.provider); err != nil {
 		return "", nil, err
 	}
@@ -126,7 +142,9 @@ func checkedGenerator(cfg *config.Config) digest.Generator {
 // (#608, spec §5): a forbidden provider answers the turn with the policy
 // error; a Quick Connection the session mounted, or its claude.ai mode, that
 // the policy now forbids ends the session (`end`), so the app's pool starts
-// a new one under the current policy.
+// a new one under the current policy. A turn is refused with
+// aiconsent.ErrPaused first when its process is an unadmitted background one
+// while paused (the daemon's chat children run as owner: chatengine).
 type policyCheckedBackend struct {
 	chat.Backend
 	provider   string
@@ -136,6 +154,10 @@ type policyCheckedBackend struct {
 }
 
 func (b policyCheckedBackend) Turn(ctx context.Context, c chat.Command, emit func(chat.Event)) error {
+	if err := aiconsent.Check(ctx); err != nil {
+		emit(chat.Event{Type: chat.EventError, TurnID: c.TurnID, Code: chat.CodeProviderUnavailable, Message: err.Error()})
+		return err
+	}
 	if err := providers.Allowed(b.provider); err != nil {
 		emit(chat.Event{Type: chat.EventError, TurnID: c.TurnID, Code: chat.CodeProviderUnavailable, Message: err.Error()})
 		return err
