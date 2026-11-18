@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -118,14 +119,19 @@ func runAIBackgroundAllow(cmd *cobra.Command, _ []string) error {
 	if readBackgroundConsent().Locked {
 		return fmt.Errorf("policy: background AI is %w (AllowBackgroundAI is false); nothing was written", policy.ErrNotAllowed)
 	}
+	if !aiBackgroundFlagYes && !stdinIsTTY() {
+		return fmt.Errorf("background AI was not allowed: run with --yes to confirm")
+	}
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
+	// The daemon to wake is the one of the workspace the command names (as
+	// sync --now does).
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
 	if !aiBackgroundFlagYes {
-		if !stdinIsTTY() {
-			return fmt.Errorf("background AI was not allowed: run with --yes to confirm")
-		}
 		ok, err := confirmBackgroundAI(cmd.InOrStdin(), cmd.OutOrStdout(), cfg)
 		if err != nil {
 			return err
@@ -169,8 +175,12 @@ func confirmBackgroundAI(in io.Reader, out io.Writer, cfg *config.Config) (bool,
 		consentText(cfg.AI.Provider, reserve, poll, cfg.Sync.BackfillDays)); err != nil {
 		return false, err
 	}
-	// A read error or EOF leaves what was typed; no answer is a no.
-	line, _ := bufio.NewReader(in).ReadString('\n')
+	// EOF (even with nothing typed) ends the answer; no answer is a no. Any
+	// other read error is returned, never read as an answer.
+	line, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, fmt.Errorf("reading the answer: %w", err)
+	}
 	switch strings.ToLower(strings.TrimSpace(line)) {
 	case "y", "yes":
 		return true, nil

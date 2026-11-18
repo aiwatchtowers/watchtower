@@ -256,7 +256,7 @@ func TestConfigSet_RefusesBackgroundRunsKey(t *testing.T) {
 	t.Cleanup(func() { flagConfig = old })
 	configSetCmd.SetOut(new(bytes.Buffer))
 
-	for _, key := range []string{"ai.background_runs", "AI.Background_Runs"} {
+	for _, key := range []string{"ai.background_runs", "AI.Background_Runs", "AI.background_runs", "ai", "AI"} {
 		for _, value := range []string{"allowed", "paused", "yes"} {
 			err := configSetCmd.RunE(configSetCmd, []string{key, value})
 			require.Error(t, err, key)
@@ -341,10 +341,11 @@ func TestProcess_ExecuteInitsOrigin(t *testing.T) {
 }
 
 // modelCommandFiles maps every cmd file that builds a generator or an AI
-// client (the grep in TestModelCommands_ExistInCLI) to the command paths of
+// client (the grep in TestModelCommands_ExistInCLI, comment lines skipped) to the command paths of
 // model_commands.json it defines. modelHelperFiles are files whose model use
 // is not a command a launcher can start, with the reason.
 var modelCommandFiles = map[string][][]string{
+	"ai.go":                        {{"ai", "query"}, {"ai", "test"}},
 	"ask.go":                       {{"ask"}},
 	"automations_run.go":           {{"automations", "dry-run"}},
 	"builtins.go":                  {{"briefing", "generate"}, {"day-plan", "generate"}},
@@ -353,6 +354,7 @@ var modelCommandFiles = map[string][][]string{
 	"coach.go":                     {{"coach", "run"}},
 	"dictate.go":                   {{"dictate", "clean"}},
 	"digest.go":                    {{"digest", "generate"}, {"digest", "summary"}},
+	"ideas.go":                     {{"ideas", "mine"}},
 	"inbox.go":                     {{"inbox", "generate"}},
 	"jira.go":                      {{"jira", "boards", "analyze"}, {"jira", "fields", "discover"}, {"jira", "fields", "map"}},
 	"meeting.go":                   {{"meeting-prep"}},
@@ -361,19 +363,22 @@ var modelCommandFiles = map[string][][]string{
 	"people.go":                    {{"people", "generate"}},
 	"profile.go":                   {{"profile", "style-sample"}},
 	"prompts.go":                   {{"tune"}},
+	"reaction_commands.go":         {{"reaction-commands", "poll"}},
 	"slack_backfill.go":            {{"slack", "backfill"}},
 	"targets_ai.go":                {{"targets", "ai-update"}, {"targets", "extract"}, {"targets", "generate"}, {"targets", "next-step"}, {"targets", "suggest-links"}},
 	"terminal.go":                  {{"terminal", "title"}},
+	"tracks.go":                    {{"tracks", "create"}, {"tracks", "generate"}, {"tracks", "scan"}},
 	"workbench_review_overview.go": {{"workbench", "review", "overview"}},
 	"workbench_spec_review.go":     {{"workbench", "spec-review", "run"}, {"workbench", "spec-review", "start"}},
 }
 
 var modelHelperFiles = map[string]string{
-	"generator.go":            "the generator and AI client constructors",
-	"provider_policy.go":      "the policy-checked generator wrapper",
-	"automations_registry.go": "the authoring generator of automations preview and the MCP tool registry (no command of its own)",
-	"root.go":                 "the interactive REPL: the bare root command, a terminal only",
-	"sync.go":                 "the daemon's post-sync pipelines: sync --daemon is background by role; sync's other forms (--now, stop, --users-only) call no model",
+	"generator.go":               "the generator and AI client constructors",
+	"provider_policy.go":         "the policy-checked generator wrapper",
+	"workbench_askguard_stop.go": "workbench ask-guard --stop: the Stop hook of the owner's own workbench session (owner origin); no launcher starts it",
+	"automations_registry.go":    "the authoring generator of automations preview and the MCP tool registry (no command of its own)",
+	"root.go":                    "the interactive REPL: the bare root command, a terminal only",
+	"sync.go":                    "the daemon's post-sync pipelines: sync --daemon is background by role; sync's other forms (--now, stop, --users-only) call no model",
 }
 
 func loadModelCommands(t *testing.T) [][]string {
@@ -399,7 +404,7 @@ func TestModelCommands_ExistInCLI(t *testing.T) {
 		assert.Equal(t, "watchtower "+key, c.CommandPath(), "%q is not a command", key)
 	}
 
-	gen := regexp.MustCompile(`cliPooledGenerator|cliGenerator|newAIClient|checkedGenerator|cliBoundedGenerator`)
+	gen := regexp.MustCompile(`cliPooledGenerator|cliGenerator|newAIClient|checkedGenerator|cliBoundedGenerator|cliBuiltinGenerator|legacyCLIGenerator|transport\.For`)
 	files, err := filepath.Glob("*.go")
 	require.NoError(t, err)
 	var found []string
@@ -409,8 +414,11 @@ func TestModelCommands_ExistInCLI(t *testing.T) {
 		}
 		src, err := os.ReadFile(f)
 		require.NoError(t, err)
-		if gen.Match(src) {
-			found = append(found, f)
+		for _, line := range strings.Split(string(src), "\n") {
+			if !strings.HasPrefix(strings.TrimSpace(line), "//") && gen.MatchString(line) {
+				found = append(found, f)
+				break
+			}
 		}
 	}
 	require.NotEmpty(t, found)
@@ -466,4 +474,71 @@ func TestProcess_CLIRootSetsConsentConfigPath(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(out), &got))
 	assert.Equal(t, aiBackgroundStatusJSON{Effective: "paused", Reason: "owner", Answer: "paused"}, got)
 	assert.Equal(t, aiconsent.ReasonOwner, aiconsent.Current().Reason)
+}
+
+func TestConfigSet_RefusesParentOfBackgroundRunsKey(t *testing.T) {
+	const initial = "ai:\n  background_runs: allowed\n  provider: claude\n"
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte(initial), 0o600))
+	old := flagConfig
+	flagConfig = configPath
+	t.Cleanup(func() { flagConfig = old })
+	configSetCmd.SetOut(new(bytes.Buffer))
+
+	err := configSetCmd.RunE(configSetCmd, []string{"ai", "x"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "watchtower ai background allow|pause")
+	assert.Equal(t, "allowed", storedAnswer(t, configPath))
+
+	// A sibling key is still settable and keeps the answer.
+	require.NoError(t, configSetCmd.RunE(configSetCmd, []string{"ai.model", "opus"}))
+	assert.Equal(t, "allowed", storedAnswer(t, configPath))
+}
+
+func TestAIBackground_AllowSignalsNamedWorkspace(t *testing.T) {
+	policytest.Set(t, nil)
+	aiBackgroundFixture(t, "active_workspace: test\n", false)
+	var signalled string
+	signalDaemonFn = func(cfg *config.Config) (int, error) { signalled = cfg.ActiveWorkspace; return 0, nil }
+
+	_, _, err := runAIBackground(t, "allow", "--yes", "--workspace", "other")
+	require.NoError(t, err)
+	assert.Equal(t, "other", signalled)
+}
+
+// errAfterReader returns data, then err.
+type errAfterReader struct {
+	data string
+	err  error
+}
+
+func (r *errAfterReader) Read(p []byte) (int, error) {
+	if r.data == "" {
+		return 0, r.err
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	return n, nil
+}
+
+func TestAIBackground_PromptReadErrorIsNotAnAnswer(t *testing.T) {
+	policytest.Set(t, nil)
+	path, signals := aiBackgroundFixture(t, "active_workspace: test\n", true)
+
+	rootCmd.SetIn(&errAfterReader{data: "y", err: errors.New("terminal gone")})
+	_, _, err := runAIBackground(t, "allow")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "terminal gone")
+	assert.Empty(t, storedAnswer(t, path))
+	assert.Zero(t, *signals)
+
+	// "y" then EOF is an answer; EOF alone is a no.
+	rootCmd.SetIn(strings.NewReader(""))
+	_, _, err = runAIBackground(t, "allow")
+	require.NoError(t, err)
+	assert.Empty(t, storedAnswer(t, path))
+	rootCmd.SetIn(strings.NewReader("y"))
+	_, _, err = runAIBackground(t, "allow")
+	require.NoError(t, err)
+	assert.Equal(t, "allowed", storedAnswer(t, path))
 }
