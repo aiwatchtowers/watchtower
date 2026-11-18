@@ -136,33 +136,6 @@ final class ChatKnowledgeCenterTests: XCTestCase {
         XCTAssertEqual(try ideas(), [], "the transaction rolled back")
     }
 
-    /// The main chat's started turn: Go wrote the item in the start, and the
-    /// factory sets the mark from `started` (no second write); a remember
-    /// message is not the knowledge center's.
-    func testFactoryMarksTheMainChatsStartedTurn() async throws {
-        let factory = EmbeddedChatEngineFactory()
-        XCTAssertNil(factory.knowledgeCenter)
-        factory.chatWrites = .fake(pool)
-        factory.dbPool = pool
-        let center = try XCTUnwrap(factory.knowledgeCenter)
-        // Go's start wrote the item (the fake tower applies the same write).
-        let created: CreatedResult = try await FakeChatTower(db: pool).perform(.ideasCreateFromChat) {
-            IdeaFromChatRequest(requestID: $0, conversationID: 3, messageID: 11, kind: "decision", body: "ship on Thursdays")
-        }
-        let ideaID = created.id
-        factory.ownerMessageStarted(ChatStarted(conversationID: 3, ownerMessageID: 11, assistantMessageID: 21,
-                                                turnID: "t1", ideaID: ideaID, ideaKind: "decision"),
-                                    text: "decided: ship on Thursdays")
-        factory.ownerMessageStarted(ChatStarted(conversationID: 3, ownerMessageID: 12, assistantMessageID: 22,
-                                                turnID: "t2", rememberOutcome: "added", rememberLineID: 5),
-                                    text: "remember: answer short")
-        await untilTurn { center.mark(for: 11) != nil }
-        guard case .saved(_, let saved)? = center.mark(for: 11) else { return XCTFail("no mark") }
-        XCTAssertEqual(saved, ideaID)
-        XCTAssertNil(center.mark(for: 12))
-        XCTAssertEqual(try ideas().count, 1, "nothing written twice")
-    }
-
     private func engineSpec(contextType: String, conversationID: Int64) -> ChatSurfaceSpec {
         ChatSurfaceSpec(
             key: EmbeddedChatKey(contextType: contextType, contextID: "4", conversationID: conversationID),

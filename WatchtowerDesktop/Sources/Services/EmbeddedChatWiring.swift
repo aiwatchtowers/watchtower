@@ -40,13 +40,6 @@ final class EmbeddedChatEngineFactory {
     /// database opens.
     var knowledgeCenter: ChatKnowledgeCenter? { remember.knowledge }
 
-    /// The main chat's started turn: Go ran remember and the knowledge
-    /// prefixes in its start; the marks show what they did.
-    func ownerMessageStarted(_ started: ChatStarted, text: String) {
-        remember.center?.record(started, text: text)
-        guard let knowledge = remember.knowledge else { return }
-        Task { await knowledge.record(started, text: text) }
-    }
     private let remember: RememberBox
     let center: EmbeddedChatCenter
     private let pool: PoolBox
