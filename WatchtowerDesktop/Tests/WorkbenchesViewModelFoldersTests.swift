@@ -212,6 +212,40 @@ final class WorkbenchesViewModelFoldersTests: XCTestCase {
         XCTAssertFalse(runner.invocations.contains { $0.starts(with: ["workbench", "merge"]) }, "Cancel changes nothing")
     }
 
+    /// Never a merge into itself; a bench gone from the list says so.
+    func testNoOfferForItselfOrAGoneBench() async throws {
+        let vm = makeVM(runner())
+        await vm.offerMerge(fromID: bench, fromName: "acme", into: bench, path: "/tmp/acme-app")
+        XCTAssertNil(vm.mergeOffer)
+        XCTAssertNil(vm.putOnBenchErrors[bench])
+
+        await vm.offerMerge(fromID: 999, fromName: "tools", into: bench, path: "/tmp/billing")
+        XCTAssertNil(vm.mergeOffer)
+        XCTAssertEqual(vm.putOnBenchErrors[bench],
+                       "Couldn’t merge “tools”: that workbench is not on the workbench list any more.")
+    }
+
+    /// Merge carries the offer the alert showed: closing the alert clears
+    /// `mergeOffer` before the button's task runs. A later step that failed
+    /// leaves a warning line (the merge itself is done).
+    func testMergeRunsForThePresentedOfferAndWarnsOnALaterFailure() async throws {
+        let tools = try toolsBench()
+        let runner = runner()
+        runner.answer("folder add", Self.otherBenchJSON(tools))
+        runner.answer("merge --from", .success(Data(#"""
+            {"ok":true,"error_code":"","error":"","targets":2,"moved_folders":[],"reinstall":{"ok":true,"failed":[]},
+             "images_ok":false,"images_error":"disk full","index_ok":false,"index_error":"locked"}
+            """#.utf8)))
+        let vm = makeVM(runner)
+        await vm.addFolderToBench(URL(fileURLWithPath: "/tmp/billing"), projectID: bench)
+        let offer = try XCTUnwrap(vm.mergeOffer)
+        vm.cancelMerge() // the alert's isPresented setter as it closes
+        await vm.confirmMerge(offer)
+        XCTAssertTrue(runner.invocations.contains { $0.starts(with: ["workbench", "merge"]) })
+        XCTAssertEqual(vm.mergeWarnings[bench], "Merged “tools”, but moving its target images and updating search failed.")
+        XCTAssertNil(vm.putOnBenchErrors[bench])
+    }
+
     func testMergeRefusedShowsTheCount() async throws {
         let tools = try toolsBench()
         let runner = runner()

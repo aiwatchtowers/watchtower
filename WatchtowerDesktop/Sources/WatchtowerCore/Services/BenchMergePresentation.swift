@@ -14,9 +14,22 @@ package enum BenchMergePresentation {
     /// `<B>'s board (<n> targets), asks and sessions move to <A>, and <B>
     /// leaves the workbench list. Folders that move: <list>.`
     package static func confirmText(from: String, into: String, targets: Int, folders: [String]) -> String {
-        "\(from)'s board (\(targets) targets), asks and sessions move to \(into), and \(from) leaves the workbench list. "
+        let count = targets == 1 ? "1 target" : "\(targets) targets"
+        return "\(from)'s board (\(count)), asks and sessions move to \(into), and \(from) leaves the workbench list. "
             + "Folders that move: \(folders.joined(separator: ", "))."
     }
+
+    /// The merge is done but a step after it failed (the data moved anyway;
+    /// a failed reinstall shows on its folder instead). Left to the builder.
+    package static func partlyDone(from: String, steps: [String]) -> String {
+        "Merged “\(from)”, but \(steps.joined(separator: " and ")) failed."
+    }
+
+    package static let imagesStep = "moving its target images"
+    package static let searchStep = "updating search"
+
+    /// The bench a merge was offered for (or into) is not on the list any more.
+    package static let benchGone = "that workbench is not on the workbench list any more."
 
     package static let cancel = "Cancel"
     package static let merge = "Merge"

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"log"
+	"slices"
 
 	"watchtower/internal/agentkind"
 	"watchtower/internal/devpack"
@@ -13,7 +14,7 @@ import (
 // EnsureInstall is the launch backstop after a bench merge (spec 2026-11-18
 // §6.13, D37): before session row's agent launches in dir, the workbench id
 // installed there is compared with the row's workbench wb. A place
-// installed for another workbench only — a merged bench's folder or
+// installed for another workbench and not for wb — a merged bench's folder or
 // worktree the merge's reinstall missed — gets wb's install first
 // (d.Reinstall), the install of each id whose workbench is gone taken out;
 // the mismatch is logged as install_mismatch. A place with wb's install,
@@ -28,7 +29,9 @@ func EnsureInstall(ctx context.Context, d Deps, row, wb int64, dir string, agent
 		return false, nil //nolint:nilerr // unreadable settings: the start's own checks report them
 	}
 	ids, err := devpack.InstalledWorkbenchIDs(dir)
-	if err != nil || len(ids) == 0 {
+	// No install at all, or the row's own (a partial one is Repair's, not a
+	// mismatch): the Desktop's WorkbenchInstallCheck reads it the same way.
+	if err != nil || len(ids) == 0 || slices.Contains(ids, wb) {
 		return false, nil //nolint:nilerr // as above
 	}
 	var stale []int64

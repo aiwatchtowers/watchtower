@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -296,6 +298,100 @@ func TestMergeRaceRecheckedInTheTransaction(t *testing.T) {
 	assert.Equal(t, b, homeOf(t, d, b).WorkbenchID)
 }
 
+// A resume keeps its row id and its finished_at until its first state
+// report; the recount still sees it: every resume touches last_active_at.
+func TestMergeRaceRecheckedForAResume(t *testing.T) {
+	ctx := context.Background()
+	d := testDB(t)
+	a := bench(t, d, "acme", dir(t, "acme"))
+	b := bench(t, d, "tools", dir(t, "tools"))
+	sess := seedSession(t, d, homeOf(t, d, b))
+	_, err := d.Exec(`UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = '2026-01-01T00:00:00.000Z',
+		finished_at = '2026-01-01T00:00:00.000Z', last_active_at = '2026-01-01T00:00:00Z' WHERE id = ?`, sess)
+	require.NoError(t, err)
+	resume := func(context.Context, int64) (int, error) {
+		_, err := d.Exec(`UPDATE terminal_sessions SET last_active_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, sess)
+		require.NoError(t, err)
+		return 0, nil
+	}
+	_, err = Merge(ctx, d, b, a, resume)
+	refusal(t, err, CodeSessionsRunning)
+	_, err = d.GetWorkbench(b)
+	require.NoError(t, err, "nothing moved")
+
+	// The same row, not resumed: the host's answer stands and the merge runs.
+	_, err = d.Exec(`UPDATE terminal_sessions SET last_active_at = '2026-01-01T00:00:00Z' WHERE id = ?`, sess)
+	require.NoError(t, err)
+	_, err = Merge(ctx, d, b, a, func(context.Context, int64) (int, error) { return 0, nil })
+	require.NoError(t, err)
+}
+
+// The merge leaves no folder suggestion naming a bench that is gone or the
+// bench the ask is on.
+func TestMergeRewritesStaleOtherBench(t *testing.T) {
+	ctx := context.Background()
+	d := testDB(t)
+	a := bench(t, d, "acme", dir(t, "acme"))
+	b := bench(t, d, "tools", dir(t, "tools"))
+	c := bench(t, d, "site", dir(t, "site"))
+	ask := func(wb, other int64) int64 {
+		payload := fmt.Sprintf(`{"path":"/tmp/x","repo_root":"/tmp/x","touches":1,"why":"w","other_bench":{"id":%d,"name":"n"}}`, other)
+		res, err := d.Exec(`INSERT INTO owner_asks (project_id, kind, title, payload) VALUES (?, 'folder', 'Put x on the bench?', ?)`, wb, payload)
+		require.NoError(t, err)
+		id, err := res.LastInsertId()
+		require.NoError(t, err)
+		return id
+	}
+	onANamingB, onBNamingA, onCNamingB := ask(a, b), ask(b, a), ask(c, b)
+
+	_, err := Merge(ctx, d, b, a, nil)
+	require.NoError(t, err)
+	other := func(id int64) sql.NullString {
+		var s sql.NullString
+		require.NoError(t, d.QueryRow(`SELECT json_extract(payload, '$.other_bench') FROM owner_asks WHERE id = ?`, id).Scan(&s))
+		return s
+	}
+	assert.False(t, other(onANamingB).Valid, "the folder is on the ask's own bench now")
+	assert.False(t, other(onBNamingA).Valid, "moved to A, naming A")
+	assert.JSONEq(t, fmt.Sprintf(`{"id":%d,"name":"acme"}`, a), other(onCNamingB).String, "B is gone: it names A")
+}
+
+// Chats keyed by the workbench id follow it: code questions, spec review
+// threads, reviewer threads (B's home-folder thread gains its folder).
+func TestMergeReKeysTheChats(t *testing.T) {
+	ctx := context.Background()
+	d := testDB(t)
+	a := bench(t, d, "acme", dir(t, "acme"))
+	b := bench(t, d, "tools", dir(t, "tools"))
+	bHome := homeOf(t, d, b).ID
+	chat := func(kind, key string) int64 {
+		res, err := d.Exec(`INSERT INTO chat_conversations (context_type, context_id, created_at, updated_at) VALUES (?, ?, 1, 1)`, kind, key)
+		require.NoError(t, err)
+		id, err := res.LastInsertId()
+		require.NoError(t, err)
+		return id
+	}
+	bs, as := strconv.FormatInt(b, 10), strconv.FormatInt(a, 10)
+	question := chat("code_question", bs+":src/main.go:12")
+	thread := chat(db.SpecReviewThreadContextType, bs+":7:item-1")
+	home := chat("review_reviewer", bs+":main")
+	folder := chat("review_reviewer", bs+":f"+strconv.FormatInt(bHome, 10)+":wt/fix")
+	mine := chat("review_reviewer", as+":main")
+
+	_, err := Merge(ctx, d, b, a, nil)
+	require.NoError(t, err)
+	key := func(id int64) string {
+		var k string
+		require.NoError(t, d.QueryRow(`SELECT context_id FROM chat_conversations WHERE id = ?`, id).Scan(&k))
+		return k
+	}
+	assert.Equal(t, as+":src/main.go:12", key(question))
+	assert.Equal(t, as+":7:item-1", key(thread))
+	assert.Equal(t, as+":f"+strconv.FormatInt(bHome, 10)+":main", key(home), "B's home is a folder of A now")
+	assert.Equal(t, as+":f"+strconv.FormatInt(bHome, 10)+":wt/fix", key(folder))
+	assert.Equal(t, as+":main", key(mine), "A's own thread untouched")
+}
+
 // Spec §7 "crash mid-move": a failure on any table rolls the whole merge
 // back.
 func TestMergeIsAllOrNothing(t *testing.T) {
@@ -309,22 +405,27 @@ func TestMergeIsAllOrNothing(t *testing.T) {
 	t.Cleanup(func() { mergeStepHook = nil })
 	// The same bench is merged again and again, failing one table later
 	// each time: every earlier table had moved when it fails.
-	for _, failAt := range mergeTables {
+	var steps []string
+	for _, t := range mergeTables {
+		steps = append(steps, t.table)
+	}
+	steps = append(steps, chatContextsStep)
+	for _, step := range steps {
 		mergeStepHook = func(table string) error {
-			if table == failAt.table {
+			if table == step {
 				return errors.New("injected")
 			}
 			return nil
 		}
 		_, err := Merge(ctx, d, b, a, nil)
-		require.ErrorContains(t, err, "injected", failAt.table)
+		require.ErrorContains(t, err, "injected", step)
 		_, err = d.GetWorkbench(b)
-		require.NoError(t, err, failAt.table)
-		assert.Equal(t, 2, countRows(t, d, `SELECT COUNT(*) FROM targets WHERE project_id = ?`, b), failAt.table)
-		assert.Equal(t, "done", readTarget(t, d, parent).status, failAt.table)
-		assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM workbench_folders WHERE workbench_id = ?`, b), failAt.table)
-		assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM workbench_board_columns WHERE project_id = ?`, b), failAt.table)
-		assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?`, rollupTrigger), failAt.table)
+		require.NoError(t, err, step)
+		assert.Equal(t, 2, countRows(t, d, `SELECT COUNT(*) FROM targets WHERE project_id = ?`, b), step)
+		assert.Equal(t, "done", readTarget(t, d, parent).status, step)
+		assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM workbench_folders WHERE workbench_id = ?`, b), step)
+		assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM workbench_board_columns WHERE project_id = ?`, b), step)
+		assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?`, rollupTrigger), step)
 	}
 }
 

@@ -943,8 +943,16 @@ final class OwnerAsksViewModel {
     /// merge's added answer, or Not Now). Any other refused or failed add
     /// answers the agent with the reason (`sendFolderFailure`).
     func putSuggestedFolderOnBench(_ ask: OwnerAsk) async {
-        guard let suggestion = ask.folderSuggestion, claimFolderCard(ask.id) else { return }
+        guard ask.folderSuggestion != nil, claimFolderCard(ask.id) else { return }
         defer { folderWorking.remove(ask.id) }
+        await resolveAndAdd(ask, offeringMerge: false)
+    }
+
+    /// The add behind Put on Bench and Merge Benches…, on a claimed card. On
+    /// another bench, `offeringMerge` opens the merge confirmation for the
+    /// bench the add names now; otherwise the card becomes the merge variant.
+    private func resolveAndAdd(_ ask: OwnerAsk, offeringMerge: Bool) async {
+        guard let suggestion = ask.folderSuggestion else { return }
         let name = FolderSuggestionPresentation.folderName(suggestion.path)
         folderPhases[ask.id] = .busy
         let reason: String
@@ -953,13 +961,16 @@ final class OwnerAsksViewModel {
             let result = try await addSuggestedFolder(suggestion.path, ask.projectID)
             if result.ok || result.code == .alreadyHere {
                 folderPhases[ask.id] = nil
+                folderMergeBench[ask.id] = nil
                 let stored = result.folder?.name ?? name
                 await answer(ask, with: OwnerAskAnswer(note: FolderSuggestionPresentation.addedAnswer(name: stored)))
                 return
             }
             if result.code == .otherBench, let other = result.otherBench {
                 folderPhases[ask.id] = nil
-                folderMergeBench[ask.id] = FolderSuggestionPayload.OtherBench(id: other.id, name: other.name)
+                let bench = FolderSuggestionPayload.OtherBench(id: other.id, name: other.name)
+                folderMergeBench[ask.id] = bench
+                if offeringMerge { await offerMerge?(ask, bench, suggestion.path) }
                 return
             }
             reason = result.reason
@@ -1044,14 +1055,17 @@ final class OwnerAsksViewModel {
         return true
     }
 
-    /// Merge Benches… on a card's merge variant (§6.13): the confirmation
-    /// for the folder's bench into the ask's. The card stays as it is until
-    /// the merge is done (`answerMergedSuggestion`) or the owner says Not Now.
+    /// Merge Benches… on a card's merge variant (§6.13). The bench the card
+    /// names may be stale (the folder moved since it was filed), so the
+    /// folder's bench is resolved again first, through Put on Bench's own
+    /// add: on another bench → the confirmation for that bench into the
+    /// ask's (the card stays until the merge is done, `answerMergedSuggestion`,
+    /// or Not Now); already free or here → it is on the bench now and the
+    /// agent hears so; any other refusal → the card's failure line.
     func mergeBenches(_ ask: OwnerAsk) async {
-        guard let suggestion = ask.folderSuggestion, let bench = folderMergeBench[ask.id] ?? suggestion.otherBench,
-              claimFolderCard(ask.id) else { return }
+        guard ask.folderSuggestion != nil, claimFolderCard(ask.id) else { return }
         defer { folderWorking.remove(ask.id) }
-        await offerMerge?(ask, bench, suggestion.path)
+        await resolveAndAdd(ask, offeringMerge: true)
     }
 
     /// The merge a card offered is done: the folder is on the ask's bench

@@ -171,6 +171,49 @@ func TestWorkbenchMergeMovesTheTargetImages(t *testing.T) {
 	assert.NoDirExists(t, store.Dir(f.tools))
 }
 
+// A copy that fails leaves every row on a file that exists: the sources go
+// only after the rows point at the copies (crash-safe).
+func TestWorkbenchMergeImageCopyFailureKeepsTheRowsWhole(t *testing.T) {
+	f := newMergeFixture(t)
+	tid := insertMergeTarget(t, f.database, f.tools)
+	cfg, err := config.Load(flagConfig)
+	require.NoError(t, err)
+	store := workbenchfiles.New(cfg.WorkspaceDir())
+	require.NoError(t, os.MkdirAll(store.Dir(f.tools), 0o700))
+	src := filepath.Join(store.Dir(f.tools), "abc.png")
+	require.NoError(t, os.WriteFile(src, []byte("png"), 0o600))
+	_, err = f.database.Exec(`INSERT INTO project_target_images (project_id, target_id, file_name, mime, size, sha256, path)
+		VALUES (?, ?, 'shot.png', 'image/png', 3, 'abc', ?)`, f.tools, tid, src)
+	require.NoError(t, err)
+	prev := copyStoredImage
+	copyStoredImage = func(string, string) error { return errors.New("disk full") }
+	t.Cleanup(func() { copyStoredImage = prev })
+
+	res := f.merge(t)
+	require.True(t, res.OK)
+	assert.False(t, res.ImagesOK)
+	assert.Contains(t, res.ImagesError, "disk full")
+	var path string
+	require.NoError(t, f.database.QueryRow(`SELECT path FROM project_target_images`).Scan(&path))
+	assert.Equal(t, src, path, "the row still names its file")
+	assert.FileExists(t, src)
+}
+
+// Every worktree the merge returns is reinstalled for A, whatever it held.
+func TestWorkbenchMergeReinstallsEveryReturnedWorktree(t *testing.T) {
+	f := newMergeFixture(t)
+	wt := filepath.Join(f.toolsDir, ".claude", "worktrees", "fix")
+	require.NoError(t, os.MkdirAll(filepath.Join(wt, ".git", "info"), 0o755))
+	_, err := f.database.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id, finished_at, last_active_at)
+		VALUES (?, 'claude', 'work', ?, 'sid', '2026-11-01T00:00:00.000Z', '2026-11-01T00:00:00Z')`, f.tools, wt)
+	require.NoError(t, err)
+
+	res := f.merge(t)
+	require.True(t, res.OK, res.Error)
+	assert.True(t, res.Reinstall.OK, res.Reinstall.Failed)
+	assert.Equal(t, []int64{f.pid}, installedIDs(t, wt))
+}
+
 func insertMergeTarget(t *testing.T, database *db.DB, wb int64) int64 {
 	t.Helper()
 	res, err := database.Exec(`INSERT INTO targets (text, period_start, period_end, status, project_id)

@@ -2,6 +2,8 @@ package sessionstart
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -101,5 +103,22 @@ func TestEnsureInstallLeavesAMatchingOrBareFolderAlone(t *testing.T) {
 	done, err = EnsureInstall(context.Background(), d, 1, w.wb, w.folder, agentkind.Claude)
 	require.NoError(t, err)
 	assert.False(t, done, "installed for the row's workbench")
+	assert.Empty(t, rec.all())
+}
+
+// A partial install of the row's own workbench is no mismatch (the
+// Desktop's WorkbenchInstallCheck agrees): Repair's business, not the merge's.
+func TestEnsureInstallLeavesAPartialOwnInstallAlone(t *testing.T) {
+	w := newWorld(t)
+	rec := &reinstallRecorder{}
+	d := w.deps()
+	d.Reinstall = rec.reinstall
+	cmd := devpack.WorkbenchSessionStateHookCommand("watchtower", w.wb)
+	settings := `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"` + cmd + `"}]}]}}`
+	require.NoError(t, os.MkdirAll(filepath.Join(w.folder, ".claude"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(w.folder, ".claude", "settings.local.json"), []byte(settings), 0o644))
+	done, err := EnsureInstall(context.Background(), d, 1, w.wb, w.folder, agentkind.Claude)
+	require.NoError(t, err)
+	assert.False(t, done)
 	assert.Empty(t, rec.all())
 }

@@ -9,19 +9,26 @@ extension WorkbenchesViewModel {
     /// Opens the merge confirmation for bench `fromID` into `projectID`,
     /// read from the database now (the names, its targets and folders).
     /// `askID`: the folder suggestion it came from, answered once the merge
-    /// is done.
+    /// is done. Never a merge of a bench into itself (the folder is already
+    /// here), nor of or into a bench no longer on the list (the failure line).
     func offerMerge(fromID: Int64, fromName: String, into projectID: Int64, path: String, askID: Int64? = nil) async {
+        guard fromID != projectID else { return }
         do {
-            mergeOffer = try await dbPool.read { db in
-                let into = try WorkbenchQueries.fetch(db, id: projectID)
-                let from = try WorkbenchQueries.fetch(db, id: fromID)
+            let offer = try await dbPool.read { db -> BenchMergeOffer? in
+                guard let into = try WorkbenchQueries.fetch(db, id: projectID),
+                      let from = try WorkbenchQueries.fetch(db, id: fromID) else { return nil }
                 return BenchMergeOffer(
-                    fromID: fromID, fromName: from?.name ?? fromName, intoID: projectID, intoName: into?.name ?? "",
+                    fromID: fromID, fromName: from.name, intoID: projectID, intoName: into.name,
                     targets: try WorkbenchQueries.targetCount(db, workbenchID: fromID),
                     folders: try WorkbenchFolderQueries.benchFolders(db, workbenchID: fromID).live.map(\.name),
                     path: path, askID: askID
                 )
             }
+            guard let offer else {
+                putOnBenchErrors[projectID] = BenchMergePresentation.failed(from: fromName, reason: BenchMergePresentation.benchGone)
+                return
+            }
+            mergeOffer = offer
         } catch {
             print("[WorkbenchMerge] reading workbench \(fromID) for the merge failed: \(error)")
             putOnBenchErrors[projectID] = BenchMergePresentation.failed(from: fromName, reason: error.localizedDescription)
@@ -33,13 +40,15 @@ extension WorkbenchesViewModel {
         mergeOffer = nil
     }
 
-    /// Merge on the confirmation. Refused while the other bench has live
-    /// sessions (the refusal dialog with their count); after a merge the list
-    /// drops the merged bench, FILES shows its folders (highlighting the one
-    /// that was put on the bench) and a folder whose reinstall failed shows
-    /// the install icon with Retry (§7) — the data moved anyway.
-    func confirmMerge() async {
-        guard let offer = mergeOffer else { return }
+    /// Merge on the confirmation, for the offer it presented (the alert
+    /// clears `mergeOffer` as it closes). Refused while the other bench has
+    /// live sessions (the refusal dialog with their count); after a merge the
+    /// list drops the merged bench, FILES shows its folders (highlighting the
+    /// one that was put on the bench), a folder whose reinstall failed shows
+    /// the install icon with Retry (§7) and a failed later step a warning
+    /// line — the data moved anyway.
+    func confirmMerge(_ presented: BenchMergeOffer? = nil) async {
+        guard let offer = presented ?? mergeOffer else { return }
         mergeOffer = nil
         guard let cli else {
             putOnBenchErrors[offer.intoID] = Self.cliMissingMessage
@@ -49,6 +58,7 @@ extension WorkbenchesViewModel {
         merging.insert(offer.intoID)
         defer { merging.remove(offer.intoID) }
         putOnBenchErrors[offer.intoID] = nil
+        mergeWarnings[offer.intoID] = nil
         let result: BenchMergeResult
         do {
             result = try await cli.merge(from: offer.fromID, into: offer.intoID)
@@ -65,9 +75,7 @@ extension WorkbenchesViewModel {
             }
             return
         }
-        // Best-effort steps after the move: the data is whole either way.
-        if !result.imagesError.isEmpty { print("[WorkbenchMerge] moving the target images failed: \(result.imagesError)") }
-        if !result.indexError.isEmpty { print("[WorkbenchMerge] re-indexing the documents failed: \(result.indexError)") }
+        mergeWarnings[offer.intoID] = Self.mergeWarning(result, from: offer.fromName)
         await reload()
         await loadBenchFolders(projectID: offer.intoID)
         applyMergeReinstall(result, projectID: offer.intoID)
@@ -79,6 +87,20 @@ extension WorkbenchesViewModel {
         if let askID = offer.askID {
             await asks.answerMergedSuggestion(askID: askID, name: put?.name ?? FolderSuggestionPresentation.folderName(offer.path))
         }
+    }
+
+    /// The warning line after a merge whose later steps failed; nil when none did.
+    static func mergeWarning(_ result: BenchMergeResult, from: String) -> String? {
+        var steps: [String] = []
+        if !result.imagesError.isEmpty {
+            print("[WorkbenchMerge] moving the target images failed: \(result.imagesError)")
+            steps.append(BenchMergePresentation.imagesStep)
+        }
+        if !result.indexError.isEmpty {
+            print("[WorkbenchMerge] updating search failed: \(result.indexError)")
+            steps.append(BenchMergePresentation.searchStep)
+        }
+        return steps.isEmpty ? nil : BenchMergePresentation.partlyDone(from: from, steps: steps)
     }
 
     /// OK on the refusal dialog.
