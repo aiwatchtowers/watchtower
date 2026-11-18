@@ -21,7 +21,8 @@ import (
 	"watchtower/internal/workbenchgit"
 )
 
-// MaxTextFiles caps one listing: the newest files by modification time are
+// MaxTextFiles caps one listing — one folder (a workbench of several folders
+// gets this many per folder, PROJ-08): the newest files by modification time are
 // kept, and the cut is logged.
 const MaxTextFiles = 2000
 
