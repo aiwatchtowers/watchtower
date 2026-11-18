@@ -116,7 +116,7 @@ func TestConnectSlackAccount_RecordsGrantedScope(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = connectSlackAccount(context.Background(), cfg, database, id,
-		&auth.OAuthResult{AccessToken: "xoxp-new", Scope: "channels:read,chat:write"}, false, &bytes.Buffer{})
+		&auth.OAuthResult{AccessToken: "xoxp-new", Scope: "channels:read,chat:write"}, false, "", &bytes.Buffer{})
 	require.NoError(t, err)
 
 	tok, err := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), id).Load()
@@ -128,9 +128,76 @@ func TestConnectSlackAccount_RecordsGrantedScope(t *testing.T) {
 	// A grant without chat:write says so: signing in again cannot fix it.
 	var warn bytes.Buffer
 	_, err = connectSlackAccount(context.Background(), cfg, database, id,
-		&auth.OAuthResult{AccessToken: "xoxp-new", Scope: "channels:read"}, false, &warn)
+		&auth.OAuthResult{AccessToken: "xoxp-new", Scope: "channels:read"}, false, "", &warn)
 	require.NoError(t, err)
 	assert.Contains(t, warn.String(), "did not grant chat:write")
+}
+
+// A connect records the client id the sign-in went through, so the shared-app
+// rule (and the Full move) can tell which Slack app an account is on.
+func TestConnectSlackAccount_WritesClientID(t *testing.T) {
+	stubSlackIdentityServer(t, "U0OWNER", "T0TEAM", "Acme Corp", "acme")
+	t.Setenv("HOME", t.TempDir())
+	cfg := &config.Config{ActiveWorkspace: "test"}
+	database := db.OpenTestDB(t)
+	id, err := database.CreateSlackAccount(db.SlackAccount{})
+	require.NoError(t, err)
+
+	_, err = connectSlackAccount(context.Background(), cfg, database, id,
+		&auth.OAuthResult{AccessToken: "xoxp-new"}, true, "111.222", &bytes.Buffer{})
+	require.NoError(t, err)
+
+	acct, err := database.GetSlackAccount(id)
+	require.NoError(t, err)
+	assert.Equal(t, "111.222", acct.ClientID)
+	tok, err := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), id).Load()
+	require.NoError(t, err)
+	require.NotNil(t, tok)
+	assert.Equal(t, "111.222", tok.ClientID)
+
+	// The same app keeps the row's App ID; an empty id writes nothing; another
+	// app drops the App ID this path cannot know.
+	require.NoError(t, database.SetSlackAccountApp(id, "111.222", "A0APP1"))
+	reconnect := func(clientID string) db.SlackAccount {
+		t.Helper()
+		_, err := connectSlackAccount(context.Background(), cfg, database, id,
+			&auth.OAuthResult{AccessToken: "xoxp-new"}, false, clientID, &bytes.Buffer{})
+		require.NoError(t, err)
+		acct, err := database.GetSlackAccount(id)
+		require.NoError(t, err)
+		return acct
+	}
+	acct = reconnect("111.222")
+	assert.Equal(t, "A0APP1", acct.AppID)
+	acct = reconnect("")
+	assert.Equal(t, "111.222", acct.ClientID)
+	assert.Equal(t, "A0APP1", acct.AppID)
+	acct = reconnect("333.444")
+	assert.Equal(t, "333.444", acct.ClientID)
+	assert.Empty(t, acct.AppID)
+}
+
+// A new row whose client id cannot be recorded is rolled back together with
+// the token file just saved for it.
+func TestConnectSlackAccount_ClientIDFailureRemovesNewToken(t *testing.T) {
+	stubSlackIdentityServer(t, "U0OWNER", "T0TEAM", "Acme Corp", "acme")
+	t.Setenv("HOME", t.TempDir())
+	cfg := &config.Config{ActiveWorkspace: "test"}
+	database := db.OpenTestDB(t)
+	id, err := database.CreateSlackAccount(db.SlackAccount{})
+	require.NoError(t, err)
+	_, err = database.Exec(`CREATE TRIGGER fail_client_id BEFORE UPDATE OF client_id ON slack_accounts
+        BEGIN SELECT RAISE(ABORT, 'client id write refused'); END`)
+	require.NoError(t, err)
+
+	_, err = connectSlackAccount(context.Background(), cfg, database, id,
+		&auth.OAuthResult{AccessToken: "xoxp-new"}, true, "111.222", &bytes.Buffer{})
+	require.ErrorContains(t, err, "client id write refused")
+
+	assert.False(t, watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), id).Exists(), "the new row's token file is removed")
+	acct, err := database.GetSlackAccount(id)
+	require.NoError(t, err)
+	assert.Equal(t, "removed", acct.Status)
 }
 
 func TestEnsureLegacySlackAccount_SecondCallIsNoop(t *testing.T) {
