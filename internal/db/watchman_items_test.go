@@ -838,3 +838,45 @@ func TestWatchmanItemArmed_SessionsTargetCovers(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, it, "leased through the session's armed target")
 }
+
+// A session being deleted lends no coverage through its target.
+func TestWatchmanItemArmed_DeletingSessionsTargetDoesNotCover(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	tg := insertWorkbenchTargetRow(t, d, wb, "Export")
+	s := newTestSession(t, d, wb)
+	_, err := d.Exec(`UPDATE terminal_sessions SET target_id = ?, finished_at = '2026-11-18T02:00:00Z',
+		delete_requested_at = '2026-11-18T02:01:00Z' WHERE id = ?`, tg, s)
+	require.NoError(t, err)
+	require.NoError(t, d.UpsertWatchmanArming(WatchmanArming{Scope: "target", RefID: tg, ArmedAt: time.Now(), ArmedBy: "cli"}))
+	armed, err := d.WatchmanItemArmed(s, 0)
+	require.NoError(t, err)
+	require.False(t, armed)
+	_, _, err = d.QueueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "handover", RefKind: "ask", RefID: 9, Question: "q"})
+	require.NoError(t, err)
+	it, err := d.LeaseArmedWatchmanItem(time.Now(), time.Minute, wmAll)
+	require.NoError(t, err)
+	require.Nil(t, it)
+}
+
+// Starting needs the destination covered: the source session's target does
+// not authorise a start on another target.
+func TestWatchmanStartArmed_DestinationOnly(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	a := insertWorkbenchTargetRow(t, d, wb, "A")
+	b := insertWorkbenchTargetRow(t, d, wb, "B")
+	s := newTestSession(t, d, wb)
+	_, err := d.Exec(`UPDATE terminal_sessions SET target_id = ? WHERE id = ?`, a, s)
+	require.NoError(t, err)
+	require.NoError(t, d.UpsertWatchmanArming(WatchmanArming{Scope: "target", RefID: a, ArmedAt: time.Now(), ArmedBy: "cli"}))
+	lease, err := d.WatchmanItemArmed(s, b)
+	require.NoError(t, err)
+	require.True(t, lease, "the lease may use the source session's target")
+	start, err := d.WatchmanStartArmed(s, b)
+	require.NoError(t, err)
+	require.False(t, start, "the start needs B covered")
+	start, err = d.WatchmanStartArmed(s, a)
+	require.NoError(t, err)
+	require.True(t, start)
+}

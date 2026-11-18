@@ -339,9 +339,9 @@ func (j *job) answerText(ctx context.Context, p asks.Payload, text string, o db.
 }
 
 // startNext starts the next session of a handover answered "Continue" on
-// its target, with the handover text as the brief — only while the item's
-// session or target is still armed (else the start is dropped as taken
-// back). The start is claimed first (pendingStart → startingMark, counted),
+// its target, with the handover text as the brief — only while the session
+// is armed directly or that destination target is covered by an armed
+// target (else the start is dropped as taken back). The start is claimed first (pendingStart → startingMark, counted),
 // so two passes never start it twice; success clears it, a failure makes it
 // owed again, and the MaxAttempts-th failure ends it with the error. One
 // start per item at a time in this process.
@@ -358,7 +358,7 @@ func (t *Twin) startNext(ctx context.Context, it db.WatchmanItem, ask *db.OwnerA
 		delete(t.starting, it.ID)
 		t.mu.Unlock()
 	}()
-	armed, err := t.d.DB.WatchmanItemArmed(it.SessionID, it.TargetID)
+	armed, err := t.d.DB.WatchmanStartArmed(it.SessionID, it.TargetID)
 	if err != nil {
 		log.Printf("watchman twin: item %d: %v", it.ID, err)
 		return // still owed
@@ -376,7 +376,7 @@ func (t *Twin) startNext(ctx context.Context, it db.WatchmanItem, ask *db.OwnerA
 	if !claimed {
 		// The claim re-checks the arming: a Take back since the check above
 		// ends the owed start (a start that moved the error leaves it).
-		if armed, err := t.d.DB.WatchmanItemArmed(it.SessionID, it.TargetID); err == nil && !armed {
+		if armed, err := t.d.DB.WatchmanStartArmed(it.SessionID, it.TargetID); err == nil && !armed {
 			t.setStartError(it.ID, pendingStart, startTakenBack)
 		}
 		return
