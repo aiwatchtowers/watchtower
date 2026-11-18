@@ -27,11 +27,14 @@ const ReleasePage = "https://github.com/aiwatchtowers/watchtower/releases/latest
 
 // Link names what the About page's connect block points at: the workspace and
 // the app's client id. An empty ClientID (the create call, before Slack has
-// issued one) means no connect block.
+// issued one) means no connect block. About, when set, is a company's connect
+// text (`company publish`): the About page carries it in place of the
+// Slack-only block.
 type Link struct {
 	TeamID   string
 	TeamName string
 	ClientID string
+	About    string
 }
 
 // ConnectLink is the connect link of screens §4.1.
@@ -43,9 +46,12 @@ func (l Link) ConnectLink() string {
 // ConnectCode is the connect code of screens §4.1.
 func (l Link) ConnectCode() string { return l.TeamID + ":" + l.ClientID }
 
-// ConnectBlock is the text the About page starts with (screens §4.1); "" for
-// a Link without a client id.
+// ConnectBlock is the text the About page starts with (screens §4.1): l.About
+// when set, else the Slack-only block; "" for a Link without a client id.
 func ConnectBlock(l Link) string {
+	if l.About != "" {
+		return l.About
+	}
 	if l.ClientID == "" {
 		return ""
 	}

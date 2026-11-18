@@ -85,7 +85,7 @@ func init() {
 		c.Flags().Bool("json", false, "print one JSON line per step and a final result line")
 		slackAppCmd.AddCommand(c)
 	}
-	slackAppAdoptCmd.Flags().String("app-id", "", "the app's App ID (Basic Information page), when Watchtower does not know it")
+	slackAppAdoptCmd.Flags().String("app-id", "", "the app's App ID (Basic Information page) or its https://api.slack.com/apps/… URL, when Watchtower does not know it")
 	slackAppAdoptCmd.Flags().String("confirm-app-id", "", "repeat --app-id after checking the app's name (confirm_app)")
 	slackAppAdoptCmd.Flags().Bool("enable-pkce", false, "agree to turn on PKCE sign-in for the app (one-way: only Slack support can turn it off)")
 	slackAppLinkCmd.Flags().String("team", "", "the workspace's team id (default: the token's workspace)")
@@ -150,6 +150,13 @@ func runSlackAppAdopt(cmd *cobra.Command, _ []string) error {
 	confirm, _ := cmd.Flags().GetString("confirm-app-id")
 	team, _ := cmd.Flags().GetString("team")
 	enablePKCE, _ := cmd.Flags().GetBool("enable-pkce")
+	// The company wizard passes the app's settings URL as the person pasted it.
+	if id, ok := slackapp.ParseSlackAppSettingsURL(appID); ok {
+		appID = id
+	}
+	if id, ok := slackapp.ParseSlackAppSettingsURL(confirm); ok {
+		confirm = id
+	}
 	return runSlackAppSetup(cmd, func(ctx context.Context, r *slackapp.Runner, tok string) (slackapp.Result, error) {
 		return r.Adopt(ctx, tok, strings.TrimSpace(team), strings.TrimSpace(appID), strings.TrimSpace(confirm), enablePKCE)
 	})

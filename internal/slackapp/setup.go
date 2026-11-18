@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"strings"
 
 	"watchtower/internal/db"
 	"watchtower/internal/fsutil"
@@ -20,13 +21,16 @@ const (
 	// KindPendingCreate: an apps.manifest.create was sent but its answer was
 	// lost (timeout, cut connection), so Slack may have made the app. Never
 	// a second create: the owner checks api.slack.com/apps for "Watchtower".
-	KindPendingCreate   = "pending_create"
-	KindConfirmApp      = "confirm_app"      // adopt: the App ID came only from --app-id; re-run with --confirm-app-id after checking app_name
-	KindNoPending       = "no_pending"       // pending: the team has no pending record
-	KindBadIDs          = "bad_ids"          // pending --attach: an id is malformed (Code says which)
-	KindNoApp           = "no_app"           // adopt: the team has no live account on a company app
-	KindNoRecord        = "no_record"        // link: the team has no setup record
-	KindWrongTeam       = "wrong_team"       // link, adopt: --team names another workspace than the token
+	KindPendingCreate = "pending_create"
+	KindConfirmApp    = "confirm_app" // adopt: the App ID came only from --app-id; re-run with --confirm-app-id after checking app_name
+	KindNoPending     = "no_pending"  // pending: the team has no pending record
+	KindBadIDs        = "bad_ids"     // pending --attach: an id is malformed (Code says which)
+	KindNoApp         = "no_app"      // adopt: the team has no live account on a company app
+	KindNoRecord      = "no_record"   // link: the team has no setup record
+	KindWrongTeam     = "wrong_team"  // link, adopt: --team names another workspace than the token
+	// KindWrongWorkspace: adopt's App ID belongs to an app this Mac knows in
+	// another workspace than the token's (the company wizard's reuse).
+	KindWrongWorkspace  = "wrong_workspace"
 	KindNeedAppID       = "need_app_id"      // adopt: the App ID is unknown or does not fit (Code says which; A19)
 	KindNotCollaborator = "not_collaborator" // the token's owner is not a collaborator on the app (Q11)
 	KindAppNotFound     = "app_not_found"
@@ -460,6 +464,13 @@ func (r *Runner) Adopt(ctx context.Context, cfgToken, team, appIDFlag, confirmAp
 		if team != "" && team != teamID {
 			return Result{Kind: KindWrongTeam, TeamID: teamID, TeamName: teamName}, nil
 		}
+		// An App ID this Mac knows in another workspace (a setup record or
+		// an account row) is not the token's app: nothing is read or changed.
+		if other, err := r.appTeam(appIDFlag); err != nil {
+			return Result{}, err
+		} else if other != "" && other != teamID {
+			return Result{Kind: KindWrongWorkspace, TeamID: teamID, TeamName: teamName, AppID: appIDFlag}, nil
+		}
 		if s, ok, err := r.record(teamID); err != nil {
 			return Result{}, err
 		} else if ok {
@@ -539,6 +550,51 @@ func (r *Runner) Adopt(ctx context.Context, cfgToken, team, appIDFlag, confirmAp
 	})
 }
 
+// appTeam is the workspace this Mac knows appID in (a setup record first,
+// else an account row that is not removed); "" when appID is "" or unknown.
+func (r *Runner) appTeam(appID string) (string, error) {
+	if appID == "" {
+		return "", nil
+	}
+	setups, err := r.DB.ListSlackAppSetups()
+	if err != nil {
+		return "", err
+	}
+	for _, s := range setups {
+		if s.AppID == appID {
+			return s.TeamID, nil
+		}
+	}
+	accounts, err := r.DB.ListSlackAccounts()
+	if err != nil {
+		return "", err
+	}
+	for _, a := range accounts {
+		if a.AppID == appID && a.Status != "removed" {
+			return a.TeamID, nil
+		}
+	}
+	return "", nil
+}
+
+// settingsURLPattern is an app's page on api.slack.com (any sub-page).
+var settingsURLPattern = regexp.MustCompile(`^https://api\.slack\.com/apps/(A[A-Z0-9]+)(/.*)?$`)
+
+// ParseSlackAppSettingsURL is the App ID in an app's settings URL
+// (https://api.slack.com/apps/A0123ABCD or any of its pages), surrounding
+// spaces ignored and a query or fragment dropped.
+func ParseSlackAppSettingsURL(s string) (appID string, ok bool) {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexAny(s, "?#"); i >= 0 {
+		s = s[:i]
+	}
+	m := settingsURLPattern.FindStringSubmatch(s)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
 // ClearPending deletes team's pending setup record: the owner checked
 // api.slack.com/apps and no Watchtower app was made. KindNoPending when the
 // team has no pending record.
@@ -607,6 +663,12 @@ func derefResult(r *Result) Result {
 // Link writes the connect link to the About page of the app of team's setup
 // record (team "" = the token's workspace): check_token → write_link.
 func (r *Runner) Link(ctx context.Context, cfgToken, team string) (Result, error) {
+	return r.LinkAbout(ctx, cfgToken, team, "")
+}
+
+// LinkAbout is Link writing about (a company's connect text, `company
+// publish`) in place of the Slack-only block; about "" is Link.
+func (r *Runner) LinkAbout(ctx context.Context, cfgToken, team, about string) (Result, error) {
 	return r.locked(func() (Result, error) {
 		teamID, teamName, fail := r.team(ctx, cfgToken)
 		if fail != nil {
@@ -625,7 +687,7 @@ func (r *Runner) Link(ctx context.Context, cfgToken, team string) (Result, error
 		if s.AppID == "" {
 			return existingRecord(s), nil
 		}
-		link := Link{TeamID: s.TeamID, TeamName: s.TeamName, ClientID: s.ClientID}
+		link := Link{TeamID: s.TeamID, TeamName: s.TeamName, ClientID: s.ClientID, About: about}
 		if fail := r.step(StepWriteLink, func() *Result { return r.writeLink(ctx, cfgToken, s.AppID, link) }); fail != nil {
 			res := recordResult(fail.Kind, s)
 			res.Code, res.Error, res.Err = fail.Code, fail.Error, fail.Err

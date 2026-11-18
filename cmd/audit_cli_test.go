@@ -217,7 +217,9 @@ var cliNoContentCommands = map[string]bool{
 	"company draft show":               true, // the wizard's own typed setup, no synced content
 	"company inspect":                  true,
 	"company list":                     true,
-	"config init":                      true,
+	"company profile":                  true, // a .mobileconfig of the stored company setup, no synced content
+	"company publish":                  true, // the company setup and its link, no synced content
+	"config init":                    true,
 	"config set":                       true,
 	"config show":                      true,
 	"confluence access":                true,
