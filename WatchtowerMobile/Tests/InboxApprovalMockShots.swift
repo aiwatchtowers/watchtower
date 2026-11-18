@@ -106,6 +106,8 @@ private enum InboxApprovalMocks {
                 card(failedJira(), label: "Retry on its way", override: .busy("Sending your answer…", retryNote: true)),
                 card(failedJira(id: 42), label: "The hub is away (nothing queues)", override: .retry(line: nil, enabled: false))
             )),
+            ("chat-approval-header-today", header(stacked: false)),
+            ("chat-approval-header-stacked", header(stacked: true)),
             ("chat-approval-unconfirmed", chatPage(
                 card(failedJira(id: 43), label: "Didn't confirm (the hub stopped mid-way)",
                      override: .retry(line: "Didn't confirm — check on the Mac.", enabled: false))
@@ -171,7 +173,28 @@ private enum InboxApprovalMocks {
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .background(Color(uiColor: .systemBackground))
-        .environment(\.chatUIStyle, PhoneChatStyle())
+        .environment(\.chatUIStyle, StackedHeaderStyle())
+        .environment(\.chatHostText, .phone(hub)))
+    }
+
+    /// The header change (§12.5), as a pair of shots in the chat: today's phone header (`stacked: false`) and Phase
+    /// B's (`stacked: true`). Only the narrow shot (the largest text size) tells them apart.
+    static func header(stacked: Bool) -> AnyView {
+        let dismiss: (ChatAgentAction) -> Void = { _ in }
+        let card = AgentActionCard(action: connector(), services: ChatApprovalServices(dismiss: dismiss))
+        return AnyView(ScrollView {
+            VStack(alignment: .leading, spacing: Spacing.medium) {
+                Text("Chat · Release plan").font(TypeScale.rowEmphasis)
+                if stacked {
+                    card.environment(\.chatUIStyle, StackedHeaderStyle())
+                } else {
+                    card.environment(\.chatUIStyle, PhoneChatStyle())
+                }
+            }
+            .padding(Spacing.large)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .background(Color(uiColor: .systemBackground))
         .environment(\.chatHostText, .phone(hub)))
     }
 
@@ -260,5 +283,39 @@ private struct MockRow: View {
                 style.approvalButton("Try again", prominent: true) {}
             }
         }
+    }
+}
+
+/// The phone's chat style with the header Phase B gives it (§12.5): the status beside the title when both fit on one
+/// line, under it otherwise, so the largest text size never truncates the title. Everything else is `PhoneChatStyle`.
+private struct StackedHeaderStyle: ChatUIStyle {
+    private let phone = PhoneChatStyle()
+
+    func primaryButton(_ title: String, action: @escaping () -> Void) -> AnyView { phone.primaryButton(title, action: action) }
+    func secondaryButton(_ title: String, action: @escaping () -> Void) -> AnyView { phone.secondaryButton(title, action: action) }
+    func card<C: View>(@ViewBuilder _ content: () -> C) -> AnyView { phone.card(content) }
+    func chip(_ title: String) -> AnyView { phone.chip(title) }
+    func attachmentChip(_ chip: ChatAttachmentChipContent) -> AnyView { phone.attachmentChip(chip) }
+
+    func approvalHeader(_ header: ChatApprovalHeader) -> AnyView {
+        let tone: Color = switch header.kind {
+        case .waiting: Tone.warning
+        case .done: Tone.success
+        case .failed: Tone.error
+        case .neutral: .secondary
+        }
+        let title = Text(header.title).font(.callout.weight(.semibold))
+        let status = Text(header.status).font(.caption).foregroundStyle(tone)
+        return AnyView(ViewThatFits(in: .horizontal) {
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+                title
+                Spacer(minLength: Spacing.regular)
+                status
+            }
+            VStack(alignment: .leading, spacing: Spacing.small) {
+                title.fixedSize(horizontal: false, vertical: true)
+                status.fixedSize(horizontal: false, vertical: true)
+            }
+        })
     }
 }
