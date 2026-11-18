@@ -42,7 +42,28 @@ The overall verdict is **go** when at least three categories are strong and one 
 
 From a terminal, `watchtower watchman learn --workbench N` prints the estimate (add `--start` to begin), `watchman profile --workbench N` shows the learned rules and sleep window, and `watchman backtest --workbench N` runs a backtest (it waits for learning to finish; `--force` runs it earlier). Starting and backtesting are yours to run: an AI agent's session is refused.
 
+### Read the night's journal
+<!-- learn
+id: watchman-journal
+title: Read what Watchman decided overnight
+text: Open **Inbox → Watchman** in the morning to see each night's decisions, what waits for you and what it cost.
+area: development
+level: power
+kind: feature
+since: next
+-->
+
+Everything Watchman handled lands in **Inbox → Watchman**, one night per entry from 12:00 to 12:00 the next day. Home shows last night as one line, such as "Overnight Watchman decided 14 — 2 unsure, 2 waiting for you"; click it to open the journal.
+
+- **WAITING FOR YOU**: what Watchman parked for you (a hard limit, a failure) or handed back because it needs your hands.
+- **Decided**: each decision with what it chose, why, the earlier decisions it leaned on and its confidence. In this version every decision is marked **Unsure**.
+- **Checks nobody ran**: checks a session asked for that Watchman passed on.
+
+The night's header shows its span, any stretch the Mac slept ("the Mac slept from 02:10 to 03:05, nothing ran") and what the night cost. While Watchman works, a "Deciding: …" line shows its current item; when the daemon is stopped, "Watchman is not running — the daemon is stopped" sits above the last night. A workbench menu narrows the journal to one workbench.
+
 ## When it's empty or wrong
+
+- **No night yet** in the journal: no session was handed to Watchman yet, so nothing was decided.
 
 - **Not measured** on a category: fewer than 30 decisions exist there, or fewer than 20 are left to score after the ones handed to you. It fills as you keep working.
 - Finish looks thin: a handover ask is learned as an ordinary question and is not always filed under finish.

@@ -46,6 +46,10 @@ final class WatchmanCenter {
         self.sleep = sleep
     }
 
+    /// `daemon_running` of the last status read; unknown before one, or
+    /// from a CLI that does not print it (the journal's daemon line).
+    private(set) var daemon: WatchmanDaemonState = .unknown
+
     /// A learning pass or a backtest is under way here or in the daemon.
     var needsPolling: Bool {
         if !learningHere.isEmpty || !backtestHere.isEmpty { return true }
@@ -76,6 +80,7 @@ final class WatchmanCenter {
             guard token == readToken else { return }
             guard status.ok else { return readFailed(Self.replyError(data) ?? "the status reply was not ok") }
             lastStatus = status
+            daemon = status.daemon
             readError = nil
             apply()
         } catch {

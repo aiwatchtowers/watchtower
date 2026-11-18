@@ -114,7 +114,7 @@ struct GettingReadyZoneView: View {
         switch InboxRoute.forFeature(feature, today: "")?.entry {
         case .card?: return ["Your day"]
         case let .legacy(list)?: return [list.title]
-        case nil: break
+        case .watchman?, nil: break
         }
         return AppState.homeDestination(for: feature).map { [$0.title] } ?? []
     }

@@ -80,6 +80,16 @@ Phase 1 hid every candidate and graded each; phase 1b makes the measurement fair
 - **Run report.** Each run writes `<workspace>/watchman/backtest-<id>-<start unix>.jsonl`: one line per hidden item (a justified handoff still gets one), with the judge's grades and reasons as arrays, each reason clipped (`reportReasonMax` = 200 runes), redacted; no situation or answer fields. `--json` carries `report_path` and `report_error`; a report failure never fails the run.
 - Phase-1 and phase-1b numbers are compared per category, not item by item: the hidden sets change.
 
+## The morning journal (phase 2, Task 16)
+
+The Inbox root lists one more built-in entry, **Watchman** (`InboxFolderEntry.watchman`, id `watchman`), while a workbench was ever turned on or any `watchman_items` row exists (`WatchmanJournalQueries.inboxSummary`, read in `InboxFeedQueries.read`); its summary is `<n> waiting` (parked and handed items without feedback, every night) and its detail the newest night's counts. Its reading pane is `WatchmanJournalView` over the app-wide `WatchmanJournalViewModel` (`AppState.watchmanJournal`): the nights on the left (one column with menus below `WatchmanJournalContent.splitWidth`), a workbench scope menu, and the night. Empty state: `EmptyStateCopyTable` key `inboxWatchman` (C1).
+
+- A night runs 12:00 to 12:00 local (`WatchmanNight.start(of:)`); an item belongs to the night it was created in, a `watchman_gaps` span to every night it overlaps (`the Mac slept from <HH:MM> to <HH:MM>, nothing ran`). `WatchmanJournalQueries.nights(db, limit:)` reads the newest 30.
+- Sections: **WAITING FOR YOU** (`parked`/`handed`, `feedback = ''`), **Decided** (every other finished item but checks; an `unsure` item as a full card with the Unsure badge, a sure one as a line; phase 2 journals all unsure, D43), **Checks nobody ran** (`kind = 'check'` without `check_done_at`). Outcome line: `the owner answered first` (`owner_first`), `session ended` (`delivery = 'no_session'`), else the decision's outcome.
+- The busy line `Deciding: <question>` shows on tonight while an item is queued or deciding (`liveDeciding`); `Watchman is not running — the daemon is stopped` shows above the journal when `watchman status --json` says `daemon_running: false` (`WatchmanCenter.daemonRunning`, reread when the journal opens; unknown = no line).
+- Home: `Overnight Watchman decided <n> — <u> unsure, <w> waiting for you` above the Workbench zone (`WatchmanJournalQueries.homeNight`: tonight or last night, only when it decided or parked anything); a click opens the journal (`HomeLink.watchmanJournal` → `InboxRoute.Entry.watchman`).
+- OK, Correct…, Open session and check-done are Task 17; the cards show no buttons until then.
+
 ## Guards
 
 `internal/watchman/guard_test.go`: `TestWATCHMAN03_SourcesAreOwnerOnly`, `TestWATCHMAN06_NoActingImports`. Contracts in `docs/inventory/watchman.md`.
@@ -90,4 +100,5 @@ Phase 1 hid every candidate and graded each; phase 1b makes the measurement fair
 - Agent commits are recognised by a `Co-Authored-By` trailer only; an agent that omits it makes its commit look like the owner's, and a merge an agent made may be counted as the owner's.
 - A row committed behind a source's `hi` mark by an out-of-order writer is missed (the git source rescans 30 days behind `hi` and is exempt); a spec mark edited after the answer is not re-read.
 - Handover asks (`finish_session`'s `handover_ask_id`) carry no mark in the database: they are learned as ordinary questions and the labeller may or may not file them under `finish`, so `finish` can be thin.
+- The journal card shows the decision's outcome only; the spec's "merged into `feature/x`, PR #" line is not tracked in phase 2.
 - The `unlabelled` counter is additive and can inflate when the CLI and the daemon overlap; it is a display figure only.

@@ -13,6 +13,8 @@ package struct InboxRoute: Equatable, Sendable {
         case card(InboxSelection)
         /// A legacy entry of the root, its list open.
         case legacy(InboxLegacyList)
+        /// Watchman's journal entry of the root (Home's Watchman row).
+        case watchman
     }
 
     /// The folder to open; nil = the folder that lists `entry`, else the
