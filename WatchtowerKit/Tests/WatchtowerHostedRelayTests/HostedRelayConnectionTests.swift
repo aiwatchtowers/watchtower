@@ -359,6 +359,37 @@ final class HostedRelayConnectionTests: XCTestCase {
         await connection.close()
     }
 
+    /// A zone event carries the relay's `records`; an older relay's single `record` is the one record. An
+    /// event folded for lack of room loses them: its reader pulls.
+    func testZoneEventsCarryTheirRecordsUnlessFolded() async throws {
+        let harness = try RelayClientHarness()
+        let connection = await harness.client.connect(zones: ["acme/a"], eventBuffer: 2)
+        let events = EventProbe(connection)
+        _ = await take(2, events)
+        let socket = try XCTUnwrap(harness.sockets.sockets.first)
+        func record(_ name: String, _ seq: UInt64) -> Relay_V1_Record {
+            var record = Relay_V1_Record()
+            record.zone = "acme/a"
+            record.name = name
+            record.envelope = Data(name.utf8)
+            record.recordSeq = seq
+            return record
+        }
+
+        socket.pushZoneChanged("acme/a", seq: 2, records: [record("x", 1), record("y", 2)])
+        socket.pushZoneChanged("acme/a", seq: 3, record: record("z", 3))
+        socket.pushZoneChanged("acme/a", seq: 4, records: [record("w", 4)], record: record("w", 4))
+        await socket.waitUntilDrained()
+
+        let delivered = await take(3, events)
+        XCTAssertEqual(delivered, [
+            .zoneChanged(zone: "acme/a", seq: 2, records: [record("x", 1), record("y", 2)]),
+            .zoneChanged(zone: "acme/a", seq: 3, records: [record("z", 3)]),
+            .zoneChanged(zone: "acme/a", seq: 0)
+        ])
+        await connection.close()
+    }
+
     func testSetZonesSubscribesOnlyTheNewZones() async throws {
         let harness = try RelayClientHarness()
         let connection = await harness.client.connect(zones: ["acme/a"])

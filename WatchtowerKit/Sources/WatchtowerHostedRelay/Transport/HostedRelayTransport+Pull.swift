@@ -31,6 +31,35 @@ extension HostedRelayTransport {
         }
     }
 
+    /// Buffers a zone event's own records in place of a `changes` read (live link R1); true when `zone` needs no
+    /// read for this event. Only while no pull is in flight (a pull reads from the cursor this would move), no
+    /// resync or first load is owed, and the transport is neither stopped nor held; an event at or below the cursor
+    /// is already read. The records must be the writes up to `seq`, contiguous by `record_seq`, starting no later
+    /// than the cursor's next seq: any gap, a tombstone, a record-less event (a deletion, an over-budget save, a
+    /// phone over its traffic budget, a folded buffer) is a read. So is a record with an attachment: the read
+    /// downloads it. Synchronous on the actor: nothing runs between the cursor check and the page's transaction.
+    func applyInline(zone: CloudZoneID, seq: UInt64, records: [Relay_V1_Record]) -> Bool {
+        guard seq > 0, pullTask == nil, held() == nil else { return false }
+        do {
+            let cursor = try store.relayCursor(zone: zone)
+            guard cursor > 0, try !store.relayResyncPending(zone) else { return false }
+            if seq <= cursor { return true }
+            guard let first = records.first?.recordSeq, first > 0, first <= cursor + 1,
+                  records.enumerated().allSatisfy({ offset, record in
+                      record.recordSeq == first + UInt64(offset) && !record.deleted && record.attachmentID.isEmpty
+                  }),
+                  records.last?.recordSeq == seq
+            else { return false }
+            let changed = records.filter { $0.recordSeq > cursor }.map { Self.cloudRecord($0, zone: zone) }
+            try store.bufferRelayPage(zone: zone, changed: changed, deleted: [], newSeq: seq, resync: false)
+        } catch {
+            Self.logger.error("relay inline records not buffered, reading instead, \(Self.kind(zone), privacy: .public)")
+            return false
+        }
+        engineFetchedHandler?()
+        return true
+    }
+
     /// Pulls the owed zones until none is owed, each pass reading its zones concurrently. The last check and the
     /// end of the pull are one step on the actor, so a caller that joins is always served. A zone that fails does
     /// not stop the others' reads; the pull then throws the first failure.

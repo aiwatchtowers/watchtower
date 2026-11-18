@@ -24,6 +24,9 @@ message Hello {
 
 message HelloOk {
   string connection_id = 1;
+  // What this relay supports beyond the protocol version, so a client can rely on it:
+  // "records_inline" — ZoneChanged.records carries the records of the writes up to its seq.
+  repeated string capabilities = 2;
 }
 
 // GoingAway announces a graceful server shutdown.
@@ -168,8 +171,20 @@ message Event {
 message ZoneChanged {
   string zone = 1;
   uint64 seq = 2;
-  // Present when the record is at most 64 KiB.
+  // Present when records holds exactly one record and its envelope is at most 64 KiB: the same
+  // record, kept for clients without "records_inline". The event may stand for more writes than
+  // that one record (a coalesced event), so a client applies it only when seq is its cursor + 1.
   optional Record record = 3;
+  // The device whose write this was; empty when the event stands for several writes or no write
+  // (a record-less catch-up). A device can skip its own writes by comparing it with its id.
+  string writer = 4;
+  // The records of the writes up to seq, oldest first, when they fit the frame budget: the sum over
+  // the records of envelope + name + zone + attachment id bytes + 32 is at most 256 KiB. A larger
+  // save comes as several events, split by record. Empty when they do not fit, for a deletion, or
+  // over a phone's traffic budget. The records are contiguous and the last one is at seq: a client
+  // whose cursor is seq minus their count applies them without a `changes` read; any other client
+  // reads `changes` as before.
+  repeated Record records = 5;
 }
 
 enum ControlKind {

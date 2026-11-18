@@ -2,7 +2,8 @@ import Foundation
 import WatchtowerRelayProto
 
 /// What a test may break on the fake only (R15): op failures, refused dials, deploys,
-/// displacement, a crash, missing pongs, an unanswered subscribe and cut sessions.
+/// displacement, a crash, missing pongs, an unanswered subscribe, cut sessions, an older relay's events
+/// and a device over its traffic budget.
 extension FakeHostedRelay {
     struct Faults {
         /// Op case name → the codes its next calls answer, one per call.
@@ -17,6 +18,23 @@ extension FakeHostedRelay {
         var crashAfter: [String: Int] = [:]
         /// Op case name → how many of its next socket calls run and then have their socket cut unanswered.
         var cutAfter: [String: Int] = [:]
+        /// An older relay: no `records_inline` capability, events carry only the single `record`.
+        var withoutRecordsInline = false
+        /// Devices over their traffic budget: their events carry no records.
+        var trafficOver: Set<String> = []
+    }
+
+    /// Off: the relay before `ZoneChanged.records`. `HelloOk` names no capability and an event carries only the
+    /// single `record`, for a save of exactly one record whose envelope fits 64 KiB.
+    public func setRecordsInline(_ on: Bool) {
+        locked { state.faults.withoutRecordsInline = !on }
+    }
+
+    /// On: the device is over its traffic budget, so its events carry no records (Worker `ws.ts` `trafficOver`).
+    public func setTrafficOver(_ over: Bool, deviceID: String) {
+        locked {
+            if over { state.faults.trafficOver.insert(deviceID) } else { state.faults.trafficOver.remove(deviceID) }
+        }
     }
 
     /// The next `times` calls of `op` (the oneof case name: `save`, `createUpload`,

@@ -19,6 +19,9 @@ public actor HostedRelaySession {
     static let logger = Logger(subsystem: "WatchtowerKit", category: "HostedRelay")
     /// `events` keeps the newest this many while nobody reads.
     static let eventBuffer = 256
+    /// The most record bytes (envelopes) of zone events one owner's inbox holds unread: an event past it is
+    /// delivered without its records, so its owner reads the zone (the relay's own lane bound, `MAX_LANE_BYTES`).
+    static let inboxRecordBytes = 1 << 20
 
     nonisolated public let client: HostedRelayClient
     /// Account-level relay signals: socket controls (`ENTITLEMENT_EXPIRED`, `SUBSCRIPTION_MOVED`,
@@ -38,6 +41,8 @@ public actor HostedRelaySession {
     private struct Owner {
         var zones: [String]
         let inbox: AsyncStream<HostedRelayClientEvent>.Continuation
+        /// The record bytes of the zone events waiting in `inbox`.
+        let waiting: OSAllocatedUnfairLock<Int>
         let reader: Task<Void, Never>
     }
 
@@ -94,10 +99,15 @@ public actor HostedRelaySession {
             order.append(id)
         }
         let (stream, inbox) = AsyncStream.makeStream(of: HostedRelayClientEvent.self)
+        let waiting = OSAllocatedUnfairLock(initialState: 0)
         let reader = Task {
-            for await event in stream { await handler(event) }
+            for await event in stream {
+                let bytes = Self.recordBytes(event)
+                if bytes > 0 { waiting.withLock { $0 -= bytes } }
+                await handler(event)
+            }
         }
-        owners[id] = Owner(zones: zones, inbox: inbox, reader: reader)
+        owners[id] = Owner(zones: zones, inbox: inbox, waiting: waiting, reader: reader)
         // A late owner learns the open socket's state at once.
         if connection != nil, let socketState { inbox.yield(socketState) }
         if connection == nil {
@@ -261,8 +271,18 @@ public actor HostedRelaySession {
     private func route(_ event: HostedRelayClientEvent, from source: HostedRelayConnection) async {
         guard source === connection else { return }
         switch event {
-        case .zoneChanged(let zone, _):
-            deliver(event, to: owners(of: zone))
+        case let .zoneChanged(zone, seq, _):
+            let bytes = Self.recordBytes(event)
+            for id in owners(of: zone) {
+                guard let owner = owners[id] else { continue }
+                // An owner busy with a pull holds what it has not read: bounded, the rest come record-less.
+                let fits = bytes == 0 || owner.waiting.withLock { waiting in
+                    guard waiting + bytes <= Self.inboxRecordBytes else { return false }
+                    waiting += bytes
+                    return true
+                }
+                owner.inbox.yield(fits ? event : .zoneChanged(zone: zone, seq: seq))
+            }
         case .zoneRefused(let zone, _):
             deliver(event, to: owners(of: zone))
             // The connection dropped it from its set: so does the union.
@@ -301,6 +321,17 @@ public actor HostedRelaySession {
 
     private func owners(of zone: String) -> [ObjectIdentifier] {
         order.filter { owners[$0]?.zones.contains(zone) == true }
+    }
+
+    /// The record bytes waiting unread in `owner`'s inbox.
+    func unreadRecordBytes(owner id: ObjectIdentifier) -> Int {
+        owners[id]?.waiting.withLock { $0 } ?? 0
+    }
+
+    /// The envelope bytes of a zone event's records (0 for any other event).
+    private static func recordBytes(_ event: HostedRelayClientEvent) -> Int {
+        guard case .zoneChanged(_, _, let records) = event else { return 0 }
+        return records.reduce(0) { $0 + $1.envelope.count }
     }
 
     private func deliver(_ event: HostedRelayClientEvent, to ids: [ObjectIdentifier]) {

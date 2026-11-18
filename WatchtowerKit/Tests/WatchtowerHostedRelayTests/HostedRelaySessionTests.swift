@@ -66,6 +66,53 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
         XCTAssertEqual(ownerB.zoneEvents.filter { $0.zone == zoneB && $0.seq == 0 }.count, 1, "the connect's marker once")
     }
 
+    /// An owner busy with one event holds at most `inboxRecordBytes` of unread records: the events past it
+    /// reach it without their records, so it reads the zone (live link R1; memory stays bounded under a
+    /// slow pull).
+    func testAnOwnersUnreadRecordsAreBounded() async throws {
+        let (phone, _, macs) = try await paired(macs: [1])
+        let session = HostedRelaySession(client: phone)
+        let zone = dataZone(macs[0])
+        let probe = Probe()
+        probes.append((session, probe))
+        let busy = Latch()
+        let release = Latch()
+        await session.attach(owner: ObjectIdentifier(probe), zones: [zone]) { event in
+            probe.record(event)
+            if case .zoneChanged(_, 1, _) = event {
+                busy.fire()
+                await release.wait()
+            }
+        }
+        await eventually { probe.zoneEvents.contains { $0.zone == zone } }
+        // 250 KiB a record: the first is being handled, four wait within the 1 MiB bound, the sixth does not.
+        let body = Data(repeating: 1, count: 250 << 10)
+        for index in 1...6 {
+            var item = Relay_V1_SaveItem()
+            item.record.zone = zone
+            item.record.name = "r\(index)"
+            item.record.envelope = body
+            var save = Relay_V1_Save()
+            save.items = [item]
+            _ = try await macs[0].save(save)
+            if index == 1 { await eventually { busy.fired } }
+        }
+        // A small one after them fits again: once it waits too, the session has routed all seven.
+        _ = try await self.save(macs[0], zone, "tail")
+        while await session.unreadRecordBytes(owner: ObjectIdentifier(probe)) != 4 * body.count + "tail".utf8.count {
+            pump()
+            await Task.yield()
+        }
+        release.fire()
+        await eventually { probe.zoneEvents.contains { $0.seq == 7 } }
+
+        let counts = probe.events.compactMap { event -> Int? in
+            guard case .zoneChanged(_, let seq, let records) = event, seq > 0 else { return nil }
+            return records.count
+        }
+        XCTAssertEqual(counts, [1, 1, 1, 1, 1, 0, 1], "the sixth is over the bound; the small seventh fits")
+    }
+
     func testRemovingATransportKeepsTheOthersSubscribed() async throws {
         let (phone, tally, macs) = try await paired(macs: [1, 3])
         let session = HostedRelaySession(client: phone)
@@ -690,7 +737,7 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
 
         var zoneEvents: [ZoneEvent] {
             events.compactMap { event in
-                guard case let .zoneChanged(zone, seq) = event else { return nil }
+                guard case let .zoneChanged(zone, seq, _) = event else { return nil }
                 return ZoneEvent(zone: zone, seq: seq)
             }
         }

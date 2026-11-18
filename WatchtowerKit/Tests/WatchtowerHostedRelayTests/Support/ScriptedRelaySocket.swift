@@ -120,10 +120,13 @@ final class ScriptedRelaySocket: RelaySocket, @unchecked Sendable {
         deliver(.binary(try! frame.serializedData()))
     }
 
-    func pushZoneChanged(_ zone: String, seq: UInt64) {
+    /// `records` as a relay with "records_inline" sends them; `record` alone as an older one does.
+    func pushZoneChanged(_ zone: String, seq: UInt64, records: [Relay_V1_Record] = [], record: Relay_V1_Record? = nil) {
         var changed = Relay_V1_ZoneChanged()
         changed.zone = zone
         changed.seq = seq
+        changed.records = records
+        if let record { changed.record = record }
         var frame = Relay_V1_Frame()
         frame.event.zoneChanged = changed
         push(frame)

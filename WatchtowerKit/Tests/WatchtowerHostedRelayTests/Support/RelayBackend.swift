@@ -280,7 +280,7 @@ class HostedRelayScenarioCase: XCTestCase {
     /// skipping other events; nil when the stream ended first.
     func nextZoneEvent(_ events: EventProbe, _ zone: String, file: StaticString = #filePath, line: UInt = #line) async -> UInt64? {
         while let event = await events.next(file: file, line: line) {
-            if case .zoneChanged(zone, let seq) = event { return seq }
+            if case .zoneChanged(zone, let seq, _) = event { return seq }
         }
         return nil
     }

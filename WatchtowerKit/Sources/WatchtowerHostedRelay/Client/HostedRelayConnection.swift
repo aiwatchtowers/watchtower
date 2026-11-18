@@ -528,7 +528,9 @@ public final class HostedRelayConnection: Sendable {
             case .control(let control):
                 buffer.push(.control(kind: control.kind, detail: control.detail))
             case .zoneChanged(let changed):
-                if wants(changed.zone) { buffer.zoneChanged(changed.zone, seq: changed.seq) }
+                // `records` from a relay with "records_inline"; an older one sends only the single `record`.
+                let records = changed.records.isEmpty && changed.hasRecord ? [changed.record] : changed.records
+                if wants(changed.zone) { buffer.zoneChanged(changed.zone, seq: changed.seq, records: records) }
             case nil:
                 break
             }
