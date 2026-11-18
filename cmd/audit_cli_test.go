@@ -429,8 +429,10 @@ var cliNoContentCommands = map[string]bool{
 	// Folder membership: the owner's own local folder paths and names, no
 	// synced content (as workbench create/list).
 	"workbench folder add":             true,
+	"workbench folder decline":         true, // prints ok only
 	"workbench folder list":            true,
 	"workbench folder locate":          true,
+	"workbench folder quiet":           true, // prints ok only
 	"workbench folder remove":          true,
 	"workbench git branches":           true,
 	"workbench git checkout":           true,
@@ -443,6 +445,7 @@ var cliNoContentCommands = map[string]bool{
 	"workbench message dismiss":        true, // prints an id only
 	"workbench message send":           true, // prints an id and a state only
 	"workbench methodology":            true,
+	"workbench outside-touch":          true, // hook: prints a repository root of the owner's, never content
 	"workbench permission-wait":        true,
 	"workbench resync":                 true,
 	"workbench review approve":         true,

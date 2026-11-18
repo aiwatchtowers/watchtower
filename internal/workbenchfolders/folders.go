@@ -509,7 +509,7 @@ func checkBench(ctx context.Context, tx *sql.Tx, workbenchID int64) error {
 // checkFree refuses folder for workbench workbenchID when a live folder other
 // than self already is it (already_here / other_bench) or nests with it
 // (nested).
-func checkFree(ctx context.Context, tx *sql.Tx, workbenchID, self int64, folder string) error {
+func checkFree(ctx context.Context, tx querier, workbenchID, self int64, folder string) error {
 	live, err := liveFolders(ctx, tx, 0, self)
 	if err != nil {
 		return err
@@ -558,9 +558,15 @@ func uniqueName(ctx context.Context, tx *sql.Tx, workbenchID int64, folder strin
 	return db.UniqueFolderName(folder, func(n string) bool { return taken[strings.ToLower(n)] }), nil
 }
 
+// querier reads rows: a caller's transaction or the database itself.
+type querier interface {
+	db.Querier
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
 // liveFolders reads the live folders of workbenchID (0 = of every bench)
-// inside tx, by id, leaving out folder except (0 = none).
-func liveFolders(ctx context.Context, tx *sql.Tx, workbenchID, except int64) ([]db.WorkbenchFolder, error) {
+// through tx, by id, leaving out folder except (0 = none).
+func liveFolders(ctx context.Context, tx querier, workbenchID, except int64) ([]db.WorkbenchFolder, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT id, workbench_id, folder_path, name, position, added_at, added_by, removed_at
 		FROM workbench_folders WHERE removed_at IS NULL AND (? = 0 OR workbench_id = ?) AND id <> ? ORDER BY id`,
 		workbenchID, workbenchID, except)
