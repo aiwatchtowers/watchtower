@@ -1,6 +1,9 @@
 package watchman
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestRedact_KnownSecretShapes(t *testing.T) {
 	cases := []struct{ name, in, want string }{
@@ -57,5 +60,15 @@ func TestClip_RuneSafe(t *testing.T) {
 	}
 	if got := Clip("abc", 0); got != "" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestItemQuestion_RedactsAndClips(t *testing.T) {
+	if got := ItemQuestion("  use ghp_abcdefghijklmnopqrstuvwxyz0123 here \n"); got != "use [secret] here" { // leak-check:allow
+		t.Fatalf("got %q", got)
+	}
+	long := ItemQuestion(strings.Repeat("a", ItemQuestionLimit+10))
+	if n := len([]rune(long)); n != ItemQuestionLimit {
+		t.Fatalf("clipped to %d runes", n)
 	}
 }

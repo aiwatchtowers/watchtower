@@ -225,3 +225,333 @@ func TestSetWatchmanItemKind_CollisionIsSentinel(t *testing.T) {
 	require.False(t, ok)
 	require.ErrorIs(t, err, ErrWatchmanItemExists)
 }
+
+// wmArmSession arms session id directly.
+func wmArmSession(t *testing.T, d *DB, id int64) {
+	t.Helper()
+	require.NoError(t, d.UpsertWatchmanArming(WatchmanArming{Scope: "session", RefID: id, ArmedAt: time.Now(), ArmedBy: "cli"}))
+}
+
+// wmPendingPermission records a pending permission request of session.
+func wmPendingPermission(t *testing.T, d *DB, session, workbench int64) int64 {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO permission_requests (terminal_session_id, workbench_id, tool_name, summary, status, created_at)
+		VALUES (?, ?, 'Bash', 'ls -la token=abc123SECRETxyz', 'pending', '2026-11-18T01:00:00.000Z')`, session, workbench)
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+	return id
+}
+
+func TestScanWatchmanWaitPoints_QueuesMissed(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	armed := newTestSession(t, d, wb)
+	wmArmSession(t, d, armed)
+	other := newTestSession(t, d, wb) // not armed
+	auto := newTestSession(t, d, wb)
+	wmArmSession(t, d, auto)
+	_, run := seedRunningAutomationRun(t, d)
+	_, err := d.Exec(`UPDATE terminal_sessions SET automation_run_id = ? WHERE id = ?`, run, auto)
+	require.NoError(t, err)
+
+	ask := questionAsk(wb, "Which store?")
+	ask.Summary = "SQLite or files"
+	ask.SessionID = nullID(armed)
+	askID := mustInsertAsk(t, d, ask)
+	perm := wmPendingPermission(t, d, armed, wb)
+	unarmed := questionAsk(wb, "Not armed")
+	unarmed.SessionID = nullID(other)
+	mustInsertAsk(t, d, unarmed)
+	wmPendingPermission(t, d, other, wb)
+	autoAsk := questionAsk(wb, "Automation's")
+	autoAsk.SessionID = nullID(auto)
+	mustInsertAsk(t, d, autoAsk)
+	runAsk := questionAsk(wb, "Run's own")
+	runAsk.SessionID = nullID(armed)
+	runAsk.AutomationRunID = nullID(run)
+	mustInsertAsk(t, d, runAsk)
+
+	now := time.Date(2026, 11, 18, 2, 0, 0, 0, time.UTC)
+	n, err := d.ScanWatchmanWaitPoints(now, func(s string) string { return "clean:" + s })
+	require.NoError(t, err)
+	require.Equal(t, 2, n)
+
+	it, err := d.WatchmanItemByRef("ask", askID, "ask")
+	require.NoError(t, err)
+	require.NotNil(t, it)
+	require.Equal(t, "clean:Which store?\nSQLite or files", it.Question)
+	require.Equal(t, armed, it.SessionID)
+	require.Equal(t, wb, it.WorkbenchID)
+	require.Equal(t, "queued", it.State)
+	require.True(t, it.CreatedAt.Equal(now))
+	p, err := d.WatchmanItemByRef("permission", perm, "permission")
+	require.NoError(t, err)
+	require.NotNil(t, p)
+	require.Equal(t, "clean:Tool: Bash\nls -la token=abc123SECRETxyz", p.Question)
+
+	n, err = d.ScanWatchmanWaitPoints(now, func(s string) string { return s })
+	require.NoError(t, err)
+	require.Equal(t, 0, n, "a second scan finds nothing new")
+	var total int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM watchman_items`).Scan(&total))
+	require.Equal(t, 2, total, "the automation's asks and the unarmed session's wait points are never queued")
+
+	// An ask whose item changed kind (a handover) is not queued again as an ask.
+	ok, err := d.SetWatchmanItemKind("ask", askID, "ask", "handover")
+	require.NoError(t, err)
+	require.True(t, ok)
+	n, err = d.ScanWatchmanWaitPoints(now, func(s string) string { return s })
+	require.NoError(t, err)
+	require.Equal(t, 0, n)
+}
+
+func TestQueueWatchmanWaitPoint_OnlyArmed(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	s := newTestSession(t, d, wb)
+	it := WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "review_doc", RefKind: "ask", RefID: 9, Question: "q"}
+	id, ins, err := d.QueueWatchmanWaitPoint(it)
+	require.NoError(t, err)
+	require.False(t, ins)
+	require.Zero(t, id, "an unarmed session queues nothing")
+
+	wmArmSession(t, d, s)
+	id, ins, err = d.QueueWatchmanWaitPoint(it)
+	require.NoError(t, err)
+	require.True(t, ins)
+	require.NotZero(t, id)
+
+	_, run := seedRunningAutomationRun(t, d)
+	_, err = d.Exec(`UPDATE terminal_sessions SET automation_run_id = ? WHERE id = ?`, run, s)
+	require.NoError(t, err)
+	it.RefID = 10
+	id, _, err = d.QueueWatchmanWaitPoint(it)
+	require.NoError(t, err)
+	require.Zero(t, id, "an ask of an automation's session is never the twin's")
+	it.Kind, it.RefKind = "permission", "permission"
+	id, _, err = d.QueueWatchmanWaitPoint(it)
+	require.NoError(t, err)
+	require.NotZero(t, id, "its permission prompts are")
+}
+
+func TestWatchmanAskItemKind(t *testing.T) {
+	require.Equal(t, "ask", WatchmanAskItemKind("question"))
+	require.Equal(t, "review_doc", WatchmanAskItemKind("review"))
+	require.Equal(t, "check", WatchmanAskItemKind("check"))
+}
+
+// A writer that queues the ask between the scan's read and its insert — even
+// under another kind (a handover) — wins: the scan adds no second row.
+func TestScanWatchmanWaitPoints_RaceWithWriterKeepsOneRow(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	s := newTestSession(t, d, wb)
+	wmArmSession(t, d, s)
+	ask := questionAsk(wb, "Images later?")
+	ask.SessionID = nullID(s)
+	askID := mustInsertAsk(t, d, ask)
+	prev := watchmanScanBeforeInsert
+	watchmanScanBeforeInsert = func() {
+		_, ins, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "handover", RefKind: "ask", RefID: askID})
+		require.NoError(t, err)
+		require.True(t, ins)
+	}
+	t.Cleanup(func() { watchmanScanBeforeInsert = prev })
+
+	n, err := d.ScanWatchmanWaitPoints(time.Now(), func(s string) string { return s })
+	require.NoError(t, err)
+	require.Zero(t, n)
+	var total int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM watchman_items WHERE ref_kind = 'ask' AND ref_id = ?`, askID).Scan(&total))
+	require.Equal(t, 1, total)
+}
+
+// The writers use the scan's automation filter: an ask an automation run
+// filed is not queued even from a session no automation started.
+func TestQueueWatchmanWaitPoint_AutomationRunAskSkipped(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	s := newTestSession(t, d, wb)
+	wmArmSession(t, d, s)
+	_, run := seedRunningAutomationRun(t, d)
+	ask := questionAsk(wb, "Run's own")
+	ask.SessionID = nullID(s)
+	ask.AutomationRunID = nullID(run)
+	askID := mustInsertAsk(t, d, ask)
+	id, _, err := d.QueueWatchmanWaitPoint(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "ask", RefKind: "ask", RefID: askID})
+	require.NoError(t, err)
+	require.Zero(t, id)
+}
+
+// A wait point with an item of another kind keeps that one item.
+func TestQueueWatchmanWaitPoint_AnyKindKeepsOneRow(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	s := newTestSession(t, d, wb)
+	wmArmSession(t, d, s)
+	first, ins, err := d.QueueWatchmanWaitPoint(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "ask", RefKind: "ask", RefID: 7})
+	require.NoError(t, err)
+	require.True(t, ins)
+	id, ins, err := d.QueueWatchmanWaitPoint(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "handover", RefKind: "ask", RefID: 7})
+	require.NoError(t, err)
+	require.False(t, ins)
+	require.Equal(t, first, id)
+}
+
+// A scan that queues the ask as an ordinary ask between the handover's read
+// and its write transaction: the end state is exactly one handover row.
+func TestPromoteWatchmanHandover_RaceWithScanEndsAsOneHandover(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	s := newTestSession(t, d, wb)
+	wmArmSession(t, d, s)
+	ask := questionAsk(wb, "Images later?")
+	ask.SessionID = nullID(s)
+	askID := mustInsertAsk(t, d, ask)
+	prev := watchmanHandoverBeforeWrite
+	watchmanHandoverBeforeWrite = func() {
+		n, err := d.ScanWatchmanWaitPoints(time.Now(), func(s string) string { return s })
+		require.NoError(t, err)
+		require.Equal(t, 1, n, "the scan queued the ask as an ask")
+	}
+	t.Cleanup(func() { watchmanHandoverBeforeWrite = prev })
+
+	promoted, inserted, err := d.PromoteWatchmanHandover(WatchmanItem{WorkbenchID: wb, SessionID: s, RefID: askID, Question: "q"})
+	require.NoError(t, err)
+	require.True(t, promoted)
+	require.False(t, inserted)
+	var kinds []string
+	rows, err := d.Query(`SELECT kind FROM watchman_items WHERE ref_kind = 'ask' AND ref_id = ?`, askID)
+	require.NoError(t, err)
+	defer rows.Close()
+	for rows.Next() {
+		var k string
+		require.NoError(t, rows.Scan(&k))
+		kinds = append(kinds, k)
+	}
+	require.NoError(t, rows.Err())
+	require.Equal(t, []string{"handover"}, kinds)
+}
+
+// With no row at all an open ask is inserted as a handover; one that is no
+// longer open is not.
+func TestPromoteWatchmanHandover_InsertsOnlyForOpenAsk(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	s := newTestSession(t, d, wb)
+	wmArmSession(t, d, s)
+	open := questionAsk(wb, "Open")
+	open.SessionID = nullID(s)
+	openID := mustInsertAsk(t, d, open)
+	_, inserted, err := d.PromoteWatchmanHandover(WatchmanItem{WorkbenchID: wb, SessionID: s, RefID: openID, Question: "q"})
+	require.NoError(t, err)
+	require.True(t, inserted)
+	it, err := d.WatchmanItemByRef("ask", openID, "handover")
+	require.NoError(t, err)
+	require.NotNil(t, it)
+
+	done := questionAsk(wb, "Answered")
+	done.SessionID = nullID(s)
+	doneID := mustInsertAsk(t, d, done)
+	markAskAnswered(t, d, doneID)
+	promoted, inserted, err := d.PromoteWatchmanHandover(WatchmanItem{WorkbenchID: wb, SessionID: s, RefID: doneID, Question: "q"})
+	require.NoError(t, err)
+	require.False(t, promoted)
+	require.False(t, inserted)
+	it, err = d.WatchmanItemByRef("ask", doneID, "handover")
+	require.NoError(t, err)
+	require.Nil(t, it)
+}
+
+// The insert keeps the wait-point guards: an unarmed session, a session an
+// automation started and an ask an automation run filed get no handover.
+func TestPromoteWatchmanHandover_InsertKeepsGuards(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	_, run := seedRunningAutomationRun(t, d)
+	unarmed := newTestSession(t, d, wb)
+	autoSession := newTestSession(t, d, wb)
+	wmArmSession(t, d, autoSession)
+	_, err := d.Exec(`UPDATE terminal_sessions SET automation_run_id = ? WHERE id = ?`, run, autoSession)
+	require.NoError(t, err)
+	armed := newTestSession(t, d, wb)
+	wmArmSession(t, d, armed)
+	for name, c := range map[string]struct {
+		session int64
+		run     bool
+	}{"unarmed": {unarmed, false}, "automation session": {autoSession, false}, "automation run's ask": {armed, true}} {
+		ask := questionAsk(wb, name)
+		ask.SessionID = nullID(c.session)
+		if c.run {
+			ask.AutomationRunID = nullID(run)
+		}
+		id := mustInsertAsk(t, d, ask)
+		_, inserted, err := d.PromoteWatchmanHandover(WatchmanItem{WorkbenchID: wb, SessionID: c.session, RefID: id, Question: "q"})
+		require.NoError(t, err, name)
+		require.False(t, inserted, name)
+		it, err := d.WatchmanItemByRef("ask", id, "handover")
+		require.NoError(t, err)
+		require.Nil(t, it, name)
+	}
+}
+
+func TestParkWatchmanGuard_EachDenialIsItsOwnItemOnItsNight(t *testing.T) {
+	d := openTestDB(t)
+	wmTestWorkbench(t, d, 1)
+	night1 := time.Date(2026, 11, 1, 2, 0, 0, 0, time.UTC)
+	night2 := night1.AddDate(0, 0, 1)
+	park := func(reason, line string, at time.Time) {
+		t.Helper()
+		require.NoError(t, d.ParkWatchmanGuard(WatchmanItem{WorkbenchID: 1, SessionID: 7, TargetID: 3, Question: line, ParkReason: reason}, at))
+	}
+	park("main_ref", "main_ref — Bash: git push origin main", night1)
+	park("main_ref", "main_ref — Bash: git push origin main", night2) // the same denial on the next night
+	rows, err := d.Query(`SELECT ` + watchmanItemCols + ` FROM watchman_items ORDER BY id`)
+	require.NoError(t, err)
+	defer rows.Close()
+	var items []*WatchmanItem
+	for rows.Next() {
+		it, err := scanWatchmanItem(rows)
+		require.NoError(t, err)
+		items = append(items, it)
+	}
+	require.NoError(t, rows.Err())
+	require.Len(t, items, 2)
+	for i, at := range []time.Time{night1, night2} {
+		it := items[i]
+		require.Equal(t, "guard", it.Kind)
+		require.Equal(t, "guard", it.RefKind)
+		require.Equal(t, int64(i+1), it.RefID)
+		require.Equal(t, int64(7), it.SessionID)
+		require.Equal(t, int64(3), it.TargetID)
+		require.Equal(t, "done", it.State)
+		require.Equal(t, "parked", it.Outcome)
+		require.True(t, it.Unsure)
+		require.Equal(t, "main_ref", it.ParkReason)
+		require.Equal(t, "main_ref — Bash: git push origin main", it.Question)
+		require.True(t, it.CreatedAt.Equal(at), "created on its night")
+		require.True(t, it.DecidedAt.Equal(at))
+	}
+	// A guard item never collides with another wait point's numbers.
+	_, ins, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: 1, Kind: "ask", RefKind: "ask", RefID: 1})
+	require.NoError(t, err)
+	require.True(t, ins)
+}
+
+func TestMigration00201_GuardRefKindKeepsRows(t *testing.T) {
+	d := openTestDB(t)
+	wmTestWorkbench(t, d, 1)
+	id := wmQueueAsk(t, d, 5)
+	var sql string
+	require.NoError(t, d.QueryRow(`SELECT sql FROM sqlite_master WHERE name = 'watchman_items'`).Scan(&sql))
+	require.Contains(t, sql, "'guard'))")
+	for _, idx := range []string{"idx_watchman_items_queue", "idx_watchman_items_wb", "idx_watchman_items_created"} {
+		var n int
+		require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?`, idx).Scan(&n))
+		require.Equal(t, 1, n, idx)
+	}
+	var q string
+	require.NoError(t, d.QueryRow(`SELECT question FROM watchman_items WHERE id = ?`, id).Scan(&q))
+	require.Equal(t, "q", q)
+}

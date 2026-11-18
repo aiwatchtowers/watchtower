@@ -112,6 +112,11 @@ func TestMain(m *testing.M) {
 	askOwnerDesktop = func(context.Context, string, ownerconfirm.Request) (ownerconfirm.Reply, error) {
 		return ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil
 	}
+	// No cmd test may ask GitHub for a branch protection through a real gh;
+	// the arm tests that want one put a fake gh on PATH (withFakeGh).
+	watchmanProtectionRun = func(context.Context, string, string, ...string) ([]byte, error) {
+		return nil, errors.New("gh is stubbed out in cmd tests")
+	}
 	// No git a cmd test starts may leave maintenance writing into a
 	// t.TempDir repository after it returns.
 	gittest.DisableBackgroundGit()

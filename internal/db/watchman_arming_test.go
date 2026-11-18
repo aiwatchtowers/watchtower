@@ -184,3 +184,21 @@ func TestArmWatchman_KeepsExistingRow(t *testing.T) {
 	require.True(t, got[0].ArmedAt.Equal(t0))
 	require.Equal(t, "desktop", got[0].ArmedBy)
 }
+
+func TestWatchmanArmedSession_ReadsOneSession(t *testing.T) {
+	d := openTestDB(t)
+	wmTestWorkbench(t, d, 1)
+	wmSession(t, d, 10, 1, "claude", nil, false)
+	wmSession(t, d, 11, 1, "claude", nil, false)
+	_, armed, err := d.WatchmanArmedSession(10)
+	require.NoError(t, err)
+	require.False(t, armed)
+	require.NoError(t, d.UpsertWatchmanArming(WatchmanArming{Scope: "session", RefID: 10, ArmedAt: time.Now(), ArmedBy: "cli"}))
+	s, armed, err := d.WatchmanArmedSession(10)
+	require.NoError(t, err)
+	require.True(t, armed)
+	require.Equal(t, ArmedSession{SessionID: 10, WorkbenchID: 1, Folder: "/tmp/acme-s", WorkbenchFolder: "/tmp/acme-1ns"}, s)
+	_, armed, err = d.WatchmanArmedSession(11)
+	require.NoError(t, err)
+	require.False(t, armed)
+}

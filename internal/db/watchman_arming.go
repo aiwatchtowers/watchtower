@@ -175,3 +175,18 @@ func (db *DB) WatchmanSessionArmed(sessionID int64) (bool, error) {
 	}
 	return n > 0, nil
 }
+
+// WatchmanArmedSession is session sessionID when it is armed, in one read
+// (the guard hook's whole cost on an unarmed session); armed is false
+// otherwise.
+func (db *DB) WatchmanArmedSession(sessionID int64) (s ArmedSession, armed bool, err error) {
+	rows, err := db.Query(armedSessionsFrom+` AND ts.id = ?`, sessionID)
+	if err != nil {
+		return ArmedSession{}, false, fmt.Errorf("reading watchman arming of session %d: %w", sessionID, err)
+	}
+	list, err := scanArmedSessions(rows)
+	if err != nil || len(list) == 0 {
+		return ArmedSession{}, false, err
+	}
+	return list[0], true, nil
+}

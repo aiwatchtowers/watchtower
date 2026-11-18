@@ -50,6 +50,7 @@ import (
 	"watchtower/internal/targets"
 	"watchtower/internal/tracks"
 	"watchtower/internal/ui"
+	"watchtower/internal/watchmanact"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -945,6 +946,10 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	// While anything is handed to Watchman the daemon keeps the Mac awake
 	// under its own reason (daemon.WatchmanAwakeReason).
 	d.SetWatchmanAwake(platform.NewAwake().Hold)
+	// Every armed session's worktree keeps Watchman's git hooks (spec §5 item 1).
+	d.SetWatchmanHooks(func(ctx context.Context, worktree string) error {
+		return watchmanact.EnsureHooks(ctx, worktree, cfg.WorkspaceDir())
+	})
 	d.SetWatchmanBacktestLaunch(func(workbenchID int64) error {
 		exe, err := watchmanBacktestExe()
 		if err != nil {
