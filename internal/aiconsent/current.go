@@ -196,12 +196,12 @@ var ErrAmbiguousConfig = errors.New("config.yaml sets ai or ai.background_runs m
 
 // CheckUnambiguous reports ErrAmbiguousConfig (wrapped with the key) when
 // data, a config.yaml's bytes, holds `ai` or `ai.background_runs` more than
-// once without regard to case. Bytes that do not parse are not its concern
-// (the reader reports them): nil.
+// once without regard to case. Bytes that do not parse are an error too: a
+// writer never replaces a file it cannot read.
 func CheckUnambiguous(data []byte) error {
 	var root map[string]any
 	if err := yaml.Unmarshal(data, &root); err != nil {
-		return nil
+		return fmt.Errorf("parsing config: %w", err)
 	}
 	ai, ok := lookupFold(root, "ai")
 	if !ok {

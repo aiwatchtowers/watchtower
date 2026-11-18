@@ -397,7 +397,7 @@ func TestCurrent_SingleCaseVariantReads(t *testing.T) {
 
 func TestCheckUnambiguous(t *testing.T) {
 	for _, ok := range []string{
-		"", "a: 1\n", "ai: {background_runs: allowed}\n", "AI: {Background_Runs: paused}\n", "not: [yaml\n",
+		"", "a: 1\n", "ai: {background_runs: allowed}\n", "AI: {Background_Runs: paused}\n",
 	} {
 		if err := CheckUnambiguous([]byte(ok)); err != nil {
 			t.Errorf("%q: %v", ok, err)
@@ -410,5 +410,8 @@ func TestCheckUnambiguous(t *testing.T) {
 		if err := CheckUnambiguous([]byte(bad)); !errors.Is(err, ErrAmbiguousConfig) {
 			t.Errorf("%q: got %v, want ErrAmbiguousConfig", bad, err)
 		}
+	}
+	if err := CheckUnambiguous([]byte("not: [yaml\n")); err == nil || errors.Is(err, ErrAmbiguousConfig) {
+		t.Errorf("unparsable: got %v, want a parse error", err)
 	}
 }
