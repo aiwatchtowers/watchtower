@@ -313,10 +313,10 @@ func newWSTap(rwc io.ReadWriteCloser, c *opCounter) *wsTap {
 	return w
 }
 
+// Write counts before writing, so a fast answer finds its request's op.
 func (w *wsTap) Write(p []byte) (int, error) {
-	n, err := w.ReadWriteCloser.Write(p)
-	w.out.feed(p[:n])
-	return n, err
+	w.out.feed(p)
+	return w.ReadWriteCloser.Write(p)
 }
 
 func (w *wsTap) Read(p []byte) (int, error) {

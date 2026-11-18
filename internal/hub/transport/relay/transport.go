@@ -482,16 +482,21 @@ func (t *Transport) doMapped(ctx context.Context, req *relayv1.Request, mapErr f
 	return resp, nil
 }
 
+// socketOpTimeout bounds one op over the WebSocket, as the relay client's
+// HTTPS timeout bounds one over HTTPS.
+const socketOpTimeout = 30 * time.Second
+
 // send runs one op over the open WebSocket, or over HTTPS without one
 // (before Connect, after Close; the sign-in ops, which make the socket's
 // session, never come here). A request the socket refused before writing
 // any of it (client.ErrNotSent: no socket while it reconnects) or the relay
 // refused UNAUTHENTICATED (the socket's session expired; HTTPS signs in
 // again) goes over HTTPS whatever its op: the relay never ran it. A socket
-// lost after the frame went out leaves the outcome unknown: an op safe to
-// run twice (resendable) is sent again over HTTPS, any other returns
-// client.ErrDisconnected — transport.ErrUnavailable after MapError — and its
-// caller's retry re-reads before writing again.
+// lost after the frame went out, or no answer within socketOpTimeout, leaves
+// the outcome unknown: an op safe to run twice (resendable) is sent again
+// over HTTPS, any other returns client.ErrDisconnected —
+// transport.ErrUnavailable after MapError — and its caller's retry re-reads
+// before writing again. The caller's own ctx ending returns its error.
 func (t *Transport) send(ctx context.Context, req *relayv1.Request) (*relayv1.Response, error) {
 	t.mu.Lock()
 	conn := t.conn
@@ -502,14 +507,21 @@ func (t *Transport) send(ctx context.Context, req *relayv1.Request) (*relayv1.Re
 	if conn == nil {
 		return t.c.Do(ctx, req)
 	}
-	resp, err := conn.Send(ctx, req)
+	sctx, cancel := context.WithTimeout(ctx, socketOpTimeout)
+	defer cancel()
+	resp, err := conn.Send(sctx, req)
+	unknown := errors.Is(err, client.ErrDisconnected) || (err != nil && sctx.Err() != nil)
 	switch {
 	case errors.Is(err, client.ErrNotSent), client.Code(err) == relayv1.ErrorCode_ERROR_CODE_UNAUTHENTICATED:
 		return t.c.Do(ctx, req)
-	case errors.Is(err, client.ErrDisconnected) && ctx.Err() != nil:
+	case unknown && ctx.Err() != nil:
 		return nil, ctx.Err()
-	case errors.Is(err, client.ErrDisconnected) && resendable(req):
+	case unknown && resendable(req):
 		return t.c.Do(ctx, req)
+	case unknown:
+		// Not sctx's DeadlineExceeded: MapError passes a ctx error through
+		// as the caller's own, and this is a relay that did not answer.
+		return nil, fmt.Errorf("relay: no answer over the websocket: %w", client.ErrDisconnected)
 	}
 	return resp, err
 }

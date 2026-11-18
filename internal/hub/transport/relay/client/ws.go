@@ -35,6 +35,8 @@ var ErrDisconnected = errors.New("relay: websocket disconnected")
 
 // ErrNotSent is the ErrDisconnected of a request refused before any of it was written (no socket
 // at the time): the server never saw it, so it may be sent another way. It matches ErrDisconnected.
+// Local to this copy until the relay repo's client carries it (upstreamed in the live link relay
+// branch, #1992), so a re-pin by make relay-go keeps it.
 var ErrNotSent = fmt.Errorf("%w: request not sent", ErrDisconnected)
 
 // errUnauthenticated: the server refused the session at hello.

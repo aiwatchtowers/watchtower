@@ -336,7 +336,9 @@ rulings asks #827, #881, #883). The hub leaves the test workspace for real data 
   `UNAUTHENTICATED` — any op then. A socket lost after the frame went out leaves the outcome unknown: reads
   (`changes`, `get_account_state`, `get_download`) and saves/deletes whose every item is conditional are sent again
   over HTTPS (a landed item comes back as a conflict on the hub's own record); any other op returns
-  `transport.ErrUnavailable` and its caller's retry re-reads. `ErrNotSent` is a local change to the vendored client
+  `transport.ErrUnavailable` and its caller's retry re-reads. An op unanswered for 30 s (`socketOpTimeout`, the HTTPS
+  client's timeout) is such an unknown outcome too. A ctx that expires while its frame is being written closes the
+  whole socket (coder/websocket), so the live link reconnects and re-reads its zones. `ErrNotSent` is a local change to the vendored client
   (`client/ws.go`) to upstream to the relay repository. `relaytest` serves every WebSocket request as over HTTPS
   (`Requests` lists both; `Ops` marks the socket's `ws:<op>`), and `DropAfterNext(op)` cuts a socket after running
   the op, unanswered.

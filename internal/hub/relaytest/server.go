@@ -128,6 +128,7 @@ type Server struct {
 	downloadBase       string              // get_download URL base ("" = this server)
 	saveOverride       *relayv1.SaveResult // answered to the next save instead
 	dropAfter          map[string]int      // op → WebSocket requests to run and then cut unanswered
+	mute               map[string]int      // op → WebSocket requests to run and never answer
 
 	kinds    map[string]relayv1.DeviceKind // registered devices
 	pairings map[string]pairing            // open pairing slots by id
@@ -177,7 +178,7 @@ func start(t testing.TB, inMemory bool) *Server {
 		pageLimit: 500, ready: make(chan struct{}), opSeen: make(chan struct{}),
 		kinds: map[string]relayv1.DeviceKind{}, pairings: map[string]pairing{},
 		slots: map[string][]string{}, paying: map[string]bool{}, conns: map[string]*conn{}, pending: map[string][]frame{},
-		vouches: map[string]map[string]time.Time{}, vouchNonces: map[string]string{}, now: time.Now, dropAfter: map[string]int{},
+		vouches: map[string]map[string]time.Time{}, vouchNonces: map[string]string{}, now: time.Now, dropAfter: map[string]int{}, mute: map[string]int{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/op", s.serveOp)
@@ -485,6 +486,14 @@ func (s *Server) DropAfterNext(op string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dropAfter[op]++
+}
+
+// MuteNext makes the next WebSocket request of op run as usual and never get
+// an answer; the socket stays open (a relay that hangs on one request).
+func (s *Server) MuteNext(op string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.mute[op]++
 }
 
 // SetWebSocketDown cuts every open WebSocket and refuses new ones (503)
@@ -1217,6 +1226,13 @@ func (s *Server) end(c *conn) {
 	close(c.done)
 }
 
+// wsReadLimit is the largest WebSocket message the fake reads: an op body
+// up to MaxBodyBytes plus its frame's envelope (the relay checks a socket
+// frame against its record cap plus its extra frame bytes, as an HTTPS body).
+// A frame over MaxBodyBytes that fits is answered RECORD_TOO_LARGE, as over
+// HTTPS.
+const wsReadLimit = MaxBodyBytes + 4<<10
+
 func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	down := s.wsDown
@@ -1229,6 +1245,7 @@ func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	ws.SetReadLimit(wsReadLimit)
 	ctx := context.Background()
 	_, b, err := ws.Read(ctx)
 	if err != nil {
@@ -1284,14 +1301,19 @@ func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 			// vouched.
 			answer = s.answerLocked(c.device, req, len(b))
 		}
-		drop := s.dropAfter[op] > 0
+		drop, mute := s.dropAfter[op] > 0, s.mute[op] > 0
 		if drop {
 			s.dropAfter[op]--
+		} else if mute {
+			s.mute[op]--
 		}
 		s.mu.Unlock()
 		if drop {
 			_ = ws.CloseNow()
 			return
+		}
+		if mute {
+			continue
 		}
 		answer = proto.Clone(answer).(*relayv1.Response)
 		answer.Id = req.GetId()
