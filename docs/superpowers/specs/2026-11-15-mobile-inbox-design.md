@@ -308,7 +308,7 @@ Contracts in `docs/inventory/` that name a moved Swift type are re-pointed to th
 - **Capability.** `wire.HeartbeatCapabilities` gains `inbox: "on" | "policy_off"`, with the reason `policy` under `workbench_only`. A missing key means an older hub, as it does for `chat`. The tab's copy names the hub ("Update Watchtower on <hub name>") through `TowerText`, so the copy is right on a server hub too.
 - **One action kind, `inbox_act`.** Its params are the generated `inbox.act` request, and its handler calls `tower.Call`.
   - The dispatcher asks the registration whether a call is idempotent, by verb. That table is pinned in `hub_contract_cases.json`.
-  - Grants (ask #1349): `permissions` for approve and retry; `typing` for `reply_propose` and for a `reply` press with text; none for everything else.
+  - Grants (ask #1349, widened by ask #1459): `permissions` for approve, retry and dismiss on an approval, for `ref` `make_task`, and for every button press except Reply; `typing` for `reply_propose` and for a `reply` press; none for everything else (done, snooze, hide, folders, plan items, open/read).
   - The handler nudges `inbox_card` and `inbox_folder`.
 - **Building the feed.** The hub builds the feed outside any write transaction. A failed build keeps the last records and logs its error class.
 
@@ -479,7 +479,7 @@ A path that fails its check does not switch. Speed is a gate.
 - The work is staged: the core with the Mac on it, then the phone, then the chat writes — ask #1356. Stage 0 (the interface) follows from ask #1362.
 - The tab sits second, after Now — ask #1349.
 - The badge counts only what waits on the owner — ask #1349.
-- Approve and Retry from the phone need the `permissions` grant — ask #1349.
+- Approve and Retry from the phone need the `permissions` grant — ask #1349. Dismiss on an approval, Make a Task and a target or card button press need it too, as the code ships (AGENT-07 owner gestures) — ask #1459.
 - Management, chat and agent stay on the Mac, and v1 has no push — ask #1349.
 - The Desktop's chat writes move to Go in this work, on condition that the UX gets no worse — ask #1361.
 - The clients share the contract, the client and the screen models, and keep their own views — ask #1362.
@@ -497,12 +497,12 @@ A path that fails its check does not switch. Speed is a gate.
 - One ledger, `tower_requests`, gives exactly-once delivery for both transports.
 - Over the socket, approve and retry wait for the tool (capped at 120 s); over the hub they return after the decision. The `reply` press always returns once its run is queued. No write transaction is held across the tool.
 - Run Now reuses the `automation_run` function and is non-idempotent.
-- Make a Task on a track is a `ref` verb over the existing propose path, with no grant.
+- Make a Task on a track is a `ref` verb over the existing propose path; from the phone it needs `permissions` (ask #1459).
 - On the phone, Thread briefs become a list document and Messages a notice card. Stopped tracks stay inside the tracks card.
 - `workbench_only` maps to `policy_off`. A missing key means an older hub, and the copy names the hub.
 - The Mac's warm `ai session` saves its own turn (`--persist`), and the hub runner does not run Mac turns. This applies ask #1361.
 - Speed is a gate: the socket feed takes at most 100 ms median, a write at most 15 ms, and the chat start is no slower.
-- Reply needs `typing`, and other Inbox actions need no grant, as for board writes.
+- Reply needs `typing`; approval dismiss, Make a Task and button presses need `permissions` (ask #1459); the other Inbox actions need no grant, as for board writes.
 - Legacy entries are typed sections for the Mac and block projections for the phone.
 - CatchUp, digests, chat-made ideas and `targets.status` writes move with the rest, because they write the same rows — ask #1362 ("everyone who writes the same rows").
 - The phone gets at most 300 cards, with Needs approval and Waiting for me first.
