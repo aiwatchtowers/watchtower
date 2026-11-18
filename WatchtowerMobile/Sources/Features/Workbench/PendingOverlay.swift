@@ -55,6 +55,9 @@ struct PendingOverlay: Equatable, Identifiable {
     /// A create's or comment's same-content records that predate the tap, learnt at its first pass: only a newer
     /// one hides the overlay.
     var earlierMatches: Set<Int64>?
+    /// A newer write to the same field whose save is still running: this overlay is no longer shown, and comes
+    /// back only if that save throws.
+    var supersededBy: String?
 
     var id: String { actionID }
 
@@ -115,10 +118,14 @@ final class OverlayBook {
         PendingOverlay(actionID: actionID, hubID: hubID, entityID: entityID, expected: expected, createdAt: createdAt)
     }
 
-    /// Adds a write's overlay at the tap. While its save runs, an older overlay of the same field stays (it shows
-    /// under the newer one) so a save that throws leaves it as it was; `supersede` drops it once the save is queued.
+    /// Adds a write's overlay at the tap; it shows at once. An older overlay of the same status, priority or answer
+    /// is set aside (not shown) while the newer save runs: `remove` brings it back if that save throws, `supersede`
+    /// deletes it once the save is queued.
     func add(_ overlay: PendingOverlay) {
         guard overlay.hubID == hubID, !overlays.contains(where: { $0.actionID == overlay.actionID }) else { return }
+        for index in overlays.indices where Self.sameField(overlays[index], overlay) && overlays[index].supersededBy == nil {
+            overlays[index].supersededBy = overlay.actionID
+        }
         overlays.append(overlay)
         taps[overlay.actionID] = (Self.actionKind(overlay), overlay.createdAt)
         onChange?()
@@ -127,20 +134,27 @@ final class OverlayBook {
     /// The newest write to a field wins: once `overlay`'s save is queued, the older overlays of the same status,
     /// priority or answer go (their timings still count).
     func supersede(by overlay: PendingOverlay) {
-        guard let entity = overlay.entityID, [.status, .priority, .askAnswer].contains(overlay.kind) else { return }
         let before = overlays.count
-        overlays.removeAll {
-            $0.actionID != overlay.actionID && $0.entityID == entity && $0.kind == overlay.kind && $0.createdAt <= overlay.createdAt
-        }
+        overlays.removeAll { $0.supersededBy == overlay.actionID }
         if overlays.count != before { onChange?() }
     }
 
-    /// Takes back the overlay of a write that was never queued (its save threw).
+    /// Takes back the overlay of a write that was never queued (its save threw); an older write it set aside
+    /// shows again.
     func remove(actionID: String) {
         taps[actionID] = nil
         guard overlays.contains(where: { $0.actionID == actionID }) else { return }
         overlays.removeAll { $0.actionID == actionID }
+        for index in overlays.indices where overlays[index].supersededBy == actionID {
+            overlays[index].supersededBy = nil
+        }
         onChange?()
+    }
+
+    /// Two writes to the same status, priority or answer of one entity.
+    private static func sameField(_ lhs: PendingOverlay, _ rhs: PendingOverlay) -> Bool {
+        guard let entity = rhs.entityID, [.status, .priority, .askAnswer].contains(rhs.kind) else { return false }
+        return lhs.entityID == entity && lhs.kind == rhs.kind && lhs.actionID != rhs.actionID
     }
 
     /// The outbox's echo of one of this tower's actions: `applied` keeps the new record's id and times the tap; a
@@ -178,9 +192,16 @@ final class OverlayBook {
         var claims = Claims(
             targets: confirmed.targets.union(overlays.filter { $0.kind == .create }.compactMap { $0.echo?.createdID }),
             comments: confirmed.comments.union(overlays.filter { $0.kind == .comment }.compactMap { $0.echo?.createdID }))
+        // A write that set an older one aside stays until its own echo or slice, even when the replica already
+        // shows its value (a reversal): the older value is still on its way.
+        let superseding = Set(overlays.compactMap(\.supersededBy))
         for var overlay in overlays {
             guard !refused.contains(overlay.actionID), now < overlay.deadline else { continue }
-            switch Self.state(of: &overlay, in: snapshot, claims: &claims) {
+            if overlay.supersededBy != nil {
+                kept.append(overlay)
+                continue
+            }
+            switch Self.state(of: &overlay, in: snapshot, claims: &claims, superseding: superseding.contains(overlay.actionID)) {
             case .done:
                 if let id = overlay.echo?.createdID {
                     if overlay.kind == .create { confirmed.targets.insert(id) }
@@ -220,18 +241,18 @@ final class OverlayBook {
     }
 
     private static func state(
-        of overlay: inout PendingOverlay, in snapshot: WorkbenchReplicaSnapshot, claims: inout Claims
+        of overlay: inout PendingOverlay, in snapshot: WorkbenchReplicaSnapshot, claims: inout Claims, superseding: Bool
     ) -> State {
         switch overlay.expected {
         case let .status(status):
             let target = snapshot.targets.first { $0.id == overlay.entityID }
-            return change(&overlay, record: target, shows: target.map { $0.status == status } ?? true)
+            return change(&overlay, record: target, shows: !superseding && (target.map { $0.status == status } ?? true))
         case let .priority(priority):
             let target = snapshot.targets.first { $0.id == overlay.entityID }
-            return change(&overlay, record: target, shows: target.map { $0.priority == priority } ?? true)
+            return change(&overlay, record: target, shows: !superseding && (target.map { $0.priority == priority } ?? true))
         case .askAnswer:
             let ask = snapshot.asks.first { $0.id == overlay.entityID }
-            return change(&overlay, record: ask, shows: ask.map { $0.status != .open } ?? true)
+            return change(&overlay, record: ask, shows: !superseding && (ask.map { $0.status != .open } ?? true))
         case let .create(workbenchID, parentID, title, _):
             let ids = snapshot.targets.map(\.id)
             let matches = snapshot.targets

@@ -269,6 +269,49 @@ final class PendingOverlayTests: XCTestCase {
         XCTAssertEqual(shown(try replica(), book, at: t0.addingTimeInterval(0.4)).targets.first { $0.id == 416 }?.status, .inProgress)
     }
 
+    /// Fix round 3: a reversal tap (In progress acked, back to Todo, which the replica still shows) shows Todo at
+    /// the tap and while the save runs; a save that throws brings In progress back; a queued one deletes it.
+    func testAReversalShowsAtTheTapAndRollsBack() async throws {
+        let book = book()
+        let (writer, store) = try writer(book)
+        let todo = try XCTUnwrap(try replica().targets.first { $0.id == 416 })
+        try await writer.setStatus(.inProgress, on: todo)
+        let first = try XCTUnwrap(book.overlays.first).actionID
+        book.receiveEcho(echo(first, .boardTargetStatus, entity: 416), now: t0.addingTimeInterval(0.2))
+        try store.dismissAction(id: first)
+        func status() throws -> WorkbenchTargetStatus? {
+            shown(try replica(), book, at: t0.addingTimeInterval(0.3)).targets.first { $0.id == 416 }?.status
+        }
+        let moved = try XCTUnwrap(shown(try replica(), book, at: t0.addingTimeInterval(0.3)).targets.first { $0.id == 416 })
+        XCTAssertEqual(moved.status, .inProgress)
+
+        // The save is suspended: Todo shows at once.
+        let gate = OverlayGate()
+        let clock = { self.t0 }
+        let held = BoardWriter(enqueue: { _, _, _, id in await gate.wait(); return id }, remove: { _ in }, overlays: book, now: clock)
+        let saving = Task { try await held.setStatus(.todo, on: moved) }
+        try await poll { book.overlays.count == 2 }
+        XCTAssertEqual(try status(), .todo, "at the tap")
+        XCTAssertEqual(try status(), .todo, "and on the next pass, while the save runs")
+        await gate.release()
+        try await saving.value
+        XCTAssertFalse(book.overlays.contains { $0.actionID == first }, "queued: the older write is gone for good")
+        XCTAssertEqual(try status(), .todo)
+
+        // Again, with a save that throws: In progress comes back.
+        try await writer.setStatus(.inProgress, on: try XCTUnwrap(try replica().targets.first { $0.id == 416 }))
+        let second = try XCTUnwrap(book.overlays.last).actionID
+        book.receiveEcho(echo(second, .boardTargetStatus, entity: 416), now: t0.addingTimeInterval(0.4))
+        struct SaveFailed: Error {}
+        let failing = BoardWriter(enqueue: { _, _, _, _ in throw SaveFailed() }, remove: { _ in }, overlays: book, now: clock)
+        do {
+            let shownNow = shown(try replica(), book, at: t0.addingTimeInterval(0.5))
+            try await failing.setStatus(.todo, on: try XCTUnwrap(shownNow.targets.first { $0.id == 416 }))
+            XCTFail("the save threw")
+        } catch is SaveFailed {}
+        XCTAssertEqual(try status(), .inProgress)
+    }
+
     /// Fix round 2, 2: the first of two identical comments is confirmed and done; its record stays its own, so the
     /// second still waits.
     func testAConfirmedRecordIsNeverTakenByItsTwin() async throws {
