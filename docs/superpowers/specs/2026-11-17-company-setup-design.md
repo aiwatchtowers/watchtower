@@ -23,7 +23,8 @@ After this work:
 | D2 | The corp build already uses the company's own internal Google client — the model this spec generalises | ask #1433 |
 | D3 | There will be no corp build; every company uses the public build plus its bundle | ask #1442 |
 | D4 | Our shared Atlassian (Jira) app is retired, as the shared Slack app is | ask #1442 |
-| D5 | Atlassian for a company: the company's own OAuth 2.0 (3LO) app, not personal API tokens | ask #1442 ("мне нравится через приложение OAuth"), ask #1447 |
+| D5 | Atlassian for a company: the company's own OAuth 2.0 (3LO) app is the main path | ask #1442 ("мне нравится через приложение OAuth"), ask #1447 |
+| D20 | A personal Atlassian API token is an extra option next to OAuth, for Jira and Confluence (§4b): for a person whose company has no app yet, or who prefers it | conversation 2026-11-18 ("хочу возможность подключения по токену как опция") |
 | D6 | Personal Data Reporting is implemented in our code and run by every Mac; the wizard advises a second admin or a service account as the app's owner; Atlassian's Developer Terms are accepted by the company | ask #1447 (points 2–4) |
 | D7 | One **Set up for my company** for every source, next to the Slack setup — not Slack only | ask #1440 (note: "не тока слак а и вся поебота подключалась") |
 | D8 | Distribution: the Slack app hands out a localhost link that sets everything up; no backend | ask #1451 |
@@ -112,6 +113,17 @@ Connections → Google → **Use my own Google project**: the wizard's Google st
 
 **Unverified so far.** That a project published to production without verification keeps its owner's `gmail.readonly` refresh token past 7 days is read from Google's docs, not tried. Spike **S2** (first in the plan, before T8) proves it: a fresh @gmail.com, its own project published unverified, the token refreshed on day 8. If S2 fails, the personal path ships with an honest weekly **Re-login** notice and the guide says so; the company path is unaffected (Internal clients have no such limit).
 
+## 4b. Atlassian by API token (option, D20)
+
+Connections → Jira → **Connect with an API token**, beside the OAuth button; also `jira add --api-token-stdin --email <email> --site <site>` (the Linear `--api-key` pattern: the token comes on stdin, never in argv or the log).
+
+- **The person** creates a token at id.atlassian.com → Security → API tokens (a scoped token with today's `JiraScopes`, plus `ConfluenceScopes` for Confluence, is the one the step links to and recommends), pastes it with their Atlassian email and the site URL. Watchtower reads the site's `cloudId` from `https://<site>/_edge/tenant_info`, checks the token with `GET /rest/api/3/myself` (fills `owner_account_id`/`owner_email` as today) and stores the account.
+- **Data:** a migration adds `auth_kind TEXT NOT NULL DEFAULT 'oauth' CHECK (auth_kind IN ('oauth','api_token'))` to `jira_accounts` (mirrored as in §1). The email and token live in the account's token store where the OAuth tokens live today, same file permissions; nothing goes into the bundle.
+- **Client:** `internal/jira` sets one `Authorization` header per request today (`Bearer` from the token store). For `api_token` it sends `Basic base64(email:token)` instead and skips refresh; the base URL for each token kind (the `api.atlassian.com/ex/jira/<cloudId>` gateway for a scoped token, the site URL for a classic one) is fixed by spike S1. Confluence reuses the account's credentials, as with OAuth.
+- **Failures:** 401 → the existing revoke path (REVOKE/PURGE-01 unchanged) with the text **"The API token stopped working (expired or revoked) — paste a new one"**; Atlassian tokens expire (a year at most), so the account row shows the token's expiry when the person enters it and a reminder 7 days before. 403 on a scope → "This token lacks <scope> — create one with the listed scopes". `--site` not an Atlassian Cloud site → refused before storing.
+- **PDR (§6) does not run for token accounts:** the Personal Data Reporting API belongs to apps; a token is the person's own access. Closed users in such an account are anonymised by Atlassian on the next sync and purge follows the usual retention.
+- **Company bundle:** unchanged. A company that prefers tokens publishes a bundle without an `atlassian` block; the connect chain then shows Jira as **Connect** in Connections, where the person picks OAuth or token.
+
 ## 5. What is retired
 
 - **Shared Google client:** stays for Calendar only (D11). The public build stops requesting `gmail.readonly` through it. Existing Gmail accounts on the shared client: their stored tokens keep working until Google refuses them; Connections shows "Move Gmail to your company's or your own Google project". Their data follows the purge rules (PURGE-01).
@@ -158,6 +170,8 @@ Test: a corp-flavored workspace fixture → bridge → public resolver gives eve
 | Corp install updates before the bridge ran | Stays on the gated feed until `company_migrated` | UpdateService test |
 | Reused Slack app, admin not a collaborator | "Ask the app's owner to add you as a collaborator"; step stays open; nothing created | wizard model test with an export fake returning the not-collaborator error |
 | Reused app's id pasted with a typo or from another workspace | Refused at the step (Slack: `team_id` of the export differs from the admin's workspace; others: dry authorize fails) | wizard model tests per vendor |
+| Atlassian API token expired or revoked | Account → revoked path, "paste a new one"; reminder 7 days before expiry | client test: 401 with `api_token` → revoked, no refresh attempt; reminder model test |
+| API token lacks a scope | 403 → named-scope hint, nothing erased | client test with a 403 fake |
 | Public build meets an untied account of an unknown client | **Re-login needed — open your company's link**, no silent failure | resolver + refresher test |
 | PDR erase interrupted | One transaction per account: all or nothing; the next cycle repeats it (idempotent) | kill-mid-erase test |
 
@@ -165,6 +179,7 @@ Test: a corp-flavored workspace fixture → bridge → public resolver gives eve
 
 - **`company/<slug>.json`:** the link handler, the code paste and the admin wizard's publish, all after a press; under a per-file flock, the last confirmed write wins. MDM never writes it — a forced bundle is an overlay read at launch and wins over the stored one.
 - **Per-account client config** (Google credentials file, new Atlassian and Linear equivalents): written when an account is added from a bundle, rewritten only by a newer bundle's confirmation; token refresh never touches it.
+- **Atlassian API token and `auth_kind`:** written only by `jira add --api-token-stdin` and its re-auth (one Go write each); the sync reads them and never writes them.
 - **`company_slug` on account rows:** the account-add path (from a bundle), the bridge corp build, and a **Replace** of a bundle; all Go, one write transaction each; Swift never writes it. The bridge runs at launch before the daemon starts, so it does not race an add.
 - **Memory aliases and entity nodes:** the memory engine and the PDR phase; the PDR phase goes through the memory package's own tombstone API, so the engine's next reconcile sees a tombstone, not a missing row.
 - **Jira user rows and `ext_users`:** the Jira/Confluence syncs and the PDR phase. A sync can re-insert a profile PDR just erased; Atlassian already returns closed accounts anonymised, so the last writer writes the same anonymous value. The PDR phase runs after the sync in the same cycle so it has the last word.
@@ -175,7 +190,7 @@ Test: a corp-flavored workspace fixture → bridge → public resolver gives eve
 |---|---|---|
 | Personal Gmail token outlives 7 days | S2 spike (before T8) | day-8 refresh on a real unverified project; result written into this spec |
 | Our Linear obligations known | S3 spike (Linear terms) | written finding; D12 holds or flips |
-| Atlassian callback URL count; Slack link rendering; manifest export/update on an existing app | S1 spike (with the Slack spec's T1) | written finding |
+| Atlassian callback URL count; Slack link rendering; manifest export/update on an existing app; API-token base URL per token kind | S1 spike (with the Slack spec's T1) | written finding |
 | One bundle format, Go and Swift alike | T1 bundle package + Swift twin | shared fixture in both |
 | Accounts know their company client | T1b migration `company_slug` + resolvers | `TestAllTablesExist`/golden, resolver order tests |
 | A localhost link connects every vendor (Slack, Google, Atlassian, Microsoft, Linear) after one press; a change needs Replace | T2 listener path + chain | listener + chain tests with a fake per vendor (Microsoft against the bundle's tenant), no-log test |
@@ -186,6 +201,7 @@ Test: a corp-flavored workspace fixture → bridge → public resolver gives eve
 | Per-account clients for Google, Atlassian, Linear, Microsoft | T7 credentials store + refreshers read it | per-vendor auth tests |
 | Company deny list applies | T7b `link_deny_hosts` into `media.RefusedHosts` | linkrule test |
 | Personal Gmail through own project | T8 personal Google path | store + CLI wrapper tests |
+| Jira and Confluence by an API token, as an option (D20) | T13 `auth_kind` migration, Basic-auth path in `internal/jira`, `jira add --api-token-stdin`, Connections option | migration golden; client header test per kind; CLI test (token never in argv/log); `myself` check; PDR skips `api_token` accounts |
 | Atlassian PDR, erasing memory and people data too | T9 daemon phase | fake endpoint tests; erase test over every table in §6 |
 | Shared Google = Calendar only; shared Jira retired; banners | T10 retirements | scope tests, banner model tests |
 | Corp installs move without breaking accounts | T11a bridge corp build (bundle from baked values, `company_slug`, `company_migrated` gate) | corp-workspace fixture test, UpdateService gate test |
