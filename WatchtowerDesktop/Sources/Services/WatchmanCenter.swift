@@ -116,6 +116,8 @@ final class WatchmanCenter {
     }
 
     func runBacktest(workbench: Int64) async {
+        // The CLI refuses a run while the relabel pass is unfinished; never start one it would refuse.
+        guard lastStatus?.workbench(workbench)?.isRelabelling != true else { return }
         guard backtestHere.insert(workbench).inserted else { return }
         notices[workbench] = nil
         apply()

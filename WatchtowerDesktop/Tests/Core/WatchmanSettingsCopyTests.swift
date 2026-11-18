@@ -118,4 +118,20 @@ final class WatchmanSettingsCopyTests: XCTestCase {
         XCTAssertEqual(Copy.learnFailed("x"),
                        "Learning stopped: x. Watchman stays on; the daemon continues in its next cycles.")
     }
+
+    func testHandedCopy() throws {
+        XCTAssertEqual(Copy.handedHeader, "Handed")
+        XCTAssertEqual(Copy.notMeasuredHanded(handed: 12), "Not measured: 12 of 30 handed to you")
+        XCTAssertEqual(Copy.relabelling(left: 340), "Sorting earlier decisions: 340 left · the backtest runs after it")
+        let status = try WatchmanStatusFixtures.decode(WatchmanStatusFixtures.results)
+        let rows = Copy.tableRows(try XCTUnwrap(status.workbenches[0].lastDone))
+        XCTAssertEqual(Copy.handedCell(rows[0]), "—")
+        XCTAssertEqual(Copy.handedCell(rows[7]), "18")
+        XCTAssertEqual(Copy.handedNote(rows[7]), "Not measured: 18 of 30 handed to you")
+        XCTAssertNil(Copy.handedNote(rows[0]))
+        // Not measured without handoffs has no note.
+        let plain = WatchmanBacktestCategory(category: "finish", total: 0, agree: 0, wrongHigh: 0, costUSD: 0,
+                                             status: "not_measured")
+        XCTAssertNil(Copy.handedNote(plain))
+    }
 }

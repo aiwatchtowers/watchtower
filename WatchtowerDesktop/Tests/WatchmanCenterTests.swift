@@ -100,6 +100,21 @@ final class WatchmanCenterTests: XCTestCase {
         XCTAssertFalse(center.needsPolling)
     }
 
+    func testRelabellingNeverStartsABacktest() async {
+        let runner = ScriptedWatchmanRunner(status: Fixtures.relabelling)
+        runner.gate.release()
+        let center = WatchmanCenter(runner: runner)
+        await center.load()
+        await center.runBacktest(workbench: 1)
+        XCTAssertFalse(runner.invocations.contains { $0.dropFirst().first == "backtest" })
+        XCTAssertTrue(center.backtestHere.isEmpty)
+        // Once the pass is done the same call starts the run.
+        runner.setStatus(Fixtures.results)
+        await center.load()
+        await center.runBacktest(workbench: 1)
+        XCTAssertTrue(runner.invocations.contains { $0.dropFirst().first == "backtest" })
+    }
+
     func testBacktestBusyShowsTheNotice() async {
         let runner = ScriptedWatchmanRunner(status: Fixtures.neverRun)
         runner.gate.release()
