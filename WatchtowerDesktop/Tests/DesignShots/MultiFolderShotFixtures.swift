@@ -20,9 +20,12 @@ enum MultiFolderShotFixtures {
             shot("suggest-card", width: 300) { MultiFolderSuggestCard(state: .ready) },
             shot("suggest-card-busy", width: 300) { MultiFolderSuggestCard(state: .busy) },
             shot("suggest-card-error", width: 300) { MultiFolderSuggestCard(state: .error) },
+            shot("suggest-card-merge", width: 300) { MultiFolderSuggestCard(state: .merge) },
             shot("remove-confirm", width: 360) { MultiFolderRemoveDialog(kind: .confirm) },
             shot("remove-refused-sessions", width: 360) { MultiFolderRemoveDialog(kind: .sessionsRunning) },
             shot("remove-refused-last", width: 360) { MultiFolderRemoveDialog(kind: .lastFolder) },
+            shot("merge-confirm", width: 360) { MultiFolderMergeDialog(refused: false) },
+            shot("merge-refused", width: 360) { MultiFolderMergeDialog(refused: true) },
             shot("feed-parent", width: 600) { MultiFolderFeedParent() },
             shot("strip-child", width: 760) { MultiFolderStripChild() },
             shot("board-card-folder", width: 380) { MultiFolderBoardCards() }
@@ -54,8 +57,14 @@ enum MultiFolderMockCopy {
     static let notNow = "Not Now"
     static let never = "Never for This Folder"
     static let putting = "Putting on the bench…"
-    static let alreadyOnOther = "Already on the “tools” bench"
-    static let openOther = "Open tools"
+    static let mergeSuggestSubtitle = "billing is on the “tools” bench"
+    static let mergeBenches = "Merge Benches…"
+    static let suggestFailed = "Couldn’t put billing on the bench: the folder was moved or deleted."
+    static let mergeTitle = "Merge “tools” into “acme”?"
+    static let mergeMessage = "tools's board (12 targets), asks and sessions move to acme, "
+        + "and tools leaves the workbench list. Folders that move: billing."
+    static let mergeRefusedTitle = "Can’t merge “tools” yet"
+    static let mergeRefused = "2 sessions are running in tools. Finish them first."
     static let removeTitle = "Remove hub from the bench?"
     static let removeMessage = "Watchtower's install in this folder is removed. Your files and git are not touched."
     static let sessionsRunning = "2 sessions are running in hub. Finish them first."
@@ -425,7 +434,7 @@ private struct MultiFolderNewSessionMenu: View {
 // MARK: - 6. The agent's folder suggestion
 
 private struct MultiFolderSuggestCard: View {
-    enum State { case ready, busy, error }
+    enum State { case ready, busy, error, merge }
     let state: State
 
     var body: some View {
@@ -449,10 +458,10 @@ private struct MultiFolderSuggestCard: View {
     }
 
     @ViewBuilder private var subtitle: some View {
-        if state == .error {
-            Text("\(MultiFolderMockCopy.alreadyOnOther) · \(Text(MultiFolderMockCopy.openOther).foregroundStyle(Color.accentColor))")
-        } else {
-            Text(MultiFolderMockCopy.suggestSubtitle)
+        switch state {
+        case .error: Text(MultiFolderMockCopy.suggestFailed)
+        case .merge: Text(MultiFolderMockCopy.mergeSuggestSubtitle)
+        default: Text(MultiFolderMockCopy.suggestSubtitle)
         }
     }
 
@@ -475,6 +484,12 @@ private struct MultiFolderSuggestCard: View {
             }
         case .error:
             Button("OK") {}.buttonStyle(.kitSecondary).controlSize(.small)
+        case .merge:
+            HStack(spacing: Spacing.small) {
+                Button(MultiFolderMockCopy.mergeBenches) {}.buttonStyle(.kitPrimary).fixedSize()
+                Button(MultiFolderMockCopy.notNow) {}.buttonStyle(.kitSecondary).fixedSize()
+            }
+            .controlSize(.small)
         }
     }
 }
@@ -533,6 +548,41 @@ private struct MultiFolderRemoveDialog: View {
         } else {
             Button("OK") {}.buttonStyle(.kitPrimary)
         }
+    }
+}
+
+/// The Merge Benches confirmation and its refusal (§6.13), drawn like the
+/// remove dialog.
+private struct MultiFolderMergeDialog: View {
+    let refused: Bool
+
+    var body: some View {
+        VStack(spacing: Spacing.medium) {
+            Image(systemName: refused ? "exclamationmark.triangle" : "arrow.triangle.merge")
+                .font(.largeTitle)
+                .foregroundStyle(refused ? AnyShapeStyle(Tone.warning) : AnyShapeStyle(.secondary))
+            VStack(spacing: Spacing.small) {
+                Text(refused ? MultiFolderMockCopy.mergeRefusedTitle : MultiFolderMockCopy.mergeTitle).font(.headline)
+                Text(refused ? MultiFolderMockCopy.mergeRefused : MultiFolderMockCopy.mergeMessage)
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            if refused {
+                Button("OK") {}.buttonStyle(.kitPrimary)
+            } else {
+                HStack(spacing: Spacing.regular) {
+                    Button("Cancel") {}.buttonStyle(.kitSecondary)
+                    Button("Merge") {}.buttonStyle(.kitPrimary)
+                }
+            }
+        }
+        .padding(Spacing.page)
+        .frame(width: 300)
+        .mockPopover()
+        .padding(Spacing.page)
+        .frame(maxWidth: .infinity)
+        .detailBackground()
     }
 }
 

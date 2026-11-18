@@ -21,10 +21,13 @@ Each shot `workbench-multifolder-<name>` is saved here as `<name>-light.png` and
 | `new-session-menu` | New Session (+) menu with `in <folder>` submenus (the `in hub` one open) and the placement submenus | §6.4 |
 | `suggest-card` | Waiting for you card `Put billing on the bench?` with Put on Bench / Not Now, and the quiet Never for This Folder on its own line (the panel is 220 pt wide by default) | §6.7 |
 | `suggest-card-busy` | The same card while the add runs: `Putting on the bench…` | §6.7 |
-| `suggest-card-error` | The add failed: `Already on the “tools” bench · Open tools` and `OK` | §6.7 |
+| `suggest-card-error` | The add failed: `Couldn’t put billing on the bench: the folder was moved or deleted.` and `OK` | §6.7 |
+| `suggest-card-merge` | The card when the folder is on another bench: `Put billing on the bench?` / `billing is on the “tools” bench` with Merge Benches… / Not Now | §6.7, §6.13 |
 | `remove-confirm` | `Remove hub from the bench?` confirmation | §6.3 |
 | `remove-refused-sessions` | Refusal: `2 sessions are running in hub. Finish them first.` | §6.3 |
 | `remove-refused-last` | Refusal: `A workbench needs at least one folder.` | §6.3 |
+| `merge-confirm` | `Merge “tools” into “acme”?` confirmation: board (12 targets), asks and sessions move, `Folders that move: billing.`, Cancel / Merge | §6.13 |
+| `merge-refused` | Refusal: `Can’t merge “tools” yet` / `2 sessions are running in tools. Finish them first.` | §6.13 |
 | `feed-parent` | Parent's Workchat feed: sub-session started, message to, message from, sub-session finished, and a waiting message with `Open` | §6.6 |
 | `strip-child` | A sub-session's strip: `📁 hub › ⑂ export-api › ⎇ wt/export-api` ending with `↖ from “Export reports to PDF”` | §6.5 |
 | `board-card-folder` | Board cards with a folder chip before the branch, and a target whose folder left the bench (`folder removed`) | §6.10, §8 PROJ-07 |
