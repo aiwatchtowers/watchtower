@@ -50,6 +50,20 @@ func TestParkedBy(t *testing.T) {
 		{"pr merge into feature", withPR("gh pr merge 12", map[int]string{12: "feature/watchman"}), ""},
 		{"pr merge unknown base", withPR("gh pr merge 12", nil), LimitMainRef},
 		{"pr merge no resolver", bash("gh pr merge 12"), LimitMainRef},
+		// The base is read in the session folder: a merge in another
+		// repository parks whatever that read says (Task 10 review).
+		{"pr merge --repo", withPR("gh pr merge 12 --repo acme/other", map[int]string{12: "feature/watchman"}), LimitMainRef},
+		{"pr merge --repo=", withPR("gh pr merge 12 --repo=acme/other", map[int]string{12: "feature/watchman"}), LimitMainRef},
+		{"pr merge -R", withPR("gh pr merge -R acme/other 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
+		{"pr merge -Rrepo", withPR("gh pr merge 12 -Racme/other", map[int]string{12: "feature/watchman"}), LimitMainRef},
+		{"pr merge -sR", withPR("gh pr merge 12 -sR acme/other", map[int]string{12: "feature/watchman"}), LimitMainRef},
+		{"pr merge after cd", withPR("cd ../other && gh pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
+		{"pr merge env -C", withPR("env -C ../other gh pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
+		{"pr merge GH_REPO", withPR("GH_REPO=acme/other gh pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
+		{"pr merge export GH_REPO", withPR("export GH_REPO=acme/other; gh pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
+		{"pr merge GH_HOST", withPR("GH_HOST=ghe.example.com gh pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
+		{"pr merge URL", withPR("gh pr merge https://github.com/acme/other/pull/12", map[int]string{12: "feature/watchman"}), LimitMainRef},
+		{"pr merge squash into feature", withPR("gh pr merge 12 --squash --delete-branch", map[int]string{12: "feature/watchman"}), ""},
 		{"tag and push", bash("git tag v1 && git push --tags"), LimitTag},
 		{"tag list", bash("git tag -l"), ""},
 		{"release create", bash("gh release create v1"), LimitRelease},
@@ -285,12 +299,26 @@ func TestParkedBy_ResetHardOnSharedLocalBranch(t *testing.T) {
 		{"switch -fB main", bash("git switch -fB main"), LimitResetShared},
 		{"checkout -fC main", bash("git checkout -fC main origin/x"), LimitResetShared},
 		{"checkout -B feature from main", bash("git checkout -B feat main"), ""},
-		{"update-ref HEAD on feature", onBranch("git update-ref HEAD abc", &BranchInfo{Current: "feat"}), ""},
+		{"update-ref HEAD on feature", onBranch("git update-ref HEAD abc", &BranchInfo{Current: "feat", Shared: shared}), ""},
+		// Shared not known (nil): every destructive ref move parks; a
+		// reset --hard with no target or HEAD stays private (Task 10 review).
+		{"update-ref HEAD shared unknown", onBranch("git update-ref HEAD abc", &BranchInfo{Current: "feat"}), LimitResetShared},
+		{"update-ref feature shared unknown", onBranch("git update-ref refs/heads/feat abc", &BranchInfo{Current: "feat"}), LimitResetShared},
+		{"branch -f shared unknown", onBranch("git branch -f feat HEAD~2", &BranchInfo{Current: "wt/session-3"}), LimitResetShared},
+		{"branch -D shared unknown", onBranch("git branch -D feat", &BranchInfo{Current: "wt/session-3"}), LimitResetShared},
+		{"checkout -B shared unknown", onBranch("git checkout -B feat main", &BranchInfo{Current: "wt/session-3"}), LimitResetShared},
+		{"reset HEAD~3 shared unknown", onBranch("git reset --hard HEAD~3", &BranchInfo{Current: "feat"}), LimitResetShared},
+		{"reset sha shared unknown", onBranch("git reset --hard abc123", &BranchInfo{Current: "feat"}), LimitResetShared},
+		{"reset no target shared unknown", onBranch("git reset --hard", &BranchInfo{Current: "feat"}), ""},
+		{"reset HEAD shared unknown", onBranch("git reset --hard HEAD", &BranchInfo{Current: "feat"}), ""},
+		{"reset -q no target shared unknown", onBranch("git reset -q --hard", &BranchInfo{Current: "feat"}), ""},
+		{"branch -f feature shared known", onBranch("git branch -f feat HEAD~2", &BranchInfo{Current: "wt/session-3", Shared: shared}), ""},
 		{"git -c then -C reset", onBranch("git -c core.x=1 -C /other reset --hard HEAD~1", &BranchInfo{Current: "feat"}), LimitResetShared},
 		{"git -c then -C reset not recorded", bash("git -c core.x=1 -C /other reset --hard HEAD~1"), LimitResetShared},
 		{"git --git-dir separate reset", bash("git --git-dir /x reset --hard"), LimitResetShared},
 		{"git --work-tree= reset", bash("git --work-tree=/x reset --hard HEAD~1"), LimitResetShared},
-		{"git -c only reset on feature", onBranch("git -c core.x=1 reset --hard HEAD~1", &BranchInfo{Current: "feat"}), ""},
+		{"git -c only reset on feature", onBranch("git -c core.x=1 reset --hard HEAD~1", &BranchInfo{Current: "feat", Shared: shared}), ""},
+		{"git -c only reset shared unknown", onBranch("git -c core.x=1 reset --hard HEAD~1", &BranchInfo{Current: "feat"}), LimitResetShared},
 		{"git --namespace separate reset on main", onBranch("git --namespace ns reset --hard HEAD~1", &BranchInfo{Current: "main"}), LimitResetShared},
 		{"git --exec-path= reset on main", onBranch("git --exec-path=/x reset --hard HEAD~1", &BranchInfo{Current: "main"}), LimitResetShared},
 		{"git -c branch -f main", bash("git -c core.x=1 branch -f main HEAD~2"), LimitResetShared},
@@ -311,7 +339,7 @@ func TestParkedBy_ResetHardOnSharedLocalBranch(t *testing.T) {
 		{"env GIT_DIR reset", bash("env GIT_DIR=/other/.git git reset --hard HEAD~1"), LimitResetShared},
 		{"export GIT_DIR then reset", bash("export GIT_DIR=/other/.git && git reset --hard HEAD~1"), LimitResetShared},
 		{"env -C reset", onBranch("env -C /other git reset --hard HEAD~1", &BranchInfo{Current: "feat"}), LimitResetShared},
-		{"other env reset on feature", onBranch("GIT_TRACE=1 git reset --hard HEAD~1", &BranchInfo{Current: "feat"}), ""},
+		{"other env reset on feature", onBranch("GIT_TRACE=1 git reset --hard HEAD~1", &BranchInfo{Current: "feat", Shared: shared}), ""},
 		{"update-ref HEAD after checkout", onBranch("git checkout main; git update-ref HEAD abc", &BranchInfo{Current: "feat"}), LimitResetShared},
 	})
 }
@@ -384,7 +412,7 @@ func TestParkedBy_UnreadableIsItsOwnRow(t *testing.T) {
 func TestParkedBy_StartDirPlacesOnly(t *testing.T) {
 	ask := func(cmd string) PermissionAsk {
 		return PermissionAsk{Tool: "Bash", Summary: cmd, Worktrees: []string{"/wt"}, Cwd: "/elsewhere",
-			Branch: &BranchInfo{Current: "feature/x"}}
+			Branch: &BranchInfo{Current: "feature/x", Shared: []string{"main"}}}
 	}
 	_, parked := ParkedBy(ask("git reset --hard HEAD~1"))
 	require.False(t, parked)

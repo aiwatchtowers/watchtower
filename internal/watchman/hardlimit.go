@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"encoding/json"
 	"path"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -56,7 +57,8 @@ type PermissionAsk struct {
 type BranchInfo struct {
 	Current string
 	// Shared holds the default branches and the session's PR base/umbrella
-	// branch.
+	// branch; nil = not known (a read failed, or the caller does not read
+	// it), and then every destructive ref move parks (matchResetShared).
 	Shared []string
 }
 
@@ -482,6 +484,25 @@ func prMergeNumber(args []string) (int, bool) {
 	return 0, false
 }
 
+// ghRepoEnv names gh's environment variables that point it at another
+// repository or host.
+var ghRepoEnv = regexp.MustCompile(`\bGH_(REPO|HOST)\b`)
+
+// prMergeElsewhere reports a gh pr merge whose repository may not be the
+// session folder's, so a base read there says nothing about it: a --repo/-R
+// option in any form, a cd or a wrapper's directory change before it, or a
+// GH_REPO/GH_HOST assignment or export anywhere in the request. (A PR URL is
+// no number, so prMergeNumber already fails it.)
+func prMergeElsewhere(r PermissionAsk, c shellCmd, args []string) bool {
+	if c.cwd != "" || c.elsewhere || ghRepoEnv.MatchString(r.Summary) {
+		return true
+	}
+	return slices.ContainsFunc(args, func(a string) bool {
+		return a == "--repo" || strings.HasPrefix(a, "--repo=") ||
+			(strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.Contains(a, "R"))
+	})
+}
+
 // matchUnreadable: a command that cannot be read, so cannot be judged.
 func matchUnreadable(r PermissionAsk) bool {
 	return anyCmd(r, func(c shellCmd) bool { return c.w[0] == unresolved })
@@ -506,7 +527,7 @@ func matchMainRef(r PermissionAsk) bool {
 		}
 		if args, ok := c.sub("gh", "pr"); ok && len(args) > 0 && args[0] == "merge" {
 			pr, ok := prMergeNumber(args[1:])
-			if !ok || r.PRBase == nil {
+			if !ok || r.PRBase == nil || prMergeElsewhere(r, c, args[1:]) {
 				return true
 			}
 			base, known := r.PRBase(pr)
@@ -721,8 +742,15 @@ func forceCreateTarget(args []string) (branch string, ok bool) {
 // tells. A stored row
 // (Branch nil) with none of those parks only a reset --hard onto a remote
 // ref.
+//
+// A live request whose shared branches are not known (Branch.Shared nil)
+// fails closed: any forced branch move (checkout/switch -B, branch -f/-D/
+// -M/-C, update-ref) parks, and so does a reset --hard to an explicit
+// target other than HEAD; a reset --hard with no target (or HEAD) only
+// drops the working tree's changes and stays private.
 func matchResetShared(r PermissionAsk) bool {
 	recordedShared := r.Branch != nil && (r.Branch.Current == "" || r.isShared(r.Branch.Current))
+	sharedUnknown := r.Branch != nil && r.Branch.Shared == nil
 	moved := false
 	return anyCmd(r, func(c shellCmd) bool {
 		if movesContext(c) {
@@ -732,7 +760,7 @@ func matchResetShared(r PermissionAsk) bool {
 		for _, sub := range []string{"checkout", "switch"} {
 			if args, ok := c.sub("git", sub); ok {
 				branch, forced := forceCreateTarget(args)
-				return forced && r.isShared(branch)
+				return forced && (sharedUnknown || r.isShared(branch))
 			}
 		}
 		if args, ok := c.sub("git", "branch"); ok {
@@ -743,14 +771,17 @@ func matchResetShared(r PermissionAsk) bool {
 			if !forced {
 				return false
 			}
-			return slices.ContainsFunc(pos, r.isShared) || (rename && len(pos) == 1 && currentShared)
+			return sharedUnknown || slices.ContainsFunc(pos, r.isShared) || (rename && len(pos) == 1 && currentShared)
 		}
 		if args, ok := c.sub("git", "update-ref"); ok {
-			return updateRefShared(r, args, currentShared)
+			return sharedUnknown || updateRefShared(r, args, currentShared)
 		}
 		args, ok := c.sub("git", "reset")
 		if !ok || !slices.Contains(args, "--hard") {
 			return false
+		}
+		if _, pos := splitFlags(args); sharedUnknown && slices.ContainsFunc(pos, func(a string) bool { return a != "HEAD" && a != "@" }) {
+			return true
 		}
 		return currentShared || slices.ContainsFunc(args, func(a string) bool {
 			return strings.HasPrefix(a, "origin/") || strings.HasPrefix(a, "upstream/") || a == "@{u}" || a == "@{upstream}" || a == "FETCH_HEAD"

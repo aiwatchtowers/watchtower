@@ -326,8 +326,9 @@ func providerRefused(f *providers.Failure) bool {
 }
 
 // park answers the ask "Parked for the owner: <reason>" (a permission
-// prompt: denies it, decided by watchman) and finishes the item parked; an ask that takes no text answer (a review) keeps waiting for
-// the owner, the item finished parked all the same.
+// prompt: denies it, decided by watchman) and finishes the item parked; an
+// ask that takes no text answer (a review) keeps waiting for the owner, the
+// item finished parked all the same.
 func (j *job) park(ctx context.Context, reason string) {
 	o := j.outcome(OutcomeParked)
 	o.ParkReason = reason

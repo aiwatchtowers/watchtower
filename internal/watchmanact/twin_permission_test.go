@@ -15,37 +15,49 @@ import (
 	"watchtower/internal/watchman"
 )
 
-// permRun is the fake git and gh of a permission's live reads: the session's
-// branch, and each PR's base by call (bases[n] for the nth `gh pr view`, the
-// last repeated; ghErr fails every one).
+// permRun is the fake git and gh of a permission's live reads: the
+// session's branch by call (branches[n] for the nth read, the last
+// repeated); the base of the current branch's PR (headBase, "" = no PR:
+// gh fails); each numbered PR's base by call (bases[n] for the nth
+// `gh pr view <n>`, the last repeated); the open PRs on the current branch
+// (onTop); ghErr fails every gh call.
 type permRun struct {
-	mu     sync.Mutex
-	branch string
-	bases  []string
-	ghErr  error
-	calls  []string
+	mu       sync.Mutex
+	branches []string
+	headBase string
+	bases    []string
+	onTop    int
+	ghErr    error
+	calls    []string
+	nBranch  int
+	nBase    int
 }
 
 func (r *permRun) run(_ context.Context, dir, name string, args ...string) ([]byte, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.calls = append(r.calls, dir+": "+name+" "+strings.Join(args, " "))
-	switch name {
-	case "git":
-		return []byte(r.branch + "\n"), nil
-	case "gh":
-		if r.ghErr != nil {
-			return nil, r.ghErr
+	line := strings.Join(args, " ")
+	r.calls = append(r.calls, dir+": "+name+" "+line)
+	switch {
+	case name == "git":
+		r.nBranch++
+		return []byte(r.branches[min(r.nBranch, len(r.branches))-1] + "\n"), nil
+	case name != "gh":
+		return nil, errors.New("unexpected command " + name)
+	case r.ghErr != nil:
+		return nil, r.ghErr
+	case strings.HasPrefix(line, "pr list"):
+		return []byte(`[` + strings.Repeat(`{"number":7}`, min(r.onTop, 1)) + `]`), nil
+	case strings.HasPrefix(line, "pr view --json"):
+		if r.headBase == "" {
+			return nil, errors.New("no pull requests found for branch")
 		}
-		n := 0
-		for _, c := range r.calls {
-			if strings.Contains(c, ": gh pr view") {
-				n++
-			}
-		}
-		return []byte(r.bases[min(n, len(r.bases))-1] + "\n"), nil
+		return []byte(r.headBase + "\n"), nil
+	case strings.HasPrefix(line, "pr view"):
+		r.nBase++
+		return []byte(r.bases[min(r.nBase, len(r.bases))-1] + "\n"), nil
 	}
-	return nil, errors.New("unexpected command " + name)
+	return nil, errors.New("unexpected gh " + line)
 }
 
 // withPermRun puts a fake git/gh under the twin.
@@ -115,7 +127,7 @@ func TestWATCHMAN01_TwinNeverDecidesHardLimit(t *testing.T) {
 		covered[c.limit] = true
 		t.Run(c.name, func(t *testing.T) {
 			e := newTwinEnv(t)
-			e.withPermRun(&permRun{branch: "feature/x", bases: []string{"main"}})
+			e.withPermRun(&permRun{branches: []string{"feature/x"}, bases: []string{"main"}})
 			_, err := e.db.AddWatchmanExtraLimit(watchman.ExtraLimitCommand, "make deploy-prod")
 			e.must(err)
 			reqID, itemID := e.permission(c.tool, c.summary, false)
@@ -140,7 +152,7 @@ func TestWATCHMAN01_TwinNeverDecidesHardLimit(t *testing.T) {
 
 func TestTwin_PermissionClippedParks(t *testing.T) {
 	e := newTwinEnv(t)
-	e.withPermRun(&permRun{branch: "feature/x"})
+	e.withPermRun(&permRun{branches: []string{"feature/x"}})
 	reqID, itemID := e.permission("Bash", "go test ./...", true)
 	e.run()
 	it := e.item(itemID)
@@ -156,7 +168,7 @@ func TestTwin_PermissionClippedParks(t *testing.T) {
 
 func TestTwin_PermissionAllowWritesDecidedByWatchman(t *testing.T) {
 	e := newTwinEnv(t)
-	run := &permRun{branch: "feature/x"}
+	run := &permRun{branches: []string{"feature/x"}, headBase: "feature/watchman"}
 	e.withPermRun(run)
 	e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
 		return permDecision(PermissionAllow), nil
@@ -177,14 +189,20 @@ func TestTwin_PermissionAllowWritesDecidedByWatchman(t *testing.T) {
 	if len(e.labelled) != 0 {
 		t.Fatal("a permission went through the ask-text label call")
 	}
-	if len(run.calls) != 1 || run.calls[0] != "/tmp/acme: git rev-parse --abbrev-ref HEAD" {
-		t.Fatalf("live reads = %q, want the branch in the session folder", run.calls)
+	// Read before the model and again before the allow is written.
+	want := []string{
+		"/tmp/acme: git rev-parse --abbrev-ref HEAD",
+		"/tmp/acme: gh pr view --json baseRefName --jq .baseRefName",
+		"/tmp/acme: gh pr list --base feature/x --state open --limit 1 --json number",
+	}
+	if strings.Join(run.calls, "|") != strings.Join(append(want, want...), "|") {
+		t.Fatalf("live reads = %q, want %q twice", run.calls, want)
 	}
 }
 
 func TestTwin_PermissionDenyWritesDecidedByWatchman(t *testing.T) {
 	e := newTwinEnv(t)
-	e.withPermRun(&permRun{branch: "feature/x"})
+	e.withPermRun(&permRun{branches: []string{"feature/x"}})
 	e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
 		return permDecision(PermissionDeny), nil
 	}
@@ -200,7 +218,7 @@ func TestTwin_PermissionDenyWritesDecidedByWatchman(t *testing.T) {
 
 func TestTwin_PermissionHandoffDeniesHanded(t *testing.T) {
 	e := newTwinEnv(t)
-	e.withPermRun(&permRun{branch: "feature/x"})
+	e.withPermRun(&permRun{branches: []string{"feature/x"}})
 	e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
 		d := permDecision(PermissionAllow)
 		d.Handoff = watchman.HandoffOwnerOnly
@@ -216,7 +234,7 @@ func TestTwin_PermissionHandoffDeniesHanded(t *testing.T) {
 // nothing and journals the owner first.
 func TestTwin_PermissionOwnerFirst(t *testing.T) {
 	e := newTwinEnv(t)
-	e.withPermRun(&permRun{branch: "feature/x"})
+	e.withPermRun(&permRun{branches: []string{"feature/x"}})
 	var reqID int64
 	e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
 		ok, err := e.db.ClosePermissionRequest(reqID, db.PermissionDenied, "Mac", time.Now())
@@ -267,7 +285,7 @@ func TestTwin_PermissionHookTimedOut(t *testing.T) {
 	})
 	t.Run("while deciding", func(t *testing.T) {
 		e := newTwinEnv(t)
-		e.withPermRun(&permRun{branch: "feature/x"})
+		e.withPermRun(&permRun{branches: []string{"feature/x"}})
 		var reqID int64
 		e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
 			_, err := e.db.ClosePermissionRequest(reqID, db.PermissionExpired, "", time.Now())
@@ -289,7 +307,7 @@ func TestTwin_PermissionHookTimedOut(t *testing.T) {
 // item and decides it.
 func TestTwin_PermissionRetakenAfterRestart(t *testing.T) {
 	e := newTwinEnv(t)
-	e.withPermRun(&permRun{branch: "feature/x"})
+	e.withPermRun(&permRun{branches: []string{"feature/x"}})
 	e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
 		return permDecision(PermissionAllow), nil
 	}
@@ -312,7 +330,7 @@ func TestTwin_PermissionRetakenAfterRestart(t *testing.T) {
 
 func TestTwin_PermissionUnknownPRBaseParks(t *testing.T) {
 	e := newTwinEnv(t)
-	run := &permRun{branch: "feature/x", ghErr: errors.New("gh: not logged in")}
+	run := &permRun{branches: []string{"feature/x"}, ghErr: errors.New("gh: not logged in")}
 	e.withPermRun(run)
 	reqID, itemID := e.permission("Bash", "gh pr merge 12 --squash", false)
 	e.run()
@@ -336,7 +354,7 @@ func TestTwin_PermissionUnknownPRBaseParks(t *testing.T) {
 func TestTwin_PermissionAllowCheckedAgainAfterTheModel(t *testing.T) {
 	t.Run("base unchanged", func(t *testing.T) {
 		e := newTwinEnv(t)
-		e.withPermRun(&permRun{branch: "feature/x", bases: []string{"feature/watchman"}})
+		e.withPermRun(&permRun{branches: []string{"feature/x"}, bases: []string{"feature/watchman"}})
 		e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
 			return permDecision(PermissionAllow), nil
 		}
@@ -347,7 +365,7 @@ func TestTwin_PermissionAllowCheckedAgainAfterTheModel(t *testing.T) {
 	})
 	t.Run("retargeted onto main", func(t *testing.T) {
 		e := newTwinEnv(t)
-		e.withPermRun(&permRun{branch: "feature/x", bases: []string{"feature/watchman", "main"}})
+		e.withPermRun(&permRun{branches: []string{"feature/x"}, bases: []string{"feature/watchman", "main"}})
 		e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
 			return permDecision(PermissionAllow), nil
 		}
@@ -365,7 +383,7 @@ func TestTwin_PermissionAllowCheckedAgainAfterTheModel(t *testing.T) {
 // The owner's limits cannot be read: fail closed.
 func TestTwin_PermissionExtraLimitsUnreadableParks(t *testing.T) {
 	e := newTwinEnv(t)
-	e.withPermRun(&permRun{branch: "feature/x"})
+	e.withPermRun(&permRun{branches: []string{"feature/x"}})
 	reqID, itemID := e.permission("Bash", "go test ./...", false)
 	_, err := e.db.Exec(`DROP TABLE watchman_extra_limits`)
 	e.must(err)
@@ -407,4 +425,89 @@ func TestTwin_PermissionRequestGoneDropsItem(t *testing.T) {
 	if n != 0 || e.decideCalls() != 0 {
 		t.Fatalf("the item stayed (%d) or was decided (%d)", n, e.decideCalls())
 	}
+}
+
+// The branches the session shares are read live (Task 10 review): the
+// current branch's PR base, and the current branch when an open PR builds
+// on it; unknown fails closed.
+func TestTwin_PermissionSharedBranchesReadLive(t *testing.T) {
+	cases := []struct {
+		name, command string
+		run           *permRun
+		parked        bool
+	}{
+		{"branch -f onto the umbrella", "git branch -f feature/watchman HEAD~2",
+			&permRun{branches: []string{"feature/x"}, headBase: "feature/watchman"}, true},
+		{"reset on the private branch", "git reset --hard HEAD~1",
+			&permRun{branches: []string{"feature/x"}, headBase: "feature/watchman"}, false},
+		{"reset on a branch others build on", "git reset --hard HEAD~1",
+			&permRun{branches: []string{"feature/x"}, headBase: "feature/watchman", onTop: 1}, true},
+		{"reset with no PR to read", "git reset --hard HEAD~1",
+			&permRun{branches: []string{"feature/x"}}, true},
+		{"reset of the working tree only, no PR", "git reset --hard",
+			&permRun{branches: []string{"feature/x"}}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := newTwinEnv(t)
+			e.withPermRun(c.run)
+			e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
+				return permDecision(PermissionAllow), nil
+			}
+			reqID, itemID := e.permission("Bash", c.command, false)
+			e.run()
+			it := e.item(itemID)
+			if !c.parked {
+				wantOutcome(t, it, OutcomeAnswered)
+				e.wantPermission(reqID, db.PermissionAllowed, askanswer.ByWatchman)
+				return
+			}
+			wantOutcome(t, it, OutcomeParked)
+			if it.ParkReason != limitReason(watchman.LimitResetShared) {
+				t.Fatalf("park reason = %q", it.ParkReason)
+			}
+			e.wantPermission(reqID, db.PermissionDenied, askanswer.ByWatchman)
+			if e.decideCalls() != 0 {
+				t.Fatal("Decide ran on a shared-branch move")
+			}
+		})
+	}
+}
+
+// The allow is checked on fresh reads: the session's branch moved to main
+// while the model ran, so the reset it allowed parks.
+func TestTwin_PermissionAllowRereadsBeforeWriting(t *testing.T) {
+	e := newTwinEnv(t)
+	e.withPermRun(&permRun{branches: []string{"feature/x", "main"}, headBase: "feature/watchman"})
+	e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
+		return permDecision(PermissionAllow), nil
+	}
+	reqID, itemID := e.permission("Bash", "git reset --hard HEAD~1", false)
+	e.run()
+	it := e.item(itemID)
+	wantOutcome(t, it, OutcomeParked)
+	if it.ParkReason != limitReason(watchman.LimitResetShared) || it.Choice != PermissionAllow {
+		t.Fatalf("item = %+v, want parked reset_shared with the choice kept", it)
+	}
+	e.wantPermission(reqID, db.PermissionDenied, askanswer.ByWatchman)
+}
+
+// The owner adds a limit while the model runs: the allow re-reads the
+// owner's limits and parks.
+func TestTwin_PermissionAllowRereadsOwnerLimits(t *testing.T) {
+	e := newTwinEnv(t)
+	e.withPermRun(&permRun{branches: []string{"feature/x"}, headBase: "feature/watchman"})
+	e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
+		_, err := e.db.AddWatchmanExtraLimit(watchman.ExtraLimitCommand, "go test")
+		e.must(err)
+		return permDecision(PermissionAllow), nil
+	}
+	reqID, itemID := e.permission("Bash", "go test ./...", false)
+	e.run()
+	it := e.item(itemID)
+	wantOutcome(t, it, OutcomeParked)
+	if it.ParkReason != limitReason(watchman.LimitOwner) {
+		t.Fatalf("park reason = %q", it.ParkReason)
+	}
+	e.wantPermission(reqID, db.PermissionDenied, askanswer.ByWatchman)
 }

@@ -472,9 +472,9 @@ func TestWatchmanGuard_RelativePathsResolvedAgainstCwd(t *testing.T) {
 		{"Read", map[string]string{"file_path": "notes.txt"}, elsewhere, "outside_folder"},
 		{"Bash", map[string]string{"command": "rm -rf build"}, folder, ""},
 		{"Bash", map[string]string{"command": "rm -rf build"}, elsewhere, "delete_outside"},
-		// The start directory is no directory change: a local reset on the
-		// private branch from outside the worktrees is not reset_shared.
-		{"Bash", map[string]string{"command": "git reset --hard HEAD~1"}, elsewhere, ""},
+		// The start directory is no directory change: a local reset of the
+		// working tree from outside the worktrees is not reset_shared.
+		{"Bash", map[string]string{"command": "git reset --hard"}, elsewhere, ""},
 		{"Bash", map[string]string{"command": "cd /tmp && git reset --hard HEAD~1"}, folder, "reset_shared"},
 	} {
 		out, _ := runGuardHook(deps, guardInput(t, tc.tool, tc.input, tc.cwd))
@@ -483,6 +483,24 @@ func TestWatchmanGuard_RelativePathsResolvedAgainstCwd(t *testing.T) {
 			want = "Parked for the owner: " + tc.want + " — continue with other work"
 		}
 		assert.Equal(t, want, guardDenial(t, out), "%s %v in %s", tc.tool, tc.input, tc.cwd)
+	}
+}
+
+// The guard reads no shared branches (no network in the hook), so it fails
+// closed: a reset --hard to an explicit target parks, one with no target
+// (the working tree only) passes.
+func TestWatchmanGuard_SharedUnknownResetParks(t *testing.T) {
+	_, folder := guardSession(t, true)
+	var store *countingGuardStore
+	deps := guardDeps(t, &store)
+	for _, tc := range []struct{ command, want string }{
+		{"git reset --hard HEAD~3", "Parked for the owner: reset_shared — continue with other work"},
+		{"git branch -f feat HEAD~2", "Parked for the owner: reset_shared — continue with other work"},
+		{"git reset --hard", ""},
+		{"git reset --hard HEAD", ""},
+	} {
+		out, _ := runGuardHook(deps, guardInput(t, "Bash", map[string]string{"command": tc.command}, folder))
+		assert.Equal(t, tc.want, guardDenial(t, out), tc.command)
 	}
 }
 

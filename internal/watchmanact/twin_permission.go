@@ -3,6 +3,7 @@ package watchmanact
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -91,9 +92,10 @@ func (j *job) permission(ctx context.Context) {
 // no write: parked (deny) when the request hits a hard limit or an owner's
 // limit, was clipped, or its places, the owner's limits or (for `gh pr
 // merge`) the PR's base cannot be read; otherwise the model decides between
-// allow and deny, and an allow is checked again (an allow of a hard-limit
-// request cannot reach the model; the check guards future rows). A model
-// that hands it to the owner is handed (deny). The error is the model's.
+// allow and deny, and an allow is checked again on fresh reads (the live
+// branch, its shared branches and PR bases, the owner's limits may have
+// moved while the model ran). A model that hands it to the owner is handed
+// (deny). The error is the model's.
 func (t *Twin) decidePermission(ctx context.Context, it db.WatchmanItem, req *db.PermissionRequest) (db.WatchmanOutcome, error) {
 	now := t.d.Clock()
 	park := func(reason string, dec *watchman.Decision) db.WatchmanOutcome {
@@ -101,18 +103,8 @@ func (t *Twin) decidePermission(ctx context.Context, it db.WatchmanItem, req *db
 		o.ParkReason = reason
 		return o
 	}
-	ask, err := t.permissionAsk(ctx, req)
-	if err != nil {
-		log.Printf("watchman twin: item %d: %v", it.ID, err)
-		return park(reasonUnreadablePrefix+err.Error(), nil), nil
-	}
-	extra, err := t.d.DB.WatchmanExtraLimits()
-	if err != nil {
-		log.Printf("watchman twin: item %d: %v", it.ID, err)
-		return park(reasonUnreadablePrefix+"the owner's limits", nil), nil
-	}
-	if l, hit := watchman.CheckLimits(ask, extra); hit {
-		return park(limitReason(l), nil), nil
+	if reason := t.limitPark(ctx, it, req); reason != "" {
+		return park(reason, nil), nil
 	}
 	if req.SummaryClipped {
 		return park(reasonClipped, nil), nil
@@ -126,8 +118,8 @@ func (t *Twin) decidePermission(ctx context.Context, it db.WatchmanItem, req *db
 		return db.WatchmanOutcome{}, err
 	}
 	if dec.Choice == PermissionAllow {
-		if l, hit := watchman.CheckLimits(ask, extra); hit {
-			return park(limitReason(l), &dec), nil
+		if reason := t.limitPark(ctx, it, req); reason != "" {
+			return park(reason, &dec), nil
 		}
 	}
 	if dec.Handoff == watchman.HandoffOwnerOnly {
@@ -136,10 +128,31 @@ func (t *Twin) decidePermission(ctx context.Context, it db.WatchmanItem, req *db
 	return outcomeOf(&dec, OutcomeAnswered, now), nil
 }
 
+// limitPark reads request req as the hard-limit table sees it now and the
+// owner's limits, and returns the park reason: a limit hit, or what could
+// not be read (fail closed); "" when the request may be decided.
+func (t *Twin) limitPark(ctx context.Context, it db.WatchmanItem, req *db.PermissionRequest) string {
+	ask, err := t.permissionAsk(ctx, req)
+	if err != nil {
+		log.Printf("watchman twin: item %d: %v", it.ID, err)
+		return reasonUnreadablePrefix + err.Error()
+	}
+	extra, err := t.d.DB.WatchmanExtraLimits()
+	if err != nil {
+		log.Printf("watchman twin: item %d: %v", it.ID, err)
+		return reasonUnreadablePrefix + "the owner's limits"
+	}
+	if l, hit := watchman.CheckLimits(ask, extra); hit {
+		return limitReason(l)
+	}
+	return ""
+}
+
 // permissionAsk is request req as the hard-limit table reads it: the
 // session's folder and worktrees and its workbench's folder; a shell
-// command also gets the session's live branch and the live base of a PR it
-// merges. The error names what could not be read.
+// command also gets the session's live branch, the branches it shares
+// (liveShared) and the live base of a PR it merges. The error names what
+// could not be read.
 func (t *Twin) permissionAsk(ctx context.Context, req *db.PermissionRequest) (watchman.PermissionAsk, error) {
 	s, err := t.d.DB.GetTerminalSession(req.TerminalSessionID)
 	if err != nil {
@@ -164,8 +177,14 @@ func (t *Twin) permissionAsk(ctx context.Context, req *db.PermissionRequest) (wa
 	}
 	if req.ToolName == "Bash" {
 		dir := s.FolderPath
-		ask.Branch = &watchman.BranchInfo{Current: t.liveBranch(ctx, dir)}
-		ask.PRBase = func(pr int) (string, bool) { return t.prBase(ctx, dir, pr) }
+		current := t.liveBranch(ctx, dir)
+		ask.Branch = &watchman.BranchInfo{Current: current, Shared: t.liveShared(ctx, dir, current)}
+		ask.PRBase = func(pr int) (string, bool) {
+			if pr <= 0 {
+				return "", false
+			}
+			return t.prBase(ctx, dir, pr)
+		}
 	}
 	return ask, nil
 }
@@ -182,12 +201,45 @@ func (t *Twin) liveBranch(ctx context.Context, dir string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// prBase is PR pr's base branch, read live with gh in dir; known=false on
-// any failure (the merge then parks).
+// liveShared is the branches the session at dir shares with others, read
+// live: the default branches, the base of the current branch's PR, and the
+// current branch itself when an open PR builds on it. Nil (unknown: every
+// destructive ref move then parks) when the branch is unknown or detached,
+// or any read fails — a branch with no PR yet included.
+func (t *Twin) liveShared(ctx context.Context, dir, current string) []string {
+	if current == "" || current == "HEAD" {
+		return nil
+	}
+	base, ok := t.prBase(ctx, dir, 0)
+	if !ok {
+		return nil
+	}
+	rctx, cancel := context.WithTimeout(ctx, permissionLiveReadLimit)
+	defer cancel()
+	out, err := t.d.Run(rctx, dir, "gh", "pr", "list", "--base", current, "--state", "open", "--limit", "1", "--json", "number")
+	var onTop []struct {
+		Number int `json:"number"`
+	}
+	if err != nil || json.Unmarshal(out, &onTop) != nil {
+		return nil
+	}
+	shared := []string{"main", "master", base}
+	if len(onTop) > 0 {
+		shared = append(shared, current)
+	}
+	return shared
+}
+
+// prBase is PR pr's base branch (pr 0: the current branch's PR), read live
+// with gh in dir; known=false on any failure (a merge then parks).
 func (t *Twin) prBase(ctx context.Context, dir string, pr int) (string, bool) {
 	ctx, cancel := context.WithTimeout(ctx, permissionLiveReadLimit)
 	defer cancel()
-	out, err := t.d.Run(ctx, dir, "gh", "pr", "view", strconv.Itoa(pr), "--json", "baseRefName", "--jq", ".baseRefName")
+	args := []string{"pr", "view"}
+	if pr != 0 {
+		args = append(args, strconv.Itoa(pr))
+	}
+	out, err := t.d.Run(ctx, dir, "gh", append(args, "--json", "baseRefName", "--jq", ".baseRefName")...)
 	base := strings.TrimSpace(string(out))
 	if err != nil || base == "" || strings.ContainsAny(base, " \t\n") {
 		return "", false
