@@ -78,7 +78,7 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertTrue(kind.isKnown)
         XCTAssertEqual(tone, .purple)
         XCTAssertTrue(tone.isKnown)
-        XCTAssertEqual(TerminalSessionState.Kind.knownValues.last, .readyToCheck)
+        XCTAssertEqual(TerminalSessionState.Kind.knownValues.last, .specReview)
         XCTAssertEqual(TerminalSessionState.Tone.knownValues.last, .purple)
     }
 
@@ -99,7 +99,7 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
             TerminalSessionState.Kind.knownValues.map(\.rawValue),
             [
                 "working", "running", "waiting_on_ask", "needs_approval", "finished", "stopped", "failed", "not_started",
-                "ready_to_check"
+                "ready_to_check", "spec_review"
             ]
         )
         XCTAssertEqual(
