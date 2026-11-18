@@ -410,9 +410,8 @@ final class AppState {
     /// The Analytics pane's `agents report` runs and Turn On (#298), and its coach (#1120).
     private(set) var agentAnalyticsCenter: AgentAnalyticsCenter?
     private(set) var coachCenter: CoachCenter?
-    /// Settings → Profile → Watchman (#1823): status, Start Learning, the backtest.
+    /// Settings → Profile → Watchman (#1823), and the Inbox's Watchman entry (the morning journal).
     private(set) var watchmanCenter: WatchmanCenter?
-    /// The Inbox's Watchman entry: the morning journal over this database.
     private(set) var watchmanJournal: WatchmanJournalViewModel?
     /// Which workbench session the owner is in (owner asks v2, Part 2),
     /// written for Go's Stop guard and read by the chat question escalation.
