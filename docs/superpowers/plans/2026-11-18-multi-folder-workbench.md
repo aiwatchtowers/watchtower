@@ -681,6 +681,8 @@ Path normalisation: `filepath.EvalSymlinks` + `filepath.Clean`, compared NOCASE;
 | §7 merge reinstall fails | 19 `TestMergeReinstallFailureKeepsTheData`, `testReinstallFailureShowsRetry` |
 | §7 hook slow path | 12 `TestOutsideTouchWalkIsCapped` |
 | (plan) message — daemon not running | 10 `TestSendWithoutTheDaemonQueuesAndWarns`, 17 `testWaitingReasonWhenTheDaemonIsStopped` |
+| (plan) the daemon probe never blocks a starting daemon (reads `daemon.pid`, takes no lock) | 10 `TestDaemonRunningNeverTakesSyncLock` |
+| (plan) finish report while the daemon is stopped | 10 `TestFinishWithoutTheDaemonQueuesAndWarns` |
 | §7 Writers (Desktop writes new tables only through the CLI) | named under Tasks 1, 2, 3, 5, 10, 12, 16; Architecture |
 | §8 PROJ-02 | 2, 7, 12 |
 | §8 PROJ-04 | 2, 12 |
