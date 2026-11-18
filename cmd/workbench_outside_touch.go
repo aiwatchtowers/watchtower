@@ -140,8 +140,10 @@ func countOutsideTouch(stdin io.Reader, rowID int64, rawWorkbenchID string) (str
 		return "", nil
 	}
 	skip := outsideSkipDirs()
-	root, ok := outsideRoot(path, nil, skip, outsideLocalMount())
-	if !ok {
+	// First without the bench, so a path in no repository (or skipped)
+	// never opens the database; then again against the bench's folders.
+	local := outsideLocalMount()
+	if _, ok := outsideRoot(path, nil, skip, local); !ok {
 		return "", nil
 	}
 	database, err := openHookDB()
@@ -154,7 +156,8 @@ func countOutsideTouch(stdin io.Reader, rowID int64, rawWorkbenchID string) (str
 	if err != nil || bench == nil {
 		return "", err
 	}
-	if benchCovers(path, root, bench) || benchCovers(root, root, others) {
+	root, ok := outsideRoot(path, bench, skip, local)
+	if !ok || benchCovers(root, root, others) {
 		return "", nil
 	}
 	declined, err := database.FolderDeclined(ctx, database, workbenchID, root)
