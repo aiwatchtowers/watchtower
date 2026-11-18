@@ -34,8 +34,8 @@
 2. A label reply that has a valid category but no `decision`/`parked` for a new ask → the precedent is stored with flags NULL and counts as a candidate; it is not dropped. Test in Task 3.
 3. A twin that hands off with a choice equal to the owner's fixed option → still judged (no `same` shortcut). Test in Task 4.
 4. A category whose 30 hidden contain enough justified handoffs to leave fewer than 20 scored → `not_measured`, `handed` shown, and the verdict does not count it strong. Test in Task 4.
-6. After the update the Settings **Run backtest now** would hit the CLI's relabel refusal → the Desktop shows the relabelling line and disables the button instead. Test in Task 5.
 5. A permission precedent whose `permission_requests` row is gone (its session was deleted: the FK cascades) → `parked` (unknown placement), never measured. Test in Task 2.
+6. After the update the Settings **Run backtest now** would hit the CLI's relabel refusal → the Desktop shows the relabelling line and disables the button instead. Test in Task 5.
 
 ---
 
