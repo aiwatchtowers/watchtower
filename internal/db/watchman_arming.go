@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Watchman arming (00198, spec §2): which sessions and targets the owner
+// Watchman arming (00200, spec §2): which sessions and targets the owner
 // handed to the twin. One row
 // per (scope, ref_id); the last write wins.
 

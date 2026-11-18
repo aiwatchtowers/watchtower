@@ -1,7 +1,7 @@
 import Foundation
 import GRDB
 
-/// One wait point Watchman handled for the owner (`watchman_items`, 00198;
+/// One wait point Watchman handled for the owner (`watchman_items`, 00200;
 /// Go `db.WatchmanItem`). The journal reads it; only the feedback columns
 /// are ever written from the Desktop (`WatchmanFeedbackQueries`). Times are RFC 3339
 /// UTC, as Go writes them (`wmTime`).

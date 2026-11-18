@@ -3,7 +3,7 @@
 -- Watchman phase 2 (Task 14): the journal source stores precedents of source
 -- 'journal', so watchman_precedents' source CHECK gains it. SQLite cannot
 -- change a CHECK in place: the table is rebuilt with every row, its id and
--- the learner's flags (00197), the index, and the FTS5 sync triggers (dropped
+-- the learner's flags (00199), the index, and the FTS5 sync triggers (dropped
 -- with the old table, re-created after the rename); the external-content FTS
 -- index is rebuilt from the new table. One transaction as one goose statement
 -- (see 00150); foreign keys are OFF around it, nothing references the table.

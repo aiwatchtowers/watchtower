@@ -580,7 +580,7 @@ func TestParkWatchmanGuard_EachDenialIsItsOwnItemOnItsNight(t *testing.T) {
 	require.True(t, ins)
 }
 
-func TestMigration00201_GuardRefKindKeepsRows(t *testing.T) {
+func TestMigration00203_GuardRefKindKeepsRows(t *testing.T) {
 	d := openTestDB(t)
 	wmTestWorkbench(t, d, 1)
 	id := wmQueueAsk(t, d, 5)

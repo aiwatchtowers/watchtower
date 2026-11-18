@@ -8,18 +8,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestMigration00202_BackfillsCorrectionSent replays goose to 00201, seeds a
+// TestMigration00204_BackfillsCorrectionSent replays goose to 00203, seeds a
 // corrected item (with and without feedback_at), an OK'd one and an unjudged
-// one, applies 00202 and checks that only the corrected ones are stamped as
+// one, applies 00204 and checks that only the corrected ones are stamped as
 // sent (feedback_at, else created_at), so a correction stored before the
 // column existed never shows Retry; owner_done_at starts empty.
-func TestMigration00202_BackfillsCorrectionSent(t *testing.T) {
+func TestMigration00204_BackfillsCorrectionSent(t *testing.T) {
 	t.Parallel()
 	raw, err := sql.Open("sqlite3", ":memory:")
 	require.NoError(t, err)
 	defer raw.Close()
 	raw.SetMaxOpenConns(1)
-	require.NoError(t, gooseUpTo(raw, "migrations", 201))
+	require.NoError(t, gooseUpTo(raw, "migrations", 203))
 	_, err = raw.Exec(`INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme')`)
 	require.NoError(t, err)
 	_, err = raw.Exec(`INSERT INTO watchman_items (id, workbench_id, kind, ref_kind, ref_id, state, outcome, feedback,
@@ -30,7 +30,7 @@ func TestMigration00202_BackfillsCorrectionSent(t *testing.T) {
 		(4, 1, 'ask', 'ask', 4, 'done', 'answered', '', '', NULL, '2026-11-17T05:00:00Z')`)
 	require.NoError(t, err)
 
-	require.NoError(t, gooseUpTo(raw, "migrations", 202))
+	require.NoError(t, gooseUpTo(raw, "migrations", 204))
 
 	rows, err := raw.Query(`SELECT id, COALESCE(correction_sent_at, ''), COALESCE(owner_done_at, '') FROM watchman_items ORDER BY id`)
 	require.NoError(t, err)

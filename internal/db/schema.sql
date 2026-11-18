@@ -3867,7 +3867,7 @@ CREATE TABLE IF NOT EXISTS chat_turn_leases (
     cancel_requested_at_ms INTEGER                               -- set by the other side's Stop
 );
 
--- Watchman (00194): precedents, profile and backtests of the phase-1 learning loop.
+-- Watchman (00196): precedents, profile and backtests of the phase-1 learning loop.
 CREATE TABLE IF NOT EXISTS watchman_workbenches (
     workbench_id       INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
     enabled_at         TEXT NOT NULL,
@@ -3968,7 +3968,7 @@ CREATE TABLE IF NOT EXISTS watchman_skipped_keys (
     PRIMARY KEY (workbench_id, source, source_key)
 );
 
--- Watchman phase 2 (00198; spec §§2, 4, 6 and the phase-2 plan's item enums).
+-- Watchman phase 2 (00200; spec §§2, 4, 6 and the phase-2 plan's item enums).
 CREATE TABLE IF NOT EXISTS watchman_arming (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     scope    TEXT NOT NULL CHECK (scope IN ('session','target')),
@@ -3984,7 +3984,7 @@ CREATE TABLE IF NOT EXISTS watchman_items (
     session_id    INTEGER,
     target_id     INTEGER,
     kind          TEXT NOT NULL CHECK (kind IN ('ask','review_doc','check','handover','permission','review_code','guard')),
-    ref_kind      TEXT NOT NULL CHECK (ref_kind IN ('ask','permission','session','round','guard')),  -- 'guard': a guard hook denial, ref_id its own number (00201)
+    ref_kind      TEXT NOT NULL CHECK (ref_kind IN ('ask','permission','session','round','guard')),  -- 'guard': a guard hook denial, ref_id its own number (00203)
     ref_id        INTEGER NOT NULL,
     state         TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','deciding','done')),
     outcome       TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('','answered','handed','parked','owner_first','approved','changes','superseded')),

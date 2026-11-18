@@ -6,8 +6,8 @@
 -- 'guard', its ref_id a number the writer takes from the guard items before
 -- it (ParkWatchmanGuard). SQLite cannot change a CHECK in place: the table is
 -- rebuilt with every row, its id and its AUTOINCREMENT high-water mark
--- (sqlite_sequence carry), and its indexes — 00198's two and 00200's
--- created_at index (IF NOT EXISTS: created here too should 00200 not have
+-- (sqlite_sequence carry), and its indexes — 00200's two and 00202's
+-- created_at index (IF NOT EXISTS: created here too should 00202 not have
 -- run). Task 9 adds the outcome 'superseded' (an ask withdrawn or replaced
 -- after the twin decided it). One transaction as one goose statement (see 00150); foreign keys are
 -- OFF around it so the DROP fires no cascade (nothing references the table).
