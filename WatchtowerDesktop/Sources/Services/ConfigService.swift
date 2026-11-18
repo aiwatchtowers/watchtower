@@ -87,6 +87,9 @@ final class ConfigService {
     let routingApplication: ProviderRoutingApplication
 
     private let configPath: String
+    /// The config write lock, the read inside it and the write
+    /// (`ConfigFileAccess.live`; a test records them).
+    @ObservationIgnored private let fileAccess: ConfigFileAccess
     /// Raw YAML dictionary — preserved for round-trip editing
     private var rawYAML: [String: Any] = [:]
     /// `calendar.enabled`/`gmail.enabled` as last read from or written to
@@ -114,9 +117,11 @@ final class ConfigService {
         configPath: String,
         routingRead: (() async throws -> ChatRoutingStatus)? = nil,
         connection: ProviderConnection? = nil,
-        catalog: AIModelCatalog = .shared
+        catalog: AIModelCatalog = .shared,
+        fileAccess: ConfigFileAccess = .live
     ) {
         self.catalog = catalog
+        self.fileAccess = fileAccess
         providerConnection = connection ?? ProviderConnection()
         routingApplication = ProviderRoutingApplication(read: routingRead ?? {
             guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
@@ -539,20 +544,20 @@ final class ConfigService {
     /// Re-reads the file and writes just these keys, so nothing else this
     /// instance holds is written. Every value is checked before anything is.
     func saveBuiltinParameters(_ values: [String: String]) throws {
-        var yaml = currentYAMLOnDisk() ?? rawYAML
-        for (key, value) in values.sorted(by: { $0.key < $1.key }) {
-            let (section, field, stored) = try Self.builtinParameter(key: key, value: value)
-            var dict = (yaml[section] as? [String: Any]) ?? [:]
-            dict[field] = stored
-            yaml[section] = dict
+        let yaml = try writeLocked { yaml in
+            for (key, value) in values.sorted(by: { $0.key < $1.key }) {
+                let (section, field, stored) = try Self.builtinParameter(key: key, value: value)
+                var dict = (yaml[section] as? [String: Any]) ?? [:]
+                dict[field] = stored
+                yaml[section] = dict
+            }
+            // The backlog's at-least never above its at-most, as the file will hold them.
+            let planned = (yaml["day_plan"] as? [String: Any]) ?? [:]
+            // Absent keys read as Go's defaults (3 and 8), as `reload()` does.
+            if (planned["min_backlog"] as? Int ?? 3) > (planned["max_backlog"] as? Int ?? 8) {
+                throw BuiltinParameterError(key: BuiltinAutomationCardModel.minBacklogKey)
+            }
         }
-        // The backlog's at-least never above its at-most, as the file will hold them.
-        let planned = (yaml["day_plan"] as? [String: Any]) ?? [:]
-        // Absent keys read as Go's defaults (3 and 8), as `reload()` does.
-        if (planned["min_backlog"] as? Int ?? 3) > (planned["max_backlog"] as? Int ?? 8) {
-            throw BuiltinParameterError(key: BuiltinAutomationCardModel.minBacklogKey)
-        }
-        try write(yaml)
         rawYAML = yaml
         if let hour = (yaml["briefing"] as? [String: Any])?["hour"] as? Int { briefingHour = hour }
         let dayPlan = (yaml["day_plan"] as? [String: Any]) ?? [:]
@@ -589,27 +594,51 @@ final class ConfigService {
         }
     }
 
-    /// Writes the whole file, owner-only (it holds tokens).
-    private func write(_ yaml: [String: Any]) throws {
-        let output = try Yams.dump(object: yaml, allowUnicode: true)
-        let dir = (configPath as NSString).deletingLastPathComponent
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        try output.write(toFile: configPath, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configPath)
+    /// Re-reads the file inside the config write lock (`ConfigFileLock`),
+    /// lets `change` edit it and writes the whole file through
+    /// `ConfigFileWriter` (owner-only: it holds tokens). Returns what was
+    /// written. Reading inside the lock, not the `rawYAML` snapshot of the
+    /// last reload(), keeps the sections another process wrote meanwhile
+    /// (`watchtower jira login`, `ai background allow`, …); `rawYAML` is the
+    /// fallback only when the file is gone or unreadable.
+    private func writeLocked(_ change: (inout [String: Any]) throws -> Void) throws -> [String: Any] {
+        var written: [String: Any] = [:]
+        try fileAccess.withLock(configPath) { token in
+            var yaml = currentYAMLOnDisk() ?? rawYAML
+            try change(&yaml)
+            try fileAccess.write(try Yams.dump(object: yaml, allowUnicode: true), configPath, token)
+            written = yaml
+        }
+        return written
     }
 
     func save() throws {
         providerConnection.invalidate()
         providerHealth.invalidate()
-        // Re-read the config file right before writing instead of using the
-        // in-memory `rawYAML` snapshot captured at the last reload(). Between
-        // load and save, an external process (e.g. `watchtower jira login`,
-        // `watchtower calendar login`) may have written sections we don't
-        // own (jira, google token, etc). Merging onto a stale snapshot would
-        // silently discard those. Fall back to `rawYAML` only if the file is
-        // gone or unreadable.
-        var yaml = currentYAMLOnDisk() ?? rawYAML
+        var purgeChanged = false
+        let yaml = try writeLocked { yaml in
+            purgeChanged = try applySettings(to: &yaml)
+        }
+        routingApplication.saved()
 
+        rawYAML = yaml
+        loadFallback(yaml["ai"] as? [String: Any] ?? [:])
+        lastSaveChangedPurge = purgeChanged
+        diskPurgeRevokedData = purgeRevokedData
+        // Adopt what is on disk now, so a switch the CLI turned on behind this
+        // instance also shows as on.
+        adoptGoogleSyncSwitches(from: yaml)
+        if let ai = yaml["ai"] as? [String: Any] {
+            providerBuckets = ai["providers"] as? [String: [String: Any]] ?? [:]
+            loadProviderModels()
+        }
+        resetModelEditTracking()
+    }
+
+    /// Writes this instance's settings into `yaml` (the file as re-read
+    /// inside the lock), only the keys Settings owns. Returns whether the
+    /// purge setting changed.
+    private func applySettings(to yaml: inout [String: Any]) throws -> Bool {
         // `active_workspace` is never written here: the CLI owns it (`auth
         // login`, `config set`) and no Settings control edits it, so the only
         // thing save() could write is the snapshot reload() took — stale after
@@ -676,22 +705,7 @@ final class ConfigService {
             privacy["purge_revoked_data"] = purgeRevokedData
             yaml["privacy"] = privacy
         }
-
-        try write(yaml)
-        routingApplication.saved()
-
-        rawYAML = yaml
-        loadFallback(yaml["ai"] as? [String: Any] ?? [:])
-        lastSaveChangedPurge = purgeChanged
-        diskPurgeRevokedData = purgeRevokedData
-        // Adopt what is on disk now, so a switch the CLI turned on behind this
-        // instance also shows as on.
-        adoptGoogleSyncSwitches(from: yaml)
-        if let ai = yaml["ai"] as? [String: Any] {
-            providerBuckets = ai["providers"] as? [String: [String: Any]] ?? [:]
-            loadProviderModels()
-        }
-        resetModelEditTracking()
+        return purgeChanged
     }
 
     /// An edit made here still waits for `save()`.
@@ -708,7 +722,7 @@ final class ConfigService {
 
     /// Bookkeeping, not settings: left out of the edit check.
     private static let nonEditableFields: Set<String> = [
-        "configPath", "routingApplication", "_rawYAML", "_parseError", "_lastSaveChangedPurge",
+        "configPath", "fileAccess", "routingApplication", "_rawYAML", "_parseError", "_lastSaveChangedPurge",
         "_diskCalendarEnabled", "_diskGmailEnabled", "_diskPurgeRevokedData", "loadedFields",
         "_providerBuckets", "_editedProviderBuckets", "editedModelTiers",
         "_providerConnection", "_providerHealth", "providerConnection", "providerHealth", "loadedFallbackEnabled", "loadedFallbackProvider"
@@ -763,7 +777,7 @@ final class ConfigService {
     /// touching any of the published `@Observable` properties. Used by
     /// `save()` to merge onto the freshest state rather than a stale snapshot.
     private func currentYAMLOnDisk() -> [String: Any]? {
-        guard let data = FileManager.default.contents(atPath: configPath),
+        guard let data = try? fileAccess.read(configPath),
               let str = String(data: data, encoding: .utf8),
               let yaml = try? Yams.load(yaml: str) as? [String: Any] else {
             return nil
