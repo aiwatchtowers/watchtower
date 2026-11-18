@@ -7,7 +7,7 @@ package struct CodexSessionAgent: SessionAgent {
     package init() {}
 
     package var subscriptionUsage: SubscriptionUsagePolicy {
-        SubscriptionUsagePolicy(title: "Codex", signInApplication: "Codex",
+        SubscriptionUsagePolicy(title: "Codex",
                                 statusTable: "codex_plan_usage_status", samplesTable: "codex_plan_usage_samples",
                                 storage: .identityScoped, defaultQuotaBucket: "codex", layout: .grouped, tint: "teal", icon: "terminal",
                                 suppliesSurfaceBreakdown: false, sendsNotifications: false,

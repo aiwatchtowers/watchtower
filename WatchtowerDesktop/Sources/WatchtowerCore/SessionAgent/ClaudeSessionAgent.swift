@@ -7,7 +7,7 @@ package struct ClaudeSessionAgent: SessionAgent {
     package init() {}
 
     package var subscriptionUsage: SubscriptionUsagePolicy {
-        SubscriptionUsagePolicy(title: "Claude", signInApplication: "Claude Code",
+        SubscriptionUsagePolicy(title: "Claude",
                                 statusTable: "plan_usage_status", samplesTable: "plan_usage_samples",
                                 storage: .legacy, defaultQuotaBucket: nil, layout: .compact, tint: "purple", icon: "sparkle",
                                 suppliesSurfaceBreakdown: true, sendsNotifications: true, messages: Self.usageMessages)

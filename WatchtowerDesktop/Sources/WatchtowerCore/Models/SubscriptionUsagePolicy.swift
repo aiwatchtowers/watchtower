@@ -16,7 +16,6 @@ package struct SubscriptionUsageMessages: Sendable {
 package struct SubscriptionUsagePolicy: Sendable {
     package enum Layout: Equatable, Sendable { case compact, grouped }
     package let title: String
-    package let signInApplication: String
     package let statusTable: String
     package let samplesTable: String
     package enum Storage: Equatable, Sendable { case legacy, identityScoped }
