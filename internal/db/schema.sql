@@ -3866,7 +3866,7 @@ CREATE TABLE IF NOT EXISTS watchman_workbenches (
 CREATE TABLE IF NOT EXISTS watchman_precedents (
     id           INTEGER PRIMARY KEY,
     workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    source       TEXT NOT NULL CHECK (source IN ('ask','review','spec','permission','turn','git')),
+    source       TEXT NOT NULL CHECK (source IN ('ask','review','spec','permission','journal','turn','git')),
     source_key   TEXT NOT NULL,
     category     TEXT NOT NULL CHECK (category IN ('design','scope','ux_text','tests','review_code','review_doc','permission','finish')),
     situation    TEXT NOT NULL DEFAULT '',

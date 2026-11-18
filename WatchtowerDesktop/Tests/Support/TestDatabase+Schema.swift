@@ -2500,19 +2500,6 @@ CREATE TABLE IF NOT EXISTS watchman_workbenches (
     unlabelled         INTEGER NOT NULL DEFAULT 0,   -- decisions seen but not placed in a category
     learned_through    TEXT                          -- set when every source reports done on its backfill
 );
-CREATE TABLE IF NOT EXISTS watchman_precedents (
-    id           INTEGER PRIMARY KEY,
-    workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    source       TEXT NOT NULL CHECK (source IN ('ask','review','spec','permission','turn','git')),
-    source_key   TEXT NOT NULL,
-    category     TEXT NOT NULL CHECK (category IN ('design','scope','ux_text','tests','review_code','review_doc','permission','finish')),
-    situation    TEXT NOT NULL DEFAULT '',
-    choice       TEXT NOT NULL DEFAULT '',
-    owner_words  TEXT NOT NULL DEFAULT '',
-    decided_at   TEXT NOT NULL,
-    weight       REAL NOT NULL DEFAULT 1, is_decision INTEGER, parked INTEGER, flags_at TEXT,
-    UNIQUE (workbench_id, source, source_key)
-);
 CREATE VIRTUAL TABLE IF NOT EXISTS watchman_fts USING fts5(
     situation, choice, owner_words,
     content='watchman_precedents', content_rowid='id',
@@ -2616,6 +2603,22 @@ CREATE TABLE IF NOT EXISTS watchman_extra_limits (
     pattern    TEXT NOT NULL,
     created_at TEXT NOT NULL,
     UNIQUE (kind, pattern)
+);
+CREATE TABLE IF NOT EXISTS "watchman_precedents" (
+    id           INTEGER PRIMARY KEY,
+    workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    source       TEXT NOT NULL CHECK (source IN ('ask','review','spec','permission','journal','turn','git')),
+    source_key   TEXT NOT NULL,
+    category     TEXT NOT NULL CHECK (category IN ('design','scope','ux_text','tests','review_code','review_doc','permission','finish')),
+    situation    TEXT NOT NULL DEFAULT '',
+    choice       TEXT NOT NULL DEFAULT '',
+    owner_words  TEXT NOT NULL DEFAULT '',
+    decided_at   TEXT NOT NULL,
+    weight       REAL NOT NULL DEFAULT 1,
+    is_decision  INTEGER,  -- §9.1: NULL = not flagged yet (a candidate), 0/1 set by the learner's relabel pass
+    parked       INTEGER,  -- §9.1: NULL/0 = usable, 1 = parked out of the backtest
+    flags_at     TEXT,     -- §9.1: when the relabel pass tried the row (even if both flags stayed NULL)
+    UNIQUE (workbench_id, source, source_key)
 );
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
@@ -2978,10 +2981,10 @@ CREATE INDEX IF NOT EXISTS idx_inbox_folders_parent ON inbox_folders(parent_id, 
 CREATE INDEX IF NOT EXISTS coach_proposals_conversation ON coach_proposals(conversation_id);
 CREATE INDEX IF NOT EXISTS skill_pack_overlays_skill ON skill_pack_overlays(skill, id);
 CREATE INDEX IF NOT EXISTS idx_messages_synced_at ON messages(CASE WHEN synced_at = 0 THEN ts_unix ELSE synced_at END);
-CREATE INDEX IF NOT EXISTS idx_watchman_precedents_wb ON watchman_precedents(workbench_id, category, decided_at);
 CREATE INDEX IF NOT EXISTS idx_watchman_backtests_wb ON watchman_backtests(workbench_id, id);
 CREATE INDEX IF NOT EXISTS idx_watchman_items_queue ON watchman_items(state, not_before);
 CREATE INDEX IF NOT EXISTS idx_watchman_items_wb ON watchman_items(workbench_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_watchman_precedents_wb ON watchman_precedents(workbench_id, category, decided_at);
 CREATE TRIGGER IF NOT EXISTS kb_chunks_ai AFTER INSERT ON kb_chunks BEGIN
     INSERT INTO kb_fts(rowid, title, body, meta) VALUES (NEW.id, NEW.title, NEW.body, NEW.meta);
 END;

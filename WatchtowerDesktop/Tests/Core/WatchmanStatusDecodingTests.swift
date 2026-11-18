@@ -26,7 +26,7 @@ final class WatchmanStatusDecodingTests: XCTestCase {
         XCTAssertFalse(first.analyticsOn)
         XCTAssertEqual(first.precedents.count, 8)
         XCTAssertEqual(first.precedents["scope"], 3)
-        XCTAssertEqual(first.sources.count, 6)
+        XCTAssertEqual(first.sources.count, 7)
         XCTAssertEqual(first.sources["ask"], WatchmanSourceProgress(written: 3, done: false))
         XCTAssertEqual(first.sleepWindow, "23:00-07:00")
         XCTAssertTrue(first.sleepWindowPinned)
