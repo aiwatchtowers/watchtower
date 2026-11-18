@@ -145,6 +145,9 @@ package struct BackgroundAIConsentSheet {
     /// lines, unless `state` says it was answered meanwhile.
     package mutating func showCatalogRetry(for kind: BackgroundAIConsentPrompt.Opened, state: BackgroundAIConsent.State) {
         guard !BackgroundAIConsentPrompt.shouldClose(opened: kind, state: state) else { return }
+        // The owner's own re-entry takes precedence: an automatic upgrade
+        // retry never downgrades it, whichever read failed last.
+        if catalogRetry == .reEntry { return }
         catalogRetry = kind
     }
 

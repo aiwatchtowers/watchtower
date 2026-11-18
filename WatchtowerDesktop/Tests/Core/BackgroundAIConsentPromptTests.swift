@@ -172,6 +172,25 @@ final class BackgroundAIConsentPromptTests: XCTestCase {
         XCTAssertFalse(sheet.showsCatalogRetry, "answered in a terminal while the retry was up")
     }
 
+    /// Both catalog reads failed (the upgrade's and the owner's re-entry):
+    /// the retry stays the re-entry's in either completion order, so it
+    /// goes only once background AI is allowed, not on any answer.
+    @MainActor
+    func testAReEntryRetryIsNeverDowngraded() {
+        var upgradeFirst = BackgroundAIConsentSheet()
+        upgradeFirst.showCatalogRetry(for: .upgrade, state: unanswered)
+        upgradeFirst.showCatalogRetry(for: .reEntry, state: unanswered)
+        var reEntryFirst = BackgroundAIConsentSheet()
+        reEntryFirst.showCatalogRetry(for: .reEntry, state: unanswered)
+        reEntryFirst.showCatalogRetry(for: .upgrade, state: unanswered)
+        for var sheet in [upgradeFirst, reEntryFirst] {
+            sheet.follow(ownerPaused)
+            XCTAssertTrue(sheet.showsCatalogRetry, "a re-entry retry outlives a pause")
+            sheet.follow(allowed)
+            XCTAssertFalse(sheet.showsCatalogRetry)
+        }
+    }
+
     /// The upgrade eligibility the caller re-reads after the catalog wait:
     /// release notes, config readability and the answer, fresh.
     @MainActor
