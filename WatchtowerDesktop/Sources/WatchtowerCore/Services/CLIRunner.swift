@@ -19,6 +19,30 @@ package protocol CLIRunnerProtocol {
     func run(args: [String], stdin: Data) async throws -> Data
     /// Commands with a partial-result envelope need stdout even on exit 1/3.
     func capture(args: [String], timeout: TimeInterval) async throws -> CLICapturedResult
+    /// The one entry for a command that calls a model (`ModelCommands`):
+    /// `origin` says who started it and has no default, so every call site
+    /// decides. The generic entries above refuse a model command
+    /// (`CLIRunnerError.modelCommandNeedsOrigin`). `.background` marks the
+    /// child `WATCHTOWER_AI_ORIGIN=background`, which the CLI gates on the
+    /// owner's background-AI answer (#1886).
+    func runModel(args: [String], origin: CLIOrigin, timeout: TimeInterval?, stdin: Data?) async throws -> Data
+}
+
+/// Who started a model command the Desktop launches. Background = started by
+/// a timer, a sync cycle or an event; not by the owner's own gesture.
+package enum CLIOrigin: Sendable, Equatable {
+    case owner
+    case background
+
+    package static let environmentKey = "WATCHTOWER_AI_ORIGIN"
+
+    /// `base` with this origin's marker: `.background` sets it, `.owner`
+    /// removes one the app may have inherited.
+    package func environment(_ base: [String: String]) -> [String: String] {
+        var env = base
+        env[Self.environmentKey] = self == .background ? "background" : nil
+        return env
+    }
 }
 
 package struct CLICapturedResult: Sendable {
@@ -51,6 +75,15 @@ extension CLIRunnerProtocol {
     package func run(args: [String], stdin: Data) async throws -> Data {
         throw CLIRunnerError.launchFailed(underlying: CocoaError(.featureUnsupported))
     }
+
+    // No default `runModel(args:origin:timeout:stdin:)` here: every
+    // production runner implements it. Test doubles get one from
+    // `WatchtowerTestSupport` (`CLIRunnerTestDefaults.swift`).
+
+    /// `runModel` with no timeout and no stdin.
+    package func runModel(args: [String], origin: CLIOrigin) async throws -> Data {
+        try await runModel(args: args, origin: origin, timeout: nil, stdin: nil)
+    }
 }
 
 // MARK: - CLIRunnerError
@@ -59,6 +92,14 @@ package enum CLIRunnerError: LocalizedError {
     case binaryNotFound
     case launchFailed(underlying: Error)
     case nonZeroExit(code: Int32, stderr: String)
+    /// A model command (its path) reached a generic entry: it launches only
+    /// through `runModel(args:origin:…)`.
+    case modelCommandNeedsOrigin(String)
+
+    /// Throws `modelCommandNeedsOrigin` when `args` run a model command.
+    package static func refuseModelCommand(_ args: [String]) throws {
+        if let path = ModelCommands.match(args) { throw modelCommandNeedsOrigin(path) }
+    }
 
     package var errorDescription: String? {
         switch self {
@@ -69,6 +110,8 @@ package enum CLIRunnerError: LocalizedError {
         case let .nonZeroExit(code, stderr):
             let detail = stderr.isEmpty ? "exit \(code)" : stderr.prefix(300).description
             return "watchtower exited with error: \(detail)"
+        case .modelCommandNeedsOrigin(let path):
+            return "watchtower \(path) calls a model and must be launched with an origin (runModel)"
         }
     }
 }
@@ -147,11 +190,18 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
     }
 
     package func run(args: [String]) async throws -> Data {
-        try await run(args: args, environment: await Constants.resolvedEnvironmentAsync())
+        try await run(args: args, stdin: nil, timeout: nil)
     }
 
     package func run(args: [String], stdin: Data) async throws -> Data {
-        try await run(args: args, environment: await Constants.resolvedEnvironmentAsync(), stdin: stdin)
+        try await run(args: args, stdin: stdin, timeout: nil)
+    }
+
+    package func runModel(
+        args: [String], origin: CLIOrigin, timeout: TimeInterval?, stdin: Data?
+    ) async throws -> Data {
+        let environment = origin.environment(await Constants.resolvedEnvironmentAsync())
+        return try await launch(args: args, environment: environment, stdin: stdin, timeout: timeout)
     }
 
     /// `run(args:)` with the child's whole environment given: a caller that
@@ -160,26 +210,38 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
     /// environment it built. `stdin`, when given, is written to the child's
     /// standard input and closed (`ProcessPipes.feed`).
     package func run(args: [String], environment: [String: String], stdin: Data? = nil) async throws -> Data {
-        try await run(args: args, environment: environment, stdin: stdin, timeout: nil)
+        try CLIRunnerError.refuseModelCommand(args)
+        return try await launch(args: args, environment: environment, stdin: stdin, timeout: nil)
     }
 
     package func run(args: [String], timeout: TimeInterval) async throws -> Data {
-        try await run(args: args, environment: await Constants.resolvedEnvironmentAsync(), stdin: nil, timeout: timeout)
+        try await run(args: args, stdin: nil, timeout: timeout)
     }
 
     package func capture(args: [String], timeout: TimeInterval) async throws -> CLICapturedResult {
-        try await capture(args: args, environment: await Constants.resolvedEnvironmentAsync(), timeout: timeout)
+        try CLIRunnerError.refuseModelCommand(args)
+        return try await capture(
+            args: args, environment: await Constants.resolvedEnvironmentAsync(), stdin: nil, timeout: timeout)
     }
 
     package func capture(
         args: [String], environment: [String: String], timeout: TimeInterval
     ) async throws -> CLICapturedResult {
-        try await capture(args: args, environment: environment, stdin: nil, timeout: timeout)
+        try CLIRunnerError.refuseModelCommand(args)
+        return try await capture(args: args, environment: environment, stdin: nil, timeout: timeout)
     }
 
-    /// The one launch path: `stdin` fed and closed when given, the child
-    /// terminated after `timeout` seconds when given.
-    private func run(
+    /// The generic entries' shared path: a model command is refused before
+    /// the environment is resolved or a process built.
+    private func run(args: [String], stdin: Data?, timeout: TimeInterval?) async throws -> Data {
+        try CLIRunnerError.refuseModelCommand(args)
+        return try await launch(
+            args: args, environment: await Constants.resolvedEnvironmentAsync(), stdin: stdin, timeout: timeout)
+    }
+
+    /// The one launch path, unguarded (callers check): `stdin` fed and closed
+    /// when given, the child terminated after `timeout` seconds when given.
+    private func launch(
         args: [String], environment: [String: String], stdin: Data?, timeout: TimeInterval?
     ) async throws -> Data {
         let result = try await capture(args: args, environment: environment, stdin: stdin, timeout: timeout)

@@ -25,7 +25,7 @@ package struct TrackComposeService {
         if let targetID, targetID > 0 {
             args.append(contentsOf: ["--target", "\(targetID)"])
         }
-        let data = try await runner.run(args: args, stdin: Data(text.utf8))
+        let data = try await runner.runModel(args: args, origin: .owner, timeout: nil, stdin: Data(text.utf8))
         return try JSONDecoder().decode(TrackDraft.self, from: data)
     }
 }
