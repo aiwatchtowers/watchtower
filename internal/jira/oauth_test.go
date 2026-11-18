@@ -284,6 +284,44 @@ func TestFetchAccessibleResources_BadJSON(t *testing.T) {
 	assert.Contains(t, err.Error(), "decoding")
 }
 
+// FetchMyself reads the person's identity on one site with a fresh grant's
+// access token; an error answer, or one without an account id, is an error.
+func TestFetchMyself(t *testing.T) {
+	answer := `{"accountId":"557058:aaaa","emailAddress":"a@example.com","displayName":"A"}`
+	status := http.StatusOK
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		assert.Equal(t, "/ex/jira/cloud-acme/rest/api/3/myself", r.URL.Path)
+		assert.Equal(t, "Bearer at-token", r.Header.Get("Authorization"))
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(answer))
+	}))
+	defer srv.Close()
+	prev := myselfAPIRoot
+	myselfAPIRoot = srv.URL
+	defer func() { myselfAPIRoot = prev }()
+
+	m, err := FetchMyself(context.Background(), "at-token", "cloud-acme")
+	require.NoError(t, err)
+	assert.Equal(t, Myself{AccountID: "557058:aaaa", EmailAddress: "a@example.com", DisplayName: "A"}, m)
+
+	answer = `{"displayName":"A"}`
+	_, err = FetchMyself(context.Background(), "at-token", "cloud-acme")
+	assert.ErrorContains(t, err, "no account id")
+
+	answer = `not json`
+	_, err = FetchMyself(context.Background(), "at-token", "cloud-acme")
+	assert.ErrorContains(t, err, "decoding myself")
+
+	status, answer = http.StatusUnauthorized, `{"message":"no"}`
+	_, err = FetchMyself(context.Background(), "at-token", "cloud-acme")
+	assert.ErrorContains(t, err, "myself failed (401)")
+
+	myselfAPIRoot = "http://127.0.0.1:0"
+	_, err = FetchMyself(context.Background(), "at-token", "cloud-acme")
+	assert.ErrorContains(t, err, "myself request")
+}
+
 func TestGetOpenBrowserFunc_NotNil(t *testing.T) {
 	assert.NotNil(t, getOpenBrowserFunc())
 }

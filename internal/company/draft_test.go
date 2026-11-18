@@ -248,6 +248,7 @@ func TestCompanyDraft_CheckHashMismatchIsUnchecked(t *testing.T) {
 		"client id": func(d *Draft) { d.Atlassian.ClientID = "acmeClientId02" },
 		"secret":    func(d *Draft) { d.Atlassian.ClientSecret = "other" },
 		"site":      func(d *Draft) { d.Atlassian.Site = "https://beta.atlassian.net" },
+		"scopes":    func(d *Draft) { d.Atlassian.Confluence = !d.Atlassian.Confluence },
 		"dropped":   func(d *Draft) { d.Atlassian = nil },
 	} {
 		e := got
@@ -297,4 +298,77 @@ func TestCompanyDraft_SameValuesKeepCheck(t *testing.T) {
 	assert.NotEqual(t, CheckHash("google", d), CheckHash("atlassian", d))
 	assert.Error(t, s.MarkDraftChecked("notion", "x"))
 	assert.Error(t, NewStore(t.TempDir()).MarkDraftChecked("google", "x"), "no draft")
+}
+
+// A passed check writes the company slug and the Google domain into the
+// draft in the same write as its mark; a later wizard save that leaves them
+// out keeps them (the wizard's draft predates the check).
+func TestCompanyDraft_RecordCheckKeepsSlugAndDomain(t *testing.T) {
+	s := NewStore(t.TempDir())
+	d := sampleDraft()
+	require.NoError(t, s.SaveDraft(d))
+	require.NoError(t, s.RecordDraftCheck(DraftCheck{Vendor: "google", Hash: CheckHash("google", d), Slug: "acme", GoogleDomain: "example.com"}))
+
+	got, _, _, err := s.LoadDraft(draftT0)
+	require.NoError(t, err)
+	assert.True(t, got.IsChecked("google"))
+	assert.Equal(t, "acme", got.Slug)
+	assert.Equal(t, "example.com", got.Google.Domain)
+
+	again := sampleDraft()
+	again.Step = "linear"
+	require.NoError(t, s.SaveDraft(again))
+	got, _, _, err = s.LoadDraft(draftT0)
+	require.NoError(t, err)
+	assert.Equal(t, "acme", got.Slug)
+	assert.Equal(t, "example.com", got.Google.Domain)
+	assert.True(t, got.IsChecked("google"), "a domain is not a checked value")
+
+	// Another Google client drops the old client's domain.
+	other := sampleDraft()
+	other.Google = &companybundle.Google{ClientID: "5678-efgh.apps.googleusercontent.com", ClientSecret: "s"}
+	require.NoError(t, s.SaveDraft(other))
+	got, _, _, err = s.LoadDraft(draftT0)
+	require.NoError(t, err)
+	assert.Empty(t, got.Google.Domain)
+}
+
+// A check whose values were edited while it ran still names the company it
+// stored (the bundle exists under that slug) but marks nothing.
+func TestCompanyDraft_LateCheckKeepsOnlySlug(t *testing.T) {
+	s := NewStore(t.TempDir())
+	d := sampleDraft()
+	require.NoError(t, s.SaveDraft(d))
+	stale := CheckHash("google", d)
+	edited := sampleDraft()
+	edited.Google = &companybundle.Google{ClientID: "5678-efgh.apps.googleusercontent.com", ClientSecret: "s"}
+	require.NoError(t, s.SaveDraft(edited))
+
+	err := s.RecordDraftCheck(DraftCheck{Vendor: "google", Hash: stale, Slug: "acme", GoogleDomain: "example.com"})
+	require.ErrorIs(t, err, ErrDraftValuesChanged)
+	got, _, _, err := s.LoadDraft(draftT0)
+	require.NoError(t, err)
+	assert.Equal(t, "acme", got.Slug)
+	assert.False(t, got.IsChecked("google"))
+	assert.Empty(t, got.Google.Domain)
+
+	assert.ErrorIs(t, s.RecordDraftCheck(DraftCheck{Vendor: "google", Hash: stale, Slug: "acme"}), ErrDraftValuesChanged,
+		"nothing new to write")
+}
+
+// A check for one company that ends after the draft was discarded and
+// started again for another leaves the new draft alone, even with the same
+// values.
+func TestCompanyDraft_CheckOfAnotherCompanyIgnored(t *testing.T) {
+	s := NewStore(t.TempDir())
+	d := sampleDraft()
+	d.Company = "Initech"
+	require.NoError(t, s.SaveDraft(d))
+
+	err := s.RecordDraftCheck(DraftCheck{Vendor: "google", Hash: CheckHash("google", d), Company: "Acme", Slug: "acme"})
+	require.ErrorIs(t, err, ErrDraftValuesChanged)
+	got, _, _, err := s.LoadDraft(draftT0)
+	require.NoError(t, err)
+	assert.Empty(t, got.Slug)
+	assert.False(t, got.IsChecked("google"))
 }

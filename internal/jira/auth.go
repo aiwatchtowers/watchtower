@@ -37,6 +37,7 @@ var (
 	jiraAuthEndpoint        = "https://auth.atlassian.com/authorize"
 	jiraTokenEndpoint       = "https://auth.atlassian.com/oauth/token"
 	jiraAccessibleResources = "https://api.atlassian.com/oauth/token/accessible-resources"
+	myselfAPIRoot           = "https://api.atlassian.com"
 )
 
 // DefaultJiraClientID and DefaultJiraClientSecret are injected at build time via -ldflags:
@@ -357,6 +358,42 @@ func FetchAccessibleResources(ctx context.Context, accessToken string) ([]CloudR
 	}
 
 	return resources, nil
+}
+
+// FetchMyself is the signed-in person's own identity on the site cloudID,
+// read with a fresh grant's access token before any account holds it (the
+// company setup check matches the person's existing account by it, #1887).
+func FetchMyself(ctx context.Context, accessToken, cloudID string) (Myself, error) {
+	u := myselfAPIRoot + "/ex/jira/" + url.PathEscape(cloudID) + "/rest/api/3/myself"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return Myself{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+
+	hc := &http.Client{Timeout: 30 * time.Second}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return Myself{}, fmt.Errorf("myself request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return Myself{}, fmt.Errorf("myself request: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return Myself{}, logredact.Errorf("myself failed (%d): %s", resp.StatusCode, logredact.Text(body))
+	}
+	var m Myself
+	if err := json.Unmarshal(body, &m); err != nil {
+		return Myself{}, fmt.Errorf("decoding myself: %w", err)
+	}
+	if m.AccountID == "" {
+		return Myself{}, errors.New("myself: no account id in the answer")
+	}
+	return m, nil
 }
 
 // openBrowserFunc can be replaced in tests.

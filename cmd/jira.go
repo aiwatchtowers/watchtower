@@ -813,6 +813,9 @@ type jiraAddTarget struct {
 	Site string
 	// Confluence implies --with-confluence (the bundle's confluence: true).
 	Confluence bool
+	// ConfluenceWrite implies --with-confluence-write (a check re-logging
+	// an account that has the write scopes).
+	ConfluenceWrite bool
 }
 
 // sameJiraSite compares two site URLs ignoring case and a trailing slash.
@@ -855,9 +858,13 @@ func chooseCompanyJiraSite(cmd *cobra.Command, token *jira.OAuthToken, site stri
 			return r, nil
 		}
 	}
-	return jira.CloudResource{}, fmt.Errorf("this Atlassian sign-in does not reach the company's site %s; it reaches: %s — check which Atlassian identity is signed in",
-		site, strings.Join(jiraSiteURLs(resources), ", "))
+	return jira.CloudResource{}, fmt.Errorf("%w %s; it reaches: %s — check which Atlassian identity is signed in",
+		errCompanySiteNotReached, site, strings.Join(jiraSiteURLs(resources), ", "))
 }
+
+// errCompanySiteNotReached is a sign-in whose grant does not reach the
+// company app's site.
+var errCompanySiteNotReached = errors.New("this Atlassian sign-in does not reach the company's site")
 
 // saveJiraAccountClient records the client accountID's grant was issued to
 // (jira_client_<id>.json): what the resolver compares a company's app with.
@@ -874,47 +881,9 @@ var jiraValidateSite = jira.ValidateCloudSite
 // company's client file, save the token. The wizard's Atlassian check
 // (company check atlassian) calls it with the draft's client.
 func addJiraAccount(cmd *cobra.Command, cfg *config.Config, database *db.DB, target jiraAddTarget) error {
-	siteFlag, _ := cmd.Flags().GetString("site")
 	label, _ := cmd.Flags().GetString("label")
 	out := cmd.OutOrStdout()
-	opts := jiraLoginOptionsFromFlags(cmd)
-	if target.Site != "" {
-		if siteFlag != "" && !sameJiraSite(siteFlag, target.Site) {
-			return fmt.Errorf("the company's Atlassian app is for %s, not %s", target.Site, siteFlag)
-		}
-		if err := jiraValidateSite(cmd.Context(), nil, target.Site); err != nil {
-			return fmt.Errorf("company Atlassian site: %w", err)
-		}
-	}
-	if target.Confluence {
-		opts.WithConfluence = true
-	}
-	// A company's app has the report permission (its setup guide enables
-	// it), so the grant carries the scope Personal Data Reporting needs.
-	opts.WithPersonalDataReporting = target.Slug != ""
-
-	// Seed the legacy single-account install first so the new row never
-	// collides with the implicit account #1 (the `slack add` precedent).
-	if _, err := ensureLegacyJiraAccount(cfg, database, jiraCmdLogger(cmd)); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: legacy account seed failed: %v\n", err)
-	}
-
-	jiraCfg := target.OAuth
-	token, err := jiraAddLogin(cmd.Context(), jiraCfg, out, opts)
-	oauthpage.ReturnAfterLogin(opts.AppReturn, err, cmd.ErrOrStderr())
-	if err != nil {
-		return jiraAddLoginError(err)
-	}
-	if opts.WithConfluence && !jira.HasConfluenceScopes(token) {
-		fmt.Fprintln(out, jiraConfluenceNotEnabled)
-	}
-
-	var chosen jira.CloudResource
-	if target.Site != "" {
-		chosen, err = chooseCompanyJiraSite(cmd, token, target.Site)
-	} else {
-		chosen, err = chooseJiraSite(cmd, token, siteFlag, "")
-	}
+	token, chosen, err := jiraSignIn(cmd, cfg, database, target)
 	if err != nil {
 		return err
 	}
@@ -922,7 +891,7 @@ func addJiraAccount(cmd *cobra.Command, cfg *config.Config, database *db.DB, tar
 	if err != nil {
 		return fmt.Errorf("creating jira account: %w", err)
 	}
-	site, err := connectJiraAccount(cmd, cfg, database, accountID, jiraCfg, target.Slug != "", token, chosen, true)
+	site, err := connectJiraAccount(cmd, cfg, database, accountID, target.OAuth, target.Slug != "", token, chosen, true)
 	if err != nil {
 		return err
 	}
@@ -935,6 +904,58 @@ func addJiraAccount(cmd *cobra.Command, cfg *config.Config, database *db.DB, tar
 	fmt.Fprintf(out, "\nRun 'watchtower jira boards --account %d' to see available boards.\n", accountID)
 	fmt.Fprintf(out, "Run 'watchtower jira sync --account %d' to sync issues.\n", accountID)
 	return nil
+}
+
+// jiraSignIn is `jira add`'s sign-in through target: the company site's
+// check, the consent and the site choice. It stores no account, token or
+// client; a legacy single-account install is seeded only once a site is
+// chosen.
+func jiraSignIn(cmd *cobra.Command, cfg *config.Config, database *db.DB, target jiraAddTarget) (*jira.OAuthToken, jira.CloudResource, error) {
+	siteFlag, _ := cmd.Flags().GetString("site")
+	out := cmd.OutOrStdout()
+	opts := jiraLoginOptionsFromFlags(cmd)
+	if target.Site != "" {
+		if siteFlag != "" && !sameJiraSite(siteFlag, target.Site) {
+			return nil, jira.CloudResource{}, fmt.Errorf("the company's Atlassian app is for %s, not %s", target.Site, siteFlag)
+		}
+		if err := jiraValidateSite(cmd.Context(), nil, target.Site); err != nil {
+			return nil, jira.CloudResource{}, fmt.Errorf("company Atlassian site: %w", err)
+		}
+	}
+	if target.Confluence || target.ConfluenceWrite {
+		opts.WithConfluence = true
+	}
+	if target.ConfluenceWrite {
+		opts.WithConfluenceWrite = true
+	}
+	// A company's app has the report permission (its setup guide enables
+	// it), so the grant carries the scope Personal Data Reporting needs.
+	opts.WithPersonalDataReporting = target.Slug != ""
+
+	token, err := jiraAddLogin(cmd.Context(), target.OAuth, out, opts)
+	oauthpage.ReturnAfterLogin(opts.AppReturn, err, cmd.ErrOrStderr())
+	if err != nil {
+		return nil, jira.CloudResource{}, jiraAddLoginError(err)
+	}
+	if opts.WithConfluence && !jira.HasConfluenceScopes(token) {
+		fmt.Fprintln(out, jiraConfluenceNotEnabled)
+	}
+
+	var chosen jira.CloudResource
+	if target.Site != "" {
+		chosen, err = chooseCompanyJiraSite(cmd, token, target.Site)
+	} else {
+		chosen, err = chooseJiraSite(cmd, token, siteFlag, "")
+	}
+	if err != nil {
+		return nil, jira.CloudResource{}, err
+	}
+	// Seed the legacy single-account install before any new row so it never
+	// collides with the implicit account #1 (the `slack add` precedent).
+	if _, err := ensureLegacyJiraAccount(cfg, database, jiraCmdLogger(cmd)); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: legacy account seed failed: %v\n", err)
+	}
+	return token, chosen, nil
 }
 
 // resolveJiraAccountForLogin resolves the account a bare `jira login`
