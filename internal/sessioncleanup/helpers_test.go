@@ -194,8 +194,11 @@ type fakeStore struct {
 	targetBranches []string
 	folders        map[int64]string
 	extraFolders   []string
-	activity       []SessionActivity
-	rootOwners     map[string][]int64
+	// bench is the workbench's live folders (BenchFolders), home first;
+	// nil = its home folder alone.
+	bench      []string
+	activity   []SessionActivity
+	rootOwners map[string][]int64
 	// agentIDs are the session's agent session ids; uuidOwners the rows
 	// holding each uuid (absent = none, which adopts nothing); idsErr and
 	// ownersErr fail those reads.
@@ -241,11 +244,18 @@ func (s *fakeStore) WorkbenchFolder(_ context.Context, id int64) (string, error)
 }
 
 func (s *fakeStore) WorkbenchFolders(context.Context) ([]string, error) {
-	out := append([]string(nil), s.extraFolders...)
+	out := append(append([]string(nil), s.extraFolders...), s.bench...)
 	for _, f := range s.folders {
 		out = append(out, f)
 	}
 	return out, nil
+}
+
+func (s *fakeStore) BenchFolders(_ context.Context, id int64) ([]string, error) {
+	if s.bench == nil {
+		return []string{s.folders[id]}, nil
+	}
+	return s.bench, nil
 }
 
 func (s *fakeStore) WorkbenchSessionWorktrees(context.Context, int64) (map[string][]int64, error) {

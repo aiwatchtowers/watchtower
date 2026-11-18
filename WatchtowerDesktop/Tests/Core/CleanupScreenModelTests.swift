@@ -129,6 +129,31 @@ final class CleanupScreenModelTests: XCTestCase {
         }
     }
 
+    /// A sweep over a bench of several folders (#2003): each repository has
+    /// `feat/same`, keyed `branch:<folder>:feat/same`. Each worktree goes
+    /// with its own repository's branch by `branch_key`, never by name; a
+    /// worktree whose key names no item goes alone.
+    func testWorktreePairsWithItsBranchByKeyNeverByName() {
+        let homeKey = "branch:/work/acme:feat/same"
+        let hubKey = "branch:/work/hub:feat/same"
+        var homeTree = worktree("home-wt", branch: "feat/same")
+        homeTree.branchKey = homeKey
+        var hubTree = worktree("hub-wt", branch: "feat/same")
+        hubTree.branchKey = hubKey
+        var lost = worktree("lost-wt", branch: "feat/same")
+        lost.branchKey = "branch:/work/gone:feat/same"
+        func branch(_ key: String) -> Item {
+            Item(key: key, kind: .branch, name: "feat/same", branch: "feat/same", action: .remove,
+                 lastCommitAt: now.addingTimeInterval(-9 * day), merged: true)
+        }
+        // The hub's branch is listed first: a match by name would hand it to the home worktree.
+        let m = model([homeTree, hubTree, lost, branch(hubKey), branch(homeKey)])
+        XCTAssertEqual(row(homeTree.key, in: m)?.applyKeys, [homeTree.key, homeKey])
+        XCTAssertEqual(row(hubTree.key, in: m)?.applyKeys, [hubTree.key, hubKey])
+        XCTAssertEqual(row(lost.key, in: m)?.applyKeys, [lost.key])
+        XCTAssertEqual(all(m).count, 3, "both branches go with their worktrees")
+    }
+
     func testKeptBranchIsNotSentWithItsWorktree() {
         let wt = worktree("legacy", branch: "feature/legacy-sync", origin: .manual)
         let lsreg = bundle(root + "legacy/Acme.app", of: root + "legacy")

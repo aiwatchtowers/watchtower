@@ -99,13 +99,19 @@ func ownerWrite(args []string) bool {
 // #229), both "" otherwise. Kind is the row's kind (claude, codex, shell).
 // Ended is the row's delete_requested_at (board #1716): its terminal had
 // ended by then; zero when the row is not being deleted (or the stamp does
-// not parse), which bounds nothing.
+// not parse), which bounds nothing. Folder is the workbench folder the
+// session was started for (multi-folder workbench, #2003): its repository is
+// the one planned; "" = the workbench's home folder (a row from before
+// folders). FolderRemoved: that folder has left the bench, so only the
+// worktrees the session's own ledger recorded can go (PROJ-18).
 type SessionInfo struct {
 	ID, WorkbenchID         int64
 	CreatedAt               time.Time
 	PlacedCwd, PlacedBranch string
 	Kind                    string
 	Ended                   time.Time
+	Folder                  string
+	FolderRemoved           bool
 }
 
 // SessionActivity is one terminal session, of any workbench, as the in-use
@@ -137,9 +143,14 @@ type Store interface {
 	// AgentSessionIDOwners maps each uuid to every terminal session row
 	// whose history or current id holds it.
 	AgentSessionIDOwners(ctx context.Context, uuids []string) (map[string][]int64, error)
+	// WorkbenchFolder is the workbench's home folder (folder_path).
 	WorkbenchFolder(ctx context.Context, workbenchID int64) (string, error)
-	// WorkbenchFolders is every workbench's folder_path.
+	// WorkbenchFolders is every folder of every workbench, the folders
+	// that left their bench included: none is ever a candidate (W1).
 	WorkbenchFolders(ctx context.Context) ([]string, error)
+	// BenchFolders is the workbench's live folders, the home folder first
+	// then the rest by position: the repositories the owner's sweep covers.
+	BenchFolders(ctx context.Context, workbenchID int64) ([]string, error)
 	WorkbenchSessionWorktrees(ctx context.Context, workbenchID int64) (map[string][]int64, error)
 	// AllSessionActivity is every terminal session of every workbench (and
 	// standalone ones): an agent of another workbench over the same

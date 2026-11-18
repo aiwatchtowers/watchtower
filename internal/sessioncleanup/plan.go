@@ -51,24 +51,37 @@ type Request struct {
 	// recheck marks an apply's re-check: it never reports, so it reads no
 	// display facts (dates, merged).
 	recheck bool
+	// folder is the bench folder whose repository one part of a sweep
+	// evaluates (sweepBuilders); "" = the workbench's home folder.
+	folder string
+	// keyFolder qualifies the part's branch keys (branchKey): a branch name
+	// is unique only within its repository. "" = a session's plan or the
+	// sweep of a one-folder bench, whose keys stay as they always were.
+	keyFolder string
+	// staleUnder are the part's other bench folders over the same
+	// repository: their stale LaunchServices entries are listed too.
+	staleUnder []string
 }
 
 // builder carries one evaluation's facts.
 type builder struct {
-	deps       Deps
-	req        Request
-	now        time.Time
-	self       int
-	repo       *repoState
-	session    SessionInfo // session mode
-	seen       observed    // session mode
-	folders    []string
-	claudeHome []string // ~/.claude as given and symlink-resolved
-	homeErr    error    // the home directory is unknown: every worktree is kept
-	procs      []Proc
-	activity   map[int64]SessionActivity
-	live       map[int64]bool
-	rootOwners map[string][]int64 // sweep
+	deps    Deps
+	req     Request
+	now     time.Time
+	self    int
+	repo    *repoState
+	session SessionInfo // session mode
+	seen    observed    // session mode
+	// ledgerRoots are the roots the session's own cwd ledger recorded
+	// (session mode): when its folder left the bench, only these can go.
+	ledgerRoots map[string]bool
+	folders     []string
+	claudeHome  []string // ~/.claude as given and symlink-resolved
+	homeErr     error    // the home directory is unknown: every worktree is kept
+	procs       []Proc
+	activity    map[int64]SessionActivity
+	live        map[int64]bool
+	rootOwners  map[string][]int64 // sweep
 	// walked caches W9's walk per worktree root (nil = walk every time).
 	// Apply shares one map between its evaluation and the early re-checks,
 	// so a worktree is walked once there and once more right before
@@ -93,25 +106,25 @@ type builder struct {
 // to. It writes nothing: no ref, worktree, file, database row or signal
 // (PROJ-18).
 func PlanResult(ctx context.Context, d Deps, r Request) (Result, error) {
-	b, err := newBuilder(ctx, d, r)
+	parts, err := evaluationBuilders(ctx, d, r)
 	if err != nil {
 		return Result{}, err
 	}
-	p := b.evaluate(ctx)
-	if p.Items == nil {
-		p.Items = []Item{}
+	reportListing(parts)
+	plans := make([]Plan, 0, len(parts))
+	for _, b := range parts {
+		plans = append(plans, b.evaluate(ctx))
 	}
+	p := mergePlans(plans)
 	return Result{
-		SessionID: r.SessionID, WorkbenchID: b.req.WorkbenchID, Mode: ModePlan, Sweep: r.Sweep,
+		SessionID: r.SessionID, WorkbenchID: parts[0].req.WorkbenchID, Mode: ModePlan, Sweep: r.Sweep,
 		Plan: p, RemovedBytesKnown: true, Summary: Summarize(p.Items),
 	}, nil
 }
 
-// evaluate lists and evaluates every candidate of the builder's facts.
+// evaluate evaluates every candidate of the builder's facts; the listing
+// was reported before (reportListing).
 func (b *builder) evaluate(ctx context.Context) Plan {
-	if b.report.obs != nil {
-		b.report.listed(b.listing())
-	}
 	items := b.worktreeItems(ctx)
 	items = append(items, b.branchItems(ctx, items)...)
 	items = append(items, b.extraItems(ctx, items)...)
@@ -178,15 +191,26 @@ func (b *builder) loadSession(ctx context.Context) error {
 	return nil
 }
 
+// loadRepo reads the repository of the folder the evaluation is for: the
+// session's own folder (a session started for one of the bench's folders,
+// #2003), a sweep part's folder, else the workbench's home folder.
 func (b *builder) loadRepo(ctx context.Context, g gitCmd) error {
-	folder, err := b.deps.DB.WorkbenchFolder(ctx, b.req.WorkbenchID)
-	if err != nil {
-		return fmt.Errorf("reading workbench %d: %w", b.req.WorkbenchID, err)
+	folder := b.session.Folder
+	if folder == "" {
+		folder = b.req.folder
+	}
+	if folder == "" {
+		home, err := b.deps.DB.WorkbenchFolder(ctx, b.req.WorkbenchID)
+		if err != nil {
+			return fmt.Errorf("reading workbench %d: %w", b.req.WorkbenchID, err)
+		}
+		folder = home
 	}
 	folder = resolvePath(folder)
 	if !gitbin.InsideRepository(folder) {
 		return fmt.Errorf("the workbench folder %s is not in a git repository", folder)
 	}
+	var err error
 	b.repo, err = readRepo(ctx, g, folder, !b.req.recheck)
 	return err
 }
@@ -263,6 +287,10 @@ func (b *builder) loadObserved(ctx context.Context) error {
 		return fmt.Errorf("reading session %d target branches: %w", b.session.ID, err)
 	}
 	b.seen = observe(rows, targets, b.req.DeclaredWorktrees, b.req.DeclaredBranches)
+	b.ledgerRoots = map[string]bool{}
+	for _, r := range rows {
+		b.ledgerRoots[resolvePath(r.Root)] = true
+	}
 	b.observePlacement()
 	if err := b.loadAgentFiles(ctx); err != nil {
 		return err
@@ -572,7 +600,7 @@ func (b *builder) listing() []Item {
 			ofListed[w.Branch] = true
 		}
 		listedTrees = append(listedTrees, Item{Key: "worktree:" + w.Root, Kind: KindWorktree,
-			Name: filepath.Base(w.Root), Branch: w.Branch})
+			Name: filepath.Base(w.Root), Branch: w.Branch, BranchKey: b.worktreeBranchKey(w)})
 	}
 	items = append(items, listedTrees...)
 	for _, it := range b.undeclaredWorktrees(known) {
@@ -593,7 +621,7 @@ func (b *builder) listing() []Item {
 	}
 	for _, name := range names {
 		if !ofListed[name] {
-			items = append(items, Item{Key: "branch:" + name, Kind: KindBranch, Name: name, Branch: name})
+			items = append(items, Item{Key: b.branchKey(name), Kind: KindBranch, Name: name, Branch: name})
 		}
 	}
 	return items
@@ -641,7 +669,7 @@ func (b *builder) undeclaredWorktrees(known map[string]bool) []Item {
 
 func (b *builder) evaluateWorktree(ctx context.Context, w worktree) Item {
 	it := Item{Key: "worktree:" + w.Root, Kind: KindWorktree, Name: filepath.Base(w.Root), Branch: w.Branch,
-		Action: ActionRemove}
+		BranchKey: b.worktreeBranchKey(w), Action: ActionRemove}
 	for _, c := range b.worktreeCatches(w) {
 		reason, detail, err := c(ctx, b, w)
 		if err != nil {
@@ -698,7 +726,7 @@ func (b *builder) branchItems(ctx context.Context, worktreeItems []Item) []Item 
 	for _, name := range b.branchCandidates(worktreeItems) {
 		sha, ok := b.repo.branchTip(name)
 		if !ok {
-			items = append(items, Item{Key: "branch:" + name, Kind: KindBranch, Name: name, Branch: name,
+			items = append(items, Item{Key: b.branchKey(name), Kind: KindBranch, Name: name, Branch: name,
 				Action: ActionKeep, Reason: ReasonNotABranch})
 		} else {
 			items = append(items, b.evaluateBranch(ctx, branchRef{Name: name, Sha: sha}))
@@ -752,7 +780,7 @@ func sortedKeys(set map[string]bool) []string {
 }
 
 func (b *builder) evaluateBranch(ctx context.Context, br branchRef) Item {
-	it := Item{Key: "branch:" + br.Name, Kind: KindBranch, Name: br.Name, Branch: br.Name, Action: ActionRemove,
+	it := Item{Key: b.branchKey(br.Name), Kind: KindBranch, Name: br.Name, Branch: br.Name, Action: ActionRemove,
 		BytesKnown: true}
 	if !b.req.recheck {
 		it.LastCommitAt, it.Merged = b.repo.commitDate(ctx, br.Sha), b.repo.isMerged(ctx, br.Sha)
@@ -844,15 +872,18 @@ func (b *builder) staleItems(ctx context.Context) []Item {
 	if !b.req.Sweep || b.deps.LS == nil {
 		return nil
 	}
-	stale, err := b.deps.LS.Stale(ctx, b.repo.folder)
-	if err != nil {
-		return []Item{{Key: "lsreg:" + b.repo.folder, Kind: KindLsreg, Name: "LaunchServices",
-			Action: ActionKeep, Reason: ReasonCheckFailed, Detail: err.Error()}}
-	}
 	var items []Item
-	for _, bundle := range stale {
-		items = append(items, Item{Key: "lsreg:" + bundle, Kind: KindLsreg, Name: filepath.Base(bundle),
-			Detail: bundle, Action: ActionRemove, BytesKnown: true})
+	for _, folder := range append([]string{b.repo.folder}, b.req.staleUnder...) {
+		stale, err := b.deps.LS.Stale(ctx, folder)
+		if err != nil {
+			items = append(items, Item{Key: "lsreg:" + folder, Kind: KindLsreg, Name: "LaunchServices",
+				Action: ActionKeep, Reason: ReasonCheckFailed, Detail: err.Error()})
+			continue
+		}
+		for _, bundle := range stale {
+			items = append(items, Item{Key: "lsreg:" + bundle, Kind: KindLsreg, Name: filepath.Base(bundle),
+				Detail: bundle, Action: ActionRemove, BytesKnown: true})
+		}
 	}
 	return items
 }
