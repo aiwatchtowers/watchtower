@@ -140,4 +140,4 @@ A successful forced retry after an empty first-round `reviewer_failed` loop beco
 - The row's second line "Spec review: round N" is gone (`SpecReviewLoopCenter.progressLine` and `SpecReviewLoopQueries.progress` removed); the round lives in the caption and the report line is back.
 - Go and Swift resolve the same state through a shared fixture (`internal/sessionstate/testdata/status_cases.json`). Hidden asks no longer count toward the open-ask states, in `sessionstate.Load` too.
 - The session counts as working in the hub's `session_counts`; the hub timeline records a constant "Spec review" milestone when the state is entered (no round in it). The phone needs no code beyond the Kit kind: a live session lands under Working, a not-live one in the ended group.
-- Idle for input when its turn is over (the findings line must be typable); quick delete asks first; a Fix-board-drift session in this state is not done.
+- Idle for input when its turn is over (the findings line must be typable); a live session's ✕ asks first; a Fix-board-drift session in this state is not done.
