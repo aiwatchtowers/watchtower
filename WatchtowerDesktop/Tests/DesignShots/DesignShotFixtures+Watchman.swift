@@ -34,6 +34,7 @@ enum WatchmanShotFixtures {
         case targetPanelUnarmed = "target-panel-unarmed"
         case inboxEntry = "inbox-entry"
         case settingsNotLearned = "settings-not-learned"
+        case settingsRelabelling = "settings-relabelling"
 
         /// A zero height means "as tall as the content".
         var size: NSSize {
@@ -45,7 +46,7 @@ enum WatchmanShotFixtures {
             case .homeRow: NSSize(width: 420, height: 0)
             case .stripArmed, .stripUnarmed: NSSize(width: 760, height: 0)
             case .armFirstTime: NSSize(width: 460, height: 0)
-            case .settingsResults, .settingsNeverRun, .settingsRunning, .settingsFailed: NSSize(width: 640, height: 0)
+            case .settingsResults, .settingsNeverRun, .settingsRunning, .settingsFailed, .settingsRelabelling: NSSize(width: 640, height: 0)
             case .trayMenu: NSSize(width: 340, height: 0)
             case .targetPanelArmed, .targetPanelUnarmed: NSSize(width: 380, height: 0)
             case .inboxEntry: NSSize(width: 420, height: 300)
@@ -75,6 +76,7 @@ enum WatchmanShotFixtures {
             case .targetPanelUnarmed: TargetPanelMock(armed: false)
             case .inboxEntry: InboxEntryMock()
             case .settingsNotLearned: WatchmanSettingsShot(json: WatchmanStatusFixtures.learning)
+            case .settingsRelabelling: WatchmanSettingsShot(json: WatchmanStatusFixtures.relabelling)
             }
         }
     }

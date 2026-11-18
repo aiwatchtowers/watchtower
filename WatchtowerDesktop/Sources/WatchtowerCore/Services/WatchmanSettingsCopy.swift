@@ -72,6 +72,7 @@ package enum WatchmanSettingsCopy {
     package static let columnCategory = "Category"
     package static let columnAgreement = "Agreement"
     package static let columnWrongHigh = "Bad while sure"
+    package static let handedHeader = "Handed"
     package static let columnRating = "Rating"
     package static let strong = "Strong"
     package static let weak = "Weak"
@@ -79,12 +80,33 @@ package enum WatchmanSettingsCopy {
     package static let noValue = "—"
     package static let barNote = "Strong: 5 % or less of its decisions bad (ones you would have had to undo) "
         + "and none bad while sure; a different but reasonable decision does not count against it. "
-        + "Below that Watchman marks every night decision unsure. Under 30 decisions: not measured."
+        + "Below that Watchman marks every night decision unsure. "
+        + "Under 30 decisions, or fewer than 20 left after the ones handed to you: not measured."
     package static let runBacktest = "Run Backtest Now"
     package static let runningButton = "Running…"
     package static let neverRun = "Watchman hasn't checked itself yet. The backtest hides your latest decisions "
         + "and asks Watchman to take them; nothing acts until you've seen the numbers."
     package static let busy = "A backtest is already running — this section updates when it finishes."
+
+    /// A not-measured row whose decisions were mostly handed to the owner.
+    package static func notMeasuredHanded(handed: Int) -> String {
+        "Not measured: \(handed) of 30 handed to you"
+    }
+
+    /// The workbench's line while the relabel pass runs.
+    package static func relabelling(left: Int) -> String {
+        "Sorting earlier decisions: \(count(left)) left · the backtest runs after it"
+    }
+
+    /// The Handed cell: the count, or a dash when nothing was handed.
+    package static func handedCell(_ row: WatchmanBacktestCategory) -> String {
+        row.handed > 0 ? "\(row.handed)" : noValue
+    }
+
+    /// Under a not-measured row whose decisions were handed to the owner; nil otherwise.
+    package static func handedNote(_ row: WatchmanBacktestCategory) -> String? {
+        row.status == "not_measured" && row.handed > 0 ? notMeasuredHanded(handed: row.handed) : nil
+    }
 
     /// The eight v1 categories in the table's order (spec §8.2).
     package static let categories = ["design", "scope", "ux_text", "tests", "review_code", "review_doc",

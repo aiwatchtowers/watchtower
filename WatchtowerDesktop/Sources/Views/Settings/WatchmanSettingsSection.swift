@@ -176,11 +176,20 @@ struct WatchmanSettingsContent: View {
                 table(lastDone).opacity(isRunning ? 0.6 : 1)
                 note(Copy.barNote)
             }
+            // Shown only once learning is done: the backtest is unreachable before, and the learning row shows progress.
+            if row.isRelabelling { relabellingLine(row.relabelLeft) }
             if !row.analyticsOn { note(Copy.analyticsOffNote(name: row.name)) }
             if let notice = notices[row.workbench] {
                 Text(notice).font(.caption).foregroundStyle(Tone.warning).fixedSize(horizontal: false, vertical: true)
             }
             backtestButton(row, phase: current).padding(.top, Spacing.small)
+        }
+    }
+
+    private func relabellingLine(_ left: Int) -> some View {
+        HStack(spacing: Spacing.regular) {
+            ProgressView().controlSize(.small)
+            Text(Copy.relabelling(left: left)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
         }
     }
 
@@ -199,9 +208,11 @@ struct WatchmanSettingsContent: View {
         case .running:
             Button(Copy.runningButton) {}.buttonStyle(.kitPrimary).disabled(true)
         case .failed:
-            Button(Copy.retry) { onRunBacktest(row.workbench) }.buttonStyle(.kitPrimary)
+            Button(Copy.retry) { onRunBacktest(row.workbench) }.buttonStyle(.kitPrimary).disabled(row.isRelabelling)
         default:
-            Button(Copy.runBacktest) { onRunBacktest(row.workbench) }.buttonStyle(.kitPrimary)
+            Button(Copy.runBacktest) { onRunBacktest(row.workbench) }
+                .buttonStyle(.kitPrimary)
+                .disabled(row.isRelabelling)
         }
     }
 
@@ -211,16 +222,22 @@ struct WatchmanSettingsContent: View {
 
     private func table(_ backtest: WatchmanBacktest) -> some View {
         VStack(alignment: .leading, spacing: Spacing.compact) {
-            tableRow(Copy.columnCategory, Copy.columnAgreement, Copy.columnWrongHigh) {
+            tableRow(Copy.columnCategory, Copy.columnAgreement, Copy.columnWrongHigh, Copy.handedHeader) {
                 Text(Copy.columnRating)
             }
             .font(.caption.weight(.semibold))
             .foregroundStyle(.secondary)
             ForEach(Copy.tableRows(backtest), id: \.category) { row in
-                tableRow(row.category, Copy.agreement(row), Copy.wrongHigh(row), baseRate: Copy.baseRate(row)) {
-                    Chip(text: Copy.rating(row), color: ratingTone(row.status))
+                VStack(alignment: .leading, spacing: 0) {
+                    tableRow(row.category, Copy.agreement(row), Copy.wrongHigh(row), Copy.handedCell(row),
+                             baseRate: Copy.baseRate(row)) {
+                        Chip(text: Copy.rating(row), color: ratingTone(row.status))
+                    }
+                    .font(.callout.monospacedDigit())
+                    if let handedNote = Copy.handedNote(row) {
+                        Text(handedNote).font(.caption).foregroundStyle(.secondary)
+                    }
                 }
-                .font(.callout.monospacedDigit())
             }
         }
         .padding(.vertical, Spacing.small)
@@ -230,6 +247,7 @@ struct WatchmanSettingsContent: View {
         _ category: String,
         _ agreement: String,
         _ wrong: String,
+        _ handed: String,
         baseRate: String? = nil,
         @ViewBuilder rating: () -> some View
     ) -> some View {
@@ -243,6 +261,7 @@ struct WatchmanSettingsContent: View {
             .frame(width: ListLayout.textColumn - Spacing.hero, alignment: .leading)
             Text(agreement).frame(width: ListLayout.numberColumn, alignment: .trailing)
             Text(wrong).frame(width: ListLayout.dateColumn, alignment: .trailing)
+            Text(handed).frame(width: ListLayout.numberColumn, alignment: .trailing)
             Spacer(minLength: Spacing.medium)
             rating()
         }

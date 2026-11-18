@@ -50,9 +50,11 @@ final class WatchmanCenter {
     var needsPolling: Bool {
         if !learningHere.isEmpty || !backtestHere.isEmpty { return true }
         return lastStatus?.workbenches.contains { row in
+            // A relabel pass runs in the daemon: keep reading until it is done.
+            if row.isRelabelling { return true }
             switch WatchmanWorkbenchPhase.of(row) {
-            case .learning, .running: true
-            default: false
+            case .learning, .running: return true
+            default: return false
             }
         } ?? false
     }
@@ -116,6 +118,8 @@ final class WatchmanCenter {
     }
 
     func runBacktest(workbench: Int64) async {
+        // Reads the last polled status; the CLI's own refusal while the relabel pass is unfinished is the backstop.
+        guard lastStatus?.workbench(workbench)?.isRelabelling != true else { return }
         guard backtestHere.insert(workbench).inserted else { return }
         notices[workbench] = nil
         apply()
