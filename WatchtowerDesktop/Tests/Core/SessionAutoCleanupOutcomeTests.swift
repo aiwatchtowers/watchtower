@@ -52,6 +52,7 @@ final class SessionAutoCleanupOutcomeTests: XCTestCase {
     /// Spec §3's table, literally.
     private static let specTable: [String: CleanupItemGroup] = [
         "uncommitted_changes": .keptOnPurpose,
+        "ignored_files": .keptOnPurpose,
         "unpushed_commits": .keptOnPurpose,
         "operation_in_progress": .keptOnPurpose,
         "locked": .keptOnPurpose,

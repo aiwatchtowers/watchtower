@@ -124,16 +124,20 @@ func TestApply_GracePollScansProcessesOnly(t *testing.T) {
 	res := f.apply(Request{}, []string{"worktree:" + root, procKey(orphanIn(root))},
 		func(d *Deps) { d.Procs, d.OrphanGrace = procs, 5*time.Second })
 	wantResultItem(t, res, "worktree:"+root, ActionRemove, "", true)
-	statuses := 0
+	statuses, ignored := 0, 0
 	for _, op := range log.list() {
-		if strings.HasPrefix(op, "git status") {
+		switch {
+		case strings.HasPrefix(op, "git status --porcelain --untracked-files"): // W4
 			statuses++
+		case strings.HasPrefix(op, "git status --porcelain -z --ignored"): // W10
+			ignored++
 		}
 	}
 	// The evaluation, the first re-check, the one after the orphan left
-	// and the one before the removal.
-	if statuses != 4 || procs.scans != 8 {
-		t.Fatalf("git status ran %d times, %d scans: %v", statuses, procs.scans, log.list())
+	// and the one before the removal; neither listing runs in the grace
+	// poll.
+	if statuses != 4 || ignored != 4 || procs.scans != 8 {
+		t.Fatalf("W4 status ran %d times, W10 listing %d, %d scans: %v", statuses, ignored, procs.scans, log.list())
 	}
 }
 
