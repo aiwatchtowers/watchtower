@@ -377,7 +377,7 @@ func (bt backtestRun) item(c string, p db.WatchmanPrecedent, opts, questions []s
 	}
 	var res JudgeResult
 	err = bt.retryOnce(func() error {
-		r, usage, err := bt.judge.Grade(bt.ctx, JudgeInput{Situation: p.Situation, Owner: ownerAnswer(p), Twin: twinAnswer(dec),
+		r, usage, err := bt.judge.Grade(bt.ctx, JudgeInput{Situation: p.Situation, Owner: ownerAnswer(p), Twin: twinAnswer(dec, handed),
 			Questions: questions, Handoff: handed})
 		row.CostUSD += usageCost(usage)
 		res = r
@@ -542,7 +542,13 @@ func ownerAnswer(p db.WatchmanPrecedent) string {
 	return joinNonEmpty("\n", wordsLine("Choice: ", p.Choice), wordsLine("Owner's words: ", p.OwnerWords))
 }
 
-func twinAnswer(dec Decision) string {
+func twinAnswer(dec Decision, handed bool) string {
+	if handed {
+		// Live, a handed item is answered with this line, never with an
+		// option: the chosen label must not read as a claim the owner-only
+		// step was done.
+		return joinNonEmpty("\n", wordsLine("Handed to the owner: ", dec.Rationale), wordsLine("Confidence: ", dec.Confidence))
+	}
 	return joinNonEmpty("\n", wordsLine("Choice: ", dec.Choice), wordsLine("Reasoning: ", dec.Rationale),
 		wordsLine("Confidence: ", dec.Confidence))
 }
