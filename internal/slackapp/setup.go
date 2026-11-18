@@ -10,7 +10,6 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/fsutil"
-	"watchtower/internal/slackconnect"
 )
 
 // Result kinds of a setup run (the final JSON line's "result").
@@ -368,7 +367,11 @@ func (r *Runner) writeLink(ctx context.Context, cfgToken, appID string, link Lin
 	return nil
 }
 
-var appIDPattern = regexp.MustCompile(`^A[A-Z0-9]+$`)
+var (
+	appIDPattern = regexp.MustCompile(`^A[A-Z0-9]+$`)
+	// clientIDPattern is the shape slackconnect.ParseConnectInput accepts.
+	clientIDPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+$`)
+)
 
 // appName is the exported manifest's display name, "" when it has none.
 func appName(m Manifest) string {
@@ -517,7 +520,7 @@ func (r *Runner) AttachPending(team, appID, clientID string) (Result, error) {
 			return Result{Kind: KindBadIDs, Code: CodeAppIDFormat, TeamID: team,
 				Error: fmt.Sprintf("%q is not an App ID (it starts with A; Basic Information page)", appID)}, nil
 		}
-		if _, err := slackconnect.ParseConnectInput(team + ":" + clientID); err != nil {
+		if !clientIDPattern.MatchString(clientID) {
 			return Result{Kind: KindBadIDs, Code: CodeClientIDFormat, TeamID: team,
 				Error: fmt.Sprintf("%q is not a Client ID (digits.digits; Basic Information page)", clientID)}, nil
 		}
