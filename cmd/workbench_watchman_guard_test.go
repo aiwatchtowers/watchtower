@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -37,6 +38,7 @@ func TestWATCHMAN01_HardLimitsDeniedWhileArmed(t *testing.T) {
 		ask   watchman.PermissionAsk
 	}{
 		{watchman.LimitUnreadable, bash(`echo "open`)},
+		{watchman.LimitSendPack, bash("git send-pack origin feat")},
 		{watchman.LimitMainRef, bash("git push origin main")},
 		{watchman.LimitTag, bash("git tag v1.0")},
 		{watchman.LimitRelease, bash("gh release create v1.0")},
@@ -73,8 +75,9 @@ func TestWATCHMAN01_HardLimitsDeniedWhileArmed(t *testing.T) {
 // countingGuardStore records each store call the guard makes.
 type countingGuardStore struct {
 	*db.DB
-	calls   []string
-	parkErr error
+	calls    []string
+	parkErr  error
+	extraErr error
 }
 
 func (s *countingGuardStore) WatchmanArmedSession(id int64) (db.ArmedSession, bool, error) {
@@ -89,6 +92,9 @@ func (s *countingGuardStore) SessionWorktrees(ctx context.Context, id int64) ([]
 
 func (s *countingGuardStore) WatchmanExtraLimits() ([]db.WatchmanExtraLimit, error) {
 	s.calls = append(s.calls, "extra")
+	if s.extraErr != nil {
+		return nil, s.extraErr
+	}
 	return s.DB.WatchmanExtraLimits()
 }
 
@@ -165,13 +171,17 @@ func guardItems(t *testing.T) []db.WatchmanItem {
 	t.Helper()
 	var path string
 	d := openAgentsTestMain(t, &path)
-	rows, err := d.Query(`SELECT kind, ref_kind, ref_id, session_id, state, outcome, park_reason, question FROM watchman_items`)
+	rows, err := d.Query(`SELECT kind, ref_kind, ref_id, session_id, state, outcome, park_reason, question, created_at FROM watchman_items ORDER BY id`)
 	require.NoError(t, err)
 	defer rows.Close()
 	var out []db.WatchmanItem
 	for rows.Next() {
 		var it db.WatchmanItem
-		require.NoError(t, rows.Scan(&it.Kind, &it.RefKind, &it.RefID, &it.SessionID, &it.State, &it.Outcome, &it.ParkReason, &it.Question))
+		var created string
+		require.NoError(t, rows.Scan(&it.Kind, &it.RefKind, &it.RefID, &it.SessionID, &it.State, &it.Outcome, &it.ParkReason, &it.Question, &created))
+		at, err := time.Parse(time.RFC3339, created)
+		require.NoError(t, err)
+		it.CreatedAt = at
 		out = append(out, it)
 	}
 	require.NoError(t, rows.Err())
@@ -198,8 +208,9 @@ func TestWatchmanGuard_QueuesParkedItem(t *testing.T) {
 	require.Len(t, items, 1)
 	it := items[0]
 	assert.Equal(t, "guard", it.Kind)
-	assert.Equal(t, "session", it.RefKind)
-	assert.Equal(t, id, it.RefID)
+	assert.Equal(t, "guard", it.RefKind)
+	assert.Equal(t, int64(1), it.RefID)
+	assert.Equal(t, id, it.SessionID)
 	assert.Equal(t, "done", it.State)
 	assert.Equal(t, "parked", it.Outcome)
 	assert.Equal(t, "main_ref", it.ParkReason)
@@ -354,14 +365,150 @@ func TestWatchmanGuard_HookBypassesToMainDenied(t *testing.T) {
 	_, folder := guardSession(t, true)
 	var store *countingGuardStore
 	deps := guardDeps(t, &store)
-	for _, cmd := range []string{
-		"git push --no-verify origin main",
-		"git -c core.hooksPath=/dev/null push origin main",
-		"GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/x git push origin main",
-		"git send-pack origin HEAD:refs/heads/main",
-		"git send-pack --all origin",
+	for cmd, limit := range map[string]string{
+		"git push --no-verify origin main":                                                              "main_ref",
+		"git -c core.hooksPath=/dev/null push origin main":                                              "main_ref",
+		"GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/x git push origin main": "main_ref",
+		"git send-pack origin HEAD:refs/heads/main":                                                     "send_pack",
+		"git send-pack origin feat":                                                                     "send_pack",
 	} {
 		out, _ := runGuardHook(deps, guardInput(t, "Bash", map[string]string{"command": cmd}, folder))
-		assert.Equal(t, "Parked for the owner: main_ref — continue with other work", guardDenial(t, out), cmd)
+		assert.Equal(t, "Parked for the owner: "+limit+" — continue with other work", guardDenial(t, out), cmd)
 	}
+}
+
+func TestWatchmanGuard_EachDenialIsItsOwnItemOnItsNight(t *testing.T) {
+	_, folder := guardSession(t, true)
+	var store *countingGuardStore
+	deps := guardDeps(t, &store)
+	night1 := time.Date(2026, 11, 18, 2, 0, 0, 0, time.UTC)
+	for _, at := range []time.Time{night1, night1.AddDate(0, 0, 1)} {
+		deps.now = func() time.Time { return at }
+		out, _ := runGuardHook(deps, guardInput(t, "Bash", map[string]string{"command": "git push origin main"}, folder))
+		require.NotEmpty(t, guardDenial(t, out))
+	}
+	items := guardItems(t)
+	require.Len(t, items, 2)
+	assert.True(t, items[0].CreatedAt.Equal(night1))
+	assert.True(t, items[1].CreatedAt.Equal(night1.AddDate(0, 0, 1)))
+	assert.NotEqual(t, items[0].RefID, items[1].RefID)
+}
+
+// An input the guard cannot read (here over the 1 MiB limit) still costs
+// the one arming read: armed, the call is denied as unreadable; not armed,
+// it runs.
+func TestWatchmanGuard_UnreadableInputDeniedWhileArmed(t *testing.T) {
+	huge := guardInput(t, "Bash", map[string]string{"command": "echo " + strings.Repeat("x", hookStdinLimit+1)}, "")
+	t.Run("armed", func(t *testing.T) {
+		guardSession(t, true)
+		var store *countingGuardStore
+		out, _ := runGuardHook(guardDeps(t, &store), huge)
+		assert.Equal(t, "Parked for the owner: unreadable — continue with other work", guardDenial(t, out))
+		items := guardItems(t)
+		require.Len(t, items, 1)
+		assert.Equal(t, "unreadable", items[0].ParkReason)
+	})
+	t.Run("not armed", func(t *testing.T) {
+		guardSession(t, false)
+		var store *countingGuardStore
+		out, _ := runGuardHook(guardDeps(t, &store), huge)
+		assert.Empty(t, out)
+		assert.Equal(t, []string{"armed"}, store.calls)
+	})
+}
+
+func TestWatchmanGuard_LimitsReadErrorDenies(t *testing.T) {
+	_, folder := guardSession(t, true)
+	var store *countingGuardStore
+	deps := guardDeps(t, &store)
+	open := deps.open
+	deps.open = func() (watchmanGuardStore, error) {
+		s, err := open()
+		if err == nil {
+			s.(*countingGuardStore).extraErr = errors.New("database is locked")
+		}
+		return s, err
+	}
+	out, errOut := runGuardHook(deps, guardInput(t, "Bash", map[string]string{"command": "go test ./internal/db"}, folder))
+	assert.Equal(t, "Parked for the owner: unreadable — continue with other work", guardDenial(t, out))
+	assert.Contains(t, errOut, "the owner's limits")
+}
+
+// The database locked past the budget: the sidecar's owner limits apply.
+func TestWatchmanGuard_DBLockedAppliesSidecarLimits(t *testing.T) {
+	id, folder := guardSession(t, false)
+	require.NoError(t, watchmanact.WriteSidecar(testSidecarPath(t), []db.ArmedSession{{SessionID: id, Folder: folder}}, false,
+		db.WatchmanExtraLimit{Kind: "command", Pattern: "terraform apply"}))
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	deps := defaultWatchmanGuardDeps()
+	deps.open = func() (watchmanGuardStore, error) { return blockedGuardStore{release: release}, nil }
+	deps.after = func(time.Duration) <-chan time.Time {
+		c := make(chan time.Time, 1)
+		c <- time.Time{}
+		return c
+	}
+	deps.branch = func(context.Context, string) string { return "feature/x" }
+	out, _ := runGuardHook(deps, guardInput(t, "Bash", map[string]string{"command": "terraform apply -auto-approve"}, folder))
+	assert.Equal(t, "Parked for the owner: owner — continue with other work", guardDenial(t, out))
+	out, _ = runGuardHook(deps, guardInput(t, "Bash", map[string]string{"command": "go test ./internal/db"}, folder))
+	assert.Empty(t, out)
+}
+
+// A relative path is judged where the tool's working directory puts it.
+func TestWatchmanGuard_RelativePathsResolvedAgainstCwd(t *testing.T) {
+	_, folder := guardSession(t, true)
+	var store *countingGuardStore
+	deps := guardDeps(t, &store)
+	elsewhere := t.TempDir()
+	for _, tc := range []struct {
+		tool  string
+		input map[string]string
+		cwd   string
+		want  string
+	}{
+		{"Edit", map[string]string{"file_path": "notes.txt"}, folder, ""},
+		{"Edit", map[string]string{"file_path": "notes.txt"}, elsewhere, "outside_folder"},
+		{"Read", map[string]string{"file_path": "notes.txt"}, elsewhere, "outside_folder"},
+		{"Bash", map[string]string{"command": "rm -rf build"}, folder, ""},
+		{"Bash", map[string]string{"command": "rm -rf build"}, elsewhere, "delete_outside"},
+	} {
+		out, _ := runGuardHook(deps, guardInput(t, tc.tool, tc.input, tc.cwd))
+		want := ""
+		if tc.want != "" {
+			want = "Parked for the owner: " + tc.want + " — continue with other work"
+		}
+		assert.Equal(t, want, guardDenial(t, out), "%s %v in %s", tc.tool, tc.input, tc.cwd)
+	}
+}
+
+func TestWatchmanGuard_PanicDeniesOnlyWhenArmed(t *testing.T) {
+	call := func(folder string) string {
+		return guardInput(t, "Bash", map[string]string{"command": "go test ./..."}, folder)
+	}
+	t.Run("armed", func(t *testing.T) {
+		_, folder := guardSession(t, true)
+		var store *countingGuardStore
+		deps := guardDeps(t, &store)
+		deps.branch = func(context.Context, string) string { panic("boom") }
+		out, _ := runGuardHook(deps, call(folder))
+		assert.Equal(t, "Parked for the owner: unreadable — continue with other work", guardDenial(t, out))
+	})
+	t.Run("arming unknown", func(t *testing.T) {
+		_, folder := guardSession(t, true)
+		deps := defaultWatchmanGuardDeps()
+		deps.open = func() (watchmanGuardStore, error) { return nil, errors.New("unable to open database file") }
+		deps.sidecar = func() (watchmanact.Sidecar, error) { panic("boom") }
+		out, _ := runGuardHook(deps, call(folder))
+		assert.Empty(t, out)
+	})
+}
+
+func TestWatchmanGuard_UnreadableSidecarDenies(t *testing.T) {
+	_, folder := guardSession(t, false)
+	require.NoError(t, os.MkdirAll(testSidecarPath(t), 0o755)) // there, but not a readable file
+	deps := defaultWatchmanGuardDeps()
+	deps.open = func() (watchmanGuardStore, error) { return nil, errors.New("unable to open database file") }
+	out, _ := runGuardHook(deps, guardInput(t, "Bash", map[string]string{"command": "go test ./..."}, folder))
+	assert.Equal(t, "Parked for the owner: unreadable — continue with other work", guardDenial(t, out))
 }

@@ -226,39 +226,62 @@ func TestSetWatchmanItemKind_CollisionIsSentinel(t *testing.T) {
 	require.ErrorIs(t, err, ErrWatchmanItemExists)
 }
 
-func TestParkWatchmanGuard_OneRowPerSessionGathersItsDenials(t *testing.T) {
+func TestParkWatchmanGuard_EachDenialIsItsOwnItemOnItsNight(t *testing.T) {
 	d := openTestDB(t)
 	wmTestWorkbench(t, d, 1)
-	at := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	night1 := time.Date(2026, 11, 1, 2, 0, 0, 0, time.UTC)
+	night2 := night1.AddDate(0, 0, 1)
 	park := func(reason, line string, at time.Time) {
 		t.Helper()
 		require.NoError(t, d.ParkWatchmanGuard(WatchmanItem{WorkbenchID: 1, SessionID: 7, TargetID: 3, Question: line, ParkReason: reason}, at))
 	}
-	park("main_ref", "main_ref — Bash: git push origin main", at)
-	park("main_ref", "main_ref — Bash: git push origin main", at.Add(time.Minute)) // the same denial again
-	park("release", "release — Bash: gh release create v1", at.Add(2*time.Minute))
-	var n int
-	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM watchman_items`).Scan(&n))
-	require.Equal(t, 1, n)
-	it, err := scanWatchmanItem(d.QueryRow(`SELECT ` + watchmanItemCols + ` FROM watchman_items`))
+	park("main_ref", "main_ref — Bash: git push origin main", night1)
+	park("main_ref", "main_ref — Bash: git push origin main", night2) // the same denial on the next night
+	rows, err := d.Query(`SELECT ` + watchmanItemCols + ` FROM watchman_items ORDER BY id`)
 	require.NoError(t, err)
-	require.Equal(t, "guard", it.Kind)
-	require.Equal(t, "session", it.RefKind)
-	require.Equal(t, int64(7), it.RefID)
-	require.Equal(t, int64(7), it.SessionID)
-	require.Equal(t, int64(3), it.TargetID)
-	require.Equal(t, "done", it.State)
-	require.Equal(t, "parked", it.Outcome)
-	require.True(t, it.Unsure)
-	require.Equal(t, "release", it.ParkReason)
-	require.Equal(t, "main_ref — Bash: git push origin main\nrelease — Bash: gh release create v1", it.Question)
-	require.NotNil(t, it.DecidedAt)
-	require.True(t, it.DecidedAt.Equal(at.Add(2*time.Minute)))
+	defer rows.Close()
+	var items []*WatchmanItem
+	for rows.Next() {
+		it, err := scanWatchmanItem(rows)
+		require.NoError(t, err)
+		items = append(items, it)
+	}
+	require.NoError(t, rows.Err())
+	require.Len(t, items, 2)
+	for i, at := range []time.Time{night1, night2} {
+		it := items[i]
+		require.Equal(t, "guard", it.Kind)
+		require.Equal(t, "guard", it.RefKind)
+		require.Equal(t, int64(i+1), it.RefID)
+		require.Equal(t, int64(7), it.SessionID)
+		require.Equal(t, int64(3), it.TargetID)
+		require.Equal(t, "done", it.State)
+		require.Equal(t, "parked", it.Outcome)
+		require.True(t, it.Unsure)
+		require.Equal(t, "main_ref", it.ParkReason)
+		require.Equal(t, "main_ref — Bash: git push origin main", it.Question)
+		require.True(t, it.CreatedAt.Equal(at), "created on its night")
+		require.True(t, it.DecidedAt.Equal(at))
+	}
+	// A guard item never collides with another wait point's numbers.
+	_, ins, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: 1, Kind: "ask", RefKind: "ask", RefID: 1})
+	require.NoError(t, err)
+	require.True(t, ins)
+}
 
-	// The question stays within its cap however many denials there are.
-	long := strings.Repeat("x", 1500)
-	park("owner", "owner — Bash: "+long, at)
-	park("owner", "owner — Bash: y"+long, at)
-	require.NoError(t, d.QueryRow(`SELECT length(question) FROM watchman_items`).Scan(&n))
-	require.LessOrEqual(t, n, watchmanQuestionMax)
+func TestMigration00201_GuardRefKindKeepsRows(t *testing.T) {
+	d := openTestDB(t)
+	wmTestWorkbench(t, d, 1)
+	id := wmQueueAsk(t, d, 5)
+	var sql string
+	require.NoError(t, d.QueryRow(`SELECT sql FROM sqlite_master WHERE name = 'watchman_items'`).Scan(&sql))
+	require.Contains(t, sql, "'guard'))")
+	for _, idx := range []string{"idx_watchman_items_queue", "idx_watchman_items_wb", "idx_watchman_items_created"} {
+		var n int
+		require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?`, idx).Scan(&n))
+		require.Equal(t, 1, n, idx)
+	}
+	var q string
+	require.NoError(t, d.QueryRow(`SELECT question FROM watchman_items WHERE id = ?`, id).Scan(&q))
+	require.Equal(t, "q", q)
 }

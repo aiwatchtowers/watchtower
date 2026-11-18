@@ -29,19 +29,23 @@ const sidecarName = "watchman.armed"
 func SidecarPath(workspace string) string { return filepath.Join(workspace, sidecarName) }
 
 // Sidecar is the sidecar's content: the armed sessions, their worktrees
-// (each once) and whether any target is armed.
+// (each once), whether any target is armed, and the owner's extra limits
+// (the guard hook applies them when it cannot read the database).
 type Sidecar struct {
 	Sessions     []int64
 	Worktrees    []string
 	TargetsArmed bool
+	Limits       []db.WatchmanExtraLimit // Kind and Pattern; no ID
 }
 
 // WriteSidecar replaces the sidecar atomically (temp file + rename) with one
 // `session <id>` line per armed session, followed by `worktree <abs path>`
 // the first time its worktree appears, and `targets-armed` when any target
-// is armed. Nothing armed writes an empty file. A worktree path with a line
-// break cannot be a line: its session is listed, the worktree is not.
-func WriteSidecar(path string, sessions []db.ArmedSession, targetsArmed bool) error {
+// is armed, then one `limit <kind> <pattern>` line per owner's extra limit.
+// Nothing armed and no limit writes an empty file. A worktree path or a
+// pattern with a line break cannot be a line: its session is listed, the
+// worktree or the limit is not (the CLI refuses such a pattern).
+func WriteSidecar(path string, sessions []db.ArmedSession, targetsArmed bool, limits ...db.WatchmanExtraLimit) error {
 	var b bytes.Buffer
 	seen := map[string]bool{}
 	for _, s := range sessions {
@@ -55,6 +59,12 @@ func WriteSidecar(path string, sessions []db.ArmedSession, targetsArmed bool) er
 	}
 	if targetsArmed {
 		b.WriteString("targets-armed\n")
+	}
+	for _, l := range limits {
+		if strings.ContainsAny(l.Kind+l.Pattern, "\r\n") || strings.ContainsAny(l.Kind, " \t") {
+			continue
+		}
+		fmt.Fprintf(&b, "limit %s %s\n", l.Kind, l.Pattern)
 	}
 	if err := fsutil.WriteFileAtomic(path, b.Bytes(), 0o644); err != nil {
 		return fmt.Errorf("writing the watchman sidecar: %w", err)
@@ -86,15 +96,20 @@ func RefreshSidecar(ctx context.Context, workspace string, d *db.DB) ([]db.Watch
 	if err != nil {
 		return arming, err
 	}
+	limits, err := d.WatchmanExtraLimits()
+	if err != nil {
+		return arming, err
+	}
 	if sidecarAfterRead != nil {
 		sidecarAfterRead()
 	}
 	targets := slices.ContainsFunc(arming, func(a db.WatchmanArming) bool { return a.Scope == "target" })
-	return arming, WriteSidecar(path, sessions, targets)
+	return arming, WriteSidecar(path, sessions, targets, limits...)
 }
 
 // ReadSidecar reads the sidecar; a missing file is nothing armed. Lines it
-// does not know are skipped.
+// does not know are skipped, so a file written before the limit lines reads
+// as no owner's limits.
 func ReadSidecar(path string) (Sidecar, error) {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -114,6 +129,10 @@ func ReadSidecar(path string) (Sidecar, error) {
 			}
 		case strings.HasPrefix(line, "worktree "):
 			sc.Worktrees = append(sc.Worktrees, strings.TrimPrefix(line, "worktree "))
+		case strings.HasPrefix(line, "limit "):
+			if kind, pattern, ok := strings.Cut(strings.TrimPrefix(line, "limit "), " "); ok && pattern != "" {
+				sc.Limits = append(sc.Limits, db.WatchmanExtraLimit{Kind: kind, Pattern: pattern})
+			}
 		}
 	}
 	return sc, nil

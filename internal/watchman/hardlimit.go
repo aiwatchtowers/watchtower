@@ -17,6 +17,7 @@ type HardLimit string
 
 const (
 	LimitUnreadable    HardLimit = "unreadable"     // a command that cannot be read (an unterminated quote, a wrapper around nothing)
+	LimitSendPack      HardLimit = "send_pack"      // the plumbing push git send-pack, in any form (no pre-push hook sees it)
 	LimitMainRef       HardLimit = "main_ref"       // push to, or PR merge into, the default branch
 	LimitTag           HardLimit = "tag"            // creating, deleting or pushing a tag
 	LimitRelease       HardLimit = "release"        // a GitHub release
@@ -60,6 +61,7 @@ var hardLimits = []struct {
 	match func(PermissionAsk) bool
 }{
 	{LimitUnreadable, matchUnreadable},
+	{LimitSendPack, matchSendPack},
 	{LimitMainRef, matchMainRef},
 	{LimitTag, matchTag},
 	{LimitRelease, matchRelease},
@@ -419,41 +421,14 @@ func refDest(spec string) string {
 	return strings.TrimPrefix(spec, "refs/heads/")
 }
 
-// sendPackArgs are the arguments of the plumbing push `git send-pack` (or
-// `git-send-pack`), which no pre-push hook sees; ok is false for any other
-// command.
-func sendPackArgs(c shellCmd) ([]string, bool) {
-	if c.w[0] == "git-send-pack" {
-		return c.w[1:], true
-	}
-	return c.sub("git", "send-pack")
-}
-
-// sendPackToDefault reports a send-pack that may update the default branch:
-// a ref whose destination is main or master, and — failing closed — every
-// send-pack whose destinations the line does not name (--all, --mirror,
-// --stdin, no ref, a HEAD or @ destination).
-func sendPackToDefault(args []string) bool {
-	var pos []string
-	for _, a := range args {
-		switch {
-		case a == "--all" || a == "--mirror" || a == "--stdin":
-			return true
-		case strings.HasPrefix(a, "-"): // its valued options take their value with =
-		default:
-			pos = append(pos, a)
-		}
-	}
-	if len(pos) < 2 { // pos[0] is the remote repository
-		return true
-	}
-	for _, spec := range pos[1:] {
-		dest := refDest(spec)
-		if isDefaultBranch(dest) || dest == "HEAD" || dest == "@" || dest == "" {
-			return true
-		}
-	}
-	return false
+// matchSendPack: git send-pack or git-send-pack, whatever it pushes. An
+// agent never needs the plumbing, and it bypasses the pre-push hook, so it
+// parks unconditionally.
+func matchSendPack(r PermissionAsk) bool {
+	return anyCmd(r, func(c shellCmd) bool {
+		_, ok := c.sub("git", "send-pack")
+		return ok || c.w[0] == "git-send-pack"
+	})
 }
 
 // stripRemote reduces origin/main, refs/heads/main and main to main.
@@ -508,8 +483,8 @@ func matchUnreadable(r PermissionAsk) bool {
 	return anyCmd(r, func(c shellCmd) bool { return c.w[0] == unresolved })
 }
 
-// matchMainRef: a push to (git push or the plumbing git send-pack), a
-// rebase onto, or a PR merge into the default branch. A plain `git push` with no refspec is not matched: its
+// matchMainRef: a push to, a rebase onto, or a PR merge into the default
+// branch. A plain `git push` with no refspec is not matched: its
 // destination is unknown here, and parking every plain push would drop
 // most push decisions (the live pre-push hook covers it).
 func matchMainRef(r PermissionAsk) bool {
@@ -521,9 +496,6 @@ func matchMainRef(r PermissionAsk) bool {
 				}
 			}
 			return false
-		}
-		if args, ok := sendPackArgs(c); ok {
-			return sendPackToDefault(args)
 		}
 		if args, ok := c.sub("git", "rebase"); ok {
 			return rebaseOnDefault(args)

@@ -52,6 +52,7 @@ func TestValidateLimitPattern(t *testing.T) {
 		{"command", "terraform apply", true},
 		{"command", "  ", false},
 		{"command", `echo "open`, false},
+		{"command", "echo \"two\nlines\"", false},
 		{"tool", "create_jira_issue", true},
 		{"tool", "two words", false},
 		{"tool", "", false},

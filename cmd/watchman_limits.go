@@ -7,8 +7,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/watchman"
+	"watchtower/internal/watchmanact"
 )
 
 // The owner's extra limits (spec 2026-11-16-watchman-design §5): Watchman
@@ -72,20 +74,30 @@ type watchmanOwnerLimit struct {
 }
 
 // openWatchmanLimitsDB opens the workspace database for the limits verbs.
-func openWatchmanLimitsDB() (*db.DB, error) {
+func openWatchmanLimitsDB() (*config.Config, *db.DB, error) {
 	cfg, err := workspaceConfigFromFlags()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	database, err := db.Open(cfg.DBPath())
 	if err != nil {
-		return nil, fmt.Errorf("opening database: %w", err)
+		return nil, nil, fmt.Errorf("opening database: %w", err)
 	}
-	return database, nil
+	return cfg, database, nil
+}
+
+// refreshLimitsSidecar rewrites the arm sidecar after a change of the
+// owner's limits, so the guard applies them when it cannot read the
+// database; a failure is a warning (the daemon's upkeep rewrites it next
+// cycle).
+func refreshLimitsSidecar(cmd *cobra.Command, cfg *config.Config, database *db.DB) {
+	if _, err := watchmanact.RefreshSidecar(cmd.Context(), cfg.WorkspaceDir(), database); err != nil {
+		sidecarWarning(cmd, err.Error())
+	}
 }
 
 func runWatchmanLimitsList(cmd *cobra.Command, _ []string) error {
-	database, err := openWatchmanLimitsDB()
+	_, database, err := openWatchmanLimitsDB()
 	if err != nil {
 		return err
 	}
@@ -126,7 +138,7 @@ func runWatchmanLimitsAdd(cmd *cobra.Command, _ []string) error {
 	if err := watchman.ValidateLimitPattern(kind, pattern); err != nil {
 		return err
 	}
-	database, err := openWatchmanLimitsDB()
+	cfg, database, err := openWatchmanLimitsDB()
 	if err != nil {
 		return err
 	}
@@ -135,6 +147,7 @@ func runWatchmanLimitsAdd(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	refreshLimitsSidecar(cmd, cfg, database)
 	fmt.Fprintf(cmd.OutOrStdout(), "Limit %d: Watchman leaves %s %q to you.\n", id, kind, pattern)
 	return nil
 }
@@ -146,7 +159,7 @@ func runWatchmanLimitsRemove(cmd *cobra.Command, _ []string) error {
 	if watchmanLimitsRemoveFlagID <= 0 {
 		return errors.New("name the limit with --id N (watchman limits list); a built-in limit cannot be removed")
 	}
-	database, err := openWatchmanLimitsDB()
+	cfg, database, err := openWatchmanLimitsDB()
 	if err != nil {
 		return err
 	}
@@ -158,6 +171,7 @@ func runWatchmanLimitsRemove(cmd *cobra.Command, _ []string) error {
 	if !removed {
 		return fmt.Errorf("no limit of yours has id %d (a built-in limit has no id and cannot be removed)", watchmanLimitsRemoveFlagID)
 	}
+	refreshLimitsSidecar(cmd, cfg, database)
 	fmt.Fprintf(cmd.OutOrStdout(), "Limit %d removed.\n", watchmanLimitsRemoveFlagID)
 	return nil
 }

@@ -3971,7 +3971,7 @@ CREATE TABLE IF NOT EXISTS watchman_items (
     session_id    INTEGER,
     target_id     INTEGER,
     kind          TEXT NOT NULL CHECK (kind IN ('ask','review_doc','check','handover','permission','review_code','guard')),
-    ref_kind      TEXT NOT NULL CHECK (ref_kind IN ('ask','permission','session','round')),
+    ref_kind      TEXT NOT NULL CHECK (ref_kind IN ('ask','permission','session','round','guard')),  -- 'guard': a guard hook denial, ref_id its own number (00201)
     ref_id        INTEGER NOT NULL,
     state         TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','deciding','done')),
     outcome       TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('','answered','handed','parked','owner_first','approved','changes')),
@@ -4001,6 +4001,7 @@ CREATE TABLE IF NOT EXISTS watchman_items (
 );
 CREATE INDEX IF NOT EXISTS idx_watchman_items_queue ON watchman_items(state, not_before);
 CREATE INDEX IF NOT EXISTS idx_watchman_items_wb ON watchman_items(workbench_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_watchman_items_created ON watchman_items(created_at);
 
 CREATE TABLE IF NOT EXISTS watchman_gaps (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,

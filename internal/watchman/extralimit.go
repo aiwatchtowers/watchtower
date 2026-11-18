@@ -68,10 +68,13 @@ func matchOwnerCommand(r PermissionAsk, pattern string) bool {
 	})
 }
 
-// ValidateLimitPattern checks an owner's limit before it is stored: a known
-// kind, a command pattern with at least one word and its quotes closed, a
-// tool name without blanks.
+// ValidateLimitPattern checks an owner's limit before it is stored: one
+// line, a known kind, a command pattern with at least one word and its
+// quotes closed, a tool name without blanks.
 func ValidateLimitPattern(kind, pattern string) error {
+	if strings.ContainsAny(pattern, "\r\n") { // the arm sidecar keeps one limit per line
+		return errors.New("the pattern must be one line")
+	}
 	switch kind {
 	case ExtraLimitCommand:
 		words, ok := splitWords(pattern)

@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os/exec"
@@ -122,8 +124,10 @@ func gitCurrentBranch(ctx context.Context, dir string) string {
 }
 
 // watchmanGuardRead is the guard's database read: whether the session is
-// armed and, armed, the places it may touch and the owner's limits. warn
-// collects failures of the reads after the arm read.
+// armed and, armed, the places it may touch and the owner's limits. err is
+// an open or arm-read failure (the sidecar then decides); extraErr a failed
+// read of the owner's limits (an armed session then denies every call);
+// warn collects the other failures.
 type watchmanGuardRead struct {
 	store     watchmanGuardStore
 	armed     bool
@@ -131,11 +135,12 @@ type watchmanGuardRead struct {
 	worktrees []string
 	extra     []db.WatchmanExtraLimit
 	err       error
+	extraErr  error
 	warn      []string
 }
 
 // readWatchmanGuard reads session rowID's arming on the store, and only
-// when it is armed anything more. err is an open or arm-read failure.
+// when it is armed anything more.
 func readWatchmanGuard(deps watchmanGuardDeps, rowID int64) (r watchmanGuardRead) {
 	defer func() {
 		if p := recover(); p != nil {
@@ -157,33 +162,49 @@ func readWatchmanGuard(deps watchmanGuardDeps, rowID int64) (r watchmanGuardRead
 	for _, w := range wts {
 		r.worktrees = append(r.worktrees, w.Root)
 	}
-	if r.extra, err = store.WatchmanExtraLimits(); err != nil {
-		r.warn = append(r.warn, err.Error())
-	}
+	r.extra, r.extraErr = store.WatchmanExtraLimits()
 	return r
 }
 
-// runWatchmanGuard is the PreToolUse hook. Its stdout is the agent's
-// decision: nothing lets the tool run, the denial JSON stops it. No
-// Desktop session (no terminal row), an unreadable input or a session not
-// armed prints nothing. Armed, a tool call the hard-limit table or the
-// owner's limits cover (watchman.CheckLimits) is denied and journalled for
-// Waiting for you; a journal failure still denies. The database not read
-// within watchmanGuardReadBudget → the arm sidecar decides, and nothing is
-// journalled.
-func runWatchmanGuard(stdin io.Reader, stdout, stderr io.Writer, agent agentkind.Kind, deps watchmanGuardDeps) {
-	defer func() { _ = recover() }()
-	ctx, cancel := context.WithTimeout(context.Background(), askGuardInputWait)
-	in, err := readHookEvent(ctx, stdin, hookStdinLimit, agent)
-	cancel()
-	if err != nil || in.ToolName == "" {
-		return
+// watchmanGuardRun is one run's output state: whether the session is known
+// armed and whether the denial was printed, for the panic path.
+type watchmanGuardRun struct {
+	stdout        io.Writer
+	armed, denied bool
+}
+
+func (g *watchmanGuardRun) deny(limit watchman.HardLimit) {
+	if !g.denied {
+		g.denied = true
+		writeToolDenial(g.stdout, watchmanGuardReason(limit))
 	}
+}
+
+// runWatchmanGuard is the PreToolUse hook. Its stdout is the agent's
+// decision: nothing lets the tool run, the denial JSON stops it. No Desktop
+// session (no terminal row) or a session not armed prints nothing, after one
+// row read. Armed, a tool call the hard-limit table or the owner's limits
+// cover (watchman.CheckLimits) is denied and journalled for Waiting for you;
+// a journal failure still denies. Armed, it fails closed with `unreadable`:
+// a hook input it cannot read, owner's limits it cannot read, a sidecar
+// that exists but cannot be read, a panic. The database not read within
+// watchmanGuardReadBudget → the arm sidecar decides (with the owner's
+// limits it carries), and nothing is journalled.
+func runWatchmanGuard(stdin io.Reader, stdout, stderr io.Writer, agent agentkind.Kind, deps watchmanGuardDeps) {
 	rowID, ok, err := terminalSessionRowID()
 	if !ok || err != nil {
 		return
 	}
-	ask := watchman.PermissionAsk{Tool: in.ToolName, Summary: permissionSummaryText(in.ToolName, in.ToolInput)}
+	g := &watchmanGuardRun{stdout: stdout}
+	defer func() {
+		if p := recover(); p != nil && g.armed {
+			g.deny(watchman.LimitUnreadable)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), askGuardInputWait)
+	in, inErr := readHookEvent(ctx, stdin, hookStdinLimit, agent)
+	cancel()
+	inputOK := inErr == nil && in.ToolName != ""
 
 	reads := make(chan watchmanGuardRead, 1)
 	go func() { reads <- readWatchmanGuard(deps, rowID) }()
@@ -205,36 +226,54 @@ func runWatchmanGuard(stdin io.Reader, stdout, stderr io.Writer, agent agentkind
 		fmt.Fprintf(stderr, "watchtower: watchman guard: %s\n", w)
 	}
 
-	armed := read.armed
+	var ask watchman.PermissionAsk
+	extra, unreadable := read.extra, read.extraErr != nil
+	if read.extraErr != nil {
+		fmt.Fprintf(stderr, "watchtower: watchman guard: the owner's limits: %v\n", read.extraErr)
+	}
 	dir := in.Cwd
 	if read.err != nil {
 		fmt.Fprintf(stderr, "watchtower: watchman guard: %v; the arm sidecar decides\n", read.err)
 		sc, err := deps.sidecar()
-		if err != nil {
+		if err != nil { // a sidecar that is there but cannot be read: armed, unreadable
 			fmt.Fprintf(stderr, "watchtower: watchman guard: %v\n", err)
+			g.armed, unreadable = true, true
+		} else {
+			g.armed = slices.Contains(sc.Sessions, rowID) || sc.TargetsArmed
 		}
-		armed = slices.Contains(sc.Sessions, rowID) || sc.TargetsArmed
-		ask.Worktrees = sidecarWorktreesOf(sc, in.Cwd)
+		ask.Worktrees, extra = sidecarWorktreesOf(sc, in.Cwd), sc.Limits
 	} else {
+		g.armed = read.armed
 		ask.WorkbenchFolder = read.session.WorkbenchFolder
 		ask.Worktrees = append([]string{read.session.Folder}, read.worktrees...)
 		if dir == "" {
 			dir = read.session.Folder
 		}
 	}
-	if !armed {
+	if !g.armed {
 		return
 	}
-	if ask.Tool == "Bash" { // only shell commands read the branch
-		gctx, gcancel := context.WithTimeout(context.Background(), watchmanGuardGitWait)
-		ask.Branch = &watchman.BranchInfo{Current: deps.branch(gctx, dir)}
-		gcancel()
+	var deny bool
+	var limit watchman.HardLimit
+	if !inputOK || unreadable {
+		if inErr != nil {
+			fmt.Fprintf(stderr, "watchtower: watchman guard: the hook input: %v\n", inErr)
+		}
+		deny, limit = true, watchman.LimitUnreadable
+		ask.Tool, ask.Summary = cmp.Or(in.ToolName, "(unknown tool)"), "the hook input or the owner's limits could not be read"
+	} else {
+		ask.Tool, ask.Summary = in.ToolName, watchmanGuardSummary(in, ask.Worktrees)
+		if ask.Tool == "Bash" { // only shell commands read the branch
+			gctx, gcancel := context.WithTimeout(context.Background(), watchmanGuardGitWait)
+			ask.Branch = &watchman.BranchInfo{Current: deps.branch(gctx, dir)}
+			gcancel()
+		}
+		deny, limit = watchmanGuardDecision(in, true, ask, extra)
 	}
-	deny, limit := watchmanGuardDecision(in, armed, ask, read.extra)
 	if !deny {
 		return
 	}
-	writeToolDenial(stdout, watchmanGuardReason(limit))
+	g.deny(limit)
 	if read.err != nil {
 		return
 	}
@@ -246,6 +285,61 @@ func runWatchmanGuard(stdin io.Reader, stdout, stderr io.Writer, agent agentkind
 	if err != nil {
 		fmt.Fprintf(stderr, "watchtower: watchman guard: the denial was not journalled: %v\n", err)
 	}
+}
+
+// watchmanGuardSummary is the tool call as the hard-limit table reads it,
+// placed by the call's working directory cwd: a file tool's relative path
+// is made absolute against cwd, and a shell command run from a directory
+// outside every worktree is read as starting with a cd there, so its
+// relative paths are judged where they land.
+func watchmanGuardSummary(in hookEvent, worktrees []string) string {
+	cwd := in.Cwd
+	if cwd == "" || !filepath.IsAbs(cwd) {
+		return permissionSummaryText(in.ToolName, in.ToolInput)
+	}
+	if in.ToolName != "Bash" {
+		return permissionSummaryText(in.ToolName, absToolPaths(in.ToolInput, cwd))
+	}
+	s := permissionSummaryText(in.ToolName, in.ToolInput)
+	if slices.ContainsFunc(worktrees, func(w string) bool { return w != "" && pathWithin(cwd, w) }) {
+		return s
+	}
+	return "cd '" + strings.ReplaceAll(cwd, "'", `'\''`) + "' && " + s
+}
+
+// absToolPaths rewrites a tool input's relative file_path, notebook_path
+// and path against cwd; anything else is kept as it was.
+func absToolPaths(input json.RawMessage, cwd string) json.RawMessage {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(input, &fields) != nil {
+		return input
+	}
+	changed := false
+	for _, key := range []string{"file_path", "notebook_path", "path"} {
+		var p string
+		if json.Unmarshal(fields[key], &p) != nil || p == "" || filepath.IsAbs(p) || strings.HasPrefix(p, "~") {
+			continue
+		}
+		raw, err := json.Marshal(filepath.Join(cwd, p))
+		if err != nil {
+			continue
+		}
+		fields[key], changed = raw, true
+	}
+	if !changed {
+		return input
+	}
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return input
+	}
+	return out
+}
+
+// pathWithin reports whether p is root or lies under it.
+func pathWithin(p, root string) bool {
+	p, root = filepath.Clean(p), filepath.Clean(root)
+	return p == root || strings.HasPrefix(p, strings.TrimSuffix(root, "/")+"/")
 }
 
 // watchmanGuardDecision is the guard's verdict on one tool call: deny while
@@ -270,9 +364,8 @@ func sidecarWorktreesOf(sc watchmanact.Sidecar, cwd string) []string {
 	if cwd == "" {
 		return nil
 	}
-	cwd = filepath.Clean(cwd)
 	for _, w := range sc.Worktrees {
-		if cwd == w || strings.HasPrefix(cwd, strings.TrimSuffix(w, "/")+"/") {
+		if pathWithin(cwd, w) {
 			return []string{w}
 		}
 	}

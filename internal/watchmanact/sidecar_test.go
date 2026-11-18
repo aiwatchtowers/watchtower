@@ -109,3 +109,37 @@ func TestRefreshSidecar_LaterStateWins(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, Sidecar{Sessions: []int64{s1, s2}, Worktrees: []string{f1, f2}}, got)
 }
+
+func TestSidecar_CarriesTheOwnersLimits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "watchman.armed")
+	limits := []db.WatchmanExtraLimit{
+		{ID: 4, Kind: "command", Pattern: "terraform apply"},
+		{ID: 5, Kind: "tool", Pattern: "create_jira_issue"},
+		{ID: 6, Kind: "command", Pattern: "two\nlines"}, // cannot be a line: left out
+	}
+	require.NoError(t, WriteSidecar(path, []db.ArmedSession{{SessionID: 7, Folder: "/tmp/acme"}}, false, limits...))
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "session 7\nworktree /tmp/acme\nlimit command terraform apply\nlimit tool create_jira_issue\n", string(raw))
+	got, err := ReadSidecar(path)
+	require.NoError(t, err)
+	assert.Equal(t, []db.WatchmanExtraLimit{{Kind: "command", Pattern: "terraform apply"}, {Kind: "tool", Pattern: "create_jira_issue"}}, got.Limits)
+
+	// A file from before the limit lines reads as no owner's limits.
+	require.NoError(t, os.WriteFile(path, []byte("session 7\ntargets-armed\n"), 0o600))
+	got, err = ReadSidecar(path)
+	require.NoError(t, err)
+	assert.Equal(t, Sidecar{Sessions: []int64{7}, TargetsArmed: true}, got)
+}
+
+func TestRefreshSidecar_WritesTheOwnersLimits(t *testing.T) {
+	ws := t.TempDir()
+	d := db.OpenTestDB(t)
+	_, err := d.AddWatchmanExtraLimit("command", "terraform apply")
+	require.NoError(t, err)
+	_, err = RefreshSidecar(context.Background(), ws, d)
+	require.NoError(t, err)
+	got, err := ReadSidecar(SidecarPath(ws))
+	require.NoError(t, err)
+	assert.Equal(t, []db.WatchmanExtraLimit{{Kind: "command", Pattern: "terraform apply"}}, got.Limits)
+}
