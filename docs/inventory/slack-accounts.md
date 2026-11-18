@@ -36,16 +36,20 @@
 
 **Status:** Enforced
 
-**Observable:** The app is in Full mode when a synced Slack account exists, in Live mode when there is none but a Slack Live probe says `ok`, and Off otherwise. The Desktop and the daemon always agree on which.
+**Observable:** The app is in Full mode when a synced Slack account exists, in Live mode when there is none but the newest probe batch of any provider says `ok` (an older `ok` never outlives a newer failed check), and Off otherwise. The Desktop and the daemon always agree on which.
 
-**Mechanism:** Go `slackmode.Derive(full, liveStatuses)` and Swift `SlackMode.derive(full:liveStatuses:)` are twins over the one fixture `internal/slackmode/testdata/slack_mode_cases.json`. Go derives the mode through `automations.SlackMode` (Full = `HasFullSlackAccount`, the Live verdicts from `slack_live_status`), which the `slack:live` event-trigger refusal at save uses (Live only: "with Live only nothing fires it"; Off: "Slack is not connected"). The probe verdicts live in `slack_live_status` (migration 00188), one row per `(team_id, provider)`, written by `UpsertSlackLiveStatus`, which keeps the newest `checked_at` and never erases a known `connector_id` with an empty one.
+**Mechanism:** Go `slackmode.Derive(full, liveStatuses)` and Swift `SlackMode.derive(full:liveStatuses:)` are twins over the one fixture `internal/slackmode/testdata/slack_mode_cases.json`. Before deriving, both sides reduce `slack_live_status` to the newest probe batch of each provider — a probe writes one row per team plus team `''` at one `checked_at`; the batch is `ok` when any row in it is (Go `slackmode.NewestBatches`/`LiveVerdicts`, Swift `SlackModePresentation.liveVerdicts`/`newestBatches`); the fixture's `probes` cases pin it on both sides. Go derives the mode through `automations.SlackMode` (Full = `HasFullSlackAccount`, the Live verdicts = `slackmode.LiveVerdicts` over `slack_live_status`), which the `slack:live` event-trigger refusal at save uses (Live only: "with Live only nothing fires it"; Off: "Slack is not connected"); the chat and agent() Live rules (`cmd` `newestSlackLive`) read the same batch verdict. The probe verdicts live in `slack_live_status` (migration 00188), one row per `(team_id, provider)`, written by `UpsertSlackLiveStatus`, which keeps the newest `checked_at` and never erases a known `connector_id` with an empty one.
 
 **Why locked:** If the two sides disagree, the Desktop shows one mode while the daemon runs another (a Live chat tool offered with no probe, or a Full sync skipped). No other test would see it.
 
 **Test guards:**
 - `internal/slackmode/mode_test.go`: `TestSlackMode_SharedFixture`.
-- `internal/automations/slack_live_internal_test.go`: `TestSlackMode_FromAccountsAndVerdicts` (the Go caller).
+- `internal/slackmode/batch_test.go`: `TestNewestBatches_VerdictRowPerProvider`.
+- `internal/automations/slack_live_internal_test.go`: `TestSlackMode_FromAccountsAndVerdicts` (the Go caller), `TestSlackMode_NewestBatchWins`.
 - `WatchtowerDesktop/Tests/Core/SlackModeFixtureTests.swift`: `SlackModeFixtureTests.testFixtureMatchesGo`.
 - `internal/db/slack_live_status_test.go`: `TestUpsertSlackLiveStatus_NewestWins`, `TestUpsertSlackLiveStatus_KeepsConnectorID`.
 
 **Locked since:** 2026-11-14
+
+**Changelog:**
+- 2026-11-18 (ask #1525, owner-approved contract change): Live is read from the newest probe batch of each provider in both Go and Swift; before, Go counted any `ok` row, so an older `ok` kept the daemon Live while the Desktop showed Off. The shared fixture gained `probes` cases (newest batch wins both ways, two providers, a same-instant batch with team `''` and team rows).

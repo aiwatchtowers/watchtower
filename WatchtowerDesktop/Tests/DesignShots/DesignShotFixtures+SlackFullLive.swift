@@ -1,5 +1,6 @@
 import AppKit
 import DesignKit
+import GRDB
 import SwiftUI
 import WatchtowerCore
 @testable import WatchtowerDesktop
@@ -95,37 +96,8 @@ private typealias Copy = SlackFullLiveMockCopy
 
 // MARK: - Connections → Slack
 
-/// One Live row: a provider, its status, the reason and the time.
-private struct LiveRowMock {
-    let provider: String
-    let status: String
-    let reason: String?
-    let checked: String
-    let tone: Color
-}
-
 private struct SlackPaneMock: View {
     let pane: SlackFullLiveShotFixtures.Pane
-
-    private var chip: (String, Color) {
-        switch pane {
-        case .full: (Copy.chipFull, Tone.success)
-        case .fullLive, .loading, .checking, .probeFailed, .readFailed: (Copy.chipFullLive, Tone.success)
-        case .live, .liveProblems: (Copy.chipLive, Tone.status("blue"))
-        case .sharedApp: (Copy.chipShared, Tone.warning)
-        default: (Copy.chipOff, Tone.status("gray"))
-        }
-    }
-
-    private var summary: String {
-        switch pane {
-        case .full: Copy.summaryFull
-        case .fullLive, .loading, .checking, .probeFailed, .readFailed: Copy.summaryFullLive
-        case .live, .liveProblems: Copy.summaryLive
-        case .sharedApp: Copy.summaryShared
-        default: Copy.summaryOff
-        }
-    }
 
     private var hasAccount: Bool {
         [.full, .fullLive, .loading, .checking, .probeFailed, .readFailed, .sharedApp].contains(pane)
@@ -147,97 +119,9 @@ private struct SlackPaneMock: View {
         .detailBackground()
     }
 
+    /// The real Slack mode section (`SlackModeSection`) on fixture data.
     private var modeSection: some View {
-        SettingsSection(title: Copy.modeTitle, isBusy: pane == .checking) {
-            HStack(spacing: Spacing.regular) {
-                Chip(text: chip.0, color: chip.1, dot: true)
-                Spacer(minLength: Spacing.medium)
-            }
-            Text(summary).font(.callout).fixedSize(horizontal: false, vertical: true)
-            liveBlock
-        }
-    }
-
-    private var liveRows: [LiveRowMock] {
-        switch pane {
-        case .full:
-            [LiveRowMock(provider: Copy.providerClaude, status: Copy.liveNotConnected,
-                         reason: Copy.reasonConnectorsOff, checked: Copy.checked2H, tone: Tone.status("gray"))]
-        case .fullLive, .checking, .probeFailed:
-            [LiveRowMock(provider: Copy.providerClaude, status: Copy.liveOn, reason: nil,
-                         checked: Copy.checked5H, tone: Tone.success),
-             LiveRowMock(provider: Copy.providerCodex, status: Copy.liveNotConnected,
-                         reason: Copy.reasonCLIMissing, checked: Copy.checked5H, tone: Tone.status("gray"))]
-        case .live:
-            [LiveRowMock(provider: Copy.providerClaude, status: Copy.liveNotConnected,
-                         reason: Copy.reasonDefault, checked: Copy.checked12Min, tone: Tone.status("gray")),
-             LiveRowMock(provider: Copy.providerCodex, status: Copy.liveOnTeamID, reason: nil,
-                         checked: Copy.checked12Min, tone: Tone.success)]
-        case .liveProblems:
-            [LiveRowMock(provider: Copy.providerClaude, status: Copy.liveOnUnidentified,
-                         reason: Copy.reasonUnidentified, checked: Copy.checkedJustNow, tone: Tone.success),
-             LiveRowMock(provider: Copy.providerCodex, status: Copy.liveNeedsAdmin,
-                         reason: Copy.reasonNeedsAdmin, checked: Copy.checkedJustNow, tone: Tone.warning)]
-        case .sharedApp:
-            [LiveRowMock(provider: Copy.providerClaude, status: Copy.liveNoPlan,
-                         reason: Copy.reasonNoPlan, checked: Copy.checked2H, tone: Tone.status("gray"))]
-        default:
-            [LiveRowMock(provider: Copy.providerClaude, status: Copy.liveNotConnected,
-                         reason: Copy.reasonDefault, checked: Copy.checked12Min, tone: Tone.status("gray"))]
-        }
-    }
-
-    @ViewBuilder private var liveBlock: some View {
-        VStack(alignment: .leading, spacing: Spacing.compact) {
-            HStack(spacing: Spacing.regular) {
-                Text(Copy.liveTitle).font(.subheadline.weight(.semibold))
-                Spacer(minLength: Spacing.medium)
-                if pane != .loading, pane != .readFailed {
-                    Button(Copy.checkAgain) {}.buttonStyle(.kitSecondary).disabled(pane == .checking)
-                }
-            }
-            switch pane {
-            case .loading:
-                HStack(spacing: Spacing.regular) {
-                    ProgressView().controlSize(.small)
-                    Text(Copy.loading).font(.caption).foregroundStyle(.secondary)
-                }
-            case .readFailed:
-                problem(Copy.readFailed, action: Copy.tryAgain)
-            case .off:
-                Text(Copy.notCheckedYet).font(.caption).foregroundStyle(.secondary)
-            default:
-                ForEach(liveRows, id: \.provider) { row in liveRow(row) }
-                if pane == .checking {
-                    Text(Copy.checking).font(.caption).foregroundStyle(.secondary)
-                }
-                if pane == .probeFailed { problem(Copy.probeFailed, action: nil) }
-            }
-        }
-        .padding(.top, Spacing.small)
-    }
-
-    private func liveRow(_ row: LiveRowMock) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-            Circle().fill(row.tone).frame(width: IconSize.stateDot, height: IconSize.stateDot)
-            VStack(alignment: .leading, spacing: Spacing.tight) {
-                Text("\(row.provider): \(row.status)").font(.callout)
-                if let reason = row.reason {
-                    Text(reason).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            Spacer(minLength: Spacing.medium)
-            Text(row.checked).font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
-    private func problem(_ text: String, action: String?) -> some View {
-        HStack(alignment: .top, spacing: Spacing.regular) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Tone.warning)
-            Text(text).font(.caption).fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: Spacing.regular)
-            if let action { Button(action) {}.buttonStyle(.kitSecondary) }
-        }
+        SlackModeSection(presentation: SlackPaneModeFixture.presentation(pane), checkAgain: {}, tryAgain: {})
     }
 
     private var connectSection: some View {
@@ -744,5 +628,71 @@ private struct LiveArtifactKeepMock: View {
         .padding(Spacing.cozy)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .panelBackground()
+    }
+}
+
+// MARK: - The real Slack mode section's fixture data
+
+/// `SlackModePresentation` for each pane frame, built from sample accounts
+/// and `slack_live_status` rows (`acme`, made-up ids) at a fixed clock.
+@MainActor
+enum SlackPaneModeFixture {
+    static let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+    static func presentation(_ pane: SlackFullLiveShotFixtures.Pane) -> SlackModePresentation {
+        let acme = SlackAccount(row: Row([
+            "id": 1, "team_id": "T0ACME", "team_name": "acme", "status": "ok", "enabled": true
+        ]))
+        let hasAccount: Set<SlackFullLiveShotFixtures.Pane> =
+            [.full, .fullLive, .loading, .checking, .probeFailed, .readFailed, .sharedApp]
+        var lastError: SlackLiveError?
+        switch pane {
+        case .probeFailed:
+            lastError = SlackLiveError(
+                provider: "claude", message: "the watchtower command did not answer in 150 seconds.", kind: .probe)
+        case .readFailed:
+            lastError = SlackLiveError(provider: "", message: "database is locked", kind: .read)
+        default: break
+        }
+        return SlackModePresentation(
+            accounts: hasAccount.contains(pane) ? [acme] : [],
+            sharedAppAccountIDs: pane == .sharedApp ? [1] : [],
+            liveStatuses: rows(pane),
+            isRunning: pane == .checking,
+            hasRead: pane != .loading,
+            lastError: lastError,
+            now: now)
+    }
+
+    private static func rows(_ pane: SlackFullLiveShotFixtures.Pane) -> [SlackLiveStatusRow] {
+        let twoHours: TimeInterval = 2 * 3600, fiveHours: TimeInterval = 5 * 3600, twelveMin: TimeInterval = 12 * 60
+        switch pane {
+        case .full:
+            return [row("claude", "not_connected", "connectors_off", ago: twoHours)]
+        case .fullLive, .checking, .probeFailed, .readFailed:
+            return [row("claude", "ok", team: "T0ACME", ago: fiveHours),
+                    row("codex", "not_connected", "cli_missing", ago: fiveHours)]
+        case .live:
+            return [row("claude", "not_connected", "no_connector", ago: twelveMin),
+                    row("codex", "ok", team: "T0ACME", ago: twelveMin)]
+        case .liveProblems:
+            return [row("claude", "ok", ago: 10), row("codex", "needs_admin", ago: 10)]
+        case .sharedApp:
+            return [row("claude", "no_plan", ago: twoHours)]
+        case .loading, .off:
+            return []
+        default:
+            return [row("claude", "not_connected", "no_connector", ago: twelveMin)]
+        }
+    }
+
+    private static func row(
+        _ provider: String, _ status: String, _ errorClass: String = "", team: String = "", ago: TimeInterval
+    ) -> SlackLiveStatusRow {
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime]
+        return SlackLiveStatusRow(
+            teamID: team, provider: provider, status: status, errorClass: errorClass, connectorID: "",
+            checkedAt: fmt.string(from: now.addingTimeInterval(-ago)))
     }
 }

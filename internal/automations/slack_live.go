@@ -152,7 +152,8 @@ func HasFullSlackAccount(d *db.DB) (bool, error) {
 
 // SlackMode is the app's Slack mode (SLACKMODE-01, slackmode.Derive, the
 // Swift twin's rule): Full with a Full account (HasFullSlackAccount), else
-// Live when any Slack Live verdict is ok, else Off.
+// Live when the newest probe batch of any provider is ok
+// (slackmode.LiveVerdicts), else Off.
 func SlackMode(d *db.DB) (slackmode.Mode, error) {
 	full, err := HasFullSlackAccount(d)
 	if err != nil {
@@ -162,11 +163,7 @@ func SlackMode(d *db.DB) (slackmode.Mode, error) {
 	if err != nil {
 		return "", err
 	}
-	statuses := make([]string, 0, len(rows))
-	for _, r := range rows {
-		statuses = append(statuses, r.Status)
-	}
-	return slackmode.Derive(full, statuses), nil
+	return slackmode.Derive(full, slackmode.LiveVerdicts(rows)), nil
 }
 
 // AutomationSlackLive reports whether an indexed automation's permissions
