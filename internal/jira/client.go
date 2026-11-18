@@ -127,7 +127,7 @@ const jsonAccept = "application/json"
 // loop; do is the Jira-base-bound convenience wrapper every existing Jira
 // call site uses.
 func (c *Client) do(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
-	return c.doURL(ctx, method, c.jiraBase()+path, body, jsonAccept)
+	return c.doURL(ctx, method, c.jiraBase()+path, body)
 }
 
 // doURL executes an authenticated HTTP request against a caller-supplied full
@@ -137,13 +137,12 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) (*htt
 // payload (nil for no body); a fresh io.Reader is built from it on every
 // attempt so a retry after a 401 refresh re-sends the full body instead of an
 // already-drained reader (which would otherwise turn a transparent retry into
-// an empty POST). accept is sent as the Accept header, or omitted entirely
-// when empty — Download passes "" so a binary attachment response is never
-// asked to look like JSON. Taking a full URL rather than a base-relative path
-// is what lets ConfluenceAPI reuse this same loop against a different
-// Atlassian product base (see confluence_api.go).
-func (c *Client) doURL(ctx context.Context, method, fullURL string, body []byte, accept string) (*http.Response, error) {
-	return c.doURLWith(ctx, c.httpClient, method, fullURL, body, accept)
+// an empty POST). It asks for JSON (jsonAccept); Download, which must not,
+// calls doURLWith with an empty accept. Taking a full URL rather than a
+// base-relative path is what lets ConfluenceAPI reuse this same loop against
+// a different Atlassian product base (see confluence_api.go).
+func (c *Client) doURL(ctx context.Context, method, fullURL string, body []byte) (*http.Response, error) {
+	return c.doURLWith(ctx, c.httpClient, method, fullURL, body, jsonAccept)
 }
 
 // maxRefreshAttempts/maxRateLimitAttempts are doURLWith's independent retry
@@ -371,6 +370,9 @@ func carryOverUnreturnedFields(newToken, old *OAuthToken) {
 	}
 	if newToken.Scope == "" {
 		newToken.Scope = old.Scope
+	}
+	if newToken.RequestedScope == "" {
+		newToken.RequestedScope = old.RequestedScope
 	}
 }
 

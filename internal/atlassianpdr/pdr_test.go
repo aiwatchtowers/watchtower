@@ -222,6 +222,20 @@ func TestPDR_ProfileRefetchErrorWritesNothing(t *testing.T) {
 	assert.Empty(t, lastPDR(t, d, acct))
 }
 
+// A grant whose sign-in already asked for the scope and did not get it: a
+// Re-login cannot help, so the hint is not shown (no endless Re-login loop).
+func TestPDR_ScopeAskedButNotGrantedLeavesNoHint(t *testing.T) {
+	d := db.OpenTestDB(t)
+	acct := newAccount(t, d, "acme")
+	seedPeople(t, d, acct)
+	_, err := Run(context.Background(), d, acct, &fakeReporter{err: fmt.Errorf("%w: status 403", jira.ErrReportScopeNotGranted)}, t0)
+	require.Error(t, err)
+	a, err := d.GetJiraAccount(acct)
+	require.NoError(t, err)
+	assert.Empty(t, a.Error)
+	assert.False(t, erased(t, d, acct))
+}
+
 func TestPDR_ScopeMissingOnTheSharedAppLeavesNoHint(t *testing.T) {
 	d := db.OpenTestDB(t)
 	acct := newAccount(t, d, "") // a re-login through the shared app cannot request the scope

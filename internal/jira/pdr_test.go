@@ -116,6 +116,31 @@ func TestUsersBulk_AsksForEveryID(t *testing.T) {
 	assert.Equal(t, User{AccountID: "a1", DisplayName: "New", EmailAddress: "n@example.com"}, users[0])
 }
 
+// TestReportAccounts_ScopeAskedButNotGrantedIsNoRelogin: Atlassian is known
+// to leave report:personal-data out of a grant that asked for it; a refusal
+// on such a grant is ErrReportScopeNotGranted, so no Re-login hint loops.
+func TestReportAccounts_ScopeAskedButNotGrantedIsNoRelogin(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv.URL, srv.URL+"/token", "at-1")
+	tok, err := c.tokenStore.Load()
+	require.NoError(t, err)
+	tok.RequestedScope = OAuthScopes + " " + PDRScope
+	require.NoError(t, c.tokenStore.Save(tok))
+
+	_, err = c.ReportAccounts(context.Background(), []ReportedAccount{{AccountID: "a1"}})
+	require.ErrorIs(t, err, ErrReportScopeNotGranted)
+	assert.NotErrorIs(t, err, ErrReportScopeMissing)
+}
+
+func TestCarryOverUnreturnedFields_KeepsRequestedScope(t *testing.T) {
+	fresh := &OAuthToken{AccessToken: "new"}
+	carryOverUnreturnedFields(fresh, &OAuthToken{RefreshToken: "rt", Scope: "s", RequestedScope: "s " + PDRScope})
+	assert.Equal(t, "s "+PDRScope, fresh.RequestedScope)
+}
+
 // TestEnsureUserMap_RefreshesAChangedProfile: an "updated" report is acted
 // on by the next sync that meets the person — the stored name and email
 // follow the issue payload, the Slack mapping stays.

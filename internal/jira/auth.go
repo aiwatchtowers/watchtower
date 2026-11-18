@@ -62,6 +62,12 @@ type OAuthToken struct {
 	ExpiresIn    int    `json:"expires_in"`
 	Scope        string `json:"scope"`
 	Expiry       string `json:"expiry,omitempty"` // ISO8601 calculated from ExpiresIn
+	// RequestedScope is the scope string the sign-in that issued the grant
+	// asked for (Login sets it; a refresh carries it over); "" for a token
+	// from before it was recorded. Atlassian may grant less than asked —
+	// report:personal-data is known to come back missing — so it tells
+	// whether a new sign-in could add a scope the grant lacks.
+	RequestedScope string `json:"requested_scope,omitempty"`
 }
 
 // IsExpired returns true if the token has expired (or will expire within 60 seconds).
@@ -470,7 +476,7 @@ func Login(ctx context.Context, cfg JiraOAuthConfig, out io.Writer, opts ...Logi
 	if err != nil {
 		return nil, fmt.Errorf("exchanging code for token: %w", err)
 	}
-
+	token.RequestedScope = scope
 	return token, nil
 }
 

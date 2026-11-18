@@ -100,7 +100,7 @@ func (a *ConfluenceAPI) GetJSON(ctx context.Context, path string, q url.Values, 
 		fullURL += "?" + q.Encode()
 	}
 
-	resp, err := a.c.doURL(ctx, http.MethodGet, fullURL, nil, jsonAccept)
+	resp, err := a.c.doURL(ctx, http.MethodGet, fullURL, nil)
 	if err != nil {
 		return err
 	}
@@ -128,7 +128,7 @@ func (a *ConfluenceAPI) PutJSON(ctx context.Context, path string, body any, out 
 		return fmt.Errorf("encoding PUT %s: %w", path, err)
 	}
 
-	resp, err := a.c.doURL(ctx, http.MethodPut, a.base()+path, data, jsonAccept)
+	resp, err := a.c.doURL(ctx, http.MethodPut, a.base()+path, data)
 	if err != nil {
 		return err
 	}
