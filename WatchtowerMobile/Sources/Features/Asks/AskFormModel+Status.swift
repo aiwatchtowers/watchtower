@@ -11,7 +11,11 @@ extension AskFormModel {
         let entity = AskAnswerer.recordName(ask.id)
         let rows = snapshot.pending.filter { $0.action.kind == .askAnswer && $0.entityRecordName == entity }
         guard let row = rows.last else {
-            return applied.map { .applied($0.text) } ?? .none
+            if let applied { return .applied(applied.text) }
+            // Live link R5: the echo removed the row and its delivery has not reached the answerer yet; while
+            // the answer's overlay lives, the answer is still shown on its way, never as unanswered.
+            guard snapshot.answerOverlaid(ask.id) else { return .none }
+            return .sending(MacStatus(heartbeat: snapshot.heartbeat, now: now).isOnline ? BoardWriteText.sending : BoardWriteText.waitingForMac)
         }
         switch row.state {
         case .pending:

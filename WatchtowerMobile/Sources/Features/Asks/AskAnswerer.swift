@@ -26,7 +26,8 @@ enum AskDelivery: String, Equatable {
 }
 
 /// An answer the Mac took this run (`applied`), with its delivery when the
-/// echo named one.
+/// echo named one. Until the asks slice closes the ask, the answer's
+/// `askAnswer` overlay (live link R5) keeps it shown as sent.
 struct AppliedAnswer: Equatable {
     let delivery: AskDelivery?
 
@@ -44,7 +45,8 @@ struct AppliedAnswer: Equatable {
 @MainActor
 @Observable
 final class AskAnswerer {
-    typealias Enqueue = (_ entity: String, _ params: [String: JSONValue]) async throws -> Void
+    /// Returns the queued action's id.
+    typealias Enqueue = (_ entity: String, _ params: [String: JSONValue]) async throws -> String
 
     /// Ask id → its answer the Mac applied this run.
     private(set) var applied: [Int64: AppliedAnswer] = [:]
@@ -55,22 +57,31 @@ final class AskAnswerer {
     @ObservationIgnored private let failedRows: (String) throws -> [String]
     @ObservationIgnored private let drafts: AskDraftStore
     @ObservationIgnored private let sendGuard = SendGuard()
+    /// The hub's optimistic overlays; nil: none (tests of other parts).
+    @ObservationIgnored private let overlays: OverlayBook?
+    @ObservationIgnored private let now: () -> Date
 
     init(
         drafts: AskDraftStore,
         enqueue: @escaping Enqueue,
         remove: @escaping (String) throws -> Void,
-        failedRows: @escaping (String) throws -> [String] = { _ in [] }
+        failedRows: @escaping (String) throws -> [String] = { _ in [] },
+        overlays: OverlayBook? = nil,
+        now: @escaping () -> Date = { Date() }
     ) {
         self.drafts = drafts
         self.enqueue = enqueue
         self.remove = remove
         self.failedRows = failedRows
+        self.overlays = overlays
+        self.now = now
     }
 
     /// The app's answerer: answers through the outbox, Dismiss on the
     /// overlay. `AppEnvironment.appliedObserver` hands it the outbox's applied echoes.
-    static func sending(through outbox: ActionOutbox, store: ReplicaStore, drafts: AskDraftStore) -> AskAnswerer {
+    static func sending(
+        through outbox: ActionOutbox, store: ReplicaStore, drafts: AskDraftStore, overlays: OverlayBook? = nil
+    ) -> AskAnswerer {
         AskAnswerer(
             drafts: drafts,
             enqueue: { entity, params in
@@ -81,7 +92,8 @@ final class AskAnswerer {
                 try store.pendingActions(forEntity: entity)
                     .filter { $0.state == .failed && $0.action.kind == .askAnswer }
                     .map(\.id)
-            }
+            },
+            overlays: overlays
         )
     }
 
@@ -106,7 +118,12 @@ final class AskAnswerer {
         let params = try AskAnswerParams(workbenchID: ask.workbenchID, answer: answer).wireParams()
         let entity = Self.recordName(ask.id)
         let stale = try failedRows(entity)
-        guard try await sendGuard.run(entity, { try await enqueue(entity, params) }) else { return false }
+        let tappedAt = now()
+        var actionID: String?
+        guard try await sendGuard.run(entity, { actionID = try await enqueue(entity, params) }) else { return false }
+        if let overlays, let actionID {
+            overlays.add(overlays.overlay(actionID: actionID, entityID: ask.id, expected: .askAnswer, createdAt: tappedAt))
+        }
         for id in stale {
             try remove(id)
         }

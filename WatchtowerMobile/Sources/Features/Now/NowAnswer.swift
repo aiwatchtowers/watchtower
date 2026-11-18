@@ -33,11 +33,14 @@ enum NowAnswer: Equatable {
 
     /// The ask's newest `ask_answer` row decides (`AskFormModel.status`'s rule): a pending one is on its way, a
     /// failed one (a refusal, Not delivered, the Mac's error) offers Retry. With none, an answer being written
-    /// (`writing`) reads as sending; else the quick answers, if any.
-    static func of(_ ask: OwnerAsk, pending: [PendingAction], flushStopped: Bool, macOnline: Bool, writing: Bool) -> Self {
+    /// (`writing`) or one the Mac applied whose ask the replica still shows open (`overlaid`, live link R5) reads
+    /// as sending; else the quick answers, if any.
+    static func of(
+        _ ask: OwnerAsk, pending: [PendingAction], flushStopped: Bool, macOnline: Bool, writing: Bool, overlaid: Bool = false
+    ) -> Self {
         let entity = AskAnswerer.recordName(ask.id)
         guard let row = pending.last(where: { $0.action.kind == .askAnswer && $0.entityRecordName == entity }) else {
-            if writing { return .sending(sendingText) }
+            if writing || overlaid { return .sending(sendingText) }
             return chipsOrForm(ask.quick?.options.map { InlineAskOption(id: $0.label, label: $0.label, isRecommended: $0.recommended) })
         }
         switch row.state {

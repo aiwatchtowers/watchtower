@@ -65,7 +65,7 @@ struct NowModel {
         let asks: [NowWaitingRow] = openAsks.map { ask in
             let answer = NowAnswer.of(
                 ask, pending: snapshot.pending, flushStopped: backlog.lastFlushStopped, macOnline: online,
-                writing: answering(ask.id))
+                writing: answering(ask.id), overlaid: snapshot.answerOverlaid(ask.id))
             return NowWaitingRow(ask, snapshot: snapshot, now: now, answer: answer)
         }
         let requests: [NowWaitingRow] = snapshot.pendingPermissions.map { NowWaitingRow($0, snapshot: snapshot, now: now) }

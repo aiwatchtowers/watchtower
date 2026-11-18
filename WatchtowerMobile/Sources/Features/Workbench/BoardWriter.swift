@@ -5,8 +5,9 @@ import WatchtowerSync
 
 /// Sends the phone's board writes (spec §5.2, §6.3) through the outbox:
 /// status, priority, comments, replies and new targets, and resolves a
-/// conflict; and runs of the workbench's automations (ask #692). `from_status`/`from_priority` are always the replica's value
-/// the phone shows, never an optimistic one. Owned by `AppEnvironment`.
+/// conflict; and runs of the workbench's automations (ask #692). `from_status`/`from_priority` are the value the
+/// phone shows: the replica's, or a live overlay's once the Mac applied it (a pending write locks its field).
+/// Each board write adds its optimistic overlay to the hub's `OverlayBook` (live link R5). Owned by `HubSession`.
 ///
 /// A comment or reply the Mac applied stays in its thread
 /// (`postedComments`) until the Mac's comment record reaches the replica:
@@ -18,7 +19,8 @@ import WatchtowerSync
 @MainActor
 @Observable
 final class BoardWriter {
-    typealias Enqueue = (ActionKind, String?, [String: JSONValue]) async throws -> Void
+    /// Returns the queued action's id.
+    typealias Enqueue = (ActionKind, String?, [String: JSONValue]) async throws -> String
 
     /// Keys (`BoardWriter.key`) of the sends still waiting for the outbox.
     var inFlight: Set<String> { sendGuard.inFlight }
@@ -30,19 +32,30 @@ final class BoardWriter {
     @ObservationIgnored private let remove: (String) throws -> Void
     /// The failed overlay rows of one kind on one entity (ids).
     @ObservationIgnored private let failedRows: (ActionKind, String) throws -> [String]
+    /// The hub's optimistic overlays; nil: none (tests of other parts).
+    @ObservationIgnored private let overlays: OverlayBook?
+    /// The tap's time, an overlay's `createdAt`.
+    @ObservationIgnored private let now: () -> Date
 
     init(
         enqueue: @escaping Enqueue,
         remove: @escaping (String) throws -> Void,
-        failedRows: @escaping (ActionKind, String) throws -> [String] = { _, _ in [] }
+        failedRows: @escaping (ActionKind, String) throws -> [String] = { _, _ in [] },
+        overlays: OverlayBook? = nil,
+        now: @escaping () -> Date = { Date() }
     ) {
         self.enqueue = enqueue
         self.remove = remove
         self.failedRows = failedRows
+        self.overlays = overlays
+        self.now = now
     }
 
-    /// The app's writer: actions through the outbox, Dismiss on the overlay.
-    static func sending(through outbox: ActionOutbox, store: ReplicaStore) -> BoardWriter {
+    /// The app's writer: actions through the outbox, Dismiss on the overlay row, each write's optimistic overlay
+    /// in `overlays`.
+    static func sending(
+        through outbox: ActionOutbox, store: ReplicaStore, overlays: OverlayBook? = nil, now: @escaping () -> Date = { Date() }
+    ) -> BoardWriter {
         BoardWriter(
             enqueue: { kind, entity, params in
                 try await outbox.enqueue(kind: kind, entityRecordName: entity, params: params)
@@ -52,7 +65,9 @@ final class BoardWriter {
                 try store.pendingActions(forEntity: entity)
                     .filter { $0.state == .failed && $0.action.kind == kind }
                     .map(\.id)
-            }
+            },
+            overlays: overlays,
+            now: now
         )
     }
 
@@ -86,14 +101,18 @@ final class BoardWriter {
     func setStatus(_ status: WorkbenchTargetStatus, on target: WorkbenchTarget) async throws {
         guard status != target.status else { return }
         let params = BoardTargetStatusParams(workbenchID: target.workbenchID, status: status, fromStatus: target.status)
-        try await sendField(BoardTargetStatusParams.actionKind, Self.recordName(target), try params.wireParams())
+        try await sendField(
+            BoardTargetStatusParams.actionKind, Self.recordName(target), try params.wireParams(),
+            expected: .status(status), on: target.id)
     }
 
     /// Asks the Mac to set the priority; the shown value sends nothing.
     func setPriority(_ priority: WorkbenchTargetPriority, on target: WorkbenchTarget) async throws {
         guard priority != target.priority else { return }
         let params = BoardTargetPriorityParams(workbenchID: target.workbenchID, priority: priority, fromPriority: target.priority)
-        try await sendField(BoardTargetPriorityParams.actionKind, Self.recordName(target), try params.wireParams())
+        try await sendField(
+            BoardTargetPriorityParams.actionKind, Self.recordName(target), try params.wireParams(),
+            expected: .priority(priority), on: target.id)
     }
 
     /// Adds a comment to the target; whitespace only, or a comment already
@@ -102,7 +121,9 @@ final class BoardWriter {
     func addComment(_ body: String, on target: WorkbenchTarget) async throws -> Bool {
         guard let body = CommentDraft.trimmed(body) else { return false }
         let params = BoardCommentAddParams(workbenchID: target.workbenchID, body: body)
-        return try await send(BoardCommentAddParams.actionKind, Self.recordName(target), try params.wireParams())
+        return try await send(
+            BoardCommentAddParams.actionKind, Self.recordName(target), try params.wireParams(),
+            expected: .comment(body: body, isReply: false), on: target.id)
     }
 
     /// Replies under a thread's root (a resolved root too: the Mac reopens
@@ -115,15 +136,18 @@ final class BoardWriter {
         return try await send(
             BoardCommentReplyParams.actionKind,
             SliceKind.workbenchComment.recordName(id: String(rootID)),
-            try params.wireParams()
+            try params.wireParams(),
+            expected: .comment(body: body, isReply: true), on: rootID
         )
     }
 
     /// Asks the Mac to add the target; an empty title sends nothing (false).
     @discardableResult
     func create(_ draft: NewBoardTargetDraft) async throws -> Bool {
-        guard let params = try draft.params() else { return false }
-        return try await send(BoardTargetCreateParams.actionKind, nil, params)
+        guard let params = try draft.params(), let title = CommentDraft.trimmed(draft.title) else { return false }
+        let expected = PendingOverlay.Expected.create(
+            workbenchID: draft.workbenchID, parentID: draft.parentID, title: title, priority: draft.priority)
+        return try await send(BoardTargetCreateParams.actionKind, nil, params, expected: expected, on: nil)
     }
 
     /// Asks the Mac to run the automation now (ask #692). `confirmed`: the
@@ -175,7 +199,8 @@ final class BoardWriter {
         default:
             return
         }
-        try await sendField(action.kind, entity, params)
+        try await sendField(
+            action.kind, entity, params, expected: Self.expected(action.kind, params), on: action.entityID.flatMap(Int64.init))
     }
 
     /// Dismiss on a failed row, and No on a conflict.
@@ -186,18 +211,46 @@ final class BoardWriter {
     /// A status or priority write: once it is queued, the field's older
     /// failed and conflict rows go, so a stale "apply anyway" can never
     /// send an older value over the newer one.
-    private func sendField(_ kind: ActionKind, _ entity: String, _ params: [String: JSONValue]) async throws {
+    private func sendField(
+        _ kind: ActionKind,
+        _ entity: String,
+        _ params: [String: JSONValue],
+        expected: PendingOverlay.Expected?,
+        on entityID: Int64?
+    ) async throws {
         let stale = try failedRows(kind, entity)
-        guard try await send(kind, entity, params) else { return }
+        guard try await send(kind, entity, params, expected: expected, on: entityID) else { return }
         for id in stale {
             try remove(id)
         }
     }
 
     /// Enqueues unless the same key is already in flight; returns whether
-    /// it sent.
-    private func send(_ kind: ActionKind, _ entity: String?, _ params: [String: JSONValue]) async throws -> Bool {
-        try await sendGuard.run(Self.key(kind, entity)) { try await enqueue(kind, entity, params) }
+    /// it sent. A sent board write's overlay (`expected` on `entityID`, nil
+    /// for a create) goes into the book, stamped with the tap.
+    private func send(
+        _ kind: ActionKind,
+        _ entity: String?,
+        _ params: [String: JSONValue],
+        expected: PendingOverlay.Expected? = nil,
+        on entityID: Int64? = nil
+    ) async throws -> Bool {
+        let tappedAt = now()
+        var actionID: String?
+        let sent = try await sendGuard.run(Self.key(kind, entity)) { actionID = try await enqueue(kind, entity, params) }
+        if let overlays, let expected, let actionID {
+            overlays.add(overlays.overlay(actionID: actionID, entityID: entityID, expected: expected, createdAt: tappedAt))
+        }
+        return sent
+    }
+
+    /// An "apply anyway" resend's expected effect.
+    private static func expected(_ kind: ActionKind, _ params: [String: JSONValue]) -> PendingOverlay.Expected? {
+        switch kind {
+        case .boardTargetStatus: (try? BoardTargetStatusParams(wireParams: params)).map { .status($0.status) }
+        case .boardTargetPriority: (try? BoardTargetPriorityParams(wireParams: params)).map { .priority($0.priority) }
+        default: nil
+        }
     }
 
     private static func recordName(_ target: WorkbenchTarget) -> String {

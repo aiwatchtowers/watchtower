@@ -108,3 +108,20 @@ public struct WorkbenchTarget: SliceMirror, Identifiable {
         case lastStatusAt, lastStatusActor, workOnPrompt, workOnPromptClipped, createdAt, updatedAt
     }
 }
+
+extension WorkbenchTarget {
+    /// This target as the phone shows it while its own write is pending (live link R5): the requested status (its
+    /// lane follows the status, so the Mac's column goes) or priority; everything else as the replica has it.
+    public func overlaid(status: WorkbenchTargetStatus? = nil, priority: WorkbenchTargetPriority? = nil) -> Self {
+        Self(
+            id: id, workbenchID: workbenchID, parentID: parentID, text: text, textClipped: textClipped, intent: intent,
+            intentClipped: intentClipped, status: status ?? self.status, priority: priority ?? self.priority,
+            progress: progress, branch: branch, branchClipped: branchClipped, pr: pr, prClipped: prClipped,
+            archived: archived, column: status == nil ? column : nil, childrenCount: childrenCount,
+            openComments: openComments, unreadForOwner: unreadForOwner, openAsks: openAsks, sessionIDs: sessionIDs,
+            sessionIDsMore: sessionIDsMore, lastStatusAt: lastStatusAt, lastStatusActor: lastStatusActor,
+            workOnPrompt: workOnPrompt, workOnPromptClipped: workOnPromptClipped, createdAt: createdAt,
+            updatedAt: updatedAt
+        )
+    }
+}
