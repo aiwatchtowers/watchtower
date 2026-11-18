@@ -22,6 +22,7 @@ A company that deploys Watchtower through its MDM forces a small set of settings
 | `AllowedAIProviders` (`claude`, `codex`, `ollama`) | `providers.Allowed` — automation `session()` (`PolicyError`), a warm Claude session ends when a mounted Quick Connection or its claude.ai mode becomes forbidden, `cliGenerator`/`newAIClient` construct a `refusedProvider`, long-lived holders (`checkedGenerator`, `checkedAIClient`, the instruction miner) check per call, `ai session` at start and per turn, `config set`, `workbench launch-args`, `agent()` runners; never a fallback | picker shows allowed providers (a forbidden stored one marked, with the policy caption; locked only when one provider is allowed and stored), Test Connection refuses without running the CLI, agent menus drop the agent, new/resumed/fresh sessions refused |
 | `AllowClaudeAITools` | `ClaudeAIAvailability` off reason first | Settings → Profile → claude.ai tools locked off |
 | `PurgeRevokedData` | `purge.Enabled` origin `policy` (PURGE-01) | Privacy switch shows and locks the forced value |
+| `AllowBackgroundAI` (#1886) | `Keyset.AllowBackgroundAI`, wrong type `false`; the key is read and shown here, the enforcement points arrive with the background-AI consent plan (BGAI-01) | Organization policy row **Background AI**; `true` is the first value that grants (stands in for an unanswered owner) |
 
 Reserved, read and shown only (`reserved_not_enforced`): `RequireDatabaseEncryption` (#603), `RetentionDays` (#611), `BulkReadLimits` (#606).
 

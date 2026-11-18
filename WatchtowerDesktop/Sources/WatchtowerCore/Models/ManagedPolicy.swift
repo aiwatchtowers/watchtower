@@ -17,6 +17,7 @@ package struct ManagedPolicy: Equatable, Sendable {
         case allowedAIProviders = "AllowedAIProviders"
         case allowClaudeAITools = "AllowClaudeAITools"
         case purgeRevokedData = "PurgeRevokedData"
+        case allowBackgroundAI = "AllowBackgroundAI"
         case requireDatabaseEncryption = "RequireDatabaseEncryption"
         case retentionDays = "RetentionDays"
         case bulkReadLimits = "BulkReadLimits"
@@ -45,6 +46,7 @@ package struct ManagedPolicy: Equatable, Sendable {
     package var allowedAIProviders: [String]?
     package var allowClaudeAITools: Bool? // swiftlint:disable:this discouraged_optional_boolean
     package var purgeRevokedData: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    package var allowBackgroundAI: Bool? // swiftlint:disable:this discouraged_optional_boolean
     package var reservedNotEnforced: [String] = []
     package var problems: [Problem] = []
 
@@ -79,18 +81,10 @@ package struct ManagedPolicy: Equatable, Sendable {
         if let v = raw[Key.allowedQuickConnections.rawValue] {
             p.allowedQuickConnections = p.list(.allowedQuickConnections, v) { isConnectionEntry($0) ? nil : "invalid_entry" }
         }
-        if let v = raw[Key.allowAutomationShell.rawValue] {
-            p.allowAutomationShell = p.boolean(.allowAutomationShell, v, restrictive: false)
-        }
         if let v = raw[Key.allowedAIProviders.rawValue] {
             p.allowedAIProviders = p.list(.allowedAIProviders, v) { byteIn($0, knownProviders) ? nil : "unknown_value" }
         }
-        if let v = raw[Key.allowClaudeAITools.rawValue] {
-            p.allowClaudeAITools = p.boolean(.allowClaudeAITools, v, restrictive: false)
-        }
-        if let v = raw[Key.purgeRevokedData.rawValue] {
-            p.purgeRevokedData = p.boolean(.purgeRevokedData, v, restrictive: true)
-        }
+        p.normalizeBooleans(raw)
         for key in Key.reserved {
             guard let v = raw[key.rawValue] else { continue }
             p.reservedNotEnforced.append(key.rawValue)
@@ -130,6 +124,22 @@ package struct ManagedPolicy: Equatable, Sendable {
             out.append(s)
         }
         return out
+    }
+
+    /// The boolean keys, each with its most restrictive value on a wrong type.
+    private mutating func normalizeBooleans(_ raw: [String: Any]) {
+        if let v = raw[Key.allowAutomationShell.rawValue] {
+            allowAutomationShell = boolean(.allowAutomationShell, v, restrictive: false)
+        }
+        if let v = raw[Key.allowClaudeAITools.rawValue] {
+            allowClaudeAITools = boolean(.allowClaudeAITools, v, restrictive: false)
+        }
+        if let v = raw[Key.purgeRevokedData.rawValue] {
+            purgeRevokedData = boolean(.purgeRevokedData, v, restrictive: true)
+        }
+        if let v = raw[Key.allowBackgroundAI.rawValue] {
+            allowBackgroundAI = boolean(.allowBackgroundAI, v, restrictive: false)
+        }
     }
 
     /// Only a real boolean counts: an NSNumber 1 (`<integer>1</integer>`,
@@ -191,6 +201,7 @@ package struct ManagedPolicy: Equatable, Sendable {
         case .allowedAIProviders: allowedAIProviders != nil
         case .allowClaudeAITools: allowClaudeAITools != nil
         case .purgeRevokedData: purgeRevokedData != nil
+        case .allowBackgroundAI: allowBackgroundAI != nil
         case .requireDatabaseEncryption, .retentionDays, .bulkReadLimits: reservedNotEnforced.contains(key.rawValue)
         }
     }

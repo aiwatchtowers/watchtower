@@ -71,6 +71,9 @@
                                 <!-- Delete a revoked or long-unreached account's data after the 72-hour notice. -->
                                 <key>PurgeRevokedData</key>
                                 <true/>
+                                <!-- Background AI (digests, tracks, automations without you at the screen): true = your organization consents, false = never runs. -->
+                                <key>AllowBackgroundAI</key>
+                                <true/>
                             </dict>
                         </dict>
                     </array>
