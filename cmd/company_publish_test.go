@@ -292,6 +292,27 @@ func TestPublish_DeletesDraftOnlyOnOK(t *testing.T) {
 				panic(err)
 			}
 		}, companyPublishInput{Company: "Acme", ConfigToken: publishTestToken}, publishRefused, publishReasonSlackApp},
+		{"Google ticked, never checked", func(h *publishHarness) {
+			d, _, _, err := h.store.LoadDraft(companyDraftT0)
+			if err != nil {
+				panic(err)
+			}
+			d.Services = append(d.Services, "google")
+			d.Google = &companybundle.Google{ClientID: "1234-abcd.apps.googleusercontent.com", ClientSecret: "unchecked"}
+			if err := h.store.SaveDraft(d); err != nil {
+				panic(err)
+			}
+		}, companyPublishInput{Company: "Acme", ConfigToken: publishTestToken}, publishRefused, publishReasonIncomplete},
+		{"Linear ticked without ids", func(h *publishHarness) {
+			d, _, _, err := h.store.LoadDraft(companyDraftT0)
+			if err != nil {
+				panic(err)
+			}
+			d.Linear = nil
+			if err := h.store.SaveDraft(d); err != nil {
+				panic(err)
+			}
+		}, companyPublishInput{Company: "Acme", ConfigToken: publishTestToken}, publishRefused, publishReasonIncomplete},
 		{"renamed after a check stored it", func(h *publishHarness) {
 			if err := h.store.Save("acme", companybundle.Bundle{V: 1, Company: "Acme"}); err != nil {
 				panic(err)
@@ -415,7 +436,7 @@ func TestPublish_TokenNeverInArgvOrDraft(t *testing.T) {
 		if err != nil || de.IsDir() {
 			return err
 		}
-		raw, err := os.ReadFile(path)
+		raw, err := os.ReadFile(path) //nolint:gosec // the test's own temp HOME
 		if err != nil {
 			return err
 		}

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -66,6 +67,9 @@ const (
 	publishReasonBundle          = "invalid_bundle"
 	publishReasonAboutTooLong    = "about_too_long"
 	publishReasonWrongWorkspace  = "wrong_workspace"
+	publishReasonIncomplete      = "vendor_incomplete" // a ticked step has no values (Google unchecked, no ids)
+	publishReasonStoredChanged   = "stored_changed"    // another writer changed company/<slug>.json meanwhile
+	publishReasonStorage         = "storage"           // a local write failed (detail on stderr only)
 )
 
 // Publish steps.
@@ -88,6 +92,8 @@ type companyPublishResult struct {
 	// Reason is our reason for a refused publish, or Slack's error code.
 	Reason  string `json:"reason,omitempty"`
 	Message string `json:"message,omitempty"`
+	// DraftError: published, but the draft could not be deleted.
+	DraftError string `json:"draft_error,omitempty"`
 }
 
 // companyPublishDeps are the publish run's outside world.
@@ -168,7 +174,7 @@ func readPublishInput(r io.Reader) (companyPublishInput, error) {
 		return companyPublishInput{}, errors.New("publish request on stdin is too long")
 	}
 	var in companyPublishInput
-	dec := json.NewDecoder(strings.NewReader(string(raw)))
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&in); err != nil {
 		// The decoder's message never quotes a value, so the token stays out.
@@ -196,9 +202,10 @@ func refusedPublish(reason, msg string) companyPublishResult {
 func publishCompany(ctx context.Context, deps companyPublishDeps, in companyPublishInput) (companyPublishResult, error) {
 	d, state, _, err := deps.store.LoadDraft(deps.now)
 	if err != nil {
-		return companyPublishResult{}, err
+		return companyPublishResult{}, fmt.Errorf("reading the company setup draft: %w", err)
 	}
 	switch state {
+	case company.DraftOK:
 	case company.DraftNone:
 		return refusedPublish(publishReasonNoDraft, "there is no company setup to publish"), nil
 	case company.DraftUnreadable:
@@ -220,13 +227,13 @@ func publishCompany(ctx context.Context, deps companyPublishDeps, in companyPubl
 	slug := d.Slug
 	if slug == "" {
 		if slug, err = deps.store.SlugFor(name, deps.forced); err != nil {
-			return companyPublishResult{}, err
+			return companyPublishResult{}, fmt.Errorf("choosing the company's file name: %w", err)
 		}
 	}
 	// The stored file (never the forced overlay): what the checks wrote.
 	stored, haveStored, err := deps.store.Get(slug, "")
 	if err != nil {
-		return companyPublishResult{}, err
+		return companyPublishResult{}, fmt.Errorf("reading the stored company %s: %w", slug, err)
 	}
 	if haveStored && stored.Bundle.Company != name {
 		return refusedPublish(publishReasonRenamed, fmt.Sprintf("this setup is stored as %q; publish it under that name", stored.Bundle.Company)), nil
@@ -235,7 +242,7 @@ func publishCompany(ctx context.Context, deps companyPublishDeps, in companyPubl
 	var setup db.SlackAppSetup
 	withSlack := active("slack")
 	if withSlack {
-		if setup, err = slackSetupForApp(deps.database, d.Slack.AppID); err != nil {
+		if setup, _, err = slackapp.SetupByAppID(deps.database, d.Slack.AppID); err != nil {
 			return companyPublishResult{}, err
 		}
 		if setup.ClientID == "" {
@@ -247,6 +254,13 @@ func publishCompany(ctx context.Context, deps companyPublishDeps, in companyPubl
 	}
 
 	b := packCompanyBundle(name, d, stored.Bundle, setup, active)
+	// A ticked vendor without its block (Google never checked, Linear or
+	// Microsoft without ids) would be dropped from the link unseen.
+	for _, v := range d.Services {
+		if active(v) && !slices.Contains(b.Vendors(), v) {
+			return refusedPublish(publishReasonIncomplete, fmt.Sprintf("Publish waits for the %s step: finish it, or skip it.", v)), nil
+		}
+	}
 	deps.emitStep(publishStepPack, slackapp.StateRunning)
 	wire, err := companybundle.Encode(b)
 	if err != nil {
@@ -261,9 +275,19 @@ func publishCompany(ctx context.Context, deps companyPublishDeps, in companyPubl
 			return refusedPublish(publishReasonAboutTooLong, err.Error()), nil
 		}
 	}
-	if err := deps.store.Save(slug, b); err != nil {
+	// Packed from this read of the file: a check or confirm that lands in
+	// between is never overwritten with the older blocks (try again).
+	var prev *companybundle.Bundle
+	if haveStored {
+		prev = &stored.Bundle
+	}
+	if err := deps.store.SaveIfUnchanged(slug, prev, b); err != nil {
 		deps.emitStep(publishStepPack, slackapp.StateFailed)
-		return companyPublishResult{}, fmt.Errorf("storing the company bundle: %w", err)
+		if errors.Is(err, company.ErrStoredChanged) {
+			return refusedPublish(publishReasonStoredChanged, "the company setup changed while it was published: publish again"), nil
+		}
+		fmt.Fprintf(deps.warn, "company publish: storing the company bundle: %v\n", err)
+		return refusedPublish(publishReasonStorage, "the company setup could not be stored on this Mac"), nil
 	}
 	deps.emitStep(publishStepPack, slackapp.StateDone)
 
@@ -273,8 +297,8 @@ func publishCompany(ctx context.Context, deps companyPublishDeps, in companyPubl
 		r := &slackapp.Runner{DB: deps.database, API: deps.api, LockPath: deps.lockPath}
 		linkRes, err := r.LinkAbout(ctx, in.ConfigToken, setup.TeamID, about)
 		if err != nil {
-			deps.emitStep(publishStepWriteLink, slackapp.StateFailed)
-			return companyPublishResult{}, err
+			// The setup lock or the database, before anything reached Slack.
+			linkRes = slackapp.Result{Kind: slackapp.KindStorage, Err: err}
 		}
 		if fail := publishSlackFailure(linkRes); fail != nil {
 			deps.emitStep(publishStepWriteLink, slackapp.StateFailed)
@@ -288,35 +312,16 @@ func publishCompany(ctx context.Context, deps companyPublishDeps, in companyPubl
 		res.Result = publishOK
 	}
 	if err := deps.store.DiscardDraft(); err != nil {
-		// Published all the same: a leftover draft only shows the setup as
-		// in progress until the next Discard or Publish.
+		// Published all the same; the wizard says the draft is still there
+		// (it shows as in progress until the next Discard or Publish).
+		res.DraftError = err.Error()
 		fmt.Fprintf(deps.warn, "company publish: deleting the draft: %v\n", err)
 	}
 	return res, nil
 }
 
 func (deps companyPublishDeps) emitStep(name, state string) {
-	if deps.emit != nil {
-		deps.emit(slackapp.Step{Name: name, State: state})
-	}
-}
-
-// slackSetupForApp is the setup record of appID (the draft's Slack step);
-// an empty record when appID is "" or has none.
-func slackSetupForApp(database *db.DB, appID string) (db.SlackAppSetup, error) {
-	if appID == "" {
-		return db.SlackAppSetup{}, nil
-	}
-	setups, err := database.ListSlackAppSetups()
-	if err != nil {
-		return db.SlackAppSetup{}, err
-	}
-	for _, s := range setups {
-		if s.AppID == appID {
-			return s, nil
-		}
-	}
-	return db.SlackAppSetup{}, nil
+	deps.emit(slackapp.Step{Name: name, State: state})
 }
 
 // packCompanyBundle is the complete bundle: Google and Atlassian as their

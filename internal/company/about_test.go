@@ -36,3 +36,24 @@ func TestAboutText_DropsTheCodeBeforeTheCap(t *testing.T) {
 	assert.True(t, strings.HasPrefix(text, "Watchtower for Acme — connect: "+link), "the leading way in is never cut")
 	assert.NotContains(t, text, "Connect code:")
 }
+
+func TestAboutText_DropsTheDownloadLineBeforeTheCode(t *testing.T) {
+	keptCodeWithoutTail := false
+	for n := 1000; n <= 3000; n += 10 {
+		wire := strings.Repeat("A", n)
+		link := ConnectLink(wire)
+		text := AboutText("Acme", link, wire)
+		if strings.HasPrefix(text, "Watchtower for Acme — connect: "+link+"\n") && len(strings.Split(text, "\n")) == 2 {
+			assert.Contains(t, text, "Connect code: "+wire)
+			keptCodeWithoutTail = true
+		}
+		if strings.Contains(text, "No Watchtower yet?") {
+			assert.Contains(t, text, "Connect code:", "the download line never outlives the code")
+		}
+		if n <= 2900 {
+			_, err := slackmanifest.Description(text)
+			assert.NoError(t, err, n)
+		}
+	}
+	assert.True(t, keptCodeWithoutTail, "some size keeps the code and drops only the download line")
+}

@@ -23,10 +23,10 @@ const aboutLeadsWithCode = false
 // AboutText is the company's text on the Slack app's About page (`company
 // publish`): "Watchtower for <company> — connect: <link>", the connect code
 // for when the link does not open, and where to get Watchtower. When the
-// whole text and the scope and AI disclosures do not fit Slack's
-// long_description cap, the second way in (the code, or the link when the
-// code leads) is left out; the leading one is never cut. The caller still
-// checks the result against the cap (slackmanifest.Description).
+// text and the scope and AI disclosures do not fit Slack's long_description
+// cap, the download line goes first, then the second way in (the code, or
+// the link when the code leads); the leading one is never cut. The caller
+// still checks the result against the cap (slackmanifest.Description).
 func AboutText(company, link, code string) string {
 	first := "Watchtower for " + company + " — connect: " + link
 	second := "Connect code: " + code + " — paste it in Watchtower → Connections → Connect with a company code if the link does not open."
@@ -35,9 +35,10 @@ func AboutText(company, link, code string) string {
 		second = "Or open this link with Watchtower running: " + link
 	}
 	tail := "Open Watchtower first. No Watchtower yet? Download it from " + slackapp.ReleasePage + "."
-	full := first + "\n" + second + "\n" + tail
-	if _, err := slackmanifest.Description(full); err == nil {
-		return full
+	for _, text := range []string{first + "\n" + second + "\n" + tail, first + "\n" + second} {
+		if _, err := slackmanifest.Description(text); err == nil {
+			return text
+		}
 	}
-	return first + "\n" + tail
+	return first
 }

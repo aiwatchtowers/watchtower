@@ -550,24 +550,39 @@ func (r *Runner) Adopt(ctx context.Context, cfgToken, team, appIDFlag, confirmAp
 	})
 }
 
-// appTeam is the workspace this Mac knows appID in (a setup record first,
-// else an account row that is not removed); "" when appID is "" or unknown.
-func (r *Runner) appTeam(appID string) (string, error) {
+// SetupByAppID is the setup record of appID; ok=false when appID is "" or
+// no record has it.
+func SetupByAppID(d *db.DB, appID string) (db.SlackAppSetup, bool, error) {
 	if appID == "" {
-		return "", nil
+		return db.SlackAppSetup{}, false, nil
 	}
-	setups, err := r.DB.ListSlackAppSetups()
+	setups, err := d.ListSlackAppSetups()
 	if err != nil {
-		return "", err
+		return db.SlackAppSetup{}, false, fmt.Errorf("listing slack app setups: %w", err)
 	}
 	for _, s := range setups {
 		if s.AppID == appID {
-			return s.TeamID, nil
+			return s, true, nil
 		}
+	}
+	return db.SlackAppSetup{}, false, nil
+}
+
+// appTeam is the workspace this Mac knows appID in (a setup record first,
+// else an account row that is not removed); "" when appID is "" or unknown.
+// An App ID this Mac has never seen is not checked here: apps.manifest.*
+// answer with Slack's own error for another workspace's app, and the
+// exported manifest names no workspace.
+func (r *Runner) appTeam(appID string) (string, error) {
+	if s, ok, err := SetupByAppID(r.DB, appID); err != nil || ok {
+		return s.TeamID, err
+	}
+	if appID == "" {
+		return "", nil
 	}
 	accounts, err := r.DB.ListSlackAccounts()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("listing slack accounts: %w", err)
 	}
 	for _, a := range accounts {
 		if a.AppID == appID && a.Status != "removed" {
@@ -577,18 +592,15 @@ func (r *Runner) appTeam(appID string) (string, error) {
 	return "", nil
 }
 
-// settingsURLPattern is an app's page on api.slack.com (any sub-page).
-var settingsURLPattern = regexp.MustCompile(`^https://api\.slack\.com/apps/(A[A-Z0-9]+)(/.*)?$`)
+// settingsURLPattern is an app's page on api.slack.com (any sub-page, query
+// or fragment).
+var settingsURLPattern = regexp.MustCompile(`^https://api\.slack\.com/apps/(A[A-Z0-9]+)([/?#].*)?$`)
 
 // ParseSlackAppSettingsURL is the App ID in an app's settings URL
 // (https://api.slack.com/apps/A0123ABCD or any of its pages), surrounding
-// spaces ignored and a query or fragment dropped.
+// spaces ignored.
 func ParseSlackAppSettingsURL(s string) (appID string, ok bool) {
-	s = strings.TrimSpace(s)
-	if i := strings.IndexAny(s, "?#"); i >= 0 {
-		s = s[:i]
-	}
-	m := settingsURLPattern.FindStringSubmatch(s)
+	m := settingsURLPattern.FindStringSubmatch(strings.TrimSpace(s))
 	if m == nil {
 		return "", false
 	}
