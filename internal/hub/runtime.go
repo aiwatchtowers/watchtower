@@ -946,7 +946,11 @@ func (h *hubRuntime) passEvent(ctx context.Context, ev transport.Event) (own boo
 }
 
 // runPass runs a mailbox pass (PassEvent for ev when set), again while the
-// batch limit left records, up to 10 times, then once more on a kick. The
+// batch limit left records, up to 10 times, then once more on a kick. An
+// event pass the processor narrows to its mailbox goes on with that mailbox
+// only (the same event again reads on from the stored token) and kicks the
+// worker's pass for the others: the event lane never reads every mailbox.
+// The
 // CloudKit account read and share sweep run with work()'s passes only
 // (worker): link.Center.SweepShares acts on its due marks outside its lock,
 // so two at once could both close the link or sweep.
@@ -968,13 +972,16 @@ func (h *hubRuntime) runPass(ctx context.Context, ev *transport.Event, worker bo
 	if worker {
 		defer h.sweepShares(ctx)
 	}
+	narrow := ev != nil && h.processor().ReadsEvents()
 	for range 10 {
 		pctx, cancel := context.WithTimeout(ctx, opTimeout)
 		var rep actions.PassReport
 		var err error
 		if ev != nil {
 			rep, err = h.processor().PassEvent(pctx, *ev)
-			ev = nil // what the batch limit left: a full pass
+			if !narrow {
+				ev = nil // what the batch limit left: a full pass
+			}
 		} else {
 			rep, err = h.processor().Pass(pctx)
 		}
@@ -995,6 +1002,10 @@ func (h *hubRuntime) runPass(ctx context.Context, ev *transport.Event, worker bo
 		h.mu.Unlock()
 		if rep.Remaining == 0 {
 			return false
+		}
+		if narrow {
+			// The other mailboxes and queues are the worker's.
+			h.kick(h.passKick)
 		}
 	}
 	h.kick(h.passKick)

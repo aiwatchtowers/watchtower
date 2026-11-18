@@ -680,7 +680,10 @@ and a burst of 8–10 actions/s ran into `rate_limited`. Now:
   actions next in line first, as Pass does), then writes the queues; an event for any other zone, the shared
   `RelayZone` or a transport that is not an `EventPuller` runs `Pass`. The runtime's 30 s backstop still runs `Pass`
   over every mailbox, and an event pass does not move its timer. So a phone whose mailbox read failed is read again at
-  its own next event or the next backstop pass, not at another phone's event as before.
+  its own next event or the next backstop pass, not at another phone's event as before. An event pass the batch
+  limit stopped goes on with its own mailbox only (`runPass` runs the same event again, which reads on from the
+  stored token, up to 10 times) and kicks the worker's `Pass` for the other mailboxes and queues at once, so the
+  event lane never reads every mailbox and a slow unrelated phone does not delay later mailbox events.
 - **Mailbox events on their own lane (live link R4).** The runtime's `eventLane` goroutine reads the transports'
   events: a mailbox zone's write (no error, control, resync or CloudKit bridge flag) runs its `PassEvent` there at
   once, and any other plain zone write (the hub's own data-zone echoes, one per slice save) ends there; the lane
