@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -164,6 +165,9 @@ type CycleReport struct {
 	Unfinished     []Kind
 	Errors         map[Kind]error
 	Stop           error
+	// Joined is the kinds a PublishNow brought into the cycle after it
+	// began (not among the kinds it was asked for).
+	Joined []Kind
 }
 
 // Publisher is the slice publisher. PublishSoon is safe from any goroutine;
@@ -200,14 +204,18 @@ type Publisher struct {
 	kindRead      time.Time
 	kindTransport transport.Kind
 
-	mu          sync.Mutex      // guards the dirty set, the pause and lastPublish
-	paused      bool            // a hold: no cycle runs, the dirty set waits
-	holds       map[string]bool // the PauseFor reasons held
-	resumed     bool            // Resume: Run's next step is one full diff
-	dirty       map[Kind]bool   // PublishSoon's kinds, due after the debounce
-	firstDirty  time.Time       // monotonic, first PublishSoon of the dirty set
-	lastDirty   time.Time       // monotonic, latest PublishSoon
-	nowDirty    map[Kind]bool   // PublishNow's kinds, due at once
+	mu         sync.Mutex      // guards the dirty set, the pause and lastPublish
+	paused     bool            // a hold: no cycle runs, the dirty set waits
+	holds      map[string]bool // the PauseFor reasons held
+	resumed    bool            // Resume: Run's next step is one full diff
+	dirty      map[Kind]bool   // PublishSoon's kinds, due after the debounce
+	firstDirty time.Time       // monotonic, first PublishSoon of the dirty set
+	lastDirty  time.Time       // monotonic, latest PublishSoon
+	nowDirty   map[Kind]bool   // PublishNow's kinds, due at once
+	// runHeld is Run's held map (monotonic time each deferred or retried
+	// kind may go) while it runs a cycle: Cycle's mid-cycle take of a
+	// PublishNow honours it. Nil unless Run is in, or waiting for, a cycle.
+	runHeld     map[Kind]time.Time
 	lastPublish time.Time
 	// stuck is each kind whose last attempt did not go through whole, from
 	// its first such attempt (stuck.go, the heartbeat's stuck_since).
@@ -304,6 +312,13 @@ func (p *Publisher) PublishNow(kinds ...Kind) {
 	}
 	p.mu.Unlock()
 	p.poke()
+}
+
+// setHolds hands Cycle a copy of Run's held map (nil clears it).
+func (p *Publisher) setHolds(held map[Kind]time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.runHeld = maps.Clone(held)
 }
 
 // poke wakes Run.
@@ -418,6 +433,38 @@ func (p *Publisher) takeDue(now time.Time) []Kind {
 			out = append(out, k)
 		}
 		clear(p.dirty)
+	}
+	return out
+}
+
+// joinable says whether a cycle may take k mid-cycle: without a linked
+// phone only the unlinked kinds are published.
+func joinable(linked bool, k Kind) bool {
+	return linked || slices.Contains(UnlinkedKinds, k)
+}
+
+// takeNowDuring takes, between two kinds of a running cycle, the kinds
+// PublishNow marked since the cycle began that the cycle has not tried
+// (done) and Run holds no longer (backoff, spacing: those wait for their
+// time as always). take says whether the cycle may publish a kind at all
+// (the link state); kinds it refuses stay marked for Run.
+func (p *Publisher) takeNowDuring(done []Kind, take func(Kind) bool) []Kind {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.nowDirty) == 0 {
+		return nil
+	}
+	now := p.mono()
+	var out []Kind
+	for _, k := range publishOrder {
+		if !p.nowDirty[k] || slices.Contains(done, k) || !take(k) || len(p.sourcesOf(k)) == 0 {
+			continue
+		}
+		if at, ok := p.runHeld[k]; ok && now.Before(at) {
+			continue
+		}
+		delete(p.nowDirty, k)
+		out = append(out, k)
 	}
 	return out
 }
@@ -591,7 +638,9 @@ func (p *Publisher) Run(ctx context.Context) error {
 			}
 		}
 		if (full && kinds == nil) || len(kinds) > 0 {
+			p.setHolds(held)
 			rep, err := p.Cycle(ctx, kinds)
+			p.setHolds(nil)
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -607,6 +656,13 @@ func (p *Publisher) Run(ctx context.Context) error {
 			after := p.mono()
 			clockNow := p.clock()
 			retryOn = p.transportKind()
+			// A kind a PublishNow brought in mid-cycle is settled like the
+			// kinds asked for: its expired hold and retry are spent (before
+			// a spacing deferral installs its new hold).
+			for _, k := range rep.Joined {
+				delete(held, k)
+				delete(retrying, k)
+			}
 			for k, at := range rep.Deferred {
 				held[k] = after.Add(max(0, at.Sub(clockNow)))
 				delete(retrying, k)
@@ -615,6 +671,7 @@ func (p *Publisher) Run(ctx context.Context) error {
 			if tried == nil {
 				tried = p.sourceKinds()
 			}
+			tried = append(slices.Clone(tried), rep.Joined...)
 			for _, k := range tried {
 				if _, deferred := rep.Deferred[k]; !deferred && !slices.Contains(rep.Unfinished, k) {
 					delete(backoff, k)
@@ -723,7 +780,20 @@ func (p *Publisher) Cycle(ctx context.Context, kinds []Kind) (CycleReport, error
 		errs             []error
 		tried, published int
 	)
-	for i, k := range todo {
+	for i := 0; i < len(todo); i++ {
+		k := todo[i]
+		// A PublishNow that came in while the earlier kinds were saved goes
+		// next, ahead of the kinds still waiting (an applied action's
+		// answer is not held to the end of a full diff); a kind already
+		// tried this cycle waits for Run.
+		if i > 0 {
+			if extra := p.takeNowDuring(todo[:i], func(k Kind) bool { return joinable(linked, k) }); len(extra) > 0 {
+				rep.Joined = append(rep.Joined, extra...)
+				rest := slices.DeleteFunc(slices.Clone(todo[i:]), func(k Kind) bool { return slices.Contains(extra, k) })
+				todo = append(append(todo[:i:i], extra...), rest...)
+				k = todo[i]
+			}
+		}
 		srcs := p.sourcesOf(k)
 		now := p.clock()
 		if last, ok := p.lastWrite[k]; ok && now.Sub(last) < p.spacing {
