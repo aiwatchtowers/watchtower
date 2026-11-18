@@ -330,6 +330,8 @@ final class ScriptedRelayDialer: RelaySocketDialer, @unchecked Sendable {
         case socket(ScriptedRelaySocket)
         /// The socket, once the dial has waited this long on the clock (a cancelled wait fails the dial).
         case delayed(Duration, ScriptedRelaySocket)
+        /// The socket, once `releaseHeld()` is called: a dial that does not end when cancelled.
+        case held(ScriptedRelaySocket)
         case http(Int)
         case unreachable
     }
@@ -345,6 +347,21 @@ final class ScriptedRelayDialer: RelaySocketDialer, @unchecked Sendable {
     private struct State {
         var steps: [Step] = []
         var dials: [Dial] = []
+        var held: [CheckedContinuation<Void, Never>] = []
+    }
+
+    /// Dials held now (`.held`).
+    var heldCount: Int {
+        state.withLock { $0.held.count }
+    }
+
+    /// Lets every held dial return its socket.
+    func releaseHeld() {
+        let all = state.withLock { state in
+            defer { state.held = [] }
+            return state.held
+        }
+        for continuation in all { continuation.resume() }
     }
 
     private let clock: any RelayClock
@@ -379,12 +396,16 @@ final class ScriptedRelayDialer: RelaySocketDialer, @unchecked Sendable {
         var socket: ScriptedRelaySocket?
         if case .socket(let scripted) = step { socket = scripted }
         if case .delayed(_, let scripted) = step { socket = scripted }
+        if case .held(let scripted) = step { socket = scripted }
         state.withLock { $0.dials.append(Dial(url: url, headers: headers, at: now, socket: socket)) }
         switch step {
         case .socket(let scripted):
             return scripted
         case let .delayed(wait, scripted):
             try await clock.sleep(for: wait)
+            return scripted
+        case .held(let scripted):
+            await withCheckedContinuation { continuation in state.withLock { $0.held.append(continuation) } }
             return scripted
         case .http(let status):
             throw RelayDialError.http(status: status)

@@ -55,6 +55,8 @@ public final class HostedRelayConnection: Sendable {
     private struct Live {
         let socket: any RelaySocket
         let generation: Int
+        /// Fired when this generation is retired: ends what only waits to keep its writes in order.
+        let retired = Latch()
     }
 
     /// A request waiting for its answer, on the socket generation it was written to.
@@ -583,9 +585,10 @@ public final class HostedRelayConnection: Sendable {
         let dial = Task { await self.redial(replacing: old.generation, promise: promise) }
         let timer = Task {
             do { try await clock.sleep(for: Self.handshakeTimeout) } catch { return }
-            if promise.fulfil(nil) { Self.logger.error("relay socket: wake, no second socket in time, reconnecting") }
-            // Given up: the loop dials again, and a late upgrade of this redial would displace its socket.
+            // Given up: cancelled before the loop is released to dial again, since a late upgrade of this redial
+            // would displace the loop's socket.
             dial.cancel()
+            if promise.fulfil(nil) { Self.logger.error("relay socket: wake, no second socket in time, reconnecting") }
         }
         Task {
             await dial.value
@@ -730,17 +733,17 @@ public final class HostedRelayConnection: Sendable {
                 // Writes go out in the order sent: each waits for the one before it on its generation. The request
                 // is registered and linked into the chain in one step, so a retired generation never relinks it.
                 let done = Latch()
-                let queued: Result<Latch?, any Error> = state.withLock { state in
+                let queued: Result<(previous: Latch?, retired: Latch), any Error> = state.withLock { state in
                     if Task.isCancelled { return .failure(CancellationError()) }
-                    guard state.live?.generation == generation else { return .failure(SocketLoss.notSent) }
+                    guard let live = state.live, live.generation == generation else { return .failure(SocketLoss.notSent) }
                     state.pending[id] = Waiter(continuation: continuation, generation: generation)
                     let previous = state.lastWrite?.generation == generation ? state.lastWrite?.done : nil
                     state.lastWrite = (generation, done)
-                    return .success(previous)
+                    return .success((previous, live.retired))
                 }
-                let previous: Latch?
+                let previous: Latch?, retired: Latch
                 switch queued {
-                case .success(let latch): previous = latch
+                case .success(let chain): (previous, retired) = chain
                 case .failure(let refusal): return continuation.resume(throwing: refusal)
                 }
                 // Started before the write, so a write that never returns is covered too.
@@ -753,9 +756,9 @@ public final class HostedRelayConnection: Sendable {
                     await previous?.wait()
                     guard !Task.isCancelled else {
                         // Skipped, not written: the chain passes through, so the next write still waits for the
-                        // one before this (a task of its own: this one is cancelled).
+                        // one before this (a task of its own: this one is cancelled), or for the socket's end.
                         Task {
-                            await previous?.wait()
+                            if let previous { await Self.either(previous, retired) }
                             done.fire()
                         }
                         return
@@ -836,9 +839,17 @@ public final class HostedRelayConnection: Sendable {
 
     /// `generation` stops being live, and its waiters leave `pending` (lock held): the caller resumes them.
     private static func retire(_ generation: Int, in state: inout State) -> [Waiter] {
-        if state.live?.generation == generation { state.live = nil }
+        if let live = state.live, live.generation == generation {
+            live.retired.fire()
+            state.live = nil
+        }
         let ids = state.pending.filter { $0.value.generation == generation }.map(\.key)
         return ids.compactMap { state.pending.removeValue(forKey: $0) }
+    }
+
+    /// The requests waiting for an answer. Internal for tests.
+    var pendingRequests: Int {
+        state.withLock { $0.pending.count }
     }
 
     /// The live socket's generation, nil while disconnected. Internal for tests.
@@ -846,11 +857,22 @@ public final class HostedRelayConnection: Sendable {
         state.withLock { $0.live?.generation }
     }
 
+    /// Returns once either latch has fired.
+    private static func either(_ first: Latch, _ second: Latch) async {
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await first.wait() }
+            group.addTask { await second.wait() }
+            await group.next()
+            group.cancelAll()
+        }
+    }
+
     /// `body`, or nil when `limit` passes on the clock first. Whenever `body` did not finish
     /// (timeout, error, cancellation), `closing` is closed before the group waits for `body`:
     /// a socket read or ping is not cancellable, the close is what makes it return. A value
-    /// `body` still produces after the timeout won goes to `discard` (a dialed socket is closed).
-    private func deadline<T: Sendable>(
+    /// `body` still produces after the timeout won, or after the caller was cancelled, goes to
+    /// `discard` (a dialed socket is closed). Internal for tests.
+    func deadline<T: Sendable>(
         _ limit: Duration,
         closing socket: (any RelaySocket)? = nil,
         discard: (@Sendable (T) async -> Void)? = nil,
@@ -867,14 +889,22 @@ public final class HostedRelayConnection: Sendable {
                 if case .done(let value)? = try await group.next() { return value }
             } catch {
                 await socket?.close(code: Self.closeNormal)
+                await Self.drain(&group, into: discard)
                 throw error
             }
             await socket?.close(code: Self.closeNormal)
-            group.cancelAll()
-            while let late = try? await group.next() {
-                if case .done(let value) = late { await discard?(value) }
-            }
+            await Self.drain(&group, into: discard)
             return nil
+        }
+    }
+
+    /// Cancels what is left of a `deadline` race and hands a value `body` still produces to `discard`.
+    private static func drain<T: Sendable>(
+        _ group: inout ThrowingTaskGroup<Race<T>, any Error>, into discard: (@Sendable (T) async -> Void)?
+    ) async {
+        group.cancelAll()
+        while let late = await group.nextResult() {
+            if case .success(.done(let value)) = late { await discard?(value) }
         }
     }
 
