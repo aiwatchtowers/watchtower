@@ -344,6 +344,8 @@ Contracts in `docs/inventory/` that name a moved Swift type are re-pointed to th
 
 ### 8. Stage 3: the Desktop's chat writes in Go
 
+> **Superseded for the main chat (2026-11-18, ask #1469).** The approved unified chat spec (`docs/superpowers/specs/2026-11-16-unified-chat-design.md`, #1822, ask #1378) moved the main chat onto one Go engine in the daemon (`internal/chatengine`, `chat.sock`), which writes every main-chat row for the Mac and the phone. What this section says of the main chat — the warm `ai session --persist` process saving its own turn, the desktop lease, `chat.recover`/`chat.release_launches`, the main chat's `chat.*` commands, `BenchmarkPersistStart` and the ≤ 20 ms start gate — was built on the #1170 branch and retired when main was merged in. What stays from it: embedded chats' turns through `ai query --persist`, their conversation-level writes, queued drafts and `meetings.delete` as `chat.*` tower commands (each refuses a main chat), and "Swift writes no `chat_*` table". See `docs/features/tower-interface.md` ("Chat commands").
+
 **Today.** The Desktop spawns warm `ai session --conversation N …` processes (`ChatSessionPool`, 3) and reads their events from stdout (`ChatSessionClient`). Swift writes every `chat_*` row:
 - the turn start (`ChatViewModel.persistTurnStart`);
 - the turn's progress and end (`ChatTurnDriver` through `ChatTurnStore`);
