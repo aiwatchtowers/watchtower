@@ -1,0 +1,8 @@
+{"event":"listening","port":18551}
+{"event":"link","flow":"flow-1","team_id":"T0ACME","client_id":"4000.0004"}
+{"event":"busy","flow":"flow-1"}
+{"event":"browser","flow":"flow-1"}
+{"event":"connected","flow":"flow-1","account_id":1,"team_id":"T0ACME","team_name":"Acme","rebound_from":"1000.0001"}
+{"event":"browser","flow":"flow-2"}
+{"event":"failed","flow":"flow-2","reason":"cancelled","message":"This connection was cancelled in Watchtower."}
+{"event":"port_busy","port":18551}

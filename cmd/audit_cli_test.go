@@ -367,6 +367,8 @@ var cliNoContentCommands = map[string]bool{
 	"session-host":                     true,
 	"slack add":                        true,
 	"slack backfill":                   true, // fetches into the database; prints counts only
+	"slack connect":                    true, // connects an account; prints the workspace and account id only
+	"slack connect serve":              true, // the app's listener child; prints connect events only
 	"slack disable":                    true,
 	"slack enable":                     true,
 	"slack login":                      true,

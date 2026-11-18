@@ -170,15 +170,8 @@ func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.D
 	// First of the writes, so a failure leaves the row moved and the next
 	// sign-in tries again; once the row is home, nothing would.
 	if moved {
-		covered, err := rewindMovedSlackAccount(database, id)
-		if err != nil {
-			return slackIdentity{}, fmt.Errorf("rewinding the search of slack account %d: %w", id, err)
-		}
-		if !covered {
-			// Nothing to rewind to (rewindMovedSlackAccount): the days the
-			// other team's searches passed over may stay missing.
-			fmt.Fprintf(warnOut, "warning: slack account %d is back on its workspace, but the next sync may not fetch "+
-				"the days it missed; fetch them with `watchtower slack backfill --account %d --from YYYY-MM-DD --to YYYY-MM-DD`\n", id, id)
+		if err := rewindMovedSlackAccountOrWarn(database, id, warnOut); err != nil {
+			return slackIdentity{}, err
 		}
 	}
 
@@ -278,8 +271,8 @@ func slackOtherTeamError(identity slackIdentity, home db.SlackHomeTeam) error {
 	if got == "" {
 		got = identity.TeamID
 	}
-	return fmt.Errorf("sign in to %q, this account's Slack workspace (you chose %q); "+
-		"to also connect the one you chose, use Add Slack Workspace (`watchtower slack add`)", home.DisplayName(), got)
+	return &slackTeamMismatchError{msg: fmt.Sprintf("sign in to %q, this account's Slack workspace (you chose %q); "+
+		"to also connect the one you chose, use Add Slack Workspace (`watchtower slack add`)", home.DisplayName(), got)}
 }
 
 // refuseDuplicateSlackTeam refuses a new account for a team another live
@@ -303,6 +296,23 @@ func refuseDuplicateSlackTeam(database *db.DB, id int64, identity slackIdentity)
 			return fmt.Errorf("slack workspace %q is already connected as account %d; use Re-login on it instead",
 				home.DisplayName(), a.ID)
 		}
+	}
+	return nil
+}
+
+// rewindMovedSlackAccountOrWarn rewinds a moved account's search
+// (rewindMovedSlackAccount) and warns on warnOut when the missed days may
+// stay missing.
+func rewindMovedSlackAccountOrWarn(database *db.DB, id int64, warnOut io.Writer) error {
+	covered, err := rewindMovedSlackAccount(database, id)
+	if err != nil {
+		return fmt.Errorf("rewinding the search of slack account %d: %w", id, err)
+	}
+	if !covered {
+		// Nothing to rewind to (rewindMovedSlackAccount): the days the
+		// other team's searches passed over may stay missing.
+		fmt.Fprintf(warnOut, "warning: slack account %d is back on its workspace, but the next sync may not fetch "+
+			"the days it missed; fetch them with `watchtower slack backfill --account %d --from YYYY-MM-DD --to YYYY-MM-DD`\n", id, id)
 	}
 	return nil
 }
@@ -426,8 +436,14 @@ func runSlackLogin(cmd *cobra.Command, _ []string) error {
 	var accountID int64
 	isNewRow := false
 	if accountFlag != 0 {
-		if _, err := database.GetSlackAccount(accountFlag); err != nil {
+		acct, err := database.GetSlackAccount(accountFlag)
+		if err != nil {
 			return fmt.Errorf("account %d not found: %w", accountFlag, err)
+		}
+		// An account on a company app signs in again through that app's
+		// connect flow (PKCE, no secret), never through the build's app.
+		if slackmode.Relogin(acct, auth.RetiredSharedClientID, slackBuiltinClientID()) == slackmode.ReloginConnect {
+			return slackLoginConnect(cmd, cfg, database, acct)
 		}
 		accountID = accountFlag
 	} else {
@@ -513,13 +529,9 @@ type slackAccountJSONItem struct {
 // writeSlackAccountsJSON writes every account, removed rows included (the
 // Desktop filters them).
 func writeSlackAccountsJSON(out io.Writer, accounts []db.SlackAccount) error {
-	builtin, ok := auth.BuiltinApp()
-	builtinID := ""
-	if ok {
-		builtinID = builtin.ClientID
-	}
+	builtinID := slackBuiltinClientID()
 	retired := auth.RetiredSharedClientID
-	doc := slackAccountsDoc{BuiltinApp: ok, Accounts: make([]slackAccountJSONItem, 0, len(accounts))}
+	doc := slackAccountsDoc{BuiltinApp: builtinID != "", Accounts: make([]slackAccountJSONItem, 0, len(accounts))}
 	for _, a := range accounts {
 		doc.Accounts = append(doc.Accounts, slackAccountJSONItem{
 			ID:        a.ID,
