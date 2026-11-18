@@ -34,7 +34,7 @@ func checkGolden(t *testing.T, rel string, got []byte) {
 	path := filepath.Join("..", filepath.FromSlash(rel))
 	if *updateSessionReportGolden {
 		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
-		require.NoError(t, os.WriteFile(path, got, 0o644)) //nolint:gosec // a checked-in doc
+		require.NoError(t, os.WriteFile(path, got, 0o644))
 	}
 	want, err := os.ReadFile(path)
 	require.NoError(t, err, "run go test ./cmd -run %s -update", t.Name())
