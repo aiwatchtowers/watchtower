@@ -191,8 +191,9 @@ type Store struct{ Dir string } // <workspace>/company
 func NewStore(workspaceDir string) Store
 func (s Store) LoadAll(forcedWire string) ([]Entry, []LoadError, error) // pure read; forced overlay wins per company name
 func (s Store) Get(slug string, forcedWire string) (Entry, bool, error)
-func (s Store) SlugFor(company string) (string, error)                 // existing slug of that company, else a free one
+func (s Store) SlugFor(company, forcedWire string) (string, error)     // existing (or forced) slug of that company, else a free one; never a forced company's slug
 func (s Store) Save(slug string, b companybundle.Bundle) error           // flock, 0600 temp+rename, dir 0700
+func (s Store) SaveIfUnchanged(slug string, prev *companybundle.Bundle, b companybundle.Bundle) error // Save only while the file still holds prev (nil = absent), else ErrStoredChanged
 type Change struct{ Vendor, Field, Old, New string }
 func Changes(stored, incoming companybundle.Bundle) []Change            // client ids, secrets, tenant, site; normalized
 func ShortID(id string) string                                         // first 4 + "…" + last 3 (A21)
