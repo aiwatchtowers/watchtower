@@ -276,6 +276,8 @@ struct WorkbenchFilesSection: View {
                 if entry.isDirectory {
                     tree.toggle(entry.relPath)
                 } else {
+                    // Another folder's file: its root becomes the page's (§6.8).
+                    vm.selectFilesRoot(root, project: project)
                     Task { await vm.openFile(entry.relPath, root: root, preview: preview) }
                 }
             },

@@ -21,6 +21,13 @@ struct FilesRootItem: Identifiable, Equatable {
     var id: Int64 { folder.id }
 }
 
+/// A FILES root chosen by opening one of its files, and the page session
+/// it was chosen under.
+struct FilesRootSelection: Equatable {
+    let root: CodeRoot
+    let sessionID: Int64?
+}
+
 /// What Put on the Bench… did with the picked folder.
 enum PutOnBenchStep: Equatable {
     /// The add ran (its outcome is in FILES).
@@ -204,6 +211,8 @@ extension WorkbenchesViewModel {
             return
         }
         await loadBenchFolders(projectID: projectID)
+        // Added, but the CLI named no folder: nothing to highlight.
+        if result.ok, result.folder == nil { return }
         if result.ok || result.code == .alreadyHere, let added = result.folder {
             highlightedFolderRoot[projectID] = added.id
             expandedFolderRoots[projectID, default: []].insert(added.id)
@@ -214,7 +223,7 @@ extension WorkbenchesViewModel {
             return
         }
         putOnBenchErrors[projectID] = WorkbenchFolderPresentation.putOnBenchFailed(
-            name: name, reason: result.error.isEmpty ? result.errorCode : result.error)
+            name: name, reason: [result.error, result.errorCode].first { !$0.isEmpty } ?? WorkbenchFolderPresentation.noReason)
     }
 
     /// Retry on a root whose install is missing: Re-run Setup installs into
