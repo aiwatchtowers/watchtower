@@ -66,17 +66,18 @@ final class AutomationListSectionsTests: XCTestCase {
     // MARK: - Rows
 
     func testChips() {
-        XCTAssertEqual(AutomationRowPresentation.chips(item(id: 1, name: "a", confirmed: false)), [.needsConfirmation])
+        XCTAssertEqual(AutomationRowPresentation.chips(item(id: 1, name: "a", confirmed: false), consent: allowed), [.needsConfirmation])
         XCTAssertEqual(AutomationRowPresentation.chips(
-            item(id: 1, name: "a", enabled: false, disabledReason: "Paused by the update…")), [.paused])
-        XCTAssertEqual(AutomationRowPresentation.chips(item(id: 1, name: "a", parseError: "bad yaml")), [.cantRead])
-        XCTAssertEqual(AutomationRowPresentation.chips(item(id: 1, name: "a", enabled: false)), [])
+            item(id: 1, name: "a", enabled: false, disabledReason: "Paused by the update…"), consent: allowed), [.paused])
+        XCTAssertEqual(AutomationRowPresentation.chips(item(id: 1, name: "a", parseError: "bad yaml"), consent: allowed), [.cantRead])
+        XCTAssertEqual(AutomationRowPresentation.chips(item(id: 1, name: "a", enabled: false), consent: allowed), [])
         XCTAssertEqual([AutomationRowChip.needsConfirmation, .paused, .cantRead, .draft].map(\.title),
                        ["Needs confirmation", "Paused", "Can't read", "Draft"])
     }
 
     // MARK: - Background AI paused (#1886, spec §6.4)
 
+    private let allowed = BackgroundAIConsent.State.allowedByOwner
     private let pausedByOwner = BackgroundAIConsent.resolve(answer: "paused", policy: nil)
     private let unanswered = BackgroundAIConsent.resolve(answer: nil, policy: nil)
     private let orgOff = BackgroundAIConsent.resolve(answer: nil, policy: false)
@@ -87,7 +88,8 @@ final class AutomationListSectionsTests: XCTestCase {
         trigger: String = "schedule",
         permissions: [String],
         enabled: Bool = true,
-        confirmed: Bool = true
+        confirmed: Bool = true,
+        grants: [AutomationToolGrant] = []
     ) -> AutomationListItem {
         let automation = Automation(
             id: id, slug: "r\(id)", name: "Recipe \(id)", triggerKind: trigger, permissions: permissions,
@@ -95,7 +97,7 @@ final class AutomationListSectionsTests: XCTestCase {
         )
         return AutomationListItem(
             automation: automation, lastRun: nil, activeRun: nil, tokens7d: 0,
-            badges: AutomationListItem.badges(for: automation, grants: []), triggerText: ""
+            badges: AutomationListItem.badges(for: automation, grants: grants), triggerText: ""
         )
     }
 
@@ -109,7 +111,7 @@ final class AutomationListSectionsTests: XCTestCase {
                 XCTAssertEqual(AutomationRowPresentation.state(row, now: now, consent: state),
                                .chip(.waitingForBackgroundAI), trigger)
             }
-            XCTAssertEqual(AutomationRowPresentation.chips(row, consent: .allowedByOwner), [], trigger)
+            XCTAssertEqual(AutomationRowPresentation.chips(row, consent: allowed), [], trigger)
         }
         let orgAllowed = BackgroundAIConsent.resolve(answer: nil, policy: true)
         XCTAssertEqual(AutomationRowPresentation.chips(recipe(permissions: ["agent:run"]), consent: orgAllowed), [])
@@ -132,26 +134,66 @@ final class AutomationListSectionsTests: XCTestCase {
             recipe(permissions: ["llm:light"], confirmed: false), consent: pausedByOwner), [.needsConfirmation])
     }
 
+    private let none: (Automation) -> Bool = { _ in false }
+
     /// The notice shows only while paused and only with a row that waits;
     /// the owner's (or unanswered) pause offers the consent screen.
     func testNoticeOnlyWithAnAIRow() {
         let ai = recipe(id: 1, permissions: ["llm:light"])
         let plain = recipe(id: 2, permissions: ["shell:make"])
         let manualAI = recipe(id: 3, trigger: "manual", permissions: ["llm:light"])
-        XCTAssertNil(AutomationsBackgroundAINotice.make(state: pausedByOwner, items: [plain, manualAI]))
-        XCTAssertNil(AutomationsBackgroundAINotice.make(state: pausedByOwner, items: []))
-        XCTAssertNil(AutomationsBackgroundAINotice.make(state: .allowedByOwner, items: [ai, plain]))
+        XCTAssertNil(AutomationsBackgroundAINotice.make(state: pausedByOwner, items: [plain, manualAI], isPolicyBlocked: none))
+        XCTAssertNil(AutomationsBackgroundAINotice.make(state: pausedByOwner, items: [], isPolicyBlocked: none))
+        XCTAssertNil(AutomationsBackgroundAINotice.make(state: .allowedByOwner, items: [ai, plain], isPolicyBlocked: none))
         for state in [pausedByOwner, unanswered] {
-            let notice = AutomationsBackgroundAINotice.make(state: state, items: [plain, ai])
+            let notice = AutomationsBackgroundAINotice.make(state: state, items: [plain, ai], isPolicyBlocked: none)
             XCTAssertEqual(notice?.text, BackgroundAIConsentCopy.automationsNotice)
             XCTAssertEqual(notice?.actionTitle, BackgroundAIConsentCopy.allowAction)
             XCTAssertEqual(notice?.isOrganization, false)
         }
     }
 
+    /// A recipe the organization's policy blocks reads Blocked, not
+    /// Waiting: it alone does not bring the notice.
+    func testPolicyBlockedRecipeBringsNoNotice() {
+        let blocked = recipe(id: 1, permissions: ["llm:light"])
+        let plain = recipe(id: 2, permissions: ["shell:make"])
+        XCTAssertNil(AutomationsBackgroundAINotice.make(state: pausedByOwner, items: [blocked, plain]) { $0.id == 1 })
+        XCTAssertNotNil(AutomationsBackgroundAINotice.make(state: pausedByOwner, items: [blocked, plain]) { $0.id == 2 })
+    }
+
+    /// While paused, Waiting leads over an auto-paused grant (that is why
+    /// it does not run); once allowed, the grant's Paused is back alone.
+    func testWaitingLeadsOverAutoPausedGrantWhilePaused() {
+        let grant = AutomationToolGrant(automationID: 1, tool: "slack.post", grantHash: "old", grantedAt: now)
+        let row = recipe(permissions: ["llm:light"], grants: [grant])
+        XCTAssertEqual(AutomationRowPresentation.chips(row, consent: pausedByOwner), [.waitingForBackgroundAI, .paused])
+        XCTAssertEqual(AutomationRowPresentation.state(row, now: now, consent: pausedByOwner),
+                       .chip(.waitingForBackgroundAI))
+        XCTAssertEqual(AutomationRowPresentation.chips(row, consent: allowed), [.paused])
+        XCTAssertEqual(AutomationRowPresentation.state(row, now: now, consent: allowed), .chip(.paused))
+    }
+
+    /// Line 1 reads Waiting, so line 3 keeps the next run the chip hides.
+    func testWaitingRowKeepsTheNextRunOnLine3() {
+        let automation = Automation(
+            id: 1, slug: "r1", name: "Brief", triggerKind: "schedule", permissions: ["llm:light"],
+            approvalHash: "h2", confirmedHash: "h2", enabled: true, nextRunAt: now.addingTimeInterval(26 * 60)
+        )
+        let row = AutomationListItem(
+            automation: automation, lastRun: nil, activeRun: nil, tokens7d: 0,
+            badges: AutomationListItem.badges(for: automation, grants: []), triggerText: "Daily 07:00"
+        )
+        XCTAssertEqual(AutomationRowPresentation.line(row, changes: nil, now: now, consent: allowed), "Daily 07:00")
+        XCTAssertEqual(AutomationRowPresentation.line(row, changes: nil, now: now, consent: pausedByOwner),
+                       AutomationCardPresentation.rowDetailLine(row, changes: nil, now: now))
+    }
+
     /// The organization's pause says so and offers nothing to click.
     func testOrgNoticeHasNoAction() {
-        let notice = AutomationsBackgroundAINotice.make(state: orgOff, items: [recipe(permissions: ["agent:run"])])
+        let notice = AutomationsBackgroundAINotice.make(
+            state: orgOff, items: [recipe(permissions: ["agent:run"])], isPolicyBlocked: none
+        )
         XCTAssertEqual(notice?.text, BackgroundAIConsentCopy.automationsOrgNotice)
         XCTAssertNil(notice?.actionTitle)
         XCTAssertEqual(notice?.isOrganization, true)
@@ -184,9 +226,9 @@ final class AutomationListSectionsTests: XCTestCase {
     /// Line 1 says "off" (or the dot does, behind a chip): line 3 never does.
     func testLineHasNoOffPrefix() {
         let off = item(id: 1, name: "a", enabled: false)
-        XCTAssertEqual(AutomationRowPresentation.line(off, changes: nil, now: now),
+        XCTAssertEqual(AutomationRowPresentation.line(off, changes: nil, now: now, consent: allowed),
                        AutomationCardPresentation.rowDetailLine(off, changes: nil, now: now))
-        XCTAssertFalse(AutomationRowPresentation.line(off, changes: nil, now: now).hasPrefix("Off"))
+        XCTAssertFalse(AutomationRowPresentation.line(off, changes: nil, now: now, consent: allowed).hasPrefix("Off"))
         XCTAssertFalse(AutomationRowPresentation.isOn(off))
         XCTAssertTrue(AutomationRowPresentation.isOn(item(id: 2, name: "b")))
     }
@@ -195,10 +237,10 @@ final class AutomationListSectionsTests: XCTestCase {
     /// line still shows it, and the line is a warning.
     func testFailedLineLeadsWithTheError() {
         let failed = scheduled(lastRun: failedRun("fetch: example.com timed out\nstack"))
-        XCTAssertEqual(AutomationRowPresentation.line(failed, changes: nil, now: now),
+        XCTAssertEqual(AutomationRowPresentation.line(failed, changes: nil, now: now, consent: allowed),
                        "fetch: example.com timed out · Daily 07:00")
         XCTAssertTrue(AutomationRowPresentation.isFailed(failed))
-        XCTAssertEqual(AutomationRowPresentation.state(failed, now: now), .failed)
+        XCTAssertEqual(AutomationRowPresentation.state(failed, now: now, consent: allowed), .failed)
         XCTAssertFalse(AutomationRowPresentation.isFailed(scheduled()))
     }
 
@@ -207,11 +249,11 @@ final class AutomationListSectionsTests: XCTestCase {
     func testFailedRunBehindAChipStillWarns() {
         for item in [scheduled(confirmed: false, lastRun: failedRun("boom")),
                      scheduled(enabled: false, disabledReason: "stopped", lastRun: failedRun("boom"))] {
-            guard case .chip = AutomationRowPresentation.state(item, now: now) else {
+            guard case .chip = AutomationRowPresentation.state(item, now: now, consent: allowed) else {
                 return XCTFail("expected a chip on line 1")
             }
             XCTAssertTrue(AutomationRowPresentation.isFailed(item))
-            XCTAssertEqual(AutomationRowPresentation.line(item, changes: nil, now: now), "boom · Daily 07:00")
+            XCTAssertEqual(AutomationRowPresentation.line(item, changes: nil, now: now, consent: allowed), "boom · Daily 07:00")
         }
     }
 
@@ -220,16 +262,16 @@ final class AutomationListSectionsTests: XCTestCase {
     func testNextRunIsNotRepeated() {
         let next = now.addingTimeInterval(26 * 60)
         let idle = scheduled(nextRunAt: next)
-        XCTAssertEqual(AutomationRowPresentation.state(idle, now: now), .next("in 26 min"))
-        XCTAssertEqual(AutomationRowPresentation.line(idle, changes: nil, now: now), "Daily 07:00")
+        XCTAssertEqual(AutomationRowPresentation.state(idle, now: now, consent: allowed), .next("in 26 min"))
+        XCTAssertEqual(AutomationRowPresentation.line(idle, changes: nil, now: now, consent: allowed), "Daily 07:00")
         let busy = scheduled(nextRunAt: next, tokens7d: 7300)
-        XCTAssertEqual(AutomationRowPresentation.line(busy, changes: nil, now: now),
+        XCTAssertEqual(AutomationRowPresentation.line(busy, changes: nil, now: now, consent: allowed),
                        "Daily 07:00 · 7.3k tokens this week")
         // A last run on line 1 leaves the next run to line 3.
         let ran = scheduled(lastRun: AutomationRun(id: 6, automationID: 1, status: .succeeded,
                                                    finishedAt: now.addingTimeInterval(-3600)),
                             nextRunAt: next)
-        XCTAssertTrue(AutomationRowPresentation.line(ran, changes: nil, now: now).contains("next in 26 min"))
+        XCTAssertTrue(AutomationRowPresentation.line(ran, changes: nil, now: now, consent: allowed).contains("next in 26 min"))
     }
 
     // MARK: - Draft rows

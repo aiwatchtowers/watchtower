@@ -47,7 +47,7 @@ private struct LiveAutomationsNotice: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
-            if let notice = AutomationsBackgroundAINotice.make(state: state, items: items) {
+            if let notice = AutomationsBackgroundAINotice.make(state: state, items: items, isPolicyBlocked: { _ in false }) {
                 AutomationsBackgroundAINoticeCard(notice: notice) {}
             }
             VStack(alignment: .leading, spacing: 0) {

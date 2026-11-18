@@ -247,10 +247,10 @@ package enum AutomationRowChip: Equatable, Sendable {
 package enum AutomationRowPresentation {
     /// Needs confirmation; Paused for auto-paused grants or a recipe the app
     /// turned off with a reason; Can't read for a parse error; Waiting for a
-    /// recipe the background AI pause holds (`isHeld`).
-    package static func chips(
-        _ item: AutomationListItem, consent: BackgroundAIConsent.State = .allowedByOwner
-    ) -> [AutomationRowChip] {
+    /// recipe the background AI pause holds (`isHeld`). Waiting comes first:
+    /// while paused that is why the recipe does not run on its own, ahead of
+    /// an auto-paused grant (which shows again once background AI is allowed).
+    package static func chips(_ item: AutomationListItem, consent: BackgroundAIConsent.State) -> [AutomationRowChip] {
         // A parse error alone, as the badges have it: nothing else is known.
         if !item.automation.parseError.isEmpty { return [.cantRead] }
         var chips: [AutomationRowChip] = []
@@ -264,7 +264,7 @@ package enum AutomationRowPresentation {
         if !item.automation.enabled, !item.automation.disabledReason.isEmpty, !chips.contains(.paused) {
             chips.append(.paused)
         }
-        if !consent.isAllowed, isHeld(item) { chips.append(.waitingForBackgroundAI) }
+        if !consent.isAllowed, isHeld(item) { chips.insert(.waitingForBackgroundAI, at: 0) }
         return chips
     }
 
@@ -275,6 +275,10 @@ package enum AutomationRowPresentation {
 
     /// A runnable recipe that grants AI and starts on its own: while
     /// background AI is paused its runs wait (Run now still runs).
+    /// Known divergence (UI only): Go's `AutomationUsesAI` reads a
+    /// `permissions_json` that does not decode as AI (fail closed), while
+    /// `Automation.permissions` decodes it to `[]`, so such a recipe shows no
+    /// Waiting here although the Go gate still holds its runs.
     package static func isHeld(_ item: AutomationListItem) -> Bool {
         item.automation.isRunnable && backgroundTriggerKinds.contains(item.automation.triggerKind)
             && AutomationAIUse.usesAI(permissions: item.automation.permissions)
@@ -284,7 +288,9 @@ package enum AutomationRowPresentation {
     /// leads with its error, so a cut line still shows it; when line 1 shows
     /// the next run (`state` is `.next`), the next run is not said again. No
     /// "Off · ": the dot and line 1 say it.
-    package static func line(_ item: AutomationListItem, changes: [AutomationChange]?, now: Date) -> String {
+    package static func line(
+        _ item: AutomationListItem, changes: [AutomationChange]?, now: Date, consent: BackgroundAIConsent.State
+    ) -> String {
         let automation = item.automation
         if automation.parseError.isEmpty, item.activeRun == nil, let last = item.lastRun, isFailed(item) {
             let reason = last.error.isEmpty
@@ -292,7 +298,7 @@ package enum AutomationRowPresentation {
                 : AutomationCardPresentation.firstLine(last.error)
             return [reason, item.triggerText].filter { !$0.isEmpty }.joined(separator: " · ")
         }
-        if case .next = state(item, now: now), automation.parseError.isEmpty, !automation.needsConfirmation,
+        if case .next = state(item, now: now, consent: consent), automation.parseError.isEmpty, !automation.needsConfirmation,
            item.activeRun == nil, automation.triggerKind != "event" {
             let tokens = item.tokens7d > 0
                 ? ["\(AutomationCardPresentation.compactTokens(item.tokens7d)) tokens this week"] : []
@@ -320,7 +326,7 @@ package enum AutomationRowPresentation {
 
     /// The compact right-hand state: chip > failed > off > last run > next run > none.
     package static func state(
-        _ item: AutomationListItem, now: Date, consent: BackgroundAIConsent.State = .allowedByOwner
+        _ item: AutomationListItem, now: Date, consent: BackgroundAIConsent.State
     ) -> AutomationRowState {
         if let chip = chips(item, consent: consent).first { return .chip(chip) }
         if isFailed(item) { return .failed }
@@ -346,6 +352,8 @@ package enum AutomationRowState: Equatable, Sendable {
 
 /// The one card above the Automations list while background AI is paused
 /// and at least one recipe waits for it (`AutomationRowPresentation.isHeld`).
+/// A recipe the organization's policy blocks does not count: its row reads
+/// Blocked, not Waiting.
 package struct AutomationsBackgroundAINotice: Equatable, Sendable {
     package let text: String
     /// "Allow background AI…" opens the consent screen; nil when the
@@ -353,8 +361,14 @@ package struct AutomationsBackgroundAINotice: Equatable, Sendable {
     package let actionTitle: String?
     package let isOrganization: Bool
 
-    package static func make(state: BackgroundAIConsent.State, items: [AutomationListItem]) -> Self? {
-        guard !state.isAllowed, items.contains(where: AutomationRowPresentation.isHeld) else { return nil }
+    package static func make(
+        state: BackgroundAIConsent.State,
+        items: [AutomationListItem],
+        isPolicyBlocked: (Automation) -> Bool
+    ) -> Self? {
+        guard !state.isAllowed,
+              items.contains(where: { AutomationRowPresentation.isHeld($0) && !isPolicyBlocked($0.automation) })
+        else { return nil }
         if state.reason == .organization {
             return Self(text: BackgroundAIConsentCopy.automationsOrgNotice, actionTitle: nil, isOrganization: true)
         }

@@ -15,7 +15,7 @@ struct AutomationListRow: View {
     /// The organization's policy blocks it (#608, `AutomationPolicyBlock`).
     var policyBlocked = false
     /// Background AI is paused: a recipe it holds reads Waiting (#1886).
-    var backgroundAI = BackgroundAIConsent.State.allowedByOwner
+    let backgroundAI: BackgroundAIConsent.State
     let onSelect: () -> Void
 
     var body: some View {
@@ -28,7 +28,7 @@ struct AutomationListRow: View {
             name: item.automation.name.isEmpty ? item.automation.slug : item.automation.name,
             state: state,
             summary: AutomationRowPresentation.summary(item),
-            line: AutomationRowPresentation.line(item, changes: changes, now: now),
+            line: AutomationRowPresentation.line(item, changes: changes, now: now, consent: backgroundAI),
             lineIsWarning: AutomationRowPresentation.isFailed(item)
         )
         .panelTab(isSelected: isSelected)
