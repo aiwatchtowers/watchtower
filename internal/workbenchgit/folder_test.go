@@ -337,3 +337,105 @@ func TestResolveFolderUnreadableRequestedIsUnresolved(t *testing.T) {
 	assert.Equal(t, repo, got.Root)
 	assert.Empty(t, rec.argv(), "no git runs")
 }
+
+// benchOptions is a multi-folder bench's Options: no Folder chosen, every
+// folder listed (the home folder first), git recorded.
+func benchOptions(r *recorder, folders ...string) Options {
+	return Options{Folders: folders, Run: r.run}
+}
+
+// PROJ-10 (2026-11-18, multi-folder workbench #2003): with several folders
+// on the bench, --folder resolves against the folder whose repository holds
+// it — a linked worktree of hub resolves with hub as the main repository —
+// and git lists the worktrees of that one folder only.
+func TestProj10_ResolveFolderPicksTheContainingBenchFolder(t *testing.T) {
+	app := newRepo(t)
+	hub := newRepo(t)
+	hubWT := addWorktree(t, hub, "hub-a", "main") // outside every folder's path
+
+	rec := &recorder{}
+	got := resolve(t, benchOptions(rec, app, hub), hubWT)
+	assert.Equal(t, ScopeWorktree, got.Scope)
+	assert.Equal(t, hub, got.MainTopLevel)
+	assert.Equal(t, hub, got.FolderPath)
+	assert.Equal(t, hubWT, got.Root)
+	assert.Equal(t, "hub-a", got.WorktreeName)
+	assert.Equal(t, []string{hub}, rec.ranIn(), "one listing, in hub only")
+
+	rec = &recorder{}
+	got = resolve(t, benchOptions(rec, app, hub), filepath.Join(hub, "README.md"))
+	assert.Equal(t, ScopeMain, got.Scope)
+	assert.Equal(t, hub, got.Root)
+	assert.Equal(t, hub, got.FolderPath)
+	assert.Equal(t, []string{hub}, rec.ranIn())
+
+	rec = &recorder{}
+	got = resolve(t, benchOptions(rec, app, hub), "")
+	assert.Equal(t, ScopeMain, got.Scope)
+	assert.Equal(t, app, got.Root, "no folder asked for: the home folder")
+	assert.Empty(t, rec.argv())
+
+	// A bench folder in a repository subfolder: the worktree maps into it.
+	mono, wtB := subfolderRepo(t)
+	monoApp := filepath.Join(mono, "app")
+	rec = &recorder{}
+	got = resolve(t, benchOptions(rec, app, monoApp), filepath.Join(wtB, "app"))
+	assert.Equal(t, ScopeWorktree, got.Scope)
+	assert.Equal(t, monoApp, got.FolderPath)
+	assert.Equal(t, mono, got.MainTopLevel)
+	assert.Equal(t, filepath.Join(wtB, "app"), got.Root)
+	assert.Equal(t, []string{monoApp}, rec.ranIn())
+
+	// A set Folder wins over the list: the caller already chose.
+	rec = &recorder{}
+	o := benchOptions(rec, app, hub)
+	o.Folder = app
+	got = resolve(t, o, hubWT)
+	assert.Equal(t, ScopeOutside, got.Scope)
+	assert.Equal(t, app, got.FolderPath)
+}
+
+// A folder in no bench folder and no worktree of one is outside, over the
+// home folder, with at most the home folder's one listing.
+func TestResolveFolderOutsideEveryFolderIsOutside(t *testing.T) {
+	app := newRepo(t)
+	hub := newRepo(t)
+	sibling := newRepo(t)
+	siblingWT := addWorktree(t, sibling, "sib-a", "main")
+	outside, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+
+	for _, req := range []string{outside, sibling, siblingWT, filepath.Join(outside, "gone"), "relative/path"} {
+		rec := &recorder{}
+		got := resolve(t, benchOptions(rec, app, hub), req)
+		assert.True(t, got.OutsideTheRepository(), req)
+		assert.Equal(t, app, got.Root, req)
+		assert.Equal(t, app, got.FolderPath, req)
+		assert.LessOrEqual(t, len(rec.argv()), 1, req)
+		for _, dir := range rec.ranIn() {
+			assert.Equal(t, app, dir, req)
+		}
+	}
+	got := resolve(t, Options{}, outside)
+	assert.Equal(t, ScopeOutside, got.Scope, "no folders at all")
+}
+
+func TestLinkedMainTopReadsOnlyAWorktreeGitdir(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	top := filepath.Join(dir, "repo")
+	require.NoError(t, os.MkdirAll(filepath.Join(top, ".git", "worktrees", "x"), 0o755))
+	wt := filepath.Join(dir, "wt")
+	require.NoError(t, os.MkdirAll(filepath.Join(wt, "sub"), 0o755))
+	for _, tc := range []struct{ content, want string }{
+		{"gitdir: " + filepath.Join(top, ".git", "worktrees", "x") + "\n", top},
+		{"gitdir: ../repo/.git/worktrees/x\n", top},
+		{"gitdir: " + filepath.Join(top, ".git") + "\n", ""}, // a submodule-style pointer
+		{"gitdir: " + filepath.Join(dir, "elsewhere", "worktrees", "x") + "\n", ""},
+		{"not a pointer\n", ""},
+	} {
+		require.NoError(t, os.WriteFile(filepath.Join(wt, ".git"), []byte(tc.content), 0o644))
+		assert.Equal(t, tc.want, linkedMainTop(filepath.Join(wt, "sub")), tc.content)
+	}
+	assert.Empty(t, linkedMainTop(top), "a .git directory is a main work tree")
+}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -58,6 +59,9 @@ type ResolvedFolder struct {
 	// MainTopLevel is the top level of the worktree holding the workbench
 	// folder, "" when git was not asked.
 	MainTopLevel string `json:"-"`
+	// FolderPath is the workbench folder resolved against: Options.Folder,
+	// or the bench folder ResolveFolder chose from Options.Folders.
+	FolderPath string `json:"workbench_folder_path"`
 }
 
 // OutsideTheRepository reports a folder no git may run in: outside the
@@ -67,8 +71,10 @@ func (f ResolvedFolder) OutsideTheRepository() bool {
 }
 
 // ResolveFolder resolves requested against the worktrees of the repository
-// holding o.Folder (the workbench folder). "" is the workbench folder
-// itself. git runs only in o.Folder (`git worktree list`), never in
+// holding o.Folder (the workbench folder). With o.Folder "" the workbench
+// folder is first chosen from o.Folders without running git
+// (benchFolderFor), so one folder's worktrees are listed at most. "" is the
+// workbench folder itself. git runs only in o.Folder (`git worktree list`), never in
 // requested, and not at all when requested is missing or not absolute, git
 // is unavailable, or o.Folder is outside a repository. Without git the
 // scope is unresolved and Root the workbench folder, so the caller's own
@@ -77,7 +83,10 @@ func (f ResolvedFolder) OutsideTheRepository() bool {
 // (an unreadable parent) failing; the scope is then unresolved and Root
 // the workbench folder.
 func ResolveFolder(ctx context.Context, o Options, requested string) (ResolvedFolder, error) {
-	res := ResolvedFolder{Requested: requested, Scope: ScopeOutside, Root: o.Folder}
+	if o.Folder == "" {
+		o.Folder = benchFolderFor(o.Folders, requested)
+	}
+	res := ResolvedFolder{Requested: requested, Scope: ScopeOutside, Root: o.Folder, FolderPath: o.Folder}
 	if requested == "" {
 		res.Scope = ScopeMain
 		return res, nil
@@ -117,6 +126,101 @@ func ResolveFolder(ctx context.Context, o Options, requested string) (ResolvedFo
 		res.Scope = ScopeMain
 	}
 	return res, nil
+}
+
+// benchFolderFor is the bench folder requested belongs to: the deepest
+// folder holding it; else, for a requested folder in a linked worktree (its
+// .git file naming <repository>/.git/worktrees/<name>), the first folder
+// inside that repository; else folders[0] (the home folder). A sole folder
+// is taken as is; "" for none. No git runs: the caller's one listing, in
+// the folder chosen, decides the scope.
+func benchFolderFor(folders []string, requested string) string {
+	if len(folders) == 0 {
+		return ""
+	}
+	if len(folders) == 1 || !filepath.IsAbs(requested) {
+		return folders[0]
+	}
+	reqReal, err := filepath.EvalSymlinks(requested)
+	if err != nil {
+		return folders[0]
+	}
+	reals := make([]string, len(folders))
+	best := -1
+	for i, f := range folders {
+		reals[i] = f
+		if r, err := filepath.EvalSymlinks(f); err == nil {
+			reals[i] = r
+		}
+		if within(reqReal, reals[i]) && (best < 0 || len(reals[i]) > len(reals[best])) {
+			best = i
+		}
+	}
+	if best >= 0 {
+		return folders[best]
+	}
+	if top := linkedMainTop(reqReal); top != "" {
+		for i, f := range folders {
+			if within(reals[i], top) {
+				return f
+			}
+		}
+	}
+	return folders[0]
+}
+
+// gitdirFileLimit caps how much of a .git file is read.
+const gitdirFileLimit = 4096
+
+// linkedMainTop is the main work tree of the repository whose linked
+// worktree holds path, read from the nearest .git entry at or above path;
+// "" when that entry is a directory (a main work tree), cannot be read, or
+// names no worktree of a .git directory. It reads files only.
+func linkedMainTop(path string) string {
+	for dir := path; ; {
+		entry := filepath.Join(dir, ".git")
+		if fi, err := os.Lstat(entry); err == nil {
+			if !fi.Mode().IsRegular() {
+				return ""
+			}
+			return mainTopFromGitdirFile(dir, entry)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+// mainTopFromGitdirFile reads a linked worktree's .git file in dir —
+// "gitdir: <top>/.git/worktrees/<name>" — and returns <top> resolved, or "".
+func mainTopFromGitdirFile(dir, entry string) string {
+	f, err := os.Open(entry) //nolint:gosec // a .git file above the folder asked about; read, never run
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	buf := make([]byte, gitdirFileLimit)
+	n, _ := io.ReadFull(f, buf) // a short file is the normal case
+	line, _, _ := strings.Cut(string(buf[:n]), "\n")
+	gitdir, ok := strings.CutPrefix(strings.TrimSpace(line), "gitdir: ")
+	if !ok || gitdir == "" {
+		return ""
+	}
+	if !filepath.IsAbs(gitdir) {
+		gitdir = filepath.Join(dir, gitdir)
+	}
+	worktrees := filepath.Dir(filepath.Clean(gitdir))
+	common := filepath.Dir(worktrees)
+	if filepath.Base(worktrees) != "worktrees" || filepath.Base(common) != ".git" {
+		return ""
+	}
+	top, err := filepath.EvalSymlinks(filepath.Dir(common))
+	if err != nil {
+		return ""
+	}
+	return top
 }
 
 // scopeWithoutRepo is the scope when open refused: unresolved without git

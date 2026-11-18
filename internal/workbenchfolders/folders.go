@@ -598,3 +598,21 @@ func uniqueRace(ctx context.Context, d *db.DB, workbenchID int64, folder string,
 	}
 	return otherBench(ctx, d, f, folder)
 }
+
+// GitFolders is every live folder path of workbench workbenchID with home
+// (projects.folder_path) first — workbenchgit.Options.Folders, whose first
+// entry is the fallback. home is listed even when no live row holds it (a
+// legacy bench on db.HomeFolder's fallback).
+func GitFolders(ctx context.Context, d *db.DB, workbenchID int64, home string) ([]string, error) {
+	live, err := d.WorkbenchFolders(ctx, workbenchID, false)
+	if err != nil {
+		return nil, err //nolint:wrapcheck // db's message names the workbench
+	}
+	paths := []string{home}
+	for _, f := range live {
+		if !strings.EqualFold(f.FolderPath, home) {
+			paths = append(paths, f.FolderPath)
+		}
+	}
+	return paths, nil
+}
