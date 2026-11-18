@@ -19,6 +19,10 @@ func runWorkbenchReviewContext(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return failReview(cmd, err)
 	}
-	lenses, notes := reviewdiff.LoadLenses(p.FolderPath)
+	folder, err := tools.SessionReviewFolder(cmd.Context(), database, p, reviewFlagSession)
+	if err != nil {
+		return failReview(cmd, err)
+	}
+	lenses, notes := reviewdiff.LoadLenses(folder)
 	return writeReview(cmd, reviewEnvelope{OK: true, Items: items, Lenses: lenses, LensNotes: notes})
 }

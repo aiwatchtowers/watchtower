@@ -117,7 +117,11 @@ func BuildReviewMap(ctx context.Context, d *db.DB, p *db.Workbench, pl reviewPla
 	if err != nil {
 		return reviewmap.Map{}, reviewdiff.Diff{}, err
 	}
-	in := reviewmap.Input{Diff: diff, Patterns: reviewmap.LoadPatterns(p.FolderPath)}
+	folder, err := tools.SessionReviewFolder(ctx, d, p, pl.SessionID)
+	if err != nil {
+		return reviewmap.Map{}, reviewdiff.Diff{}, err
+	}
+	in := reviewmap.Input{Diff: diff, Patterns: reviewmap.LoadPatterns(folder)}
 	if pl.SessionID != 0 {
 		// Every chapter note of the session, whatever its tree_sha: the
 		// Desktop's agent chapters (ReviewChangesModel) are the same set, so

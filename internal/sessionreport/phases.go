@@ -95,7 +95,7 @@ func (s scope) phaseOf(p *boardEntry, spans map[int64]span, states map[string]db
 		switch {
 		case l.target.Status == "done":
 			ph.Done++
-		case s.b.mergedLeaf(l, states):
+		case s.mergedLeaf(l, states):
 			ph.Merged++
 		}
 		sp := spans[l.id()]

@@ -52,6 +52,10 @@ type RefreshOptions struct {
 	Network bool
 	Budget  time.Duration    // 0 = DefaultRefreshBudget
 	Now     func() time.Time // nil = time.Now
+	// SessionID is the session whose report the refs are of: the refresh
+	// runs git and gh in its bench folder and reads and writes that
+	// folder's cache (spec §6.9, §6.10); 0 = the home folder.
+	SessionID int64
 	// writeWait > 0 bounds each cache write's lock wait (the handle's
 	// busy_timeout, set before each write and left at the last one's), cut
 	// to the budget left (at least 1 ms).
@@ -84,7 +88,11 @@ type prJSON struct {
 // the cache only — never the board, so PROJ-07's drift check stays the only
 // place that flags merged_but_open.
 func Refresh(ctx context.Context, d *db.DB, workbenchID int64, refs []string, opts RefreshOptions) RefreshResult {
-	res, _, _ := refresh(ctx, d, workbenchID, refs, opts)
+	folder, err := folderOf(ctx, d, workbenchID, opts.SessionID)
+	if err != nil {
+		return RefreshResult{Note: "PR states not refreshed: " + err.Error()}
+	}
+	res, _, _ := refresh(ctx, d, workbenchID, folder, refs, opts)
 	return res
 }
 
@@ -94,7 +102,7 @@ func Refresh(ctx context.Context, d *db.DB, workbenchID int64, refs []string, op
 // failed — a git call, an unresolvable base, gh — or one the budget left
 // out. A folder outside a repository leaves none unchecked: git has nothing
 // to say there, now or later.
-func refresh(ctx context.Context, d *db.DB, workbenchID int64, refs []string,
+func refresh(ctx context.Context, d *db.DB, workbenchID int64, folder benchFolder, refs []string,
 	opts RefreshOptions) (res RefreshResult, cache map[string]db.PRState, unchecked map[string]bool) {
 	if opts.Budget <= 0 {
 		opts.Budget = DefaultRefreshBudget
@@ -102,16 +110,10 @@ func refresh(ctx context.Context, d *db.DB, workbenchID int64, refs []string,
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	wb, err := d.GetWorkbench(workbenchID)
-	if err != nil {
-		return RefreshResult{Note: "PR states not refreshed: " + err.Error()}, nil, nil
+	if folder.id == 0 {
+		return RefreshResult{Note: "PR states not refreshed: the workbench has no folder row"}, nil, nil
 	}
-	// The home folder's cache until the session's folder is passed in (#2003 Task 6).
-	folderID, err := d.HomeFolderID(ctx, workbenchID)
-	if err != nil {
-		return RefreshResult{Note: "PR states not refreshed: " + err.Error()}, nil, nil
-	}
-	cache, err = d.PRStates(workbenchID, folderID)
+	cache, err := d.PRStates(workbenchID, folder.id)
 	if err != nil {
 		return RefreshResult{Note: "PR states not refreshed: " + err.Error()}, nil, nil
 	}
@@ -138,7 +140,7 @@ func refresh(ctx context.Context, d *db.DB, workbenchID int64, refs []string,
 	ctx, cancel := context.WithTimeout(ctx, opts.Budget)
 	defer cancel()
 	deadline := start.Add(opts.Budget)
-	r := refresher{d: d, workbenchID: workbenchID, folderID: folderID, folder: wb.FolderPath, cache: cache, opts: opts,
+	r := refresher{d: d, workbenchID: workbenchID, folderID: folder.id, folder: folder.path, cache: cache, opts: opts,
 		deadline: deadline, unchecked: map[string]bool{}}
 	r.open(ctx, stale)
 	for i, ref := range stale {

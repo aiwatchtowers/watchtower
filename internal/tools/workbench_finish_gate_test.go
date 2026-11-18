@@ -469,3 +469,115 @@ func TestProj14_BranchTipWithACleanFolder(t *testing.T) {
 		mustApply(t, reg, wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
 	})
 }
+
+// hubFolder puts a second git repository on bench wb (spec §3: folders are
+// equal) with one commit and an uncommitted hub.go; git runs in it.
+// reviewRepoWorkbench has set the git environment.
+func hubFolder(t *testing.T, d *db.DB, wb int64) (id int64, dir string, git func(args ...string)) {
+	t.Helper()
+	bin, ok := gitbin.Locate()
+	if !ok {
+		t.Skip("git not installed")
+	}
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	git = func(args ...string) {
+		cmd := exec.Command(bin, args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, string(out))
+	}
+	git("init", "-q", "-b", "main")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("hub\n"), 0o600))
+	git("add", ".")
+	git("commit", "-q", "-m", "init")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "hub.go"), []byte("package hub\n"), 0o600))
+	res, err := d.Exec(`INSERT INTO workbench_folders (workbench_id, folder_path, position, added_by, name)
+		VALUES (?, ?, 1, 'owner', 'hub')`, wb, dir)
+	require.NoError(t, err)
+	id, err = res.LastInsertId()
+	require.NoError(t, err)
+	return id, dir, git
+}
+
+// folderSession seeds an agent session of bench wb started for folder
+// folderID in dir, a sub-session of parent when parent is not 0.
+func folderSession(t *testing.T, d *db.DB, wb, folderID int64, dir string, parent int64) int64 {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id,
+		workbench_folder_id, parent_session_id) VALUES (?, 'claude', 'Hub work', ?, 'uuid-hub', ?, ?)`,
+		wb, dir, folderID, sql.NullInt64{Int64: parent, Valid: parent != 0})
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+	return id
+}
+
+// TestProj14_SubSessionGatedOnlyOnItsOwnTarget (spec D24): a sub-session
+// launched for T2 is gated on T2's subtree only, never on its parent's
+// open ticket.
+func TestProj14_SubSessionGatedOnlyOnItsOwnTarget(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	parent := seedTerminalSession(t, fx.d, fx.a)
+	group, _, _ := ticketTree(t, fx.d, fx.a)
+	launchedFor(t, fx.d, parent, group)
+	home, err := fx.d.HomeFolderID(context.Background(), fx.a)
+	require.NoError(t, err)
+	child := folderSession(t, fx.d, fx.a, home, reviewFolder(t, fx.d, fx.a), parent)
+	own := db.SeedTestWorkbenchTarget(t, fx.d, fx.a, sql.NullInt64{}, "Hub endpoint")
+	launchedFor(t, fx.d, child, own)
+	reg := askRegistry(t, fx.d, strconv.FormatInt(child, 10))
+
+	_, err = proposeIn(t, reg, fx.a, "finish_session", `{"summary":"Done.","reason":"r"}`)
+	msg := refusal(t, err)
+	assert.Contains(t, msg, fmt.Sprintf("ticket #%d still has 1 open leaf", own))
+	assert.NotContains(t, msg, "Images", "the parent's open leaves are the parent's")
+	assertNotFinished(t, fx.d, child, 0)
+
+	setTargetStatus(t, fx.d, own, "done")
+	mustApply(t, reg, fx.a, "finish_session", `{"summary":"Done.","reason":"r"}`)
+}
+
+// TestProj14_SubSessionWithoutTargetSkipsGate1 (spec D24): a sub-session
+// with no target of its own skips gate 1 — even when the call names its
+// parent's open ticket — and gate 2 runs in its own folder: the hub's
+// changes need an overview, the home folder's do not count.
+func TestProj14_SubSessionWithoutTargetSkipsGate1(t *testing.T) {
+	fx, wb, parent, _ := repoSession(t)
+	group, _, _ := ticketTree(t, fx.d, wb)
+	launchedFor(t, fx.d, parent, group)
+	hub, dir, git := hubFolder(t, fx.d, wb)
+	child := folderSession(t, fx.d, wb, hub, dir, parent)
+	reg := askRegistry(t, fx.d, strconv.FormatInt(child, 10))
+
+	_, err := proposeIn(t, reg, wb, "finish_session", fmt.Sprintf(`{"summary":"Done.","target_id":%d,"reason":"r"}`, group))
+	msg := refusal(t, err)
+	assert.NotContains(t, msg, "open leaves", "gate 1 is skipped")
+	assert.Contains(t, msg, "your changes have no AI overview yet", "gate 2 reads the hub's uncommitted hub.go")
+	assertNotFinished(t, fx.d, child, 0)
+
+	// The hub committed: nothing to review there, whatever the home folder holds.
+	git("add", ".")
+	git("commit", "-q", "-m", "hub")
+	mustApply(t, reg, wb, "finish_session", fmt.Sprintf(`{"summary":"Done.","target_id":%d,"reason":"r"}`, group))
+}
+
+// TestLeftItsWorktreeInTheSessionsFolder (spec §6.9): leftItsWorktree
+// compares against the session's own folder. A hub session that left its
+// worktree is not judged on the hub's diff; one launched in the hub is.
+func TestLeftItsWorktreeInTheSessionsFolder(t *testing.T) {
+	t.Run("launched in a hub worktree", func(t *testing.T) {
+		fx, wb, _, _ := repoSession(t)
+		hub, _, _ := hubFolder(t, fx.d, wb)
+		session := folderSession(t, fx.d, wb, hub, t.TempDir(), 0)
+		mustApply(t, askRegistry(t, fx.d, strconv.FormatInt(session, 10)), wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
+	})
+	t.Run("launched in the hub", func(t *testing.T) {
+		fx, wb, _, _ := repoSession(t)
+		hub, dir, _ := hubFolder(t, fx.d, wb)
+		session := folderSession(t, fx.d, wb, hub, dir, 0)
+		_, err := proposeIn(t, askRegistry(t, fx.d, strconv.FormatInt(session, 10)), wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
+		assert.Contains(t, refusal(t, err), "your changes have no AI overview yet")
+		assertNotFinished(t, fx.d, session, 0)
+	})
+}
