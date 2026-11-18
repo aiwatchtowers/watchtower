@@ -59,3 +59,33 @@ func TestJournalSource_UnreviewedItemIsNot(t *testing.T) {
 	require.Empty(t, ps)
 	require.True(t, done)
 }
+
+func TestJournalSource_CorrectionWithoutTextIsSkipped(t *testing.T) {
+	d := openSourceDB(t)
+	at := srcT0.Add(time.Hour)
+	seedJournalItem(t, d, 1, "sqlite", "corrected", "  ", &at)
+	src := &journalSource{}
+	ps, _, _, err := src.Next(context.Background(), d, 1, "", 50)
+	require.NoError(t, err)
+	require.Empty(t, ps)
+	require.Equal(t, 1, src.Skipped())
+}
+
+func TestJournalSource_LearnStoresASearchablePrecedent(t *testing.T) {
+	d, wb := learnDB(t)
+	at := learnT0.Add(-time.Hour)
+	id, _, err := d.QueueWatchmanItem(db.WatchmanItem{WorkbenchID: wb, Kind: "ask", RefKind: "ask", RefID: 7, Question: "Which cache should the importer use?"})
+	require.NoError(t, err)
+	_, err = d.Exec(`UPDATE watchman_items SET state='done', outcome='answered', choice='sqlite', category='design', feedback='ok', feedback_at=? WHERE id=?`, stamp(at), id)
+	require.NoError(t, err)
+	st, err := Learn(context.Background(), d, wb, LearnOptions{
+		Budget: 5 * time.Minute, Now: fixedNow, Sources: []Source{&journalSource{}}, Labeler: &fakeLabeler{label: CategoryDesign}, BatchSize: 5,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, st.BySource[SourceJournal])
+	got, err := d.SearchWatchmanPrecedents(wb, CategoryDesign, "importer cache", learnT0.Add(time.Hour), nil, 5)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Equal(t, "sqlite", got[0].Choice)
+	require.Equal(t, SourceJournal, got[0].Source)
+}

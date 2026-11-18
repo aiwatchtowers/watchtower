@@ -2,6 +2,7 @@ package watchman
 
 import (
 	"context"
+	"errors"
 	"strconv"
 
 	"watchtower/internal/db"
@@ -17,6 +18,9 @@ const (
 // marked OK becomes a precedent with the twin's choice, one he corrected
 // becomes a precedent with his own words. An item with no feedback is never
 // read, so the twin's own write cannot reinforce itself (WATCHMAN-03).
+// errNoCorrection is a corrected item with no words of the owner.
+var errNoCorrection = errors.New("corrected without text")
+
 type journalSource struct{ skips }
 
 func (*journalSource) Name() string { return SourceJournal }
@@ -40,6 +44,10 @@ func (s *journalSource) Next(ctx context.Context, d *db.DB, workbenchID int64, c
 		at, err := decidedAt(r.Mark)
 		if err != nil {
 			return nil, cur, false, err
+		}
+		if r.Feedback == "corrected" && clean(r.FeedbackText) == "" {
+			s.skip(SourceJournal, strconv.FormatInt(r.ID, 10), errNoCorrection)
+			continue
 		}
 		choice, weight := r.Choice, float64(journalOKWeight)
 		if r.Feedback == "corrected" {

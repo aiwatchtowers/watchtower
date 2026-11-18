@@ -25,6 +25,10 @@
           "written": 0,
           "done": false
         },
+        "journal": {
+          "written": 0,
+          "done": false
+        },
         "permission": {
           "written": 2,
           "done": false
@@ -110,6 +114,10 @@
           "done": false
         },
         "git": {
+          "written": 0,
+          "done": false
+        },
+        "journal": {
           "written": 0,
           "done": false
         },

@@ -372,8 +372,6 @@ type WatchmanMark struct {
 	Sub string
 }
 
-// Each reader's inner select (wm_at, wm_id, wm_sub first); the estimate
-// counts the same rows (WatchmanCounts).
 // wmTwinDecided is true for an entity (ref_kind, ref_id) the twin decided: its
 // item carries a twin outcome, so the owner did not decide it (WATCHMAN-03).
 func wmTwinDecided(kind, id string) string {
@@ -387,6 +385,8 @@ func wmTwinRound(id string) string {
 		`) AND w.outcome IN ('answered','handed','parked','approved','changes'))`
 }
 
+// Each reader's inner select (wm_at, wm_id, wm_sub first); the estimate
+// counts the same rows (WatchmanCounts).
 var (
 	wmOwnedComment = `c.carried_from IS NULL AND c.status IN ('sent','resolved')`
 	wmAsksSQL      = `SELECT COALESCE(strftime(` + wmAtFormat + `, a.answered_at), '') AS wm_at, a.id AS wm_id, '' AS wm_sub,

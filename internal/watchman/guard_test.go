@@ -65,6 +65,7 @@ func TestWATCHMAN03_SourcesAreOwnerOnly(t *testing.T) {
 	require.NoError(t, err)
 	twinRound := seedRound(t, d, 1, "sent", "approved", &at)
 	twinComment := seedComment(t, d, twinRound, "a.go", "q", "twin note", "sent", nil)
+	twinRevert := seedRevert(t, d, twinRound, "h1", at)
 	ownerRound := seedRound(t, d, 1, "sent", "approved", &at)
 	for _, it := range []db.WatchmanItem{
 		{Kind: "ask", RefKind: "ask", RefID: twinAsk},
@@ -91,11 +92,11 @@ func TestWATCHMAN03_SourcesAreOwnerOnly(t *testing.T) {
 	require.Equal(t, []string{strconv.FormatInt(keepPerm, 10)}, keys(pp))
 	rr, _, _, err := (&reviewSource{}).Next(context.Background(), d, 1, "", 50)
 	require.NoError(t, err)
-	for _, p := range rr {
-		require.NotContains(t, []string{strconv.FormatInt(twinRound, 10), strconv.FormatInt(twinComment, 10)}, p.SourceKey)
-	}
-	require.NotEmpty(t, ownerRound)
-	require.NotEmpty(t, rr)
+	got := keys(rr)
+	require.NotContains(t, got, "round:"+strconv.FormatInt(twinRound, 10))
+	require.NotContains(t, got, "comment:"+strconv.FormatInt(twinComment, 10))
+	require.NotContains(t, got, "revert:"+strconv.FormatInt(twinRevert, 10))
+	require.Contains(t, got, "round:"+strconv.FormatInt(ownerRound, 10))
 }
 
 // TestWATCHMAN06_NoActingImports pins WATCHMAN-06 ("learning and the backtest

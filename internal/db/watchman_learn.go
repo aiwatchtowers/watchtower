@@ -27,6 +27,7 @@ func (db *DB) WatchmanCounts(workbenchID int64) (WatchmanSourceCounts, error) {
 		{`SELECT COUNT(*) FROM (` + wmReviewSQL + `)`, []any{wb, wb, wb, wb}, nil},
 		{`SELECT COUNT(*) FROM (` + wmSpecMarksSQL + `)`, []any{wb}, nil},
 		{`SELECT COUNT(*) FROM (` + wmPermissionSQL + `)`, []any{wb}, nil},
+		{`SELECT COUNT(*) FROM watchman_items WHERE workbench_id = ? AND feedback IN ('ok','corrected')`, []any{wb}, nil}, // the journal source
 		{`SELECT COUNT(*) FROM (` + wmAsksSQL + `)`, []any{wb}, &c.Asks},
 		{`SELECT COUNT(*) FROM terminal_sessions WHERE project_id = ? AND kind IN ('claude','codex') AND ` + NotDeletingSQL, []any{wb}, &c.Sessions},
 	} {

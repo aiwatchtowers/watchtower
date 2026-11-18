@@ -10,7 +10,7 @@ import (
 )
 
 // statusSources are the sources a status lists, in learning order.
-var statusSources = []string{SourceAsk, SourceReview, SourceSpec, SourcePermission, "turn", "git"}
+var statusSources = []string{SourceAsk, SourceReview, SourceSpec, SourcePermission, SourceJournal, "turn", "git"}
 
 // BacktestInterrupted is the status a running backtest row is reported with
 // when no process holds the lock: its run died; the next run closes the row.
