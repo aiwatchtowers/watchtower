@@ -121,16 +121,19 @@ type actionRow struct {
 	ID                                                int64
 	Tool, ArgsJSON, ResultJSON, Reason, Status, Error string
 	ContextType, ContextID, CreatedAt                 string
+	External                                          bool
 }
 
 func actionRowOfOpen(o db.OpenApproval) actionRow {
 	return actionRow{ID: o.ID, Tool: o.Tool, ArgsJSON: o.ArgsJSON, ResultJSON: o.ResultJSON, Reason: o.Reason,
-		Status: o.Status, Error: o.Error, ContextType: o.ContextType, ContextID: o.ContextID, CreatedAt: o.CreatedAt}
+		Status: o.Status, Error: o.Error, ContextType: o.ContextType, ContextID: o.ContextID, CreatedAt: o.CreatedAt,
+		External: o.External}
 }
 
 func actionRowOf(a db.AgentAction) actionRow {
 	return actionRow{ID: a.ID, Tool: a.Tool, ArgsJSON: a.ArgsJSON, ResultJSON: a.ResultJSON, Reason: a.Reason,
-		Status: a.Status, Error: a.Error, ContextType: a.ContextType, ContextID: a.ContextID, CreatedAt: a.CreatedAt}
+		Status: a.Status, Error: a.Error, ContextType: a.ContextType, ContextID: a.ContextID, CreatedAt: a.CreatedAt,
+		External: a.External}
 }
 
 // actionCard is a proposal's native card (a<id>): the folder row's title,
@@ -163,8 +166,9 @@ func (s *snapshot) approvalOf(a actionRow) *api.Approval {
 		Tool: a.Tool, Title: t.Title, Summary: strings.Join(t.Summary, "\n"),
 		ArgsSHA256: tools.ArgsSHA256(a.ArgsJSON), Status: a.Status, Error: a.Error,
 		Proposer: s.proposer(a), Reason: a.Reason, EditOnMac: t.EditOnMac && a.Status == "pending",
-		Disclosure: t.Disclosure, RecipeText: t.RecipeText, Diff: t.Diff,
+		Disclosure: t.Disclosure, RecipeText: t.RecipeText, Diff: t.Diff, External: a.External,
 	}
+	ap.ArgsDisplay, ap.ArgsComplete = tools.ArgsDisplay(a.ArgsJSON)
 	if ap.Diff == nil {
 		ap.Diff = []api.DiffLine{}
 	}

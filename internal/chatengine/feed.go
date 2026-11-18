@@ -6,7 +6,6 @@ package chatengine
 // text and steps over the last flush. The hub fits it to its record caps.
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -693,19 +692,9 @@ func actionTitle(tool string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
-// argsDisplay is an action's args as the phone shows them: indented JSON
-// (the stored text when it is not JSON), cut at 4000 characters, and
-// whether the text is whole. The approval hash is over the stored bytes,
-// never this text.
-func argsDisplay(argsJSON string) (string, bool) {
-	var buf bytes.Buffer
-	text := argsJSON
-	if json.Indent(&buf, []byte(argsJSON), "", "  ") == nil {
-		text = buf.String()
-	}
-	out, clipped := clipText(text, maxActionArgsBytes)
-	return out, clipped == nil
-}
+// argsDisplay is an action's args as the phone shows them
+// (tools.ArgsDisplay, shared with the phone Inbox's approval card).
+func argsDisplay(argsJSON string) (string, bool) { return tools.ArgsDisplay(argsJSON) }
 
 // cardResultKeys are the result_json keys the approval card shows (the
 // outcome link, "Task #N created", "Board X connected", the Confluence

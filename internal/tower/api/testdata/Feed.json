@@ -128,7 +128,10 @@
         "disclosure": "",
         "recipe_text": "",
         "diff": [],
-        "recipe_clipped": false
+        "recipe_clipped": false,
+        "args_display": "{\n  \"text\": \"Follow up with colleague A\"\n}",
+        "args_complete": true,
+        "external": true
       },
       "link": ""
     },
