@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"watchtower/internal/aiconsent/aiconsenttest"
 	"watchtower/internal/auditlog"
 	"watchtower/internal/chat/listenstub"
 	"watchtower/internal/codex"
@@ -61,6 +62,8 @@ import (
 func TestMain(m *testing.M) {
 	// Read tests' audit lines stay out of the machine's unified log.
 	auditlog.SetSinkForTest(func(string) {})
+	// Background AI reads allowed unless a test injects a consent reader.
+	aiconsenttest.AllowByDefault()
 	// The `ai session --listen` stand-in (sync stop's chat tests).
 	if os.Getenv(listenstub.Env) == "1" {
 		listenstub.Main()
