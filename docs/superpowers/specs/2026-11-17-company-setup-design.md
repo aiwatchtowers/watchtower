@@ -37,8 +37,9 @@ After this work:
 | D18 | The corp build's baked deny list moves into the bundle (`link_deny_hosts`), not dropped; a bundle can only add hosts to refuse, never allow one | decided by the agent |
 | D13 | The Live layer for Gmail/Calendar/Atlassian connectors (generalised Slack Live) is a separate project, not part of this spec | decided by the agent |
 | D19 | Every wizard step (Slack, Google, Atlassian, Linear, Microsoft) first looks for a company app the Mac already knows and reuses it; only when none is found does it ask **Create new** (default) / **We already have one**, with a hint for "don't know". Never a second app by accident | ask #1473 ("не только Slack. Так по всем конекторам") |
+| D21 | What IT controls through MDM is documented on the public website, one page for every key, linked from the app (the wizard's Publish step next to the `.mobileconfig`, and the **Organization policy** row in Settings → Privacy and in Connections) | conversation 2026-11-18 ("на сайте с ссылкой из приложения") |
 | D15 | Sharing on our shared Atlassian app is turned off 30 days after company setup ships | ask #1455 |
-| D14 | Screens (wizard, confirmation, Connections rows, banners) get their own screens spec with DesignShotCatalog mockups for every state, as #1709 does for Slack. This spec holds no screen and no UI task: it fixes the behaviour, the data and the UI texts (in the models, tested — T3); the screens spec is a prerequisite of every UI task and the screen tasks are planned from it | decided by the agent |
+| D14 | Screens (wizard with the existing-app fork, confirmation, Connections rows, banners, the Atlassian API-token form, the MDM help links) get their own screens spec with DesignShotCatalog mockups for every state, as #1709 does for Slack. This spec holds no screen and no UI task: it fixes the behaviour, the data and the UI texts (in the models, tested — T3); the screens spec is a prerequisite of every UI task and the screen tasks are planned from it | decided by the agent |
 
 ## 1. The company bundle
 
@@ -105,6 +106,17 @@ What still needs the person: the one **Connect** press in Watchtower and each ve
 
 **MDM (D9).** A forced `CompanyBundle` string (same encoding; POLICY-01 forced-only, fail closed) shows **<company> — Connect all** in Connections at launch; the same confirmation and chain. A forced bundle wins over a stored bundle of the same company; it never deletes accounts.
 
+**What IT controls through MDM (D21).** Every connector can be run from a configuration profile (`com.watchtower.desktop`, forced values only, POLICY-01):
+
+| Key | What it does | Status |
+|---|---|---|
+| `CompanyBundle` | The company bundle (§1): every connector's company app, the deny list; **Connect all** without a link | new here (T6) |
+| `AllowedSources` | Which connectors may run at all (`slack`, `google`, `imap` incl. Outlook, `caldav`, `jira` incl. Confluence, `linear`) | exists |
+| `PurgeRevokedData` | Revoked access wipes the account's data | exists |
+| `AllowedQuickConnections`, `AllowedAIProviders`, `AllowClaudeAITools`, `AllowAutomationShell`, `MobileSync` | Unchanged | exist |
+
+Further keys for connectors are pending the owner's answer (ask #1476). The public page (T14) lists every key with its type, default, effect and a sample profile, and is the one place IT reads; `docs/features/mdm-policy.md` stays the developer note and links to it; `watchtower policy show` names the page in its text output.
+
 **Connect code.** Connections → **Connect with a company code** takes the same base64url string; same flow without the browser hop.
 
 ## 4. Personal Gmail (no company)
@@ -120,7 +132,7 @@ Connections → Jira → **Connect with an API token**, beside the OAuth button;
 - **The person** creates a token at id.atlassian.com → Security → API tokens (a scoped token with today's `JiraScopes`, plus `ConfluenceScopes` for Confluence, is the one the step links to and recommends), pastes it with their Atlassian email and the site URL. Watchtower reads the site's `cloudId` from `https://<site>/_edge/tenant_info`, checks the token with `GET /rest/api/3/myself` (fills `owner_account_id`/`owner_email` as today) and stores the account.
 - **Data:** a migration adds `auth_kind TEXT NOT NULL DEFAULT 'oauth' CHECK (auth_kind IN ('oauth','api_token'))` to `jira_accounts` (mirrored as in §1). The email and token live in the account's token store where the OAuth tokens live today, same file permissions; nothing goes into the bundle.
 - **Client:** `internal/jira` sets one `Authorization` header per request today (`Bearer` from the token store). For `api_token` it sends `Basic base64(email:token)` instead and skips refresh; the base URL for each token kind (the `api.atlassian.com/ex/jira/<cloudId>` gateway for a scoped token, the site URL for a classic one) is fixed by spike S1. Confluence reuses the account's credentials, as with OAuth.
-- **Failures:** 401 → the existing revoke path (REVOKE/PURGE-01 unchanged) with the text **"The API token stopped working (expired or revoked) — paste a new one"**; Atlassian tokens expire (a year at most), so the account row shows the token's expiry when the person enters it and a reminder 7 days before. 403 on a scope → "This token lacks <scope> — create one with the listed scopes". `--site` not an Atlassian Cloud site → refused before storing.
+- **Failures:** 401 → the existing revoke path (REVOKE/PURGE-01 unchanged) with the text **"The API token stopped working (expired or revoked) — paste a new one"**. No expiry field is asked for: Atlassian's API does not report a token's expiry and Atlassian emails the person before it expires; Watchtower learns of it only from the 401. 403 on a scope → "This token lacks <scope> — create one with the listed scopes". `--site` not an Atlassian Cloud site → refused before storing.
 - **PDR (§6) does not run for token accounts:** the Personal Data Reporting API belongs to apps; a token is the person's own access. Closed users in such an account are anonymised by Atlassian on the next sync and purge follows the usual retention.
 - **Company bundle:** unchanged. A company that prefers tokens publishes a bundle without an `atlassian` block; the connect chain then shows Jira as **Connect** in Connections, where the person picks OAuth or token.
 
@@ -170,7 +182,7 @@ Test: a corp-flavored workspace fixture → bridge → public resolver gives eve
 | Corp install updates before the bridge ran | Stays on the gated feed until `company_migrated` | UpdateService test |
 | Reused Slack app, admin not a collaborator | "Ask the app's owner to add you as a collaborator"; step stays open; nothing created | wizard model test with an export fake returning the not-collaborator error |
 | Reused app's id pasted with a typo or from another workspace | Refused at the step (Slack: `team_id` of the export differs from the admin's workspace; others: dry authorize fails) | wizard model tests per vendor |
-| Atlassian API token expired or revoked | Account → revoked path, "paste a new one"; reminder 7 days before expiry | client test: 401 with `api_token` → revoked, no refresh attempt; reminder model test |
+| Atlassian API token expired or revoked | Account → revoked path, "paste a new one" | client test: 401 with `api_token` → revoked, no refresh attempt |
 | API token lacks a scope | 403 → named-scope hint, nothing erased | client test with a 403 fake |
 | Public build meets an untied account of an unknown client | **Re-login needed — open your company's link**, no silent failure | resolver + refresher test |
 | PDR erase interrupted | One transaction per account: all or nothing; the next cycle repeats it (idempotent) | kill-mid-erase test |
@@ -207,6 +219,7 @@ Test: a corp-flavored workspace fixture → bridge → public resolver gives eve
 | Corp installs move without breaking accounts | T11a bridge corp build (bundle from baked values, `company_slug`, `company_migrated` gate) | corp-workspace fixture test, UpdateService gate test |
 | Corp build gone, its settings moved | T11b build scripts drop the corp flavor | build-script check |
 | Guide pages | T12 `docs/guide/` connections pages | `go test ./docs/guide` |
+| IT reads every MDM key on the website, reached from the app (D21) | T14 site page (website repo) + in-app links + sample `.mobileconfig` | link-target model test (one URL constant, used by every link); page lists every key `internal/policy` knows — a test compares the key list in the policy package with a checked-in copy of the page's key list |
 
 ## 10. Inventory touched
 
