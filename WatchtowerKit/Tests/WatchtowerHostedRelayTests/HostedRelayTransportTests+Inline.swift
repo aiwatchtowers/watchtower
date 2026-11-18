@@ -41,20 +41,46 @@ extension HostedRelayTransportTests {
         return (transport, store, log, mac)
     }
 
-    /// A started transport on a live socket whose data zone holds the Mac's "before", once the reads of its
-    /// start and of its connect's record-less event are over (one `changes` of the data zone each).
-    private func liveAtOne() async throws -> (HostedRelayTransport, TransportStore, TransportEventLog, mac: HostedRelayClient) {
+    /// A started transport on a live socket whose data zone holds the Mac's "before" (cursor 1), with `reads`, the
+    /// data zone's `changes` so far. The connect's record-less event either joins the start's pull or reads on its
+    /// own, by timing, so the tests count reads from `reads`. "before" is saved once both zones are subscribed: its
+    /// event follows the connect's record-less ones on the socket, so once it is taken and no pull runs, they were
+    /// handled too.
+    private func liveAtOne() async throws -> LiveAtOne {
         let (mac, phone) = try await hub()
         let store = try TransportStore.inMemory()
         let (transport, log) = try await makeTransport(phone, mac: mac, store: store)
         let zone = dataZone(mac)
-        try await macSave(mac, zone, "before")
+        let box = mailbox(mac, phone)
         await transport.start()
-        await waitUntilLive(await transport.session)
-        await eventually { ((try? self.changesSinces(zone).count) ?? 0) >= 2 }
-        await settle("the start's pulls are over") { await transport.pullTask == nil }
-        XCTAssertEqual(try changesSinces(zone), [0, 1])
-        return (transport, store, log, mac)
+        let session = await transport.session
+        await waitUntilLive(session)
+        await eventually { Set(self.subscribedZones()).isSuperset(of: [zone, box]) }
+        try await macSave(mac, zone, "before")
+        await eventually { (try? self.names(store)) == ["before"] }
+        let owner = ObjectIdentifier(await transport.owner)
+        await settle("the connect's events are handled") {
+            let unread = await session.unreadRecordBytes(owner: owner)
+            return unread == 0 ? await transport.pullTask == nil : false
+        }
+        XCTAssertEqual(try store.relayCursor(zone: .data), 1)
+        return LiveAtOne(transport: transport, store: store, log: log, mac: mac, reads: try changesSinces(zone))
+    }
+
+    private struct LiveAtOne {
+        let transport: HostedRelayTransport
+        let store: TransportStore
+        let log: TransportEventLog
+        let mac: HostedRelayClient
+        let reads: [UInt64]
+    }
+
+    /// The zones the clients subscribed so far.
+    private func subscribedZones() -> [String] {
+        backend.opLog.flatMap { op -> [String] in
+            guard case .subscribe(let subscribe) = op else { return [] }
+            return subscribe.zones
+        }
     }
 
     private func names(_ store: TransportStore) throws -> [String] {
@@ -63,14 +89,15 @@ extension HostedRelayTransportTests {
 
     /// A two-record save of the hub reaches the buffer from its event alone: no `changes` after it.
     func testInlineRecordsAppliedWithoutChangesRead() async throws {
-        let (_, store, log, mac) = try await liveAtOne()
+        let live = try await liveAtOne()
+        let (store, log, mac, reads) = (live.store, live.log, live.mac, live.reads)
         let zone = dataZone(mac)
         let fetches = log.fetches
 
         try await macSaveAll(mac, zone, ["x", "y"])
         await eventually { (try? self.names(store)) == ["before", "x", "y"] }
         XCTAssertEqual(try store.relayCursor(zone: .data), 3)
-        XCTAssertEqual(try changesSinces(zone), [0, 1], "no read for the event's own records")
+        XCTAssertEqual(try changesSinces(zone), reads, "no read for the event's own records")
         XCTAssertEqual(log.fetches, fetches + 1, "the engine is told as after a pull")
         let batch = try buffered(store, .data)
         XCTAssertEqual(batch.changed.map(\.payload), [Data("before".utf8), Data("x".utf8), Data("y".utf8)])
@@ -78,7 +105,7 @@ extension HostedRelayTransportTests {
 
         try await macSave(mac, zone, "z")
         await eventually { (try? self.names(store)) == ["before", "x", "y", "z"] }
-        XCTAssertEqual(try changesSinces(zone), [0, 1], "nor for the next one")
+        XCTAssertEqual(try changesSinces(zone), reads, "nor for the next one")
         XCTAssertEqual(try store.relayCursor(zone: .data), 4)
     }
 
@@ -201,13 +228,14 @@ extension HostedRelayTransportTests {
     /// A phone over the relay's traffic budget gets its events without records: each is a read.
     func testRecordlessEventOverTrafficBudgetReads() async throws {
         let relay = try relay
-        let (transport, store, _, mac) = try await liveAtOne()
+        let live = try await liveAtOne()
+        let (transport, store, mac, reads) = (live.transport, live.store, live.mac, live.reads)
         let zone = dataZone(mac)
         relay.setTrafficOver(true, deviceID: await transport.client.deviceID)
 
         try await macSaveAll(mac, zone, ["x", "y"])
         await eventually { (try? self.names(store)) == ["before", "x", "y"] }
-        XCTAssertEqual(try changesSinces(zone), [0, 1, 1], "a bare event is a read from the cursor")
+        XCTAssertEqual(try changesSinces(zone), reads + [1], "a bare event is a read from the cursor")
     }
 
     /// While a pull is in flight the event's records are not applied (the pull reads from the cursor they would
@@ -267,15 +295,16 @@ extension HostedRelayTransportTests {
     func testOldRelayWithoutCapabilityKeepsSingleRecordInline() async throws {
         let relay = try relay
         relay.setRecordsInline(false)
-        let (_, store, _, mac) = try await liveAtOne()
+        let live = try await liveAtOne()
+        let (store, mac, reads) = (live.store, live.mac, live.reads)
         let zone = dataZone(mac)
 
         try await macSave(mac, zone, "one")
         await eventually { (try? self.names(store)) == ["before", "one"] }
-        XCTAssertEqual(try changesSinces(zone), [0, 1], "the single record needs no read")
+        XCTAssertEqual(try changesSinces(zone), reads, "the single record needs no read")
 
         try await macSaveAll(mac, zone, ["x", "y"])
         await eventually { (try? self.names(store)) == ["before", "one", "x", "y"] }
-        XCTAssertEqual(try changesSinces(zone), [0, 1, 2], "two records: a read")
+        XCTAssertEqual(try changesSinces(zone), reads + [2], "two records: a read")
     }
 }
