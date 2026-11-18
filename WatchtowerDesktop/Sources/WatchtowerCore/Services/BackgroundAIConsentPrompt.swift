@@ -44,16 +44,21 @@ package struct BackgroundAIConsentSheet {
     /// Shown instead of the sheet when the provider catalog could not be
     /// read: the agent's plan and usage-limit lines come from it, and the
     /// screen never discloses without them. Its Try again presents again.
-    package private(set) var showsCatalogRetry = false
+    package var showsCatalogRetry: Bool { catalogRetry != nil }
+    /// Which sheet the shown catalog retry stands in for; it goes once that
+    /// sheet would have closed (answered meanwhile, Decision 12).
+    private var catalogRetry: BackgroundAIConsentPrompt.Opened?
     /// The upgrade sheet opens once per launch.
     private var upgradeShown = false
+    /// Its config error (`makeModel` gave nil) shows once per launch.
+    private var upgradeConfigErrorShown = false
 
     /// What a re-entry did.
     package enum Presentation: Equatable {
         /// Opened now, or the config error is shown instead.
         case opened, configError
         /// The provider catalog is not read yet: the caller reads it, then
-        /// presents again (or `showCatalogRetry()` when the read failed).
+        /// presents again (or `showCatalogRetry(for:state:)` when the read failed).
         case needsCatalog
         /// Already on screen: only bring its window forward.
         case alreadyVisible
@@ -87,11 +92,28 @@ package struct BackgroundAIConsentSheet {
         catalogLoaded: Bool = true,
         makeModel: () -> BackgroundAIConsentModel?
     ) {
-        guard !upgradeShown, opened == nil, !configUnreadable, !releaseNotesPending, catalogLoaded,
-              BackgroundAIConsentPrompt.shouldPresent(onboardingDone: onboardingDone, state: state),
-              let made = makeModel() else { return }
+        guard catalogLoaded, upgradeDue(onboardingDone: onboardingDone, state: state, configUnreadable: configUnreadable,
+                                        releaseNotesPending: releaseNotesPending) else { return }
+        // nil: the file could not be read again, or the setup read failed
+        // closed (a key set twice in different case): the config error shows
+        // instead, once per launch; a later readable file still opens it.
+        guard let made = makeModel() else {
+            if !upgradeConfigErrorShown { showsConfigError = true }
+            upgradeConfigErrorShown = true
+            return
+        }
         upgradeShown = true
         open(.upgrade, model: made)
+    }
+
+    /// Whether the upgrade sheet would open now, the provider catalog aside:
+    /// not shown yet this launch, nothing open, config.yaml readable, no
+    /// release notes pending, and the answer still due.
+    package func upgradeDue(
+        onboardingDone: Bool, state: BackgroundAIConsent.State, configUnreadable: Bool, releaseNotesPending: Bool
+    ) -> Bool {
+        !upgradeShown && opened == nil && !configUnreadable && !releaseNotesPending
+            && BackgroundAIConsentPrompt.shouldPresent(onboardingDone: onboardingDone, state: state)
     }
 
     /// The owner's re-entry (Settings, Home, empty states, Automations).
@@ -118,14 +140,16 @@ package struct BackgroundAIConsentSheet {
         return .opened
     }
 
-    /// The provider catalog could not be read for a sheet that was wanted:
-    /// the retry shows instead of a disclosure without the plan lines.
-    package mutating func showCatalogRetry() {
-        showsCatalogRetry = true
+    /// The provider catalog could not be read for sheet `kind`, still
+    /// wanted: the retry shows instead of a disclosure without the plan
+    /// lines, unless `state` says it was answered meanwhile.
+    package mutating func showCatalogRetry(for kind: BackgroundAIConsentPrompt.Opened, state: BackgroundAIConsent.State) {
+        guard !BackgroundAIConsentPrompt.shouldClose(opened: kind, state: state) else { return }
+        catalogRetry = kind
     }
 
     package mutating func dismissCatalogRetry() {
-        showsCatalogRetry = false
+        catalogRetry = nil
     }
 
     /// The sheet's content appeared.
@@ -136,6 +160,7 @@ package struct BackgroundAIConsentSheet {
     /// Closes the sheet when the state says it was answered elsewhere.
     package mutating func follow(_ state: BackgroundAIConsent.State) {
         if let opened, BackgroundAIConsentPrompt.shouldClose(opened: opened, state: state) { close() }
+        if let catalogRetry, BackgroundAIConsentPrompt.shouldClose(opened: catalogRetry, state: state) { self.catalogRetry = nil }
     }
 
     package mutating func close() {

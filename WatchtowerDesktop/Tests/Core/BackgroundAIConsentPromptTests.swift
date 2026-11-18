@@ -74,6 +74,8 @@ final class BackgroundAIConsentPromptTests: XCTestCase {
         sheet.presentIfDue(onboardingDone: true, state: unanswered, configUnreadable: false,
                            releaseNotesPending: false) { nil }
         XCTAssertNil(sheet.opened, "a file unreadable at the re-read opens nothing")
+        XCTAssertTrue(sheet.showsConfigError, "it says why")
+        sheet.dismissConfigError()
         due(&sheet, done: false)
         XCTAssertNil(sheet.opened, "onboarding asks in its own step")
         due(&sheet)
@@ -142,7 +144,7 @@ final class BackgroundAIConsentPromptTests: XCTestCase {
                        .needsCatalog)
         XCTAssertNil(sheet.opened)
         XCTAssertEqual(made, 0)
-        sheet.showCatalogRetry()
+        sheet.showCatalogRetry(for: .reEntry, state: ownerPaused)
         XCTAssertTrue(sheet.showsCatalogRetry)
         sheet.dismissCatalogRetry()
         XCTAssertEqual(sheet.present(configUnreadable: false, catalogLoaded: true) { self.model() }, .opened)
@@ -152,6 +154,54 @@ final class BackgroundAIConsentPromptTests: XCTestCase {
         upgrade.presentIfDue(onboardingDone: true, state: unanswered, configUnreadable: false,
                              releaseNotesPending: false, catalogLoaded: true) { self.model() }
         XCTAssertEqual(upgrade.opened, .upgrade, "once read, the upgrade sheet opens")
+    }
+
+    /// The catalog retry stands in for a sheet: it is not shown once that
+    /// sheet would have closed, and goes when the answer arrives meanwhile.
+    @MainActor
+    func testTheCatalogRetryFollowsTheAnswer() {
+        var sheet = BackgroundAIConsentSheet()
+        sheet.showCatalogRetry(for: .upgrade, state: ownerPaused)
+        XCTAssertFalse(sheet.showsCatalogRetry, "answered meanwhile: no retry for the upgrade sheet")
+        sheet.showCatalogRetry(for: .reEntry, state: allowed)
+        XCTAssertFalse(sheet.showsCatalogRetry, "allowed meanwhile: no retry for a re-entry")
+
+        sheet.showCatalogRetry(for: .upgrade, state: unanswered)
+        XCTAssertTrue(sheet.showsCatalogRetry)
+        sheet.follow(ownerPaused)
+        XCTAssertFalse(sheet.showsCatalogRetry, "answered in a terminal while the retry was up")
+    }
+
+    /// The upgrade eligibility the caller re-reads after the catalog wait:
+    /// release notes, config readability and the answer, fresh.
+    @MainActor
+    func testUpgradeDueReadsEveryInput() {
+        let sheet = BackgroundAIConsentSheet()
+        XCTAssertTrue(sheet.upgradeDue(onboardingDone: true, state: unanswered, configUnreadable: false, releaseNotesPending: false))
+        XCTAssertFalse(sheet.upgradeDue(onboardingDone: true, state: unanswered, configUnreadable: false, releaseNotesPending: true))
+        XCTAssertFalse(sheet.upgradeDue(onboardingDone: true, state: unanswered, configUnreadable: true, releaseNotesPending: false))
+        XCTAssertFalse(sheet.upgradeDue(onboardingDone: true, state: ownerPaused, configUnreadable: false, releaseNotesPending: false))
+        XCTAssertFalse(sheet.upgradeDue(onboardingDone: false, state: unanswered, configUnreadable: false, releaseNotesPending: false))
+        var shown = BackgroundAIConsentSheet()
+        shown.presentIfDue(onboardingDone: true, state: unanswered, configUnreadable: false, releaseNotesPending: false) { self.model() }
+        shown.close()
+        XCTAssertFalse(shown.upgradeDue(onboardingDone: true, state: unanswered, configUnreadable: false, releaseNotesPending: false),
+                       "once per launch")
+    }
+
+    /// The setup read failed closed (a key set twice in different case):
+    /// the upgrade shows the config error instead of nothing, once.
+    @MainActor
+    func testUpgradeShowsTheConfigErrorWhenTheSetupFailsClosed() {
+        var sheet = BackgroundAIConsentSheet()
+        sheet.presentIfDue(onboardingDone: true, state: unanswered, configUnreadable: false, releaseNotesPending: false) { nil }
+        XCTAssertNil(sheet.opened)
+        XCTAssertTrue(sheet.showsConfigError)
+        sheet.dismissConfigError()
+        sheet.presentIfDue(onboardingDone: true, state: unanswered, configUnreadable: false, releaseNotesPending: false) { nil }
+        XCTAssertFalse(sheet.showsConfigError, "the alert shows once per launch")
+        sheet.presentIfDue(onboardingDone: true, state: unanswered, configUnreadable: false, releaseNotesPending: false) { self.model() }
+        XCTAssertEqual(sheet.opened, .upgrade, "a file fixed later still opens the sheet")
     }
 
     /// The onboarding step offers Try again while the catalog is unread, and

@@ -91,7 +91,8 @@ extension AppState {
                 if await self.readCatalogForConsent() {
                     self.presentBackgroundAIConsent()
                 } else {
-                    self.backgroundAIConsentSheet.showCatalogRetry()
+                    // Not when it was answered meanwhile (allowed elsewhere).
+                    self.backgroundAIConsentSheet.showCatalogRetry(for: .reEntry, state: self.backgroundAI)
                 }
             }
         case .opened, .configError, .alreadyVisible:
@@ -113,29 +114,40 @@ extension AppState {
     func syncBackgroundAIConsentSheet() {
         backgroundAIConsentSheet.follow(backgroundAI)
         let wasOpen = isBackgroundAIConsentPresented
-        let onboardingDone = onboarding.currentStep == .complete
         backgroundAIConsentSheet.presentIfDue(
-            onboardingDone: onboardingDone,
+            onboardingDone: onboarding.currentStep == .complete,
             state: backgroundAI,
             configUnreadable: backgroundAIConfigUnreadable,
-            releaseNotesPending: !updateService.isWhatsNewSettled || updateService.installedRelease != nil,
+            releaseNotesPending: backgroundAIReleaseNotesPending,
             catalogLoaded: aiModelCatalog.isLoaded
         ) { makeBackgroundAIConsentModel() }
         if !wasOpen, isBackgroundAIConsentPresented { bringMainWindowForward() }
         // Due, but the provider catalog is not read: read it, then look
         // again; a read that fails offers Try again (never a disclosure
-        // without the plan lines).
-        if !aiModelCatalog.isLoaded, !isBackgroundAIConsentPresented,
-           BackgroundAIConsentPrompt.shouldPresent(onboardingDone: onboardingDone, state: backgroundAI) {
+        // without the plan lines) only if the sheet is still due then.
+        if !aiModelCatalog.isLoaded, upgradeSheetDue() {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if await self.readCatalogForConsent() {
                     self.syncBackgroundAIConsentSheet()
-                } else if !self.isBackgroundAIConsentPresented {
-                    self.backgroundAIConsentSheet.showCatalogRetry()
+                } else if self.upgradeSheetDue() {
+                    self.backgroundAIConsentSheet.showCatalogRetry(for: .upgrade, state: self.backgroundAI)
                 }
             }
         }
+    }
+
+    private var backgroundAIReleaseNotesPending: Bool {
+        !updateService.isWhatsNewSettled || updateService.installedRelease != nil
+    }
+
+    /// The upgrade sheet's eligibility read fresh: release notes, config
+    /// readability and the answer as they are now.
+    private func upgradeSheetDue() -> Bool {
+        backgroundAIConsentSheet.upgradeDue(
+            onboardingDone: onboarding.currentStep == .complete, state: backgroundAI,
+            configUnreadable: backgroundAIConfigUnreadable, releaseNotesPending: backgroundAIReleaseNotesPending
+        )
     }
 
     /// The sheet's answer was saved: re-read it, then close.
