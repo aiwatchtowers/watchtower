@@ -17,8 +17,6 @@ extension FakeHostedRelay {
         var crashAfter: [String: Int] = [:]
         /// Op case name → how many of its next socket calls run and then have their socket cut unanswered.
         var cutAfter: [String: Int] = [:]
-        /// Op case name → how many of its next socket calls run and are never answered, the socket kept.
-        var withheld: [String: Int] = [:]
     }
 
     /// The next `times` calls of `op` (the oneof case name: `save`, `createUpload`,
@@ -68,23 +66,8 @@ extension FakeHostedRelay {
 
     /// Whether `cutSocketAfterNext` armed a cut for this socket call of `op`, consumed (lock held).
     func takeCutAfter(_ op: String) -> Bool {
-        Self.take(op, from: &state.faults.cutAfter)
-    }
-
-    /// The next call of `op` over a socket runs (its writes stay) and is never answered; the socket stays
-    /// up and keeps answering pings and other requests.
-    public func withholdNextAnswer(_ op: String) {
-        locked { state.faults.withheld[op, default: 0] += 1 }
-    }
-
-    /// Whether `withholdNextAnswer` armed this socket call of `op`, consumed (lock held).
-    func takeWithheld(_ op: String) -> Bool {
-        Self.take(op, from: &state.faults.withheld)
-    }
-
-    private static func take(_ op: String, from counts: inout [String: Int]) -> Bool {
-        guard let count = counts[op], count > 0 else { return false }
-        counts[op] = count > 1 ? count - 1 : nil
+        guard let count = state.faults.cutAfter[op], count > 0 else { return false }
+        state.faults.cutAfter[op] = count > 1 ? count - 1 : nil
         return true
     }
 

@@ -94,62 +94,6 @@ extension HostedRelayTransportTests {
         XCTAssertEqual(count("changes", http) - before, 1)
     }
 
-    /// A request the relay never answers while its socket stays up gives up after the HTTPS request
-    /// timeout: a read is then resent over HTTPS, a `create_upload` is not replayed (`.unreachable`).
-    func testARequestWithoutAnAnswerExpires() async throws {
-        let relay = try relay
-        let (transport, _, http, mac) = try await liveTransport()
-        let phone = await transport.client
-        let session = await transport.session
-
-        relay.withholdNextAnswer("getDownload")
-        var download = Relay_V1_GetDownload()
-        download.zone = mailbox(mac, phone)
-        download.attachmentID = "missing"
-        let read = download
-        _ = try await expire("getDownload", relay) { _ = try? await session.getDownload(read) }
-        XCTAssertEqual(count("getDownload", http), 1, "the read resent over HTTPS")
-
-        relay.withholdNextAnswer("createUpload")
-        var create = Relay_V1_CreateUpload()
-        create.zone = mailbox(mac, phone)
-        create.size = 4
-        let upload = create
-        let error: (any Error)? = try await expire("createUpload", relay) {
-            do {
-                _ = try await session.createUpload(upload)
-                return nil
-            } catch {
-                return error
-            }
-        }
-        XCTAssertEqual(error as? HostedRelayError, .unreachable)
-        XCTAssertEqual(count("createUpload", http), 0, "not replayed over HTTPS")
-    }
-
-    /// Runs `body` until it ends, moving the manual clock by the request timeout once its op reached the relay.
-    private func expire<T: Sendable>(
-        _ op: String, _ relay: FakeHostedRelay, _ body: @escaping @Sendable () async -> T
-    ) async throws -> T {
-        let clock = try XCTUnwrap(manualClock)
-        let reached = relay.log.filter { HostedRelayClient.name($0) == op }.count
-        let start = clock.now()
-        let result = OSAllocatedUnfairLock<T?>(initialState: nil)
-        let task = Task {
-            let value = await body()
-            result.withLock { $0 = value }
-        }
-        while relay.log.filter({ HostedRelayClient.name($0) == op }).count == reached { await Task.yield() }
-        while result.withLock({ $0 }) == nil {
-            clock.advance(by: HostedRelayConnection.requestTimeout)
-            await Task.yield()
-        }
-        await task.value
-        let waited = clock.now().timeIntervalSince(start)
-        XCTAssertLessThanOrEqual(waited, 2 * URLSessionRelayHTTP.requestTimeout, "ended by the request deadline, \(waited) s")
-        return try XCTUnwrap(result.withLock { $0 })
-    }
-
     /// `UNAUTHENTICATED` on the socket: the op did not run, so it goes over HTTPS once.
     func testUnauthenticatedOnTheSocketGoesOverHTTPS() async throws {
         let relay = try relay

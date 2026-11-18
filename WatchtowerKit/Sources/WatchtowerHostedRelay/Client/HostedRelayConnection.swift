@@ -513,7 +513,8 @@ public final class HostedRelayConnection: Sendable {
 
     /// One `Request` frame on `socket`, answered by id. `SocketLoss.notSent` when the socket is no
     /// longer the live one, `.lost` when it drops (or fails the write) before the answer, or when no
-    /// answer comes within `requestTimeout` of the write (a relay that still pongs but never answers).
+    /// answer comes within `requestTimeout` (a relay that still pongs but never answers, or a write that
+    /// never returns): the socket is then retired (`expire`).
     private func roundTrip(_ op: Relay_V1_Request.OneOf_Op, on socket: any RelaySocket, generation: Int) async throws -> Relay_V1_Response {
         let id = state.withLock { state in
             state.nextID += 1
@@ -523,8 +524,8 @@ public final class HostedRelayConnection: Sendable {
         frame.request.id = id
         frame.request.op = op
         let data = try frame.serializedData()
-        let writer = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
-        defer { writer.withLock { $0?.cancel() } }
+        let deadline = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
+        defer { deadline.withLock { $0?.cancel() } }
         let response: Relay_V1_Response = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 let refusal: (any Error)? = state.withLock { state in
@@ -534,18 +535,20 @@ public final class HostedRelayConnection: Sendable {
                     return nil
                 }
                 if let refusal { return continuation.resume(throwing: refusal) }
-                let task = Task {
+                // Started before the write, so a write that never returns is covered too; cancelled once the
+                // request is answered or failed.
+                let timer = Task {
+                    do { try await self.clock.sleep(for: Self.requestTimeout) } catch { return }
+                    await self.expire(id, op: op, socket: socket, generation: generation)
+                }
+                deadline.withLock { $0 = timer }
+                Task {
                     do {
                         try await socket.send(data)
                     } catch {
-                        return self.fail(id, with: SocketLoss.lost)
+                        self.fail(id, with: SocketLoss.lost)
                     }
-                    // Cancelled once the request is answered or failed.
-                    do { try await self.clock.sleep(for: Self.requestTimeout) } catch { return }
-                    Self.logger.error("relay socket: \(HostedRelayClient.name(op), privacy: .public) got no answer in time")
-                    self.fail(id, with: SocketLoss.lost)
                 }
-                writer.withLock { $0 = task }
             }
         } onCancel: {
             fail(id, with: CancellationError())
@@ -559,9 +562,22 @@ public final class HostedRelayConnection: Sendable {
         waiter?.resume(returning: response)
     }
 
-    private func fail(_ id: UInt64, with error: any Error) {
-        let waiter = state.withLock { $0.pending.removeValue(forKey: id) }
-        waiter?.resume(throwing: error)
+    /// Fails request `id`; false when it was already answered or failed.
+    @discardableResult
+    private func fail(_ id: UInt64, with error: any Error) -> Bool {
+        guard let waiter = state.withLock({ $0.pending.removeValue(forKey: id) }) else { return false }
+        waiter.resume(throwing: error)
+        return true
+    }
+
+    /// Request `id` got no answer within `requestTimeout`: it is lost (it may have run), and the socket is
+    /// retired, since a relay that pongs but never answers would hold every later request for as long.
+    /// The connection redials; until then a request is refused before its write (`.notSent`).
+    private func expire(_ id: UInt64, op: Relay_V1_Request.OneOf_Op, socket: any RelaySocket, generation: Int) async {
+        guard fail(id, with: SocketLoss.lost) else { return }
+        Self.logger.error("relay socket: \(HostedRelayClient.name(op), privacy: .public) got no answer in time, reconnecting")
+        detach(generation)
+        await socket.close(code: Self.closeNormal)
     }
 
     // MARK: - State

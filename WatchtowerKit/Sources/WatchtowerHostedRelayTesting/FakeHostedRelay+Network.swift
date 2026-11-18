@@ -140,8 +140,6 @@ extension FakeHostedRelay {
                     state.sockets.removeAll { $0 === socket }
                     return
                 }
-                // `withholdNextAnswer`: the op ran, its answer never comes.
-                if let op = request.op, takeWithheld(Self.name(op)) { return }
             }
             response.id = request.id
             var out = Relay_V1_Frame()
