@@ -5,7 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
+	"time"
 
 	"watchtower/internal/db"
 )
@@ -243,6 +245,73 @@ func TestProj18_RemovedFolderIsNeverACandidate(t *testing.T) {
 	}
 	if hasItem(res.Plan, "worktree:"+gone) {
 		t.Fatalf("a folder that left the bench is a sweep candidate: %+v", res.Items)
+	}
+
+	// A session of the bench that declares it keeps it as a workbench folder.
+	row, err := d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id, created_at)
+		VALUES (?, 'claude', 'one', ?, 'c1', ?)`, wb, f.repo, f.sessionCreated.UTC().Format(time.RFC3339))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid, _ := row.LastInsertId()
+	res, err = PlanResult(context.Background(), deps, Request{SessionID: sid, DeclaredWorktrees: []string{gone}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantItem(t, res.Plan, "worktree:"+gone, ActionKeep, ReasonWorkbenchFolder)
+}
+
+// homeSwitch is a store whose bench is home A until the first BenchFolders
+// read, and home B for every read after it: the home changed while an
+// apply ran.
+type homeSwitch struct {
+	*fakeStore
+	mu    sync.Mutex
+	reads int
+	after string
+}
+
+func (s *homeSwitch) switched() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reads > 0
+}
+
+func (s *homeSwitch) BenchFolders(ctx context.Context, id int64) ([]string, error) {
+	s.mu.Lock()
+	s.reads++
+	first := s.reads == 1
+	s.mu.Unlock()
+	if first {
+		return s.fakeStore.BenchFolders(ctx, id)
+	}
+	return []string{s.after}, nil
+}
+
+func (s *homeSwitch) WorkbenchFolder(ctx context.Context, id int64) (string, error) {
+	if s.switched() {
+		return s.after, nil
+	}
+	return s.fakeStore.WorkbenchFolder(ctx, id)
+}
+
+// TestProj18_SweepApplyStaysInTheFolderItEvaluated: the home of a one-folder
+// bench changes from A to B while a sweep apply runs; the re-checks do not
+// read B's repository for A's deletes: everything is kept (check_failed)
+// and nothing is removed in either repository.
+func TestProj18_SweepApplyStaysInTheFolderItEvaluated(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	hub := f.otherRepo("hub")
+	work := f.pushedWork("wt", "feat/x")
+	hubWork := f.pushedWorkIn(hub, "hub-wt", "feat/x")
+	gitIn(t, hub, "worktree", "remove", hubWork)
+	res := f.apply(Request{Sweep: true}, []string{"worktree:" + work, "branch:feat/x"}, func(d *Deps) {
+		d.DB = &homeSwitch{fakeStore: f.store, after: hub}
+	})
+	wantResultItem(t, res, "worktree:"+work, ActionKeep, ReasonCheckFailed, false)
+	if !exists(work) || !f.branchExists("feat/x") || !branchIn(t, hub, "feat/x") {
+		t.Fatal("an apply acted after the bench's home changed")
 	}
 }
 

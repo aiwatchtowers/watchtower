@@ -244,6 +244,9 @@ func (a *applier) act(ctx context.Context, i int) {
 
 // fresh is a new evaluation of the request: the re-check's facts.
 func (a *applier) fresh(ctx context.Context) (*builder, error) {
+	if err := benchFolderGone(ctx, a.deps, a.req); err != nil {
+		return nil, fmt.Errorf("re-checking: %w", err)
+	}
 	b, err := newBuilder(ctx, a.deps, a.req)
 	if err != nil {
 		return nil, fmt.Errorf("re-checking: %w", err)

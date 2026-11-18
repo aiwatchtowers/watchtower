@@ -51,6 +51,12 @@ func sweepBuilders(ctx context.Context, d Deps, r Request) ([]*builder, error) {
 		return nil, fmt.Errorf("reading workbench %d folders: %w", r.WorkbenchID, err)
 	}
 	if len(folders) <= 1 {
+		// The home folder is pinned, so the apply's re-checks read the
+		// repository its deletes run in (benchFolderGone); the keys stay
+		// unqualified.
+		if len(folders) == 1 {
+			r.folder = resolvePath(folders[0])
+		}
 		b, err := newBuilder(ctx, d, r)
 		if err != nil {
 			return nil, err
@@ -88,6 +94,27 @@ func sweepBuilders(ctx context.Context, d Deps, r Request) ([]*builder, error) {
 	}
 	parts[0].notes = append(parts[0].notes, notes...)
 	return parts, nil
+}
+
+// benchFolderGone fails a sweep's re-check whose pinned folder is no longer
+// a live folder of the bench (it left, or another folder became the home of
+// a one-folder bench): the evaluation read that folder's repository, so
+// nothing is acted on against another one (fail closed). A session's
+// re-check, and a request with no pinned folder, pass.
+func benchFolderGone(ctx context.Context, d Deps, r Request) error {
+	if !r.Sweep || r.folder == "" {
+		return nil
+	}
+	folders, err := d.DB.BenchFolders(ctx, r.WorkbenchID)
+	if err != nil {
+		return fmt.Errorf("reading workbench %d folders: %w", r.WorkbenchID, err)
+	}
+	for _, f := range folders {
+		if resolvePath(f) == r.folder {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s is no longer a folder of workbench %d", r.folder, r.WorkbenchID)
 }
 
 // unsweptNote is the plan note of a bench folder the sweep skips: missing
