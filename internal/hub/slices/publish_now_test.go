@@ -342,3 +342,59 @@ func TestResumeKeepsARetryHold(t *testing.T) {
 		t.Fatalf("the held kind read %d times when its hold ran out, want 3", n)
 	}
 }
+
+// kindSaves records the kinds the publisher saved, in order.
+type kindSaves struct {
+	mu    sync.Mutex
+	kinds []Kind
+}
+
+func (s *kindSaves) Saved(_, kind string, _, _ time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.kinds = append(s.kinds, Kind(kind))
+}
+
+// A PublishNow that arrives while a full cycle runs is taken between kinds:
+// the nudged kind is the next one saved, not the last of the cycle.
+func TestPublisher_PublishNowJoinsRunningCycle(t *testing.T) {
+	r := newRig(t, transport.KindRelay)
+	saves := &kindSaves{}
+	var sources []Source
+	srcs := map[Kind]*fakeSource{}
+	for _, k := range AllKinds {
+		s := &fakeSource{kind: k}
+		s.set(item("1", `{"v":1}`))
+		srcs[k] = s
+		sources = append(sources, s)
+	}
+	p := r.publisherWith(Config{Latency: saves}, sources...)
+	order := p.sourceKinds()
+	if len(order) < 34 {
+		t.Fatalf("%d kinds with a source, want the full set", len(order))
+	}
+	late := order[len(order)-1]
+	// The hook runs while the cycle is on its first kinds; saved counts the
+	// kinds finished by then (the one being read is the next to finish).
+	saved := -1
+	srcs[order[1]].during = func() {
+		saves.mu.Lock()
+		saved = len(saves.kinds)
+		saves.mu.Unlock()
+		p.PublishNow(late)
+	}
+	if _, err := p.Cycle(context.Background(), nil); err != nil {
+		t.Fatalf("Cycle: %v", err)
+	}
+	got := saves.kinds
+	at := slices.Index(got, late)
+	if saved < 0 || at < 0 || at > saved+1 {
+		t.Fatalf("saved order %v (nudged after %d saves), want %s as the next kind", got, saved, late)
+	}
+	if n := slices.Index(got[at+1:], late); n >= 0 {
+		t.Fatalf("%s saved twice in one cycle: %v", late, got)
+	}
+	if p.DirtyForTest(late) {
+		t.Fatalf("%s still waits for a publish after the cycle took it", late)
+	}
+}
