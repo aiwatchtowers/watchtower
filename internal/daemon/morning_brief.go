@@ -6,6 +6,7 @@ import (
 	"maps"
 	"time"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/builtin"
 	"watchtower/internal/db"
@@ -87,8 +88,21 @@ const briefingNoDataBackoff = time.Hour
 func (d *Daemon) phaseMorningBrief(ctx context.Context, now time.Time) {
 	if !d.builtinOn(morningBriefID) {
 		d.cancelQueuedBuiltinRuns(morningBriefID, now)
-		d.phaseBriefingAt(ctx, now)
-		d.runDayPlanPhases(ctx, now)
+		owner := db.Owner{}
+		if d.config.DayPlan.Enabled && d.dayPlanPipeline != nil && d.db != nil {
+			owner = d.dayPlanOwner(now)
+		}
+		// Only the briefing and the plan's generation call a model; the
+		// conflict phase (calendar refresh and conflict detection on an
+		// existing plan) is mechanical and runs while paused, as on the
+		// built-in path.
+		d.aiPhase(ctx, "morning-brief", func(ctx context.Context) {
+			d.phaseBriefingAt(ctx, now)
+			if d.config.DayPlan.Enabled && d.dayPlanPipeline != nil && d.db != nil {
+				d.runDayPlanPhase(ctx, now, owner)
+			}
+		})
+		d.runDayPlanConflictPhase(ctx, now, owner)
 		return
 	}
 	d.ensureBuiltinsSwept() // the start's sweep failed: retried before the slot
@@ -207,7 +221,7 @@ func (d *Daemon) trackBrief(trigger, date string, run func() (int, error)) (int,
 			d.logNoOwnerOnce(now, "briefing")
 			err, runErr = nil, nil
 		case err != nil:
-			if sync {
+			if sync && !errors.Is(err, aiconsent.ErrPaused) { // paused: deferred, not an attempt
 				d.recordBriefingAttempt(today)
 			}
 			d.logger.Printf("briefing error: %v", err)
@@ -247,7 +261,7 @@ func (d *Daemon) trackPlan(trigger, date string, run func() (*db.DayPlan, error)
 		inTok, outTok, cost, totalAPI := d.dayPlanPipeline.AccumulatedUsage()
 		d.mbMu.Lock()
 		if runErr != nil {
-			if trigger == db.TriggerSync {
+			if trigger == db.TriggerSync && !errors.Is(runErr, aiconsent.ErrPaused) { // paused: deferred
 				d.recordDayPlanAttempt(today)
 			}
 			d.logger.Printf("dayplan: generation failed: %v", runErr)

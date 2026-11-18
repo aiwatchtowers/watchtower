@@ -37,6 +37,9 @@ func TestMain(m *testing.M) {
 	// Background AI reads allowed unless a test injects a consent reader.
 	aiconsenttest.AllowByDefault()
 	gittest.DisableBackgroundGit() // the coach's commit-check tests create repositories
+	// Background AI allowed, so the cycle's AI phases run as before; a test
+	// that needs another state injects a reader (SetConsent).
+	aiconsenttest.AllowByDefault()
 	// Allow sub-second poll intervals in tests for fast execution.
 	minPollInterval = 1 * time.Millisecond
 	// Fresh database files under t.TempDir() start from the template too:
