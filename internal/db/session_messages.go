@@ -88,11 +88,22 @@ func (db *DB) SettleSessionMessage(ctx context.Context, id int64, state, reason 
 	}
 	var deliveredAt any
 	if state == SessionMessageDelivered {
-		deliveredAt = at.UTC().Format(time.RFC3339)
+		// Millisecond precision (agent_state_at's layout): a hook stamped in
+		// the same second but before the paste is not after it.
+		deliveredAt = at.UTC().Format(agentStateAtLayout)
 	}
 	res, err := db.ExecContext(ctx, `UPDATE session_messages SET state = ?, reason = ?, delivered_at = ?
 		WHERE id = ? AND state IN ('queued','delivering')`, state, reason, deliveredAt, id)
 	return requireMessageMoved(res, err, id, "settling")
+}
+
+// FailQueuedSessionMessage fails message id with reason only while it is
+// still queued (never a row another tick has claimed); a row in any other
+// state is ErrSessionMessageNotPending.
+func (db *DB) FailQueuedSessionMessage(ctx context.Context, id int64, reason string) error {
+	res, err := db.ExecContext(ctx, `UPDATE session_messages SET state = 'failed', reason = ? WHERE id = ? AND state = 'queued'`,
+		reason, id)
+	return requireMessageMoved(res, err, id, "failing")
 }
 
 // RequeueSessionMessage puts claimed message id back in the queue: the

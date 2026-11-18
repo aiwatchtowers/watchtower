@@ -170,8 +170,21 @@ package struct SessionCleanupItem: Decodable, Equatable, Identifiable, Sendable 
     /// The root of the worktree a bundle's LaunchServices entry or an
     /// orphan process belongs to; "" when it has none (a stale entry).
     package var worktree: String
+    /// A worktree's branch as its branch item's key (`branch_key`, #2003):
+    /// `branch:<name>`, or `branch:<folder>:<name>` in a sweep of a bench
+    /// of several folders. "" without one (a detached worktree, an older CLI).
+    package var branchKey: String
 
     package var id: String { key }
+
+    /// The key of the branch item this worktree goes with: `branchKey`, or
+    /// from a CLI without it the one-folder key `branch:<branch>`. Never
+    /// a match by name: a same-named branch of another folder has another key.
+    package var pairedBranchKey: String? {
+        guard kind == .worktree else { return nil }
+        if !branchKey.isEmpty { return branchKey }
+        return branch.isEmpty ? nil : "branch:" + branch
+    }
 
     /// A worktree item's root, from its key (`name` is only the folder's
     /// base name); "" for any other kind. What `worktree` names.
@@ -205,7 +218,8 @@ package struct SessionCleanupItem: Decodable, Equatable, Identifiable, Sendable 
         origin: SessionCleanupOrigin = .none,
         lastCommitAt: Date? = nil,
         merged: Bool = false,
-        worktree: String = ""
+        worktree: String = "",
+        branchKey: String = ""
     ) {
         self.key = key
         self.kind = kind
@@ -223,11 +237,13 @@ package struct SessionCleanupItem: Decodable, Equatable, Identifiable, Sendable 
         self.lastCommitAt = lastCommitAt
         self.merged = merged
         self.worktree = worktree
+        self.branchKey = branchKey
     }
 
     package enum CodingKeys: String, CodingKey {
         case key, kind, name, branch, bytes, action, reason, detail, done, error, owner
         case origin, merged, worktree
+        case branchKey = "branch_key"
         case lastCommitAt = "last_commit_at"
         case bytesKnown = "bytes_known"
     }
@@ -252,6 +268,7 @@ package struct SessionCleanupItem: Decodable, Equatable, Identifiable, Sendable 
         lastCommitAt = stamp.isEmpty ? nil : Self.stampFormatter.date(from: stamp)
         merged = try c.decodeIfPresent(Bool.self, forKey: .merged) ?? false
         worktree = try c.decodeIfPresent(String.self, forKey: .worktree) ?? ""
+        branchKey = try c.decodeIfPresent(String.self, forKey: .branchKey) ?? ""
     }
 }
 

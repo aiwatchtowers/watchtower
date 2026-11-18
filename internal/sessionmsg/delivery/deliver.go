@@ -163,7 +163,13 @@ func (d *Deliverer) deliver(ctx context.Context, m db.SessionMessage, runs map[i
 		return
 	}
 	if !m.ToSessionID.Valid || !ok {
-		d.fail(ctx, m, sessionmsg.ReasonNotFound)
+		d.fail(ctx, m, sessionmsg.ReasonNotFound, false)
+		return
+	}
+	// Re-checked on every row, whoever queued it: only an agent session of
+	// the row's own workbench is ever typed into.
+	if !sessionmsg.IsPeer(target, m.WorkbenchID) {
+		d.fail(ctx, m, sessionmsg.ReasonNotAPeer, false)
 		return
 	}
 	if _, running := runs[to]; !running {
@@ -171,7 +177,7 @@ func (d *Deliverer) deliver(ctx context.Context, m db.SessionMessage, runs map[i
 		return
 	}
 	if m.Kind != sessionmsg.KindFinished && d.expired(m) {
-		d.fail(ctx, m, d.expiryReason(m.ID))
+		d.fail(ctx, m, d.expiryReason(m.ID), false)
 		return
 	}
 	live, ok, err := d.Port.Live(ctx, to)
@@ -221,7 +227,7 @@ func (d *Deliverer) settle(ctx context.Context, m db.SessionMessage, res handler
 	to := m.ToSessionID.Int64
 	if err != nil {
 		d.logf("message %d: delivering into session %d: %v", m.ID, to, err)
-		d.fail(ctx, m, sessionmsg.ReasonDeliveryUnknown)
+		d.fail(ctx, m, sessionmsg.ReasonDeliveryUnknown, true)
 		return
 	}
 	now := d.now()
@@ -246,8 +252,15 @@ func (d *Deliverer) settle(ctx context.Context, m db.SessionMessage, res handler
 			d.logf("%v", err)
 		}
 	case handlers.DeliverNoPasteMode:
-		d.fail(ctx, m, sessionmsg.ReasonCannotType)
-	default: // no_session: the run ended or was replaced since Live
+		d.fail(ctx, m, sessionmsg.ReasonCannotType, true)
+	default:
+		if res.Reason == sessionhost.LostAfterPaste {
+			// Pasted, then the run ended: it may have landed. Final, never
+			// requeued (at most once); the sender is told.
+			d.fail(ctx, m, sessionmsg.ReasonDeliveryUnknown, true)
+			return
+		}
+		// no_session before any byte: the run ended or was replaced since Live.
 		d.notRunning(ctx, m, true)
 	}
 }
@@ -264,25 +277,37 @@ func (d *Deliverer) notRunning(ctx context.Context, m db.SessionMessage, claimed
 		}
 		return
 	}
-	d.fail(ctx, m, sessionmsg.ReasonNotRunning)
+	d.fail(ctx, m, sessionmsg.ReasonNotRunning, claimed)
 }
 
-// fail settles m failed with reason and tells its sender — except for a
-// finished line (its parent was deleted: dropped, logged) and a failure line
-// (no failure about a failure).
-func (d *Deliverer) fail(ctx context.Context, m db.SessionMessage, reason string) {
+// fail settles m failed with reason — a row this tick claimed from
+// delivering, any other only while it is still queued (never a row another
+// tick has claimed) — and tells its sender, except for a finished line (its
+// parent was deleted: dropped, logged), a failure line (no failure about a
+// failure) and a row whose receiver is no peer (dropped, logged).
+func (d *Deliverer) fail(ctx context.Context, m db.SessionMessage, reason string, claimed bool) {
 	d.done(m.ID)
 	if m.Kind == sessionmsg.KindFinished && reason == sessionmsg.ReasonNotFound {
 		reason = sessionmsg.ReasonParentDeleted
 	}
-	if !d.settleRow(ctx, m.ID, db.SessionMessageFailed, reason, d.now()) {
+	var err error
+	if claimed {
+		err = d.DB.SettleSessionMessage(ctx, m.ID, db.SessionMessageFailed, reason, d.now())
+	} else {
+		err = d.DB.FailQueuedSessionMessage(ctx, m.ID, reason)
+	}
+	if err != nil {
+		d.logf("%v", err)
 		return
 	}
-	switch m.Kind {
-	case sessionmsg.KindMessage:
-		d.tellSender(ctx, m, sessionmsg.FailureLine(m.ToSessionID.Int64, reason))
+	to := m.ToSessionID.Int64
+	switch {
+	case m.Kind != sessionmsg.KindMessage || reason == sessionmsg.ReasonNotAPeer:
+		d.logf("%s message %d to session %d dropped: %s", m.Kind, m.ID, to, reason)
+	case reason == sessionmsg.ReasonDeliveryUnknown:
+		d.tellSender(ctx, m, sessionmsg.DeliveryUnknownLine(to))
 	default:
-		d.logf("%s message %d to session %d dropped: %s", m.Kind, m.ID, m.ToSessionID.Int64, reason)
+		d.tellSender(ctx, m, sessionmsg.FailureLine(to, reason))
 	}
 }
 
@@ -386,9 +411,9 @@ func (d *Deliverer) promptCleared(ctx context.Context, m db.SessionMessage, runs
 		return false
 	}
 	started, running := runs[to]
-	// A run that started after the paste (a second's slack for the stamp's
-	// precision) is not the one it was typed into: that run ended.
-	if !running || started.After(deliveredAt.Add(time.Second)) {
+	// A run that started after the paste is not the one it was typed into:
+	// that run ended.
+	if !running || started.After(deliveredAt) {
 		return true
 	}
 	if target.AgentState.String == "working" && !target.ToolRun && target.AgentStateAt.After(deliveredAt) {

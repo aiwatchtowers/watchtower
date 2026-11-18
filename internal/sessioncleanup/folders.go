@@ -155,6 +155,15 @@ func (b *builder) branchKey(name string) string {
 	return "branch:" + b.req.keyFolder + ":" + name
 }
 
+// worktreeBranchKey is the key of w's branch item (Item.BranchKey); "" for
+// a worktree with no branch (a detached HEAD).
+func (b *builder) worktreeBranchKey(w worktree) string {
+	if w.Branch == "" {
+		return ""
+	}
+	return b.branchKey(w.Branch)
+}
+
 // mergePlans is the parts' plans as one: their items in part order, the
 // home part's default branch, every note once.
 func mergePlans(plans []Plan) Plan {

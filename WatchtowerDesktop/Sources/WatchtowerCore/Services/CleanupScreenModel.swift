@@ -120,8 +120,10 @@ package struct CleanupScreenModel {
         var claimed: Set<String> = []
         var pairs: [String: (branch: Item?, extras: [Item])] = [:]
         for wt in live where wt.kind == .worktree {
-            let branch = wt.branch.isEmpty ? nil : live.first {
-                $0.kind == .branch && $0.name == wt.branch && !claimed.contains($0.key)
+            // By key, never by name: on a bench of several folders two
+            // repositories may each have the branch (#2003).
+            let branch = wt.pairedBranchKey.flatMap { key in
+                live.first { $0.kind == .branch && $0.key == key && !claimed.contains($0.key) }
             }
             // Go names the worktree by its base name; the bundles and the
             // orphans name its root, which is the worktree key's.

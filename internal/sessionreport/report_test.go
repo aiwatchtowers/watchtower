@@ -571,3 +571,54 @@ func TestProj14_BoundLeafCountsItself(t *testing.T) {
 	runSQL(t, d, `UPDATE terminal_sessions SET target_id = 22 WHERE id = 1`)
 	assert.Equal(t, Progress{Done: 0, Total: 1}, build(t, d, 1).Progress)
 }
+
+// TestProj14_ParentReportExcludesSubSessionWork (spec §8 PROJ-14, §6.10):
+// the merged share is read in the session's own folder. A sub-session in
+// the hub merged wt/b and wt/c there; the parent, in the home folder, does
+// not count them — only the verdicts of its own folder's repository (wt/g).
+func TestProj14_ParentReportExcludesSubSessionWork(t *testing.T) {
+	d := mergedFixture(t)
+	runSQL(t, d, `INSERT INTO workbench_folders (id, workbench_id, folder_path, position, added_by, name)
+			VALUES (2, 1, '/tmp/hub', 1, 'owner', 'hub');
+		INSERT INTO terminal_sessions (id, project_id, kind, title, target_id, folder_path, claude_session_id,
+			workbench_folder_id, parent_session_id) VALUES (2, 1, 'claude', 'Hub', 110, '/tmp/hub', 'u2', 2, 1);
+		UPDATE workbench_pr_states SET workbench_folder_id = 2
+			WHERE ref IN ('into:feature/x:wt/b', 'into:feature/x:wt/c');
+		UPDATE targets SET workbench_folder_id = 2 WHERE id BETWEEN 110 AND 116`)
+
+	parent := build(t, d, 1)
+	assert.Equal(t, Progress{Done: 1, Total: 8, Merged: 1}, parent.Progress, "121 only: the hub's verdicts are the sub-session's")
+	s := summaryOf(t, d, 1)
+	assert.Equal(t, []int{1, 8, 1}, []int{s.Done, s.Total, s.Merged}, "the row line agrees")
+
+	child := build(t, d, 2)
+	assert.Equal(t, Progress{Done: 1, Total: 6, Merged: 2}, child.Progress, "112 and 113, merged in the hub")
+	s = summaryOf(t, d, 2)
+	assert.Equal(t, []int{1, 6, 2}, []int{s.Done, s.Total, s.Merged})
+}
+
+// TestProj14_OtherFoldersTargetsAreNotLookedUpHere (spec §6.10): a target
+// of another folder (a hub target with PR #12 on wt/c) is never looked up
+// in this session's folder cache — not refreshed, not listed, and its
+// same-named branch's verdict here does not count it merged.
+func TestProj14_OtherFoldersTargetsAreNotLookedUpHere(t *testing.T) {
+	d := mergedFixture(t)
+	runSQL(t, d, `INSERT INTO workbench_folders (id, workbench_id, folder_path, position, added_by, name)
+			VALUES (2, 1, '/tmp/hub', 1, 'owner', 'hub');
+		UPDATE targets SET workbench_folder_id = 2, pr = '12' WHERE id = 113;
+		INSERT INTO workbench_pr_states (project_id, workbench_folder_id, ref, state, checked_at)
+			VALUES (1, 1, 'pr:12', 'merged', '2026-10-02T12:00:00Z')`)
+
+	r := build(t, d, 1)
+	assert.Equal(t, Progress{Done: 1, Total: 8, Merged: 2}, r.Progress, "112 and 121; 113's wt/c is the hub's")
+	for _, pr := range r.PRs {
+		assert.NotEqual(t, "pr:12", pr.Ref, "the hub's PR is not read from home's cache")
+		assert.NotEqual(t, "branch:wt/c", pr.Ref)
+	}
+	refs, err := SessionRefs(context.Background(), d, 1, 1)
+	require.NoError(t, err)
+	assert.NotContains(t, refs, "pr:12")
+	assert.NotContains(t, refs, "branch:wt/c")
+	assert.NotContains(t, refs, "into:feature/x:wt/c", "home's refresh never checks the hub's branch")
+	assert.Equal(t, 2, summaryOf(t, d, 1).Merged, "the row line agrees")
+}

@@ -456,7 +456,8 @@ struct OwnerAskDrawer: View {
                 fieldFocus: fieldFocus,
                 onLeaveField: leaveField
             )
-        case .question: EmptyView()
+        // A folder suggestion's own card is Task 16's (#2003).
+        case .question, .folder: EmptyView()
         }
     }
 
