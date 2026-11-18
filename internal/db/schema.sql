@@ -3856,7 +3856,7 @@ CREATE TABLE IF NOT EXISTS chat_turn_leases (
     cancel_requested_at_ms INTEGER                               -- set by the other side's Stop
 );
 
--- Tower request ledger (00195). Go-written by internal/tower: the request ledger, exactly-once writes for the socket and the hub. Rows older than the hub ledger window (8 days) are pruned by the daemon.
+-- Tower request ledger (00196). Go-written by internal/tower: the request ledger, exactly-once writes for the socket and the hub. Rows older than the hub ledger window (8 days) are pruned by the daemon.
 CREATE TABLE IF NOT EXISTS tower_requests (
     request_id  TEXT PRIMARY KEY,                                  -- the client's UUID, kept across retries of one press
     command     TEXT NOT NULL,                                     -- the tower command name (domain.verb)
