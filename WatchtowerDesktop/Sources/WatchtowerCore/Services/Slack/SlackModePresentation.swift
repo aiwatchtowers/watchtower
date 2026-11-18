@@ -75,7 +75,7 @@ package struct SlackModePresentation: Equatable, Sendable {
         let full = syncing.contains { $0.isOK && !sharedAppAccountIDs.contains($0.id) }
         // The chip reads the same verdicts as the Live block: each
         // provider's newest check, so an older ok cannot say "Live".
-        let verdicts = Self.newestBatches(liveStatuses).map(\.verdict.status)
+        let verdicts = Self.liveVerdicts(liveStatuses)
         let mode = SlackMode.derive(full: full, liveStatuses: verdicts)
         let liveOn = verdicts.contains("ok")
         display = switch mode {
@@ -157,6 +157,13 @@ package struct SlackModePresentation: Equatable, Sendable {
         let checkedAt: String
         let okTeams: [String]
         let verdict: SlackLiveStatusRow
+    }
+
+    /// The status of each provider's newest batch: the Live input of
+    /// `SlackMode.derive`. Go twin: `slackmode.LiveVerdicts`, both checked
+    /// over the shared fixture (SLACKMODE-01).
+    package static func liveVerdicts(_ statuses: [SlackLiveStatusRow]) -> [String] {
+        newestBatches(statuses).map(\.verdict.status)
     }
 
     /// Claude first, then ChatGPT (Codex), then any other provider by name.
