@@ -53,8 +53,13 @@ the truth (the zone) and one order (its `seq`). The old single `record` field st
   to the event's seq is applied as one page (own and already-read records left out), then the token moves; anything
   else (a gap, no records, the resync marker, a zone never read) is a `Pull`. The hub does not look at the capability:
   an event without records reads, whichever relay sent it.
-- **Phone:** TODO(Task 8): Kit applies inline relay records — the controller fills this line when Task 8 merges
-  (cursor rule, Kit proto re-pin to `771a99e`, the `HostedRelayTransport+Pull.swift` path).
+- **Phone:** the Kit's proto is pinned to `771a99e` too. `HostedRelayTransport+Pull.swift` applies an event's records
+  without a `changes` read when they cover every seq after the zone cursor up to the event's seq (the hub's covering
+  rule), no pull is in flight, no resync is owed and no record carries an attachment or is a deletion; the page goes
+  through `bufferRelayPage` like a read. An event at the cursor does nothing; one below it, a gap, a record-less event
+  (a phone over its traffic budget, an overflowed event buffer) or cursor 0 is a read. A session owner holds at most
+  1 MiB of unread records (framed size); past that its events carry no records and it reads. v1 limit: the connection's
+  event buffer is capped by count (256), not bytes.
 
 ### R4 — the hub's event lane
 
