@@ -64,7 +64,8 @@ package final class ProviderConnection {
         test: @escaping (Selection) async throws -> Result = { selected in
             if selected.localServer { return try await ProviderConnection.testLocal(selected) }
             guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
-            let data = try await runner.run(args: ProviderConnection.arguments(selected), timeout: 55)
+            let data = try await runner.runModel(
+                args: ProviderConnection.arguments(selected), origin: .owner, timeout: 55, stdin: nil)
             return try JSONDecoder().decode(Result.self, from: data)
         }
     ) { self.catalog = catalog; self.metadata = metadata; self.test = test }

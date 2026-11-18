@@ -1004,10 +1004,15 @@ struct WorkbenchCLI {
 
     /// Every review call prints one envelope; a refusal is `ok: false` with
     /// `error` at exit 0, not a throw.
-    func review(_ args: [String], timeout: TimeInterval? = nil) async throws -> ReviewEnvelope {
+    /// `origin` is given for the subcommands that call a model (`lessons
+    /// propose`); nil runs the generic entry, which refuses a model command.
+    func review(_ args: [String], timeout: TimeInterval? = nil, origin: CLIOrigin? = nil) async throws
+        -> ReviewEnvelope {
         let full = ["workbench", "review"] + args + ["--json"]
         let data: Data
-        if let timeout {
+        if let origin {
+            data = try await runner.runModel(args: full, origin: origin, timeout: timeout, stdin: nil)
+        } else if let timeout {
             data = try await runner.run(args: full, timeout: timeout)
         } else {
             data = try await runner.run(args: full)
@@ -1075,7 +1080,7 @@ struct WorkbenchCLI {
         let workbench = ["--workbench", String(projectID)]
         switch action {
         case .propose:
-            return try await review(["lessons", "propose"] + workbench, timeout: Self.reviewAITimeout)
+            return try await review(["lessons", "propose"] + workbench, timeout: Self.reviewAITimeout, origin: .owner)
         case .accept(let id):
             return try await review(["lessons", "accept"] + workbench + ["--lesson", String(id)])
         case .dismiss(let id):
@@ -1095,7 +1100,7 @@ struct WorkbenchCLI {
             if let stdin = r.stdin {
                 let runner = runner
                 data = try await withThrowingTaskGroup(of: Data.self) { group in
-                    group.addTask { try await runner.run(args: r.args, stdin: stdin) }
+                    group.addTask { try await runner.runModel(args: r.args, origin: .owner, timeout: nil, stdin: stdin) }
                     group.addTask {
                         try await Task.sleep(for: .seconds(timeout))
                         throw CLIRunnerError.nonZeroExit(code: -1, stderr: "timed out after \(Int(timeout)) s")
@@ -1105,7 +1110,7 @@ struct WorkbenchCLI {
                     return first
                 }
             } else {
-                data = try await runner.run(args: r.args, timeout: timeout)
+                data = try await runner.runModel(args: r.args, origin: .owner, timeout: timeout, stdin: nil)
             }
         } catch CLIRunnerError.nonZeroExit(code: GoSessionStartContract.agentNotFoundExit, _) {
             throw WorkbenchCLIError.agentNotFound(r.agent)
@@ -1275,7 +1280,7 @@ struct WorkbenchCLI {
         var args = ["workbench", "spec-review", "start", "--ask", String(askID)]
         if force { args.append("--force") }
         do {
-            _ = try await runner.run(args: args)
+            _ = try await runner.runModel(args: args, origin: .owner)
         } catch CLIRunnerError.nonZeroExit(code: 3, _) {
             throw WorkbenchCLIError.specReviewRunning
         }

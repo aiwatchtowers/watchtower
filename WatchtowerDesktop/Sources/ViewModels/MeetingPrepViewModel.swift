@@ -202,7 +202,7 @@ final class MeetingPrepViewModel {
                 statusMessage = ""
             }
             do {
-                let data = try await cli.run(args: args)
+                let data = try await cli.runModel(args: args, origin: .owner)
                 // ASCII whitespace only: the old Process wrapper trimmed stdout.
                 if data.allSatisfy({ [0x20, 0x09, 0x0A, 0x0D].contains($0) }) {
                     error = emptyStderrError(0)

@@ -82,7 +82,7 @@ final class ReviewScriptedRunner: CLIRunnerProtocol, CLIStreamingRunner, @unchec
         Data(try await serve(args).utf8)
     }
 
-    func stream(args: [String]) async throws -> CLIStreamedRun {
+    func stream(args: [String], origin _: CLIOrigin) async throws -> CLIStreamedRun {
         if liveStreams {
             let process = FakeOverviewProcess(args: args)
             lock.withLock {
