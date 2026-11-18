@@ -345,6 +345,8 @@ func (s *Server) handle(c *conn) {
 			s.inputTo(c, p)
 		case PromptHint:
 			s.promptHint(c, p)
+		case PromptStateReq:
+			s.promptState(c, p)
 		case Deliver:
 			s.deliver(c, p)
 		case DeliverCheckReply:
@@ -377,7 +379,8 @@ func (s *Server) hello(c *conn) bool {
 		_ = WriteFrame(c.nc, Error, encode(ErrorMsg{Message: msg}))
 		return false
 	}
-	return WriteFrame(c.nc, HelloOK, encode(HelloMsg{Version: ProtocolVersion, Pid: os.Getpid()})) == nil
+	ok := HelloMsg{Version: ProtocolVersion, Pid: os.Getpid(), Features: []string{FeaturePromptState}}
+	return WriteFrame(c.nc, HelloOK, encode(ok)) == nil
 }
 
 func (s *Server) launch(c *conn, bound *session, p []byte) *session {
@@ -545,6 +548,22 @@ func (s *Server) promptHint(c *conn, p []byte) {
 		return
 	}
 	sess.setDialog(m.Dialog)
+}
+
+// promptState answers whether a running session's prompt holds text not
+// submitted, read under the session's lock; nothing is written to the PTY.
+// A run that is gone, exited or of another launch is an Error.
+func (s *Server) promptState(c *conn, p []byte) {
+	var m PromptStateMsg
+	if err := json.Unmarshal(p, &m); err != nil {
+		c.sendError(fmt.Sprintf("prompt_state: bad request: %v", err))
+		return
+	}
+	sess := s.running(c, "prompt_state", m.Row, m.Run, m.Launch)
+	if sess == nil {
+		return
+	}
+	c.send(PromptStateReply, encode(PromptStateReplyMsg{HoldsText: sess.promptHoldsText(), Known: true}))
 }
 
 // stop answers Stopping once the session's group was signalled; the Exit

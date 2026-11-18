@@ -3,6 +3,8 @@ package sessioncleanup
 import (
 	"context"
 	"errors"
+	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -111,6 +113,70 @@ func TestDBStore_AllSessionActivityCarriesTheAgentCwd(t *testing.T) {
 	// An unreadable stamp reads as now: the session counts as active.
 	if !a.LastActive.Equal(now) {
 		t.Fatalf("unreadable last_active_at = %v, want now", a.LastActive)
+	}
+}
+
+// addFolderRow adds a folder row to workbench wb; removed marks it as
+// having left the bench.
+func addFolderRow(t *testing.T, s DBStore, wb int64, path string, position int, removed bool) int64 {
+	t.Helper()
+	var removedAt any
+	if removed {
+		removedAt = "2026-11-18T10:00:00Z"
+	}
+	res, err := s.DB.Exec(`INSERT INTO workbench_folders (workbench_id, folder_path, position, added_by, removed_at, name)
+		VALUES (?, ?, ?, 'owner', ?, ?)`, wb, path, position, removedAt, filepath.Base(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := res.LastInsertId()
+	return id
+}
+
+// TestProj18_StoreCoversEveryFolder: WorkbenchFolders is every folder of
+// every bench, the removed ones included; BenchFolders is the bench's live
+// folders, home first; a session carries the folder it was started for and
+// whether that folder left the bench (#2003).
+func TestProj18_StoreCoversEveryFolder(t *testing.T) {
+	s, wb, id := storeFixture(t)
+	ctx := context.Background()
+	home, err := s.WorkbenchFolder(ctx, wb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := addFolderRow(t, s, wb, "/tmp/example/hub", 1, false)
+	gone := addFolderRow(t, s, wb, "/tmp/example/gone", 2, true)
+	_, err = s.DB.CreateWorkbench("other", "/tmp/example/other")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := s.WorkbenchFolders(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{home, "/tmp/example/hub", "/tmp/example/gone", "/tmp/example/other"} {
+		if !slices.Contains(all, want) {
+			t.Fatalf("WorkbenchFolders = %v, missing %s", all, want)
+		}
+	}
+	bench, err := s.BenchFolders(ctx, wb)
+	if err != nil || !slices.Equal(bench, []string{home, "/tmp/example/hub"}) {
+		t.Fatalf("BenchFolders = %v, %v; want [%s /tmp/example/hub]", bench, err, home)
+	}
+
+	for _, c := range []struct {
+		folder  any
+		path    string
+		removed bool
+	}{{nil, "", false}, {hub, "/tmp/example/hub", false}, {gone, "/tmp/example/gone", true}} {
+		if _, err := s.DB.Exec(`UPDATE terminal_sessions SET workbench_folder_id = ? WHERE id = ?`, c.folder, id); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.CleanupSession(ctx, id)
+		if err != nil || got.Folder != c.path || got.FolderRemoved != c.removed {
+			t.Fatalf("folder %v: CleanupSession = %+v, %v; want %q removed=%v", c.folder, got, err, c.path, c.removed)
+		}
 	}
 }
 
