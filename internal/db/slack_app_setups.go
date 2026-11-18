@@ -63,9 +63,10 @@ func (db *DB) GetSlackAppSetup(team string) (SlackAppSetup, error) {
 	return s, nil
 }
 
-// ListSlackAppSetups returns every setup, oldest first.
+// ListSlackAppSetups returns every setup in insertion order (created_at has
+// one-second precision, so rowid breaks ties).
 func (db *DB) ListSlackAppSetups() ([]SlackAppSetup, error) {
-	rows, err := db.Query(`SELECT ` + slackAppSetupColumns + ` FROM slack_app_setups ORDER BY created_at, team_id`)
+	rows, err := db.Query(`SELECT ` + slackAppSetupColumns + ` FROM slack_app_setups ORDER BY created_at, rowid`)
 	if err != nil {
 		return nil, fmt.Errorf("listing slack app setups: %w", err)
 	}

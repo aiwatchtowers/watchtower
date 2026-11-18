@@ -177,6 +177,29 @@ func TestConnectSlackAccount_WritesClientID(t *testing.T) {
 	assert.Empty(t, acct.AppID)
 }
 
+// A new row whose client id cannot be recorded is rolled back together with
+// the token file just saved for it.
+func TestConnectSlackAccount_ClientIDFailureRemovesNewToken(t *testing.T) {
+	stubSlackIdentityServer(t, "U0OWNER", "T0TEAM", "Acme Corp", "acme")
+	t.Setenv("HOME", t.TempDir())
+	cfg := &config.Config{ActiveWorkspace: "test"}
+	database := db.OpenTestDB(t)
+	id, err := database.CreateSlackAccount(db.SlackAccount{})
+	require.NoError(t, err)
+	_, err = database.Exec(`CREATE TRIGGER fail_client_id BEFORE UPDATE OF client_id ON slack_accounts
+        BEGIN SELECT RAISE(ABORT, 'client id write refused'); END`)
+	require.NoError(t, err)
+
+	_, err = connectSlackAccount(context.Background(), cfg, database, id,
+		&auth.OAuthResult{AccessToken: "xoxp-new"}, true, "111.222", &bytes.Buffer{})
+	require.ErrorContains(t, err, "client id write refused")
+
+	assert.False(t, watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), id).Exists(), "the new row's token file is removed")
+	acct, err := database.GetSlackAccount(id)
+	require.NoError(t, err)
+	assert.Equal(t, "removed", acct.Status)
+}
+
 func TestEnsureLegacySlackAccount_SecondCallIsNoop(t *testing.T) {
 	stubSlackIdentityServer(t, "U0OWNER", "T0TEAM", "Acme Corp", "acme")
 	home := t.TempDir()

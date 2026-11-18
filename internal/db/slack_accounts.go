@@ -163,6 +163,23 @@ func (db *DB) SetSlackAccountApp(id int64, clientID, appID string) error {
 	return nil
 }
 
+// SetSlackAccountClientID records the client id a sign-in went through when
+// the App ID is not known: the row's App ID is kept while the client id stays
+// the same and cleared when it changes — one statement, so a concurrent
+// SetSlackAccountApp cannot interleave.
+func (db *DB) SetSlackAccountClientID(id int64, clientID string) error {
+	res, err := db.Exec(`UPDATE slack_accounts
+        SET app_id = CASE WHEN client_id = ? THEN app_id ELSE '' END, client_id = ?
+        WHERE id = ?`, clientID, clientID, id)
+	if err != nil {
+		return fmt.Errorf("setting client id for slack account %d: %w", id, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("setting client id: no slack_accounts row %d", id)
+	}
+	return nil
+}
+
 // SetSlackRefreshExpiry records when accountID's refresh token expires; the
 // zero time clears it (a token without rotation).
 func (db *DB) SetSlackRefreshExpiry(id int64, at time.Time) error {

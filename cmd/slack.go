@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -202,6 +203,10 @@ func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.D
 	if err := recordSlackClientID(database, id, clientID); err != nil {
 		if isNewRow {
 			rollbackSlackAccount(database, id, warnOut)
+			// The token was saved for this row only: a rolled-back row keeps no token.
+			if delErr := store.Delete(); delErr != nil {
+				err = errors.Join(err, fmt.Errorf("removing the token of rolled-back slack account %d: %w", id, delErr))
+			}
 		}
 		return slackIdentity{}, err
 	}
@@ -218,22 +223,15 @@ func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.D
 	return identity, nil
 }
 
-// recordSlackClientID writes clientID onto account id's row. The row's App ID
-// is kept while the client id stays the same (this path does not learn it)
-// and dropped when the sign-in moved the account to another app.
+// recordSlackClientID writes clientID onto account id's row in one statement
+// (db.SetSlackAccountClientID: the App ID stays for the same app and is
+// dropped for another one). An empty id writes nothing, so it never blanks a
+// recorded one.
 func recordSlackClientID(database *db.DB, id int64, clientID string) error {
 	if clientID == "" {
 		return nil
 	}
-	acct, err := database.GetSlackAccount(id)
-	if err != nil {
-		return fmt.Errorf("recording client id: %w", err)
-	}
-	appID := ""
-	if acct.ClientID == clientID {
-		appID = acct.AppID
-	}
-	if err := database.SetSlackAccountApp(id, clientID, appID); err != nil {
+	if err := database.SetSlackAccountClientID(id, clientID); err != nil {
 		return fmt.Errorf("recording client id: %w", err)
 	}
 	return nil

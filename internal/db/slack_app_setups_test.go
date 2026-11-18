@@ -41,6 +41,21 @@ func TestSlackAppSetups_InsertGetList(t *testing.T) {
 	assert.Equal(t, "T0BETA", all[1].TeamID)
 }
 
+// Rows inserted within the same second list in insertion order, not by team id.
+func TestSlackAppSetups_ListInsertionOrder(t *testing.T) {
+	d := openTestDB(t)
+	for _, team := range []string{"T0ZULU", "T0ALPHA", "T0MIKE"} {
+		require.NoError(t, d.InsertSlackAppSetup(SlackAppSetup{TeamID: team, AppID: "A0APP", ClientID: "1.2"}))
+	}
+	_, err := d.Exec(`UPDATE slack_app_setups SET created_at = '2026-11-17T10:00:00Z'`)
+	require.NoError(t, err)
+
+	all, err := d.ListSlackAppSetups()
+	require.NoError(t, err)
+	require.Len(t, all, 3)
+	assert.Equal(t, []string{"T0ZULU", "T0ALPHA", "T0MIKE"}, []string{all[0].TeamID, all[1].TeamID, all[2].TeamID})
+}
+
 func TestSlackAppSetups_SecondInsertRefused(t *testing.T) {
 	d := openTestDB(t)
 
@@ -119,6 +134,26 @@ func TestSlackAccounts_ClientIDRoundTrip(t *testing.T) {
 
 	assert.Error(t, d.SetSlackAccountApp(999, "1.2", "A0X"))
 	assert.Error(t, d.SetSlackRefreshExpiry(999, exp))
+}
+
+func TestSlackAccounts_SetClientIDKeepsOrDropsAppID(t *testing.T) {
+	d := openTestDB(t)
+	id, err := d.CreateSlackAccount(SlackAccount{TeamID: "T0ACME"})
+	require.NoError(t, err)
+	require.NoError(t, d.SetSlackAccountApp(id, "111.222", "A0APP1"))
+
+	require.NoError(t, d.SetSlackAccountClientID(id, "111.222"))
+	a, err := d.GetSlackAccount(id)
+	require.NoError(t, err)
+	assert.Equal(t, "A0APP1", a.AppID, "same app keeps its App ID")
+
+	require.NoError(t, d.SetSlackAccountClientID(id, "333.444"))
+	a, err = d.GetSlackAccount(id)
+	require.NoError(t, err)
+	assert.Equal(t, "333.444", a.ClientID)
+	assert.Empty(t, a.AppID, "another app drops the App ID")
+
+	assert.Error(t, d.SetSlackAccountClientID(999, "1.2"))
 }
 
 func TestBackfillSlackClientIDs_OnlyEmptyRows(t *testing.T) {
