@@ -6,12 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/dop251/goja"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/claude"
 	"watchtower/internal/db"
 	"watchtower/internal/fsutil"
@@ -32,7 +35,7 @@ const errShellSymlink = "the workbench folder path contains a symlink; rebind th
 
 // shellEnvKeys are the daemon variables a shell() command gets after PATH,
 // in this order; one the daemon does not have is left out. RunEnvMarker
-// follows.
+// follows, then the run's AI origin (aiconsent.ChildEnv, #1886).
 var shellEnvKeys = []string{"HOME", "LANG", "USER"}
 
 // ShellModule defines shell(cmd) (spec §5, §13.2; AUTO-13): only in a
@@ -148,14 +151,29 @@ func shellFolder(ctx context.Context, b Backends, wbID int64) (string, error) {
 // USER from the daemon's, then the run marker. Nothing else of the daemon's
 // environment — no token, no session marker — reaches it.
 func shellEnv(env *Env) []string {
-	out := make([]string, 0, len(shellEnvKeys)+2)
+	out := make([]string, 0, len(shellEnvKeys)+4)
 	out = append(out, "PATH="+claude.RichPATH())
 	for _, k := range shellEnvKeys {
 		if v, ok := os.LookupEnv(k); ok {
 			out = append(out, k+"="+v)
 		}
 	}
-	return append(out, RunEnvMarker+"="+strconv.FormatInt(env.Binding().AutomationRunID, 10))
+	out = append(out, RunEnvMarker+"="+strconv.FormatInt(env.Binding().AutomationRunID, 10))
+	return append(out, shellOriginEnv(env)...)
+}
+
+// shellOriginEnv is the run's AI origin for a shell() child. The admitted
+// mark passes only from a run that was admitted under consent for AI — one
+// whose manifest grants a model call (Manifest.UsesAI: a background run of
+// such a recipe is held while paused). A recipe without AI is claimed while
+// paused too, so its child stays background, not admitted: a model command
+// it runs (`watchtower …`) is checked against the consent of its own call.
+func shellOriginEnv(env *Env) []string {
+	origin := aiconsent.ChildEnv(env.Ctx)
+	if env.Manifest.UsesAI() {
+		return origin
+	}
+	return slices.DeleteFunc(origin, func(kv string) bool { return strings.HasPrefix(kv, aiconsent.EnvAdmitted+"=") })
 }
 
 // shellDeadline is the wall-clock moment the run's active time runs out

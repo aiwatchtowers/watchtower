@@ -15,6 +15,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/policy/policytest"
 )
 
@@ -168,6 +169,32 @@ func TestAIConnectionOllamaCompatibility(t *testing.T) {
 	require.NoError(t, p.wait())
 	require.Contains(t, line, `"ok":true`)
 	require.Equal(t, int32(1), calls.Load())
+}
+
+// BGAI-02: `ai test` started by a background unit is refused while
+// background AI is paused, before any model request; the owner's own test
+// (TestAIConnectionOllama… above) still runs.
+func TestAIConnectionBackgroundChildIsRefusedWhilePaused(t *testing.T) {
+	policytest.Set(t, nil)
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	cfg := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(cfg, []byte("ai: {provider: ollama, ollama_url: '"+server.URL+"', background_runs: paused}"), 0600))
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(aiconsent.EnvOrigin, "background")
+	t.Setenv(aiconsent.EnvAdmitted, "")
+	t.Setenv(realConsentEnv, "1")
+	p := startCLI(t, "--config", cfg, "--provider", "ollama", "ai", "test", "--model", "local-form-model")
+	line, ok := p.next()
+	require.True(t, ok)
+	require.NoError(t, p.wait())
+	require.Contains(t, line, `"ok":false`)
+	require.Contains(t, line, aiconsent.ErrPaused.Error())
+	require.Equal(t, int32(0), calls.Load())
 }
 
 func TestConnectionErrorNeverExposesRawChildData(t *testing.T) {

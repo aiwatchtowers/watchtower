@@ -142,3 +142,34 @@ func TestAllIsACopy(t *testing.T) {
 		t.Fatal("All() must return a copy, not the registry backing array")
 	}
 }
+
+// Lookup finds only a registered id; ByID's claude fallback is not a match.
+func TestLookup_ExactIDOnly(t *testing.T) {
+	for _, id := range IDs() {
+		if p, ok := Lookup(id); !ok || p.ID != id {
+			t.Errorf("Lookup(%q) = %q, %v; want the row", id, p.ID, ok)
+		}
+	}
+	for _, id := range []string{"", "unknown"} {
+		if _, ok := Lookup(id); ok {
+			t.Errorf("Lookup(%q) found a row; want none", id)
+		}
+	}
+}
+
+// Only a CLI provider can run on the owner's own plan, and a plan row is
+// complete: the consent text prints every field.
+func TestRegistry_SubscriptionRowsComplete(t *testing.T) {
+	for _, p := range All() {
+		s := p.Subscription
+		if s == (Subscription{}) {
+			continue
+		}
+		if p.Kind != "cli" {
+			t.Errorf("%s: a subscription on a %s provider", p.ID, p.Kind)
+		}
+		if s.AgentName == "" || s.Plan == "" || s.Usage == "" || s.Limit == "" {
+			t.Errorf("%s: incomplete subscription %+v", p.ID, s)
+		}
+	}
+}

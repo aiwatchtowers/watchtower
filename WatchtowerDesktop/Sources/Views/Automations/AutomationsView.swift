@@ -49,6 +49,11 @@ struct AutomationsView: View {
     var reactionDictionary: ReactionDictionaryViewModel?
     /// The feature manager is applying a change: a built-in's Turn On/Off waits.
     var isApplyingFeatures = false
+    /// Background AI consent (#1886): while paused, the recipes it holds
+    /// read Waiting and a notice sits above the list.
+    let backgroundAI: BackgroundAIConsent.State
+    /// The notice's "Allow background AI…": the one consent screen.
+    let onAllowBackgroundAI: () -> Void
     /// Whether the organization's policy blocks an automation (#608).
     var policyBlocked: (Automation) -> Bool = { _ in false }
 
@@ -144,6 +149,14 @@ struct AutomationsView: View {
                     .padding(.bottom, Spacing.regular)
             }
 
+            if let notice = AutomationsBackgroundAINotice.make(
+                state: backgroundAI, items: vm.items, isPolicyBlocked: policyBlocked
+            ) {
+                AutomationsBackgroundAINoticeCard(notice: notice, onAllow: onAllowBackgroundAI)
+                    .padding(.horizontal, Spacing.medium)
+                    .padding(.bottom, Spacing.regular)
+            }
+
             List {
                 let now = Date()
                 ForEach(sections) { section in
@@ -163,7 +176,8 @@ struct AutomationsView: View {
                                 changes: vm.details[item.id]?.changes,
                                 isSelected: vm.selectedID == item.id,
                                 now: now,
-                                policyBlocked: policyBlocked(item.automation)
+                                policyBlocked: policyBlocked(item.automation),
+                                backgroundAI: backgroundAI
                             ) { vm.select(item.id) }
                         }
                     }

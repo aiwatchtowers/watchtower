@@ -399,8 +399,9 @@ final class DaemonBannerTests: XCTestCase {
         let manager = DaemonManager()
         manager.isRunning = true
         let environment = LiveReadinessEnvironment(
-            daemon: manager, visibility: FeatureVisibilityStore(), configPath: dir + "/config.yaml"
-        ) { dir }
+            daemon: manager, visibility: FeatureVisibilityStore(), configPath: dir + "/config.yaml",
+            backgroundAI: { .allowedByOwner }, workspaceDir: { dir }
+        )
         let pool = try makePool()
         let startedAt = ISO8601DateFormatter().string(from: Date())
         try await pool.write { db in

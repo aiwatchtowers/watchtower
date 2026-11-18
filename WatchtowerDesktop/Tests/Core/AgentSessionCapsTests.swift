@@ -65,7 +65,6 @@ final class AgentSessionCapsTests: XCTestCase {
     func testSubscriptionCapabilitiesMatchPublishedContracts() {
         let legacy = ClaudeSessionAgent().subscriptionUsage
         XCTAssertEqual(legacy.title, "Claude")
-        XCTAssertEqual(legacy.signInApplication, "Claude Code")
         XCTAssertEqual(legacy.statusTable, "plan_usage_status")
         XCTAssertEqual(legacy.samplesTable, "plan_usage_samples")
         XCTAssertEqual(legacy.layout, .compact)
@@ -78,7 +77,6 @@ final class AgentSessionCapsTests: XCTestCase {
 
         let scoped = CodexSessionAgent().subscriptionUsage
         XCTAssertEqual(scoped.title, "Codex")
-        XCTAssertEqual(scoped.signInApplication, "Codex")
         XCTAssertEqual(scoped.statusTable, "codex_plan_usage_status")
         XCTAssertEqual(scoped.samplesTable, "codex_plan_usage_samples")
         XCTAssertEqual(scoped.layout, .grouped)

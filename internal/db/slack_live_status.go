@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"fmt"
 	"time"
 )
@@ -40,7 +41,14 @@ WHERE excluded.checked_at > slack_live_status.checked_at`,
 // ListSlackLiveStatus returns every row, newest check first, so a caller can
 // take the first row per provider.
 func (db *DB) ListSlackLiveStatus() ([]SlackLiveStatus, error) {
-	rows, err := db.Query(`SELECT team_id, provider, status, error_class, connector_id, checked_at
+	return db.ListSlackLiveStatusContext(context.Background())
+}
+
+// ListSlackLiveStatusContext is ListSlackLiveStatus bound to ctx. A row whose
+// checked_at does not parse fails the read: skipping it could drop a newer
+// failed check and let an older ok turn Live back on (SLACKMODE-01).
+func (db *DB) ListSlackLiveStatusContext(ctx context.Context) ([]SlackLiveStatus, error) {
+	rows, err := db.QueryContext(ctx, `SELECT team_id, provider, status, error_class, connector_id, checked_at
 FROM slack_live_status ORDER BY checked_at DESC, team_id, provider`)
 	if err != nil {
 		return nil, fmt.Errorf("list slack live status: %w", err)

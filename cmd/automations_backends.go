@@ -16,6 +16,7 @@ import (
 
 	"watchtower/internal/agentloop"
 	"watchtower/internal/ai"
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/builtin"
 	"watchtower/internal/codex"
@@ -235,6 +236,9 @@ func (r *cliAgentRunner) routingRequest(tier string) providerrouting.Request {
 }
 
 func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) (res automations.AgentResult, err error) {
+	if err := aiconsent.Check(ctx); err != nil {
+		return automations.AgentResult{}, automations.PolicyError(err) // BGAI-01: nothing spawned, nothing metered
+	}
 	if !r.prepared {
 		selected, err := r.Prepare(ctx, req.Tier)
 		if err != nil {
@@ -267,7 +271,7 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 	defer func() { _ = os.RemoveAll(readyDir) }()
 	readyFile := filepath.Join(readyDir, "ready")
 	mcpArgs := append(r.mcpArgs(req), "--automation-ready-file", readyFile)
-	env := automationAgentEnv(req.RunID)
+	env := automationAgentEnv(ctx, req.RunID)
 	newClient := wiringFor(r.provider).newAgentClient
 	if newClient == nil {
 		return automations.AgentResult{}, fmt.Errorf("agent(): provider %s runs no CLI child", r.provider)
@@ -368,8 +372,10 @@ func (r *cliAgentRunner) mcpArgs(req automations.AgentRequest) []string {
 
 // codexAgentServerEnv is what codex passes through to the agent's watchtower
 // server: codex starts MCP servers with a filtered environment, and the
-// server refuses to start without the run marker (mcpAutomationOptions).
-var codexAgentServerEnv = []string{automations.RunEnvMarker}
+// server refuses to start without the run marker (mcpAutomationOptions); the
+// run's AI origin (automationAgentEnv) goes along so the server's model calls
+// are the run's (#1886). Claude passes its own environment to the server.
+var codexAgentServerEnv = []string{automations.RunEnvMarker, aiconsent.EnvOrigin, aiconsent.EnvAdmitted}
 
 // codexAgentHome is the CODEX_HOME of one agent() codex child, a fresh 0700
 // temp folder the caller removes after the run (the returned remove), with
@@ -463,15 +469,18 @@ var automationAgentPassthrough = []string{
 
 // automationAgentEnv is an agent() child's environment besides PATH (the
 // clients append the rich PATH): automationAgentPassthrough from this process
-// when set (absent ones omitted), and the run marker (AGENT-07).
-func automationAgentEnv(runID int64) []string {
+// when set (absent ones omitted), the run marker (AGENT-07) and ctx's AI
+// origin (aiconsent.ChildEnv: none for an owner-triggered run, whose marker
+// names its trigger).
+func automationAgentEnv(ctx context.Context, runID int64) []string {
 	var env []string
 	for _, k := range automationAgentPassthrough {
 		if v := os.Getenv(k); v != "" {
 			env = append(env, k+"="+v)
 		}
 	}
-	return append(env, automations.RunEnvMarker+"="+strconv.FormatInt(runID, 10))
+	env = append(env, automations.RunEnvMarker+"="+strconv.FormatInt(runID, 10))
+	return append(env, aiconsent.ChildEnv(ctx)...)
 }
 
 // agentResult is a finished agent() loop: the provider's usage and cost
@@ -511,6 +520,9 @@ type runtimeBAgentRunner struct {
 func (r *runtimeBAgentRunner) Name() string { return "runtime-b" }
 
 func (r *runtimeBAgentRunner) Run(ctx context.Context, req automations.AgentRequest) (automations.AgentResult, error) {
+	if err := aiconsent.Check(ctx); err != nil {
+		return automations.AgentResult{}, automations.PolicyError(err) // BGAI-01
+	}
 	if err := providers.Allowed(r.cfg.AI.Provider); err != nil {
 		return automations.AgentResult{}, automations.PolicyError(err) // #608
 	}

@@ -1,5 +1,6 @@
 import XCTest
 @testable import WatchtowerCore
+import WatchtowerTestSupport
 
 /// `show --json` / `validate --json` payloads shared by the form and editor
 /// center tests (sample data: acme, example.com).

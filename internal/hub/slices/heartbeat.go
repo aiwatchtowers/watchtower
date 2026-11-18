@@ -2,14 +2,15 @@ package slices
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log"
 	"slices"
 	"sync"
 	"time"
 
+	"watchtower/internal/db"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/slackmode"
 )
 
 // Heartbeat limits and cadence (the Kit's HeartbeatPayload, the Swift
@@ -17,6 +18,9 @@ import (
 const (
 	// MaxHeartbeatAccounts is HeartbeatPayload.maxAccounts.
 	MaxHeartbeatAccounts = 20
+	// liveOnlyStatus is the status of the Slack row DBAccounts adds while
+	// Slack is Live only; the phone's AccountStatusStyle reads it.
+	liveOnlyStatus = "live"
 	// MaxAccountLabel is HeartbeatAccount.maxLabelLength, in grapheme
 	// clusters (the Swift String.prefix).
 	MaxAccountLabel = 80
@@ -50,8 +54,11 @@ type HeartbeatFacts struct {
 	Recordings func() bool
 	// Chat says whether the AI chat is on and, when off, why (wire.ChatOff*);
 	// nil carries no chat capability.
-	Chat  func() (on bool, reason string)
-	Clock func() time.Time
+	Chat func() (on bool, reason string)
+	// BackgroundAI is a wire.BackgroundAI* value ("" or nil: absent); a
+	// change restamps the heartbeat at once, as caps does (#1886).
+	BackgroundAI func() string
+	Clock        func() time.Time
 }
 
 // HeartbeatSource is the hub's liveness record, record "heartbeat". It is
@@ -78,6 +85,7 @@ type heartbeatSource struct {
 	accounts []wire.HeartbeatAccount    // what the current payload carries
 	caps     wire.HeartbeatCapabilities // what the current payload carries (zero = none)
 	stuck    time.Time                  // the stuck_since the current payload carries (zero = none)
+	bgAI     string                     // the background_ai the current payload carries ("" = none)
 	payload  []byte
 	stamped  time.Time
 	failing  bool // the accounts read failed last time (logged once per streak)
@@ -118,13 +126,17 @@ func (h *heartbeatSource) Items(ctx context.Context) ([]Item, error) {
 			stuck = at
 		}
 	}
-	changed = changed || caps != h.caps || !stuck.Equal(h.stuck)
+	var bgAI string
+	if h.f.BackgroundAI != nil {
+		bgAI = h.f.BackgroundAI()
+	}
+	changed = changed || caps != h.caps || !stuck.Equal(h.stuck) || bgAI != h.bgAI
 	if h.payload == nil || changed || now.Sub(h.stamped) >= HeartbeatInterval {
-		payload, err := wire.Marshal(h.build(now, accounts, caps, stuck))
+		payload, err := wire.Marshal(h.build(now, accounts, caps, stuck, bgAI))
 		if err != nil {
 			return nil, fmt.Errorf("slices: encoding the heartbeat: %w", err)
 		}
-		h.payload, h.accounts, h.caps, h.stuck, h.stamped = payload, accounts, caps, stuck, now
+		h.payload, h.accounts, h.caps, h.stuck, h.bgAI, h.stamped = payload, accounts, caps, stuck, bgAI, now
 	}
 	return []Item{{Payload: h.payload}}, nil
 }
@@ -145,7 +157,7 @@ func (h *heartbeatSource) readAccounts(ctx context.Context) ([]wire.HeartbeatAcc
 	return out, nil
 }
 
-func (h *heartbeatSource) build(now time.Time, accounts []wire.HeartbeatAccount, caps wire.HeartbeatCapabilities, stuck time.Time) wire.Heartbeat {
+func (h *heartbeatSource) build(now time.Time, accounts []wire.HeartbeatAccount, caps wire.HeartbeatCapabilities, stuck time.Time, bgAI string) wire.Heartbeat {
 	if accounts == nil {
 		accounts = []wire.HeartbeatAccount{} // the Kit's accounts is not optional: [] never null
 	}
@@ -153,7 +165,7 @@ func (h *heartbeatSource) build(now time.Time, accounts []wire.HeartbeatAccount,
 		UpdatedAt: wire.Time{Time: now}, AppVersion: h.f.AppVersion, HubID: h.f.HubID,
 		MacName: wire.ClipMacName(h.f.MacName), Flavor: h.f.Flavor, Accounts: accounts,
 		EnabledAt: wire.Time{Time: h.f.EnabledAt}, OwnerUser: "", Sharing: wire.SharingNone,
-		HubKind: h.f.HubKind,
+		HubKind: h.f.HubKind, BackgroundAI: bgAI,
 	}
 	if caps != (wire.HeartbeatCapabilities{}) {
 		hb.Capabilities = &caps
@@ -177,9 +189,9 @@ func (h *heartbeatSource) build(now time.Time, accounts []wire.HeartbeatAccount,
 	return hb
 }
 
-// accountsSQL is the Swift HubAccountRows query: kind, label and status of
-// each Slack, Google and Jira account, at most MaxHeartbeatAccounts. Only
-// those columns are read, so no token can reach the payload.
+// accountsSQL reads the kind, label and status of each Slack, Google and
+// Jira account, at most MaxHeartbeatAccounts. Only those columns are read,
+// so no token can reach the payload.
 const accountsSQL = `SELECT kind, label, status FROM (
 	SELECT 0 AS ord, id, 'slack' AS kind, COALESCE(NULLIF(label, ''), team_name) AS label, status
 	FROM slack_accounts WHERE status != 'removed'
@@ -190,13 +202,18 @@ const accountsSQL = `SELECT kind, label, status FROM (
 	FROM jira_accounts WHERE status != 'removed'
 ) ORDER BY ord, id LIMIT ?`
 
-// DBAccounts reads the heartbeat's account rows from db, the daemon's
+// DBAccounts reads the heartbeat's account rows from d, the daemon's
 // watchtower.db. Phase 1: the runtime refuses to start the hub in any
-// workspace but a hubtest-* test workspace (Task 14), so db is always that
+// workspace but a hubtest-* test workspace (Task 14), so d is always that
 // workspace's database, never the owner's live one.
-func DBAccounts(db *sql.DB) func(ctx context.Context) ([]wire.HeartbeatAccount, error) {
+//
+// With no listed Slack account and Live on, the list starts with one
+// {slack, "Slack", "live"} row (screens spec §2.3): the phone says "Live
+// only". Live is slackmode's rule over each provider's newest probe batch
+// (SLACKMODE-01).
+func DBAccounts(d *db.DB) func(ctx context.Context) ([]wire.HeartbeatAccount, error) {
 	return func(ctx context.Context) ([]wire.HeartbeatAccount, error) {
-		rows, err := db.QueryContext(ctx, accountsSQL, MaxHeartbeatAccounts)
+		rows, err := d.QueryContext(ctx, accountsSQL, MaxHeartbeatAccounts)
 		if err != nil {
 			return nil, fmt.Errorf("slices: reading the accounts: %w", err)
 		}
@@ -212,6 +229,18 @@ func DBAccounts(db *sql.DB) func(ctx context.Context) ([]wire.HeartbeatAccount, 
 		if err := rows.Err(); err != nil {
 			return nil, fmt.Errorf("slices: reading the accounts: %w", err)
 		}
-		return out, nil
+		if slices.ContainsFunc(out, func(a wire.HeartbeatAccount) bool { return a.Kind == "slack" }) {
+			return out, nil
+		}
+		probes, err := d.ListSlackLiveStatusContext(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("slices: reading the Slack Live status: %w", err)
+		}
+		if slackmode.Derive(false, slackmode.LiveVerdicts(probes)) != slackmode.Live {
+			return out, nil
+		}
+		live := wire.HeartbeatAccount{Kind: "slack", Label: "Slack", Status: liveOnlyStatus}
+		out = append([]wire.HeartbeatAccount{live}, out...)
+		return out[:min(len(out), MaxHeartbeatAccounts)], nil
 	}
 }

@@ -141,6 +141,23 @@ final class SessionAgentNoticePolicyTests: XCTestCase {
         XCTAssertEqual(postedNotices(policy.update(statusMap(agentStatus(1, .live(.stopped), at: "t3")), canPost: true)).count, 1)
     }
 
+    /// Spec review is no notice (D3): the owner is not asked yet.
+    func testSpecReviewPostsNothing() {
+        let loop = SessionSwitcherPresentation.State.live(.specReview, specReviewRound: 1)
+        func posted(
+            _ policy: inout SessionAgentNoticePolicy, _ state: SessionSwitcherPresentation.State, _ at: String
+        ) -> [SessionAgentNoticePolicy.Notice] {
+            postedNotices(policy.update(statusMap(agentStatus(1, state, at: at)), canPost: true))
+        }
+        var fromWorking = SessionAgentNoticePolicy()
+        _ = posted(&fromWorking, .live(.working), "t0")
+        XCTAssertEqual(posted(&fromWorking, loop, "t1"), [], "working → spec review")
+        XCTAssertEqual(posted(&fromWorking, .live(.working), "t2"), [], "spec review → working")
+        var fromStopped = SessionAgentNoticePolicy()
+        _ = posted(&fromStopped, .live(.stopped), "t1")
+        XCTAssertEqual(posted(&fromStopped, loop, "t2"), [], "stopped → spec review")
+    }
+
     func testNotLiveWithdraws() {
         var policy = SessionAgentNoticePolicy()
         _ = policy.update(statusMap(agentStatus(1, .live(.needsApproval), at: "t1"), agentStatus(2, .live(.working), at: "t1")), canPost: true)

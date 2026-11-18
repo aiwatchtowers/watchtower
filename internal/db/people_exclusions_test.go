@@ -380,3 +380,25 @@ func prunedAt(t *testing.T, d *DB, acct int64) string {
 	require.NoError(t, d.QueryRow(`SELECT people_prune_done_at FROM slack_accounts WHERE id = ?`, acct).Scan(&at))
 	return at
 }
+
+// TestPrunePreUpgradePeopleCards_RemovedMidPassNotStamped: an account removed
+// while its own pass runs is not stamped, so a later reconnect is pruned.
+func TestPrunePreUpgradePeopleCards_RemovedMidPassNotStamped(t *testing.T) {
+	d := openTestDB(t)
+	mustExecAll(t, d, `INSERT INTO slack_accounts (id, current_user_id) VALUES (1, '1:UOWN')`)
+	_, err := d.UpsertPeopleCard(PeopleCard{UserID: "1:UGONE", PeriodFrom: 1000000, PeriodTo: 2000000, Summary: "s"})
+	require.NoError(t, err)
+
+	// The account is removed after the pass chose it, before it stamps.
+	mustExecAll(t, d, `UPDATE slack_accounts SET status = 'removed' WHERE id = 1`)
+	require.NoError(t, d.stampPeoplePruneDone(1))
+	assert.Empty(t, prunedAt(t, d, 1), "a removed account is not stamped")
+
+	mustExecAll(t, d, `UPDATE slack_accounts SET status = 'ok' WHERE id = 1`)
+	n, done, err := d.PrunePreUpgradePeopleCards(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n)
+	assert.True(t, done)
+	assert.NotEmpty(t, prunedAt(t, d, 1))
+	assert.Equal(t, 0, count(t, d, `SELECT COUNT(*) FROM people_cards WHERE user_id = '1:UGONE'`))
+}

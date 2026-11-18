@@ -15,6 +15,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/slackconnector"
 	"watchtower/internal/slacklive"
+	"watchtower/internal/slackmode"
 )
 
 // Live Slack in the AI chat (#1764): which providers may promise the owner's
@@ -23,10 +24,10 @@ import (
 
 const slackLiveProbeAge = 24 * time.Hour
 
-// newestSlackLive is the newest slack_live_status row of provider
-// (ListSlackLiveStatus is newest first).
+// newestSlackLive is the verdict row of provider's newest probe batch
+// (slackmode.NewestBatches, the rule the Slack mode reads).
 func newestSlackLive(rows []db.SlackLiveStatus, provider string) (db.SlackLiveStatus, bool) {
-	for _, r := range rows {
+	for _, r := range slackmode.NewestBatches(rows) {
 		if r.Provider == provider {
 			return r, true
 		}

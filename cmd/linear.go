@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -231,11 +230,14 @@ func linearWorkspaceURL(a db.LinearAccount) string {
 
 // enableLinearPhase flips the global linear.enabled daemon-phase switch on.
 func enableLinearPhase() error {
-	v := viper.New()
-	v.SetConfigFile(flagConfig)
-	_ = v.ReadInConfig()
-	v.Set("linear.enabled", true)
-	return writeConfigAtomic(v, flagConfig)
+	return config.WithWriteLock(flagConfig, func(lk *config.WriteLock) error {
+		v, err := readConfigForWrite(flagConfig)
+		if err != nil {
+			return err
+		}
+		v.Set("linear.enabled", true)
+		return writeConfigAtomic(lk, v, flagConfig)
+	})
 }
 
 // saveLinearTokenLocked saves a freshly consented token under the account's

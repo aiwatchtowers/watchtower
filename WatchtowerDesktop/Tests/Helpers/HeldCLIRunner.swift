@@ -39,7 +39,17 @@ final class HeldCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
         try await run(args: args)
     }
 
+    /// Refuses a model command as `ProcessCLIRunner` does (#1886 Task 18).
     func run(args: [String]) async throws -> Data {
+        try CLIRunnerError.refuseModelCommand(args)
+        return try await hold(args)
+    }
+
+    func runModel(args: [String], origin _: CLIOrigin, timeout _: TimeInterval?, stdin _: Data?) async throws -> Data {
+        try await hold(args)
+    }
+
+    private func hold(_ args: [String]) async throws -> Data {
         lock.withLock { recorded.append(args) }
         started.release()
         await finish.wait()

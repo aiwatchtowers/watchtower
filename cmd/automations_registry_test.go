@@ -194,7 +194,7 @@ func TestAutomationAuthoringDeps_BackendsCarryMCPAndAgent(t *testing.T) {
 	// The agent runner's children get an allowlisted env, never the markers.
 	t.Setenv("CLAUDECODE", "1")
 	t.Setenv("WATCHTOWER_TERMINAL_SESSION_ID", "1")
-	for _, kv := range automationAgentEnv(1) {
+	for _, kv := range automationAgentEnv(context.Background(), 1) {
 		name, _, _ := strings.Cut(kv, "=")
 		if name != automations.RunEnvMarker { // the run's own marker is set on purpose
 			assert.NotContains(t, agentEnvMarkers, name)

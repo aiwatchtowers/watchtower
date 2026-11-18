@@ -44,6 +44,12 @@ package enum OrganizationPolicyPresentation {
         if let b = p.allowOwnGoogleProject {
             out.append(Line(label: "Own Google projects", value: allowed(b)))
         }
+        if let b = p.allowBackgroundAI {
+            out.append(Line(label: "Background AI", value: b ? "Allowed by your organization" : "Turned off by your organization"))
+        }
+        if let apps = p.slackApps {
+            out.append(Line(label: "Slack workspaces set up for you", value: list(apps.map(\.teamID))))
+        }
         if !p.reservedNotEnforced.isEmpty {
             out.append(Line(label: "Not enforced in this version", value: p.reservedNotEnforced.joined(separator: ", ")))
         }

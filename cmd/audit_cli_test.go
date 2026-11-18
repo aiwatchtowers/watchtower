@@ -150,6 +150,9 @@ var cliNoContentCommands = map[string]bool{
 	"agents report":                    true,
 	"agents scan":                      true,
 	"agents stats":                     true,
+	"ai background allow":              true, // Config and policy only.
+	"ai background pause":              true,
+	"ai background status":             true,
 	"ai models":                        true,
 	"ai routing-status":                true, // Local provider health/revision metadata only.
 	"ai session":                       true,
@@ -374,7 +377,14 @@ var cliNoContentCommands = map[string]bool{
 	"remind":                           true,
 	"session-host":                     true,
 	"slack add":                        true,
+	"slack app adopt":                  true, // updates the app's manifest; prints ids and the result only
+	"slack app create":                 true, // creates the app; prints ids and the result only
+	"slack app link":                   true,
+	"slack app pending":                true,
+	"slack app status":                 true,
 	"slack backfill":                   true, // fetches into the database; prints counts only
+	"slack connect":                    true, // connects an account; prints the workspace and account id only
+	"slack connect serve":              true, // the app's listener child; prints connect events only
 	"slack disable":                    true,
 	"slack enable":                     true,
 	"slack login":                      true,

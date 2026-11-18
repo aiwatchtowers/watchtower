@@ -377,7 +377,7 @@ final class AgentActionCardViewTests: XCTestCase {
                                       onReconnectSlack: { id in
                                            XCTAssertEqual(id, 3)
                                            reconnected.fulfill()
-                                           return nil
+                                           return .signedIn
                                        })
         try view.inspect().find(button: "Reconnect Slack").tap()
         wait(for: [reconnected], timeout: 2)

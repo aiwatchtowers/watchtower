@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"watchtower/internal/claude"
 	"watchtower/internal/codex"
 	"watchtower/internal/db"
 
@@ -242,4 +243,29 @@ func TestPlansAggregate_StoredValidationAndIdentitySuppression(t *testing.T) {
 	wire, err := json.Marshal(s)
 	require.NoError(t, err)
 	require.NotContains(t, string(wire), "+01:00", "public timestamps are UTC")
+}
+
+func TestPlansAggregate_CloudReasonsArePublic(t *testing.T) {
+	for _, code := range []string{"cloud_bedrock", "cloud_vertex", "cloud_foundry"} {
+		assert.Equal(t, code, safeStoredReason(code))
+		assert.Equal(t, code, publicError(&claude.UsageError{Code: code}).Code)
+		assert.Equal(t, "Plan usage: "+code+".", publicError(&OperationError{Code: code}).Message)
+	}
+	assert.Equal(t, "no_credentials", safeStoredReason("token_expired"))
+	assert.Equal(t, "no_credentials", safeStoredReason("http_401"))
+	assert.Equal(t, "network", safeStoredReason("http_500"))
+	assert.Equal(t, "network", safeStoredReason("anything"))
+
+	d, err := db.Open(":memory:")
+	require.NoError(t, err)
+	defer d.Close()
+	now := at(10, 0)
+	for reason, want := range map[string]string{"cloud_bedrock": "cloud_bedrock", "cloud_vertex": "cloud_vertex",
+		"cloud_foundry": "cloud_foundry", "token_expired": "no_credentials", "http_500": "network"} {
+		require.NoError(t, d.UpsertPlanUsageStatus(db.PlanUsageStatus{State: "unavailable", Reason: reason, UpdatedAt: now,
+			LastError: "Claude usage: " + reason, LastErrorAt: &now, LimitsJSON: "[]", BreakdownJSON: "[]", PlotJSON: "{}"}))
+		s, err := ReadStatus(d, "claude", true, now)
+		require.NoError(t, err)
+		assert.Equal(t, "Plan usage: "+want+".", s.LastError, reason)
+	}
 }

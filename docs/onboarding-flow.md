@@ -1,8 +1,9 @@
 # Onboarding Flow — Watchtower Desktop
 
 Onboarding v2 (2026-10): two steps, no LLM, nothing required.
-**Goals → Connect**, then straight into the app (the third step, About you,
-was removed on 2026-10-14, #758). There is no
+**Goals → Connect → Background AI**, then straight into the app (the old
+third step, About you, was removed on 2026-10-14, #758; Background AI, added
+on 2026-11-18, #1886, shows only while the answer is due). There is no
 "all done" screen. Contracts and the reasoning behind them are in
 [`docs/features/onboarding-v2.md`](features/onboarding-v2.md).
 
@@ -61,12 +62,25 @@ Customize screen never loses what was picked.
  │  Back · Continue always allowed                                 │
  └───────────────┬──────────────────────────────────────────────────┘
                  ▼
+ ┌──────────────────────────────────────────────────────────────────┐
+ │ 3. BACKGROUND AI (aiConsent)   skipped when the answer is       │
+ │    decided (answered, or by the AllowBackgroundAI policy)       │
+ │  the consent screen for the agent picked on Goals: what runs,   │
+ │  on whose plan, how often                                       │
+ │  Back · Not now (`ai background pause`) ·                       │
+ │  Allow background AI (`ai background allow --yes`)              │
+ │  a failed write → error line, the step stays                    │
+ └───────────────┬──────────────────────────────────────────────────┘
+                 ▼
             FINISH (the last step the route runs)
    onboarding_done written → daemon started (or restarted once) in
    the background → `.complete` → Home
 ```
 
-`OnboardingRoute(goals:)` decides the skips. The goals it
+`OnboardingRoute(goals:consentPrompt:)` decides the skips. Background AI
+is skipped when `AppState.backgroundAI.prompt` is false, so a re-run never
+asks again; see [background-ai-consent.md](features/background-ai-consent.md).
+The goals it
 reads are the ones saved by the last successful Goals Continue
 (`onboarding_v2_goals`), never the live checkboxes, so the step dots do not
 move while the owner is still picking. Zero goals behave like Development
@@ -133,7 +147,9 @@ Settings starts no load.
 
 Finish is the only place onboarding starts or restarts the daemon: the
 Connect sheets run in `.deferred` mode, and nothing else in the flow touches
-it.
+it. When the Background AI step runs, its saved answer triggers the finish
+(`answerBackgroundAIConsentStep`), so the daemon starts with the answer in
+place; a failed finish shows **Try again**, which reruns the finish only.
 
 ## Run setup again
 

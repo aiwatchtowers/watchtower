@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"log"
 
 	"watchtower/internal/config"
@@ -72,17 +73,30 @@ func ensureLegacySlackAccount(ctx context.Context, cfg *config.Config, database 
 	// below must not depend on it.
 	identity, resolveErr := resolveSlackIdentity(ctx, legacyToken)
 
-	if err := store.Save(&watchtowerslack.Token{
-		AccessToken: legacyToken,
-		TeamID:      identity.TeamID,
-		TeamName:    identity.TeamName,
-		UserID:      identity.UserID,
-	}); err != nil {
+	// Under the account's token lock (review #1426); another process that
+	// migrated the token meanwhile wins, and this one leaves its file alone.
+	migrated := false
+	err = withSlackTokenLock(ctx, store, func() error {
+		if store.Exists() {
+			return nil
+		}
+		migrated = true
+		return store.Save(&watchtowerslack.Token{
+			AccessToken: legacyToken,
+			TeamID:      identity.TeamID,
+			TeamName:    identity.TeamName,
+			UserID:      identity.UserID,
+		})
+	})
+	if err != nil {
 		// Token file wasn't written -> wireSlackSyncers can't sync this
 		// account. Surface the error like Google's rename failure; a later
 		// call retries since the file still won't exist.
 		logger.Printf("slack: account %d: failed to migrate legacy token: %v", id, err)
 		return id, err
+	}
+	if !migrated {
+		return id, nil
 	}
 
 	if resolveErr == nil {
@@ -115,18 +129,34 @@ func blankLegacySlackConfigToken(cfg *config.Config, logger *log.Logger) {
 	if flagConfig == "" {
 		return
 	}
-	v := viper.New()
-	v.SetConfigFile(flagConfig)
-	if err := v.ReadInConfig(); err != nil {
+	key := "workspaces." + cfg.ActiveWorkspace + ".slack_token"
+	// Checked once without the lock, so a config with nothing to blank (the
+	// usual case, a read-only config dir included) takes no lock and logs
+	// nothing; checked again inside it before the write.
+	pre := viper.New()
+	pre.SetConfigFile(flagConfig)
+	pre.SetConfigType("yaml")
+	if err := pre.ReadInConfig(); err != nil {
 		logger.Printf("slack: failed to read config to blank legacy token: %v", err)
 		return
 	}
-	key := "workspaces." + cfg.ActiveWorkspace + ".slack_token"
-	if v.GetString(key) == "" {
+	if pre.GetString(key) == "" {
 		return
 	}
-	v.Set(key, "")
-	if err := writeConfigAtomic(v, flagConfig); err != nil {
+	err := config.WithWriteLock(flagConfig, func(lk *config.WriteLock) error {
+		v := viper.New()
+		v.SetConfigFile(flagConfig)
+		v.SetConfigType("yaml")
+		if err := v.ReadInConfig(); err != nil {
+			return fmt.Errorf("re-reading config: %w", err)
+		}
+		if v.GetString(key) == "" {
+			return nil
+		}
+		v.Set(key, "")
+		return writeConfigAtomic(lk, v, flagConfig)
+	})
+	if err != nil {
 		logger.Printf("slack: failed to blank legacy config token: %v", err)
 	}
 }
