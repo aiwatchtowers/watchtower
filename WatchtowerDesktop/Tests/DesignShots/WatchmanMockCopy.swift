@@ -24,7 +24,7 @@ enum WatchmanMockCopy {
     static let nightTonight = "Tonight"
     static let nightTonightLine = "In progress · 3 decided so far"
     static let night16 = "Night of 16 Nov"
-    static let night16Line = "14 decided · 2 unsure · 1 waiting"
+    static let night16Line = "14 decided · 2 unsure · 2 waiting"
     static let night15 = "Night of 15 Nov"
     static let night15Line = "9 decided · all sure"
     static let night13 = "Night of 13 Nov"
@@ -42,6 +42,10 @@ enum WatchmanMockCopy {
     static let parkedTitle = "#1830 Merge feature/store-window → main"
     static let parkedReason = "Parked: merging to main is yours"
     static let parkedSession = "acme-api · session 4 · 05:12"
+    // Phase 1b (§4, ask #1486): only what needs the owner's own hands.
+    static let handedTitle = "#1834 Rotate the deploy token"
+    static let handedReason = "Handed to you: issue a new token in the provider's console"
+    static let handedSession = "acme-api · session 5 · 03:47"
     static let openSession = "Open session"
 
     static let unsureBadge = "Unsure"
@@ -105,7 +109,7 @@ enum WatchmanMockCopy {
 
     // MARK: Home
 
-    static let homeRow = "Overnight Watchman decided 14 — 2 unsure, 1 waiting for you"
+    static let homeRow = "Overnight Watchman decided 14 — 2 unsure, 2 waiting for you"
 
     // MARK: Arming
 
@@ -167,7 +171,7 @@ enum WatchmanMockCopy {
     // MARK: Inbox source list
 
     static let inboxRoot = "Inbox"
-    static let inboxWatchmanSummary = "1 waiting"
+    static let inboxWatchmanSummary = "2 waiting"
     static let inboxWatchmanDetail = "Night of 16 Nov · 14 decided · 2 unsure"
     /// The Inbox root's other built-in entries, as the app names them today.
     static let inboxOthers: [(id: String, title: String, summary: String, detail: String)] = [

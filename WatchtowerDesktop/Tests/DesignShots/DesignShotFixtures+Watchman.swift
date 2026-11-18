@@ -210,7 +210,13 @@ private struct JournalNight: View {
         VStack(alignment: .leading, spacing: Spacing.large) {
             header
             if live { liveLine }
-            section(Copy.waitingTitle, count: 1, trailing: nil) { parkedCard }
+            section(Copy.waitingTitle, count: live ? 1 : 2, trailing: nil) {
+                waitingCard(icon: "hand.raised.fill", title: Copy.parkedTitle, reason: Copy.parkedReason, session: Copy.parkedSession)
+                if !live {
+                    waitingCard(icon: "person.fill.questionmark", title: Copy.handedTitle,
+                                reason: Copy.handedReason, session: Copy.handedSession)
+                }
+            }
             section(Copy.decidedTitle, count: live ? 3 : 14, trailing: live ? Copy.busySummary : Copy.decidedSummary) {
                 DecisionCard(
                     session: Copy.unsure1Session, question: Copy.unsure1Question, choice: Copy.unsure1Choice,
@@ -269,14 +275,14 @@ private struct JournalNight: View {
         }
     }
 
-    private var parkedCard: some View {
+    private func waitingCard(icon: String, title: String, reason: String, session: String) -> some View {
         VStack(alignment: .leading, spacing: Spacing.compact) {
             HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                Image(systemName: "hand.raised.fill").foregroundStyle(Tone.warning)
-                Text(Copy.parkedTitle).font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                Image(systemName: icon).foregroundStyle(Tone.warning)
+                Text(title).font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
             }
-            Text(Copy.parkedReason).font(.callout)
-            Text(Copy.parkedSession).font(.caption).foregroundStyle(.secondary)
+            Text(reason).font(.callout)
+            Text(session).font(.caption).foregroundStyle(.secondary)
             Button(Copy.openSession) {}.buttonStyle(.kitSecondary).padding(.top, Spacing.tight)
         }
         .padding(Spacing.medium)
