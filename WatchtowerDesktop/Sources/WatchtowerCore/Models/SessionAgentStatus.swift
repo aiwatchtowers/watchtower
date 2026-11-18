@@ -263,8 +263,12 @@ package struct SessionAgentStatus: Equatable, Sendable {
         } else {
             kind = restingKind(row, turnEnded: hook == .waiting, live: live)
         }
+        // Background shells alone do not hold the wait on children back: the
+        // turn rests as it would without them (Go `Resolve`).
+        let resting = kind == .background && background?.agents == 0
+            ? restingKind(row, turnEnded: true, live: live) : kind
         let waitsOnChildren = live && liveChildren > 0
-            && (kind == .stopped || (kind == .finished && row.openAsks == 0))
+            && (resting == .stopped || (resting == .finished && row.openAsks == 0))
         return SessionSwitcherPresentation.State(
             kind: waitsOnChildren ? .subSessionsWorking : kind, live: live, openAsks: row.openAsks,
             error: failed ? row.agentError : "",

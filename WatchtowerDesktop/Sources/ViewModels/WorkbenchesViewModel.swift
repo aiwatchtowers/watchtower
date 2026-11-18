@@ -1177,7 +1177,7 @@ final class WorkbenchesViewModel {
         if installed {
             await startNewSession(project: project, title: TerminalSessionNaming.setupTitle,
                                   prompt: TerminalLaunch.firstRunPrompt,
-                                  agent: setupAgent(projectID: project.id))
+                                  agent: setupAgent(projectID: project.id), folder: .home)
         }
     }
 

@@ -282,7 +282,7 @@ extension WorkbenchesViewModel {
         ticket: Int? = nil,
         agent: AgentKind,
         worktree: WorktreeChoice = .auto,
-        folder: StartFolder = .home
+        folder: StartFolder
     ) async -> TerminalSession? {
         await createAndStart(
             .init(projectID: project.id, kind: TerminalSession.Kind(agent), title: title,
@@ -566,7 +566,8 @@ extension WorkbenchesViewModel {
         } else {
             await startNewSession(
                 project: project, title: TerminalSessionNaming.provisional(now: now()), placement: placement, ticket: ticket,
-                agent: currentDefaultAgent()
+                agent: currentDefaultAgent(),
+                folder: startFolder(shortcutFolder(projectID: project.id), bench: benchFolders[project.id])
             )
         }
     }
