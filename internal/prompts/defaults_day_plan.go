@@ -22,7 +22,7 @@ Working hours: %s – %s
 === JIRA (active on me) ===
 %s
 
-=== PEOPLE TO WATCH (red flags, status=active) ===
+=== PEOPLE (active people cards) ===
 %s
 
 === MANUAL ITEMS USER PINNED (DO NOT MODIFY — include as-is) ===

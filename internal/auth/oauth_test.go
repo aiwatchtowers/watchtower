@@ -118,6 +118,8 @@ func TestLogin_HappyPath(t *testing.T) {
 	// Verify user_scope is used (not scope)
 	assert.NotEmpty(t, parsed.Query().Get("user_scope"))
 	assert.Empty(t, parsed.Query().Get("scope"))
+	assert.NotContains(t, strings.Split(parsed.Query().Get("user_scope"), ","), "emoji:read",
+		"the login never asks an existing app for emoji:read (ask #1464)")
 
 	simulateCallback(redirectURI, state, "test-auth-code", "")
 
@@ -607,6 +609,21 @@ func TestUserScopes(t *testing.T) {
 	assert.Contains(t, UserScopes, "team:read")
 	assert.Contains(t, UserScopes, "chat:write", "send_slack_message posts with the user token")
 	assert.Greater(t, len(UserScopes), 10)
+}
+
+func TestLoginScopes_OmitEmojiRead(t *testing.T) {
+	// Owner decision (ask #1464): the login never asks existing apps for
+	// emoji:read; every other manifest scope is requested, in manifest order.
+	assert.Contains(t, UserScopes, "emoji:read", "the manifest keeps emoji:read")
+	assert.NotContains(t, LoginScopes, "emoji:read")
+	assert.Equal(t, len(UserScopes)-1, len(LoginScopes))
+	want := make([]string, 0, len(UserScopes))
+	for _, s := range UserScopes {
+		if s != "emoji:read" {
+			want = append(want, s)
+		}
+	}
+	assert.Equal(t, want, LoginScopes)
 }
 
 func TestDefaultRedirectPort(t *testing.T) {

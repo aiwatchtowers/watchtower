@@ -44,7 +44,7 @@ Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the 
 | `watchtower inbox folders` | The Inbox menu: `list`, and `create`, `update`, `move`, `delete`, `route <automation-id>`, each with `--expect-revision` from `list`; a stale one changes nothing ("the Inbox menu changed"). Refused in a coding agent's shell |
 | `watchtower digest`, `decisions`, `ideas` | [Digests](../features/digests.md), decisions, [ideas](../features/ideas-and-decisions.md) |
 | `watchtower targets`, `tracks` | [Targets](../features/targets.md) and [tracks](../features/tracks.md); `tracks start <id>` makes a track's watch, `tracks instruction <id> --text <t>` edits it |
-| `watchtower people`, `trends`, `users`, `channels` | [People](../features/people.md), trends (no weekly digest is generated today), synced users and channels |
+| `watchtower people` (`people exclude --user <id>` and `people include --user <id>` stop and restore a person's card, as in the app), `trends`, `users`, `channels` | [People](../features/people.md), trends (no weekly digest is generated today), synced users and channels |
 | `watchtower channels exclude <name>`, `channels include <name>` | **Stop syncing** and **Sync again** on a Slack channel from the terminal, as in [Statistics](../features/statistics.md); a name (`#` optional) or `--id <id>`, `--json` for scripts |
 | `watchtower meeting-prep [event-id\|next]` | Meeting preparation |
 | `watchtower ask "<question>"` | Ask the assistant a question from the terminal |

@@ -68,7 +68,7 @@ func TestTemplates_RunE2E(t *testing.T) {
 	t.Run("jira-state-report", testRunJiraStateReport)
 	t.Run("jira-state-report two projects", testRunJiraStateReportTwoProjects)
 
-	t.Run("team-performance-report", testRunTeamPerformanceReport)
+	t.Run("team-week-summary", testRunTeamWeekSummary)
 
 	t.Run("on-reaction", testRunOnReaction)
 }
@@ -696,10 +696,10 @@ func testRunJiraStateReportTwoProjects(t *testing.T) {
 	mustContain(t, "report input", calls[0].UserMessage, "OPS-7")
 }
 
-func testRunTeamPerformanceReport(t *testing.T) {
+func testRunTeamWeekSummary(t *testing.T) {
 	gen := &automationstest.FakeGenerator{Replies: []string{"## Summary\nA steady week."}}
 	f := newTplFixture(t, gen)
-	a := f.installTemplate(t, "team-performance-report", nil)
+	a := f.installTemplate(t, "team-week-summary", nil)
 	id := f.enqueue(t, a, db.TriggerSchedule)
 	f.step(t, 1)
 	f.wantRun(t, id, db.RunSucceeded, "")
@@ -895,7 +895,7 @@ func seedProductionSize(t *testing.T, d *db.DB, seeds ...string) {
 }
 
 // TestTemplates_ProductionSizeReports runs jira-state-report and
-// team-performance-report over production-size data through the executor:
+// team-week-summary over production-size data through the executor:
 // every tool result passes the 256 KiB cap, every llm() input the 200 KiB
 // cap, and the estimated tokens fit the recipes' budgets (the generator
 // reports no usage, so llm() estimates bytes/4).
@@ -924,11 +924,11 @@ func TestTemplates_ProductionSizeReports(t *testing.T) {
 			productionSizeOpsSeed, []string{`"key":"PAY-`, `"key":"OPS-`}},
 		{"jira-state-report &-heavy titles", "jira-state-report", map[string]string{"PROJECT": "PAY,OPS"},
 			ampOpsSeed, []string{`"key":"OPS-`, strings.Repeat(`\u0026`, 2)}},
-		{"team-performance-report", "team-performance-report", nil, "", []string{"PAY-300"}},
+		{"team-week-summary", "team-week-summary", nil, "", []string{"PAY-300"}},
 		// #665: Slack texts full of < and > (mentions, links) are 6 bytes a
 		// character in Go's JSON, so a script counting characters sends past
 		// the cap.
-		{"team-performance-report <>-heavy messages", "team-performance-report", nil,
+		{"team-week-summary <>-heavy messages", "team-week-summary", nil,
 			`UPDATE messages SET text = replace(hex(zeroblob(128)), '0', '<>')`, []string{strings.Repeat("\\u003c\\u003e", 2)}},
 	} {
 		t.Run(c.name, func(t *testing.T) {

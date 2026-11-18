@@ -104,6 +104,11 @@ final class DesignShotsTests: XCTestCase {
         })
     }
 
+    /// The plan limits without a token spec's mockups (#1885).
+    func testPlanLimitsNoTokenShotsRender() throws {
+        try renderShots(PlanLimitsNoTokenShotFixtures.shots)
+    }
+
     /// The Slack Full / Live screens spec's mockups (#1779).
     func testBackgroundAIConsentShotsRender() throws {
         try renderShots(BackgroundAIConsentShotFixtures.shots)
@@ -149,6 +154,16 @@ final class DesignShotsTests: XCTestCase {
     /// The adaptive Slack sync plan's Statistics mockups (#1709).
     func testSlackAdaptiveSyncShotsRender() throws {
         try renderShots(SlackAdaptiveSyncShotFixtures.shots)
+    }
+
+    /// The session's Spec review state mockups (board #1945).
+    func testSpecReviewStateShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("session-state-spec-review") })
+    }
+
+    /// The Slack Developer Policy hygiene spec's mockups (#1769).
+    func testSlackPolicyShotsRender() throws {
+        try renderShots(SlackPolicyShotFixtures.shots)
     }
 
     private func renderShots(_ shots: [DesignShot]) throws {

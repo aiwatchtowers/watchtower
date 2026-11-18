@@ -273,11 +273,6 @@ type JiraConfig struct {
 	ChangelogIssuesPerSync int `mapstructure:"changelog_issues_per_sync"`
 }
 
-// AnalysisConfig holds settings for the people analysis pipeline.
-type AnalysisConfig struct {
-	LegacyMode bool `mapstructure:"legacy_mode"` // enable legacy people analytics (default: false)
-}
-
 // TargetsExtractConfig holds settings for the targets extraction phase.
 type TargetsExtractConfig struct {
 	Enabled        bool `mapstructure:"enabled"`
@@ -434,7 +429,6 @@ type Config struct {
 	Imap             ImapConfig                  `mapstructure:"imap"`
 	Jira             JiraConfig                  `mapstructure:"jira"`
 	Linear           LinearConfig                `mapstructure:"linear"`
-	Analysis         AnalysisConfig              `mapstructure:"analysis"`
 	DayPlan          DayPlanConfig               `mapstructure:"day_plan"`
 	Memory           MemoryConfig                `mapstructure:"memory"`
 	Targets          TargetsConfig               `mapstructure:"targets"`

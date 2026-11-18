@@ -28,6 +28,10 @@ package enum SessionSwitcherPresentation {
             /// agent waits for the owner's verdict, not a decision (#534).
             /// Live or not.
             case readyToCheck
+            /// The turn is over and an open ask of the session is in the
+            /// spec review author loop, hidden from the owner (board #1945).
+            /// Live or not.
+            case specReview
         }
 
         package let kind: Kind
@@ -57,6 +61,9 @@ package enum SessionSwitcherPresentation {
         /// `missing`, `permission`, `compressed`, `unreadable`; spec
         /// 2026-11-05 §3.5); nil when watched and for every other kind.
         package let watchIssue: String?
+        /// The highest author-loop round of the session's open asks
+        /// (board #1945); 0 for every other kind.
+        package let specReviewRound: Int
 
         /// `openQuestionAsks` nil = every open ask is a question: the
         /// reading before asks had kinds here, so a state built without them
@@ -71,7 +78,8 @@ package enum SessionSwitcherPresentation {
             backgroundShells: Int = 0,
             openQuestionAsks: Int? = nil,
             openReviewAsks: Int = 0,
-            watchIssue: String? = nil
+            watchIssue: String? = nil,
+            specReviewRound: Int = 0
         ) {
             self.kind = kind
             self.live = live
@@ -83,6 +91,7 @@ package enum SessionSwitcherPresentation {
             self.openQuestionAsks = openQuestionAsks ?? openAsks
             self.openReviewAsks = openReviewAsks
             self.watchIssue = kind == .working ? watchIssue : nil
+            self.specReviewRound = kind == .specReview ? specReviewRound : 0
         }
 
         /// Asks are open and none is a question: each is a check or a
@@ -108,11 +117,13 @@ package enum SessionSwitcherPresentation {
             backgroundAgents: Int = 0,
             backgroundShells: Int = 0,
             openQuestionAsks: Int? = nil,
-            openReviewAsks: Int = 0
+            openReviewAsks: Int = 0,
+            specReviewRound: Int = 0
         ) -> Self {
             Self(kind: kind, live: true, openAsks: openAsks, error: error, oldestAskID: oldestAskID,
                  backgroundAgents: backgroundAgents, backgroundShells: backgroundShells,
-                 openQuestionAsks: openQuestionAsks, openReviewAsks: openReviewAsks)
+                 openQuestionAsks: openQuestionAsks, openReviewAsks: openReviewAsks,
+                 specReviewRound: specReviewRound)
         }
     }
 

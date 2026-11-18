@@ -23,9 +23,9 @@ import (
 	"watchtower/internal/aiconsent/aiconsenttest"
 	"watchtower/internal/automations"
 	"watchtower/internal/chat"
+	"watchtower/internal/claude"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
-	"watchtower/internal/planusage"
 	"watchtower/internal/policy"
 	"watchtower/internal/policy/policytest"
 	"watchtower/internal/providers/transport"
@@ -154,35 +154,25 @@ func TestCLIAgentRunner_PausedSpawnsNothing(t *testing.T) {
 	assert.Equal(t, 0, metered)
 }
 
-type planCreds struct{}
-
-func (planCreds) Load(context.Context) (planusage.Credentials, error) {
-	return planusage.Credentials{AccessToken: "tok", ExpiresAt: time.Now().Add(time.Hour), Plan: "max"}, nil
-}
-
-type planFetch struct {
-	body  []byte
-	calls int
-}
-
-func (f *planFetch) Fetch(context.Context, string) ([]byte, error) {
-	f.calls++
-	return f.body, nil
-}
-
 // D17: the plan-limit read is no model call; paused never stops it.
 func TestPlanUsagePoller_NotGatedByConsent(t *testing.T) {
 	aiconsenttest.Use(t, "daemon", nil, false)
-	body, err := os.ReadFile(filepath.Join("..", "internal", "planusage", "testdata", "usage_full.json"))
-	require.NoError(t, err)
 	database := db.OpenTestDB(t)
 	poller := newPlanUsagePoller(database, log.New(io.Discard, "", 0))
-	fetch := &planFetch{body: body}
-	poller.Creds, poller.Client = planCreds{}, fetch
+	require.NotNil(t, poller.Read)
+	reads := 0
+	// The production Read spawns `claude` for get_usage; the stand-in keeps
+	// the poll in-process, as the token reader's fake client did.
+	poller.Read = func(context.Context) (claude.UsageSnapshot, error) {
+		reads++
+		return claude.UsageSnapshot{Plan: "max", Windows: []claude.UsageWindow{
+			{Key: "five_hour", Label: "5-hour", Group: "session", Percent: 12.5},
+		}}, nil
+	}
 
-	_, err = poller.PollOnce(context.Background())
+	_, err := poller.PollOnce(context.Background())
 	require.NoError(t, err)
-	assert.Equal(t, 1, fetch.calls)
+	assert.Equal(t, 1, reads)
 	st, err := database.GetPlanUsageStatus()
 	require.NoError(t, err)
 	require.NotNil(t, st)

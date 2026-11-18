@@ -296,6 +296,32 @@ func (db *DB) SlackRosterSyncedAt(id int64) (time.Time, error) {
 	return t, nil
 }
 
+// SlackEmojiScopeMissing reports whether accountID's legacy token (no
+// recorded grant) answered emoji.list with missing_scope (migration 00195);
+// false for a missing row.
+func (db *DB) SlackEmojiScopeMissing(id int64) (bool, error) {
+	var missing bool
+	err := db.QueryRow(`SELECT emoji_scope_missing FROM slack_accounts WHERE id = ?`, id).Scan(&missing)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("reading emoji scope flag for slack account %d: %w", id, err)
+	}
+	return missing, nil
+}
+
+// SetSlackEmojiScopeMissing marks accountID's legacy token as lacking
+// emoji:read, so the emoji sync skips it. Its only writer is the sync's
+// syncEmoji; nothing clears it — a re-login records the grant, which then
+// decides alone.
+func (db *DB) SetSlackEmojiScopeMissing(id int64) error {
+	if _, err := db.Exec(`UPDATE slack_accounts SET emoji_scope_missing = 1 WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("marking emoji scope missing for slack account %d: %w", id, err)
+	}
+	return nil
+}
+
 // SetSlackRosterSyncedAt stamps accountID's roster as fetched at at.
 func (db *DB) SetSlackRosterSyncedAt(id int64, at time.Time) error {
 	res, err := db.Exec(`UPDATE slack_accounts SET roster_synced_at = ? WHERE id = ?`,

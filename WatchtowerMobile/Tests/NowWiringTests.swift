@@ -174,6 +174,7 @@ final class NowWiringTests: XCTestCase {
         XCTAssertEqual(finished.glyph, "checkmark")
         XCTAssertEqual(finished.tone, .blue)
         XCTAssertFalse(model.ended.contains { $0.id == .session(17) }, "a session that never ran has not ended")
+        XCTAssertFalse(model.ended.contains { $0.id == .session(22) }, "a live spec review session has not ended")
     }
 
     func testAnEndedRowMarkedSeenLeavesUntilTheSessionEndsAgain() throws {

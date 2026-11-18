@@ -47,10 +47,12 @@ extension AppState {
 
     /// The managed policy and the background AI answer both re-read on app
     /// activation, so an answer or a profile change made outside the app
-    /// shows when the owner comes back.
+    /// shows when the owner comes back. FileVault status (#1769) starts here
+    /// too, outside XCTest.
     func startPolicyAndConsentRefresh() {
         managedPolicy.start(activation: NSApplication.didBecomeActiveNotification)
         backgroundAIRefresher.start()
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil { fileVault.start() }
     }
 }
 
