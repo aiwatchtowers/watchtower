@@ -3,7 +3,7 @@ import GRDB
 
 /// One wait point Watchman handled for the owner (`watchman_items`, 00198;
 /// Go `db.WatchmanItem`). The journal reads it; only the feedback columns
-/// are ever written from the Desktop (phase-2 Task 17). Times are RFC 3339
+/// are ever written from the Desktop (`WatchmanFeedbackQueries`). Times are RFC 3339
 /// UTC, as Go writes them (`wmTime`).
 package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord {
     package var id: Int64
@@ -34,7 +34,13 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
     package var decidedAt: Date?
     /// `''`, `ok`, `corrected`.
     package var feedback: String
+    /// The owner's correction (`feedback = 'corrected'`).
+    package var feedbackText: String
     package var checkDoneAt: Date?
+    /// The owner marked a waiting (parked, handed) item done.
+    package var ownerDoneAt: Date?
+    /// The owner's correction reached a session (typed, or a new session).
+    package var correctionSentAt: Date?
 
     package init(
         id: Int64,
@@ -58,7 +64,10 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
         createdAt: Date,
         decidedAt: Date? = nil,
         feedback: String = "",
-        checkDoneAt: Date? = nil
+        feedbackText: String = "",
+        checkDoneAt: Date? = nil,
+        ownerDoneAt: Date? = nil,
+        correctionSentAt: Date? = nil
     ) {
         self.id = id
         self.workbenchID = workbenchID
@@ -81,7 +90,10 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
         self.createdAt = createdAt
         self.decidedAt = decidedAt
         self.feedback = feedback
+        self.feedbackText = feedbackText
         self.checkDoneAt = checkDoneAt
+        self.ownerDoneAt = ownerDoneAt
+        self.correctionSentAt = correctionSentAt
     }
 
     package init(row: Row) throws {
@@ -111,7 +123,10 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
         self.createdAt = createdAt
         decidedAt = AutomationDates.parse(row["decided_at"])
         feedback = row["feedback"]
+        feedbackText = row["feedback_text"] ?? ""
         checkDoneAt = AutomationDates.parse(row["check_done_at"])
+        ownerDoneAt = AutomationDates.parse(row["owner_done_at"])
+        correctionSentAt = AutomationDates.parse(row["correction_sent_at"])
     }
 
     /// Malformed `precedent_ids` JSON is logged once per launch (never its
@@ -133,7 +148,17 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
 
     /// Parked or handed back: the owner has to act.
     package var waitsForOwner: Bool {
-        state == "done" && (outcome == "parked" || outcome == "handed") && feedback.isEmpty
+        isWaitingKind && feedback.isEmpty && ownerDoneAt == nil
+    }
+
+    /// Parked or handed back, whether or not the owner has dealt with it.
+    package var isWaitingKind: Bool {
+        state == "done" && (outcome == "parked" || outcome == "handed")
+    }
+
+    /// The owner corrected it and the correction never reached a session.
+    package var correctionUnsent: Bool {
+        feedback == "corrected" && correctionSentAt == nil
     }
 
     /// A check Watchman passed on that nobody has run since.

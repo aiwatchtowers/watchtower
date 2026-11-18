@@ -9,7 +9,7 @@ import XCTest
 
 /// Design-only scenes for Watchman (#1824, spec
 /// `docs/superpowers/specs/2026-11-16-watchman-design.md` §2, §10, §11).
-/// The `journal-*` (but the Correct… sheet), `home-row`, `inbox-entry`,
+/// The `journal-*` (the Correct… sheet too), `home-row`, `inbox-entry`,
 /// `settings-*`, `strip-*`, `target-panel-*` and `arm-first-time` frames draw
 /// the real views on fixture data; `tray-menu` draws the native menu as it
 /// reads, in the real copy; the rest are design-only (the strings are
@@ -42,6 +42,8 @@ enum WatchmanShotFixtures {
         case settingsRelabelling = "settings-relabelling"
         case journalNotRunning = "journal-not-running"
         case journalNightUnsure = "journal-night-unsure"
+        case settingsAddLimit = "settings-add-limit"
+        case settingsProfileEdit = "settings-profile-edit"
 
         /// A zero height means "as tall as the content".
         var size: NSSize {
@@ -53,7 +55,8 @@ enum WatchmanShotFixtures {
             case .homeRow: NSSize(width: 420, height: 0)
             case .stripArmed, .stripUnarmed: NSSize(width: 760, height: 0)
             case .armFirstTime: NSSize(width: 460, height: 0)
-            case .settingsResults, .settingsNeverRun, .settingsRunning, .settingsFailed, .settingsRelabelling: NSSize(width: 640, height: 0)
+            case .settingsResults, .settingsNeverRun, .settingsRunning, .settingsFailed, .settingsRelabelling,
+                 .settingsAddLimit, .settingsProfileEdit: NSSize(width: 640, height: 0)
             case .trayMenu: NSSize(width: 340, height: 0)
             case .targetPanelArmed, .targetPanelUnarmed: NSSize(width: 380, height: 0)
             case .inboxEntry: NSSize(width: 420, height: 300)
@@ -79,24 +82,41 @@ enum WatchmanShotFixtures {
                                                         daemon: .stopped))
             case .journalNightUnsure:
                 JournalShot(model: JournalFixture.model([JournalFixture.unsureNight] + JournalFixture.older))
-            case .journalCorrectSheet: CorrectSheetMock()
+            case .journalCorrectSheet: CorrectSheetShot()
             case .homeRow: HomeRowShot()
             case .stripArmed: WatchmanArmingShotFixture.strip(armed: true)
             case .stripUnarmed: WatchmanArmingShotFixture.strip(armed: false)
             case .armFirstTime: ArmSheetShot()
-            case .settingsResults: WatchmanSettingsShot(json: WatchmanStatusFixtures.results)
-            case .settingsNeverRun: WatchmanSettingsShot(json: WatchmanStatusFixtures.neverRun)
-            case .settingsRunning: WatchmanSettingsShot(json: WatchmanStatusFixtures.running)
-            case .settingsFailed: WatchmanSettingsShot(json: WatchmanStatusFixtures.failed)
+            case .settingsResults:
+                WatchmanSettingsShot(json: WatchmanStatusFixtures.results, editing: WatchmanStatusFixtures.editing())
+            case .settingsAddLimit:
+                WatchmanSettingsShot(
+                    json: WatchmanStatusFixtures.results,
+                    editing: WatchmanStatusFixtures.editing(errors: [.limits: WatchmanShotFixtures.addLimitError]),
+                    draft: .limit(kind: .tool, pattern: "create jira issue"))
+            case .settingsProfileEdit:
+                WatchmanSettingsShot(
+                    json: WatchmanStatusFixtures.results, editing: WatchmanStatusFixtures.editing(),
+                    draft: .entry(workbench: 1, key: "ux_text", text: WatchmanShotFixtures.profileDraft))
+            case .settingsNeverRun: WatchmanSettingsShot(json: WatchmanStatusFixtures.neverRun, editing: WatchmanStatusFixtures.editing())
+            case .settingsRunning: WatchmanSettingsShot(json: WatchmanStatusFixtures.running, editing: WatchmanStatusFixtures.editing())
+            case .settingsFailed: WatchmanSettingsShot(json: WatchmanStatusFixtures.failed, editing: WatchmanStatusFixtures.editing())
             case .trayMenu: TrayMenuShot()
             case .targetPanelArmed: WatchmanArmingShotFixture.targetPanel(armed: true)
             case .targetPanelUnarmed: WatchmanArmingShotFixture.targetPanel(armed: false)
             case .inboxEntry: InboxEntryMock()
             case .settingsNotLearned: WatchmanSettingsShot(json: WatchmanStatusFixtures.learning)
-            case .settingsRelabelling: WatchmanSettingsShot(json: WatchmanStatusFixtures.relabelling)
+            case .settingsRelabelling: WatchmanSettingsShot(json: WatchmanStatusFixtures.relabelling, editing: WatchmanStatusFixtures.editing())
             }
         }
     }
+
+    /// The add-limit frame's line: a tool name with blanks, refused before the CLI.
+    static let addLimitError = WatchmanSettingsCopy.limitToolBlanks
+    /// The profile-edit frame's draft: ux_text's learned lines and one more.
+    static let profileDraft = "Shipped button titles stay unless the guide page changes too.\n"
+        + "Say what happened and what to do; no apologies, no exclamation marks.\n"
+        + "Name the button after what it does."
 
     static var shots: [DesignShot] {
         Frame.allCases.map { frame in
@@ -131,6 +151,7 @@ private enum JournalFixture {
         _ created: String,
         workbench: (Int64, String) = (1, "acme-api"),
         session: Int64 = 3,
+        target: Int64 = 0,
         kind: String = "ask",
         state: String = "done",
         outcome: String = "answered",
@@ -145,7 +166,8 @@ private enum JournalFixture {
         cost: Double = 0
     ) -> WatchmanItem {
         WatchmanItem(
-            id: id, workbenchID: workbench.0, workbenchName: workbench.1, sessionID: session, kind: kind, state: state,
+            id: id, workbenchID: workbench.0, workbenchName: workbench.1, sessionID: session, targetID: target,
+            kind: kind, state: state,
             outcome: outcome, question: question, choice: choice, rationale: rationale, precedentIDs: precedents,
             confidence: confidence, category: category, unsure: unsure, parkReason: parkReason, costUSD: cost,
             createdAt: at(created), decidedAt: state == "done" ? at(created).addingTimeInterval(60) : nil)
@@ -158,7 +180,7 @@ private enum JournalFixture {
         1834, "2026-11-17T03:47:00Z", session: 5, outcome: "handed", question: "Rotate the deploy token",
         rationale: "issue a new token in the provider's console")
     static let unsure1 = item(
-        1826, "2026-11-17T02:14:00Z", question: "Store the window per workbench or global?", choice: "Per workbench",
+        1826, "2026-11-17T02:14:00Z", target: 1826, question: "Store the window per workbench or global?", choice: "Per workbench",
         rationale: "You split settings per workbench in #1201, #1288 and kept global only what every workbench "
             + "shares. A window's place differs per folder.",
         precedents: [1201, 1288], confidence: "low", category: "design", cost: 0.9)
@@ -243,44 +265,18 @@ private struct JournalShot: View {
     }
 }
 
-/// Correct…: the owner writes what he would have decided.
-private struct CorrectSheetMock: View {
+/// The real Correct… sheet (`WatchmanCorrectSheet`) on the first unsure
+/// decision, its session ended: a new session starts with the correction.
+private struct CorrectSheetShot: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.large) {
-            Text(Copy.correctTitle).font(.title3.weight(.semibold))
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                Text(Copy.unsure1Question).font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
-                HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                    Text(Copy.choseLabel).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    Text(Copy.unsure1Choice).font(.callout)
-                }
-            }
-            .padding(Spacing.medium)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .card()
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                Text(Copy.correctQuestion).font(.headline)
-                TextField("", text: .constant(Copy.correctDraft), axis: .vertical)
-                    .textFieldStyle(.kit)
-                    .lineLimit(3...6)
-                HStack(alignment: .top, spacing: Spacing.regular) {
-                    Image(systemName: "info.circle").foregroundStyle(.secondary)
-                    Text(Copy.correctSessionEnded)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            HStack(spacing: Spacing.regular) {
-                Spacer()
-                Button(Copy.cancel) {}.buttonStyle(.kitSecondary)
-                Button(Copy.sendCorrection) {}.buttonStyle(.kitPrimary)
-            }
-        }
-        .controlSize(.small)
-        .padding(Spacing.page)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground()
+        WatchmanCorrectSheet(model: Self.model())
+    }
+
+    private static func model() -> WatchmanJournalViewModel {
+        let vm = JournalFixture.model([JournalFixture.fullNight])
+        vm.beginCorrect(JournalFixture.unsure1.id)
+        vm.correcting?.text = Copy.correctDraft
+        return vm
     }
 }
 
@@ -431,9 +427,11 @@ private struct ArmSheetShot: View {
 /// on a `watchman status --json` fixture per state.
 private struct WatchmanSettingsShot: View {
     let json: String
+    var editing = WatchmanEditingData()
+    var draft: WatchmanSettingsDraft?
 
     var body: some View {
-        WatchmanSettingsContent(state: .of(WatchmanStatusFixtures.status(json)))
+        WatchmanSettingsContent(state: .of(WatchmanStatusFixtures.status(json)), editing: editing, draft: draft)
             .padding(Spacing.page)
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .detailBackground()

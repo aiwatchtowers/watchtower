@@ -40,7 +40,20 @@ The overall verdict is **go** when at least three categories are strong and one 
 3. When learning is done, press **Run Backtest Now**. A run shows its progress and can take a while, and the weekly run repeats it once learning is done. The screen lists each category with its numbers, its base rate and its rating; the verdict and the cost are printed by `watchman backtest` in a terminal, which also saves a report of the grades and reasons in the workspace's `watchman` folder.
 4. If a run fails or is interrupted, the error is shown with **Retry**, and the last finished result stays below it.
 
-From a terminal, `watchtower watchman learn --workbench N` prints the estimate (add `--start` to begin), `watchman profile --workbench N` shows the learned rules and sleep window, and `watchman backtest --workbench N` runs a backtest (it waits for learning to finish; `--force` runs it earlier). Starting and backtesting are yours to run: an AI agent's session is refused.
+### Edit what it learned and its limits
+<!-- learn
+id: watchman-settings-editing
+title: Correct Watchman's rules and add your own limits
+text: In Settings → Profile → Watchman, press **Edit** on a category or the sleep window, or **Add a Limit…** under Your hard limits.
+area: development
+level: power
+kind: feature
+since: next
+-->
+
+Under **What Watchman learned**, **Edit** opens a category's rules (one per line, at most 20); **Save** pins them, so the weekly rebuild leaves them alone until you press **Unpin**. The sleep window edits the same way, as `HH:MM-HH:MM`. Under **Your hard limits**, **Add a Limit…** takes a command's first words (`terraform apply`) or a tool's name (`create_jira_issue`), and Watchman parks it for you. **Remove** takes only your own rows; the built-in ones stay.
+
+From a terminal, `watchtower watchman learn --workbench N` prints the estimate (add `--start` to begin), `watchman profile --workbench N` shows the learned rules and sleep window, `watchman limits list|add|remove` manages your limits, and `watchman backtest --workbench N` runs a backtest (it waits for learning to finish; `--force` runs it earlier). Starting and backtesting are yours to run: an AI agent's session is refused.
 
 ### Hand a session to Watchman
 <!-- learn
@@ -75,6 +88,19 @@ Everything Watchman handled lands in **Inbox → Watchman**, one night per entry
 - **Checks nobody ran**: checks a session asked for that Watchman passed on.
 
 The night's header shows its span, any stretch the Mac slept ("the Mac slept from 02:10 to 03:05, nothing ran") and what the night cost. While Watchman works, a "Deciding: …" line shows its current item; when the daemon is stopped, "Watchman is not running — the daemon is stopped" sits above the last night. A workbench menu narrows the journal to one workbench.
+
+### OK and Correct…
+<!-- learn
+id: watchman-feedback
+title: Teach Watchman from its night
+text: In **Inbox → Watchman**, press **OK** on a decision you agree with, or **Correct…** to write what you would have decided.
+area: development
+level: power
+kind: feature
+since: next
+-->
+
+**OK** keeps a decision and teaches it to Watchman. **Correct…** asks what you would have decided: the text goes to the session as a typed line, or, if the session ended, a new session starts on its target with it (not handed to Watchman). Your words are saved first, so a failed send shows "Not sent — …" with **Retry**. **Open session** shows the session; **Mark done** clears a check you ran or a waiting item you dealt with.
 
 ## When it's empty or wrong
 

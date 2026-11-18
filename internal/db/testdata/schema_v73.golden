@@ -3711,7 +3711,7 @@ decided_at TEXT,
 feedback TEXT NOT NULL DEFAULT '' CHECK (feedback IN ('','ok','corrected')), -- written by the Desktop only
 feedback_text TEXT NOT NULL DEFAULT '',
 feedback_at TEXT,
-check_done_at TEXT,
+check_done_at TEXT, owner_done_at TEXT, correction_sent_at TEXT,
 UNIQUE (ref_kind, ref_id, kind)
 )
 
@@ -7172,6 +7172,8 @@ GROUP BY up.ancestor
 28	feedback_text	TEXT	notnull=1	dflt=''	pk=0
 29	feedback_at	TEXT	notnull=0	dflt=NULL	pk=0
 30	check_done_at	TEXT	notnull=0	dflt=NULL	pk=0
+31	owner_done_at	TEXT	notnull=0	dflt=NULL	pk=0
+32	correction_sent_at	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## watchman_precedents
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

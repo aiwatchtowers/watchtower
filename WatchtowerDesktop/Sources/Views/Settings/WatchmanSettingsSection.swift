@@ -2,8 +2,9 @@ import DesignKit
 import SwiftUI
 import WatchtowerCore
 
-/// Settings → Profile → Watchman (#1823, phase 1) over the app-wide
-/// `WatchmanCenter`: rereads while a learning pass or a backtest runs.
+/// Settings → Profile → Watchman (#1823) over the app-wide `WatchmanCenter`:
+/// rereads while a learning pass or a backtest runs; phase 2 edits the
+/// profile texts, the sleep window and the owner's hard limits.
 struct WatchmanSettingsSection: View {
     let center: WatchmanCenter
 
@@ -15,15 +16,22 @@ struct WatchmanSettingsSection: View {
             readError: center.readError,
             onStartLearning: { id in Task { await center.startLearning(workbench: id) } },
             onRunBacktest: { id in Task { await center.runBacktest(workbench: id) } },
-            onRetry: { Task { await center.load() } }
+            onRetry: { Task { await center.refresh() } },
+            editing: center.editing,
+            actions: WatchmanEditActions(
+                saveProfile: { await center.saveProfile(workbench: $0, key: $1, text: $2) },
+                unpin: { await center.unpin(workbench: $0, key: $1) },
+                addLimit: { await center.addLimit(kind: $0, pattern: $1) },
+                removeLimit: { await center.removeLimit(id: $0) },
+                clearError: { center.clearError($0) }
+            )
         )
         .task(id: center.needsPolling) { await center.watch() }
     }
 }
 
 /// The section's body for one state, so the design shots draw the real
-/// screen on fixture JSON. Phase 1 is read-only except Start Learning, Run
-/// Backtest Now and Retry: no Edit, Unpin or extra limits (phase 2).
+/// screen on fixture JSON (`draft` opens an editor in a shot).
 struct WatchmanSettingsContent: View {
     let state: WatchmanSettingsState
     var phase: (WatchmanWorkbenchStatus) -> WatchmanWorkbenchPhase = { WatchmanWorkbenchPhase.of($0) }
@@ -32,6 +40,9 @@ struct WatchmanSettingsContent: View {
     var onStartLearning: (Int64) -> Void = { _ in }
     var onRunBacktest: (Int64) -> Void = { _ in }
     var onRetry: () -> Void = {}
+    var editing = WatchmanEditingData()
+    var actions = WatchmanEditActions()
+    @State var draft: WatchmanSettingsDraft?
 
     private typealias Copy = WatchmanSettingsCopy
 
@@ -84,6 +95,13 @@ struct WatchmanSettingsContent: View {
         ForEach(learned, id: \.workbench) { row in
             sleepSection(row, several: learned.count > 1)
             backtestSection(row, several: learned.count > 1)
+            if row.isLearned {
+                WatchmanProfileSection(row: row, several: learned.count > 1, editing: editing, actions: actions,
+                                       draft: $draft)
+            }
+        }
+        if editing.limits != nil || editing.limitsReadError != nil {
+            WatchmanLimitsSection(editing: editing, actions: actions, draft: $draft)
         }
     }
 
@@ -124,16 +142,52 @@ struct WatchmanSettingsContent: View {
     // MARK: - Sleep window
 
     private func sleepSection(_ row: WatchmanWorkbenchStatus, several: Bool) -> some View {
-        SettingsSection(title: Copy.sleepTitle(name: row.name, several: several), caption: Copy.sleepCaption) {
-            if let value = Copy.sleepValue(row.sleepWindow) {
+        let key = WatchmanProfileEntry.sleepWindowKey
+        let slot = WatchmanEditSlot.profile(workbench: row.workbench, key: key)
+        let saving = editing.saving.contains(slot)
+        return SettingsSection(title: Copy.sleepTitle(name: row.name, several: several), caption: Copy.sleepCaption) {
+            if let text = entryDraftText($draft, workbench: row.workbench, key: key) {
+                WatchmanInlineEditor(
+                    text: text, multiline: false, placeholder: Copy.sleepPlaceholder, note: Copy.sleepPinnedNote,
+                    error: editing.errors[slot], saving: saving,
+                    onSave: { saveSleep(row.workbench, text.wrappedValue) },
+                    onCancel: {
+                        actions.clearError(slot)
+                        draft = nil
+                    }
+                )
+            } else {
                 HStack(spacing: Spacing.regular) {
-                    Text(value).font(.body.monospacedDigit())
-                    OutlineTag(text: row.sleepWindowPinned ? Copy.sleepPinned : Copy.sleepLearned)
+                    if let value = Copy.sleepValue(row.sleepWindow) {
+                        Text(value).font(.body.monospacedDigit())
+                        OutlineTag(text: row.sleepWindowPinned ? Copy.sleepPinned : Copy.sleepLearned)
+                    } else {
+                        Text(Copy.sleepNotLearned).font(.callout).foregroundStyle(.secondary)
+                    }
                     Spacer(minLength: Spacing.regular)
+                    Button(Copy.edit) {
+                        actions.clearError(slot)
+                        draft = .entry(workbench: row.workbench, key: key, text: row.sleepWindow ?? "")
+                    }
+                    .buttonStyle(.kitSecondary)
+                    .disabled(saving)
+                    if row.sleepWindowPinned {
+                        Button(Copy.unpin) { Task { await actions.unpin(row.workbench, key) } }
+                            .buttonStyle(.kitQuiet)
+                            .disabled(saving)
+                    }
                 }
                 .frame(minHeight: ListLayout.rowMinHeight)
-            } else {
-                Text(Copy.sleepNotLearned).font(.callout).foregroundStyle(.secondary)
+                if let error = editing.errors[slot] { WatchmanErrorLine(text: error) }
+            }
+        }
+    }
+
+    private func saveSleep(_ workbench: Int64, _ text: String) {
+        let key = WatchmanProfileEntry.sleepWindowKey
+        Task {
+            if await actions.saveProfile(workbench, key, text), draft?.isEntry(workbench: workbench, key: key) == true {
+                draft = nil
             }
         }
     }
