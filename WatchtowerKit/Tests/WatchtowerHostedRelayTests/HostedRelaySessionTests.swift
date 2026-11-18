@@ -327,6 +327,218 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
         XCTAssertEqual(try http.ops().filter { $0 == "save" }.count, 1)
     }
 
+    // MARK: - Wake reads (live link R6)
+
+    /// The pull reads its zones at once: both `changes` are in flight together, not one after the other.
+    func testWakeReadsZonesConcurrently() async throws {
+        let http = HTTPBox()
+        let (phone, _, macs) = try await paired(macs: [1], wrapHTTP: http.wrap)
+        let session = HostedRelaySession(client: phone)
+        let store = try TransportStore.inMemory()
+        let hub = try transport(session, mac: macs[0], store: store)
+        let intercept = try http.intercept()
+        intercept.answer(Self.scriptedPages(data: dataZone(macs[0]), mailbox: mailbox(macs[0], phone)))
+        intercept.park { if case .changes = $0.op { true } else { false } }
+
+        let pull = Task { try await hub.pull() }
+        guard await within({ intercept.parked.count == 2 }) else {
+            intercept.park(where: nil)
+            intercept.releaseParked()
+            _ = await pull.result
+            return XCTFail("the reads went out one after the other")
+        }
+
+        XCTAssertEqual(
+            intercept.parked.compactMap { if case .changes(let changes) = $0.op { changes.zone } else { nil } },
+            [dataZone(macs[0]), mailbox(macs[0], phone)], "both zones' reads in flight together, the data zone's sent first")
+        intercept.park(where: nil)
+        intercept.releaseParked()
+        try await pull.value
+        XCTAssertEqual(try store.changes(in: .data, since: nil).changed.map(\.recordName), ["a1", "a2", "a3"])
+        XCTAssertEqual(try store.changes(in: .relay, since: nil).changed.map(\.recordName), ["b1"])
+    }
+
+    /// The app leaves mid-read: the caller of the wake's reads is cancelled (`HubSession.setActive(false)` cancels its
+    /// fetch, which waits on this pull) after zone A's first page is stored and before zone B answers. The next wake reads A from its stored cursor and B from its old one: nothing applied twice, nothing
+    /// skipped.
+    func testBackgroundMidConcurrentReadResumesFromStoredCursor() async throws {
+        let http = HTTPBox()
+        let (phone, _, macs) = try await paired(macs: [1], wrapHTTP: http.wrap)
+        let session = HostedRelaySession(client: phone)
+        let store = try TransportStore.inMemory()
+        let hub = try transport(session, mac: macs[0], store: store)
+        let (data, box) = (dataZone(macs[0]), mailbox(macs[0], phone))
+        let intercept = try http.intercept()
+        let reads = OSAllocatedUnfairLock<[String]>(initialState: [])
+        let pages = Self.scriptedPages(data: data, mailbox: box)
+        intercept.answer { request in
+            if case .changes(let changes) = request.op {
+                reads.withLock { $0.append("\(changes.zone == data ? "A" : "B")@\(changes.sinceSeq)") }
+            }
+            return try pages(request)
+        }
+        // A's first page goes through; A's second page and B's only page wait.
+        intercept.park { request in
+            guard case .changes(let changes) = request.op else { return false }
+            return !(changes.zone == data && changes.sinceSeq == 0)
+        }
+
+        let pull = Task { try await hub.pull() }
+        guard await within({ intercept.parked.count == 2 }) else {
+            intercept.park(where: nil)
+            intercept.releaseParked()
+            _ = await pull.result
+            return XCTFail("the reads went out one after the other")
+        }
+        XCTAssertEqual(try store.relayCursor(zone: .data), 2, "A's first page is stored")
+        pull.cancel()
+        let cancelled = await pull.result
+        XCTAssertThrowsError(try cancelled.get())
+        XCTAssertEqual(try store.relayCursor(zone: .data), 2)
+        XCTAssertEqual(try store.relayCursor(zone: .relay), 0)
+
+        intercept.park(where: nil)
+        reads.withLock { $0 = [] }
+        try await hub.pull()
+
+        XCTAssertEqual(Set(reads.withLock { $0 }), ["A@2", "B@0"], "A from its stored cursor, B from its old one")
+        XCTAssertEqual(try store.changes(in: .data, since: nil).changed.map(\.recordName), ["a1", "a2", "a3"])
+        XCTAssertEqual(try store.changes(in: .relay, since: nil).changed.map(\.recordName), ["b1"])
+    }
+
+    /// Against the relay: a silent socket is dropped at once and the wake returns while the second dial is still
+    /// held before the relay (it never waits on a dial); once through, the second socket takes over with no
+    /// `disconnected`, no backoff and no third dial.
+    func testAWakeRedialHandsOverWithoutWaitingOrBackingOff() async throws {
+        let relay = try requireFake("holds pongs (fake only, R15)")
+        let gate = DialGate()
+        let (phone, tally, _) = try await paired(macs: [1], gate: gate)
+        let session = HostedRelaySession(client: phone)
+        let owner = await probe(session, zones: [])
+        await waitUntilLive(session)
+        let current = await session.connection
+        let connection = try XCTUnwrap(current)
+        relay.setPongs(false)
+        defer { relay.setPongs(true) }
+        gate.hold()
+
+        let woke = OSAllocatedUnfairLock(initialState: false)
+        let wake = Task {
+            await session.wake()
+            woke.withLock { $0 = true }
+        }
+        _ = await until { woke.withLock { $0 } }
+        XCTAssertNil(connection.liveGeneration, "the silent socket is dropped: reads go over HTTPS")
+        _ = await until { gate.waiting == 1 }
+        relay.setPongs(true)
+        gate.release()
+        await wake.value
+        _ = await until { owner.events.filter { $0 == .connected }.count == 2 }
+
+        XCTAssertEqual(connection.liveGeneration, 2)
+        XCTAssertFalse(owner.events.contains(.disconnected), "a handover, not a disconnect")
+        XCTAssertEqual(tally.dials, 2, "no third dial")
+        XCTAssertTrue(connection.isLive)
+    }
+
+    /// A caller of the wake that is cancelled (the app left) returns at once, though the wake itself still waits for
+    /// its pong: the shared wake goes on, and the next caller joins it.
+    func testACancelledWakeCallerReturnsWhileTheWakeGoesOn() async throws {
+        let relay = try requireFake("holds pongs (fake only, R15)")
+        let (phone, _, _) = try await paired(macs: [1])
+        let session = HostedRelaySession(client: phone)
+        _ = await probe(session, zones: [])
+        await waitUntilLive(session)
+        let current = await session.connection
+        let connection = try XCTUnwrap(current)
+        relay.setPongs(false)
+        defer { relay.setPongs(true) }
+
+        let returned = OSAllocatedUnfairLock(initialState: 0)
+        let first = Task {
+            await session.wake()
+            returned.withLock { $0 += 1 }
+        }
+        for _ in 0..<1_000 { await Task.yield() }
+        first.cancel()
+        // The clock does not move: only the cancel can end the caller's wait.
+        var back = false
+        for _ in 0..<20_000 where !back {
+            back = returned.withLock { $0 } == 1
+            await Task.yield()
+        }
+        XCTAssertTrue(back, "the cancelled caller waited for the wake")
+        XCTAssertEqual(connection.liveGeneration, 1, "the wake itself was not cancelled: still waiting for its pong")
+
+        let second = Task {
+            await session.wake()
+            returned.withLock { $0 += 1 }
+        }
+        _ = await until { returned.withLock { $0 } == 2 }
+        await first.value
+        await second.value
+        XCTAssertNil(connection.liveGeneration, "the shared wake ran to its end: the silent socket is dropped")
+    }
+
+    /// A pull that joins one its caller cancelled is not lost with it: it waits for the cancelled pull to end and
+    /// reads its zones afresh.
+    func testAPullJoiningACancelledPullReadsItsZones() async throws {
+        let http = HTTPBox()
+        let (phone, _, macs) = try await paired(macs: [1], wrapHTTP: http.wrap)
+        let session = HostedRelaySession(client: phone)
+        let store = try TransportStore.inMemory()
+        let hub = try transport(session, mac: macs[0], store: store)
+        let intercept = try http.intercept()
+        intercept.answer(Self.scriptedPages(data: dataZone(macs[0]), mailbox: mailbox(macs[0], phone)))
+        // Held without regard to cancellation: the cancelled pull is still running when the next one joins.
+        intercept.holdNext { if case .changes = $0.op { true } else { false } }
+
+        let first = Task { try await hub.pull() }
+        _ = await until { intercept.holding }
+        first.cancel()
+        let second = Task { try await hub.pull() }
+        for _ in 0..<1_000 { await Task.yield() }
+        intercept.release()
+
+        _ = await first.result
+        try await second.value
+        XCTAssertEqual(try store.changes(in: .data, since: nil).changed.map(\.recordName), ["a1", "a2", "a3"])
+        XCTAssertEqual(try store.changes(in: .relay, since: nil).changed.map(\.recordName), ["b1"])
+    }
+
+    /// `changes` answered from a script: the data zone in two pages (a1 a2, then a3), the mailbox in one (b1).
+    private static func scriptedPages(data: String, mailbox: String) -> @Sendable (Relay_V1_Request) throws -> Relay_V1_Response? {
+        { request in
+            guard case .changes(let changes) = request.op else { return nil }
+            var page = Relay_V1_ChangesResult()
+            func records(_ names: [String], from seq: UInt64) -> [Relay_V1_Record] {
+                names.enumerated().map { offset, name in
+                    var record = Relay_V1_Record()
+                    record.zone = changes.zone
+                    record.name = name
+                    record.envelope = Data("envelope-\(name)".utf8)
+                    record.recordSeq = seq + UInt64(offset)
+                    record.clientModifiedAtMs = 1_700_000_000_000
+                    return record
+                }
+            }
+            switch (changes.zone, changes.sinceSeq) {
+            case (data, 0):
+                (page.changed, page.newSeq, page.more) = (records(["a1", "a2"], from: 1), 2, true)
+            case (data, _):
+                (page.changed, page.newSeq) = (records(["a3"], from: 3), 3)
+            case (mailbox, 0):
+                (page.changed, page.newSeq) = (records(["b1"], from: 1), 1)
+            default:
+                page.newSeq = changes.sinceSeq
+            }
+            var response = Relay_V1_Response()
+            response.id = request.id
+            response.changes = page
+            return response
+        }
+    }
+
     // MARK: - Helpers
 
     /// The phone's `InterceptingRelayHTTP`, once `paired` built it.
@@ -340,7 +552,11 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
         }
 
         func ops() throws -> [String] {
-            try XCTUnwrap(lock.withLock { $0 }).ops
+            try intercept().ops
+        }
+
+        func intercept() throws -> InterceptingRelayHTTP {
+            try XCTUnwrap(lock.withLock { $0 })
         }
     }
 
@@ -365,6 +581,16 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
         return true
     }
 
+    /// Whether `condition` holds within a bounded number of yields (pumping the fake's clock; no wall clock).
+    private func within(_ condition: () -> Bool) async -> Bool {
+        for _ in 0..<50_000 {
+            if condition() { return true }
+            pump()
+            await Task.yield()
+        }
+        return condition()
+    }
+
     /// Dials and displacements (`GoingAway`) of one client.
     final class SocketTally: Sendable {
         private let counts = OSAllocatedUnfairLock(initialState: (dials: 0, displacements: 0))
@@ -386,12 +612,65 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
         }
     }
 
+    /// Holds dials before they reach the relay (before the upgrade) while `hold()` is on; a held dial whose task is
+    /// cancelled throws.
+    final class DialGate: Sendable {
+        private struct State {
+            var holding = false
+            var waiting: [Int: CheckedContinuation<Void, any Error>] = [:]
+            var nextID = 0
+        }
+
+        private let state = OSAllocatedUnfairLock(initialState: State())
+
+        var waiting: Int {
+            state.withLock { $0.waiting.count }
+        }
+
+        func hold() {
+            state.withLock { $0.holding = true }
+        }
+
+        func release() {
+            let all = state.withLock { state in
+                state.holding = false
+                defer { state.waiting = [:] }
+                return Array(state.waiting.values)
+            }
+            for waiter in all { waiter.resume() }
+        }
+
+        func pass() async throws {
+            let id = state.withLock { state in
+                state.nextID += 1
+                return state.nextID
+            }
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                    let now: Result<Void, any Error>? = state.withLock { state in
+                        if Task.isCancelled { return .failure(CancellationError()) }
+                        guard state.holding else { return .success(()) }
+                        state.waiting[id] = continuation
+                        return nil
+                    }
+                    if let now { continuation.resume(with: now) }
+                }
+            } onCancel: {
+                let waiter = state.withLock { $0.waiting.removeValue(forKey: id) }
+                waiter?.resume(throwing: CancellationError())
+            }
+        }
+    }
+
     struct CountingDialer: RelaySocketDialer {
         let base: any RelaySocketDialer
         let tally: SocketTally
 
+        var gate: DialGate?
+
         func dial(_ url: URL, headers: [String: String]) async throws -> any RelaySocket {
             tally.dialed()
+            try await gate?.pass()
             return try await base.dial(url, headers: headers)
         }
     }
@@ -436,7 +715,7 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
 
     /// A paying phone (seed 2) whose dials are counted, paired with the Macs of `seeds`.
     private func paired(
-        macs seeds: [UInt8], wrapHTTP: ((any RelayHTTP) -> any RelayHTTP)? = nil
+        macs seeds: [UInt8], wrapHTTP: ((any RelayHTTP) -> any RelayHTTP)? = nil, gate: DialGate? = nil
     ) async throws -> (HostedRelayClient, SocketTally, [HostedRelayClient]) {
         let tally = SocketTally()
         let signer = try backend.signer(seed: 2)
@@ -447,7 +726,7 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
             kind: .phone,
             attestor: RelayAttestor(attest: fakeAttest(seed: 2), keys: InMemoryAppAttestKeyStore(), clock: clock),
             http: wrapHTTP?(backend.http) ?? backend.http,
-            sockets: CountingDialer(base: backend.sockets, tally: tally),
+            sockets: CountingDialer(base: backend.sockets, tally: tally, gate: gate),
             clock: clock,
             backoff: Self.quickBackoff
         ) { tally.displaced() }

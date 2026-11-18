@@ -1,6 +1,6 @@
 import Foundation
 import os
-import WatchtowerHostedRelay
+@testable import WatchtowerHostedRelay
 import WatchtowerHostedRelayTesting
 import WatchtowerRelayProto
 import XCTest
@@ -436,7 +436,376 @@ final class HostedRelayConnectionTests: XCTestCase {
         await connection.close()
     }
 
+    // MARK: - Wake (live link R6)
+
+    /// A pong within the wake's 300 ms keeps the socket: no second dial, the same generation.
+    func testProbeAnsweredKeepsSocket() async throws {
+        XCTAssertEqual(HostedRelayConnection.wakePingDeadline, .milliseconds(300))
+        let harness = try RelayClientHarness()
+        let socket = ScriptedRelaySocket()
+        harness.sockets.script([.socket(socket)])
+        let connection = await harness.client.connect(zones: [])
+        let events = EventProbe(connection)
+        let first = await events.next()
+        XCTAssertEqual(first, .connected)
+
+        await connection.wake()
+
+        XCTAssertEqual(socket.pings, 1)
+        XCTAssertNil(socket.closedWith)
+        XCTAssertEqual(harness.sockets.dials.count, 1)
+        XCTAssertEqual(connection.liveGeneration, 1)
+        await connection.close()
+    }
+
+    /// No pong within 300 ms: the old socket is dropped at once and the wake returns, its dial still running (it
+    /// hangs for 5 s): a request is refused before the write (so it goes over HTTPS) without the clock moving. The
+    /// dial completing later takes over with no `disconnected` and no backoff; a late pong of the old socket changes
+    /// nothing.
+    func testProbeSilentDialsInParallelAndFirstReadyWins() async throws {
+        let harness = try RelayClientHarness()
+        let old = ScriptedRelaySocket(pongs: false)
+        let new = ScriptedRelaySocket()
+        harness.sockets.script([.socket(old), .delayed(.seconds(5), new)])
+        let connection = await harness.client.connect(zones: [])
+        let events = EventProbe(connection)
+        let first = await events.next()
+        XCTAssertEqual(first, .connected)
+
+        let woke = OSAllocatedUnfairLock(initialState: false)
+        Task {
+            await connection.wake()
+            woke.withLock { $0 = true }
+        }
+        await harness.clock.waitForSleep(.milliseconds(300))
+        harness.clock.manual.advance(by: .milliseconds(300))
+        // The clock does not move again: the wake must return with its dial still out.
+        var returned = false
+        for _ in 0..<20_000 where !returned {
+            returned = woke.withLock { $0 }
+            await Task.yield()
+        }
+        guard returned else {
+            XCTFail("the wake waited for its dial")
+            harness.clock.manual.advance(by: .seconds(5))
+            return await connection.close()
+        }
+
+        XCTAssertNil(connection.liveGeneration, "the silent socket is dropped at once")
+        do {
+            _ = try await connection.request(RelayClientHarness.removeSlot)
+            XCTFail("written to a dropped socket")
+        } catch {
+            XCTAssertEqual(error as? HostedRelayConnection.SocketLoss, .notSent, "refused before the write: HTTPS")
+        }
+        await old.waitUntilClosedByClient()
+        XCTAssertEqual(old.closedWith, 1000)
+
+        await harness.clock.waitForSleep(.seconds(5))
+        harness.clock.manual.advance(by: .seconds(5))
+        let next = await events.next()
+        XCTAssertEqual(next, .connected, "the new socket takes over, with no disconnect in between")
+        XCTAssertEqual(connection.liveGeneration, 2)
+        old.pong()
+        XCTAssertEqual(connection.liveGeneration, 2, "a late pong of the old socket changes nothing")
+        _ = try await connection.send(RelayClientHarness.removeSlot)
+        XCTAssertTrue(new.sent.contains { if case .removeSlot? = $0.request.op { true } else { false } })
+        XCTAssertEqual(harness.sockets.dials.count, 2, "no third dial")
+        await connection.close()
+        XCTAssertEqual(new.closedWith, 1000)
+    }
+
+    /// The write chain is per socket: the new socket's subscribe goes out although the old socket's subscribe write
+    /// is stuck for good (not ended by the close or the cancel).
+    func testANewSocketsWritesAreNotHeldByAStuckOldWrite() async throws {
+        let harness = try RelayClientHarness()
+        let old = ScriptedRelaySocket(pongs: false, stuckWrites: true)
+        let new = ScriptedRelaySocket()
+        harness.sockets.script([.socket(old), .delayed(.milliseconds(100), new)])
+        let connection = await harness.client.connect(zones: ["acme/a"])
+        let events = EventProbe(connection)
+        _ = await events.next()
+        await spin { old.stuckCount == 1 }
+
+        let wake = Task { await connection.wake() }
+        await harness.clock.waitForSleep(.milliseconds(300))
+        harness.clock.manual.advance(by: .milliseconds(300))
+        await wake.value
+        await harness.clock.waitForSleep(.milliseconds(100))
+        harness.clock.manual.advance(by: .milliseconds(100))
+        let up = await events.next()
+        XCTAssertEqual(up, .connected)
+
+        var subscribed = false
+        for _ in 0..<50_000 where !subscribed {
+            subscribed = new.sent.contains { if case .subscribe? = $0.request.op { true } else { false } }
+            await Task.yield()
+        }
+        XCTAssertTrue(subscribed, "the new socket's subscribe waited on the old socket's stuck write")
+        old.releaseStuck()
+        await connection.close()
+    }
+
+    /// Writes stay in order past a cancelled one: A is stuck in its send, B (queued behind it) is cancelled, C is
+    /// queued behind B. C's frame is written only once A's send has returned.
+    func testACancelledQueuedWriteDoesNotLetTheNextOvertake() async throws {
+        let harness = try RelayClientHarness()
+        let socket = ScriptedRelaySocket(stuckWrites: true)
+        harness.sockets.script([.socket(socket)])
+        let connection = await harness.client.connect(zones: [])
+        let events = EventProbe(connection)
+        _ = await events.next()
+        func requests() -> Int {
+            socket.sent.filter { if case .request = $0.kind { true } else { false } }.count
+        }
+
+        let first = Task { try await connection.request(RelayClientHarness.removeSlot) }
+        let second = Task<Relay_V1_Response, any Error> {
+            _ = await self.settles { socket.stuckCount == 1 }
+            return try await connection.request(RelayClientHarness.removeSlot)
+        }
+        // B is queued (registered behind A) before it is cancelled; C is queued behind B before the check.
+        let queuedB = await settles { socket.stuckCount == 1 && connection.pendingRequests == 2 }
+        second.cancel()
+        _ = await second.result
+        let third = Task { try await connection.request(RelayClientHarness.removeSlot) }
+        let queuedC = await settles { connection.pendingRequests == 2 }
+        guard queuedB, queuedC else {
+            XCTFail("the requests were not queued (B \(queuedB), C \(queuedC))")
+            socket.releaseStuck()
+            return await connection.close()
+        }
+        // Nothing observable marks "C is still held": give a write that would overtake every chance to land.
+        _ = await settles { requests() > 0 }
+        XCTAssertEqual(requests(), 0, "C was written while A was still in its send")
+
+        socket.releaseStuck()
+        _ = await first.result
+        let written = await settles { requests() == 1 }
+        XCTAssertTrue(written, "C goes out once A's send returned; B was never written")
+        _ = await third.result
+        await connection.close()
+    }
+
+    /// A's send stays blocked while the socket is retired: the cancelled writes queued behind it stop waiting for it
+    /// (their chain settles) before A is released.
+    func testARetiredSocketEndsTheSkippedWritesWaits() async throws {
+        try await assertSkippedWritesEnd { connection in
+            guard let generation = connection.liveGeneration else { return XCTFail("no live socket") }
+            connection.detach(generation)
+        }
+    }
+
+    /// The same when the connection is closed with A's send still blocked.
+    func testACloseEndsTheSkippedWritesWaits() async throws {
+        try await assertSkippedWritesEnd { await $0.close() }
+    }
+
+    private func assertSkippedWritesEnd(
+        after end: (HostedRelayConnection) async -> Void, line: UInt = #line
+    ) async throws {
+        let harness = try RelayClientHarness()
+        let socket = ScriptedRelaySocket(stuckWrites: true)
+        harness.sockets.script([.socket(socket)])
+        let connection = await harness.client.connect(zones: [])
+        let events = EventProbe(connection)
+        _ = await events.next()
+        defer { socket.releaseStuck() }
+
+        let first = Task { try await connection.request(RelayClientHarness.removeSlot) }
+        let second = Task<Relay_V1_Response, any Error> {
+            _ = await self.settles { socket.stuckCount == 1 }
+            return try await connection.request(RelayClientHarness.removeSlot)
+        }
+        let queued = await settles { socket.stuckCount == 1 && connection.pendingRequests == 2 }
+        XCTAssertTrue(queued, "B was not queued behind A", line: line)
+        second.cancel()
+        _ = await second.result
+        XCTAssertFalse(connection.lastWriteSettled, "B's skipped write still waits for A", line: line)
+
+        await end(connection)
+
+        let settled = await settles { connection.lastWriteSettled }
+        XCTAssertTrue(settled, "the skipped write still waits for A's blocked send", line: line)
+        XCTAssertEqual(socket.stuckCount, 1, "A's send is still blocked", line: line)
+        socket.releaseStuck()
+        _ = await first.result
+        // A detached socket is no longer the connection's to close: end its reader so `close()` returns.
+        socket.closeFromServer(1006)
+        await connection.close()
+    }
+
+    /// A body that ignores the cancel and finishes before the race sees it: the cancelled caller still gets no
+    /// value, which goes to `discard` (whichever of the two the race meets first).
+    func testACancelledDeadlineDiscardsAValueItsBodyReturnsAnyway() async throws {
+        let harness = try RelayClientHarness()
+        let connection = await harness.client.connect(zones: [])
+        let held = OSAllocatedUnfairLock<CheckedContinuation<Void, Never>?>(initialState: nil)
+        let caller = OSAllocatedUnfairLock<Task<Int?, any Error>?>(initialState: nil)
+        let discarded = OSAllocatedUnfairLock<[Int]>(initialState: [])
+        let race = Task {
+            try await connection.deadline(.seconds(7), discard: { (value: Int) in discarded.withLock { $0.append(value) } }, {
+                await withCheckedContinuation { continuation in held.withLock { $0 = continuation } }
+                // Cancels its own caller and returns at once.
+                caller.withLock { $0 }?.cancel()
+                return 7
+            })
+        }
+        caller.withLock { $0 = race }
+        let out = await settles { held.withLock { $0 != nil } }
+        XCTAssertTrue(out, "the body never started")
+        held.withLock { $0 }?.resume()
+        let result = await race.result
+        XCTAssertThrowsError(try result.get(), "a cancelled caller gets no value")
+        XCTAssertEqual(discarded.withLock { $0 }, [7])
+        await connection.close()
+    }
+
+    /// A `deadline` whose caller is cancelled while its body (a dial) is still out hands the value the body returns
+    /// later to `discard`: a late socket is closed, not dropped open.
+    func testACancelledDeadlineDiscardsWhatItsBodyReturnsLate() async throws {
+        let harness = try RelayClientHarness()
+        let connection = await harness.client.connect(zones: [])
+        let held = OSAllocatedUnfairLock<CheckedContinuation<Void, Never>?>(initialState: nil)
+        let discarded = OSAllocatedUnfairLock<[Int]>(initialState: [])
+        let race = Task {
+            try await connection.deadline(.seconds(7), discard: { (value: Int) in discarded.withLock { $0.append(value) } }, {
+                // Not ended by the cancel, like a dial that ignores it.
+                await withCheckedContinuation { continuation in held.withLock { $0 = continuation } }
+                return 7
+            })
+        }
+        let out = await settles { held.withLock { $0 != nil } }
+        XCTAssertTrue(out, "the body never started")
+        await harness.clock.waitForSleep(.seconds(7))
+        race.cancel()
+        // The race has seen the cancel (its clock sleep ended) before the body returns.
+        await harness.clock.waitForSleeps(.seconds(7), count: 0)
+        held.withLock { $0 }?.resume()
+        let result = await race.result
+        XCTAssertThrowsError(try result.get(), "a cancelled race throws")
+        XCTAssertEqual(discarded.withLock { $0 }, [7], "the late value was dropped, not discarded")
+        await connection.close()
+    }
+
+    /// The second dial hangs past the handshake timeout: the loop stops waiting for it and dials again at once; the
+    /// socket the hung dial produces later is closed, never live.
+    func testAHungSecondDialIsGivenUpAfterTheHandshakeTimeout() async throws {
+        let harness = try RelayClientHarness()
+        let old = ScriptedRelaySocket(pongs: false)
+        let late = ScriptedRelaySocket()
+        let third = ScriptedRelaySocket()
+        harness.sockets.script([.socket(old), .held(late), .socket(third)])
+        defer { harness.sockets.releaseHeld() }
+        let connection = await harness.client.connect(zones: [])
+        let events = EventProbe(connection)
+        _ = await events.next()
+
+        let wake = Task { await connection.wake() }
+        await harness.clock.waitForSleep(.milliseconds(300))
+        harness.clock.manual.advance(by: .milliseconds(300))
+        await wake.value
+        // The redial is in its upgrade (the dial is out), under the wake's timer and the upgrade's own deadline.
+        let dialling = await settles { harness.sockets.heldCount == 1 }
+        XCTAssertTrue(dialling, "the redial never dialled")
+        await harness.clock.waitForSleeps(HostedRelayConnection.handshakeTimeout, count: 2)
+        harness.clock.manual.advance(by: HostedRelayConnection.handshakeTimeout)
+
+        let down = await events.next()
+        XCTAssertEqual(down, .disconnected)
+        let up = await events.next()
+        XCTAssertEqual(up, .connected, "dialled again with no backoff")
+        XCTAssertEqual(harness.sockets.dials.count, 3)
+        // The hung dial returns its socket at last: closed, never greeted, the loop's socket untouched.
+        harness.sockets.releaseHeld()
+        let closed = await settles { late.closedWith != nil }
+        XCTAssertTrue(closed, "the given-up redial's late socket was left open")
+        XCTAssertEqual(late.closedWith, 1000)
+        XCTAssertTrue(late.sent.isEmpty, "the given-up redial never said Hello")
+        XCTAssertEqual(connection.liveGeneration, 2)
+        XCTAssertNil(third.closedWith)
+        await connection.close()
+    }
+
+    /// The second dial fails while the old socket is silent: the wake returns at once (no 10 s wait), the old socket
+    /// is retired so requests go over HTTPS, and the loop dials again with no backoff.
+    func testAFailedSecondDialRetiresTheSilentSocketAtOnce() async throws {
+        let harness = try RelayClientHarness()
+        let old = ScriptedRelaySocket(pongs: false)
+        let third = ScriptedRelaySocket()
+        harness.sockets.script([.socket(old), .unreachable, .socket(third)])
+        let connection = await harness.client.connect(zones: [])
+        let events = EventProbe(connection)
+        _ = await events.next()
+
+        let wake = Task { await connection.wake() }
+        await harness.clock.waitForSleep(.milliseconds(300))
+        harness.clock.manual.advance(by: .milliseconds(300))
+        await wake.value
+
+        XCTAssertEqual(old.closedWith, 1000)
+        let down = await events.next()
+        XCTAssertEqual(down, .disconnected)
+        let up = await events.next()
+        XCTAssertEqual(up, .connected, "redialled with no backoff (the clock did not move)")
+        XCTAssertEqual(harness.sockets.dials.count, 3)
+        XCTAssertNil(third.closedWith)
+        await connection.close()
+    }
+
+    /// A wake while the loop waits out a reconnect backoff dials at once.
+    func testAWakeDuringBackoffDialsNow() async throws {
+        let harness = try RelayClientHarness()
+        let first = ScriptedRelaySocket()
+        harness.sockets.script([.socket(first)])
+        let connection = await harness.client.connect(zones: [])
+        let events = EventProbe(connection)
+        _ = await events.next()
+
+        first.closeFromServer(1006)
+        let down = await events.next()
+        XCTAssertEqual(down, .disconnected)
+        await harness.clock.waitForSleep(where: Self.reconnectDelay)
+        await connection.wake()
+
+        let up = await events.next()
+        XCTAssertEqual(up, .connected, "dialled without waiting out the backoff")
+        XCTAssertEqual(harness.sockets.dials.count, 2)
+        await connection.close()
+    }
+
+    /// The old socket's serve ends before the replacement says `HelloOk` and the connection closes meanwhile: the
+    /// replacement is closed, never made live.
+    func testARedialAfterCloseClosesTheReplacement() async throws {
+        let harness = try RelayClientHarness()
+        let old = ScriptedRelaySocket(pongs: false)
+        let new = ScriptedRelaySocket(hello: .silent)
+        harness.sockets.script([.socket(old), .socket(new)])
+        let connection = await harness.client.connect(zones: [])
+        let events = EventProbe(connection)
+        _ = await events.next()
+
+        let wake = Task { await connection.wake() }
+        await harness.clock.waitForSleep(.milliseconds(300))
+        harness.clock.manual.advance(by: .milliseconds(300))
+        await spin { new.sent.contains { if case .hello = $0.kind { true } else { false } } }
+        await connection.close()
+        await wake.value
+
+        XCTAssertEqual(new.closedWith, 1000)
+        XCTAssertNil(connection.liveGeneration)
+    }
+
     // MARK: - Helpers
+
+    /// Whether `condition` comes to hold within a bounded number of yields: false, never a hang, when it does not.
+    private func settles(_ condition: () -> Bool) async -> Bool {
+        for _ in 0..<50_000 {
+            if condition() { return true }
+            await Task.yield()
+        }
+        return condition()
+    }
 
     private func take(_ count: Int, _ events: EventProbe, line: UInt = #line) async -> [HostedRelayClientEvent] {
         var taken: [HostedRelayClientEvent] = []
