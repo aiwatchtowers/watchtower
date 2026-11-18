@@ -3190,3 +3190,13 @@ Entry format:
 - rule-gap (candidate, dim 6/8): *a marker carried to child processes through the environment (origin, admitted unit) is checked on every spawn path that can inherit the parent's work, including the terminal and session launchers, not only the ones the static spawn checker walks; a comment claiming "admitted with its run" needs a test that reads the child's env.*
 - rule-gap (candidate, dim 6): *a screen with several entry points (onboarding step, upgrade sheet, Settings) waits for the same async inputs on every entry; a guard on one entry and not on the others is the tell.*
 - outcome: TBD
+
+## 2026-11-18 — feature/2017-files-polish (dd2d629c9: workbench FILES tree polished to the multi-folder mockup — root row with branch/dirty/↑↓ from `vm.gitStatus`, `CodeFilesRootLine` in Core, compact rows on Tone tints, `.kitIcon` header buttons, empty-folder note, five DesignShot states; 10 files +605/−120; panel: prosecutor (9) + codex (2); pr-review-toolkit specialists unavailable; judge verified by reading, reviewer's filtered test log green for the new suites, swiftlint 0) — verdict: changes-needed
+
+- contested: C1, the root row showing the last good git snapshot after a failed refresh. Kept as minor: keeping the last status is the VM's documented policy, and the header's branch button does the same — but it passes `staleError` and marks the status stale, while the new row drops the error and its own doc says "the read failed → right side empty". A new consumer of a cached-with-error pair must read both halves, as the sibling consumer does. [6]
+- contested: F1 (prosecutor major), a DesignShot fixture `catch` that renders "fixture failed" text with no `XCTFail`. Held major: `DesignShotFixtures.failure` exists and fails the test, and the new fixture writes its own instead. A broken fixture would leave the shot test green and put an error PNG in front of the owner. [7]
+- false-positive: F2, `collapseAll` reopening a closed root row. Downgraded to a nit: the doc comment and the new test both pin "the root stays open" as intended, and the toolbar button is only on view while the section is open. [6]
+- miss: none late; codex alone raised the stale-status contradiction, and the prosecutor alone raised the fixture false-green. The two lanes did not overlap except on the keyboard reachability of the root row. [6/7]
+- weak-dimension: 7. A new fixture file copied a `do/catch` shape from the older fixtures that lack `XCTFail` instead of calling the shared failure helper.
+- rule-gap (candidate, dim 7/Design kit): *a DesignShot fixture's error path calls `DesignShotFixtures.failure` (XCTFail plus red text); a local `catch` that only returns a Text is the tell.*
+- outcome: TBD
