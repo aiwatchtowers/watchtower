@@ -98,6 +98,7 @@ func slackAppTestCmd(stdin string, flags map[string]string) (*cobra.Command, *by
 	c.Flags().Bool("attach", false, "")
 	c.Flags().String("client-id", "", "")
 	c.Flags().Bool("enable-pkce", false, "")
+	c.Flags().Bool("dry-run", false, "")
 	for k, v := range flags {
 		_ = c.Flags().Set(k, v)
 	}

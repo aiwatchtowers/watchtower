@@ -8,7 +8,87 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/slackconnect"
+	"watchtower/internal/slackmanifest"
 )
+
+// An app no account on this Mac is on yet is adopted from the App ID and
+// Client ID the person gave, confirmed by name first; never created.
+func TestReuse_AdoptByIDsWithoutAccount(t *testing.T) {
+	h := newHarness(t)
+	h.api.manifests["A0CORP"] = theirManifest()
+	ctx := context.Background()
+
+	res, err := h.r.AdoptWith(ctx, cfgToken, AdoptOptions{AppID: "A0CORP"})
+	require.NoError(t, err)
+	assert.Equal(t, KindNoApp, res.Kind, "an App ID alone has no client id to link")
+
+	res, err = h.r.AdoptWith(ctx, cfgToken, AdoptOptions{AppID: "A0CORP", ClientID: "5555.6666", EnablePKCE: true})
+	require.NoError(t, err)
+	assert.Equal(t, KindConfirmApp, res.Kind)
+	assert.Equal(t, "Acme Watchtower", res.AppName)
+	require.NotNil(t, res.Changes, "the confirmation shows what the update changes")
+	assert.True(t, res.Changes.EnablePKCE)
+	assert.Zero(t, h.api.updates)
+
+	res, err = h.r.AdoptWith(ctx, cfgToken, AdoptOptions{AppID: "A0CORP", ClientID: "5555.6666", ConfirmAppID: "A0CORP", EnablePKCE: true})
+	require.NoError(t, err)
+	assert.Equal(t, KindOK, res.Kind)
+	assert.Equal(t, "5555.6666", res.ClientID)
+	assert.Contains(t, h.api.lastUpdate.LongDescription(), "client=5555.6666")
+	s := h.setups(t)
+	require.Len(t, s, 1)
+	assert.Equal(t, "A0CORP", s[0].AppID)
+	assert.Equal(t, "5555.6666", s[0].ClientID)
+	assert.Zero(t, h.api.creates)
+
+	// The same App ID again: exists; another App ID for this workspace:
+	// need_app_id, never a second record.
+	res, err = h.r.AdoptWith(ctx, cfgToken, AdoptOptions{AppID: "A0CORP"})
+	require.NoError(t, err)
+	assert.Equal(t, KindExists, res.Kind)
+	res, err = h.r.AdoptWith(ctx, cfgToken, AdoptOptions{AppID: "A0OTHER", ClientID: "7777.8888"})
+	require.NoError(t, err)
+	assert.Equal(t, KindNeedAppID, res.Kind)
+	assert.Equal(t, CodeAppIDMismatch, res.Code)
+	assert.Len(t, h.setups(t), 1)
+}
+
+func TestReuse_AdoptClientIDChecked(t *testing.T) {
+	h := newHarness(t)
+	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
+	h.api.manifests["A0CORP"] = theirManifest()
+	res, err := h.r.AdoptWith(context.Background(), cfgToken, AdoptOptions{AppID: "A0CORP", ClientID: "not-an-id"})
+	require.NoError(t, err)
+	assert.Equal(t, KindBadIDs, res.Kind)
+	assert.Equal(t, CodeClientIDFormat, res.Code)
+	res, err = h.r.AdoptWith(context.Background(), cfgToken, AdoptOptions{AppID: "A0CORP", ClientID: "7777.8888"})
+	require.NoError(t, err)
+	assert.Equal(t, KindBadIDs, res.Kind)
+	assert.Equal(t, CodeClientIDMismatch, res.Code)
+	assert.Zero(t, h.api.updates)
+}
+
+func TestReuse_DryRunListsChangesAndChangesNothing(t *testing.T) {
+	h := newHarness(t)
+	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
+	h.api.manifests["A0CORP"] = theirManifest()
+	res, err := h.r.AdoptWith(context.Background(), cfgToken, AdoptOptions{DryRun: true})
+	require.NoError(t, err)
+	assert.Equal(t, KindDryRun, res.Kind)
+	require.NotNil(t, res.Changes)
+	assert.Equal(t, []string{slackconnect.RedirectURL}, res.Changes.AddRedirectURLs)
+	assert.True(t, res.Changes.EnablePKCE)
+	assert.NotContains(t, res.Changes.AddScopes, "channels:history", "a scope the app has is not added")
+	assert.Len(t, res.Changes.AddScopes, len(slackmanifest.UserScopes())-1)
+	assert.Zero(t, h.api.updates)
+	assert.Empty(t, h.setups(t))
+
+	// After the update the app matches: nothing left to change.
+	_, err = h.r.Adopt(context.Background(), cfgToken, "", "", "", true)
+	require.NoError(t, err)
+	assert.Equal(t, Changes{AddScopes: []string{}, AddRedirectURLs: []string{}}, ManifestChanges(h.api.lastUpdate))
+}
 
 // The company wizard reuses an app the person picked (a settings URL or a
 // found app) through Adopt: never a create.

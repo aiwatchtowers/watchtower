@@ -44,6 +44,9 @@ const (
 	// KindNeedsPKCEConsent: adopt would turn PKCE on (one-way) and the run
 	// did not opt in (--enable-pkce); nothing was changed.
 	KindNeedsPKCEConsent = "needs_pkce_consent"
+	// KindDryRun: adopt --dry-run read the app; Changes lists what the
+	// update would do. Nothing was changed.
+	KindDryRun = "dry_run"
 )
 
 // Codes of a KindNeedAppID or KindBadIDs result.
@@ -51,7 +54,10 @@ const (
 	CodeAppIDMissing   = "app_id_missing"   // no App ID known and none given
 	CodeAppIDFormat    = "app_id_format"    // --app-id is not an App ID
 	CodeAppIDMismatch  = "app_id_mismatch"  // --app-id differs from the account row's App ID
-	CodeClientIDFormat = "client_id_format" // pending --attach: --client-id is not a Client ID
+	CodeClientIDFormat = "client_id_format" // pending --attach, adopt: --client-id is not a Client ID
+	// CodeClientIDMismatch: adopt's --client-id differs from the connected
+	// account's.
+	CodeClientIDMismatch = "client_id_mismatch"
 )
 
 // Step names and states (one JSON line each).
@@ -84,6 +90,8 @@ type Result struct {
 	AppName     string // adopt: the exported app's display name (confirm_app)
 	ClientID    string
 	LinkWritten bool
+	// Changes: adopt read the app; what the update makes (or made) differ.
+	Changes *Changes
 	// Err is the Go error behind KindStorage; for stderr only, never in the
 	// JSON result line.
 	Err error
@@ -454,6 +462,26 @@ func adoptAppID(acct db.SlackAccount, appIDFlag string) (appID string, fromFlag 
 // or the app already has PKCE on, update_app answers KindNeedsPKCEConsent
 // after reading the app and before changing anything.
 func (r *Runner) Adopt(ctx context.Context, cfgToken, team, appIDFlag, confirmAppID string, enablePKCE bool) (Result, error) {
+	return r.AdoptWith(ctx, cfgToken, AdoptOptions{Team: team, AppID: appIDFlag, ConfirmAppID: confirmAppID, EnablePKCE: enablePKCE})
+}
+
+// AdoptOptions are adopt's flags.
+type AdoptOptions struct {
+	Team         string // the workspace the app must be in ("" = the token's)
+	AppID        string // --app-id
+	ClientID     string // --client-id: the app's Client ID when no account here is on it yet
+	ConfirmAppID string // --confirm-app-id
+	EnablePKCE   bool
+	DryRun       bool // read the app and answer KindDryRun with its Changes; change nothing
+}
+
+// AdoptWith is Adopt with the company wizard's additions (#1887): an app no
+// account here is on yet is adopted from opts.AppID and opts.ClientID (the
+// Basic Information page; confirmed by name like a flag-only App ID), and
+// DryRun answers the changes the update would make. confirm_app and dry_run
+// carry those Changes.
+func (r *Runner) AdoptWith(ctx context.Context, cfgToken string, opts AdoptOptions) (Result, error) {
+	team, appIDFlag, confirmAppID, enablePKCE := opts.Team, opts.AppID, opts.ConfirmAppID, opts.EnablePKCE
 	return r.locked(func() (Result, error) {
 		teamID, teamName, fail := r.team(ctx, cfgToken)
 		if fail != nil {
@@ -474,6 +502,11 @@ func (r *Runner) Adopt(ctx context.Context, cfgToken, team, appIDFlag, confirmAp
 		if s, ok, err := r.record(teamID); err != nil {
 			return Result{}, err
 		} else if ok {
+			if appIDFlag != "" && s.AppID != "" && s.AppID != appIDFlag {
+				res := recordResult(KindNeedAppID, s)
+				res.Code, res.Error = CodeAppIDMismatch, "this workspace's Watchtower app is "+s.AppID+", not "+appIDFlag
+				return res, nil
+			}
 			return existingRecord(s), nil
 		}
 		acct, ok, err := r.companyAccount(teamID)
@@ -481,6 +514,19 @@ func (r *Runner) Adopt(ctx context.Context, cfgToken, team, appIDFlag, confirmAp
 			return Result{}, err
 		}
 		base := Result{TeamID: teamID, TeamName: teamName}
+		switch {
+		case opts.ClientID != "" && !clientIDPattern.MatchString(opts.ClientID):
+			base.Kind, base.Code = KindBadIDs, CodeClientIDFormat
+			base.Error = fmt.Sprintf("%q is not a Client ID (digits.digits; Basic Information page)", opts.ClientID)
+			return base, nil
+		case ok && opts.ClientID != "" && opts.ClientID != acct.ClientID:
+			base.Kind, base.Code = KindBadIDs, CodeClientIDMismatch
+			base.Error = "Client ID doesn't match this workspace's connected app (" + acct.ClientID + ")"
+			return base, nil
+		case !ok && appIDFlag != "" && opts.ClientID != "":
+			// No account here is on the app yet: the ids the person gave.
+			acct, ok = db.SlackAccount{ClientID: opts.ClientID}, true
+		}
 		if !ok {
 			base.Kind = KindNoApp
 			return base, nil
@@ -503,14 +549,23 @@ func (r *Runner) Adopt(ctx context.Context, cfgToken, team, appIDFlag, confirmAp
 			base.AppName = appName(theirs)
 			return nil
 		}
-		if fromFlag {
+		// before is an answer given before anything changes: it shows what
+		// the update would do.
+		before := func(kind string) (Result, error) {
+			changes := ManifestChanges(theirs)
+			base.Kind, base.Changes = kind, &changes
+			return base, nil
+		}
+		if fromFlag || opts.DryRun {
 			if fail := r.step(StepReadApp, read); fail != nil {
 				base.Kind, base.Code, base.Error = fail.Kind, fail.Code, fail.Error
 				return base, nil
 			}
-			if confirmAppID != appID {
-				base.Kind = KindConfirmApp
-				return base, nil
+			if fromFlag && confirmAppID != appID {
+				return before(KindConfirmApp)
+			}
+			if opts.DryRun {
+				return before(KindDryRun)
 			}
 		}
 

@@ -127,6 +127,32 @@ func MergeManifest(theirs Manifest, l Link) (Manifest, error) {
 	return m, nil
 }
 
+// Changes is what MergeManifest changes in an existing app besides its About
+// text (screens §2.5 manifestDiff): the user scopes and redirect URL it
+// adds, and PKCE turned on.
+type Changes struct {
+	AddScopes       []string `json:"add_scopes"`
+	AddRedirectURLs []string `json:"add_redirect_urls"`
+	EnablePKCE      bool     `json:"enable_pkce"`
+}
+
+// ManifestChanges is what MergeManifest would change in theirs.
+func ManifestChanges(theirs Manifest) Changes {
+	oauth, _ := theirs["oauth_config"].(map[string]any)
+	scopes, _ := oauth["scopes"].(map[string]any)
+	have := toStrings(scopes["user"])
+	c := Changes{AddScopes: []string{}, AddRedirectURLs: []string{}, EnablePKCE: !theirs.PKCEEnabled()}
+	for _, s := range slackmanifest.UserScopes() {
+		if !slices.Contains(have, s) {
+			c.AddScopes = append(c.AddScopes, s)
+		}
+	}
+	if !slices.Contains(toStrings(oauth["redirect_urls"]), slackconnect.RedirectURL) {
+		c.AddRedirectURLs = append(c.AddRedirectURLs, slackconnect.RedirectURL)
+	}
+	return c
+}
+
 // WithLongDescription is theirs with only display_information.long_description
 // replaced by our About text for l (the `slack app link` merge); a copy, so
 // theirs is never changed.
