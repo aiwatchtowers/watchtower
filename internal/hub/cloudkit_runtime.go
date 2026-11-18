@@ -92,15 +92,18 @@ func (h *hubRuntime) passTickEvery() time.Duration {
 // runs when the cadence has one due, elsewhere every tick.
 func (h *hubRuntime) passTick(ctx context.Context) {
 	now := h.sup.o.Clock()
+	h.laneMu.Lock()
+	last := h.lastPass
+	h.laneMu.Unlock()
 	switch {
 	case h.tr.Kind() == transport.KindCloudKit:
-		if !cloudKitPassDue(now, h.lastPass, h.touched(), h.center.LinkUrgent()) {
+		if !cloudKitPassDue(now, last, h.touched(), h.center.LinkUrgent()) {
 			return
 		}
 	case h.sw != nil:
 		// A desktop host on the relay: the relay's backstop cadence on
 		// the CloudKit ticker.
-		if !h.lastPass.IsZero() && now.Sub(h.lastPass) < h.sup.o.passEvery-CloudKitActivePass/2 {
+		if !last.IsZero() && now.Sub(last) < h.sup.o.passEvery-CloudKitActivePass/2 {
 			return
 		}
 	}

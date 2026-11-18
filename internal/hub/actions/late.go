@@ -95,7 +95,7 @@ func (p *Processor) LateEcho(ctx context.Context, r Request, o Outcome) error {
 		// Queued: the first pass after the pause writes it.
 		return nil
 	}
-	if _, _, err := p.flushMailbox(ctx, b); err != nil {
+	if err := p.flushBox(ctx, b); err != nil {
 		log.Printf("hub: flushing device %s's mailbox after a late echo: %s", b.id, errClass(err))
 	}
 	return nil

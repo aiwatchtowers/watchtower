@@ -643,9 +643,10 @@ re-checked in its Task 0; the plan's Global Constraints, Decisions and Known lim
   action carries its kind (`latency_samples.kind`); `Recorder.NudgeCycleDone`, called by the publisher at a cycle's
   end for every kind it handled, written or not, writes `nudge_saved` (apply → that cycle's end) once per apply for
   the first such cycle whose read of the kind began after the apply; `Recorder.EventRead` writes `event_read`
-  (`transport.Event.ArrivedAt`, stamped by each transport's `emit`, → the start of the pass it triggers: the
-  processor's `PassEvent` stamps it after the own-echo check, so the hub's own echoes are not timed; for an inline
-  record the pass applies without a read). `hub diagnostics` reads both groupings in one read-only transaction; a
+  (`transport.Event.ArrivedAt`, stamped by each transport's `emit`, → the start of the read it triggers: the
+  processor's `PassEvent` stamps it after the own-echo check, so the hub's own echoes are not timed, and only when
+  that read reached the mailbox — a page, maybe empty, or the inline record it applies without a read; an event an
+  earlier read already took reads nothing and gives no sample). `hub diagnostics` reads both groupings in one read-only transaction; a
   sidecar not yet at 00018 gives the all-kinds rows only. An
   apply stops waiting once it has both its save and its cycle end, or after `SaveWait`. Batched once a second, never
   inside a pass transaction; pruned once a minute to 7 days and 20 000 rows. Nothing leaves the device; the 500 ms
@@ -667,6 +668,18 @@ and a burst of 8–10 actions/s ran into `rate_limited`. Now:
   `RelayZone` or a transport that is not an `EventPuller` runs `Pass`. The runtime's 30 s backstop still runs `Pass`
   over every mailbox, and an event pass does not move its timer. So a phone whose mailbox read failed is read again at
   its own next event or the next backstop pass, not at another phone's event as before.
+- **Mailbox events on their own lane (live link R4).** The runtime's `eventLane` goroutine reads the transports'
+  events: a mailbox zone's write (no error, control, resync or CloudKit bridge flag) runs its `PassEvent` there at
+  once; every other event goes to `work()` in order (a 64-event hand-off), which keeps the backstop pass, link
+  upkeep, the soon tick and housekeeping. `laneMu` guards `watched`, `subRetry` and `lastPass`. Passes may now run
+  at once, so the processor's locks are split: a mailbox zone's read → apply → token move holds that zone's own lock
+  (`boxLock`), so the lane and the backstop never read one mailbox together and its token only moves forward, while
+  another mailbox's read goes on; `Processor.mu` is held only while a page's records (and the held actions) are
+  applied, never across a mailbox read; `flushAll` and a claim's `received` flush hold `flushMu`. Lock order: `run`
+  (shared by passes and `FlushControls`, exclusive for `Hygiene` and `PauseFor`'s wait), a mailbox's lock, `mu`,
+  `flushMu`. A pass nudges the slice kinds it applied (`PublishNow`) before it writes the queued echoes, so the
+  slices' save starts ahead of the applied echo's. v1 limit: the daily `Hygiene` holds every pass, the lane's
+  included, while it runs; CloudKit's shared `RelayZone` is read under one lock for every phone.
 - **No read when the event says it all** (`relay.Transport.PullEvent`; zone seqs grow by one per write, so the seqs
   between the stored token and the event's `seq` are exactly the writes not read yet). Already read (`seq` ≤ token):
   nothing. Every seq after the token is one the hub's own `Save` got (`OwnWrites`; kept per zone in memory, at most

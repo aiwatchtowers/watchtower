@@ -448,7 +448,7 @@ func (p *Processor) claim(ctx context.Context, b mailbox, r record, o secure.Ope
 	}
 	if recv != nil {
 		ps.report.Echoed++
-		if _, _, err := p.flushMailbox(ctx, b); err != nil {
+		if err := p.flushBox(ctx, b); err != nil {
 			return true, err
 		}
 	}

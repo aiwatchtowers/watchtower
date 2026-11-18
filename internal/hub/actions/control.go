@@ -511,15 +511,19 @@ func deleteClass(err error, out []transport.Outcome) string {
 // feed and is answered then — except that an echo replaces the hub's own
 // older record at its name.
 func (p *Processor) FlushControls(ctx context.Context) (written, failed int, err error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.run.RLock()
+	defer p.run.RUnlock()
 	if p.paused.Load() {
 		return 0, 0, nil
 	}
 	return p.flushAll(ctx)
 }
 
+// flushAll writes every linked phone's queue under flushMu, its own lock:
+// never p.mu, so a pass applying another mailbox's page goes on meanwhile.
 func (p *Processor) flushAll(ctx context.Context) (written, failed int, err error) {
+	p.flushMu.Lock()
+	defer p.flushMu.Unlock()
 	boxes, err := p.mailboxes()
 	if err != nil {
 		return 0, 0, err
@@ -537,8 +541,16 @@ func (p *Processor) flushAll(ctx context.Context) (written, failed int, err erro
 	return written, failed, errors.Join(errs...)
 }
 
+// flushBox is flushMailbox under flushMu (a write between flushAll's).
+func (p *Processor) flushBox(ctx context.Context, b mailbox) error {
+	p.flushMu.Lock()
+	defer p.flushMu.Unlock()
+	_, _, err := p.flushMailbox(ctx, b)
+	return err
+}
+
 // flushMailbox writes b's queue in order; failed counts rows that did not
-// land this time (the first one stops the mailbox).
+// land this time (the first one stops the mailbox). flushMu is held.
 func (p *Processor) flushMailbox(ctx context.Context, b mailbox) (written, failed int, err error) {
 	zone := b.zone
 	// Rows queued while the phone's mailbox had the other shape (its own
