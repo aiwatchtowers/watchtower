@@ -164,11 +164,19 @@ func TestUsageCommand_InheritedPATHFirst(t *testing.T) {
 	var calls atomic.Int32
 	c := testPathCache(func(context.Context) (string, bool) { calls.Add(1); return login, true })
 	c.inherited = func() string { return inherited }
-	if bin, _ := c.command(t.Context(), ""); bin != want {
+	c.fallback = func() string { return "/usr/bin:/bin" }
+	bin, env := c.command(t.Context(), "")
+	if bin != want {
 		t.Fatalf("bin = %q, want the inherited PATH's %q", bin, want)
 	}
-	if calls.Load() != 0 {
-		t.Errorf("login shell ran %d times although claude is on the inherited PATH", calls.Load())
+	// No shell for the binary lookup; at most one cached shell for the
+	// child's environment, which carries the login PATH for its interpreter.
+	if got, want := pathOf(t, env), inherited+":"+login+":/usr/bin:/bin"; got != want {
+		t.Errorf("PATH = %q, want %q", got, want)
+	}
+	c.command(t.Context(), "")
+	if calls.Load() != 1 {
+		t.Errorf("login shell ran %d times, want once (cached, for the child env only)", calls.Load())
 	}
 }
 
@@ -269,5 +277,23 @@ func TestLoginShellPATHUntil_BannerIgnored(t *testing.T) {
 	got, ok := loginShellPATHUntil(t.Context(), shell)
 	if !ok || got != "/usr/bin:/bin:/wt-test/bin" {
 		t.Fatalf("got %q %v", got, ok)
+	}
+}
+
+// The last lookup tier is the fallback tool folders (nvm, fnm, …), after
+// wellKnownDirs.
+func TestUsageCommand_FallbackFoldersLastTier(t *testing.T) {
+	login, nvm := t.TempDir(), t.TempDir()
+	want := writeCLI(t, nvm)
+	c := testPathCache(func(context.Context) (string, bool) { return login, true })
+	c.fallback = func() string { return nvm }
+	if bin, _ := c.command(t.Context(), ""); bin != want {
+		t.Fatalf("bin = %q, want the fallback folder's %q", bin, want)
+	}
+	known := t.TempDir()
+	want = writeCLI(t, known)
+	c.wellKnown = func() []string { return []string{known} }
+	if bin, _ := c.command(t.Context(), ""); bin != want {
+		t.Fatalf("bin = %q, want the well-known folder's %q before the fallback", bin, want)
 	}
 }

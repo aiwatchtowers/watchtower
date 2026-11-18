@@ -74,11 +74,17 @@ func (c *usagePathCache) loginPATH(ctx context.Context, refresh bool) string {
 //     PATH is its folder, the login shell's PATH (bounded, cached) and the
 //     well-known tool folders, so a `#!/usr/bin/env node` CLI finds a node
 //     only the login profile adds;
-//   - else claude on the inherited PATH, with no shell started;
+//   - else claude on the inherited PATH, found without a shell;
 //   - else the login shell's PATH (bounded by ctx and usageShellBudget,
-//     cached once answered), then wellKnownDirs; after a miss the shell is
-//     asked again at most once per usageShellRetry, so a CLI installed later
-//     is found on a later poll.
+//     cached once answered), then wellKnownDirs, then the fallback tool
+//     folders (nvm, fnm, volta, …); after a miss the shell is asked again at
+//     most once per usageShellRetry, so a CLI installed later is found on a
+//     later poll.
+//
+// The child's PATH is always the binary's folder, the login shell's PATH
+// (the same bounded run, cached: at most one shell per answer) and the
+// fallback folders, so a `#!/usr/bin/env node` launcher finds a node only
+// the login profile adds.
 //
 // Not found is a bare "claude", which ReadUsage reports as cli_missing.
 func UsageCommand(ctx context.Context, override string) (bin string, env []string) {
@@ -93,15 +99,17 @@ func (c *usagePathCache) command(ctx context.Context, override string) (string, 
 		}
 	}
 	if bin := lookPathIn("claude", c.inherited()); bin != "" {
-		return bin, withPATH(mergePATH(filepath.Dir(bin), c.fallback()))
+		// Found without a shell; the child still gets the login PATH (one
+		// bounded shell run, then cached) for its interpreter.
+		return bin, withPATH(mergePATH(filepath.Dir(bin), c.loginPATH(ctx, false), c.fallback()))
 	}
 	wellKnown := strings.Join(c.wellKnown(), string(filepath.ListSeparator))
 	login := c.loginPATH(ctx, false)
-	bin := lookPathIn("claude", mergePATH(login, wellKnown))
+	bin := lookPathIn("claude", mergePATH(login, wellKnown, c.fallback()))
 	if bin == "" {
 		if fresh := c.loginPATH(ctx, true); fresh != login {
 			login = fresh
-			bin = lookPathIn("claude", mergePATH(login, wellKnown))
+			bin = lookPathIn("claude", mergePATH(login, wellKnown, c.fallback()))
 		}
 	}
 	if bin == "" {
