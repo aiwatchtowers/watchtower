@@ -142,7 +142,7 @@ func TestAppSetup_SecretNeverStored(t *testing.T) {
 	}
 	root, err := os.OpenRoot(home)
 	require.NoError(t, err)
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	require.NoError(t, fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, err error) error {
 		require.NoError(t, err)
 		if d.IsDir() {
