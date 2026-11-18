@@ -104,7 +104,7 @@ struct FolderSuggestionAskCard: View {
         FolderSuggestionCard(
             card: FolderSuggestionPresentation.card(
                 suggestion, sessionTitle: ask.sessionID.flatMap { vm.session($0, projectID: ask.projectID)?.title },
-                phase: asks.folderPhases[ask.id] ?? .ready, otherBench: asks.folderMergeBench[ask.id]
+                phase: asks.folderPhases[ask.id] ?? .ready, otherBench: asks.folderMergeBench[ask.id], askBench: ask.projectID
             ),
             error: asks.answerErrors[ask.id],
             answering: asks.isFolderCardWorking(ask.id),

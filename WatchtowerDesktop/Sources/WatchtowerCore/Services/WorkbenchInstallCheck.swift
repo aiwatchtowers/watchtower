@@ -34,11 +34,12 @@ package enum WorkbenchInstallCheck {
         (folder as NSString).appendingPathComponent(".claude/settings.local.json")
     }
 
-    /// Whether `folder` is installed for another workbench and not for
-    /// `workbenchID`: the merge left it behind, Go reinstalls it.
+    /// Whether `folder`'s install names any workbench but `workbenchID` — a
+    /// merged bench's, even beside the row's own: Go repairs it (it takes out
+    /// the ids whose workbench is gone). No install, or only the row's
+    /// (a partial one is Repair's), is left alone.
     package static func needsReinstall(folder: String, workbenchID: Int64) -> Bool {
         guard let data = FileManager.default.contents(atPath: settingsPath(folder: folder)) else { return false }
-        let ids = installedIDs(settings: data)
-        return !ids.isEmpty && !ids.contains(workbenchID)
+        return installedIDs(settings: data).contains { $0 != workbenchID }
     }
 }

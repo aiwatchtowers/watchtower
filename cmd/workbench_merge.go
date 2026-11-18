@@ -2,12 +2,12 @@ package cmd
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -16,7 +16,7 @@ import (
 	"watchtower/internal/agentkind"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
-	"watchtower/internal/devpack"
+	"watchtower/internal/fsutil"
 	"watchtower/internal/kb"
 	"watchtower/internal/sessionhost"
 	"watchtower/internal/sessionstart"
@@ -181,7 +181,7 @@ func runWorkbenchMerge(cmd *cobra.Command, _ []string) error {
 	// from here on.
 	out := workbenchMergeJSON{OK: true, MovedFolders: []folderJSON{}, Targets: rep.Targets,
 		Reinstall: mergeReinstallJSON{OK: true, Failed: []mergeFailedJSON{}}}
-	for _, path := range mergeReinstallPlaces(rep, from.ID) {
+	for _, path := range rep.Reinstall {
 		if rerr := mergeReinstall(ctx, cfg, from, into, path); rerr != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: reinstalling Watchtower in %s failed: %v (retry: watchtower workbench resync %d)\n",
 				path, rerr, into.ID)
@@ -197,10 +197,15 @@ func runWorkbenchMerge(cmd *cobra.Command, _ []string) error {
 	}
 	// F20: B's documents leave the index (done with knowledge search off
 	// too, as a folder remove does), then A's folders are indexed.
-	if _, derr := kb.DropWorkbenchDocs(ctx, database, from.ID); derr != nil {
+	_, derr := kb.DropWorkbenchDocs(ctx, database, from.ID)
+	if derr != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: dropping workbench %d's documents from search failed: %v\n", from.ID, derr)
 	}
 	out.workbenchIndexJSON = indexWorkbenchDocs(cmd, cfg.Knowledge.Enabled, database, into.ID)
+	if derr != nil { // the index result carries the drop's failure too
+		out.IndexOK, out.IndexSkipped = false, false
+		out.IndexError = strings.TrimPrefix(out.IndexError+"; ", "; ") + "dropping the merged workbench's documents: " + derr.Error()
+	}
 	if into, err = database.GetWorkbench(into.ID); err != nil {
 		return err
 	}
@@ -213,27 +218,6 @@ func runWorkbenchMerge(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "Merged workbench %d %q into %d %q: %d targets and %d folders moved.\n",
 		from.ID, from.Name, into.ID, into.Name, rep.Targets, len(rep.MovedFolders))
 	return nil
-}
-
-// mergeReinstallPlaces is the merge's moved folders, and each other place
-// (a worktree of a moved session) that still carries the merged bench's
-// install: a place that never had it is none of the merge's business.
-func mergeReinstallPlaces(rep workbenchfolders.MergeReport, from int64) []string {
-	folders := map[string]bool{}
-	for _, f := range rep.MovedFolders {
-		folders[f.FolderPath] = true
-	}
-	var out []string
-	for _, p := range rep.Reinstall {
-		if folders[p] {
-			out = append(out, p)
-			continue
-		}
-		if ids, err := devpack.InstalledWorkbenchIDs(p); err == nil && slices.Contains(ids, from) {
-			out = append(out, p)
-		}
-	}
-	return out
 }
 
 // mergeReinstall replaces the merged bench's install in path with the
@@ -250,27 +234,59 @@ func mergeReinstall(ctx context.Context, cfg *config.Config, from, into *db.Work
 // the surviving bench already has is shared.
 func moveTargetImages(ctx context.Context, cfg *config.Config, database *db.DB, from, into int64) error {
 	store := workbenchfiles.New(cfg.WorkspaceDir())
-	moving, err := storedImagesUnder(ctx, database, into, store.Dir(from)+string(filepath.Separator))
+	old := store.Dir(from) + string(filepath.Separator)
+	moving, err := storedImagesUnder(ctx, database, into, old)
 	if err != nil {
 		return err
 	}
+	// 1. Copies into A's store; the sources stay until no row names them,
+	// so a failure (or a crash) here leaves every row on a file that exists.
 	if len(moving) > 0 {
 		if err := os.MkdirAll(store.Dir(into), 0o700); err != nil {
 			return fmt.Errorf("creating %s: %w", store.Dir(into), err)
 		}
 	}
-	for _, im := range moving {
+	for i := range moving {
+		im := &moving[i]
 		dst := filepath.Join(store.Dir(into), filepath.Base(im.path))
 		if _, err := os.Stat(dst); errors.Is(err, fs.ErrNotExist) {
-			if err := os.Rename(im.path, dst); err != nil {
-				return fmt.Errorf("moving image %d: %w", im.id, err)
+			if err := copyStoredImage(im.path, dst); err != nil {
+				return fmt.Errorf("copying image %d: %w", im.id, err)
 			}
 		}
-		if _, err := database.ExecContext(ctx, `UPDATE project_target_images SET path = ? WHERE id = ?`, dst, im.id); err != nil {
-			return fmt.Errorf("re-pointing image %d: %w", im.id, err)
+		im.path = dst
+	}
+	// 2. Every row re-pointed in one transaction.
+	if err := database.WithTx(func(tx *sql.Tx) error {
+		for _, im := range moving {
+			if _, err := tx.ExecContext(ctx, `UPDATE project_target_images SET path = ? WHERE id = ?`, im.path, im.id); err != nil {
+				return fmt.Errorf("re-pointing image %d: %w", im.id, err)
+			}
 		}
+		return nil
+	}); err != nil {
+		return err //nolint:wrapcheck // the step names the image
+	}
+	// 3. B's store goes once no row of any bench names a file in it.
+	var left int
+	if err := database.QueryRowContext(ctx, `SELECT COUNT(*) FROM project_target_images WHERE substr(path, 1, length(?)) = ?`,
+		old, old).Scan(&left); err != nil {
+		return fmt.Errorf("reading the target images: %w", err)
+	}
+	if left > 0 {
+		return nil
 	}
 	return store.RemoveWorkbench(from) //nolint:wrapcheck // the store names the directory
+}
+
+// copyStoredImage copies a stored image to dst through a temporary file, so
+// dst is whole or absent. A var for tests.
+var copyStoredImage = func(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err //nolint:wrapcheck // the caller names the image
+	}
+	return fsutil.WriteFileAtomic(dst, data, 0o600) //nolint:wrapcheck // the caller names the image
 }
 
 // storedImage is one project_target_images row's id and stored copy.

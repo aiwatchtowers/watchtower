@@ -73,7 +73,8 @@ package enum FolderSuggestionPresentation {
         WorkbenchFolderPresentation.putOnBenchFailed(name: name, reason: reason)
     }
 
-    /// `otherBench`: the bench the folder turned out to be on when Put on
+    /// `askBench`: the bench the ask is on (a filed other_bench naming it is
+    /// ignored). `otherBench`: the bench the folder turned out to be on when Put on
     /// Bench ran (F14), else the one the suggestion was filed with. On
     /// another bench the card is the merge variant (§6.13, mockup
     /// `suggest-card-merge`): its line reads `<name> is on the “<B>” bench`,
@@ -83,10 +84,14 @@ package enum FolderSuggestionPresentation {
         sessionTitle: String?,
         phase: Phase,
         otherBench: FolderSuggestionPayload.OtherBench? = nil,
+        askBench: Int64? = nil,
         home: String = NSHomeDirectory()
     ) -> Card {
         let name = folderName(suggestion.path)
-        let bench = (otherBench ?? suggestion.otherBench)?.name
+        // A filed other_bench that is the ask's own bench is stale (the folder
+        // came here since): the plain card.
+        let filed = suggestion.otherBench.flatMap { $0.id == askBench ? nil : $0 }
+        let bench = (otherBench ?? filed)?.name
         switch phase {
         case let .failed(line), let .unsent(line):
             return Card(title: title(name: name), subtitle: line, phase: phase, otherBench: bench)

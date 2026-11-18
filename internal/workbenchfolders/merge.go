@@ -25,9 +25,10 @@ type MergeReport struct {
 	MovedFolders []db.WorkbenchFolder
 	// Targets is how many targets moved.
 	Targets int
-	// Reinstall is every moved live folder, then every place the merged
-	// bench's agent sessions ran in that is still on disk and none of those
-	// folders — their worktrees (spec §6.13); never nil.
+	// Reinstall is every moved live folder, then every linked worktree of
+	// one of them that the merged bench's agent sessions ran in or reported
+	// and that is still on disk (spec §6.13); never nil. Nothing else: a
+	// repository outside the bench is never written.
 	Reinstall []string
 }
 
@@ -72,7 +73,7 @@ var mergeTables = []mergeTable{
 	{table: "project_target_images", column: "project_id", op: opMove},
 	{table: "project_comments", column: "project_id", op: opMove},
 	{table: "terminal_sessions", column: "project_id", op: opCustom, apply: pinHomeThenMove("terminal_sessions", "workbench_folder_id", "")},
-	{table: "owner_asks", column: "project_id", op: opCustom, apply: pinHomeThenMove("owner_asks", "doc_folder_id", "doc_path <> ''")},
+	{table: "owner_asks", column: "project_id", op: opCustom, apply: moveAsks},
 	{table: "coach_proposals", column: "workbench_id", op: opMove},
 	// Keyed by folder too (00196): B's folders came along, so no clash.
 	{table: "workbench_pr_states", column: "project_id", op: opMove},
@@ -106,6 +107,7 @@ const rollupTrigger = "targets_project_status_rollup_au"
 type merger struct {
 	from, into int64
 	fromName   string
+	intoName   string
 	// fromHome is the merged bench's home folder: its rows that name it by
 	// NULL are pinned to it before they move (on the surviving bench NULL
 	// means that bench's own home).
@@ -128,9 +130,13 @@ func Merge(ctx context.Context, d *db.DB, from, into int64, live LiveBenchSessio
 	if from == into {
 		return MergeReport{}, &Refusal{Code: CodeAlreadyHere, Detail: "a workbench cannot be merged into itself."}
 	}
-	hostCount, mark, asked := 0, int64(0), false
+	hostCount, asked := 0, false
+	var snap liveSnapshot
 	if live != nil {
-		if err := d.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM terminal_sessions WHERE `+db.NotDeletingSQL).Scan(&mark); err != nil {
+		// Taken before the host is asked: a start (a new row) or a resume
+		// (its row touched) after it is what the recount catches.
+		if err := d.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0), strftime('%Y-%m-%dT%H:%M:%SZ','now')
+			FROM terminal_sessions WHERE `+db.NotDeletingSQL).Scan(&snap.mark, &snap.at); err != nil {
 			return MergeReport{}, fmt.Errorf("reading the terminal sessions: %w", err)
 		}
 		if n, err := live(ctx, from); err == nil {
@@ -141,8 +147,11 @@ func Merge(ctx context.Context, d *db.DB, from, into int64, live LiveBenchSessio
 	var cwds []string
 	err := withTx(ctx, d, func(tx *sql.Tx) error {
 		m := &merger{from: from, into: into, report: &report}
-		if err := checkBench(ctx, tx, into); err != nil {
-			return err
+		if err := tx.QueryRowContext(ctx, `SELECT name FROM projects WHERE id = ?`, into).Scan(&m.intoName); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("workbench %d: %w", into, db.ErrWorkbenchNotFound)
+			}
+			return fmt.Errorf("reading workbench %d: %w", into, err)
 		}
 		if err := tx.QueryRowContext(ctx, `SELECT name FROM projects WHERE id = ?`, from).Scan(&m.fromName); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -150,7 +159,7 @@ func Merge(ctx context.Context, d *db.DB, from, into int64, live LiveBenchSessio
 			}
 			return fmt.Errorf("reading workbench %d: %w", from, err)
 		}
-		running, err := countBenchLiveRows(ctx, tx, from, asked, mark)
+		running, err := countBenchLiveRows(ctx, tx, from, asked, snap)
 		if err != nil {
 			return err
 		}
@@ -178,6 +187,14 @@ func Merge(ctx context.Context, d *db.DB, from, into int64, live LiveBenchSessio
 			if err := t.run(ctx, tx, m); err != nil {
 				return fmt.Errorf("merging %s of workbench %d: %w", t.table, from, err)
 			}
+		}
+		if mergeStepHook != nil {
+			if err := mergeStepHook(chatContextsStep); err != nil {
+				return err
+			}
+		}
+		if err := reKeyChats(ctx, tx, m); err != nil {
+			return fmt.Errorf("re-keying the chats of workbench %d: %w", from, err)
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM projects WHERE id = ?`, from); err != nil {
 			return fmt.Errorf("deleting workbench %d: %w", from, err)
@@ -310,6 +327,54 @@ func pinHomeThenMove(table, column, where string) func(ctx context.Context, tx *
 	}
 }
 
+// moveAsks moves the merged bench's asks (a review ask naming B's home by a
+// NULL doc folder pinned to it first), then rewrites every folder
+// suggestion's other_bench that the merge made stale: one naming B now names
+// A, and one on A naming A or B is dropped — the folder is on its own bench.
+func moveAsks(ctx context.Context, tx *sql.Tx, m *merger) error {
+	if err := askMove(ctx, tx, m); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE owner_asks SET payload = json_remove(payload, '$.other_bench')
+		WHERE kind = 'folder' AND project_id = ? AND json_valid(payload)
+		  AND json_extract(payload, '$.other_bench.id') IN (?, ?)`, m.into, m.into, m.from); err != nil {
+		return err //nolint:wrapcheck // Merge names the table
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE owner_asks SET payload = json_set(payload, '$.other_bench', json_object('id', ?, 'name', ?))
+		WHERE kind = 'folder' AND project_id <> ? AND json_valid(payload)
+		  AND json_extract(payload, '$.other_bench.id') = ?`, m.into, m.intoName, m.into, m.from)
+	return err //nolint:wrapcheck // Merge names the table
+}
+
+// askMove is owner_asks' re-key: the review asks' NULL doc folder (B's home)
+// pinned first.
+var askMove = pinHomeThenMove("owner_asks", "doc_folder_id", "doc_path <> ''")
+
+// chatContextsStep is the mergeStepHook name of the chat re-key.
+const chatContextsStep = "chat_conversations"
+
+// reKeyChats re-keys the merged bench's chats whose context id starts with
+// its id — the conversations of its code questions (`<wb>:<path>:<line>`),
+// spec review threads (`<wb>:<root ask>:<key>`) and reviewer threads
+// (`<wb>:f<folder>:<branch>`, or `<wb>:<branch>` for its home folder,
+// which on the surviving bench needs its folder: B's home is not A's).
+func reKeyChats(ctx context.Context, tx *sql.Tx, m *merger) error {
+	from, into := strconv.FormatInt(m.from, 10)+":", strconv.FormatInt(m.into, 10)+":"
+	if _, err := tx.ExecContext(ctx, `UPDATE chat_conversations SET context_id = ? || substr(context_id, length(?) + 1)
+		WHERE context_type IN ('code_question', ?) AND substr(context_id, 1, length(?)) = ?`,
+		into, from, db.SpecReviewThreadContextType, from, from); err != nil {
+		return err //nolint:wrapcheck // Merge names the step
+	}
+	// A branch name never holds a colon (git refuses one): a rest with a
+	// colon is already `f<folder>:<branch>`.
+	_, err := tx.ExecContext(ctx, `UPDATE chat_conversations SET context_id = ? ||
+		CASE WHEN instr(substr(context_id, length(?) + 1), ':') > 0 THEN '' ELSE 'f' || ? || ':' END
+		|| substr(context_id, length(?) + 1)
+		WHERE context_type = 'review_reviewer' AND substr(context_id, 1, length(?)) = ?`,
+		into, from, m.fromHome, from, from, from)
+	return err //nolint:wrapcheck // Merge names the step
+}
+
 // moveAutomations moves the merged bench's recipes; a slug the surviving
 // bench already holds becomes <folder name>/<slug> (the indexer's own name
 // for such a recipe, spec §6.11), its folder being the moved folder the
@@ -395,16 +460,29 @@ func (r *Refusal) runningInBench() string {
 	return fmt.Sprintf("%s: %s sessions are running in %s. Finish them first.", r.Code, r.Detail, r.OtherBench.Name)
 }
 
+// liveSnapshot is the session rows as they were before the host was asked:
+// the highest row id and the time (last_active_at's format).
+type liveSnapshot struct {
+	mark int64
+	at   string
+}
+
 // countBenchLiveRows is countLiveRows for a whole bench: its agent rows that
-// may be running (F2) and, with asked, only those newer than mark or never
-// reported by a hook.
-func countBenchLiveRows(ctx context.Context, tx *sql.Tx, wb int64, asked bool, mark int64) (int, error) {
-	q := `SELECT COUNT(*) FROM terminal_sessions WHERE project_id = ? AND kind <> 'shell' AND ` + db.NotDeletingSQL +
-		` AND finished_at IS NULL AND agent_failed_at IS NULL`
+// may be running (F2). With asked (the host answered for what ran at the
+// snapshot), only the rows that may have started since count: newer than
+// its mark, never reported by a hook, or touched since its time — a resume
+// keeps its row id and may keep finished_at until its first state report,
+// but every resume (Go's reopen, the Desktop's) sets last_active_at first.
+// The time is to the second, so a row touched in the snapshot's own second
+// counts too (a refusal, never a missed run).
+func countBenchLiveRows(ctx context.Context, tx *sql.Tx, wb int64, asked bool, snap liveSnapshot) (int, error) {
+	q := `SELECT COUNT(*) FROM terminal_sessions WHERE project_id = ? AND kind <> 'shell' AND ` + db.NotDeletingSQL
 	args := []any{wb}
 	if asked {
-		q += ` AND (id > ? OR agent_state IS NULL)`
-		args = append(args, mark)
+		q += ` AND ((finished_at IS NULL AND agent_failed_at IS NULL AND (id > ? OR agent_state IS NULL)) OR last_active_at >= ?)`
+		args = append(args, snap.mark, snap.at)
+	} else {
+		q += ` AND finished_at IS NULL AND agent_failed_at IS NULL`
 	}
 	var n int
 	if err := tx.QueryRowContext(ctx, q, args...).Scan(&n); err != nil {
@@ -418,10 +496,11 @@ func countBenchLiveRows(ctx context.Context, tx *sql.Tx, wb int64, asked bool, m
 func sessionCwds(ctx context.Context, tx *sql.Tx, wb int64) ([]string, error) {
 	// A row being deleted (#1716) is on its way out with its worktree: no
 	// install goes there.
-	rows, err := tx.QueryContext(ctx, `SELECT folder_path FROM terminal_sessions WHERE project_id = ? AND kind <> 'shell'
-		AND `+db.NotDeletingSQL+`
+	//nolint:gosec // G202: db.NotDeletingSQL is a constant predicate; every value is a bound arg.
+	q := `SELECT folder_path FROM terminal_sessions WHERE project_id = ? AND kind <> 'shell' AND ` + db.NotDeletingSQL + `
 		UNION SELECT w.root FROM terminal_session_worktrees w JOIN terminal_sessions s ON s.id = w.session_id
-		WHERE s.project_id = ? AND s.kind <> 'shell' AND s.`+db.NotDeletingSQL, wb, wb)
+		WHERE s.project_id = ? AND s.kind <> 'shell' AND s.` + db.NotDeletingSQL
+	rows, err := tx.QueryContext(ctx, q, wb, wb)
 	if err != nil {
 		return nil, fmt.Errorf("reading the session folders of workbench %d: %w", wb, err)
 	}
@@ -440,8 +519,8 @@ func sessionCwds(ctx context.Context, tx *sql.Tx, wb int64) ([]string, error) {
 	return out, nil
 }
 
-// reinstallPlaces is the moved folders, then each cwd still on disk that is
-// none of them, once each.
+// reinstallPlaces is the moved folders, then each cwd that is a linked
+// worktree of one of them (isWorktreeOf), once each.
 func reinstallPlaces(folders []db.WorkbenchFolder, cwds []string) []string {
 	out := []string{}
 	seen := map[string]bool{}
@@ -455,9 +534,31 @@ func reinstallPlaces(folders []db.WorkbenchFolder, cwds []string) []string {
 		add(f.FolderPath)
 	}
 	for _, p := range cwds {
-		if info, err := os.Stat(p); err == nil && info.IsDir() {
+		if isWorktreeOf(p, folders) {
 			add(p)
 		}
 	}
 	return out
+}
+
+// isWorktreeOf reports whether dir is a linked worktree (its `.git` a file
+// naming `<repo>/.git/worktrees/<name>`) whose main repository is one of
+// folders. Anything else a session ran in or reported — another repository,
+// a folder that left the bench, one on a third bench — is not the merge's:
+// no install goes there, and none is taken out.
+func isWorktreeOf(dir string, folders []db.WorkbenchFolder) bool {
+	fi, err := os.Lstat(filepath.Join(dir, ".git"))
+	if err != nil || !fi.Mode().IsRegular() {
+		return false
+	}
+	main, ok := worktreeMain(dir)
+	if !ok {
+		return false
+	}
+	for _, f := range folders {
+		if strings.EqualFold(filepath.Clean(main), filepath.Clean(f.FolderPath)) {
+			return true
+		}
+	}
+	return false
 }

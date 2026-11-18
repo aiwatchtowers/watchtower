@@ -317,6 +317,14 @@ struct WorkbenchFilesSection: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, Spacing.medium)
         }
+        if let warning = vm.mergeWarnings[project.id] {
+            Text(warning)
+                .font(.caption2)
+                .foregroundStyle(Tone.warning)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, Spacing.medium)
+        }
         if let error = files.watchErrors[root] {
             Text(error).font(.caption2).foregroundStyle(.orange).padding(.horizontal, 12)
         }

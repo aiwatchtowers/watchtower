@@ -181,27 +181,58 @@ final class OwnerAsksViewModelFolderTests: XCTestCase {
             return tools
         }
         let runner = runner()
+        // The card was filed naming a bench that is gone (9); the add says
+        // where the folder is now.
+        runner.answer("folder add", .success(Data(#"""
+            {"ok":false,"error_code":"other_bench","error":"other_bench: /tmp/billing is on the workbench \"tools\".",
+             "other_bench":{"id":\#(tools),"name":"tools"}}
+            """#.utf8)))
         runner.answer("merge --from", .success(Data(#"""
             {"ok":true,"error_code":"","error":"","targets":1,
              "moved_folders":[{"id":77,"path":"/tmp/billing","name":"billing","position":1,"home":false,"installed":true,"removed":false}],
              "reinstall":{"ok":true,"failed":[]}}
             """#.utf8)))
         let vm = makeVM(runner)
-        let ask = try await folderAsk(vm, otherBench: #","other_bench":{"id":\#(tools),"name":"tools"}"#)
+        let ask = try await folderAsk(vm, otherBench: #","other_bench":{"id":9,"name":"old"}"#)
 
         await vm.asks.mergeBenches(ask)
-        let offer = try XCTUnwrap(vm.mergeOffer)
+        let offer = try XCTUnwrap(vm.mergeOffer, "the bench the add named now, not the filed one")
+        XCTAssertEqual(offer.fromID, tools)
         XCTAssertEqual(offer.title, "Merge “tools” into “acme”?")
-        XCTAssertEqual(offer.text, "tools's board (1 targets), asks and sessions move to acme, and tools leaves the workbench list. "
+        XCTAssertEqual(offer.text, "tools's board (1 target), asks and sessions move to acme, and tools leaves the workbench list. "
             + "Folders that move: billing.")
 
-        await vm.confirmMerge()
+        // The alert clears the offer as it closes; Merge carries the one it showed.
+        vm.cancelMerge()
+        await vm.confirmMerge(offer)
 
         XCTAssertEqual(runner.invocations.first { $0.starts(with: ["workbench", "merge"]) },
                        ["workbench", "merge", "--from", String(tools), "--into", String(bench), "--json"])
         let row = try await stored(ask.id)
         XCTAssertEqual(row.status, "answered")
         XCTAssertEqual(row.note, "billing is on the bench now. Start a sub-session there with start_session(\"billing\", …).")
+    }
+
+    /// A filed other_bench that is the ask's own bench is stale: the plain
+    /// card. Merge Benches… on a folder that is free by now just adds it.
+    func testStaleOtherBenchIsNeverAMerge() async throws {
+        let runner = runner()
+        runner.answer("folder add", .success(Data(#"""
+            {"ok":true,"folder":{"id":42,"path":"/tmp/billing","name":"billing","position":1,"home":false,"installed":true,"removed":false},
+             "install":{"ok":true,"error":""}}
+            """#.utf8)))
+        let vm = makeVM(runner)
+        let ask = try await folderAsk(vm, otherBench: #","other_bench":{"id":\#(bench),"name":"acme"}"#)
+        let suggestion = try XCTUnwrap(ask.folderSuggestion)
+        let card = FolderSuggestionPresentation.card(suggestion, sessionTitle: nil, phase: .ready, askBench: bench)
+        XCTAssertNil(card.otherBench, "the ask's own bench: the plain card")
+        XCTAssertEqual(card.title, "Put billing on the bench?")
+
+        await vm.asks.mergeBenches(ask)
+        XCTAssertNil(vm.mergeOffer, "never a merge of a bench into itself")
+        XCTAssertFalse(runner.invocations.contains { $0.starts(with: ["workbench", "merge"]) })
+        let row = try await stored(ask.id)
+        XCTAssertEqual(row.status, "answered")
     }
 
     // MARK: - Not Now / Never

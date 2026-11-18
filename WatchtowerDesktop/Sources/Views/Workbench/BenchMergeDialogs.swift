@@ -21,9 +21,11 @@ private struct BenchMergeDialogs: ViewModifier {
                 vm.mergeOffer?.title ?? "",
                 isPresented: Binding(get: { vm.mergeOffer != nil }, set: { if !$0 { vm.cancelMerge() } }),
                 presenting: vm.mergeOffer
-            ) { _ in
+            ) { offer in
                 Button(Copy.cancel, role: .cancel) { vm.cancelMerge() }
-                Button(Copy.merge) { Task { await vm.confirmMerge() } }
+                // The presented offer itself: closing the alert clears
+                // `mergeOffer` before the task runs.
+                Button(Copy.merge) { Task { await vm.confirmMerge(offer) } }
                     .keyboardShortcut(.defaultAction)
             } message: { offer in
                 Text(offer.text)

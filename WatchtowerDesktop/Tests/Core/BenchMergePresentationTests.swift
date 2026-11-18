@@ -38,6 +38,20 @@ final class BenchMergePresentationTests: XCTestCase {
         XCTAssertEqual(refusal.text, "2 sessions are running in tools. Finish them first.")
     }
 
+    func testOneTargetIsSingular() {
+        XCTAssertEqual(
+            Copy.confirmText(from: "tools", into: "acme", targets: 1, folders: ["tools"]),
+            "tools's board (1 target), asks and sessions move to acme, and tools leaves the workbench list. Folders that move: tools."
+        )
+    }
+
+    func testPartlyDoneWarning() {
+        XCTAssertEqual(Copy.partlyDone(from: "tools", steps: [Copy.imagesStep]), "Merged “tools”, but moving its target images failed.")
+        XCTAssertEqual(Copy.partlyDone(from: "tools", steps: [Copy.imagesStep, Copy.searchStep]),
+                       "Merged “tools”, but moving its target images and updating search failed.")
+        XCTAssertEqual(Copy.benchGone, "that workbench is not on the workbench list any more.")
+    }
+
     func testFailedLine() {
         XCTAssertEqual(Copy.failed(from: "tools", reason: "disk full"), "Couldn’t merge “tools”: disk full")
     }

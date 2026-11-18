@@ -644,6 +644,9 @@ final class WorkbenchesViewModel {
     var mergeRefusal: BenchMergeRefusal?
     /// Workbenches a merge into is in flight for.
     var merging: Set<Int64> = []
+    /// A merge done but a later step of it failed, per workbench: the
+    /// warning line under the FILES header.
+    var mergeWarnings: [Int64: String] = [:]
     /// A seam for tests: whether a folder's directory exists.
     @ObservationIgnored var folderExists: (String) -> Bool = { CodeRootPolicy.directoryExists(URL(fileURLWithPath: $0)) }
     /// A seam for tests: the sessions running now (Remove from Bench… counts
