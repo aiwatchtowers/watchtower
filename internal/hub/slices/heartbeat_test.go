@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -152,9 +153,95 @@ func TestDBAccountsReadsLabelAndStatusOnly(t *testing.T) {
 			t.Fatalf("%s: %v", q, err)
 		}
 	}
-	got, err := DBAccounts(d.DB)(context.Background())
+	got, err := DBAccounts(d)(context.Background())
 	want := []wire.HeartbeatAccount{{Kind: "slack", Label: "Acme", Status: "ok"}, {Kind: "google", Label: "Work", Status: "error"}}
 	if err != nil || !slices.Equal(got, want) {
 		t.Fatalf("accounts = %+v %v", got, err)
+	}
+}
+
+// With no listed Slack account and Live on (the newest probe batch of a
+// provider is ok), the phone gets one "live" Slack row; any listed Slack
+// account suppresses it, and an older ok under a newer failed check is not
+// Live (SLACKMODE-01, ask #1525). Screens spec §2.3.
+func TestDBAccounts_LiveOnlySlackRow(t *testing.T) {
+	at := time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC)
+	live := wire.HeartbeatAccount{Kind: "slack", Label: "Slack", Status: "live"}
+	work := wire.HeartbeatAccount{Kind: "google", Label: "Work", Status: "ok"}
+	cases := []struct {
+		name     string
+		accounts []string
+		probes   []db.SlackLiveStatus
+		want     []wire.HeartbeatAccount
+	}{
+		{name: "nothing", want: []wire.HeartbeatAccount{}},
+		{
+			name:   "live only",
+			probes: []db.SlackLiveStatus{{TeamID: "T1", Provider: "claude", Status: "ok", CheckedAt: at}},
+			want:   []wire.HeartbeatAccount{live},
+		},
+		{
+			name:     "live row first, before other accounts",
+			accounts: []string{`INSERT INTO google_accounts (email, label, status) VALUES ('owner@example.com', 'Work', 'ok')`},
+			probes:   []db.SlackLiveStatus{{Provider: "codex", Status: "ok", CheckedAt: at}},
+			want:     []wire.HeartbeatAccount{live, work},
+		},
+		{
+			name:     "a listed Slack account suppresses it",
+			accounts: []string{`INSERT INTO slack_accounts (team_name, label, status, enabled) VALUES ('Acme', '', 'error', 0)`},
+			probes:   []db.SlackLiveStatus{{TeamID: "T1", Provider: "claude", Status: "ok", CheckedAt: at}},
+			want:     []wire.HeartbeatAccount{{Kind: "slack", Label: "Acme", Status: "error"}},
+		},
+		{
+			name:     "a removed Slack account does not",
+			accounts: []string{`INSERT INTO slack_accounts (team_name, label, status) VALUES ('Gone', '', 'removed')`},
+			probes:   []db.SlackLiveStatus{{TeamID: "T1", Provider: "claude", Status: "ok", CheckedAt: at}},
+			want:     []wire.HeartbeatAccount{live},
+		},
+		{
+			name: "an older ok under a newer failed check is off",
+			probes: []db.SlackLiveStatus{
+				{TeamID: "T1", Provider: "claude", Status: "ok", CheckedAt: at},
+				{TeamID: "", Provider: "claude", Status: "not_connected", CheckedAt: at.Add(time.Hour)},
+			},
+			want: []wire.HeartbeatAccount{},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := db.OpenTestDB(t)
+			for _, q := range c.accounts {
+				if _, err := d.Exec(q); err != nil {
+					t.Fatalf("%s: %v", q, err)
+				}
+			}
+			for _, p := range c.probes {
+				if err := d.UpsertSlackLiveStatus(p); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := DBAccounts(d)(context.Background())
+			if err != nil || !slices.Equal(got, c.want) {
+				t.Fatalf("accounts = %+v %v, want %+v", got, err, c.want)
+			}
+		})
+	}
+}
+
+// The Live row never pushes the list past MaxHeartbeatAccounts.
+func TestDBAccounts_LiveOnlySlackRowKeepsTheCap(t *testing.T) {
+	d := db.OpenTestDB(t)
+	for i := range MaxHeartbeatAccounts {
+		if _, err := d.Exec(`INSERT INTO google_accounts (email, label, status) VALUES (?, '', 'ok')`,
+			fmt.Sprintf("a%d@example.com", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := d.UpsertSlackLiveStatus(db.SlackLiveStatus{Provider: "claude", Status: "ok", CheckedAt: time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := DBAccounts(d)(context.Background())
+	if err != nil || len(got) != MaxHeartbeatAccounts || got[0].Status != "live" {
+		t.Fatalf("accounts = %d rows, first %+v, err %v", len(got), got[0], err)
 	}
 }
