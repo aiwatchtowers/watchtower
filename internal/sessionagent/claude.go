@@ -74,7 +74,18 @@ var claudeHookSpecs = []HookSpec{
 	// (board #988, ask #525).
 	withMatcher(claudeStateHook("PreToolUse"), "*"),
 	claudeStateHook("PostToolUseFailure"),
+	// The outside-bench detection (spec 2026-11-18 §6.7): a synchronous
+	// PostToolUse entry of its own, beside the silent state hook, that counts
+	// the tool's path arguments outside the bench and adds a context line on
+	// the third touch of one repository. `workbench outside-touch` bounds its
+	// one write well under this timeout and always exits 0.
+	{Event: "PostToolUse", Subcommand: "workbench outside-touch --workbench", TimeoutSec: 5,
+		Matcher: OutsideTouchMatcher},
 }
+
+// OutsideTouchMatcher is the tools whose path arguments the outside-bench
+// hook reads (spec 2026-11-18 §6.7) — never Bash.
+const OutsideTouchMatcher = "Read|Edit|Write|MultiEdit|NotebookEdit|Glob|Grep"
 
 func withMatcher(spec HookSpec, matcher string) HookSpec {
 	spec.Matcher = matcher
