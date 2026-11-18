@@ -82,7 +82,9 @@ type BacktestStatus struct {
 }
 
 // CategoryResult is one category's backtest row: Total scored decisions
-// graded same (Agree), Acceptable or Bad by the judge.
+// graded same (Agree), Acceptable or Bad by the judge; Handed the hidden
+// items the twin justly handed to the owner (at most 30; their questions are
+// not scored).
 type CategoryResult struct {
 	Category    string  `json:"category"`
 	Total       int     `json:"total"`
@@ -94,6 +96,7 @@ type CategoryResult struct {
 	CostUSD     float64 `json:"cost_usd"`
 	Baseline    float64 `json:"baseline"`     // share of the owner's most common choice among the hidden items
 	RecBaseline float64 `json:"rec_baseline"` // share of the decisions where the owner picked the recommended option
+	Handed      int     `json:"handed"`
 }
 
 // StatusOptions are what Status cannot read from the database: Running is
@@ -229,7 +232,7 @@ func backtestStatus(b *db.WatchmanBacktest, rows []db.WatchmanBacktestRow, runni
 	for _, r := range rows {
 		out.Categories = append(out.Categories, CategoryResult{Category: r.Category, Total: r.Total, Agree: r.Agree,
 			Acceptable: r.Acceptable, Bad: r.Bad, WrongHigh: r.WrongHigh, Status: r.Status, CostUSD: r.CostUSD,
-			Baseline: r.Baseline, RecBaseline: r.RecBaseline})
+			Baseline: r.Baseline, RecBaseline: r.RecBaseline, Handed: r.Handed})
 	}
 	return out
 }

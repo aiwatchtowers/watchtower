@@ -67,7 +67,7 @@ type WatchmanBacktestRow struct {
 	CostUSD     float64
 	Baseline    float64 // share of the most common owner choice among the hidden items (informational)
 	RecBaseline float64 // share of the decisions where the owner picked the agent's recommended option (informational)
-	Handed      int     // decisions the twin handed to the owner (not scored)
+	Handed      int     // hidden items the twin justly handed to the owner (their questions not scored)
 }
 
 func wmTime(t time.Time) string { return t.UTC().Format(time.RFC3339) }

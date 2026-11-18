@@ -220,7 +220,7 @@ func TestStatus_Fixture(t *testing.T) {
 	fin := learnT0.Add(time.Hour)
 	insertBacktest(t, d, on, "done", learnT0, &fin,
 		db.WatchmanBacktestRow{Category: "permission", Total: 30, Agree: 26, Acceptable: 3, Bad: 1, Status: "strong",
-			CostUSD: 0.75, Baseline: 0.6, RecBaseline: 0.7})
+			CostUSD: 0.75, Baseline: 0.6, RecBaseline: 0.7, Handed: 2})
 	insertBacktest(t, d, on, "running", learnT0.Add(2*time.Hour), nil)
 	off, err := d.CreateWorkbench("acme-docs", "/tmp/acme-docs")
 	require.NoError(t, err)

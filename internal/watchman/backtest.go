@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -29,6 +31,10 @@ const (
 	// category; a strong category also has no bad decision taken at high
 	// confidence (ask #1423).
 	StrongMaxBad = 0.05
+	// MinScored is the fewest scored decisions (handed ones are not scored)
+	// a category with its 30 hidden needs to be measured, so handing back
+	// cannot make a category strong (spec §9.1, D41).
+	MinScored = 20
 )
 
 // Backtest row statuses and verdicts.
@@ -48,6 +54,25 @@ var ErrBusy = errors.New("watchman: a backtest is already running")
 // (unix seconds) in the workspace folder; the daemon's weekly launch reads it.
 func BacktestStampPath(workspaceDir string, workbenchID int64) string {
 	return filepath.Join(workspaceDir, "last_watchman_backtest_"+strconv.FormatInt(workbenchID, 10)+".txt")
+}
+
+// BacktestReportPath is the run report of backtest backtestID, started at
+// startedAt, in the workspace folder: one JSON line per hidden item with its
+// grades and the judge's reasons, no situation or answer fields; the judge's
+// reasons are redacted and clipped. Local workspace data. The start stamp is
+// in the name because a backtest id can be reused (the table has no
+// AUTOINCREMENT, and a deleted workbench's reports stay).
+func BacktestReportPath(workspaceDir string, backtestID int64, startedAt time.Time) string {
+	return filepath.Join(workspaceDir, "watchman",
+		"backtest-"+strconv.FormatInt(backtestID, 10)+"-"+strconv.FormatInt(startedAt.Unix(), 10)+".jsonl")
+}
+
+// BacktestResult is a run's id and its report: ReportPath is the written
+// report, "" when none was asked for (no workspace folder) or it could not be
+// written, and then ReportError says why.
+type BacktestResult struct {
+	ID                      int64
+	ReportPath, ReportError string
 }
 
 // backtestClock stamps finished_at (the run is long; started_at is the
@@ -71,49 +96,62 @@ var backtestClock = time.Now
 // options, permissions, review lessons) are same on an exact match; every
 // other item, a different fixed option included, goes to the judge with the
 // situation. An ask with several questions is graded per question, each one
-// scored decision. A reply the twin cannot get right (ErrBadReply) is bad;
+// scored decision. An item the twin hands to the owner (HandoffOwnerOnly)
+// always goes to the judge, which rules on the handoff: justified hands the
+// item (one handed item, its questions not scored), unjustified is one
+// bad decision for the whole item, never bad while sure (§9.1, D40). A
+// category with fewer than MinScored scored decisions is not measured. A
+// reply the twin cannot get right (ErrBadReply) is bad;
 // a failed call, or a judge reply that cannot be read, is tried once more
 // and then fails the run. The run holds
 // LockPath (ErrBusy when held), closes any running row left by a dead
 // process, writes a row per finished category and progress after each item;
 // an error leaves the row failed with its message and the finished rows
-// kept.
-func Backtest(ctx context.Context, d *db.DB, gen digest.Generator, judge Judge, store *prompts.Store, workbenchID int64, now time.Time) (int64, error) {
+// kept. With a workspaceDir it writes the run report (BacktestReportPath)
+// item by item; a report that cannot be written never fails the run (see
+// backtestReport).
+func Backtest(ctx context.Context, d *db.DB, gen digest.Generator, judge Judge, store *prompts.Store, workbenchID int64,
+	workspaceDir string, now time.Time) (BacktestResult, error) {
 	unlock, err := lockBacktest(d)
 	if err != nil {
-		return 0, err
+		return BacktestResult{}, err
 	}
 	defer unlock()
 	// A running row while the lock is free belongs to a process that died.
 	if _, err := d.FailRunningWatchmanBacktests(workbenchID, "interrupted", now); err != nil {
-		return 0, err
+		return BacktestResult{}, err
 	}
 	id, err := d.InsertWatchmanBacktest(db.WatchmanBacktest{WorkbenchID: workbenchID, StartedAt: now, Status: "running"})
 	if err != nil {
-		return 0, err
+		return BacktestResult{}, err
 	}
-	bt := backtestRun{ctx: ctx, d: d, gen: gen, judge: judge, store: store, wb: workbenchID, id: id}
+	report := openBacktestReport(workspaceDir, id, now)
+	err = backtestRun{ctx: ctx, d: d, gen: gen, judge: judge, store: store, wb: workbenchID, id: id, report: report}.run()
+	res := BacktestResult{ID: id}
+	res.ReportPath, res.ReportError = report.close()
+	return res, err
+}
+
+// run measures every category and finishes the run's row.
+func (bt backtestRun) run() error {
 	var rows []db.WatchmanBacktestRow
 	var cost float64
 	for k, c := range Categories {
 		row, err := bt.category(c, k)
 		cost += row.CostUSD
 		if err == nil {
-			err = d.AddWatchmanBacktestRow(id, row)
+			err = bt.d.AddWatchmanBacktestRow(bt.id, row)
 		}
 		if err != nil {
 			err = fmt.Errorf("watchman backtest, category %s: %w", c, err)
-			if ferr := d.FinishWatchmanBacktest(id, "failed", "", err.Error(), cost, backtestClock()); ferr != nil {
+			if ferr := bt.d.FinishWatchmanBacktest(bt.id, "failed", "", err.Error(), cost, backtestClock()); ferr != nil {
 				err = errors.Join(err, ferr)
 			}
-			return id, err
+			return err
 		}
 		rows = append(rows, row)
 	}
-	if err := d.FinishWatchmanBacktest(id, "done", Verdict(rows), "", cost, backtestClock()); err != nil {
-		return id, err
-	}
-	return id, nil
+	return bt.d.FinishWatchmanBacktest(bt.id, "done", Verdict(rows), "", cost, backtestClock())
 }
 
 // lockBacktest takes LockPath next to the database file. An in-memory
@@ -137,13 +175,14 @@ func lockBacktest(d *db.DB) (func(), error) {
 }
 
 type backtestRun struct {
-	ctx   context.Context
-	d     *db.DB
-	gen   digest.Generator
-	judge Judge
-	store *prompts.Store
-	wb    int64
-	id    int64
+	ctx    context.Context
+	d      *db.DB
+	gen    digest.Generator
+	judge  Judge
+	store  *prompts.Store
+	wb     int64
+	id     int64
+	report *backtestReport
 }
 
 // category measures one category; k is how many categories are done. The
@@ -189,13 +228,17 @@ func (bt backtestRun) category(c string, k int) (db.WatchmanBacktestRow, error) 
 		}
 	}
 	row.Baseline = baseline(hidden, opts)
-	recPicks := 0
+	recPicks, decisions := 0, 0
 	for i, p := range hidden {
-		grades, high, err := bt.item(c, p, opts[i], asked[i].questions, exclude, profile, instr, &row)
+		o, err := bt.item(c, p, opts[i], asked[i].questions, exclude, profile, instr, &row)
 		if err != nil {
 			return row, err
 		}
-		for _, g := range grades {
+		for _, g := range o.grades {
+			if g == gradeHanded {
+				row.Handed++ // one handed item, counted apart, not scored
+				continue
+			}
 			row.Total++
 			switch g {
 			case GradeSame:
@@ -206,18 +249,23 @@ func (bt backtestRun) category(c string, k int) (db.WatchmanBacktestRow, error) 
 				row.Bad++ // not the twin's confidence at fault: never bad while sure
 			default:
 				row.Bad++
-				if high {
+				if o.high {
 					row.WrongHigh++
 				}
 			}
 		}
+		bt.report.write(backtestReportLine{Category: c, Source: p.Source, SourceKey: p.SourceKey, Handoff: o.handoff,
+			Grades: o.grades, HandoffVerdict: o.verdict, Why: reportReasons(o.why, len(o.grades)), Confidence: o.confidence})
 		recPicks += asked[i].recommendedPicks
+		decisions += max(1, len(asked[i].questions))
 		if err := bt.d.SetWatchmanBacktestProgress(bt.id,
 			fmt.Sprintf("%s, %d of %d · %d of %d categories done", c, i+1, len(hidden), k, len(Categories))); err != nil {
 			return row, err
 		}
 	}
-	row.RecBaseline = float64(recPicks) / float64(row.Total)
+	// Over the owner's decisions, handed ones included: it describes him,
+	// not the twin.
+	row.RecBaseline = float64(recPicks) / float64(decisions)
 	row.Status = rowStatus(row)
 	return row, nil
 }
@@ -254,15 +302,29 @@ func (bt backtestRun) retryOnce(call func() error) error {
 // bad while sure (the twin's confidence did not cause it).
 const gradeOmitted = "omitted"
 
-// item re-decides one hidden precedent and grades it: one grade per
-// question (questions nil: one), and whether the twin was sure (confidence
-// high).
+// gradeHanded marks an item the twin justly handed to the owner: one handed
+// item, however many questions it has, none of them scored (so the handed
+// count never exceeds the 30 hidden). The judge never gives it.
+const gradeHanded = "handed"
+
+// itemOutcome is one hidden item's grades (one per question, or one for a
+// handoff), whether the twin was sure (confidence high; never
+// for an unjustified handoff), and what the run report shows of it: the
+// twin's handoff and confidence, the judge's handoff verdict and reasons.
+type itemOutcome struct {
+	grades, why                  []string
+	high                         bool
+	handoff, verdict, confidence string
+}
+
+// item re-decides one hidden precedent and grades it (questions nil: one
+// decision).
 func (bt backtestRun) item(c string, p db.WatchmanPrecedent, opts, questions []string, exclude []int64, profile, instr string,
-	row *db.WatchmanBacktestRow) (grades []string, high bool, err error) {
+	row *db.WatchmanBacktestRow) (itemOutcome, error) {
 	n := max(1, len(questions))
 	var dec Decision
 	unusable := false
-	err = bt.retryOnce(func() error {
+	err := bt.retryOnce(func() error {
 		var err error
 		dec, err = Decide(bt.ctx, bt.d, bt.gen, bt.store, Item{
 			WorkbenchID: bt.wb, Category: c, Situation: p.Situation, Options: opts,
@@ -276,29 +338,46 @@ func (bt backtestRun) item(c string, p db.WatchmanPrecedent, opts, questions []s
 	})
 	switch {
 	case err != nil:
-		return nil, false, err
+		return itemOutcome{}, err
 	case unusable:
 		// The twin gave no usable decision: bad, with no confidence to be sure of.
-		return slices.Repeat([]string{GradeBad}, n), false, nil
-	case len(opts) > 0 && dec.Choice == p.Choice:
-		return []string{GradeSame}, dec.Confidence == "high", nil
+		return itemOutcome{grades: slices.Repeat([]string{GradeBad}, n), why: []string{}}, nil
 	}
-	var got []string
+	o := itemOutcome{handoff: dec.Handoff, confidence: dec.Confidence, high: dec.Confidence == "high", why: []string{}}
+	handed := dec.Handoff == HandoffOwnerOnly
+	if !handed && len(opts) > 0 && dec.Choice == p.Choice {
+		o.grades = []string{GradeSame}
+		return o, nil
+	}
+	var res JudgeResult
 	err = bt.retryOnce(func() error {
-		g, usage, err := bt.judge.Grade(bt.ctx, JudgeInput{Situation: p.Situation, Owner: ownerAnswer(p), Twin: twinAnswer(dec),
-			Questions: questions})
+		r, usage, err := bt.judge.Grade(bt.ctx, JudgeInput{Situation: p.Situation, Owner: ownerAnswer(p), Twin: twinAnswer(dec),
+			Questions: questions, Handoff: handed})
 		row.CostUSD += usageCost(usage)
-		got = g
+		res = r
 		return err
 	})
 	if err != nil {
-		return nil, false, err
+		return itemOutcome{}, err
+	}
+	if handed {
+		o.verdict, o.why = res.Handoff, []string{res.HandoffWhy}
+		if res.Handoff == HandoffJustified {
+			o.grades = []string{gradeHanded}
+			return o, nil
+		}
+		// One wrong handoff is one bad decision however many questions the
+		// item has, and not the twin's confidence at fault.
+		o.grades, o.high = []string{GradeBad}, false
+		return o, nil
 	}
 	// A grade the judge left out is bad (not bad while sure); an extra one
-	// is ignored.
-	grades = slices.Repeat([]string{gradeOmitted}, n)
-	copy(grades, got)
-	return grades, dec.Confidence == "high", nil
+	// is ignored. The reasons are lined up with the grades.
+	o.grades = slices.Repeat([]string{gradeOmitted}, n)
+	copy(o.grades, res.Grades)
+	o.why = make([]string, n)
+	copy(o.why, res.Why)
+	return o, nil
 }
 
 // backtestOptions returns the options the owner chose among, when the
@@ -471,12 +550,13 @@ func baseline(hidden []db.WatchmanPrecedent, opts [][]string) float64 {
 	return float64(top) / float64(len(hidden))
 }
 
-// rowStatus applies the bar to a measured row (ask #1423): strong when at
-// most StrongMaxBad of its decisions are bad and none of them was taken at
-// high confidence. Agreement and the base rates are reported, not gated on:
-// a different but reasonable decision is no failure.
+// rowStatus applies the bar to a row of 30 hidden (ask #1423, §9.1): not
+// measured with fewer than MinScored scored decisions, else strong when at
+// most StrongMaxBad of its scored decisions are bad and none of them was
+// taken at high confidence. Agreement and the base rates are reported, not
+// gated on: a different but reasonable decision is no failure.
 func rowStatus(r db.WatchmanBacktestRow) string {
-	if r.Total < HiddenPerCategory {
+	if r.Total < MinScored {
 		return BacktestNotMeasured
 	}
 	if float64(r.Bad)/float64(r.Total) <= StrongMaxBad && r.WrongHigh == 0 {
@@ -521,4 +601,112 @@ func usageCost(u *digest.Usage) float64 {
 	}
 	usd, _ := pricing.CodexCost(u.Model, u.Input, u.Output, u.CacheRead, u.CacheWrite())
 	return usd
+}
+
+// reportReasonMax is the most runes of one judge reason in the run report.
+const reportReasonMax = 200
+
+// reportReasons lines the judge's reasons up with n grades ("" for a grade
+// with none: an exact match, an unusable reply), each redacted and clipped:
+// the reasons are the model's free text and may quote the situation.
+func reportReasons(why []string, n int) []string {
+	out := make([]string, n)
+	for i := range min(n, len(why)) {
+		out[i] = Clip(Redact(why[i]), reportReasonMax)
+	}
+	return out
+}
+
+// backtestReportLine is one hidden item in the run report (keys read by the
+// owner; no situation or answer fields).
+type backtestReportLine struct {
+	Category       string   `json:"category"`
+	Source         string   `json:"source"`
+	SourceKey      string   `json:"source_key"`
+	Handoff        string   `json:"handoff"`
+	Grades         []string `json:"grades"`
+	HandoffVerdict string   `json:"handoff_verdict"`
+	Why            []string `json:"why"`
+	Confidence     string   `json:"confidence"`
+}
+
+// backtestReport writes the run report line by line. Writing it never fails
+// or discards the paid run: on the first error (the folder cannot be made,
+// the file cannot be created, a write fails) the report is abandoned — a
+// file this run created is removed, one log line with the stage and the
+// count written — and close reports why. A nil report (no workspace folder)
+// writes nothing.
+type backtestReport struct {
+	f       *os.File
+	path    string
+	created bool // this run created the file: only then is it removed
+	lines   int
+	err     error
+}
+
+func openBacktestReport(workspaceDir string, backtestID int64, startedAt time.Time) *backtestReport {
+	if workspaceDir == "" {
+		return nil
+	}
+	r := &backtestReport{path: BacktestReportPath(workspaceDir, backtestID, startedAt)}
+	if err := os.MkdirAll(filepath.Dir(r.path), 0o700); err != nil {
+		r.abandon("making its folder", err)
+		return r
+	}
+	// O_EXCL: a run id is fresh, so anything already at the path is not
+	// this run's and is never truncated or removed.
+	f, err := os.OpenFile(r.path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		r.abandon("creating it", err)
+		return r
+	}
+	r.f, r.created = f, true
+	return r
+}
+
+func (r *backtestReport) write(line backtestReportLine) {
+	if r == nil || r.err != nil {
+		return
+	}
+	b, err := json.Marshal(line)
+	if err == nil {
+		_, err = r.f.Write(append(b, '\n'))
+	}
+	if err != nil {
+		r.abandon("writing a line", err)
+		return
+	}
+	r.lines++
+}
+
+// abandon drops the report after err at stage: the file is closed and, when
+// this run created it, removed. The log line carries the stage and the
+// count only (no path, no error text); close hands the error to the owner.
+func (r *backtestReport) abandon(stage string, err error) {
+	r.err = fmt.Errorf("writing the backtest report (%s): %w", stage, err)
+	if r.f != nil {
+		_ = r.f.Close() // known-safe ignore: the file is removed next
+		r.f = nil
+	}
+	if r.created {
+		_ = os.Remove(r.path) // known-safe ignore: best effort; the error is reported
+	}
+	log.Printf("watchman backtest: run report abandoned while %s after %d lines", stage, r.lines)
+}
+
+// close finishes the report: its path, or "" and why it was abandoned.
+func (r *backtestReport) close() (path, errText string) {
+	if r == nil {
+		return "", ""
+	}
+	if f := r.f; f != nil {
+		r.f = nil
+		if err := f.Close(); err != nil {
+			r.abandon("closing it", err)
+		}
+	}
+	if r.err != nil {
+		return "", r.err.Error()
+	}
+	return r.path, ""
 }

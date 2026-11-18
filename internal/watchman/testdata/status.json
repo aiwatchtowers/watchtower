@@ -81,7 +81,8 @@
             "status": "strong",
             "cost_usd": 0.75,
             "baseline": 0.6,
-            "rec_baseline": 0.7
+            "rec_baseline": 0.7,
+            "handed": 2
           }
         ]
       },
