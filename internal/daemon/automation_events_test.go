@@ -659,18 +659,27 @@ func runSyncBody(t *testing.T, file *ast.File) *ast.BlockStmt {
 
 // runSyncCallOrder maps each method or function called in runSync to the
 // index of the first top-level statement calling it (the
-// TestDaemon_RunSync_PollsReactionsBeforeAIPipelines scan).
+// TestDaemon_RunSync_PollsReactionsBeforeAIPipelines scan). A phase passed
+// to d.aiPhase (the consent gate) counts as called there.
 func runSyncCallOrder(t *testing.T) map[string]int {
 	t.Helper()
 	file, err := parser.ParseFile(token.NewFileSet(), "daemon.go", nil, 0)
 	require.NoError(t, err)
 	order := map[string]int{}
+	note := func(name string, i int) {
+		if _, seen := order[name]; !seen {
+			order[name] = i
+		}
+	}
 	for i, stmt := range runSyncBody(t, file).List {
 		ast.Inspect(stmt, func(n ast.Node) bool {
 			if call, ok := n.(*ast.CallExpr); ok {
 				if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
-					if _, seen := order[sel.Sel.Name]; !seen {
-						order[sel.Sel.Name] = i
+					note(sel.Sel.Name, i)
+					if sel.Sel.Name == "aiPhase" && len(call.Args) == 3 {
+						if phase, ok := call.Args[2].(*ast.SelectorExpr); ok {
+							note(phase.Sel.Name, i)
+						}
 					}
 				}
 			}

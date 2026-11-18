@@ -393,7 +393,8 @@ package enum AutomationQueries {
     /// run's poll launches a new session for the step, as after a delete.
     package static func unattachedSession(_ db: Database, runID: Int64) throws -> TerminalSession? {
         try TerminalSession.fetchOne(db, sql: """
-            SELECT * FROM terminal_sessions s WHERE \(unattachedSessionsWhere) AND s.delete_requested_at IS NULL
+            SELECT \(TerminalSessionQueries.sessionColumns("s")) FROM terminal_sessions s
+            WHERE \(unattachedSessionsWhere) AND s.delete_requested_at IS NULL
             ORDER BY s.id LIMIT 1
             """, arguments: [runID])
     }

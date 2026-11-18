@@ -186,7 +186,7 @@ func runHubStatus(cmd *cobra.Command, _ []string) error {
 		line += " (" + s.Reason + ")"
 	}
 	if s.State == hub.StateRunning {
-		line += fmt.Sprintf(", %s, %d phone(s)", s.Transport, s.Phones)
+		line += fmt.Sprintf(", %s%s, %d phone(s)", s.Transport, hubRelayNote(s.Relay, time.Now()), s.Phones)
 	}
 	rec, err := hubRecordingsValue(dir)
 	if err != nil {
@@ -211,6 +211,36 @@ func runHubStatus(cmd *cobra.Command, _ []string) error {
 	out := hubStatusJSON{Status: s, Recordings: rec, KeptRecordings: kept, Name: hub.DisplayName(dir), Transcriber: hubTranscriberSeen(dir)}
 	out.Epoch, out.EpochAgeDays = hubEpochFacts(dir, time.Now())
 	return hubPrint(cmd, asJSON, out, line)
+}
+
+// hubRelayNote is `hub status`'s note on a relay that is not connected
+// (#1873): " unavailable since 15:22 (last saved 15:20)", with "never saved"
+// before the first save of this run; "" while connected or with no relay.
+// Times are local, with the date when not today; an unreadable time is
+// left out rather than failing the status.
+func hubRelayNote(r *hub.RelayHealth, now time.Time) string {
+	if r == nil || r.State == "" || r.State == hub.RelayConnected {
+		return ""
+	}
+	note := " " + r.State
+	if since, err := time.Parse(time.RFC3339, r.Since); err == nil {
+		note += " since " + hubClock(since, now)
+	}
+	if saved, err := time.Parse(time.RFC3339, r.LastSavedAt); err == nil {
+		note += " (last saved " + hubClock(saved, now) + ")"
+	} else if r.LastSavedAt == "" {
+		note += " (never saved since the hub started)"
+	}
+	return note
+}
+
+// hubClock is t in now's zone as "15:04", or "Jan 2 15:04" on another day.
+func hubClock(t, now time.Time) string {
+	t = t.In(now.Location())
+	if y, m, d := t.Date(); y == now.Year() && m == now.Month() && d == now.Day() {
+		return t.Format("15:04")
+	}
+	return t.Format("Jan 2 15:04")
 }
 
 // hubStatusJSON is `hub status --json`: the runtime's status plus the

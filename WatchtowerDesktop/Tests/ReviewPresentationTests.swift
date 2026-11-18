@@ -286,6 +286,17 @@ final class ReviewPresentationTests: XCTestCase {
         XCTAssertEqual(ReviewChangesPaneView.noFileText(f.model), "Pick a file")
     }
 
+    /// #1945: a turn ending in the spec review loop refreshes the pane, as
+    /// the `.stopped` it read before did; a turn-over → turn-over move does not.
+    func testSpecReviewEndsTheTurn() {
+        XCTAssertTrue(ReviewChangesPaneView.endsTurn(from: .working, to: .specReview))
+        XCTAssertTrue(ReviewChangesPaneView.endsTurn(from: .working, to: .stopped))
+        XCTAssertFalse(ReviewChangesPaneView.endsTurn(from: .specReview, to: .waitingOnAsk))
+        XCTAssertFalse(ReviewChangesPaneView.endsTurn(from: .finished, to: .stopped))
+        XCTAssertFalse(ReviewChangesPaneView.endsTurn(from: .specReview, to: .working))
+        XCTAssertFalse(ReviewChangesPaneView.endsTurn(from: .working, to: nil))
+    }
+
     func testSentEmptyRoundOffersOnlyStartNextRound() async throws {
         let f = try await fixture([], status: "sent")
         let onMain = WorkbenchGitStatus(branch: "main", head: "b1")

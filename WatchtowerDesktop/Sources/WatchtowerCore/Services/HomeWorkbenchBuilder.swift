@@ -14,7 +14,7 @@ package struct HomeWorkbenchBlock: Equatable, Sendable {
 package enum HomeWorkbenchBuilder {
     /// The session states Home shows, in the order they sort within a block.
     private static let kindOrder: [SessionSwitcherPresentation.State.Kind] = [
-        .needsApproval, .failed, .readyToCheck, .background, .working
+        .needsApproval, .failed, .readyToCheck, .background, .specReview, .working
     ]
     package static let shownKinds: Set<SessionSwitcherPresentation.State.Kind> = Set(kindOrder)
 

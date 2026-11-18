@@ -31,6 +31,7 @@ final class SessionAgentStatusFixtureTests: XCTestCase {
         let openAsks: Int
         let openQuestionAsks: Int
         let openReviewAsks: Int
+        let specReviewRound: Int
         let runStartedAt: String
 
         enum CodingKeys: String, CodingKey {
@@ -39,7 +40,7 @@ final class SessionAgentStatusFixtureTests: XCTestCase {
             case agentBackgroundAt = "agent_background_at", agentBackgroundShells = "agent_background_shells"
             case openAsks = "open_asks"
             case openQuestionAsks = "open_question_asks", openReviewAsks = "open_review_asks"
-            case runStartedAt = "run_started_at"
+            case specReviewRound = "spec_review_round", runStartedAt = "run_started_at"
         }
     }
 
@@ -77,7 +78,7 @@ final class SessionAgentStatusFixtureTests: XCTestCase {
                 workbenchName: "wb", finishedAt: row.finishedAt, agentFailedAt: row.agentFailedAt,
                 openAsks: row.openAsks, openQuestionAsks: row.openQuestionAsks, openReviewAsks: row.openReviewAsks,
                 agentBackground: row.agentBackground, agentBackgroundAt: row.agentBackgroundAt,
-                agentBackgroundShells: row.agentBackgroundShells
+                agentBackgroundShells: row.agentBackgroundShells, specReviewRound: row.specReviewRound
             )
             let status = try XCTUnwrap(SessionAgentStatus.resolve(
                 [stateRow], liveIDs: live ? [1] : [], startedAt: started.map { [1: $0] } ?? [:], now: now
@@ -105,6 +106,7 @@ final class SessionAgentStatusFixtureTests: XCTestCase {
         case .finished: return "finished"
         case .background: return "agents_working"
         case .readyToCheck: return "ready_to_check"
+        case .specReview: return "spec_review"
         }
     }
 }

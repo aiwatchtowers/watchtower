@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import WatchtowerCore
+import ChatUI
 
 // MARK: - Recap tab
 

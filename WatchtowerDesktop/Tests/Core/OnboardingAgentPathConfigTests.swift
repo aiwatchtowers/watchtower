@@ -1,5 +1,6 @@
 import XCTest
 @testable import WatchtowerCore
+import WatchtowerTestSupport
 
 /// The agent check's `claude_path` / `codex_path` config edit ("Choose the executable…").
 final class OnboardingAgentPathConfigTests: XCTestCase {
@@ -53,7 +54,11 @@ final class OnboardingAgentPathConfigTests: XCTestCase {
         XCTAssertEqual(try String(contentsOfFile: configPath, encoding: .utf8), "active_workspace: acme\nclaude_path: '/new'\n")
         let mode = try FileManager.default.attributesOfItem(atPath: configPath)[.posixPermissions] as? Int
         XCTAssertEqual(mode, 0o600, "a rewrite locks a loose config down")
-        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir.path), ["config.yaml"], "no staged file left")
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: dir.path).sorted(),
+            ["config.yaml", "config.yaml.lock"],
+            "no staged file left (the write lock's file stays, as Go's does)"
+        )
     }
 
     /// A line break in the path would end the quoted scalar's line: refused,
@@ -101,6 +106,50 @@ final class OnboardingAgentPathConfigTests: XCTestCase {
         try OnboardingAgentPathConfig.save("/opt/codex", for: .codex, configPath: configPath)
 
         XCTAssertEqual(try String(contentsOfFile: configPath, encoding: .utf8), "codex_path: '/opt/codex'\n")
+    }
+
+    // MARK: - Under the config write lock
+
+    func testSaveReadsAndWritesUnderLock() throws {
+        let dir = try tempDir()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let configPath = dir.appendingPathComponent("config.yaml").path
+        try "active_workspace: acme\n".write(toFile: configPath, atomically: true, encoding: .utf8)
+        let recorder = RecordingConfigFileAccess()
+
+        try OnboardingAgentPathConfig.save("/opt/claude", for: .claude, configPath: configPath, access: recorder.access)
+
+        XCTAssertEqual(recorder.events, ["lock", "read(locked)", "write(locked)", "unlock"])
+        XCTAssertEqual(try String(contentsOfFile: configPath, encoding: .utf8), "active_workspace: acme\nclaude_path: '/opt/claude'\n")
+    }
+
+    /// Review #1484: `ai.background_runs: allowed`, written by
+    /// `watchtower ai background allow` after onboarding loaded the config and
+    /// before it saved the agent path, survives that save.
+    func testSaveKeepsBackgroundRunsKey() throws {
+        let dir = try tempDir()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let configPath = dir.appendingPathComponent("config.yaml").path
+        try "active_workspace: acme\n".write(toFile: configPath, atomically: true, encoding: .utf8)
+        let live = ConfigFileAccess.live
+        // The other writer lands its key just before onboarding's save takes the lock.
+        let racing = ConfigFileAccess(
+            withLock: { path, body in
+                try live.withLock(path) { token in
+                    try live.writeConfigFile("active_workspace: acme\nai:\n  background_runs: allowed\n", path, token)
+                }
+                try live.withLock(path, body)
+            },
+            read: live.read,
+            writeConfigFile: live.writeConfigFile
+        )
+
+        try OnboardingAgentPathConfig.save("/opt/claude", for: .claude, configPath: configPath, access: racing)
+
+        XCTAssertEqual(
+            try String(contentsOfFile: configPath, encoding: .utf8),
+            "active_workspace: acme\nai:\n  background_runs: allowed\nclaude_path: '/opt/claude'\n"
+        )
     }
 
     func testKeepsOtherLinesIncludingTheOtherAgentsPath() {

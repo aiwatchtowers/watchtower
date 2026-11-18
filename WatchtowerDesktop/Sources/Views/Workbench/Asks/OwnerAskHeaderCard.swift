@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import ChatUI
 
 /// The agent's short header of an ask (spec 2026-10-03 Part 8): what it is,
 /// where to look (`focus`), and on a later review round what changed since

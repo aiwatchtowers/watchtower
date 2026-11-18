@@ -105,6 +105,9 @@ CREATE INDEX idx_chat_attachments_project ON chat_attachments(project_id)
 index	idx_chat_conversations_project
 CREATE INDEX idx_chat_conversations_project ON chat_conversations(project_id)
 
+index	idx_chat_messages_client_key
+CREATE UNIQUE INDEX idx_chat_messages_client_key ON chat_messages(conversation_id, client_key) WHERE client_key IS NOT NULL
+
 index	idx_chat_messages_conversation
 CREATE INDEX idx_chat_messages_conversation ON chat_messages(conversation_id)
 
@@ -1154,7 +1157,7 @@ text TEXT NOT NULL,
 created_at REAL NOT NULL,
 turn_id TEXT NOT NULL DEFAULT ''
 , status TEXT NOT NULL DEFAULT 'complete'
-CHECK(status IN ('complete','partial','error')), provider TEXT, model TEXT, tokens_in INTEGER, tokens_out INTEGER, parent_id INTEGER REFERENCES chat_messages(id) ON DELETE CASCADE, error_code TEXT, error_message TEXT)
+CHECK(status IN ('complete','partial','error')), provider TEXT, model TEXT, tokens_in INTEGER, tokens_out INTEGER, parent_id INTEGER REFERENCES chat_messages(id) ON DELETE CASCADE, error_code TEXT, error_message TEXT, client_key TEXT)
 
 table	chat_project_sources
 CREATE TABLE "chat_project_sources" (
@@ -2623,6 +2626,12 @@ started_at REAL NOT NULL,
 transcribed_at REAL
 , private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1)), upload_id TEXT)
 
+table	people_card_exclusions
+CREATE TABLE people_card_exclusions (
+user_id TEXT PRIMARY KEY,
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+)
+
 table	people_card_summaries
 CREATE TABLE people_card_summaries (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3100,7 +3109,7 @@ error TEXT NOT NULL DEFAULT '',
 enabled INTEGER NOT NULL DEFAULT 1,
 search_last_date TEXT NOT NULL DEFAULT '',
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at TEXT NOT NULL DEFAULT '', first_cycle_at TEXT NOT NULL DEFAULT '')
+, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at TEXT NOT NULL DEFAULT '', first_cycle_at TEXT NOT NULL DEFAULT '', emoji_scope_missing INTEGER NOT NULL DEFAULT 0, people_prune_done_at TEXT NOT NULL DEFAULT '')
 
 table	slack_live_status
 CREATE TABLE slack_live_status (
@@ -4939,6 +4948,7 @@ GROUP BY up.ancestor
 11	parent_id	INTEGER	notnull=0	dflt=NULL	pk=0
 12	error_code	TEXT	notnull=0	dflt=NULL	pk=0
 13	error_message	TEXT	notnull=0	dflt=NULL	pk=0
+14	client_key	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## chat_project_sources
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -6211,6 +6221,10 @@ GROUP BY up.ancestor
 7	private	INTEGER	notnull=1	dflt=0	pk=0
 8	upload_id	TEXT	notnull=0	dflt=NULL	pk=0
 
+## people_card_exclusions
+0	user_id	TEXT	notnull=0	dflt=NULL	pk=1
+1	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+
 ## people_card_summaries
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	period_from	REAL	notnull=1	dflt=NULL	pk=0
@@ -6622,6 +6636,8 @@ GROUP BY up.ancestor
 15	access_ok_at	TEXT	notnull=1	dflt=''	pk=0
 16	revoked_at	TEXT	notnull=1	dflt=''	pk=0
 17	first_cycle_at	TEXT	notnull=1	dflt=''	pk=0
+18	emoji_scope_missing	INTEGER	notnull=1	dflt=0	pk=0
+19	people_prune_done_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## slack_live_status
 0	team_id	TEXT	notnull=1	dflt=NULL	pk=1

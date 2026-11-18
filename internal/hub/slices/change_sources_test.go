@@ -96,7 +96,7 @@ VALUES ('Feature', 'custom', 'project', '2026-09-29', '2026-09-29', 'todo', 'med
 		Store: st, Transport: tr, Sealer: secure.NewSealer(kr), DataZone: "data/hubtest-acme", Clock: pubFT.Now,
 		Sources: []slices.Source{sources.WorkbenchTargets(d, pubFT.Now)},
 	})
-	slices.SetRunClock(pub, pubFT.Now, pubFT.Timer)
+	slices.SetRunClock(pub, pubFT)
 
 	r, err := db.OpenExisting(path, time.Second)
 	if err != nil {

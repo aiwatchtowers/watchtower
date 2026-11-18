@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 
+	"watchtower/internal/chatengine"
 	"watchtower/internal/chatstore"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
@@ -21,18 +23,37 @@ import (
 	"watchtower/internal/tools"
 )
 
-// fakeChatRunner runs the start transaction through a real store (so the
-// lease, busy and refusals are the store's) and records the cancels.
+// fakeChatRunner is a real engine (every write but a turn's is the
+// engine's) whose Turn runs only the start transaction through a real store
+// (so the lease, busy and refusals are the store's) and whose Cancel records
+// the cancels: no session process is started.
 type fakeChatRunner struct {
+	*chatengine.Engine
 	store   *chatstore.Store
 	runs    []chatstore.StartRequest
+	turns   []chatengine.TurnRequest
+	keys    []string
 	cancels []string
 	cancel  bool
+	// manages are the chat_manage requests the handler passed on;
+	// manageErr (nil = the engine's answer) refuses them.
+	manages   []chatengine.ManageRequest
+	manageErr error
 }
 
-func (f *fakeChatRunner) Run(ctx context.Context, req chatstore.StartRequest) (chatstore.Started, error) {
-	f.runs = append(f.runs, req)
-	return f.store.Start(ctx, req)
+func (f *fakeChatRunner) Manage(ctx context.Context, req chatengine.ManageRequest) error {
+	f.manages = append(f.manages, req)
+	if f.manageErr != nil {
+		return f.manageErr
+	}
+	return f.Engine.Manage(ctx, req)
+}
+
+func (f *fakeChatRunner) Turn(ctx context.Context, req chatengine.TurnRequest) (chatstore.Started, error) {
+	f.runs = append(f.runs, req.StartRequest)
+	f.turns = append(f.turns, req)
+	f.keys = append(f.keys, req.ClientKey)
+	return f.store.Start(ctx, req.StartRequest)
 }
 
 func (f *fakeChatRunner) Cancel(conv int64, turnID string) (bool, error) {
@@ -81,7 +102,15 @@ func newChatEnv(t *testing.T, server bool) *chatEnv {
 	c := &chatEnv{env: e, requests: &fakeChatRequests{}, files: filepath.Join(t.TempDir(), "chat_files"), on: true,
 		now: time.Unix(1_800_000_000, 0)}
 	c.chat = chatstore.New(e.db, db.ChatLeaseHub, "hub-1", chatstore.WithClock(func() time.Time { return c.now }))
-	c.runner = &fakeChatRunner{store: c.chat, cancel: true}
+	skillsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(skillsDir, "weekly-report.md"),
+		[]byte("---\ndescription: Write the weekly report\n---\nbody"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	eng := chatengine.New(chatengine.Config{Exe: "/usr/bin/false", DB: e.db, FilesDir: c.files, SkillsDir: skillsDir,
+		Clock: func() time.Time { return c.now }})
+	t.Cleanup(func() { _ = eng.Close(context.Background()) })
+	c.runner = &fakeChatRunner{Engine: eng, store: c.chat, cancel: true}
 	c.reg = tools.New(e.db)
 	if err := c.reg.Register(tools.NewClaudeAIConnectorCall()); err != nil {
 		t.Fatal(err)
@@ -103,7 +132,7 @@ func newChatEnv(t *testing.T, server bool) *chatEnv {
 		DB: e.db, Store: st, Sessions: e.port, ServerHost: server, Clock: func() time.Time { return c.now },
 		Chat: &ChatDeps{
 			Available: func() (bool, string) { return c.on, c.reason },
-			Runner:    c.runner, Store: c.chat, Requests: c.requests, Tools: c.reg, FilesDir: c.files,
+			Engine:    c.runner, Requests: c.requests, Tools: c.reg, FilesDir: c.files,
 		},
 	})
 	err = st.WithTx(context.Background(), func(tx *sql.Tx) error {
@@ -165,6 +194,8 @@ func chatKindParams(conv int64) map[string]map[string]any {
 		"chat_branch_select": {"message_id": 1},
 		"chat_manage":        {"conversation_id": conv, "op": "pin"},
 		"chat_action_answer": {"action_id": 1, "decision": "reject", "args_sha256": "x"},
+		"chat_entity_search": {"query": "al"},
+		"chat_skills_list":   {},
 	}
 }
 
@@ -200,7 +231,6 @@ func TestChatHandlers_RefuseWhenNotOnRelay(t *testing.T) {
 	for _, tc := range []struct{ reason, msg string }{
 		{wire.ChatOffNotRelay, "Chat works over Relay"},
 		{wire.ChatOffRunnerDown, "Chat can't run on your Mac right now"},
-		{wire.ChatOffDesktopTooOld, "Update Watchtower on your Mac"},
 		{wire.ChatOffPolicy, "Chat is turned off by your organization"},
 	} {
 		c.on, c.reason = false, tc.reason
@@ -222,6 +252,33 @@ func TestChatHandlers_RefuseWhenNotOnRelay(t *testing.T) {
 		r := e.request(kind, nil, params)
 		out := e.h.chatKinds()[kind](context.Background(), r)
 		wantOutcome(t, out, wire.StatusFailed, reasonNotSupported)
+	}
+}
+
+// TestChatTurn_PassesClientKeyAndCompose: the phone's send carries its
+// client_key (the engine answers a repeated key with the first turn) and the
+// composer's skill and mentions, as chat.sock does; a compose the Mac's
+// composer cannot make is refused before the engine.
+func TestChatTurn_PassesClientKeyAndCompose(t *testing.T) {
+	c := newChatEnv(t, false)
+	conv := c.conversation()
+	out := c.run("chat_turn", map[string]any{"conversation_id": conv, "mode": "send", "text": "hi @Alice",
+		"attachment_ids": []int64{}, "client_key": "K-1",
+		"compose": map[string]any{"skill": "weekly-report", "mentions": []any{map[string]any{"kind": "person", "id": "U1", "label": "Alice"}}}})
+	wantOutcome(t, out, wire.StatusApplied, "")
+	if len(c.runner.runs) != 1 || c.runner.keys[0] != "K-1" {
+		t.Fatalf("keys %v", c.runner.keys)
+	}
+	got := c.runner.runs[0].Compose
+	if got == nil || got.Skill != "weekly-report" || len(got.Mentions) != 1 || got.Mentions[0].ID != "U1" {
+		t.Fatalf("compose %+v", got)
+	}
+	wantOutcome(t, c.run("chat_turn", map[string]any{"conversation_id": conv, "mode": "send", "text": "x",
+		"compose": map[string]any{"mentions": []any{map[string]any{"kind": "planet", "id": "x"}}}}), wire.StatusFailed, reasonInvalidParams)
+	wantOutcome(t, c.run("chat_turn", map[string]any{"conversation_id": conv, "mode": "send", "text": "x", "client_key": 7}),
+		wire.StatusFailed, reasonInvalidParams)
+	if len(c.runner.runs) != 1 {
+		t.Fatalf("a refused compose reached the engine: %d runs", len(c.runner.runs))
 	}
 }
 
@@ -344,7 +401,32 @@ func TestChatManage_RenameSetsUserTitle(t *testing.T) {
 	}
 	wantOutcome(t, c.run("chat_manage", map[string]any{"conversation_id": conv, "op": "unpin"}), wire.StatusApplied, "")
 	wantOutcome(t, c.run("chat_manage", map[string]any{"conversation_id": conv, "op": "archive"}), wire.StatusFailed, reasonInvalidParams)
+	// discard (the Mac's untouched landing draft) is chat.sock only: the relay never deletes a chat by it.
+	wantOutcome(t, c.run("chat_manage", map[string]any{"conversation_id": conv, "op": "discard"}), wire.StatusFailed, reasonInvalidParams)
 	wantOutcome(t, c.run("chat_manage", map[string]any{"conversation_id": 9999, "op": "pin"}), wire.StatusFailed, reasonNotFound)
+}
+
+// TestChatManage_UsePreferredAllowed: the relay's chat_manage passes
+// use_preferred to the engine, which clears the sticky reserve; a running
+// turn's busy comes back as conversation_busy, the refusal the phone maps.
+func TestChatManage_UsePreferredAllowed(t *testing.T) {
+	c := newChatEnv(t, false)
+	conv := c.conversation()
+	if _, err := c.db.Exec(`UPDATE chat_conversations SET actual_provider = 'codex', actual_model = 'gpt-x',
+		routing_reason = 'quota_exhausted' WHERE id = ?`, conv); err != nil {
+		t.Fatal(err)
+	}
+	wantOutcome(t, c.run("chat_manage", map[string]any{"conversation_id": conv, "op": "use_preferred"}), wire.StatusApplied, "")
+	if len(c.runner.manages) != 1 || c.runner.manages[0].Op != chatengine.ManageUsePreferred {
+		t.Fatalf("engine got %+v", c.runner.manages)
+	}
+	if got := c.scalar(`SELECT routing_mode || '/' || actual_provider || '/' || routing_reason FROM chat_conversations WHERE id = ?`, conv); got != "preferred_reserve//" {
+		t.Fatalf("row %q", got)
+	}
+	c.runner.manageErr = chatstore.ErrBusy
+	wantOutcome(t, c.run("chat_manage", map[string]any{"conversation_id": conv, "op": "use_preferred"}), wire.StatusFailed, reasonConversationBusy)
+	c.runner.manageErr = nil
+	wantOutcome(t, c.run("chat_manage", map[string]any{"conversation_id": 9999, "op": "use_preferred"}), wire.StatusFailed, reasonNotFound)
 }
 
 func TestChatManage_DeleteRemovesAttachmentFolder(t *testing.T) {
@@ -440,6 +522,26 @@ func TestChatActionAnswer_StaleHashRefused(t *testing.T) {
 	c.h.WaitChat()
 	if got := c.scalar(`SELECT status FROM agent_actions WHERE id = ?`, send); got != "applied" {
 		t.Fatalf("an approved action of no session: %q", got)
+	}
+}
+
+// TestChatActionAnswer_RepeatedApproveAnswersAlreadyApproved: a phone whose
+// relay dropped after its approve went sends it again; the second answer
+// reads "Already approved" and never runs the action twice (#1822 T15).
+func TestChatActionAnswer_RepeatedApproveAnswersAlreadyApproved(t *testing.T) {
+	c := newChatEnv(t, false)
+	id, sum := c.chatAction("claude_ai_connector_call", "pending")
+	answer := map[string]any{"action_id": id, "decision": "approve", "args_sha256": sum}
+	wantOutcome(t, c.run("chat_action_answer", answer), wire.StatusApplied, "")
+	c.h.WaitChat()
+	decidedAt := c.scalar(`SELECT decided_at FROM agent_actions WHERE id = ?`, id)
+	out := c.run("chat_action_answer", answer)
+	wantOutcome(t, out, wire.StatusFailed, reasonNotPending)
+	if out.Message != "Already approved" || out.Result["status"] != "approved" {
+		t.Fatalf("second approve: message %q result %+v", out.Message, out.Result)
+	}
+	if got := c.scalar(`SELECT decided_at FROM agent_actions WHERE id = ?`, id); got != decidedAt {
+		t.Fatalf("decided again: %q then %q", decidedAt, got)
 	}
 }
 
@@ -555,5 +657,56 @@ func TestChatHandlers_DiscussChatIsNotFound(t *testing.T) {
 	}
 	if c.scalar(`SELECT status FROM agent_actions WHERE id = ?`, id) != "pending" {
 		t.Fatal("a Discuss chat's action was decided from the phone")
+	}
+}
+
+// TestChatEntitySearchAction_ResultInEcho: chat_entity_search answers the
+// engine's hits in the applied echo (nothing published for it), at most
+// MaxChatEntityHits; an unknown kind is invalid_params.
+func TestChatEntitySearchAction_ResultInEcho(t *testing.T) {
+	c := newChatEnv(t, false)
+	for i := range 25 {
+		if _, err := c.db.Exec(`INSERT INTO channels (id, name, type, is_archived, is_member) VALUES (?, ?, 'public', 0, 1)`,
+			fmt.Sprintf("C%03d", i), fmt.Sprintf("payments-%02d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out := c.run("chat_entity_search", map[string]any{"query": "pay", "kinds": []string{"channel"}})
+	wantOutcome(t, out, wire.StatusApplied, "")
+	hits, ok := out.Result["hits"].([]chatengine.EntityHit)
+	if !ok || len(hits) != MaxChatEntityHits {
+		t.Fatalf("hits %#v", out.Result["hits"])
+	}
+	if hits[0].Kind != "channel" || hits[0].ID != "C000" || hits[0].Label != "#payments-00" {
+		t.Errorf("first hit %+v", hits[0])
+	}
+	out = c.run("chat_entity_search", map[string]any{"query": "zzz"})
+	wantOutcome(t, out, wire.StatusApplied, "")
+	if hits, ok := out.Result["hits"].([]chatengine.EntityHit); !ok || hits == nil || len(hits) != 0 {
+		t.Errorf("no match: %#v", out.Result["hits"])
+	}
+	wantOutcome(t, c.run("chat_entity_search", map[string]any{"query": "pay", "kinds": []string{"galaxy"}}),
+		wire.StatusFailed, reasonInvalidParams)
+	wantOutcome(t, c.run("chat_entity_search", map[string]any{"query": strings.Repeat("q", MaxChatSearchQuery+1)}),
+		wire.StatusFailed, reasonInvalidParams)
+	if !EchoOnlyKinds["chat_entity_search"] || len(NudgeTable["chat_entity_search"]) != 0 ||
+		slices.Contains(actions.NonIdempotentKinds, "chat_entity_search") {
+		t.Error("chat_entity_search: idempotent and echo-only (no nudge)")
+	}
+}
+
+// TestChatSkillsListAction_ResultInEcho: chat_skills_list answers the
+// workspace's enabled skills in the applied echo.
+func TestChatSkillsListAction_ResultInEcho(t *testing.T) {
+	c := newChatEnv(t, false)
+	out := c.run("chat_skills_list", map[string]any{})
+	wantOutcome(t, out, wire.StatusApplied, "")
+	list, ok := out.Result["skills"].([]chatengine.SkillSummary)
+	if !ok || len(list) != 1 || list[0].Name != "weekly-report" || list[0].Description != "Write the weekly report" {
+		t.Fatalf("skills %#v", out.Result["skills"])
+	}
+	if !EchoOnlyKinds["chat_skills_list"] || len(NudgeTable["chat_skills_list"]) != 0 ||
+		slices.Contains(actions.NonIdempotentKinds, "chat_skills_list") {
+		t.Error("chat_skills_list: idempotent and echo-only (no nudge)")
 	}
 }

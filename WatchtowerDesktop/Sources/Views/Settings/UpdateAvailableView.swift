@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import ChatUI
 
 /// The "update available" window: shown once per version by a background
 /// check (`UpdateService.presentUpdateWindow`), so an app living in the tray

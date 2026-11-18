@@ -127,7 +127,7 @@ final class SlackAuthServiceTests: XCTestCase {
         service.configure(dbPool: pool)
         await service.refreshStatus()
 
-        let succeeded = await service.applyDisconnectResult(exitCode: 1, stderr: "boom")
+        let succeeded = await service.applyDisconnectResult(exitCode: 1, stdout: "", stderr: "boom")
         XCTAssertFalse(succeeded)
         XCTAssertEqual(service.error, "boom")
 
@@ -142,7 +142,7 @@ final class SlackAuthServiceTests: XCTestCase {
         XCTAssertNil(service.disconnectTarget)
         XCTAssertNil(service.error)
 
-        _ = await service.applyDisconnectResult(exitCode: 2, stderr: "")
+        _ = await service.applyDisconnectResult(exitCode: 2, stdout: "", stderr: "")
         XCTAssertEqual(service.error, "Disconnect failed (exit 2)")
         service.clearDisconnectError()
         XCTAssertNil(service.error)
@@ -157,10 +157,30 @@ final class SlackAuthServiceTests: XCTestCase {
         service.configure(dbPool: pool)
         try await pool.write { db in try db.execute(sql: "ALTER TABLE slack_accounts RENAME TO slack_accounts_away") }
 
-        let succeeded = await service.applyDisconnectResult(exitCode: 0, stderr: "")
+        let succeeded = await service.applyDisconnectResult(exitCode: 0, stdout: "", stderr: "")
 
         XCTAssertTrue(succeeded)
         XCTAssertNotNil(service.error, "the post-logout status read failed")
+    }
+
+    /// #1769: a logout whose revoke Slack did not confirm still succeeds;
+    /// the CLI's warning becomes a notice, and the next clean logout clears it.
+    func testUnconfirmedRevokeBecomesANotice() async throws {
+        let pool = try makePool()
+        let service = SlackAuthService()
+        service.configure(dbPool: pool)
+
+        let warned = await service.applyDisconnectResult(
+            exitCode: 0,
+            stdout: SlackRevokeNotice.cliWarning + "\nSlack disconnected: account 1 token removed (synced data kept).",
+            stderr: ""
+        )
+        XCTAssertTrue(warned)
+        XCTAssertEqual(service.revokeNotice, SlackRevokeNotice.cliWarning)
+        XCTAssertNil(service.error, "a notice, not an error")
+
+        _ = await service.applyDisconnectResult(exitCode: 0, stdout: "Slack disconnected.", stderr: "")
+        XCTAssertNil(service.revokeNotice)
     }
 
     func testNotConnectedWithoutADatabase() async {

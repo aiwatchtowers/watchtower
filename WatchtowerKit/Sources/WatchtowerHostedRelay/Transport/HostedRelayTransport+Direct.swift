@@ -18,9 +18,18 @@ extension HostedRelayTransport {
     /// `expected_seq` of the copy it was refused for, so a farewell that lands late never replaces
     /// a relink's record (#261) — that copy's change refuses it (`.refused`). A save cancelled while
     /// the first try ran never tries again. Throws the relay's error; an answer that does not
-    /// account for the record throws `HostedRelayError.undecodable(status: 200)`.
-    public static func saveDirectly(_ record: CloudRecord, client: HostedRelayClient, macDeviceID: String) async throws {
+    /// account for the record throws `HostedRelayError.undecodable(status: 200)`. Internal: the app saves
+    /// through its session (`saveDirectly(_:session:macDeviceID:)`), so a caller cannot skip the socket.
+    static func saveDirectly(_ record: CloudRecord, client: HostedRelayClient, macDeviceID: String) async throws {
         try await saveDirectly(record, client: client, macDeviceID: macDeviceID) {}
+    }
+
+    /// `saveDirectly(_:client:macDeviceID:)` through the device's `session`: over its socket while one
+    /// is live (live link R2), else over HTTPS.
+    public static func saveDirectly(_ record: CloudRecord, session: HostedRelaySession, macDeviceID: String) async throws {
+        try await saveDirectly(
+            record, phone: session.client.deviceID, macDeviceID: macDeviceID, save: { try await session.save($0) }, beforeRetry: {}
+        )
     }
 
     /// `beforeRetry` runs between the refused first try and the retry (tests).
@@ -30,25 +39,40 @@ extension HostedRelayTransport {
         macDeviceID: String,
         beforeRetry: @Sendable () async throws -> Void
     ) async throws {
+        try await saveDirectly(
+            record, phone: client.deviceID, macDeviceID: macDeviceID, save: { try await client.save($0) }, beforeRetry: beforeRetry
+        )
+    }
+
+    /// One farewell, each conditional save through `save` (the client's HTTPS or the session's socket).
+    private static func saveDirectly(
+        _ record: CloudRecord,
+        phone: String,
+        macDeviceID: String,
+        save: (Relay_V1_Save) async throws -> Relay_V1_SaveResult,
+        beforeRetry: @Sendable () async throws -> Void
+    ) async throws {
         guard record.zone == .relay, record.assetFileURL == nil else { throw DirectSaveError.notAMailboxRecord }
         var item = Relay_V1_SaveItem()
-        item.record.zone = HostedRelayZones.mailbox(mac: macDeviceID, phone: client.deviceID)
+        item.record.zone = HostedRelayZones.mailbox(mac: macDeviceID, phone: phone)
         item.record.name = record.recordName
         item.record.envelope = record.payload
         item.record.clientModifiedAtMs = Int64((record.modifiedAt.timeIntervalSince1970 * 1000).rounded())
         item.mustNotExist = true
-        guard let seen = try await saveOne(item, client: client) else { return }
+        guard let seen = try await saveOne(item, save: save) else { return }
         try await beforeRetry()
         try Task.checkCancellation()
         item.expectedSeq = seen
-        guard try await saveOne(item, client: client) == nil else { throw DirectSaveError.refused }
+        guard try await saveOne(item, save: save) == nil else { throw DirectSaveError.refused }
     }
 
     /// One conditional save: nil once saved, else the seq of the copy it was refused for.
-    private static func saveOne(_ item: Relay_V1_SaveItem, client: HostedRelayClient) async throws -> UInt64? {
+    private static func saveOne(
+        _ item: Relay_V1_SaveItem, save send: (Relay_V1_Save) async throws -> Relay_V1_SaveResult
+    ) async throws -> UInt64? {
         var save = Relay_V1_Save()
         save.items = [item]
-        let result = try await client.save(save)
+        let result = try await send(save)
         if result.conflicts.isEmpty, result.saved.map(\.name) == [item.record.name] { return nil }
         if result.saved.isEmpty, result.conflicts.count == 1, let conflict = result.conflicts.first, conflict.index == 0 {
             // A record gone for good (no copy) has nothing to condition on: refused.

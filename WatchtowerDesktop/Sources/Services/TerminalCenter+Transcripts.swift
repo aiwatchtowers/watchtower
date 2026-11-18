@@ -36,3 +36,14 @@ extension TerminalCenter {
         return try agent.transcriptExists(id: id, storedPath: session.transcriptPath, home: home, in: transcriptLookups)
     }
 }
+
+extension TerminalCenter {
+    /// The path with symlinks resolved; a path that does not exist (any
+    /// more) only standardized.
+    static func resolvedPath(_ path: String) -> String {
+        let standard = URL(fileURLWithPath: path).standardizedFileURL.path
+        guard let resolved = realpath(standard, nil) else { return standard }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+}

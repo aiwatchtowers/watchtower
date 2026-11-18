@@ -244,6 +244,31 @@ final class WorkbenchesViewModelDriftFixTests: XCTestCase {
         XCTAssertEqual(processes.count, 2, "Fix starts a new session")
     }
 
+    /// D7: a Fix whose agent waits on the spec review loop is still working
+    /// on the findings, not done.
+    func testAFixInSpecReviewIsStillLive() async throws {
+        let (p, t) = try await setUpBoard()
+        let states = SessionAgentStateCenter(
+            dbPool: pool, terminalCenter: center, interval: .seconds(3600), notifier: RecordingSessionNotifier(),
+            defaults: defaults, notificationCenter: NotificationCenter()
+        )
+        let vm = makeVM(agentStates: states)
+        vm.selectedWorkbenchID = p
+        await vm.fixDrift(projectID: p, findings: [try finding(t[0])])
+        let live = try XCTUnwrap(vm.liveDriftFix(projectID: p))
+        try await setAgentState(live, "waiting")
+        try await pool.write { db in
+            let ask = try TestDatabase.insertOwnerAsk(db, projectID: p, sessionID: live, kind: "review", docPath: "docs/spec.md")
+            try db.execute(sql: """
+                INSERT INTO spec_reviews (ask_id, status, queued_at, loop, round)
+                VALUES (?, 'running', '2026-10-26T10:00:00Z', 'author', 2)
+                """, arguments: [ask])
+        }
+        await states.poll()
+        XCTAssertEqual(states.statuses[live]?.state.kind, .specReview)
+        XCTAssertEqual(vm.liveDriftFix(projectID: p), live, "Spec review is not a done Fix")
+    }
+
     /// The state hook's write, stamped after the run started.
     private func setAgentState(_ id: Int64, _ state: String) async throws {
         try await pool.write { db in

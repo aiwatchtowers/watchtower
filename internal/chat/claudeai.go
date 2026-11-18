@@ -3,6 +3,7 @@ package chat
 import (
 	"strings"
 
+	"watchtower/internal/claude"
 	"watchtower/internal/policy"
 	"watchtower/internal/providers"
 )
@@ -24,16 +25,12 @@ type ClaudeAIMode struct {
 	Sandbox *ChildSandbox
 }
 
-// claudeAIOffMarkers are the child environment variables under which the CLI
-// does not use the owner's claude.ai login, in the order their reason is
-// reported: an API key or token takes precedence over the login, and a
-// third-party provider has neither connectors nor Artifact.
-var claudeAIOffMarkers = []struct{ name, uses string }{
-	{"ANTHROPIC_API_KEY", "an API key"},
-	{"ANTHROPIC_AUTH_TOKEN", "an API key"},
-	{"CLAUDE_CODE_USE_BEDROCK", "Bedrock"},
-	{"CLAUDE_CODE_USE_VERTEX", "Vertex"},
-	{"CLAUDE_CODE_USE_FOUNDRY", "Foundry"},
+// claudeAIOffUses words claude.LoginOverride's kind for the off reason.
+var claudeAIOffUses = map[string]string{
+	"api_key": "an API key",
+	"bedrock": "Bedrock",
+	"vertex":  "Vertex",
+	"foundry": "Foundry",
 }
 
 // claudeAIPolicyOff is the off reason when the organization's policy turns
@@ -60,10 +57,8 @@ func ClaudeAIAvailability(env []string, provider, surface string) (on bool, reas
 	if surface != "main" {
 		return false, "claude.ai tools are available in the main chat only."
 	}
-	for _, m := range claudeAIOffMarkers {
-		if envValue(env, m.name) != "" {
-			return false, "claude.ai tools need a claude.ai login; this chat uses " + m.uses + "."
-		}
+	if kind, ok := claude.LoginOverride(env); ok {
+		return false, "claude.ai tools need a claude.ai login; this chat uses " + claudeAIOffUses[kind] + "."
 	}
 	return true, ""
 }

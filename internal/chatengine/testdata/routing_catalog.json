@@ -1,0 +1,38 @@
+{
+  "providers": [
+    {
+      "id": "claude",
+      "display_name": "Claude",
+      "reserve_peer": "codex",
+      "images": true,
+      "pdfs": true,
+      "read_folder": true,
+      "claude_ai_tools": true
+    },
+    {
+      "id": "codex",
+      "display_name": "Codex",
+      "reserve_peer": "claude",
+      "images": true,
+      "pdfs": false,
+      "read_folder": true,
+      "claude_ai_tools": false
+    }
+  ],
+  "status": {
+    "revision": "0bd3cad3170eb5b1096f353666c178ba07b5d66cdfcec984556a6d9d6447e9a3",
+    "preferred_provider": "claude",
+    "enabled": true,
+    "providers": [
+      {
+        "provider": "claude",
+        "state": "quota_wait",
+        "next_probe_at": "2026-01-02T10:05:00Z"
+      },
+      {
+        "provider": "codex",
+        "state": "available"
+      }
+    ]
+  }
+}

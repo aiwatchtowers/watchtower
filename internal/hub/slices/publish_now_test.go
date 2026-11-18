@@ -28,6 +28,8 @@ func (s *saveTimes) Saved(_, _ string, _, doneAt time.Time) {
 	s.at = append(s.at, doneAt)
 }
 
+func (s *saveTimes) NudgeCycleDone(_, _ string, _, _ time.Time) {}
+
 func (s *saveTimes) times() []time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -40,7 +42,7 @@ func (r *rig) runFakeSaves(sources ...Source) (*runner, *saveTimes) {
 	ft := newFakeTime()
 	saves := &saveTimes{}
 	p := r.publisherWith(Config{Clock: ft.Now, Latency: saves}, sources...)
-	p.mono, p.timer = ft.Now, ft.Timer
+	ft.drive(p)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- p.Run(ctx) }()
@@ -340,5 +342,231 @@ func TestResumeKeepsARetryHold(t *testing.T) {
 	ru.step(29 * time.Second)
 	if n := len(held.readTimes()); n != 3 {
 		t.Fatalf("the held kind read %d times when its hold ran out, want 3", n)
+	}
+}
+
+// kindSaves records the kinds the publisher saved, in order.
+type kindSaves struct {
+	mu    sync.Mutex
+	kinds []Kind
+}
+
+// NudgeCycleDone completes SaveLatency (Task 3); these tests count saves only.
+func (s *kindSaves) NudgeCycleDone(_, _ string, _, _ time.Time) {}
+
+func (s *kindSaves) Saved(_, kind string, _, _ time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.kinds = append(s.kinds, Kind(kind))
+}
+
+// A PublishNow that arrives while a full cycle runs is taken between kinds:
+// the nudged kind is the next one saved, not the last of the cycle.
+func TestPublisher_PublishNowJoinsRunningCycle(t *testing.T) {
+	r := newRig(t, transport.KindRelay)
+	saves := &kindSaves{}
+	var sources []Source
+	srcs := map[Kind]*fakeSource{}
+	for _, k := range AllKinds {
+		s := &fakeSource{kind: k}
+		s.set(item("1", `{"v":1}`))
+		srcs[k] = s
+		sources = append(sources, s)
+	}
+	p := r.publisherWith(Config{Latency: saves}, sources...)
+	order := p.sourceKinds()
+	if len(order) < 34 {
+		t.Fatalf("%d kinds with a source, want the full set", len(order))
+	}
+	late := order[len(order)-1]
+	// The hook runs while the cycle is on its first kinds; saved counts the
+	// kinds finished by then (the one being read is the next to finish).
+	saved := -1
+	srcs[order[1]].during = func() {
+		saves.mu.Lock()
+		saved = len(saves.kinds)
+		saves.mu.Unlock()
+		p.PublishNow(late)
+	}
+	if _, err := p.Cycle(context.Background(), nil); err != nil {
+		t.Fatalf("Cycle: %v", err)
+	}
+	got := saves.kinds
+	at := slices.Index(got, late)
+	if saved < 0 || at < 0 || at > saved+1 {
+		t.Fatalf("saved order %v (nudged after %d saves), want %s as the next kind", got, saved, late)
+	}
+	if n := slices.Index(got[at+1:], late); n >= 0 {
+		t.Fatalf("%s saved twice in one cycle: %v", late, got)
+	}
+	if p.DirtyForTest(late) {
+		t.Fatalf("%s still waits for a publish after the cycle took it", late)
+	}
+}
+
+// midCycleRig is a publisher over a source for every kind; hook runs inside
+// the read of the kind at index at of the publish order.
+func midCycleRig(t *testing.T, at int, hook func(p *Publisher, order []Kind)) (*rig, *Publisher, []Kind, *kindSaves) {
+	t.Helper()
+	r := newRig(t, transport.KindRelay)
+	saves := &kindSaves{}
+	var sources []Source
+	srcs := map[Kind]*fakeSource{}
+	for _, k := range AllKinds {
+		s := &fakeSource{kind: k}
+		s.set(item("1", `{"v":1}`))
+		srcs[k] = s
+		sources = append(sources, s)
+	}
+	p := r.publisherWith(Config{Latency: saves}, sources...)
+	order := p.sourceKinds()
+	srcs[order[at]].during = func() { hook(p, order) }
+	return r, p, order, saves
+}
+
+func (s *kindSaves) has(k Kind) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Contains(s.kinds, k)
+}
+
+// A kind Run still holds (a retry or spacing that has not run out) is not
+// taken mid-cycle: it waits for its time, dirty.
+func TestPublisher_PublishNowHeldKindNotTakenMidCycle(t *testing.T) {
+	_, p, order, saves := midCycleRig(t, 1, func(p *Publisher, order []Kind) { p.PublishNow(order[5]) })
+	late := order[5]
+	p.setHolds(map[Kind]time.Time{late: time.Now().Add(time.Hour)})
+	if _, err := p.Cycle(context.Background(), order[:3]); err != nil {
+		t.Fatalf("Cycle: %v", err)
+	}
+	if saves.has(late) || !p.DirtyForTest(late) {
+		t.Fatalf("held %s: saved %v, dirty %v; want not saved and still dirty", late, saves.has(late), p.DirtyForTest(late))
+	}
+}
+
+// A kind already tried this cycle is not tried again by a nudge: it stays
+// dirty for Run.
+func TestPublisher_PublishNowKindAlreadyTriedLeftForRun(t *testing.T) {
+	_, p, _, saves := midCycleRig(t, slices.Index(publishOrder, "target"), func(p *Publisher, _ []Kind) { p.PublishNow("owner_ask") })
+	if _, err := p.Cycle(context.Background(), []Kind{"owner_ask", "target", "track"}); err != nil {
+		t.Fatalf("Cycle: %v", err)
+	}
+	n := 0
+	for _, k := range saves.kinds {
+		if k == "owner_ask" {
+			n++
+		}
+	}
+	if n != 1 || !p.DirtyForTest("owner_ask") {
+		t.Fatalf("owner_ask saved %d times, dirty %v; want once and still dirty", n, p.DirtyForTest("owner_ask"))
+	}
+}
+
+// With no phone linked a cycle may take only the unlinked kinds mid-cycle.
+func TestJoinableHonoursTheLinkState(t *testing.T) {
+	if joinable(false, "target") || !joinable(false, KindDeviceGrant) || !joinable(true, "target") {
+		t.Fatal("joinable: want only the unlinked kinds without a phone, any kind with one")
+	}
+}
+
+// runFakeKinds is runFake with the saved kinds recorded in order.
+func (r *rig) runFakeKinds(sources ...Source) (*runner, *kindSaves) {
+	r.t.Helper()
+	ft := newFakeTime()
+	saves := &kindSaves{}
+	p := r.publisherWith(Config{Clock: ft.Now, Latency: saves}, sources...)
+	p.mono, p.timer = ft.Now, ft.Timer
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- p.Run(ctx) }()
+	r.t.Cleanup(func() {
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			r.t.Errorf("Run = %v", err)
+		}
+	})
+	ru := &runner{t: r.t, ft: ft, p: p}
+	ru.settle(0)
+	return ru, saves
+}
+
+func (s *kindSaves) list() []Kind {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.kinds)
+}
+
+// A kind whose hold runs out while a cycle runs and that is nudged then
+// joins that cycle ahead of the kinds still waiting in it, and is settled
+// like the rest (a later failure backs off from the first step).
+func TestPublisher_JoinedKindSettledLikeTheRest(t *testing.T) {
+	r := newRig(t, transport.KindRelay)
+	a := &fakeSource{kind: "owner_ask"}
+	x := &fakeSource{kind: "target"}
+	y := &fakeSource{kind: "track"}
+	x.set(item("1", `{"v":1}`))
+	ru, saves := r.runFakeKinds(a, x, y)
+	ru.step(RelaySpacing)
+	x.set(item("1", `{"v":9}`))
+	r.tr.FailNext("save", transport.ErrUnavailable)
+	ru.publishNow("target") // x's save fails: held for RetryFirst, backoff set
+	a.set(item("1", `{"v":1}`))
+	y.set(item("1", `{"v":1}`))
+	fired := false
+	a.during = func() {
+		if fired {
+			return
+		}
+		fired = true
+		ru.ft.advance(RetryFirst) // x's hold runs out while the cycle runs
+		ru.p.PublishNow("target")
+	}
+	n := ru.ft.armedCount()
+	ru.p.PublishNow("owner_ask", "track")
+	ru.settle(n)
+	got := saves.list()
+	if len(got) < 3 || !slices.Equal(got[len(got)-3:], []Kind{"owner_ask", "target", "track"}) {
+		t.Fatalf("saved %v, want target joined between owner_ask and track", got)
+	}
+	ru.step(RelaySpacing)
+	ru.step(RelaySpacing)
+	ru.step(RelaySpacing)
+	x.set(item("1", `{"v":2}`))
+	r.tr.FailNext("save", transport.ErrUnavailable)
+	ru.publishNow("target")
+	failed := len(x.readTimes())
+	ru.step(RetryFirst)
+	if n := len(x.readTimes()); n != failed+1 {
+		t.Fatalf("x read %d times after the retry wait, want %d: it kept the stale doubled backoff", n, failed+1)
+	}
+}
+
+// A joined kind that the spacing defers keeps a hold and is published when
+// the spacing ends, not at the next full diff.
+func TestPublisher_JoinedKindDeferredBySpacingKeepsItsHold(t *testing.T) {
+	r := newRig(t, transport.KindRelay)
+	a := &fakeSource{kind: "owner_ask"}
+	x := &fakeSource{kind: "target"}
+	x.set(item("1", `{"v":1}`))
+	y := &fakeSource{kind: "track"}
+	ru, saves := r.runFakeKinds(a, x, y) // x saved at start: its spacing runs
+	a.set(item("1", `{"v":1}`))
+	y.set(item("1", `{"v":1}`))
+	fired := false
+	a.during = func() {
+		if fired {
+			return
+		}
+		fired = true
+		x.set(item("1", `{"v":2}`))
+		ru.p.PublishNow("target")
+	}
+	n := ru.ft.armedCount()
+	ru.p.PublishNow("owner_ask", "track") // track follows owner_ask: x joins before it
+	ru.settle(n)
+	before := len(saves.list())
+	ru.step(RelaySpacing)
+	if got := saves.list(); len(got) != before+1 || got[len(got)-1] != "target" {
+		t.Fatalf("saved %v after the spacing, want target published then", got)
 	}
 }

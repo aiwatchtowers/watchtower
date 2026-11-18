@@ -97,6 +97,24 @@ func (db *DB) SearchUsersByName(query string, limit int) ([]User, error) {
 	return scanUsers(rows)
 }
 
+// FindUsersByExactName returns non-bot, non-deleted users whose name,
+// display name or real name equals query, ignoring ASCII case — the exact
+// matches SearchUsersByName's capped substring list can leave out.
+func (db *DB) FindUsersByExactName(query string, limit int) ([]User, error) {
+	rows, err := db.Query(`
+		SELECT id, name, display_name, real_name, email, is_bot, is_deleted, is_stub, profile_json, updated_at
+		FROM users
+		WHERE is_bot = 0 AND is_deleted = 0 AND ? != ''
+		  AND (name = ? COLLATE NOCASE OR display_name = ? COLLATE NOCASE OR real_name = ? COLLATE NOCASE)
+		ORDER BY name LIMIT ?`, query, query, query, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("finding users by name: %w", err)
+	}
+	defer rows.Close()
+
+	return scanUsers(rows)
+}
+
 // GetUserByID returns a user by their Slack ID.
 func (db *DB) GetUserByID(id string) (*User, error) {
 	row := db.QueryRow(`

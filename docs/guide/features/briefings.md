@@ -21,10 +21,10 @@ The very first briefing on a new install skips the hour and comes in the first c
 
 A briefing has up to five sections, plus today's calendar:
 
-- **Needs you**: unanswered mentions, DMs and mail to you, updated tracks, overdue or blocked targets, new red flags. Workbench activity (a blocked target, open asks, unread agent comments on targets still open) can appear here, labelled *Workbench*.
+- **Needs you**: unanswered mentions, DMs and mail to you, updated tracks, overdue or blocked targets. Workbench activity (a blocked target, open asks, unread agent comments on targets still open) can appear here, labelled *Workbench*.
 - **Your day**: your targets and tracks for today.
 - **What happened**: notable events from recent channel digests. Notes your automations left for the briefing are folded in here, labelled with a gear and the automation's name.
-- **Team pulse**: people signals such as activity spikes or drops and new red flags.
+- **Team pulse**: work signals from people cards, such as highlights and disagreements about the work. It never judges a person.
 - **Coaching**: communication and process tips.
 
 Your Jira and Linear issues feed these sections when that tracker is switched on: issues assigned to you, open issues you reported, blocked, stale (in progress for more than 7 days) and overdue ones, and sprint or cycle progress. The **Jira Features** switches decide which of these the briefing reads, for both trackers.

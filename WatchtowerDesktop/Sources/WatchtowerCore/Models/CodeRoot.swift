@@ -45,9 +45,8 @@ package struct CodeRoot: Hashable, Sendable {
         return ".wt." + digest.prefix(8).map { String(format: "%02x", $0) }.joined()
     }
 
-    /// The worktree's folder name, as the FILES header and the
-    /// removed-worktree banner show it. For the main root it is the
-    /// workbench folder's name, which neither shows.
+    /// The root's folder name: the worktree's in the FILES header and the
+    /// removed-worktree banner, either root's on the FILES tree's root row.
     package var worktreeFolderName: String {
         folder.lastPathComponent
     }

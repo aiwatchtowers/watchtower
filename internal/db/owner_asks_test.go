@@ -2,6 +2,10 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -580,4 +584,87 @@ func TestInsertOwnerAsk_StoresAutomationRunID(t *testing.T) {
 	got, err = d.GetOwnerAsk(pid, id)
 	require.NoError(t, err)
 	assert.False(t, got.AutomationRunID.Valid)
+}
+
+// TestAskInSpecLoopSQLFixture pins the hidden-ask predicate; the Desktop's
+// OwnerAskQueries.notInSpecLoop reads the same fixture.
+func TestAskInSpecLoopSQLFixture(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "spec_loop_asks.json"))
+	require.NoError(t, err)
+	var f struct {
+		Asks []struct {
+			ID   int64   `json:"id"`
+			Loop *string `json:"loop"`
+		} `json:"asks"`
+		Visible []int64 `json:"visible"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &f))
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	for _, a := range f.Asks {
+		_, err := d.Exec(`INSERT INTO owner_asks (id, project_id, kind, title, payload) VALUES (?, ?, 'question', 'q', '{}')`, a.ID, pid)
+		require.NoError(t, err)
+		if a.Loop != nil {
+			_, err := d.Exec(`INSERT INTO spec_reviews (ask_id, status, queued_at, loop) VALUES (?, 'running', '2026-10-01T00:00:00Z', ?)`, a.ID, *a.Loop)
+			require.NoError(t, err)
+		}
+	}
+	rows, err := d.Query(`SELECT id FROM owner_asks a WHERE NOT ` + AskInSpecLoopSQL("a") + ` ORDER BY id`)
+	require.NoError(t, err)
+	defer rows.Close()
+	var got []int64
+	for rows.Next() {
+		var id int64
+		require.NoError(t, rows.Scan(&id))
+		got = append(got, id)
+	}
+	require.NoError(t, rows.Err())
+	assert.Equal(t, f.Visible, got)
+
+	listed, err := d.ListOwnerAsks(pid, OwnerAskFilter{ExcludeSpecLoop: true})
+	require.NoError(t, err)
+	var ids []int64
+	for _, a := range listed {
+		ids = append(ids, a.ID)
+	}
+	assert.ElementsMatch(t, f.Visible, ids)
+}
+
+// TestSpecLoopRoundSQL pins the loop round's edges (#1945); the Desktop's
+// TerminalSessionQueriesTests.testSpecLoopRoundEdges plants the same rows.
+func TestSpecLoopRoundSQL(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	for s := int64(1); s <= 4; s++ {
+		_, err := d.Exec(`INSERT INTO terminal_sessions (id, project_id, kind, title, folder_path, claude_session_id)
+			VALUES (?, ?, 'claude', 't', '/tmp/acme', ?)`, s, pid, "sid-"+strconv.FormatInt(s, 10))
+		require.NoError(t, err)
+	}
+	ask := func(session int64, status, loop string, round int) {
+		t.Helper()
+		answer := ""
+		if status == "answered" {
+			answer = `{"verdict":"approve"}`
+		}
+		res, err := d.Exec(`INSERT INTO owner_asks (project_id, session_id, kind, title, payload, doc_path, status, answer)
+			VALUES (?, ?, 'review', 'Spec', '{}', 'docs/spec.md', ?, ?)`, pid, session, status, answer)
+		require.NoError(t, err)
+		id, err := res.LastInsertId()
+		require.NoError(t, err)
+		_, err = d.Exec(`INSERT INTO spec_reviews (ask_id, status, queued_at, loop, round)
+			VALUES (?, 'running', '2026-10-01T00:00:00Z', ?, ?)`, id, loop, round)
+		require.NoError(t, err)
+	}
+	// 1: no rows. 2: closed asks still in the author loop. 3: an open ask
+	// the loop handed to the owner. 4: two open loop asks.
+	ask(2, "answered", "author", 5)
+	ask(2, "withdrawn", "author", 6)
+	ask(3, "open", "owner", 4)
+	ask(4, "open", "author", 1)
+	ask(4, "open", "author", 3)
+	for session, want := range map[int64]int{1: 0, 2: 0, 3: 0, 4: 3} {
+		var got int
+		require.NoError(t, d.QueryRow(`SELECT `+SpecLoopRoundSQL("t.id")+` FROM terminal_sessions t WHERE t.id = ?`, session).Scan(&got))
+		assert.Equal(t, want, got, "session %d", session)
+	}
 }

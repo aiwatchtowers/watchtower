@@ -19,10 +19,12 @@ import (
 	"time"
 
 	"watchtower/docs/guide"
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/alerts"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/link"
+	"watchtower/internal/hub/logreason"
 	"watchtower/internal/hub/measure"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/slices"
@@ -96,19 +98,22 @@ type zoneWatcher interface {
 // keyring, the transport, the link center, the processor and the publisher,
 // one worker goroutine and the publisher's.
 type hubRuntime struct {
-	stuck   stuckRotationNote // the daily stuck-rotation log line
-	sup     *supervisor
-	st      *state.Store
-	lat     *measure.Recorder // the content-free latency samples (RC §10)
-	mode    string
-	name    string
-	id      identity.Identity
-	kr      *identity.Keyring
-	tr      transport.Transport
-	relayID string
-	data    string
-	center  *link.Center
-	proc    *actions.Processor // nil on a desktop host: the switcher's (processor)
+	stuck stuckRotationNote // the daily stuck-rotation log line
+	// readersFailLog keeps a readers sync that fails on every link upkeep
+	// to one line per logreason.RepeatEvery and reason (#1873).
+	readersFailLog *logreason.Limiter
+	sup            *supervisor
+	st             *state.Store
+	lat            *measure.Recorder // the content-free latency samples (RC §10)
+	mode           string
+	name           string
+	id             identity.Identity
+	kr             *identity.Keyring
+	tr             transport.Transport
+	relayID        string
+	data           string
+	center         *link.Center
+	proc           *actions.Processor // nil on a desktop host: the switcher's (processor)
 	// A desktop host's two transports (phase 3 Task 21): rel the hosted
 	// relay (nil without a relay origin), ck the CloudKit bridge client, sw
 	// the switch between them, whose Front() is tr; bridge supervises the
@@ -157,8 +162,10 @@ type hubRuntime struct {
 	// refused zones at once instead of at their backoff (#1761). Set from
 	// any goroutine, taken by the worker.
 	zonesDue atomic.Bool
-	// lastPass is when the last mailbox pass started (worker only): the
-	// CloudKit cadence counts from it (cloudkit_runtime.go).
+	// lastPass is when the last mailbox pass started (laneMu: the event lane
+	// runs passes too): the CloudKit cadence counts from it
+	// (cloudkit_runtime.go).
+	laneMu   sync.Mutex
 	lastPass time.Time
 
 	passKick, linkKick, houseKick chan struct{}
@@ -271,7 +278,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	h := &hubRuntime{
 		sup: s, st: st, mode: mode, name: name, id: id, watched: map[string]bool{}, subRetry: map[string]*subRetry{},
 		passKick: make(chan struct{}, 1), linkKick: make(chan struct{}, 1), houseKick: make(chan struct{}, 1),
-		soonKick: make(chan struct{}, 1),
+		soonKick: make(chan struct{}, 1), readersFailLog: logreason.NewLimiter(logreason.RepeatEvery, time.Now),
 	}
 	ok := false
 	defer func() {
@@ -541,12 +548,19 @@ func (h *hubRuntime) heartbeat(st *state.Store, name string) slices.HeartbeatFac
 			}
 			return h.pub.LastPublishAt()
 		},
+		StuckSince: func() (time.Time, bool) {
+			if h.pub == nil {
+				return time.Time{}, false
+			}
+			return h.pub.StuckSince()
+		},
 		LastRelayAt: func() (time.Time, bool) {
 			h.mu.Lock()
 			defer h.mu.Unlock()
 			return h.lastRelay, !h.lastRelay.IsZero()
 		},
-		Chat: h.chatAvailable,
+		Chat:         h.chatAvailable,
+		BackgroundAI: func() string { return backgroundAIValue(aiconsent.Current()) },
 		Recordings: func() bool {
 			on, _, err := st.Recordings()
 			if err != nil {
@@ -565,6 +579,20 @@ func (h *hubRuntime) heartbeat(st *state.Store, name string) slices.HeartbeatFac
 		f.Accounts = slices.DBAccounts(h.sup.o.DB.DB)
 	}
 	return f
+}
+
+// backgroundAIValue is the heartbeat's background_ai for a consent state:
+// allowed; paused by the organization; otherwise paused (the owner's answer
+// or none yet).
+func backgroundAIValue(s aiconsent.State) string {
+	switch {
+	case s.Allowed():
+		return wire.BackgroundAIAllowed
+	case s.Reason == aiconsent.ReasonOrganization:
+		return wire.BackgroundAIOrganization
+	default:
+		return wire.BackgroundAIPaused
+	}
 }
 
 // publishSoon marks kinds dirty on the publisher (none before it is built).
@@ -718,11 +746,19 @@ func (h *hubRuntime) setUnreachable(v bool) {
 	}
 }
 
-// work is the hub's one worker: transport events, mailbox passes, link
-// upkeep and housekeeping, one at a time.
+// work is the hub's worker: the transport events the event lane hands it,
+// mailbox passes, link upkeep and housekeeping, one at a time. A mailbox
+// event does not wait for them: the event lane (eventLane) reads it — but
+// for the daily Processor.Hygiene, which holds every pass while it sweeps
+// CloudKit's RelayZone (v1 limit).
 func (h *hubRuntime) work(ctx context.Context) {
 	h.cloudKitStart(ctx)
-	evA, evB := h.events()
+	events := make(chan transport.Event, laneHandOff)
+	h.wg.Add(1)
+	go func() {
+		defer h.wg.Done()
+		h.eventLane(ctx, events)
+	}()
 	passC, stopPasses := h.sup.o.passTicker(h.passTickEvery())
 	defer stopPasses()
 	links := time.NewTicker(h.sup.o.linkEvery)
@@ -735,9 +771,7 @@ func (h *hubRuntime) work(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case ev := <-evA:
-			h.onEvent(ctx, ev)
-		case ev := <-evB:
+		case ev := <-events:
 			h.onEvent(ctx, ev)
 		case <-h.passKick:
 			h.pass(ctx)
@@ -762,7 +796,81 @@ func (h *hubRuntime) work(ctx context.Context) {
 	}
 }
 
-// onEvent handles one transport event.
+// laneHandOff is how many events the event lane can hand work() before it
+// waits for it. Only events that ask work() for something go there (errors,
+// controls, resyncs, pairing, the CloudKit bridge's): the hub's own data-zone
+// write echoes, one per slice save, stay on the lane.
+const laneHandOff = 64
+
+// eventLane reads the transports' events (live link R4): a phone's mailbox
+// write is read and applied here at once — the processor holds only that
+// mailbox's lock and its apply — not behind work()'s backstop pass, link
+// upkeep or housekeeping (Hygiene aside, see work); a plain zone write
+// elsewhere only says the transport is reachable; every other event goes to
+// work() in order. A mailbox write may so overtake an earlier event handed
+// to work(): the pass reads the current links, so a pairing or control it
+// passes changes nothing it decides.
+func (h *hubRuntime) eventLane(ctx context.Context, work chan<- transport.Event) {
+	evA, evB := h.events()
+	for {
+		var ev transport.Event
+		select {
+		case <-ctx.Done():
+			return
+		case ev = <-evA:
+		case ev = <-evB:
+		}
+		h.noteReach(ev)
+		if h.laneEvent(ev) {
+			if h.isMailbox(ev.Zone) {
+				h.onMailboxEvent(ctx, ev)
+			} // else a plain zone write: noteReach was all there is to it
+			continue
+		}
+		select {
+		case work <- ev:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// noteReach follows what ev says of the transport's reach, in the order the
+// events arrive (the lane's), never in the order the lane and work() get to
+// them: an error not tied to a zone makes it unreachable, a zone write or
+// CloudKit's PullNow reachable again.
+func (h *hubRuntime) noteReach(ev transport.Event) {
+	switch {
+	case ev.Err != nil && ev.Zone == "":
+		h.setUnreachable(true)
+	case ev.Err == nil && ev.Control == nil && (ev.Zone != "" || ev.PullNow):
+		h.setUnreachable(false)
+	}
+}
+
+// laneEvent: ev is a zone's write and nothing else (no error, control,
+// resync or CloudKit bridge event) outside the pair zones, which the event
+// lane handles.
+func (h *hubRuntime) laneEvent(ev transport.Event) bool {
+	return ev.Err == nil && ev.Control == nil && !ev.Resync && !ev.PullNow && !ev.AccountChanged &&
+		!ev.ZonesRecreated && ev.Zone != "" && !strings.HasPrefix(ev.Zone, transport.PairZone(""))
+}
+
+// onMailboxEvent is the pass a mailbox zone's event asks for.
+func (h *hubRuntime) onMailboxEvent(ctx context.Context, ev transport.Event) {
+	if h.passEvent(ctx, ev) {
+		return // only the hub's own writes: no phone wrote, nothing to poll
+	}
+	h.touch()
+	if h.sw != nil {
+		// The other transport's mailbox may have news too (a switch back,
+		// an epoch_ack): its poll runs now.
+		h.sw.Kick()
+	}
+}
+
+// onEvent handles one transport event the event lane handed over (its
+// reach already noted there, noteReach).
 func (h *hubRuntime) onEvent(ctx context.Context, ev transport.Event) {
 	if h.cloudKitEvent(ctx, ev) {
 		return
@@ -781,11 +889,9 @@ func (h *hubRuntime) onEvent(ctx context.Context, ev transport.Event) {
 		h.kick(h.linkKick)
 	case ev.Err != nil:
 		log.Printf("hub: transport event: %s", errClass(ev.Err))
-		h.setUnreachable(true)
 	case ev.Control != nil:
 		h.onControl(ctx, *ev.Control)
 	case ev.Zone != "":
-		h.setUnreachable(false)
 		if ev.Resync {
 			// A reconnect: what the phones wait for goes out again, and
 			// the account state the relay re-read may have new readers.
@@ -796,15 +902,7 @@ func (h *hubRuntime) onEvent(ctx context.Context, ev transport.Event) {
 		case strings.HasPrefix(ev.Zone, transport.PairZone("")):
 			h.pairing(ctx, strings.TrimPrefix(ev.Zone, transport.PairZone("")))
 		case h.isMailbox(ev.Zone):
-			if h.passEvent(ctx, ev) {
-				break // only the hub's own writes: no phone wrote, nothing to poll
-			}
-			h.touch()
-			if h.sw != nil {
-				// The other transport's mailbox may have news too (a
-				// switch back, an epoch_ack): its poll runs now.
-				h.sw.Kick()
-			}
+			h.onMailboxEvent(ctx, ev) // a resync's
 		}
 	}
 }
@@ -851,7 +949,7 @@ func (h *hubRuntime) pairing(ctx context.Context, slot string) {
 
 // pass is one processor pass, run again at once while it left records.
 func (h *hubRuntime) pass(ctx context.Context) {
-	h.runPass(ctx, nil)
+	h.runPass(ctx, nil, true)
 }
 
 // passEvent is the pass a mailbox event asks for: on the hosted relay only
@@ -860,13 +958,20 @@ func (h *hubRuntime) pass(ctx context.Context) {
 // still comes. own reports an event that stood only for the hub's own
 // writes (actions.PassReport.OwnEcho): nothing was read.
 func (h *hubRuntime) passEvent(ctx context.Context, ev transport.Event) (own bool) {
-	return h.runPass(ctx, &ev)
+	return h.runPass(ctx, &ev, false)
 }
 
 // runPass runs a mailbox pass (PassEvent for ev when set), again while the
-// batch limit left records, up to 10 times, then once more on a kick.
-func (h *hubRuntime) runPass(ctx context.Context, ev *transport.Event) (ownEcho bool) {
-	if h.ckAccountUnread() {
+// batch limit left records, up to 10 times, then once more on a kick. An
+// event pass the processor narrows to its mailbox goes on with that mailbox
+// only (the same event again reads on from the stored token) and kicks the
+// worker's pass for the others: the event lane never reads every mailbox.
+// The
+// CloudKit account read and share sweep run with work()'s passes only
+// (worker): link.Center.SweepShares acts on its due marks outside its lock,
+// so two at once could both close the link or sweep.
+func (h *hubRuntime) runPass(ctx context.Context, ev *transport.Event, worker bool) (ownEcho bool) {
+	if worker && h.ckAccountUnread() {
 		h.refreshCloudKitAccount(ctx) // the bridge may have come up since start
 	}
 	if h.isHeld() || h.iCloudPaused() {
@@ -876,16 +981,27 @@ func (h *hubRuntime) runPass(ctx context.Context, ev *transport.Event) (ownEcho 
 		h.sup.o.onPass()
 	}
 	if ev == nil || !h.processor().ReadsEvents() {
+		h.laneMu.Lock()
 		h.lastPass = h.sup.o.Clock()
+		h.laneMu.Unlock()
 	}
-	defer h.sweepShares(ctx)
+	if worker {
+		defer h.sweepShares(ctx)
+	}
+	narrow := ev != nil && h.processor().ReadsEvents()
 	for range 10 {
 		pctx, cancel := context.WithTimeout(ctx, opTimeout)
 		var rep actions.PassReport
 		var err error
 		if ev != nil {
 			rep, err = h.processor().PassEvent(pctx, *ev)
-			ev = nil // what the batch limit left: a full pass
+			if !narrow {
+				ev = nil // what the batch limit left: a full pass
+			} else {
+				// A repeat past the batch limit is the same event: its event_read
+				// sample was taken on the first pass (a zero ArrivedAt records none).
+				ev.ArrivedAt = time.Time{}
+			}
 		} else {
 			rep, err = h.processor().Pass(pctx)
 		}
@@ -906,6 +1022,10 @@ func (h *hubRuntime) runPass(ctx context.Context, ev *transport.Event) (ownEcho 
 		h.mu.Unlock()
 		if rep.Remaining == 0 {
 			return false
+		}
+		if narrow {
+			// The other mailboxes and queues are the worker's.
+			h.kick(h.passKick)
 		}
 	}
 	h.kick(h.passKick)
@@ -979,7 +1099,7 @@ func (h *hubRuntime) syncReaders(ctx context.Context, rt transport.Transport, vo
 		}
 		if err := h.center.SyncReaders(ctx, set); err != nil {
 			h.noteNotVouched(err)
-			log.Printf("hub: readers not synced (%s)", errClass(err))
+			h.readersFailLog.Printf("hub: readers not synced (%s)", logreason.With(errClass(err), err))
 			return
 		}
 		// A phone that became a reader (or stopped being one) gets its
@@ -1109,8 +1229,11 @@ func zoneKind(zone, data string) string {
 // named its relay id has its mailbox refused until the relay puts the hub
 // in its slot, often within the same second, and its transport_switch must
 // not wait linkEvery (#1761). A refusal after that still backs off, from
-// the doubled wait, so admissions never make it spin. A subscription that
-// takes means the relay is reachable.
+// the doubled wait, so admissions never make it spin. A subscription the
+// relay confirmed means it is reachable; one the transport only queued for
+// its next connect (transport.ErrWatchQueued, disconnected) counts as
+// watched but says nothing of reach, so it never clears an outage the event
+// lane noted.
 func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
 	if _, ok := h.relayT().(relayAdmission); ok {
 		v := h.relayVouched()
@@ -1137,7 +1260,9 @@ func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
 		if r != nil && now.Before(r.next) {
 			continue
 		}
-		if err := zw.WatchZone(ctx, z); err != nil {
+		err := zw.WatchZone(ctx, z)
+		queued := errors.Is(err, transport.ErrWatchQueued)
+		if err != nil && !queued {
 			if r == nil {
 				r = &subRetry{}
 				h.subRetry[z] = r
@@ -1148,14 +1273,16 @@ func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
 			r.next = now.Add(min(wait, maxSubBackoff))
 			continue
 		}
-		if r != nil && h.paying != nil {
+		if r != nil && h.paying != nil && !queued {
 			// The relay takes a zone it refused: a phone holds the hub in
 			// a slot now, and may pay.
 			h.paying.Recheck()
 		}
 		delete(h.subRetry, z)
 		h.watched[z] = true
-		h.setUnreachable(false)
+		if !queued {
+			h.setUnreachable(false)
+		}
 	}
 }
 

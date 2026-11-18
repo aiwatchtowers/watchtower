@@ -1,6 +1,7 @@
 import SwiftUI
 import WatchtowerCore
 @testable import WatchtowerDesktop
+import WatchtowerTestSupport
 
 /// Settings → Mobile over `watchtower hub …` and its pairing sheet (go hub
 /// plan 3 Task 23, mockups `docs/design/mockups/go-hub/index.html` §1–§13),

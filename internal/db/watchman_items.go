@@ -197,12 +197,14 @@ func (db *DB) QueueWatchmanWaitPoint(it WatchmanItem) (id int64, inserted bool, 
 		return 0, false, err
 	}
 	if it.RefKind == "ask" {
-		var automation bool
-		if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM terminal_sessions WHERE id = ? AND automation_run_id IS NOT NULL)
-			OR EXISTS (SELECT 1 FROM owner_asks WHERE id = ? AND automation_run_id IS NOT NULL)`, it.SessionID, it.RefID).Scan(&automation); err != nil {
+		// Only an owner's live session: none an automation started, none
+		// being deleted (NotDeletingSQL), and no ask an automation filed.
+		var ownerAsk bool
+		if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM terminal_sessions WHERE id = ? AND automation_run_id IS NULL AND `+NotDeletingSQL+`)
+			AND NOT EXISTS (SELECT 1 FROM owner_asks WHERE id = ? AND automation_run_id IS NOT NULL)`, it.SessionID, it.RefID).Scan(&ownerAsk); err != nil {
 			return 0, false, fmt.Errorf("reading ask %d's automation: %w", it.RefID, err)
 		}
-		if automation {
+		if !ownerAsk {
 			return 0, false, nil
 		}
 	}
@@ -250,7 +252,7 @@ func (db *DB) PromoteWatchmanHandover(it WatchmanItem) (promoted, inserted bool,
 			SELECT ?, ?, ?, 'handover', 'ask', ?, ?, ?
 			WHERE NOT EXISTS (SELECT 1 FROM watchman_items WHERE ref_kind = 'ask' AND ref_id = ?)
 			  AND EXISTS (SELECT 1 FROM owner_asks WHERE id = ? AND status = 'open' AND automation_run_id IS NULL)
-			  AND NOT EXISTS (SELECT 1 FROM terminal_sessions WHERE id = ? AND automation_run_id IS NOT NULL)
+			  AND EXISTS (SELECT 1 FROM terminal_sessions WHERE id = ? AND automation_run_id IS NULL AND `+NotDeletingSQL+`)
 			ON CONFLICT(ref_kind, ref_id, kind) DO NOTHING`,
 			it.WorkbenchID, wmNullID(it.SessionID), wmNullID(it.TargetID), it.RefID, string(q), wmTime(time.Now()),
 			it.RefID, it.RefID, it.SessionID)
@@ -355,7 +357,7 @@ func (db *DB) ScanWatchmanWaitPoints(now time.Time, question func(string) string
 func (db *DB) watchmanMissedWaitPoints(session int64) ([]WatchmanItem, error) {
 	rows, err := db.Query(`SELECT 'ask', a.id, a.project_id, COALESCE(a.target_id, 0), a.kind, a.title, a.summary
 		FROM owner_asks a JOIN terminal_sessions s ON s.id = a.session_id
-		WHERE a.session_id = ? AND a.status = 'open' AND a.automation_run_id IS NULL AND s.automation_run_id IS NULL
+		WHERE a.session_id = ? AND a.status = 'open' AND a.automation_run_id IS NULL AND s.automation_run_id IS NULL AND s.`+NotDeletingSQL+`
 		  AND NOT EXISTS (SELECT 1 FROM watchman_items w WHERE w.ref_kind = 'ask' AND w.ref_id = a.id)
 		UNION ALL
 		SELECT 'permission', r.id, r.workbench_id, 0, '', r.tool_name, r.summary

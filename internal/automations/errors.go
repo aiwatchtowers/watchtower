@@ -27,7 +27,13 @@ const (
 // Error whose name is Name, with a `needed` property when Needed is set.
 type SDKError struct {
 	Name, Message, Needed string
+	// cause is the Go error behind it (PolicyError's refusal), for
+	// errors.Is; the script sees only Name and Message.
+	cause error
 }
+
+// Unwrap returns the Go error the SDK error was made from, if any.
+func (e *SDKError) Unwrap() error { return e.cause }
 
 func (e *SDKError) Error() string {
 	if e.Message == "" {
@@ -37,9 +43,10 @@ func (e *SDKError) Error() string {
 }
 
 // PolicyError is the SDK error of a call the organization's policy forbids;
-// err is the policy refusal, whose text the script sees.
+// err is the policy refusal, whose text the script sees; errors.Is reaches
+// it (aiconsent.ErrPaused, policy.ErrNotAllowed).
 func PolicyError(err error) *SDKError {
-	return &SDKError{Name: ErrNamePolicy, Message: err.Error()}
+	return &SDKError{Name: ErrNamePolicy, Message: err.Error(), cause: err}
 }
 
 // InterruptReason is why a run was stopped from outside the script.

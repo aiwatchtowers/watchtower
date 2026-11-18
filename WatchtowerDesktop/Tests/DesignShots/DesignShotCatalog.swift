@@ -1,4 +1,5 @@
 import AppKit
+import ChatWire
 import GRDB
 import SwiftUI
 import XCTest
@@ -58,6 +59,13 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "session-rows-title-narrow", size: NSSize(width: 214, height: 0)) {
                 DesignShotFixtures.sessionRowsTitle(width: 190)
+            },
+            // Board #1945: Spec review beside Working, Ready for review, Idle.
+            DesignShot(name: "session-state-spec-review", size: NSSize(width: 300, height: 0)) {
+                SpecReviewStateShotFixtures.rows(width: 276)
+            },
+            DesignShot(name: "session-state-spec-review-narrow", size: NSSize(width: 214, height: 0)) {
+                SpecReviewStateShotFixtures.rows(width: 190)
             },
             DesignShot(name: "chat-rows", size: NSSize(width: 560, height: 280)) {
                 AnyView(DesignShotFixtures.chatRows().padding(12).shotFrame().detailBackground())
@@ -615,7 +623,15 @@ enum DesignShotCatalog {
             + TuningChatShotFixtures.shots // The tuning chat over the Analytics pane (#1517).
             + SlackFullLiveShotFixtures.shots // Slack Full / Live screens spec (#1779), design only.
             + SlackAdaptiveSyncShotFixtures.shots // Adaptive Slack sync, Statistics → Channels (#1709).
-            + IPhoneChatShotFixtures.shots // The iPhone chat's Mac side (#1791), mockups 4a/4b.
+            + SlackPolicyShotFixtures.shots // Slack Developer Policy hygiene (#1769): People frames real, the rest design only.
+            + PlanLimitsNoTokenShotFixtures.shots // Plan limits without a token spec (#1885), design only.
+            + FilesSectionShotFixtures.shots // The workbench FILES tree polished to the multi-folder mockup (#2017).
+            + IPhoneChatShotFixtures.shots // The iPhone chat's Mac side (#1791), mockup 4b.
+            + UnifiedChatShotFixtures.shots // The unified chat's new states and baselines (#1822 T0).
+            + ComposerShotFixtures.shots // The composer on every Mac surface, before and after ChatUI (#1822 T13).
+            + ApprovalCardShotFixtures.shots // The approval card before and after its move to ChatUI (#1822 T15).
+            + RoutingPillShotFixtures.shots // The routing pill and fallback card before and after ChatUI (#1822 T17).
+            + BackgroundAIConsentShotFixtures.shots // Background AI consent spec (#1886), design only.
             + WatchmanShotFixtures.shots // Watchman spec (#1824), design only.
     }
 }
@@ -644,6 +660,7 @@ enum DesignShotFixtures {
         if let poolPath { TestDatabase.cleanup(path: poolPath) }
         poolPath = nil
         ReviewShotFixtures.cleanUp()
+        FilesSectionShotFixtures.cleanUp()
         ReviewerShotFixtures.cleanUp()
         SpecReviewShotFixtures.cleanUp()
         InboxShotFixtures.cleanUp()
@@ -662,6 +679,10 @@ enum DesignShotFixtures {
         ClosedAsksShotFixtures.cleanUp()
         WatchmanArmingShotFixture.cleanUp()
         IPhoneChatShotFixtures.cleanUp()
+        UnifiedChatShotFixtures.cleanUp()
+        ComposerShotFixtures.cleanUp()
+        ApprovalCardShotFixtures.cleanUp()
+        RoutingPillShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil
         UserDefaults().removePersistentDomain(forName: defaultsSuite)
@@ -876,8 +897,8 @@ enum DesignShotFixtures {
                 }
             }
             return AnyView(VStack(alignment: .leading, spacing: 12) {
-                ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                    ChatMessageRow(item: item, isLast: index == items.count - 1, isEditing: false, actions: ChatRowActions())
+                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                    ChatUIShotRow.row(item)
                 }
                 HStack {
                     Spacer()
@@ -898,7 +919,8 @@ enum DesignShotFixtures {
             (.undone, "decision"), (.failed("database is locked"), "decision")
         ]
         return AnyView(VStack(alignment: .trailing, spacing: 12) {
-            UserMessageBubble(text: "decided: release acme on Tuesdays from next week")
+            ChatUIShotRow.message(ChatFeed.Message(id: 1, role: "user", text: "decided: release acme on Tuesdays from next week",
+                                                   createdAt: .distantPast))
             ChatKnowledgeMarkLine(mark: .saved(kind: "decision", ideaID: 1), prefixKind: "decision",
                                   undo: {}, openInInbox: { _ in })
             ForEach(Array(marks.enumerated()), id: \.offset) { _, entry in

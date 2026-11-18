@@ -1,6 +1,8 @@
+import ChatWire
 import GRDB
 import SwiftUI
 import WatchtowerCore
+import ChatUI
 
 /// The Inbox tab's content: the folder menu and the selected folder
 /// (`ActionStripActionsView`) over every kind that needs the owner — the
@@ -46,7 +48,7 @@ struct ActionStripView: View {
                         }
                     },
                     onReconnectSlack: { id in await appState.reconnectSlack(accountID: id) },
-                    sessionHoldsCall: { appState.chatSessionPool?.holdsSessionCall($0) ?? false },
+                    sessionHoldsCall: { appState.chatHoldsSessionCall($0) },
                     emptyState: appState.emptyStateContext,
                     onOpenConnections: { appState.openConnections() },
                     ownerKnown: appState.owner.isKnown,
@@ -204,7 +206,7 @@ struct ActionStripActionsView: View {
     var onRetryBuiltin: ((String) -> Void)?
     /// A failed Slack send's Reconnect Slack button (`AppState.reconnectSlack`).
     var onReconnectSlack: ((Int64) async -> String?)?
-    /// `AgentActionCardView.sessionHoldsCall` for a row (a connector call).
+    /// `MacAgentActionCard.sessionHoldsCall` for a row (a connector call).
     var sessionHoldsCall: ((AgentAction) -> Bool)?
     /// The empty list's readiness and actions (`AppState.emptyStateContext`).
     var emptyState: EmptyStateContext = .neutral
@@ -789,12 +791,12 @@ struct ActionStripActionsView: View {
         Task { await vm.select(nil) }
     }
 
-    private func card(_ action: AgentAction) -> AgentActionCardView {
+    private func card(_ action: AgentAction) -> MacAgentActionCard {
         // An Inbox target button's newest proposal: the button's state, so a
         // stuck row (Needs approval keeps approved and executing rows on their
         // native card) offers Try again (apply, or apply --force on the same row).
         let targetState = vm.targetFacts(for: action).map { TargetButtonStateResolver.state($0, now: now ?? Date()) }
-        return AgentActionCardView(
+        return MacAgentActionCard(
             action: action,
             inFlight: vm.actionFeed.inFlight.contains(action.id),
             onApprove: { Task { await vm.approve(action.id, shownArgs: action.argsJSON) } },

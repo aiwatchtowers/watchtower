@@ -529,7 +529,7 @@ var hubMetaKeys = map[string]string{
 	state.MetaDesktopAt:           "timestamp",
 	state.MetaDesktopSeen:         "flag", // Plan 1b's; no longer written
 	state.MetaDesktopSeenAt:       "timestamp",
-	state.MetaDesktopChatLease:    "flag",
+	"desktop_chat_lease":          "flag", // the old chat_lease flag; no longer written
 	state.MetaRecordings:          "enum",
 	state.MetaSyncGeneration:      "counter",
 	state.MetaWorkAlertsStartedAt: "timestamp",

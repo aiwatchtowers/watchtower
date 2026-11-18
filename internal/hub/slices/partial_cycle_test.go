@@ -12,6 +12,9 @@ import (
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/memfake"
+	"watchtower/internal/hub/transport/relay"
+	"watchtower/internal/hub/transport/relay/client"
+	"watchtower/internal/hub/transport/relay/relayv1"
 )
 
 // refusingTransport refuses every Save carrying the wire name it is given
@@ -104,6 +107,26 @@ func TestCycleUnavailableTransportStopsTheCycle(t *testing.T) {
 	}
 }
 
+// The relay failing one op itself (UNSPECIFIED "internal error", #1872) is
+// unavailable for its retry but not cycle-wide: the relay also answers it
+// for one op that throws (a record its zone cannot store), so the other kinds
+// still go (#1761).
+func TestCycleRelayInternalErrorDoesNotStopTheCycle(t *testing.T) {
+	r := newRig(t, transport.KindRelay)
+	ask, target := &fakeSource{kind: "owner_ask"}, &fakeSource{kind: "target"}
+	ask.set(item("1", `{"id":1}`))
+	target.set(item("1", `{"id":1}`))
+	internal := relay.MapError(&client.Error{E: &relayv1.Error{Code: relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED, Message: "internal error"}})
+	r.tr.FailNext("save", internal)
+	rep, err := r.publisher(target, ask).Cycle(context.Background(), nil)
+	if !errors.Is(err, relay.ErrRelayInternal) || !slices.Equal(rep.Unfinished, []Kind{"owner_ask"}) || rep.Stop != nil {
+		t.Fatalf("Cycle = %+v %v", rep, err)
+	}
+	if len(target.readTimes()) != 1 || rep.Saved != 1 {
+		t.Fatalf("target read %d times, %d saved; want it published after the failure", len(target.readTimes()), rep.Saved)
+	}
+}
+
 // An epoch rotation still aborts the cycle after an earlier kind failed:
 // the rotated kind and every later one are unfinished, the earlier failure
 // is still returned.
@@ -148,7 +171,7 @@ func TestPermanentFailureBacksOffPerKind(t *testing.T) {
 	target.set(item("1", `{"v":0}`))
 	ft := newFakeTime()
 	p := r.publisherWith(Config{Clock: ft.Now, Transport: tr}, ask, target)
-	p.mono, p.timer = ft.Now, ft.Timer
+	ft.drive(p)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- p.Run(ctx) }()
@@ -292,7 +315,7 @@ func TestResumeAfterASwitchDropsTheOldTransportsRetries(t *testing.T) {
 	other.set(item("1", `{"v":0}`))
 	ft := newFakeTime()
 	p := r.publisherWith(Config{Clock: ft.Now, Transport: tr}, held, other)
-	p.mono, p.timer = ft.Now, ft.Timer
+	ft.drive(p)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- p.Run(ctx) }()
@@ -366,7 +389,7 @@ func TestPartlySavedThenFailedKindIsRetried(t *testing.T) {
 	ft := newFakeTime()
 	seen := make(chan error, 4)
 	p := r.publisherWith(Config{Clock: ft.Now, Transport: tr, OnError: func(err error) { seen <- err }}, target)
-	p.mono, p.timer = ft.Now, ft.Timer
+	ft.drive(p)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- p.Run(ctx) }()

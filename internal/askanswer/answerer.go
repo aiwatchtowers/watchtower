@@ -211,9 +211,10 @@ func (a *Answerer) Answer(ctx context.Context, r AnswerRequest) (Result, error) 
 	err = a.d.DB.WithTx(func(tx *sql.Tx) error {
 		// Not cancelled by ctx: an answer cut by the caller's timeout may
 		// still land (the hub's outcome_unknown), as before the move.
+		//nolint:gosec // G202: db.AskInSpecLoopSQL returns a constant predicate; every value is a bound arg.
 		res, err := tx.Exec(`UPDATE owner_asks SET status = 'answered', answer = ?, answered_at = ?
 			WHERE id = ? AND project_id = ? AND status = 'open'
-			  AND NOT EXISTS (SELECT 1 FROM spec_reviews sr WHERE sr.ask_id = owner_asks.id AND sr.loop = 'author')`,
+			  AND NOT `+db.AskInSpecLoopSQL("owner_asks"),
 			encoded, at, r.Ask.ID, r.Ask.WorkbenchID)
 		if err != nil {
 			return err

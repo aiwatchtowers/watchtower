@@ -65,21 +65,21 @@ since: 0.24.0
 action: chat:How do I make an automation that runs every Monday?
 -->
 
-**Where answers come from.** The assistant searches everything Watchtower synced and indexed (Slack, mail, Jira with comments, calendar, transcripts and recaps, digests, decisions, ideas). That search follows the Knowledge search feature switch. Each answer folds its steps into "Worked for 12s · 4 steps", and a line below it opens the **Sources** panel, grouped by Slack channel, Jira project, Confluence space, mail, meetings and other.
+**Where answers come from.** The assistant searches everything Watchtower synced and indexed (Slack, mail, Jira with comments, calendar, transcripts and recaps, digests, decisions, ideas). That search follows the Knowledge search feature switch. Each answer folds its steps into "Worked for 12s · 4 steps"; a line below it opens the **Sources** panel.
 
 **The web.** On Claude and Codex the assistant can search the public web and lists each page under **Web** in **Sources**. Your private data never goes into a search, and a link you give is never fetched; Codex's search index can miss a very recent page. Ollama has no web search.
 
 **Providers.** Choose **Preferred + reserve · Auto** or **Only** a provider. See [limits, pins and recovery](../concepts/ai-providers-and-cost.md#a-reserve-provider-for-quota-limits).
 
-**Warm sessions.** Up to three conversations keep a live assistant for ten idle minutes, so replies start fast; a fourth waits, no running reply cut off.
+**Warm sessions.** Up to three conversations, from the Mac and your [iPhone](iphone-chat.md) together, keep a live assistant for ten idle minutes, so replies start fast; a fourth waits, no running reply cut off. A reply keeps running when the background service restarts; quitting the app ends it.
 
 **Long chats.** The assistant sees only a long chat's newest part; in the main chat, the target chat and the automation editor it rereads its earlier messages and artifacts when you ask.
 
 **Memory.** When the Memory feature's **Chat surface** switch is on, the assistant starts each chat with a short map of what it remembers and can look things up. See [Memory](memory.md).
 
-**Other assistant chats.** The same chat appears in a target's **Assistant** tab, the track chat, an idea or decision, a recording's **Chat** tab, an automation's **Chat** and the setup assistant in Settings, without attachments, @-mentions or branches. Only the main chat, the target chat and the automation editor can act, through proposals; the others are draft-only. At most three replies across all of them run at once; a fourth shows **Queued**.
+**Other assistant chats.** The same chat appears in a target's **Assistant** tab, a track, idea, decision, recording or automation, and the setup assistant in Settings, without attachments, @-mentions or branches. Only the main chat, the target chat and the automation editor can act, through proposals; the others are draft-only. At most three replies across all of them run at once; a fourth shows **Queued**.
 
-**Questions about Watchtower itself.** The assistant searches this guide (built in, so it matches your version), links the section it used, and says so when the guide has nothing. An answer can also link a screen, such as **Inbox**: the link opens that tab, and only screens shown in your sidebar become links.
+**Questions about Watchtower itself.** The assistant searches this guide (built in), and links the section it used. An answer can also link a screen, such as **Inbox**: the link opens that tab, and only screens shown in your sidebar become links.
 
 Messages sent from the ⌘/ panel also tell the assistant your tab and item; that note is never stored.
 
@@ -128,10 +128,10 @@ since: 0.27.0
 action: nav:chat
 -->
 
-1. Open **Chats**. A start page offers a composer, starter prompts, and your pinned and recent chats beside [the Chats panel](#the-chats-panel). If you left a chat less than two hours ago, the tab reopens it instead. A chat with a reply running, or an unsent draft or file, always reopens.
+1. Open **Chats**. A start page offers a composer, starter prompts and your recent chats beside [the Chats panel](#the-chats-panel). If you left a chat less than two hours ago, the tab reopens it instead. A chat with a reply running, or an unsent draft or file, always reopens.
 2. Type and press Enter (Shift+Enter adds a line). **Stop** (Esc) keeps what was written and offers **Continue**. **Edit** your message or **Regenerate** a reply on hover; every version is kept.
 3. Type `@` to point at a person, Slack channel, Jira issue, target or track. Type `/` at the start to load one of your enabled skills.
-4. Attach files with the paperclip, drag and drop, or ⌘V: images (PNG, JPEG, GIF, WebP) up to 5 MB, PDFs up to 32 MB, text-like files up to 256 KB, 30 MB per message. Anything else is refused with the reason. Files are stored privately and deleted with their chat.
+4. Attach files with the paperclip, drag and drop, or ⌘V: images (PNG, JPEG, GIF, WebP) up to 5 MB, PDFs up to 32 MB, text-like files up to 256 KB, 30 MB per message. Files are deleted with their chat.
 5. ⌘V attaches copied files, screenshots, images or PDFs; other images become PNGs, shrunk if over 5 MB. A text paste of 10,000 characters or more, up to 256 KB, offers **Attach as File** (⌘Z puts the text back) or **Keep as Text**.
 6. **New chat** is ⌘N (the **+** in the panel header); ⌘K searches the text of every message. Right-click a chat to rename, pin, move to a project, archive or delete. A title comes after the first reply; one you set is kept.
 
@@ -147,13 +147,13 @@ since: 0.26.0
 action: nav:chat
 -->
 
-Each chat has a dot and two lines: its title and the start of the last answer with its age (in **All chats**, a project chat's line starts with the project name). The dot is orange for a proposal waiting for your approval, a pulsing accent while the answer is written, a filled accent with a bold title for an unread answer, and a grey ring once read. A chat is read once opened or when its answer finishes on screen.
+Each chat has a dot and two lines: its title and the start of the last answer with its age (in **All chats**, a project chat's line starts with the project name). The dot is orange for a proposal waiting for your approval, a pulsing accent while the answer is written, a filled accent with a bold title for an unread answer, and a grey ring once read.
 
-Chats are grouped as **PINNED**, **RECENT** (the last 7 days) and **▸ N older**, folded until you open it (remembered). The chat on screen stays visible under the header.
+Chats are grouped as **PINNED**, **RECENT** (the last 7 days) and **▸ N older**, folded until you open it.
 
 The header reads **All chats ⌄**, or **‹ 📁 Project ⌄** inside a project, with **+** for a new chat; its menu switches projects (see [Chat projects](ai-chat-projects.md)). **⌘[** goes back to All chats.
 
-Hover a chat and press **✕** to delete it at once; **Undo** (⌘Z) stays for 5 seconds. An answering or waiting chat has no ✕; **Delete…** in the right-click menu asks first. Click the panel, then **↑/↓** move, **Return** opens, **⌘⌫** deletes and **⌘1–⌘9** open the first nine chats (they and ⌘[ need the panel shown).
+Hover a chat and press **✕** to delete it at once; **Undo** (⌘Z) stays for 5 seconds. An answering or waiting chat has no ✕; **Delete…** in the right-click menu asks first. In the panel, **↑/↓** move, **Return** opens, **⌘⌫** deletes and **⌘1–⌘9** open the first nine chats.
 
 ### Asking from any tab
 <!-- learn
@@ -198,9 +198,9 @@ since: 0.25.0
 action: nav:chat
 -->
 
-Select a passage of a finished answer and click **Ask about this** next to it. The passage joins the quotes above the message box, with the cursor there for your follow-up. Quotes go out together with your next message, each with an optional comment.
+Select a passage of a finished answer and click **Ask about this** next to it. The passage joins the quotes above the message box. Quotes go out with your next message, each with an optional comment.
 
-A selection can run across the paragraphs, headings and lists of an answer, up to the next code block or table. A table is selected whole, with tabs between cells, and ⌘C copies it as plain text. A wide table wraps its cells to fit the chat. Your own messages can be copied, not quoted.
+A selection can run across the paragraphs, headings and lists of an answer, up to the next code block or table. A table is selected whole, with tabs between cells, and ⌘C copies it as plain text.
 
 ### Question cards
 
@@ -208,6 +208,7 @@ When your request can be read two ways, the assistant asks with a card of one to
 
 ## When it's empty or wrong
 
+- **Chat is not ready.** **Chat is starting…** shows while the background service starts on its own. After 10 seconds without it: **Chat is unavailable — Watchtower's background service is not running**; press **Retry**. If you stopped it yourself: **Chat needs Watchtower's background service, which is stopped**; press **Start** (nothing restarts it silently). Your draft stays and Send is off meanwhile.
 - **A reply fails.** Your message stays. After a started-turn limit, **Review actions** opens saved actions; send a new message after checking. Other errors may offer **Retry**.
 - **Answers miss recent items.** The assistant sees only synced data. Check **Connections**, or see [Search and knowledge](search-and-knowledge.md).
 - **An attachment is refused.** It is over the size cap, or the provider can't read that type (Codex: no PDFs; Ollama: no images or PDFs); the reason shows under the field.

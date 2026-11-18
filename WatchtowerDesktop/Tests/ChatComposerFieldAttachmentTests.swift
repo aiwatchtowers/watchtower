@@ -3,6 +3,7 @@ import SwiftUI
 import ViewInspector
 @testable import WatchtowerDesktop
 @testable import WatchtowerCore // memberwise init of the package struct ChatAttachment (TrayMenuViewTests precedent)
+@testable import ChatUI
 
 @MainActor
 final class ChatComposerFieldAttachmentTests: XCTestCase {
@@ -18,14 +19,15 @@ final class ChatComposerFieldAttachmentTests: XCTestCase {
         onSend: @escaping () -> Void = {},
         onAttach: (([URL]) -> Void)? = { _ in },
         onRemove: ((Int64) -> Void)? = { _ in }
-    ) -> ChatComposerFieldContent {
+    ) -> some View {
         var stored = text
-        return ChatComposerFieldContent(
+        return ChatComposerField(
             text: Binding(get: { stored }, set: { stored = $0 }),
-            isStreaming: false, onSend: onSend, onStop: nil,
-            placeholder: "Ask…", dictationTargetID: nil, dictationCenter: nil,
-            attachments: attachments, attachmentError: error,
+            isStreaming: false, config: ChatComposerFieldConfig(placeholder: "Ask…"), onSend: onSend, onStop: nil,
+            attachments: attachments.map { ChatComposerAttachment(id: $0.id, name: $0.name, mime: $0.mime, size: $0.size) },
+            attachmentError: error,
             onAttachFiles: onAttach, onPasteData: nil, onRemoveAttachment: onRemove)
+            .macComposerStyle()
     }
 
     func testChipsShowNamesAndRemoveCallsBack() throws {

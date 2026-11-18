@@ -30,10 +30,10 @@ One runtime (`internal/hub`, `Run`) inside the daemon joins these packages:
 | `internal/hub/secure` | The one sealing choke point: envelopes (X25519/Ed25519/HKDF/ChaCha20-Poly1305/HPKE, the Swift `SecureTransport`'s twin), wire record names, keyboxes, asset encryption, the four-digit SAS. Everything that leaves the hub is a `secure.Record` from the `Sealer`; the transports refuse anything else. Pinned by the shared Kit E2E vectors (`make e2e-vectors`). |
 | `internal/hub/state` | The sidecar `hubstate.db` (own goose migrations, below), the hub lock `hub.lock`, the stored rows (devices, ledger, control queue, held actions, zone tokens, slice hashes, milestones, recording jobs). |
 | `internal/hub/identity` | The hub's keys (`hub_sig`, `hub_kx`, wrap key) in a 0600 file `<hub dir>/identity.key` in phase 1; the keyring (epochs, `K_data`/`K_alert`, the per-phone relay keys), wiped when the hub stops. |
-| `internal/hub/transport` | The `Transport` seam (`Write`/`Changes`/`Delete`, `Expect` preconditions, zones), `relay` — the hosted relay client (the relay's Go client and generated proto vendored by `make relay-go`, pinned in `transport/relay/VERSION`) — `memfake`, the in-memory relay/CloudKit stand-in for tests, and `cloudkit` (phase 3) — the client of `WatchtowerCloudBridge.app` over `<hub dir>/bridge.sock` (`bridge.proto`/`bridgepb`, frames pinned by `testdata/frames.json` for the Swift bridge; runtime zone names mapped onto `DataZone-<hub_id>`/`RelayZone-<hub_id>`, every phone on the one shared mailbox `relay/<relay id>/*`; the bridge's generation in `<hub dir>/bridge.generation` so a lost `bridge.db` resets cursors and refuses old tags), its `Supervisor` and the `bridgefake` test bridge. |
+| `internal/hub/transport` | The `Transport` seam (`Write`/`Changes`/`Delete`, `Expect` preconditions, zones), `relay` — the hosted relay client (the relay's Go client and generated proto vendored by `make relay-go`, pinned in `transport/relay/VERSION`, at relay `771a99e` since the live link, #1992; two local changes not in the relay repository sit on the copy and must be put back after a re-pin, which overwrites them: `Conn.Connected` in `client/ws.go` and the non-200-without-an-error rule of `post` in `client/client.go` with its two tests, #1872) — `memfake`, the in-memory relay/CloudKit stand-in for tests, and `cloudkit` (phase 3) — the client of `WatchtowerCloudBridge.app` over `<hub dir>/bridge.sock` (`bridge.proto`/`bridgepb`, frames pinned by `testdata/frames.json` for the Swift bridge; runtime zone names mapped onto `DataZone-<hub_id>`/`RelayZone-<hub_id>`, every phone on the one shared mailbox `relay/<relay id>/*`; the bridge's generation in `<hub dir>/bridge.generation` so a lost `bridge.db` resets cursors and refuses old tags), its `Supervisor` and the `bridgefake` test bridge. |
 | `internal/hub/link` | Linking: link codes, the pair zone hello, the awaiting keybox, the SAS confirmation (`Confirm(device, code, ok)`), grants (`typing`, `permissions`, `start_sessions`), unlink and the revoke hook; a linked phone's `device` record naming its relay id with the `relay_auth` key's proof (`VerifyRelayIDProof`, relay client Phase 3b Task 23) sets `devices.relay_device_id`, takes the id (with its admission stamp and any relay lapse) off any other row (ask #1005; a hello's unproven id is stored only when no other row holds it), clears the phone's own admission stamp, and `OnRelayIDNamed` makes the runtime run the link upkeep (`set_hub_readers`) and read the account state at once. |
 | `internal/hub/actions` | The processor (ordered actions per phone by `action_seq`: hold ahead of a gap, one `resend_from` per gap (asked again once the ask is 10 minutes old and another action is read ahead of it, #1498), `skip_to`, the exactly-once ledger, `received`/final echoes, the legacy unordered path, controls, and the phone's `device-<id>` record through `link.Center.ApplyDeviceRecord`, on CloudKit's shared `RelayZone` and, since G1, in its relay mailbox with no creator check, see `relay-client.md`) and the dispatcher; the hosted relay keeps one mailbox per phone, read drain-then-read per phone as in phase 1 (a zone event reads only the mailbox it names, see Phase 4 → Relay ops per action), while the shared `RelayZone` (`actions/shared.go`) is read once per pass with every record routed to the phone its envelope's sender names (every linked phone with or without a relay id; a name naming another device than its sender is dropped as `sender_mismatch`; the hub's own records go to the phone whose key opens them; `control_queue` keyed `<zone>@<device>`, moved when a phone's mailbox changes shape; a failed phone's records wait for the next pass with the zone token held back; only a record whose own content fails is struck, and it is passed over after `MaxRecordStrikes` = 3 failures over at least `StrikeWindow` = 10 min — a store or transport error never strikes); `actions/handlers` holds every action handler (asks, board, session start/stop, session input and Interrupt, permission answers, chat/report requests, recording uploads). |
-| `internal/hub/slices` | The publisher (hash per record, debounced saves with a 60 s full diff — only the kinds an applied phone action nudges (`PublishNow`) skip the debounce; they are still held by the transport spacing and by a failed save's retry (the backoff, or the relay's `retry_after_s` after RATE_LIMITED, capped at `RetryRateLimitedMax` 60 s); a held kind keeps its time across the periodic full diff and Resume's full diff, which cover only the kinds not held, except that a Resume after a transport switch drops the retries (and backoffs) of the old transport, spacing holds kept; one kind's failed save does not stop the cycle (#1761): the later kinds still go and only the failed one is retried, on its own backoff (1 s doubling to 10 s, to 5 min for `record_too_large`/`unsupported_version`), while a transport- or zone-wide refusal (`unavailable`, `hub_quota`, `rate_limited`, `forbidden`, `not_vouched`, `unsupported_version`, `entitlement_inactive`), ctx and an epoch rotation still end the cycle (the kinds it never tried back off by the stopping failure's class, by the plain backoff after an epoch rotation); `last_publish_at` moves unless the cycle tried kinds and finished none —, the 900 KB guard, heartbeat), the change watch (`data_version` poll: 250 ms while a phone was in touch within the last 10 min (`ActiveWindow`), else 1 s; nudges from handlers and the session-state lane) and `slices/sources`, one source per slice kind. |
+| `internal/hub/slices` | The publisher (hash per record, debounced saves with a 60 s full diff — only the kinds an applied phone action nudges (`PublishNow`) skip the debounce; one that arrives while a cycle runs is taken between its kinds and saved next, not after the cycle; they are still held by the transport spacing and by a failed save's retry (the backoff, or the relay's `retry_after_s` after RATE_LIMITED, capped at `RetryRateLimitedMax` 60 s); a held kind keeps its time across the periodic full diff and Resume's full diff, which cover only the kinds not held, except that a Resume after a transport switch drops the retries (and backoffs) of the old transport, spacing holds kept; one kind's failed save does not stop the cycle (#1761): the later kinds still go and only the failed one is retried, on its own backoff (1 s doubling to 10 s, to 5 min for `record_too_large`/`unsupported_version`), while a transport- or zone-wide refusal (`unavailable`, `hub_quota`, `rate_limited`, `forbidden`, `not_vouched`, `unsupported_version`, `entitlement_inactive`), ctx and an epoch rotation still end the cycle (the kinds it never tried back off by the stopping failure's class, by the plain backoff after an epoch rotation); `last_publish_at` moves unless the cycle tried kinds and finished none —, the 900 KB guard, heartbeat), the change watch (`data_version` poll: 250 ms while a phone was in touch within the last 10 min (`ActiveWindow`), else 1 s; nudges from handlers and the session-state lane) and `slices/sources`, one source per slice kind. |
 | `internal/hub/alerts` (phase 4) | The pusher: work alerts to the paying phones over the relay's `send_alert`, at most once per (alert key, phone), with the `alert_pushes` ledger (below). |
 | `internal/hub/measure` (phase 4) | `Recorder`: content-free latency samples (read → applied → slice saved) into `latency_samples`. |
 | `internal/hub/platform` | Darwin/Linux specifics: the owner-away signal, keeping the machine awake, and `PeerUID` (the unix-socket peer check of the control socket and the bridge client). |
@@ -75,7 +75,7 @@ checked), so the sidecar never has two writers. Refusals print classes only.
 |---|---|
 | `hub status` | `state` (`off`, `starting`, `running`, `paused`), `reason` (`disabled`, `policy_off`, `locked`, `not_test_workspace`, `sidecar_unreadable`, `not_admitted`, `relay_unreachable`, `start_failed`; phase 2: `desktop_host`, `no_relay_origin`, `run_dir_unusable`, `needs_relay`, `not_vouched`, `vouch_revoked`; phase 3: `no_icloud` with `paused` on a CloudKit desktop host), `hub_id`, `relay_device_id`, `transport`, `impl`, `dir`, `phones`, `host` (`desktop`/`headless`), `mode` (`test`/`live`, empty = off), `recordings` (`on`/`off`); phase 3: `adoption` (`none`, `in_progress`, `failed`, `done`), `bridge` (`running`, `restarting`, `unavailable`; "" off a desktop host), `identity` (`keychain`/`file`, "" = not known), `switched_at` (RFC 3339, "" = never), `switched_by` (a device id or `entitlement_expired`), `off_delete` {`state` (`ok`/`pending`/`failed` while the owner's switch is off, "" while on: the owner's off deletes the records the hub published, as POLICY-03's wipe, through the running transports before the hub stops, then retried while off from 1 min doubling to 1 h while records stay; it removes the staged assets (`<hub dir>/assets` and the `slice_assets` descriptors an adoption brought, also on an iCloud account change; a plain stop keeps them); and it unlinks every phone, as the Swift hub's off did (owner, ask #956): `supervisor.unlinkForOff` runs `hub unlink`'s offline path for each linked phone (row and grants gone, keybox read revoked, epoch rotated) and refuses each waiting one, at every reconcile while the switch is written off (`0`; read again under the lock `hub enable` also takes; one phone failing does not stop the rest), so turning on again needs a fresh pairing; the hub's identity key stays, as the Swift hub's Keychain identity did. The policy's off never unlinks), `at` (last try, RFC 3339)}, `transcriber` (a Desktop heartbeat ever arrived: recordings can go on), `cloudkit` {`account` (bridge account state, "" = not read), `throttled_since` (RFC 3339, "" = not throttled), `signed` (a desktop host's build has the bridge and its entitlement)}, `kept_recordings` (absent at 0), `name` (the name phones show: `hub name`'s value, else the short host name; Settings → Mobile's Mac name row); phase 4: `relay` (below), `paying_phones`, `mailbox_full_phones` |
 | `hub phones` | `device_id`, `name`, `scope`, `linked_at`, `typing_allowed`, `typing_requested`, `permissions_allowed`, `permissions_requested`, `start_sessions_allowed`, `start_sessions_granted`, `ordered`, `last_applied_action_seq`, `transport`; phase 4: `paying` (true, false, or null unless the hub runs on the relay and knows the account state), `undelivered` (this Mac's side: held actions plus 1 for an open gap), `mailbox_full`, `alerts` ("" or the last outcome class of 7 days) — each null when the read behind it failed (a stderr warning; the phones are still listed) |
-| `hub diagnostics [--days 1..7]` (phase 4, `cmd/hub_diagnostics.go`; reads the sidecar through `state.OpenReadOnly`, no hub needed; no sidecar = no rows) | `window_days`, `rows` [{`step` (`read_applied`, `applied_saved`, `read_saved`), `transport` (`cloudkit`, `relay`), `p50_ms`, `p90_ms`, `samples`}] (nearest rank), `push_overflow_expired` |
+| `hub diagnostics [--days 1..7]` (phase 4, `cmd/hub_diagnostics.go`; reads the sidecar through `state.OpenReadOnly`, no hub needed; no sidecar = no rows) | `window_days`, `rows` [{`step` (`read_applied`, `applied_saved`, `read_saved`, `event_read`, `nudge_saved`), `transport` (`cloudkit`, `relay`), `kind` (additive, #1992: '' = the all-kinds row, listed first for each step and transport, then one row per action kind), `p50_ms`, `p90_ms`, `samples`}] (nearest rank), `push_overflow_expired` |
 | `hub unlink <device>` | `device_id`, `unlinked` |
 | `hub allow <device> typing\|permissions\|start_sessions [--revoke]` | `device_id`, `grant`, `allowed` |
 | `hub name <name>` | `name` |
@@ -145,6 +145,9 @@ through the handlers' guarded writes. Migrations (`internal/hub/state/migrations
 - `00013_alert_pushes_settled_index` (phase 4) — index on `alert_pushes.settled_at` for the status reads.
 - `00015_resend_requested_at` — `devices.resend_requested_at` (REAL, NULL when not known; a re-link clears it): when the
   gap was last asked, so an ask lost for good is asked again (#1498).
+- `00018_latency_steps` (live link R7, #1992) — `latency_samples` rebuilt in one transaction: `step` gains
+  `event_read` and `nudge_saved`, and a `kind` column (`TEXT NOT NULL DEFAULT ''`, the action's kind name such as
+  `board_target_create`; '' for `event_read` and for older rows) — still no id and no content.
 
 New columns hold ids, counters, timestamps and error classes only; envelopes stay sealed. The only plaintext the
 sidecar keeps is today's: `held_session_lines.line` (a phone line held behind the owner's draft) and the Swift
@@ -191,7 +194,6 @@ checked against the code named).
 | `internal/workbenchgit` `.worktreeinclude` (`clone_other.go`) | `clonefile` | plain copy |
 | `internal/hub/platform` (`away_linux.go`, `awake_linux.go`) | console lock, input idle and display sleep; keep-awake | always away, no keep-awake (`Hold` does nothing) |
 | `internal/chat` sandbox (`NewChildSandbox`) | `sandbox-exec` profile | refused ("needs macOS"), so claude.ai mode stays off |
-| `internal/planusage` (`DefaultCredentialSource`) | Keychain, then `~/.claude/.credentials.json` | the credentials file only, no Keychain |
 | `internal/daemon` process identity (`procident_other.go`) | `kern.proc.pid` sysctl start time | `ps -o lstart=` under `LC_ALL=C` |
 | Phone line or ask answer the session cannot take (`internal/hub/actions/handlers`: `deps.go` `Clipboard`/`DesktopHost`, `session_input.go`, `ask.go`) | a line: copied to the clipboard (pbcopy) while the Desktop heartbeat is fresh, echo `failed(cannot_type)` saying so; an ask answer: saved, `failed(cannot_type)` | no Desktop heartbeat, so no clipboard: `failed(cannot_type)` with `CannotTypeMessage` (an ask answer still saved) |
 | `internal/sqlcipher` crypto (`wt_cgo.go`) | CommonCrypto | OpenSSL `libcrypto` (dynamic) |
@@ -332,6 +334,21 @@ rulings asks #827, #881, #883). The hub leaves the test workspace for real data 
   without `relay_admitted_at`, `relay` with it. `hubtest.Phone.VouchLink` (the copied client's `VouchHub`: VOUCH challenge, then
   `vouch_hub` with no attestation) and `relaytest`'s vouch model (gate incl. open sockets, the relay's refusal order,
   10-minute pending vouch consumed by `promote_pairing`/`add_slot`, best-effort `SLOT_ADDED`, `RemoveSlot`).
+- **Relay ops over the open socket** (live link R2, #1992; `relay.Transport.send`). Once `Connect` opened the
+  WebSocket every op goes over it (`client.Conn.Send`); HTTPS only before `Connect`, after `Close`, and for a request
+  the socket refused before writing it (`client.ErrNotSent`, no socket while it reconnects) or the relay answered
+  `UNAUTHENTICATED` — any op then. A socket lost after the frame went out leaves the outcome unknown: reads
+  (`changes`, `get_account_state`, `get_download`) and saves/deletes whose every item is conditional are sent again
+  over HTTPS (a landed item comes back as a conflict on the hub's own record); any other op returns
+  `transport.ErrUnavailable` and its caller's retry re-reads. An op unanswered for 30 s (`socketOpTimeout`, the HTTPS
+  client's timeout) is such an unknown outcome too; a read or fully conditional write whose caller has a deadline
+  waits on the socket at most half of what is left of it (`socketBound`: the pump's account read, 30 s, gives the
+  socket 15 s), so a socket that never answers `get_account_state` still leaves the HTTPS resend its turn and
+  `SLOT_ADDED` goes out with a fresh account state. A ctx that expires while its frame is being written closes the
+  whole socket (coder/websocket), so the live link reconnects and re-reads its zones. `ErrNotSent` comes from the
+  relay's client (relay PR #10, `771a99e`; set only when no attempt of a `Send` was written). `relaytest` serves every WebSocket request as over HTTPS
+  (`Requests` lists both; `Ops` marks the socket's `ws:<op>`), and `DropAfterNext(op)` cuts a socket after running
+  the op, unanswered.
 - **Relay saves in requests under the relay's cap** (#1760; `relay.Transport.Save`, `transport/relay/save.go`). The
   relay refuses a record over 1 MiB and an op body over 1 MiB + 64 KiB as a whole (`RECORD_TOO_LARGE`), and the
   publisher saves a whole kind per call (a thousand-target board failed every cycle). `Save` packs the items, in
@@ -596,6 +613,15 @@ re-checked in its Task 0; the plan's Global Constraints, Decisions and Known lim
   `relay.Transport.SendAlert(ctx, phoneRelayID, secure.Push)` refuses an unsealed push before any I/O and sends the
   envelope only. On this op `NOT_FOUND` is `transport.ErrNoPushToken` and `UNSPECIFIED` "not implemented"
   `transport.ErrPushOff`; the rest maps through `MapError`; `relay.RetryAfter(err)` reads `retry_after_s`.
+- **Relay answers `MapError` has no code class for** (#1872). `UNSPECIFIED` "internal error" (the relay failed the
+  op: a 200 from the device object's catch around one op, a 500 when the call to the device object threw, a 200 on
+  a public op such as login) is `relay.ErrRelayInternal`, which is `transport.ErrUnavailable` (a mailbox pass and
+  `set_hub_readers` retry later) with two exceptions: the publisher does not take it as cycle-wide (one op may throw
+  alone, so the other kinds still go, #1761), and the alert pusher settles it `expired` (`in_flight`), never resent
+  (the push may already be queued). An HTTP status other than 200 whose body carries no protocol error (an empty 5xx
+  from the edge) is no answer (`client.Do` fails; unavailable), never a success. The publisher's, the hub's, the
+  mailbox processor's and the pusher's log classes name the former `relay_internal` and any other unclassed code
+  `relay_<code>` (`relay.CodeClass`) instead of a bare `error`/`other`.
 - **The pusher** (`internal/hub/alerts`, wired in `alerts_wiring.go`). The publisher calls
   `slices.Config.OnAlertSaved` once per alert key after its first successful save, only while the relay is the active
   transport (republishes and rotations never; on CloudKit the `sig-` signal path runs instead). `Pusher.Enqueue`
@@ -628,8 +654,20 @@ re-checked in its Task 0; the plan's Global Constraints, Decisions and Known lim
 - **Latency samples** (`internal/hub/measure`, RC §10). `Recorder.Applied` for an action applied on its first read
   (a held action measures the phone's gap, not the hub) writes `read_applied`; the first save of one of its slice
   kinds whose read began after the apply, within `SaveWait` (60 s), writes `applied_saved` and `read_saved` together;
-  waiting applies are in memory (256 at most). Batched once a second, never inside a pass transaction; pruned once a
-  minute to 7 days and 20 000 rows. Nothing leaves the device; the 500 ms line reads the relay p50 of `read_saved`.
+  waiting applies are in memory (256 at most). Live link R7 (#1992) adds: `read_applied` is per record (the time the
+  processor reached the record, not its page, so an earlier record's handler time is left out); every sample of an
+  action carries its kind (`latency_samples.kind`); `Recorder.NudgeCycleDone`, called by the publisher at a cycle's
+  end for every kind it handled, written or not, writes `nudge_saved` (apply → that cycle's end) once per apply for
+  the first such cycle whose read of the kind began after the apply; `Recorder.EventRead` writes `event_read`
+  (`transport.Event.ArrivedAt`, stamped by each transport's `emit`, → the start of the read it triggers: the
+  processor's `PassEvent` stamps it after the own-echo check, so the hub's own echoes are not timed, and only when
+  that read reached the mailbox — a page, maybe empty, or the inline record it applies without a read; an event an
+  earlier read already took reads nothing and gives no sample. An event the processor does not narrow to one phone's
+  own mailbox — another zone, or a transport that is not an `EventPuller` — is stamped as its full pass starts). `hub diagnostics` reads both groupings in one read-only transaction; a
+  sidecar not yet at 00018 gives the all-kinds rows only. An
+  apply stops waiting once it has both its save and its cycle end, or after `SaveWait`. Batched once a second, never
+  inside a pass transaction; pruned once a minute to 7 days and 20 000 rows. Nothing leaves the device; the 500 ms
+  line reads the relay p50 of `read_saved` (the all-kinds row).
 - **Desktop.** Settings → Mobile shows the Relay row (connection, push-off, storage-full lines) and per-phone lines
   (mailbox full, free phone on a relay hub, not applied on this Mac's side, notifications not set up / last alert sent
   to relay) from `hub status|phones --json` (`MobileHubCLI`, `MobileSettingsModel+Indicators.swift`), and
@@ -646,16 +684,52 @@ and a burst of 8–10 actions/s ran into `rate_limited`. Now:
   actions next in line first, as Pass does), then writes the queues; an event for any other zone, the shared
   `RelayZone` or a transport that is not an `EventPuller` runs `Pass`. The runtime's 30 s backstop still runs `Pass`
   over every mailbox, and an event pass does not move its timer. So a phone whose mailbox read failed is read again at
-  its own next event or the next backstop pass, not at another phone's event as before.
+  its own next event or the next backstop pass, not at another phone's event as before. An event pass the batch
+  limit stopped goes on with its own mailbox only (`runPass` runs the same event again, which reads on from the
+  stored token, up to 10 times) and kicks the worker's `Pass` for the other mailboxes and queues at once, so the
+  event lane never reads every mailbox and a slow unrelated phone does not delay later mailbox events.
+- **Mailbox events on their own lane (live link R4).** The runtime's `eventLane` goroutine reads the transports'
+  events: a mailbox zone's write (no error, control, resync or CloudKit bridge flag) runs its `PassEvent` there at
+  once, and any other plain zone write (the hub's own data-zone echoes, one per slice save) ends there; the lane
+  also sets the relay's reachability from every event in arrival order (`noteReach`: an error not tied to a zone
+  → unreachable, a zone write or `PullNow` → reachable), so an error still waiting for `work()` never overrides a
+  later write. Link upkeep's resubscription clears an outage only when the relay confirmed it: one the relay
+  client only queued while disconnected (`transport.ErrWatchQueued`) marks the zone watched and says nothing of
+  reach; errors, controls, resyncs, pairing and the bridge's events go to `work()` in order (a
+  64-event hand-off), which keeps the backstop pass, link upkeep, the soon tick and housekeeping. A mailbox write may
+  overtake an event still waiting in the hand-off (a pass reads the current links, so nothing it decides depends on
+  that order). The CloudKit account read and `SweepShares` run with `work()`'s passes only (the sweep acts on its due
+  marks outside its lock); `laneMu` guards `lastPass`, the one runtime field both write. Passes may now run at once,
+  so the processor's locks are split: a mailbox zone's read → apply → token move holds that zone's own lock
+  (`boxLock`), so the lane and the backstop never read one mailbox together and its token only moves forward, while
+  another mailbox's read goes on; `Processor.mu` is held only while a page's records (and the held actions) are
+  applied, never across a mailbox write, nor across a read but the read back of held recording uploads after a
+  restart (`recoverHeld`); each control queue's writes hold that queue's own flush lock (`flushLock`), so one mailbox's
+  write never waits for another's, and an event pass writes its own mailbox's queue only (the passes write the
+  rest). `LateEcho` decides under `mu` and writes with `mu` released but `run` held shared, so `PauseFor` returns
+  only after a late echo already past its pause check has written; that write is bounded by
+  `LateEchoWriteTimeout` (30 s, the transports' per-op bound: a held line's writer has no deadline), an unwritten
+  echo staying queued for the next pass. Lock order: `run` (shared by passes and `FlushControls`, exclusive for
+  `Hygiene` and `PauseFor`'s wait), a mailbox's lock, `mu`, a queue's flush lock. A pass nudges the slice kinds it
+  applied (`PublishNow`) before it writes the queued echoes, so the slices' save starts ahead of the applied echo's.
+  v1 limits: the daily `Hygiene` holds every pass, the lane's included, while it runs (on CloudKit, its RelayZone
+  sweep); CloudKit's shared `RelayZone` is read under one lock for every phone. A claim's `received` echo is
+  written with `mu` released (the action is begun in the ledger and its mailbox's lock is held, so nothing else
+  decides it; the handler still runs after the write), so another mailbox's apply never waits for that write.
 - **No read when the event says it all** (`relay.Transport.PullEvent`; zone seqs grow by one per write, so the seqs
   between the stored token and the event's `seq` are exactly the writes not read yet). Already read (`seq` ≤ token):
   nothing. Every seq after the token is one the hub's own `Save` got (`OwnWrites`; kept per zone in memory, at most
   256, forgotten once the token passes them; a restart forgets them and the hub reads again): the event pass does
   nothing at all (`PassReport.OwnEcho`: no read, no queue write, and the runtime neither stamps a phone contact nor
-  kicks the other transport's poll); the token passes those seqs with the next read. Only the event's own seq is
-  someone else's and the relay carried the record inline (≤ 64 KiB, one-record saves): that one-record page is
-  applied, then the token moves. Anything else — another writer's seq in between, no inline record (a delete, a merged
-  event, a large record), the resync marker (seq 0), a zone never read (token 0) — is `Pull` of that zone. An own
+  kicks the other transport's poll); the token passes those seqs with the next read. The event carries records inline
+  (live link R3, #1992: relay `ZoneChanged.records`, every record of a save within a 256 KiB framed budget, split by
+  record into several events above it; from a relay without the `records_inline` capability only the old single
+  `record`, one-record saves ≤ 64 KiB) and they run without a gap up to its seq from at or before the first seq after
+  the token that is not the hub's own: one page of those records is applied (the hub's own and already read ones left
+  out), then the token moves. Anything else — a seq the records do not cover (an event lost before this one), no
+  inline records (a delete, a merged event, a record over the budget), the resync marker (seq 0), a zone never read
+  (token 0) — is `Pull` of that zone. The hub does not look at `HelloOk.capabilities`: an event without records reads,
+  whichever relay sent it. An own
   write never stands for a write it may hide, and one whose event overtakes its `Save`'s answer is read, never
   skipped. A mailbox whose last read stopped on an error (a claim whose done transaction failed among them) is read
   with `Pull` at its next event, its own writes not skipped (`Processor.unread`), so the hub's own `received` echo of
@@ -671,8 +745,12 @@ and a burst of 8–10 actions/s ran into `rate_limited`. Now:
   (done). A `Save` refused as a whole may have written part of the batch: nothing is settled, the first row is marked
   failed, and the next pass reads the mailbox before it writes again. A whole-batch refusal for good is retried row
   by row so only the refused row is dropped. The `received` echo of a claim still goes out before its handler runs.
-- **relaytest** sends one `ZoneChanged` per write call and zone (the zone's last seq, the record inline only when the
-  call wrote exactly that one record), to the writer too, as the relay does.
+- **relaytest** announces each write call per zone as the relay does (relay `zone.ts` `announce`), to the writer too:
+  the saved records go in `records`, split by record where their framed sizes pass 256 KiB, a record over that alone
+  in a bare event at its seq, a delete as one bare event at the zone's last seq; the old single `record` with an event
+  of one record ≤ 64 KiB; `HelloOk.capabilities` = `records_inline`. The relay's merging of a slow recipient's waiting
+  changes is not modelled. `DisableRecordsInline` makes it a relay before the capability (no capability, only the
+  single `record` of a one-record call).
 
 Measured with `TestMeasure_HubLatencyOverTheStand` (200 actions, local stand, hub ops counted on its HTTP client; the
 1 s run includes the test's 1 s link and backstop cadence, about three reads and two other ops per second):
@@ -715,4 +793,39 @@ On a relay route the keyring rotates every 7 days (`relayRotationAge`; 90 days o
 
 ## iPhone chat (2026-11-15, board #1791)
 
+**Superseded in part (unified chat, 2026-11-16, [unified-chat.md](unified-chat.md)):** the runner `internal/hub/chatrun` and its pool of 2 are now the daemon's chat engine (`internal/chatengine`, one pool of 3 for the Mac and the phone), the hub calls it in-process as an adapter (`hub.Options.ChatEngine`) and no longer watches `chat_*` tables, and the lease watch, `desktop_too_old` and the heartbeat's `chat_lease` flag are gone (the flag is accepted and ignored for one release). The text below describes the 2026-11-15 design.
+
 The hub runs phone-started chat turns: `internal/chatstore` (the Go turn store) and `internal/hub/chatrun` (a pool of 2 `ai session` processes, started at hub start with a sweep of orphan groups and dead leases, closed first at hub stop). A turn's rows are written by the lease holder's store, Swift or Go (`chat_turn_leases`, migration 00189). The ten `chat_*` kinds and the `chat_attachment` frame are registered in `handlers.Register`; the `chat` grant (`hub allow <device> chat [--revoke]`, sidecar migration 00017) is on by default; the heartbeat carries `capabilities.chat` and `chat_reason`; `hub desktop heartbeat --chat-lease 0|1` and the control socket's `chat_lease` tell the hub the Desktop honours the lease. Full note: [iphone-chat.md](iphone-chat.md); push: the `chat_answer` paragraph in Phase 4 above.
+
+## A failing publish is visible (2026-11-16, #1873, asks #1396/#1398)
+
+- **The log names the reason.** A failed publish cycle, a kind's source read, a phone's mailbox read and the relay readers sync log a
+  content-free reason after their class (`internal/hub/logreason`): the relay's error code when the chain carries one
+  (`other: relay code CONFLICT`), else the deepest typed Go error (`unavailable: *net.OpError`), else `untyped` —
+  never the error's text. The cycle line lists the kinds it retries (`kinds retried: owner_ask, target`). Each of the
+  lines goes through a `logreason.Limiter` (one per publisher, processor and hub runtime): the first copy is logged,
+  then at most one per `logreason.RepeatEvery` (10 min) with "(repeated N more times over 10m0s)"; a different line
+  logs at once. The cycle line is keyed by its reason alone (the kinds retried vary through one outage), the mailbox
+  line by device and reason, the source line by kind and reason; a line that stops repeating loses its held-back count.
+- **`hub status` text** shows a relay that is not connected: `hub: running, relay unavailable since 15:22 (last saved
+  15:20), 1 phone(s)` (local time, the date when not today; "never saved since the hub started" before the first
+  save). `--json` already carried `relay.state`/`since`/`last_saved_at`; Settings → Mobile's Relay row already reads
+  them ("Relay unavailable for <N> min.", "Connected · last change delivered … ago").
+- **Heartbeat `background_ai`** (optional string, #1886): `allowed`, `paused` (the owner's answer, or none yet) or
+  `organization` (paused by the AllowBackgroundAI policy). `runtime.go`'s `backgroundAIValue(aiconsent.Current())`
+  feeds `HeartbeatFacts.BackgroundAI` (nil or empty = absent); a change restamps the heartbeat at once, as `caps`
+  does. The Kit's `HeartbeatPayload.backgroundAI` is `BackgroundAIStatus?`; an absent key (an older hub) and an
+  unknown value read as nil.
+- **Heartbeat `stuck_since`** (optional Unix seconds): when the oldest kind whose last attempt did not go through
+  whole first failed — a failed save or source read, or a record the cycle skipped (oversized, unsealable, refused by
+  the transport). `Publisher.StuckSince` keeps it per kind (`slices/stuck.go`) until an attempt goes through whole; an
+  epoch rotation's abort counts neither way. The heartbeat restamps at once when the value changes. `last_publish_at`
+  keeps its meaning (moves when any kind finished). The phone's use of it is in
+  [mobile-companion.md](mobile-companion.md) ("The data's age").
+
+## Live link (2026-11-18, #1992)
+
+The hub's half of the live link — relay ops over the open socket (R2), inline records applied without a read (R3),
+the mailbox event lane, the early nudge and the in-cycle `PublishNow` (R4), and the `event_read`/`nudge_saved`
+timings (R7) — is described in place above; how the parts fit with the relay and the phone, the failure behaviour
+and the stand numbers are in [live-link.md](live-link.md).

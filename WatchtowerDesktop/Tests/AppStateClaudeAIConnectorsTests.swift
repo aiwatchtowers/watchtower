@@ -8,7 +8,7 @@ import WatchtowerTestSupport
 /// to the chat pool.
 @MainActor
 final class AppStateClaudeAIConnectorsTests: XCTestCase {
-    func testListIsReadBesideTheDatabaseAndASwitchIsWiredToThePool() async throws {
+    func testListIsReadBesideTheDatabase() async throws {
         let (seedPool, path) = try TestDatabase.createPool()
         try seedPool.close()
         defer { TestDatabase.cleanup(path: path) }
@@ -22,13 +22,6 @@ final class AppStateClaudeAIConnectorsTests: XCTestCase {
         appState.databaseManager = try DatabaseManager(path: path)
         appState.claudeAIConnectors.reload()
         XCTAssertEqual(appState.claudeAIConnectors.servers.map(\.name), ["Connector A"])
-
-        // The pool's own retirement is pinned in ChatSessionPoolTests; here
-        // the switch must reach it (the real pool spawns real processes).
-        let pool = try XCTUnwrap(appState.databaseManager.map { appState.ensureChatSessionPool($0) })
-        XCTAssertNotNil(appState.claudeAIConnectors.onSwitched)
-        appState.claudeAIConnectors.onSwitched?()
-        XCTAssertTrue(pool.clients.isEmpty)
-        await pool.closeAll()
+        // The engine reads the list when it starts a session (no app pool to retire since the unified chat).
     }
 }

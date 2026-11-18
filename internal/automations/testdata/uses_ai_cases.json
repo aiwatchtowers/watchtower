@@ -1,0 +1,22 @@
+[
+  {"permissions": ["llm:light"], "uses_ai": true},
+  {"permissions": ["llm:strong"], "uses_ai": true},
+  {"permissions": ["agent:run"], "uses_ai": true},
+  {"permissions": ["session:start"], "uses_ai": true},
+  {"permissions": ["session:start@review"], "uses_ai": true},
+  {"permissions": ["builtin:brief.compose"], "uses_ai": true},
+  {"permissions": ["builtin:attention.waiting"], "uses_ai": false},
+  {"permissions": ["builtin:approvals.list"], "uses_ai": false},
+  {"permissions": ["builtin:plan.compose"], "uses_ai": true},
+  {"permissions": ["builtin:tracks.extract"], "uses_ai": true},
+  {"permissions": ["builtin:ideas.consolidate"], "uses_ai": true},
+  {"permissions": ["builtin:reaction.compose"], "uses_ai": true},
+  {"permissions": ["builtin:track.scan"], "uses_ai": true},
+  {"permissions": ["track:scan"], "uses_ai": true},
+  {"permissions": ["mcp:x.y"], "uses_ai": false},
+  {"permissions": ["shell:make"], "uses_ai": false},
+  {"permissions": ["slack:read"], "uses_ai": false},
+  {"permissions": [], "uses_ai": false},
+  {"permissions": ["slack:read@general", "tool:list_targets", "llm:light"], "uses_ai": true},
+  {"permissions": ["builtin:attention.waiting", "builtin:approvals.list"], "uses_ai": false}
+]

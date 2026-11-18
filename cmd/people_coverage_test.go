@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"regexp"
 	"testing"
 	"time"
 
@@ -180,4 +181,52 @@ func TestRunPeople_WeeksClampedToOne(t *testing.T) {
 	err := peopleCmd.RunE(peopleCmd, nil)
 	require.NoError(t, err)
 	assert.Contains(t, buf.String(), "No people cards available")
+}
+
+// TestPeopleCLI_NoDroppedPeopleFields (#1769, A12/A24; the CLI half of
+// internal/tools' TestNoReaderReturnsDroppedPeopleFields): `watchtower
+// people` and `people --user` print a basis line and no dropped field — no
+// volume change, red flags, average length or attention list — even for a
+// card and a summary written before the clearing migration.
+func TestPeopleCLI_NoDroppedPeopleFields(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+
+	now := time.Now().UTC()
+	from := float64(now.AddDate(0, 0, -7).Unix())
+	to := float64(now.Unix())
+	_, err = database.UpsertPeopleCard(db.PeopleCard{
+		UserID: "U001", PeriodFrom: from, PeriodTo: to, MessageCount: 42, ChannelsActive: 5,
+		ThreadsInitiated: 3, ThreadsReplied: 4, AvgMessageLength: 120.5, ActiveHoursJSON: `{"9":3}`, VolumeChangePct: -40,
+		Summary: "Works on auth", CommunicationStyle: "driver", DecisionRole: "decision-maker",
+		RedFlags: `["Seems overloaded","A performance dip"]`, Highlights: `["Led auth"]`, Accomplishments: `["Shipped SSO"]`,
+		CommunicationGuide: "Be direct", DecisionStyle: "Quick", Tactics: `[]`, Model: "haiku",
+	})
+	require.NoError(t, err)
+	require.NoError(t, database.UpsertPeopleCardSummary(db.PeopleCardSummary{
+		PeriodFrom: from, PeriodTo: to, Summary: "Auth work moved", Attention: `["Check the performance of alice"]`,
+		Tips: `["Use threads"]`, Model: "haiku",
+	}))
+
+	list := new(bytes.Buffer)
+	require.NoError(t, showPeopleList(peopleCmd, list, database, nil, from, to,
+		time.Unix(int64(from), 0), time.Unix(int64(to), 0)))
+	detail := new(bytes.Buffer)
+	require.NoError(t, showUserDetail(detail, database, "alice", from, to))
+
+	ansi := regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	for name, raw := range map[string]string{"list": list.String(), "detail": detail.String()} {
+		out := ansi.ReplaceAllString(raw, "")
+		assert.Contains(t, out, "Works on auth", name)
+		assert.Contains(t, out, "42 messages in 5 channels", name)
+		for _, word := range []string{"RedFlags", "red_flags", "ActiveHours", "active_hours", "VolumeChangePct",
+			"Volume change", "volume:", "Red flags", "Red Flags", "overloaded", "performance", "Needs Attention",
+			"Avg message length", "-40"} {
+			assert.NotContains(t, out, word, name)
+		}
+	}
 }

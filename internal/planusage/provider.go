@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"watchtower/internal/claude"
 	"watchtower/internal/codex"
 	"watchtower/internal/fsutil"
 )
@@ -26,8 +27,7 @@ func (e *OperationError) Unwrap() error { return e.Cause }
 func ErrorCode(err error) string {
 	var op *OperationError
 	var ce *codex.UsageError
-	var he *HTTPError
-	var pe *parseError
+	var cle *claude.UsageError
 	switch {
 	case err == nil:
 		return ""
@@ -39,15 +39,8 @@ func ErrorCode(err error) string {
 		return "cancelled"
 	case errors.As(err, &ce):
 		return ce.Code
-	case errors.Is(err, ErrNoCredentials):
-		return "no_credentials"
-	case errors.As(err, &he):
-		if he.Status == 401 {
-			return "no_credentials"
-		}
-		return "network"
-	case errors.As(err, &pe):
-		return "parse"
+	case errors.As(err, &cle):
+		return cle.Code
 	default:
 		return "storage"
 	}
@@ -174,12 +167,19 @@ func (p *Provider) Disable(ctx context.Context) error {
 	return nil
 }
 
+func (p *Provider) logPoll(code string, next time.Duration) {
+	if p.Logger != nil {
+		p.Logger.Printf("%s plan usage: %s (next poll in %s)", p.Name, code, next)
+	}
+}
+
 func (p *Provider) Run(ctx context.Context) error {
 	after := p.After
 	if after == nil {
 		after = time.After
 	}
 	delay := firstPollDelay
+	lastQuiet := ""
 	for {
 		select {
 		case <-ctx.Done():
@@ -190,8 +190,20 @@ func (p *Provider) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return nil //nolint:nilerr // Cancellation ends the scheduler normally; source errors are logged below.
 		}
-		if err != nil && ErrorCode(err) != "busy" && ErrorCode(err) != "feature_disabled" && p.Logger != nil {
-			p.Logger.Printf("%s plan usage: %s (next poll in %s)", p.Name, ErrorCode(err), next)
+		code := ErrorCode(err)
+		switch {
+		case err == nil:
+			lastQuiet = ""
+		case code == "busy" || code == "feature_disabled":
+			// Unlogged and leaves the quiet state untouched.
+		case quietCodes[code]:
+			if code != lastQuiet {
+				lastQuiet = code
+				p.logPoll(code, next)
+			}
+		default:
+			lastQuiet = ""
+			p.logPoll(code, next)
 		}
 		delay = next
 	}
@@ -245,8 +257,8 @@ func (p *CodexPoller) PollOnce(ctx context.Context) (time.Duration, error) {
 	}
 	code := ErrorCode(err)
 	delay := pollInterval
-	switch code {
-	case "no_credentials", "unsupported_auth", "cli_missing", "unsupported_cli":
+	switch {
+	case cliCodes[code] || accountCodes[code]:
 		p.failures = 0
 	default:
 		p.failures++
