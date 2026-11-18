@@ -80,6 +80,23 @@ func readSeen(dir, slug string) (companybundle.Bundle, error) {
 	return companybundle.ParseJSON(raw, companybundle.OriginMDM)
 }
 
+// storedAfterSeen reports whether the stored file <storedSlug>.json was
+// modified after the record of slug ("" storedSlug: no stored file).
+func storedAfterSeen(dir, storedSlug, slug string) bool {
+	if storedSlug == "" {
+		return false
+	}
+	stored, err := os.Stat(filepath.Join(dir, storedSlug+".json"))
+	if err != nil {
+		return false
+	}
+	seen, err := os.Stat(seenPath(dir, slug))
+	if err != nil {
+		return false
+	}
+	return stored.ModTime().After(seen.ModTime())
+}
+
 func writeSeen(dir, slug string, b companybundle.Bundle) error {
 	data, err := json.MarshalIndent(b, "", "  ")
 	if err != nil {
@@ -112,10 +129,11 @@ func ApplyForcedChanges(d *db.DB, s Store, forcedWire string) ([]Change, error) 
 		return nil, err
 	}
 	var baseline *companybundle.Bundle
+	storedSlug := ""
 	for _, e := range st.entries {
 		if e.Bundle.Company == fb.Company {
 			stored := e.Bundle
-			baseline = &stored
+			baseline, storedSlug = &stored, e.Slug
 		}
 	}
 	overlay(&st, forcedWire)
@@ -130,7 +148,10 @@ func ApplyForcedChanges(d *db.DB, s Store, forcedWire string) ([]Change, error) 
 	// this company's; a damaged one is compared as absent (the stored bundle,
 	// or none: that one change goes unmarked, and a changed client still
 	// fails its refresh) and rewritten below.
-	if seen, rerr := readSeen(s.Dir, slug); rerr == nil && seen.Company == fb.Company {
+	// A stored file written after the record (the profile was removed and a
+	// link confirmed another app meanwhile) is what the accounts signed in
+	// with, so it stays the baseline.
+	if seen, rerr := readSeen(s.Dir, slug); rerr == nil && seen.Company == fb.Company && !storedAfterSeen(s.Dir, storedSlug, slug) {
 		if reflect.DeepEqual(seen, fb) {
 			return nil, nil
 		}

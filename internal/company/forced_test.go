@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -196,9 +197,11 @@ func TestForcedSlug_DamagedSeenKeepsSlug(t *testing.T) {
 	assert.Equal(t, "acme", entries[0].Slug)
 	require.Len(t, errs, 1)
 	assert.Equal(t, ".forced-acme.seen", errs[0].File)
-	slug, err := s.SlugFor("Acme", "")
+	// The profile removed, an unreadable pin stays reserved: its owner is
+	// unknown, so no company takes it.
+	slug, err := s.SlugFor("ACME", "")
 	require.NoError(t, err)
-	assert.Equal(t, "acme", slug, "the profile removed, the company still keeps its slug")
+	assert.Equal(t, "acme-2", slug)
 
 	_, err = ApplyForcedChanges(d, s, forced)
 	require.NoError(t, err)
@@ -206,6 +209,31 @@ func TestForcedSlug_DamagedSeenKeepsSlug(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, sample("Acme"), got)
 	assert.NoFileExists(t, seenFile(s, "acme-2"))
+}
+
+// TestForcedBundle_StoredAfterSeenIsBaseline: the profile removed, a link
+// stores another Atlassian app and the person signs in with it; the profile
+// put back with its old bundle marks the Atlassian accounts, though the
+// bundle equals the record.
+func TestForcedBundle_StoredAfterSeenIsBaseline(t *testing.T) {
+	d := db.OpenTestDB(t)
+	s := newStore(t)
+	jira, google, _ := forcedAccounts(t, d, "acme")
+	forced := wire(t, sample("Acme"))
+	_, err := ApplyForcedChanges(d, s, forced)
+	require.NoError(t, err)
+	past := time.Now().Add(-time.Hour)
+	require.NoError(t, os.Chtimes(seenFile(s, "acme"), past, past))
+	require.NoError(t, s.Save("acme", withAtlassianClient("Acme", "acmeClientId02")))
+
+	changes, err := ApplyForcedChanges(d, s, forced)
+	require.NoError(t, err)
+	assert.Equal(t, []Change{{Vendor: "atlassian", Field: "client_id", Old: "acmeClientId02", New: "acmeClientId01"}}, changes)
+	st, code := jiraState(t, d, jira)
+	assert.Equal(t, "error", st)
+	assert.Equal(t, ChangedAppCode, code)
+	st, _ = googleState(t, d, google)
+	assert.Equal(t, "ok", st)
 }
 
 // TestForcedSlug_OnePinPerCompany: when the forced company's slug follows a

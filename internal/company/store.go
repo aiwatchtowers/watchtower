@@ -293,9 +293,6 @@ func (s Store) SlugFor(company, forcedWire string) (string, error) {
 	if slug, ok := st.seen[company]; ok && !st.taken[slug] {
 		return slug, nil
 	}
-	if slug, ok := st.damagedPin(company); ok {
-		return slug, nil
-	}
 	return freeSlug(company, st.inUse), nil
 }
 
