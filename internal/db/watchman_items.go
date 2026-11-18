@@ -209,6 +209,59 @@ func (db *DB) QueueWatchmanWaitPoint(it WatchmanItem) (id int64, inserted bool, 
 	return db.queueWatchmanItemOnce(it)
 }
 
+// watchmanHandoverBeforeWrite runs between PromoteWatchmanHandover's read
+// and its write transaction; a seam for the race test.
+var watchmanHandoverBeforeWrite = func() {}
+
+// PromoteWatchmanHandover makes ask it.RefID the twin's handover in one write
+// transaction: a queued item of the ask, whatever its kind, becomes kind
+// handover; with no item at all a handover is inserted, only when the ask is
+// still open. An item already deciding or done is left. So a scan or writer
+// racing it ends with exactly one handover row. it carries the insert's
+// workbench, session, target and question; promoted reports a row that is
+// now a queued handover it wrote, inserted a new one.
+func (db *DB) PromoteWatchmanHandover(it WatchmanItem) (promoted, inserted bool, err error) {
+	var open bool
+	if err := db.QueryRow(`SELECT status = 'open' FROM owner_asks WHERE id = ?`, it.RefID).Scan(&open); err != nil {
+		return false, false, fmt.Errorf("reading ask %d: %w", it.RefID, err)
+	}
+	watchmanHandoverBeforeWrite()
+	q := []rune(it.Question)
+	if len(q) > watchmanQuestionMax {
+		q = q[:watchmanQuestionMax]
+	}
+	err = db.WithTx(func(tx *sql.Tx) error {
+		res, err := tx.Exec(`UPDATE watchman_items SET kind = 'handover'
+			WHERE ref_kind = 'ask' AND ref_id = ? AND state = 'queued' AND kind != 'handover'`, it.RefID)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			promoted = true
+			return nil
+		}
+		if !open {
+			return nil
+		}
+		res, err = tx.Exec(`INSERT INTO watchman_items (workbench_id, session_id, target_id, kind, ref_kind, ref_id, question, created_at)
+			SELECT ?, ?, ?, 'handover', 'ask', ?, ?, ?
+			WHERE NOT EXISTS (SELECT 1 FROM watchman_items WHERE ref_kind = 'ask' AND ref_id = ?)
+			ON CONFLICT(ref_kind, ref_id, kind) DO NOTHING`,
+			it.WorkbenchID, wmNullID(it.SessionID), wmNullID(it.TargetID), it.RefID, string(q), wmTime(time.Now()), it.RefID)
+		if err != nil {
+			return err
+		}
+		n, _ := res.RowsAffected()
+		inserted = n > 0
+		promoted = inserted
+		return nil
+	})
+	if err != nil {
+		return false, false, fmt.Errorf("marking ask %d Watchman's handover: %w", it.RefID, err)
+	}
+	return promoted, inserted, nil
+}
+
 // watchmanScanBeforeInsert runs between the scan's read and its inserts; a
 // seam for the race test.
 var watchmanScanBeforeInsert = func() {}

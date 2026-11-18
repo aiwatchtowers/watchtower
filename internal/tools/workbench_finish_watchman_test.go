@@ -167,7 +167,11 @@ func TestProj14_FinishArmedDoneNotParkedRefuses(t *testing.T) {
 	_, err = fx.d.Exec(`UPDATE watchman_items SET state = 'done', outcome = 'owner_first' WHERE ref_kind = 'session' AND ref_id = ?`, session)
 	require.NoError(t, err)
 	_, err = proposeIn(t, reg, wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
-	assert.Equal(t, watchmanReviewingRefusal, refusal(t, err))
+	msg := refusal(t, err)
+	assert.NotEqual(t, watchmanReviewingRefusal, msg, "nothing is reviewing: the agent must not just wait")
+	assert.Equal(t, "Watchman's review of this session's changes ended without an approval (owner_first) and no review is running: "+
+		"request a new review round — send your changes for review again with an ask_owner that says what changed — "+
+		"and call finish_session after that round arrives", msg)
 	assertNotFinished(t, fx.d, session, 0)
 }
 
@@ -221,4 +225,25 @@ func TestFinishSession_ArmedHandoverQueuedAfterFailedInsert(t *testing.T) {
 	assert.Equal(t, "Images later?", it.Question)
 	assert.Equal(t, 1, watchmanItemCount(t, fx.d))
 	assert.Equal(t, int32(1), wakes.Load())
+}
+
+// A handover ask that is no longer open is not queued by the fallback.
+func TestFinishSession_ArmedHandoverOfAnsweredAskQueuesNothing(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	session := seedTerminalSession(t, fx.d, fx.a)
+	armSession(t, fx.d, session)
+	var wakes atomic.Int32
+	reg := watchmanRegistry(t, fx.d, session, &wakes)
+	captureWatchmanLog(t)
+	_, err := fx.d.Exec(`CREATE TRIGGER wm_fail BEFORE INSERT ON watchman_items BEGIN SELECT RAISE(ABORT, 'database is locked'); END`)
+	require.NoError(t, err)
+	id := askID(t, mustApply(t, reg, fx.a, "ask_owner", fmt.Sprintf(`{"kind":"question","title":"Images later?",`+
+		`"questions":[{"question":"Leave images?","options":[{"label":"Yes"},{"label":"No"}]}],"target_id":%d,"reason":"r"}`, fx.aTarget)))
+	_, err = fx.d.Exec(`DROP TRIGGER wm_fail`)
+	require.NoError(t, err)
+	answerAsk(t, fx.d, id, `{"answers":[{"id":"1","labels":["Yes"]}]}`)
+
+	mustApply(t, reg, fx.a, "finish_session", fmt.Sprintf(`{"summary":"A done.","target_id":%d,"handover_ask_id":%d,"reason":"r"}`, fx.aTarget, id))
+	assert.Zero(t, watchmanItemCount(t, fx.d))
+	assert.Zero(t, wakes.Load())
 }

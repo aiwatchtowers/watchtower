@@ -398,3 +398,67 @@ func TestQueueWatchmanWaitPoint_AnyKindKeepsOneRow(t *testing.T) {
 	require.False(t, ins)
 	require.Equal(t, first, id)
 }
+
+// A scan that queues the ask as an ordinary ask between the handover's read
+// and its write transaction: the end state is exactly one handover row.
+func TestPromoteWatchmanHandover_RaceWithScanEndsAsOneHandover(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	s := newTestSession(t, d, wb)
+	wmArmSession(t, d, s)
+	ask := questionAsk(wb, "Images later?")
+	ask.SessionID = nullID(s)
+	askID := mustInsertAsk(t, d, ask)
+	prev := watchmanHandoverBeforeWrite
+	watchmanHandoverBeforeWrite = func() {
+		n, err := d.ScanWatchmanWaitPoints(time.Now(), func(s string) string { return s })
+		require.NoError(t, err)
+		require.Equal(t, 1, n, "the scan queued the ask as an ask")
+	}
+	t.Cleanup(func() { watchmanHandoverBeforeWrite = prev })
+
+	promoted, inserted, err := d.PromoteWatchmanHandover(WatchmanItem{WorkbenchID: wb, SessionID: s, RefID: askID, Question: "q"})
+	require.NoError(t, err)
+	require.True(t, promoted)
+	require.False(t, inserted)
+	var kinds []string
+	rows, err := d.Query(`SELECT kind FROM watchman_items WHERE ref_kind = 'ask' AND ref_id = ?`, askID)
+	require.NoError(t, err)
+	defer rows.Close()
+	for rows.Next() {
+		var k string
+		require.NoError(t, rows.Scan(&k))
+		kinds = append(kinds, k)
+	}
+	require.NoError(t, rows.Err())
+	require.Equal(t, []string{"handover"}, kinds)
+}
+
+// With no row at all an open ask is inserted as a handover; one that is no
+// longer open is not.
+func TestPromoteWatchmanHandover_InsertsOnlyForOpenAsk(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	s := newTestSession(t, d, wb)
+	open := questionAsk(wb, "Open")
+	open.SessionID = nullID(s)
+	openID := mustInsertAsk(t, d, open)
+	_, inserted, err := d.PromoteWatchmanHandover(WatchmanItem{WorkbenchID: wb, SessionID: s, RefID: openID, Question: "q"})
+	require.NoError(t, err)
+	require.True(t, inserted)
+	it, err := d.WatchmanItemByRef("ask", openID, "handover")
+	require.NoError(t, err)
+	require.NotNil(t, it)
+
+	done := questionAsk(wb, "Answered")
+	done.SessionID = nullID(s)
+	doneID := mustInsertAsk(t, d, done)
+	markAskAnswered(t, d, doneID)
+	promoted, inserted, err := d.PromoteWatchmanHandover(WatchmanItem{WorkbenchID: wb, SessionID: s, RefID: doneID, Question: "q"})
+	require.NoError(t, err)
+	require.False(t, promoted)
+	require.False(t, inserted)
+	it, err = d.WatchmanItemByRef("ask", doneID, "handover")
+	require.NoError(t, err)
+	require.Nil(t, it)
+}
