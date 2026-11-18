@@ -2,6 +2,8 @@ package db
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 )
 
@@ -31,6 +33,23 @@ func (db *DB) MarkOutsideNudged(ctx context.Context, sessionID int64, repoRoot s
 	return nil
 }
 
+// ClaimOutsideNudge stamps nudged_at on session sessionID's counted row for
+// repoRoot unless it is already stamped or quiet, and reports whether this
+// call stamped it: of two hooks racing past the third touch only one wins,
+// so the agent is told once.
+func (db *DB) ClaimOutsideNudge(ctx context.Context, sessionID int64, repoRoot string) (bool, error) {
+	res, err := db.ExecContext(ctx, `UPDATE session_outside_touches SET nudged_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		WHERE session_id = ? AND repo_root = ? AND nudged_at IS NULL AND quiet = 0`, sessionID, repoRoot)
+	if err != nil {
+		return false, fmt.Errorf("marking session %d nudged about %s: %w", sessionID, repoRoot, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("marking session %d nudged about %s: %w", sessionID, repoRoot, err)
+	}
+	return n == 1, nil
+}
+
 // QuietOutsideRoot records the owner's Not Now: session sessionID is never
 // asked about repoRoot again.
 func (db *DB) QuietOutsideRoot(ctx context.Context, sessionID int64, repoRoot string) error {
@@ -39,4 +58,19 @@ func (db *DB) QuietOutsideRoot(ctx context.Context, sessionID int64, repoRoot st
 		return fmt.Errorf("quieting session %d about %s: %w", sessionID, repoRoot, err)
 	}
 	return nil
+}
+
+// OutsideTouches is how many tool calls of session sessionID touched
+// repoRoot (compared NOCASE) as the hook counted them; 0 when none did.
+func (db *DB) OutsideTouches(ctx context.Context, sessionID int64, repoRoot string) (int, error) {
+	var n int
+	err := db.QueryRowContext(ctx, `SELECT touches FROM session_outside_touches WHERE session_id = ? AND repo_root = ? COLLATE NOCASE`,
+		sessionID, repoRoot).Scan(&n)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("reading session %d's touches of %s: %w", sessionID, repoRoot, err)
+	}
+	return n, nil
 }

@@ -46,6 +46,7 @@ func workbenchTools(files workbenchfiles.Store, sessionEnv func() string, launch
 		NewListAsks(sessionEnv), NewWithdrawAsk(),
 		NewFinishSession(sessionEnv, sessions), NewSetSessionTarget(sessionEnv),
 		NewSendToSession(sessionEnv, sessions), NewStartSession(sessionEnv, sessions), NewListSessions(sessions),
+		NewSuggestWorkbenchFolder(sessionEnv),
 	}
 }
 
