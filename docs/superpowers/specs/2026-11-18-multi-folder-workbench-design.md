@@ -84,8 +84,8 @@ One migration (next free number at implementation time; SQL, goose):
 3. `targets.workbench_folder_id` (FK ON DELETE SET NULL). NULL = the home folder (today's
    behaviour); a removed folder is told apart by its row's `removed_at`. Set by `create_targets`/`update_target` (§6.10).
 4. `owner_asks.kind` gains `folder` (table rebuild per the `add-migration` skill and
-   `00150_builtin_automations.sql`, one transaction). Payload: `{"path", "repo_root", "touches",
-   "why"}`.
+   `00150_builtin_automations.sql`, one transaction). Payload: `{"path", "repo_root", "touches", "why", "other_bench"?: {"id", "name"}}` (the
+   last only when the folder is on another bench).
 5. `workbench_folder_declines` (`workbench_id`, `folder_path` NOCASE, `declined_at`; PK both) —
    "Never for This Folder".
 6. `session_messages` (`id`, `workbench_id`, `from_session_id`, `to_session_id` — both FK SET
@@ -346,7 +346,8 @@ card has no branch chip).
 
 ### 6.11 Documents, search, automations
 Docs indexing (PROJ-08) and the search scope cover every folder (key and per-folder cap in
-§4 item 7); a document's path in search and asks is shown as `<folder>/<rel>`. `ask_owner` review `doc_path`: a relative path resolves
+§4 item 7); a document's path in search and asks is shown as `<folder>/<rel>` when the bench has more than
+one folder, and as `<rel>` otherwise. `ask_owner` review `doc_path`: a relative path resolves
 against the caller session's folder; an absolute one must lie in a bench folder. Automations are
 read from every folder's `.watchtower/automations`; a duplicate recipe name is shown as
 `<folder>/<name>`.
@@ -417,7 +418,7 @@ Suggestion card: when the suggested folder is on bench B, the card reads
 | merge | a session of B starts between the dialog and the merge | re-checked inside the merge transaction → `sessions_running`, nothing moved | Go race test |
 | merge | crash mid-move | one transaction: all of B or nothing | Go (tx failure injection) |
 | merge | reinstall in a moved folder fails | data already in A; install icon + Retry | Go + Swift |
-| hook | repo-root walk on a slow network path | walk capped at 64 levels and skips paths under `/Volumes` network mounts; hook budget unchanged | Go |
+| hook | repo-root walk on a slow network path | walk capped at 64 levels and skips paths on non-local mounts (no `MNT_LOCAL`); hook budget unchanged | Go |
 
 **Writers and who wins**
 - `workbench_folders`: only the Go CLI (Desktop and MCP never write it directly). Races resolved
