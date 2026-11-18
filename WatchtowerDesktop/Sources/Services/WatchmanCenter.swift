@@ -233,8 +233,10 @@ final class WatchmanCenter {
     /// set and asks again; otherwise exactly the confirmed sessions are armed
     /// (`--only`), so a session started meanwhile is never armed unseen. One
     /// confirm at a time; a sheet dismissed during the check arms nothing.
-    func confirmSheet() async {
-        guard !confirming, let request = sheet else { return }
+    /// `token` is the sheet the button was pressed on: a sheet replaced
+    /// before this runs is not confirmed.
+    func confirmSheet(token: UUID) async {
+        guard !confirming, let request = sheet, request.token == token else { return }
         guard request.scope == .allRunning else {
             sheet = nil
             await arm(request.scope)

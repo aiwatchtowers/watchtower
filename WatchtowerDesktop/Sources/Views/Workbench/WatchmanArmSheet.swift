@@ -90,7 +90,7 @@ struct WatchmanArmSheetHost: ViewModifier {
                 content: request.content,
                 busy: center?.confirming ?? false,
                 onCancel: { center?.sheet = nil },
-                onConfirm: { Task { await center?.confirmSheet() } }
+                onConfirm: { [token = request.token] in Task { await center?.confirmSheet(token: token) } }
             )
         }
     }

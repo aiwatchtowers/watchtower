@@ -261,7 +261,9 @@ func runWatchmanArm(cmd *cobra.Command, _ []string) error {
 		}
 	}
 	if watchmanArmFlagCheck {
-		if out.Estimate != nil {
+		if watchmanArmFlagAllRunning && len(out.Sessions) == 0 {
+			fmt.Fprintln(w, "No running session to hand to Watchman.")
+		} else if out.Estimate != nil {
 			fmt.Fprintf(w, "The first time on this workbench: Watchman learns ~%d decisions first (~%d tokens on the light model).\n",
 				out.Estimate.Decisions, out.Estimate.Tokens)
 		} else {
@@ -320,8 +322,11 @@ func watchmanArm(cmd *cobra.Command, out *watchmanArmJSON) error {
 	defer database.Close()
 	rows, workbenches, err := watchmanArmRows(database)
 	if err != nil {
-		// Every confirmed session stopped: all of them are dropped.
-		out.Dropped = append(out.Dropped, watchmanArmFlagOnly...)
+		// Every confirmed session stopped: all of them are dropped (not on
+		// a lookup error, which says nothing about them).
+		if errors.Is(err, errNoConfirmedSession) {
+			out.Dropped = append(out.Dropped, watchmanArmFlagOnly...)
+		}
 		return err
 	}
 	for _, r := range rows {
@@ -417,6 +422,9 @@ func watchmanArm(cmd *cobra.Command, out *watchmanArmJSON) error {
 	return nil
 }
 
+// errNoConfirmedSession: `--only` named sessions none of which runs now.
+var errNoConfirmedSession = errors.New("none of the confirmed sessions is still running")
+
 // watchmanCheckBusy bounds how long `arm --check` waits for another
 // process's lock on the read-only database.
 const watchmanCheckBusy = 2 * time.Second
@@ -460,7 +468,7 @@ func watchmanArmRows(database *db.DB) ([]db.WatchmanArming, []int64, error) {
 	case len(rows) > 0:
 		return rows, wbs, nil
 	case watchmanArmFlagAllRunning && len(watchmanArmFlagOnly) > 0:
-		return nil, nil, errors.New("none of the confirmed sessions is still running")
+		return nil, nil, errNoConfirmedSession
 	case watchmanArmFlagAllRunning && watchmanArmFlagCheck:
 		// --check only reads: no running session is an answer (sessions: []).
 		return nil, nil, nil

@@ -398,6 +398,32 @@ func TestWatchmanArm_CheckFixture(t *testing.T) {
 	assert.JSONEq(t, string(want), out, "rerun with -update")
 }
 
+// TestWatchmanArm_DroppedOnlyWhenNoneRuns: a lookup that fails for another
+// reason (here the database cannot be read) reports no dropped ids.
+func TestWatchmanArm_DroppedOnlyWhenNoneRuns(t *testing.T) {
+	wb, _ := watchmanFixture(t)
+	_, _ = armSession(t, wb, "claude", nil, false)
+	var path string
+	d := openAgentsTestMain(t, &path)
+	_, err := d.Exec(`DROP TABLE terminal_sessions`)
+	require.NoError(t, err)
+	r, out, err := armCLI(t, "arm", "--all-running", "--only", "7", "--json")
+	require.Error(t, err)
+	assert.NotEqual(t, errNoConfirmedSession.Error(), r.Error, out)
+	assert.Equal(t, []int64{}, r.Dropped, out)
+}
+
+// TestWatchmanArm_CheckTextNothingRunning: the text form of an all-running
+// check with no eligible session says so.
+func TestWatchmanArm_CheckTextNothingRunning(t *testing.T) {
+	wb, _ := watchmanFixture(t)
+	_, _ = armSession(t, wb, "shell", nil, false)
+	_, out, err := armCLI(t, "arm", "--all-running", "--check")
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "No running session to hand to Watchman.")
+	assert.NotContains(t, out, "Ready to hand")
+}
+
 // countArmingNudges replaces the daemon nudge with a counter.
 func countArmingNudges(t *testing.T) *int {
 	t.Helper()

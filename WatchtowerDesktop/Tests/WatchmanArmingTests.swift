@@ -106,7 +106,7 @@ final class WatchmanArmingTests: XCTestCase {
         XCTAssertEqual(sheet.content.confirm, "Hand to Watchman")
 
         runner.setStatus(Self.sessionArmed)
-        await center.confirmSheet()
+        await center.confirmShown()
         XCTAssertNil(center.sheet)
         XCTAssertEqual(runner.verbs.filter { !$0.contains("--check") }, [["watchman", "arm", "--session", "5", "--json"]])
         XCTAssertEqual(WatchmanArmControl.arming(.session(5), in: center.lastStatus), .armed)
@@ -210,7 +210,7 @@ final class WatchmanArmingTests: XCTestCase {
         XCTAssertTrue(sheet.content.lines.map(\.text).contains(Copy.analyticsLine))
 
         XCTAssertEqual(sheet.content.sessions, ["Session 5"], "no title known: the id")
-        await center.confirmSheet()
+        await center.confirmShown()
         XCTAssertEqual(runner.verbs.last, ["watchman", "arm", "--all-running", "--only", "5", "--json"])
         XCTAssertEqual(runner.verbs.count, 3, "check, the check again on confirm, arm")
         XCTAssertEqual(center.armNotices[.allRunning], Copy.analyticsLine)
@@ -375,14 +375,14 @@ final class WatchmanArmingTests: XCTestCase {
 
         // Session 6 started meanwhile.
         runner.reply("check", #"{"ok":true,"first_time":true,"sessions":[5,6],"estimate":null}"#)
-        await center.confirmSheet()
+        await center.confirmShown()
         let refreshed = try XCTUnwrap(center.sheet, "the sheet asks again")
         XCTAssertEqual(refreshed.sessions, [5, 6])
         XCTAssertEqual(refreshed.content.notice, Copy.sessionsChanged)
         XCTAssertFalse(runner.verbs.contains { !$0.contains("--check") }, "nothing armed yet")
 
         // Confirmed as shown: exactly that set.
-        await center.confirmSheet()
+        await center.confirmShown()
         XCTAssertNil(center.sheet)
         XCTAssertEqual(runner.verbs.last, ["watchman", "arm", "--all-running", "--only", "5,6", "--json"])
     }
@@ -428,10 +428,10 @@ final class WatchmanArmingTests: XCTestCase {
 
         let gate = AsyncGate()
         runner.holdNextCheck(gate)
-        let confirm = Task { await center.confirmSheet() }
+        let confirm = Task { await center.confirmShown() }
         await runner.checkEntered.wait()
         XCTAssertTrue(center.confirming)
-        await center.confirmSheet() // a second press while checking: ignored
+        await center.confirmShown() // a second press while checking: ignored
         center.sheet = nil          // Not now meanwhile
         gate.release()
         await confirm.value
@@ -453,7 +453,7 @@ final class WatchmanArmingTests: XCTestCase {
         XCTAssertEqual(Copy.sessionsHeader(2), "Hands over 2 sessions:")
 
         runner.reply("arm", #"{"ok":true,"sessions":[5],"dropped":[6]}"#)
-        await center.confirmSheet()
+        await center.confirmShown()
         XCTAssertEqual(center.armNotices[.allRunning], Copy.droppedLine([6]))
         XCTAssertEqual(Copy.droppedLine([6, 7]), "Not handed over (no longer running): #6, #7")
     }
@@ -497,7 +497,7 @@ final class WatchmanArmingTests: XCTestCase {
         // First time with a warning: the sheet, then the arm on confirm.
         await center.handTo(.session(1), workbench: "acme")
         XCTAssertEqual(center.sheet?.sessions, [1])
-        await center.confirmSheet()
+        await center.confirmShown()
         XCTAssertEqual(runner.verbs.last, ["watchman", "arm", "--session", "1", "--json"])
 
         // Learned, no warning: armed at once, still without --only.
@@ -524,7 +524,7 @@ final class WatchmanArmingTests: XCTestCase {
 
         let gate = AsyncGate()
         runner.holdNextCheck(gate)
-        let confirm = Task { await center.confirmSheet() }
+        let confirm = Task { await center.confirmShown() }
         await runner.checkEntered.wait()
         center.sheet = nil                 // Not now
         _ = await center.handAllRunning()  // the tray again: a new sheet, same set
@@ -540,5 +540,29 @@ final class WatchmanArmingTests: XCTestCase {
     func testSessionListIsBounded() {
         XCTAssertEqual(WatchmanArmSheet.listHeight(rows: 3), 3 * ListLayout.lineMinHeight)
         XCTAssertEqual(WatchmanArmSheet.listHeight(rows: 40), 6 * ListLayout.lineMinHeight)
+    }
+
+    /// The button passes the token of the sheet it shows: a sheet replaced
+    /// before the confirm runs is not confirmed.
+    func testConfirmTokenOfAReplacedSheetDoesNothing() async throws {
+        let runner = ArmingRunner(status: Self.unarmed)
+        runner.reply("check", #"{"ok":true,"first_time":true,"sessions":[5]}"#)
+        let center = await center(runner)
+        _ = await center.handAllRunning()
+        let pressed = try XCTUnwrap(center.sheet).token
+        _ = await center.handAllRunning() // replaced before the press runs
+        XCTAssertNotEqual(center.sheet?.token, pressed)
+        let checks = runner.verbs.count
+        await center.confirmSheet(token: pressed)
+        XCTAssertEqual(runner.verbs.count, checks, "no recheck, no arm")
+        XCTAssertNotNil(center.sheet)
+    }
+}
+
+private extension WatchmanCenter {
+    /// Hand to Watchman on the sheet on screen now.
+    func confirmShown() async {
+        guard let token = sheet?.token else { return }
+        await confirmSheet(token: token)
     }
 }
