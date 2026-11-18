@@ -12,6 +12,16 @@ package enum BackgroundAIConsentCopy {
         /// display name.
         case other(name: String)
 
+        /// The agent of provider id `provider` (`ai.provider`); any other
+        /// provider by `displayName`.
+        package init(provider: String, displayName: String) {
+            switch provider {
+            case "claude": self = .claude
+            case "codex": self = .codex
+            default: self = .other(name: displayName)
+            }
+        }
+
         package var name: String {
             switch self {
             case .claude: "Claude Code"
@@ -88,6 +98,12 @@ package enum BackgroundAIConsentCopy {
     package static func saveFailed(_ error: String) -> String {
         "Couldn't save your choice: \(error). Nothing runs in the background until it is saved."
     }
+
+    /// Instead of the consent sheet while config.yaml cannot be read: the
+    /// answer's writer refuses a file it cannot parse.
+    package static let configUnreadableTitle = "Watchtower can't read config.yaml"
+    package static let configUnreadable = "Your background AI choice can't be saved until the file is fixed. "
+        + "Settings shows what is wrong with it."
 
     // MARK: Settings → AI → Background AI
 

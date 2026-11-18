@@ -1,0 +1,144 @@
+import Foundation
+import XCTest
+@testable import WatchtowerCore
+
+/// A `watchtower` stand-in for the consent answer: records argv, can fail
+/// with a stderr, and can hold a call until released.
+private final class ConsentRunner: CLIRunnerProtocol, @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [[String]] = []
+    private var failure: String?
+    private var holds = false
+    private var gate: CheckedContinuation<Void, Never>?
+    private var startWaiter: CheckedContinuation<Void, Never>?
+    private var isStarted = false
+
+    var calls: [[String]] { lock.withLock { recorded } }
+
+    func fail(with stderr: String?) { lock.withLock { failure = stderr } }
+    func hold() { lock.withLock { holds = true } }
+
+    func run(args: [String]) async throws -> Data {
+        let (shouldHold, waiter) = lock.withLock { () -> (Bool, CheckedContinuation<Void, Never>?) in
+            recorded.append(args)
+            isStarted = true
+            defer { startWaiter = nil }
+            return (holds, startWaiter)
+        }
+        waiter?.resume()
+        if shouldHold {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                lock.withLock { gate = continuation }
+            }
+        }
+        if let stderr = lock.withLock({ failure }) {
+            throw CLIRunnerError.nonZeroExit(code: 1, stderr: stderr)
+        }
+        return Data()
+    }
+
+    /// Returns once a call has started.
+    func waitForStart() async {
+        await withCheckedContinuation { continuation in
+            let now = lock.withLock { () -> Bool in
+                if isStarted { return true }
+                startWaiter = continuation
+                return false
+            }
+            if now { continuation.resume() }
+        }
+    }
+
+    func release() {
+        let waiting = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            defer { gate = nil }
+            return gate
+        }
+        waiting?.resume()
+    }
+}
+
+@MainActor
+final class BackgroundAIConsentModelTests: XCTestCase {
+    private func makeModel(_ runner: ConsentRunner) -> BackgroundAIConsentModel {
+        BackgroundAIConsentModel(
+            runner: runner, configPath: "/tmp/acme/config.yaml",
+            agent: .claude, reserve: nil, pollMinutes: 15, backfillDays: 30
+        )
+    }
+
+    func testAllowCallsCLIWithYes() async {
+        let runner = ConsentRunner()
+        let ok = await makeModel(runner).allow()
+        XCTAssertTrue(ok)
+        XCTAssertEqual(runner.calls, [["--config", "/tmp/acme/config.yaml", "ai", "background", "allow", "--yes"]])
+    }
+
+    func testNotNowCallsPause() async {
+        let runner = ConsentRunner()
+        let ok = await makeModel(runner).notNow()
+        XCTAssertTrue(ok)
+        XCTAssertEqual(runner.calls, [["--config", "/tmp/acme/config.yaml", "ai", "background", "pause"]])
+    }
+
+    func testSavingDisablesThenClears() async {
+        let runner = ConsentRunner()
+        runner.hold()
+        let model = makeModel(runner)
+        XCTAssertFalse(model.isSaving)
+        let answer = Task { await model.allow() }
+        await runner.waitForStart()
+        XCTAssertTrue(model.isSaving, "saving while the CLI call runs")
+        runner.release()
+        let ok = await answer.value
+        XCTAssertTrue(ok)
+        XCTAssertFalse(model.isSaving)
+    }
+
+    func testFailureShowsErrorAndReturnsFalse() async {
+        let runner = ConsentRunner()
+        runner.fail(with: "Error: disk full\n")
+        let model = makeModel(runner)
+        let ok = await model.notNow()
+        XCTAssertFalse(ok)
+        XCTAssertFalse(model.isSaving)
+        XCTAssertEqual(model.errorLine, BackgroundAIConsentCopy.saveFailed("disk full"))
+    }
+
+    func testFailureWithoutStderrNamesTheExit() async {
+        let runner = ConsentRunner()
+        runner.fail(with: "")
+        let model = makeModel(runner)
+        _ = await model.allow()
+        XCTAssertEqual(model.errorLine, BackgroundAIConsentCopy.saveFailed("watchtower exited with code 1"))
+    }
+
+    func testSheetClosesOnlyAfterSuccess() async {
+        let runner = ConsentRunner()
+        runner.fail(with: "disk full")
+        let model = makeModel(runner)
+        let failed = await model.allow()
+        XCTAssertFalse(failed, "a failed write keeps the sheet open")
+        runner.fail(with: nil)
+        let saved = await model.allow()
+        XCTAssertTrue(saved)
+        XCTAssertNil(model.errorLine, "a later success clears the error")
+    }
+
+    func testWhatRunsUsesTheConfiguredCadence() {
+        let model = BackgroundAIConsentModel(
+            runner: ConsentRunner(), configPath: "c", agent: .codex, reserve: .claude, pollMinutes: 5, backfillDays: 7
+        )
+        XCTAssertEqual(model.whatRuns, BackgroundAIConsentCopy.whatRuns(pollMinutes: 5, backfillDays: 7))
+        XCTAssertEqual(model.planLines, [
+            BackgroundAIConsentCopy.plan(.codex), BackgroundAIConsentCopy.reserve(from: .codex, to: .claude)
+        ])
+    }
+
+    func testAgentFromProvider() {
+        typealias Agent = BackgroundAIConsentCopy.Agent
+        XCTAssertEqual(Agent(provider: "claude", displayName: "Claude"), .claude)
+        XCTAssertEqual(Agent(provider: "codex", displayName: "Codex"), .codex)
+        XCTAssertEqual(Agent(provider: "ollama", displayName: "Ollama / Local"), .other(name: "Ollama / Local"))
+    }
+}

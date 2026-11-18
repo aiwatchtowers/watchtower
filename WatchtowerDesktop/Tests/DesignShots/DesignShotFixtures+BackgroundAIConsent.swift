@@ -6,8 +6,9 @@ import WatchtowerCore
 
 /// Design-only scenes for the background AI consent (#1886, spec
 /// `docs/superpowers/specs/2026-11-17-background-ai-consent-design.md`).
-/// Nothing here is wired into the app; the strings are
-/// `BackgroundAIConsentCopy`. Sample data only (`acme`).
+/// The mockups are not wired into the app; the `-live-` shots render the
+/// real screen beside them. The strings are `BackgroundAIConsentCopy`.
+/// Sample data only (`acme`).
 @MainActor
 enum BackgroundAIConsentShotFixtures {
     /// The consent screen as onboarding's last step.
@@ -35,7 +36,7 @@ enum BackgroundAIConsentShotFixtures {
             DesignShot(name: "ai-consent-sheet-error", size: NSSize(width: 560, height: 0)) {
                 AnyView(ConsentSheetMock(error: "config.yaml: permission denied"))
             }
-        ] + Settings.allCases.map { state in
+        ] + liveShots + Settings.allCases.map { state in
             DesignShot(name: "ai-consent-settings-\(state.rawValue)", size: NSSize(width: 640, height: 0)) {
                 AnyView(SettingsSectionMock(state: state))
             }
@@ -69,6 +70,84 @@ enum BackgroundAIConsentShotFixtures {
 }
 
 private typealias Copy = BackgroundAIConsentCopy
+
+// MARK: - The real screen, beside its mockups (Task 13)
+
+extension BackgroundAIConsentShotFixtures {
+    static var liveShots: [DesignShot] {
+        [
+            DesignShot(name: "ai-consent-step-live-claude", size: NSSize(width: 860, height: 0)) {
+                AnyView(LiveConsentStep(model: model(.claude)))
+            },
+            DesignShot(name: "ai-consent-step-live-codex", size: NSSize(width: 860, height: 0)) {
+                AnyView(LiveConsentStep(model: model(.codex)))
+            },
+            DesignShot(name: "ai-consent-step-live-claude-narrow", size: NSSize(width: 600, height: 0)) {
+                AnyView(LiveConsentStep(model: model(.claude)))
+            },
+            DesignShot(name: "ai-consent-sheet-live-claude", size: NSSize(width: 560, height: 0)) {
+                AnyView(LiveConsentSheet(model: model(.claude)))
+            },
+            DesignShot(name: "ai-consent-sheet-live-error", size: NSSize(width: 560, height: 0)) {
+                AnyView(LiveConsentSheet(model: failedModel()))
+            }
+        ]
+    }
+
+    private static func model(_ agent: Copy.Agent, runner: any CLIRunnerProtocol = ShotConsentRunner(stderr: nil)) -> BackgroundAIConsentModel {
+        BackgroundAIConsentModel(
+            runner: runner, configPath: "config.yaml", agent: agent, reserve: nil, pollMinutes: 15, backfillDays: 30
+        )
+    }
+
+    /// A model whose Allow failed: the runner refuses at once, and the main
+    /// run loop is drained (no clock) until the answer has landed.
+    private static func failedModel() -> BackgroundAIConsentModel {
+        let model = model(.claude, runner: ShotConsentRunner(stderr: "Error: config.yaml: permission denied"))
+        var done = false
+        Task { @MainActor in
+            _ = await model.allow()
+            done = true
+        }
+        while !done { RunLoop.main.run(mode: .default, before: .distantPast) }
+        return model
+    }
+}
+
+/// A `watchtower` stand-in for the shots: succeeds, or fails with `stderr`.
+private struct ShotConsentRunner: CLIRunnerProtocol {
+    let stderr: String?
+
+    func run(args: [String]) async throws -> Data {
+        if let stderr { throw CLIRunnerError.nonZeroExit(code: 1, stderr: stderr) }
+        return Data()
+    }
+}
+
+/// Onboarding's last step as `OnboardingV2View` hosts it: the real
+/// indicator over the real screen.
+private struct LiveConsentStep: View {
+    let model: BackgroundAIConsentModel
+
+    var body: some View {
+        VStack(spacing: Spacing.page) {
+            OnboardingStepIndicator(steps: [.purpose, .connect, .aiConsent], current: .aiConsent)
+            BackgroundAIConsentView(model: model, host: .step {}) {}
+        }
+        .padding(Spacing.page)
+        .frame(maxWidth: .infinity, alignment: .top)
+        .background(Surface.window)
+    }
+}
+
+private struct LiveConsentSheet: View {
+    let model: BackgroundAIConsentModel
+
+    var body: some View {
+        BackgroundAIConsentView(model: model, host: .sheet) {}
+            .background(Surface.window)
+    }
+}
 
 // MARK: - The consent body (shared by the step and the sheet)
 

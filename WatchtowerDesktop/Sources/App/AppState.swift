@@ -50,6 +50,7 @@ final class AppState {
     /// so a test that never initializes never reads this Mac's managed preferences.
     let managedPolicy: ManagedPolicyCenter
     @ObservationIgnored private(set) lazy var backgroundAIRefresher = makeBackgroundAIRefresher() // #1886, started with the policy
+    var backgroundAIConsentSheet = BackgroundAIConsentSheet() // #1886, AppState+BackgroundAI
     var isDBAvailable: Bool { databaseManager != nil }
 
     /// Live per-feature readiness behind the tabs' empty states, here so a
@@ -1050,11 +1051,6 @@ final class AppState {
         }
         onboarding.settle(route: route)
         needsOnboarding = !skipThisLaunch && onboarding.currentStep != .complete
-    }
-
-    /// The route onboarding follows: the goals of the last Continue.
-    var onboardingRoute: OnboardingRoute {
-        onboardingGoals.route
     }
 
     /// Settings' account changes (Add, Remove, re-login) while onboarding is
