@@ -13,22 +13,27 @@
 ## Global Constraints
 
 - Umbrella branch `feature/watchman`; every task PR targets it, never `main`. The umbrella PR stays draft until Task 19 is merged.
-- **New migrations continue the Watchman numbering** (this plan adds `00198_watchman_phase2.sql`); never edit 00194–00197. Renumbering against `main` happens at the umbrella merge, not in this plan.
+- **New migrations continue the Watchman numbering** (this plan adds `00198_watchman_phase2.sql`); never edit 00194–00197 while the tasks run. Task 20 renumbers the Watchman migrations past `origin/main`'s latest before the umbrella merges.
 - Phase 2 acts in **Sleep only**. `watchman.Mode` still returns `away` (spec §2 rules) but nothing acts in it until phase 3; Off and Away leave items queued. No relay, no phone, no CloudKit code in this phase.
 - **Every twin decision is journalled unsure** (`watchman_items.unsure = 1`), whatever the category's measurement or the model's confidence (D43).
-- Hard limits are checked in Go on the item **before** the model and on the choice **after**; the model never decides a hard limit (WATCHMAN-01). The owner can add limits, never remove a built-in row.
+- Hard limits are checked in Go on the item **before** the model and on the choice **after**; the model never decides a hard limit (WATCHMAN-01). Permissions and commands go through the §5 table (`CheckLimits`); ask text goes through a Go keyword/pattern table (`AskParkedBy`, Task 9). The light-tier label call may only **add** a park, never remove one, and a label-call error or timeout parks (fail closed). Before any twin Approve (diff round or spec/plan verdict), Go parks a change that touches `docs/inventory/**` or adds, changes or removes a `Test<Module>NN_*` guard test (`ProtectedChange`, Task 12). The owner can add limits, never remove a built-in row.
+- Until a workbench is learned (`learned_through` set) and its relabel pass is done (`relabel_pending = 0`), every item is parked `Watchman is still learning this workbench` (Task 9).
 - The twin writes only through `askanswer.Answerer` (asks, spec marks, permissions, typed lines) or the review-round functions in `internal/db`; every write is a compare-and-set and the item's outcome is written in the **same transaction** as the answer (WATCHMAN-02).
 - Nothing acts while `platform.Away` says present or returns an error (WATCHMAN-04). An item already `deciding` when the owner returns finishes and races normally.
 - `internal/watchman` stays a non-acting leaf (WATCHMAN-06: no import of `internal/hub/...`, `internal/sessionhost/...`, `internal/tools/...`). Acting code lives in the new package `internal/watchmanact`; `watchman.Mode` takes plain values, not a `platform.Away`.
 - Owner verbs (`watchman arm|disarm|sleep|limits add|limits remove`) are refused under an AI agent's environment markers (`refuseUnderAgent`, AGENT-07). The Desktop arms only through these verbs (one implementation of arming, sidecar and hook install).
-- Tier and ledger: decisions on the strong tier with purpose `watchman.decide`; the before/after hard-limit check of ask text reuses the light-tier `watchman.label` call (purpose `watchman.label`). Prompt changes go through `.claude/skills/add-ai-prompt` on both providers with a version bump and reason.
+- Tier and ledger: decisions on the strong tier with purpose `watchman.decide`; the extra before/after park check of ask text reuses the light-tier `watchman.label` call (purpose `watchman.label`), after the Go table. Prompt changes go through `.claude/skills/add-ai-prompt` on both providers with a version bump and reason.
 - Lease 10 min (`LeaseFor`), at most 2 items deciding at once (`MaxDeciding`), attempt ≥ 3 → parked (`MaxAttempts`), a provider refusal is retried once after 15 min (`ProviderRetry`) then parked.
 - Item enums (shared by Go and Swift): `kind` ∈ `ask`, `review_doc`, `check`, `handover`, `permission`, `review_code`, `guard`; `state` ∈ `queued`, `deciding`, `done`; `outcome` ∈ `''`, `answered`, `handed`, `parked`, `owner_first`, `approved`, `changes`; `feedback` ∈ `''`, `ok`, `corrected`.
 - Copy, verbatim (spec): `Parked for the owner: <reason>`; `Handed to the owner: <what he must do>`; check answer `The owner is away — verify what you can yourself (tests, screenshots, make desktop-shots) and continue`; brief line `The owner handed this session to Watchman; asks are answered by his twin; do not wait, keep working.`; arm-sheet warning `main is not protected on GitHub — an agent's gh pr merge cannot be stopped here`; `Watchman is not running — the daemon is stopped`; journal `the owner answered first`, `session ended`, `the Mac slept from <HH:MM> to <HH:MM>, nothing ran`; strip `Watchman · Sleep since <HH:MM>`, **Take back**, **Hand to Watchman**; target panel `Watchman has this target · Sleep since <HH:MM>`; tray **Hand all running sessions to Watchman**, **Going to sleep**; Home `Overnight Watchman decided <n> — <u> unsure, <w> waiting for you`; `Agent analytics turned on — Watchman learns from your sessions`; journal sections `WAITING FOR YOU`, `Checks nobody ran`, actions **OK**, **Correct…**, **Open session**. Any other copy is the builder's and lives in a view model with a test.
 - Desktop screens follow `docs/design/desktop-style-guide.md`: built from `WatchtowerDesktop/Sources/DesignKit/`, **one mockup per state registered in `DesignShotCatalog`** (the spec §11a shots already exist; each Swift task re-renders its real screens under the same names, replacing the `*Mock` scene for that shot), **all UI copy in the view model with a test**, **colours only via `Tone`** (no hex, no `.red`). Fixture data only (`acme`, `example.com`).
 - Public repo hygiene: no live data (ids, names, texts, counts from the owner's database) in code, tests, fixtures, docs or commits. Tests never wait on wall-clock time (synctest, fake clocks, injected `Clock`); tests that spawn processes reap them; packages whose tests create git repositories call `gittest.DisableBackgroundGit()` in `TestMain`.
 - No background builds or tests. The agent never runs `watchman learn|backtest|arm` against the live database.
-- **Guard suites.** Every Go task runs, besides its own package: `go test ./internal/watchman ./internal/db -run 'Watchman|WATCHMAN|Schema|AllTablesExist'`. Tasks touching `cmd` add `go test ./cmd -run 'Watchman|Permission|Finish|Integrate|Proj1[2-4]|Proj21'`; touching `internal/tools`: `go test ./internal/tools -run 'Proj14|SpecReview0|AskOwner|Finish'`; touching `internal/hub`: `go test ./internal/hub/...`; touching prompts: `go test ./internal/prompts ./internal/llmusage` and `go test ./internal/transporttest ./internal/providers -run LLMTRANSPORT`; touching the schema: `go test ./internal/db -run 'TestSchemaGolden|TestDesktopTestSchema|Live01'`. Swift tasks: `make test-swift FILTER='Watchman|<their classes>'`, `make lint-swift` (swiftlint; `make lint-diff` is Go-only), and `make desktop-shots DESKTOP_SHOTS=<dir>` to look at their screens. The full gate (`make test`, `make test-swift`, `make lint-all`) runs once per phase by the controller, not per task.
+- **Guard suites.** Every Go task runs, besides its own package: `go test ./internal/watchman ./internal/db -run 'Watchman|WATCHMAN|Schema|AllTablesExist'`. Tasks touching `cmd` add `go test ./cmd -run 'Watchman|Permission|Finish|Integrate|Proj1[2-4]|Proj21'`; touching `internal/tools`: `go test ./internal/tools -run 'Proj14|SpecReview0|AskOwner|Finish|Agent0|Dev06'`; touching the brief or the agents' tools (AGENT-0x / DEV-06): `go test ./internal/tools ./cmd -run 'Agent0|Dev06|Proj12|Proj22'`; touching the Inbox (C1, the Watchman entry): `make test-swift FILTER='InboxFolder|ActionStrip|Inbox'`; touching `internal/hub`: `go test ./internal/hub/...`; touching prompts: `go test ./internal/prompts ./internal/llmusage` and `go test ./internal/transporttest ./internal/providers -run LLMTRANSPORT`; touching the schema: `go test ./internal/db -run 'TestSchemaGolden|TestDesktopTestSchema|Live01'`. Swift tasks: `make test-swift FILTER='Watchman|<their classes>'`, `make lint-swift` (swiftlint; `make lint-diff` is Go-only), and `make desktop-shots DESKTOP_SHOTS=<dir>` to look at their screens. The full gate (`make test`, `make test-swift`, `make lint-all`) runs once per phase by the controller, not per task.
+
+## Contracts touched (spec §13, ask #1373)
+
+PROJ-12 (brief line, answer delivery), PROJ-14 (finish gate), PROJ-21 (third permission decider), SPECREVIEW-0x (twin verdict), REVIEW-0x (twin round / Approve), **AGENT-0x / DEV-06** (the brief line; no new MCP tool for agents — Task 13 runs their guards), **C1 Inbox** (one more entry, **Watchman**, with its own empty-state copy key — Task 16 runs the Inbox guards), Go hub (`internal/askanswer`), WATCHMAN-01..06. Each owning task runs the guards of the contracts it touches (Global Constraints, guard suites); Task 19 writes the changelog lines.
 
 ## Writers and races (beyond spec §6)
 
@@ -182,6 +187,8 @@
 
 ### Task 5: Arming, the mode, the sidecar and the daemon upkeep
 
+**Status:** the Mode rule for away-without-the-sleep-test is **pending owner choice (ask #1581)**; everything else in the task is ready.
+
 **Depends on:** Task 3
 
 **Files:**
@@ -192,17 +199,20 @@
 - Produces:
   - `type TwinMode string` with `ModeOff = "off"`, `ModeSleep = "sleep"`, `ModeAway = "away"`.
   - `type ModeInputs struct { Away bool; AwayErr error; AwaySince time.Time; PresentInSession bool; SleepRequestedAt *time.Time; Window *SleepSpan; PhoneLinked bool }`, `type SleepSpan struct { Start, End time.Duration /* since local midnight */ }`.
-  - `func Mode(now time.Time, in ModeInputs) (TwinMode, time.Time)` — pure; spec §2 rules: `AwayErr != nil` or not away or present → Off; away and (sleep pressed or ≥ 20 min away inside the window) → Sleep, since = the later of the press / `AwaySince+20m`; away, sleep test fails, `PhoneLinked` → Away; no phone → Sleep (D7), since = `AwaySince`.
+  - `func Mode(now time.Time, in ModeInputs) (TwinMode, time.Time)` — pure. Common: `AwayErr != nil` or not away or present → Off; away and the sleep test passes (pressed, or ≥ 20 min away inside the window) → Sleep, since = the later of the press / `AwaySince+20m`. **Pending owner choice (ask #1581)** for away with the sleep test failing — one variant ships, the other's test rows are dropped:
+    - **Variant A (spec D7 as written):** `PhoneLinked` → Away; no phone → Sleep, since = `AwaySince`.
+    - **Variant B (sleep test only):** → Off (`PhoneLinked` → Away is kept for phase 3; nothing acts in it now).
   - `func ParseSleepSpan(text string) (*SleepSpan, bool)` over the stored `HH:MM-HH:MM`.
   - `func WriteSidecar(path string, sessions []db.ArmedSession, targetsArmed bool) error` — atomic (temp + rename), lines `session <id>` and `worktree <abs path>` and, when any target is armed, `targets-armed`; `func ReadSidecar(path string) (Sidecar, error)`; `func SidecarPath(workspace string) string` = `<workspace>/watchman.armed`.
   - `func AwayStampPath(workspace string) string` = `<workspace>/watchman.away` (RFC3339 `away_since`, written/removed by the daemon only).
-  - CLI: `watchtower watchman arm (--session N | --target N | --all-running) [--check] [--json]`, `watchman disarm (--session N | --target N | --all)`, `watchman sleep (--on | --off)`; JSON `{ok, armed:[{scope,id,armed_at}], protection_warning, first_time, error}`; `--check` writes nothing.
+  - CLI: `watchtower watchman arm (--session N | --target N | --all-running) [--check] [--json]`, `watchman disarm (--session N | --target N | --all)`, `watchman sleep (--on | --off)`; JSON `{ok, armed:[{scope,id,armed_at}], protection_warning, first_time, analytics_turned_on, learning_started, estimate, error}`; `--check` writes nothing and reports `first_time` plus the learn estimate (`decisions`, `need_labels`, `tokens`). **First arm on a workbench** that Watchman is not on for, or that is not learned: arm turns Watchman and Agent analytics on through the same code as `learn --start` (`analytics_turned_on` set once, D21 line `Agent analytics turned on — Watchman learns from your sessions`) and leaves the backfill to the daemon's learning phase (`learning_started`; arm never runs the 5-minute pass itself).
   - `watchman status --json` gains `mode`, `mode_since`, `sleep_requested`, `armed` (list as above), `daemon_running` (pinned; `TestWatchmanStatus_JSONKeysPinned` and `testdata/status.json` updated).
   - Daemon: `func (d *Daemon) SetWatchmanPlatform(away func() (bool, error), awake func(reason string) (release func(), err error))`, `func (d *Daemon) SetWatchmanHooks(ensure func(ctx context.Context, worktree string) error)` (nil until Task 6 wires it), `const WatchmanAwakeReason = "Watchtower: Watchman has a session"`; `phaseWatchmanUpkeep` every cycle.
 
 - [ ] **Step 1: Failing tests:**
-  - `TestMode` (table, `internal/watchman`) — AwayErr → Off; not away → Off; away + present in session → Off; away + pressed → Sleep since press; away 19 min inside window, no phone → Sleep (D7) since AwaySince; away 25 min inside window → Sleep since AwaySince+20m; away 25 min outside window, phone linked → Away; no window (fewer than 7 days) + phone, not pressed → Away. This is the WATCHMAN-04 mode half; the acting half is Task 9.
+  - `TestMode` (table, `internal/watchman`) — AwayErr → Off; not away → Off; away + present in session → Off; away + pressed → Sleep since press; away 25 min inside window → Sleep since AwaySince+20m; away 25 min outside window, phone linked → Away; variant A rows: away 19 min inside window, no phone → Sleep since AwaySince; variant B rows: the same → Off, and no window (fewer than 7 days), no phone, not pressed → Off. This is the WATCHMAN-04 mode half; the acting half is Task 9.
   - `TestWriteSidecar_AtomicAndReadable`, `TestReadSidecar_MissingIsNotArmed`.
+  - `TestWatchmanArm_FirstArmTurnsAnalyticsAndLearningOn` (a workbench without Watchman: one arm → `watchman_workbenches` row, `agent_analytics = 1`, `analytics_turned_on == true`; a second arm → false), `TestWatchmanArm_CheckReportsEstimateOnFirstArm`.
   - `TestWatchmanArm_JSONKeysPinned`, `TestWatchmanArm_RefusedUnderAgent`, `TestWatchmanArm_WritesRowThenSidecar` (sidecar lists the session and its worktree), `TestWatchmanArm_CheckWritesNothing`, `TestWatchmanDisarm_RemovesRowAndSidecarLine`, `TestWatchmanSleep_OnOff`, `TestWatchmanArm_AllRunningArmsEachLiveSession`.
   - `TestWatchmanUpkeep_HoldsAwakeWhileArmed` — fake `awake` records one `Hold(WatchmanAwakeReason)` while a row exists across two cycles, release when the last row goes.
   - `TestWatchmanUpkeep_ClearsSleepOnOwnerInput` — sleep row, fake away → false: row cleared; `TestWatchmanUpkeep_KeepsNewerSleepPress` — the row is replaced between read and clear → kept.
@@ -299,17 +309,19 @@
 **Depends on:** Task 1, Task 4, Task 5, Task 8
 
 **Files:**
-- Create: `internal/watchmanact/twin.go`, `internal/watchmanact/twin_ask.go`, `internal/watchmanact/answer_map.go`, `internal/watchmanact/twin_test.go`, `internal/daemon/watchman_twin.go`, `internal/daemon/watchman_twin_test.go`
+- Create: `internal/watchman/asklimit.go`, `internal/watchman/asklimit_test.go`, `internal/watchmanact/twin.go`, `internal/watchmanact/twin_ask.go`, `internal/watchmanact/answer_map.go`, `internal/watchmanact/twin_test.go`, `internal/daemon/watchman_twin.go`, `internal/daemon/watchman_twin_test.go`
 - Modify: `internal/daemon/daemon.go` (phase + wake), `cmd/sync.go` (wire the shared `Answerer`, the generator, `sessionstart` for handovers)
 
 **Interfaces:**
 - Consumes: `askanswer.Answerer.Answer` (Task 4), `watchman.Mode` (Task 5), `db.LeaseWatchmanItem`/`FinishWatchmanItemTx`/`RequeueWatchmanItem` (Task 3), `watchman.Decide`, `watchman.LiveContext`, `watchman.NewLLMLabeler`.
 - Produces:
   - `const (MaxDeciding = 2; LeaseFor = 10 * time.Minute; MaxAttempts = 3; ProviderRetry = 15 * time.Minute)`.
-  - `type TwinDeps struct { DB *db.DB; Answerer *askanswer.Answerer; Decide func(ctx context.Context, it watchman.Item) (watchman.Decision, error); Parked func(ctx context.Context, text string) (bool, string, error) /* light-tier label */; Away func() (bool, error); AwaySince func() time.Time; PhoneLinked func() bool; StartSession func(ctx context.Context, workbenchID, targetID int64, brief string) error; Clock func() time.Time }`.
+  - `func AskParkedBy(text string) (HardLimit, bool)` in `internal/watchman/asklimit.go` (pure Go table, one test row per entry): merge, push or rebase onto `main`/`master`; release, tag, TestFlight; send or post a message outside the workbench (Slack, mail, a PR/issue comment); approving an inventory contract or a guard test (`docs/inventory`, `Test<Module>NN_`). Run on the question before the model and on question + choice after.
+  - `type TwinDeps struct { DB *db.DB; Answerer *askanswer.Answerer; Decide func(ctx context.Context, it watchman.Item) (watchman.Decision, error); Parked func(ctx context.Context, text string) (bool, string, error) /* light-tier label: may only add a park; an error or timeout parks */; Away func() (bool, error); AwaySince func() time.Time; PhoneLinked func() bool; StartSession func(ctx context.Context, workbenchID, targetID int64, brief string) error; Clock func() time.Time }`.
   - `func NewTwin(d TwinDeps) *Twin`; `func (t *Twin) RunOnce(ctx context.Context) int` — leases while fewer than `MaxDeciding` are deciding, each item in its own goroutine, returns how many it started; `func (t *Twin) Wait()`.
   - `func answerFromDecision(p asks.Payload, dec watchman.Decision) (asks.Answer, error)` — one question: the option or "Other" text; several: the `<question>: <answer>` lines of decide v2 mapped back per question; an unmappable reply is an error.
-  - Outcomes: answered (unsure=1); handoff → answer `Handed to the owner: <rationale>`, outcome `handed`; parked (before: the label call says parked; after: the label call on question + choice says parked) → answer `Parked for the owner: <reason>`, outcome `parked`; check → the fixed check answer, outcome `answered`, listed under **Checks nobody ran** until `check_done_at`; handover options `Continue in a new session` / `Park for the morning` / `Accept as done` (continue → `StartSession` on the item's target with the handover text; the new session is armed only through the target's arming); lost CAS → `owner_first`; delivery `no_session` → journal `session ended`.
+  - Learning gate: an item of a workbench that is not learned or has `relabel_pending > 0` → outcome `parked`, `Parked for the owner: Watchman is still learning this workbench`, no model call.
+  - Outcomes: answered (unsure=1); handoff → answer `Handed to the owner: <rationale>`, outcome `handed`; parked (before: `AskParkedBy` on the question, then the label call; after: the same on question + choice — either one parks, the label never un-parks) → answer `Parked for the owner: <reason>`, outcome `parked`; check → the fixed check answer, outcome `answered`, listed under **Checks nobody ran** until `check_done_at`; handover options `Continue in a new session` / `Park for the morning` / `Accept as done` (continue → `StartSession` on the item's target with the handover text; the new session is armed only through the target's arming); lost CAS → `owner_first`; delivery `no_session` → journal `session ended`.
   - `phaseWatchmanTwin`: every cycle and on the wake channel: `ScanWatchmanWaitPoints`, then `RunOnce`; on shutdown waits for running items (their leases expire if killed).
 
 - [ ] **Step 1: Failing tests** (fakes for `Decide`, `Parked`, the session port; synctest for time):
@@ -319,7 +331,9 @@
   - `TestTwin_PresentInSessionLeavesQueued`, `TestTwin_PhoneLinkedAwayLeavesQueued` (Away mode does not act in phase 2), `TestTwin_DecidingItemFinishesAfterOwnerReturns`.
   - `TestTwin_LeaseExpiryRetakenThenParked` — a `Decide` that blocks until the lease passes (synctest), retaken; three failures → `parked` with `park_reason` naming the failures.
   - `TestTwin_ProviderRefusalRetriesOnceThenParks` — a plan-limit error → `not_before = now+15m`, no lease before it; a second refusal → `parked` with the provider's reason.
-  - `TestTwin_HardLimitParksBeforeModel` (label says parked → `Decide` not called), `TestTwin_ChoiceParkedAfterModel`.
+  - `TestAskParkedBy` (table, `internal/watchman`: each entry matched and a near-miss not matched, e.g. `merge feature/x into main` parked, `merge main into feature/x` not).
+  - `TestTwin_HardLimitParksBeforeModel` (Go table hit, label says not parked → still parked, `Decide` not called), `TestTwin_LabelOnlyAddsPark` (Go table clean, label parked → parked), `TestTwin_LabelErrorParks` (label error and label timeout → parked with the reason, `Decide` not called), `TestTwin_ChoiceParkedAfterModel`.
+  - `TestTwin_UnlearnedWorkbenchParks` (no `learned_through`, and `relabel_pending > 0` → parked with the learning text, `Decide` not called).
   - `TestTwin_HandoffAnswersHanded`, `TestTwin_CheckAnswersFixedText`, `TestTwin_HandoverContinueStartsSession`, `TestTwin_HandoverAcceptAnswersOnly`, `TestTwin_SessionGoneJournalled`, `TestTwin_AtMostTwoDeciding`, `TestTwin_UnmappableReplyParks`.
   - `TestWatchmanTwinPhase_WakeRunsWithoutWaitingForCycle` (daemon).
 - [ ] **Step 2: Run** `go test ./internal/watchmanact ./internal/daemon -run 'Twin|WATCHMAN04'` → FAIL; implement; **Step 3: Run** the task tests, `go test ./internal/askanswer` and the guard suites (`cmd` row) → PASS.
@@ -366,17 +380,18 @@
 **Depends on:** Task 8, Task 9, Task 11
 
 **Files:**
-- Create: `internal/watchmanact/twin_review.go`, `internal/watchmanact/twin_review_test.go`
+- Create: `internal/watchmanact/twin_review.go`, `internal/watchmanact/twin_review_test.go`, `internal/watchmanact/protected.go`, `internal/watchmanact/protected_test.go`
 - Modify: `internal/watchman/decide.go` (optional `marks` in the reply for `review_doc` items), `internal/prompts/defaults.go` (`watchman.decide` **v4**); the merge rule in the skill pack is Task 13's
 
 **Interfaces:**
 - Consumes: `specreview.AnswerMarks` (Task 11), `askanswer.Answer` with `Marks` and `DeliverLine` (Task 4), `db.CreateReviewRound`, `db.SendReviewRound`, `db.ApproveReviewRound`, the round delivery lines `workbench review send|approve` print (reuse their builder from `cmd/workbench_review.go`, moved to `internal/review…` if it lives in `cmd`).
 - Produces:
+  - `func ProtectedChange(paths []string, diff string) (string, bool)` — Go only, never the model: true when a path is under `docs/inventory/`, or a diff hunk adds, changes or removes a line declaring `func Test<Module>NN_…` / `func test<Module>NN_…` (Go and Swift; `<Module>` letters, `NN` two digits), or a changed file holds such a guard test inside a changed hunk; the string names the reason. Called before **every** twin Approve: on the round's diff for `review_code`, and on the reviewed document's path plus its diff against the previous snapshot for `review_doc` (a spec or plan that edits an inventory file). True → outcome `parked`, `Parked for the owner: approving a change to a behavior contract or a guard test is yours` (WATCHMAN-01); the twin may still send `changes`.
   - `Decision.Marks []TwinMarkReply` (`key`, `state`, `body`) — parsed only for category `review_doc`; unknown keys dropped in Go.
   - `review_doc`: the item waits (stays `queued`, `not_before = now + 1 min`) while the spec review row is running or its author loop has not ended; then `Decide` with options `["approve","changes"]` over the findings list (keyed), `AnswerMarks` → `Answer` with marks in the same transaction.
   - `review_code`: create a round on the session's current tree; `Decide` with options `["approve","changes"]` over the reviewer's AI overview and the diff stat; `changes` → one design comment (path NULL) with the rationale, `SendReviewRound`, deliver its line, outcome `changes`; `approve` → only when the session's PR base is known and is not the default branch (`gh pr view --json baseRefName` on the session branch), `ApproveReviewRound`, deliver its approved line, outcome `approved`; base unknown/default → outcome `parked`, `Parked for the owner: merging to main is yours`. After 3 twin rounds on one session without Approve → `parked` (the finish gate then passes, Task 8).
 
-- [ ] **Step 1: Failing tests:** `TestTwin_ReviewDocWaitsForAuthorLoop`, `TestTwin_ReviewDocWritesVerdictAndMarksInOneTx`, `TestTwin_ReviewDocOwnerFirstWritesNoMarks`, `TestTwin_ReviewCodeApproveOnFeatureBase`, `TestTwin_ReviewCodeMainBaseParks`, `TestTwin_ReviewCodeChangesSendsDesignComment`, `TestTwin_ReviewCodeThirdRoundParks`, `TestTwin_ReviewRoundOwnerClosedFirst` (the owner sent the round first → `owner_first`), `TestDecide_MarksOnlyForReviewDoc`, `TestWatchmanDecidePrompt_V4Marks` (prompt registry pins the marks shape; `DefaultVersions[WatchmanDecide] == 4`).
+- [ ] **Step 1: Failing tests:** `TestProtectedChange` (both ways: `docs/inventory/watchman.md` touched → true; a hunk adding `func TestWATCHMAN07_X`, changing the body of `TestProj21_…`, or deleting `func testProj20_…` (Swift) → true; an ordinary `TestFoo` edit and `docs/features/x.md` → false), `TestWATCHMAN01_TwinNeverApprovesContractChange` (a `review_code` item whose diff edits `docs/inventory/**` → parked, no `ApproveReviewRound`; a `review_doc` of a plan that edits a guard test → parked, no answer verdict `approve`), `TestTwin_ReviewCodeApproveWhenNotProtected`, `TestTwin_ReviewDocWaitsForAuthorLoop`, `TestTwin_ReviewDocWritesVerdictAndMarksInOneTx`, `TestTwin_ReviewDocOwnerFirstWritesNoMarks`, `TestTwin_ReviewCodeApproveOnFeatureBase`, `TestTwin_ReviewCodeMainBaseParks`, `TestTwin_ReviewCodeChangesSendsDesignComment`, `TestTwin_ReviewCodeThirdRoundParks`, `TestTwin_ReviewRoundOwnerClosedFirst` (the owner sent the round first → `owner_first`), `TestDecide_MarksOnlyForReviewDoc`, `TestWatchmanDecidePrompt_V4Marks` (prompt registry pins the marks shape; `DefaultVersions[WatchmanDecide] == 4`).
 - [ ] **Step 2: Run** → FAIL; implement; **Step 3: Run** the task tests, the guard suites (`internal/tools`, prompts rows) and `go test ./internal/review... -run Review0` → PASS.
 - [ ] **Step 4: Commit** `feat(watchman): twin spec verdicts with marks and twin diff review rounds`.
 
@@ -421,7 +436,7 @@
 - Consumes: `watchman arm|disarm|sleep [--check] --json`, `watchman status --json` keys (Task 5), `protection_warning`, `first_time` (Task 6); `watchman learn --workbench N --json` for the first-arm estimate.
 - Produces: `WatchmanArmingCopy` (every string of the strip, panel, tray items and arm sheet, incl. the spec copy, the analytics line and the accepted residual risk of spec §5 item 4: deleting outside the worktree or messaging people from a script with its own token is not caught); `WatchmanCenter.arm(_ scope:)`, `.disarm(_:)`, `.setSleep(_:)`, `.check(_:) -> WatchmanArmCheck`.
 
-- [ ] **Step 1: Failing tests:** `WatchmanArmingCopyTests` (each string, `Sleep since` formatting from `mode_since`, the warning line only when `protection_warning` is non-empty), `WatchmanStatusDecodingTests.testModeKeysDecodeAndMissingIsOff`, `WatchmanArmingTests.testArmCallsCLIThenReloads`, `testFirstArmShowsSheetWithEstimateAndWarning`, `testArmFailureShowsErrorAndKeepsControl` (CLI error → the control shows the error, the strip stays unarmed), `testTrayHandAllRunningCallsAllRunning`.
+- [ ] **Step 1: Failing tests:** `WatchmanArmingTests.testFirstArmSheetShowsAnalyticsLineAndStartsLearning` (a workbench not learned: the sheet shows the estimate, the D21 line and the parked-while-learning note `Until learning finishes, Watchman parks everything for you`; **Hand to Watchman** calls `watchman arm` once, which turns analytics and learning on), `WatchmanArmingCopyTests` (each string, `Sleep since` formatting from `mode_since`, the warning line only when `protection_warning` is non-empty), `WatchmanStatusDecodingTests.testModeKeysDecodeAndMissingIsOff`, `WatchmanArmingTests.testArmCallsCLIThenReloads`, `testFirstArmShowsSheetWithEstimateAndWarning`, `testArmFailureShowsErrorAndKeepsControl` (CLI error → the control shows the error, the strip stays unarmed), `testTrayHandAllRunningCallsAllRunning`.
 - [ ] **Step 2: Run** `make test-swift FILTER='WatchmanArming|WatchmanStatusDecoding'` → FAIL; implement; render `make desktop-shots` for `watchman-strip-*`, `watchman-target-panel-*`, `watchman-tray-menu`, `watchman-arm-first-time` and compare with the spec mockups.
 - [ ] **Step 3: Run** `make test-swift FILTER='Watchman|DesignShots'` and `make lint-swift` → PASS; the guide page gets a "Hand a session to Watchman" section (stay under the 8 KB page cap: `go test ./docs/guide`; split into a second page if needed).
 - [ ] **Step 4: Commit** `feat(watchman): Hand to Watchman on the session strip, target panel and tray`.
@@ -438,8 +453,8 @@
 - Consumes: the `watchman_items`, `watchman_gaps` columns and enums (Task 3, Global Constraints). The card's "merged into `feature/x`, PR #" outcome line is not tracked in phase 2 (a v1 limit in the feature note); the card shows the decision outcome only.
 - Produces: `struct WatchmanNight { date; waiting: [WatchmanItem]; checks: [WatchmanItem]; decided: [WatchmanItem]; gaps: [ClosedRange<Date>]; costUSD }` — a night is 12:00 local to 12:00 the next day; **Waiting for you** = `parked` and `handed` outcomes without feedback; **Checks nobody ran** = `check` items without `check_done_at`; `WatchmanJournalQueries.nights(db, limit:)`, `.liveDeciding(db)`; `WatchmanJournalViewModel` states `loading`, `empty`, `error(Retry)`, `night`, `busy` (a `deciding` item: `Deciding: <question>`), daemon not running (from `WatchmanCenter`'s `daemon_running`) → `Watchman is not running — the daemon is stopped`.
 
-- [ ] **Step 1: Failing tests:** `WatchmanJournalQueriesTests.testNightBoundaryAtNoon`, `testWaitingHoldsParkedAndHanded`, `testChecksListUntilDone`, `testGapsAndCostPerNight`; `WatchmanJournalCopyTests` (Home row text, gap line, owner-first and session-ended lines, every card label); `WatchmanJournalViewModelTests.testReadFailureShowsErrorAndRetryReloads`, `testDecidingItemShowsBusyLine`, `testDaemonStoppedLine`.
-- [ ] **Step 2: Run** `make test-swift FILTER='WatchmanJournal'` → FAIL; implement (GRDB + MVVM per `add-desktop-feature`); render `watchman-journal-*`, `watchman-home-row`, `watchman-inbox-entry` and compare with the mockups.
+- [ ] **Step 1: Failing tests:** `WatchmanJournalQueriesTests.testNightBoundaryAtNoon`, `testWaitingHoldsParkedAndHanded`, `testChecksListUntilDone`, `testGapsAndCostPerNight`; `WatchmanJournalCopyTests` (Home row text, gap line, owner-first and session-ended lines, every card label); `WatchmanJournalViewModelTests.testReadFailureShowsErrorAndRetryReloads`, `testDecidingItemShowsBusyLine`, `testDaemonStoppedLine`, `testEveryPhase2DecisionShowsUnsure`; `WatchmanMockCopyTests` pins a frame for both new shots.
+- [ ] **Step 2: Run** `make test-swift FILTER='WatchmanJournal'` → FAIL; implement (GRDB + MVVM per `add-desktop-feature`); render `watchman-journal-*`, `watchman-home-row`, `watchman-inbox-entry` and compare with the mockups. Two new shots in `DesignShotCatalog`, copy in `WatchmanMockCopy` and the view model with `WatchmanMockCopyTests` covering them: `watchman-journal-not-running` (the journal while the daemon is stopped: `Watchman is not running — the daemon is stopped`, last night kept below) and `watchman-journal-night-unsure` (a phase-2 night: every decided card carries **Unsure**, no sure lines).
 - [ ] **Step 3: Run** `make test-swift FILTER='Watchman|Inbox|Home|DesignShots'`, `make lint-swift` → PASS; guide section "Read the night's journal".
 - [ ] **Step 4: Commit** `feat(watchman): the morning journal in the Inbox and the Home row`.
 
@@ -471,7 +486,7 @@
 - Produces: per-category profile text **Edit** / **Unpin**, sleep window edit (`HH:MM-HH:MM`, validated in the view model before the CLI call; key `sleep_window`, pinned), extra limits list with **Add** (kind + pattern) and **Remove** on owner rows only (built-in rows shown read-only).
 
 - [ ] **Step 1: Failing tests:** `WatchmanCenterTests.testEditProfileWritesTempFileAndCallsSet`, `testUnpinCallsUnpin`, `testSleepWindowRejectsBadText`, `testAddLimitThenListReloads`, `testBuiltinLimitHasNoRemove`, `testCLIErrorShownInline`; copy tests for every new string.
-- [ ] **Step 2: Run** `make test-swift FILTER='WatchmanCenter|WatchmanSettingsCopy'` → FAIL; implement; render `watchman-settings-results`.
+- [ ] **Step 2: Run** `make test-swift FILTER='WatchmanCenter|WatchmanSettingsCopy'` → FAIL; implement; render `watchman-settings-results`, plus two new `DesignShotCatalog` shots from status/profile fixtures with copy in `WatchmanMockCopy`/`WatchmanSettingsCopy` and tests: `watchman-settings-add-limit` (the add form: kind, pattern, a validation error) and `watchman-settings-profile-edit` (a category's profile text in the editor, **Save** / **Cancel**, the pinned note).
 - [ ] **Step 3: Run** `make test-swift FILTER='Watchman|DesignShots'`, `make lint-swift` → PASS; guide section on Settings editing.
 - [ ] **Step 4: Commit** `feat(watchman): edit profiles, the sleep window and extra limits in Settings`.
 
@@ -480,7 +495,7 @@
 **Depends on:** Tasks 1–18
 
 **Files:**
-- Modify: `docs/inventory/watchman.md` (WATCHMAN-01, -02, -04, -05 with the guard tests named in Tasks 4, 5, 7, 9, 10; WATCHMAN-03 and -06 amended for the journal source and `internal/watchmanact`; module list; changelog), `docs/inventory/workbench.md` (PROJ-12 brief line, PROJ-14 finish gate, PROJ-21 third decider — changelog lines citing ask #1373), `docs/inventory/spec-review.md`, `docs/inventory/review.md` (twin verdict and Approve), `docs/features/watchman.md` (phase 2 section: arming, mode, layers, worker, journal, failures, v1 limits), `docs/features/go-hub.md` (`internal/askanswer`), `docs/features/README.md` (summary line), `docs/guide/features/watchman.md` (sweep), `CLAUDE.md` (feature list line unchanged unless the title changes)
+- Modify: `docs/inventory/watchman.md` (WATCHMAN-01, -02, -04, -05 with the guard tests named in Tasks 4, 5, 7, 9, 10; WATCHMAN-03 and -06 amended for the journal source and `internal/watchmanact`; module list; changelog), `docs/inventory/workbench.md` (PROJ-12 brief line, PROJ-14 finish gate, PROJ-21 third decider — changelog lines citing ask #1373), `docs/inventory/spec-review.md`, `docs/inventory/review.md` (twin verdict and Approve), `docs/features/watchman.md` (phase 2 section: arming, mode, layers, worker, journal, failures, v1 limits — including: the journal card has no "merged into `feature/x`, PR #" line in phase 2; the backtest reruns weekly only (D44); three twin review rounds without Approve park (D45); a night runs 12:00 to 12:00), `docs/features/go-hub.md` (`internal/askanswer`), `docs/features/README.md` (summary line), `docs/guide/features/watchman.md` (sweep), `CLAUDE.md` (feature list line unchanged unless the title changes)
 
 - [ ] **Step 1:** Write the inventory entries; each names its guard tests exactly as they exist (`grep -rn 'func TestWATCHMAN0' internal cmd`).
 - [ ] **Step 2: Run** `go test ./docs/guide`, the full Go guard suites and `make test-swift FILTER='Watchman'` → PASS.
@@ -488,11 +503,26 @@
 
 ---
 
+### Task 20: Renumber the Watchman migrations past `origin/main`'s latest before the umbrella merge
+
+**Depends on:** Tasks 1–19
+
+**Files:**
+- Rename: `internal/db/migrations/00194_watchman.sql` … `00198_watchman_phase2.sql` (the five Watchman files) to the next free numbers after `origin/main`'s latest migration at that time, in the same order; update every reference (`docs/features/watchman.md`, `docs/inventory/watchman.md` module list, comments in `schema.sql`, the Go migration exception list if it names them)
+- Modify: goldens and `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift` (regenerated)
+- Test: `internal/db/migrations_test.go`
+
+- [ ] **Step 1:** `git fetch origin main`; read the latest number on `origin/main`; merge `origin/main` into the umbrella first so both sets of files are present.
+- [ ] **Step 2: Failing test** `TestLoadMigrations_NoDuplicateVersions` — `loadMigrations` over the embedded set returns unique versions (fails today on the 00194/00195 clash once main is merged).
+- [ ] **Step 3: Rename** with `git mv`; dev databases that applied the old numbers are throwaway (the owner's copy is recreated); regenerate `go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema' -update`.
+- [ ] **Step 4: Run** `go test ./internal/db` and the full gate (`make test`, `make test-swift`, `make lint-all`) → PASS.
+- [ ] **Step 5: Commit** `chore(watchman): renumber the Watchman migrations after main's`.
+
 ## Parallel lanes
 
 - Start together: Tasks 1, 2, 3, 4, 11.
 - After Task 3: Tasks 5, 14, 16. After Task 5: Tasks 6, 8, 13 (and 7 once Task 1 is in). After Task 6: Task 15. After Task 7: Tasks 10 (with 9) and 18.
-- Task 9 waits for 1, 4, 5, 8; Task 12 for 8, 9, 11; Task 17 for 16; Task 19 last.
+- Task 9 waits for 1, 4, 5, 8; Task 12 for 8, 9, 11; Task 17 for 16; Task 19 after 1–18; Task 20 last.
 - Shared files across lanes (merge carefully): `internal/prompts/defaults.go` (Tasks 2, 12), `cmd/workbench_permission_wait.go` (Tasks 1, 4, 8, 10), `cmd/sync.go` (Tasks 4, 5, 6, 9), `DesignShotFixtures+Watchman.swift` and the guide page (Tasks 15–18).
 
 ## Failures on the new paths → tests
@@ -504,6 +534,9 @@
 | Decide | crash / Mac sleeps | lease expiry, retake, park at 3 | `TestTwin_LeaseExpiryRetakenThenParked` |
 | Decide | provider refuses | retry once after 15 min, then parked | `TestTwin_ProviderRefusalRetriesOnceThenParks` |
 | Decide | unusable reply | parked with the reason | `TestTwin_UnmappableReplyParks` |
+| Park check | label call errors or times out | parked (fail closed), no model call | `TestTwin_LabelErrorParks` |
+| Decide | workbench not learned / relabel pending | parked `Watchman is still learning this workbench` | `TestTwin_UnlearnedWorkbenchParks` |
+| Approve | change touches inventory or a guard test | parked, no Approve | `TestWATCHMAN01_TwinNeverApprovesContractChange` |
 | Write | owner answered first | journalled, nothing delivered, no marks | `TestTwin_OwnerFirstJournalledNothingDelivered`, `TestAnswerer_MarksOnlyByWinner` |
 | Deliver | prompt open / daemon restart | held in the shared ledger, reloaded | `TestAnswerer_HeldLinesOneLedgerBothOrigins` |
 | Deliver | session gone | stored, journal `session ended` | `TestAnswerer_SessionGoneStoresAnswer`, `TestTwin_SessionGoneJournalled` |

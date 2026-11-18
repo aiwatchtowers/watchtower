@@ -209,7 +209,7 @@ Phase 1 stopped twice (D31 metric, then D33 with the work context). A triage of 
 
 A category is "strong" (Away mode decides itself) when at most 5 % of its scored decisions (handed ones are not scored) are bad **and** none of them is bad while sure; agreement does not gate. Below it the category is "weak" (Away asks the phone, Sleep decides and marks every such entry unsure); fewer than 30 hidden decisions is not measured. The backtest reruns weekly and after each morning's feedback batch. **Phase 1 exit (go / stop):** go to phase 2 when at least 3 categories are strong and one of them is `permission`, `design` or `scope`; otherwise stop and bring the numbers to the owner before any acting code is written (2026-11-10 lesson: proof before spec for shaky ideas).
 
-**Outcome of phase 1b (ask #1578, D43).** The phase-1b backtest stopped again with no strong category, but bad decisions fell two to four times (`scope`, `finish`, `design`, `ux_text` now between about 6 % and 12 %), none was bad while sure, and the triage showed the rest is the owner's own judgement of intent and document quality, which history cannot teach. The owner lifted the go/stop gate for a **Sleep-only phase 2**: the twin decides at night, **every** decision is journalled **unsure** whatever its category's measurement, the hard limits (§5) still park, and the owner's morning OK / Correct is the new learning signal. Away mode (phase 3) stays gated: it needs strong categories as defined above.
+**Outcome of phase 1b (ask #1578, D43).** The phase-1b backtest stopped again with no strong category, but bad decisions fell two to four times (`scope`, `finish`, `design`, `ux_text` now between about 6 % and 12 %), none was bad while sure, and the triage showed the rest is the owner's own judgement of intent and document quality, which history cannot teach. The owner lifted the go/stop gate for a **Sleep-only phase 2**: the twin decides at night, **every** decision is journalled **unsure** whatever its category's measurement, the hard limits (§5) still park, and the owner's morning OK / Correct is the new learning signal. Away mode (phase 3) stays gated: it needs strong categories as defined above. Phase 2 keeps the weekly backtest only: the rerun after each morning's feedback batch is deferred, since each run costs about $17 (D44).
 
 ## 10. Morning journal
 
@@ -220,6 +220,8 @@ A category is "strong" (Away mode decides itself) when at most 5 % of its scored
 There is no literal "undo": the agents built on top of the decision. "Correct" is honest about that — it starts the fix (ask #1373).
 
 **Waiting for you** section on top: parked items (hard limits, failures, budget).
+
+A night runs from 12:00 to 12:00 the next day (local time); the journal groups items by the night they were created in. Phase 2 does not track the card's "merged into `feature/x`, PR #" outcome line: the card shows the decision's outcome only, and the feature note lists this as a v1 limit.
 
 Text sketch:
 
@@ -341,6 +343,8 @@ After implementation the real screens are rendered with the same names and compa
 | D38 | Permission rows are excluded from the backtest by the §5 hard-limit Go table (built in phase 1b, reused by phase 2); asks and turns by the light-tier `parked` label | decided by the agent (spec review round 1) |
 | D42 | PR base unknown in stored data → every gh pr merge permission is parked | decided by the agent (implementation) |
 | D43 | Phase 2 proceeds Sleep-only with every decision marked unsure; the go/stop gate (D32) no longer blocks it; Away mode stays gated on strong categories | ask #1578 |
+| D44 | Weekly backtest only in phase 2; the rerun after each morning's feedback is deferred (cost) | decided by the agent |
+| D45 | Three twin diff-review rounds on one session without an Approve park the review item for the owner, and the finish gate then passes | decided by the agent |
 
 ## 15. Left to the builder
 
