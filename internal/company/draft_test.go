@@ -265,6 +265,14 @@ func TestCompanyDraft_CheckHashMismatchIsUnchecked(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, got.IsChecked("atlassian"))
 	assert.False(t, got.IsChecked("google"), "only MarkDraftChecked writes a mark")
+
+	// The new values are checked; a late result for the old ones changes
+	// nothing.
+	require.NoError(t, s.MarkDraftChecked("atlassian", CheckHash("atlassian", got)))
+	assert.ErrorIs(t, s.MarkDraftChecked("atlassian", CheckHash("atlassian", d)), ErrDraftValuesChanged)
+	got, _, _, err = s.LoadDraft(draftT0)
+	require.NoError(t, err)
+	assert.True(t, got.IsChecked("atlassian"))
 }
 
 func TestCompanyDraft_SameValuesKeepCheck(t *testing.T) {

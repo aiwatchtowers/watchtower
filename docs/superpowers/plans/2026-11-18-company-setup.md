@@ -418,7 +418,7 @@ type DraftState string // "none", "ok", "unreadable"
 func (s Store) LoadDraft(now time.Time) (Draft, DraftState, string /*bad file name*/, error) // unreadable → rename, keep newest .bad only
 func (s Store) SaveDraft(d Draft) error; func (s Store) DiscardDraft() error // deletes draft + every .bad-*
 // SaveDraft keeps the stored StartedAt and Checked; only MarkDraftChecked writes a mark (hash taken when the check started)
-func (s Store) MarkDraftChecked(vendor, hash string) error
+func (s Store) MarkDraftChecked(vendor, hash string) error // ErrDraftValuesChanged when hash is not the current values' (a late result)
 func ParseDraftJSON(raw []byte) (Draft, error) // strict; ErrSlackTokenInDraft for a token field or an xoxe… value
 func (s Store) CleanStaleBadDrafts(now time.Time) error                      // > 30 days
 func CheckHash(vendor string, d Draft) string; func (d Draft) IsChecked(vendor string) bool; func (d Draft) CheckedVendors() []string

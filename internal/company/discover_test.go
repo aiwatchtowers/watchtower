@@ -133,6 +133,17 @@ func TestDiscover_DuplicateKeepsFirstSource(t *testing.T) {
 	require.Len(t, got, 1)
 	assert.Equal(t, SourceStored, got[0].Source)
 	assert.True(t, got[0].HasSecret)
+
+	// A draft typed without the tenant yet takes it from the file.
+	ws2 := t.TempDir()
+	require.NoError(t, NewStore(ws2).SaveDraft(Draft{Company: "Acme", Services: []string{"microsoft"},
+		Microsoft: &companybundle.Microsoft{ClientID: "00000000-0000-0000-0000-000000000001"}}))
+	writeClientFile(t, ws2, "outlook_client_"+itoa(o)+".json", map[string]string{"client_id": "00000000-0000-0000-0000-000000000001", "tenant_id": "00000000-0000-0000-0000-0000000000aa"})
+	got, err = Discover(context.Background(), ws2, d, "")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, SourceDraft, got[0].Source)
+	assert.Equal(t, "00000000-0000-0000-0000-0000000000aa", got[0].TenantID)
 }
 
 // TestDiscover_PersonalProjectNeverCandidate: a Google account on the

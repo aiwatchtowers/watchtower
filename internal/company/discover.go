@@ -239,7 +239,7 @@ func clientFileCandidate(workspaceDir string, a accountRef) (Candidate, bool) {
 func candidateKey(c Candidate) string { return c.Vendor + "\x00" + c.ClientID + "\x00" + c.AppID }
 
 // dedupeCandidates drops our shared clients, the excluded (personal) ones
-// and repeats, keeping the first and OR-ing HasSecret; vendors in the
+// and repeats, keeping the first (HasSecret OR-ed, an empty TenantID filled); vendors in the
 // wizard's order.
 func dedupeCandidates(in []Candidate, excluded map[string]bool) []Candidate {
 	shared := sharedClientIDs()
@@ -255,6 +255,7 @@ func dedupeCandidates(in []Candidate, excluded map[string]bool) []Candidate {
 		}
 		if i, ok := at[key]; ok {
 			out[i].HasSecret = out[i].HasSecret || c.HasSecret
+			out[i].TenantID = cmp.Or(out[i].TenantID, c.TenantID)
 			continue
 		}
 		at[key] = len(out)

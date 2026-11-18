@@ -77,6 +77,10 @@ const (
 // token: it is used once and never stored.
 var ErrSlackTokenInDraft = errors.New("the Slack configuration token is never stored in the draft")
 
+// ErrDraftValuesChanged is a check result for values the draft no longer
+// holds (edited while the check ran): it is not recorded.
+var ErrDraftValuesChanged = errors.New("the step's values changed while it was checked")
+
 // errDraftDamaged marks a draft.json that is there but does not decode or
 // validate: it is set aside, unlike an I/O error, which is returned.
 var errDraftDamaged = errors.New("damaged draft")
@@ -332,8 +336,9 @@ func (s Store) SaveDraft(d Draft) error {
 }
 
 // MarkDraftChecked records that vendor's check passed with the values whose
-// CheckHash is hash (taken when the check started: a value edited since
-// leaves the step unchecked). No draft is an error.
+// CheckHash is hash (taken when the check started). A check of values
+// edited since is not recorded (ErrDraftValuesChanged): it neither marks the
+// new values nor replaces their own mark. No draft is an error.
 func (s Store) MarkDraftChecked(vendor, hash string) error {
 	if !slices.Contains(draftVendors, vendor) {
 		return fmt.Errorf("unknown service %q", vendor)
@@ -346,6 +351,9 @@ func (s Store) MarkDraftChecked(vendor, hash string) error {
 	d, err := readDraft(s.draftPath())
 	if err != nil {
 		return fmt.Errorf("reading the company draft: %w", err)
+	}
+	if hash == "" || hash != CheckHash(vendor, d) {
+		return ErrDraftValuesChanged
 	}
 	if d.Checked == nil {
 		d.Checked = map[string]string{}
@@ -362,6 +370,9 @@ func (s Store) writeDraft(d Draft) error {
 	}
 	if _, err := ParseDraftJSON(data); err != nil {
 		return err
+	}
+	if len(data) >= maxFileBytes {
+		return errors.New("draft too large")
 	}
 	return fsutil.WriteFileAtomic(s.draftPath(), append(data, '\n'), 0o600)
 }
