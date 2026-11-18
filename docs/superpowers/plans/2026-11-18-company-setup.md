@@ -45,7 +45,7 @@ This plan **does not rebuild them**; it builds on plan B's contracts as that pla
 | T13 (`SlackAppSetupModel` with sheet) | **C0** (Task 15) builds the model without the sheet; whichever plan runs first builds it, the other reuses it | Task 15 |
 | T1 spike (Q6 link rendering, Q11 export/update on an existing app) | answers shared with S1 | Task 2 |
 
-**Gate G2 (before Phase 2):** plan B Tasks 2, 6, 7, 9, 10 merged into main and main merged into the umbrella. If the owner wants this plan to move first, the controller runs those five plan-B tasks, exactly as plan B writes them, into main first; this plan never copies them into the umbrella. Phase 0, Phase 1 and Phase 3 (Tasks 1–9, 16–19) do not touch Slack and do not wait for G2; Tasks 10, 14, 15, 23 (and everything after them) do.
+**Gate G2 (before Phase 2):** plan B Tasks 2, 6, 7, 9, 10 merged into main and main merged into the umbrella. The owner chose to wait for the #1709 session to land them (ask #1518); this plan never builds or copies them. Phases 0, 1 and 3 run before the gate opens. Phase 0, Phase 1 and Phase 3 (Tasks 1–9, 16–19) do not touch Slack and do not wait for G2; Tasks 10, 14, 15, 23 (and everything after them) do.
 
 ## Decisions taken in this plan (agent; flag at review)
 
@@ -56,7 +56,7 @@ This plan **does not rebuild them**; it builds on plan B's contracts as that pla
 | P3 | One migration carries `company_slug` (5 tables), `jira_accounts.auth_kind` and `jira_accounts.last_pdr_at` | one renumber instead of three |
 | P4 | Per-account client files for Atlassian, Linear, Microsoft are `<workspace>/<vendor>_client_<accountID>.json` (0600) via `internal/oauthclient.Store`; Google keeps `google_credentials_<id>.json` (`calendar.CredentialStore`) | spec §8 "new Atlassian and Linear equivalents" |
 | P5 | `invalid_client` on refresh: `company_slug != ''` → `invalid_client` ("your company changed its app; open the new link"); `company_slug = ''` → `unknown_client` ("open your company's link") | no stored "issuing client" exists for Jira/Linear tokens; the slug is the honest discriminator |
-| P6 | Memory erase in PDR: Jira and Confluence people are **not** memory aliases today (person entities are keyed by Slack ids, `internal/memory/jira_ingest.go` `linkJiraIssueEntities`). PDR erases `jira_user_map.slack_user_id` (so no new link forms) and calls a new `memory.ForgetAliases(prefixes)` that removes any `jira:<accountId>`/`confluence:<accountId>` alias and tombstones an orphaned node — a no-op today, a guard for later | spec §6 assumed the alias exists |
+| P6 | Memory is not touched by the Atlassian erase: memory person entities are keyed by Slack ids (no `jira:<accountId>` alias exists, `internal/memory/jira_ingest.go` `linkJiraIssueEntities`); PDR deletes the `jira_user_map` row (incl. `slack_user_id`, so no new Jira→Slack link forms) and leaves memory facts to age out under retention. No `ForgetAliases` | ask #1518 |
 | P7 | Dry authorize check = an HTTP GET of the authorize URL without following redirects, classified by status/`error` param/AADSTS code; the exact markers come from S1 | spec §2.4 says "dry authorize URL" without a mechanism |
 
 ## Writers of the same data and who wins
@@ -70,7 +70,6 @@ This plan **does not rebuild them**; it builds on plan B's contracts as that pla
 | `jira_accounts.auth_kind`, API token file | `jira add --api-token-stdin` and its re-auth only | sync reads, never writes |
 | Per-account client files | account add from a bundle; a **Replace** confirm | token refresh never writes them |
 | `jira_user_map`, `ext_users`, Jira person columns | Jira/Confluence syncs, the PDR phase | PDR runs after the syncs in the same cycle (last word); Atlassian returns closed accounts anonymised, so a re-insert writes the same anonymous value |
-| Memory aliases/nodes | memory engine, PDR via `memory.ForgetAliases` | the tombstone API, never a raw delete |
 | `last_pdr_at` | the PDR phase only | stamped after a whole-account success |
 | Account `status/error` codes of this plan | refreshers (`invalid_client`/`unknown_client`/`api_token_dead`), `confirm --replace` (`company_changed_app`), PDR (`pdr_scope_missing`), a successful login clears | last writer wins; a successful login always clears |
 
@@ -501,14 +500,12 @@ func EraseClosed(ctx context.Context, d *db.DB, v *memory.Vault, accountID int64
 // internal/db
 func (db *DB) AtlassianPersonIDs(accountID int64) ([]string, error)       // jira_user_map, issue/comment/changelog authors, ext_users
 func (db *DB) EraseAtlassianPeople(tx *sql.Tx, accountID int64, ids []string) error
-// internal/memory (P6)
-func ForgetAliases(ctx context.Context, v *Vault, d *db.DB, aliases []string) (tombstoned int, err error)
 ```
-- Erase: `jira_user_map` row deleted (email, display name, `slack_user_id`); `ext_users` row deleted; every Jira/Confluence person column for that id (`*_display_name`, `*_email`, `*_slack_id` paired with an `*_account_id` column) set to `''` (the UI shows "Former user" for a bare id); `kb_dirty` rows for the account's Jira and Confluence docs so the next KB pass re-renders; `ForgetAliases(["jira:<id>","confluence:<id>"])`. Free-text derived texts untouched.
+- Erase: `jira_user_map` row deleted (email, display name, `slack_user_id`); `ext_users` row deleted; every Jira/Confluence person column for that id (`*_display_name`, `*_email`, `*_slack_id` paired with an `*_account_id` column) set to `''` (the UI shows "Former user" for a bare id); `kb_dirty` rows for the account's Jira and Confluence docs so the next KB pass re-renders. Memory and free-text derived texts untouched (P6, ask #1518; D17).
 - A missing `report:personal-data` scope (403) → `error='pdr_scope_missing'`, `status` unchanged (Swift shows "Re-login to finish the setup" for that code); a later successful report clears it.
 
-- [ ] **Step 1: Failing tests:** `TestPDR_ChunksOf90` (181 ids → 3 calls), `TestPDR_RunsEvery7Days` (fake clock; `last_pdr_at` stamped only on success), `TestPDR_ClosedErasesEveryTable`, `TestPDR_EraseCoversEveryAtlassianPersonColumn` (schema-driven over `schema.sql`: every column pair `<x>_account_id` + `<x>_display_name|_email|_slack_id` in a `jira_*`/`ext_*` table is erased or listed in `pdrKeptColumns` with a reason), `TestPDR_UpdatedRefetchesNextSync`, `TestPDR_ErrorErasesNothing` (network, 401, 403), `TestPDR_ScopeMissingHint`, `TestPDR_KillMidEraseAllOrNothing` (fail inside the tx → nothing changed; next run completes; idempotent), `TestPDR_SharedAppAccountsRunToo`, `TestForgetAliases_TombstonesOrphanKeepsShared`, `TestDaemon_PDRAfterExternalSync`.
-- [ ] **Step 2:** `go test ./internal/atlassianpdr ./internal/db ./internal/memory ./internal/daemon -run 'PDR|ForgetAliases|AtlassianPe'` → FAIL; implement; → PASS; `make lint-diff`.
+- [ ] **Step 1: Failing tests:** `TestPDR_ChunksOf90` (181 ids → 3 calls), `TestPDR_RunsEvery7Days` (fake clock; `last_pdr_at` stamped only on success), `TestPDR_ClosedErasesEveryTable`, `TestPDR_EraseCoversEveryAtlassianPersonColumn` (schema-driven over `schema.sql`: every column pair `<x>_account_id` + `<x>_display_name|_email|_slack_id` in a `jira_*`/`ext_*` table is erased or listed in `pdrKeptColumns` with a reason), `TestPDR_UpdatedRefetchesNextSync`, `TestPDR_ErrorErasesNothing` (network, 401, 403), `TestPDR_ScopeMissingHint`, `TestPDR_KillMidEraseAllOrNothing` (fail inside the tx → nothing changed; next run completes; idempotent), `TestPDR_SharedAppAccountsRunToo`, `TestPDR_MemoryUntouched` (memory_nodes/aliases/provenance row counts equal before and after an erase), `TestDaemon_PDRAfterExternalSync`.
+- [ ] **Step 2:** `go test ./internal/atlassianpdr ./internal/db ./internal/daemon -run 'PDR|AtlassianPe'` → FAIL; implement; → PASS; `make lint-diff`.
 - [ ] **Step 3: Commit** `feat(jira): Atlassian Personal Data Reporting erases closed accounts (#1887)`.
 
 **Guards:** `go test ./internal/memory`, `go test ./internal/kb -run Dirty`, `go test ./internal/db -run 'Purge02|TestAllTablesExist'`, `go test ./internal/daemon -run 'Phase|Cycle'`.
@@ -792,7 +789,7 @@ Phase 5  T28 (T5,T6,T7a,T7b,T9) ── T29 (released + owner's go)   T30 (all)  
 | Deny list (T7b) | 9 | `TestDenyHosts_BundleOnlyAdds` |
 | Personal Gmail path (T8) | 18, 26 | `TestGoogleAddClientID_SavesPersonalBundle`, `OwnGoogleProjectModelTests` |
 | API token (T13, D20, D22, D23) | 6, 17, 27 | `TestJiraClient_AuthHeaderPerKind`, `TestJiraAPIToken401IsErrorNotRevoked`, `TestTokenLookup_*`, `AtlassianTokenFormModelTests` |
-| PDR (T9, D17) | 16 | `TestPDR_*`, `TestForgetAliases_*` |
+| PDR (T9, D17) | 16 | `TestPDR_*` |
 | Retirements + banners (T10) | 19, 24, 25b | `TestGoogleShared_*`, `testShared*Banner` |
 | Corp bridge (T11a) / corp gone (T11b) | 28 / 29 | `TestBridge_*`, `testCorpStaysGatedUntilMigrated` / script test |
 | Guide (T12, C7) | 30 | `go test ./docs/guide` |
@@ -811,6 +808,6 @@ Phase 5  T28 (T5,T6,T7a,T7b,T9) ── T29 (released + owner's go)   T30 (all)  
 ## Self-review (2026-11-18)
 
 - **Coverage:** every row of the parent's §9 and the screens spec's §13 maps to a task above (table "Spec promises → tasks → tests"); every §7 failure row and every screens §10 row is a named test in its task. Not code, so not tasks: D15 (owner turns Sharing off), the "Watchtower not running" row (doc only, Task 30).
-- **Unmapped spec assumptions, resolved here:** memory has no `jira:<accountId>` person alias today (P6); "dry authorize URL" has no defined mechanism (P7, S1.6); no stored "issuing client" for Jira/Linear tokens (P5); the bridge needs the company name, which no corp profile carries (`BUILD_COMPANY_NAME` ldflag, Task 28); Slack plan B is unshipped (Gate G2).
+- **Unmapped spec assumptions, resolved here:** memory has no `jira:<accountId>` person alias, so memory is left untouched (P6, ask #1518); "dry authorize URL" has no defined mechanism (P7, S1.6); no stored "issuing client" for Jira/Linear tokens (P5); the bridge needs the company name, which no corp profile carries (`BUILD_COMPANY_NAME` ldflag, Task 28); Slack plan B is unshipped (Gate G2).
 - **Types:** `clientSource`, `companyForcedBundle`, `Store.LoadAll(forcedWire)`, `Draft.IsChecked`, `atlassianpdr.Status` are defined once and used with the same names; `classifyBulkUser`/`LookupClosed` live in `internal/atlassianpdr` to avoid an import cycle with `internal/jira`.
 - **Review Focus:** each of the five lines has its test in the owning task (Tasks 4, 5, 7b, 9, 10).

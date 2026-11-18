@@ -33,7 +33,7 @@ After this work:
 | D11 | Our shared Google client keeps the Calendar scopes only; Gmail is requested only through a company's or a person's own client | ask #1455 (existing tokens live on until Google refuses them, plus a banner) |
 | D12 | Linear keeps our shared app (PKCE, no secret); a bundle may carry the company's own Linear client id. Our obligations to Linear are checked in spike S3 (Linear's API and OAuth app terms); if S3 finds one we cannot meet, the company client becomes required and the shared app is retired like Atlassian's | decided by the agent |
 | D16 | Microsoft 365 / Outlook joins the bundle (`microsoft` block: the company's own Entra app registration, public client, PKCE, no secret, the tenant id); our shared Microsoft client id stays for personal Outlook accounts | ask #1458 |
-| D17 | Atlassian PDR erases what came from Atlassian about a closed account, including the memory and people data keyed by that account id; free-text derived texts (digests, briefings, chat transcripts) are not rewritten and age out under retention | ask #1458 |
+| D17 | Atlassian PDR erases the people data that came from Atlassian about a closed account (Jira/Confluence user rows, their names and emails on synced rows, the Jira→Slack mapping); memory is not touched — memory people are keyed by Slack ids — and free-text derived texts (digests, briefings, chat transcripts) are not rewritten; both age out under retention | ask #1458, ask #1518 |
 | D18 | The corp build's baked deny list moves into the bundle (`link_deny_hosts`), not dropped; a bundle can only add hosts to refuse, never allow one | decided by the agent |
 | D13 | The Live layer for Gmail/Calendar/Atlassian connectors (generalised Slack Live) is a separate project, not part of this spec | decided by the agent |
 | D19 | Every wizard step (Slack, Google, Atlassian, Linear, Microsoft) first looks for a company app the Mac already knows and reuses it; only when none is found does it ask **Create new** (default) / **We already have one**, with a hint for "don't know". Never a second app by accident | ask #1473 ("не только Slack. Так по всем конекторам") |
@@ -160,7 +160,7 @@ Test: a corp-flavored workspace fixture → bridge → public resolver gives eve
 - A daemon phase, per Atlassian account, once every 7 days (stored `last_pdr_at`): collect the stored account ids of that site (Jira users, issue/comment authors, `ext_users` for Confluence), POST them in chunks of 90 to `https://api.atlassian.com/app/report-accounts/` with the account's token.
 - `closed` → erase, in one write transaction per account, what Watchtower got from Atlassian about that person (D17):
   - `jira_user_map` row (email, display name, Slack mapping), `ext_users` row, the person's fields on Jira issue/comment rows (author/assignee display names) → the bare account id, shown as "Former user";
-  - memory: the alias `jira:<accountId>` (and the Confluence alias) is removed; an entity node left with no other alias is tombstoned (the memory engine's existing `tombstone` status); an entity that also has a Slack or mail alias is kept — that data came from another source, not from Atlassian;
+  - memory: not touched (ask #1518). Memory people are keyed by Slack ids, not Atlassian ids; deleting the `jira_user_map` row (with its Slack mapping) stops new Jira→Slack links, and Jira-derived facts age out under retention;
   - KB documents rendered from Jira issues and Confluence pages are re-rendered on the next KB pass (they read the erased names);
   - not rewritten: free-text derived texts (digests, briefings, chat transcripts, inbox card text). They are summaries, not Atlassian records; they age out under retention. Stated in the guide's privacy page.
 - `updated` → refetch the profile on the next sync.
@@ -200,7 +200,7 @@ Test: a corp-flavored workspace fixture → bridge → public resolver gives eve
 - **Per-account client config** (Google credentials file, new Atlassian and Linear equivalents): written when an account is added from a bundle, rewritten only by a newer bundle's confirmation; token refresh never touches it.
 - **Atlassian API token and `auth_kind`:** written only by `jira add --api-token-stdin` and its re-auth (one Go write each); the sync reads them and never writes them.
 - **`company_slug` on account rows:** the account-add path (from a bundle), the bridge corp build, and a **Replace** of a bundle; all Go, one write transaction each; Swift never writes it. The bridge runs at launch before the daemon starts, so it does not race an add.
-- **Memory aliases and entity nodes:** the memory engine and the PDR phase; the PDR phase goes through the memory package's own tombstone API, so the engine's next reconcile sees a tombstone, not a missing row.
+- **Memory:** the memory engine only; the PDR phase does not write memory (D17, ask #1518).
 - **Jira user rows and `ext_users`:** the Jira/Confluence syncs and the PDR phase. A sync can re-insert a profile PDR just erased; Atlassian already returns closed accounts anonymised, so the last writer writes the same anonymous value. The PDR phase runs after the sync in the same cycle so it has the last word.
 
 ## 9. Promises → tasks → tests
@@ -221,7 +221,7 @@ Test: a corp-flavored workspace fixture → bridge → public resolver gives eve
 | Company deny list applies | T7b `link_deny_hosts` into `media.RefusedHosts` | linkrule test |
 | Personal Gmail through own project | T8 personal Google path | store + CLI wrapper tests |
 | Jira and Confluence by an API token, as an option (D20) | T13 `auth_kind` migration, Basic-auth path in `internal/jira`, `jira add --api-token-stdin`, Connections option | migration golden; client header test per kind; CLI test (token never in argv/log); `myself` check; token 401 → `error` (D22); the 7-day profile lookup erases a closed person on a token account (D23) |
-| Atlassian PDR, erasing memory and people data too | T9 daemon phase | fake endpoint tests; erase test over every table in §6 |
+| Atlassian PDR, erasing people data (memory untouched, ask #1518) | T9 daemon phase | fake endpoint tests; erase test over every table in §6 |
 | Shared Google = Calendar only; shared Jira retired; banners | T10 retirements | scope tests, banner model tests |
 | Corp installs move without breaking accounts | T11a bridge corp build (bundle from baked values, `company_slug`, `company_migrated` gate) | corp-workspace fixture test, UpdateService gate test |
 | Corp build gone, its settings moved | T11b build scripts drop the corp flavor | build-script check |
