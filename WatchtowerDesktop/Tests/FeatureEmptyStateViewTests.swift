@@ -131,6 +131,38 @@ final class FeatureEmptyStateViewTests: XCTestCase {
                        briefings.primaryAction)
     }
 
+    /// Background AI paused (#1886, spec §6.2): the paused line and Allow,
+    /// which opens the consent screen; no button when the organization
+    /// decided; Catch-Up keeps its own Build a recap (an owner gesture).
+    func testBackgroundAIPausedShowsAllowOrNothing() throws {
+        var tapped: EmptyStateAction?
+        let view = makeView(readiness: .backgroundAIPaused(managed: false)) { tapped = $0 }
+        XCTAssertNoThrow(try view.inspect().find(text: BackgroundAIConsentCopy.readinessPaused))
+        XCTAssertThrowsError(try view.inspect().find(button: "Turn on"))
+        try view.inspect().find(button: BackgroundAIConsentCopy.allowAction).tap()
+        XCTAssertEqual(tapped, .allowBackgroundAI)
+
+        let org = makeView(readiness: .backgroundAIPaused(managed: true))
+        XCTAssertNoThrow(try org.inspect().find(text: BackgroundAIConsentCopy.readinessOrg))
+        XCTAssertThrowsError(try org.inspect().find(button: BackgroundAIConsentCopy.allowAction))
+        XCTAssertThrowsError(try org.inspect().find(ViewType.Button.self))
+
+        let catchUp = try XCTUnwrap(EmptyStateCopyTable.copy(for: "catchUp", briefingHour: 8))
+        for managed in [false, true] {
+            XCTAssertEqual(
+                FeatureEmptyState<EmptyView>.visibleAction(copy: catchUp, readiness: .backgroundAIPaused(managed: managed)),
+                .tabAction(label: "Build a recap"))
+            let view = makeView(copy: catchUp, readiness: .backgroundAIPaused(managed: managed))
+            XCTAssertThrowsError(try view.inspect().find(text: BackgroundAIConsentCopy.readinessPaused))
+            XCTAssertThrowsError(try view.inspect().find(text: BackgroundAIConsentCopy.readinessOrg))
+            XCTAssertNoThrow(try view.inspect().find(button: "Build a recap"))
+        }
+        XCTAssertEqual(
+            FeatureEmptyState<EmptyView>.visibleAction(
+                copy: Self.memoryCopy, readiness: .backgroundAIPaused(managed: true), turnOnError: "restart failed"),
+            .turnOn(featureID: "memory"))
+    }
+
     /// A Turn on whose restart failed keeps its error and Try again while the
     /// daemon is down.
     func testDaemonStoppedKeepsAFailedTurnOnsRetry() throws {

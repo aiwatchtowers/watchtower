@@ -90,6 +90,23 @@ extension BackgroundAIConsentShotFixtures {
             },
             DesignShot(name: "ai-consent-sheet-live-error", size: NSSize(width: 560, height: 0)) {
                 AnyView(LiveConsentSheet(model: failedModel()))
+            },
+            // Task 15: the real empty state and Home beside their mockups.
+            DesignShot(name: "ai-consent-empty-live-paused", size: NSSize(width: 720, height: 360)) {
+                AnyView(LiveEmptyState(managed: false))
+            },
+            DesignShot(name: "ai-consent-empty-live-org", size: NSSize(width: 720, height: 360)) {
+                AnyView(LiveEmptyState(managed: true))
+            },
+            DesignShot(name: "ai-consent-home-live-paused", size: NSSize(width: 780, height: 1440)) {
+                HomeShotFixtures.home(
+                    gettingReady: true,
+                    backgroundAI: HomeBackgroundAICard.make(BackgroundAIConsent.resolve(answer: nil, policy: nil)))
+            },
+            DesignShot(name: "ai-consent-home-live-org", size: NSSize(width: 780, height: 1440)) {
+                HomeShotFixtures.home(
+                    gettingReady: true,
+                    backgroundAI: HomeBackgroundAICard.make(BackgroundAIConsent.resolve(answer: nil, policy: false)))
             }
         ]
     }
@@ -137,6 +154,23 @@ private struct LiveConsentStep: View {
         .padding(Spacing.page)
         .frame(maxWidth: .infinity, alignment: .top)
         .background(Surface.window)
+    }
+}
+
+/// The Digests tab's real empty state while background AI is paused.
+private struct LiveEmptyState: View {
+    let managed: Bool
+
+    var body: some View {
+        TabEmptyState(.digests, context: context) { EmptyView() }
+            .detailBackground()
+    }
+
+    private var context: EmptyStateContext {
+        var context = EmptyStateContext()
+        let managed = managed
+        context.readiness = { _ in .backgroundAIPaused(managed: managed) }
+        return context
     }
 }
 
