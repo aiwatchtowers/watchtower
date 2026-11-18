@@ -30,7 +30,8 @@ enum MultiFolderShotFixtures {
             shot("merge-refused", width: 360) { MultiFolderMergeDialog(refused: true) },
             shot("feed-parent", width: 600) { MultiFolderFeedParent() },
             shot("strip-child", width: 760) { MultiFolderStripChild() },
-            shot("board-card-folder", width: 380) { MultiFolderBoardCards() }
+            shot("board-card-folder", width: 380) { MultiFolderBoardCards() },
+            shot("message-in-prompt", width: 760) { MultiFolderMessageInPrompt() }
         ]
     }
 
@@ -73,6 +74,9 @@ enum MultiFolderMockCopy {
     static let lastFolder = "A workbench needs at least one folder."
     static let benchFolders = "app, hub, site"
     static let parentWaiting = "Sub-sessions working · 2 sub-sessions"
+    static let messageWaitingSuffix = "· Agent message waiting in the prompt"
+    static let messageInPromptNotice = "An agent's message is in the prompt. Press Return in the terminal to send it."
+    static let showInTerminal = "Show in Terminal"
     static let fromParent = "↖ from “Export reports to PDF”"
 }
 
@@ -111,6 +115,8 @@ private struct MockSessionRow: View {
     var folder: String?
     let place: String
     var closed: String?
+    /// A second, warning-toned part of the state line (§6.6).
+    var captionWarning: String?
     var selected = false
 
     var body: some View {
@@ -124,7 +130,12 @@ private struct MockSessionRow: View {
                 }
             }
             VStack(alignment: .leading, spacing: Spacing.tight) {
-                SessionStateLabel(state: state, caption: caption)
+                HStack(spacing: Spacing.small) {
+                    SessionStateLabel(state: state, caption: caption)
+                    if let captionWarning {
+                        Text(captionWarning).foregroundStyle(Tone.warning).lineLimit(1)
+                    }
+                }
                 if let report {
                     HStack(spacing: Spacing.small) {
                         ProgressView(value: report.progress).frame(width: 28).controlSize(.mini)
@@ -715,6 +726,46 @@ private struct MultiFolderStripChild: View {
         .padding(.horizontal, Spacing.medium)
         .frame(minHeight: 36)
         .padding(.vertical, Spacing.small)
+        .detailBackground()
+    }
+}
+
+// MARK: - 11. A typed message waiting in the prompt (§6.6)
+
+/// The sessions-panel row of a session whose agent message sits typed in its
+/// prompt, beside the top of that session's pane with the notice bar.
+private struct MultiFolderMessageInPrompt: View {
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            MockSessionRow(title: "PDF export API", state: .init(kind: .stopped, live: true), caption: "Idle",
+                           folder: "hub", place: "⑂ export-api", captionWarning: MultiFolderMockCopy.messageWaitingSuffix)
+                .frame(width: 300)
+            Divider()
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: Spacing.compact) {
+                    SessionLiveDot(state: .init(kind: .stopped, live: true))
+                    Text("PDF export API").font(.callout.weight(.semibold))
+                    Text("›").foregroundStyle(.tertiary)
+                    FolderLabel(name: "hub")
+                    Spacer(minLength: 0)
+                }
+                .font(.caption)
+                .lineLimit(1)
+                .padding(.horizontal, Spacing.medium)
+                .frame(minHeight: 36)
+                HStack(spacing: Spacing.compact) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Tone.warning)
+                    Text(MultiFolderMockCopy.messageInPromptNotice)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: Spacing.small)
+                    Button(MultiFolderMockCopy.showInTerminal) {}.buttonStyle(.kitSecondary).fixedSize()
+                }
+                .font(.callout)
+                .padding(.horizontal, Spacing.medium)
+                .padding(.vertical, Spacing.regular)
+                .background(Tone.warning.opacity(0.12))
+            }
+        }
         .detailBackground()
     }
 }
