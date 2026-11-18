@@ -27,6 +27,8 @@ package enum CompanyBundleRefusal: String, Error, CaseIterable, Sendable {
 package struct CompanyBundle: Encodable, Equatable, Sendable {
     package static let version = 1
     package static let maxEncodedLength = 3000
+    /// Would collide with the store's draft.json in company/.
+    private static let reservedSlug = "draft"
 
     package struct Slack: Encodable, Equatable, Sendable {
         package var teamID: String
@@ -128,10 +130,76 @@ package struct CompanyBundle: Encodable, Equatable, Sendable {
         "v", "company", "personal", "slack", "google", "atlassian", "linear", "microsoft", "link_deny_hosts"
     ]
 
+    /// Go's `plainJSONText`, byte for byte: refuses a NUL byte (Foundation
+    /// sniffs UTF-16/32 without a BOM), a `\u` escape of a UTF-16 surrogate
+    /// (Go reads a lone one as U+FFFD), an object key that is not printable
+    /// ASCII without escapes (Swift would merge canonically equal keys), and a
+    /// key twice in one object. A bracket-and-string scan, not a validator.
+    private static func plainJSONText(_ raw: [UInt8]) -> Bool {
+        struct Frame {
+            var object: Bool
+            var wantKey: Bool
+            var keys: Set<[UInt8]> = []
+        }
+        var stack: [Frame] = []
+        var i = 0
+        while i < raw.count {
+            switch raw[i] {
+            case 0:
+                return false
+            case UInt8(ascii: "{"):
+                stack.append(Frame(object: true, wantKey: true))
+            case UInt8(ascii: "["):
+                stack.append(Frame(object: false, wantKey: false))
+            case UInt8(ascii: "}"), UInt8(ascii: "]"):
+                guard stack.popLast() != nil else { return false }
+            case UInt8(ascii: ","):
+                if stack.last?.object == true { stack[stack.count - 1].wantKey = true }
+            case UInt8(ascii: "\""):
+                guard let (end, plainKey) = scanString(raw, from: i) else { return false }
+                if let top = stack.last, top.object, top.wantKey {
+                    let key = Array(raw[(i + 1)..<end])
+                    guard plainKey, !top.keys.contains(key) else { return false }
+                    stack[stack.count - 1].keys.insert(key)
+                    stack[stack.count - 1].wantKey = false
+                }
+                i = end
+            default:
+                break
+            }
+            i += 1
+        }
+        return true
+    }
+
+    /// Scans the JSON string opening at `open`: the index of its closing
+    /// quote and whether it is a plain key (printable ASCII, no escape); nil
+    /// for a surrogate escape or an unterminated string.
+    private static func scanString(_ raw: [UInt8], from open: Int) -> (end: Int, plainKey: Bool)? {
+        var plainKey = true
+        var i = open + 1
+        while i < raw.count, raw[i] != UInt8(ascii: "\"") {
+            let c = raw[i]
+            if c < 0x20 || c > 0x7E { plainKey = false }
+            if c == UInt8(ascii: "\\") {
+                plainKey = false
+                if i + 3 < raw.count, raw[i + 1] == UInt8(ascii: "u"),
+                   raw[i + 2] == UInt8(ascii: "d") || raw[i + 2] == UInt8(ascii: "D"),
+                   Array("89abcdefABCDEF".utf8).contains(raw[i + 3]) {
+                    return nil
+                }
+                i += 1 // the escaped character, so `\\ud800` (an escaped backslash) passes
+            }
+            i += 1
+        }
+        return i < raw.count ? (i, plainKey) : nil
+    }
+
     private static func read(_ data: Data, origin: CompanyBundleOrigin) throws -> Self {
         // Go's decoder refuses a byte-order mark and invalid UTF-8;
         // JSONSerialization would accept the first and sniff other encodings.
-        guard !data.starts(with: [0xEF, 0xBB, 0xBF]), String(data: data, encoding: .utf8) != nil,
+        guard !data.starts(with: [0xEF, 0xBB, 0xBF]), String(bytes: data, encoding: .utf8) != nil,
+              plainJSONText(Array(data)),
               let top = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { throw CompanyBundleRefusal.damaged }
         // The version first: a newer bundle may carry fields this build lacks.
@@ -268,7 +336,6 @@ package struct CompanyBundle: Encodable, Equatable, Sendable {
 
     // MARK: - Shapes (the regular expressions of Go's bundle.go)
 
-    private static func bytesAll(_ s: String, _ ok: (UInt8) -> Bool) -> Bool { s.utf8.allSatisfy(ok) }
     private static func isDigit(_ b: UInt8) -> Bool { b >= 0x30 && b <= 0x39 }
     private static func isLowerAlnum(_ b: UInt8) -> Bool { isDigit(b) || (b >= 0x61 && b <= 0x7A) }
     private static func isUpperAlnum(_ b: UInt8) -> Bool { isDigit(b) || (b >= 0x41 && b <= 0x5A) }
@@ -298,12 +365,12 @@ package struct CompanyBundle: Encodable, Equatable, Sendable {
 
     /// `^[A-Za-z0-9_-]{1,128}$`
     private static func isPlainID(_ s: String) -> Bool {
-        (1...128).contains(s.utf8.count) && bytesAll(s) { isWireByte($0) }
+        (1...128).contains(s.utf8.count) && s.utf8.allSatisfy(isWireByte)
     }
 
     /// `^[\x21-\x7e]{1,256}$`
     private static func isSecret(_ s: String) -> Bool {
-        (1...256).contains(s.utf8.count) && bytesAll(s) { $0 >= 0x21 && $0 <= 0x7E }
+        (1...256).contains(s.utf8.count) && s.utf8.allSatisfy { $0 >= 0x21 && $0 <= 0x7E }
     }
 
     /// A lower-case GUID.
@@ -327,12 +394,12 @@ package struct CompanyBundle: Encodable, Equatable, Sendable {
         return labelsOK && last.utf8.contains { $0 >= 0x61 && $0 <= 0x7A }
     }
 
-    /// Non-empty, at most 200 UTF-8 bytes, no control or line/paragraph
-    /// separator characters.
+    /// Non-empty, at most 200 UTF-8 bytes, no control, format (bidi overrides,
+    /// zero-width characters) or line/paragraph separator characters.
     private static func validCompany(_ c: String) -> Bool {
         guard !c.isEmpty, c.utf8.count <= 200 else { return false }
         return !c.unicodeScalars.contains {
-            [.control, .lineSeparator, .paragraphSeparator].contains($0.properties.generalCategory)
+            [.control, .format, .lineSeparator, .paragraphSeparator].contains($0.properties.generalCategory)
         }
     }
 
@@ -363,7 +430,7 @@ package struct CompanyBundle: Encodable, Equatable, Sendable {
         return data
     }
 
-    private static func base64URL(_ data: Data) -> String {
+    static func base64URL(_ data: Data) -> String {
         data.base64EncodedString()
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
@@ -394,10 +461,12 @@ package struct CompanyBundle: Encodable, Equatable, Sendable {
         }
         let s = String(bytes: out, encoding: .utf8) ?? ""
         if s.isEmpty { return "company" }
-        return s == "draft" ? "draft-company" : s
+        return s == reservedSlug ? s + "-company" : s
     }
 
-    /// The JSON Go's `Encode` writes: sorted keys, `/` unescaped.
+    /// The JSON Go's `Encode` writes: sorted keys, `/` unescaped. With
+    /// `encoded()`, the Go-parity check of the shared fixture; the Desktop
+    /// never writes a bundle (Go owns the stored files).
     func encodedJSON() throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]

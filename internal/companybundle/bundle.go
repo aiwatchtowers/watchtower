@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -102,9 +103,6 @@ const (
 	RefusalNewerVersion Refusal = "newer_version"
 )
 
-// refusals is every Refusal; the Swift enum holds the same raw values.
-var refusals = []Refusal{RefusalDamaged, RefusalTooLong, RefusalSiteNotHTTPS, RefusalPersonal, RefusalNewerVersion}
-
 // ParseError is the error every refused bundle returns; Detail names the
 // offending field and is for logs, never shown to the user.
 type ParseError struct {
@@ -129,8 +127,8 @@ var (
 	slackClientID  = regexp.MustCompile(`^[0-9]+\.[0-9]+$`)
 	googleClientID = regexp.MustCompile(`^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$`)
 	plainID        = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
-	secret         = regexp.MustCompile(`^[\x21-\x7e]{1,256}$`)
-	guid           = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	secretRE       = regexp.MustCompile(`^[\x21-\x7e]{1,256}$`)
+	guidRE         = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	hostLabel      = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 )
 
@@ -148,6 +146,86 @@ func asciiLower(s string) string {
 		}
 		return r
 	}, s)
+}
+
+// plainJSONText refuses, before any decoder sees them, the inputs Go's
+// encoding/json and Foundation's JSONSerialization read differently:
+//   - a NUL byte (Foundation sniffs UTF-16/32 text without a BOM);
+//   - a \u escape of a UTF-16 surrogate (Go turns a lone one into U+FFFD,
+//     Foundation refuses it; a valid escaped pair goes too, our encoders
+//     write raw UTF-8);
+//   - an object key that is not printable ASCII without escapes (every real
+//     key is; Swift would merge canonically equal Unicode keys), or a key
+//     twice in one object (which duplicate wins is not pinned in Foundation).
+//
+// It is a bracket-and-string scan, not a validator: malformed JSON is the
+// decoder's to refuse. The Swift twin runs the same scan.
+func plainJSONText(raw []byte) bool {
+	type frame struct {
+		object, wantKey bool
+		keys            map[string]bool
+	}
+	var stack []*frame
+	for i := 0; i < len(raw); i++ {
+		switch raw[i] {
+		case 0:
+			return false
+		case '{':
+			stack = append(stack, &frame{object: true, wantKey: true, keys: map[string]bool{}})
+		case '[':
+			stack = append(stack, &frame{})
+		case '}', ']':
+			if len(stack) == 0 {
+				return false
+			}
+			stack = stack[:len(stack)-1]
+		case ',':
+			if len(stack) > 0 && stack[len(stack)-1].object {
+				stack[len(stack)-1].wantKey = true
+			}
+		case '"':
+			end, plainKey, ok := scanString(raw, i)
+			if !ok {
+				return false
+			}
+			if n := len(stack); n > 0 && stack[n-1].object && stack[n-1].wantKey {
+				key := string(raw[i+1 : end])
+				if !plainKey || stack[n-1].keys[key] {
+					return false
+				}
+				stack[n-1].keys[key] = true
+				stack[n-1].wantKey = false
+			}
+			i = end
+		}
+	}
+	return true
+}
+
+// scanString scans the JSON string opening at open: the index of its closing
+// quote and whether it is a plain key (printable ASCII, no escape); ok is
+// false for a surrogate escape or an unterminated string.
+func scanString(raw []byte, open int) (end int, plainKey, ok bool) {
+	plainKey = true
+	i := open + 1
+	for ; i < len(raw) && raw[i] != '"'; i++ {
+		c := raw[i]
+		if c < 0x20 || c > 0x7e {
+			plainKey = false
+		}
+		if c == '\\' {
+			plainKey = false
+			if i+3 < len(raw) && raw[i+1] == 'u' && (raw[i+2] == 'd' || raw[i+2] == 'D') &&
+				strings.IndexByte("89abcdefABCDEF", raw[i+3]) >= 0 {
+				return 0, false, false
+			}
+			i++ // the escaped character, so `\\ud800` (an escaped backslash) passes
+		}
+	}
+	if i >= len(raw) {
+		return 0, false, false // unterminated string
+	}
+	return i, plainKey, true
 }
 
 // Parse decodes and validates a wire-form bundle (link, MDM, code).
@@ -171,6 +249,9 @@ func ParseJSON(raw []byte, origin Origin) (Bundle, error) {
 	if !utf8.Valid(raw) {
 		return Bundle{}, damaged("json: invalid UTF-8")
 	}
+	if !plainJSONText(raw) {
+		return Bundle{}, damaged("json: NUL byte, surrogate escape, odd or duplicate key")
+	}
 	top, err := object(raw, "bundle")
 	if err != nil {
 		return Bundle{}, err
@@ -191,14 +272,14 @@ func ParseJSON(raw []byte, origin Origin) (Bundle, error) {
 		return Bundle{}, err
 	}
 	b := Bundle{V: v}
-	if b.Company, err = str(top, "company"); err != nil {
+	if b.Company, err = str(top, "", "company"); err != nil {
 		return Bundle{}, err
 	}
 	b.Company = trimASCII(b.Company)
 	if !validCompany(b.Company) {
 		return Bundle{}, damaged("company")
 	}
-	if b.Personal, err = boolean(top, "personal"); err != nil {
+	if b.Personal, err = boolean(top, "", "personal"); err != nil {
 		return Bundle{}, err
 	}
 	if b.Personal && origin != OriginLocal {
@@ -255,10 +336,10 @@ func parseGoogle(raw json.RawMessage) (*Google, error) {
 	if g.ClientID, err = id(m, "google", "client_id", googleClientID); err != nil {
 		return nil, err
 	}
-	if g.ClientSecret, err = id(m, "google", "client_secret", secret); err != nil {
+	if g.ClientSecret, err = id(m, "google", "client_secret", secretRE); err != nil {
 		return nil, err
 	}
-	d, err := str(m, "google.domain")
+	d, err := str(m, "google", "domain")
 	if err != nil {
 		return nil, err
 	}
@@ -278,17 +359,17 @@ func parseAtlassian(raw json.RawMessage) (*Atlassian, error) {
 	if a.ClientID, err = id(m, "atlassian", "client_id", plainID); err != nil {
 		return nil, err
 	}
-	if a.ClientSecret, err = id(m, "atlassian", "client_secret", secret); err != nil {
+	if a.ClientSecret, err = id(m, "atlassian", "client_secret", secretRE); err != nil {
 		return nil, err
 	}
-	site, err := str(m, "atlassian.site")
+	site, err := str(m, "atlassian", "site")
 	if err != nil {
 		return nil, err
 	}
 	if a.Site, err = normalizeSite(site); err != nil {
 		return nil, err
 	}
-	if a.Confluence, err = boolean(m, "atlassian.confluence"); err != nil {
+	if a.Confluence, err = boolean(m, "atlassian", "confluence"); err != nil {
 		return nil, err
 	}
 	return a, nil
@@ -312,18 +393,18 @@ func parseMicrosoft(raw json.RawMessage) (*Microsoft, error) {
 		return nil, err
 	}
 	ms := &Microsoft{}
-	cid, err := str(m, "microsoft.client_id")
+	cid, err := str(m, "microsoft", "client_id")
 	if err != nil {
 		return nil, err
 	}
-	if ms.ClientID = asciiLower(trimASCII(cid)); !guid.MatchString(ms.ClientID) {
+	if ms.ClientID = asciiLower(trimASCII(cid)); !guidRE.MatchString(ms.ClientID) {
 		return nil, damaged("microsoft.client_id")
 	}
-	tid, err := str(m, "microsoft.tenant_id")
+	tid, err := str(m, "microsoft", "tenant_id")
 	if err != nil {
 		return nil, err
 	}
-	if ms.TenantID = asciiLower(trimASCII(tid)); !guid.MatchString(ms.TenantID) && !validHost(ms.TenantID) {
+	if ms.TenantID = asciiLower(trimASCII(tid)); !guidRE.MatchString(ms.TenantID) && !validHost(ms.TenantID) {
 		return nil, damaged("microsoft.tenant_id")
 	}
 	return ms, nil
@@ -391,14 +472,15 @@ func validHost(h string) bool {
 	return strings.ContainsAny(labels[len(labels)-1], "abcdefghijklmnopqrstuvwxyz")
 }
 
-// validCompany: non-empty, at most maxCompanyBytes, no control or line/
+// validCompany: non-empty, at most maxCompanyBytes, no control, format (bidi
+// overrides, zero-width characters: the name is shown for confirmation) or line/
 // paragraph separator characters.
 func validCompany(c string) bool {
 	if c == "" || len(c) > maxCompanyBytes {
 		return false
 	}
 	for _, r := range c {
-		if unicode.Is(unicode.Cc, r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) {
+		if unicode.Is(unicode.Cc, r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r) {
 			return false
 		}
 	}
@@ -418,14 +500,7 @@ func object(raw []byte, field string) (map[string]json.RawMessage, error) {
 // encoding/json's case-insensitive field match.
 func onlyKeys(m map[string]json.RawMessage, field string, allowed ...string) error {
 	for k := range m {
-		found := false
-		for _, a := range allowed {
-			if k == a {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !slices.Contains(allowed, k) {
 			return damaged(field + ": unknown field " + k)
 		}
 	}
@@ -452,36 +527,43 @@ func isAbsent(raw json.RawMessage) bool {
 	return raw == nil || bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
 }
 
-// str reads an optional string member (absent or null → ""); key is the
-// dotted path, its last segment the member name.
-func str(m map[string]json.RawMessage, key string) (string, error) {
-	raw := m[key[strings.LastIndex(key, ".")+1:]]
+// path names a member for ParseError.Detail: "company", "atlassian.site".
+func path(block, name string) string {
+	if block == "" {
+		return name
+	}
+	return block + "." + name
+}
+
+// str reads an optional string member of block (absent or null → "").
+func str(m map[string]json.RawMessage, block, name string) (string, error) {
+	raw := m[name]
 	if isAbsent(raw) {
 		return "", nil
 	}
 	var s string
 	if err := json.Unmarshal(raw, &s); err != nil {
-		return "", damaged(key + ": not a string")
+		return "", damaged(path(block, name) + ": not a string")
 	}
 	return s, nil
 }
 
-// boolean reads an optional bool member (absent or null → false).
-func boolean(m map[string]json.RawMessage, key string) (bool, error) {
-	raw := m[key[strings.LastIndex(key, ".")+1:]]
+// boolean reads an optional bool member of block (absent or null → false).
+func boolean(m map[string]json.RawMessage, block, name string) (bool, error) {
+	raw := m[name]
 	if isAbsent(raw) {
 		return false, nil
 	}
 	var b bool
 	if err := json.Unmarshal(raw, &b); err != nil {
-		return false, damaged(key + ": not a bool")
+		return false, damaged(path(block, name) + ": not a bool")
 	}
 	return b, nil
 }
 
 // id reads a required string member, trims it and matches it against re.
 func id(m map[string]json.RawMessage, vendor, name string, re *regexp.Regexp) (string, error) {
-	s, err := str(m, vendor+"."+name)
+	s, err := str(m, vendor, name)
 	if err != nil {
 		return "", err
 	}
@@ -524,8 +606,8 @@ func marshal(b Bundle) ([]byte, error) {
 	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
-// reservedSlugs would collide with the store's own files in company/.
-var reservedSlugs = map[string]bool{"draft": true}
+// reservedSlug would collide with the store's draft.json in company/.
+const reservedSlug = "draft"
 
 // Slug is the file-name stem for a company: ASCII-lower-cased, every run of
 // characters outside [a-z0-9] one dash, no leading or trailing dash, at most
@@ -535,11 +617,9 @@ var reservedSlugs = map[string]bool{"draft": true}
 func Slug(company string) string {
 	var sb strings.Builder
 	dash := false
-	for i := 0; i < len(company); i++ {
-		c := company[i]
-		if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
-		}
+	lower := asciiLower(company)
+	for i := 0; i < len(lower); i++ {
+		c := lower[i]
 		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
 			if dash && sb.Len() > 0 {
 				sb.WriteByte('-')
@@ -557,7 +637,7 @@ func Slug(company string) string {
 	switch {
 	case s == "":
 		return "company"
-	case reservedSlugs[s]:
+	case s == reservedSlug:
 		return s + "-company"
 	}
 	return s

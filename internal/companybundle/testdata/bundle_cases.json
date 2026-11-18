@@ -968,6 +968,122 @@
   }
  },
  {
+  "name": "lone surrogate escape",
+  "json": "{\"v\":1,\"company\":\"Ac\\ud800me\"}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "escaped surrogate pair",
+  "json": "{\"v\":1,\"company\":\"Acme \\ud83d\\ude00\"}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "escaped backslash before u-d-8",
+  "json": "{\"v\":1,\"company\":\"Acme\\\\ud800\"}",
+  "origin": "link",
+  "want": {
+   "ok": true,
+   "bundle": {
+    "v": 1,
+    "company": "Acme\\ud800"
+   },
+   "slug": "acme-ud800"
+  }
+ },
+ {
+  "name": "escaped non-surrogate in a value",
+  "json": "{\"v\":1,\"company\":\"Ac\\u006de\"}",
+  "origin": "link",
+  "want": {
+   "ok": true,
+   "bundle": {
+    "v": 1,
+    "company": "Acme"
+   },
+   "slug": "acme"
+  }
+ },
+ {
+  "name": "duplicate personal",
+  "json": "{\"v\":1,\"company\":\"Me\",\"personal\":true,\"personal\":false}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "duplicate v",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"v\":2}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "duplicate key in a block",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"linear\":{\"client_id\":\"acmelinear01\",\"client_id\":\"other01\"}}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "escaped key",
+  "json": "{\"\\u0076\":1,\"company\":\"Acme\"}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "canonically equal Unicode keys",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"é\":1,\"é\":2}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "company with a bidi override",
+  "json": "{\"v\":1,\"company\":\"Ac‮me\"}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "company with a zero-width space",
+  "json": "{\"v\":1,\"company\":\"Ac​me\"}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "unterminated string",
+  "json": "{\"v\":1,\"company\":\"Acme}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
   "name": "top level a list",
   "json": "[1]",
   "origin": "link",
@@ -1100,6 +1216,24 @@
  {
   "name": "empty wire",
   "wire": "",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "wire of UTF-16 JSON without a BOM",
+  "wire": "ewAiAHYAIgA6ADEALAAiAGMAbwBtAHAAYQBuAHkAIgA6ACIAQQBjAG0AZQAiAH0A",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "wire of UTF-32 JSON without a BOM",
+  "wire": "ewAAACIAAAB2AAAAIgAAADoAAAAxAAAALAAAACIAAABjAAAAbwAAAG0AAABwAAAAYQAAAG4AAAB5AAAAIgAAADoAAAAiAAAAQQAAAGMAAABtAAAAZQAAACIAAAB9AAAA",
   "origin": "link",
   "want": {
    "ok": false,

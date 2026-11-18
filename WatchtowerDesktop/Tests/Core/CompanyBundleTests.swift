@@ -26,13 +26,6 @@ struct CompanyBundleTests {
         return try #require(String(bytes: data, encoding: .utf8))
     }
 
-    private static func base64URL(_ data: Data) -> String {
-        data.base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "=", with: "")
-    }
-
     private static func check(
         _ result: Result<CompanyBundle, CompanyBundleRefusal>, _ want: [String: Any], _ label: String
     ) throws {
@@ -65,7 +58,7 @@ struct CompanyBundleTests {
                 let data = Data(json.utf8)
                 try Self.check(CompanyBundle.parseJSON(data, origin: origin), want, "\(name) / parseJSON")
                 try Self.check(
-                    CompanyBundle.parse(Self.base64URL(data), origin: origin), want, "\(name) / parse(wire)"
+                    CompanyBundle.parse(CompanyBundle.base64URL(data), origin: origin), want, "\(name) / parse(wire)"
                 )
             }
         }

@@ -278,6 +278,9 @@ func TestSlug_NonASCIIFallsBackToCompany(t *testing.T) {
 	}
 }
 
+// refusals is every Refusal; the Swift enum holds the same raw values.
+var refusals = []Refusal{RefusalDamaged, RefusalTooLong, RefusalSiteNotHTTPS, RefusalPersonal, RefusalNewerVersion}
+
 func TestParse_RefusalReasonsAreClosedSet(t *testing.T) {
 	want := []Refusal{"damaged", "too_long", "site_not_https", "personal", "newer_version"}
 	if !reflect.DeepEqual(refusals, want) {
