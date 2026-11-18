@@ -3,12 +3,16 @@ package media
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"sort"
 	"strings"
+	"sync"
 
 	"golang.org/x/net/publicsuffix"
 
+	"watchtower/internal/company"
+	"watchtower/internal/companybundle"
 	"watchtower/internal/config"
 	"watchtower/internal/doclinks"
 	"watchtower/internal/media/linkrule"
@@ -22,9 +26,10 @@ import (
 var BuildDenyHosts = ""
 
 // DenyHosts is the build seed united with the config's
-// knowledge.link_fetch_deny_hosts: a config list only adds hosts, it never
-// drops the seed. Normalize the result with NormalizeHostSet.
-func DenyHosts(cfg *config.Config) []string {
+// knowledge.link_fetch_deny_hosts and every company bundle's link_deny_hosts
+// (D18): a config list or a bundle only adds hosts, it never drops one.
+// Normalize the result with NormalizeHostSet.
+func DenyHosts(cfg *config.Config, companies []companybundle.Bundle) []string {
 	var out []string
 	add := func(h string) {
 		if h = strings.TrimSpace(h); h != "" {
@@ -39,7 +44,63 @@ func DenyHosts(cfg *config.Config) []string {
 			add(h)
 		}
 	}
+	for _, b := range companies {
+		for _, h := range b.LinkDenyHosts {
+			add(h)
+		}
+	}
 	return out
+}
+
+// DenySource returns DenyHosts over cfg and the company bundles of
+// workspaceDir (company.Store.LoadAll, the forced MDM bundle forced() — nil
+// for none — winning over the stored file of the same company), read afresh
+// at each call so a company confirmed while the daemon runs applies at the
+// next read. A damaged company file, a refused forced bundle or an unreadable
+// company directory adds no host; the problem is logged when it first
+// appears, not again at every read while it stays.
+func DenySource(cfg *config.Config, workspaceDir string, forced func() string, logger *log.Logger) func() []string {
+	store := company.NewStore(workspaceDir)
+	if logger == nil {
+		logger = log.Default()
+	}
+	var mu sync.Mutex
+	var lastProblems string
+	return func() []string {
+		wire := ""
+		if forced != nil {
+			wire = forced()
+		}
+		entries, loadErrs, err := store.LoadAll(wire)
+		var problems []string
+		if err != nil {
+			problems = append(problems, err.Error())
+		}
+		for _, le := range loadErrs {
+			problems = append(problems, le.File+": "+le.Err)
+		}
+		mu.Lock()
+		if joined := strings.Join(problems, "\n"); joined != lastProblems {
+			lastProblems = joined
+			for _, p := range problems {
+				logger.Printf("media: company deny hosts: %s (adds no host to refuse)", p)
+			}
+		}
+		mu.Unlock()
+		bundles := make([]companybundle.Bundle, 0, len(entries))
+		for _, e := range entries {
+			bundles = append(bundles, e.Bundle)
+		}
+		return DenyHosts(cfg, bundles)
+	}
+}
+
+// readDeny calls a deny source; nil is no deny list.
+func readDeny(src func() []string) []string {
+	if src == nil {
+		return nil
+	}
+	return src()
 }
 
 // PublicMailDomains are registrable domains of public mailbox providers: an

@@ -290,7 +290,7 @@ func TestConfluenceRecorder_RefusesSitesAndDeniedHosts(t *testing.T) {
 	c := newConfEnv(t)
 	_, err := c.d.Exec(`UPDATE jira_accounts SET site_url = 'https://wiki.acme.example', cloud_id = 'cloud-1'`)
 	require.NoError(t, err)
-	c.engine = extsync.New(c.d, extsync.Options{Media: ConfluenceRecorder([]string{"intra.example.org"})})
+	c.engine = extsync.New(c.d, extsync.Options{Media: ConfluenceRecorder(func() []string { return []string{"intra.example.org"} })})
 	c.engine.SetFetcher(c.src.JiraAccountID, c.f)
 	c.f.page("p1", 1, confMod, "page body",
 		extsync.MediaRef{Kind: "link", Locator: "url:https://example.com/a", URL: "https://example.com/a?utm_source=x"},

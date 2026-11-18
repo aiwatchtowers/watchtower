@@ -15,8 +15,46 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/company"
+	"watchtower/internal/companybundle"
 	"watchtower/internal/db"
+	"watchtower/internal/media"
 )
+
+// TestSlackMedia_CompanyDenyHostsNotRecorded: with no deny source set, the
+// orchestrator refuses the stored company bundles' deny hosts (D18).
+func TestSlackMedia_CompanyDenyHostsNotRecorded(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ts := newMediaSetup(t, defaultMux())
+	ws := ts.orch.config.WorkspaceDir()
+	require.NoError(t, company.NewStore(ws).Save("acme",
+		companybundle.Bundle{V: 1, Company: "Acme", LinkDenyHosts: []string{"intranet.example.com"}}))
+	ch := ts.ns("C001")
+	var msg goslack.Message
+	msg.Timestamp, msg.User = mediaTS, "U001"
+	msg.Text = "<https://wiki.intranet.example.com/page> <https://example.com/ok>"
+
+	_, err := ts.orch.upsertMessagePage(context.Background(), ch, []goslack.Message{msg})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"url:https://example.com/ok"}, locators(slackMediaRows(t, ts.db, ch, mediaTS)))
+}
+
+// TestSlackMedia_SetDenyHostsForcedBundle: a deny source set by the caller
+// (the forced MDM bundle) is what discovery refuses.
+func TestSlackMedia_SetDenyHostsForcedBundle(t *testing.T) {
+	ts := newMediaSetup(t, defaultMux())
+	forced, err := companybundle.Encode(companybundle.Bundle{V: 1, Company: "Acme", LinkDenyHosts: []string{"forced.example.com"}})
+	require.NoError(t, err)
+	ts.orch.SetDenyHosts(media.DenySource(ts.orch.config, t.TempDir(), func() string { return forced }, log.New(&bytes.Buffer{}, "", 0)))
+	ch := ts.ns("C001")
+	var msg goslack.Message
+	msg.Timestamp, msg.User = mediaTS, "U001"
+	msg.Text = "<https://forced.example.com/a> <https://example.com/ok>"
+
+	_, err = ts.orch.upsertMessagePage(context.Background(), ch, []goslack.Message{msg})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"url:https://example.com/ok"}, locators(slackMediaRows(t, ts.db, ch, mediaTS)))
+}
 
 // mediaRow is one media_items row as the Slack discovery tests read it.
 type mediaRow struct {

@@ -237,6 +237,24 @@ func TestNormalizeHostSet(t *testing.T) {
 	}
 }
 
+// TestNormalizeHostSet_KeepsInvalidPunycodeAsGiven: IDNA refuses an invalid
+// xn-- label; the entry stays refused as given instead of being dropped, and
+// no link on or under it is fetchable. Non-host junk is still dropped.
+func TestNormalizeHostSet_KeepsInvalidPunycodeAsGiven(t *testing.T) {
+	if _, ok := asciiHost("xn--a.example.com"); ok {
+		t.Fatal("precondition: IDNA must refuse xn--a")
+	}
+	m := NormalizeHostSet([]string{" XN--A.Example.com. ", "https://x/", "*", "a b.example", "xn--a..example"})
+	if !m["xn--a.example.com"] || len(m) != 1 {
+		t.Fatalf("%v", m)
+	}
+	for _, u := range []string{"https://xn--a.example.com/", "https://www.xn--a.example.com/p"} {
+		if n, ok := Fetchable(u, m); ok {
+			t.Errorf("%s allowed as %s", u, n)
+		}
+	}
+}
+
 func TestFetchable_CamelCaseAndBrackets(t *testing.T) {
 	for _, u := range []string{
 		"https://example.com/p?accessToken=x", "https://example.com/p?refreshToken=x", "https://example.com/p?clientSecret=x",

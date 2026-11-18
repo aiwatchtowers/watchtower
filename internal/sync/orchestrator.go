@@ -107,6 +107,10 @@ type Orchestrator struct {
 	planMu   gosync.Mutex
 	plan     *slackMediaPlan
 	planRead bool
+	// denyHosts is the link deny list each plan reads (media.DenySource);
+	// SetDenyHosts sets it, else the first plan builds one over the config
+	// and the stored company bundles (no forced MDM bundle).
+	denyHosts func() []string
 
 	// jiraKeyDetector, if set, links Jira issue keys found in synced messages
 	// (the digest/tracks pipelines' SetJiraKeyDetector shape).
@@ -156,6 +160,14 @@ func (o *Orchestrator) SetTokenTeam(teamID string) { o.tokenTeamID = teamID }
 // SetTokenScope records the grant the account's token file names
 // (Token.Scope; "" when the token predates recorded grants).
 func (o *Orchestrator) SetTokenScope(scope string) { o.tokenScope = scope }
+
+// SetDenyHosts sets the link deny list media discovery reads once per run
+// (media.DenySource with the forced company bundle).
+func (o *Orchestrator) SetDenyHosts(src func() []string) {
+	o.planMu.Lock()
+	defer o.planMu.Unlock()
+	o.denyHosts = src
+}
 
 // TeamMismatch reports that the last Run refused the account's token or team
 // as another team than the account's data (ErrSlackTeamMismatch).
