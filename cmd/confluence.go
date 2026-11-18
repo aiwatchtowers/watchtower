@@ -595,7 +595,7 @@ func extSyncOptions(cfg *config.Config, logger *log.Logger, budget time.Duration
 		Relink: confluenceRelink,
 		// Inline images, image attachments and links → media_items, in the
 		// item's write transaction (the media pass describes them).
-		Media: media.ConfluenceRecorder(media.DenyHosts(cfg)),
+		Media: media.ConfluenceRecorder(linkDenySource(cfg, logger)),
 	}
 }
 

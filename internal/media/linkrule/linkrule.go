@@ -129,15 +129,36 @@ func asciiHost(h string) (string, bool) {
 }
 
 // NormalizeHostSet builds the refusedHosts set Fetchable expects: lowercase,
-// IDNA ASCII, no trailing dot. Hosts that do not normalize are dropped.
+// IDNA ASCII, no trailing dot. A plain ASCII DNS name IDNA refuses (an
+// invalid xn-- label) is kept as given, lowercased: a deny list never loses an
+// entry over its spelling (Fetchable refuses every link on or under such a
+// name anyway). Other hosts that do not normalize are dropped.
 func NormalizeHostSet(hosts []string) map[string]bool {
 	m := make(map[string]bool, len(hosts))
 	for _, h := range hosts {
-		if n, ok := asciiHost(strings.TrimSpace(h)); ok {
+		h = strings.TrimSpace(h)
+		if n, ok := asciiHost(h); ok {
+			m[n] = true
+		} else if n, ok := plainHost(h); ok {
 			m[n] = true
 		}
 	}
 	return m
+}
+
+// plainHost lowercases h and drops its trailing dots; it reports false
+// unless every label is non-empty letters, digits and hyphens.
+func plainHost(h string) (string, bool) {
+	h = strings.TrimRight(strings.ToLower(h), ".")
+	if h == "" {
+		return "", false
+	}
+	for _, l := range strings.Split(h, ".") {
+		if l == "" || strings.Trim(l, "abcdefghijklmnopqrstuvwxyz0123456789-") != "" {
+			return "", false
+		}
+	}
+	return h, true
 }
 
 func isTrackingKey(k string) bool {

@@ -907,7 +907,7 @@ func TestPipeline_StoresOnlyErrorClass(t *testing.T) {
 // (Task 3's tests pin the fetcher's own redirect re-check).
 func TestPipeline_DenyHostRefusedOnRedirect(t *testing.T) {
 	e := newEnv(t)
-	e.p.DenyHosts = []string{"Denied.Example"}
+	e.p.DenyHosts = func() []string { return []string{"Denied.Example"} }
 	var deniedHits atomic.Int32
 	denied := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		deniedHits.Add(1)
@@ -1247,11 +1247,11 @@ func TestDenyHosts_ConfigUnitesWithBuildSeed(t *testing.T) {
 	t.Cleanup(func() { BuildDenyHosts = prev })
 
 	withList := &config.Config{Knowledge: config.KnowledgeConfig{LinkFetchDenyHosts: []string{" extra.example ", ""}}}
-	assert.Equal(t, []string{"corp.example", "tenant.example", "extra.example"}, DenyHosts(withList))
-	assert.Equal(t, []string{"corp.example", "tenant.example"}, DenyHosts(&config.Config{}))
-	assert.Equal(t, []string{"corp.example", "tenant.example"}, DenyHosts(nil))
+	assert.Equal(t, []string{"corp.example", "tenant.example", "extra.example"}, DenyHosts(withList, nil))
+	assert.Equal(t, []string{"corp.example", "tenant.example"}, DenyHosts(&config.Config{}, nil))
+	assert.Equal(t, []string{"corp.example", "tenant.example"}, DenyHosts(nil, nil))
 
-	set := linkrule.NormalizeHostSet(DenyHosts(withList))
+	set := linkrule.NormalizeHostSet(DenyHosts(withList, nil))
 	for _, raw := range []string{"https://corp.example/x", "https://wiki.tenant.example/", "https://EXTRA.example./a"} {
 		_, ok := linkrule.Fetchable(raw, set)
 		assert.False(t, ok, raw)

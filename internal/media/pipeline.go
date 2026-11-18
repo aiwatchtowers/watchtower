@@ -62,9 +62,10 @@ type Pipeline struct {
 	DB      *db.DB
 	Gen     digest.Generator
 	Prompts *prompts.Store
-	// DenyHosts are the hosts whose links are never fetched (DenyHosts(cfg)),
-	// added to SyncedHosts and the connected Jira sites at each run.
-	DenyHosts []string
+	// DenyHosts returns the hosts whose links are never fetched (DenySource;
+	// nil for none), read at each run and added to SyncedHosts, the connected
+	// Jira sites and the owner's company domains.
+	DenyHosts func() []string
 	// Openers and Resolvers are keyed by the item's parent kind.
 	Openers   map[string]Opener
 	Resolvers map[string]Resolver
@@ -186,7 +187,7 @@ func (p *Pipeline) HasPending(ctx context.Context) (bool, error) {
 // refusedHosts is this run's refused-host set: the synced sources, the
 // connected Jira/Confluence sites and the deny list.
 func (p *Pipeline) refusedHosts(ctx context.Context) (map[string]bool, error) {
-	return RefusedHosts(ctx, p.DB, p.DenyHosts)
+	return RefusedHosts(ctx, p.DB, readDeny(p.DenyHosts))
 }
 
 // run is one pass's state.

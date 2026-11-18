@@ -55,7 +55,11 @@ func (o *Orchestrator) mediaPlan(ctx context.Context) *slackMediaPlan {
 		o.logger.Printf("warning: media discovery skipped for this sync: %v", err)
 		return nil
 	}
-	refused, err := media.RefusedHosts(ctx, o.db, media.DenyHosts(o.config))
+	deny := media.DenyHosts(o.config, nil)
+	if o.denyHosts != nil {
+		deny = o.denyHosts()
+	}
+	refused, err := media.RefusedHosts(ctx, o.db, deny)
 	if err != nil {
 		o.logger.Printf("warning: media discovery skipped for this sync: %v", err)
 		return nil
