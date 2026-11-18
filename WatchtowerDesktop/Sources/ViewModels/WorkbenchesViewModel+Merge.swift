@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import WatchtowerCore
 
 /// Merging benches (#2003, spec §6.13): a folder put on this bench from Put
@@ -17,11 +18,20 @@ extension WorkbenchesViewModel {
             let offer = try await dbPool.read { db -> BenchMergeOffer? in
                 guard let into = try WorkbenchQueries.fetch(db, id: projectID),
                       let from = try WorkbenchQueries.fetch(db, id: fromID) else { return nil }
+                let settings = try Row.fetchOne(
+                    db, sql: "SELECT session_instructions, target_procedure, worktree_setup FROM projects WHERE id = ?",
+                    arguments: [fromID]
+                )
                 return BenchMergeOffer(
                     fromID: fromID, fromName: from.name, intoID: projectID, intoName: into.name,
                     targets: try WorkbenchQueries.targetCount(db, workbenchID: fromID),
                     folders: try WorkbenchFolderQueries.benchFolders(db, workbenchID: fromID).live.map(\.name),
-                    path: path, askID: askID
+                    path: path, askID: askID,
+                    dropped: BenchMergePresentation.droppedSettings(
+                        sessionInstructions: settings?["session_instructions"],
+                        targetProcedure: settings?["target_procedure"],
+                        worktreeSetup: settings?["worktree_setup"]
+                    )
                 )
             }
             guard let offer else {

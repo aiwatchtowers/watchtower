@@ -13,10 +13,41 @@ package enum BenchMergePresentation {
 
     /// `<B>'s board (<n> targets), asks and sessions move to <A>, and <B>
     /// leaves the workbench list. Folders that move: <list>.`
-    package static func confirmText(from: String, into: String, targets: Int, folders: [String]) -> String {
+    /// When `dropped` is not empty one more line follows (ask #1598).
+    package static func confirmText(
+        from: String, into: String, targets: Int, folders: [String], dropped: [String] = []
+    ) -> String {
         let count = targets == 1 ? "1 target" : "\(targets) targets"
-        return "\(from)'s board (\(count)), asks and sessions move to \(into), and \(from) leaves the workbench list. "
+        let text = "\(from)'s board (\(count)), asks and sessions move to \(into), and \(from) leaves the workbench list. "
             + "Folders that move: \(folders.joined(separator: ", "))."
+        guard !dropped.isEmpty else { return text }
+        return text + " " + droppedLine(from: from, into: into, dropped: dropped)
+    }
+
+    package static let sessionInstructionsName = "session instructions"
+    package static let targetProcedureName = "target procedure"
+    package static let worktreeSetupName = "worktree setup"
+
+    /// The names of B's owner-written settings that hold something (blank
+    /// ones do not count), in the order of the line.
+    package static func droppedSettings(sessionInstructions: String?, targetProcedure: String?, worktreeSetup: String?) -> [String] {
+        func present(_ value: String?) -> Bool {
+            !(value ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        var names: [String] = []
+        if present(sessionInstructions) { names.append(sessionInstructionsName) }
+        if present(targetProcedure) { names.append(targetProcedureName) }
+        if present(worktreeSetup) { names.append(worktreeSetupName) }
+        return names
+    }
+
+    /// `“<B>”’s own <list> will be dropped; “<A>”’s stay.` The list joins
+    /// with ", " and " and ".
+    package static func droppedLine(from: String, into: String, dropped: [String]) -> String {
+        let list = dropped.count > 1
+            ? dropped.dropLast().joined(separator: ", ") + " and " + dropped[dropped.count - 1]
+            : dropped.joined()
+        return "“\(from)”’s own \(list) will be dropped; “\(into)”’s stay."
     }
 
     /// The merge is done but a step after it failed (the data moved anyway;
@@ -78,6 +109,8 @@ package struct BenchMergeOffer: Equatable, Sendable, Identifiable {
     package let folders: [String]
     package let path: String
     package let askID: Int64?
+    /// B's owner-written settings that hold something and go with its row.
+    package let dropped: [String]
 
     package var id: Int64 { fromID }
 
@@ -89,7 +122,8 @@ package struct BenchMergeOffer: Equatable, Sendable, Identifiable {
         targets: Int,
         folders: [String],
         path: String,
-        askID: Int64?
+        askID: Int64?,
+        dropped: [String] = []
     ) {
         self.fromID = fromID
         self.fromName = fromName
@@ -99,11 +133,12 @@ package struct BenchMergeOffer: Equatable, Sendable, Identifiable {
         self.folders = folders
         self.path = path
         self.askID = askID
+        self.dropped = dropped
     }
 
     package var title: String { BenchMergePresentation.confirmTitle(from: fromName, into: intoName) }
     package var text: String {
-        BenchMergePresentation.confirmText(from: fromName, into: intoName, targets: targets, folders: folders)
+        BenchMergePresentation.confirmText(from: fromName, into: intoName, targets: targets, folders: folders, dropped: dropped)
     }
 }
 
