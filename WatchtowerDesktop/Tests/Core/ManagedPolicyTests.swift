@@ -27,7 +27,8 @@ struct ManagedPolicyTests {
             "AllowAutomationShell": opt(p.allowAutomationShell),
             "AllowedAIProviders": opt(p.allowedAIProviders),
             "AllowClaudeAITools": opt(p.allowClaudeAITools),
-            "PurgeRevokedData": opt(p.purgeRevokedData)
+            "PurgeRevokedData": opt(p.purgeRevokedData),
+            "SlackApps": opt(p.slackApps.map { $0.map { ["team_id": $0.teamID, "client_id": $0.clientID] } })
         ]
         return [
             "managed": p.managed, "domain": Constants.bundleID, "keys": keys,

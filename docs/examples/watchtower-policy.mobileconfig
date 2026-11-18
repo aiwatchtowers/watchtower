@@ -71,6 +71,16 @@
                                 <!-- Delete a revoked or long-unreached account's data after the 72-hour notice. -->
                                 <key>PurgeRevokedData</key>
                                 <true/>
+                                <!-- Slack apps your organization provisions: one entry per workspace (placeholders below). -->
+                                <key>SlackApps</key>
+                                <array>
+                                    <dict>
+                                        <key>team_id</key>
+                                        <string>T0EXAMPLE</string>
+                                        <key>client_id</key>
+                                        <string>1234567890.1234567890</string>
+                                    </dict>
+                                </array>
                             </dict>
                         </dict>
                     </array>

@@ -11,6 +11,7 @@ package policy
 import (
 	"math"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -28,6 +29,7 @@ const (
 	KeyAllowedAIProviders      = "AllowedAIProviders"
 	KeyAllowClaudeAITools      = "AllowClaudeAITools"
 	KeyPurgeRevokedData        = "PurgeRevokedData"
+	KeySlackApps               = "SlackApps"
 )
 
 // The reserved keys: read and shown, not enforced in this version.
@@ -40,7 +42,7 @@ const (
 // Keys are the v1 keys, in display order.
 var Keys = []string{
 	KeyAllowedSources, KeyMobileSync, KeyAllowedQuickConnections, KeyAllowAutomationShell,
-	KeyAllowedAIProviders, KeyAllowClaudeAITools, KeyPurgeRevokedData,
+	KeyAllowedAIProviders, KeyAllowClaudeAITools, KeyPurgeRevokedData, KeySlackApps,
 }
 
 // ReservedKeys are named now and enforced by their own boards later.
@@ -76,13 +78,21 @@ type Problem struct {
 // Keyset holds the effective v1 values. nil = the key is absent (no
 // restriction); an empty slice is a real, most restrictive value.
 type Keyset struct {
-	AllowedSources          []string `json:"AllowedSources"`
-	MobileSync              *string  `json:"MobileSync"`
-	AllowedQuickConnections []string `json:"AllowedQuickConnections"`
-	AllowAutomationShell    *bool    `json:"AllowAutomationShell"`
-	AllowedAIProviders      []string `json:"AllowedAIProviders"`
-	AllowClaudeAITools      *bool    `json:"AllowClaudeAITools"`
-	PurgeRevokedData        *bool    `json:"PurgeRevokedData"`
+	AllowedSources          []string   `json:"AllowedSources"`
+	MobileSync              *string    `json:"MobileSync"`
+	AllowedQuickConnections []string   `json:"AllowedQuickConnections"`
+	AllowAutomationShell    *bool      `json:"AllowAutomationShell"`
+	AllowedAIProviders      []string   `json:"AllowedAIProviders"`
+	AllowClaudeAITools      *bool      `json:"AllowClaudeAITools"`
+	PurgeRevokedData        *bool      `json:"PurgeRevokedData"`
+	SlackApps               []SlackApp `json:"SlackApps"`
+}
+
+// SlackApp is one Slack app a company provisions: the workspace it belongs to
+// and its OAuth client id.
+type SlackApp struct {
+	TeamID   string `json:"team_id"`
+	ClientID string `json:"client_id"`
 }
 
 // Policy is the normalized policy, also the pinned `policy show --json`
@@ -129,6 +139,9 @@ func Normalize(raw map[string]any) Policy {
 	}
 	if v, ok := raw[KeyPurgeRevokedData]; ok {
 		ks.PurgeRevokedData = n.boolean(KeyPurgeRevokedData, v, true)
+	}
+	if v, ok := raw[KeySlackApps]; ok {
+		ks.SlackApps = n.slackApps(v)
 	}
 	n.reserved(raw)
 	return n.p
@@ -184,6 +197,40 @@ func (n *normalizer) list(key string, v any, check entryCheck) []string {
 			continue
 		}
 		out = append(out, s)
+	}
+	return out
+}
+
+var (
+	slackTeamIDPattern   = regexp.MustCompile(`^[TE][A-Z0-9]{2,}$`)
+	slackClientIDPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+$`)
+)
+
+// slackApps reads an array of dictionaries. An entry that is not a dictionary,
+// lacks a field or fails the id patterns is dropped; a repeated team_id keeps
+// the first. Unknown dictionary keys are ignored.
+func (n *normalizer) slackApps(v any) []SlackApp {
+	arr, ok := v.([]any)
+	if !ok {
+		n.report(KeySlackApps, ProblemWrongType)
+		return []SlackApp{}
+	}
+	out := []SlackApp{}
+	seen := map[string]bool{}
+	for _, e := range arr {
+		m, ok := e.(map[string]any)
+		if !ok {
+			n.report(KeySlackApps, ProblemInvalidEntry)
+			continue
+		}
+		team, _ := m["team_id"].(string)
+		client, _ := m["client_id"].(string)
+		if !slackTeamIDPattern.MatchString(team) || !slackClientIDPattern.MatchString(client) || seen[team] {
+			n.report(KeySlackApps, ProblemInvalidEntry)
+			continue
+		}
+		seen[team] = true
+		out = append(out, SlackApp{TeamID: team, ClientID: client})
 	}
 	return out
 }
@@ -391,6 +438,10 @@ func (p Policy) PurgeRevokedData() (on, set bool) {
 	}
 	return *p.Keys.PurgeRevokedData, true
 }
+
+// SlackApps returns the Slack apps the profile provisions; nil when the key
+// is absent.
+func (p Policy) SlackApps() []SlackApp { return p.Keys.SlackApps }
 
 // AllowedList returns the effective list of an array key (nil when absent or
 // not an array key), for error copy.
