@@ -7,7 +7,7 @@
 
 Every screen the parent promises has a mockup for each of its states and a model that owns its texts:
 
-1. The admin's **Set up for my company** wizard: Slack, Google, Atlassian, Linear, Microsoft 365, Link deny list, Publish; each step skippable; the draft resumed; the existing-app fork per vendor (D19); Publish with the link, the code, the `.mobileconfig` and the IT guide link (D21).
+1. The admin's **Set up for my company** wizard, a page in Connections: first **What does your company use?**, then a step per ticked service (Slack, Google, Atlassian, Linear, Microsoft 365), Link deny list, Publish; each vendor step skippable; the draft resumed; the existing-app fork per vendor (D19); Publish with the link, the code, the `.mobileconfig` and the IT guide link (D21).
 2. The employee's **Connect Acme?** confirmation with a checkbox per vendor, the chain ticking per vendor, a cancelled or failed consent, the same bundle again, the **Replace** warning, the listener's browser pages, the port-busy line, the code paste, the MDM **Acme — Connect all**.
 3. Connections: a **Companies** zone on the overview, account rows grouped by company in every service, **Re-login needed** (`invalid_client`) and **Not connected — Connect** rows.
 4. **Use my own Google project** (personal Gmail) and its policy lock (`AllowOwnGoogleProject = false`).
@@ -21,11 +21,11 @@ No production code changes with this spec. The mockups are design-only SwiftUI s
 
 | Slack screens spec | Becomes | Why |
 |---|---|---|
-| §3.1–§3.2 the Slack-only **Set up for my company** sheet | the wizard's **Slack** step (§2.3 here). Its token form, its progress marks, `badToken`, `notAllowed` and `approval` states keep their texts. Its **Success** ("Copy connect code") moves to **Publish** (§2.8): the code is now the company code | parent D7: one setup for every vendor |
-| §3.3 **Add the link to the app** sheet | the wizard's **Publish** step with a fresh token (`publish-tokenExpired`, §2.8). The sheet goes | parent §2 step 7: Publish writes the link |
+| §3.1–§3.2 the Slack-only **Set up for my company** sheet | the wizard's **Slack** step (§2.5 here), on a page instead of a sheet (owner, ask #1490; supersedes Slack spec decision 13 for the setup). Its token form, its progress marks, `badToken`, `notAllowed` and `approval` states keep their texts. Its **Success** ("Copy connect code") moves to **Publish** (§2.10): the code is now the company code | parent D7: one setup for every vendor |
+| §3.3 **Add the link to the app** sheet | the wizard's **Publish** step with a fresh token (`publish-tokenExpired`, §2.10). The sheet goes | parent §2 step 8: Publish writes the link |
 | §3.4 the setup-record rows on Connections → Slack | kept. **Continue setup** and **Check again** open the wizard at the Slack step; **Add the link to the app** opens it at Publish | the record still exists (Slack spec T7); only the button target changes |
 | §3.5 `SlackAppSetupModel` | kept as the Slack step's engine (create, reuse, link write), driven by `CompanySetupWizardModel` (§9); it owns no sheet of its own any more | one wizard model owns the frame |
-| §4.1 the About page text | written by Publish: "Watchtower for <company> — connect: <company link>" and the company code (parent §2 step 7). The listener keeps serving `/slack/connect` for About pages written before | parent §2; old pages must not break |
+| §4.1 the About page text | written by Publish: "Watchtower for <company> — connect: <company link>" and the company code (parent §2 step 8). The listener keeps serving `/slack/connect` for About pages written before | parent §2; old pages must not break |
 | §4.2 the connect field "Connect link or code" | also accepts a company link or code; one opens **Connect Acme?** (§3.1) | one field, never "wrong field" |
 | §4.3 the Slack connect sheets | kept for a `/slack/connect` link; a company link uses §3 here | parent §3 |
 | §4.4 port 18551 busy | the same line on Connections → Slack, plus the Companies zone's line (§4.1) | one listener, two places to paste |
@@ -42,24 +42,42 @@ Everything else in the Slack screens spec (§1, §2, §6–§9) is untouched.
 - **Browser pages:** `internal/oauthpage` (`Success`, `Error`, `Stale`; card with icon, heading, message, hint).
 - **Language:** the Desktop is not localised; every string below is English.
 
-## 1. Where it starts
+## 1. (moved)
 
-- **Connections overview → Companies** (new zone above Sources, §4.1): **Set up for my company** and **Connect with a company code**; the company cards.
-- **Connect…** menu on the overview gains the same two items at its end.
-- Connections → Slack's connect section and the shared-app banner (Slack spec §4.2, §5): **Set up for my company** opens the wizard.
-- The Atlassian banner (§7) and the Jira empty state: **Set up for my company**.
+Where the wizard opens from is now §2.1.
 
 ## 2. The admin wizard
 
-### 2.1 The frame
+### 2.1 Where it opens from
 
-A sheet over the main window, 720 pt wide (the Slack spec's setup sheet, decision 13 there; the run and the draft live outside the sheet, so closing it loses nothing). Top: title "Set up Watchtower for your company" and the intro "One pass for every service your company uses. Each step can be skipped; Watchtower keeps your progress, so you can close this window and come back." Left: the **step rail** — Slack, Google, Atlassian, Linear, Microsoft 365, Link deny list, Publish — each with a mark (done ✓, skipped –, not started ○) and a word (**Done**, **Reused**, **Skipped**); the current step is the selected row. Right: the step's title and content. Bottom row: **Close** (quiet, left); **Skip this step** (quiet), **Back**, and the step's one prominent action (right).
+- **Connections overview → Companies** (new zone above Sources, §4.1): **Set up for my company**; while a draft exists, the zone's first row "Setup in progress: Acme, at Atlassian (step 4 of 8)." with **Continue setup** (`company-overview-setupInProgress`). The zone also holds **Connect with a company code** and the company cards.
+- **Connect…** menu on the overview gains **Set up for my company** and **Connect with a company code** at its end.
+- Connections → Slack's connect section, its setup-record rows (Slack spec §3.4) and the shared Slack app banner (Slack spec §4.2, §5).
+- The Atlassian banner (§7) and the Jira empty state.
 
-- **Narrow** (under 520 pt): the rail folds into one line "Step 2 of 7 · Google" (`company-wizard-google-create-narrow`, `company-wizard-publish-done-narrow`).
-- **Close** keeps the draft (`<workspace>/company/draft.json`, parent §2); the next **Set up for my company** opens at the draft's step with the line "Continuing the setup you started on Nov 17." and a quiet **Discard setup** (`company-wizard-resume`). **Discard setup** asks first (a system confirmation, not mocked): "Discard this setup? The draft and the secrets in it are deleted from this Mac. Apps you created stay in Slack, Google, Atlassian, Linear and Microsoft." — **Discard** (destructive) / **Keep**.
-- A rail row is clickable once its step was reached; the admin can go back to any earlier step. **Skip this step** marks it Skipped and moves on; a skipped step can be reopened from the rail.
+Every entry opens the same page; with a draft it opens at the draft's step.
 
-### 2.2 Existing apps first (D19) — every vendor step
+### 2.2 The frame: a page in the Connections detail area
+
+The wizard is a **page in the Connections detail area**, like Jira's drill-in (owner, ask #1490), not a sheet: the detail shows it in place of a service, with **‹ Connections** (quiet, top left) as the way back. Under it: title "Set up Watchtower for your company" and the intro "One pass for every service your company uses. Each step can be skipped; Watchtower keeps your progress, so you can leave this page and come back." Left: the **step rail** — **Services**, then one row per service ticked on the Services step (in the order Slack, Google, Atlassian, Linear, Microsoft 365), then Link deny list and Publish — each with a mark (done ✓, skipped –, not started ○) and a word (**Done**, **Reused**, **Skipped**); the current step is the selected row; under the rail a quiet **Change services** (from the second step on). Right: the step's title and content. Bottom row (right): **Skip this step** (quiet, vendor steps only), **Back**, and the step's one prominent action.
+
+- **Narrow** (under 520 pt): the rail folds into one line "Step 3 of 8 · Google" (`company-wizard-services-narrow`, `company-wizard-google-create-narrow`, `company-wizard-publish-done-narrow`).
+- **Leaving the page** (‹ Connections, another service, another tab, quitting): the draft (`<workspace>/company/draft.json`, parent §2) is saved at the current step — every field typed so far, secrets included (0600), except the Slack configuration token, which is never stored. A check or create in flight keeps running on `AppState.companySetup`; its result lands in the draft. The Companies zone then shows "Setup in progress: … — **Continue setup**". Coming back opens at the draft's step with the line "Continuing the setup you started on Nov 17." and a quiet **Discard setup** (`company-wizard-resume`). **Discard setup** asks first (a system confirmation, not mocked): "Discard this setup? The draft and the secrets in it are deleted from this Mac. Apps you created stay in Slack, Google, Atlassian, Linear and Microsoft." — **Discard** (destructive) / **Keep**.
+- A rail row is clickable once its step was reached; the admin can go back to any earlier step. **Skip this step** marks a vendor step Skipped and moves on (the company has the service but sets it up later); a skipped step can be reopened from the rail.
+
+### 2.3 Services: "What does your company use?" (first step)
+
+Owner, conversation 2026-11-18: the first step picks the services; everything else goes through MCP connectors.
+
+| State | Shot | What shows | Buttons |
+|---|---|---|---|
+| Empty | `company-wizard-services` (+ `-narrow`) | "Tick what your company has. Each ticked service gets its own step; the link deny list and Publish always follow."; one checkbox per supported service with a one-line description: **Slack** "Messages, digests and the Inbox"; **Google Workspace — Gmail and Calendar** "Mail and calendar through your company's Google project"; **Atlassian — Jira and Confluence** "Issues and pages through your company's Atlassian app"; **Linear** "Issues through your company's Linear app"; **Microsoft 365 — Outlook** "Mail through your company's Entra app"; nothing ticked; under the list the quiet note "Use something else (Notion, GitHub, a CRM…)? Connect it yourself in Connections → Quick Connections (MCP connectors)." with a quiet **Open Quick Connections** (`AppState.openConnections(.quickConnections)`, the Tools for AI service of `docs/features/quick-connections.md`); the rail shows Services, Link deny list, Publish | **Continue** (disabled until one is ticked) |
+| Found | `company-wizard-services-found` | a service whose app discovery (§2.4 "Look", run when the page opens) found comes pre-ticked, its description followed by " · Found on this Mac"; the rail already lists the ticked services | **Continue** |
+| Unticking a filled step | `company-wizard-services-change` | reached by **Change services**; unticking a service whose step holds entries shows, in place, the warning "Stop setting up Atlassian?" / "What you entered for it (client id and secret) is dropped from the draft. An app you created stays in Atlassian." | **Keep** (prominent), **Drop Atlassian** (destructive) |
+
+The choice is kept in the draft (`services`). Ticking a service later adds its step to the rail before Link deny list; unticking an empty step drops it without asking. What an unticked service means for colleagues is in the Publish summary (§2.10): "Linear · not used: colleagues use Watchtower's shared Linear app", "Microsoft 365 · not used: colleagues use Watchtower's shared Microsoft app, which your tenant may ask an admin to approve", "Google · not used: colleagues can connect Google Calendar; Gmail needs their own Google project", "Atlassian · not used: colleagues connect Jira with their own API token", "Slack · not used: no Slack page carries the link". A skipped step reads the same with "skipped" in place of "not used". The step's own captions no longer repeat it (the old per-step "Skipped: …" notes are gone).
+
+### 2.4 Existing apps first (D19) — every vendor step
 
 | State | Shot | What shows | Buttons |
 |---|---|---|---|
@@ -82,12 +100,12 @@ What **We already have one** asks (parent §2 "Nothing found"): Slack — "App s
 
 The candidate's source line names one of the parent's "Look" sources: "Acme's saved company setup" (a stored `company/*.json` or the draft), "the credentials file of <account>" (a per-account credentials file), "<vendor> app — your connected account <label>" (an account on a non-shared client, incl. a bridged corp account).
 
-### 2.3 Slack
+### 2.5 Slack
 
 | State | Shot | What shows | Buttons |
 |---|---|---|---|
 | Create new / reuse: token | `company-wizard-slack-create` | Slack spec §3.2's form unchanged: "1. Generate a configuration token" + help + **Open Slack's token page**; "2. Paste it here", secure "Configuration token", "Used once for this setup and never stored." | **Create the app** (new) / **Continue** (reuse) |
-| Busy | `company-wizard-slack-progress` | marks: new — "Checking the token", "Creating the app"; reuse — "Checking the token", "Reading app A0ACME's settings", "Comparing them with Watchtower's"; caption "Keep this window open. If it closes, the setup resumes at this step; the app is never created twice." | the action disabled; no Skip |
+| Busy | `company-wizard-slack-progress` | marks: new — "Checking the token", "Creating the app"; reuse — "Checking the token", "Reading app A0ACME's settings", "Comparing them with Watchtower's"; caption "You can leave this page: the setup resumes at this step, and the app is never created twice." | the action disabled; no Skip |
 | Reused app differs | `company-wizard-slack-manifestDiff` | blue notice "App A0ACME's settings differ from Watchtower's" / "Watchtower will make these changes to the app. Nothing else in it changes." and one line per change ("Add scopes: …", "Add redirect URL: …") | **Back**, **Update the app** |
 | Not a collaborator | `company-wizard-slack-notCollaborator` | "You are not a collaborator on app A0ACME, so Slack does not let you change it. Ask the app's owner to add you as a collaborator, then try again." Nothing is created (parent §2.2) | **Back**, **Try again** |
 | Wrong workspace | `company-wizard-slack-wrongWorkspace` | "App A0ACME belongs to another workspace (T0OTHER), not acme. Check the link and paste it again." | **Back**, **Try again** |
@@ -95,9 +113,9 @@ The candidate's source line names one of the parent's "Look" sources: "Acme's sa
 | Not allowed, network, other refusal, approval | (layout of `slack-badToken`) | Slack spec §3.2's texts unchanged | **Try again** / **Check again** |
 | Done | rail ✓ **Done** (new) or **Reused** | — | moves to Google |
 
-Skipping Slack: Publish cannot write an About page; its text says so (§2.8).
+Slack not used or skipped: Publish cannot write an About page; its text says so (§2.10).
 
-### 2.4 Google
+### 2.6 Google
 
 | State | Shot | What shows | Buttons |
 |---|---|---|---|
@@ -105,11 +123,9 @@ Skipping Slack: Publish cannot write an About page; its text says so (§2.8).
 | Checking (busy) | `company-wizard-google-checking` | the dropped file ("client_secret_….json · project acme-watchtower") + "Checking the client with Google…" | **Continue** disabled |
 | Rejected | `company-wizard-google-checkFailed` | "Google does not accept this client: invalid_client. Download the JSON again from Credentials." + **Try again** | **Continue** disabled |
 | Network error | (layout of `google-checkFailed`) | "Could not reach Google: the request timed out. Nothing was saved." + **Try again** | — |
-| Done | rail ✓ | the check also records the Workspace domain (parent §2 step 2) | — |
+| Done | rail ✓ | the check also records the Workspace domain (parent §2 step 3) | — |
 
-Skip note (shown in Publish's summary): "Skipped: colleagues can still connect Google Calendar; Gmail needs a company or own Google project."
-
-### 2.5 Atlassian
+### 2.7 Atlassian
 
 | State | Shot | What shows | Buttons |
 |---|---|---|---|
@@ -117,32 +133,32 @@ Skip note (shown in Publish's summary): "Skipped: colleagues can still connect G
 | Confirm (new and reused) | `company-wizard-atlassian-confirm` | "Confirm the app's settings" / "Atlassian gives Watchtower no way to read these. Check each one in the developer console, then tick it." Three checkboxes, each with **Open**: "Sharing is on (Distribution)", "“Does your app store personal data?” is Yes", "report:personal-data is among the permissions" | **Continue** (disabled until all three) |
 | Resumed draft | `company-wizard-resume` | the Create-new content under the resume line | — |
 
-Atlassian has no dry check for a client id and secret (no API without a user); a wrong pair shows at the first login of the chain (§3.2 "failed"), which the admin runs right after Publish. Skip note: "Skipped: colleagues connect Jira with their own API token."
+Atlassian has no dry check for a client id and secret (no API without a user); a wrong pair shows at the first login of the chain (§3.2 "failed"), which the admin runs right after Publish.
 
-### 2.6 Linear and Microsoft 365
+### 2.8 Linear and Microsoft 365
 
 | State | Shot | What shows | Buttons |
 |---|---|---|---|
-| Linear, create new | `company-wizard-linear-create` | guide "Settings → API → OAuth applications → New application"; "Callback URL: paste Watchtower's" (+ **Copy callback URL**); field Client ID; "No secret: Watchtower signs in with PKCE."; skip note "Skipped: colleagues use Watchtower's shared Linear app." | **Continue** |
-| Microsoft, create new | `company-wizard-microsoft-create` | guide "App registrations → New registration: Accounts in this organizational directory only"; "Platform: Mobile and desktop applications, redirect URI http://localhost"; "API permissions: add the Outlook permissions, then Grant admin consent" (+ **Copy permissions**); fields Application (client) ID, Directory (tenant) ID; "No secret: Watchtower signs in with PKCE against your tenant."; skip note "Skipped: colleagues use Watchtower's shared Microsoft app, where your tenant may ask an admin to approve it." | **Continue** |
+| Linear, create new | `company-wizard-linear-create` | guide "Settings → API → OAuth applications → New application"; "Callback URL: paste Watchtower's" (+ **Copy callback URL**); field Client ID; "No secret: Watchtower signs in with PKCE." | **Continue** |
+| Microsoft, create new | `company-wizard-microsoft-create` | guide "App registrations → New registration: Accounts in this organizational directory only"; "Platform: Mobile and desktop applications, redirect URI http://localhost"; "API permissions: add the Outlook permissions, then Grant admin consent" (+ **Copy permissions**); fields Application (client) ID, Directory (tenant) ID; "No secret: Watchtower signs in with PKCE against your tenant." | **Continue** |
 | Microsoft rejected | `company-wizard-microsoft-checkFailed` | "Microsoft does not accept this client in tenant 0000-acme: AADSTS700016. Check both ids on the app's Overview page." + **Try again** | **Continue** disabled |
 | Checking / network / Linear rejected | (layouts of `google-checking`, `google-checkFailed`) | "Checking the client with Microsoft…" / "…with Linear…"; "Could not reach <vendor>: <error>. Nothing was saved." | — |
 
 Both are checked by a dry authorize URL (parent §2.4 names Google and Microsoft; Linear gets the same check, decision A9).
 
-### 2.7 Link deny list
+### 2.9 Link deny list
 
 `company-wizard-denyList`: "Watchtower never opens links to these hosts — your intranet and internal tools. Colleagues cannot remove them; their own settings can only add more." (D18), a field "Add a host", the list with **Remove** per host. A wrong entry (`company-wizard-denyList-invalid`): "That is not a host name. Enter it like intranet.example.com, without https:// or a path." Empty list = the step can be skipped.
 
-### 2.8 Publish
+### 2.10 Publish
 
 | State | Shot | What shows | Buttons |
 |---|---|---|---|
-| Ready | `company-wizard-publish-ready` | "Company name" (prefilled, editable), "Colleagues see “Connect Acme?”. Taken from your Slack workspace; change it if people know the company by another name."; the summary, one line per step ("Slack · Watchtower (A0ACME) in acme", "Linear · skipped: the shared app", …); "Writes the connect link and code to the About page of Watchtower's app in Slack." | **Back**, **Publish** |
+| Ready | `company-wizard-publish-ready` | "Company name" (prefilled, editable), "Colleagues see “Connect Acme?”. Taken from your Slack workspace; change it if people know the company by another name."; the summary, one line per supported service ("Slack · Watchtower (A0ACME) in acme", "Linear · skipped: colleagues use Watchtower's shared Linear app", the "not used" lines of §2.3, …); "Writes the connect link and code to the About page of Watchtower's app in Slack." | **Back**, **Publish** |
 | Ready, token gone (resumed draft) | (layout of `publish-tokenExpired`) | "Paste a configuration token to write the link to the Slack page. It is used once and never stored." + the token field | **Publish** |
 | Busy | `company-wizard-publish-busy` | "Packing the company setup" ✓, "Writing the link to the Slack app's About page" … | **Publish** disabled |
 | Done | `company-wizard-publish-done` (+ `-narrow`) | green "Acme is set up" / "Colleagues open Watchtower's app in Slack, go to About and click the link. Without Slack, send them the code, or give IT the profile. You connect like any colleague."; rows **Connect link** (Copy), **Connect code** (Copy), **Configuration profile for IT** "Acme-Watchtower.mobileconfig" (**Save…**, a save panel); the quiet link **What IT can set** (§8) | **Done**, **Connect this Mac** (opens §3.1 for this bundle) |
-| Done, Slack skipped | `company-wizard-publish-done-noSlack` | body "Slack was skipped, so no page carries the link. Send colleagues the code, or give IT the profile. You connect like any colleague." | same |
+| Done, Slack not used or skipped | `company-wizard-publish-done-noSlack` | body "Slack was skipped, so no page carries the link. Send colleagues the code, or give IT the profile. You connect like any colleague." | same |
 | Token expired | `company-wizard-publish-tokenExpired` | "The configuration token has expired, so the link is not on the Slack page yet. Your setup is kept. Generate a fresh token and paste it." + **Open Slack's token page** + the token field | **Try again** |
 | Failed | `company-wizard-publish-failed` | the summary + "Could not reach Slack: the request timed out. Your setup is kept." | **Try again** |
 
@@ -152,7 +168,7 @@ The company name is never asked when it can be derived: Slack workspace name fir
 
 ### 3.1 Connect Acme?
 
-A sheet over the main window, Connections selected (460 pt; `-narrow` at 360).
+A sheet over the main window, Connections selected (460 pt; `-narrow` at 360): a confirmation, the style guide's case for a sheet (decision A1b).
 
 | Variant | Shot | Title / body | Rows |
 |---|---|---|---|
@@ -200,6 +216,7 @@ Above Sources, titled **Companies** (`HomeZoneTitle`).
 | MDM bundle | `company-overview-mdm` | the card carries **Managed by your organization**, "Set up by your organization · nothing connected yet" and **Connect all** — the overview's one prominent action |
 | Re-login needed | `company-overview-relogin` | the existing attention banner "Jira · Re-login needed — Acme changed its app" + **Reconnect**; the card's line in `Tone.error` "Atlassian: Re-login needed — Acme changed its app" + **Re-login** (runs the changed vendors' logins in a chain, §3.2) |
 | No company (empty) | `company-overview-empty` | "Using Watchtower at work? Connect with your company's link or code, or set it up for your company." + the two quiet buttons |
+| Setup in progress | `company-overview-setupInProgress` | first row of the zone: "Setup in progress: Acme, at Atlassian (step 4 of 8)." + **Continue setup** (prominent) — while a wizard draft exists |
 | Loading | `company-overview-loading` | spinner "Reading company setups…" |
 | Read failed | `company-overview-readFailed` | "Could not read the company setups: acme.json is damaged." + **Try again** — a damaged file is its own state, never "no company" (review-rules, absent vs. error) |
 | Code paste | `company-overview-codePaste` | **Connect with a company code** opens a field "Company code" + **Connect**; a wrong text: "That is not a Watchtower company code. Copy it again from the Slack app's About page or from your admin." |
@@ -239,13 +256,15 @@ Shots: `company-google-detail-relogin` (the three re-login rows), `company-linea
 
 ### 5.1 Where
 
-Google detail → **Use my own Google project** (secondary button in "Add an account", and on the shared-Google banner). It replaces `AddGoogleAccountView`'s "Advanced: custom OAuth client" disclosure (decision A14, **needs the owner**); the CLI `google add --client-id --client-secret-stdin` stays (parent §4).
+Google detail → **Use my own Google project** (secondary button in "Add an account", and on the shared-Google banner). It replaces `AddGoogleAccountView`'s "Advanced: custom OAuth client" disclosure (owner, ask #1490); the CLI `google add --client-id --client-secret-stdin` stays (parent §4).
 
-### 5.2 The sheet (560 pt; `-narrow` at 380)
+### 5.2 The page (in the Google detail; `-narrow` at 360)
+
+A page in the Google detail, like Jira's drill-in, with **‹ Google** as the way back (decision A1b): the flow takes about ten minutes in Google Cloud Console, too long for a sheet. Leaving the page keeps nothing but a dropped JSON while the app runs; nothing is stored before **Connect** succeeds.
 
 | State | Shot | What shows | Buttons |
 |---|---|---|---|
-| Empty | `company-ownGoogle-empty` (+ `-narrow`) | "Use my own Google project" / "Gmail and Calendar through a Google Cloud project you own. About ten minutes, once."; guide with **Open**: "Create a project"; "Turn on the Gmail API and the Google Calendar API"; "OAuth consent screen: user type External, and add yourself as a test user"; "Publish the app to production. Google calls it unverified; that is expected for your own project"; "Credentials → Create OAuth client → Desktop app, then download its JSON"; drop zone; note "The first sign-in shows “Google hasn't verified this app”. Choose Advanced → Go to your project: it is your own." | **Cancel**, **Connect** (disabled) |
+| Empty | `company-ownGoogle-empty` (+ `-narrow`) | "Use my own Google project" / "Gmail and Calendar through a Google Cloud project you own. About ten minutes, once."; guide with **Open**: "Create a project"; "Turn on the Gmail API and the Google Calendar API"; "OAuth consent screen: user type External, and add yourself as a test user"; "Publish the app to production. Google calls it unverified; that is expected for your own project"; "Credentials → Create OAuth client → Desktop app, then download its JSON"; drop zone; note "The first sign-in shows “Google hasn't verified this app”. Choose Advanced → Go to your project: it is your own." | **Connect** (disabled) |
 | Ready | `company-ownGoogle-ready` | the dropped file | **Connect** |
 | Busy | `company-ownGoogle-checking` | "Checking the client with Google…", then the browser sign-in (the existing Google login wait) | **Connect** disabled |
 | Rejected | `company-ownGoogle-checkFailed` | the Google step's rejected line | **Try again** |
@@ -270,6 +289,8 @@ The weekly frame ships only if spike S2 fails (parent §4); then the account row
 Jira detail → "Add an account": **Connect with Acme's Atlassian app** (when a stored company has an `atlassian` block) and **Connect with an API token**; the Atlassian banner's quiet **Connect with an API token**.
 
 ### 6.2 The sheet (520 pt; `-narrow` at 380)
+
+A sheet: one short form, the style guide's case for a sheet (decision A1b).
 
 Top: "Connect Jira with an API token" / "For a person whose company has no Atlassian app yet, or who prefers a token. The token stays on this Mac." "1. Create a scoped API token" + "On your Atlassian account's Security page, create an API token with scopes: the Jira scopes Watchtower lists, and the Confluence ones if you use Confluence." + **Open Atlassian's token page**, quiet **Copy scopes**; "2. Fill in": Atlassian email, Site, API token (secure); the scoped-token hint "A token without scopes works too, but a scoped one can read only what Watchtower needs."
 
@@ -327,8 +348,8 @@ The Privacy section stays a `Form` section until that pane is ported; the mock d
 
 | Model | File | Owns | Test (`Tests/Core` unless said) |
 |---|---|---|---|
-| `CompanySetupWizardModel` (`@Observable`, `AppState.companySetup`) | `WatchtowerCore/Services/Company/CompanySetupWizardModel.swift` | steps, rail marks, the fork, field validation, every §2 string; drives `SlackAppSetupModel` for the Slack step; runs the T3/T5 CLI (`watchtower company discover --json`, `company draft save --stdin` / `discard`, `company check <vendor> --json`, `company publish --json`; names final in the plan) | `CompanySetupWizardModelTests` |
-| `CompanyVendorGuide` | `WatchtowerCore/Services/Company/CompanyVendorGuide.swift` | per vendor: guide lines, deep links, "Not sure?" hints, skip notes, what **We already have one** asks | `CompanyVendorGuideTests` (every vendor has every string; every deep link is `https` on the vendor's host) |
+| `CompanySetupWizardModel` (`@Observable`, `AppState.companySetup`) | `WatchtowerCore/Services/Company/CompanySetupWizardModel.swift` | the Services step (ticked services, discovery pre-ticks, the drop warning), steps, rail marks, the fork, field validation, every §2 string; drives `SlackAppSetupModel` for the Slack step; runs the T3/T5 CLI (`watchtower company discover --json`, `company draft save --stdin` / `discard`, `company check <vendor> --json`, `company publish --json`; names final in the plan) | `CompanySetupWizardModelTests` |
+| `CompanyVendorGuide` | `WatchtowerCore/Services/Company/CompanyVendorGuide.swift` | per vendor: the Services row and its one-line description, guide lines, deep links, "Not sure?" hints, the Publish "not used"/"skipped" lines, what **We already have one** asks | `CompanyVendorGuideTests` (every vendor has every string; every deep link is `https` on the vendor's host) |
 | `CompanyConnectFlowModel` (`@Observable`, `AppState.companyConnect`) | `WatchtowerCore/Services/Company/CompanyConnectFlowModel.swift` | §3.1–§3.3: variants, checkboxes, chain, Skip/Stop, done, replace; one flow at a time | `CompanyConnectFlowModelTests` |
 | `CompanyConnectionsPresentation` (pure value) | `WatchtowerCore/Services/Company/CompanyConnectionsPresentation.swift` | §4: the Companies zone, the groups, every row status of §4.3, §6.3's note, §7's banners and card lines, §5.4/§6.5 lock texts | `CompanyConnectionsPresentationTests` |
 | `OwnGoogleProjectModel` (`@Observable`, `AppState.ownGoogleProject`) | `WatchtowerCore/Services/Company/OwnGoogleProjectModel.swift` | §5.2 | `OwnGoogleProjectModelTests` |
@@ -336,13 +357,16 @@ The Privacy section stays a `Form` section until that pane is ported; the mock d
 | `ManagedPolicyHelp` | `WatchtowerCore/Services/ManagedPolicyHelp.swift` | the URL constant and label; `OrganizationPolicyPresentation` gains the two key lines | `ManagedPolicyHelpTests` (one constant; every link site uses it), `OrganizationPolicyPresentationTests` (new lines) |
 | Go pages | `internal/oauthpage` (`CompanyOpen`, `CompanyRefused(reason)`, `CompanyNeedsNewer`) | §3.4 | `TestCompanyPages_*` |
 
-Views (new): `Views/Company/CompanySetupSheet.swift`, `Views/Company/CompanyConnectSheet.swift`, `Views/Connections/CompaniesZone.swift`, `Views/Connections/CompanyAccountGroups.swift` (the §4.2 sections, shared by the five details), `Views/Settings/OwnGoogleProjectSheet.swift`, `Views/Settings/AtlassianTokenSheet.swift`. Changed: `ConnectionsOverview.swift`, `GoogleConnectionDetail.swift`, `JiraConnectionDetail.swift`, `LinearConnectionDetail.swift`, `EmailConnectionDetail.swift`, `SlackConnectionDetail.swift`, `AddGoogleAccountView.swift`, `ConnectionsSettings.swift` (`SourceBlockedNotice`), `OrganizationPolicySection.swift`.
+Views (new): `Views/Company/CompanySetupPage.swift` (in the Connections detail, `AppState.selectedConnection` gains a company-setup destination), `Views/Company/CompanyConnectSheet.swift`, `Views/Connections/CompaniesZone.swift`, `Views/Connections/CompanyAccountGroups.swift` (the §4.2 sections, shared by the five details), `Views/Settings/OwnGoogleProjectPage.swift`, `Views/Settings/AtlassianTokenSheet.swift`. Changed: `ConnectionsOverview.swift`, `GoogleConnectionDetail.swift`, `JiraConnectionDetail.swift`, `LinearConnectionDetail.swift`, `EmailConnectionDetail.swift`, `SlackConnectionDetail.swift`, `AddGoogleAccountView.swift`, `ConnectionsSettings.swift` (`SourceBlockedNotice`), `OrganizationPolicySection.swift`.
 
 ## 10. Failure modes
 
 | Path | Failure | Behaviour | Test |
 |---|---|---|---|
-| Wizard | sheet closed mid-step | draft kept; reopen lands on the step with the resume line | `CompanySetupWizardModelTests.testCloseKeepsDraftAndResumesAtStep` |
+| Wizard | the admin leaves the page mid-step (another service, tab, ‹ Connections) | draft saved at the step; a running check or create goes on and lands in the draft; the Companies zone shows "Setup in progress — Continue setup"; reopen lands on the step with the resume line | `CompanySetupWizardModelTests.testLeavingPageKeepsDraftAndResumesAtStep`, `testCheckInFlightLandsInDraft`, `CompanyConnectionsPresentationTests.testSetupInProgressRow` |
+| Wizard | Services: nothing ticked | **Continue** disabled | `testServicesNeedOneTicked` |
+| Wizard | Services: discovery found an app | that service pre-ticked with "Found on this Mac" | `testDiscoveredServicesArePreTicked` |
+| Wizard | Services: unticking a service whose step holds entries | the in-place warning; **Drop** removes its entries from the draft, **Keep** changes nothing; an empty step drops silently | `testUntickFilledStepAsksFirst`, `testUntickEmptyStepDropsSilently` |
 | Wizard | app quits mid-step (incl. during a check) | the draft was saved on each **Continue**; the check's result is lost and re-run on resume; a CLI child is reaped | `testQuitDuringCheckResumesBeforeCheck` + Go `TestCompanyDraft_RoundTrip` (parent) |
 | Wizard | Slack app created, then app quits | resume at Slack shows the created app as **Found** ("Acme's saved company setup"); never a second create | `testResumeAfterCreateOffersReuse`, parent `TestAppSetup_ResumeAfterCreate` |
 | Wizard | reused Slack app, not a collaborator | error, step open, nothing created | `testNotCollaboratorKeepsStepOpen` (export fake) |
@@ -364,7 +388,7 @@ Views (new): `Views/Company/CompanySetupSheet.swift`, `Views/Company/CompanyConn
 | Companies zone | a company file is damaged | read-failed state with **Try again**; never shown as "no company" | `CompanyConnectionsPresentationTests.testDamagedFileIsNotEmpty` |
 | Rows | `invalid_client` after a secret rotation | "Re-login needed — your company changed its app; open the new link"; attention | `testInvalidClientRow` |
 | Own Google | rejected client / network | error with **Try again**; nothing stored | `OwnGoogleProjectModelTests` |
-| Own Google | policy turns it off while the sheet is open | the sheet closes with the lock card's line | `testPolicyLockClosesSheet` |
+| Own Google | policy turns it off while the page is open | the page goes back to the Google detail with the lock card | `testPolicyLockLeavesPage` |
 | API token | 401 / 403 / not Cloud / network at add | the state's text; nothing stored | `AtlassianTokenFormModelTests` (CLI envelope fakes) |
 | API token | token dies later | row error, data kept, lease note only while the lease counts | `CompanyConnectionsPresentationTests.testDeadTokenRowAndLeaseNote` |
 | API token | policy turns tokens off while the sheet is open | the sheet closes with the lock line | `testPolicyLockClosesSheet` |
@@ -373,7 +397,7 @@ Views (new): `Views/Company/CompanySetupSheet.swift`, `Views/Company/CompanyConn
 
 | Data | Writers | Rule | Screen |
 |---|---|---|---|
-| `company/draft.json` | only the wizard (through the CLI, secrets on stdin) | one wizard run at a time (`AppState.companySetup`); the CLI takes the file's flock | the wizard re-reads it on open |
+| `company/draft.json` (incl. the ticked `services`) | only the wizard (through the CLI, secrets on stdin) | one wizard run at a time (`AppState.companySetup`); the CLI takes the file's flock | the wizard re-reads it on open |
 | `company/<slug>.json` | link confirm, code paste, publish, **Replace** (parent §8) | per-file flock, last confirmed write wins | the Companies zone re-reads on appear and when a flow ends |
 | Account rows, `company_slug`, `auth_kind` | Go only (parent §8) | — | the account view models re-read on appear (existing) |
 | A running chain | link, code, MDM **Connect all**, **Connect the rest**, **Re-login** | one at a time (`CompanyConnectFlowModel`, sharing the guard with `SlackAuthFlowState`) | the running sheet stays |
@@ -382,12 +406,16 @@ Views (new): `Views/Company/CompanySetupSheet.swift`, `Views/Company/CompanyConn
 
 Design-only SwiftUI scenes in `DesignShotCatalog` (`CompanySetupShotFixtures`, `WatchtowerDesktop/Tests/DesignShots/DesignShotFixtures+CompanySetup.swift`, `+CompanySetupWizard.swift`, `+CompanySetupBlocks.swift`), built from the design kit (`SettingsSection`, `SettingRow`, `Chip`, `OutlineTag`, `.card()`, `.kitRow`, `.kit*` buttons, `ManagedByOrganizationBadge`, `Tone`) and, on the overview, the real `ConnectionCard` and `ConnectionAttentionBanner`. Each frame is data drawn by one renderer. Every string comes from `CompanySetupMockCopy` (`Tests/DesignShots/CompanySetupMockCopy.swift`), pinned by `CompanySetupMockCopyTests` — including that the parent's verbatim texts are verbatim, that `blockedTitle` equals the shipped `SourceBlockedNotice.title`, that every overview frame and wizard scene has a shot, and that every screen has a narrow frame. Rendered by `DesignShotsTests.testCompanySetupShotsRender` (`make desktop-shots` renders them with the rest), light and dark, committed under `docs/design/mockups/company-setup/` as `<shot>-light.png` / `<shot>-dark.png`. Sample data only (`Acme`, `acme`, `example.com`, made-up ids).
 
-Light frames linked; each has a `-dark` twin.
+Light frames linked; each has a `-dark` twin. The vendor-step shots show a company with all five services ticked, so their rail lists Services, the five services, Link deny list and Publish.
 
 **Wizard**
 
 | Shot | State |
 |---|---|
+| [`company-wizard-services`](../../design/mockups/company-setup/company-wizard-services-light.png) | empty: first step, nothing found or ticked, **Continue** disabled |
+| [`company-wizard-services-narrow`](../../design/mockups/company-setup/company-wizard-services-narrow-light.png) | the same at 420 pt |
+| [`company-wizard-services-found`](../../design/mockups/company-setup/company-wizard-services-found-light.png) | Slack and Atlassian pre-ticked from discovery |
+| [`company-wizard-services-change`](../../design/mockups/company-setup/company-wizard-services-change-light.png) | **Change services**: unticking a filled step asks first |
 | [`company-wizard-looking`](../../design/mockups/company-setup/company-wizard-looking-light.png) | loading: looking for known apps |
 | [`company-wizard-slack-notFound`](../../design/mockups/company-setup/company-wizard-slack-notFound-light.png) | empty: first open, nothing found |
 | [`company-wizard-slack-found`](../../design/mockups/company-setup/company-wizard-slack-found-light.png) | found one: **Use Watchtower** / **Create new** |
@@ -447,6 +475,7 @@ Light frames linked; each has a `-dark` twin.
 | [`company-overview-mdm`](../../design/mockups/company-setup/company-overview-mdm-light.png) | MDM bundle: **Connect all** |
 | [`company-overview-relogin`](../../design/mockups/company-setup/company-overview-relogin-light.png) | Re-login needed: banner + card |
 | [`company-overview-empty`](../../design/mockups/company-setup/company-overview-empty-light.png) | no company |
+| [`company-overview-setupInProgress`](../../design/mockups/company-setup/company-overview-setupInProgress-light.png) | a draft exists: **Continue setup** |
 | [`company-overview-loading`](../../design/mockups/company-setup/company-overview-loading-light.png) | loading |
 | [`company-overview-readFailed`](../../design/mockups/company-setup/company-overview-readFailed-light.png) | error, **Try again** |
 | [`company-overview-codePaste`](../../design/mockups/company-setup/company-overview-codePaste-light.png) | code paste, wrong text |
@@ -474,7 +503,7 @@ Light frames linked; each has a `-dark` twin.
 | Shot | State |
 |---|---|
 | [`company-ownGoogle-empty`](../../design/mockups/company-setup/company-ownGoogle-empty-light.png) | empty |
-| [`company-ownGoogle-empty-narrow`](../../design/mockups/company-setup/company-ownGoogle-empty-narrow-light.png) | the same at 380 pt |
+| [`company-ownGoogle-empty-narrow`](../../design/mockups/company-setup/company-ownGoogle-empty-narrow-light.png) | the same at 360 pt |
 | [`company-ownGoogle-ready`](../../design/mockups/company-setup/company-ownGoogle-ready-light.png) | JSON dropped |
 | [`company-ownGoogle-checking`](../../design/mockups/company-setup/company-ownGoogle-checking-light.png) | busy |
 | [`company-ownGoogle-checkFailed`](../../design/mockups/company-setup/company-ownGoogle-checkFailed-light.png) | error, **Try again** |
@@ -501,7 +530,9 @@ Screen tasks (C) follow the parent's tasks they need.
 
 | Promise | Task | Needs | Test |
 |---|---|---|---|
-| The wizard with a step per vendor, skippable, resumable, with every state above | C1 `CompanySetupWizardModel` + `CompanyVendorGuide` + the sheet | T3, T5 | `CompanySetupWizardModelTests`, `CompanyVendorGuideTests` |
+| The wizard is a page in Connections; leaving it keeps the draft and the Companies zone offers **Continue setup** | C1 `CompanySetupWizardModel` + `CompanySetupPage` | T3 | `testLeavingPageKeepsDraftAndResumesAtStep`, `testSetupInProgressRow` |
+| The first step picks the services; only ticked ones become steps; discovery pre-ticks; other tools point to Quick Connections | C1 | T3 | `testServicesNeedOneTicked`, `testDiscoveredServicesArePreTicked`, `testRailListsOnlyTickedServices`, `testUntickFilledStepAsksFirst`, `CompanyVendorGuideTests.testMCPNoteOpensQuickConnections` |
+| The wizard with a step per ticked vendor, skippable, resumable, with every state above | C1 `CompanySetupWizardModel` + `CompanyVendorGuide` | T3, T5 | `CompanySetupWizardModelTests`, `CompanyVendorGuideTests` |
 | Existing apps first, never a second app (D19) | C1 | T3, T5 | `testFoundAppIsDefault`, `testResumeAfterCreateOffersReuse`, `testNotCollaboratorKeepsStepOpen`, parent discovery tests |
 | Publish shows link, code, profile and the IT guide; token expiry keeps the setup | C1 | T5, T6, T14 | `testPublishDoneOffersLinkCodeProfile`, `testPublishTokenExpiredKeepsSetup` |
 | One press connects every ticked vendor; cancelled vendors wait in Connections | C2 `CompanyConnectFlowModel` + the sheet | T2 | `CompanyConnectFlowModelTests` |
@@ -509,7 +540,7 @@ Screen tasks (C) follow the parent's tasks they need.
 | Refusal pages and the clean redirect page | C2 (Go) | T2 | `TestCompanyPages_*` |
 | Companies zone, rows grouped by company, Not connected and Re-login rows | C3 `CompanyConnectionsPresentation` + `CompaniesZone` + `CompanyAccountGroups`, details off `Form` | T1b, T2, T7 | `CompanyConnectionsPresentationTests`, `ConnectionsTabTests` (zone present, attention rule unchanged) |
 | MDM **Connect all**, code paste, port busy | C3 | T2, T6 | `testMDMCompanyIsProminent`, `testPortBusyLine`, `testPasteRejectsOtherText` |
-| Personal Gmail sheet; its lock | C4 `OwnGoogleProjectModel` + sheet | T8, T6 | `OwnGoogleProjectModelTests`, `testOwnGoogleLock` |
+| Personal Gmail page; its lock; the custom-client disclosure gone from Add Google Account | C4 `OwnGoogleProjectModel` + page | T8, T6 | `OwnGoogleProjectModelTests`, `testOwnGoogleLock` |
 | API token sheet, dead token row with lease note, its lock | C5 `AtlassianTokenFormModel` + sheet | T13, T6 | `AtlassianTokenFormModelTests`, `testDeadTokenRowAndLeaseNote`, `testTokenLock` |
 | The two banners, not attention items | C3 | T10 | `testSharedGoogleBanner`, `testSharedAtlassianBanner`, `testBannersAreNotAttention` |
 | The IT guide link everywhere from one constant (D21) | C6 `ManagedPolicyHelp` + Privacy rows + lock links | T6, T14 | `ManagedPolicyHelpTests`, `OrganizationPolicyPresentationTests` |
@@ -527,7 +558,7 @@ Screen tasks (C) follow the parent's tasks they need.
 | S2 | Each step first looks for a known app; found → "Use <app>" default + **Create new**; none → **Create new** default / **We already have one** + "Not sure?" | parent D19 (ask #1473) |
 | S3 | Reused Slack app, not a collaborator: the error, the step stays open, nothing created | parent §2, D19 (ask #1473) |
 | S4 | Atlassian settings confirmed by a three-item checklist with deep links | parent §2.4, D6 (ask #1447) |
-| S5 | Publish shows the link, the code, the `.mobileconfig` and the IT guide link | parent §2 step 7, D21 (conversation 2026-11-18) |
+| S5 | Publish shows the link, the code, the `.mobileconfig` and the IT guide link | parent §2 step 8, D21 (conversation 2026-11-18) |
 | S6 | The confirmation lists every vendor with a checkbox; nothing before **Connect** | parent §3 step 1, D8 (ask #1451) |
 | S7 | A changed company: separate warning, **Keep current** default, **Replace** beside it; MDM replaces silently | parent §3 step 5 |
 | S8 | Cancelled consent → **Not connected — Connect**; same bundle again offers only the rest | parent §3 steps 3–4 |
@@ -539,25 +570,28 @@ Screen tasks (C) follow the parent's tasks they need.
 | S14 | Banner texts for shared Google (Calendar only) and the retiring Atlassian app | parent §5, D11 (ask #1455), D15 (ask #1455) |
 | S15 | One IT page linked from Privacy, Connections locks and Publish | parent D21 (conversation 2026-11-18) |
 | S16 | Screens spec with a mockup for every state, strings in models with tests | parent D14, T3 |
+| S17 | The wizard's first step, "What does your company use?", picks the services; only ticked ones become steps; discovery pre-ticks; anything else is connected through Quick Connections (MCP connectors), said in a note under the list | conversation 2026-11-18 (owner: first step picks the services; others through MCP connectors) |
+| S18 | The wizard is a page in the Connections detail area (like Jira's drill-in), not a sheet; leaving it keeps the draft and the Companies zone shows **Continue setup** | ask #1490 (N1) |
+| S19 | "Advanced: custom OAuth client" is removed from Add Google Account, replaced by **Use my own Google project**; the CLI flags stay | ask #1490 (N2) |
+| S20 | No "forget company" in v1: accounts are removed one by one, the card stays with every vendor **Not connected** | ask #1490 (N3) |
 
 ### Decided by the agent
 
 | # | Decision |
 |---|---|
-| A1 | The wizard is a 720 pt sheet, as the Slack setup was (Slack spec decision 13, ask #1315); its run and draft live outside the sheet. **Needs the owner** (N1) |
+| A1b | Following S18, sheets stay only for short blocking flows: the connect confirmation, chain and replace warning (§3) and the API-token form (§6.2) are sheets; **Use my own Google project** becomes a page in the Google detail, like the wizard (ten minutes of console work) |
 | A2 | The company name is derived (Slack workspace → Google domain → Atlassian site) and only shown for correction at Publish |
 | A3 | A **Companies** zone on the overview above Sources, always shown (one inviting line when empty) |
 | A4 | **Connect the rest** reuses the confirmation's same-bundle variant |
 | A5 | **Not connected** rows are not attention items (no banner, no red badge); **Re-login needed** rows are (status error) |
 | A6 | Account groups per service: company sections, then own Google project, API tokens, shared app, other accounts |
 | A7 | Google, Jira, Linear and Outlook details move off `Form` onto `SettingsSection`s (as Slack did, its decision 1) |
-| A8 | The rail folds into "Step n of 7 · <step>" under 520 pt |
+| A8 | The rail folds into "Step n of m · <step>" under 520 pt (m counts Services, the ticked services, the deny list and Publish) |
 | A9 | Linear's client id is checked by a dry authorize URL like Google's and Microsoft's |
 | A10 | The chain runs on `AppState`; closing the sheet keeps it running; **Skip this service** and **Stop** |
 | A11 | The listener's clean page after a valid link reads "Continue in Watchtower"; refusal reasons named per cause |
 | A12 | The draft is written through the CLI with secrets on stdin; Go owns its format and 0600 mode |
 | A13 | A forbidden vendor shows in the confirmation disabled with the lock |
-| A14 | **Use my own Google project** replaces the "Advanced: custom OAuth client" disclosure in **Add Google Account**. **Needs the owner** (N2) |
 | A15 | Locks hide the button and show a lock card with **What IT can set** and **Managed by your organization** |
 | A16 | The API token sheet has a replace mode (email and site read-only) for a dead token |
 | A17 | The dead-token lease note shows only while PURGE-01's lease counts; the existing purge line takes over once scheduled |
@@ -565,13 +599,12 @@ Screen tasks (C) follow the parent's tasks they need.
 | A19 | The Slack setup-record rows (Slack spec §3.4) stay and open the wizard at the matching step; `/slack/connect` links keep working |
 | A20 | Connections → Slack's connect field also accepts a company link or code |
 | A21 | Changed ids in the replace warning are shortened to first 4 + last 3 characters |
-| A22 | No company-level remove in this spec. **Needs the owner** (N3) |
+| A23 | The per-step "Skipped: …" notes are gone; what an unused or skipped service means for colleagues is said once, in the Publish summary |
+| A24 | The services' order and their one-line descriptions; the drop warning appears in place on the Services step, **Keep** prominent |
 
 ## 15. Needs the owner
 
-- **N1 — the wizard as a sheet.** The style guide keeps sheets for short blocking flows; this wizard has seven steps and trips to vendor consoles. Proposed: a 720 pt sheet anyway, as the owner approved for the Slack setup (ask #1315, decision 13), since the run and the draft survive closing it. The alternative is a page in the Connections detail area (like Jira's drill-in), which needs no new pattern but leaves the admin able to wander off mid-step.
-- **N2 — removing "Advanced: custom OAuth client" from Add Google Account.** Today any account can be added with a custom client from that disclosure. Proposed: the guided **Use my own Google project** sheet replaces it (the CLI flags stay, parent §4). The owner never approved removing the disclosure.
-- **N3 — forgetting a stored company.** The parent defines storing and replacing a company bundle, not removing one (a consultant who leaves a client). Proposed for v1: nothing — accounts are removed one by one as today, and the card stays with every vendor **Not connected**. The alternative: a **Forget Acme** item on the card that deletes `company/acme.json` once no account uses it.
+Nothing open: N1–N3 were answered in ask #1490 (decisions S18–S20).
 
 ## 16. Out of scope
 

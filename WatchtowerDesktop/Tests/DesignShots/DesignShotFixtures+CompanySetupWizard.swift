@@ -13,36 +13,55 @@ enum RailState { case done, reused, skipped, current, todo }
 struct WizardScene {
     let name: String
     let step: Int
+    var labels: [String]
     var rail: [RailState]
     var resume = false
     let blocks: [MockBlock]
 
+    /// A vendor, deny-list or Publish step with every service ticked: `step` and
+    /// `rail` count from Slack (0) to Publish (6); the done Services step is put
+    /// in front of them.
     init(_ name: String, step: Int, rail: [RailState]? = nil, resume: Bool = false, _ blocks: [MockBlock]) {
         self.name = name
-        self.step = step
-        self.rail = rail ?? (0..<Copy.railSteps.count).map { $0 < step ? .done : ($0 == step ? .current : .todo) }
+        self.step = step + 1
+        self.labels = Copy.railSteps
+        let vendorRail = rail ?? (0..<(Copy.railSteps.count - 1)).map { $0 < step ? .done : ($0 == step ? .current : .todo) }
+        self.rail = [.done] + vendorRail
         self.resume = resume
+        self.blocks = blocks
+    }
+
+    /// The Services step: the rail lists Services, the ticked services, then
+    /// the deny list and Publish.
+    init(services name: String, ticked: [String], done: [RailState] = [], _ blocks: [MockBlock]) {
+        self.name = name
+        self.step = 0
+        self.labels = [Copy.railSteps[0]] + ticked + Array(Copy.railSteps.suffix(2))
+        self.rail = [.current] + done + Array(repeating: .todo, count: ticked.count + 2 - done.count)
         self.blocks = blocks
     }
 }
 
-/// The wizard sheet: the step rail on the left (one line at narrow width),
-/// the step's content on the right, the buttons at the bottom.
+/// The wizard page in the Connections detail area (owner, ask #1490): the way
+/// back to Connections on top, the step rail on the left (one line at narrow
+/// width), the step's content on the right, the buttons at the bottom.
 struct CompanyWizardMock: View {
     let scene: WizardScene
     var narrow = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.large) {
+            Button {} label: { Label(Copy.backToConnections, systemImage: "chevron.left") }.buttonStyle(.kitQuiet)
             MockBlockView(block: .title(Copy.wizardTitle, Copy.wizardIntro))
             if scene.resume { resumeLine }
             if narrow {
-                Text(Copy.stepLine(scene.step)).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text(Copy.stepLine(scene.step, of: scene.labels)).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             }
+            if narrow, scene.step == 0 { Text(Copy.servicesTitle).font(.headline) }
             HStack(alignment: .top, spacing: Spacing.large) {
                 if !narrow { rail.frame(width: PaneWidth.sideListIdeal) }
                 VStack(alignment: .leading, spacing: Spacing.medium) {
-                    if !narrow { Text(Copy.railSteps[scene.step]).font(.headline) }
+                    if !narrow { Text(scene.step == 0 ? Copy.servicesTitle : scene.labels[scene.step]).font(.headline) }
                     ForEach(Array(scene.blocks.enumerated()), id: \.offset) { _, block in MockBlockView(block: block) }
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -67,7 +86,7 @@ struct CompanyWizardMock: View {
 
     private var rail: some View {
         VStack(alignment: .leading, spacing: Spacing.tight) {
-            ForEach(Array(Copy.railSteps.enumerated()), id: \.offset) { index, title in
+            ForEach(Array(scene.labels.enumerated()), id: \.offset) { index, title in
                 let state = scene.rail[index]
                 HStack(spacing: Spacing.regular) {
                     railMark(state)
@@ -78,6 +97,9 @@ struct CompanyWizardMock: View {
                 .padding(.horizontal, Spacing.regular)
                 .padding(.vertical, Spacing.compact)
                 .kitRow(isSelected: state == .current)
+            }
+            if scene.step > 0 {
+                Button(Copy.changeServices) {}.buttonStyle(.kitQuiet).padding(.leading, Spacing.regular)
             }
         }
     }
@@ -102,7 +124,6 @@ struct CompanyWizardMock: View {
 
 @MainActor
 enum CompanyWizardScenes {
-    private static let close = MockButton(title: Copy.close, kind: .quiet)
     private static let skip = MockButton(title: Copy.skipStep, kind: .quiet)
     private static let back = MockButton(title: Copy.back)
 
@@ -115,7 +136,7 @@ enum CompanyWizardScenes {
         var trailing: [MockButton] = canSkip ? [skip] : []
         trailing.append(extra ?? back)
         trailing.append(MockButton(title: primary, kind: .primary, disabled: disabled))
-        return .buttons(leading: [close], trailing: trailing)
+        return .buttons(leading: [], trailing: trailing)
     }
 
     private static func notFound(_ empty: String?, hint: String) -> [MockBlock] {
@@ -157,7 +178,42 @@ enum CompanyWizardScenes {
     }
 
     static var scenes: [WizardScene] {
-        slackScenes + googleScenes + laterScenes + publishScenes
+        servicesScenes + slackScenes + googleScenes + laterScenes + publishScenes
+    }
+
+    private static func serviceChecks(found: Set<Int>, ticked: Set<Int>) -> MockBlock {
+        .checks(Copy.services.enumerated().map { index, row in
+            MockCheck(title: row.0,
+                      detail: found.contains(index) ? "\(row.1) · \(Copy.foundOnMac)" : row.1,
+                      checked: ticked.contains(index))
+        })
+    }
+
+    private static let mcpNote: [MockBlock] = [
+        .caption(Copy.mcpNote),
+        .buttons(leading: [MockButton(title: Copy.openQuickConnections, kind: .quiet)], trailing: [])
+    ]
+
+    private static func servicesFooter(disabled: Bool) -> MockBlock {
+        .buttons(leading: [], trailing: [MockButton(title: Copy.continueStep, kind: .primary, disabled: disabled)])
+    }
+
+    private static var servicesScenes: [WizardScene] {
+        let all = Array(Copy.railSteps[1...5])
+        return [
+            WizardScene(services: "services", ticked: [], [.caption(Copy.servicesBody), serviceChecks(found: [], ticked: [])]
+                        + mcpNote + [servicesFooter(disabled: true)]),
+            WizardScene(services: "services-found", ticked: ["Slack", "Atlassian"], [
+                .caption(Copy.servicesBody), serviceChecks(found: [0, 2], ticked: [0, 2])
+            ] + mcpNote + [servicesFooter(disabled: false)]),
+            WizardScene(services: "services-change", ticked: all, done: [.reused, .done, .done], [
+                .caption(Copy.servicesBody),
+                serviceChecks(found: [0], ticked: [0, 1, 3, 4]),
+                .warning(Copy.dropServiceBody, title: Copy.dropServiceTitle),
+                .buttons(leading: [], trailing: [MockButton(title: Copy.keepService, kind: .primary),
+                                                 MockButton(title: Copy.dropService, kind: .destructive)])
+            ])
+        ]
     }
 
     private static var slackScenes: [WizardScene] {
@@ -246,7 +302,6 @@ enum CompanyWizardScenes {
                 .guide(Copy.linearGuide, extras: [1: Copy.copyCallback]),
                 .fields([MockField(label: Copy.clientID, value: "")], error: nil),
                 .caption(Copy.linearNote),
-                .caption(Copy.linearSkipped),
                 footer(disabled: true)
             ]),
             WizardScene("microsoft-create", step: 4, rail: [.reused, .done, .done, .skipped, .current, .todo, .todo], [
@@ -254,7 +309,6 @@ enum CompanyWizardScenes {
                 .fields([MockField(label: Copy.microsoftClientID, value: "4b1e0c9d-0000-4f00-a000-00000000077a"),
                          MockField(label: Copy.microsoftTenantID, value: "0000-acme")], error: nil),
                 .caption(Copy.microsoftNote),
-                .caption(Copy.microsoftSkipped),
                 footer()
             ]),
             WizardScene("microsoft-checkFailed", step: 4, rail: [.reused, .done, .done, .skipped, .current, .todo, .todo], [
@@ -374,6 +428,24 @@ enum CompanyConnectScenes {
                          .buttons(leading: [], trailing: [MockButton(title: Copy.replace),
                                                           MockButton(title: Copy.keepCurrent, kind: .primary)])])
         ]
+    }
+}
+
+/// A page in a service's detail (the own Google project, ask #1490): the way
+/// back on top, then the blocks.
+struct MockPage: View {
+    let back: String
+    let blocks: [MockBlock]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.large) {
+            Button {} label: { Label(back, systemImage: "chevron.left") }.buttonStyle(.kitQuiet)
+            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in MockBlockView(block: block) }
+        }
+        .controlSize(.small)
+        .padding(Spacing.page)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .detailBackground()
     }
 }
 

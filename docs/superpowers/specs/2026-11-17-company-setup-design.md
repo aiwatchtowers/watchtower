@@ -70,7 +70,7 @@ One JSON object, versioned, the only thing a link, an MDM key and a pasted code 
 
 ## 2. The admin: Set up for my company
 
-Connections → **Set up for my company**. A step per vendor, each skippable; progress kept in a draft (`<workspace>/company/draft.json`, 0600) so a closed window resumes.
+Connections → **Set up for my company** opens a page in the Connections detail area (screens spec §2, ask #1490). Its first step, **What does your company use?**, has the admin tick the services the company has (Slack, Google Workspace, Atlassian, Linear, Microsoft 365); only those become steps, and anything else is connected through Quick Connections (MCP connectors) (conversation 2026-11-18). A step per ticked vendor, each skippable; progress kept in a draft (`<workspace>/company/draft.json`, 0600) so leaving the page resumes at the step.
 
 **Existing apps first (D19).** No vendor lets Watchtower list a company's apps, so each step starts from what this Mac already knows, then asks only if that finds nothing:
 
@@ -79,15 +79,16 @@ Connections → **Set up for my company**. A step per vendor, each skippable; pr
 3. **Nothing found** → **Create new** (default) / **We already have one**. "Already have one" takes what identifies it: the Slack app's settings URL (`api.slack.com/apps/A…`, the `app_id` is parsed from it), the Google client JSON or id + secret, the Atlassian client id + secret, the Linear client id, the Microsoft client id + tenant id. Under both buttons, a "Not sure?" hint names where to look per vendor (Slack: Apps in the workspace, search Watchtower; Google: Cloud Console → Credentials; Atlassian: developer console → My apps; Linear: Settings → API → OAuth applications; Microsoft: Entra → App registrations).
 4. **A reused app is checked like a new one** before the step completes: the Slack manifest's scopes and redirect are compared with ours and updated if they differ (the update is shown first); Google and Microsoft by a dry authorize URL; Atlassian by asking the admin to confirm Sharing on, personal data Yes and `report:personal-data` (the developer console has no API to read them), with deep links.
 
-The steps (each describes the **Create new** path):
+The steps (each vendor step describes the **Create new** path; a vendor step appears only when its service is ticked):
 
-1. **Slack** — Slack spec §5.1 for a new app (configuration token, `apps.manifest.create`, no secret kept), or the reuse path above.
-2. **Google** — deep links into Google Cloud Console in order: create project → enable Gmail API and Calendar API → OAuth consent screen, user type **Internal** → Credentials → OAuth client **Desktop app** → download JSON. The admin drops the JSON on the step (or pastes it). Watchtower checks the client with a dry authorize URL and records the Workspace domain.
-3. **Atlassian** — deep links into developer.atlassian.com: create OAuth 2.0 integration → permissions: Jira API with today's `JiraScopes`, Confluence API with `ConfluenceScopes`, `report:personal-data` → callback URLs (the Jira loopback range, §5 open item) → **Distribution: Sharing on**, "Does your app store personal data? **Yes**" → add a second admin (D6). The admin pastes client id and secret.
-4. **Linear** (optional) — create an OAuth application in Linear settings with the loopback redirect; paste the client id. Skipped = employees use our shared Linear app.
-5. **Microsoft 365** (optional, D16) — deep links into Entra admin center: App registrations → New → "Accounts in this organizational directory only" → platform "Mobile and desktop", redirect `http://localhost` → API permissions (today's Outlook scopes) → **Grant admin consent** → paste client id and tenant id. Skipped = employees use our shared Microsoft client, where the tenant may demand admin consent.
-6. **Link deny list** (optional, D18) — hosts whose links Watchtower must never fetch (intranet, internal tools).
-7. **Publish** — Watchtower encodes the bundle and, with the Slack configuration token (fresh one asked if the first expired), writes into the Slack app's `long_description`: "Watchtower for <company> — connect: <link>" plus the connect code. It also shows the link, the code and a ready `.mobileconfig` with the `CompanyBundle` key for IT.
+1. **Services** — what the company uses (above); steps 2–6 follow the ticks.
+2. **Slack** — Slack spec §5.1 for a new app (configuration token, `apps.manifest.create`, no secret kept), or the reuse path above.
+3. **Google** — deep links into Google Cloud Console in order: create project → enable Gmail API and Calendar API → OAuth consent screen, user type **Internal** → Credentials → OAuth client **Desktop app** → download JSON. The admin drops the JSON on the step (or pastes it). Watchtower checks the client with a dry authorize URL and records the Workspace domain.
+4. **Atlassian** — deep links into developer.atlassian.com: create OAuth 2.0 integration → permissions: Jira API with today's `JiraScopes`, Confluence API with `ConfluenceScopes`, `report:personal-data` → callback URLs (the Jira loopback range, §5 open item) → **Distribution: Sharing on**, "Does your app store personal data? **Yes**" → add a second admin (D6). The admin pastes client id and secret.
+5. **Linear** — create an OAuth application in Linear settings with the loopback redirect; paste the client id. Not ticked or skipped = employees use our shared Linear app.
+6. **Microsoft 365** (D16) — deep links into Entra admin center: App registrations → New → "Accounts in this organizational directory only" → platform "Mobile and desktop", redirect `http://localhost` → API permissions (today's Outlook scopes) → **Grant admin consent** → paste client id and tenant id. Not ticked or skipped = employees use our shared Microsoft client, where the tenant may demand admin consent.
+7. **Link deny list** (optional, D18) — hosts whose links Watchtower must never fetch (intranet, internal tools).
+8. **Publish** — Watchtower encodes the bundle and, with the Slack configuration token (fresh one asked if the first expired), writes into the Slack app's `long_description`: "Watchtower for <company> — connect: <link>" plus the connect code. It also shows the link, the code and a ready `.mobileconfig` with the `CompanyBundle` key for IT.
 
 The admin then connects like any employee (§3), through the same link.
 
@@ -175,7 +176,7 @@ Test: a corp-flavored workspace fixture → bridge → public resolver gives eve
 | Malformed / oversized / unknown-version bundle | Refused before any UI, with the reason | `TestCompanyBundle_*` fixture cases, Swift twin |
 | Watchtower quits mid-chain | Bundle was stored first; done vendors stay connected; the rest show **Connect** in Connections; no auto-resume | integration test: kill after vendor 1, relaunch, rows |
 | Consent cancelled for one vendor | That row **Not connected**, chain continues | chain test with a fake OAuth that returns `access_denied` |
-| Admin wizard closed mid-step | Draft resumes at the step; secrets in the draft are 0600 and deleted on publish or **Discard** | draft round-trip test |
+| Admin leaves the wizard page mid-step | Draft resumes at the step; secrets in the draft are 0600 and deleted on publish or **Discard** | draft round-trip test |
 | Slack configuration token expired before publish | Publish asks for a fresh token; the bundle is not lost | manifest-update fake returning `token_expired` |
 | Company rotates the Atlassian/Google secret | Refresh fails `invalid_client` → **Re-login needed — your company changed its app; open the new link** | refresher test on `invalid_client` |
 | Admin's Atlassian account deleted, app gone | Same `invalid_client` path | as above |

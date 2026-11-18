@@ -14,7 +14,7 @@ private typealias Copy = CompanySetupMockCopy
 enum CompanySetupShotFixtures {
     /// Connections overview frames (the Companies zone).
     enum Overview: String, CaseIterable {
-        case companies, mdm, relogin, empty, loading, readFailed, codePaste, portBusy
+        case companies, mdm, relogin, empty, loading, readFailed, codePaste, portBusy, setupInProgress
     }
 
     static var shots: [DesignShot] {
@@ -28,7 +28,7 @@ enum CompanySetupShotFixtures {
     private static var wizardShots: [DesignShot] {
         let scenes = CompanyWizardScenes.scenes
         var shots = scenes.map { scene in shot("wizard-\(scene.name)", 720) { CompanyWizardMock(scene: scene) } }
-        for name in ["google-create", "publish-done"] {
+        for name in ["services", "google-create", "publish-done"] {
             if let scene = scenes.first(where: { $0.name == name }) {
                 shots.append(shot("wizard-\(name)-narrow", 420) { CompanyWizardMock(scene: scene, narrow: true) })
             }
@@ -79,10 +79,10 @@ enum CompanySetupShotFixtures {
     private static var sheetShots: [DesignShot] {
         let own = CompanySheetScenes.ownGoogle
         let token = CompanySheetScenes.token
-        var shots = own.map { name, blocks in shot("ownGoogle-\(name)", 560) { MockSheet(blocks: blocks) } }
+        var shots = own.map { name, blocks in shot("ownGoogle-\(name)", 640) { MockPage(back: Copy.backToGoogle, blocks: blocks) } }
         shots += token.map { name, blocks in shot("token-\(name)", 520) { MockSheet(blocks: blocks) } }
         if let empty = own.first(where: { $0.0 == "empty" }) {
-            shots.append(shot("ownGoogle-empty-narrow", 380) { MockSheet(blocks: empty.1) })
+            shots.append(shot("ownGoogle-empty-narrow", 360) { MockPage(back: Copy.backToGoogle, blocks: empty.1) })
         }
         if let empty = token.first(where: { $0.0 == "empty" }) {
             shots.append(shot("token-empty-narrow", 380) { MockSheet(blocks: empty.1) })
@@ -162,6 +162,10 @@ private struct CompanyOverviewMock: View {
             companyCard(managed: false, line: Copy.companyCount, problem: Copy.companyRelogin,
                         button: MockButton(title: Copy.relogin))
             zoneButtons
+        case .setupInProgress:
+            setupRow
+            companyCard(managed: false, line: Copy.companyCount, problem: nil, button: MockButton(title: Copy.connectRest))
+            zoneButtons
         case .companies, .codePaste, .portBusy:
             companyCard(managed: false, line: Copy.companyCount, problem: nil, button: MockButton(title: Copy.connectRest))
             if frame == .companies { zoneButtons } else { codeField }
@@ -185,6 +189,17 @@ private struct CompanyOverviewMock: View {
         }
         .padding(Spacing.medium)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .card()
+    }
+
+    private var setupRow: some View {
+        HStack(spacing: Spacing.regular) {
+            Image(systemName: "wrench.and.screwdriver").foregroundStyle(Tone.warning)
+            Text(Copy.setupInProgress).font(.callout)
+            Spacer(minLength: Spacing.regular)
+            Button(Copy.continueSetup) {}.buttonStyle(.kitPrimary)
+        }
+        .padding(Spacing.medium)
         .card()
     }
 
@@ -360,7 +375,7 @@ enum CompanyPaneScenes {
     }
 }
 
-// MARK: - Own Google project and API token sheets
+// MARK: - Own Google project page and API token sheet
 
 @MainActor
 enum CompanySheetScenes {
@@ -372,14 +387,19 @@ enum CompanySheetScenes {
         .buttons(leading: [], trailing: [MockButton(title: Copy.cancel), MockButton(title: primary, kind: .primary, disabled: disabled)])
     }
 
+    /// The own-project page has no Cancel: leaving it is the way back.
+    private static func pageButton(_ primary: String, disabled: Bool = false) -> MockBlock {
+        .buttons(leading: [], trailing: [MockButton(title: primary, kind: .primary, disabled: disabled)])
+    }
+
     private static let doneButton = MockBlock.buttons(leading: [], trailing: [MockButton(title: Copy.done, kind: .primary)])
 
     static var ownGoogle: [(String, [MockBlock])] {
         [
-            ("empty", [ownHead, ownGuide, .drop(nil), .caption(Copy.ownUnverifiedNote), buttons(Copy.connect, disabled: true)]),
-            ("ready", [ownHead, ownGuide, ownFile, .caption(Copy.ownUnverifiedNote), buttons(Copy.connect)]),
-            ("checking", [ownHead, ownGuide, ownFile, .busy(Copy.checkingGoogle), buttons(Copy.connect, disabled: true)]),
-            ("checkFailed", [ownHead, ownGuide, ownFile, .problem(Copy.googleRejected, nil), buttons(Copy.tryAgain)]),
+            ("empty", [ownHead, ownGuide, .drop(nil), .caption(Copy.ownUnverifiedNote), pageButton(Copy.connect, disabled: true)]),
+            ("ready", [ownHead, ownGuide, ownFile, .caption(Copy.ownUnverifiedNote), pageButton(Copy.connect)]),
+            ("checking", [ownHead, ownGuide, ownFile, .busy(Copy.checkingGoogle), pageButton(Copy.connect, disabled: true)]),
+            ("checkFailed", [ownHead, ownGuide, ownFile, .problem(Copy.googleRejected, nil), pageButton(Copy.tryAgain)]),
             ("done", [.title(Copy.ownTitle, nil), .success(Copy.ownDoneTitle, Copy.ownDoneBody), doneButton]),
             ("done-weekly", [.title(Copy.ownTitle, nil), .success(Copy.ownDoneTitle, Copy.ownDoneBody),
                              .caption(Copy.ownWeeklyNote), doneButton])

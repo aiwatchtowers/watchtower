@@ -11,8 +11,16 @@ final class CompanySetupMockCopyTests: XCTestCase {
     private typealias Copy = CompanySetupMockCopy
 
     func testWizardStepsAndHints() {
-        XCTAssertEqual(Copy.railSteps, ["Slack", "Google", "Atlassian", "Linear", "Microsoft 365", "Link deny list", "Publish"])
-        XCTAssertEqual(Copy.stepLine(1), Copy.narrowStepLine)
+        XCTAssertEqual(Copy.railSteps,
+                       ["Services", "Slack", "Google", "Atlassian", "Linear", "Microsoft 365", "Link deny list", "Publish"])
+        XCTAssertEqual(Copy.stepLine(2), Copy.narrowStepLine)
+        // The owner's first step: one row per supported service, the MCP note under them.
+        XCTAssertEqual(Copy.servicesTitle, "What does your company use?")
+        let services = ["Slack", "Google Workspace — Gmail and Calendar", "Atlassian — Jira and Confluence", "Linear",
+                        "Microsoft 365 — Outlook"]
+        XCTAssertEqual(Copy.services.map(\.0), services)
+        XCTAssertTrue(Copy.mcpNote.contains("Connections → Quick Connections (MCP connectors)"))
+        XCTAssertTrue(Copy.dropServiceBody.contains("dropped from the draft"))
         // D19: the fork offers Create new by default and a hint per vendor.
         XCTAssertEqual(Copy.createNew, "Create new")
         XCTAssertEqual(Copy.alreadyHaveOne, "We already have one")
@@ -60,7 +68,10 @@ final class CompanySetupMockCopyTests: XCTestCase {
             XCTAssertTrue(names.contains("company-wizard-\(scene.name)"))
         }
         // The owner's rule: every screen has a narrow frame.
-        for screen in ["wizard-google-create", "connect-confirm", "overview-companies", "google-detail", "jira-detail",
+        for scene in ["services", "services-found", "services-change"] {
+            XCTAssertTrue(names.contains("company-wizard-\(scene)"), scene)
+        }
+        for screen in ["wizard-services", "wizard-google-create", "connect-confirm", "overview-companies", "google-detail", "jira-detail",
                        "ownGoogle-empty", "token-empty"] {
             XCTAssertTrue(names.contains("company-\(screen)-narrow"), screen)
         }

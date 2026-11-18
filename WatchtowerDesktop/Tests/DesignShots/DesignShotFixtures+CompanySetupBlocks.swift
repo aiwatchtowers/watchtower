@@ -364,7 +364,7 @@ struct MockDropView: View {
 
     var body: some View {
         HStack(spacing: Spacing.regular) {
-            Image(systemName: file == nil ? "square.and.arrow.down" : "doc.badge.checkmark")
+            Image(systemName: file == nil ? "square.and.arrow.down" : "doc.text")
                 .foregroundStyle(file == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Tone.success))
             Text(file ?? CompanySetupMockCopy.dropJSON)
                 .font(.callout)

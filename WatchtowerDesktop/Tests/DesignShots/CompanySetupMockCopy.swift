@@ -13,7 +13,6 @@ enum CompanySetupMockCopy {
     // MARK: Shared buttons
 
     static let cancel = "Cancel"
-    static let close = "Close"
     static let done = "Done"
     static let back = "Back"
     static let continueStep = "Continue"
@@ -22,20 +21,50 @@ enum CompanySetupMockCopy {
     static let open = "Open"
     static let copy = "Copy"
     static let skipStep = "Skip this step"
+    static let backToConnections = "Connections"
+    static let backToGoogle = "Google"
     static let notConnected = "Not connected"
 
     // MARK: Wizard frame (§2)
 
     static let wizardTitle = "Set up Watchtower for your company"
     static let wizardIntro = "One pass for every service your company uses. Each step can be skipped; Watchtower keeps "
-        + "your progress, so you can close this window and come back."
-    static let railSteps = ["Slack", "Google", "Atlassian", "Linear", "Microsoft 365", "Link deny list", "Publish"]
+        + "your progress, so you can leave this page and come back."
+    /// The rail of a wizard where every service is ticked: Services first, then one step
+    /// per ticked service, then the deny list and Publish.
+    static let railSteps = ["Services", "Slack", "Google", "Atlassian", "Linear", "Microsoft 365", "Link deny list", "Publish"]
     static let railDone = "Done"
     static let railReused = "Reused"
     static let railSkipped = "Skipped"
-    static let narrowStepLine = "Step 2 of 7 · Google"
-    /// "Step <n> of 7 · <step>", the wizard's one-line rail at narrow width.
-    static func stepLine(_ index: Int) -> String { "Step \(index + 1) of \(railSteps.count) · \(railSteps[index])" }
+    static let narrowStepLine = "Step 3 of 8 · Google"
+    /// "Step <n> of <count> · <step>", the wizard's one-line rail at narrow width.
+    static func stepLine(_ index: Int, of rail: [String] = railSteps) -> String {
+        "Step \(index + 1) of \(rail.count) · \(rail[index])"
+    }
+    static let changeServices = "Change services"
+
+    // MARK: Services step (first)
+
+    static let servicesTitle = "What does your company use?"
+    static let servicesBody = "Tick what your company has. Each ticked service gets its own step; the link deny list "
+        + "and Publish always follow."
+    /// One row per supported service: the name and a one-line description.
+    static let services = [
+        ("Slack", "Messages, digests and the Inbox"),
+        ("Google Workspace — Gmail and Calendar", "Mail and calendar through your company's Google project"),
+        ("Atlassian — Jira and Confluence", "Issues and pages through your company's Atlassian app"),
+        ("Linear", "Issues through your company's Linear app"),
+        ("Microsoft 365 — Outlook", "Mail through your company's Entra app")
+    ]
+    static let foundOnMac = "Found on this Mac"
+    static let mcpNote = "Use something else (Notion, GitHub, a CRM…)? Connect it yourself in Connections → "
+        + "Quick Connections (MCP connectors)."
+    static let openQuickConnections = "Open Quick Connections"
+    static let dropServiceTitle = "Stop setting up Atlassian?"
+    static let dropServiceBody = "What you entered for it (client id and secret) is dropped from the draft. "
+        + "An app you created stays in Atlassian."
+    static let dropService = "Drop Atlassian"
+    static let keepService = "Keep"
     static let resumeLine = "Continuing the setup you started on Nov 17."
     static let discardSetup = "Discard setup"
     static let discardConfirm = "Discard this setup? The draft and the secrets in it are deleted from this Mac. "
@@ -81,8 +110,8 @@ enum CompanySetupMockCopy {
     static let tokenNote = "Used once for this setup and never stored."
     static let createApp = "Create the app"
     static let slackReuseSteps = ["Checking the token", "Reading app A0ACME's settings", "Comparing them with Watchtower's"]
-    static let slackProgressCaption = "Keep this window open. If it closes, the setup resumes at this step; "
-        + "the app is never created twice."
+    static let slackProgressCaption = "You can leave this page: the setup resumes at this step, "
+        + "and the app is never created twice."
     static let manifestDiffTitle = "App A0ACME's settings differ from Watchtower's"
     static let manifestDiffBody = "Watchtower will make these changes to the app. Nothing else in it changes."
     static let manifestDiffLines = [
@@ -144,7 +173,6 @@ enum CompanySetupMockCopy {
     ]
     static let copyCallback = "Copy callback URL"
     static let linearNote = "No secret: Watchtower signs in with PKCE."
-    static let linearSkipped = "Skipped: colleagues use Watchtower's shared Linear app."
     static let microsoftGuide = [
         "App registrations → New registration: Accounts in this organizational directory only",
         "Platform: Mobile and desktop applications, redirect URI http://localhost",
@@ -154,8 +182,6 @@ enum CompanySetupMockCopy {
     static let microsoftClientID = "Application (client) ID"
     static let microsoftTenantID = "Directory (tenant) ID"
     static let microsoftNote = "No secret: Watchtower signs in with PKCE against your tenant."
-    static let microsoftSkipped = "Skipped: colleagues use Watchtower's shared Microsoft app, where your tenant may "
-        + "ask an admin to approve it."
     static let microsoftRejected = "Microsoft does not accept this client in tenant 0000-acme: AADSTS700016. "
         + "Check both ids on the app's Overview page."
 
@@ -178,7 +204,7 @@ enum CompanySetupMockCopy {
         "Slack · Watchtower (A0ACME) in acme",
         "Google · acme-watchtower · example.com",
         "Atlassian · client 9f3a…c21 · acme.atlassian.net · Confluence on",
-        "Linear · skipped: the shared app",
+        "Linear · skipped: colleagues use Watchtower's shared Linear app",
         "Microsoft 365 · client 4b1e…77a · tenant 0000-acme",
         "Link deny list · 2 hosts"
     ]
@@ -285,6 +311,8 @@ enum CompanySetupMockCopy {
     static let portBusy = "Company links cannot reach Watchtower: port 18551 is busy. Paste the company code here instead."
     static let companiesLoading = "Reading company setups…"
     static let companiesReadFailed = "Could not read the company setups: acme.json is damaged."
+    static let setupInProgress = "Setup in progress: Acme, at Atlassian (step 4 of 8)."
+    static let continueSetup = "Continue setup"
     static let attentionJira = "Jira · Re-login needed — Acme changed its app"
     static let reconnect = "Reconnect"
 
