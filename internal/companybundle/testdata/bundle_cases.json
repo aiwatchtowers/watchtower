@@ -1,0 +1,1109 @@
+[
+ {
+  "name": "minimal",
+  "json": "{\"v\":1,\"company\":\"Acme\"}",
+  "origin": "link",
+  "want": {
+   "ok": true,
+   "bundle": {
+    "v": 1,
+    "company": "Acme"
+   },
+   "slug": "acme",
+   "encoded": "eyJjb21wYW55IjoiQWNtZSIsInYiOjF9"
+  }
+ },
+ {
+  "name": "every vendor block",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":{\"team_id\":\"T0000\",\"client_id\":\"000.000\"},\"google\":{\"client_id\":\"1234-abcd.apps.googleusercontent.com\",\"client_secret\":\"sample-secret\",\"domain\":\"example.com\"},\"atlassian\":{\"client_id\":\"acmeClientId01\",\"client_secret\":\"acme-secret\",\"site\":\"https://acme.atlassian.net\",\"confluence\":true},\"linear\":{\"client_id\":\"acmelinear01\"},\"microsoft\":{\"client_id\":\"00000000-0000-0000-0000-000000000001\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000aa\"},\"link_deny_hosts\":[\"intranet.example.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": true,
+   "bundle": {
+    "v": 1,
+    "company": "Acme",
+    "slack": {
+     "team_id": "T0000",
+     "client_id": "000.000"
+    },
+    "google": {
+     "client_id": "1234-abcd.apps.googleusercontent.com",
+     "client_secret": "sample-secret",
+     "domain": "example.com"
+    },
+    "atlassian": {
+     "client_id": "acmeClientId01",
+     "client_secret": "acme-secret",
+     "site": "https://acme.atlassian.net",
+     "confluence": true
+    },
+    "linear": {
+     "client_id": "acmelinear01"
+    },
+    "microsoft": {
+     "client_id": "00000000-0000-0000-0000-000000000001",
+     "tenant_id": "00000000-0000-0000-0000-0000000000aa"
+    },
+    "link_deny_hosts": [
+     "intranet.example.com"
+    ]
+   },
+   "slug": "acme",
+   "encoded": "eyJhdGxhc3NpYW4iOnsiY2xpZW50X2lkIjoiYWNtZUNsaWVudElkMDEiLCJjbGllbnRfc2VjcmV0IjoiYWNtZS1zZWNyZXQiLCJjb25mbHVlbmNlIjp0cnVlLCJzaXRlIjoiaHR0cHM6Ly9hY21lLmF0bGFzc2lhbi5uZXQifSwiY29tcGFueSI6IkFjbWUiLCJnb29nbGUiOnsiY2xpZW50X2lkIjoiMTIzNC1hYmNkLmFwcHMuZ29vZ2xldXNlcmNvbnRlbnQuY29tIiwiY2xpZW50X3NlY3JldCI6InNhbXBsZS1zZWNyZXQiLCJkb21haW4iOiJleGFtcGxlLmNvbSJ9LCJsaW5lYXIiOnsiY2xpZW50X2lkIjoiYWNtZWxpbmVhcjAxIn0sImxpbmtfZGVueV9ob3N0cyI6WyJpbnRyYW5ldC5leGFtcGxlLmNvbSJdLCJtaWNyb3NvZnQiOnsiY2xpZW50X2lkIjoiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAxIiwidGVuYW50X2lkIjoiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMGFhIn0sInNsYWNrIjp7ImNsaWVudF9pZCI6IjAwMC4wMDAiLCJ0ZWFtX2lkIjoiVDAwMDAifSwidiI6MX0"
+  }
+ },
+ {
+  "name": "every vendor block from mdm",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":{\"team_id\":\"T0000\",\"client_id\":\"000.000\"},\"google\":{\"client_id\":\"1234-abcd.apps.googleusercontent.com\",\"client_secret\":\"sample-secret\",\"domain\":\"example.com\"},\"atlassian\":{\"client_id\":\"acmeClientId01\",\"client_secret\":\"acme-secret\",\"site\":\"https://acme.atlassian.net\",\"confluence\":true},\"linear\":{\"client_id\":\"acmelinear01\"},\"microsoft\":{\"client_id\":\"00000000-0000-0000-0000-000000000001\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000aa\"},\"link_deny_hosts\":[\"intranet.example.com\"]}",
+  "origin": "mdm",
+  "want": {
+   "ok": true,
+   "bundle": {
+    "v": 1,
+    "company": "Acme",
+    "slack": {
+     "team_id": "T0000",
+     "client_id": "000.000"
+    },
+    "google": {
+     "client_id": "1234-abcd.apps.googleusercontent.com",
+     "client_secret": "sample-secret",
+     "domain": "example.com"
+    },
+    "atlassian": {
+     "client_id": "acmeClientId01",
+     "client_secret": "acme-secret",
+     "site": "https://acme.atlassian.net",
+     "confluence": true
+    },
+    "linear": {
+     "client_id": "acmelinear01"
+    },
+    "microsoft": {
+     "client_id": "00000000-0000-0000-0000-000000000001",
+     "tenant_id": "00000000-0000-0000-0000-0000000000aa"
+    },
+    "link_deny_hosts": [
+     "intranet.example.com"
+    ]
+   },
+   "slug": "acme"
+  }
+ },
+ {
+  "name": "every vendor block from a code",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":{\"team_id\":\"T0000\",\"client_id\":\"000.000\"},\"google\":{\"client_id\":\"1234-abcd.apps.googleusercontent.com\",\"client_secret\":\"sample-secret\",\"domain\":\"example.com\"},\"atlassian\":{\"client_id\":\"acmeClientId01\",\"client_secret\":\"acme-secret\",\"site\":\"https://acme.atlassian.net\",\"confluence\":true},\"linear\":{\"client_id\":\"acmelinear01\"},\"microsoft\":{\"client_id\":\"00000000-0000-0000-0000-000000000001\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000aa\"},\"link_deny_hosts\":[\"intranet.example.com\"]}",
+  "origin": "code",
+  "want": {
+   "ok": true,
+   "bundle": {
+    "v": 1,
+    "company": "Acme",
+    "slack": {
+     "team_id": "T0000",
+     "client_id": "000.000"
+    },
+    "google": {
+     "client_id": "1234-abcd.apps.googleusercontent.com",
+     "client_secret": "sample-secret",
+     "domain": "example.com"
+    },
+    "atlassian": {
+     "client_id": "acmeClientId01",
+     "client_secret": "acme-secret",
+     "site": "https://acme.atlassian.net",
+     "confluence": true
+    },
+    "linear": {
+     "client_id": "acmelinear01"
+    },
+    "microsoft": {
+     "client_id": "00000000-0000-0000-0000-000000000001",
+     "tenant_id": "00000000-0000-0000-0000-0000000000aa"
+    },
+    "link_deny_hosts": [
+     "intranet.example.com"
+    ]
+   },
+   "slug": "acme"
+  }
+ },
+ {
+  "name": "company with spaces and a dot",
+  "json": "{\"v\":1,\"company\":\"  Acme Inc.  \"}",
+  "origin": "link",
+  "want": {
+   "ok": true,
+   "bundle": {
+    "v": 1,
+    "company": "Acme Inc."
+   },
+   "slug": "acme-inc",
+   "encoded": "eyJjb21wYW55IjoiQWNtZSBJbmMuIiwidiI6MX0"
+  }
+ },
+ {
+  "name": "non-ASCII company",
+  "json": "{\"v\":1,\"company\":\"Ачме\"}",
+  "origin": "link",
+  "want": {
+   "ok": true,
+   "bundle": {
+    "v": 1,
+    "company": "Ачме"
+   },
+   "slug": "company",
+   "encoded": "eyJjb21wYW55Ijoi0JDRh9C80LUiLCJ2IjoxfQ"
+  }
+ },
+ {
+  "name": "company named like the draft file",
+  "json": "{\"v\":1,\"company\":\"Draft\"}",
+  "origin": "link",
+  "want": {
+   "ok": true,
+   "bundle": {
+    "v": 1,
+    "company": "Draft"
+   },
+   "slug": "draft-company"
+  }
+ },
+ {
+  "name": "company with quotes and slashes",
+  "json": "{\"v\":1,\"company\":\"A/B \\\"Acme\\\" <&>\"}",
+  "origin": "link",
+  "want": {
+   "ok": true,
+   "bundle": {
+    "v": 1,
+    "company": "A/B \"Acme\" <&>"
+   },
+   "slug": "a-b-acme",
+   "encoded": "eyJjb21wYW55IjoiQS9CIFwiQWNtZVwiIDwmPiIsInYiOjF9"
+  }
+ },
+ {
+  "name": "null blocks read as absent",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":null,\"google\":null,\"link_deny_hosts\":null,\"personal\":null}",
+  "origin": "link",
+  "want": {
+   "ok": true,
+   "bundle": {
+    "v": 1,
+    "company": "Acme"
+   },
+   "slug": "acme"
+  }
+ },
+ {
+  "name": "empty deny list reads as absent",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"link_deny_hosts\":[]}",
+  "origin": "link",
+  "want": {
+   "ok": true,
+   "bundle": {
+    "v": 1,
+    "company": "Acme"
+   },
+   "slug": "acme"
+  }
+ },
+ {
+  "name": "google without a domain",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"google\":{\"client_id\":\"1234-abcd.apps.googleusercontent.com\",\"client_secret\":\"sample-secret\"}}",
+  "origin": "link",
+  "want": {
+   "ok": true,
+   "bundle": {
+    "v": 1,
+    "company": "Acme",
+    "google": {
+     "client_id": "1234-abcd.apps.googleusercontent.com",
+     "client_secret": "sample-secret"
+    }
+   },
+   "slug": "acme",
+   "encoded": "eyJjb21wYW55IjoiQWNtZSIsImdvb2dsZSI6eyJjbGllbnRfaWQiOiIxMjM0LWFiY2QuYXBwcy5nb29nbGV1c2VyY29udGVudC5jb20iLCJjbGllbnRfc2VjcmV0Ijoic2FtcGxlLXNlY3JldCJ9LCJ2IjoxfQ"
+  }
+ },
+ {
+  "name": "atlassian without confluence",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"atlassian\":{\"client_id\":\"acmeClientId01\",\"client_secret\":\"acme-secret\",\"site\":\"https://acme.atlassian.net\"}}",
+  "origin": "link",
+  "want": {
+   "ok": true,
+   "bundle": {
+    "v": 1,
+    "company": "Acme",
+    "atlassian": {
+     "client_id": "acmeClientId01",
+     "client_secret": "acme-secret",
+     "site": "https://acme.atlassian.net",
+     "confluence": false
+    }
+   },
+   "slug": "acme",
+   "encoded": "eyJhdGxhc3NpYW4iOnsiY2xpZW50X2lkIjoiYWNtZUNsaWVudElkMDEiLCJjbGllbnRfc2VjcmV0IjoiYWNtZS1zZWNyZXQiLCJjb25mbHVlbmNlIjpmYWxzZSwic2l0ZSI6Imh0dHBzOi8vYWNtZS5hdGxhc3NpYW4ubmV0In0sImNvbXBhbnkiOiJBY21lIiwidiI6MX0"
+  }
+ },
+ {
+  "name": "normalizes site, ids, hosts and tenant",
+  "json": "{\"v\":1,\"company\":\" Acme \",\"slack\":{\"team_id\":\" T0000 \",\"client_id\":\" 000.000\\n\"},\"google\":{\"client_id\":\" 1234-abcd.apps.googleusercontent.com \",\"client_secret\":\" sample-secret \",\"domain\":\" Example.COM \"},\"atlassian\":{\"client_id\":\" acmeClientId01 \",\"client_secret\":\"acme-secret\\t\",\"site\":\"HTTPS://Acme.atlassian.net/\",\"confluence\":true},\"linear\":{\"client_id\":\" acmelinear01 \"},\"microsoft\":{\"client_id\":\"00000000-0000-0000-0000-000000000001\",\"tenant_id\":\" Example.ONMICROSOFT.com \"},\"link_deny_hosts\":[\" Intranet.Example.com \"]}",
+  "origin": "link",
+  "want": {
+   "ok": true,
+   "bundle": {
+    "v": 1,
+    "company": "Acme",
+    "slack": {
+     "team_id": "T0000",
+     "client_id": "000.000"
+    },
+    "google": {
+     "client_id": "1234-abcd.apps.googleusercontent.com",
+     "client_secret": "sample-secret",
+     "domain": "example.com"
+    },
+    "atlassian": {
+     "client_id": "acmeClientId01",
+     "client_secret": "acme-secret",
+     "site": "https://acme.atlassian.net",
+     "confluence": true
+    },
+    "linear": {
+     "client_id": "acmelinear01"
+    },
+    "microsoft": {
+     "client_id": "00000000-0000-0000-0000-000000000001",
+     "tenant_id": "example.onmicrosoft.com"
+    },
+    "link_deny_hosts": [
+     "intranet.example.com"
+    ]
+   },
+   "slug": "acme"
+  }
+ },
+ {
+  "name": "microsoft tenant GUID upper-cased",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"microsoft\":{\"client_id\":\"00000000-0000-0000-0000-000000000001\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000AA\"}}",
+  "origin": "link",
+  "want": {
+   "ok": true,
+   "bundle": {
+    "v": 1,
+    "company": "Acme",
+    "microsoft": {
+     "client_id": "00000000-0000-0000-0000-000000000001",
+     "tenant_id": "00000000-0000-0000-0000-0000000000aa"
+    }
+   },
+   "slug": "acme"
+  }
+ },
+ {
+  "name": "personal from a stored file",
+  "json": "{\"v\":1,\"company\":\"Me\",\"personal\":true,\"google\":{\"client_id\":\"1234-abcd.apps.googleusercontent.com\",\"client_secret\":\"sample-secret\"}}",
+  "origin": "local",
+  "want": {
+   "ok": true,
+   "bundle": {
+    "v": 1,
+    "company": "Me",
+    "personal": true,
+    "google": {
+     "client_id": "1234-abcd.apps.googleusercontent.com",
+     "client_secret": "sample-secret"
+    }
+   },
+   "slug": "me"
+  }
+ },
+ {
+  "name": "personal false from a link",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"personal\":false}",
+  "origin": "link",
+  "want": {
+   "ok": true,
+   "bundle": {
+    "v": 1,
+    "company": "Acme"
+   },
+   "slug": "acme"
+  }
+ },
+ {
+  "name": "personal from link",
+  "json": "{\"v\":1,\"company\":\"Me\",\"personal\":true}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "personal"
+  }
+ },
+ {
+  "name": "personal from mdm",
+  "json": "{\"v\":1,\"company\":\"Me\",\"personal\":true}",
+  "origin": "mdm",
+  "want": {
+   "ok": false,
+   "reason": "personal"
+  }
+ },
+ {
+  "name": "personal from code",
+  "json": "{\"v\":1,\"company\":\"Me\",\"personal\":true}",
+  "origin": "code",
+  "want": {
+   "ok": false,
+   "reason": "personal"
+  }
+ },
+ {
+  "name": "personal not a bool",
+  "json": "{\"v\":1,\"company\":\"Me\",\"personal\":1}",
+  "origin": "local",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "unknown top-level field",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":{\"team_id\":\"T0000\",\"client_id\":\"000.000\"},\"google\":{\"client_id\":\"1234-abcd.apps.googleusercontent.com\",\"client_secret\":\"sample-secret\",\"domain\":\"example.com\"},\"atlassian\":{\"client_id\":\"acmeClientId01\",\"client_secret\":\"acme-secret\",\"site\":\"https://acme.atlassian.net\",\"confluence\":true},\"linear\":{\"client_id\":\"acmelinear01\"},\"microsoft\":{\"client_id\":\"00000000-0000-0000-0000-000000000001\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000aa\"},\"link_deny_hosts\":[\"intranet.example.com\"],\"extra\":1}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "unknown field in a block",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":{\"team_id\":\"T0000\",\"client_id\":\"000.000\",\"app_id\":\"A1\"},\"google\":{\"client_id\":\"1234-abcd.apps.googleusercontent.com\",\"client_secret\":\"sample-secret\",\"domain\":\"example.com\"},\"atlassian\":{\"client_id\":\"acmeClientId01\",\"client_secret\":\"acme-secret\",\"site\":\"https://acme.atlassian.net\",\"confluence\":true},\"linear\":{\"client_id\":\"acmelinear01\"},\"microsoft\":{\"client_id\":\"00000000-0000-0000-0000-000000000001\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000aa\"},\"link_deny_hosts\":[\"intranet.example.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "miscased field",
+  "json": "{\"v\":1,\"Company\":\"Acme\"}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "miscased field in a block",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"linear\":{\"Client_ID\":\"acmelinear01\"}}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "confluence not a bool",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":{\"team_id\":\"T0000\",\"client_id\":\"000.000\"},\"google\":{\"client_id\":\"1234-abcd.apps.googleusercontent.com\",\"client_secret\":\"sample-secret\",\"domain\":\"example.com\"},\"atlassian\":{\"client_id\":\"acmeClientId01\",\"client_secret\":\"acme-secret\",\"site\":\"https://acme.atlassian.net\",\"confluence\":\"yes\"},\"linear\":{\"client_id\":\"acmelinear01\"},\"microsoft\":{\"client_id\":\"00000000-0000-0000-0000-000000000001\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000aa\"},\"link_deny_hosts\":[\"intranet.example.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "confluence as a number",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":{\"team_id\":\"T0000\",\"client_id\":\"000.000\"},\"google\":{\"client_id\":\"1234-abcd.apps.googleusercontent.com\",\"client_secret\":\"sample-secret\",\"domain\":\"example.com\"},\"atlassian\":{\"client_id\":\"acmeClientId01\",\"client_secret\":\"acme-secret\",\"site\":\"https://acme.atlassian.net\",\"confluence\":1},\"linear\":{\"client_id\":\"acmelinear01\"},\"microsoft\":{\"client_id\":\"00000000-0000-0000-0000-000000000001\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000aa\"},\"link_deny_hosts\":[\"intranet.example.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "company not a string",
+  "json": "{\"v\":1,\"company\":7}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "block not an object",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":\"T0000\"}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "block a list",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"linear\":[]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "deny hosts not a list",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"link_deny_hosts\":\"example.com\"}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "v as a string",
+  "json": "{\"v\":\"1\",\"company\":\"Acme\"}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "v as a float",
+  "json": "{\"v\":1.0,\"company\":\"Acme\"}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "v in exponent form",
+  "json": "{\"v\":1e0,\"company\":\"Acme\"}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "v as a bool",
+  "json": "{\"v\":true,\"company\":\"Acme\"}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "v null",
+  "json": "{\"v\":null,\"company\":\"Acme\"}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "v missing",
+  "json": "{\"company\":\"Acme\"}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "v zero",
+  "json": "{\"v\":0,\"company\":\"Acme\"}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "v negative",
+  "json": "{\"v\":-1,\"company\":\"Acme\"}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "v two",
+  "json": "{\"v\":2,\"company\":\"Acme\"}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "newer_version"
+  }
+ },
+ {
+  "name": "v two with fields this build lacks",
+  "json": "{\"v\":2,\"company\":\"Acme\",\"zoom\":{\"client_id\":\"z\"}}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "newer_version"
+  }
+ },
+ {
+  "name": "company missing",
+  "json": "{\"v\":1}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "company blank",
+  "json": "{\"v\":1,\"company\":\"  \"}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "company with a control character",
+  "json": "{\"v\":1,\"company\":\"Ac\\u0007me\"}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "company with DEL",
+  "json": "{\"v\":1,\"company\":\"Acme\"}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "company with a line separator",
+  "json": "{\"v\":1,\"company\":\"Ac me\"}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "company over 200 bytes",
+  "json": "{\"v\":1,\"company\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "company of exactly 200 bytes",
+  "json": "{\"v\":1,\"company\":\"ЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖ\"}",
+  "origin": "link",
+  "want": {
+   "ok": true,
+   "bundle": {
+    "v": 1,
+    "company": "ЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖ"
+   },
+   "slug": "company"
+  }
+ },
+ {
+  "name": "site over http",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":{\"team_id\":\"T0000\",\"client_id\":\"000.000\"},\"google\":{\"client_id\":\"1234-abcd.apps.googleusercontent.com\",\"client_secret\":\"sample-secret\",\"domain\":\"example.com\"},\"atlassian\":{\"client_id\":\"acmeClientId01\",\"client_secret\":\"acme-secret\",\"site\":\"http://acme.atlassian.net\",\"confluence\":true},\"linear\":{\"client_id\":\"acmelinear01\"},\"microsoft\":{\"client_id\":\"00000000-0000-0000-0000-000000000001\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000aa\"},\"link_deny_hosts\":[\"intranet.example.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "site_not_https"
+  }
+ },
+ {
+  "name": "site without a scheme",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":{\"team_id\":\"T0000\",\"client_id\":\"000.000\"},\"google\":{\"client_id\":\"1234-abcd.apps.googleusercontent.com\",\"client_secret\":\"sample-secret\",\"domain\":\"example.com\"},\"atlassian\":{\"client_id\":\"acmeClientId01\",\"client_secret\":\"acme-secret\",\"site\":\"acme.atlassian.net\",\"confluence\":true},\"linear\":{\"client_id\":\"acmelinear01\"},\"microsoft\":{\"client_id\":\"00000000-0000-0000-0000-000000000001\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000aa\"},\"link_deny_hosts\":[\"intranet.example.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "site_not_https"
+  }
+ },
+ {
+  "name": "site with a path",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":{\"team_id\":\"T0000\",\"client_id\":\"000.000\"},\"google\":{\"client_id\":\"1234-abcd.apps.googleusercontent.com\",\"client_secret\":\"sample-secret\",\"domain\":\"example.com\"},\"atlassian\":{\"client_id\":\"acmeClientId01\",\"client_secret\":\"acme-secret\",\"site\":\"https://acme.atlassian.net/jira\",\"confluence\":true},\"linear\":{\"client_id\":\"acmelinear01\"},\"microsoft\":{\"client_id\":\"00000000-0000-0000-0000-000000000001\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000aa\"},\"link_deny_hosts\":[\"intranet.example.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "site with a port",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":{\"team_id\":\"T0000\",\"client_id\":\"000.000\"},\"google\":{\"client_id\":\"1234-abcd.apps.googleusercontent.com\",\"client_secret\":\"sample-secret\",\"domain\":\"example.com\"},\"atlassian\":{\"client_id\":\"acmeClientId01\",\"client_secret\":\"acme-secret\",\"site\":\"https://acme.atlassian.net:8443\",\"confluence\":true},\"linear\":{\"client_id\":\"acmelinear01\"},\"microsoft\":{\"client_id\":\"00000000-0000-0000-0000-000000000001\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000aa\"},\"link_deny_hosts\":[\"intranet.example.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "site with a user part",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":{\"team_id\":\"T0000\",\"client_id\":\"000.000\"},\"google\":{\"client_id\":\"1234-abcd.apps.googleusercontent.com\",\"client_secret\":\"sample-secret\",\"domain\":\"example.com\"},\"atlassian\":{\"client_id\":\"acmeClientId01\",\"client_secret\":\"acme-secret\",\"site\":\"https://user@acme.example.com\",\"confluence\":true},\"linear\":{\"client_id\":\"acmelinear01\"},\"microsoft\":{\"client_id\":\"00000000-0000-0000-0000-000000000001\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000aa\"},\"link_deny_hosts\":[\"intranet.example.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "site with a query",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":{\"team_id\":\"T0000\",\"client_id\":\"000.000\"},\"google\":{\"client_id\":\"1234-abcd.apps.googleusercontent.com\",\"client_secret\":\"sample-secret\",\"domain\":\"example.com\"},\"atlassian\":{\"client_id\":\"acmeClientId01\",\"client_secret\":\"acme-secret\",\"site\":\"https://acme.atlassian.net?x=1\",\"confluence\":true},\"linear\":{\"client_id\":\"acmelinear01\"},\"microsoft\":{\"client_id\":\"00000000-0000-0000-0000-000000000001\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000aa\"},\"link_deny_hosts\":[\"intranet.example.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "site an IP",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":{\"team_id\":\"T0000\",\"client_id\":\"000.000\"},\"google\":{\"client_id\":\"1234-abcd.apps.googleusercontent.com\",\"client_secret\":\"sample-secret\",\"domain\":\"example.com\"},\"atlassian\":{\"client_id\":\"acmeClientId01\",\"client_secret\":\"acme-secret\",\"site\":\"https://10.0.0.1\",\"confluence\":true},\"linear\":{\"client_id\":\"acmelinear01\"},\"microsoft\":{\"client_id\":\"00000000-0000-0000-0000-000000000001\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000aa\"},\"link_deny_hosts\":[\"intranet.example.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "site missing",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"atlassian\":{\"client_id\":\"acmeClientId01\",\"client_secret\":\"acme-secret\"}}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "atlassian client id with a space",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":{\"team_id\":\"T0000\",\"client_id\":\"000.000\"},\"google\":{\"client_id\":\"1234-abcd.apps.googleusercontent.com\",\"client_secret\":\"sample-secret\",\"domain\":\"example.com\"},\"atlassian\":{\"client_id\":\"acme client\",\"client_secret\":\"acme-secret\",\"site\":\"https://acme.atlassian.net\",\"confluence\":true},\"linear\":{\"client_id\":\"acmelinear01\"},\"microsoft\":{\"client_id\":\"00000000-0000-0000-0000-000000000001\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000aa\"},\"link_deny_hosts\":[\"intranet.example.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "atlassian secret missing",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"atlassian\":{\"client_id\":\"acmeClientId01\",\"site\":\"https://acme.atlassian.net\"}}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "slack team id not T or E",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":{\"team_id\":\"U0000\",\"client_id\":\"000.000\"},\"google\":{\"client_id\":\"1234-abcd.apps.googleusercontent.com\",\"client_secret\":\"sample-secret\",\"domain\":\"example.com\"},\"atlassian\":{\"client_id\":\"acmeClientId01\",\"client_secret\":\"acme-secret\",\"site\":\"https://acme.atlassian.net\",\"confluence\":true},\"linear\":{\"client_id\":\"acmelinear01\"},\"microsoft\":{\"client_id\":\"00000000-0000-0000-0000-000000000001\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000aa\"},\"link_deny_hosts\":[\"intranet.example.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "slack team id lower case",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":{\"team_id\":\"t0000\",\"client_id\":\"000.000\"},\"google\":{\"client_id\":\"1234-abcd.apps.googleusercontent.com\",\"client_secret\":\"sample-secret\",\"domain\":\"example.com\"},\"atlassian\":{\"client_id\":\"acmeClientId01\",\"client_secret\":\"acme-secret\",\"site\":\"https://acme.atlassian.net\",\"confluence\":true},\"linear\":{\"client_id\":\"acmelinear01\"},\"microsoft\":{\"client_id\":\"00000000-0000-0000-0000-000000000001\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000aa\"},\"link_deny_hosts\":[\"intranet.example.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "slack client id not dotted digits",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":{\"team_id\":\"T0000\",\"client_id\":\"abc\"},\"google\":{\"client_id\":\"1234-abcd.apps.googleusercontent.com\",\"client_secret\":\"sample-secret\",\"domain\":\"example.com\"},\"atlassian\":{\"client_id\":\"acmeClientId01\",\"client_secret\":\"acme-secret\",\"site\":\"https://acme.atlassian.net\",\"confluence\":true},\"linear\":{\"client_id\":\"acmelinear01\"},\"microsoft\":{\"client_id\":\"00000000-0000-0000-0000-000000000001\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000aa\"},\"link_deny_hosts\":[\"intranet.example.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "slack client id missing",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":{\"team_id\":\"T0000\"}}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "google client id not a google id",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":{\"team_id\":\"T0000\",\"client_id\":\"000.000\"},\"google\":{\"client_id\":\"acme\",\"client_secret\":\"sample-secret\",\"domain\":\"example.com\"},\"atlassian\":{\"client_id\":\"acmeClientId01\",\"client_secret\":\"acme-secret\",\"site\":\"https://acme.atlassian.net\",\"confluence\":true},\"linear\":{\"client_id\":\"acmelinear01\"},\"microsoft\":{\"client_id\":\"00000000-0000-0000-0000-000000000001\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000aa\"},\"link_deny_hosts\":[\"intranet.example.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "google secret with a space",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":{\"team_id\":\"T0000\",\"client_id\":\"000.000\"},\"google\":{\"client_id\":\"1234-abcd.apps.googleusercontent.com\",\"client_secret\":\"sample secret\",\"domain\":\"example.com\"},\"atlassian\":{\"client_id\":\"acmeClientId01\",\"client_secret\":\"acme-secret\",\"site\":\"https://acme.atlassian.net\",\"confluence\":true},\"linear\":{\"client_id\":\"acmelinear01\"},\"microsoft\":{\"client_id\":\"00000000-0000-0000-0000-000000000001\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000aa\"},\"link_deny_hosts\":[\"intranet.example.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "google domain not a host",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":{\"team_id\":\"T0000\",\"client_id\":\"000.000\"},\"google\":{\"client_id\":\"1234-abcd.apps.googleusercontent.com\",\"client_secret\":\"sample-secret\",\"domain\":\"example\"},\"atlassian\":{\"client_id\":\"acmeClientId01\",\"client_secret\":\"acme-secret\",\"site\":\"https://acme.atlassian.net\",\"confluence\":true},\"linear\":{\"client_id\":\"acmelinear01\"},\"microsoft\":{\"client_id\":\"00000000-0000-0000-0000-000000000001\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000aa\"},\"link_deny_hosts\":[\"intranet.example.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "linear client id empty",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":{\"team_id\":\"T0000\",\"client_id\":\"000.000\"},\"google\":{\"client_id\":\"1234-abcd.apps.googleusercontent.com\",\"client_secret\":\"sample-secret\",\"domain\":\"example.com\"},\"atlassian\":{\"client_id\":\"acmeClientId01\",\"client_secret\":\"acme-secret\",\"site\":\"https://acme.atlassian.net\",\"confluence\":true},\"linear\":{\"client_id\":\"\"},\"microsoft\":{\"client_id\":\"00000000-0000-0000-0000-000000000001\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000aa\"},\"link_deny_hosts\":[\"intranet.example.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "microsoft client id not a GUID",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":{\"team_id\":\"T0000\",\"client_id\":\"000.000\"},\"google\":{\"client_id\":\"1234-abcd.apps.googleusercontent.com\",\"client_secret\":\"sample-secret\",\"domain\":\"example.com\"},\"atlassian\":{\"client_id\":\"acmeClientId01\",\"client_secret\":\"acme-secret\",\"site\":\"https://acme.atlassian.net\",\"confluence\":true},\"linear\":{\"client_id\":\"acmelinear01\"},\"microsoft\":{\"client_id\":\"acme\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000aa\"},\"link_deny_hosts\":[\"intranet.example.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "microsoft tenant neither a GUID nor a domain",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":{\"team_id\":\"T0000\",\"client_id\":\"000.000\"},\"google\":{\"client_id\":\"1234-abcd.apps.googleusercontent.com\",\"client_secret\":\"sample-secret\",\"domain\":\"example.com\"},\"atlassian\":{\"client_id\":\"acmeClientId01\",\"client_secret\":\"acme-secret\",\"site\":\"https://acme.atlassian.net\",\"confluence\":true},\"linear\":{\"client_id\":\"acmelinear01\"},\"microsoft\":{\"client_id\":\"00000000-0000-0000-0000-000000000001\",\"tenant_id\":\"not a tenant\"},\"link_deny_hosts\":[\"intranet.example.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "microsoft tenant common",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"slack\":{\"team_id\":\"T0000\",\"client_id\":\"000.000\"},\"google\":{\"client_id\":\"1234-abcd.apps.googleusercontent.com\",\"client_secret\":\"sample-secret\",\"domain\":\"example.com\"},\"atlassian\":{\"client_id\":\"acmeClientId01\",\"client_secret\":\"acme-secret\",\"site\":\"https://acme.atlassian.net\",\"confluence\":true},\"linear\":{\"client_id\":\"acmelinear01\"},\"microsoft\":{\"client_id\":\"00000000-0000-0000-0000-000000000001\",\"tenant_id\":\"common\"},\"link_deny_hosts\":[\"intranet.example.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "deny host \"*\"",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"link_deny_hosts\":[\"intranet.example.com\",\"*\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "deny host \"https://x/\"",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"link_deny_hosts\":[\"intranet.example.com\",\"https://x/\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "deny host \"example.com/path\"",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"link_deny_hosts\":[\"intranet.example.com\",\"example.com/path\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "deny host \"10.0.0.0/8\"",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"link_deny_hosts\":[\"intranet.example.com\",\"10.0.0.0/8\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "deny host \"10.0.0.1\"",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"link_deny_hosts\":[\"intranet.example.com\",\"10.0.0.1\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "deny host \"localhost\"",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"link_deny_hosts\":[\"intranet.example.com\",\"localhost\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "deny host \"*.example.com\"",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"link_deny_hosts\":[\"intranet.example.com\",\"*.example.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "deny host \"example.com:443\"",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"link_deny_hosts\":[\"intranet.example.com\",\"example.com:443\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "deny host \"\"",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"link_deny_hosts\":[\"intranet.example.com\",\"\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "deny host \"-bad.example.com\"",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"link_deny_hosts\":[\"intranet.example.com\",\"-bad.example.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "deny host \"exa mple.com\"",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"link_deny_hosts\":[\"intranet.example.com\",\"exa mple.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "deny host \"[::1]\"",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"link_deny_hosts\":[\"intranet.example.com\",\"[::1]\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "deny host \"exämple.com\"",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"link_deny_hosts\":[\"intranet.example.com\",\"exämple.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "deny host \"example.com.\"",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"link_deny_hosts\":[\"intranet.example.com\",\"example.com.\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "deny host \"Kiosk.example.com\"",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"link_deny_hosts\":[\"intranet.example.com\",\"Kiosk.example.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "deny host \"İntranet.example.com\"",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"link_deny_hosts\":[\"intranet.example.com\",\"İntranet.example.com\"]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "deny host not a string",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"link_deny_hosts\":[1]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "deny host null",
+  "json": "{\"v\":1,\"company\":\"Acme\",\"link_deny_hosts\":[null]}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "top level a list",
+  "json": "[1]",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "top level null",
+  "json": "null",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "not JSON",
+  "json": "{v:1}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "trailing data",
+  "json": "{\"v\":1,\"company\":\"Acme\"} {}",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "wire with surrounding line breaks",
+  "wire": "\n eyJ2IjoxLCJjb21wYW55IjoiQWNtZSJ9\r\n",
+  "origin": "code",
+  "want": {
+   "ok": true,
+   "bundle": {
+    "v": 1,
+    "company": "Acme"
+   },
+   "slug": "acme"
+  }
+ },
+ {
+  "name": "wire not base64",
+  "wire": "!!!",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "wire with padding",
+  "wire": "eyJ2IjoxLCJjb21wYW55IjoiQWMifQ==",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "wire in the standard alphabet",
+  "wire": "+/+/",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "wire with an inner line break",
+  "wire": "eyJ2Ijox\nLCJjb21wYW55IjoiQWNtZSJ9",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "wire with non-zero trailing bits",
+  "wire": "eyJ2IjoxLCJjb21wYW55IjoiQWNtIn1",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "wire one char too long",
+  "wire": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "too_long"
+  }
+ },
+ {
+  "name": "wire too long after trimming",
+  "wire": "\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "too_long"
+  }
+ },
+ {
+  "name": "wire of invalid UTF-8",
+  "wire": "eyJ2IjoxLCJjb21wYW55Ijoi_yJ9",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "wire of a length no base64 has",
+  "wire": "eyJ2IjoxLCJjb21wYW55IjoiQWNtZSJ9A",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ },
+ {
+  "name": "empty wire",
+  "wire": "",
+  "origin": "link",
+  "want": {
+   "ok": false,
+   "reason": "damaged"
+  }
+ }
+]
