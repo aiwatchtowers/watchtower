@@ -536,15 +536,17 @@ const slackRemovedDataDeletion = "With account data deletion on, it is deleted 7
 // removeSlackAccount disconnects account id: revokes its OAuth token at Slack
 // (auth.revoke; a failure prints slackRevokeWarning to warnOut, logs the
 // cause to logOut and never stops the remove, A25), cancels the account's
-// scheduled purge rows (a lease row scheduled while it was live would keep
-// its old due date and cut the 72 h notice; the next pass schedules a fresh
-// one), deletes its stored OAuth token file and marks the row
+// scheduled purge rows when it was not removed yet (a lease row scheduled
+// while it was live would keep its old due date and cut the 72 h notice; the
+// next pass schedules a fresh one; a retry keeps the removed account's row),
+// deletes its stored OAuth token file and marks the row
 // removed/disabled so it stops syncing. Deliberately non-destructive — the
 // account's synced messages/channels/digests/tracks/situations/memory are
 // kept (SetSlackAccountRemoved, NOT a cascade delete), per the plan's v1
 // decision.
 func removeSlackAccount(ctx context.Context, cfg *config.Config, database *db.DB, id int64, warnOut, logOut io.Writer) error {
-	if _, err := database.GetSlackAccount(id); err != nil {
+	acct, err := database.GetSlackAccount(id)
+	if err != nil {
 		return err
 	}
 	if ctx == nil {
@@ -566,8 +568,13 @@ func removeSlackAccount(ctx context.Context, cfg *config.Config, database *db.DB
 			fmt.Fprintln(warnOut, slackRevokeWarning)
 		}
 	}
-	if _, err := database.CancelScheduledAccountPurges("slack", id); err != nil {
-		return err
+	// Only the live → removed transition cancels: a retry on a removed
+	// account keeps its zero-lease row and due date, or repeated removes
+	// would postpone the deletion forever.
+	if acct.Status != "removed" {
+		if _, err := database.CancelScheduledAccountPurges("slack", id); err != nil {
+			return err
+		}
 	}
 	if err := store.Delete(); err != nil {
 		return fmt.Errorf("deleting token file: %w", err)

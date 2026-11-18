@@ -193,3 +193,32 @@ func TestSlackRevokeWarning_MatchesDesktopModel(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(src), `"`+slackRevokeWarning+`"`)
 }
+
+// #1769 re-review: a retry on an already-removed workspace keeps its
+// zero-lease row and due date — only the live → removed transition cancels,
+// or repeated removes would postpone the deletion forever.
+func TestSlackRemove_RetryKeepsTheRemovedAccountsPurgeRow(t *testing.T) {
+	cfg, store, id := setupSlackRemove(t)
+	fake := &revokeFake{}
+	fake.serve(t, store.Path(), http.StatusOK, `{"ok":true,"revoked":true}`)
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+	require.NoError(t, runSlackRemove(cmd, []string{"1"}))
+
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	_, err = database.ScheduleAccountPurge("slack", id, "lease", "2026-10-24T12:00:00Z")
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+
+	require.NoError(t, runSlackRemove(cmd, []string{"1"}))
+
+	database, err = db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	defer database.Close()
+	open, err := database.ListAccountPurges(true)
+	require.NoError(t, err)
+	require.Len(t, open, 1, "the retry keeps the scheduled row")
+	assert.Equal(t, "scheduled", open[0].State)
+	assert.Equal(t, "2026-10-24T12:00:00Z", open[0].DueAt)
+}
