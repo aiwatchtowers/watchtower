@@ -1,6 +1,6 @@
 # Live link — one write over the socket, the relay stores and delivers it in the same hop
 
-**Board:** #1992 / #2002. **Research:** [2026-11-18-relay-latency-research.md](2026-11-18-relay-latency-research.md) (approved, ask #1526).
+**Board:** #1992 / #2002. **Status:** approved (ask #1535). **Research:** [2026-11-18-relay-latency-research.md](2026-11-18-relay-latency-research.md) (approved, ask #1526).
 **Notes:** `docs/features/go-hub.md`, `docs/features/relay-client.md`, `docs/features/mobile-companion.md`; relay contract
 in the relay repository (`proto/relay/v1/relay.proto`, design `docs/superpowers/specs/2026-10-28-relay-design.md`).
 
@@ -175,9 +175,9 @@ Replica/Relay), phone app (`HubSession` wake, overlays). Order: relay (R1, R2 al
   (owner's note) and ask #1527 ("multiplexing inside the relay, clients don't send twice").
 - Direct is needed, but as a delivery mode of the relay, not a separate client frame — ask #1527.
 - Write-through by the client rejected — ask #1527.
-- `pub_seq` approved in ask #1527, **dropped by the agent** in this revision: with one path (the zone, ordered by
-  `seq`) there are no two copies to decide between. Pending the owner's confirmation in the review ask.
+- `pub_seq` approved in ask #1527, then dropped: with one path (the zone, ordered by `seq`) there are no two copies to decide
+  between — owner approved the spec with this (ask #1535).
 - Stages 1, 3, 7, 8 kept, 2, 4, 6 closed, 5 into wake — ask #1527.
 - R5 optimistic apply — decided by the agent (it is what makes a tap feel instant; the owner closed stage 6 under the
-  assumption that live results replace it). Pending the owner's confirmation in the review ask.
+  assumption that live results replace it). Owner approved the spec with it (ask #1535).
 - Frame budget 256 KiB, 300 ms wake ping, 10-min overlay expiry — decided by the agent, starting values tuned from R7.
