@@ -157,6 +157,7 @@ var sidecarColumns = map[string]string{
 	// Content-free timings (00011): at is REAL and ms INTEGER (not listed).
 	"latency_samples.transport": classEnum,
 	"latency_samples.step":      classEnum,
+	"latency_samples.kind":      classEnum, // an action kind name (00018), never content
 
 	// The alert-push ledger (00012): attempts INTEGER, first_at and
 	// settled_at REAL (not listed).

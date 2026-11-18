@@ -247,6 +247,7 @@ func (t *Transport) Close() error {
 // emit hands an event to the consumer, waiting for room; it gives up only
 // when the transport is closed.
 func (t *Transport) emit(ev transport.Event) {
+	ev.ArrivedAt = t.o.Clock()
 	select {
 	case t.events <- ev:
 	case <-t.done:

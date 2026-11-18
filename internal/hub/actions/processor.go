@@ -67,10 +67,11 @@ type Config struct {
 }
 
 // Latency is the processor's side of the latency samples (measure.Recorder):
-// an action applied on its first read, with the time its batch was read, the
-// time its outcome committed, the transport and the slice kinds it nudged.
+// an action of kind action applied on its first read, with the time the
+// processor reached its record, the time its outcome committed, the
+// transport and the slice kinds it nudged.
 type Latency interface {
-	Applied(transport string, readAt, appliedAt time.Time, kinds []string)
+	Applied(transport, action string, readAt, appliedAt time.Time, kinds []string)
 }
 
 // Processor reads the phones' mailboxes and applies their actions. Pass and
@@ -303,9 +304,6 @@ type pass struct {
 	// resent is the phones asked resend_from this pass for an action in an
 	// epoch the hub no longer holds (epoch.go): one ask per phone per pass.
 	resent map[secure.ID]bool
-	// readAt is when the transport handed the processor the page being
-	// handled (the latency samples' read time).
-	readAt time.Time
 }
 
 // Pass reads every linked phone's mailbox from its stored change token,
@@ -545,7 +543,6 @@ func (p *Processor) readMailbox(ctx context.Context, b mailbox, ps *pass) error 
 // readMailboxWith is readMailbox over read, which hands apply b's pages.
 func (p *Processor) readMailboxWith(ctx context.Context, b mailbox, ps *pass, read func(apply func(transport.Batch) error) error) error {
 	err := read(func(batch transport.Batch) error {
-		ps.readAt = p.cfg.Clock()
 		for i, rec := range batch.Changed {
 			if ps.budget <= 0 {
 				ps.report.Remaining += len(batch.Changed) - i
@@ -575,6 +572,9 @@ func (p *Processor) readMailboxWith(ctx context.Context, b mailbox, ps *pass, re
 // the same check; the hosted relay's own mailboxes keep their phase-1 handling
 // of every other kind.
 func (p *Processor) handle(ctx context.Context, b mailbox, rec transport.Stored, ps *pass) error {
+	// The latency samples' read time: when the processor reached this record,
+	// so an earlier record's handler time in the same page is not counted.
+	readAt := p.cfg.Clock()
 	opened, err := p.cfg.Opener.FromPhone(b.zone, rec.Name, rec.Envelope)
 	if err != nil {
 		if !droppable(err) {
@@ -628,7 +628,7 @@ func (p *Processor) handle(ctx context.Context, b mailbox, rec transport.Stored,
 	switch opened.Frame.Kind {
 	case kindAction:
 		ps.report.Read++
-		err = p.action(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq), at: rec.ServerAt, readAt: ps.readAt}, opened, ps)
+		err = p.action(ctx, b, record{name: rec.Name, env: rec.Envelope, expect: expectSeq(rec.RecordSeq), at: rec.ServerAt, readAt: readAt}, opened, ps)
 	case kindControl:
 		ps.report.Read++
 		err = p.phoneControl(ctx, b, rec, opened, ps)

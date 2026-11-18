@@ -28,6 +28,8 @@ func (s *saveTimes) Saved(_, _ string, _, doneAt time.Time) {
 	s.at = append(s.at, doneAt)
 }
 
+func (s *saveTimes) NudgeCycleDone(_, _ string, _, _ time.Time) {}
+
 func (s *saveTimes) times() []time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()

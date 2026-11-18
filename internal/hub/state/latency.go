@@ -9,28 +9,34 @@ import (
 
 // The latency steps (00011, RC §10): a phone action read → applied, applied
 // → the slice that shows it saved, and read → saved (the per-action total,
-// recorded together with applied_saved).
+// recorded together with applied_saved). 00018 (live link R7) adds a mailbox
+// event's arrival → the read it starts, and applied → the end of the first
+// cycle that handled a kind it nudged, written or not.
 const (
 	StepReadApplied  = "read_applied"
 	StepAppliedSaved = "applied_saved"
 	StepReadSaved    = "read_saved"
+	StepEventRead    = "event_read"
+	StepNudgeSaved   = "nudge_saved"
 )
 
 // LatencySample is one content-free timing: when it was taken, the active
-// transport ("cloudkit" or "relay"), the step and its duration in ms.
+// transport ("cloudkit" or "relay"), the step, its duration in ms and the
+// action kind it timed (” for event_read, which precedes any action).
 type LatencySample struct {
 	At        time.Time
 	Transport string
 	Step      string
+	Kind      string
 	MS        int64
 }
 
-// LatencyRow is one step on one transport over a window: the nearest-rank
-// p50 and p90 and the number of samples.
+// LatencyRow is one step on one transport for one action kind over a
+// window: the nearest-rank p50 and p90 and the number of samples.
 type LatencyRow struct {
-	Step, Transport string
-	P50, P90        time.Duration
-	Samples         int
+	Step, Transport, Kind string
+	P50, P90              time.Duration
+	Samples               int
 }
 
 // AddLatencySamples writes xs in one short transaction; a sample outside the
@@ -40,13 +46,13 @@ func (s *Store) AddLatencySamples(xs []LatencySample) error {
 		return nil
 	}
 	err := s.write(func(tx *sql.Tx) error {
-		stmt, err := tx.Prepare(`INSERT INTO latency_samples (at, transport, step, ms) VALUES (?, ?, ?, ?)`)
+		stmt, err := tx.Prepare(`INSERT INTO latency_samples (at, transport, step, kind, ms) VALUES (?, ?, ?, ?, ?)`)
 		if err != nil {
 			return err
 		}
 		defer func() { _ = stmt.Close() }()
 		for _, x := range xs {
-			if _, err := stmt.Exec(toReal(x.At), x.Transport, x.Step, x.MS); err != nil {
+			if _, err := stmt.Exec(toReal(x.At), x.Transport, x.Step, x.Kind, x.MS); err != nil {
 				return err
 			}
 		}
@@ -59,10 +65,25 @@ func (s *Store) AddLatencySamples(xs []LatencySample) error {
 }
 
 // LatencyStats is every (step, transport) with samples taken at or after
-// since, sorted by step then transport, with nearest-rank percentiles.
+// since, over all action kinds (Kind ”), sorted by step then transport, with
+// nearest-rank percentiles.
 func (s *Store) LatencyStats(since time.Time) ([]LatencyRow, error) {
-	rows, err := s.db.Query(`SELECT step, transport, ms FROM latency_samples WHERE at >= ?
-		ORDER BY step, transport, ms`, toReal(since))
+	return s.latencyStats(since, false)
+}
+
+// LatencyStatsByKind is LatencyStats per action kind: every (step,
+// transport, kind), sorted by step, transport then kind. Kind ” is
+// event_read and the samples taken before 00018.
+func (s *Store) LatencyStatsByKind(since time.Time) ([]LatencyRow, error) {
+	return s.latencyStats(since, true)
+}
+
+func (s *Store) latencyStats(since time.Time, byKind bool) ([]LatencyRow, error) {
+	q := `SELECT step, transport, '', ms FROM latency_samples WHERE at >= ? ORDER BY step, transport, ms`
+	if byKind {
+		q = `SELECT step, transport, kind, ms FROM latency_samples WHERE at >= ? ORDER BY step, transport, kind, ms`
+	}
+	rows, err := s.db.Query(q, toReal(since))
 	if err != nil {
 		return nil, fmt.Errorf("reading latency samples: %w", err)
 	}
@@ -82,14 +103,14 @@ func (s *Store) LatencyStats(since time.Time) ([]LatencyRow, error) {
 		ms = ms[:0]
 	}
 	for rows.Next() {
-		var step, tr string
+		var step, tr, kind string
 		var v int64
-		if err := rows.Scan(&step, &tr, &v); err != nil {
+		if err := rows.Scan(&step, &tr, &kind, &v); err != nil {
 			return nil, fmt.Errorf("reading latency samples: %w", err)
 		}
-		if step != cur.Step || tr != cur.Transport {
+		if step != cur.Step || tr != cur.Transport || kind != cur.Kind {
 			flush()
-			cur = LatencyRow{Step: step, Transport: tr}
+			cur = LatencyRow{Step: step, Transport: tr, Kind: kind}
 		}
 		ms = append(ms, v)
 	}
