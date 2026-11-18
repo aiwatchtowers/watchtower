@@ -1,7 +1,8 @@
 // Package relay is the hub's transport over the hosted relay (Go hub design
 // §6.1, RC §7 hub half): records, change feeds and attachments over the
 // pinned copy of the relay's Go client (client/, relayv1/, see VERSION and
-// `make relay-go`), live events from its WebSocket.
+// `make relay-go`), live events from its WebSocket. Once connected, ops go
+// over that WebSocket too (live link R2), HTTPS only without one (send).
 //
 // The client already does RC §7's connection rules — login, ping/pong, close
 // codes, backoff, UNAVAILABLE retries, resubscribing one zone at a time after
@@ -380,7 +381,7 @@ func (t *Transport) readAccountNow() {
 // AccountState reads the hub's account state (the phones holding it in a
 // slot) and keeps it for Vouched and Admitted.
 func (t *Transport) AccountState(ctx context.Context) (*relayv1.AccountState, error) {
-	resp, err := t.c.Do(ctx, &relayv1.Request{Op: &relayv1.Request_GetAccountState{GetAccountState: &relayv1.GetAccountState{}}})
+	resp, err := t.send(ctx, &relayv1.Request{Op: &relayv1.Request_GetAccountState{GetAccountState: &relayv1.GetAccountState{}}})
 	if err != nil {
 		return nil, MapError(err)
 	}
@@ -465,20 +466,77 @@ func (t *Transport) observed() func(zone string, err error) {
 	return t.observe
 }
 
-// do runs one op over HTTPS and maps its error with MapError.
+// do runs one op (send) and maps its error with MapError.
 func (t *Transport) do(ctx context.Context, req *relayv1.Request) (*relayv1.Response, error) {
 	return t.doMapped(ctx, req, MapError)
 }
 
-// doMapped runs one op over HTTPS and maps its error with mapErr.
+// doMapped runs one op (send) and maps its error with mapErr.
 // HUB_NOT_VOUCHED means the hub is in no slot now, whatever the last account
 // state said.
 func (t *Transport) doMapped(ctx context.Context, req *relayv1.Request, mapErr func(error) error) (*relayv1.Response, error) {
-	resp, err := t.c.Do(ctx, req)
+	resp, err := t.send(ctx, req)
 	if err != nil {
 		return nil, t.noteError(mapErr(err))
 	}
 	return resp, nil
+}
+
+// send runs one op over the open WebSocket, or over HTTPS without one
+// (before Connect, after Close; the sign-in ops, which make the socket's
+// session, never come here). A request the socket refused before writing
+// any of it (client.ErrNotSent: no socket while it reconnects) or the relay
+// refused UNAUTHENTICATED (the socket's session expired; HTTPS signs in
+// again) goes over HTTPS whatever its op: the relay never ran it. A socket
+// lost after the frame went out leaves the outcome unknown: an op safe to
+// run twice (resendable) is sent again over HTTPS, any other returns
+// client.ErrDisconnected — transport.ErrUnavailable after MapError — and its
+// caller's retry re-reads before writing again.
+func (t *Transport) send(ctx context.Context, req *relayv1.Request) (*relayv1.Response, error) {
+	t.mu.Lock()
+	conn := t.conn
+	if t.closed {
+		conn = nil
+	}
+	t.mu.Unlock()
+	if conn == nil {
+		return t.c.Do(ctx, req)
+	}
+	resp, err := conn.Send(ctx, req)
+	switch {
+	case errors.Is(err, client.ErrNotSent), client.Code(err) == relayv1.ErrorCode_ERROR_CODE_UNAUTHENTICATED:
+		return t.c.Do(ctx, req)
+	case errors.Is(err, client.ErrDisconnected) && ctx.Err() != nil:
+		return nil, ctx.Err()
+	case errors.Is(err, client.ErrDisconnected) && resendable(req):
+		return t.c.Do(ctx, req)
+	}
+	return resp, err
+}
+
+// resendable reports whether req is safe to run twice: a read, or a save or
+// delete whose every item is conditional (run again, an item that landed the
+// first time comes back as a conflict on the hub's own record).
+func resendable(req *relayv1.Request) bool {
+	switch op := req.GetOp().(type) {
+	case *relayv1.Request_Changes, *relayv1.Request_GetAccountState, *relayv1.Request_GetDownload:
+		return true
+	case *relayv1.Request_Save:
+		for _, it := range op.Save.GetItems() {
+			if it.GetExpect() == nil {
+				return false
+			}
+		}
+		return true
+	case *relayv1.Request_Delete:
+		for _, it := range op.Delete.GetItems() {
+			if it.ExpectedSeq == nil {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // noteError forgets the cached account state's slots on HUB_NOT_VOUCHED and

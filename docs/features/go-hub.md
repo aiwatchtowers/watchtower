@@ -330,6 +330,16 @@ rulings asks #827, #881, #883). The hub leaves the test workspace for real data 
   without `relay_admitted_at`, `relay` with it. `hubtest.Phone.VouchLink` (the copied client's `VouchHub`: VOUCH challenge, then
   `vouch_hub` with no attestation) and `relaytest`'s vouch model (gate incl. open sockets, the relay's refusal order,
   10-minute pending vouch consumed by `promote_pairing`/`add_slot`, best-effort `SLOT_ADDED`, `RemoveSlot`).
+- **Relay ops over the open socket** (live link R2, #1992; `relay.Transport.send`). Once `Connect` opened the
+  WebSocket every op goes over it (`client.Conn.Send`); HTTPS only before `Connect`, after `Close`, and for a request
+  the socket refused before writing it (`client.ErrNotSent`, no socket while it reconnects) or the relay answered
+  `UNAUTHENTICATED` — any op then. A socket lost after the frame went out leaves the outcome unknown: reads
+  (`changes`, `get_account_state`, `get_download`) and saves/deletes whose every item is conditional are sent again
+  over HTTPS (a landed item comes back as a conflict on the hub's own record); any other op returns
+  `transport.ErrUnavailable` and its caller's retry re-reads. `ErrNotSent` is a local change to the vendored client
+  (`client/ws.go`) to upstream to the relay repository. `relaytest` serves every WebSocket request as over HTTPS
+  (`Requests` lists both; `Ops` marks the socket's `ws:<op>`), and `DropAfterNext(op)` cuts a socket after running
+  the op, unanswered.
 - **Relay saves in requests under the relay's cap** (#1760; `relay.Transport.Save`, `transport/relay/save.go`). The
   relay refuses a record over 1 MiB and an op body over 1 MiB + 64 KiB as a whole (`RECORD_TOO_LARGE`), and the
   publisher saves a whole kind per call (a thousand-target board failed every cycle). `Save` packs the items, in
