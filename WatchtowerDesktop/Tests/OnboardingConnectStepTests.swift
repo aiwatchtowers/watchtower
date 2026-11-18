@@ -21,11 +21,24 @@ final class OnboardingConnectStepTests: XCTestCase {
     }
 
     /// Plan B A13: with no Slack app in the build the card opens the connect
-    /// section; no connect flow keeps the Add sheet (unknown counts as having
-    /// an app: `SlackAccountsViewModelTests.testFlagsReadFailureKeepsLast`).
+    /// section; flags still unknown after the card's read prefer it too; no
+    /// connect flow keeps the Add sheet.
     func testSlackWithoutBuiltinAppOpensConnectSection() {
-        XCTAssertTrue(OnboardingConnectStepView.slackOpensConnectSection(builtinApp: false, hasConnectFlow: true))
-        XCTAssertFalse(OnboardingConnectStepView.slackOpensConnectSection(builtinApp: true, hasConnectFlow: true))
-        XCTAssertFalse(OnboardingConnectStepView.slackOpensConnectSection(builtinApp: false, hasConnectFlow: false))
+        let none = SlackAccountsDocument(builtinApp: false, accounts: [])
+        let builtin = SlackAccountsDocument(builtinApp: true, accounts: [])
+        XCTAssertTrue(OnboardingConnectStepView.slackOpensConnectSection(flags: none, hasConnectFlow: true))
+        XCTAssertFalse(OnboardingConnectStepView.slackOpensConnectSection(flags: builtin, hasConnectFlow: true))
+        XCTAssertTrue(OnboardingConnectStepView.slackOpensConnectSection(flags: nil, hasConnectFlow: true),
+                      "unknown: the connect section works on every build")
+        XCTAssertFalse(OnboardingConnectStepView.slackOpensConnectSection(flags: none, hasConnectFlow: false))
+        XCTAssertFalse(OnboardingConnectStepView.slackOpensConnectSection(flags: nil, hasConnectFlow: false))
+    }
+
+    /// Fix round 1: an About link clicked during onboarding opens the Slack
+    /// sheet (its confirm) when it is closed.
+    func testLinkDuringOnboardingOpensTheSlackSheet() {
+        XCTAssertTrue(OnboardingConnectStepView.flowOpensSlackSheet(flowShowsSheet: true, sheetOpen: false))
+        XCTAssertFalse(OnboardingConnectStepView.flowOpensSlackSheet(flowShowsSheet: true, sheetOpen: true))
+        XCTAssertFalse(OnboardingConnectStepView.flowOpensSlackSheet(flowShowsSheet: false, sheetOpen: false))
     }
 }

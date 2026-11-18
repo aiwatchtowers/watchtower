@@ -74,7 +74,9 @@ package struct SlackModePresentation: Equatable, Sendable {
         now: Date
     ) {
         let syncing = accounts.filter { $0.enabled && !$0.isGone }
-        let shared = syncing.filter { sharedAppAccountIDs.contains($0.id) }
+        // Only an account that still syncs: once Slack stops its token the
+        // row shows its error and the chip says what the other accounts make.
+        let shared = syncing.filter { $0.isOK && sharedAppAccountIDs.contains($0.id) }
         let full = syncing.contains { $0.isOK && !sharedAppAccountIDs.contains($0.id) }
         // The chip reads the same verdicts as the Live block: each
         // provider's newest check, so an older ok cannot say "Live".
@@ -87,7 +89,7 @@ package struct SlackModePresentation: Equatable, Sendable {
         }
         sharedLabel = shared.first.map(Self.label) ?? ""
         // It goes once Slack stops the token: the row then shows its Re-login.
-        sharedAppBanner = shared.first { $0.isOK }.map { SharedAppBanner(label: Self.label($0)) }
+        sharedAppBanner = shared.first.map { SharedAppBanner(label: Self.label($0)) }
 
         let rows = Self.liveRows(Self.newestBatches(liveStatuses), accounts: accounts, now: now)
         liveRows = rows

@@ -40,4 +40,31 @@ final class SlackReconnectOutcomeTests: XCTestCase {
         let outcome = await run.value
         XCTAssertEqual(outcome, .notConnected)
     }
+
+    /// Fix round 1 (A13): a link clicked during onboarding stays on the
+    /// onboarding window (its Connect step shows the confirm); after it,
+    /// the link opens Connections → Slack.
+    func testLinkDuringOnboardingStaysOnOnboarding() {
+        let appState = AppState.isolated()
+        let flow = appState.makeSlackConnectFlow(host: SlackConnectListenerHost(streamer: FakeCLILineStream()))
+        appState.needsOnboarding = true
+        let before = appState.selectedDestination
+        flow.onLink?()
+        XCTAssertEqual(appState.selectedDestination, before)
+        appState.needsOnboarding = false
+        flow.onLink?()
+        XCTAssertEqual(appState.selectedDestination, .connections)
+        XCTAssertEqual(appState.selectedConnection, .slack)
+    }
+
+    /// Fix round 1: onboarding wires the Slack accounts with the connect
+    /// flow's entry point (the listener itself never starts under XCTest).
+    func testOnboardingWiresSlackAccounts() throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let appState = AppState.isolated()
+        appState.initSlackAccountsAndConnectFlow(dbPool: pool)
+        XCTAssertNotNil(appState.slackAccountsViewModel)
+        XCTAssertNil(appState.slackConnectListener, "never under XCTest")
+    }
 }

@@ -160,10 +160,9 @@ private struct SlackPaneMock: View {
             HStack {
                 SlackAccountTitle(
                     account: SlackPaneModeFixture.acme,
-                    sharedAppLine: pane == .sharedApp
-                        ? SlackModePresentation.sharedAppAccountLine(
-                            lastSync: SlackPaneModeFixture.now.addingTimeInterval(-180), now: SlackPaneModeFixture.now)
-                        : nil)
+                    sharedAppAccountIDs: pane == .sharedApp ? [1] : [],
+                    lastSync: SlackPaneModeFixture.now.addingTimeInterval(-180),
+                    now: SlackPaneModeFixture.now)
                 Spacer()
                 Circle().fill(Tone.success).frame(width: IconSize.stateDot, height: IconSize.stateDot)
             }

@@ -11,6 +11,15 @@ extension AppState {
         startSlackConnectListener()
     }
 
+    /// The Slack accounts and the connect flow, for onboarding's Connect step
+    /// too: a build with no Slack app of its own connects there by link, code
+    /// or MDM row (A13). The listener is the one the app keeps afterwards
+    /// (`initSlackLive` finds it running).
+    func initSlackAccountsAndConnectFlow(dbPool: DatabasePool) {
+        initSlackAccounts(dbPool: dbPool)
+        startSlackConnectListener()
+    }
+
     /// The connect listener (`slack connect serve`, plan B #1709), once per
     /// process after the database opened; never under XCTest. On quit its
     /// stdin is closed, so the child frees port 18551 and exits.
@@ -37,7 +46,8 @@ extension AppState {
     func makeSlackConnectFlow(host: SlackConnectListenerHost) -> SlackConnectFlowModel {
         let flow = SlackConnectFlowModel(host: host)
         flow.onLink = { [weak self] in
-            self?.openConnections(.slack)
+            // Onboarding's Connect step shows the confirm in its Slack sheet.
+            if self?.needsOnboarding == false { self?.openConnections(.slack) }
             self?.bringMainWindowForward()
         }
         flow.onConnected = { [weak self] _ in

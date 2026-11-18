@@ -1546,7 +1546,7 @@ final class AppState {
         initEmailAccounts(dbPool: manager.dbPool)
         initCalendarAccounts(dbPool: manager.dbPool)
         initGoogleAccounts(dbPool: manager.dbPool)
-        initSlackAccounts(dbPool: manager.dbPool)
+        initSlackAccountsAndConnectFlow(dbPool: manager.dbPool)
         initJiraAccounts(dbPool: manager.dbPool)
         linearAccountsViewModel = .started { [weak self] in await self?.accountsChanged() }
     }

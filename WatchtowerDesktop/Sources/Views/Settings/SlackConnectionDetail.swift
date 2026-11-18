@@ -126,7 +126,7 @@ struct SlackConnectionDetail: View {
             SlackSharedAppBanner(
                 banner: banner, blocked: sourceBlocked,
                 setUpForCompany: { appState.slackAppSetup.present() },
-                pasteLink: { appState.slackConnectFlow?.reconnect(.connectSection) })
+                pasteLink: appState.slackConnectFlow.map { flow in { flow.reconnect(.connectSection) } })
         }
     }
 
@@ -335,7 +335,8 @@ struct SlackConnectionDetail: View {
                     ForEach(vm.accounts) { account in
                         HStack {
                             VStack(alignment: .leading, spacing: Spacing.tight) {
-                                SlackAccountTitle(account: account, sharedAppLine: sharedAppLine(account, vm))
+                                SlackAccountTitle(account: account, sharedAppAccountIDs: vm.sharedAppAccountIDs,
+                                                  lastSync: vm.lastSyncs[account.id])
                                 if let line = AccountPurgeLine.make(
                                     center: appState.accountPurgeCenter, source: "slack", accountID: Int64(account.id),
                                     isPurged: account.isPurged
@@ -449,13 +450,6 @@ struct SlackConnectionDetail: View {
                 connectExpanded = true
                 connectFieldFocused = true
             })
-    }
-
-    /// The shared-app line of an account Go reports on the retired app
-    /// (enabled, not removed); nil for any other.
-    private func sharedAppLine(_ account: SlackAccount, _ vm: SlackAccountsViewModel) -> String? {
-        guard account.enabled, !account.isGone, vm.sharedAppAccountIDs.contains(account.id) else { return nil }
-        return SlackModePresentation.sharedAppAccountLine(lastSync: vm.lastSyncs[account.id], now: Date())
     }
 
     /// The dictionary editor lives only on the Reactions built-in's card (ask #366, C3).

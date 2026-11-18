@@ -16,10 +16,17 @@ struct OnboardingConnectStepView: View {
 
     /// A13: a build with no Slack app of its own (`builtin_app` false) opens
     /// the connect section instead of the Add sheet, which would have no app
-    /// to sign in with. No connect flow (its listener did not start) keeps
-    /// the Add sheet.
-    static func slackOpensConnectSection(builtinApp: Bool, hasConnectFlow: Bool) -> Bool {
-        !builtinApp && hasConnectFlow
+    /// to sign in with. `flags` nil (never read, even after the card's own
+    /// read): the connect section, which works on every build. No connect
+    /// flow (its listener did not start) keeps the Add sheet.
+    static func slackOpensConnectSection(flags: SlackAccountsDocument?, hasConnectFlow: Bool) -> Bool {
+        hasConnectFlow && flags?.builtinApp != true
+    }
+
+    /// A clicked About link (or any flow step) while the Slack sheet is
+    /// closed opens it, so its confirm is seen on this step.
+    static func flowOpensSlackSheet(flowShowsSheet: Bool, sheetOpen: Bool) -> Bool {
+        flowShowsSheet && !sheetOpen
     }
 
     /// Opens with Calendar and Gmail both checked, whatever the goals.
@@ -137,12 +144,22 @@ struct OnboardingConnectStepView: View {
         .task {
             await openDatabase()
             appState.resumePeopleRosterIfNeeded()
+            showFlowSheetIfNeeded() // a link that arrived on an earlier step
         }
+        .onChange(of: appState.slackConnectFlow?.showsSheet) { _, _ in showFlowSheetIfNeeded() }
     }
 
-    private var slackSheetKind: Sheet {
-        Self.slackOpensConnectSection(builtinApp: appState.slackAccountsViewModel?.builtinApp ?? true,
-                                      hasConnectFlow: appState.slackConnectFlow != nil) ? .slackConnect : .slack
+    /// Reads the flags first when no read has succeeded yet, then picks the sheet.
+    private func openSlackSheet() async {
+        if let vm = appState.slackAccountsViewModel, vm.accountFlags == nil { await vm.refreshFlags() }
+        sheet = Self.slackOpensConnectSection(flags: appState.slackAccountsViewModel?.accountFlags,
+                                              hasConnectFlow: appState.slackConnectFlow != nil) ? .slackConnect : .slack
+    }
+
+    private func showFlowSheetIfNeeded() {
+        guard Self.flowOpensSlackSheet(flowShowsSheet: appState.slackConnectFlow?.showsSheet ?? false,
+                                       sheetOpen: sheet != nil) else { return }
+        sheet = .slackConnect
     }
 
     /// The connect section in a sheet (A13); a written account reloads the
@@ -188,7 +205,7 @@ struct OnboardingConnectStepView: View {
                 connected: activeSlackAccounts.first?.displayName,
                 available: appState.slackAccountsViewModel != nil,
                 error: appState.slackAccountsViewModel?.error,
-                connect: { sheet = slackSheetKind },
+                connect: { Task { await openSlackSheet() } },
                 remove: activeSlackAccounts.first.map { account in
                     { await appState.slackAccountsViewModel?.remove(account, daemonPolicy: Self.daemonPolicy) }
                 },

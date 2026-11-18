@@ -32,6 +32,18 @@ extension SlackModePresentation {
         return line + " · last sync " + ago(from: lastSync, now: now)
     }
 
+    /// Whether `account`'s row says it syncs through the shared app: flagged,
+    /// enabled, not removed and its token working. A stopped token shows the
+    /// row's own error state instead (its button still says Move to Full).
+    package static func showsSharedAppLine(_ account: SlackAccount, sharedAppAccountIDs: Set<Int>) -> Bool {
+        account.enabled && !account.isGone && account.isOK && sharedAppAccountIDs.contains(account.id)
+    }
+
+    /// The **Shared app** tag: any flagged account not removed.
+    package static func showsSharedAppTag(_ account: SlackAccount, sharedAppAccountIDs: Set<Int>) -> Bool {
+        !account.isGone && sharedAppAccountIDs.contains(account.id)
+    }
+
     /// The account row's sign-in button: **Move to Full** for an account
     /// Go routes `move` (on the retired app, which cannot sign in again;
     /// the press opens the connect section, A7), else Reconnect / Re-login.

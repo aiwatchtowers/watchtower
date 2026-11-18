@@ -10,7 +10,8 @@ struct SlackSharedAppBanner: View {
     /// The organization's policy forbids the Slack source (#608).
     var blocked = false
     let setUpForCompany: () -> Void
-    let pasteLink: () -> Void
+    /// nil (no connect flow: the listener did not start) hides the button.
+    let pasteLink: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
@@ -23,9 +24,11 @@ struct SlackSharedAppBanner: View {
                 Button(banner.setUpForCompany, action: setUpForCompany)
                     .buttonStyle(.kitSecondary)
                     .managedByOrganization(blocked)
-                Button(banner.pasteLink, action: pasteLink)
-                    .buttonStyle(.kitQuiet)
-                    .managedByOrganization(blocked)
+                if let pasteLink {
+                    Button(banner.pasteLink, action: pasteLink)
+                        .buttonStyle(.kitQuiet)
+                        .managedByOrganization(blocked)
+                }
             }
         }
         .padding(Spacing.medium)
@@ -38,23 +41,31 @@ struct SlackSharedAppBanner: View {
 /// on the retired app), the domain, the shared-app line and a sync note.
 struct SlackAccountTitle: View {
     let account: SlackAccount
-    /// "Syncing through the shared app · …" for an account on the retired
-    /// app; nil for any other.
-    var sharedAppLine: String?
+    /// Accounts Go reports on the retired shared app.
+    var sharedAppAccountIDs: Set<Int> = []
+    var lastSync: Date?
+    /// A fixed clock for the shots; nil re-reads it every minute.
+    var now: Date?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.tight) {
             HStack(spacing: Spacing.regular) {
                 Text(account.displayName)
-                if sharedAppLine != nil { OutlineTag(text: SlackModePresentation.sharedAppTag) }
+                if SlackModePresentation.showsSharedAppTag(account, sharedAppAccountIDs: sharedAppAccountIDs) {
+                    OutlineTag(text: SlackModePresentation.sharedAppTag)
+                }
             }
             if !account.teamDomain.isEmpty {
                 Text("\(account.teamDomain).slack.com")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            if let sharedAppLine {
-                Text(sharedAppLine).font(.caption).foregroundStyle(.secondary)
+            if SlackModePresentation.showsSharedAppLine(account, sharedAppAccountIDs: sharedAppAccountIDs) {
+                TimelineView(.everyMinute) { context in
+                    Text(SlackModePresentation.sharedAppAccountLine(lastSync: lastSync, now: now ?? context.date))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             if let note = account.syncNote {
                 Label(note, systemImage: "exclamationmark.triangle")

@@ -140,6 +140,23 @@ final class SlackModePresentationTests: XCTestCase {
         XCTAssertEqual(SlackModePresentation.reloginTitle(isOK: true, relogin: nil), "Reconnect", "flags not read yet")
     }
 
+    /// Fix round 1: a shared-app account whose token Slack stopped does not
+    /// claim to sync — no line, no Shared app chip or summary — but keeps its
+    /// tag (and Move to Full, from the relogin flag).
+    func testStoppedSharedAppAccountDoesNotClaimToSync() {
+        let stopped = account(id: 4, status: "revoked")
+        XCTAssertFalse(SlackModePresentation.showsSharedAppLine(stopped, sharedAppAccountIDs: [4]))
+        XCTAssertTrue(SlackModePresentation.showsSharedAppTag(stopped, sharedAppAccountIDs: [4]))
+        XCTAssertTrue(SlackModePresentation.showsSharedAppLine(account(id: 4), sharedAppAccountIDs: [4]))
+        XCTAssertFalse(SlackModePresentation.showsSharedAppLine(account(id: 4), sharedAppAccountIDs: []))
+        XCTAssertFalse(SlackModePresentation.showsSharedAppLine(account(id: 4, enabled: false), sharedAppAccountIDs: [4]))
+        XCTAssertFalse(SlackModePresentation.showsSharedAppTag(account(id: 4, status: "removed"), sharedAppAccountIDs: [4]))
+        let p = make(accounts: [stopped], shared: [4])
+        XCTAssertEqual(p.display, .off)
+        XCTAssertFalse(p.summary.contains("syncs"))
+        XCTAssertEqual(SlackModePresentation.reloginTitle(isOK: false, relogin: "move"), "Move to Full")
+    }
+
     /// §5: the overview card reads "Shared app retiring"; the account is OK,
     /// so the card's status (and the badge) stay the accounts' own.
     func testSharedAppIsNotAttention() {
