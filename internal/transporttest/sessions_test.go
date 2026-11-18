@@ -28,7 +28,7 @@ import (
 	"watchtower/internal/sessionagent"
 	"watchtower/internal/sessionfeed"
 	"watchtower/internal/sessionhost"
-	"watchtower/internal/sessionstate"
+	"watchtower/internal/sessionline"
 )
 
 // The Workbench session rows (spec §4.1, second table): each drives the
@@ -157,7 +157,7 @@ type sessionResult struct {
 	Title         string
 	TitleErr      error
 	// LineHolds and LineBusy are the hub's phone-line gate after each step
-	// (handlers.LineGate, the live run started with the env): the hold
+	// (sessionline.Gate, the live run started with the env): the hold
 	// reason ("" = the line goes) and whether it goes while the agent works.
 	LineHolds []string
 	LineBusy  []bool
@@ -462,15 +462,15 @@ func (e *sessionEnv) watchIssue() (issue string, present bool) {
 	return v.String, true
 }
 
-// lineGate is the hub's phone-line gate on the row now, as the live run
-// the env started.
+// lineGate is the shared line gate (the hub's phone lines, the daemon's
+// agent messages) on the row now, as the live run the env started.
 func (e *sessionEnv) lineGate() (hold string, whileBusy bool) {
-	row, err := sessionstate.Load(context.Background(), e.db, e.row)
+	now := time.Now()
+	_, row, err := sessionline.Load(context.Background(), e.db, e.row, e.runStarted, now)
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	row.RunStartedAt = db.AgentStateStamp(e.runStarted)
-	return handlers.LineGate(row, time.Now())
+	return sessionline.Gate(row, now)
 }
 
 func (e *sessionEnv) pendingPermissions() int {

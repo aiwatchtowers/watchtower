@@ -401,7 +401,8 @@ Suggestion card: when the suggested folder is on bench B, the card reads
 | folder add | two adds of the same path race | UNIQUE index: one wins, the other gets `already_here`/`other_bench` | Go: concurrent add |
 | folder remove vs session start | start in the folder while remove commits | both in `BEGIN IMMEDIATE`; remove re-counts live rows inside its tx; start re-checks the folder row inside the row insert; first commit wins, the other gets `folder_removed` / `sessions_running` | Go race test |
 | folder missing at launch | moved/deleted | root `Folder not found`; start refused `folder_missing` | Swift presentation + Go |
-| sub-session start | host down / launch fails | existing start failure path; parent's tool result carries the error; no row left (existing) | Go |
+| sub-session start | host down before the row | refused before any row; the tool result carries the error | Go |
+| sub-session start | launch fails after the host answered | the child row stays as a failed start (today's start-failure behaviour, `TestPortStartFailuresAreNeverStarted`); a `failure` message tells the parent (Tasks 10–11) | Go |
 | message | target stops, is deleted, or 24 h pass | `failed` + failure line to the sender | Go daemon deliverer test with fake clock |
 | message flag | `PromptState` times out or the connection drops | treated as unknown: flag stays, next tick retries; never blocks the tick past 2 s | Go client test with a silent fake host |
 | message flag | host's HelloOK has no `prompt_state` feature | `PromptState` never sent; fallback + Dismiss; no `ErrHostV1`, no host restart | Go client test on a featureless v2 hello |

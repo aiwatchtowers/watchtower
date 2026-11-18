@@ -150,6 +150,32 @@ func TestPortInterruptIsOneEscAndNoDraft(t *testing.T) {
 	w.waitPTY(sid, "\x1b"+pasteOpen+"after"+pasteClose+"\r")
 }
 
+// PromptState reads the run's prompt through the host and types nothing: an
+// empty prompt, then the owner's draft; another launch is not running and
+// never "empty".
+func TestPortPromptStateReadsTheDraftAndTypesNothing(t *testing.T) {
+	w := newWorld(t)
+	p := w.port()
+	sid, info := w.startedSession(p)
+	holds, known, err := p.PromptState(context.Background(), sid, info.Launch)
+	require.NoError(t, err)
+	assert.True(t, known)
+	assert.False(t, holds, "an empty prompt")
+
+	pane := attach(t, w.socket, info)
+	pane.send(sessionhost.Input, []byte("my draft"))
+	w.waitPTY(sid, "my draft")
+	holds, known, err = p.PromptState(context.Background(), sid, info.Launch)
+	require.NoError(t, err)
+	assert.True(t, known)
+	assert.True(t, holds, "the owner's draft")
+	assert.Equal(t, "my draft", w.ptyBefore(sid, pane), "not one byte from the read")
+
+	_, known, err = p.PromptState(context.Background(), sid, info.Launch+1)
+	assert.ErrorIs(t, err, ErrNotRunning)
+	assert.False(t, known)
+}
+
 // relay is the hub's handlers over the real port, behind a real processor on
 // a memfake relay, with one linked phone allowed to type.
 type relay struct {

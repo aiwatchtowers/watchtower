@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/sessionline"
 	"watchtower/internal/sessionstate"
 )
 
@@ -33,14 +34,14 @@ const (
 	heldLineLifetime = actions.SessionRequestMaxAge
 	// busyAfterSubmit: after a line is submitted into a session, the session
 	// counts as busy until a hook reports after the submit, or this long
-	// passed (SessionControl.submitSettle).
-	busyAfterSubmit = 30 * time.Second
+	// passed (sessionline.BusyAfterSubmit).
+	busyAfterSubmit = sessionline.BusyAfterSubmit
 )
 
 // Wire reasons of the phone lines (the Kit's ActionReason).
 const (
-	inputReasonAgentBusy        = "agent_busy"
-	inputReasonNeedsApproval    = "needs_approval"
+	inputReasonAgentBusy        = sessionline.HoldAgentBusy
+	inputReasonNeedsApproval    = sessionline.HoldNeedsApproval
 	inputReasonPromptHasText    = "prompt_has_text"
 	inputReasonStateUnknown     = "state_unknown"
 	inputReasonNotRunning       = "session_not_running"
@@ -307,25 +308,13 @@ func (h *Handlers) tryLine(ctx context.Context, l phoneLine, held *heldLine) try
 }
 
 // LineGate is PROJ-16's session condition for a phone line right before
-// its paste, from the session's state row (RunStartedAt set for the live
-// run) and its agent's capability row: hold is "" when the line may go,
-// needs_approval at a permission prompt, agent_busy when the agent is
-// neither idle nor working, or works and its row does not
-// TakesLineWhileWorking (an MCP form it opens mid-turn would take the
-// line). whileBusy reports a line that goes while the agent works. The hub
-// also holds a line just submitted into the session (justSubmitted). The
-// transport contract suite asserts each agent's answer through it.
+// its paste: sessionline.Gate (the rule set the daemon's agent messages share)
+// over the handlers' capability lookup (sessionCaps). The hub also holds a
+// line just submitted into the session (justSubmitted). The transport
+// contract suite asserts each agent's answer through sessionline.Gate.
 func LineGate(row sessionstate.Row, now time.Time) (hold string, whileBusy bool) {
-	s := sessionstate.Resolve(row, now)
 	agent, _ := agentkind.Parse(row.Kind)
-	working := sessionstate.IsWorking(s) && sessionCaps(agent).Phone().InputWhileWorking
-	switch {
-	case sessionstate.NeedsApproval(s):
-		return inputReasonNeedsApproval, false
-	case !sessionstate.IsIdle(row, s) && !working:
-		return inputReasonAgentBusy, false
-	}
-	return "", working
+	return sessionline.GateWith(row, now, sessionCaps(agent))
 }
 
 // deliverPhoneLine is the Deliver of a line that passed its gate; heldBy is
@@ -334,12 +323,7 @@ func (h *Handlers) deliverPhoneLine(ctx context.Context, l phoneLine, live LiveR
 	res, err := h.d.Sessions.Deliver(ctx, DeliverRequest{
 		SessionID: l.sessionID, Run: live.Run, Text: l.line, HoldIfPromptText: true, Settle: submitSettle,
 		Check: func(ctx context.Context) CheckAnswer {
-			s, r, fresh := h.readState(ctx, l.sessionID, live)
-			return CheckAnswer{
-				Fresh:         fresh,
-				CanSubmit:     fresh && sessionstate.HooksReported(r) && !sessionstate.NeedsApproval(s),
-				AnswersDialog: sessionstate.NeedsApproval(s),
-			}
+			return vouch(h.readState(ctx, l.sessionID, live))
 		},
 	})
 	if err != nil {
@@ -372,12 +356,8 @@ func (h *Handlers) deliverPhoneLine(ctx context.Context, l phoneLine, live LiveR
 // justSubmitted: a line went into the session within busyAfterSubmit and no
 // hook has reported since — the agent is turning to it.
 func (h *Handlers) justSubmitted(sessionID int64, row sessionstate.Row, now time.Time) bool {
-	at, ok := h.lines.submittedAt(sessionID)
-	if !ok || now.Sub(at) >= busyAfterSubmit {
-		return false
-	}
-	stamp, ok := db.ParseAgentStateStamp(sessionstate.TrustedHookAt(row))
-	return !ok || !stamp.After(at)
+	at, _ := h.lines.submittedAt(sessionID)
+	return sessionline.JustSubmitted(at, row, now)
 }
 
 // standingFailure is what ends a line whatever the session does: its age,
