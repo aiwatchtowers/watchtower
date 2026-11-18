@@ -167,8 +167,8 @@ struct WorkbenchSessionsPanel: View {
             WorkbenchSwitcher(vm: vm, project: project, actions: switcherActions)
             // A click starts the default agent; the menu offers each agent.
             Menu {
-                NewSessionMenuItems(vm: vm, projectID: project.id) { agent, worktree in
-                    Task { await vm.newSessionOnPage(agent: agent, worktree: worktree) }
+                NewSessionMenuItems(vm: vm, projectID: project.id) { agent, worktree, folder in
+                    Task { await vm.newSessionOnPage(agent: agent, worktree: worktree, folder: folder) }
                 }
             } label: {
                 Image(systemName: "plus")

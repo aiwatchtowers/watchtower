@@ -20,10 +20,14 @@ struct WorkbenchSessionStrip: View {
         HStack(spacing: Spacing.regular) {
             WorkbenchSessionsMenu(vm: vm, project: project, slot: pane)
             if vm.crumbsPane(projectID: project.id) == pane {
+                // On a bench of several folders the session's folder leads (§6.5).
+                SessionFolderCrumb(vm: vm, project: project, sessionID: sessionID)
                 WorkbenchPlaceCrumb(vm: vm, project: project)
                 WorkbenchBranchCrumb(vm: vm, project: project)
             }
             Spacer(minLength: Spacing.small)
+            SessionFromParentLink(vm: vm, projectID: project.id, sessionID: sessionID)
+                .layoutPriority(-1)
             modeButton()
                 // The button never truncates; the session name and the crumbs do.
                 .fixedSize()
@@ -142,8 +146,10 @@ struct WorkbenchSessionsMenu: View {
                 .disabled(current == row.id)
             }
             Divider()
-            NewSessionMenuItems(vm: vm, projectID: project.id) { agent, worktree in
-                Task { await vm.newSession(inPane: slot, projectID: project.id, agent: agent, worktree: worktree) }
+            NewSessionMenuItems(vm: vm, projectID: project.id) { agent, worktree, folder in
+                Task {
+                    await vm.newSession(inPane: slot, projectID: project.id, agent: agent, worktree: worktree, folder: folder)
+                }
             }
         } label: {
             HStack(spacing: Spacing.small) {

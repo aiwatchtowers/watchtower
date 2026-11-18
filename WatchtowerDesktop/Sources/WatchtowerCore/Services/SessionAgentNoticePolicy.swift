@@ -95,7 +95,10 @@ package struct SessionAgentNoticePolicy: Sendable {
             if status.state.asksAreOnlyChecks { return nil }
             if status.finishedAt != nil { return .finished }
             return status.state.openAsks > 0 ? nil : .stopped
-        case .notStarted, .running, .working, .waitingOnAsk, .readyToCheck, .background, .specReview: return nil
+        // A parent whose children still work announces nothing (PROJ-11,
+        // spec 2026-11-18 §6.5): its stop comes once the last one ends.
+        case .notStarted, .running, .working, .waitingOnAsk, .readyToCheck, .background, .specReview,
+             .subSessionsWorking: return nil
         }
     }
 

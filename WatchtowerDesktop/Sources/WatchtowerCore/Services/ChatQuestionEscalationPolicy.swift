@@ -53,15 +53,20 @@ package enum ChatQuestionEscalationPolicy {
     /// `SessionAgentStatus.effective`'s run rules (a state written before
     /// `startedAt`, or with no known start, is no state); `hasOwnerDraft` is
     /// text the owner typed in the session's prompt and has not submitted.
+    /// `liveChildren`: the session's live sub-sessions — while one is live
+    /// nothing escalates (PROJ-11, spec 2026-11-18 §6.5; Go
+    /// `sessionstate.MayEscalate`): the session waits on its children, not
+    /// on the owner.
     package static func decide(
         row: SessionAgentStateRow,
         live: Bool,
         startedAt: Date?,
         presence: Presence,
         hasOwnerDraft: Bool,
-        now: Date
+        now: Date,
+        liveChildren: Int = 0
     ) -> Decision {
-        guard live, row.projectID != nil, row.chatQuestion != nil, let rawAt = row.chatQuestionAt,
+        guard live, liveChildren == 0, row.projectID != nil, row.chatQuestion != nil, let rawAt = row.chatQuestionAt,
               SessionAgentStatus.trustedHook(row, startedAt: startedAt) == .waiting else { return .none }
         guard let asked = SessionAgentStatus.parseStamp(rawAt), asked.timeIntervalSince(now) <= futureTolerance else {
             return .unreadableStamp

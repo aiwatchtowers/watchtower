@@ -33,6 +33,8 @@ final class SessionAgentStatusFixtureTests: XCTestCase {
         let openReviewAsks: Int
         let specReviewRound: Int
         let runStartedAt: String
+        /// The row's live sub-sessions (absent = 0).
+        let liveChildren: Int?
 
         enum CodingKeys: String, CodingKey {
             case agentState = "agent_state", agentStateAt = "agent_state_at", finishedAt = "finished_at"
@@ -41,6 +43,7 @@ final class SessionAgentStatusFixtureTests: XCTestCase {
             case openAsks = "open_asks"
             case openQuestionAsks = "open_question_asks", openReviewAsks = "open_review_asks"
             case specReviewRound = "spec_review_round", runStartedAt = "run_started_at"
+            case liveChildren = "live_children"
         }
     }
 
@@ -60,12 +63,26 @@ final class SessionAgentStatusFixtureTests: XCTestCase {
         }
     }
 
-    func testEveryGoFixtureCaseResolvesTheSame() throws {
-        // Tests/<this file> -> the repository root, three levels up.
+    /// PROJ-11 (amended, ask #1545): the Go cases with live sub-sessions —
+    /// a child live → Sub-sessions working, the last one stopped → the
+    /// stored state — resolve the same here; the fixture holds both.
+    func testProj11_SubSessionsWorkingMatchesTheGoCases() throws {
+        let cases = try Self.fixture().cases.filter { $0.row.liveChildren != nil }
+        XCTAssertTrue(cases.contains { $0.expect.state == "sub_sessions_working" })
+        XCTAssertTrue(cases.contains { $0.row.liveChildren == 0 && $0.expect.state == "stopped" })
+        try testEveryGoFixtureCaseResolvesTheSame()
+    }
+
+    /// Tests/<this file> -> the repository root, three levels up.
+    private static func fixture() throws -> Fixture {
         var root = URL(fileURLWithPath: #filePath)
         for _ in 0..<3 { root.deleteLastPathComponent() }
         let url = root.appendingPathComponent("internal/sessionstate/testdata/status_cases.json")
-        let fixture = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: url))
+        return try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: url))
+    }
+
+    func testEveryGoFixtureCaseResolvesTheSame() throws {
+        let fixture = try Self.fixture()
         let now = try XCTUnwrap(SessionAgentStatus.parseStamp(fixture.now))
         XCTAssertFalse(fixture.cases.isEmpty)
 
@@ -73,6 +90,12 @@ final class SessionAgentStatusFixtureTests: XCTestCase {
             let row = item.row
             let live = !row.runStartedAt.isEmpty
             let started = live ? SessionAgentStatus.parseStamp(row.runStartedAt) : nil
+            // A parent's live sub-sessions are child rows the host runs, as
+            // the state center reads them (Go fills Row.LiveChildren).
+            let children = (0..<(row.liveChildren ?? 0)).map { offset in
+                SessionAgentStateRow(id: 100 + Int64(offset), projectID: 1, title: "child", agentState: "working",
+                                     agentStateAt: row.runStartedAt, workbenchName: "wb", parentSessionID: 1)
+            }
             let stateRow = SessionAgentStateRow(
                 id: 1, projectID: 1, title: "t", agentState: row.agentState, agentStateAt: row.agentStateAt,
                 workbenchName: "wb", finishedAt: row.finishedAt, agentFailedAt: row.agentFailedAt,
@@ -80,8 +103,10 @@ final class SessionAgentStatusFixtureTests: XCTestCase {
                 agentBackground: row.agentBackground, agentBackgroundAt: row.agentBackgroundAt,
                 agentBackgroundShells: row.agentBackgroundShells, specReviewRound: row.specReviewRound
             )
+            let childIDs = Set(children.map(\.id))
             let status = try XCTUnwrap(SessionAgentStatus.resolve(
-                [stateRow], liveIDs: live ? [1] : [], startedAt: started.map { [1: $0] } ?? [:], now: now
+                [stateRow] + children, liveIDs: (live ? Set<Int64>([1]) : []).union(childIDs),
+                startedAt: started.map { [1: $0] } ?? [:], now: now
             )[1], item.name)
             XCTAssertEqual(Self.name(of: status), item.expect.state, item.name)
             XCTAssertEqual(status.hooksReported, item.expect.hooksReported, item.name)
@@ -107,6 +132,7 @@ final class SessionAgentStatusFixtureTests: XCTestCase {
         case .background: return "agents_working"
         case .readyToCheck: return "ready_to_check"
         case .specReview: return "spec_review"
+        case .subSessionsWorking: return "sub_sessions_working"
         }
     }
 }

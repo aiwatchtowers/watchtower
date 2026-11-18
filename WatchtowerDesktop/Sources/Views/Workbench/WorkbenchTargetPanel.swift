@@ -70,6 +70,7 @@ struct WorkbenchTargetPanel: View {
                 case .group: groupStatus
                 }
                 priorityMenu
+                folderMenu
                 ForEach(findings) { finding in
                     Chip(
                         text: finding.kindLabel,
@@ -276,6 +277,35 @@ struct WorkbenchTargetPanel: View {
         )
         .fixedSize()
         .help("A group's status follows its sub-tasks")
+    }
+
+    /// The target's folder (spec 2026-11-18 §6.10), only on a bench of
+    /// several: the owner moves the work to another one, or back home. A
+    /// removed folder keeps showing as `folder removed` until another is picked.
+    @ViewBuilder
+    private var folderMenu: some View {
+        if let folders = vm.folders,
+           WorkbenchBoardCard.showsFolderMenu(folderID: target.workbenchFolderID, folders: folders) {
+            let current = folders.folder(target.workbenchFolderID)
+            Menu {
+                ForEach(folders.live) { folder in
+                    Toggle(folder.name, isOn: Binding(
+                        get: { current?.id == folder.id },
+                        set: { if $0 { vm.setFolder(folder.id == folders.homeID ? nil : folder.id) } }
+                    ))
+                }
+            } label: {
+                MenuLabel(
+                    text: WorkbenchBoardCard.folderMenuTitle(current),
+                    systemImage: "folder",
+                    color: current?.isRemoved == true ? Tone.warning : .secondary
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Folder")
+        }
     }
 
     private var priorityMenu: some View {

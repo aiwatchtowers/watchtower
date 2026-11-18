@@ -496,6 +496,7 @@ private struct WorkbenchBoardKanbanCards: View {
                 isCollapsed: false,
                 caption: card.breadcrumb.isEmpty ? nil : card.breadcrumb,
                 wrapsText: true,
+                folders: vm.folders,
                 onToggle: {},
                 trailing: { hovering in
                     WorkOnTargetButton(target: card.row.node.target, compact: true,

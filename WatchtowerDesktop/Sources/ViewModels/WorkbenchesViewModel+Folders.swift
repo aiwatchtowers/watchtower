@@ -175,10 +175,16 @@ extension WorkbenchesViewModel {
         liveFolders(projectID: projectID).count > 1
     }
 
-    /// A root row's click: open or close its tree.
+    /// A root row's click: open or close its tree; the root opened is the
+    /// one ⌘T starts in while no session is on screen.
     func toggleFolderRoot(_ folderID: Int64, projectID: Int64) {
         var expanded = expandedFolderRoots[projectID] ?? []
-        if expanded.remove(folderID) == nil { expanded.insert(folderID) }
+        if expanded.remove(folderID) == nil {
+            expanded.insert(folderID)
+            selectedFolderRoot[projectID] = folderID
+        } else if selectedFolderRoot[projectID] == folderID {
+            selectedFolderRoot[projectID] = nil
+        }
         expandedFolderRoots[projectID] = expanded
     }
 
@@ -251,6 +257,7 @@ extension WorkbenchesViewModel {
         // being ok, no error either).
         if result.ok || result.code == .alreadyHere, let added = result.folder {
             highlightedFolderRoot[projectID] = added.id
+            selectedFolderRoot[projectID] = added.id
             expandedFolderRoots[projectID, default: []].insert(added.id)
             if result.ok { folderInstalled[projectID, default: [:]][added.id] = result.install?.ok ?? added.installed }
             if result.ok, gitWatching.contains(projectID), let added = benchFolders[projectID]?.folder(added.id) {

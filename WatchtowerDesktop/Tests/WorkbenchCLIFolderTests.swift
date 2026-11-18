@@ -108,7 +108,7 @@ final class WorkbenchCLIFolderTests: XCTestCase {
             XCTFail("a refused start throws")
         } catch let WorkbenchCLIError.startRefused(code, message) {
             XCTAssertEqual(code, .notInstalled)
-            XCTAssertEqual(message, "not_installed: Install Watchtower in hub first")
+            XCTAssertEqual(message, "Install Watchtower in hub first", "the sentence alone, no code")
         }
 
         let other = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "database is locked"))

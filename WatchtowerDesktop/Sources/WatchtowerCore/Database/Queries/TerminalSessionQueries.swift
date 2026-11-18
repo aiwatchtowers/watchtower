@@ -248,6 +248,13 @@ package enum TerminalSessionQueries {
         let cwdAt = try hasAgentCwd(db) ? "s.agent_cwd_at" : "NULL"
         let watchIssue = try hasColumn(db, "agent_watch_issue") ? "s.agent_watch_issue" : "NULL"
         let shells = try hasColumn(db, "agent_background_shells") ? "s.agent_background_shells" : "NULL"
+        // Migration 00196 brought both the sub-session link and session_messages.
+        let multiFolder = try hasColumn(db, "parent_session_id")
+        let parent = multiFolder ? "s.parent_session_id" : "NULL"
+        let inPrompt = multiFolder ? """
+            (SELECT COUNT(*) FROM session_messages m WHERE m.to_session_id = s.id AND m.state = 'delivered'
+             AND m.reason = '\(SessionMessage.typedNotSubmitted)' AND m.prompt_cleared_at IS NULL)
+            """ : "0"
         let open = OwnerAskQueries.notInSpecLoop("a")
         return try SessionAgentStateRow.fetchAll(
             db,
@@ -257,6 +264,8 @@ package enum TerminalSessionQueries {
                        s.agent_background, s.agent_background_at, \(shells) AS agent_background_shells,
                        s.chat_question, s.chat_question_at,
                        \(cwdAt) AS agent_cwd_at, \(watchIssue) AS agent_watch_issue,
+                       \(parent) AS parent_session_id,
+                       \(inPrompt) AS prompt_messages,
                        (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open' AND \(open)) AS open_asks,
                        (SELECT MIN(a.id) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open' AND \(open))
                            AS oldest_open_ask_id,
