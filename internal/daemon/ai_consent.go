@@ -7,9 +7,13 @@ import (
 )
 
 // SetConsent injects the background-AI consent reader. nil (the default)
-// reads aiconsent.Current, never "ungated" (fail closed).
+// reads aiconsent.Current, never "ungated" (fail closed). The built-ins'
+// slot runner (SetBuiltins) reads the same one.
 func (d *Daemon) SetConsent(r aiconsent.Reader) {
 	d.consent = r
+	if d.builtins != nil {
+		d.builtins.SetConsent(r)
+	}
 }
 
 // consentNow reads the consent state and logs the paused line once per

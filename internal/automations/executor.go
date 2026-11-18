@@ -571,7 +571,9 @@ func (e *Executor) ExecuteBuiltinInline(ctx context.Context, runID int64) (*db.A
 		return nil, fmt.Errorf("automation run %d of %q: %w", runID, a.Slug, ErrNotRunnable)
 	}
 	// The reaction-command dispatcher's sync runs come with an
-	// owner-started ctx (D3) and pass.
+	// owner-started ctx (D3) and pass. A slot's sync run is checked here,
+	// at claim time, whatever the slot read before; once claimed, its calls
+	// are admitted as run:<id> (runOrigin) and finish after a pause (D12).
 	owner := ownerStarted(ctx)
 	if held, err := e.heldForConsent(owner, run, a, now); err != nil {
 		return nil, fmt.Errorf("automation run %d: %w", runID, err)

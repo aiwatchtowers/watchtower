@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerKit
 
 /// A screen pushed on Now's stack: Settings, from the gear (design pass
 /// spec §5); the Not delivered list, from its row (relay client mockup 5a); Settings → Macs, from a refused Mac's term
@@ -17,10 +18,10 @@ struct NowView: View {
     /// What sits at the top of the list, in order: how old the data is right under the chip (#1873), the Relay
     /// banner above Waiting to send (Phase 1's row stays where it is).
     enum TopBlock: Hashable {
-        case chip, freshness, relayBanner, outbox
+        case chip, freshness, relayBanner, outbox, backgroundAI
     }
 
-    static let topBlocks: [TopBlock] = [.chip, .freshness, .relayBanner, .outbox]
+    static let topBlocks: [TopBlock] = [.chip, .freshness, .relayBanner, .outbox, .backgroundAI]
 
     @Environment(AppEnvironment.self) private var env
     @Environment(LinkingViewModel.self) private var linking
@@ -136,6 +137,15 @@ struct NowView: View {
                     case .outbox:
                         if let outbox = model.outbox {
                             NowOutboxGroup(rows: outbox)
+                        }
+                    case .backgroundAI:
+                        // The Mac's background AI is paused or off (#1886); the phone cannot allow it, so no button.
+                        if let line = BackgroundAIConsentCopy.phoneLine(env.activeSession.heartbeat?.backgroundAI) {
+                            Text(line)
+                                .font(TypeScale.meta)
+                                .foregroundStyle(PhoneTone.secondary.color)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, Spacing.small)
                         }
                     }
                 }
