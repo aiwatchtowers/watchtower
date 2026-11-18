@@ -146,8 +146,11 @@ Measured 2026-11-18 on the feature branch with the relay at `771a99e`, one Go ph
 
 Before the live link the same run gave `read_saved` p50 71 ms, p90 140 ms (Task 7, ops over HTTPS). Every op went
 over the socket: 4.72 relay ops per action (`ws:save` 2.29, `ws:changes` 1.82, `ws:get_account_state` 0.30,
-`ws:set_hub_readers` 0.30), none over HTTPS. The p90 did not improve (175 ms against 140 ms); the likely cause, not
-verified, is the transport spacing between back-to-back saves of 200 actions sent with no gap. The Kit phone against the Go hub (`RELAY_INTEROP_CI=1 make relay-interop-kit-hub`): the farewell action was
+`ws:set_hub_readers` 0.30), none over HTTPS. The p90 is the same as before the live link: origin/main on the same machine and relay
+gave `read_saved` p50 104 ms, p90 178 ms (the 140 ms above is a different run under other load). The run's
+FORBIDDEN refusals (about one `save` and one `changes` per second) are link upkeep rewriting the keyboxes of a
+pairing slot the phone's `add_slot` already closed (`PublishPairKeyboxes`, up to `pairSlotLifetime`, every
+`linkEvery`, 1 s in the test, 1 min in production); main shows the same, and they are off the action path. The Kit phone against the Go hub (`RELAY_INTEROP_CI=1 make relay-interop-kit-hub`): the farewell action was
 applied 35–80 ms after the phone began to send it. The relay indicator outage run (`RELAY_INTEROP_RESTART_PAUSE=75`)
 still turns `unavailable` at 60 s and `connected` again once the stand is back.
 
