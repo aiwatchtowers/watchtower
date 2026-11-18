@@ -122,10 +122,26 @@ final class ReadinessCenterTests: XCTestCase {
         await waitUntil(center) { !$0.isEmpty }
         XCTAssertNotEqual(center.readiness(for: .digests), .backgroundAIPaused(managed: false))
 
-        environment.backgroundAI = BackgroundAIConsent.resolve(answer: "paused", policy: nil)
+        environment.consent = BackgroundAIConsent.resolve(answer: "paused", policy: nil)
         center.refresh()
         XCTAssertEqual(center.readiness(for: .digests), .backgroundAIPaused(managed: false))
         XCTAssertNotEqual(center.readiness(for: .slackSync), .backgroundAIPaused(managed: false))
+    }
+
+    /// An answer or a profile change (observable, as `AppState.backgroundAI`
+    /// is) re-evaluates on its own, without a refresh.
+    func testObservedConsentChangeReevaluates() async throws {
+        let box = ConsentBox()
+        let environment = FakeReadinessEnvironment()
+        environment.consentRead = { box.state }
+        let center = ReadinessCenter(environment: environment)
+        center.start(pool: try makePool())
+        defer { center.stop() }
+        await waitUntil(center) { !$0.isEmpty }
+        XCTAssertNotEqual(center.readiness(for: .digests), .backgroundAIPaused(managed: true))
+
+        box.state = BackgroundAIConsent.resolve(answer: nil, policy: false)
+        await waitUntil(center) { $0[.digests] == .backgroundAIPaused(managed: true) }
     }
 
     /// F5 (#578): the backfill rows, memory's first run and the kill switch
@@ -244,4 +260,10 @@ final class ReadinessCenterTests: XCTestCase {
         await waitUntil(appState.readinessCenter) { !$0.isEmpty }
         XCTAssertEqual(appState.readinessCenter.readiness.count, ReadinessFeature.allCases.count)
     }
+}
+
+@MainActor
+@Observable
+private final class ConsentBox {
+    var state = BackgroundAIConsent.State.allowedByOwner
 }

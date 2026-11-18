@@ -680,7 +680,7 @@ final class FeatureReadinessTests: XCTestCase {
         XCTAssertEqual(FeatureReadiness.line(.backgroundAIPaused(managed: false)), BackgroundAIConsentCopy.readinessPaused)
         // The organization's "yes" and the owner's both run.
         input.backgroundAI = BackgroundAIConsent.resolve(answer: nil, policy: true)
-        XCTAssertNotEqual(evaluate(.digests, input), .backgroundAIPaused(managed: false))
+        XCTAssertEqual(evaluate(.digests, input), .scheduled(.nextCycle(minutes: 15)))
         input.backgroundAI = .allowedByOwner
         XCTAssertEqual(evaluate(.digests, input), .scheduled(.nextCycle(minutes: 15)))
     }

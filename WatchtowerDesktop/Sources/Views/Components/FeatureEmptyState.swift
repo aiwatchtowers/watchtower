@@ -57,10 +57,13 @@ struct FeatureEmptyState<Extra: View>: View {
             }
             if let readiness, case .backgroundAIPaused(let managed) = readiness {
                 // Background AI paused (#1886): a quiet line, the lock when the
-                // organization decided.
-                Label(FeatureReadiness.line(readiness), systemImage: managed ? "lock.fill" : "pause.circle")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                // organization decided; none where the tab's own action builds
+                // what it shows (Catch-Up tops up digests itself).
+                if !Self.ownerActionLeads(copy) {
+                    Label(FeatureReadiness.line(readiness), systemImage: managed ? "lock.fill" : "pause.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             } else if let line = Self.readinessLine(readiness) {
                 Text(line)
                     .font(.callout)
@@ -144,7 +147,7 @@ struct FeatureEmptyState<Extra: View>: View {
             if turnOnError != nil, let featureID = turnOnID {
                 return .turnOn(featureID: featureID)
             }
-            if case .tabAction = copy.primaryAction { return copy.primaryAction }
+            if ownerActionLeads(copy) { return copy.primaryAction }
             return managed ? nil : .allowBackgroundAI
         default:
             if turnOnError != nil, let featureID = turnOnID {
@@ -171,6 +174,13 @@ struct FeatureEmptyState<Extra: View>: View {
         case .tabAction(let label): label
         case .allowBackgroundAI: BackgroundAIConsentCopy.allowAction
         }
+    }
+
+    /// The tab's own action (Catch-Up's Build a recap) is an owner gesture
+    /// that runs whatever background AI is set to (#1886).
+    static func ownerActionLeads(_ copy: EmptyStateCopy) -> Bool {
+        if case .tabAction = copy.primaryAction { return true }
+        return false
     }
 
     private static func isStateGated(_ action: EmptyStateAction) -> Bool {

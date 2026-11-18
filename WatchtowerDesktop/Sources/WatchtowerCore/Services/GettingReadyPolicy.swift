@@ -48,11 +48,11 @@ package enum GettingReadyPolicy {
 
         var next = memory
         // A rows-only zone is never complete: it stays until a source connects.
-        if sourcedCards, cards.allSatisfy(\.isTerminal) {
-            // AI features left out while background AI is paused (#1886) are
-            // not ready: nothing is left to show, but the zone stays open for
-            // their cards to come back once it is allowed.
-            if readiness.values.contains(where: \.isBackgroundAIPaused) { return hidden }
+        // Nor is one with AI features left out while background AI is paused
+        // (#1886): they are not ready, and their cards come back once it is
+        // allowed; meanwhile the zone keeps its other cards, rows and Hide.
+        let paused = readiness.values.contains(where: \.isBackgroundAIPaused)
+        if sourcedCards, !paused, cards.allSatisfy(\.isTerminal) {
             // An install that was already ready at first look never was getting ready.
             next.completedAt = now
             return GettingReadyStep(zone: sawUnready ? .allReady : .hidden, memory: next, sawUnready: sawUnready)

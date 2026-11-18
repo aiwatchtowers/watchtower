@@ -343,19 +343,34 @@ final class GettingReadyTests: XCTestCase {
         XCTAssertEqual(step(readiness, memory: GettingReadyMemory(hiddenByOwner: true)).zone, .hidden)
     }
 
-    /// The zone never completes while AI features wait on the answer: once
-    /// it is allowed, their cards come back instead of a zone gone for good.
+    /// The zone never completes while AI features wait on the answer: with
+    /// every other card ready it stays shown (cards, rows, Hide), and once it
+    /// is allowed their cards come back instead of a zone gone for good.
     func testPausedHoldsCompletion() {
-        let first = step(readinessMap([.slackSync: .preparing(detail: nil), .digests: .backgroundAIPaused(managed: true)]))
+        let first = step(readinessMap([
+            .slackSync: .preparing(detail: nil), .digests: .backgroundAIPaused(managed: true), .jira: .needsSource(.jira)
+        ]))
         let second = step(
-            readinessMap([.slackSync: .ready, .digests: .backgroundAIPaused(managed: true)]),
+            readinessMap([.slackSync: .ready, .digests: .backgroundAIPaused(managed: true), .jira: .needsSource(.jira)]),
             memory: first.memory, sawUnready: first.sawUnready)
-        XCTAssertEqual(second.zone, .hidden)
+        XCTAssertEqual(cards(second.zone).map(\.feature), [.slackSync])
+        XCTAssertEqual(sourceRows(second.zone).map(\.source), [.jira])
         XCTAssertNil(second.memory.completedAt)
 
         let allowed = step(
             readinessMap([.slackSync: .ready, .digests: .scheduled(.nextCycle(minutes: 15))]),
             memory: second.memory, sawUnready: second.sawUnready)
         XCTAssertEqual(cards(allowed.zone).map(\.feature), [.slackSync, .digests])
+    }
+
+    /// Nothing left to show (every sourced feature paused, no Connect row):
+    /// hidden, and nothing persisted as complete.
+    func testPausedWithNothingLeftHidesWithoutCompleting() {
+        let result = step(readinessMap([
+            .digests: .backgroundAIPaused(managed: false), .briefing: .backgroundAIPaused(managed: false)
+        ]))
+        XCTAssertEqual(result.zone, .hidden)
+        XCTAssertNil(result.memory.completedAt)
+        XCTAssertNil(result.memory.firstShownAt)
     }
 }

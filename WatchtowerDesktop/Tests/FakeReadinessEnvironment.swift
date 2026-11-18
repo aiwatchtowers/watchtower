@@ -16,7 +16,10 @@ final class FakeReadinessEnvironment: ReadinessEnvironment {
     var briefingHour = 8
     var pollInterval: String?
     var backfillDays: Int?
-    var backgroundAI = BackgroundAIConsent.State.allowedByOwner
+    var consent = BackgroundAIConsent.State.allowedByOwner
+    /// Reads an observable source instead of `consent` when set.
+    var consentRead: (() -> BackgroundAIConsent.State)?
+    var backgroundAI: BackgroundAIConsent.State { consentRead?() ?? consent }
     var stamps: [String: Date] = [:]
     func stamp(_ fileName: String) -> Date? { stamps[fileName] }
 }

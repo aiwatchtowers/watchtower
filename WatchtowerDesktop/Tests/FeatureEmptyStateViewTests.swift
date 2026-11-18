@@ -148,9 +148,15 @@ final class FeatureEmptyStateViewTests: XCTestCase {
         XCTAssertThrowsError(try org.inspect().find(ViewType.Button.self))
 
         let catchUp = try XCTUnwrap(EmptyStateCopyTable.copy(for: "catchUp", briefingHour: 8))
-        XCTAssertEqual(
-            FeatureEmptyState<EmptyView>.visibleAction(copy: catchUp, readiness: .backgroundAIPaused(managed: false)),
-            .tabAction(label: "Build a recap"))
+        for managed in [false, true] {
+            XCTAssertEqual(
+                FeatureEmptyState<EmptyView>.visibleAction(copy: catchUp, readiness: .backgroundAIPaused(managed: managed)),
+                .tabAction(label: "Build a recap"))
+            let view = makeView(copy: catchUp, readiness: .backgroundAIPaused(managed: managed))
+            XCTAssertThrowsError(try view.inspect().find(text: BackgroundAIConsentCopy.readinessPaused))
+            XCTAssertThrowsError(try view.inspect().find(text: BackgroundAIConsentCopy.readinessOrg))
+            XCTAssertNoThrow(try view.inspect().find(button: "Build a recap"))
+        }
         XCTAssertEqual(
             FeatureEmptyState<EmptyView>.visibleAction(
                 copy: Self.memoryCopy, readiness: .backgroundAIPaused(managed: true), turnOnError: "restart failed"),
