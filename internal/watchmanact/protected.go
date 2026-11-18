@@ -74,7 +74,8 @@ var noChangeRe = regexp.MustCompile(`(?i)\b(unchanged|not changed|no change|does
 // paragraph) naming a contract id of inventoryDir's headings or a family
 // wildcard of their prefixes (REVIEW-0x), matched in any case, unless that
 // line names exactly one id and is one clause saying it is not changed (no
-// ";", ".", ":", ",", "but" or "and" on it but a closing mark). A
+// ";", ".", ":", ",", "—", "–", "(", "but", "and", "except" or "other than"
+// on it but a closing mark). A
 // "PROJ-12/21" shorthand is two ids; a wildcard is never exactly one. An inventoryDir that exists but cannot be
 // read, or holds files with no contract heading, parks ("inventory
 // unreadable"); an absent one gives no ids.
@@ -158,8 +159,9 @@ func contractRes(prefixes map[string]bool) (id, wild *regexp.Regexp) {
 // listMarkRe is a leading list or quote mark: "- ", "* ", "1. ", "> ".
 var listMarkRe = regexp.MustCompile(`^\s*(?:[-*+>]|[0-9]+[.)])\s+`)
 
-// clauseSepRe separates clauses: punctuation, "but", "and".
-var clauseSepRe = regexp.MustCompile(`(?i)[;.:,]|\b(?:but|and)\b`)
+// clauseSepRe separates clauses: punctuation, dashes, an opening
+// parenthesis, "but", "and", "except", "other than".
+var clauseSepRe = regexp.MustCompile(`(?i)[;.:,—–(]|\b(?:but|and|except|other\s+than)\b`)
 
 // singleClause reports a line that is one clause: after its list mark and
 // any closing punctuation, nothing separates it into two (table pipes and

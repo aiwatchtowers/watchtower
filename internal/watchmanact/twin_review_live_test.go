@@ -152,11 +152,33 @@ func TestLiveReviewPlace(t *testing.T) {
 			t.Fatalf("park = %q (%s), want the guard-test park", park, why)
 		}
 	})
-	t.Run("an ordinary test in the same file", func(t *testing.T) {
+	t.Run("an ordinary test in a file that declares a guard test", func(t *testing.T) {
 		r := newLiveRepo(t, map[string]string{"Tests/PanelTests.swift": swiftTests("1", "true")})
 		r.write("Tests/PanelTests.swift", swiftTests("1", "false"))
+		if park, why := protectedPlace(r.place()); park != ProtectedReason {
+			t.Fatalf("park = %q (%s): any edit of a file declaring a guard test is the owner's", park, why)
+		}
+	})
+	t.Run("a test file without guard tests", func(t *testing.T) {
+		r := newLiveRepo(t, map[string]string{"x_test.go": "package x\n\nfunc TestFoo(t *testing.T) {\n\ta()\n}\n"})
+		r.write("x_test.go", "package x\n\nfunc TestFoo(t *testing.T) {\n\tb()\n}\n")
 		if park, why := protectedPlace(r.place()); park != "" {
-			t.Fatalf("an ordinary test's edit parks: %s (%s)", park, why)
+			t.Fatalf("park = %q (%s)", park, why)
+		}
+	})
+	t.Run("a guard test deleted with its file", func(t *testing.T) {
+		r := newLiveRepo(t, map[string]string{"g_test.go": "package x\n\nfunc TestProj12_Delivery(t *testing.T) {}\n", "x.go": "package x\n"})
+		r.git("rm", "-q", "g_test.go")
+		if park, _ := protectedPlace(r.place()); park != ProtectedReason {
+			t.Fatalf("park = %q, want the guard-test park from the base side", park)
+		}
+	})
+	t.Run("a file git shows as binary", func(t *testing.T) {
+		r := newLiveRepo(t, map[string]string{".gitattributes": "*.cfg -diff\n", "a.cfg": "one\n"})
+		r.write("a.cfg", "two\n")
+		place := r.place()
+		if park, _ := protectedPlace(place); park != reasonDiffUnchecked {
+			t.Fatalf("park = %q (unchecked %q, diff %q), want the diff-unchecked park", park, place.Unchecked, place.Diff)
 		}
 	})
 }

@@ -194,40 +194,78 @@ func TestTwin_ReviewCodeMainBaseParks(t *testing.T) {
 	}
 }
 
+// wantWaiting checks the item waits reviewWait with its attempt unspent
+// and nothing was approved or sent.
+func (e *reviewEnv) wantWaiting(itemID int64) {
+	e.t.Helper()
+	it := e.item(itemID)
+	var nb sql.NullString
+	e.must(e.db.QueryRow(`SELECT not_before FROM watchman_items WHERE id = ?`, itemID).Scan(&nb))
+	if it.State != "queued" || it.Attempts != 0 || !nb.Valid {
+		e.t.Fatalf("item = %s attempts %d not_before %v, want waiting unspent", it.State, it.Attempts, nb)
+	}
+	if at, err := time.Parse(time.RFC3339, nb.String); err != nil || time.Until(at) < 30*time.Second {
+		e.t.Fatalf("not_before = %q, want about a minute ahead", nb.String)
+	}
+	for _, r := range e.rounds() {
+		if r.Status != "open" {
+			e.t.Fatalf("round %d written: %+v", r.ID, r)
+		}
+	}
+	if len(e.lines()) != 0 {
+		e.t.Fatalf("lines delivered: %q", e.lines())
+	}
+}
+
 // The session's tree moves while the twin decides: nothing is approved or
-// sent on the tree it checked; the item goes back to be reviewed again.
+// sent on the tree it checked; the item waits to be reviewed again.
 func TestTwin_ReviewCodeTreeMovedDuringDecideIsNotApproved(t *testing.T) {
 	for _, choice := range ReviewOptions {
 		t.Run(choice, func(t *testing.T) {
 			e := newReviewEnv(t)
-			calls := 0
 			e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
-				calls++
-				if calls == 1 {
-					e.baseMu.Lock()
-					e.place.Round.TreeSHA = "t2"
-					e.baseMu.Unlock()
-				}
+				e.baseMu.Lock()
+				e.place.Round.TreeSHA = "t2"
+				e.baseMu.Unlock()
 				return reviewDecision(choice), nil
 			}
 			itemID := e.queueReview()
 			e.run()
-			for _, r := range e.rounds() {
-				if r.Status != "open" && r.TreeSHA == "t1" {
-					t.Fatalf("round %d written at the tree that moved: %+v", r.ID, r)
-				}
-			}
-			if it := e.item(itemID); it.State == "done" && e.roundOf(itemID) != 0 {
-				var tree string
-				e.must(e.db.QueryRow(`SELECT tree_sha FROM review_rounds WHERE id = ?`, e.roundOf(itemID)).Scan(&tree))
-				if tree != "t2" {
-					t.Fatalf("item finished on tree %q, want only the new tree", tree)
-				}
-			} else if it.State != "queued" || it.Attempts != 0 {
-				t.Fatalf("item = %s attempts %d, want queued unspent", it.State, it.Attempts)
-			}
+			e.wantWaiting(itemID)
 		})
 	}
+}
+
+// The session switched branch (same tree) after the PR base was read for
+// the old one: no Approve; the item waits.
+func TestTwin_ReviewCodeBranchSwitchIsNotApproved(t *testing.T) {
+	e := newReviewEnv(t)
+	e.twin.d.PRBase = func(context.Context, string, string) (string, string, error) {
+		e.baseMu.Lock()
+		e.place.Branch = "task/other"
+		e.baseMu.Unlock()
+		return "feature/watchman", "main", nil
+	}
+	itemID := e.queueReview()
+	e.run()
+	e.wantWaiting(itemID)
+}
+
+// A park that comes from the diff waits for the place to be checked again:
+// a tree that moved meanwhile is reviewed again, not parked on what it no
+// longer is.
+func TestTwin_ReviewCodeDiffParkRevalidatesThePlace(t *testing.T) {
+	e := newReviewEnv(t)
+	e.place.Paths = []string{"docs/inventory/watchman.md"}
+	e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
+		e.baseMu.Lock()
+		e.place.Round.TreeSHA, e.place.Paths = "t2", []string{"internal/x/x.go"}
+		e.baseMu.Unlock()
+		return reviewDecision(ReviewApprove), nil
+	}
+	itemID := e.queueReview()
+	e.run()
+	e.wantWaiting(itemID)
 }
 
 // The owner's Refresh repoints the twin's open round while it decides: the
@@ -252,9 +290,7 @@ func TestTwin_ReviewCodeRoundRepointedDuringDecideIsNotApproved(t *testing.T) {
 			t.Fatalf("round %d approved at a tree the twin never checked", r.ID)
 		}
 	}
-	if it := e.item(itemID); it.State == "queued" && it.Attempts != 0 {
-		t.Fatalf("attempts = %d, want the attempt given back", it.Attempts)
-	}
+	e.wantWaiting(itemID)
 }
 
 func TestTwin_ReviewCodeChangesSendsDesignComment(t *testing.T) {
