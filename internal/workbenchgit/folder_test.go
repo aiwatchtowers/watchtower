@@ -455,3 +455,19 @@ func TestProj10_WorktreeOfAnotherRepoInsideAFolderIsThatRepos(t *testing.T) {
 	assert.Equal(t, "", repoOf(t.TempDir()), "no work tree")
 	assert.Equal(t, filepath.Join(hub, ".git"), repoOf(nested), "a worktree's repository is its common dir")
 }
+
+// A cwd that is a symlink to a linked worktree is in that worktree's
+// repository: SameRepository resolves symlinks before walking to the git files.
+func TestSameRepositoryFollowsASymlinkToALinkedWorktree(t *testing.T) {
+	repo := newRepo(t)
+	wt := addWorktree(t, repo, "wt-link", "main")
+	link := filepath.Join(t.TempDir(), "cwd-link")
+	require.NoError(t, os.Symlink(wt, link))
+
+	require.NoError(t, os.MkdirAll(filepath.Join(wt, "sub", "deep"), 0o755))
+	assert.True(t, SameRepository(link, repo), "a symlinked linked worktree is the same repository")
+	assert.True(t, SameRepository(filepath.Join(link, "sub", "deep"), repo), "a directory below the symlink too")
+	assert.True(t, SameRepository(repo, link))
+	other := newRepo(t)
+	assert.False(t, SameRepository(link, other), "another repository never matches")
+}
