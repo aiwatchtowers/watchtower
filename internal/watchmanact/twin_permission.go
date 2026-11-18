@@ -175,10 +175,11 @@ func (t *Twin) permissionAsk(ctx context.Context, req *db.PermissionRequest) (wa
 	for _, w := range wts {
 		ask.Worktrees = append(ask.Worktrees, w.Root)
 	}
-	if req.ToolName == "Bash" {
+	// Only a command a branch-dependent row can hit pays for the live reads
+	// (git, and gh over the network).
+	if req.ToolName == "Bash" && watchman.BranchDependent(ask) {
 		dir := s.FolderPath
-		current := t.liveBranch(ctx, dir)
-		ask.Branch = &watchman.BranchInfo{Current: current, Shared: t.liveShared(ctx, dir, current)}
+		ask.Branch = t.liveBranchInfo(ctx, dir)
 		ask.PRBase = func(pr int) (string, bool) {
 			if pr <= 0 {
 				return "", false
@@ -201,45 +202,94 @@ func (t *Twin) liveBranch(ctx context.Context, dir string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// liveShared is the branches the session at dir shares with others, read
-// live: the default branches, the base of the current branch's PR, and the
-// current branch itself when an open PR builds on it. Nil (unknown: every
-// destructive ref move then parks) when the branch is unknown or detached,
-// or any read fails — a branch with no PR yet included.
-func (t *Twin) liveShared(ctx context.Context, dir, current string) []string {
+// liveBranchInfo is the session's branch at dir and the branches it shares
+// with others, read live: the default branches, the base of the current
+// branch's PR, and the current branch itself when an open PR builds on it.
+// The two gh lookups run apart. Shared stays nil (unknown: every
+// destructive ref move then parks) when the branch is unknown or detached
+// or a lookup that could add a shared branch failed; an open PR on top of
+// the current branch still marks it shared then (Current "": the table's
+// most closed view, the current branch shared and the rest unknown).
+func (t *Twin) liveBranchInfo(ctx context.Context, dir string) *watchman.BranchInfo {
+	current := t.liveBranch(ctx, dir)
+	b := &watchman.BranchInfo{Current: current}
 	if current == "" || current == "HEAD" {
-		return nil
+		return b
 	}
-	base, ok := t.prBase(ctx, dir, 0)
-	if !ok {
-		return nil
+	base, hasPR, ownErr := t.ownPRBase(ctx, dir)
+	onTop, topErr := t.prOnTop(ctx, dir, current)
+	switch {
+	case topErr != nil:
+		return b
+	case ownErr != nil:
+		if onTop {
+			b.Current = ""
+		}
+		return b
 	}
-	rctx, cancel := context.WithTimeout(ctx, permissionLiveReadLimit)
-	defer cancel()
-	out, err := t.d.Run(rctx, dir, "gh", "pr", "list", "--base", current, "--state", "open", "--limit", "1", "--json", "number")
-	var onTop []struct {
-		Number int `json:"number"`
+	b.Shared = []string{"main", "master"}
+	if hasPR {
+		b.Shared = append(b.Shared, base)
 	}
-	if err != nil || json.Unmarshal(out, &onTop) != nil {
-		return nil
+	if onTop {
+		b.Shared = append(b.Shared, current)
 	}
-	shared := []string{"main", "master", base}
-	if len(onTop) > 0 {
-		shared = append(shared, current)
-	}
-	return shared
+	return b
 }
 
-// prBase is PR pr's base branch (pr 0: the current branch's PR), read live
-// with gh in dir; known=false on any failure (a merge then parks).
+// ownPRBase is the base of the current branch's PR at dir; hasPR false
+// with no error when gh says the branch has none.
+func (t *Twin) ownPRBase(ctx context.Context, dir string) (base string, hasPR bool, err error) {
+	rctx, cancel := context.WithTimeout(ctx, permissionLiveReadLimit)
+	defer cancel()
+	out, err := t.d.Run(rctx, dir, "gh", "pr", "view", "--json", "baseRefName", "--jq", ".baseRefName")
+	if err != nil {
+		if noPullRequest(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	base = strings.TrimSpace(string(out))
+	if base == "" || strings.ContainsAny(base, " \t\n") {
+		return "", false, fmt.Errorf("unreadable PR base %q", watchman.Clip(base, 80))
+	}
+	return base, true, nil
+}
+
+// noPullRequest reports gh's answer for a branch with no PR (not a
+// failed read).
+func noPullRequest(err error) bool {
+	text := err.Error()
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		text += " " + string(ee.Stderr)
+	}
+	return strings.Contains(text, "no pull requests found")
+}
+
+// prOnTop reports an open PR whose base is branch at dir.
+func (t *Twin) prOnTop(ctx context.Context, dir, branch string) (bool, error) {
+	rctx, cancel := context.WithTimeout(ctx, permissionLiveReadLimit)
+	defer cancel()
+	out, err := t.d.Run(rctx, dir, "gh", "pr", "list", "--base", branch, "--state", "open", "--limit", "1", "--json", "number")
+	if err != nil {
+		return false, err
+	}
+	var prs []struct {
+		Number int `json:"number"`
+	}
+	if err := json.Unmarshal(out, &prs); err != nil {
+		return false, err
+	}
+	return len(prs) > 0, nil
+}
+
+// prBase is PR pr's base branch, read live with gh in dir; known=false on
+// any failure (the merge then parks).
 func (t *Twin) prBase(ctx context.Context, dir string, pr int) (string, bool) {
 	ctx, cancel := context.WithTimeout(ctx, permissionLiveReadLimit)
 	defer cancel()
-	args := []string{"pr", "view"}
-	if pr != 0 {
-		args = append(args, strconv.Itoa(pr))
-	}
-	out, err := t.d.Run(ctx, dir, "gh", append(args, "--json", "baseRefName", "--jq", ".baseRefName")...)
+	out, err := t.d.Run(ctx, dir, "gh", "pr", "view", strconv.Itoa(pr), "--json", "baseRefName", "--jq", ".baseRefName")
 	base := strings.TrimSpace(string(out))
 	if err != nil || base == "" || strings.ContainsAny(base, " \t\n") {
 		return "", false

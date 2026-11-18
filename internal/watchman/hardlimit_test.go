@@ -64,6 +64,19 @@ func TestParkedBy(t *testing.T) {
 		{"pr merge GH_HOST", withPR("GH_HOST=ghe.example.com gh pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
 		{"pr merge URL", withPR("gh pr merge https://github.com/acme/other/pull/12", map[int]string{12: "feature/watchman"}), LimitMainRef},
 		{"pr merge squash into feature", withPR("gh pr merge 12 --squash --delete-branch", map[int]string{12: "feature/watchman"}), ""},
+		{"gh -R before pr", withPR("gh -R acme/other pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
+		{"gh --repo before pr", withPR("gh --repo acme/other pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
+		{"gh --repo= before pr", withPR("gh --repo=acme/other pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
+		{"gh -Rx before pr", withPR("gh -Racme/other pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
+		{"gh flag value named pr", withPR("gh -R pr pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef}, //nolint:dupword // the flag value "pr" is the point
+		{"pushd then pr merge", withPR("pushd ../other && gh pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
+		{"checkout then pr merge", withPR("git checkout other && gh pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
+		{"gh pr checkout then pr merge", withPR("gh pr checkout 7 && gh pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
+		{"env GH_REPO pr merge", withPR("env GH_REPO=acme/other gh pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
+		{"export GH_HOST then pr merge", withPR("export GH_HOST=ghe.example.com && gh pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
+		// GH_REPO in the description lines is no assignment.
+		{"GH_REPO in the description", withPR("gh pr merge 12\n# merges it; GH_REPO stays unset", map[int]string{12: "feature/watchman"}), ""},
+		{"gh -R before pr comment", bash("gh -R acme/other pr comment 3 -b hi"), LimitOutward},
 		{"tag and push", bash("git tag v1 && git push --tags"), LimitTag},
 		{"tag list", bash("git tag -l"), ""},
 		{"release create", bash("gh release create v1"), LimitRelease},
@@ -427,4 +440,22 @@ func TestParkedBy_StartDirPlacesOnly(t *testing.T) {
 	l, parked = ParkedBy(ask("cd /tmp && git reset --hard HEAD~1"))
 	require.True(t, parked)
 	require.Equal(t, LimitResetShared, l)
+}
+
+func TestBranchDependent(t *testing.T) {
+	for cmd, want := range map[string]bool{
+		"go test ./...":                  false,
+		"git status && git diff":         false,
+		"rm -rf build":                   false,
+		"gh pr view 12":                  false,
+		"git reset --hard HEAD~1":        true,
+		"git -C ../x branch -f feat":     true,
+		"go vet && git push origin feat": true,
+		"git update-ref HEAD abc":        true,
+		"git checkout -B feat":           true,
+		"gh -R acme/x pr merge 12":       true,
+	} {
+		require.Equal(t, want, BranchDependent(bash(cmd)), cmd)
+	}
+	require.False(t, BranchDependent(PermissionAsk{Tool: "Edit", Summary: "git reset --hard"}))
 }

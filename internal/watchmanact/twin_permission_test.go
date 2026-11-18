@@ -17,16 +17,19 @@ import (
 
 // permRun is the fake git and gh of a permission's live reads: the
 // session's branch by call (branches[n] for the nth read, the last
-// repeated); the base of the current branch's PR (headBase, "" = no PR:
-// gh fails); each numbered PR's base by call (bases[n] for the nth
-// `gh pr view <n>`, the last repeated); the open PRs on the current branch
-// (onTop); ghErr fails every gh call.
+// repeated); the base of the current branch's PR (headBase, "" = no PR,
+// gh's own answer; ownErr fails that lookup); each numbered PR's base by
+// call (bases[n] for the nth `gh pr view <n>`, the last repeated); the open
+// PRs on the current branch (onTop; topErr fails that lookup); ghErr fails
+// every gh call.
 type permRun struct {
 	mu       sync.Mutex
 	branches []string
 	headBase string
+	ownErr   error
 	bases    []string
 	onTop    int
+	topErr   error
 	ghErr    error
 	calls    []string
 	nBranch  int
@@ -47,8 +50,14 @@ func (r *permRun) run(_ context.Context, dir, name string, args ...string) ([]by
 	case r.ghErr != nil:
 		return nil, r.ghErr
 	case strings.HasPrefix(line, "pr list"):
+		if r.topErr != nil {
+			return nil, r.topErr
+		}
 		return []byte(`[` + strings.Repeat(`{"number":7}`, min(r.onTop, 1)) + `]`), nil
 	case strings.HasPrefix(line, "pr view --json"):
+		if r.ownErr != nil {
+			return nil, r.ownErr
+		}
 		if r.headBase == "" {
 			return nil, errors.New("no pull requests found for branch")
 		}
@@ -189,14 +198,9 @@ func TestTwin_PermissionAllowWritesDecidedByWatchman(t *testing.T) {
 	if len(e.labelled) != 0 {
 		t.Fatal("a permission went through the ask-text label call")
 	}
-	// Read before the model and again before the allow is written.
-	want := []string{
-		"/tmp/acme: git rev-parse --abbrev-ref HEAD",
-		"/tmp/acme: gh pr view --json baseRefName --jq .baseRefName",
-		"/tmp/acme: gh pr list --base feature/x --state open --limit 1 --json number",
-	}
-	if strings.Join(run.calls, "|") != strings.Join(append(want, want...), "|") {
-		t.Fatalf("live reads = %q, want %q twice", run.calls, want)
+	// No branch-dependent row can hit a test run: no git, no gh.
+	if len(run.calls) != 0 {
+		t.Fatalf("live reads = %q, want none", run.calls)
 	}
 }
 
@@ -442,8 +446,16 @@ func TestTwin_PermissionSharedBranchesReadLive(t *testing.T) {
 			&permRun{branches: []string{"feature/x"}, headBase: "feature/watchman"}, false},
 		{"reset on a branch others build on", "git reset --hard HEAD~1",
 			&permRun{branches: []string{"feature/x"}, headBase: "feature/watchman", onTop: 1}, true},
-		{"reset with no PR to read", "git reset --hard HEAD~1",
-			&permRun{branches: []string{"feature/x"}}, true},
+		{"reset on a branch with no PR", "git reset --hard HEAD~1",
+			&permRun{branches: []string{"feature/x"}}, false},
+		{"reset when the own-PR lookup fails", "git reset --hard HEAD~1",
+			&permRun{branches: []string{"feature/x"}, ownErr: errors.New("gh: network down")}, true},
+		{"reset when the downstream lookup fails", "git reset --hard HEAD~1",
+			&permRun{branches: []string{"feature/x"}, headBase: "main", topErr: errors.New("gh: network down")}, true},
+		{"umbrella with no PR of its own but one on top", "git reset --hard",
+			&permRun{branches: []string{"feature/x"}, onTop: 1}, true},
+		{"one on top while the own-PR lookup fails", "git reset --hard",
+			&permRun{branches: []string{"feature/x"}, ownErr: errors.New("gh: network down"), onTop: 1}, true},
 		{"reset of the working tree only, no PR", "git reset --hard",
 			&permRun{branches: []string{"feature/x"}}, false},
 	}
@@ -510,4 +522,27 @@ func TestTwin_PermissionAllowRereadsOwnerLimits(t *testing.T) {
 		t.Fatalf("park reason = %q", it.ParkReason)
 	}
 	e.wantPermission(reqID, db.PermissionDenied, askanswer.ByWatchman)
+}
+
+// A branch-dependent command reads the branch and both gh lookups in the
+// session folder, before the model and again before the allow is written.
+func TestTwin_PermissionLiveReadsForBranchCommands(t *testing.T) {
+	e := newTwinEnv(t)
+	run := &permRun{branches: []string{"feature/x"}, headBase: "feature/watchman"}
+	e.withPermRun(run)
+	e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
+		return permDecision(PermissionAllow), nil
+	}
+	reqID, itemID := e.permission("Bash", "git push origin feature/x", false)
+	e.run()
+	wantOutcome(t, e.item(itemID), OutcomeAnswered)
+	e.wantPermission(reqID, db.PermissionAllowed, askanswer.ByWatchman)
+	want := []string{
+		"/tmp/acme: git rev-parse --abbrev-ref HEAD",
+		"/tmp/acme: gh pr view --json baseRefName --jq .baseRefName",
+		"/tmp/acme: gh pr list --base feature/x --state open --limit 1 --json number",
+	}
+	if strings.Join(run.calls, "|") != strings.Join(append(want, want...), "|") {
+		t.Fatalf("live reads = %q, want %q twice", run.calls, want)
+	}
 }
