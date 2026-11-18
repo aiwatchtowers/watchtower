@@ -28,8 +28,7 @@ import (
 
 // The feed's caps (iPhone chat spec §4.6).
 const (
-	MaxMessageText     = 40_000
-	maxActionArgsBytes = 4000
+	MaxMessageText = 40_000
 	// maxResultValueBytes caps each result value the approval card shows.
 	maxResultValueBytes = 512
 	// maxLabel caps titles, names and error messages (SliceClip's 200).

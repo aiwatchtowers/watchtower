@@ -183,3 +183,21 @@ func TestChatActionAnswer_RetryRacesTheInboxRetry(t *testing.T) {
 		t.Fatalf("status %q", got)
 	}
 }
+
+// TestChatActionAnswer_RetryWhileTheHubStopsRunsNothing: a Retry the stopping
+// hub cannot start answers "stopping" (nothing on disk, the row still
+// failed), never applied.
+func TestChatActionAnswer_RetryWhileTheHubStopsRunsNothing(t *testing.T) {
+	c := newChatEnv(t, false)
+	c.h.d.Chat.Spawn = func(func()) bool { return false }
+	id := c.failedChatAction("fake_send", "jira: 503")
+	out := c.run("chat_action_answer", c.answer(id, "retry"))
+	wantOutcome(t, out, wire.StatusFailed, reasonNotSupported)
+	if out.Message != chatHubStoppingMessage {
+		t.Fatalf("message %q", out.Message)
+	}
+	c.h.WaitChat()
+	if got := c.scalar(`SELECT status FROM agent_actions WHERE id = ?`, id); got != "failed" {
+		t.Fatalf("status %q", got)
+	}
+}

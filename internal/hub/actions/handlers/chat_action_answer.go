@@ -97,7 +97,11 @@ func (h *Handlers) chatActionAnswer(ctx context.Context, r actions.Request) acti
 			return h.chatActionSettled(id)
 		}
 		if t, known := reg.Get(row.Tool); !known || !t.AppliedBySession {
-			h.chatApply(reg, id)
+			if !h.chatApply(reg, id) {
+				// The approval is on disk; `watchtower actions apply` or the
+				// Mac's Retry runs it.
+				log.Printf("hub chat: action %d approved while the hub stops: not run", id)
+			}
 		}
 		return applied(map[string]any{"status": "approved"})
 	})
@@ -109,18 +113,14 @@ func validChatDecision(d string) bool {
 }
 
 // chatApply runs approved (or retried) action id after the answer: the run
-// is the registry's (its outcome reaches the phone through the feed).
-func (h *Handlers) chatApply(reg *tools.Registry, id int64) {
-	started := h.chatAsync("chat_action_apply", func(ctx context.Context) {
+// is the registry's (its outcome reaches the phone through the feed). False:
+// the hub is stopping and nothing started.
+func (h *Handlers) chatApply(reg *tools.Registry, id int64) bool {
+	return h.chatAsync("chat_action_apply", func(ctx context.Context) {
 		if _, err := reg.Apply(ctx, id); err != nil {
 			log.Printf("hub chat: action %d approved, its run failed (%s)", id, errClass(err))
 		}
 	})
-	if !started {
-		// The approval is on disk; `watchtower actions apply` or the Mac's
-		// Retry runs it.
-		log.Printf("hub chat: action %d approved while the hub stops: not run", id)
-	}
 }
 
 // chatActionRetry is the retry decision: inbox.act's retry rule
@@ -136,7 +136,11 @@ func (h *Handlers) chatActionRetry(reg *tools.Registry, id int64, now time.Time)
 		o.Result = map[string]any{"status": row.Status, "already": res.Already}
 		return o
 	}
-	h.chatApply(reg, id)
+	if !h.chatApply(reg, id) {
+		// Unlike an approve, nothing is on disk: the row stays as it was, so
+		// the phone may press Retry again once the hub is back.
+		return failed(reasonNotSupported, chatHubStoppingMessage)
+	}
 	return applied(map[string]any{"status": "approved"})
 }
 

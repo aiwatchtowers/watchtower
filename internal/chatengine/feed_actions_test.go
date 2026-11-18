@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/tools"
 )
 
 // feedActionOf reads conv's feed with one assistant message of turn "t1" and
@@ -84,7 +85,7 @@ func TestChatengine_FeedActionResultKeepsOnlyCardKeys(t *testing.T) {
 // TestChatengine_FeedActionArgsCompleteFalseWhenClipped: args past the
 // display cap reach the phone clipped, so the card offers no editor.
 func TestChatengine_FeedActionArgsCompleteFalseWhenClipped(t *testing.T) {
-	big := feedActionOf(t, 1, "", "", `{"text":"`+strings.Repeat("a", maxActionArgsBytes)+`"}`)
+	big := feedActionOf(t, 1, "", "", `{"text":"`+strings.Repeat("a", tools.MaxArgsDisplay)+`"}`)
 	assert.False(t, big.ArgsComplete)
 	small := feedActionOf(t, 1, "", "", `{"text":"hi"}`)
 	assert.True(t, small.ArgsComplete)

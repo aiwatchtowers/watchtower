@@ -1038,9 +1038,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"name\": \"Morning digest\",\n  \"slug\": \"morning-digest\",\n  \"trigger_kind\": \"schedule\",\n  \"trigger_spec\": {\n    \"schedule\": \"0 9 * * 1-5\"\n  },\n  \"permissions\": [\n    \"slack:read@*\",\n    \"llm:light\",\n    \"targets:write\"\n  ],\n  \"is_new\": true,\n  \"recipe_text\": \"---\\nname: Morning digest\\n---\\n\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         }
       ]
@@ -2372,9 +2370,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Old\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -2413,9 +2409,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Shipping\",\n  \"target\": {\n    \"label\": \"#eng\",\n    \"workspace\": \"acme\"\n  }\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -2475,9 +2469,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Fix the build\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -2557,9 +2549,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Running\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         }
       ]
@@ -2645,9 +2635,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Fix\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         }
       ]
@@ -2732,9 +2720,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Fix\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -2773,9 +2759,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Late\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         }
       ]
@@ -3058,9 +3042,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Fix\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -3209,9 +3191,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Old proposal\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -3604,9 +3584,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         }
       ]
@@ -4653,9 +4631,7 @@
             "disclosure": "Show the whole recipe (2 lines)",
             "recipe_text": "a\nb\n",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"name\": \"Digest\",\n  \"slug\": \"digest\",\n  \"is_new\": true,\n  \"recipe_text\": \"a\\nb\\n\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -4694,9 +4670,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Task 4\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -4735,9 +4709,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Task 1\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -4776,9 +4748,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Task 2\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -4817,9 +4787,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Task 3\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         }
       ]
@@ -5150,9 +5118,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         }
       ]
@@ -5275,8 +5241,6 @@
             "recipe_text": "",
             "diff": [],
             "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true,
             "external": true
           }
         }
@@ -5400,9 +5364,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -5854,9 +5816,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -8574,9 +8534,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -9151,9 +9109,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         }
       ]
@@ -9247,9 +9203,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         }
       ]
@@ -9333,9 +9287,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -9374,9 +9326,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         }
       ]
@@ -9457,9 +9407,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         }
       ]
@@ -9900,9 +9848,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Ship it\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         }
       ]
@@ -10124,9 +10070,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         }
       ]
@@ -10207,9 +10151,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         }
       ]
@@ -10570,8 +10512,6 @@
             "recipe_text": "",
             "diff": [],
             "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true,
             "external": true
           }
         }
@@ -10943,8 +10883,6 @@
                 "recipe_text": "",
                 "diff": [],
                 "recipe_clipped": false,
-                "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-                "args_complete": true,
                 "external": true
               }
             }
@@ -12175,9 +12113,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -12216,9 +12152,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -13115,9 +13049,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         }
       ]
@@ -14120,9 +14052,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Call colleague A\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -14161,9 +14091,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Call colleague A\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -14202,9 +14130,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"project_key\": \"ACME\",\n  \"issue_type\": \"Task\",\n  \"summary\": \"Fix the link\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -14243,9 +14169,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -14284,9 +14208,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"path\": \"a.md\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -14325,9 +14247,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"server\": \"claude.ai Gmail\",\n  \"tool\": \"send\",\n  \"input\": {\n    \"to\": \"a@example.com\"\n  }\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -14366,9 +14286,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"server\": \"claude.ai Gmail\",\n  \"tool\": \"send\",\n  \"input\": {\n    \"to\": \"a@example.com\"\n  }\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -14407,9 +14325,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"On it\",\n  \"candidates\": [\n    {\n      \"account_id\": 1,\n      \"workspace\": \"acme\",\n      \"label\": \"#general\"\n    },\n    {\n      \"account_id\": 2,\n      \"workspace\": \"acme-eu\",\n      \"label\": \"#general\"\n    }\n  ]\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -14448,9 +14364,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"On it\",\n  \"target\": {\n    \"account_id\": 1,\n    \"workspace\": \"acme\",\n    \"label\": \"#general\"\n  }\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -14489,9 +14403,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         }
       ]
@@ -14573,9 +14485,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -14614,9 +14524,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         }
       ]
@@ -14817,9 +14725,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Sign off\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -14858,9 +14764,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Sign off\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         }
       ]
@@ -14980,9 +14884,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Sign off\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         }
       ]
@@ -15063,9 +14965,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         }
       ]
@@ -15175,9 +15075,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         }
       ]
@@ -15276,9 +15174,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Sign off\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -15778,8 +15674,6 @@
             "recipe_text": "",
             "diff": [],
             "recipe_clipped": false,
-            "args_display": "{\n  \"team\": \"ACME\",\n  \"title\": \"Rollback plan for 2.0\"\n}",
-            "args_complete": true,
             "external": true
           }
         }
@@ -15945,8 +15839,6 @@
             "recipe_text": "",
             "diff": [],
             "recipe_clipped": false,
-            "args_display": "{\n  \"team\": \"ACME\",\n  \"title\": \"Rollback plan for 2.0\"\n}",
-            "args_complete": true,
             "external": true
           }
         },
@@ -15987,8 +15879,6 @@
             "recipe_text": "",
             "diff": [],
             "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Release 2.0 is tagged; checklist in the thread.\",\n  \"target\": {\n    \"account_id\": 1,\n    \"workspace\": \"acme\",\n    \"channel_id\": \"C1\",\n    \"label\": \"#acme-release\"\n  }\n}",
-            "args_complete": true,
             "external": true
           }
         },
@@ -16050,8 +15940,6 @@
             "recipe_text": "",
             "diff": [],
             "recipe_clipped": false,
-            "args_display": "{\n  \"project_key\": \"ACME\",\n  \"issue_type\": \"Bug\",\n  \"summary\": \"Checklist link broken on the release page\"\n}",
-            "args_complete": true,
             "external": true
           }
         }
@@ -16179,8 +16067,6 @@
             "recipe_text": "",
             "diff": [],
             "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Release 2.0 is tagged; checklist in the thread.\",\n  \"target\": {\n    \"account_id\": 1,\n    \"workspace\": \"acme\",\n    \"channel_id\": \"C1\",\n    \"label\": \"#acme-release\"\n  }\n}",
-            "args_complete": true,
             "external": true
           }
         },
@@ -16221,8 +16107,6 @@
             "recipe_text": "",
             "diff": [],
             "recipe_clipped": false,
-            "args_display": "{\n  \"project_key\": \"ACME\",\n  \"issue_type\": \"Bug\",\n  \"summary\": \"Checklist link broken on the release page\"\n}",
-            "args_complete": true,
             "external": true
           }
         }
@@ -16353,8 +16237,6 @@
             "recipe_text": "",
             "diff": [],
             "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Release 2.0 is tagged; checklist in the thread.\",\n  \"target\": {\n    \"account_id\": 1,\n    \"workspace\": \"acme\",\n    \"channel_id\": \"C1\",\n    \"label\": \"#acme-release\"\n  }\n}",
-            "args_complete": true,
             "external": true
           }
         },
@@ -16395,8 +16277,6 @@
             "recipe_text": "",
             "diff": [],
             "recipe_clipped": false,
-            "args_display": "{\n  \"project_key\": \"ACME\",\n  \"issue_type\": \"Bug\",\n  \"summary\": \"Checklist link broken on the release page\"\n}",
-            "args_complete": true,
             "external": true
           }
         }
@@ -16609,8 +16489,6 @@
             "recipe_text": "",
             "diff": [],
             "recipe_clipped": false,
-            "args_display": "{\n  \"project_key\": \"ACME\",\n  \"issue_type\": \"Bug\",\n  \"summary\": \"Checklist link broken on the release page\"\n}",
-            "args_complete": true,
             "external": true
           }
         }
@@ -16802,8 +16680,6 @@
             "recipe_text": "",
             "diff": [],
             "recipe_clipped": false,
-            "args_display": "{\n  \"project_key\": \"ACME\",\n  \"issue_type\": \"Bug\",\n  \"summary\": \"Checklist link broken on the release page\"\n}",
-            "args_complete": true,
             "external": true
           }
         }
@@ -17052,8 +16928,6 @@
             "recipe_text": "",
             "diff": [],
             "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Release 2.0 is tagged; checklist in the thread.\",\n  \"target\": {\n    \"account_id\": 1,\n    \"workspace\": \"acme\",\n    \"channel_id\": \"C1\",\n    \"label\": \"#acme-release\"\n  }\n}",
-            "args_complete": true,
             "external": true
           }
         },
@@ -17094,8 +16968,6 @@
             "recipe_text": "",
             "diff": [],
             "recipe_clipped": false,
-            "args_display": "{\n  \"project_key\": \"ACME\",\n  \"issue_type\": \"Bug\",\n  \"summary\": \"Checklist link broken on the release page\"\n}",
-            "args_complete": true,
             "external": true
           }
         }
@@ -17223,8 +17095,6 @@
             "recipe_text": "",
             "diff": [],
             "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Release 2.0 is tagged; checklist in the thread.\",\n  \"target\": {\n    \"account_id\": 1,\n    \"workspace\": \"acme\",\n    \"channel_id\": \"C1\",\n    \"label\": \"#acme-release\"\n  }\n}",
-            "args_complete": true,
             "external": true
           }
         },
@@ -17265,8 +17135,6 @@
             "recipe_text": "",
             "diff": [],
             "recipe_clipped": false,
-            "args_display": "{\n  \"project_key\": \"ACME\",\n  \"issue_type\": \"Bug\",\n  \"summary\": \"Checklist link broken on the release page\"\n}",
-            "args_complete": true,
             "external": true
           }
         }
@@ -17635,9 +17503,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -17676,9 +17542,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
@@ -17717,9 +17581,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         }
       ]
@@ -18066,9 +17928,7 @@
                 "disclosure": "",
                 "recipe_text": "",
                 "diff": [],
-                "recipe_clipped": false,
-                "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-                "args_complete": true
+                "recipe_clipped": false
               }
             },
             {
@@ -18107,9 +17967,7 @@
                 "disclosure": "",
                 "recipe_text": "",
                 "diff": [],
-                "recipe_clipped": false,
-                "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-                "args_complete": true
+                "recipe_clipped": false
               }
             },
             {
@@ -18148,9 +18006,7 @@
                 "disclosure": "",
                 "recipe_text": "",
                 "diff": [],
-                "recipe_clipped": false,
-                "args_display": "{\n  \"text\": \"Call Vasya\",\n  \"reason\": \"r\"\n}",
-                "args_complete": true
+                "recipe_clipped": false
               }
             }
           ]
@@ -18413,9 +18269,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"path\": \"/acme/automations/mail-digest.md\",\n  \"name\": \"Morning mail digest\",\n  \"slug\": \"mail-digest\",\n  \"is_new\": true,\n  \"trigger_kind\": \"schedule\",\n  \"trigger_spec\": {\n    \"schedule\": \"0 9 * * 1-5\"\n  },\n  \"permissions\": [\n    \"gmail:read@work\",\n    \"llm:light\",\n    \"slack:read@acme\",\n    \"inbox:reply\"\n  ],\n  \"outputs\": [\n    \"inbox\"\n  ],\n  \"recipe_text\": \"---\\nname: Morning mail digest\\n---\\n\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         }
       ]
@@ -18637,9 +18491,7 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false,
-            "args_display": "{\n  \"text\": \"Send the weekly report to acme leads\"\n}",
-            "args_complete": true
+            "recipe_clipped": false
           }
         },
         {
