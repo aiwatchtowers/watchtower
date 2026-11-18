@@ -175,6 +175,9 @@ func readDraft(path string) (Draft, error) {
 	if !fi.Mode().IsRegular() {
 		return Draft{}, fmt.Errorf("%w: not a regular file", errDraftDamaged)
 	}
+	if fi.Size() > maxFileBytes {
+		return Draft{}, fmt.Errorf("%w: file too large", errDraftDamaged)
+	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return Draft{}, err
@@ -467,7 +470,10 @@ func CheckHash(vendor string, d Draft) string {
 	if vals == nil {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(strings.Join(append([]string{vendor}, vals...), "\x00")))
+	// A JSON array keeps the values apart whatever they contain; a
+	// []string always encodes.
+	raw, _ := json.Marshal(append([]string{vendor}, vals...))
+	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
 }
 

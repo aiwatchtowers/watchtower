@@ -3,6 +3,7 @@ package company
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -121,8 +122,9 @@ func TestCompanyDraft_CorruptRenamed(t *testing.T) {
 	assert.Equal(t, DraftUnreadable, state)
 	assert.Equal(t, bad, again)
 
-	// An unknown service, a null and trailing data are unreadable too.
-	for i, raw := range []string{`{"company":"Acme","services":["notion"],"step":""}`, `null`, `{"company":"Acme"}]`} {
+	// An unknown service, a null, trailing data and an oversized file are
+	// unreadable too.
+	for i, raw := range []string{`{"company":"Acme","services":["notion"],"step":""}`, `null`, `{"company":"Acme"}]`, "{" + strings.Repeat(" ", maxFileBytes) + "}"} {
 		writeRawDraft(t, s, raw)
 		_, state, _, err = s.LoadDraft(draftT0.Add(time.Duration(i+2) * time.Hour))
 		require.NoError(t, err)
