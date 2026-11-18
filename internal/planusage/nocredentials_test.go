@@ -28,6 +28,11 @@ var credentialMarkers = []string{
 // testdata, node_modules or vendor, or starting with ".", are skipped (nested
 // worktrees live under .claude/worktrees, build output under .build).
 func credentialMarkerHits(root string, dirs []string) ([]string, error) {
+	fsRoot, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = fsRoot.Close() }()
 	var hits []string
 	for _, dir := range dirs {
 		start := filepath.Join(root, dir)
@@ -49,11 +54,11 @@ func credentialMarkerHits(root string, dirs []string) ([]string, error) {
 			if !goSource && !strings.HasSuffix(name, ".swift") {
 				return nil
 			}
-			b, err := os.ReadFile(path)
+			rel, err := filepath.Rel(root, path)
 			if err != nil {
 				return err
 			}
-			rel, err := filepath.Rel(root, path)
+			b, err := fsRoot.ReadFile(rel)
 			if err != nil {
 				return err
 			}
