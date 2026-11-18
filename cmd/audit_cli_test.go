@@ -357,6 +357,7 @@ var cliNoContentCommands = map[string]bool{
 	"people generate":                  true,
 	"people include":                   true, // prints the person's id only
 	"policy show":                      true, // the organization policy: settings, no company content
+	"policy keys":                      true, // the MDM key reference: static docs, no company content
 	"profile":                          true,
 	"project":                          true,
 	"prompts history":                  true,
