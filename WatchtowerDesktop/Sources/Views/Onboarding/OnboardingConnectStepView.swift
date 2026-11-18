@@ -30,6 +30,13 @@ struct OnboardingConnectStepView: View {
         current ?? (flowShowsSheet ? .slackConnect : nil)
     }
 
+    /// The Slack sheet itself closed (swipe, Esc, Skip): its finished flow
+    /// is dismissed as **Done**/**Close** would, so the result does not
+    /// reopen. Any other sheet closing retries a queued link instead.
+    static func closingDismissesFlow(from old: Sheet?, to new: Sheet?) -> Bool {
+        old == .slackConnect && new == nil
+    }
+
     /// The card's choice after its flags read: a sheet that opened meanwhile
     /// (a link's confirm) stays.
     static func sheet(_ current: Sheet?, afterFlagsRead chosen: Sheet) -> Sheet {
@@ -154,7 +161,13 @@ struct OnboardingConnectStepView: View {
             showFlowSheetIfNeeded() // a link that arrived on an earlier step
         }
         .onChange(of: appState.slackConnectFlow?.showsSheet) { _, _ in showFlowSheetIfNeeded() }
-        .onChange(of: sheet) { _, _ in showFlowSheetIfNeeded() }
+        .onChange(of: sheet) { old, new in
+            if Self.closingDismissesFlow(from: old, to: new) {
+                appState.slackConnectFlow?.dismiss() // only a connected or failed flow; a running one cannot close
+            } else {
+                showFlowSheetIfNeeded()
+            }
+        }
     }
 
     /// Reads the flags first when no read has succeeded yet, then picks the sheet.

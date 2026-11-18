@@ -1,6 +1,7 @@
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerTestSupport
 
 /// The Connect step opens the Settings sheets and removes accounts without
 /// restarting the daemon mid-setup.
@@ -57,5 +58,25 @@ final class OnboardingConnectStepTests: XCTestCase {
         typealias View = OnboardingConnectStepView
         XCTAssertEqual(View.sheet(.slackConnect, afterFlagsRead: .slack), .slackConnect)
         XCTAssertEqual(View.sheet(nil, afterFlagsRead: .slack), .slack)
+    }
+
+    /// Fix round 3: closing the Slack sheet over a finished flow dismisses
+    /// the flow (no reopen of the same result); another sheet closing
+    /// retries a queued link instead.
+    func testClosingTheSlackSheetDismissesItsFinishedFlow() {
+        typealias View = OnboardingConnectStepView
+        XCTAssertTrue(View.closingDismissesFlow(from: .slackConnect, to: nil))
+        XCTAssertFalse(View.closingDismissesFlow(from: .google, to: nil), "a different sheet: retry the queued link")
+        XCTAssertFalse(View.closingDismissesFlow(from: nil, to: .slackConnect))
+
+        let host = SlackConnectListenerHost(streamer: FakeCLILineStream())
+        let flow = SlackConnectFlowModel(host: host)
+        host.onEvent?(.link(flow: "f1", teamID: "T0ACME", clientID: "1111.2222"))
+        flow.confirm()
+        host.onEvent?(.failed(flow: "f1", reason: .denied, message: ""))
+        XCTAssertTrue(flow.showsSheet, "a failed result")
+        flow.dismiss() // what the close does
+        XCTAssertFalse(flow.showsSheet)
+        XCTAssertNil(View.sheet(nil, flowShowsSheet: flow.showsSheet), "the result does not reopen")
     }
 }
