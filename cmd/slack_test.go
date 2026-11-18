@@ -136,6 +136,9 @@ func TestConnectSlackAccount_RecordsGrantedScope(t *testing.T) {
 // A connect records the client id the sign-in went through, so the shared-app
 // rule (and the Full move) can tell which Slack app an account is on.
 func TestConnectSlackAccount_WritesClientID(t *testing.T) {
+	// The row is on the build's own app, so a sign-in through the build's
+	// app may re-consent it (slackBuiltinSignInRefusal).
+	setSlackBuild(t, "111.222", "test-secret", "")
 	stubSlackIdentityServer(t, "U0OWNER", "T0TEAM", "Acme Corp", "acme")
 	t.Setenv("HOME", t.TempDir())
 	cfg := &config.Config{ActiveWorkspace: "test"}

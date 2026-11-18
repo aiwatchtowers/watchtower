@@ -168,6 +168,12 @@ func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.D
 	if err := refuseLoginDuringPurge(database, "slack", id); err != nil {
 		return slackIdentity{}, err
 	}
+	if !isNewRow {
+		// Before any write; checked again under the token lock below.
+		if err := refuseSlackBuiltinSignIn(database, id, clientID); err != nil {
+			return slackIdentity{}, err
+		}
+	}
 	// First of the writes, so a failure leaves the row moved and the next
 	// sign-in tries again; once the row is home, nothing would.
 	if moved {
@@ -189,6 +195,12 @@ func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.D
 	// never sees one without the other.
 	store := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), id)
 	err = withSlackTokenLock(ctx, store, func() error {
+		if !isNewRow {
+			// A connect flow may have moved the row to a company app since.
+			if err := refuseSlackBuiltinSignIn(database, id, clientID); err != nil {
+				return err
+			}
+		}
 		if err := store.Save(&watchtowerslack.Token{
 			AccessToken: accessToken,
 			TeamID:      identity.TeamID,
@@ -231,6 +243,18 @@ func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.D
 			"workspace; the Slack app's user scopes (or the workspace admin) must allow it first\n", watchtowerslack.SendScope)
 	}
 	return identity, nil
+}
+
+// refuseSlackBuiltinSignIn is slackBuiltinSignInRefusal on account id's
+// current row: a sign-in through the build's app (`auth login`, `slack
+// login` on its builtin route) never replaces a company app's token, whichever
+// row it resolved to (review verify round 1).
+func refuseSlackBuiltinSignIn(database *db.DB, id int64, clientID string) error {
+	acct, err := database.GetSlackAccount(id)
+	if err != nil {
+		return err
+	}
+	return slackBuiltinSignInRefusal(acct, clientID)
 }
 
 // recordSlackClientID writes clientID onto account id's row in one statement

@@ -707,7 +707,15 @@ package final class SlackAppSetupModel {
         if let streamer {
             do {
                 for try await text in streamer.lines(args: args, stdin: stdin) {
-                    guard let data = text.data(using: .utf8), let line = try? JSONDecoder().decode(Line.self, from: data) else {
+                    guard let data = text.data(using: .utf8) else { continue }
+                    guard let line = try? JSONDecoder().decode(Line.self, from: data) else {
+                        // A line with a `result` key whose fields have the
+                        // wrong types is still the run's answer (verify round 1).
+                        if Self.hasResultKey(data) {
+                            print("[SlackAppSetup] unreadable result line: \(text)")
+                            result = nil
+                            unreadable = true
+                        }
                         continue
                     }
                     if let step = line.step, let state = line.state {
@@ -741,6 +749,12 @@ package final class SlackAppSetupModel {
             phase = .finished(.problem(unreadable ? .unreadableAnswer : .stopped(failure ?? Self.noAnswer)))
         }
         return nil
+    }
+
+    /// Whether `data` is a JSON object with a `result` key, whatever its type.
+    private static func hasResultKey(_ data: Data) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        return object["result"] != nil
     }
 
     private static func mark(_ state: String) -> StepMark {

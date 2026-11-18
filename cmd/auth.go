@@ -297,16 +297,27 @@ func refuseAuthLoginOffBuiltinApp(configPath string) error {
 	if err != nil {
 		return fmt.Errorf("reading slack account 1: %w", err)
 	}
-	if acct.Status == "removed" {
+	return slackBuiltinSignInRefusal(acct, slackBuiltinClientID())
+}
+
+// slackBuiltinSignInRefusal refuses a sign-in through the build's app
+// (auth.Login, client id signInClientID) onto acct when acct is on another
+// app it must sign in again through (slackmode.Relogin connect or move):
+// saving the build's token would overwrite that app's client id and
+// rotating token. A removed row, or one with no client id yet, is open.
+// The auth login preflight and connectSlackAccount (under the token lock,
+// on the account it actually writes) both apply it.
+func slackBuiltinSignInRefusal(acct db.SlackAccount, signInClientID string) error {
+	if acct.Status == "removed" || acct.ClientID == "" || acct.ClientID == signInClientID {
 		return nil
 	}
 	switch slackmode.Relogin(acct, auth.RetiredSharedClientID, slackBuiltinClientID()) {
 	case slackmode.ReloginConnect:
-		return errors.New("slack account 1 signs in through its workspace's own Slack app; " +
-			"run `watchtower slack login --account 1` instead")
+		return fmt.Errorf("slack account %d signs in through its workspace's own Slack app; "+
+			"run `watchtower slack login --account %d` instead", acct.ID, acct.ID)
 	case slackmode.ReloginMove:
-		return errors.New("slack account 1 is on the retired shared Slack app; move it to its workspace's own app " +
-			"with the link or code from that app (`watchtower slack connect --code ...` or Connections → Slack)")
+		return fmt.Errorf("slack account %d is on the retired shared Slack app; move it to its workspace's own app "+
+			"with the link or code from that app (`watchtower slack connect --code ...` or Connections → Slack)", acct.ID)
 	}
 	return nil
 }

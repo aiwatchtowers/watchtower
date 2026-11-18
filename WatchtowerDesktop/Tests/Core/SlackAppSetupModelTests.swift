@@ -398,6 +398,10 @@ final class SlackAppSetupModelTests: XCTestCase {
     /// A result line that does not decode is its own state, not "no answer"
     /// (review m3): the setup may have finished on Slack's side.
     func testUnreadableResultLine() async {
+        let typed = await problem(#"{"result":42}"#)
+        guard case .finished(.problem(.unreadableAnswer)) = typed.phase else {
+            return XCTFail("a wrongly typed result is unreadable, not no answer: \(typed.phase)")
+        }
         let model = await problem(#"{"result":"ok","link_written":"yes"}"#)
         guard case .finished(.problem(.unreadableAnswer)) = model.phase else { return XCTFail("\(model.phase)") }
         XCTAssertEqual(model.notice?.body, "Watchtower could not read the setup's answer, so it does not know how the "

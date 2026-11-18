@@ -320,3 +320,42 @@ func TestWireSlackSyncers_PassesTheTokenTeam(t *testing.T) {
 	require.NoError(t, herr)
 	assert.False(t, has, "nothing is synced for another team's token")
 }
+
+// A sign-in through the build's app never replaces the token of the row it
+// resolved to when that row is on a company app (connect) or the retired
+// shared app (move): whatever account `auth login` or `slack login` landed
+// on, the credential stays (verify round 1).
+func TestConnectSlackAccount_BuiltinSignInRefusedOnACompanyAppRow(t *testing.T) {
+	for _, tc := range []struct{ name, rowClient, want string }{
+		{name: "company app", rowClient: "4000.0004", want: "watchtower slack login --account 1"},
+		{name: "retired shared app", rowClient: "1000.0001", want: "retired shared Slack app"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setSlackBuild(t, "2000.0002", "test-secret", "1000.0001")
+			env := newTeamGuardEnv(t, "T_HOME", "Acme")
+			require.NoError(t, env.db.SetSlackAccountClientID(env.id, tc.rowClient))
+			stubSlackIdentityServer(t, "U_OWNER", "T_HOME", "Acme", "acme")
+
+			_, err := connectSlackAccount(context.Background(), env.cfg, env.db, env.id,
+				&auth.OAuthResult{AccessToken: "xoxp-builtin"}, false, "2000.0002", &bytes.Buffer{})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+			assert.Equal(t, "xoxp-old", env.token(t).AccessToken, "the credential is not replaced")
+			acct, err := env.db.GetSlackAccount(env.id)
+			require.NoError(t, err)
+			assert.Equal(t, tc.rowClient, acct.ClientID)
+		})
+	}
+}
+
+// The build's own app re-consenting its own row still works.
+func TestConnectSlackAccount_BuiltinSignInOnItsOwnRow(t *testing.T) {
+	setSlackBuild(t, "2000.0002", "test-secret", "1000.0001")
+	env := newTeamGuardEnv(t, "T_HOME", "Acme")
+	require.NoError(t, env.db.SetSlackAccountClientID(env.id, "2000.0002"))
+	stubSlackIdentityServer(t, "U_OWNER", "T_HOME", "Acme", "acme")
+	_, err := connectSlackAccount(context.Background(), env.cfg, env.db, env.id,
+		&auth.OAuthResult{AccessToken: "xoxp-builtin"}, false, "2000.0002", &bytes.Buffer{})
+	require.NoError(t, err)
+	assert.Equal(t, "xoxp-builtin", env.token(t).AccessToken)
+}

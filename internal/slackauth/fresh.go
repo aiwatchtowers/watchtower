@@ -223,8 +223,8 @@ func refreshedToken(tok *slack.Token, got Refreshed, clientID string, at time.Ti
 // access token has less than refreshAhead left, or the refresh token less
 // than refreshTokenAhead. An unknown (zero) expiry is never due, and neither
 // is one a refresh inside its window already left where it was (Slack kept
-// the token or stated no lifetime): refreshing again would call Slack on
-// every read until the expiry (review m1).
+// the token or stated no lifetime) until that expiry passes: refreshing
+// again would call Slack on every read until then (review m1).
 func refreshDue(tok *slack.Token, now time.Time) bool {
 	if tok.RefreshToken == "" {
 		return false
@@ -235,9 +235,15 @@ func refreshDue(tok *slack.Token, now time.Time) bool {
 
 // expiryDue reports whether expiry is within ahead of now and no refresh
 // already ran inside that window (refreshedAt at or after expiry-ahead).
+// The cooldown holds only while the token is still usable: at or past
+// expiry a refresh is always tried, so no reader is handed a token known to
+// be expired (verify round 1).
 func expiryDue(expiry time.Time, ahead time.Duration, refreshedAt, now time.Time) bool {
 	if expiry.IsZero() || expiry.Sub(now) >= ahead {
 		return false
+	}
+	if !now.Before(expiry) {
+		return true
 	}
 	return refreshedAt.Before(expiry.Add(-ahead))
 }
