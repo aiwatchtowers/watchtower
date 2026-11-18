@@ -251,7 +251,9 @@ package enum TerminalSessionQueries {
                        (SELECT COUNT(*) FROM owner_asks a
                         WHERE a.session_id = s.id AND a.status = 'open' AND \(open) AND a.kind = 'question') AS open_question_asks,
                        (SELECT COUNT(*) FROM owner_asks a
-                        WHERE a.session_id = s.id AND a.status = 'open' AND \(open) AND a.kind = 'review') AS open_review_asks
+                        WHERE a.session_id = s.id AND a.status = 'open' AND \(open) AND a.kind = 'review') AS open_review_asks,
+                       (SELECT COALESCE(MAX(sr.round), 0) FROM spec_reviews sr JOIN owner_asks a2 ON a2.id = sr.ask_id
+                        WHERE a2.session_id = s.id AND a2.status = 'open' AND sr.loop = 'author') AS spec_review_round
                 FROM terminal_sessions s
                 LEFT JOIN projects p ON p.id = s.project_id
                 WHERE s.delete_requested_at IS NULL

@@ -117,11 +117,13 @@ package enum SessionSwitcherPresentation {
             backgroundAgents: Int = 0,
             backgroundShells: Int = 0,
             openQuestionAsks: Int? = nil,
-            openReviewAsks: Int = 0
+            openReviewAsks: Int = 0,
+            specReviewRound: Int = 0
         ) -> Self {
             Self(kind: kind, live: true, openAsks: openAsks, error: error, oldestAskID: oldestAskID,
                  backgroundAgents: backgroundAgents, backgroundShells: backgroundShells,
-                 openQuestionAsks: openQuestionAsks, openReviewAsks: openReviewAsks)
+                 openQuestionAsks: openQuestionAsks, openReviewAsks: openReviewAsks,
+                 specReviewRound: specReviewRound)
         }
     }
 

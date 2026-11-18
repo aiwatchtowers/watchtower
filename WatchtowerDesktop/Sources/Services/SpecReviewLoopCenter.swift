@@ -126,7 +126,6 @@ extension WorkbenchCLI: SpecReviewRevealing {}
 ///   a held or queued line is tried again on the next poll;
 /// - when the session is not running, the loop ends (`spec-review reveal
 ///   --reason session_gone`, once per ask per run) and the owner gets the ask;
-/// - `progress` (session id → round) feeds the session row's line;
 /// - `hidden` lists the asks in a loop for the stack's **Show Now**, which
 ///   ends one at once (`reveal --reason owner`).
 ///
@@ -136,9 +135,6 @@ extension WorkbenchCLI: SpecReviewRevealing {}
 @Observable
 final class SpecReviewLoopCenter {
     nonisolated static let pollInterval: Duration = .seconds(3)
-
-    /// Session id → the round of its author loop.
-    private(set) var progress: [Int64: Int] = [:]
 
     /// Open asks hidden in their author loop.
     private(set) var hidden: [SpecReviewLoopQueries.HiddenLoop] = []
@@ -167,13 +163,6 @@ final class SpecReviewLoopCenter {
         self.pollInterval = pollInterval
     }
 
-    /// The session row's line, "Spec review: round 2". The loop runs while
-    /// the author's fixes hold (spec 2026-11-08 §1): its fuse is no target,
-    /// so no "of N".
-    nonisolated static func progressLine(round: Int) -> String {
-        "Spec review: round \(round)"
-    }
-
     func start() {
         guard pollTask == nil else { return }
         pollTask = Task { [weak self, pollInterval] in
@@ -190,17 +179,15 @@ final class SpecReviewLoopCenter {
         pollTask = nil
     }
 
-    /// One pass: re-reads progress and the pending rounds, then types each
+    /// One pass: re-reads the pending rounds, then types each
     /// round not typed yet. Not private: tests drive it.
     func poll() async {
         let pending: [SpecReviewLoopQueries.PendingRound]
         do {
-            let (rounds, latest, loops) = try await dbPool.read { db in
-                (try SpecReviewLoopQueries.pending(db), try SpecReviewLoopQueries.progress(db),
-                 try SpecReviewLoopQueries.hidden(db))
+            let (rounds, loops) = try await dbPool.read { db in
+                (try SpecReviewLoopQueries.pending(db), try SpecReviewLoopQueries.hidden(db))
             }
             failing = false
-            if latest != progress { progress = latest }
             if loops != hidden { hidden = loops }
             pending = rounds
         } catch {

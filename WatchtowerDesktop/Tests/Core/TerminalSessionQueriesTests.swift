@@ -177,6 +177,27 @@ final class TerminalSessionQueriesTests: XCTestCase {
         }
     }
 
+    func testFetchAgentStatesReadsTheHighestSpecLoopRound() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let project = try TestDatabase.insertWorkbench(db, name: "acme")
+            let s = try TerminalSessionQueries.create(db, claude(project))
+            let none = try TerminalSessionQueries.create(db, claude(project))
+            for round in [1, 3] {
+                let ask = try TestDatabase.insertOwnerAsk(db, projectID: project, sessionID: s.id, kind: "review",
+                                                          docPath: "docs/spec.md")
+                try db.execute(sql: """
+                    INSERT INTO spec_reviews (ask_id, status, queued_at, loop, round)
+                    VALUES (?, 'running', '2026-10-26T10:00:00Z', 'author', ?)
+                    """, arguments: [ask, round])
+            }
+            let rows = try TerminalSessionQueries.fetchAgentStates(db, liveIDs: [])
+            XCTAssertEqual(rows.first { $0.id == s.id }?.openAsks, 0, "loop asks are hidden")
+            XCTAssertEqual(rows.first { $0.id == s.id }?.specReviewRound, 3)
+            XCTAssertEqual(rows.first { $0.id == none.id }?.specReviewRound, 0)
+        }
+    }
+
     func testMirrorHasTerminalSessionsTable() throws {
         let queue = try TestDatabase.create()
         try queue.read { db in XCTAssertTrue(try db.tableExists("terminal_sessions")) }

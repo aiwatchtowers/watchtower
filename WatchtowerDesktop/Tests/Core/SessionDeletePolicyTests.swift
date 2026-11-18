@@ -22,6 +22,10 @@ final class SessionDeletePolicyTests: XCTestCase {
         )
     }
 
+    func testLiveSpecReviewIsNotQuick() {
+        XCTAssertFalse(isQuick(.specReview, live: true, workbench: true), "the agent still owes the loop an answer")
+    }
+
     /// PROJ-17: a live session whose agent may still be working is deleted
     /// only after a confirmation; one with no process, or an agent that is
     /// done, goes at once (with Undo). A standalone terminal keeps its dialog.
