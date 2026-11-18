@@ -497,7 +497,10 @@ const socketOpTimeout = 30 * time.Second
 // the outcome unknown: an op safe to run twice (resendable) is sent again
 // over HTTPS, any other returns client.ErrDisconnected —
 // transport.ErrUnavailable after MapError — and its caller's retry re-reads
-// before writing again. The caller's own ctx ending returns its error.
+// before writing again. The caller's own ctx ending returns its error. A
+// resendable op of a caller with a deadline waits on the socket at most half
+// of what the caller has left (socketBound), so a socket that never answers
+// still leaves the HTTPS resend its turn.
 func (t *Transport) send(ctx context.Context, req *relayv1.Request) (*relayv1.Response, error) {
 	t.mu.Lock()
 	conn := t.conn
@@ -508,7 +511,7 @@ func (t *Transport) send(ctx context.Context, req *relayv1.Request) (*relayv1.Re
 	if conn == nil {
 		return t.c.Do(ctx, req)
 	}
-	sctx, cancel := context.WithTimeout(ctx, socketOpTimeout)
+	sctx, cancel := context.WithTimeout(ctx, socketBound(ctx, req, time.Now()))
 	defer cancel()
 	resp, err := conn.Send(sctx, req)
 	unknown := errors.Is(err, client.ErrDisconnected) || (err != nil && sctx.Err() != nil)
@@ -525,6 +528,17 @@ func (t *Transport) send(ctx context.Context, req *relayv1.Request) (*relayv1.Re
 		return nil, fmt.Errorf("relay: no answer over the websocket: %w", client.ErrDisconnected)
 	}
 	return resp, err
+}
+
+// socketBound is how long req may wait for its answer over the socket:
+// socketOpTimeout, or for a resendable op half of what ctx's deadline
+// leaves at now when that is less — the other half is the HTTPS resend's.
+func socketBound(ctx context.Context, req *relayv1.Request, now time.Time) time.Duration {
+	deadline, ok := ctx.Deadline()
+	if !ok || !resendable(req) {
+		return socketOpTimeout
+	}
+	return min(socketOpTimeout, deadline.Sub(now)/2)
 }
 
 // resendable reports whether req is safe to run twice: a read, or a save or

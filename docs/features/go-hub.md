@@ -340,7 +340,10 @@ rulings asks #827, #881, #883). The hub leaves the test workspace for real data 
   (`changes`, `get_account_state`, `get_download`) and saves/deletes whose every item is conditional are sent again
   over HTTPS (a landed item comes back as a conflict on the hub's own record); any other op returns
   `transport.ErrUnavailable` and its caller's retry re-reads. An op unanswered for 30 s (`socketOpTimeout`, the HTTPS
-  client's timeout) is such an unknown outcome too. A ctx that expires while its frame is being written closes the
+  client's timeout) is such an unknown outcome too; a read or fully conditional write whose caller has a deadline
+  waits on the socket at most half of what is left of it (`socketBound`: the pump's account read, 30 s, gives the
+  socket 15 s), so a socket that never answers `get_account_state` still leaves the HTTPS resend its turn and
+  `SLOT_ADDED` goes out with a fresh account state. A ctx that expires while its frame is being written closes the
   whole socket (coder/websocket), so the live link reconnects and re-reads its zones. `ErrNotSent` comes from the
   relay's client (relay PR #10, `771a99e`; set only when no attempt of a `Send` was written). `relaytest` serves every WebSocket request as over HTTPS
   (`Requests` lists both; `Ops` marks the socket's `ws:<op>`), and `DropAfterNext(op)` cuts a socket after running
