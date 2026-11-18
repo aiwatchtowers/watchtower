@@ -230,6 +230,8 @@ Caption under the rows: "Each service opens its own sign-in page in your browser
 | After a valid link (the redirect to `/company/connected`) | `company-page-open` | "Continue in Watchtower" / "Watchtower is asking you to confirm Acme. You can close this tab." |
 | Refused bundle | `company-page-refused` | "This link does not work" / the reason / "Ask your admin for a fresh link, or paste the connect code in Watchtower → Connections." Reasons: "The link is damaged or cut short." (bad base64 or JSON, unknown field, wrong type), "The link is too long to be a Watchtower company link." (over the cap), "The link names a site that is not https." , "The link carries a personal Google project, which only this Mac can set." (`personal`) |
 | Unknown `v` | `company-page-newerVersion` | "This link needs a newer Watchtower" / "Update Watchtower from its menu, then open the link again." (the parent's text) |
+| Another company's link still waits for its confirm (409; the same link again is one confirm and redirects) | — (no shot; Task 10) | "Another link is waiting" / "Watchtower is already asking you to confirm a company link. Answer it there, then open this link again." / "You can close this tab." |
+| Watchtower did not take the link (the app was closing; 503) | — (no shot; Task 10) | "Watchtower did not take this link" / "Open Watchtower, then open the link again." |
 
 Watchtower not running: the browser's own "can't connect" page; the About text says "Open Watchtower first" (parent §7, no code path). Port busy: §4.1.
 

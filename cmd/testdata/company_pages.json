@@ -7,6 +7,10 @@
     "heading": "This link needs a newer Watchtower",
     "message": "Update Watchtower from its menu, then open the link again."
   },
+  "not_taken": {
+    "heading": "Watchtower did not take this link",
+    "message": "Open Watchtower, then open the link again."
+  },
   "open": {
     "heading": "Continue in Watchtower",
     "message_acme": "Watchtower is asking you to confirm Acme. You can close this tab."

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -131,7 +132,7 @@ func TestCompanyListener_ValidLinkRedirectsClean(t *testing.T) {
 
 	// A normalizing difference is the same bundle: the event carries the
 	// normalized wire.
-	h.send(t, `{"cmd":"company_dismiss","flow":"`+ev["flow"].(string)+`"}`)
+	h.dismiss(t, ev["flow"].(string))
 	loose := rawWire(`{"v":1,"company":" Acme ","slack":{"team_id":"T0000","client_id":" 000.000"}}`)
 	resp, _ = h.companyLink(t, loose)
 	assert.Equal(t, http.StatusFound, resp.StatusCode)
@@ -288,28 +289,77 @@ func TestCompanyListener_DuplicateLinkWhilePendingIsOne(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Contains(t, body, oauthpage.CompanyOpenMessage("Acme"), "the waiting link's company")
 
-	h.send(t, `{"cmd":"company_dismiss","flow":"not-it"}`)
-	h.send(t, `{"cmd":"company_dismiss","flow":"`+first+`"}`)
+	h.dismiss(t, "not-it")
+	resp, _ = h.companyLink(t, other)
+	assert.Equal(t, http.StatusConflict, resp.StatusCode, "another flow's dismiss changes nothing")
+	h.dismiss(t, first)
 	h.companyLink(t, other)
 	ev := h.expect(t, "company_link")
 	assert.Equal(t, other, ev["bundle"], "the only second event is the other company's, after the dismiss")
 	assert.NotEqual(t, first, ev["flow"])
 }
 
+// dismiss sends company_dismiss and waits until serve has applied it: serve
+// handles stdin in order, so the failed answer to the confirm after it comes
+// once the dismiss is done.
+func (h *serveHarness) dismiss(t *testing.T, flow string) {
+	t.Helper()
+	h.send(t, `{"cmd":"company_dismiss","flow":"`+flow+`"}`)
+	h.send(t, `{"cmd":"confirm","flow":"barrier"}`)
+	h.expect(t, "failed")
+}
+
+func companyLinkRequest(wire string) *http.Request {
+	return httptest.NewRequest(http.MethodGet, "http://127.0.0.1:18551"+companyConnectPath+"?b="+wire, nil)
+}
+
 // The app goes away while a link's handler waits to hand its event over:
 // the browser gets the "not taken" page and the link does not stay pending.
 func TestCompanyListener_EmitNotTakenReleases(t *testing.T) {
 	links := &pendingLinks{}
-	h := companyConnectHandler("127.0.0.1:18551", func(context.Context, any) bool { return false }, links,
+	h := companyConnectHandler("127.0.0.1:18551", func(context.Context, companyLinkEvent) bool { return false }, links,
 		log.New(io.Discard, "", 0))
 	_, wire := acmeLinkBundle(t)
-	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:18551"+companyConnectPath+"?b="+wire, nil)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+	h.ServeHTTP(rec, companyLinkRequest(wire))
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
-	assert.Contains(t, rec.Body.String(), "Watchtower did not take this link.")
+	assert.Contains(t, rec.Body.String(), oauthpage.CompanyNotTakenHeading)
+	assert.Empty(t, links.shownCompany(), "the connected page names no link the app never got")
 	_, offered := links.offer(wire, "Acme")
 	assert.Equal(t, linkFresh, offered, "the link was released")
+}
+
+// A duplicate that arrives while the first link is still being handed over
+// waits for that hand-over: it never says "confirm in Watchtower" for a link
+// the app did not take.
+func TestCompanyListener_DuplicateWaitsForHandOver(t *testing.T) {
+	_, wire := acmeLinkBundle(t)
+	synctest.Test(t, func(t *testing.T) {
+		emits, outcome := 0, make(chan bool)
+		h := companyConnectHandler("127.0.0.1:18551", func(context.Context, companyLinkEvent) bool {
+			emits++
+			return <-outcome
+		}, &pendingLinks{}, log.New(io.Discard, "", 0))
+
+		first, dup := httptest.NewRecorder(), httptest.NewRecorder()
+		firstDone, dupDone := make(chan struct{}), make(chan struct{})
+		go func() { defer close(firstDone); h.ServeHTTP(first, companyLinkRequest(wire)) }()
+		synctest.Wait() // the first is handing over
+		go func() { defer close(dupDone); h.ServeHTTP(dup, companyLinkRequest(wire)) }()
+		synctest.Wait() // the duplicate waits for that hand-over
+		select {
+		case <-dupDone:
+			t.Fatal("the duplicate answered before the hand-over ended")
+		default:
+		}
+		outcome <- false
+		<-firstDone
+		<-dupDone
+		assert.Equal(t, 1, emits, "the duplicate is never handed over itself")
+		assert.Equal(t, http.StatusServiceUnavailable, first.Code)
+		assert.Equal(t, http.StatusServiceUnavailable, dup.Code)
+		assert.Contains(t, dup.Body.String(), oauthpage.CompanyNotTakenHeading)
+	})
 }
 
 func TestCompanyListener_PortBusy(t *testing.T) {
@@ -353,6 +403,8 @@ func TestCompanyPages_Fixture(t *testing.T) {
 		"refused": map[string]any{"heading": oauthpage.CompanyRefusedHeading, "hint": oauthpage.CompanyRefusedHint, "reasons": reasons},
 		"newer":   map[string]string{"heading": oauthpage.CompanyNewerHeading, "message": oauthpage.CompanyNewerMessage},
 		"busy":    map[string]string{"heading": oauthpage.CompanyBusyHeading, "message": oauthpage.CompanyBusyMessage},
+		"not_taken": map[string]string{"heading": oauthpage.CompanyNotTakenHeading,
+			"message": oauthpage.CompanyNotTakenMessage},
 	}
 	got, err := json.MarshalIndent(fixture, "", "  ")
 	require.NoError(t, err)

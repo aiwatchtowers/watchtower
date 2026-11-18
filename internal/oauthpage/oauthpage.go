@@ -146,7 +146,9 @@ const (
 	CompanyBusyHeading    = "Another link is waiting"
 	CompanyBusyMessage    = "Watchtower is already asking you to confirm a company link. " +
 		"Answer it there, then open this link again."
-	companyCloseHint = "You can close this tab."
+	CompanyNotTakenHeading = "Watchtower did not take this link"
+	CompanyNotTakenMessage = "Open Watchtower, then open the link again."
+	companyCloseHint       = "You can close this tab."
 )
 
 // CompanyRefusedReasons is the reason line of each refusal a link can get.
@@ -218,6 +220,18 @@ func CompanyBusy() string {
 		Heading:   CompanyBusyHeading,
 		Message:   CompanyBusyMessage,
 		Hint:      companyCloseHint,
+	})
+}
+
+// CompanyNotTaken renders the page of a company link Watchtower did not
+// take (the app was closing, or the tab went away before it took it).
+func CompanyNotTaken() string {
+	return render(page{
+		Title:     "Link not taken",
+		IconClass: "icon-err",
+		Icon:      "!",
+		Heading:   CompanyNotTakenHeading,
+		Message:   CompanyNotTakenMessage,
 	})
 }
 

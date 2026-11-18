@@ -134,8 +134,8 @@ func serveSlackConnect(ctx context.Context, cfg *config.Config, database *db.DB,
 	}
 	events := make(chan slackconnect.Event)
 	stop := make(chan struct{})
-	companyEvents := make(chan any)
-	emitCompany := func(ctx context.Context, ev any) bool {
+	companyEvents := make(chan companyLinkEvent)
+	emitCompany := func(ctx context.Context, ev companyLinkEvent) bool {
 		select {
 		case companyEvents <- ev:
 			return true

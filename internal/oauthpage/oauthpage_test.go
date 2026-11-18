@@ -222,3 +222,9 @@ func TestCompanyPages_Busy(t *testing.T) {
 	assert.Contains(t, page, "<p>"+CompanyBusyMessage+"</p>")
 	assert.Contains(t, page, "You can close this tab.")
 }
+
+func TestCompanyPages_NotTaken(t *testing.T) {
+	page := CompanyNotTaken()
+	assert.Contains(t, page, "<h1>Watchtower did not take this link</h1>")
+	assert.Contains(t, page, "<p>Open Watchtower, then open the link again.</p>")
+}
