@@ -14,6 +14,7 @@ import (
 
 	"github.com/rivo/uniseg"
 
+	"watchtower/internal/db"
 	"watchtower/internal/hub/wire"
 )
 
@@ -96,4 +97,4 @@ func sqliteDate(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05
 // askVisible is OwnerAskQueries.notInSpecLoop over alias "a": it drops the spec
 // review author loop's hidden asks from an owner-facing read of owner_asks
 // aliased "a".
-const askVisible = "NOT EXISTS (SELECT 1 FROM spec_reviews sr WHERE sr.ask_id = a.id AND sr.loop = 'author')"
+var askVisible = "NOT " + db.AskInSpecLoopSQL("a")

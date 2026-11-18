@@ -286,7 +286,7 @@ func stateText(st sessionState) string {
 	case kindFailed:
 		// "Error: rate limit", or "Stopped on an error".
 		return st.caption()
-	case kindNotStarted:
+	case kindNotStarted, kindSpecReview: // no milestone for a spec review (#1945)
 	}
 	return ""
 }

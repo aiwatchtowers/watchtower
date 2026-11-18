@@ -2,6 +2,9 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -580,4 +583,48 @@ func TestInsertOwnerAsk_StoresAutomationRunID(t *testing.T) {
 	got, err = d.GetOwnerAsk(pid, id)
 	require.NoError(t, err)
 	assert.False(t, got.AutomationRunID.Valid)
+}
+
+// TestAskInSpecLoopSQLFixture pins the hidden-ask predicate; the Desktop's
+// OwnerAskQueries.notInSpecLoop reads the same fixture.
+func TestAskInSpecLoopSQLFixture(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "spec_loop_asks.json"))
+	require.NoError(t, err)
+	var f struct {
+		Asks []struct {
+			ID   int64   `json:"id"`
+			Loop *string `json:"loop"`
+		} `json:"asks"`
+		Visible []int64 `json:"visible"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &f))
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	for _, a := range f.Asks {
+		_, err := d.Exec(`INSERT INTO owner_asks (id, project_id, kind, title, payload) VALUES (?, ?, 'question', 'q', '{}')`, a.ID, pid)
+		require.NoError(t, err)
+		if a.Loop != nil {
+			_, err := d.Exec(`INSERT INTO spec_reviews (ask_id, status, queued_at, loop) VALUES (?, 'running', '2026-10-01T00:00:00Z', ?)`, a.ID, *a.Loop)
+			require.NoError(t, err)
+		}
+	}
+	rows, err := d.Query(`SELECT id FROM owner_asks a WHERE NOT ` + AskInSpecLoopSQL("a") + ` ORDER BY id`)
+	require.NoError(t, err)
+	defer rows.Close()
+	var got []int64
+	for rows.Next() {
+		var id int64
+		require.NoError(t, rows.Scan(&id))
+		got = append(got, id)
+	}
+	require.NoError(t, rows.Err())
+	assert.Equal(t, f.Visible, got)
+
+	listed, err := d.ListOwnerAsks(pid, OwnerAskFilter{ExcludeSpecLoop: true})
+	require.NoError(t, err)
+	var ids []int64
+	for _, a := range listed {
+		ids = append(ids, a.ID)
+	}
+	assert.ElementsMatch(t, f.Visible, ids)
 }

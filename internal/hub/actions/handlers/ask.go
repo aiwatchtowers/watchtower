@@ -191,7 +191,7 @@ func (h *Handlers) storeAnswer(askID, workbenchID int64, a asks.Answer) (bool, e
 	err = h.d.DB.WithTx(func(tx *sql.Tx) error {
 		res, err := tx.Exec(`UPDATE owner_asks SET status = 'answered', answer = ?, answered_at = ?
 			WHERE id = ? AND project_id = ? AND status = 'open'
-			  AND NOT EXISTS (SELECT 1 FROM spec_reviews sr WHERE sr.ask_id = owner_asks.id AND sr.loop = 'author')`,
+			  AND NOT `+db.AskInSpecLoopSQL("owner_asks"),
 			encoded, at, askID, workbenchID)
 		if err != nil {
 			return err

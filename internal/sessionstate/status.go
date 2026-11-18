@@ -40,6 +40,10 @@ type Row struct {
 	OpenAsks         int
 	OpenQuestionAsks int
 	OpenReviewAsks   int
+	// SpecReviewRound is the highest round among the session's open asks
+	// hidden in the spec review's author loop (db.AskInSpecLoopSQL); 0 = none.
+	// Those asks are in none of the counts above.
+	SpecReviewRound int
 	// RunStartedAt is the start of the live process run in the agent-state
 	// stamp layout; "" = the session is not live. Load leaves it empty: only
 	// the host knows the run.
@@ -66,6 +70,7 @@ const (
 	StateWaitingForYou State = "waiting_for_you" // an open question ask
 	StateReadyToCheck  State = "ready_to_check"  // open asks, none a question
 	StateFinished      State = "finished"
+	StateSpecReview    State = "spec_review" // an ask in the spec review author loop, turn over
 )
 
 // backgroundGrace is how long a background count of zero still shows as
@@ -104,6 +109,8 @@ func Resolve(r Row, now time.Time) State {
 		return StateFinished
 	case r.OpenAsks > 0:
 		return StateWaitingForYou
+	case r.SpecReviewRound > 0:
+		return StateSpecReview
 	case hook == "waiting":
 		return StateStopped
 	case !live:
@@ -130,7 +137,7 @@ func TrustedHookAt(r Row) string {
 
 // IsIdle mirrors SessionControl.isIdle: the agent is idle for the current run
 // when the session is live and either a hook state of this run says its turn
-// ended (stopped, finished, waiting_for_you, ready_to_check, error) or the run
+// ended (stopped, finished, waiting_for_you, ready_to_check, spec_review, error) or the run
 // is marked and no turn began (marked_idle, whatever the asks say). Without a
 // hook state of this run, finished and the asks alone do not make it idle.
 // agents_working is not idle: it is in IsWorking only.
@@ -142,7 +149,7 @@ func IsIdle(r Row, s State) bool {
 		return runMarked(r)
 	}
 	switch s {
-	case StateStopped, StateFinished, StateWaitingForYou, StateReadyToCheck, StateError:
+	case StateStopped, StateFinished, StateWaitingForYou, StateReadyToCheck, StateSpecReview, StateError:
 		return true
 	case StateNotStarted, StateRunning, StateMarkedIdle, StateWorking, StateAgentsWorking, StateNeedsApproval:
 	}
@@ -241,13 +248,15 @@ func Load(ctx context.Context, q Querier, sessionID int64) (Row, error) {
 	err := q.QueryRowContext(ctx, `
 SELECT t.kind, t.agent_state, t.agent_state_at, t.finished_at, t.agent_failed_at,
        t.agent_background, t.agent_background_at, t.agent_background_shells, t.chat_question_at, t.agent_cwd_at,
-       (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = t.id AND a.status = 'open'),
-       (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = t.id AND a.status = 'open' AND a.kind = 'question'),
-       (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = t.id AND a.status = 'open' AND a.kind = 'review')
+       (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = t.id AND a.status = 'open' AND NOT `+db.AskInSpecLoopSQL("a")+`),
+       (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = t.id AND a.status = 'open' AND NOT `+db.AskInSpecLoopSQL("a")+` AND a.kind = 'question'),
+       (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = t.id AND a.status = 'open' AND NOT `+db.AskInSpecLoopSQL("a")+` AND a.kind = 'review'),
+       (SELECT COALESCE(MAX(sr.round), 0) FROM spec_reviews sr JOIN owner_asks a ON a.id = sr.ask_id
+        WHERE a.session_id = t.id AND a.status = 'open' AND sr.loop = 'author')
 FROM terminal_sessions t WHERE t.id = ? AND t.`+db.NotDeletingSQL, sessionID).Scan(
 		&r.Kind, &r.AgentState, &r.AgentStateAt, &r.FinishedAt, &r.AgentFailedAt,
 		&r.AgentBackground, &r.AgentBackgroundAt, &r.AgentBackgroundShells, &r.ChatQuestionAt, &r.AgentCwdAt,
-		&r.OpenAsks, &r.OpenQuestionAsks, &r.OpenReviewAsks)
+		&r.OpenAsks, &r.OpenQuestionAsks, &r.OpenReviewAsks, &r.SpecReviewRound)
 	if err != nil {
 		return Row{}, fmt.Errorf("load session %d state: %w", sessionID, err)
 	}
