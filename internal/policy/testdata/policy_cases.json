@@ -13,7 +13,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "SlackApps": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -37,7 +38,13 @@
           "ollama"
         ],
         "AllowClaudeAITools": false,
-        "PurgeRevokedData": true
+        "PurgeRevokedData": true,
+        "SlackApps": [
+          {
+            "team_id": "T01ABC",
+            "client_id": "123.456"
+          }
+        ]
       },
       "want": {
         "managed": true,
@@ -58,7 +65,13 @@
             "ollama"
           ],
           "AllowClaudeAITools": false,
-          "PurgeRevokedData": true
+          "PurgeRevokedData": true,
+          "SlackApps": [
+            {
+              "team_id": "T01ABC",
+              "client_id": "123.456"
+            }
+          ]
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -79,7 +92,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "SlackApps": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -105,7 +119,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "SlackApps": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -134,7 +149,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "SlackApps": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -160,7 +176,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "SlackApps": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -191,7 +208,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "SlackApps": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -217,7 +235,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "SlackApps": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -238,7 +257,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "SlackApps": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -264,7 +284,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "SlackApps": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -290,7 +311,8 @@
           "AllowAutomationShell": false,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "SlackApps": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -316,7 +338,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": false,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "SlackApps": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -342,7 +365,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": true
+          "PurgeRevokedData": true,
+          "SlackApps": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -368,7 +392,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": false
+          "PurgeRevokedData": false,
+          "SlackApps": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -394,7 +419,8 @@
             "claude"
           ],
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "SlackApps": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -422,7 +448,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": [],
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "SlackApps": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -454,7 +481,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "SlackApps": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -480,7 +508,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "SlackApps": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -501,7 +530,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "SlackApps": null
         },
         "reserved_not_enforced": [
           "RetentionDays"
@@ -528,7 +558,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "SlackApps": null
         },
         "reserved_not_enforced": [
           "RequireDatabaseEncryption",
@@ -562,7 +593,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "SlackApps": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -585,7 +617,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": true
+          "PurgeRevokedData": true,
+          "SlackApps": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -628,7 +661,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "SlackApps": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -669,7 +703,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "SlackApps": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -705,7 +740,8 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "SlackApps": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -714,6 +750,186 @@
             "problem": "invalid_entry"
           }
         ]
+      }
+    },
+    {
+      "name": "slack_apps_valid",
+      "raw": {
+        "SlackApps": [
+          {
+            "team_id": "T01ABC",
+            "client_id": "123.456"
+          },
+          {
+            "team_id": "E02XYZ",
+            "client_id": "7.8",
+            "extra": "ignored"
+          }
+        ]
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "SlackApps": [
+            {
+              "team_id": "T01ABC",
+              "client_id": "123.456"
+            },
+            {
+              "team_id": "E02XYZ",
+              "client_id": "7.8"
+            }
+          ]
+        },
+        "reserved_not_enforced": [],
+        "errors": []
+      }
+    },
+    {
+      "name": "slack_apps_wrong_type",
+      "raw": {
+        "SlackApps": "T01ABC"
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "SlackApps": []
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "SlackApps",
+            "problem": "wrong_type"
+          }
+        ]
+      }
+    },
+    {
+      "name": "slack_apps_bad_entries",
+      "raw": {
+        "SlackApps": [
+          "T01ABC",
+          {
+            "team_id": "T01ABC"
+          },
+          {
+            "team_id": "t01abc",
+            "client_id": "1.2"
+          },
+          {
+            "team_id": "T02DEF",
+            "client_id": "12"
+          },
+          {
+            "team_id": "T03GHI",
+            "client_id": "3.4"
+          }
+        ]
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "SlackApps": [
+            {
+              "team_id": "T03GHI",
+              "client_id": "3.4"
+            }
+          ]
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "SlackApps",
+            "problem": "invalid_entry"
+          }
+        ]
+      }
+    },
+    {
+      "name": "slack_apps_duplicate_team",
+      "raw": {
+        "SlackApps": [
+          {
+            "team_id": "T01ABC",
+            "client_id": "1.2"
+          },
+          {
+            "team_id": "T01ABC",
+            "client_id": "3.4"
+          }
+        ]
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "SlackApps": [
+            {
+              "team_id": "T01ABC",
+              "client_id": "1.2"
+            }
+          ]
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "SlackApps",
+            "problem": "invalid_entry"
+          }
+        ]
+      }
+    },
+    {
+      "name": "slack_apps_empty",
+      "raw": {
+        "SlackApps": []
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "SlackApps": []
+        },
+        "reserved_not_enforced": [],
+        "errors": []
       }
     }
   ],

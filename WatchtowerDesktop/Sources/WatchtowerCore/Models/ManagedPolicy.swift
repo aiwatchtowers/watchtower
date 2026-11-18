@@ -17,6 +17,7 @@ package struct ManagedPolicy: Equatable, Sendable {
         case allowedAIProviders = "AllowedAIProviders"
         case allowClaudeAITools = "AllowClaudeAITools"
         case purgeRevokedData = "PurgeRevokedData"
+        case slackApps = "SlackApps"
         case requireDatabaseEncryption = "RequireDatabaseEncryption"
         case retentionDays = "RetentionDays"
         case bulkReadLimits = "BulkReadLimits"
@@ -29,6 +30,12 @@ package struct ManagedPolicy: Equatable, Sendable {
     package struct Problem: Equatable, Sendable {
         package let key: String
         package let problem: String
+    }
+
+    /// One Slack app a company provisions: its workspace and OAuth client id.
+    package struct SlackApp: Equatable, Sendable {
+        package let teamID: String
+        package let clientID: String
     }
 
     package static let knownSources = ["slack", "google", "imap", "caldav", "jira", "linear"]
@@ -45,6 +52,8 @@ package struct ManagedPolicy: Equatable, Sendable {
     package var allowedAIProviders: [String]?
     package var allowClaudeAITools: Bool? // swiftlint:disable:this discouraged_optional_boolean
     package var purgeRevokedData: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    /// nil = the key is absent; entries are valid and unique by team id.
+    package var slackApps: [SlackApp]?
     package var reservedNotEnforced: [String] = []
     package var problems: [Problem] = []
 
@@ -91,23 +100,66 @@ package struct ManagedPolicy: Equatable, Sendable {
         if let v = raw[Key.purgeRevokedData.rawValue] {
             p.purgeRevokedData = p.boolean(.purgeRevokedData, v, restrictive: true)
         }
+        if let v = raw[Key.slackApps.rawValue] {
+            p.slackApps = p.slackApps(v)
+        }
+        p.normalizeReserved(raw)
+        return p
+    }
+
+    /// Lists the present reserved keys and reports a wrong type.
+    private mutating func normalizeReserved(_ raw: [String: Any]) {
         for key in Key.reserved {
             guard let v = raw[key.rawValue] else { continue }
-            p.reservedNotEnforced.append(key.rawValue)
+            reservedNotEnforced.append(key.rawValue)
             let typeOK: Bool
             switch key {
-            case .requireDatabaseEncryption: typeOK = isBool(v)
-            case .retentionDays: typeOK = isIntegral(v)
+            case .requireDatabaseEncryption: typeOK = Self.isBool(v)
+            case .retentionDays: typeOK = Self.isIntegral(v)
             default: typeOK = v is [String: Any]
             }
-            if !typeOK { p.report(key, "wrong_type") }
+            if !typeOK { report(key, "wrong_type") }
         }
-        return p
     }
 
     private mutating func report(_ key: Key, _ problem: String) {
         let pr = Problem(key: key.rawValue, problem: problem)
         if !problems.contains(pr) { problems.append(pr) }
+    }
+
+    /// An array of dictionaries: an entry that is not a dictionary, lacks a
+    /// field or fails the id patterns is dropped, and a repeated team id keeps
+    /// the first. Unknown dictionary keys are ignored.
+    private mutating func slackApps(_ v: Any) -> [SlackApp] {
+        guard let arr = v as? [Any] else {
+            report(.slackApps, "wrong_type")
+            return []
+        }
+        var out: [SlackApp] = []
+        for e in arr {
+            guard let m = e as? [String: Any],
+                  let team = m["team_id"] as? String, Self.isSlackTeamID(team),
+                  let client = m["client_id"] as? String, Self.isSlackClientID(client),
+                  !out.contains(where: { $0.teamID == team }) else {
+                report(.slackApps, "invalid_entry")
+                continue
+            }
+            out.append(SlackApp(teamID: team, clientID: client))
+        }
+        return out
+    }
+
+    /// `^[TE][A-Z0-9]{2,}$` over bytes (Go's regexp is ASCII here).
+    static func isSlackTeamID(_ s: String) -> Bool {
+        let b = Array(s.utf8)
+        return b.count >= 3 && (b[0] == 0x54 || b[0] == 0x45)
+            && b.dropFirst().allSatisfy { ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x5A) }
+    }
+
+    /// `^[0-9]+\.[0-9]+$`.
+    static func isSlackClientID(_ s: String) -> Bool {
+        let parts = Array(s.utf8).split(separator: 0x2E, omittingEmptySubsequences: false)
+        return parts.count == 2 && parts.allSatisfy { !$0.isEmpty && $0.allSatisfy { $0 >= 0x30 && $0 <= 0x39 } }
     }
 
     /// An array key: a non-array is a wrong type ([]); a non-string entry is
@@ -191,6 +243,7 @@ package struct ManagedPolicy: Equatable, Sendable {
         case .allowedAIProviders: allowedAIProviders != nil
         case .allowClaudeAITools: allowClaudeAITools != nil
         case .purgeRevokedData: purgeRevokedData != nil
+        case .slackApps: slackApps != nil
         case .requireDatabaseEncryption, .retentionDays, .bulkReadLimits: reservedNotEnforced.contains(key.rawValue)
         }
     }

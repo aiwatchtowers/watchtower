@@ -41,7 +41,7 @@ func TestPolicyShow_JSONKeys(t *testing.T) {
 	keys, ok := m["keys"].(map[string]any)
 	require.True(t, ok)
 	wantKeys(t, keys, "AllowedSources", "MobileSync", "AllowedQuickConnections", "AllowAutomationShell",
-		"AllowedAIProviders", "AllowClaudeAITools", "PurgeRevokedData")
+		"AllowedAIProviders", "AllowClaudeAITools", "PurgeRevokedData", "SlackApps")
 	assert.Equal(t, true, m["managed"])
 	assert.Equal(t, "com.watchtower.desktop", m["domain"])
 	assert.Equal(t, "off", keys["MobileSync"])
@@ -68,6 +68,7 @@ func TestPolicyShow_Plain(t *testing.T) {
 		"AllowedAIProviders":   []any{"claude", "ollama"},
 		"AllowAutomationShell": 1,
 		"RetentionDays":        int64(30),
+		"SlackApps":            []any{map[string]any{"team_id": "T01ABC", "client_id": "1.2"}},
 	})
 	out := runPolicyShow(t)
 	assert.Contains(t, out, "Managed by your organization: yes (domain com.watchtower.desktop)\n")
@@ -76,6 +77,7 @@ func TestPolicyShow_Plain(t *testing.T) {
 	assert.Contains(t, out, "AllowedAIProviders: claude, ollama\n")
 	assert.Contains(t, out, "AllowAutomationShell: not allowed\n")
 	assert.Contains(t, out, "AllowClaudeAITools: not set\n")
+	assert.Contains(t, out, "SlackApps: T01ABC (1.2)\n")
 	assert.Contains(t, out, "Not enforced in this version: RetentionDays\n")
 	assert.Contains(t, out, "Profile problems: AllowAutomationShell (wrong_type)\n")
 }
@@ -85,6 +87,7 @@ func TestPolicyShow_PlainNoProfile(t *testing.T) {
 	out := runPolicyShow(t)
 	assert.Contains(t, out, "Managed by your organization: no (domain com.watchtower.desktop)\n")
 	assert.Contains(t, out, "PurgeRevokedData: not set\n")
+	assert.Contains(t, out, "SlackApps: not set\n")
 	assert.NotContains(t, out, "Not enforced")
 	assert.NotContains(t, out, "Profile problems")
 }
