@@ -168,38 +168,36 @@ func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.D
 	if err := refuseLoginDuringPurge(database, "slack", id); err != nil {
 		return slackIdentity{}, err
 	}
-	if !isNewRow {
-		// Before any write; checked again under the token lock below.
-		if err := refuseSlackBuiltinSignIn(database, id, clientID); err != nil {
-			return slackIdentity{}, err
-		}
-	}
-	// First of the writes, so a failure leaves the row moved and the next
-	// sign-in tries again; once the row is home, nothing would.
-	if moved {
-		if err := rewindMovedSlackAccountOrWarn(database, id, warnOut); err != nil {
-			return slackIdentity{}, err
-		}
-	}
-
-	namespacedUser := watchtowerslack.Namespace(id, identity.UserID)
-	if err := database.UpdateSlackAccountConnection(id, identity.TeamID, identity.TeamName, identity.TeamDomain, namespacedUser); err != nil {
-		if isNewRow {
-			rollbackSlackAccount(database, id, warnOut)
-		}
-		return slackIdentity{}, fmt.Errorf("recording connection: %w", err)
-	}
-
-	// The token file and the row's client id are written under the account's
-	// token lock, so a refresh or repair in another process (slackauth.LoadFresh)
-	// never sees one without the other.
 	store := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), id)
+	if !isNewRow {
+		// Before the lock wait; checked again under the lock below.
+		if err := refuseSlackBuiltinSignIn(database, store, id, clientID); err != nil {
+			return slackIdentity{}, err
+		}
+	}
+
+	// Every write — the watermark rewind, the connection, the token file and
+	// the row's client id — runs under the account's token lock after the
+	// locked refusal, so a refused sign-in changes nothing and a refresh or
+	// repair in another process (slackauth.LoadFresh) never sees the token
+	// without its client id.
+	namespacedUser := watchtowerslack.Namespace(id, identity.UserID)
 	err = withSlackTokenLock(ctx, store, func() error {
 		if !isNewRow {
-			// A connect flow may have moved the row to a company app since.
-			if err := refuseSlackBuiltinSignIn(database, id, clientID); err != nil {
+			// A connect flow may have moved the account to a company app since.
+			if err := refuseSlackBuiltinSignIn(database, store, id, clientID); err != nil {
 				return err
 			}
+		}
+		// First of the writes, so a failure leaves the row moved and the
+		// next sign-in tries again; once the row is home, nothing would.
+		if moved {
+			if err := rewindMovedSlackAccountOrWarn(database, id, warnOut); err != nil {
+				return err
+			}
+		}
+		if err := database.UpdateSlackAccountConnection(id, identity.TeamID, identity.TeamName, identity.TeamDomain, namespacedUser); err != nil {
+			return fmt.Errorf("recording connection: %w", err)
 		}
 		if err := store.Save(&watchtowerslack.Token{
 			AccessToken: accessToken,
@@ -245,14 +243,20 @@ func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.D
 	return identity, nil
 }
 
-// refuseSlackBuiltinSignIn is slackBuiltinSignInRefusal on account id's
-// current row: a sign-in through the build's app (`auth login`, `slack
-// login` on its builtin route) never replaces a company app's token, whichever
-// row it resolved to (review verify round 1).
-func refuseSlackBuiltinSignIn(database *db.DB, id int64, clientID string) error {
+// refuseSlackBuiltinSignIn is slackBuiltinSignInRefusal on account id: a
+// sign-in through the build's app (`auth login`, `slack login` on its
+// builtin route) never replaces a company app's token, whichever row it
+// resolved to (review verify rounds 1–2). The token file's non-empty
+// client_id wins over the row's — a connect that saved its file and stopped
+// before the row update left the row naming the old app (A6, the recovery
+// contract of slackauth.LoadFresh). An unreadable file falls back to the row.
+func refuseSlackBuiltinSignIn(database *db.DB, store *watchtowerslack.TokenStore, id int64, clientID string) error {
 	acct, err := database.GetSlackAccount(id)
 	if err != nil {
 		return err
+	}
+	if tok, err := store.Load(); err == nil && tok != nil && tok.ClientID != "" {
+		acct.ClientID = tok.ClientID
 	}
 	return slackBuiltinSignInRefusal(acct, clientID)
 }

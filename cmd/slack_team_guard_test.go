@@ -359,3 +359,44 @@ func TestConnectSlackAccount_BuiltinSignInOnItsOwnRow(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "xoxp-builtin", env.token(t).AccessToken)
 }
+
+// A connect that saved the company app's token file and stopped before the
+// row update leaves the row naming the build's app: the token file's
+// client_id wins, so a builtin sign-in still does not replace the rotating
+// company credential (verify round 2, A6).
+func TestConnectSlackAccount_BuiltinSignInReadsTheTokenFilesApp(t *testing.T) {
+	setSlackBuild(t, "2000.0002", "test-secret", "1000.0001")
+	env := newTeamGuardEnv(t, "T_HOME", "Acme")
+	require.NoError(t, env.db.SetSlackAccountClientID(env.id, "2000.0002"))
+	require.NoError(t, watchtowerslack.NewTokenStore(env.cfg.WorkspaceDir(), env.id).Save(&watchtowerslack.Token{
+		AccessToken: "xoxe.xoxp-company", TeamID: "T_HOME", RefreshToken: "xoxe-1-company", ClientID: "4000.0004",
+	}))
+	stubSlackIdentityServer(t, "U_OWNER", "T_HOME", "Acme", "acme")
+
+	_, err := connectSlackAccount(context.Background(), env.cfg, env.db, env.id,
+		&auth.OAuthResult{AccessToken: "xoxp-builtin"}, false, "2000.0002", &bytes.Buffer{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "watchtower slack login --account 1")
+	assert.Equal(t, "xoxe.xoxp-company", env.token(t).AccessToken, "the company credential stays")
+}
+
+// A refused builtin sign-in changes nothing: not the connection columns,
+// not the search watermark of a moved account (verify round 2).
+func TestConnectSlackAccount_RefusedSignInWritesNothing(t *testing.T) {
+	setSlackBuild(t, "2000.0002", "test-secret", "1000.0001")
+	env := newTeamGuardEnv(t, "T_OTHER", "Dev Sandbox")
+	require.NoError(t, env.db.SetSlackAccountClientID(env.id, "4000.0004"))
+	require.NoError(t, env.db.SetSlackAccountSearchWatermark(env.id, "2026-03-09"))
+	env.addMessage(t, time.Date(2026, 3, 5, 12, 0, 0, 0, time.Local))
+	before, err := env.db.GetSlackAccount(env.id)
+	require.NoError(t, err)
+	stubSlackIdentityServer(t, "U_OWNER", "T_HOME", "Acme", "acme")
+
+	_, err = connectSlackAccount(context.Background(), env.cfg, env.db, env.id,
+		&auth.OAuthResult{AccessToken: "xoxp-builtin"}, false, "2000.0002", &bytes.Buffer{})
+	require.Error(t, err)
+	after, err := env.db.GetSlackAccount(env.id)
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "team, user and watermark unchanged")
+	assert.Equal(t, "xoxp-old", env.token(t).AccessToken)
+}
