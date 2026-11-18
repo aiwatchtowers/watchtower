@@ -329,6 +329,63 @@ func TestProj18_FailedIncludeProbeLetsNoCopyPass(t *testing.T) {
 	}
 }
 
+// A listed worktree that is not the checkout holding the workbench folder
+// (a stale, locked entry nested in main whose .git is gone) is never taken
+// as its base: the folder's real checkout is confirmed with git, so files
+// under the stale entry's idea of the subfolder are not exempted.
+func TestProj18_StaleListedEntryGivesNoSubfolderBase(t *testing.T) {
+	t.Parallel()
+	f, root := ignoredFixture(t)
+	nested := filepath.Join(f.repo, "nested")
+	gitIn(t, f.repo, "worktree", "add", "-q", "-b", "feat/stale", nested, "main")
+	gitIn(t, f.repo, "worktree", "lock", nested)
+	if err := os.Remove(filepath.Join(nested, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	folder := filepath.Join(nested, "app")
+	if err := os.MkdirAll(folder, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.store.folders[testWorkbench] = folder
+	// The stale entry would make "app" the subfolder; the real one is
+	// "nested/app", so the install's files at app/ are not the install's.
+	if err := os.MkdirAll(filepath.Join(root, "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeIntegration(t, filepath.Join(root, "app"))
+
+	it := wantItem(t, f.plan(Request{}), "worktree:"+root, ActionKeep, ReasonIgnoredFiles)
+	if !strings.HasPrefix(it.Detail, "ignored file: app/") {
+		t.Fatalf("detail = %q, want a file under app/", it.Detail)
+	}
+}
+
+// ctxBlindGit runs git ignoring the caller's context, so a probe succeeds
+// even when the judge's deadline has passed.
+type ctxBlindGit struct{ SystemGit }
+
+func (g ctxBlindGit) RunGit(_ context.Context, dir, bin string, args ...string) ([]byte, int, error) {
+	return g.SystemGit.RunGit(context.Background(), dir, bin, args...)
+}
+
+// The budget is checked after the probe whatever it answered: a probe that
+// succeeded past the deadline still makes the judgement fail (check_failed).
+func TestIgnoredJudge_ProbeThatSucceedsOverTheBudgetFails(t *testing.T) {
+	t.Parallel()
+	f, root := ignoredFixture(t)
+	writeFile(t, filepath.Join(root, ".env"), "A\n")
+	info, err := os.Lstat(filepath.Join(root, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin, _ := gitbin.Locate()
+	j := overBudget(context.Background(), root)
+	j.git, j.folder = gitCmd{run: ctxBlindGit{}, bin: bin}, f.repo
+	if _, err := j.includedCopy(".env", info); err == nil || !strings.Contains(err.Error(), "budget") {
+		t.Fatalf("err = %v, want the budget", err)
+	}
+}
+
 // stallGit answers every git call only when its context ends.
 type stallGit struct{ SystemGit }
 

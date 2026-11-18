@@ -37,6 +37,8 @@ type ignoredJudge struct {
 	folder      string // the workbench folder, symlink-resolved
 	source      string // the checkout .worktreeinclude copies come from; "" = unknown
 	sourceRead  bool
+	worktrees   []worktree // the repository's listing, for baseList
+	basesRead   bool
 	bases       []string // the integration's folders: "" (the root) and the workbench folder's subfolder
 	workbenchID int64
 	git         gitCmd
@@ -81,22 +83,42 @@ func (b *builder) ignoredWork(ctx context.Context, root string, budget time.Dura
 func (b *builder) newIgnoredJudge(ctx context.Context, root string, budget time.Duration) *ignoredJudge {
 	j := &ignoredJudge{ctx: ctx, root: root, bases: []string{""}, workbenchID: b.req.WorkbenchID,
 		git: b.repo.git, skills: map[string]bool{}, deadline: time.Now().Add(budget), budget: budget}
-	j.folder = b.repo.folder
-	// The integration's subfolder base comes from the worktree list (the
-	// checkout holding the workbench folder), independent of the include
-	// probe, so a failed probe never turns those files into work.
+	j.folder, j.worktrees = b.repo.folder, b.repo.worktrees
+	return j
+}
+
+// baseList is where the integration lives: the root, and the workbench
+// folder's subfolder of its checkout. The checkout is the longest listed
+// worktree root holding the folder (independent of the include probe, so a
+// failed probe never turns those files into work), confirmed by
+// `git rev-parse --show-toplevel` in the folder through the cleanup's own
+// runner: a stale entry (its .git gone, kept by a lock) is not taken. When
+// it cannot be confirmed no subfolder is added, and subfolder files count
+// as work. Read once per worktree, when first needed.
+func (j *ignoredJudge) baseList() []string {
+	if j.basesRead || j.folder == "" {
+		return j.bases
+	}
+	j.basesRead = true
 	holder := ""
-	for _, w := range b.repo.worktrees {
-		if !w.Prunable && pathWithin(b.repo.folder, w.Root) && len(w.Root) > len(holder) {
+	for _, w := range j.worktrees {
+		if !w.Prunable && pathWithin(j.folder, w.Root) && len(w.Root) > len(holder) {
 			holder = w.Root
 		}
 	}
-	if holder != "" {
-		if rel, err := filepath.Rel(holder, b.repo.folder); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
-			j.bases = append(j.bases, filepath.ToSlash(rel))
-		}
+	if holder == "" {
+		return j.bases
 	}
-	return j
+	ctx, cancel := context.WithDeadline(j.ctx, j.deadline)
+	defer cancel()
+	out, err := j.git.output(ctx, j.folder, "rev-parse", "--show-toplevel")
+	if err != nil || resolvePath(strings.TrimSpace(string(out))) != resolvePath(holder) {
+		return j.bases
+	}
+	if rel, err := filepath.Rel(holder, j.folder); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+		j.bases = append(j.bases, filepath.ToSlash(rel))
+	}
+	return j.bases
 }
 
 // check is the budget and the context, now.
@@ -186,13 +208,16 @@ func (j *ignoredJudge) includeSource() (string, error) {
 			return g.run.RunGit(ctx, dir, g.bin, args...)
 		},
 	})
-	if err != nil {
-		if budgetErr := j.check(); budgetErr != nil {
-			return "", fmt.Errorf("locating the %s source: %w", workbenchgit.IncludeFile, budgetErr)
-		}
-		return "", nil
+	resolved := ""
+	if err == nil {
+		resolved = resolvePath(top)
 	}
-	j.source = resolvePath(top)
+	// The budget counts whatever the probe answered: an overrun is a failed
+	// judgement (check_failed), even after a probe that succeeded.
+	if budgetErr := j.check(); budgetErr != nil {
+		return "", fmt.Errorf("locating the %s source: %w", workbenchgit.IncludeFile, budgetErr)
+	}
+	j.source = resolved
 	return j.source, nil
 }
 
@@ -211,7 +236,7 @@ func (j *ignoredJudge) cacheAt(parts []string, i int) bool {
 		return false
 	}
 	parent := strings.Join(parts[:i], "/")
-	for _, base := range j.bases {
+	for _, base := range j.baseList() {
 		if parent == base {
 			return true
 		}
@@ -285,7 +310,7 @@ func (j *ignoredJudge) file(rel string) (string, error) {
 // holding an un-edited copy, or a settings.local.json holding only our
 // hooks and permission rule lists.
 func (j *ignoredJudge) integration(rel string) (bool, error) {
-	for _, base := range j.bases {
+	for _, base := range j.baseList() {
 		r, ok := under(base, rel)
 		if !ok {
 			continue
