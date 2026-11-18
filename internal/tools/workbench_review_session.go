@@ -6,6 +6,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/reviewdiff"
+	"watchtower/internal/workbenchfolders"
 	"watchtower/internal/workbenchgit"
 )
 
@@ -33,7 +34,12 @@ func reviewSessionPlace(ctx context.Context, d *db.DB, p *db.Workbench, sessionI
 	if err != nil {
 		return "", false, err
 	}
-	resolved, err := workbenchgit.ResolveFolder(ctx, workbenchgit.Options{Folder: p.FolderPath}, cwd.Path)
+	folders, err := workbenchfolders.GitFolders(ctx, d, p.ID, p.FolderPath)
+	if err != nil {
+		return "", false, err
+	}
+	// The bench folder holding the agent's folder is the main repository.
+	resolved, err := workbenchgit.ResolveFolder(ctx, workbenchgit.Options{Folders: folders}, cwd.Path)
 	if err != nil {
 		return "", false, err
 	}
