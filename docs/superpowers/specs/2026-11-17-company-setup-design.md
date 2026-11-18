@@ -11,7 +11,7 @@ Today the public build carries our own shared OAuth apps (Google, Atlassian, Lin
 After this work:
 
 - **There is one build.** It ships no Google or Atlassian app of ours, carries no vendor obligations for them, and the corp build goes away.
-- **A company sets up once.** An admin runs **Set up for my company** in Watchtower: the company's Slack app (Slack spec §5.1), its Google OAuth client, its Atlassian OAuth app and optionally its Linear app and Microsoft 365 app registration. Watchtower packs the result into one **company bundle**.
+- **A company sets up once.** Someone at the company — an admin or any employee (ask #1503) — runs **Set up for my company** in Watchtower: the company's Slack app (Slack spec §5.1), its Google OAuth client, its Atlassian OAuth app and optionally its Linear app and Microsoft 365 app registration. Watchtower packs the result into one **company bundle**.
 - **An employee connects with one link.** The company's Slack app's About page carries a link to `127.0.0.1` that hands the bundle to the employee's own Watchtower; one confirmation, then each vendor's consent page in turn. No backend, no bot, no Mac that must stay on. MDM and a pasted code carry the same bundle where Slack does not.
 - **A private person** connects Gmail through their own Google project (the Hermes Agent / OpenClaw model), guided by the same Google step of the wizard.
 
@@ -68,9 +68,9 @@ One JSON object, versioned, the only thing a link, an MDM key and a pasted code 
 - **Which account uses which client.** A migration adds `company_slug TEXT NOT NULL DEFAULT ''` to `slack_accounts`, `google_accounts`, `jira_accounts`, `linear_accounts` and `email_accounts` (Outlook); mirrored into `schema.sql`, the golden snapshot and the Swift test schema. `''` = our shared client (or, for Google, an existing `google_credentials_<id>.json`). Every OAuth config resolver (Google, Atlassian, Linear, Microsoft) reads in this order: the company's bundle → the account's own credentials file → env (development) → the baked default.
 - **Resolvers by company, then by account.** Each vendor's resolver has two forms: `…ForCompany(slug)` does the lookup above, and `…ForAccount(accountID)` reads the account's `company_slug` and calls it (Google keeps its existing `resolveGoogleOAuthConfigForAccount`, which gains the bundle step). For Atlassian, the argument-less `resolveJiraOAuthConfig` is replaced by `resolveJiraOAuthConfigForCompany(slug)` and `resolveJiraOAuthConfigForAccount(accountID)`. The 10 call sites that already hold an account pass it — `cmd/jira.go` (7), `cmd/confluence.go`, `cmd/sync.go`, `cmd/actions_registry.go`. The one that runs before the account exists — `runJiraAdd` (`cmd/jira.go`, before `CreateJiraAccount`) — takes the company from a new `jira add --company <slug>` flag (set by the employee chain, §3 step 2) and calls the `ForCompany` form; the new account row gets that `company_slug` in the same `CreateJiraAccount` call, so a company's first Atlassian login never touches the retired shared app. Linear and Microsoft follow the same split, since their `add` also runs before the account row exists. Tests: no argument-less Jira resolver remains; `jira add --company acme` uses the bundle's client and stores `company_slug = 'acme'`; `jira add --company` naming an unstored company fails before any browser opens. Go owns the column; Swift only reads it to group Connections rows by company.
 
-## 2. The admin: Set up for my company
+## 2. The person setting up: Set up for my company
 
-Connections → **Set up for my company** opens a page in the Connections detail area (screens spec §2, ask #1490). Its first step, **What does your company use?**, has the admin tick the services the company has (Slack, Google Workspace, Atlassian, Linear, Microsoft 365); only those become steps, and anything else is connected through Quick Connections (MCP connectors) (conversation 2026-11-18). A step per ticked vendor, each skippable; progress kept in a draft (`<workspace>/company/draft.json`, 0600) so leaving the page resumes at the step.
+Connections → **Set up for my company** opens a page in the Connections detail area (screens spec §2, ask #1490). Its first step, **What does your company use?**, has the person setting up tick the services the company has (Slack, Google Workspace, Atlassian, Linear, Microsoft 365); only those become steps, and anything else is connected through Quick Connections (MCP connectors) (conversation 2026-11-18). A step per ticked vendor, each skippable; progress kept in a draft (`<workspace>/company/draft.json`, 0600) so leaving the page resumes at the step.
 
 **Existing apps first (D19).** No vendor lets Watchtower list a company's apps, so each step starts from what this Mac already knows, then asks only if that finds nothing:
 
@@ -90,7 +90,7 @@ The steps (each vendor step describes the **Create new** path; a vendor step app
 7. **Link deny list** (optional, D18) — hosts whose links Watchtower must never fetch (intranet, internal tools).
 8. **Publish** — Watchtower encodes the bundle and, with the Slack configuration token (fresh one asked if the first expired), writes into the Slack app's `long_description`: "Watchtower for <company> — connect: <link>" plus the connect code. It also shows the link, the code and a ready `.mobileconfig` with the `CompanyBundle` key for IT.
 
-The admin then connects like any employee (§3), through the same link.
+The Google and Atlassian steps are checked by the person's own sign-in, which is also their real connection: the bundle is stored locally at the first successful check and the accounts are tied to the company; Publish adds the rest, and **Connect this Mac** connects only what is not yet connected (ask #1503; screens spec §2.6, §2.7, §2.12). What needs real admin rights per vendor, and what the step does without them, is in the screens spec §2.11.
 
 ## 3. The employee: one link
 
@@ -186,8 +186,8 @@ Test: a corp-flavored workspace fixture → bridge → public resolver gives eve
 | A link changes a stored company's clients | Change warning, **Keep current** default; nothing stored without **Replace** | listener test: changed ids → no write until Replace |
 | The bundle in the request log | Path only is logged | log assertion test |
 | Corp install updates before the bridge ran | Stays on the gated feed until `company_migrated` | UpdateService test |
-| Reused Slack app, admin not a collaborator | "Ask the app's owner to add you as a collaborator"; step stays open; nothing created | wizard model test with an export fake returning the not-collaborator error |
-| Reused app's id pasted with a typo or from another workspace | Refused at the step (Slack: `team_id` of the export differs from the admin's workspace; others: dry authorize fails) | wizard model tests per vendor |
+| Reused Slack app, the person not a collaborator | "Ask the app's owner to add you as a collaborator"; step stays open; nothing created | wizard model test with an export fake returning the not-collaborator error |
+| Reused app's id pasted with a typo or from another workspace | Refused at the step (Slack: `team_id` of the export differs from the person's workspace; others: dry authorize fails) | wizard model tests per vendor |
 | Atlassian API token expired or revoked | Account → `error`, "paste a new one", data kept, no 72 h purge; only the 30-day lease applies | client test: 401 with `api_token` → `error`, no refresh attempt; purge plan test: no revoked row for it |
 | Profile lookup ambiguous (403, error, not found without a closed marker) | Nothing erased; retried next cycle | phase test with fakes for each answer |
 | API token lacks a scope | 403 → named-scope hint, nothing erased | client test with a 403 fake |
@@ -196,7 +196,7 @@ Test: a corp-flavored workspace fixture → bridge → public resolver gives eve
 
 ## 8. Writers of the same data
 
-- **`company/<slug>.json`:** the link handler, the code paste and the admin wizard's publish, all after a press; under a per-file flock, the last confirmed write wins. MDM never writes it — a forced bundle is an overlay read at launch and wins over the stored one.
+- **`company/<slug>.json`:** the link handler, the code paste, the wizard's successful checks and its publish, all after a press; under a per-file flock, the last confirmed write wins. MDM never writes it — a forced bundle is an overlay read at launch and wins over the stored one.
 - **Per-account client config** (Google credentials file, new Atlassian and Linear equivalents): written when an account is added from a bundle, rewritten only by a newer bundle's confirmation; token refresh never touches it.
 - **Atlassian API token and `auth_kind`:** written only by `jira add --api-token-stdin` and its re-auth (one Go write each); the sync reads them and never writes them.
 - **`company_slug` on account rows:** the account-add path (from a bundle), the bridge corp build, and a **Replace** of a bundle; all Go, one write transaction each; Swift never writes it. The bridge runs at launch before the daemon starts, so it does not race an add.

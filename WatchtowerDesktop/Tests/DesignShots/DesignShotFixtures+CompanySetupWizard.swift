@@ -8,7 +8,7 @@ private typealias Copy = CompanySetupMockCopy
 
 // MARK: - The admin wizard (spec §2)
 
-enum RailState { case done, reused, skipped, current, todo }
+enum RailState { case done, reused, skipped, waiting, current, todo }
 
 struct WizardScene {
     let name: String
@@ -108,7 +108,7 @@ struct CompanyWizardMock: View {
         switch state {
         case .done, .reused: MockMarkView(mark: .done)
         case .skipped: MockMarkView(mark: .skipped)
-        case .current, .todo: MockMarkView(mark: .waiting)
+        case .current, .todo, .waiting: MockMarkView(mark: .waiting)
         }
     }
 
@@ -117,6 +117,7 @@ struct CompanyWizardMock: View {
         case .done: Copy.railDone
         case .reused: Copy.railReused
         case .skipped: Copy.railSkipped
+        case .waiting: Copy.railWaiting
         case .current, .todo: nil
         }
     }
@@ -168,8 +169,8 @@ enum CompanyWizardScenes {
         MockField(label: Copy.clientSecret, value: "sample-secret", secure: true)
     ], error: nil)
 
-    private static let publishRail: [RailState] = [.reused, .done, .done, .skipped, .done, .done, .current]
-    private static let allDone: [RailState] = [.reused, .done, .done, .skipped, .done, .done, .done]
+    private static let publishRail: [RailState] = [.reused, .done, .done, .skipped, .waiting, .done, .current]
+    private static let allDone: [RailState] = [.reused, .done, .done, .skipped, .waiting, .done, .done]
 
     private static var publishSummary: MockBlock {
         .steps(Copy.publishSummary.enumerated().map { index, line in
@@ -281,7 +282,15 @@ enum CompanyWizardScenes {
                 .fields([MockField(label: Copy.clientSecret, value: "", secure: true)], error: nil),
                 footer(disabled: true)
             ]),
-            WizardScene("google-create", step: 1, rail: rail, [googleGuide, .drop(nil), footer(disabled: true)]),
+            WizardScene("google-create", step: 1, rail: rail, [
+                googleGuide, .buttons(leading: [MockButton(title: Copy.noOrgLink, kind: .quiet)], trailing: []),
+                .drop(nil), footer(disabled: true)
+            ]),
+            WizardScene("google-noOrgAccess", step: 1, rail: rail, [
+                .warning(Copy.noOrgBody, title: Copy.noOrgTitle),
+                .buttons(leading: [MockButton(title: Copy.copyStepsForAdmin)], trailing: []),
+                .drop(nil), footer(disabled: true)
+            ]),
             WizardScene("google-checking", step: 1, rail: rail, [googleGuide, dropped, .busy(Copy.checkingGoogle),
                                                                  footer(disabled: true)]),
             WizardScene("google-checkFailed", step: 1, rail: rail, [
@@ -323,6 +332,11 @@ enum CompanyWizardScenes {
                          MockField(label: Copy.microsoftTenantID, value: "0000-acme")], error: nil),
                 .caption(Copy.microsoftNote),
                 footer()
+            ]),
+            WizardScene("microsoft-adminConsent", step: 4, rail: [.reused, .done, .done, .skipped, .current, .todo, .todo], [
+                .notice(MockNotice(icon: "hourglass", tone: Tone.warning, title: Copy.consentTitle, body: Copy.consentBody)),
+                .values([MockValue(label: Copy.consentLinkLabel, value: Copy.consentLinkValue, button: Copy.copy)]),
+                footer(extra: MockButton(title: Copy.checkAgain))
             ]),
             WizardScene("microsoft-checkFailed", step: 4, rail: [.reused, .done, .done, .skipped, .current, .todo, .todo], [
                 .fields([MockField(label: Copy.microsoftClientID, value: "4b1e0c9d-0000-4f00-a000-00000000077a"),

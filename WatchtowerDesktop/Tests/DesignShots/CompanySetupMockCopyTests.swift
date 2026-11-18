@@ -29,7 +29,15 @@ final class CompanySetupMockCopyTests: XCTestCase {
         }
         XCTAssertTrue(Copy.notCollaborator.contains("Ask the app's owner to add you as a collaborator"))
         XCTAssertEqual(Copy.confirmChecks.count, 3)
-        XCTAssertTrue(Copy.publishSummary[2].hasSuffix("checked by your sign-in"))
+        XCTAssertTrue(Copy.publishSummary[2].hasSuffix("checked and connected by your sign-in"))
+        // Ask #1503: the check sign-in is the person's real connection; Discard keeps it.
+        XCTAssertTrue(Copy.checkingGoogle.contains("connects your own Google account"))
+        XCTAssertTrue(Copy.atlassianSigninWait.contains("connects your own Atlassian account"))
+        XCTAssertTrue(Copy.discardConfirm.contains("stay connected"))
+        XCTAssertTrue(Copy.publishedBody.hasSuffix("Connect this Mac adds the rest."))
+        // The person setting up may not be an admin: the steps say who to ask.
+        XCTAssertTrue(Copy.consentLinkValue.contains("/adminconsent?client_id="))
+        XCTAssertTrue(Copy.noOrgBody.contains("Project Creator role"))
         XCTAssertTrue(Copy.draftUnreadableTitle.hasSuffix("start again"))
     }
 

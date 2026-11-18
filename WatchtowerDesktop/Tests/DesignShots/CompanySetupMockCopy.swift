@@ -36,6 +36,7 @@ enum CompanySetupMockCopy {
     static let railDone = "Done"
     static let railReused = "Reused"
     static let railSkipped = "Skipped"
+    static let railWaiting = "Waiting"
     static let narrowStepLine = "Step 3 of 8 · Google"
     /// "Step <n> of <count> · <step>", the wizard's one-line rail at narrow width.
     static func stepLine(_ index: Int, of rail: [String] = railSteps) -> String {
@@ -72,7 +73,8 @@ enum CompanySetupMockCopy {
     static let resumeLine = "Continuing the setup you started on Nov 17."
     static let discardSetup = "Discard setup"
     static let discardConfirm = "Discard this setup? The draft and the secrets in it are deleted from this Mac. "
-        + "Apps you created stay in Slack, Google, Atlassian, Linear and Microsoft."
+        + "Services you already signed in to stay connected and keep working. Apps you created stay in Slack, "
+        + "Google, Atlassian, Linear and Microsoft."
 
     // MARK: Existing apps first (D19)
 
@@ -144,9 +146,15 @@ enum CompanySetupMockCopy {
     ]
     static let dropJSON = "Drop the client JSON here, or paste it"
     static let droppedJSON = "client_secret_1234-abcd.json · project acme-watchtower"
-    static let checkingGoogle = "Finish in your browser: sign in to Google with this client. Watchtower only checks "
-        + "the client id and secret; nothing is kept."
+    static let checkingGoogle = "Finish in your browser: sign in to Google with this client. Your sign-in checks the "
+        + "client and connects your own Google account."
     static let googleRejected = "Google does not accept this client: invalid_client. Download the JSON again from Credentials."
+    static let noOrgLink = "Can't create a project in your organization?"
+    static let noOrgTitle = "An Internal app needs your company's Google Cloud organization"
+    static let noOrgBody = "The project must sit inside example.com's Google Cloud organization. If you cannot create "
+        + "one there, or Internal is not offered, ask your Google Workspace admin to create the project or to give you "
+        + "the Project Creator role. Then drop the client JSON they send you here."
+    static let copyStepsForAdmin = "Copy the steps for your admin"
     static let googleNetwork = "Could not reach Google: the request timed out. Nothing was saved."
 
     // MARK: Atlassian step
@@ -159,8 +167,8 @@ enum CompanySetupMockCopy {
         "Add a second admin as an owner, so the app outlives one person"
     ]
     static let copyScopes = "Copy scopes"
-    static let atlassianSigninWait = "Finish in your browser: sign in to Atlassian with this app. Watchtower checks "
-        + "the client id, the secret and the callback URLs by your own sign-in; nothing is kept."
+    static let atlassianSigninWait = "Finish in your browser: sign in to Atlassian with this app. Your sign-in checks "
+        + "the client id, the secret and the callback URLs, and connects your own Atlassian account."
     static let atlassianSigninFailed = "Atlassian refused the sign-in: invalid_client. Check the client id and secret, "
         + "and that Watchtower's callback URLs are in the app's Authorization settings."
     static let checkBySignin = "Check by signing in"
@@ -191,6 +199,12 @@ enum CompanySetupMockCopy {
         "API permissions: add the Outlook permissions, then Grant admin consent"
     ]
     static let copyPermissions = "Copy permissions"
+    static let consentTitle = "Your IT admin must approve Watchtower in Microsoft 365"
+    static let consentBody = "Grant admin consent needs a tenant admin. Send your IT admin this link; you can go on "
+        + "with the setup meanwhile. Microsoft 365 shows as waiting until they approve."
+    static let consentLinkLabel = "Admin consent link"
+    static let consentLinkValue = "https://login.microsoftonline.com/0000-acme/adminconsent?client_id=4b1e…77a"
+    static let checkAgain = "Check again"
     static let microsoftClientID = "Application (client) ID"
     static let microsoftTenantID = "Directory (tenant) ID"
     static let microsoftNote = "No secret: Watchtower signs in with PKCE against your tenant."
@@ -215,9 +229,9 @@ enum CompanySetupMockCopy {
     static let publishSummary = [
         "Slack · Watchtower (A0ACME) in acme",
         "Google · acme-watchtower · example.com",
-        "Atlassian · client 9f3a…c21 · acme.atlassian.net · Confluence on · checked by your sign-in",
+        "Atlassian · client 9f3a…c21 · acme.atlassian.net · Confluence on · checked and connected by your sign-in",
         "Linear · skipped: colleagues use Watchtower's shared Linear app",
-        "Microsoft 365 · client 4b1e…77a · tenant 0000-acme",
+        "Microsoft 365 · client 4b1e…77a · tenant 0000-acme · waiting for admin consent",
         "Link deny list · 2 hosts"
     ]
     static let publishCaption = "Writes the connect link and code to the About page of Watchtower's app in Slack."
@@ -225,9 +239,10 @@ enum CompanySetupMockCopy {
     static let publishSteps = ["Packing the company setup", "Writing the link to the Slack app's About page"]
     static let publishedTitle = "Acme is set up"
     static let publishedBody = "Colleagues open Watchtower's app in Slack, go to About and click the link. Without "
-        + "Slack, send them the code, or give IT the profile. You connect like any colleague."
+        + "Slack, send them the code, or give IT the profile. Your checked services are already connected; "
+        + "Connect this Mac adds the rest."
     static let publishedNoSlack = "Slack was skipped, so no page carries the link. Send colleagues the code, "
-        + "or give IT the profile. You connect like any colleague."
+        + "or give IT the profile. Your checked services are already connected; Connect this Mac adds the rest."
     static let linkLabel = "Connect link"
     static let linkValue = "http://127.0.0.1:18551/company/connect?b=eyJ2IjoxLCJjb21wYW55IjoiQWNtZSIs…"
     static let codeLabel = "Connect code"
