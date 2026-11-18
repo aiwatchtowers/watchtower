@@ -37,7 +37,7 @@ You need permission to create apps in your Slack workspace.
 
 The token is used for this setup only and never stored. You can close the window: the setup goes on, and **Connections → Slack** shows where it got to with **Continue setup**. The app is never created twice.
 
-**Your company already has a Watchtower app** (one you connect through today): the sheet says "Watchtower's app already exists in …". Paste the token again and press **Update the app**. Watchtower adds the connect link and the sign-in settings it needs and keeps everything else on the app. The update also turns on Slack's PKCE sign-in for the app, which cannot be undone, and Slack may ask colleagues already connected to allow Watchtower again. You must be one of the app's collaborators, and Watchtower may ask for its **App ID** from the app's Basic Information page.
+**Your company already has a Watchtower app** (one you connect through today): the sheet says "Watchtower's app already exists in …". Paste the token again and press **Update the app**. Watchtower adds the connect link and the sign-in settings it needs and keeps everything else on the app. The update also turns on Slack's PKCE sign-in for the app, which cannot be undone, and Slack may ask colleagues already connected to allow Watchtower again. You must be one of the app's collaborators, and Watchtower may ask for its **App ID** from the app's Basic Information page. If your Watchtower already signs in through that app, the sheet says "This version of Watchtower signs in to … through this app already" and changes nothing: the app moves to the new sign-in with a later Watchtower update.
 
 ### Connect from the app's About page
 <!-- learn

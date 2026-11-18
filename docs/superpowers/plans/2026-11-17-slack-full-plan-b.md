@@ -548,7 +548,7 @@ Rules: absent key → nil (no rows). Wrong type (not an array) → `[]` + `wrong
 
 ### Task 18: Retire the baked Slack app in every build ("T9")
 
-**Depends on:** Task 15, Task 16, Task 17 merged to main and a release with them out; the owner's go (ask). For the corp profile also: the corp admin has run **Set up for my company** (adopt) on the corp app, so its About page carries the link and PKCE Re-login works without the baked id (Q13).
+**Depends on:** Task 15, Task 16, Task 17 merged to main and a release with them out; the owner's go (ask). For the corp profile also: the corp admin runs **Set up for my company** (adopt, `--enable-pkce`) on the corp app together with this task's build — not before: a build that still bakes the corp app refuses to adopt it (`builtin_app_pkce_deferred`, final review M1), because PKCE on would break its secret-based loopback sign-in — so its About page carries the link and PKCE Re-login works without the baked id (Q13).
 
 **Files:**
 - Modify: `scripts/build-app.sh` `retired-slack-id-check` (A15: any release refuses a set `WATCHTOWER_OAUTH_CLIENT_SECRET`; a public release also refuses `WATCHTOWER_OAUTH_CLIENT_ID == RETIRED_SLACK_CLIENT_ID`), `scripts/tests/test-build-app-retired-slack-id.sh` (three more cases)
