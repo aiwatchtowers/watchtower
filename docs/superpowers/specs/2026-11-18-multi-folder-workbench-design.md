@@ -109,6 +109,7 @@ Kit's schema floor if it reads these tables.
 | CLI | `workbench folder add|remove|locate|list --workbench N [--folder P] --json`; `workbench session start … --folder F --parent S`; `workbench message send --to S` (agents use MCP; CLI for tests and the Desktop) |
 | MCP (workbench server) | `start_session(folder, brief, title?, target_id?, agent?)`, `send_to_session(session_id, text)`, `list_sessions()` (live sessions with folder, title, state, parent), `suggest_workbench_folder(path, why)`; `workbench_info` lists folders; `create_targets`/`update_target` take `folder` |
 | Hooks | PostToolUse (Claude) counts outside-bench touches (§6.7) |
+| Session host | new read-only request `PromptState {launch}` → `{holds_text}` (no write, no paste). A host that predates it answers `unknown_request`; the deliverer then falls back to `UserPromptSubmit` and the run's end, and the pane notice gets a `Dismiss` that sets `prompt_cleared_at` by hand. Hosts are adopted across updates (PROJ-20), so the fallback is needed until the old host restarts. |
 | Daemon | delivers `session_messages` (§6.6) |
 
 The pack version (DEV-06 tool count) goes up by four tools.
@@ -221,9 +222,9 @@ becomes `delivered` with reason `typed_not_submitted`, is never pasted again, an
 gets `[Message to #<id> was typed into the session but not submitted; it waits in its prompt.]`
 — the text sits in the receiver's prompt for its next submit, and a later message to that
 session is held by the prompt-text check until then. The owner sees it: such a row carries `prompt_cleared_at` (NULL while the text may still sit
-there). The deliverer sets it, on each tick for every row still NULL, when the session host's
-prompt-text read (the same read `HoldIfPromptText` uses, no hooks needed) reports an empty
-prompt, when a `UserPromptSubmit` is recorded after the row, or when the session's run ends.
+there). The deliverer sets it, on each tick for every row still NULL, when the session host's new read-only `PromptState` request (§5; it returns
+`sess.prompt.holdsText()` — the state `Deliver`'s `HoldIfPromptText` already tracks — under the
+session's lock, writing nothing; no hooks needed) reports an empty prompt, when a `UserPromptSubmit` is recorded after the row, or when the session's run ends.
 While any row of the session has `prompt_cleared_at` NULL, the session row's state line adds `· Agent message waiting in the
 prompt` (Tone warning) and the pane shows a notice `An agent's message is in the prompt. Press
 Return in the terminal to send it.` with `Show in Terminal`. Held `finished` messages never
@@ -484,7 +485,8 @@ Every string above lives in a presentation model with a test (owner rule).
 9. MCP `start_session`, `list_sessions`, sub-session brief header, limits.
 10. Extract the line gate to `internal/sessionline` (today shaped for the phone: its signature
     and the hub's `transporttest` cases move with it; the hub keeps a thin adapter);
-    `session_messages` + MCP `send_to_session` + daemon `MessageDeliverer` + finish → parent.
+    `session_messages` + MCP `send_to_session` + daemon `MessageDeliverer` + finish → parent; session-host `PromptState` request (client,
+    server, old-host fallback test).
 11. Hook detection + `suggest_workbench_folder` + ask kind `folder`.
 12. Desktop: models (`WorkbenchFolder`, session/target columns), `CodeRoot` per folder.
 13. Desktop: FILES multi-root + root states + context menu + Put on the Bench (switcher, header).
@@ -539,6 +541,7 @@ Every string above lives in a presentation model with a test (owner rule).
 | D38 | PROJ-09 amended: a merge moves the merged bench's targets with their trees | ask #1548 |
 | D39 | A `typed` delivery is final (never re-pasted); the sender is told it waits in the prompt | decided by the agent |
 | D40 | A message left in a prompt is flagged on the row and pane; finish reports never expire while the parent exists | decided by the agent |
+| D41 | New read-only session-host request `PromptState`; old hosts fall back to hook/run end + a manual Dismiss | decided by the agent |
 
 ## Left to the builder
 Exact migration number; how `CodeRoot` encodes the folder id in its defaults key; the hub's
