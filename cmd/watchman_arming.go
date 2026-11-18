@@ -241,39 +241,32 @@ func watchmanArm(cmd *cobra.Command, out *watchmanArmJSON) error {
 		out.LearningStarted = len(notOn) > 0
 	}
 	// A row already there keeps its armed_at: re-arming does not move
-	// "Sleep since".
-	existing, err := database.ListWatchmanArming()
-	if err != nil {
-		return err
-	}
+	// "Sleep since" (one INSERT … DO NOTHING, so no check-then-write race).
 	now := time.Now()
 	changed := false
 	for _, r := range rows {
-		if slices.ContainsFunc(existing, func(a db.WatchmanArming) bool { return a.Scope == r.Scope && a.RefID == r.RefID }) {
-			continue
-		}
 		r.ArmedAt, r.ArmedBy = now, "cli"
-		if err := database.UpsertWatchmanArming(r); err != nil {
+		inserted, err := database.ArmWatchman(r)
+		if err != nil {
 			return err
 		}
-		changed = true
-	}
-	arming, err := watchmanact.RefreshSidecar(cmd.Context(), cfg.WorkspaceDir(), database)
-	out.Armed = watchman.ArmedEntries(arming)
-	if err != nil {
-		if arming == nil {
-			if arming, err = database.ListWatchmanArming(); err != nil {
-				return err
-			}
-			out.Armed = watchman.ArmedEntries(arming)
-		}
-		out.SidecarError = err.Error()
+		changed = changed || inserted
 	}
 	// The daemon's upkeep takes the hold and its learning phase does the
 	// backfill; arm never runs either.
 	if changed || out.LearningStarted {
-		watchmanArmingNudge(cmd, cfg)
+		defer watchmanArmingNudge(cmd, cfg)
 	}
+	arming, refreshErr := watchmanact.RefreshSidecar(cmd.Context(), cfg.WorkspaceDir(), database)
+	if refreshErr != nil {
+		out.SidecarError = refreshErr.Error()
+		if arming == nil {
+			if arming, err = database.ListWatchmanArming(); err != nil {
+				return err
+			}
+		}
+	}
+	out.Armed = watchman.ArmedEntries(arming)
 	return nil
 }
 

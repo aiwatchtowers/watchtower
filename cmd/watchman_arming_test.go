@@ -424,3 +424,20 @@ func TestWatchmanArm_SidecarFailureStillOK(t *testing.T) {
 	assert.NotEmpty(t, d.SidecarError)
 	assert.Empty(t, armingRows(t))
 }
+
+// The sidecar's lock cannot be taken (refresh returns no rows): the arm
+// still says ok with sidecar_error, lists the rows and nudges the daemon.
+func TestWatchmanArm_SidecarLockFailureStillOK(t *testing.T) {
+	wb, _ := watchmanFixture(t)
+	s1, _ := armSession(t, wb, "claude", nil, false)
+	nudges := countArmingNudges(t)
+	// A directory where the lock file goes: it cannot be opened for writing.
+	require.NoError(t, os.MkdirAll(testSidecarPath(t)+".lock", 0o755))
+	r, out, err := armCLI(t, "arm", "--session", strconv.FormatInt(s1, 10), "--json")
+	require.NoError(t, err, out)
+	assert.True(t, r.OK)
+	assert.Contains(t, r.SidecarError, "lock")
+	require.Len(t, r.Armed, 1)
+	assert.Equal(t, s1, r.Armed[0].ID)
+	assert.Equal(t, 1, *nudges)
+}

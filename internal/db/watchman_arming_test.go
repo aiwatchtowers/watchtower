@@ -168,3 +168,19 @@ func TestPruneWatchmanArming_DropsWhatCannotBeDecided(t *testing.T) {
 	require.Equal(t, [2]string{"session", "target"}, [2]string{got[0].Scope, got[1].Scope})
 	require.Equal(t, [2]int64{10, 1}, [2]int64{got[0].RefID, got[1].RefID})
 }
+
+func TestArmWatchman_KeepsExistingRow(t *testing.T) {
+	d := openTestDB(t)
+	t0 := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	ok, err := d.ArmWatchman(WatchmanArming{Scope: "session", RefID: 7, ArmedAt: t0, ArmedBy: "desktop"})
+	require.NoError(t, err)
+	require.True(t, ok)
+	ok, err = d.ArmWatchman(WatchmanArming{Scope: "session", RefID: 7, ArmedAt: t0.Add(time.Hour), ArmedBy: "cli"})
+	require.NoError(t, err)
+	require.False(t, ok)
+	got, err := d.ListWatchmanArming()
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.True(t, got[0].ArmedAt.Equal(t0))
+	require.Equal(t, "desktop", got[0].ArmedBy)
+}

@@ -66,8 +66,12 @@ func (d *Daemon) phaseWatchmanUpkeep(ctx context.Context) {
 	arming, err := watchmanact.RefreshSidecar(ctx, d.config.WorkspaceDir(), d.db)
 	if err != nil {
 		d.logger.Printf("watchman upkeep: %v", err)
+		// The hold and the gap do not depend on the sidecar.
 		if arming == nil {
-			return
+			if arming, err = d.db.ListWatchmanArming(); err != nil {
+				d.logger.Printf("watchman upkeep: %v", err)
+				return
+			}
 		}
 	}
 	armed := len(arming) > 0

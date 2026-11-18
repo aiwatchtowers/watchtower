@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -229,4 +230,24 @@ func TestWatchmanUpkeep_PrunesStaleArmingBeforeHold(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, rows, 1)
 	assert.Equal(t, []string{WatchmanAwakeReason}, awake.holds)
+}
+
+// A sidecar refresh that fails before reading (its lock cannot be taken)
+// still leaves the hold and the gap recording to run from the database.
+func TestWatchmanUpkeep_SidecarFailureStillHolds(t *testing.T) {
+	d, database, logs, clk := newUpkeepDaemon(t)
+	awake := &fakeAwake{}
+	d.SetWatchmanAwake(awake.hold)
+	ctx := context.Background()
+	wb, err := database.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	armUpkeepSession(t, database, upkeepSession(t, database, wb, t.TempDir()))
+	require.NoError(t, os.MkdirAll(watchmanact.SidecarPath(d.config.WorkspaceDir())+".lock", 0o755))
+
+	d.phaseWatchmanUpkeep(ctx)
+	assert.Contains(t, logs.String(), "watchman sidecar")
+	assert.Equal(t, []string{WatchmanAwakeReason}, awake.holds)
+	clk.advance(5*time.Hour, 0)
+	d.phaseWatchmanUpkeep(ctx)
+	assert.Len(t, gapRows(t, database), 1)
 }

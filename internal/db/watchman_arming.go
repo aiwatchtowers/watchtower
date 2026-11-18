@@ -40,6 +40,18 @@ func (db *DB) UpsertWatchmanArming(a WatchmanArming) error {
 	return nil
 }
 
+// ArmWatchman inserts the row unless (scope, ref_id) is already armed, which
+// keeps its armed_at and armed_by; inserted reports a new row.
+func (db *DB) ArmWatchman(a WatchmanArming) (inserted bool, err error) {
+	res, err := db.Exec(`INSERT INTO watchman_arming (scope, ref_id, armed_at, armed_by) VALUES (?, ?, ?, ?)
+		ON CONFLICT(scope, ref_id) DO NOTHING`, a.Scope, a.RefID, wmArmTime(a.ArmedAt), a.ArmedBy)
+	if err != nil {
+		return false, fmt.Errorf("arming watchman %s %d: %w", a.Scope, a.RefID, err)
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
 // DeleteWatchmanArming removes one row; false when there was none.
 func (db *DB) DeleteWatchmanArming(scope string, refID int64) (bool, error) {
 	res, err := db.Exec(`DELETE FROM watchman_arming WHERE scope = ? AND ref_id = ?`, scope, refID)
