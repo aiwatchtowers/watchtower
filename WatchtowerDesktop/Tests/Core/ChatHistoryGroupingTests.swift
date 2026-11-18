@@ -1,8 +1,8 @@
+import ChatWire
 import XCTest
-import GRDB
-import WatchtowerTestSupport
 @testable import WatchtowerCore
 
+/// The Chats panel's Pinned / Recent / older sections over the engine's list.
 final class ChatHistoryGroupingTests: XCTestCase {
     private let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
     private let day: TimeInterval = 86_400
@@ -12,19 +12,15 @@ final class ChatHistoryGroupingTests: XCTestCase {
         return cal
     }
 
-    private func conversations(_ ages: [(String, TimeInterval, Bool)]) throws -> [ChatConversation] {
-        let db = try TestDatabase.create()
-        return try db.write { d in
-            for (title, age, pinned) in ages {
-                try TestDatabase.insertChatConversation(
-                    d, title: title, updatedAt: now.addingTimeInterval(-age).timeIntervalSince1970, pinned: pinned)
-            }
-            return try ChatConversationQueries.fetchAll(d)
+    private func conversations(_ ages: [(String, TimeInterval, Bool)]) -> [ChatList.Conversation] {
+        ages.enumerated().map { index, row in
+            ChatList.Conversation(id: Int64(index + 1), title: row.0, pinned: row.2,
+                                  updatedAt: now.addingTimeInterval(-row.1), state: .read)
         }
     }
 
-    func testPinnedRecentOlder() throws {
-        let convs = try conversations([
+    func testPinnedRecentOlder() {
+        let convs = conversations([
             ("today", 3600, false), ("yesterday", day, false), ("week", 6 * day, false),
             ("month", 20 * day, false), ("old", 60 * day, false), ("pinned-old", 90 * day, true),
             ("pinned-new", 60, true)
@@ -40,9 +36,9 @@ final class ChatHistoryGroupingTests: XCTestCase {
     /// back is still recent, eight is older, whatever the hour.
     func testSevenDayBoundaryOnStartOfDay() throws {
         let startOfToday = calendar.startOfDay(for: now)
-        let sevenBack = startOfToday.addingTimeInterval(-7 * day + 1)   // the first second of 7 days back
-        let eightBack = startOfToday.addingTimeInterval(-7 * day - 1)   // the last second of 8 days back
-        let convs = try conversations([
+        let sevenBack = startOfToday.addingTimeInterval(-7 * day + 1)
+        let eightBack = startOfToday.addingTimeInterval(-7 * day - 1)
+        let convs = conversations([
             ("seven", now.timeIntervalSince(sevenBack), false), ("eight", now.timeIntervalSince(eightBack), false)
         ])
         let seven = try XCTUnwrap(convs.first { $0.title == "seven" })
@@ -52,33 +48,12 @@ final class ChatHistoryGroupingTests: XCTestCase {
     }
 
     func testEmptyInputHasNoSections() {
-        XCTAssertTrue(ChatHistoryGrouping.group([ChatConversation](), now: now, calendar: calendar).isEmpty)
-    }
-
-    func testArchivedSkipped() throws {
-        let db = try TestDatabase.create()
-        let convs = try db.write { d in
-            let id = try TestDatabase.insertChatConversation(d, title: "gone", updatedAt: now.timeIntervalSince1970)
-            try d.execute(sql: "UPDATE chat_conversations SET archived_at = 1 WHERE id = ?", arguments: [id])
-            return try ChatConversationQueries.fetchAll(d)
-        }
-        XCTAssertTrue(ChatHistoryGrouping.group(convs, now: now, calendar: calendar).isEmpty)
+        XCTAssertTrue(ChatHistoryGrouping.group([], now: now, calendar: calendar).isEmpty)
     }
 
     func testNewestFirstInsideASection() throws {
-        let convs = try conversations([("older", 7200, false), ("newer", 60, false)])
+        let convs = conversations([("older", 7200, false), ("newer", 60, false)])
         let recent = try XCTUnwrap(ChatHistoryGrouping.group(convs, now: now, calendar: calendar).first)
         XCTAssertEqual(recent.items.map(\.title), ["newer", "older"])
-    }
-
-    func testGroupsPanelRows() throws {
-        let convs = try conversations([("pinned", 50 * day, true), ("fresh", 60, false)])
-        let rows = convs.map {
-            ChatPanelRow(conversation: $0, lastAnswerAt: nil, lastAnswerPreview: "",
-                         pendingApprovals: 0, pendingTool: nil, projectName: nil)
-        }
-        let sections = ChatHistoryGrouping.group(rows, now: now, calendar: calendar)
-        XCTAssertEqual(sections.map(\.kind), [.pinned, .recent])
-        XCTAssertEqual(sections.map { $0.items.map(\.conversation.title) }, [["pinned"], ["fresh"]])
     }
 }

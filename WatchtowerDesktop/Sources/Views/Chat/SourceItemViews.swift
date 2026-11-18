@@ -1,5 +1,7 @@
 import SwiftUI
 import WatchtowerCore
+import WatchtowerChatText
+import ChatUI
 
 /// A sources-panel group header: kind icon, name, count.
 struct SourceGroupHeader: View {
@@ -7,7 +9,7 @@ struct SourceGroupHeader: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: SourcesSummaryRow.icon(group.kind)).font(.caption)
+            Image(systemName: ChatSource.icon(forKind: group.kind)).font(.caption)
             Text(group.name).font(.subheadline.weight(.semibold)).lineLimit(1)
             Text("\(group.sources.count)").font(.caption).foregroundStyle(.secondary)
         }

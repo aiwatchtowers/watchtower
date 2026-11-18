@@ -1,0 +1,597 @@
+[
+  {
+    "kind": "text",
+    "turn_id": "t1",
+    "message": {
+      "id": 2,
+      "role": "assistant",
+      "text": "Here is the **plan**.",
+      "text_cut": false,
+      "status": "complete",
+      "created_at": 1794000000,
+      "siblings": {
+        "index": 1,
+        "count": 1
+      },
+      "attachments": [],
+      "steps": [],
+      "parts": []
+    },
+    "conversation": {
+      "id": 7,
+      "title": "Plan",
+      "routing": {
+        "mode": "auto"
+      },
+      "actual_provider": "claude",
+      "actual_model": "sonnet"
+    },
+    "actions": [],
+    "part": {
+      "kind": "text",
+      "payload": {
+        "text": "Here is the **plan**.",
+        "text_cut": false
+      },
+      "fallback": {
+        "text": "Here is the **plan**.",
+        "actions": []
+      }
+    }
+  },
+  {
+    "kind": "steps",
+    "turn_id": "t1",
+    "message": {
+      "id": 2,
+      "role": "assistant",
+      "text": "Searching.",
+      "text_cut": false,
+      "status": "complete",
+      "created_at": 1794000000,
+      "siblings": {
+        "index": 1,
+        "count": 1
+      },
+      "attachments": [],
+      "steps": [
+        {
+          "name": "list_messages",
+          "ok": true,
+          "summary": "Searched Slack: roadmap",
+          "sources": []
+        }
+      ],
+      "parts": []
+    },
+    "conversation": {
+      "id": 7,
+      "title": "Plan",
+      "routing": {
+        "mode": "auto"
+      },
+      "actual_provider": "claude",
+      "actual_model": "sonnet"
+    },
+    "actions": [],
+    "part": {
+      "kind": "steps",
+      "payload": {
+        "steps": [
+          {
+            "name": "list_messages",
+            "ok": true,
+            "summary": "Searched Slack: roadmap"
+          }
+        ]
+      },
+      "fallback": {
+        "text": "Steps:\n- Searched Slack: roadmap (done)",
+        "actions": []
+      }
+    }
+  },
+  {
+    "kind": "sources",
+    "turn_id": "t1",
+    "message": {
+      "id": 2,
+      "role": "assistant",
+      "text": "Found it.",
+      "text_cut": false,
+      "status": "complete",
+      "created_at": 1794000000,
+      "siblings": {
+        "index": 1,
+        "count": 1
+      },
+      "attachments": [],
+      "steps": [
+        {
+          "name": "list_messages",
+          "ok": true,
+          "summary": "Searched Slack: roadmap",
+          "sources": [
+            {
+              "kind": "slack",
+              "title": "#general thread",
+              "url": "https://acme.example.com/archives/C1/p1",
+              "ref": "1:C1:1.1"
+            }
+          ]
+        }
+      ],
+      "parts": []
+    },
+    "conversation": {
+      "id": 7,
+      "title": "Plan",
+      "routing": {
+        "mode": "auto"
+      },
+      "actual_provider": "claude",
+      "actual_model": "sonnet"
+    },
+    "actions": [],
+    "part": {
+      "kind": "sources",
+      "payload": {
+        "sources": [
+          {
+            "kind": "slack",
+            "title": "#general thread",
+            "url": "https://acme.example.com/archives/C1/p1",
+            "ref": "1:C1:1.1"
+          }
+        ]
+      },
+      "fallback": {
+        "text": "Sources:\n- #general thread (https://acme.example.com/archives/C1/p1)",
+        "actions": []
+      }
+    }
+  },
+  {
+    "kind": "artifact",
+    "client_derived": true,
+    "turn_id": "t1",
+    "message": {
+      "id": 2,
+      "role": "assistant",
+      "text": "Here it is:\n:::artifact key=\"q3\" kind=\"document\" title=\"Q3 plan\"\n# Q3\n- ship\n:::\nDone.",
+      "text_cut": false,
+      "status": "complete",
+      "created_at": 1794000000,
+      "siblings": {
+        "index": 1,
+        "count": 1
+      },
+      "attachments": [],
+      "steps": [],
+      "parts": []
+    },
+    "conversation": {
+      "id": 7,
+      "title": "Plan",
+      "routing": {
+        "mode": "auto"
+      },
+      "actual_provider": "claude",
+      "actual_model": "sonnet"
+    },
+    "actions": [],
+    "part": {
+      "kind": "text",
+      "payload": {
+        "text": "Here it is:\n:::artifact key=\"q3\" kind=\"document\" title=\"Q3 plan\"\n# Q3\n- ship\n:::\nDone.",
+        "text_cut": false
+      },
+      "fallback": {
+        "text": "Here it is:\n:::artifact key=\"q3\" kind=\"document\" title=\"Q3 plan\"\n# Q3\n- ship\n:::\nDone.",
+        "actions": []
+      }
+    }
+  },
+  {
+    "kind": "approval",
+    "turn_id": "t1",
+    "message": {
+      "id": 2,
+      "role": "assistant",
+      "text": "I propose a message.",
+      "text_cut": false,
+      "status": "complete",
+      "created_at": 1794000000,
+      "siblings": {
+        "index": 1,
+        "count": 1
+      },
+      "attachments": [],
+      "steps": [],
+      "parts": []
+    },
+    "conversation": {
+      "id": 7,
+      "title": "Plan",
+      "routing": {
+        "mode": "auto"
+      },
+      "actual_provider": "claude",
+      "actual_model": "sonnet"
+    },
+    "actions": [
+      {
+        "id": 9,
+        "tool": "send_slack_message",
+        "title": "Send slack message",
+        "args_display": "{\n  \"channel\": \"#general\",\n  \"text\": \"hi\"\n}",
+        "args_sha256": "abc123",
+        "status": "pending",
+        "external": true,
+        "error": "Slack refused the first try",
+        "result": {
+          "label": "ACME-1",
+          "url": "https://example.com/acme-1",
+          "warning": "mirror failed"
+        },
+        "turn_id": "t1",
+        "args_complete": true
+      }
+    ],
+    "part": {
+      "kind": "approval",
+      "payload": {
+        "args_complete": true,
+        "args_display": "{\n  \"channel\": \"#general\",\n  \"text\": \"hi\"\n}",
+        "args_sha256": "abc123",
+        "error": "Slack refused the first try",
+        "external": true,
+        "id": 9,
+        "result": {
+          "label": "ACME-1",
+          "url": "https://example.com/acme-1",
+          "warning": "mirror failed"
+        },
+        "status": "pending",
+        "title": "Send slack message",
+        "tool": "send_slack_message",
+        "turn_id": "t1"
+      },
+      "fallback": {
+        "text": "Send a Slack message to #general — waiting for your approval",
+        "actions": [
+          {
+            "label": "Open on the Mac",
+            "action": "none"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "kind": "question",
+    "client_derived": true,
+    "turn_id": "t1",
+    "message": {
+      "id": 2,
+      "role": "assistant",
+      "text": "Pick one.\n```watchtower-question\n{\"questions\":[{\"id\":\"scope\",\"question\":\"Which release?\",\"options\":[{\"label\":\"v1\",\"description\":\"New\",\"recommended\":true},{\"label\":\"v2\"}]}]}\n```",
+      "text_cut": false,
+      "status": "complete",
+      "created_at": 1794000000,
+      "siblings": {
+        "index": 1,
+        "count": 1
+      },
+      "attachments": [],
+      "steps": [],
+      "parts": []
+    },
+    "conversation": {
+      "id": 7,
+      "title": "Plan",
+      "routing": {
+        "mode": "auto"
+      },
+      "actual_provider": "claude",
+      "actual_model": "sonnet"
+    },
+    "actions": [],
+    "part": {
+      "kind": "text",
+      "payload": {
+        "text": "Pick one.\n```watchtower-question\n{\"questions\":[{\"id\":\"scope\",\"question\":\"Which release?\",\"options\":[{\"label\":\"v1\",\"description\":\"New\",\"recommended\":true},{\"label\":\"v2\"}]}]}\n```",
+        "text_cut": false
+      },
+      "fallback": {
+        "text": "Pick one.\n\nWhich release?\n- v1 (recommended)\n- v2",
+        "actions": []
+      }
+    }
+  },
+  {
+    "kind": "error",
+    "turn_id": "t1",
+    "message": {
+      "id": 2,
+      "role": "assistant",
+      "text": "",
+      "text_cut": false,
+      "status": "error",
+      "error_code": "rate_limit",
+      "error_message": "429 too many requests",
+      "created_at": 1794000000,
+      "siblings": {
+        "index": 1,
+        "count": 1
+      },
+      "attachments": [],
+      "steps": [],
+      "parts": []
+    },
+    "conversation": {
+      "id": 7,
+      "title": "Plan",
+      "routing": {
+        "mode": "auto"
+      },
+      "actual_provider": "claude",
+      "actual_model": "sonnet"
+    },
+    "actions": [],
+    "part": {
+      "kind": "error",
+      "payload": {
+        "code": "rate_limit",
+        "message": "429 too many requests"
+      },
+      "fallback": {
+        "text": "The provider is rate-limiting requests. Try again in a moment.\n429 too many requests",
+        "actions": [
+          {
+            "label": "Try again",
+            "action": "chat_turn",
+            "text": "Please try again."
+          }
+        ]
+      }
+    }
+  },
+  {
+    "kind": "remember_mark",
+    "turn_id": "t1",
+    "message": {
+      "id": 3,
+      "role": "user",
+      "text": "remember: I prefer short answers",
+      "text_cut": false,
+      "status": "complete",
+      "created_at": 1794000000,
+      "siblings": {
+        "index": 1,
+        "count": 1
+      },
+      "attachments": [],
+      "steps": [],
+      "parts": []
+    },
+    "conversation": {
+      "id": 7,
+      "title": "Plan",
+      "routing": {
+        "mode": "auto"
+      },
+      "actual_provider": "claude",
+      "actual_model": "sonnet"
+    },
+    "actions": [],
+    "part": {
+      "kind": "remember_mark",
+      "payload": {
+        "rule": "I prefer short answers"
+      },
+      "fallback": {
+        "text": "Remembering for all chats: I prefer short answers",
+        "actions": []
+      }
+    }
+  },
+  {
+    "kind": "knowledge_mark",
+    "turn_id": "t1",
+    "message": {
+      "id": 3,
+      "role": "user",
+      "text": "decided: ship on Friday",
+      "text_cut": false,
+      "status": "complete",
+      "created_at": 1794000000,
+      "siblings": {
+        "index": 1,
+        "count": 1
+      },
+      "attachments": [],
+      "steps": [],
+      "parts": []
+    },
+    "conversation": {
+      "id": 7,
+      "title": "Plan",
+      "routing": {
+        "mode": "auto"
+      },
+      "actual_provider": "claude",
+      "actual_model": "sonnet"
+    },
+    "actions": [],
+    "part": {
+      "kind": "knowledge_mark",
+      "payload": {
+        "kind": "decision"
+      },
+      "fallback": {
+        "text": "Saved as a decision",
+        "actions": []
+      }
+    }
+  },
+  {
+    "kind": "published_link",
+    "turn_id": "t1",
+    "message": {
+      "id": 2,
+      "role": "assistant",
+      "text": "Published.",
+      "text_cut": false,
+      "status": "complete",
+      "created_at": 1794000000,
+      "siblings": {
+        "index": 1,
+        "count": 1
+      },
+      "attachments": [],
+      "steps": [
+        {
+          "name": "Artifact",
+          "ok": true,
+          "summary": "Published Quarterly plan",
+          "sources": [
+            {
+              "kind": "claude_ai_published",
+              "title": "Quarterly plan",
+              "url": "https://claude.ai/artifact/PrbbeQQQQQQQQQQQQQQQQQ",
+              "ref": "https://claude.ai/artifact/PrbbeQQQQQQQQQQQQQQQQQ"
+            }
+          ]
+        }
+      ],
+      "parts": []
+    },
+    "conversation": {
+      "id": 7,
+      "title": "Plan",
+      "routing": {
+        "mode": "auto"
+      },
+      "actual_provider": "claude",
+      "actual_model": "sonnet"
+    },
+    "actions": [],
+    "part": {
+      "kind": "published_link",
+      "payload": {
+        "title": "Quarterly plan",
+        "url": "https://claude.ai/artifact/PrbbeQQQQQQQQQQQQQQQQQ"
+      },
+      "fallback": {
+        "text": "Published on claude.ai: Quarterly plan",
+        "actions": [
+          {
+            "label": "Open",
+            "action": "open_url",
+            "url": "https://claude.ai/artifact/PrbbeQQQQQQQQQQQQQQQQQ"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "kind": "attachment",
+    "turn_id": "t1",
+    "message": {
+      "id": 3,
+      "role": "user",
+      "text": "See the file.",
+      "text_cut": false,
+      "status": "complete",
+      "created_at": 1794000000,
+      "siblings": {
+        "index": 1,
+        "count": 1
+      },
+      "attachments": [
+        {
+          "id": 5,
+          "name": "notes.pdf",
+          "mime": "application/pdf",
+          "size": 20480
+        }
+      ],
+      "steps": [],
+      "parts": []
+    },
+    "conversation": {
+      "id": 7,
+      "title": "Plan",
+      "routing": {
+        "mode": "auto"
+      },
+      "actual_provider": "claude",
+      "actual_model": "sonnet"
+    },
+    "actions": [],
+    "part": {
+      "kind": "attachment",
+      "payload": {
+        "id": 5,
+        "name": "notes.pdf",
+        "mime": "application/pdf",
+        "size": 20480
+      },
+      "fallback": {
+        "text": "Attachment: notes.pdf (application/pdf, 20 KB)",
+        "actions": []
+      }
+    }
+  },
+  {
+    "kind": "routing_note",
+    "turn_id": "t1",
+    "message": {
+      "id": 2,
+      "role": "assistant",
+      "text": "Working on it.",
+      "text_cut": false,
+      "status": "complete",
+      "created_at": 1794000000,
+      "siblings": {
+        "index": 1,
+        "count": 1
+      },
+      "attachments": [],
+      "steps": [],
+      "parts": []
+    },
+    "conversation": {
+      "id": 7,
+      "title": "Plan",
+      "routing": {
+        "mode": "pinned",
+        "provider": "codex",
+        "model": "gpt-x"
+      },
+      "actual_provider": "codex",
+      "actual_model": "gpt-x",
+      "lease": {
+        "owner": "hub",
+        "turn_id": "t1",
+        "waiting_slot": false
+      }
+    },
+    "actions": [],
+    "part": {
+      "kind": "routing_note",
+      "payload": {
+        "actual_model": "gpt-x",
+        "actual_provider": "codex",
+        "mode": "pinned",
+        "model": "gpt-x",
+        "provider": "codex"
+      },
+      "fallback": {
+        "text": "Current provider: codex · gpt-x",
+        "actions": []
+      }
+    }
+  }
+]

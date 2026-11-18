@@ -1,5 +1,6 @@
 import XCTest
 @testable import WatchtowerCore
+import WatchtowerChatText
 
 /// A card link (`link`, an action's `open`) is checked again at press time:
 /// http(s), or `watchtower-nav://` to a visible screen, nothing else.

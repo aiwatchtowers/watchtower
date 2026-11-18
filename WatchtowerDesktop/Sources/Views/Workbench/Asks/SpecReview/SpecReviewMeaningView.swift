@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import ChatUI
 
 /// Spec review, step 1 (spec §7): the ask's own header (its summary, focus
 /// points, what changed on a re-round, its questions to answer), the

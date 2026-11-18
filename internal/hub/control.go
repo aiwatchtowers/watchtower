@@ -20,10 +20,10 @@ import (
 	"watchtower/internal/hub/actions/handlers"
 	"watchtower/internal/hub/adopt"
 	"watchtower/internal/hub/link"
-	"watchtower/internal/hub/platform"
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/platform"
 	"watchtower/internal/policy"
 )
 
@@ -137,8 +137,9 @@ type ControlRequest struct {
 	DisplayOver  []ShownOverWire `json:"display_over,omitempty"`
 	Phase        string          `json:"phase,omitempty"`
 	Percent      *int            `json:"percent,omitempty"`
-	// ChatLease is a desktop_heartbeat's flag: 1 = the app honours
-	// chat_turn_leases (iPhone chat D18); absent from an older app.
+	// ChatLease is a desktop_heartbeat's old chat_lease flag: accepted and
+	// ignored for one release (unified chat §6.4: no desktop_too_old any
+	// more), then gone with the app's field.
 	ChatLease int `json:"chat_lease,omitempty"`
 }
 
@@ -494,7 +495,7 @@ func (s *supervisor) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		now := s.o.Clock()
 		wasFresh, _, err := s.st.DesktopHost(now)
 		wasFresh = err == nil && wasFresh
-		if err := s.st.HeartbeatChat(now, r.ChatLease == 1); err != nil {
+		if err := s.st.Heartbeat(now); err != nil {
 			return ControlAnswer{Error: ErrClassFailed}
 		}
 		s.recordingsChanged() // the first beat turns the default switch on

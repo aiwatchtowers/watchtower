@@ -5,9 +5,11 @@ import WatchtowerChatText
 /// build URLs, copy to the pasteboard, open URLs and write local chat rows;
 /// none may reach a process, the CLI, the network or the provider session.
 ///
-/// `AssistantMessageBody` (the artifact-card renderer) lives in
-/// `ChatMessageRow.swift` — it extends Task 14's existing type rather than a
-/// separate file (preflight A36), so that file is scanned here too.
+/// Since unified chat T12 every chat draws its artifact cards, rows and
+/// published-link cards with ChatUI (`ArtifactPartView`, `ChatMessageRow`,
+/// `PublishedLinkPartView`); those are scanned once, by ChatUI's
+/// `testChat05FallbackAndArtifactActionsOnlyOpenOrCopy` (ruling F18). This
+/// test scans what is left of the artifact path in the app.
 final class ArtifactChat05ScanTests: XCTestCase {
     /// BEHAVIOR CHAT-05 — see docs/inventory/chat.md
     func testChat05ArtifactSurfacesNeverWrite() throws {
@@ -15,16 +17,19 @@ final class ArtifactChat05ScanTests: XCTestCase {
             "../../WatchtowerChatText/Sources/WatchtowerChatText/ArtifactParser.swift",
             // The artifact links both apps resolve in a reply (iPhone chat).
             "../../WatchtowerChatText/Sources/WatchtowerChatText/ArtifactLinks.swift",
-            "WatchtowerCore/Services/Chat/ArtifactActions.swift",
+            "../../WatchtowerChatText/Sources/WatchtowerChatText/ArtifactActions.swift",
+            "../../WatchtowerChatText/Sources/WatchtowerChatText/ChatArtifactActions.swift",
+            "WatchtowerCore/Services/Chat/ArtifactActions+Slack.swift",
             "WatchtowerCore/Services/Chat/ArtifactPanelModel.swift",
             "Views/Chat/ArtifactPanelView.swift",
-            "Views/Chat/ArtifactCardView.swift",
             "Views/Chat/ArtifactActionPerformer.swift",
             // Print… / Export as Word: the print panel and a local file only.
             "WatchtowerCore/Services/Chat/ArtifactPrint.swift",
             "Views/Chat/ArtifactPrinter.swift",
-            "Views/Chat/ChatMessageRow.swift",
             "Views/Chat/ChatInspectorContent.swift",
+            // The embedded chats' artifact sheet (ChatUI's viewer) and the Mac's hooks under ChatUI's cards.
+            "Views/Chat/Embedded/EmbeddedArtifactSheet.swift",
+            "Views/Chat/DesignKitChatStyle.swift",
             // Artifact comments (projects POC phase 6): comments reach the
             // assistant only as the owner's own message, sent by the chat.
             "WatchtowerCore/Services/Chat/ArtifactCommentsModel.swift",
@@ -45,7 +50,7 @@ final class ArtifactChat05ScanTests: XCTestCase {
             // controls are view-only, and it never reaches the loopback
             // server (workbench files only) or any socket.
             "Views/Common/SandboxedHTMLView.swift",
-            "WatchtowerCore/Services/LocalPreview/HTMLPreviewPolicy.swift",
+            "../../WatchtowerChatText/Sources/WatchtowerChatText/HTMLPreviewPolicy.swift",
             // The in-app preview's file scheme handler (#563): read-only
             // from disk, no socket or URL loading of its own.
             "Views/Common/SandboxedHTMLSchemeHandler.swift"
@@ -56,12 +61,12 @@ final class ArtifactChat05ScanTests: XCTestCase {
     /// CHAT-05 on the "Published on claude.ai" card (#737): the card and its
     /// model only open the claude.ai link or copy it — the same forbidden
     /// list as the artifact side. Publishing itself happens in the session,
-    /// behind the gate; the card never sends.
+    /// behind the gate; the card never sends. The card is ChatUI's
+    /// `PublishedLinkPartView` since T12, scanned by ChatUI's CHAT-05 test.
     /// BEHAVIOR CHAT-05 — see docs/inventory/chat.md
     func testChat05PublishedLinkCardOnlyOpensOrCopies() throws {
         try assertNeverWrites([
-            "WatchtowerCore/Services/Chat/PublishedLink.swift",
-            "Views/Chat/PublishedLinkCardView.swift"
+            "../../WatchtowerChatText/Sources/WatchtowerChatText/PublishedLink.swift"
         ])
     }
 

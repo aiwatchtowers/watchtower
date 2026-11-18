@@ -723,6 +723,8 @@ On a relay route the keyring rotates every 7 days (`relayRotationAge`; 90 days o
 
 ## iPhone chat (2026-11-15, board #1791)
 
+**Superseded in part (unified chat, 2026-11-16, [unified-chat.md](unified-chat.md)):** the runner `internal/hub/chatrun` and its pool of 2 are now the daemon's chat engine (`internal/chatengine`, one pool of 3 for the Mac and the phone), the hub calls it in-process as an adapter (`hub.Options.ChatEngine`) and no longer watches `chat_*` tables, and the lease watch, `desktop_too_old` and the heartbeat's `chat_lease` flag are gone (the flag is accepted and ignored for one release). The text below describes the 2026-11-15 design.
+
 The hub runs phone-started chat turns: `internal/chatstore` (the Go turn store) and `internal/hub/chatrun` (a pool of 2 `ai session` processes, started at hub start with a sweep of orphan groups and dead leases, closed first at hub stop). A turn's rows are written by the lease holder's store, Swift or Go (`chat_turn_leases`, migration 00189). The ten `chat_*` kinds and the `chat_attachment` frame are registered in `handlers.Register`; the `chat` grant (`hub allow <device> chat [--revoke]`, sidecar migration 00017) is on by default; the heartbeat carries `capabilities.chat` and `chat_reason`; `hub desktop heartbeat --chat-lease 0|1` and the control socket's `chat_lease` tell the hub the Desktop honours the lease. Full note: [iphone-chat.md](iphone-chat.md); push: the `chat_answer` paragraph in Phase 4 above.
 
 ## A failing publish is visible (2026-11-16, #1873, asks #1396/#1398)

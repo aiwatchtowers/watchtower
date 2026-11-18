@@ -1,3 +1,4 @@
+import ChatWire
 import XCTest
 import GRDB
 import WatchtowerTestSupport
@@ -9,15 +10,12 @@ final class ProjectDetailViewModelTests: XCTestCase {
     private var pool: DatabasePool!
     private var path: String!
     private var projectID: Int64 = 0
-    private var importedURLs: [URL] = []
-    /// Project ids reported through `onPromptChanged`.
-    private var promptChanges: [Int64] = []
+    private var client: DatabaseProjectClient!
 
     override func setUpWithError() throws {
         (pool, path) = try TestDatabase.createPool()
         projectID = try pool.write { try ChatProjectQueries.create($0, name: "Payments").id }
-        importedURLs = []
-        promptChanges = []
+        client = DatabaseProjectClient(db: pool)
     }
 
     override func tearDown() {
@@ -26,20 +24,12 @@ final class ProjectDetailViewModelTests: XCTestCase {
     }
 
     private func makeVM(debounce: Duration = .zero) -> ProjectDetailViewModel {
-        ProjectDetailViewModel(projectID: projectID, dbPool: pool, debounce: debounce, importFile: { [weak self] url, pid in
-            guard let self else { throw CancellationError() }
-            self.importedURLs.append(url)
-            return try self.pool.write { d in
-                try d.execute(
-                    sql: """
-                        INSERT INTO chat_attachments (project_id, name, mime, size, path, sha256, created_at)
-                        VALUES (?, ?, 'application/pdf', 1, ?, 'h', 1)
-                        """,
-                    arguments: [pid, url.lastPathComponent, url.path]
-                )
-                return try XCTUnwrap(ChatProjectQueries.files(d, projectID: pid).last)
-            }
-        }, onPromptChanged: { [weak self] in self?.promptChanges.append($0) })
+        ProjectDetailViewModel(projectID: projectID, dbPool: pool, client: client, debounce: debounce)
+    }
+
+    /// The instructions writes the page sent (each one retires the project's warm sessions in the engine).
+    private var instructionWrites: [String] {
+        client.requests.compactMap { $0.op == .update ? $0.instructions : nil }
     }
 
     private func storedInstructions() throws -> String? {
@@ -71,33 +61,21 @@ final class ProjectDetailViewModelTests: XCTestCase {
         XCTAssertEqual(stored, "Second", "only the latest draft is written")
     }
 
-    /// Every committed change to what the prompt holds is reported, so the
-    /// chat retires the project's warm sessions; a no-op write is not.
-    func testPromptChangingEditsAreReported() async throws {
+    /// Every write is one `project_manage` operation of the engine.
+    func testWritesGoThroughProjectManage() async throws {
         let vm = makeVM()
         vm.load()
         vm.instructionsEdited("Be brief.")
         await vm.pendingSave?.value
-        XCTAssertEqual(promptChanges, [projectID])
-
-        let hit = ChatEntityHit(kind: .channel, ref: "1:C1", label: "#payments", detail: "")
-        await vm.addSource(hit)
-        await vm.addSource(hit)
-        XCTAssertEqual(promptChanges.count, 2, "a duplicate source changes nothing")
+        await vm.addSource(ChatEntityHit(kind: "channel", id: "1:C1", label: "#payments"))
         let source = try XCTUnwrap(vm.sources.first)
         await vm.removeSource(source)
-        XCTAssertEqual(promptChanges.count, 3)
-        await vm.removeSource(source)
-        XCTAssertEqual(promptChanges.count, 3, "removing an already-gone source changes nothing")
-
-        await vm.addFiles([URL(fileURLWithPath: NSTemporaryDirectory() + "imported_\(UUID().uuidString).pdf")])
-        XCTAssertEqual(promptChanges.count, 4)
+        await vm.addFiles([URL(fileURLWithPath: NSTemporaryDirectory() + "imported.pdf")])
         let file = try XCTUnwrap(vm.files.first)
         await vm.removeFile(file)
-        XCTAssertEqual(promptChanges.count, 5)
-        await vm.removeFile(file)
-        XCTAssertEqual(promptChanges.count, 5, "removing an already-gone file changes nothing")
-        XCTAssertEqual(Set(promptChanges), [projectID])
+        XCTAssertEqual(client.requests.map(\.op), [.update, .sourceAdd, .sourceRemove, .fileAdd, .fileRemove])
+        XCTAssertEqual(client.requests[1].sources, [ChatWire.ChatProjectSource(kind: "slack_channel", ref: "1:C1", label: "#payments")])
+        XCTAssertEqual(client.requests[3].path, NSTemporaryDirectory() + "imported.pdf")
     }
 
     /// Leaving the page before the debounce fires must not lose the edit.
@@ -115,70 +93,11 @@ final class ProjectDetailViewModelTests: XCTestCase {
         vm.load()
         await vm.rename("Q3 payments")
         XCTAssertEqual(vm.project?.name, "Q3 payments")
-        await vm.addSource(ChatEntityHit(kind: .channel, ref: "1:C1", label: "#payments", detail: ""))
-        await vm.addSource(ChatEntityHit(kind: .jiraIssue, ref: "PAY-1", label: "PAY-1", detail: ""))
+        await vm.addSource(ChatEntityHit(kind: "channel", id: "1:C1", label: "#payments"))
+        await vm.addSource(ChatEntityHit(kind: "jira", id: "PAY-1", label: "PAY-1"))
         XCTAssertEqual(vm.sources.map(\.kind), ["slack_channel"], "an issue hit is not a project source")
         await vm.removeSource(vm.sources[0])
         XCTAssertTrue(vm.sources.isEmpty)
-    }
-
-    func testAddAndRemoveFilesRemovesDiskFile() async throws {
-        let file = URL(fileURLWithPath: NSTemporaryDirectory() + "proj_\(UUID().uuidString).pdf")
-        try Data("x".utf8).write(to: file)
-        let vm = makeVM()
-        vm.load()
-        await vm.addFiles([file])
-        XCTAssertEqual(importedURLs, [file])
-        XCTAssertEqual(vm.files.map(\.name), [file.lastPathComponent])
-        await vm.removeFile(vm.files[0])
-        XCTAssertTrue(vm.files.isEmpty)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "disk file removed post-commit")
-    }
-
-    func testImportFailureSurfacesError() async {
-        let vm = ProjectDetailViewModel(projectID: projectID, dbPool: pool, debounce: .zero) { _, _ in
-            throw NSError(domain: "t", code: 1, userInfo: [NSLocalizedDescriptionKey: "too big"])
-        }
-        vm.load()
-        await vm.addFiles([URL(fileURLWithPath: "/tmp/huge.pdf")])
-        XCTAssertEqual(vm.errorMessage, "huge.pdf: too big")
-        XCTAssertTrue(vm.files.isEmpty)
-    }
-
-    func testStoreImporterWithoutWorkspaceFailsVisibly() async {
-        let vm = ProjectDetailViewModel(
-            projectID: projectID, dbPool: pool, debounce: .zero,
-            importFile: ProjectDetailViewModel.storeImporter(dbPool: pool, rootDir: nil)
-        )
-        vm.load()
-        await vm.addFiles([URL(fileURLWithPath: "/tmp/spec.pdf")])
-        XCTAssertEqual(vm.errorMessage, "spec.pdf: Attachments need an active workspace")
-    }
-
-    /// The real store end to end: an imported file lands under
-    /// `projects/<id>/`, and deleting the project removes that directory.
-    func testDeleteProjectRemovesItsStoredFilesDirectory() async throws {
-        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("wt_proj_\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: root) }
-        let source = root.appendingPathComponent("in.pdf")
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        try Data("%PDF-1.4\n%fake body\n".utf8).write(to: source)
-
-        let vm = ProjectDetailViewModel(
-            projectID: projectID, dbPool: pool, debounce: .zero, attachmentsRoot: root,
-            importFile: ProjectDetailViewModel.storeImporter(dbPool: pool, rootDir: root)
-        )
-        vm.load()
-        await vm.addFiles([source])
-        XCTAssertNil(vm.errorMessage)
-        let stored = try XCTUnwrap(vm.files.first?.path)
-        XCTAssertTrue(stored.hasPrefix(root.appendingPathComponent("projects/\(projectID)").path))
-
-        let deleted = await vm.deleteProject()
-        XCTAssertTrue(deleted)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: stored))
-        XCTAssertFalse(FileManager.default.fileExists(
-            atPath: root.appendingPathComponent("projects/\(projectID)").path))
     }
 
     /// A chat moved out of the project elsewhere (the panel's Move to
@@ -196,7 +115,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
         let vm = makeVM()
         vm.load()
         XCTAssertEqual(vm.chats.map(\.id), [chatID])
-        try await pool.write { try ChatConversationQueries.setProject($0, id: chatID, projectID: nil) }
+        try await pool.write { try $0.execute(sql: "UPDATE chat_conversations SET project_id = NULL WHERE id = ?", arguments: [chatID]) }
         vm.reloadLists()
         XCTAssertTrue(vm.chats.isEmpty)
     }
@@ -231,7 +150,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
         vm.load()
         vm.instructionsEdited("Still typing")
         await vm.rename("Renamed")
-        await vm.addSource(ChatEntityHit(kind: .track, ref: "7", label: "T", detail: ""))
+        await vm.addSource(ChatEntityHit(kind: "track", id: "7", label: "T"))
         XCTAssertEqual(vm.instructionsDraft, "Still typing")
         await vm.flush()
         let stored = try storedInstructions()
@@ -247,7 +166,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
         vm.instructionsEdited("")
         let saved = await vm.flush()
         XCTAssertTrue(saved)
-        XCTAssertTrue(promptChanges.isEmpty)
+        XCTAssertTrue(instructionWrites.isEmpty, "nothing changed, nothing is written")
     }
 
     /// "New chat in this project" waits on this result: a failed save must
@@ -266,7 +185,6 @@ final class ProjectDetailViewModelTests: XCTestCase {
         let saved = await vm.flush()
         XCTAssertFalse(saved)
         XCTAssertNotNil(vm.errorMessage)
-        XCTAssertTrue(promptChanges.isEmpty)
         let again = await vm.flush()
         XCTAssertFalse(again, "a second try still has the unsaved draft to write")
 
@@ -274,7 +192,6 @@ final class ProjectDetailViewModelTests: XCTestCase {
         let retried = await vm.flush()
         XCTAssertTrue(retried)
         XCTAssertEqual(try storedInstructions(), "New text", "the draft was kept, not dropped")
-        XCTAssertEqual(promptChanges, [projectID])
     }
 
     /// Deleting with an unsaved draft: the closing flush has no row to
@@ -288,7 +205,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
         let saved = await vm.flush()
         XCTAssertTrue(saved)
         XCTAssertNil(vm.errorMessage)
-        XCTAssertTrue(promptChanges.isEmpty)
+        XCTAssertTrue(instructionWrites.isEmpty)
     }
 
     func testFlushWithNothingPendingWritesNothing() async throws {
@@ -322,7 +239,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
     /// only a load puts the stored text into the drafts.
     func testRefreshWithoutLoadKeepsEditingOff() async throws {
         let vm = makeVM()
-        await vm.addSource(ChatEntityHit(kind: .track, ref: "7", label: "T", detail: ""))
+        await vm.addSource(ChatEntityHit(kind: "track", id: "7", label: "T"))
         XCTAssertNotNil(vm.project)
         XCTAssertFalse(vm.draftsLoaded)
         vm.load()
@@ -345,7 +262,6 @@ extension ProjectDetailViewModelTests {
         XCTAssertNil(vm.instructionsEditor, "Save closes the editor")
         XCTAssertEqual(vm.instructionsDraft, "Answer in tables.")
         XCTAssertEqual(try storedInstructions(), "Answer in tables.")
-        XCTAssertEqual(promptChanges, [projectID])
     }
 
     func testInstructionsCancelWritesNothing() async throws {
@@ -361,7 +277,7 @@ extension ProjectDetailViewModelTests {
         await vm.flush()
         XCTAssertEqual(vm.instructionsDraft, "Be brief.")
         XCTAssertEqual(try storedInstructions(), "Be brief.")
-        XCTAssertTrue(promptChanges.isEmpty)
+        XCTAssertTrue(instructionWrites.isEmpty)
     }
 
     /// A failed Save keeps the editor and its text; Cancel then drops the
@@ -387,7 +303,6 @@ extension ProjectDetailViewModelTests {
         let flushed = await vm.flush()
         XCTAssertTrue(flushed)
         XCTAssertEqual(try storedInstructions(), "")
-        XCTAssertTrue(promptChanges.isEmpty)
     }
 
     func testEditingNeedsALoad() {
@@ -401,18 +316,15 @@ extension ProjectDetailViewModelTests {
         try Data("x".utf8).write(to: file)
         let vm = makeVM()
         vm.load()
-        await vm.addSource(ChatEntityHit(kind: .channel, ref: "1:C1", label: "#acme", detail: ""))
+        await vm.addSource(ChatEntityHit(kind: "channel", id: "1:C1", label: "#acme"))
         await vm.addFiles([file])
         XCTAssertEqual(vm.knowledge.map(\.title), [file.lastPathComponent, "#acme"])
         XCTAssertEqual(vm.knowledge.map(\.kind), [.pdf, .slack])
 
-        promptChanges = []
         await vm.removeKnowledge(vm.knowledge[1].id)
         XCTAssertTrue(vm.sources.isEmpty)
         await vm.removeKnowledge(vm.knowledge[0].id)
         XCTAssertTrue(vm.files.isEmpty)
         XCTAssertTrue(vm.knowledge.isEmpty)
-        XCTAssertEqual(promptChanges, [projectID, projectID])
-        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
     }
 }

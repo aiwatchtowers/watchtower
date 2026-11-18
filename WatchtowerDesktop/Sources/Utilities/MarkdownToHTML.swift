@@ -1,4 +1,5 @@
 import Foundation
+import ChatUI
 
 /// Converts the markdown subset the pasteboard needs (headers, bullet /
 /// numbered lists, blockquotes, code blocks, dividers, inline bold/italic/code/
