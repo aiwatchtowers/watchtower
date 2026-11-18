@@ -34,7 +34,7 @@ func TestFlowSkillShipsWithMarkerAndName(t *testing.T) {
 	content := string(body)
 	assert.Equal(t, "watchtower-flow", name)
 	assert.True(t, HasMarker(content), "the preset carries %s (DEV-04)", MarkerKey)
-	assert.Contains(t, content, "\n"+MarkerKey+": v12\n")
+	assert.Contains(t, content, "\n"+MarkerKey+": v13\n")
 	assert.Contains(t, content, "\nname: watchtower-flow\n")
 	assert.Contains(t, content, "\ndescription: Use in a folder bound to a Watchtower workbench")
 	s := flowSkill()
@@ -128,4 +128,10 @@ func TestFlowSkill_ApprovedReviewRoundFinishesTheBranch(t *testing.T) {
 	assert.Contains(t, section, "The owner's own review is the diff reviewer's round: when one arrives `approved` "+
 		"(`Review round #N approved …`), the branch is accepted — finish it (PR and merge, targets `done`, cleanup, "+
 		"`finish_session`) without asking for another review.")
+}
+
+func TestWorkbenchFlowSkill_WatchmanMergeRule(t *testing.T) {
+	rule := "In a session handed to Watchman, a Watchman **Approve** on the review round counts as the owner's approval for merging this session's PR into its feature or umbrella branch, never into `main`; check CI is green first."
+	assert.Contains(t, skillSection(t, string(mustFlow()), "What `in_review` means"), rule)
+	assert.Contains(t, rule, "never into `main`")
 }

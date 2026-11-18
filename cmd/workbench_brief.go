@@ -216,7 +216,8 @@ func briefFromDB(database *db.DB, p *db.Workbench) string {
 	// The board columns (PROJ-19) share the folder rules' reserved slot.
 	method := joinBriefLines(briefMethodSection(e, briefPresetMismatch(e, p.FolderPath, p.ID)), briefColumnsFor(database, p.ID))
 	return renderSessionBrief(board, p, comments, drift, loadBriefRecent(database, p.ID, now), loadBriefAsks(database, p.ID), now,
-		briefRulesFor(e.Preset), method, joinBriefLines(briefReviewLines(database, p.ID), briefCleanupLine(database, p.ID)), briefInstructionsSlot(database, p.ID))
+		briefRulesFor(e.Preset), method, joinBriefLines(briefReviewLines(database, p.ID), briefCleanupLine(database, p.ID)),
+		joinBriefLines(briefInstructionsSlot(database, p.ID), briefWatchmanLine(database, p.ID)))
 }
 
 // briefAsks is the answered-asks input: the asks for the brief's own session
@@ -287,6 +288,28 @@ func briefInstructionsSlot(database *db.DB, workbenchID int64) string {
 		return ""
 	}
 	return instructions.BriefSlot(t)
+}
+
+// briefWatchmanLineText is the spec's line for a session the owner handed to Watchman.
+const briefWatchmanLineText = "The owner handed this session to Watchman; asks are answered by his twin; do not wait, keep working."
+
+// briefWatchmanLine is briefWatchmanLineText while the brief's own session is
+// armed (arming is the delegation); "" when it is not, when the session is
+// not known, or when the read fails (logged, the brief goes on).
+func briefWatchmanLine(database *db.DB, workbenchID int64) string {
+	sessionID, ok, err := terminalSessionRowID()
+	if err != nil || !ok {
+		return "" // an invalid env var is already reported by recordTerminalSessionID
+	}
+	armed, err := database.WatchmanSessionArmed(sessionID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "watchtower: workbench %d brief: watchman arming: %v\n", workbenchID, err)
+		return ""
+	}
+	if !armed {
+		return ""
+	}
+	return briefWatchmanLineText
 }
 
 // joinBriefLines joins the non-empty parts with newlines.
