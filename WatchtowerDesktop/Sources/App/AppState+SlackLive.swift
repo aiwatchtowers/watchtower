@@ -16,7 +16,7 @@ extension AppState {
     /// stdin is closed, so the child frees port 18551 and exits.
     private func startSlackConnectListener() {
         guard slackConnectListener == nil,
-              ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil,
+              !Self.runsUnderXCTest,
               let streamer = ProcessCLILineStream.makeDefault() else { return }
         let host = SlackConnectListenerHost(streamer: streamer)
         slackConnectListener = host

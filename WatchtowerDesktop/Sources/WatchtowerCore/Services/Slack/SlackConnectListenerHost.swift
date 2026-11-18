@@ -9,7 +9,8 @@ package enum SlackConnectListenerState: Equatable, Sendable {
     case listening
     /// Something else holds the port; stays so until `ensureRunning()`.
     case portBusy
-    /// Stopped, or the child died twice in a row; stays so until `ensureRunning()`.
+    /// Stopped, or the child died again before binding the port after its
+    /// restart; stays so until `ensureRunning()`.
     case stopped
 }
 
@@ -34,7 +35,8 @@ package final class SlackConnectListenerHost {
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var restartsLeft = 0
     @ObservationIgnored private var stopping = false
-    /// `ensureRunning()` while the old child is still on its way out.
+    /// `ensureRunning()` while a child that is not listening is still up (starting,
+    /// port busy, stopping): relaunch when it exits, unless it binds the port first.
     @ObservationIgnored private var relaunchAfterExit = false
 
     package static let serveArgs = ["slack", "connect", "serve"]
@@ -49,8 +51,9 @@ package final class SlackConnectListenerHost {
     /// the retry (one fresh restart allowed again).
     package func ensureRunning() {
         if child != nil {
-            // The old child exits on its own (port busy: exit 3; stop: EOF).
-            if state == .portBusy || stopping { relaunchAfterExit = true }
+            // A starting child may still report port_busy; a busy or stopping one
+            // exits on its own (exit 3; EOF). The retry waits for that exit.
+            if state != .listening || stopping { relaunchAfterExit = true }
             return
         }
         launch()
@@ -115,7 +118,13 @@ package final class SlackConnectListenerHost {
             return
         }
         switch event {
-        case .listening: if !stopping { state = .listening }
+        case .listening:
+            if !stopping {
+                state = .listening
+                // Bound: a later crash gets its own restart, and a pending retry is moot.
+                restartsLeft = 1
+                relaunchAfterExit = false
+            }
         case .portBusy: if !stopping { state = .portBusy }
         default: break
         }

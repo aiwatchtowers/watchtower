@@ -278,7 +278,7 @@ final class ProcessCLILineSession: CLILineSession, @unchecked Sendable {
 // MARK: - Spawn helpers
 
 /// The child's pid and the parent's ends of its three pipes.
-private struct SpawnedChild {
+struct SpawnedChild {
     let pid: pid_t
     let stdinFD: Int32
     let stdoutFD: Int32
@@ -289,10 +289,23 @@ private struct SpawnedChild {
         var description: String { String(cString: strerror(code)) }
     }
 
-    static func start(path: String, args: [String], environment: [String: String]) throws -> Self {
-        let input = try pipePair(), output = try pipePair(), errors = try pipePair()
-        let childEnds = [input.read, output.write, errors.write]
-        defer { childEnds.forEach { close($0) } }
+    typealias PipeFactory = () throws -> (read: Int32, write: Int32)
+
+    /// `makePipe` is a seam for tests (a pipe that fails part-way).
+    static func start(
+        path: String, args: [String], environment: [String: String], makePipe: PipeFactory = pipePair
+    ) throws -> Self {
+        // Every descriptor is closed on any failure until the spawn succeeds;
+        // then the parent keeps its ends and closes the child's.
+        var opened: [Int32] = []
+        var spawnedChild = false
+        defer { if !spawnedChild { opened.forEach { close($0) } } }
+        func nextPipe() throws -> (read: Int32, write: Int32) {
+            let pair = try makePipe()
+            opened += [pair.read, pair.write]
+            return pair
+        }
+        let input = try nextPipe(), output = try nextPipe(), errors = try nextPipe()
 
         var actions: posix_spawn_file_actions_t?
         posix_spawn_file_actions_init(&actions)
@@ -314,16 +327,15 @@ private struct SpawnedChild {
         defer { (argv + envp).forEach { free($0) } }
         var pid: pid_t = 0
         let spawned = posix_spawn(&pid, path, &actions, &attr, argv, envp)
-        guard spawned == 0 else {
-            [input.write, output.read, errors.read].forEach { close($0) }
-            throw SpawnError(code: spawned)
-        }
+        guard spawned == 0 else { throw SpawnError(code: spawned) }
+        spawnedChild = true
+        [input.read, output.write, errors.write].forEach { close($0) }
         // A write after the child is gone fails with EPIPE instead of killing the app.
         _ = fcntl(input.write, F_SETNOSIGPIPE, 1)
         return Self(pid: pid, stdinFD: input.write, stdoutFD: output.read, stderrFD: errors.read)
     }
 
-    private static func pipePair() throws -> (read: Int32, write: Int32) {
+    static func pipePair() throws -> (read: Int32, write: Int32) {
         var fds: [Int32] = [0, 0]
         guard pipe(&fds) == 0 else { throw SpawnError(code: errno) }
         fds.forEach { _ = fcntl($0, F_SETFD, FD_CLOEXEC) }

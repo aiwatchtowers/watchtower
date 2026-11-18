@@ -8,8 +8,7 @@ final class CLILineStreamTests: XCTestCase {
     private var groups: [pid_t] = []
 
     override func tearDown() {
-        // Only a group whose leader still runs (a failed test): never a recycled id.
-        groups.filter(Self.isRunning).forEach { _ = killpg($0, SIGKILL) }
+        groups.forEach { _ = killpg($0, SIGKILL) }
         groups = []
         super.tearDown()
     }
@@ -103,6 +102,25 @@ final class CLILineStreamTests: XCTestCase {
         session.terminate()
         await session.waitForExit()
         XCTAssertFalse(Self.isRunning(leader))
+    }
+
+    func testFailedPipeClosesEarlierPipes() throws {
+        var made: [Int32] = []
+        var calls = 0
+        struct NoPipe: Error {}
+        XCTAssertThrowsError(try SpawnedChild.start(path: "/bin/sh", args: ["-c", "true"], environment: [:]) {
+            calls += 1
+            guard calls < 2 else { throw NoPipe() }
+            let pair = try SpawnedChild.pipePair()
+            made += [pair.read, pair.write]
+            return pair
+        })
+        XCTAssertEqual(calls, 2)
+        XCTAssertEqual(made.count, 2)
+        for fd in made {
+            XCTAssertEqual(fcntl(fd, F_GETFD), -1, "fd \(fd) still open")
+            XCTAssertEqual(errno, EBADF)
+        }
     }
 
     /// Alive and not a zombie (a zombie has exited; only its parent's reap is left).

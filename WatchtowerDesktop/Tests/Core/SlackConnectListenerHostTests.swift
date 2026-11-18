@@ -129,22 +129,68 @@ final class SlackConnectListenerHostTests: XCTestCase {
         first.exit(code: 1)
         let second = await fake.session(number: 2)
         XCTAssertEqual(host.state, .idle)
-        second.emit(listening)
-        await untilObserved { host.state == .listening }
 
+        // The restart dies before binding the port: no second restart.
         second.exit(code: 0)
         await untilObserved { host.state == .stopped }
         XCTAssertFalse(host.isChildRunning)
         XCTAssertEqual(fake.sessions.count, 2, "one restart only")
 
+        // ensureRunning gives a fresh restart budget.
         host.ensureRunning()
         let third = await fake.session(number: 3)
-        third.emit(listening)
-        await untilObserved { host.state == .listening }
-
-        // ensureRunning gave a fresh restart budget.
         third.exit(code: 1)
         _ = await fake.session(number: 4)
+    }
+
+    /// Crashes far apart (each after the child bound the port) each get a
+    /// restart: binding the port refills the budget. No clock involved.
+    func testCrashesAfterListeningEachRestart() async {
+        let (host, fake) = makeHost()
+        host.ensureRunning()
+        for number in 1...3 {
+            let child = await fake.session(number: number)
+            child.emit(listening)
+            await untilObserved { host.state == .listening }
+            child.exit(code: 1)
+        }
+        let fourth = await fake.session(number: 4)
+        fourth.emit(listening)
+        await untilObserved { host.state == .listening }
+        XCTAssertEqual(fake.sessions.count, 4)
+    }
+
+    func testEnsureRunningWhileStartingThenPortBusyRelaunches() async {
+        let (host, fake) = makeHost()
+        host.ensureRunning()
+        let first = await fake.session(number: 1)
+        XCTAssertEqual(host.state, .idle)
+        host.ensureRunning() // the child has not reported yet
+        XCTAssertEqual(fake.sessions.count, 1)
+
+        first.emit(portBusy)
+        await untilObserved { host.state == .portBusy }
+        first.exit(code: 3)
+        let second = await fake.session(number: 2)
+        second.emit(listening)
+        await untilObserved { host.state == .listening }
+    }
+
+    func testEnsureRunningWhileStartingThenListeningKeepsChild() async {
+        let (host, fake) = makeHost()
+        host.ensureRunning()
+        let first = await fake.session(number: 1)
+        host.ensureRunning()
+        first.emit(listening)
+        await untilObserved { host.state == .listening }
+
+        // The bound child answered the retry: its crash is an ordinary restart,
+        // and the restart's own crash before binding stops the host.
+        first.exit(code: 1)
+        let second = await fake.session(number: 2)
+        second.exit(code: 1)
+        await untilObserved { host.state == .stopped }
+        XCTAssertEqual(fake.sessions.count, 2)
     }
 
     func testEnsureRunningRebindsAfterPortBusy() async {
