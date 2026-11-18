@@ -219,6 +219,8 @@ extension SlackAppSetupModel {
         case let .problem(.notCollaborator(workspace)):
             Notice(icon: "exclamationmark.triangle.fill", tone: .warning, title: isAdopt ? Self.adoptTitle(workspace) : nil,
                    body: Self.notCollaboratorBody)
+        case let .builtinAppDeferred(workspace):
+            Notice(icon: "info.circle", tone: .blue, title: Self.adoptTitle(workspace), body: Self.builtinAppDeferredBody(workspace))
         case let .problem(problem):
             Notice(icon: "exclamationmark.triangle.fill", tone: .warning, title: nil, body: problemLine(problem))
         }
@@ -239,6 +241,15 @@ extension SlackAppSetupModel {
     package static let clientIDFormatLine = "That is not a Client ID: two numbers joined by a dot."
 
     package static let busyBody = "Another setup is already running on this Mac. Try again once it has finished."
+    package static let unreadableAnswerBody = "Watchtower could not read the setup's answer, so it does not know how "
+        + "the setup ended. Connections → Slack shows where it got to; the app is never created twice."
+
+    /// The workspace's app is the one this Watchtower signs in through
+    /// (`builtin_app_pkce_deferred`, review M1).
+    package static func builtinAppDeferredBody(_ workspace: String) -> String {
+        "This version of Watchtower signs in to \(workspace) through this app already. The app moves to the new "
+            + "sign-in with a later Watchtower update; until then there is nothing to set up. Nothing was changed."
+    }
     /// The storage line names the button the setup's record row shows; with
     /// no row, the owner tries again.
     package static func storageBody(rowAction: String?) -> String {
@@ -285,6 +296,8 @@ extension SlackAppSetupModel {
         case let .stopped(detail):
             return "The setup stopped before it finished: \(detail). Connections → Slack shows where it got to; "
                 + "the app is never created twice."
+        case .unreadableAnswer:
+            return Self.unreadableAnswerBody
         }
     }
 
@@ -331,7 +344,7 @@ extension SlackAppSetupModel {
         case .notConnected: [button(.close), button(.continueSetup, prominent: true)]
         case .approval: [button(.close), button(.checkAgain, prominent: true)]
         case .linkFailed: [button(.close), button(.showAddLink, prominent: true)]
-        case .linkDone, .problem(.notPending): [button(.done, prominent: true)]
+        case .linkDone, .builtinAppDeferred, .problem(.notPending): [button(.done, prominent: true)]
         case .problem(.notAllowed), .problem(.notCollaborator):
             [button(.cancel), button(.copyAdminNote), button(.tryAgain, prominent: true)]
         case .problem: [button(.cancel), button(.tryAgain, prominent: true)]

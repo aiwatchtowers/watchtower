@@ -141,6 +141,10 @@ package final class SlackAppSetupModel {
         case approval(SlackSetupTarget)
         case linkFailed(SlackSetupTarget)
         case linkDone
+        /// The workspace's app is the one this build signs in through: it
+        /// moves to PKCE with a later update, nothing is set up now
+        /// (`builtin_app_pkce_deferred`, review M1).
+        case builtinAppDeferred(workspace: String)
         case problem(Problem)
     }
 
@@ -163,6 +167,9 @@ package final class SlackAppSetupModel {
         case saveFailed
         /// The CLI ended without a result line (crashed, killed, refused to start).
         case stopped(String)
+        /// The CLI's result line could not be read: how the run ended is
+        /// unknown (the raw line is logged).
+        case unreadableAnswer
     }
 
     package enum StepMark: Equatable, Sendable {
@@ -460,6 +467,8 @@ package final class SlackAppSetupModel {
             await finishSetup(target)
         case "existing_app":
             reset(.adopt(Adopt(target: target)))
+        case "builtin_app_pkce_deferred":
+            phase = .finished(.builtinAppDeferred(workspace: target.workspace))
         case "pending_create":
             reset(.pending(target))
         default:
@@ -524,6 +533,8 @@ package final class SlackAppSetupModel {
             continueAfterExists(record?.target ?? next.target, connected: record?.connected ?? false)
         case "pending_create":
             reset(.pending(next.target))
+        case "builtin_app_pkce_deferred":
+            phase = .finished(.builtinAppDeferred(workspace: next.target.workspace))
         default:
             finishWithProblem(result, workspace: next.target.workspace)
         }
@@ -685,11 +696,13 @@ package final class SlackAppSetupModel {
 
     /// Runs one verb: step lines move the marks, the last result line is
     /// returned. A run without a result line (the CLI died, was refused,
-    /// or is missing) finishes as `stopped`, unless `keepPhase` (the link
-    /// retry inside a run, whose failure is the outcome's).
+    /// or is missing) finishes as `stopped`, one whose result line does not
+    /// decode as `unreadableAnswer`, unless `keepPhase` (the link retry
+    /// inside a run, whose failure is the outcome's).
     private func stream(_ args: [String], token: String?, keepPhase: Bool = false) async -> ResultLine? {
         let stdin = token.map { Data(($0 + "\n").utf8) }
         var result: ResultLine?
+        var unreadable = false
         var failure: String?
         if let streamer {
             do {
@@ -700,7 +713,16 @@ package final class SlackAppSetupModel {
                     if let step = line.step, let state = line.state {
                         mark(step, Self.mark(state))
                     } else if line.result != nil {
-                        result = try? JSONDecoder().decode(ResultLine.self, from: data)
+                        // A result line that does not decode is its own
+                        // outcome, never "no answer" (review m3).
+                        do {
+                            result = try JSONDecoder().decode(ResultLine.self, from: data)
+                            unreadable = false
+                        } catch {
+                            print("[SlackAppSetup] unreadable result line: \(text) (\(error))")
+                            result = nil
+                            unreadable = true
+                        }
                     }
                 }
             } catch {
@@ -716,7 +738,7 @@ package final class SlackAppSetupModel {
             return line
         }
         if !keepPhase {
-            phase = .finished(.problem(.stopped(failure ?? Self.noAnswer)))
+            phase = .finished(.problem(unreadable ? .unreadableAnswer : .stopped(failure ?? Self.noAnswer)))
         }
         return nil
     }
