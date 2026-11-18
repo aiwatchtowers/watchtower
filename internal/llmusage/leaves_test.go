@@ -61,7 +61,6 @@ var knownNonLLMExec = map[string]string{
 	"media.runSips":                      "sips image conversion",
 	"oauthpage.openURL":                  "/usr/bin/open of an OAuth page",
 	"ownerconfirm.codesign":              "codesign of the Desktop app",
-	"planusage.DefaultCredentialSource":  "security find-generic-password (the Claude Code token)",
 	"sessioncleanup.runCommand":          "ps / lsof",
 	"sessionhost.(*detached).launch":     "starts the watchtower session-host process on darwin (no model call)",
 	"sessionhost.systemdRunCommand":      "runs systemd-run to start session-host as a user unit (no model call)",

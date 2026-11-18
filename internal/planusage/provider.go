@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"watchtower/internal/claude"
 	"watchtower/internal/codex"
 	"watchtower/internal/fsutil"
 )
@@ -26,8 +27,7 @@ func (e *OperationError) Unwrap() error { return e.Cause }
 func ErrorCode(err error) string {
 	var op *OperationError
 	var ce *codex.UsageError
-	var he *HTTPError
-	var pe *parseError
+	var cle *claude.UsageError
 	switch {
 	case err == nil:
 		return ""
@@ -39,15 +39,8 @@ func ErrorCode(err error) string {
 		return "cancelled"
 	case errors.As(err, &ce):
 		return ce.Code
-	case errors.Is(err, ErrNoCredentials):
-		return "no_credentials"
-	case errors.As(err, &he):
-		if he.Status == 401 {
-			return "no_credentials"
-		}
-		return "network"
-	case errors.As(err, &pe):
-		return "parse"
+	case errors.As(err, &cle):
+		return cle.Code
 	default:
 		return "storage"
 	}

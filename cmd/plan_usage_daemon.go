@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"watchtower/internal/claude"
 	"watchtower/internal/codex"
 	"watchtower/internal/config"
 	"watchtower/internal/daemon"
@@ -34,12 +35,23 @@ func planUsageEnabled() (bool, error) {
 	return cfg.PlanUsage.Enabled, nil
 }
 
+// newPlanUsagePoller reads Claude's plan limits from the installed claude's
+// get_usage answer; the CLI path is re-read from the config at every poll.
 func newPlanUsagePoller(database *db.DB, logger *log.Logger) *planusage.Poller {
-	return &planusage.Poller{Store: database, Creds: planusage.DefaultCredentialSource(), Client: planusage.NewClient(Version), Now: time.Now, Logger: logger}
+	return &planusage.Poller{Store: database, Now: time.Now, Logger: logger, Read: func(ctx context.Context) (claude.UsageSnapshot, error) {
+		latest, err := config.Load(flagConfig)
+		if err != nil {
+			return claude.UsageSnapshot{}, &planusage.OperationError{Code: "storage", Cause: err}
+		}
+		// The same environment as Watchtower's own Claude children, so the
+		// gauge describes the account Watchtower's AI calls use.
+		env := append(os.Environ(), "PATH="+claude.RichPATH())
+		return claude.ReadUsage(ctx, claude.FindBinary(latest.ClaudePath), env)
+	}}
 }
 
 func newPlanProviders(database *db.DB, cfg *config.Config, logger *log.Logger) planusage.Providers {
-	claude := newPlanUsagePoller(database, logger)
+	claudePoller := newPlanUsagePoller(database, logger)
 	codexPoller := &planusage.CodexPoller{Store: database, Now: time.Now, Read: func(ctx context.Context) (codex.UsageSnapshot, error) {
 		latest, err := config.Load(flagConfig)
 		if err != nil {
@@ -53,19 +65,7 @@ func newPlanProviders(database *db.DB, cfg *config.Config, logger *log.Logger) p
 	}}
 	return planusage.Providers{
 		&planusage.Provider{Name: "claude", Workspace: cfg.WorkspaceDir(), Enabled: planUsageEnabled, Logger: logger,
-			Poll: func(ctx context.Context) (time.Duration, error) {
-				delay, err := claude.PollOnce(ctx)
-				if err == nil {
-					st, readErr := database.GetPlanUsageStatus()
-					if readErr != nil {
-						return delay, &planusage.OperationError{Code: "storage", Cause: readErr}
-					}
-					if st != nil && st.State == "stale" && st.Reason == "token_expired" {
-						return delay, &planusage.OperationError{Code: "no_credentials"}
-					}
-				}
-				return delay, err
-			}, MarkDisabled: func(ctx context.Context) error { return planusage.MarkDisabledContext(ctx, database, time.Now()) }},
+			Poll: claudePoller.PollOnce, MarkDisabled: func(ctx context.Context) error { return planusage.MarkDisabledContext(ctx, database, time.Now()) }},
 		&planusage.Provider{Name: "codex", Workspace: cfg.WorkspaceDir(), Enabled: planUsageEnabled, Logger: logger, Poll: codexPoller.PollOnce,
 			MarkDisabled: func(ctx context.Context) error {
 				st, err := database.GetCodexPlanUsageStatusContext(ctx)

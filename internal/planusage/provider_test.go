@@ -18,6 +18,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"watchtower/internal/claude"
 	"watchtower/internal/codex"
 	"watchtower/internal/db"
 	"watchtower/internal/fsutil"
@@ -319,4 +320,82 @@ func TestProviderRun_QuietStatesLogOncePerChange(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+// runClaudeTicks drives a Provider over poller tick by tick, calling check
+// after each tick.
+func runClaudeTicks(t *testing.T, poller *Poller, steps int, check func(step int)) {
+	t.Helper()
+	requested := make(chan time.Duration, 1)
+	ticks := make(chan time.Time)
+	p := &Provider{Name: "claude", Workspace: t.TempDir(), Poll: poller.PollOnce,
+		After: func(d time.Duration) <-chan time.Time { requested <- d; return ticks }}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); _ = p.Run(ctx) }()
+	<-requested
+	for i := range steps {
+		ticks <- time.Time{}
+		<-requested
+		check(i)
+	}
+	cancel()
+	<-done
+}
+
+// Account-level codes clear the plan label and numbers; a later transient
+// failure must not bring them back. Samples stay (retention as usual).
+func testProviderRunClearsPlanLabel(t *testing.T, code string) {
+	read := okRead()
+	read.push(claude.UsageSnapshot{}, usageErr(code))
+	read.push(claude.UsageSnapshot{}, usageErr("network"))
+	poller, d := newPoller(t, read, at(10, 0))
+	runClaudeTicks(t, poller, 3, func(step int) {
+		st, err := d.GetPlanUsageStatus()
+		require.NoError(t, err)
+		var count int
+		require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM plan_usage_samples`).Scan(&count))
+		assert.Equal(t, 3, count, "samples of the ok tick are kept")
+		if step == 0 {
+			require.Equal(t, "ok", st.State)
+			require.Equal(t, "max", st.Plan)
+			return
+		}
+		want := []string{"", "unavailable", "error"}[step]
+		assert.Equal(t, want, st.State)
+		assert.Equal(t, []string{"", code, "network"}[step], st.Reason)
+		assert.Empty(t, st.Plan)
+		assert.Equal(t, "[]", st.LimitsJSON)
+		assert.Equal(t, "[]", st.BreakdownJSON)
+		assert.Equal(t, "{}", st.PlotJSON)
+		assert.Empty(t, st.PublicationProof)
+	})
+}
+
+func TestProviderRun_SignedOutClearsPlanLabel(t *testing.T) {
+	testProviderRunClearsPlanLabel(t, "no_credentials")
+}
+
+func TestProviderRun_APIKeyClearsPlanLabel(t *testing.T) {
+	testProviderRunClearsPlanLabel(t, "unsupported_auth")
+}
+
+func TestProviderRun_CloudProviderClearsPlanLabel(t *testing.T) {
+	testProviderRunClearsPlanLabel(t, "cloud_vertex")
+}
+
+// cli_missing says nothing about the account: the row keeps its data.
+func TestProviderRun_CLIMissingKeepsRow(t *testing.T) {
+	read := okRead()
+	read.push(claude.UsageSnapshot{}, usageErr("cli_missing"))
+	poller, d := newPoller(t, read, at(10, 0))
+	runClaudeTicks(t, poller, 2, func(step int) {
+		st, err := d.GetPlanUsageStatus()
+		require.NoError(t, err)
+		assert.Equal(t, []string{"ok", "unavailable"}[step], st.State)
+		assert.Equal(t, "max", st.Plan)
+		assert.Contains(t, st.LimitsJSON, "weekly_all")
+		assert.NotEqual(t, "{}", st.PlotJSON)
+	})
 }

@@ -3,11 +3,11 @@ package planusage
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"time"
 
+	"watchtower/internal/claude"
 	"watchtower/internal/db"
 )
 
@@ -27,29 +27,21 @@ type Store interface {
 	GetPlanUsageStatusContext(context.Context) (*db.PlanUsageStatus, error)
 }
 
-// CredentialLoader reads Claude Code's OAuth credentials.
-type CredentialLoader interface {
-	Load(context.Context) (Credentials, error)
-}
-
-// Fetcher GETs the usage body for a token.
-type Fetcher interface {
-	Fetch(context.Context, string) ([]byte, error)
-}
-
-// Poller reads the plan usage on a schedule and stores the result.
+// Poller reads the plan usage through Read (production: claude.ReadUsage)
+// and stores the result. Provider.Run schedules it.
 type Poller struct {
 	Store  Store
-	Creds  CredentialLoader
-	Client Fetcher
+	Read   func(context.Context) (claude.UsageSnapshot, error)
 	Now    func() time.Time
 	Logger *log.Logger
 
 	failures int
 }
 
-// PollOnce reads credentials, fetches, stores samples + status with the
-// projection, prunes old samples, and returns the delay before the next poll.
+// PollOnce reads the usage, stores samples + status with the projection,
+// prunes old samples, and returns the delay before the next poll. A failure
+// stores only a fixed code (spec 2026-11-17 §1, §3); a cancelled poll writes
+// nothing.
 func (p *Poller) PollOnce(ctx context.Context) (time.Duration, error) {
 	previousFailures := p.failures
 	defer func() {
@@ -71,62 +63,43 @@ func (p *Poller) PollOnce(ctx context.Context) (time.Duration, error) {
 	}
 	st.UpdatedAt = now
 
-	creds, err := p.Creds.Load(ctx)
-	if err != nil {
-		if ctx.Err() != nil {
-			return pollInterval, ctx.Err()
-		}
-		p.failures = 0
-		st.State, st.Reason = "unavailable", "no_credentials"
-		return pollInterval, p.save(ctx, st, err)
-	}
-	st.Plan = creds.Plan
-	if !creds.ExpiresAt.IsZero() && !creds.ExpiresAt.After(now) {
-		p.failures = 0
-		st.State, st.Reason = "stale", "token_expired"
-		return pollInterval, p.save(ctx, st, nil)
-	}
-	body, err := p.Client.Fetch(ctx, creds.AccessToken)
-	if err != nil && ctx.Err() != nil {
+	snap, err := p.Read(ctx)
+	if ctx.Err() != nil {
 		return pollInterval, ctx.Err()
 	}
+	code := "parse"
 	if err == nil {
-		var u Usage
-		if u, err = parse(body); err == nil {
-			if ctx.Err() != nil {
-				return pollInterval, ctx.Err()
-			}
+		u, perr := usageFromSnapshot(snap)
+		if perr == nil {
+			st.Plan = snap.Plan
 			return pollInterval, p.storeUsage(ctx, now, st, u)
 		}
-		err = &parseError{err}
+	} else {
+		code = ErrorCode(err)
 	}
-	err = redact(err, creds.AccessToken)
-	var he *HTTPError
-	if errors.As(err, &he) && he.Status == 401 {
+	delay := pollInterval
+	switch code {
+	case "cli_missing", "unsupported_cli":
+		// Nothing is known about the account: its data stays, hidden by the state.
 		p.failures = 0
-		st.State, st.Reason = "stale", "token_expired"
-		return pollInterval, p.fail(ctx, st, now, err)
-	}
-	p.failures++
-	st.State, st.Reason = "error", reasonFor(err)
-	return backoff(p.failures), p.fail(ctx, st, now, err)
-}
-
-type parseError struct{ error }
-
-func (e *parseError) Unwrap() error { return e.error }
-
-func reasonFor(err error) string {
-	var he *HTTPError
-	var pe *parseError
-	switch {
-	case errors.As(err, &he):
-		return fmt.Sprintf("http_%d", he.Status)
-	case errors.As(err, &pe):
-		return "parse"
+		st.State = "unavailable"
+	case "no_credentials", "unsupported_auth", "cloud_bedrock", "cloud_vertex", "cloud_foundry":
+		// Account-level: no plan limits apply, so the old account's label and
+		// numbers must not survive into a later state. Samples stay.
+		p.failures = 0
+		st.State = "unavailable"
+		st.Plan, st.LimitsJSON, st.BreakdownJSON, st.PlotJSON, st.PublicationProof = "", "[]", "[]", "{}", ""
 	default:
-		return "network"
+		p.failures++
+		delay = backoff(p.failures)
+		st.State = "error"
 	}
+	st.Reason = safeStoredReason(code)
+	st.LastError, st.LastErrorAt = "Claude usage: "+code, &now
+	if err := p.Store.UpsertPlanUsageStatusContext(ctx, st); err != nil {
+		return delay, fmt.Errorf("planusage: write status: %w (while handling: %s)", err, code)
+	}
+	return delay, &OperationError{Code: code, Cause: err}
 }
 
 func backoff(failures int) time.Duration {
@@ -194,49 +167,6 @@ func nonNil(rows []BreakdownRow) []BreakdownRow {
 		return []BreakdownRow{}
 	}
 	return rows
-}
-
-func (p *Poller) fail(ctx context.Context, st db.PlanUsageStatus, now time.Time, cause error) error {
-	st.LastError, st.LastErrorAt = cause.Error(), &now
-	return p.save(ctx, st, cause)
-}
-
-// save writes st and returns cause; a write error always wins and never wraps cause.
-func (p *Poller) save(ctx context.Context, st db.PlanUsageStatus, cause error) error {
-	if err := p.Store.UpsertPlanUsageStatusContext(ctx, st); err != nil {
-		if cause == nil {
-			return err
-		}
-		// Not joined: Run silences ErrNoCredentials, and a failed write must still be logged.
-		return fmt.Errorf("planusage: write status: %w (while handling: %v)", err, cause)
-	}
-	if cause != nil {
-		code := safeStoredReason(st.Reason)
-		var timeout interface{ Timeout() bool }
-		if errors.Is(cause, context.DeadlineExceeded) || errors.As(cause, &timeout) && timeout.Timeout() {
-			code = "timeout"
-		}
-		return &OperationError{Code: code, Cause: cause}
-	}
-	return nil
-}
-
-// Run polls until ctx ends: first after 10 s, then at PollOnce's delay.
-func (p *Poller) Run(ctx context.Context) error {
-	timer := time.NewTimer(firstPollDelay)
-	defer timer.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-timer.C:
-			next, err := p.PollOnce(ctx)
-			if err != nil && !errors.Is(err, ErrNoCredentials) {
-				p.Logger.Printf("plan usage: %v (next poll in %s)", err, next)
-			}
-			timer.Reset(next)
-		}
-	}
 }
 
 // MarkDisabled records that the feature is off, keeping the last numbers.

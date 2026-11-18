@@ -4,39 +4,40 @@
 > Modifying or weakening the protecting test requires explicit approval
 > from @Vadym.
 >
-> AI assistant: when working in `internal/planusage/`, `internal/db/plan_usage.go`,
+> AI assistant: when working in `internal/planusage/`, `internal/claude/usage*.go`, `internal/db/plan_usage.go`,
 > `cmd/usage_plan.go`, `cmd/plan_usage_daemon.go` or the Desktop `PlanUsage*` files,
 > read this file first. Any proposed change that would break a guard test or remove
 > a contract must be raised as a question before touching code.
 
-**Module:** `internal/llmusage/` (LLMUSAGE-01) + `internal/planusage/` + `internal/db/plan_usage.go` + `cmd/usage_plan.go` + `cmd/plan_usage_daemon.go` + Desktop `PlanUsage*`
+**Module:** `internal/llmusage/` (LLMUSAGE-01) + `internal/planusage/` + `internal/claude/usage*.go` + `internal/db/plan_usage.go` + `cmd/usage_plan.go` + `cmd/plan_usage_daemon.go` + Desktop `PlanUsage*`
 **Last full audit:** 2026-10-15
 
-## PLANUSAGE-01 — The token is never refreshed or written; an expired token sends no request
+## PLANUSAGE-01 — Watchtower never reads, refreshes or writes Claude credentials
 
 **Status:** Enforced
 
-**Observable:** Watchtower reads the Claude Code OAuth credentials read-only. It never calls a refresh endpoint and never writes the Keychain item or `~/.claude/.credentials.json`, because a refresh rotates the refresh token and signs Claude Code out. When `expiresAt` is not in the future, the poller makes no HTTP request: status becomes `stale` / `token_expired` and the next poll re-reads the credentials.
+**Observable:** Plan limits come only from the installed `claude` command's `get_usage` answer; no source reads the Claude Code Keychain item or credentials file, and no Watchtower code calls Anthropic's usage endpoint. The reader starts `claude` with a pinned argv in a neutral folder and writes only the one `get_usage` control request.
 
-**Why locked:** A silent refresh would log the owner out of Claude Code, a far worse outcome than a stale number.
+**Why locked:** Claude Code's terms forbid collecting or intermediating Claude credentials.
 
 **Test guards:**
-- `internal/planusage/poller_test.go::TestPlanUsage01_ExpiredTokenMakesNoRequest`
+- `internal/planusage/nocredentials_test.go::TestPlanUsage01_NoClaudeCredentialReader`
+- `internal/claude/usage_test.go::TestPlanUsage01_ReaderArgvAndHome`
 
-**Locked since:** 2026-10-15
+**Locked since:** 2026-10-15 (rewritten 2026-11-18)
 
-## PLANUSAGE-02 — The token never reaches the DB, logs or errors
+## PLANUSAGE-02 — The usage child's output never reaches the DB, logs or errors
 
 **Status:** Enforced
 
-**Observable:** The access token is read into memory, sent in one `Authorization` header and dropped. It is not written to any table (`plan_usage_status.last_error` included), not logged, not in any returned error, and not passed on argv (`security` prints it to our stdout pipe).
+**Observable:** Only parsed numbers, the plan name and a fixed reason code are stored. The `claude` child's stderr, its unknown answer fields, malformed lines and error text are not written to any table (`plan_usage_status.last_error` holds `Claude usage: <code>`), not logged and not in any returned error.
 
-**Why locked:** The database and logs can end up in support bundles and other tools; a bearer token there is a credential leak.
+**Why locked:** The database and logs can end up in support bundles and other tools; the child's output may carry account details that do not belong there.
 
 **Test guards:**
-- `internal/planusage/poller_test.go::TestPlanUsage02_TokenNeverPersisted`
+- `internal/planusage/poller_test.go::TestPlanUsage02_ChildOutputNeverPersisted`
 
-**Locked since:** 2026-10-15
+**Locked since:** 2026-10-15 (rewritten 2026-11-18)
 
 ## PLANUSAGE-03 — At most one notification per kind per (limit, window)
 
@@ -70,6 +71,7 @@
 
 ## Changelog
 
+- 2026-11-18: PLANUSAGE-01 and PLANUSAGE-02 rewritten (plan limits without the token, spec `docs/superpowers/specs/2026-11-17-plan-limits-without-token-design.md`, approved in ask #1448): the token reader and its guards `TestPlanUsage01_ExpiredTokenMakesNoRequest` / `TestPlanUsage02_TokenNeverPersisted` are deleted with the code; new guards are strictly stronger. LLMUSAGE-01 unchanged: `knownNonLLMExec` swaps `planusage.DefaultCredentialSource` for `claude.usageProcess`; no guard relaxed.
 - 2026-11-06: **LLMUSAGE-01 amended** (transport independence task A3, N3 signed off in ask #514) — provider values: runtime B over Ollama records `ollama`, `http` is retired and read as `ollama` through `providers.LedgerLabel`; no migration, no row rewritten. The token split moved into `llmusage.Tokens`, embedded in `Call` with the same flat keys. No guard relaxed; guards added: `TestLLMUSAGE01_AgentloopRecordsOllamaLabel`, `TestLLMUSAGE01_LedgerLabelHTTPReadsAsOllama`, `TestLLMUSAGE01_UsageLLMSpoolHTTPReadsAsOllama`, `TestLLMUSAGE01_CallTokenKeysStayFlat`.
 - 2026-10-28: LLMUSAGE-01 added by the LLM usage ledger (spec `docs/superpowers/specs/2026-10-27-llm-usage-ledger-design.md`, note `docs/features/llm-usage-ledger.md`); the file also covers `internal/llmusage/`.
 - 2026-10-15: PLANUSAGE-03 wording — the key's reset time is rounded to the minute, past windows never notify; same contract.
