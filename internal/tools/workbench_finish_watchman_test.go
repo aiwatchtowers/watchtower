@@ -169,9 +169,10 @@ func TestProj14_FinishArmedDoneNotParkedRefuses(t *testing.T) {
 	_, err = proposeIn(t, reg, wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
 	msg := refusal(t, err)
 	assert.NotEqual(t, watchmanReviewingRefusal, msg, "nothing is reviewing: the agent must not just wait")
-	assert.Equal(t, "Watchman's review of this session's changes ended without an approval (owner_first) and no review is running: "+
-		"request a new review round — send your changes for review again with an ask_owner that says what changed — "+
-		"and call finish_session after that round arrives", msg)
+	assert.Equal(t, "Watchman's review of this session's changes ended without an approval (owner_first); "+
+		"the owner will look at it in the morning journal. finish_session stays blocked until a review round of these "+
+		"changes is approved — continue with other work", msg)
+	assert.NotContains(t, msg, "ask_owner", "an ask does not send a review round")
 	assertNotFinished(t, fx.d, session, 0)
 }
 

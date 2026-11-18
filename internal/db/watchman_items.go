@@ -209,22 +209,19 @@ func (db *DB) QueueWatchmanWaitPoint(it WatchmanItem) (id int64, inserted bool, 
 	return db.queueWatchmanItemOnce(it)
 }
 
-// watchmanHandoverBeforeWrite runs between PromoteWatchmanHandover's read
-// and its write transaction; a seam for the race test.
+// watchmanHandoverBeforeWrite runs just before PromoteWatchmanHandover's
+// write transaction; a seam for the race test.
 var watchmanHandoverBeforeWrite = func() {}
 
 // PromoteWatchmanHandover makes ask it.RefID the twin's handover in one write
 // transaction: a queued item of the ask, whatever its kind, becomes kind
-// handover; with no item at all a handover is inserted, only when the ask is
-// still open. An item already deciding or done is left. So a scan or writer
-// racing it ends with exactly one handover row. it carries the insert's
-// workbench, session, target and question; promoted reports a row that is
-// now a queued handover it wrote, inserted a new one.
+// handover; with no item at all a handover is inserted — only for an open
+// ask that no automation run filed, of an armed session no automation
+// started (QueueWatchmanWaitPoint's guards). An item already deciding or done
+// is left. So a scan or writer racing it ends with exactly one handover row.
+// it carries the insert's workbench, session, target and question; promoted
+// reports a queued handover it wrote, inserted a new row.
 func (db *DB) PromoteWatchmanHandover(it WatchmanItem) (promoted, inserted bool, err error) {
-	var open bool
-	if err := db.QueryRow(`SELECT status = 'open' FROM owner_asks WHERE id = ?`, it.RefID).Scan(&open); err != nil {
-		return false, false, fmt.Errorf("reading ask %d: %w", it.RefID, err)
-	}
 	watchmanHandoverBeforeWrite()
 	q := []rune(it.Question)
 	if len(q) > watchmanQuestionMax {
@@ -240,14 +237,21 @@ func (db *DB) PromoteWatchmanHandover(it WatchmanItem) (promoted, inserted bool,
 			promoted = true
 			return nil
 		}
-		if !open {
+		var armed int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM (`+armedSessionsFrom+` AND ts.id = ?)`, it.SessionID).Scan(&armed); err != nil {
+			return err
+		}
+		if armed == 0 {
 			return nil
 		}
 		res, err = tx.Exec(`INSERT INTO watchman_items (workbench_id, session_id, target_id, kind, ref_kind, ref_id, question, created_at)
 			SELECT ?, ?, ?, 'handover', 'ask', ?, ?, ?
 			WHERE NOT EXISTS (SELECT 1 FROM watchman_items WHERE ref_kind = 'ask' AND ref_id = ?)
+			  AND EXISTS (SELECT 1 FROM owner_asks WHERE id = ? AND status = 'open' AND automation_run_id IS NULL)
+			  AND NOT EXISTS (SELECT 1 FROM terminal_sessions WHERE id = ? AND automation_run_id IS NOT NULL)
 			ON CONFLICT(ref_kind, ref_id, kind) DO NOTHING`,
-			it.WorkbenchID, wmNullID(it.SessionID), wmNullID(it.TargetID), it.RefID, string(q), wmTime(time.Now()), it.RefID)
+			it.WorkbenchID, wmNullID(it.SessionID), wmNullID(it.TargetID), it.RefID, string(q), wmTime(time.Now()),
+			it.RefID, it.RefID, it.SessionID)
 		if err != nil {
 			return err
 		}

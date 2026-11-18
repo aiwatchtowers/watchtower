@@ -25,10 +25,10 @@ const watchmanReviewingRefusal = "Watchman is reviewing this session's changes; 
 
 // watchmanReviewClosedRefusal is finish_session's refusal when the twin's
 // review of these changes ended (%s: its outcome) without an Approve at the
-// current tree and without parking: nothing is reviewing them now.
-const watchmanReviewClosedRefusal = "Watchman's review of this session's changes ended without an approval (%s) and no " +
-	"review is running: request a new review round — send your changes for review again with an ask_owner that says " +
-	"what changed — and call finish_session after that round arrives"
+// current tree and without parking: the owner takes it from the journal.
+const watchmanReviewClosedRefusal = "Watchman's review of this session's changes ended without an approval (%s); " +
+	"the owner will look at it in the morning journal. finish_session stays blocked until a review round of these " +
+	"changes is approved — continue with other work"
 
 // watchmanLog is where a wait point's Watchman failures go; a var for tests.
 var watchmanLog = func(format string, args ...any) {

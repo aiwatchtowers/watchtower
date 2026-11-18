@@ -440,6 +440,7 @@ func TestPromoteWatchmanHandover_InsertsOnlyForOpenAsk(t *testing.T) {
 	d := openTestDB(t)
 	wb := newTestWorkbench(t, d)
 	s := newTestSession(t, d, wb)
+	wmArmSession(t, d, s)
 	open := questionAsk(wb, "Open")
 	open.SessionID = nullID(s)
 	openID := mustInsertAsk(t, d, open)
@@ -461,4 +462,36 @@ func TestPromoteWatchmanHandover_InsertsOnlyForOpenAsk(t *testing.T) {
 	it, err = d.WatchmanItemByRef("ask", doneID, "handover")
 	require.NoError(t, err)
 	require.Nil(t, it)
+}
+
+// The insert keeps the wait-point guards: an unarmed session, a session an
+// automation started and an ask an automation run filed get no handover.
+func TestPromoteWatchmanHandover_InsertKeepsGuards(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	_, run := seedRunningAutomationRun(t, d)
+	unarmed := newTestSession(t, d, wb)
+	autoSession := newTestSession(t, d, wb)
+	wmArmSession(t, d, autoSession)
+	_, err := d.Exec(`UPDATE terminal_sessions SET automation_run_id = ? WHERE id = ?`, run, autoSession)
+	require.NoError(t, err)
+	armed := newTestSession(t, d, wb)
+	wmArmSession(t, d, armed)
+	for name, c := range map[string]struct {
+		session int64
+		run     bool
+	}{"unarmed": {unarmed, false}, "automation session": {autoSession, false}, "automation run's ask": {armed, true}} {
+		ask := questionAsk(wb, name)
+		ask.SessionID = nullID(c.session)
+		if c.run {
+			ask.AutomationRunID = nullID(run)
+		}
+		id := mustInsertAsk(t, d, ask)
+		_, inserted, err := d.PromoteWatchmanHandover(WatchmanItem{WorkbenchID: wb, SessionID: c.session, RefID: id, Question: "q"})
+		require.NoError(t, err, name)
+		require.False(t, inserted, name)
+		it, err := d.WatchmanItemByRef("ask", id, "handover")
+		require.NoError(t, err)
+		require.Nil(t, it, name)
+	}
 }
