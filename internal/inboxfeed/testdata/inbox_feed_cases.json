@@ -3584,7 +3584,8 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false
+            "recipe_clipped": false,
+            "needs_workspace": true
           }
         }
       ]
@@ -5240,7 +5241,8 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false
+            "recipe_clipped": false,
+            "external": true
           }
         }
       ]
@@ -10510,7 +10512,9 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false
+            "recipe_clipped": false,
+            "external": true,
+            "needs_workspace": true
           }
         }
       ]
@@ -10880,7 +10884,9 @@
                 "disclosure": "",
                 "recipe_text": "",
                 "diff": [],
-                "recipe_clipped": false
+                "recipe_clipped": false,
+                "external": true,
+                "needs_workspace": true
               }
             }
           ]
@@ -14322,7 +14328,8 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false
+            "recipe_clipped": false,
+            "needs_workspace": true
           }
         },
         {
@@ -15670,7 +15677,8 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false
+            "recipe_clipped": false,
+            "external": true
           }
         }
       ]
@@ -15834,7 +15842,8 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false
+            "recipe_clipped": false,
+            "external": true
           }
         },
         {
@@ -15873,7 +15882,8 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false
+            "recipe_clipped": false,
+            "external": true
           }
         },
         {
@@ -15933,7 +15943,8 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false
+            "recipe_clipped": false,
+            "external": true
           }
         }
       ]
@@ -16059,7 +16070,8 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false
+            "recipe_clipped": false,
+            "external": true
           }
         },
         {
@@ -16098,7 +16110,8 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false
+            "recipe_clipped": false,
+            "external": true
           }
         }
       ]
@@ -16227,7 +16240,8 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false
+            "recipe_clipped": false,
+            "external": true
           }
         },
         {
@@ -16266,7 +16280,8 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false
+            "recipe_clipped": false,
+            "external": true
           }
         }
       ]
@@ -16477,7 +16492,8 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false
+            "recipe_clipped": false,
+            "external": true
           }
         }
       ]
@@ -16667,7 +16683,8 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false
+            "recipe_clipped": false,
+            "external": true
           }
         }
       ]
@@ -16914,7 +16931,8 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false
+            "recipe_clipped": false,
+            "external": true
           }
         },
         {
@@ -16953,7 +16971,8 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false
+            "recipe_clipped": false,
+            "external": true
           }
         }
       ]
@@ -17079,7 +17098,8 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false
+            "recipe_clipped": false,
+            "external": true
           }
         },
         {
@@ -17118,7 +17138,8 @@
             "disclosure": "",
             "recipe_text": "",
             "diff": [],
-            "recipe_clipped": false
+            "recipe_clipped": false,
+            "external": true
           }
         }
       ]

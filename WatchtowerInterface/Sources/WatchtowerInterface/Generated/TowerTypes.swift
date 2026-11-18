@@ -238,6 +238,10 @@ public struct Approval: Codable, Hashable, Sendable {
     public var recipeText: String
     public var diff: [DiffLine]
     public var recipeClipped: Bool
+    public var argsDisplay: String?
+    public var argsComplete: Bool?
+    public var external: Bool?
+    public var needsWorkspace: Bool?
 
     public init(
         tool: String,
@@ -256,7 +260,11 @@ public struct Approval: Codable, Hashable, Sendable {
         disclosure: String,
         recipeText: String,
         diff: [DiffLine],
-        recipeClipped: Bool
+        recipeClipped: Bool,
+        argsDisplay: String? = nil,
+        argsComplete: Bool? = nil,
+        external: Bool? = nil,
+        needsWorkspace: Bool? = nil
     ) {
         self.tool = tool
         self.title = title
@@ -275,6 +283,10 @@ public struct Approval: Codable, Hashable, Sendable {
         self.recipeText = recipeText
         self.diff = diff
         self.recipeClipped = recipeClipped
+        self.argsDisplay = argsDisplay
+        self.argsComplete = argsComplete
+        self.external = external
+        self.needsWorkspace = needsWorkspace
     }
 
     enum CodingKeys: String, CodingKey {
@@ -295,6 +307,10 @@ public struct Approval: Codable, Hashable, Sendable {
         case recipeText = "recipe_text"
         case diff
         case recipeClipped = "recipe_clipped"
+        case argsDisplay = "args_display"
+        case argsComplete = "args_complete"
+        case external
+        case needsWorkspace = "needs_workspace"
     }
 
     public init(from decoder: Decoder) throws {
@@ -316,6 +332,10 @@ public struct Approval: Codable, Hashable, Sendable {
         self.recipeText = try container.decode(String.self, forKey: .recipeText)
         self.diff = try container.decodeIfPresent([DiffLine].self, forKey: .diff) ?? []
         self.recipeClipped = try container.decode(Bool.self, forKey: .recipeClipped)
+        self.argsDisplay = try container.decodeIfPresent(String.self, forKey: .argsDisplay)
+        self.argsComplete = try container.decodeIfPresent(Bool.self, forKey: .argsComplete)
+        self.external = try container.decodeIfPresent(Bool.self, forKey: .external)
+        self.needsWorkspace = try container.decodeIfPresent(Bool.self, forKey: .needsWorkspace)
     }
 }
 

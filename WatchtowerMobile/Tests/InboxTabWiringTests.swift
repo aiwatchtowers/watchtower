@@ -1,3 +1,5 @@
+import ChatUI
+import ChatWire
 import SwiftUI
 import UIKit
 import WatchtowerDesign
@@ -188,26 +190,34 @@ final class InboxTabWiringTests: XCTestCase {
         XCTAssertFalse(InboxCardButtons.state(1, roundup, center: center).enabled)
     }
 
-    /// Mockup §3 "Approve — sending": while Approve is on its way only "Approving…" shows; Reject comes back after.
-    func testApprovingShowsOnlyTheBusyButton() async throws {
+    /// Needs approval draws ChatUI's shared approval card (mobile Inbox spec §12.1, ask #1469): a proposal is the
+    /// shared `AgentActionCard` with the Inbox's services, a press on its way turns its row off with "Approving…"
+    /// (ask #1549 Q2 = A, which retired the single busy button of #1170 T15), and a refusal brings the row back with
+    /// the tower's sentence; a reminder keeps its own card.
+    func testNeedsApprovalDrawsTheSharedCard() async throws {
         let hub = FakeInboxHub(feed: feed)
         let center = try await startedInboxCenter(hub)
-        let proposal = try XCTUnwrap(center.feed?.cards.first { $0.id == DemoSeed.Inbox.slackProposal })
-        let model = InboxApprovalModel(card: proposal, platform: .phone, grants: .all, now: now)
-        XCTAssertNil(InboxApprovalCard.busyVerb(center.rowState(proposal.id)))
-        XCTAssertEqual(InboxApprovalCard.shownVerbs(model, busy: nil), [.approve, .reject])
+        let proposal = try card(DemoSeed.Inbox.slackProposal, in: center)
+        let view = InboxApprovalCard(center: center, card: proposal, grants: .all, now: now)
+        XCTAssertNotNil(ImageRenderer(content: view.frame(width: 393)).uiImage)
+        let services = InboxApprovalCard.services(center: center, card: proposal.card, grants: .all, hubAway: false, hubName: "", now: now)
+        let action = ChatAgentAction(inboxCard: proposal.card)
+        XCTAssertEqual(AgentActionCard.availability(services.state?(action)), .live)
 
-        let press = Task { await center.press { model.approve(requestID: $0) } }
-        try await poll({ hub.requests.count == 1 }, "Approve queued")
-        let busy = InboxApprovalCard.busyVerb(center.rowState(proposal.id))
-        XCTAssertEqual(busy, .approve)
-        XCTAssertEqual(InboxApprovalCard.shownVerbs(model, busy: busy), [.approve], "Reject hides while approving")
-        XCTAssertEqual(InboxApprovalCard.busyTitle(.approve), InboxText.approving)
+        services.decide(action, .approve(patch: nil))
+        try await pollBounded({ hub.requests.count == 1 }, "Approve queued")
+        let busy = try XCTUnwrap(services.state?(action))
+        XCTAssertEqual(busy.line, InboxText.approving)
+        XCTAssertEqual(AgentActionCard.availability(busy), .disabled, "Approve and Reject stay, off")
 
         hub.transport.settle(actionID: "act-1", .refused(code: .argsChanged, sentence: "This proposal changed — look again."))
-        await press.value
-        XCTAssertNil(InboxApprovalCard.busyVerb(center.rowState(proposal.id)))
-        XCTAssertEqual(InboxApprovalCard.shownVerbs(model, busy: nil), [.approve, .reject], "the decision row is back")
+        try await pollBounded({ services.state?(action)?.gestureError != nil }, "refused")
+        XCTAssertEqual(services.state?(action)?.gestureError, "This proposal changed — look again.")
+        XCTAssertEqual(AgentActionCard.availability(services.state?(action)), .live, "the decision row is back")
+
+        let reminder = try card("r104", in: center)
+        XCTAssertNotNil(ImageRenderer(content: InboxApprovalCard(center: center, card: reminder, grants: .all, now: now)
+            .frame(width: 393)).uiImage)
     }
 
     func testDidntConfirmShowsRefresh() async throws {

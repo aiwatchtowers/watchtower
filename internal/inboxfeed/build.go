@@ -21,6 +21,12 @@ import (
 // ClipBytes is the most of a card's body Options.Clip keeps.
 const ClipBytes = 16 << 10
 
+// ArgsDisplayClipBytes is the most of an approval's args_display
+// Options.Clip keeps (mobile Inbox spec §12.1): a byte cap on top of
+// tools.ArgsDisplay's 4000 characters, so a card stays within the hub's
+// record budget whatever its characters' widths.
+const ArgsDisplayClipBytes = 8 << 10
+
 // MaxBlocksBytes is the largest block document a card carries; a bigger
 // one is sent as a notice card, never as a broken record.
 const MaxBlocksBytes = 128 << 10
@@ -91,11 +97,22 @@ func compose(s *snapshot, o Options) api.Feed {
 		}
 		cards, feed.More = Limit(cards, approvals, o.Limit)
 	}
-	if o.Clip {
-		for i := range cards {
-			cards[i].Body, cards[i].BodyClipped = Clip(cards[i].Body, ClipBytes)
-			if ap := cards[i].Approval; ap != nil {
-				ap.RecipeText, ap.Diff, ap.RecipeClipped = clipRecipe(ap.RecipeText, ap.Diff)
+	for i := range cards {
+		ap := cards[i].Approval
+		if !o.Clip {
+			// The display args are the phone's (the hub's clipped feed, §12.1):
+			// the Mac draws its own rows and never reads them.
+			if ap != nil {
+				ap.ArgsDisplay, ap.ArgsComplete = "", false
+			}
+			continue
+		}
+		cards[i].Body, cards[i].BodyClipped = Clip(cards[i].Body, ClipBytes)
+		if ap != nil {
+			ap.RecipeText, ap.Diff, ap.RecipeClipped = clipRecipe(ap.RecipeText, ap.Diff)
+			var cut bool
+			if ap.ArgsDisplay, cut = Clip(ap.ArgsDisplay, ArgsDisplayClipBytes); cut {
+				ap.ArgsComplete = false
 			}
 		}
 	}

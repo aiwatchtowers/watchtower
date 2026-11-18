@@ -231,6 +231,10 @@ public struct ChatManageParams: Codable, Hashable, Sendable {
 public enum ChatActionDecision: String, Codable, Hashable, Sendable {
     case approve
     case reject
+    /// Re-run a failed action (mobile Inbox spec §12.9); only to a hub whose heartbeat says `chat_actions`.
+    case retry
+    /// Dismiss a session call whose outcome is unknown (§12.9); the same gate.
+    case dismiss
 }
 
 /// `chat_action_answer`; needs the permissions grant too. `argsSHA256` is the hash of the args the phone showed:

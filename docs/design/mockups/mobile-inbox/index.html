@@ -256,49 +256,35 @@ An unread entry has a blue dot. A folder's count is the Mac's <code>InboxFolderC
 
 <!-- ===================================================== 3 -->
 <h2>3. Needs approval</h2>
-<div class="note">Each approval is a waiting card. It shows the recipe's look when the Mac would draw it (APPROVAL-01, computed by the hub), otherwise the native card. The actions are always the Mac's:
+<div class="note">Superseded by spec §12 (board #2018, ask #1469): an approval in Needs approval is ChatUI's shared approval card (<code>AgentActionCard</code>, ask #1409) in the phone's style, the same card the phone chat draws. These frames are the one source of truth for it; each also has a <code>-narrow</code> image in <code>approval-card/</code>.
 <ul>
-<li>proposals: <b>Approve</b> and <b>Reject</b>;</li>
-<li>failed proposals: <b>Retry</b> and <b>Dismiss</b>;</li>
-<li>reminders: <b>Done</b> and <b>Snooze 1h</b>.</li>
+<li>pending: <b>Approve</b> and <b>Reject</b>; without the <code>permissions</code> grant "Approve on the Mac" and a live <b>Reject</b>;</li>
+<li>failed: <b>Retry</b> (without the grant "Retry on the Mac"); <b>Dismiss</b> only on a connector call whose outcome is unknown, the one row Go dismisses (ask #1549, Q1 = A) — today's Dismiss on an ordinary failed row is refused by Go;</li>
+<li>the phone chat draws the same card and gains <b>Retry</b> and <b>Dismiss</b> too (ask #1553, spec §12.9): the <code>chat-approval-*</code> frames below;</li>
+<li>on every phone surface the header puts the status under the title when both do not fit (spec §12.5): the <code>chat-approval-header-today</code> / <code>-stacked</code> pair;</li>
+<li>on its way, waiting to send, refused, not delivered, didn't confirm, done, dismissed: as in spec §12.5;</li>
+<li><b>Open Draft</b> (save_automation) and <b>Edit…</b> stay on the Mac; an Inbox button's stuck task offers <b>Try again</b>;</li>
+<li>reminders keep their own card: <b>Done</b> and <b>Snooze 1h</b>.</li>
 </ul>
-<b>Approve</b> pins the SHA-256 of the arguments shown on screen, as <code>actions approve --args-sha256</code> does. If the arguments changed meanwhile, the hub refuses and the card redraws. <b>Edit…</b> and <b>Open Draft</b> (save_automation) stay on the Mac: the phone shows "Edit on your Mac". The off / stopped / failed notes from the Mac are one line at the top.</div>
+<b>Approve</b> pins the SHA-256 of the arguments shown, as <code>actions approve --args-sha256</code> does; if they changed meanwhile the hub refuses and the card redraws.</div>
 <div class="row">
-<div class="col"><div class="tag">Needs approval — dark</div>
-<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
-<div class="top"><span class="back">‹ Inbox</span><span></span></div>
-<div class="title">Needs approval</div>
-<div class="body">
- <div class="card wait"><div class="ct">Send a Slack message</div><div class="cm">to #acme-release · ϟ Release notes · run #4 · 09:12</div><div class="cq">“Release 2.0 is tagged; checklist in the thread.”</div><div class="btns"><span class="btn pri">Approve</span><span class="btn">Reject</span></div></div>
- <div class="card wait"><div class="ct">Reply in #acme-release</div><div class="cm">Reply from Waiting for me · this iPhone · 09:40</div><div class="cq">“Signing off now — docs link is the only open item…”</div><div class="btns"><span class="btn pri">Approve</span><span class="btn">Reject</span></div></div>
- <div class="card wait"><div class="ct">Create a Linear issue</div><div class="cm err">Failed: the team was archived</div><div class="btns"><span class="btn">Retry</span><span class="btn">Dismiss</span></div></div>
- <div class="card wait"><div class="ct">Reminder · 14:00</div><div class="cq">Answer colleague A about the budget</div><div class="cm"><span class="link">Slack message ↗</span></div><div class="btns"><span class="btn pri">Done</span><span class="btn">Snooze 1h</span></div></div>
+<div class="col"><div class="tag">inbox-approval-pending — light / dark</div><img src="approval-card/inbox-approval-pending-light.png" alt="inbox-approval-pending, light" style="width:300px;display:block;margin-bottom:8px"><img src="approval-card/inbox-approval-pending-dark.png" alt="inbox-approval-pending, dark" style="width:300px;display:block"></div>
+<div class="col"><div class="tag">inbox-approval-failed — light / dark</div><img src="approval-card/inbox-approval-failed-light.png" alt="inbox-approval-failed, light" style="width:300px;display:block;margin-bottom:8px"><img src="approval-card/inbox-approval-failed-dark.png" alt="inbox-approval-failed, dark" style="width:300px;display:block"></div>
+<div class="col"><div class="tag">inbox-approval-sending — light / dark</div><img src="approval-card/inbox-approval-sending-light.png" alt="inbox-approval-sending, light" style="width:300px;display:block;margin-bottom:8px"><img src="approval-card/inbox-approval-sending-dark.png" alt="inbox-approval-sending, dark" style="width:300px;display:block"></div>
+<div class="col"><div class="tag">inbox-approval-refused — light / dark</div><img src="approval-card/inbox-approval-refused-light.png" alt="inbox-approval-refused, light" style="width:300px;display:block;margin-bottom:8px"><img src="approval-card/inbox-approval-refused-dark.png" alt="inbox-approval-refused, dark" style="width:300px;display:block"></div>
+<div class="col"><div class="tag">inbox-approval-settled — light / dark</div><img src="approval-card/inbox-approval-settled-light.png" alt="inbox-approval-settled, light" style="width:300px;display:block;margin-bottom:8px"><img src="approval-card/inbox-approval-settled-dark.png" alt="inbox-approval-settled, dark" style="width:300px;display:block"></div>
+<div class="col"><div class="tag">inbox-approval-dismiss — light / dark</div><img src="approval-card/inbox-approval-dismiss-light.png" alt="inbox-approval-dismiss, light" style="width:300px;display:block;margin-bottom:8px"><img src="approval-card/inbox-approval-dismiss-dark.png" alt="inbox-approval-dismiss, dark" style="width:300px;display:block"></div>
+<div class="col"><div class="tag">inbox-approval-mac-only — light / dark</div><img src="approval-card/inbox-approval-mac-only-light.png" alt="inbox-approval-mac-only, light" style="width:300px;display:block;margin-bottom:8px"><img src="approval-card/inbox-approval-mac-only-dark.png" alt="inbox-approval-mac-only, dark" style="width:300px;display:block"></div>
 </div>
-<div class="tabs"><div><span class="gl">◷</span>Now</div><div class="on"><span class="gl">▤</span>Inbox<span class="badge">7</span></div><div><span class="gl">⚒</span>Workbench</div><div><span class="gl">✉</span>Chats</div><div><span class="gl">▦</span>Calendar</div></div>
-</div></div>
 
-<div class="col"><div class="tag">Needs approval — light, recipe off + save_automation</div>
-<div class="phone lt"><div class="status"><span>9:41</span><span>●●●</span></div>
-<div class="top"><span class="back">‹ Inbox</span><span></span></div>
-<div class="title">Needs approval</div>
-<div class="body">
- <div class="line">Showing approvals in the standard card — Needs approval is off on Acme Mac.</div>
- <div class="card wait"><div class="ct">Save automation “Standup notes”</div><div class="cm">Assistant proposal · 08:55</div><div class="cq">Runs weekdays at 09:30 · writes to your Inbox · reads Slack</div><div class="btns"><span class="btn dis">Open Draft — on your Mac</span><span class="btn">Reject</span></div></div>
- <div class="card wait"><div class="ct">Create a Jira issue</div><div class="cm">ACME · from your :ticket: reaction · 08:31</div><div class="cq">“Checklist link broken on the release page”</div><div class="btns"><span class="btn pri">Approve</span><span class="btn">Reject</span></div><div class="cm">Edit on your Mac</div></div>
-</div>
-<div class="tabs"><div><span class="gl">◷</span>Now</div><div class="on"><span class="gl">▤</span>Inbox<span class="badge">7</span></div><div><span class="gl">⚒</span>Workbench</div><div><span class="gl">✉</span>Chats</div><div><span class="gl">▦</span>Calendar</div></div>
-</div></div>
-
-<div class="col"><div class="tag">Approve — sending, then changed on the Mac — dark</div>
-<div class="phone"><div class="status"><span>9:41</span><span>●●●</span></div>
-<div class="top"><span class="back">‹ Inbox</span><span></span></div>
-<div class="title">Needs approval</div>
-<div class="body">
- <div class="card wait"><div class="ct">Send a Slack message</div><div class="cm">to #acme-release · ϟ Release notes · run #4</div><div class="cq">“Release 2.0 is tagged; checklist in the thread.”</div><div class="btns"><span class="btn pri" style="opacity:.6"><span class="spin" style="border-top-color:#fff"></span> Approving…</span></div></div>
- <div class="card wait"><div class="ct">Create a Jira issue</div><div class="cm">ACME · from your :ticket: reaction</div><div class="cq">“Checklist link broken on the release page (v2)”</div><div class="cm err" style="margin-top:6px">This proposal changed on the Mac — look again before approving.</div><div class="btns"><span class="btn pri">Approve</span><span class="btn">Reject</span></div></div>
-</div>
-<div class="tabs"><div><span class="gl">◷</span>Now</div><div class="on"><span class="gl">▤</span>Inbox<span class="badge">7</span></div><div><span class="gl">⚒</span>Workbench</div><div><span class="gl">✉</span>Chats</div><div><span class="gl">▦</span>Calendar</div></div>
-</div></div>
+<div class="row">
+<div class="col"><div class="tag">chat-approval-failed — light / dark</div><img src="approval-card/chat-approval-failed-light.png" alt="chat-approval-failed, light" style="width:300px;display:block;margin-bottom:8px"><img src="approval-card/chat-approval-failed-dark.png" alt="chat-approval-failed, dark" style="width:300px;display:block"></div>
+<div class="col"><div class="tag">chat-approval-dismiss — light / dark</div><img src="approval-card/chat-approval-dismiss-light.png" alt="chat-approval-dismiss, light" style="width:300px;display:block;margin-bottom:8px"><img src="approval-card/chat-approval-dismiss-dark.png" alt="chat-approval-dismiss, dark" style="width:300px;display:block"></div>
+<div class="col"><div class="tag">chat-approval-sending — light / dark</div><img src="approval-card/chat-approval-sending-light.png" alt="chat-approval-sending, light" style="width:300px;display:block;margin-bottom:8px"><img src="approval-card/chat-approval-sending-dark.png" alt="chat-approval-sending, dark" style="width:300px;display:block"></div>
+<div class="col"><div class="tag">chat-approval-refused — light / dark</div><img src="approval-card/chat-approval-refused-light.png" alt="chat-approval-refused, light" style="width:300px;display:block;margin-bottom:8px"><img src="approval-card/chat-approval-refused-dark.png" alt="chat-approval-refused, dark" style="width:300px;display:block"></div>
+<div class="col"><div class="tag">chat-approval-unconfirmed — light / dark</div><img src="approval-card/chat-approval-unconfirmed-light.png" alt="chat-approval-unconfirmed, light" style="width:300px;display:block;margin-bottom:8px"><img src="approval-card/chat-approval-unconfirmed-dark.png" alt="chat-approval-unconfirmed, dark" style="width:300px;display:block"></div>
+<div class="col"><div class="tag">chat-approval-header-today — light / narrow</div><img src="approval-card/chat-approval-header-today-light.png" alt="chat-approval-header-today, light" style="width:300px;display:block;margin-bottom:8px"><img src="approval-card/chat-approval-header-today-narrow.png" alt="chat-approval-header-today, narrow" style="width:300px;display:block"></div>
+<div class="col"><div class="tag">chat-approval-header-stacked — light / narrow</div><img src="approval-card/chat-approval-header-stacked-light.png" alt="chat-approval-header-stacked, light" style="width:300px;display:block;margin-bottom:8px"><img src="approval-card/chat-approval-header-stacked-narrow.png" alt="chat-approval-header-stacked, narrow" style="width:300px;display:block"></div>
 </div>
 
 <!-- ===================================================== 4 -->

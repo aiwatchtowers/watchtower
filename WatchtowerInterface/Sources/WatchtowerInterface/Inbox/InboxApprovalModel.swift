@@ -23,12 +23,9 @@ public struct InboxApprovalModel: Equatable, Sendable {
     public let canReject: Bool
     /// Retry of a failed row; never on a superseded one (the CLI refuses it).
     public let canRetry: Bool
-    public let canDismiss: Bool
     public let canEdit: Bool
     /// "Edit on your Mac" on the phone for a proposal the Mac's Edit… changes.
     public let editNote: String?
-    /// "Failed: <error>" on a failed row.
-    public let failedLine: String?
     public let targetRow: TargetRow
 
     public init(card: Card, platform: Platform, grants: Grants, now: Date = Date()) {
@@ -49,12 +46,9 @@ public struct InboxApprovalModel: Equatable, Sendable {
         }
         canReject = pending
         canRetry = failed && mayDecide && card.approval?.superseded != true
-        canDismiss = failed && mayDecide
         let editable = card.approval?.editOnMac == true && pending
         canEdit = editable && platform == .mac
         editNote = editable && platform == .phone ? TowerText.editOnYourMac : nil
-        let error = card.approval?.error ?? ""
-        failedLine = failed && !error.isEmpty ? TowerText.failedPrefix(error) : nil
         targetRow = Self.targetRow(card.approval, status: status, now: now)
     }
 

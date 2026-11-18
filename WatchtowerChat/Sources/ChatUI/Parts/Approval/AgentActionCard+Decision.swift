@@ -25,7 +25,7 @@ extension AgentActionCard {
     }
 
     /// Whether the pending decision buttons show, and whether they are live.
-    enum Availability: Equatable {
+    public enum Availability: Equatable {
         case live
         /// Shown but off: no answer can go now (offline, an answer on its way, a CLI call in flight).
         case disabled
@@ -60,7 +60,36 @@ extension AgentActionCard {
         }
     }
 
-    static func availability(_ state: ChatApprovalState?) -> Availability {
+    /// What a row no longer pending draws: its offer, the note that says where to act instead (no grant, an older hub;
+    /// mobile Inbox spec §12.4), or nothing.
+    public enum SettledRow: Equatable {
+        case offer(SettledOffer)
+        case note(String)
+        case none
+    }
+
+    public static func settledRow(
+        for action: ChatAgentAction, services: ChatApprovalServices, offersRetry: Bool, state: ChatApprovalState?
+    ) -> SettledRow {
+        let offered: SettledOffer = switch settledOffer(for: action) {
+        case .retry: offersRetry ? .retry : .none
+        case let other: other
+        }
+        if offered != .none, let note = state?.settledNote { return .note(note) }
+        let shown = shownSettledOffer(for: action, services: services, offersRetry: offersRetry)
+        return shown == .none ? .none : .offer(shown)
+    }
+
+    /// The state line under the row: on a pending row, and on a settled one that offers (or notes) Retry or Dismiss.
+    public static func shownLine(
+        for action: ChatAgentAction, services: ChatApprovalServices, offersRetry: Bool, state: ChatApprovalState?
+    ) -> String? {
+        guard let line = state?.line else { return nil }
+        if action.isPending { return line }
+        return settledRow(for: action, services: services, offersRetry: offersRetry, state: state) == .none ? nil : line
+    }
+
+    public static func availability(_ state: ChatApprovalState?) -> Availability {
         guard let state else { return .live }
         if !state.showsButtons { return .hidden }
         return state.canAnswer && !state.inFlight ? .live : .disabled
@@ -120,16 +149,37 @@ extension AgentActionCard {
     static let approveLabel = "Approve"
     static let rejectLabel = "Reject"
     static let retryLabel = "Retry"
+    static let dismissLabel = "Dismiss"
 
     // MARK: - The row
 
+    /// Which row the card draws under its body: a Not delivered press's named Retry wins over everything (its
+    /// outbox action is the one to resend, mobile Inbox spec §12.4), then the screen's own row (the Inbox target
+    /// button's), then the card's decision row.
+    public enum DecisionRowKind: Equatable {
+        case undelivered
+        case custom
+        case standard
+    }
+
+    public static func decisionRowKind(
+        for action: ChatAgentAction, state: ChatApprovalState?, hasOverride: Bool
+    ) -> DecisionRowKind {
+        if state?.undelivered != nil, !action.isTerminal { return .undelivered }
+        return hasOverride ? .custom : .standard
+    }
+
     @ViewBuilder
     func decision(connector: ConnectorCallProposal?) -> some View {
-        if let custom = services.decisionOverride?(action) {
+        let custom = services.decisionOverride?(action)
+        switch Self.decisionRowKind(for: action, state: state, hasOverride: custom != nil) {
+        case .undelivered:
+            if let undelivered = state?.undelivered { undeliveredRow(undelivered) }
+        case .custom:
             custom
-        } else {
+        case .standard:
             decisionRow(connector: connector)
-            if action.isPending, let line = state?.line {
+            if let line = Self.shownLine(for: action, services: services, offersRetry: offersRetry, state: state) {
                 Text(line).font(.caption).foregroundStyle(.secondary).lineLimit(4)
             }
         }
@@ -155,12 +205,35 @@ extension AgentActionCard {
         .disabled(availability == .disabled)
     }
 
+    /// Not delivered: the line in red and the named Retry, the row's one button.
+    private func undeliveredRow(_ undelivered: ChatApprovalState.Undelivered) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            Label(undelivered.line, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(Tone.error)
+                .accessibilityIdentifier("agentAction.undelivered")
+            style.approvalButton(undelivered.retryTitle, prominent: true) { services.resend?(action) }
+                .accessibilityIdentifier("agentAction.resend")
+        }
+    }
+
     private var approveTitle: String {
         state?.approveFailed == true ? Self.retryLabel : Self.approveLabel
     }
 
     @ViewBuilder
     private func pendingButtons(connector: ConnectorCallProposal?) -> some View {
+        if let note = state?.approveNote {
+            approveNoteText(note)
+        } else {
+            approveButton(connector: connector)
+        }
+        style.approvalButton(Self.rejectLabel, prominent: false) { services.decide(action, .reject) }
+            .accessibilityIdentifier("chat.approval.reject")
+    }
+
+    @ViewBuilder
+    private func approveButton(connector: ConnectorCallProposal?) -> some View {
         switch Self.pendingApproval(for: action, editsSlack: editsSlack) {
         case .session:
             connectorButtons(connector)
@@ -179,21 +252,27 @@ extension AgentActionCard {
         case .none:
             EmptyView()
         }
-        style.approvalButton(Self.rejectLabel, prominent: false) { services.decide(action, .reject) }
-            .accessibilityIdentifier("chat.approval.reject")
+    }
+
+    /// Approve's note in its place (no grant, a draft only the Mac opens).
+    private func approveNoteText(_ note: String) -> some View {
+        Text(note).font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("agentAction.approveNote")
     }
 
     @ViewBuilder
     private var settledButtons: some View {
-        switch Self.shownSettledOffer(for: action, services: services, offersRetry: offersRetry) {
-        case .retry:
+        switch Self.settledRow(for: action, services: services, offersRetry: offersRetry, state: state) {
+        case .offer(.retry):
             Button(Self.retryLabel) { services.retry?(action) }
-        case .dismiss:
+                .accessibilityIdentifier("agentAction.retry")
+        case .offer(.dismiss):
             Text(ConnectorCallProposal.dismissNote).font(.caption).foregroundStyle(.secondary)
-            Button("Dismiss") { services.dismiss?(action) }
+            Button(Self.dismissLabel) { services.dismiss?(action) }
                 .help("Take this call off the Inbox badge")
                 .accessibilityIdentifier("agentAction.dismissOutcomeUnknown")
-        case .none:
+        case let .note(note):
+            Text(note).font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("agentAction.settledNote")
+        case .offer(.none), .none:
             EmptyView()
         }
     }
