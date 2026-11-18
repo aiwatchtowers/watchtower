@@ -67,7 +67,13 @@ final class WatchmanJournalViewModel {
         let meta: String
         /// Mark done is offered (a check nobody ran).
         var canMarkDone = false
+        /// The line's own symbol; nil = its section's.
+        var icon: String?
     }
+
+    /// The symbol of a superseded item's line (its ask was withdrawn), apart
+    /// from the owner-answered one.
+    static let supersededIcon = "arrow.uturn.backward.circle"
 
     /// The Correct… sheet's draft.
     struct CorrectDraft: Identifiable, Equatable {
@@ -574,7 +580,8 @@ final class WatchmanJournalViewModel {
 
     private func ownerFirstLine(_ item: WatchmanItem) -> Line {
         Line(id: item.id, title: WatchmanJournalCopy.question(item), note: WatchmanJournalCopy.outcome(item),
-             meta: WatchmanJournalCopy.place(item, calendar: calendar))
+             meta: WatchmanJournalCopy.place(item, calendar: calendar),
+             icon: item.outcome == "superseded" ? Self.supersededIcon : nil)
     }
 
     private func checkLine(_ item: WatchmanItem) -> Line {

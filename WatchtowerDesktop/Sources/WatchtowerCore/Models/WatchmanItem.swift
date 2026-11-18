@@ -29,6 +29,9 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
     package var parkReason: String
     /// How the answer reached the session; `no_session` = it had ended.
     package var delivery: String
+    /// A step after the answer that is still owed or failed (`error`; a
+    /// "Continue" handover's session start).
+    package var errorText: String
     package var costUSD: Double
     package var createdAt: Date
     package var decidedAt: Date?
@@ -60,6 +63,7 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
         unsure: Bool = true,
         parkReason: String = "",
         delivery: String = "",
+        errorText: String = "",
         costUSD: Double = 0,
         createdAt: Date,
         decidedAt: Date? = nil,
@@ -86,6 +90,7 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
         self.unsure = unsure
         self.parkReason = parkReason
         self.delivery = delivery
+        self.errorText = errorText
         self.costUSD = costUSD
         self.createdAt = createdAt
         self.decidedAt = decidedAt
@@ -115,6 +120,7 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
         unsure = (row["unsure"] as Int64? ?? 1) != 0
         parkReason = row["park_reason"]
         delivery = row["delivery"]
+        errorText = row["error"] ?? ""
         costUSD = row["cost_usd"]
         let created: String = row["created_at"]
         guard let createdAt = AutomationDates.parse(created) else {
@@ -146,15 +152,36 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
         return []
     }
 
-    /// Parked or handed back: the owner has to act.
+    /// The `error` values of a "Continue" handover whose session start is
+    /// still owed (Go `db.WatchmanStartPending`, `db.WatchmanStartClaimed`):
+    /// not a failure the owner sees.
+    package static let startOwedErrors: Set<String> = ["next session not started yet", "next session starting"]
+
+    /// Parked or handed back, or a handover whose next session did not
+    /// start: the owner has to act.
     package var waitsForOwner: Bool {
-        isWaitingKind && feedback.isEmpty && ownerDoneAt == nil
+        if hasFailedStep { return ownerDoneAt == nil }
+        return isWaitingKind && feedback.isEmpty && ownerDoneAt == nil
     }
 
     /// Parked or handed back, whether or not the owner has dealt with it.
     package var isWaitingKind: Bool {
         state == "done" && (outcome == "parked" || outcome == "handed")
     }
+
+    /// An answered handover whose session start failed for good (its error
+    /// is set and no longer an owed start).
+    package var hasFailedStep: Bool {
+        kind == "handover" && state == "done" && outcome == "answered"
+            && !errorText.isEmpty && !Self.startOwedErrors.contains(errorText)
+    }
+
+    /// The SQL twin of `hasFailedStep` / `waitsForOwner` (alias-free columns).
+    package static let waitingSQL = """
+        state = 'done' AND owner_done_at IS NULL AND ((outcome IN ('parked', 'handed') AND feedback = '')
+          OR (kind = 'handover' AND outcome = 'answered' AND error != ''
+              AND error NOT IN ('next session not started yet', 'next session starting')))
+        """
 
     /// The owner corrected it and the correction never reached a session.
     package var correctionUnsent: Bool {

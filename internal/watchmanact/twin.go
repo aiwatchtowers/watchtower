@@ -102,7 +102,17 @@ func (t *Twin) RunOnce(ctx context.Context) int {
 		if it.RefKind != "ask" || !twinKinds[it.Kind] {
 			return false
 		}
-		mode, _ := watchman.Mode(now, watchman.ModeInputs{Armed: armed[it.SessionID]})
+		isArmed := armed[it.SessionID]
+		if it.Kind == "handover" && !isArmed {
+			// A handover outlives its session: its arming row (kept by the
+			// prune while the handover is open) or its target's arming.
+			var err error
+			if isArmed, err = t.d.DB.WatchmanItemArmed(it.SessionID, it.TargetID); err != nil {
+				log.Printf("watchman twin: %v", err)
+				return false
+			}
+		}
+		mode, _ := watchman.Mode(now, watchman.ModeInputs{Armed: isArmed})
 		return mode == watchman.ModeSleep
 	}
 	started := 0
@@ -199,7 +209,7 @@ func (j *job) answer(ctx context.Context, ans *askanswer.AnswerRequest, o db.Wat
 		j.lostRace(o)
 		return false
 	}
-	if err := j.t.d.DB.NoteWatchmanItemDelivery(j.it.ID, res.Delivery, o.Error); err != nil {
+	if err := j.t.d.DB.NoteWatchmanItemDelivery(j.it.ID, res.Delivery); err != nil {
 		log.Printf("watchman twin: %v", err)
 	}
 	return true

@@ -120,8 +120,10 @@ package enum WatchmanJournalCopy {
         return parts.joined(separator: " · ")
     }
 
-    /// A waiting card's reason: "Parked: …" or "Handed to you: …".
+    /// A waiting card's reason: "Parked: …", "Handed to you: …", or the
+    /// failed step's error of a handover whose next session did not start.
     package static func waitingReason(_ item: WatchmanItem) -> String {
+        if item.hasFailedStep { return oneLine(item.errorText) }
         if item.outcome == "handed" {
             return "Handed to you: \(oneLine(item.rationale.isEmpty ? item.choice : item.rationale))"
         }

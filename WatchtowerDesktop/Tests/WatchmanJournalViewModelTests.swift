@@ -164,6 +164,8 @@ final class WatchmanJournalViewModelTests: XCTestCase {
         XCTAssertEqual(page.decidedCount, 1)
         XCTAssertEqual(page.ownerFirst.map(\.title), ["Use a sheet?", "Keep the old export?"])
         XCTAssertEqual(page.ownerFirst.map(\.note), ["the owner answered first", "The ask was withdrawn before the answer"])
+        XCTAssertEqual(page.ownerFirst.map(\.icon), [nil, WatchmanJournalViewModel.supersededIcon],
+                       "a superseded line has its own symbol")
     }
 
     /// While on screen the journal rereads on every tick (the daemon writes
