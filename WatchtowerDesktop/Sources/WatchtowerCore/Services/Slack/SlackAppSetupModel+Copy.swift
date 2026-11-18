@@ -43,6 +43,8 @@ extension SlackAppSetupModel {
         StepLine(id: "write_link", label: "Writing the connect link to its About page", mark: .waiting),
         StepLine(id: "connect", label: "Connecting your Slack account", mark: .waiting)
     ]
+    /// The wizard's create (company screens spec §2.5): no link, no connect.
+    package static let wizardCreateSteps = Array(createSteps.prefix(2))
     package static let adoptSteps = [
         StepLine(id: "check_token", label: "Checking the token", mark: .waiting),
         StepLine(id: "update_app", label: "Updating the app", mark: .waiting)
