@@ -25,6 +25,7 @@ import (
 	"watchtower/internal/providers"
 	"watchtower/internal/providers/transport"
 	"watchtower/internal/tools"
+	"watchtower/internal/workbenchfolders"
 )
 
 // readFolderFixture is a config whose claude is a stub that answers with its
@@ -144,6 +145,39 @@ func TestAIQueryReadFolder_RunsClaudeInTheFolder(t *testing.T) {
 	}
 	assert.Empty(t, parts[2], "--setting-sources is empty")
 	assert.Equal(t, "ToolSearch,Read,Grep,Glob,LS", parts[3], "the --tools allowlist adds only the reads")
+}
+
+// TestAIQueryReadFolder_RunsInANonHomeBenchFolder: any folder on a bench is
+// a workbench folder (multi-folder workbench, spec 2026-11-18 §6.1), and the
+// run reads that folder, not the bench's home; one taken off the bench is
+// none.
+func TestAIQueryReadFolder_RunsInANonHomeBenchFolder(t *testing.T) {
+	f := newReadFolderFixture(t)
+	hub, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	gone, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	database, err := db.Open(f.dbPath)
+	require.NoError(t, err)
+	wb, err := database.WorkbenchByFolder(f.folder)
+	require.NoError(t, err)
+	ctx := context.Background()
+	_, err = workbenchfolders.Add(ctx, database, wb.ID, hub, workbenchfolders.AddedByOwner, nil)
+	require.NoError(t, err)
+	removed, err := workbenchfolders.Add(ctx, database, wb.ID, gone, workbenchfolders.AddedByOwner, nil)
+	require.NoError(t, err)
+	_, err = workbenchfolders.Remove(ctx, database, removed.ID, nil)
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+
+	code, stdout, stderr := f.run(t, "--read-folder", hub)
+	require.Equal(t, 0, code, stderr)
+	assert.Equal(t, hub, strings.Split(firstText(t, stdout), "|")[0], "cwd is the bench's hub folder")
+
+	code, stdout, stderr = f.run(t, "--read-folder", gone)
+	assert.Equal(t, 2, code)
+	assert.Contains(t, stderr, "not a workbench folder")
+	assert.Empty(t, stdout)
 }
 
 // Without --read-folder the run is today's: temp-dir cwd, read tools hidden.

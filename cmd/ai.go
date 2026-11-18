@@ -703,14 +703,16 @@ func resolveReadFolder(cmd *cobra.Command, dbPath string) (string, error) {
 		return "", usageError("--read-folder: opening the database: %v", err)
 	}
 	defer func() { _ = database.Close() }()
-	wb, err := database.WorkbenchByFolder(resolved)
+	// Any live folder of any bench, not only a home folder (multi-folder
+	// workbench, spec 2026-11-18 §6.1): the folder itself, as stored.
+	f, err := database.LiveFolderByPath(cmdContext(cmd), database, resolved)
 	if err != nil {
 		if errors.Is(err, db.ErrWorkbenchNotFound) {
 			return "", usageError("--read-folder %s: not a workbench folder", aiFlagReadFolder)
 		}
 		return "", usageError("--read-folder %s: %v", aiFlagReadFolder, err)
 	}
-	return wb.FolderPath, nil
+	return f.FolderPath, nil
 }
 
 // resolveReviewReadFolder is --read-folder-ask's folder: the one the reviewer
