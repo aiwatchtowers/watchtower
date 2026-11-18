@@ -89,7 +89,8 @@ One migration (next free number at implementation time; SQL, goose):
    "Never for This Folder".
 6. `session_messages` (`id`, `workbench_id`, `from_session_id`, `to_session_id` — both FK SET
    NULL, `kind` CHECK IN (`message`,`finished`,`failure`), `text`, `created_at`, `state` CHECK
-   IN (`queued`,`delivering`,`delivered`,`failed`), `reason`, `delivered_at`). Persisted so a
+   IN (`queued`,`delivering`,`delivered`,`failed`), `reason`, `delivered_at`, `prompt_cleared_at`
+   — §6.6 "typed"). Persisted so a
    daemon restart resumes delivery. Text is not indexed and never leaves the Mac.
 7. Docs index key (PROJ-08) gains the folder: `wbdoc:<project_id>:<folder_id>:<rel_path>`; the
    2 000-document cap becomes per folder. The migration drops the old `wbdoc:` rows; the next
@@ -219,9 +220,11 @@ through session-host `Deliver` (`sessionstart.Port.Deliver`, the same client the
 becomes `delivered` with reason `typed_not_submitted`, is never pasted again, and the sender
 gets `[Message to #<id> was typed into the session but not submitted; it waits in its prompt.]`
 — the text sits in the receiver's prompt for its next submit, and a later message to that
-session is held by the prompt-text check until then. The owner sees it: while the session's
-newest `typed_not_submitted` message is newer than its last submitted prompt (the
-`UserPromptSubmit` hook), the session row's state line adds `· Agent message waiting in the
+session is held by the prompt-text check until then. The owner sees it: such a row carries `prompt_cleared_at` (NULL while the text may still sit
+there). The deliverer sets it, on each tick for every row still NULL, when the session host's
+prompt-text read (the same read `HoldIfPromptText` uses, no hooks needed) reports an empty
+prompt, when a `UserPromptSubmit` is recorded after the row, or when the session's run ends.
+While any row of the session has `prompt_cleared_at` NULL, the session row's state line adds `· Agent message waiting in the
 prompt` (Tone warning) and the pane shows a notice `An agent's message is in the prompt. Press
 Return in the terminal to send it.` with `Show in Terminal`. Held `finished` messages never
 expire after 24 h — they wait while the parent row exists; held `message` rows still fail after
@@ -384,6 +387,7 @@ Suggestion card: when the suggested folder is on bench B, the card reads
 | folder missing at launch | moved/deleted | root `Folder not found`; start refused `folder_missing` | Swift presentation + Go |
 | sub-session start | host down / launch fails | existing start failure path; parent's tool result carries the error; no row left (existing) | Go |
 | message | target stops, is deleted, or 24 h pass | `failed` + failure line to the sender | Go daemon deliverer test with fake clock |
+| message flag | session has no hooks (the reason it was typed) | cleared by the host's prompt-text read or the run's end, never waits on a hook | Go deliverer test with a fake host |
 | message | Deliver returns `typed` (Return withheld) | row final `delivered`/`typed_not_submitted`, never re-pasted; sender told; later lines held by the prompt-text check | Go deliverer test with a fake host |
 | message | daemon restarts with queued lines | resumed from `session_messages` | Go |
 | message | target not running | `failed` `not_running` at once; never launches it | Go |
@@ -454,6 +458,7 @@ Approved by the owner (asks #1545, #1548):
 7. `remove-confirm` and `remove-refused` (sessions running; last folder).
 8. `feed-parent` — started / from / finished / waiting peer bubbles.
 8a. `merge-confirm`, `merge-refused`, and `suggest-card-merge` (§6.13).
+8b. `message-in-prompt` — row flag and pane notice (§6.6, D40).
 9. `strip-child` — `📁 hub › ⑂ export-api › ⎇ … ↖ from “…”`.
 10. `board-card-folder` — folder chip, drift `folder removed`.
 
