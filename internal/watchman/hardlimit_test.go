@@ -651,7 +651,8 @@ func TestParkedBy_HeredocIdiomAndMoreHiddenShapes(t *testing.T) {
 	both("commit heredoc", "git commit -m \"$(cat <<'EOF'\nrelease notes before merge\nEOF\n)\"", "")
 	both("pr create heredoc", "gh pr create --title \"Fix\" --body \"$(cat <<'EOF'\nreview the push and the tag\nEOF\n)\"", "")
 	both("backslash delimiter", "git commit -m \"$(cat <<\\EOF\nrelease it\nEOF\n)\"", "")
-	both("wrapped commit heredoc", "env GIT_AUTHOR_NAME=x git commit -m \"$(cat <<'EOF'\nrelease\nEOF\n)\"", "")
+	// Round 8: a wrapper in front is off the allowlist, so the body is scanned.
+	both("wrapped commit heredoc", "env GIT_AUTHOR_NAME=x git commit -m \"$(cat <<'EOF'\nrelease\nEOF\n)\"", LimitUnreadable)
 	// Not blanked.
 	// "EOF" inside the double-quoted word closes the reader's quote: it
 	// cannot be told from an unquoted delimiter, so it stays scanned.
@@ -710,6 +711,44 @@ func TestParkedBy_HeredocIdiomAndMoreHiddenShapes(t *testing.T) {
 	// rm: .. is a parent only as a path segment.
 	both("rm of ..cache", "make x & rm ..cache", "")
 	both("rm of ..", "make x & rm ..", LimitUnreadable)
+	// Round 8: the blanking needs every other part on the plain allowlist.
+	body := "\"$(cat <<'EOF'\ngit push origin main\nEOF\n)\""
+	msg := "\"$(cat <<'EOF'\nrelease notes, push after the review\nEOF\n)\""
+	for name, cmd := range map[string]string{
+		"hash -p":               "hash -p /bin/sh cat; git commit -m " + body,
+		"alias cat=sh":          "alias cat=sh\ngit commit -m " + body,
+		"ln, export PATH":       "ln -s /bin/sh cat; export PATH=.:$PATH; git commit -m " + body,
+		"message run as script": "git commit -m " + body + " && git log -1 --format=%B > x.sh && chmod +x x.sh && ./x.sh",
+		"PATH assignment":       "PATH=. git commit -m " + body,
+		"git -c before commit":  "git -c core.hooksPath=x commit -m " + body,
+		"commit -c":             "git commit -c HEAD -m " + body,
+		"commit redirected":     "git commit -m " + body + " > out.txt",
+		"go test -exec":         "go test -exec sh ./... && git commit -m " + body,
+		"make with a variable":  "make SHELL=sh x && git commit -m " + body,
+		"absolute program":      "/usr/bin/git commit -m " + body,
+		"command builtin":       "command -p true && git commit -m " + body,
+		"tee":                   "git commit -m " + body + " | tee x.sh",
+		"git diff --ext-diff":   "git diff --ext-diff && git commit -m " + body,
+	} {
+		both("probe "+name, cmd, LimitUnreadable)
+	}
+	for name, cmd := range map[string]string{
+		"add then commit":      "git add -A && git commit -m " + msg,
+		"commit then go test":  "git commit -m " + msg + " && go test ./...",
+		"cd then commit":       "cd /w/a && git commit -m " + msg,
+		"pr create":            "gh pr create --title \"Fix\" --body " + msg,
+		"status, diff, commit": "git status && git diff --stat && git commit -m " + msg,
+		"gofmt, vet, commit":   "gofmt -l . && go vet ./... && git commit -m " + msg,
+		"make target, commit":  "make lint && git commit -m " + msg,
+		"swift test, commit":   "swift test && git commit -m " + msg,
+		"echo, commit":         "echo done && git commit -m " + msg,
+	} {
+		both("idiom "+name, cmd, "")
+	}
+	// rm's operand is read with its quotes and escapes removed.
+	both("rm of ..\\/x", "make x & rm ..\\/x", LimitUnreadable)
+	both("rm of quoted .. then /x", "make x & rm \"..\"\\/x", LimitUnreadable)
+	both("rm of \\/etc", "make x & rm \\/etc/hosts", LimitUnreadable)
 	expectParked(t, cases)
 	// The strict backstop alone (the unreadable row comes first above).
 	r := bash(prBody)

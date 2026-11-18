@@ -727,8 +727,15 @@ func rebaseOnDefault(args []string) bool {
 // when its command text names a hard-limit action.
 func matchUnreadable(r PermissionAsk) bool {
 	return anyCmd(r, func(c shellCmd) bool {
-		return c.w[0] == unresolved || (c.w[0] == hiddenMark && (!r.Lenient || limitWords.MatchString(lenientScanText(r.Summary))))
+		return c.w[0] == unresolved || (c.w[0] == hiddenMark && (!r.Lenient || lenientLimitHit(r.Summary)))
 	})
+}
+
+// lenientLimitHit reports a hard-limit word in the guard's scan text, or
+// an rm of an outside path read with its quotes and escapes removed.
+func lenientLimitHit(summary string) bool {
+	text := lenientScanText(summary)
+	return limitWords.MatchString(text) || rmOutside(text)
 }
 
 // limitWords are the words of the actions the hard-limit table covers (a
@@ -741,57 +748,161 @@ var limitWords = regexp.MustCompile(`(?i)(^|[^a-z0-9_])(merges?|mergepullrequest
 // merge backstop: the command text (comments and description lines
 // dropped by splitCommands) with each commit-message idiom blanked — a
 // "$(cat <<'D' … D)" argument (quoted delimiter, so its body is literal
-// text) of a message-taking command (heredocArgsBlanked) — but only when,
-// after blanking, nothing in the whole request could run that body
-// (blankedRequestPlain). Otherwise the text unblanked.
+// text) of a message-taking command (heredocArgsBlanked) — but only when
+// every part of the request is on the plain allowlist (plainPart), so
+// nothing in it can run the body. Otherwise the text unblanked.
 func lenientScanText(summary string) string {
 	parts := splitCommands(summary)
-	plain := make([]string, 0, len(parts))
-	blanked := make([]string, 0, len(parts))
-	rebuilt := ""
+	blanked := make([]string, len(parts))
 	found := false
-	for _, p := range parts {
-		b, ok := heredocArgsBlanked(p)
+	for i, p := range parts {
+		var ok bool
+		blanked[i], ok = heredocArgsBlanked(p)
 		found = found || ok
-		plain, blanked = append(plain, p.text), append(blanked, b)
-		rebuilt += p.sep + b
 	}
-	if found && blankedRequestPlain(rebuilt) {
-		return strings.Join(blanked, "\n")
+	useBlanked := found
+	for i := 0; useBlanked && i < len(parts); i++ {
+		useBlanked = plainPart(blanked[i])
 	}
-	return strings.Join(plain, "\n")
+	var out strings.Builder
+	for i, p := range parts {
+		if i > 0 {
+			out.WriteByte('\n')
+		}
+		if useBlanked {
+			out.WriteString(blanked[i])
+		} else {
+			out.WriteString(p.text)
+		}
+	}
+	return out.String()
 }
 
-// blankedRequestPlain reports a request (heredoc bodies blanked) in which
-// no part could run a blanked body: no hidden shape anywhere (a
-// substitution, a pipe into a shell, a variable as the program, a function
-// definition — one redefining cat included...), no unreadable part, and no
-// eval, source, . or shell call at all.
-func blankedRequestPlain(text string) bool {
-	for _, p := range splitCommands(text) {
-		if hiddenText(p.text) {
-			return false
+// plainPart reports one part (its heredoc bodies blanked) that cannot run
+// a blanked body: no hidden shape, no output redirect, and the command —
+// written as is, no wrapper, assignment or path in front — is a plain
+// message taker (plainMessageTaker) or on the allowlist (plainCommand).
+func plainPart(text string) bool {
+	if strings.TrimSpace(text) == "" {
+		return true
+	}
+	if hiddenText(text) || hasRedirect(text) {
+		return false
+	}
+	words, ok := splitWords(text)
+	if !ok || len(words) == 0 {
+		return ok
+	}
+	return plainMessageTaker(words) || plainCommand(words)
+}
+
+// hasRedirect reports a > outside quotes (an output redirect).
+func hasRedirect(text string) bool {
+	var quote byte
+	for i := 0; i < len(text); i++ {
+		ch := text[i]
+		switch {
+		case quote == '\'':
+			if ch == '\'' {
+				quote = 0
+			}
+		case ch == '\\':
+			i++
+		case quote == '"':
+			if ch == '"' {
+				quote = 0
+			}
+		case ch == '\'' || ch == '"':
+			quote = ch
+		case ch == '>':
+			return true
 		}
+	}
+	return false
+}
+
+// plainMessageTaker: git commit or an annotated git tag with no git global
+// option and no -c/-C/--exec-style option, or gh pr|issue|release
+// create|edit, each written directly.
+func plainMessageTaker(w []string) bool {
+	if len(w) < 2 {
+		return false
+	}
+	runsThings := func(a string) bool {
+		return a == "-c" || a == "-C" || strings.HasPrefix(a, "--exec") || strings.HasPrefix(a, "--template")
+	}
+	switch {
+	case w[0] == "git" && (w[1] == "commit" || w[1] == "tag"):
+		return !slices.ContainsFunc(w[2:], runsThings)
+	case w[0] == "gh" && len(w) > 2 && (w[1] == "pr" || w[1] == "issue" || w[1] == "release"):
+		return w[2] == "create" || w[2] == "edit"
+	}
+	return false
+}
+
+// plainCommand is the allowlist of commands that may stand beside a
+// blanked message: cd <dir>; git add|status|diff|log|show without
+// --output, --ext-diff, --textconv or -c; go test|build|vet without
+// -exec, -toolexec or -o; gofmt -l; make with targets only; swift
+// build|test; ls, pwd, true, echo. Each written directly.
+func plainCommand(w []string) bool {
+	args := w[1:]
+	noneOf := func(bad ...string) bool {
+		return !slices.ContainsFunc(args, func(a string) bool {
+			for _, b := range bad {
+				if a == b || strings.HasPrefix(a, b+"=") {
+					return true
+				}
+			}
+			return false
+		})
+	}
+	switch w[0] {
+	case "cd":
+		return len(args) == 1
+	case "ls", "pwd", "true", "echo":
+		return true
+	case "git":
+		return len(args) > 0 && slices.Contains([]string{"add", "status", "diff", "log", "show"}, args[0]) &&
+			noneOf("--output", "--ext-diff", "--textconv", "-c")
+	case "go":
+		return len(args) > 0 && slices.Contains([]string{"test", "build", "vet"}, args[0]) &&
+			noneOf("-exec", "-toolexec", "-o", "-vettool")
+	case "gofmt":
+		return slices.Contains(args, "-l") && noneOf("-w")
+	case "make":
+		return !slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, "-") || strings.Contains(a, "=") })
+	case "swift":
+		return len(args) > 0 && (args[0] == "build" || args[0] == "test")
+	}
+	return false
+}
+
+// rmOutside reports an rm — anywhere in a part's words, so one behind a
+// wrapper or a background & counts — whose operand, quotes and escapes
+// removed, is an absolute, home or parent path (.. as a whole segment:
+// ..cache is local).
+func rmOutside(text string) bool {
+	for _, p := range splitCommands(text) {
 		words, ok := splitWords(p.text)
 		if !ok {
-			return false
-		}
-		var c shellCmd
-		if words = stripWrappers(words, &c); len(words) == 0 {
 			continue
 		}
-		switch prog := path.Base(words[0]); {
-		case shells[prog], prog == "eval", prog == "source", prog == ".", prog == unresolved,
-			strings.HasPrefix(words[0], "$"), c.xargs:
-			return false
+		for i, w := range words {
+			if path.Base(w) != "rm" {
+				continue
+			}
+			for _, a := range words[i+1:] {
+				if a == "&" || a == ";" || a == "|" {
+					break
+				}
+				if strings.HasPrefix(a, "/") || strings.HasPrefix(a, "~") || a == ".." || strings.HasPrefix(a, "../") {
+					return true
+				}
+			}
 		}
 	}
-	for _, c := range commands(text) {
-		if c.w[0] == hiddenMark || c.w[0] == unresolved {
-			return false
-		}
-	}
-	return true
+	return false
 }
 
 // messageTaker reports a command whose heredoc argument is a message: git

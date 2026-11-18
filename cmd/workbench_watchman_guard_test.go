@@ -535,6 +535,13 @@ func TestWatchmanGuard_HiddenShapesNeedALimitWord(t *testing.T) {
 		{"echo \"$(cat <<'EOF'\ngit push origin main\nEOF\n)\" | sh", "Parked for the owner: unreadable — continue with other work"},
 		{"printf '%s\\n' \"$(cat <<'EOF'\ngit push origin main\nEOF\n)\" | bash", "Parked for the owner: unreadable — continue with other work"},
 		{"cat() { sh; }; git commit -m \"$(cat <<'EOF'\ngit push origin main\nEOF\n)\"", "Parked for the owner: unreadable — continue with other work"},
+		// Only a request of plain allowlisted commands blanks the body (round 8).
+		{"hash -p /bin/sh cat; git commit -m \"$(cat <<'EOF'\ngit push origin main\nEOF\n)\"", "Parked for the owner: unreadable — continue with other work"},
+		{"alias cat=sh\ngit commit -m \"$(cat <<'EOF'\ngit push origin main\nEOF\n)\"", "Parked for the owner: unreadable — continue with other work"},
+		{"ln -s /bin/sh cat; export PATH=.:$PATH; git commit -m \"$(cat <<'EOF'\ngit push origin main\nEOF\n)\"", "Parked for the owner: unreadable — continue with other work"},
+		{"git commit -m \"$(cat <<'EOF'\ngit push origin main\nEOF\n)\" && git log -1 --format=%B > x.sh && chmod +x x.sh && ./x.sh", "Parked for the owner: unreadable — continue with other work"},
+		{"git add -A && git commit -m \"$(cat <<'EOF'\nrelease notes, push after the review\nEOF\n)\" && go test ./...", ""},
+		{"cd /w && git commit -m \"$(cat <<'EOF'\nrelease notes\nEOF\n)\"", ""},
 		{"x $(git push origin HEAD:main)", "Parked for the owner: unreadable — continue with other work"},
 		{"true & gh pr merge 1", "Parked for the owner: unreadable — continue with other work"},
 		{`echo "open`, "Parked for the owner: unreadable — continue with other work"},
