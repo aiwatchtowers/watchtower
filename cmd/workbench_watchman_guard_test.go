@@ -545,7 +545,8 @@ func TestWatchmanGuard_HiddenShapesNeedALimitWord(t *testing.T) {
 		// Round 9: a zsh glob qualifier, go's --exec, rm only as a command.
 		{"git commit -m \"$(cat <<'EOF'\ngit push origin main\nEOF\n)\" && ls *(e:'git log -1 --format=%B|sh':)", "Parked for the owner: unreadable — continue with other work"},
 		{"go test --exec sh ./... && git commit -m \"$(cat <<'EOF'\ngit push origin main\nEOF\n)\"", "Parked for the owner: unreadable — continue with other work"},
-		{`echo "$(pwd)" rm example /tmp`, ""},
+		{`echo "$(pwd)" rm example /tmp`, "Parked for the owner: unreadable — continue with other work"},
+		{`sleep 1&rm "/x"`, "Parked for the owner: unreadable — continue with other work"},
 		{"make x & sudo rm /tmp/x", "Parked for the owner: unreadable — continue with other work"},
 		{"x $(git push origin HEAD:main)", "Parked for the owner: unreadable — continue with other work"},
 		{"true & gh pr merge 1", "Parked for the owner: unreadable — continue with other work"},

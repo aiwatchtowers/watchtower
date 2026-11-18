@@ -760,7 +760,13 @@ func TestParkedBy_HeredocIdiomAndMoreHiddenShapes(t *testing.T) {
 	both("go vet --vettool=", "go vet --vettool=x ./... && git commit -m "+body, LimitUnreadable)
 	both("go build --o", "go build --o x . && git commit -m "+body, LimitUnreadable)
 	both("go test --count", "go test --count=1 ./... && git commit -m "+msg, "")
-	both("rm as an echo argument", `echo "$(pwd)" rm example /tmp`, "")
+	// rm counts in any position (round 9 item 3 reverted): an echo argument
+	// named rm parks too, which fails closed.
+	both("rm as an echo argument", `echo "$(pwd)" rm example /tmp`, LimitUnreadable)
+	both("rm in a then-body", `if true; then rm "/x"; fi`, LimitUnreadable)
+	both("rm in a group", `{ rm "/x"; }`, LimitUnreadable)
+	both("rm glued behind &", `sleep 1&rm "/x"`, LimitUnreadable)
+	both("rm after a glued &&", `a&& rm "/x" && echo $(date)`, LimitUnreadable)
 	both("sudo rm behind &", "make x & sudo rm /tmp/x", LimitUnreadable)
 	both("rm after a hidden part", "echo $(date) && rm \\/tmp/x", LimitUnreadable)
 	both("xargs rm behind &", "make x & xargs rm ~/y", LimitUnreadable)

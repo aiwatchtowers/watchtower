@@ -885,30 +885,37 @@ func plainCommand(w []string) bool {
 	return false
 }
 
-// rmOutside reports an rm at command position — after the known wrappers
-// (sudo, xargs, env...), in each part and each segment of it behind a
-// background & — whose operand, quotes and escapes removed, is an
-// absolute, home or parent path (.. as a whole segment: ..cache is
-// local). An "rm" word elsewhere (an echo's argument) is no rm.
+// rmOutside reports an rm anywhere in a part's words — at command
+// position or not (a then-body, a group, behind a background &, even an
+// echo's argument: that false park is accepted, it fails closed) — whose
+// following operand, quotes and escapes removed, is an absolute, home or
+// parent path (.. as a whole segment: ..cache is local). A & glued inside
+// a word (sleep 1&rm) splits it.
 func rmOutside(text string) bool {
 	for _, p := range splitCommands(text) {
-		words, ok := splitWords(p.text)
+		raw, ok := splitWords(p.text)
 		if !ok {
 			continue
 		}
-		for len(words) > 0 {
-			seg := words
-			if i := slices.Index(words, "&"); i >= 0 {
-				seg, words = words[:i], words[i+1:]
-			} else {
-				words = nil
+		var words []string
+		for _, w := range raw {
+			for i, piece := range strings.Split(w, "&") {
+				if i > 0 {
+					words = append(words, "&")
+				}
+				if piece != "" {
+					words = append(words, piece)
+				}
 			}
-			var c shellCmd
-			seg = stripWrappers(slices.Clone(seg), &c)
-			if len(seg) < 2 || path.Base(seg[0]) != "rm" {
+		}
+		for i, w := range words {
+			if path.Base(w) != "rm" {
 				continue
 			}
-			for _, a := range seg[1:] {
+			for _, a := range words[i+1:] {
+				if a == "&" || a == ";" || a == "|" {
+					break
+				}
 				if strings.HasPrefix(a, "/") || strings.HasPrefix(a, "~") || a == ".." || strings.HasPrefix(a, "../") {
 					return true
 				}
