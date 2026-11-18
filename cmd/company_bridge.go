@@ -23,6 +23,7 @@ import (
 	"watchtower/internal/jira"
 	"watchtower/internal/linear"
 	"watchtower/internal/media"
+	"watchtower/internal/media/linkrule"
 	"watchtower/internal/oauthclient"
 )
 
@@ -127,8 +128,9 @@ type bridgeSkipJSON struct {
 // Reason (public_build, no_company_name, no_baked_clients); "migrated" the
 // slug, what happened to the company file (created, updated, unchanged), the
 // accounts tied and the baked-client accounts left untied with why
-// (other_team, other_tenant, no_tenant, no_site, company_app_differs,
-// unresolved).
+// (other_team, no_tenant, no_site, company_app_differs, unresolved). An
+// untied account other than Slack keeps the corp client through its own
+// client record; a Slack token is never refreshed, so it needs none.
 type companyBridgeResult struct {
 	Result  string              `json:"result"`
 	Reason  string              `json:"reason,omitempty"`
@@ -162,7 +164,7 @@ type bridgeAccount struct {
 	source   string
 	id       int64
 	slug     string // company_slug now
-	key      string // Slack team, Outlook mail domain, Jira site
+	key      string // Slack team, Jira site
 	clientID string // the client its grant resolves to now
 	resolved error
 	// record writes the account's client record when it has none and
@@ -251,11 +253,9 @@ func bridgeAccounts(workspaceDir string, database *db.DB) ([]bridgeAccount, erro
 			continue
 		}
 		cfg, _, rerr := resolveOutlookAccountClient(workspaceDir, a)
-		_, domain, _ := strings.Cut(a.EmailAddress, "@")
-		out = append(out, bridgeAccount{source: "outlook", id: a.ID, slug: a.CompanySlug, key: strings.ToLower(domain),
-			clientID: cfg.ClientID, resolved: rerr,
+		out = append(out, bridgeAccount{source: "outlook", id: a.ID, slug: a.CompanySlug, clientID: cfg.ClientID, resolved: rerr,
 			// The grant was issued on the "common" tenant: the record keeps
-			// no tenant, so the company's tenant is not a changed app.
+			// no tenant, so the account refreshes there as before.
 			record: clientRecordWriter(workspaceDir, outlookClientVendor, a.ID, func(b corpBaked) oauthclient.Client {
 				return oauthclient.Client{ClientID: b.ids["outlook"]}
 			})})
@@ -289,9 +289,12 @@ func (a bridgeAccount) onBaked(baked corpBaked, slug string) bool {
 }
 
 // bridgeBundle is the bundle the corp build's clients make: every baked
-// vendor whose block it can fill. Slack's team, Atlassian's site and
-// Microsoft's tenant come from the oldest account on the baked client (the
-// tenant is its mail domain); a vendor without one is left out.
+// vendor whose block it can fill. Slack's team and Atlassian's site come from
+// the oldest account on the baked client; a vendor without one is left out.
+// Microsoft is always left out: the baked app signs in on the "common"
+// tenant, and no tenant this Mac knows is provably the company's (a mail
+// domain need not be a verified tenant domain). Outlook accounts keep the
+// corp app through their client records instead.
 func bridgeBundle(companyName string, baked corpBaked, accts []bridgeAccount, slug, workspaceDir string) (companybundle.Bundle, error) {
 	b := companybundle.Bundle{V: companybundle.Version, Company: companyName}
 	first := func(source string) (bridgeAccount, bool) {
@@ -310,21 +313,25 @@ func bridgeBundle(companyName string, baked corpBaked, accts []bridgeAccount, sl
 	}
 	if a, ok := first("jira"); ok {
 		if site, ok := bridgeSite(a.key); ok {
-			access, _ := readConfluenceAccess(workspaceDir, a.id) // unreadable token: no Confluence
+			// An unreadable token fails the run (retried next launch): a
+			// stored block is never replaced, so a guess would stick.
+			access, err := readConfluenceAccess(workspaceDir, a.id)
+			if err != nil {
+				return companybundle.Bundle{}, err
+			}
 			b.Atlassian = &companybundle.Atlassian{ClientID: baked.ids["jira"], ClientSecret: baked.jiraSecret, Site: site, Confluence: access.Read}
 		}
 	}
 	if id := baked.ids["linear"]; id != "" {
 		b.Linear = &companybundle.Linear{ClientID: id}
 	}
-	if a, ok := first("outlook"); ok {
-		if tenant, ok := companybundle.DenyHost(a.key); ok {
-			b.Microsoft = &companybundle.Microsoft{ClientID: baked.ids["outlook"], TenantID: tenant}
-		}
-	}
-	for _, h := range strings.Split(baked.denyHosts, ",") {
-		if h, ok := companybundle.DenyHost(h); ok && !slices.Contains(b.LinkDenyHosts, h) {
-			b.LinkDenyHosts = append(b.LinkDenyHosts, h)
+	// The build list in the link policy's own normal form first (IDN,
+	// trailing dot), so every host it refuses today reaches the bundle.
+	for _, raw := range strings.Split(baked.denyHosts, ",") {
+		for n := range linkrule.NormalizeHostSet([]string{raw}) {
+			if h, ok := companybundle.DenyHost(n); ok && !slices.Contains(b.LinkDenyHosts, h) {
+				b.LinkDenyHosts = append(b.LinkDenyHosts, h)
+			}
 		}
 	}
 	wire, err := companybundle.Encode(b)
@@ -396,15 +403,9 @@ func bridgeTie(a bridgeAccount, eff companybundle.Bundle, baked corpBaked) (bool
 			return false, "company_app_differs"
 		}
 	case "outlook":
-		if eff.Microsoft == nil {
-			return false, "no_tenant"
-		}
-		if !strings.EqualFold(eff.Microsoft.ClientID, id) {
-			return false, "company_app_differs"
-		}
-		if eff.Microsoft.TenantID != a.key {
-			return false, "other_tenant"
-		}
+		// A company Microsoft app names a tenant; the grant was issued on
+		// "common" (bridgeBundle).
+		return false, "no_tenant"
 	}
 	return true, ""
 }
@@ -412,12 +413,15 @@ func bridgeTie(a bridgeAccount, eff companybundle.Bundle, baked corpBaked) (bool
 // runCompanyBridge moves a corp build onto a company bundle (#1887 T11a): it
 // stores the bundle its baked clients make under companyName (merged into a
 // stored bundle of that company, never replacing a block), writes a client
-// record for every account on a baked client that lacks one, ties those
-// accounts to the company in one transaction, and writes the
-// company_migrated marker last. It runs at every launch of the corp build,
-// so accounts added since the last run are tied too. Any failure undoes
-// what this run wrote (bundle, records, ties) and leaves no marker: the next
-// launch retries.
+// record for every account on a baked client that lacks one, ties those the
+// effective bundle gives the same client to the company in one transaction,
+// and writes the company_migrated marker last. It runs at every launch of
+// the corp build and again before the app installs a public update, so
+// accounts added since are covered too. Any failure it sees undoes what this
+// run wrote (bundle, records, ties) and leaves the marker as it was; a run
+// killed mid-way (the app's 30 s step timeout) leaves at most a bundle or
+// records without ties, which change no account's client and which the next
+// run completes.
 func runCompanyBridge(workspaceDir string, database *db.DB, companyName string, baked corpBaked, forced string) (companyBridgeResult, error) {
 	store := company.NewStore(workspaceDir)
 	slug, err := store.SlugFor(companyName, forced)
@@ -465,12 +469,7 @@ func runCompanyBridge(workspaceDir string, database *db.DB, companyName string, 
 		}
 		if prev == nil {
 			res.Stored = "created"
-			undo = append(undo, func() error {
-				if err := os.Remove(filepath.Join(store.Dir, slug+".json")); err != nil && !errors.Is(err, os.ErrNotExist) {
-					return err
-				}
-				return nil
-			})
+			undo = append(undo, func() error { return removeIfExists(filepath.Join(store.Dir, slug+".json")) })
 		} else {
 			res.Stored = "updated"
 			was := *prev
@@ -490,10 +489,9 @@ func runCompanyBridge(workspaceDir string, database *db.DB, companyName string, 
 			}
 			continue
 		}
-		if ok, why := bridgeTie(a, eff.Bundle, baked); !ok {
-			res.Skipped = append(res.Skipped, bridgeSkipJSON{Source: a.source, ID: a.id, Reason: why})
-			continue
-		}
+		// Every account on a baked client gets its client record, tied or
+		// not: an untied one keeps the corp client through it once the
+		// public build (which bakes none of them) takes over.
 		if a.record != nil {
 			if err := companyBridgeFault("record"); err != nil {
 				return fail(err)
@@ -503,13 +501,12 @@ func runCompanyBridge(workspaceDir string, database *db.DB, companyName string, 
 				return fail(fmt.Errorf("%s account %d client record: %w", a.source, a.id, err))
 			}
 			if created != "" {
-				undo = append(undo, func() error {
-					if err := os.Remove(created); err != nil && !errors.Is(err, os.ErrNotExist) {
-						return err
-					}
-					return nil
-				})
+				undo = append(undo, func() error { return removeIfExists(created) })
 			}
+		}
+		if ok, why := bridgeTie(a, eff.Bundle, baked); !ok {
+			res.Skipped = append(res.Skipped, bridgeSkipJSON{Source: a.source, ID: a.id, Reason: why})
+			continue
 		}
 		ref := db.CompanyAccountRef{Source: a.source, ID: a.id}
 		tie = append(tie, ref)
@@ -530,13 +527,15 @@ func runCompanyBridge(workspaceDir string, database *db.DB, companyName string, 
 	if err := companyBridgeFault("marker"); err != nil {
 		return fail(err)
 	}
-	marker := filepath.Join(workspaceDir, companyMigratedMarker)
-	if _, err := os.Stat(marker); errors.Is(err, os.ErrNotExist) {
-		if err := fsutil.WriteFileAtomic(marker, []byte(slug+"\n"), 0o600); err != nil {
-			return fail(fmt.Errorf("writing %s: %w", companyMigratedMarker, err))
-		}
-	} else if err != nil {
-		return fail(err)
+	if err := fsutil.WriteFileAtomic(filepath.Join(workspaceDir, companyMigratedMarker), []byte(slug+"\n"), 0o600); err != nil {
+		return fail(fmt.Errorf("writing %s: %w", companyMigratedMarker, err))
 	}
 	return res, nil
+}
+
+func removeIfExists(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }

@@ -103,8 +103,7 @@ final class UpdateService {
     /// exception is a corp install the company bridge has migrated
     /// (`companyMigrated`): its accounts no longer need the baked clients.
     /// Instance property so tests can inject a flavor.
-    var buildFlavor: String =
-        (Bundle.main.object(forInfoDictionaryKey: "WTBuildFlavor") as? String) ?? ""
+    var buildFlavor: String = CompanyBridgeLaunch.bundleFlavor
 
     /// Gated-channel keys stamped into Info.plist by build-app.sh (absent on
     /// default and dev builds). Instance properties so tests can inject them.
@@ -115,9 +114,15 @@ final class UpdateService {
     var updateClientSecret: String? =
         Bundle.main.object(forInfoDictionaryKey: "WTUpdateClientSecret") as? String
 
-    /// Whether the workspace carries the company bridge's marker; read only
-    /// for a flavored build. Instance property so tests can inject it.
-    var companyMigrated: () -> Bool = { CompanyBridgeLaunch.workspaceMigrated() }
+    /// Whether every workspace carries the company bridge's marker; read only
+    /// for a flavored build, afresh each time (a stat per workspace), so a
+    /// workspace created later gates the feed again. Instance property so
+    /// tests can inject it.
+    var companyMigrated: () -> Bool = { CompanyBridgeLaunch.workspacesMigrated() }
+    /// The company bridge run right before a migrated corp build installs a
+    /// public update (accounts signed in since the launch's run); false =
+    /// it failed and the install stops. Tests replace it.
+    var bridgeBeforeInstall: @Sendable () -> Bool = { CompanyBridgeLaunch.run() }
 
     var channel: UpdateChannel {
         let migrated = CompanyBridgeLaunch.applies(flavor: buildFlavor) && companyMigrated()
@@ -608,6 +613,9 @@ final class UpdateService {
     /// itself — signed by the same Team ID as the bundle it replaces — which
     /// App Management allows. Every failure lands in `.error` and leaves the
     /// current app untouched.
+    nonisolated static let bridgeFailedMessage =
+        "Could not move this build's accounts onto your company before the update — try again in a moment"
+
     func install() async {
         guard case .readyToInstall(let newAppPath) = state else { return }
         // Same gate as the quit path's "recording in progress" confirmation,
@@ -627,6 +635,16 @@ final class UpdateService {
         }
 
         state = .installing
+        // A corp build leaving for the public one: the public build has no
+        // bridge and no corp clients, so an account signed in since the
+        // launch's bridge gets its client record and tie now, or nothing is
+        // installed (#1887 T11a).
+        if CompanyBridgeLaunch.applies(flavor: buildFlavor), channel == .publicGitHub {
+            guard await ProcessPipes.offPool(bridgeBeforeInstall) else {
+                state = .error(Self.bridgeFailedMessage)
+                return
+            }
+        }
         // Staging, the deep signature check (it hashes the whole bundle) and
         // the swap are file-system work: run them off the main actor so the
         // "Installing…" spinner keeps spinning.

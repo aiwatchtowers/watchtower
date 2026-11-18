@@ -248,6 +248,21 @@ struct UpdateChannelTests {
         #expect(reports.items == ["Company bridge skipped: the watchtower CLI was not found"])
     }
 
+    @Test("migrated means every workspace with a database carries the marker")
+    func everyWorkspaceMigrated() throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("wt-bridge-\(UUID().uuidString)").path
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        #expect(!CompanyBridgeLaunch.workspacesMigrated(basePath: base), "no workspace is not migrated")
+        for name in ["alpha", "beta"] {
+            try FileManager.default.createDirectory(atPath: "\(base)/\(name)", withIntermediateDirectories: true)
+            FileManager.default.createFile(atPath: "\(base)/\(name)/watchtower.db", contents: Data())
+        }
+        FileManager.default.createFile(atPath: "\(base)/alpha/\(CompanyBridgeLaunch.markerName)", contents: Data())
+        #expect(!CompanyBridgeLaunch.workspacesMigrated(basePath: base))
+        FileManager.default.createFile(atPath: "\(base)/beta/\(CompanyBridgeLaunch.markerName)", contents: Data())
+        #expect(CompanyBridgeLaunch.workspacesMigrated(basePath: base))
+    }
+
     @Test("the launch migrates first, then bridges (the bridge needs the company columns)")
     func migrateThenBridgeOrder() {
         var steps: [String] = []
@@ -866,6 +881,40 @@ struct UpdateServiceRelaunchTests {
         await svc.install()
         #expect(svc.state == .error("Cannot determine current app location"))
         #expect(install.calls.isEmpty)
+    }
+
+    @Test("a migrated corp build bridges again before a public install; a failed bridge installs nothing")
+    func corpBridgesBeforePublicInstall() async {
+        let install = InstallRecorder()
+        let svc = service(RelaunchRecorder(), appURL: appURL)
+        svc.isBusy = { false }
+        svc.teamIdentifier = { nil } // the step right after the bridge fails visibly
+        svc.installSteps = install.steps
+        svc.buildFlavor = "corp"
+        svc.companyMigrated = { true }
+        let runs = LockedReports()
+        svc.bridgeBeforeInstall = { runs.append("bridge"); return false }
+        svc.state = .readyToInstall(appPath: URL(fileURLWithPath: "/downloads/Watchtower.app"))
+        await svc.install()
+        #expect(svc.state == .error(UpdateService.bridgeFailedMessage))
+        #expect(runs.items == ["bridge"])
+        #expect(install.calls.isEmpty)
+
+        svc.bridgeBeforeInstall = { runs.append("bridge"); return true }
+        svc.state = .readyToInstall(appPath: URL(fileURLWithPath: "/downloads/Watchtower.app"))
+        await svc.install()
+        guard case .error(let message) = svc.state else {
+            Issue.record("expected the Team ID error past the bridge, got \(svc.state)")
+            return
+        }
+        #expect(message.contains("Team ID"))
+        #expect(runs.items == ["bridge", "bridge"])
+
+        // The public build never runs it.
+        svc.buildFlavor = ""
+        svc.state = .readyToInstall(appPath: URL(fileURLWithPath: "/downloads/Watchtower.app"))
+        await svc.install()
+        #expect(runs.items == ["bridge", "bridge"])
     }
 }
 

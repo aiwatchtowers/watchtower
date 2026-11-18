@@ -79,6 +79,9 @@ func (db *DB) SetAccountCompany(source string, id int64, slug string) error {
 // a third company, a missing row, or an unknown source fails the whole call
 // and changes nothing.
 func (db *DB) RetieAccounts(refs []CompanyAccountRef, from, to string) error {
+	if len(refs) == 0 {
+		return nil
+	}
 	ctx := context.Background()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {

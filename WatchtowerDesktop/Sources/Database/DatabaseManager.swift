@@ -154,15 +154,17 @@ final class DatabaseManager: Sendable {
     /// One launch-time CLI step (`arguments`, logged as `label`) under
     /// `runCLIMigrations`' rules: up to 30 s, off the main actor and the
     /// concurrency pool, stdout dropped, a failure reported with its stderr.
+    /// Returns whether the step ran and exited 0.
+    @discardableResult
     static func runCLILaunchStep(
         _ arguments: [String],
         label: String,
         cliPath: String?,
         report: @escaping @Sendable (String) -> Void
-    ) {
+    ) -> Bool {
         guard let cliPath else {
             report("\(label) skipped: the watchtower CLI was not found")
-            return
+            return false
         }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
@@ -175,7 +177,7 @@ final class DatabaseManager: Sendable {
             try process.run()
         } catch {
             report("\(label) could not start: \(error.localizedDescription)")
-            return
+            return false
         }
         // SB3: drain stderr while the child runs — an unread pipe fills at
         // 64 KiB and a chatty migrate then blocks until the timer kills it.
@@ -192,7 +194,7 @@ final class DatabaseManager: Sendable {
         process.waitUntilExit()
         timer.cancel()
         let status = process.terminationStatus
-        guard status != 0 else { return }
+        guard status != 0 else { return true }
         let what = timedOut.withLock { $0 } ? "timed out after 30 s (exit code \(status))" : "failed with exit code \(status)"
         // Off this (possibly main) thread: the drain finishes at the child's
         // EOF, which a grandchild still holding stderr could postpone.
@@ -200,6 +202,7 @@ final class DatabaseManager: Sendable {
             let stderr = String(data: await stderrRead.value, encoding: .utf8) ?? ""
             report("\(label) \(what): \(CLILog.detail(stderr))")
         }
+        return false
     }
 
     /// C2: only allow safe workspace names (alphanumeric, hyphens, underscores, dots)

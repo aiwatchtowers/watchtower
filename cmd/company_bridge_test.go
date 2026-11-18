@@ -63,7 +63,7 @@ func setBakedClients(t *testing.T, slack, googleID, googleSecret, jiraID, jiraSe
 
 func setCorpBaked(t *testing.T) {
 	setBakedClients(t, corpSlackID, corpGoogleID, corpGoogleSec, corpJiraID, corpJiraSec, corpLinearID, corpMicrosoftID,
-		"Intranet.Example.com, not a host,,wiki.example.com")
+		"Intranet.Example.com, not a host,,wiki.example.com,Trailing.Example.org.")
 }
 
 // setPublicBaked is the public build after the corp flavor: other shared
@@ -121,8 +121,8 @@ func newCorpWorkspace(t *testing.T) *corpWorkspace {
 	require.NoError(t, err)
 	id, err = database.CreateEmailAccount(db.EmailAccount{Provider: "outlook", EmailAddress: "a@corp.example.com", Security: "ssl"})
 	add("outlook", id, err)
-	id, err = database.CreateEmailAccount(db.EmailAccount{Provider: "outlook", EmailAddress: "b@other.example.org", Security: "ssl"})
-	add("outlook_other_tenant", id, err)
+	id, err = database.CreateEmailAccount(db.EmailAccount{Provider: "outlook", EmailAddress: "b@outlook.example.org", Security: "ssl"})
+	add("outlook_personal", id, err)
 	id, err = database.CreateEmailAccount(db.EmailAccount{Provider: "imap", EmailAddress: "c@corp.example.com", Host: "imap.example.com", Security: "ssl"})
 	add("imap", id, err)
 	return c
@@ -148,7 +148,7 @@ func (c *corpWorkspace) clients(t *testing.T) map[string]string {
 	out["linear"] = lcfg.ClientID
 	mcfg, _, err := resolveMicrosoftOAuthConfigForAccount(c.cfg, c.database, c.ids["outlook"])
 	require.NoError(t, err)
-	out["outlook"] = strings.ToLower(mcfg.ClientID)
+	out["outlook"] = strings.ToLower(mcfg.ClientID) + "@" + mcfg.TenantID
 	return out
 }
 
@@ -177,7 +177,7 @@ func TestBridge_TiesEveryBakedAccount(t *testing.T) {
 	before := c.clients(t)
 	assert.Equal(t, map[string]string{
 		"google": corpGoogleID + "/" + corpGoogleSec, "jira": corpJiraID + "/" + corpJiraSec,
-		"linear": corpLinearID, "outlook": corpMicrosoftID,
+		"linear": corpLinearID, "outlook": corpMicrosoftID + "@",
 	}, before)
 
 	res, err := c.bridge(t)
@@ -187,14 +187,15 @@ func TestBridge_TiesEveryBakedAccount(t *testing.T) {
 	assert.Equal(t, "created", res.Stored)
 	assert.ElementsMatch(t, []bridgeAccountJSON{
 		{Source: "slack", ID: c.ids["slack"]}, {Source: "google", ID: c.ids["google"]}, {Source: "jira", ID: c.ids["jira"]},
-		{Source: "linear", ID: c.ids["linear"]}, {Source: "outlook", ID: c.ids["outlook"]},
+		{Source: "linear", ID: c.ids["linear"]},
 	}, res.Tied)
 	assert.ElementsMatch(t, []bridgeSkipJSON{
 		{Source: "slack", ID: c.ids["slack_other_team"], Reason: "other_team"},
-		{Source: "outlook", ID: c.ids["outlook_other_tenant"], Reason: "other_tenant"},
+		{Source: "outlook", ID: c.ids["outlook"], Reason: "no_tenant"},
+		{Source: "outlook", ID: c.ids["outlook_personal"], Reason: "no_tenant"},
 	}, res.Skipped)
 	assert.Equal(t, map[string]string{
-		"slack": corpSlug, "google": corpSlug, "jira": corpSlug, "linear": corpSlug, "outlook": corpSlug,
+		"slack": corpSlug, "google": corpSlug, "jira": corpSlug, "linear": corpSlug,
 	}, c.slugs(t), "only the accounts on the baked clients are tied")
 
 	// The stored bundle is the one an admin would publish for these clients.
@@ -208,9 +209,9 @@ func TestBridge_TiesEveryBakedAccount(t *testing.T) {
 	assert.Equal(t, corpSlackID, b.Slack.ClientID)
 	require.NotNil(t, b.Atlassian)
 	assert.Equal(t, "https://corp.atlassian.net", b.Atlassian.Site)
-	require.NotNil(t, b.Microsoft)
-	assert.Equal(t, "corp.example.com", b.Microsoft.TenantID)
-	assert.Equal(t, []string{"intranet.example.com", "wiki.example.com"}, b.LinkDenyHosts, "a host a bundle refuses is dropped")
+	assert.Nil(t, b.Microsoft, "no tenant is provably the company's: Outlook keeps the corp app through its record")
+	assert.Equal(t, []string{"intranet.example.com", "wiki.example.com", "trailing.example.org"}, b.LinkDenyHosts,
+		"the link policy's normal form first; a host a bundle refuses is dropped")
 	info, err := os.Stat(filepath.Join(c.ws, "company", corpSlug+".json"))
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
@@ -244,6 +245,10 @@ func TestBridge_TiesEveryBakedAccount(t *testing.T) {
 	// every tied account through the same client as before.
 	setPublicBaked(t)
 	assert.Equal(t, before, c.clients(t))
+	// An untied account on a baked client keeps it too, through its record.
+	personal, _, err := resolveMicrosoftOAuthConfigForAccount(c.cfg, c.database, c.ids["outlook_personal"])
+	require.NoError(t, err)
+	assert.Equal(t, imap.MicrosoftOAuthConfig{ClientID: corpMicrosoftID}, personal)
 }
 
 // TestBridge_IncludesLinearClient: the bundle carries the baked Linear
@@ -370,6 +375,16 @@ func TestBridge_KeepsAStoredCompanyApp(t *testing.T) {
 	assert.Equal(t, corpLinearID, e.Bundle.Linear.ClientID)
 	_, tied := c.slugs(t)["jira"]
 	assert.False(t, tied)
+
+	// The untied Jira account still refreshes through the corp app on the
+	// public build: its client record holds it.
+	setPublicBaked(t)
+	j, err := c.database.GetJiraAccount(c.ids["jira"])
+	require.NoError(t, err)
+	got, src, err := resolveJiraOAuthConfigForAccount(c.ws, j)
+	require.NoError(t, err)
+	assert.Equal(t, corpJiraID, got.ClientID)
+	assert.Equal(t, clientSourceAccountFile, src)
 }
 
 func TestBridge_PublicBuildNoop(t *testing.T) {
