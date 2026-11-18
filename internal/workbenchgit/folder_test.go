@@ -420,22 +420,38 @@ func TestResolveFolderOutsideEveryFolderIsOutside(t *testing.T) {
 	assert.Equal(t, ScopeOutside, got.Scope, "no folders at all")
 }
 
-func TestLinkedMainTopReadsOnlyAWorktreeGitdir(t *testing.T) {
-	dir, err := filepath.EvalSymlinks(t.TempDir())
-	require.NoError(t, err)
-	top := filepath.Join(dir, "repo")
-	require.NoError(t, os.MkdirAll(filepath.Join(top, ".git", "worktrees", "x"), 0o755))
-	wt := filepath.Join(dir, "wt")
-	require.NoError(t, os.MkdirAll(filepath.Join(wt, "sub"), 0o755))
-	for _, tc := range []struct{ content, want string }{
-		{"gitdir: " + filepath.Join(top, ".git", "worktrees", "x") + "\n", top},
-		{"gitdir: ../repo/.git/worktrees/x\n", top},
-		{"gitdir: " + filepath.Join(top, ".git") + "\n", ""}, // a submodule-style pointer
-		{"gitdir: " + filepath.Join(dir, "elsewhere", "worktrees", "x") + "\n", ""},
-		{"not a pointer\n", ""},
-	} {
-		require.NoError(t, os.WriteFile(filepath.Join(wt, ".git"), []byte(tc.content), 0o644))
-		assert.Equal(t, tc.want, linkedMainTop(filepath.Join(wt, "sub")), tc.content)
+// PROJ-10 (#2003): a linked worktree of hub that sits inside the app
+// folder belongs to hub, never to app — enclosure is accepted only within
+// one repository — and a repository nested in the workbench folder is
+// outside it, with no git run.
+func TestProj10_WorktreeOfAnotherRepoInsideAFolderIsThatRepos(t *testing.T) {
+	app := newRepo(t)
+	hub := newRepo(t)
+	nested := filepath.Join(app, "hub-n")
+	gitIn(t, hub, "worktree", "add", "-q", "-b", "hub-n", nested, "main")
+	inner := filepath.Join(app, "inner")
+	require.NoError(t, os.Mkdir(inner, 0o755))
+	gitIn(t, inner, "init", "-q", "-b", "main")
+
+	rec := &recorder{}
+	got := resolve(t, benchOptions(rec, app, hub), filepath.Join(nested, "README.md"))
+	assert.Equal(t, ScopeWorktree, got.Scope)
+	assert.Equal(t, hub, got.FolderPath)
+	assert.Equal(t, hub, got.MainTopLevel)
+	assert.Equal(t, nested, got.Root)
+	assert.Equal(t, []string{hub}, rec.ranIn(), "one listing, in hub only")
+
+	for _, req := range []string{nested, inner} {
+		rec = &recorder{}
+		got = resolve(t, options(app, rec), req)
+		assert.Equal(t, ScopeOutside, got.Scope, req)
+		assert.Equal(t, app, got.Root, req)
+		assert.Empty(t, rec.argv(), "%s: refused before any git", req)
 	}
-	assert.Empty(t, linkedMainTop(top), "a .git directory is a main work tree")
+	got = resolve(t, benchOptions(&recorder{}, app, hub), inner)
+	assert.Equal(t, ScopeOutside, got.Scope, "a repository on no bench folder")
+	assert.Equal(t, app, got.FolderPath)
+
+	assert.Equal(t, "", repoOf(t.TempDir()), "no work tree")
+	assert.Equal(t, filepath.Join(hub, ".git"), repoOf(nested), "a worktree's repository is its common dir")
 }

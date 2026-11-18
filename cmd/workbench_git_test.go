@@ -549,3 +549,41 @@ func TestGitSwitchRunsInTheChosenFolder(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "edited\n", string(content))
 }
+
+// PROJ-10 (#2003): a worktree of hub inside the app folder is hub's — a
+// switch there never runs in app.
+func TestGitSwitchInAHubWorktreeInsideAppNeverTouchesApp(t *testing.T) {
+	id, app, hub, _ := twoFolderBench(t)
+	bin, _ := gitbin.Locate()
+	nested := filepath.Join(app, "hub-n")
+	c := exec.Command(bin, "worktree", "add", "-q", "-b", "hub-n", nested, "main")
+	c.Dir = hub
+	out, err := c.CombinedOutput()
+	require.NoError(t, err, "git worktree add: %s", out)
+
+	st := gitJSON(t, id, "status", "--folder", nested)
+	assert.Equal(t, "hub-n", st["branch"])
+	assert.Equal(t, "worktree", st["folder_scope"])
+	assert.Equal(t, hub, st["workbench_folder_path"])
+
+	sw := gitJSON(t, id, "switch", "--folder", nested, "--branch", "feature")
+	assert.Equal(t, "checked_out_elsewhere", sw["refused"], "hub's feature, checked out in hub")
+	sw = gitJSON(t, id, "switch", "--workbench-folder", app, "--folder", nested, "--branch", "feature", "--stash", "--confirm-agent")
+	assert.Equal(t, "folder_not_a_worktree", sw["refused"], "not app's worktree")
+	assert.Equal(t, false, sw["switched"])
+	assert.Equal(t, "main", gitJSON(t, id, "status")["branch"], "app untouched")
+	assert.Equal(t, "hub-n", gitJSON(t, id, "status", "--folder", nested)["branch"])
+}
+
+// A moved home folder blocks only the calls that use it; the bench's other
+// folders keep working.
+func TestGitMissingHomeBlocksOnlyTheHomeFolder(t *testing.T) {
+	id, app, hub, hubName := twoFolderBench(t)
+	hubWT := gitWorktree(t, hub, "hub-a")
+	require.NoError(t, os.RemoveAll(app))
+
+	assert.Equal(t, "feature", gitJSON(t, id, "status", "--workbench-folder", hubName)["branch"])
+	assert.Equal(t, "hub-a", gitJSON(t, id, "status", "--folder", hubWT)["branch"])
+	_, err := runWorkbenchGit(t, "status", "--workbench", strconv.FormatInt(id, 10), "--json")
+	assert.ErrorContains(t, err, "missing")
+}

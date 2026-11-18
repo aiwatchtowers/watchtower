@@ -166,7 +166,13 @@ func workbenchGitTarget(ctx context.Context) (
 	if err != nil {
 		return 0, o, folder, nil, err
 	}
+	// No git runs in a missing folder (ResolveFolder only lists the
+	// worktrees of a repository); only the folder chosen must exist, so a
+	// moved home folder does not block the bench's other folders.
 	folder, resolveErr = workbenchgit.ResolveFolder(ctx, bench, workbenchGitFlagFolder)
+	if _, err := os.Stat(folder.FolderPath); err != nil {
+		return 0, o, folder, nil, fmt.Errorf("workbench %d: folder %s is missing (moved or deleted?)", id, folder.FolderPath)
+	}
 	return id, workbenchgit.Options{Folder: folder.Root}, folder, resolveErr, nil
 }
 
@@ -174,25 +180,18 @@ func workbenchGitTarget(ctx context.Context) (
 // --workbench-folder's folder (id, name or path; a refusal such as
 // not_found or folder_removed exits non-zero), else the bench's folders
 // with the home folder first when --folder names a path (the folder
-// holding it is chosen), else the home folder. The folder chosen, or the
-// home folder, must exist.
+// holding it is chosen), else the home folder.
 func workbenchGitBench(ctx context.Context, database *db.DB, id int64) (workbenchgit.Options, error) {
+	p, err := database.GetWorkbench(id)
+	if err != nil {
+		return workbenchgit.Options{}, fmt.Errorf("workbench %d: %w", id, err)
+	}
 	if ref := strings.TrimSpace(workbenchGitFlagBenchFolder); ref != "" {
-		if _, err := database.GetWorkbench(id); err != nil {
-			return workbenchgit.Options{}, fmt.Errorf("workbench %d: %w", id, err)
-		}
 		f, err := workbenchfolders.Resolve(ctx, database, id, ref)
 		if err != nil {
 			return workbenchgit.Options{}, err //nolint:wrapcheck // a Refusal reads "<code>: <sentence>" (D42)
 		}
-		if _, err := os.Stat(f.FolderPath); err != nil {
-			return workbenchgit.Options{}, fmt.Errorf("workbench %d: folder %s is missing (moved or deleted?)", id, f.FolderPath)
-		}
 		return workbenchgit.Options{Folder: f.FolderPath}, nil
-	}
-	p, err := workbenchWithFolder(database, id)
-	if err != nil {
-		return workbenchgit.Options{}, err
 	}
 	if workbenchGitFlagFolder == "" {
 		return workbenchgit.Options{Folder: p.FolderPath}, nil
