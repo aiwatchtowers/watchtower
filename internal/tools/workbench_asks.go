@@ -190,8 +190,8 @@ func benchFolderHolding(ctx context.Context, d *db.DB, p *db.Workbench, path str
 		return 0, p.FolderPath, nil // a bench with no folder row: its folder decides
 	}
 	target := filepath.Clean(path)
-	if real, err := filepath.EvalSymlinks(target); err == nil {
-		target = real
+	if resolved, err := filepath.EvalSymlinks(target); err == nil {
+		target = resolved
 	}
 	best := -1
 	for i, f := range folders {
