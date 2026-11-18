@@ -459,7 +459,7 @@ final class WatchmanJournalViewModel {
             }
             if let sent = Self.sentText(delivery, sessionID: item.sessionID) {
                 sends[item.id] = .done(sent)
-                if delivery != .held, delivery != .queued { await markSent(item.id) }
+                if Self.reachedSession(delivery) { await markSent(item.id) }
                 return
             }
         }
@@ -493,7 +493,7 @@ final class WatchmanJournalViewModel {
         guard case let .tried(delivery) = event else { return }
         if let sent = Self.sentText(delivery, sessionID: item.sessionID) {
             sends[item.id] = .done(sent)
-            if delivery != .held, delivery != .queued { Task { await markSent(item.id) } }
+            if Self.reachedSession(delivery) { Task { await markSent(item.id) } }
         } else {
             sends[item.id] = .failed(WatchmanJournalCopy.notSent(WatchmanJournalCopy.sessionStopped))
         }
@@ -504,6 +504,13 @@ final class WatchmanJournalViewModel {
     private func sendState(_ item: WatchmanItem) -> Send? {
         if let send = sends[item.id] { return send }
         return item.correctionUnsent ? .failed(WatchmanJournalCopy.notSent(WatchmanJournalCopy.appQuit)) : nil
+    }
+
+    /// The line is in the session's prompt (submitted, or typed for the
+    /// owner's Return). On the clipboard only, held or queued it is not: a
+    /// relaunch still offers Retry.
+    private static func reachedSession(_ delivery: SessionLineDelivery.Delivery) -> Bool {
+        delivery == .submitted || delivery == .typed
     }
 
     /// Where a delivered line went; nil = no session took it.

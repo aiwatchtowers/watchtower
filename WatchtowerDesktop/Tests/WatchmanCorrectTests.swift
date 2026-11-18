@@ -281,6 +281,19 @@ final class WatchmanCorrectTests: XCTestCase {
         XCTAssertEqual(sent.page?.decided.first?.sendFailed, false)
     }
 
+    /// Round 2: a line only copied to the clipboard is not stamped sent, so
+    /// a relaunch still offers Retry; a typed one is.
+    func testCopiedCorrectionIsNotStampedSent() async {
+        let copied = Recorder()
+        let vm = model([item()], recorder: copied, delivery: .copied)
+        await correct(vm)
+        XCTAssertEqual(copied.writes, [.correct(1826, "Global, one window for all.")])
+        XCTAssertEqual(vm.page?.decided.first?.sendLine, "On the clipboard — paste it into session 3")
+        let typed = Recorder()
+        await correct(model([item()], recorder: typed, delivery: .typed))
+        XCTAssertEqual(typed.writes.last, .correctionSent(1826))
+    }
+
     /// Fix 4: Retry only from Not sent; a second tap while it sends starts nothing.
     func testRetryWhileSendingStartsOneSession() async {
         final class Gate: @unchecked Sendable {
@@ -294,7 +307,9 @@ final class WatchmanCorrectTests: XCTestCase {
         actions.write = { _ in true }
         actions.startSession = { _, _ in
             gate.starts += 1
-            await withCheckedContinuation { gate.waiting = $0 }
+            // Only the first call waits: a regression that starts twice fails
+            // the count below instead of hanging.
+            if gate.starts == 1 { await withCheckedContinuation { gate.waiting = $0 } }
             return 42
         }
         let vm = WatchmanJournalViewModel(read: { .init(nights: [night], deciding: []) }, actions: actions)
