@@ -83,6 +83,7 @@ Session or ask stuck? See [A Workbench session or ask is stuck](../../troublesho
 
 - [Board and targets](board-and-targets.md): the board, Kanban, grouping, archive, drift check.
 - [Sessions](sessions.md): states, the sessions panel, reports, starting and resuming.
+- [Folders and sub-sessions](folders.md): several repositories on one bench, sub-sessions and agent messages.
 - [Workchat](workchat.md): a session's dialog as a chat you can drive it from.
 - [Asks](asks.md): reviews, checks and questions, and how answers reach the agent.
 - [Code viewer](code-viewer.md): the Files pane, Open Quickly and go to definition.

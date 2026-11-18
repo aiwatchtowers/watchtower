@@ -41,6 +41,7 @@ Per-feature notes — architecture, contracts, dual paths, v1 limits — live in
 - Chat — claude.ai tools — `chat-claude-ai-tools.md`
 - Slack send from the chat and the workbench terminal — `slack-send.md`
 - Workbench — `workbench.md`
+- Multi-folder workbench (folders, sub-sessions, agent messages, merge) — `workbench.md` (its "Multi-folder workbench" entry)
 - Agent instructions — `agent-instructions.md`
 - Agent coach — `agent-coach.md`
 - Tuning chat — `tuning-chat.md`
