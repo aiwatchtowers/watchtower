@@ -529,17 +529,32 @@ func queueBehindLock(t *testing.T, whileHeld func(), args ...string) (string, er
 	require.NoError(t, err)
 	unlock, err := fsutil.LockFile(context.Background(), workbenchfolders.LockPath(cfg.WorkspaceDir()))
 	require.NoError(t, err)
+	release := sync.OnceFunc(unlock)
 	waiting := make(chan struct{})
 	var once sync.Once
 	prev := folderLockWait
 	folderLockWait = func() { once.Do(func() { close(waiting) }) }
-	t.Cleanup(func() { folderLockWait = prev })
 	type result struct {
 		out string
 		err error
 	}
 	done := make(chan result, 1)
+	joined := make(chan struct{})
+	reset := func() {
+		rootCmd.SetArgs(nil)
+		resetSetFlags(append(append(workbenchCmd.Commands(), workbenchFolderCmd.Commands()...), workbenchCmd, rootCmd)...)
+		workbenchFlagJSON = false
+	}
+	// Whatever happens below — a failed require in whileHeld included —
+	// the lock is released and the command joined before the test ends.
+	t.Cleanup(func() {
+		release()
+		<-joined
+		folderLockWait = prev
+		reset()
+	})
 	go func() {
+		defer close(joined)
 		var out, errOut bytes.Buffer
 		rootCmd.SetOut(&out)
 		rootCmd.SetErr(&errOut)
@@ -547,13 +562,15 @@ func queueBehindLock(t *testing.T, whileHeld func(), args ...string) (string, er
 		err := rootCmd.Execute()
 		done <- result{out.String(), err}
 	}()
-	<-waiting
+	select {
+	case <-waiting:
+	case r := <-done:
+		require.FailNowf(t, "the command ended before it waited for the folder lock", "err=%v out=%s", r.err, r.out)
+	}
 	whileHeld()
-	unlock()
+	release()
 	r := <-done
-	rootCmd.SetArgs(nil)
-	resetSetFlags(append(append(workbenchCmd.Commands(), workbenchFolderCmd.Commands()...), workbenchCmd, rootCmd)...)
-	workbenchFlagJSON = false
+	reset()
 	return r.out, r.err
 }
 
