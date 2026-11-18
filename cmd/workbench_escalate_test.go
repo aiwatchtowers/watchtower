@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"sync"
@@ -143,6 +145,51 @@ func TestEscalateFilesAQuickAskWithTheSameOptions(t *testing.T) {
 			assert.Empty(t, s.ChatQuestionAt, "the question is cleared as it is filed")
 		})
 	}
+}
+
+// PROJ-11 (amended, ask #1545): a parent's question is not raised while a
+// sub-session of it runs in the host — busy, nothing written, the question
+// kept; an unreadable host is internal — and is filed once the last child
+// is no longer live. A session
+// with no sub-session never reads the host.
+func TestProj11_NoEscalationWhileChildrenAreLive(t *testing.T) {
+	f := newEscalateFixture(t, twoOptions())
+	reads := 0
+	runs := map[int64]bool{}
+	var hostErr error
+	orig := escalateHostRuns
+	escalateHostRuns = func(context.Context, *config.Config) (map[int64]bool, error) {
+		reads++
+		return runs, hostErr
+	}
+	t.Cleanup(func() { escalateHostRuns = orig })
+	res, err := f.database.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id, parent_session_id)
+		VALUES (?, 'claude', 'child', '/tmp/acme', 'child-sid', ?)`, f.pid, f.row)
+	require.NoError(t, err)
+	child, err := res.LastInsertId()
+	require.NoError(t, err)
+
+	runs[child] = true
+	got := f.escalate(t, escalateReasonTimeout)
+	assert.False(t, got.OK)
+	assert.Equal(t, escalateErrBusy, got.ErrorCode, "%+v", got)
+	assert.Zero(t, countAsks(t, f.database, f.pid), "nothing filed while a child works")
+
+	hostErr = errors.New("host down")
+	got = f.escalate(t, escalateReasonTimeout)
+	assert.Equal(t, escalateErrInternal, got.ErrorCode, "an unreadable host is internal, not retried forever: %+v", got)
+	assert.Zero(t, countAsks(t, f.database, f.pid))
+
+	hostErr = nil
+	delete(runs, child)
+	got = f.escalate(t, escalateReasonTimeout)
+	require.True(t, got.OK, "%+v", got)
+	assert.Equal(t, escalateFiled, got.Outcome)
+
+	g := newEscalateFixture(t, twoOptions())
+	before := reads
+	require.True(t, g.escalate(t, escalateReasonTimeout).OK)
+	assert.Equal(t, before, reads, "no sub-session: the host is never read")
 }
 
 // PROJ-13 (E11a, E16, E17): the escalation is a compare-and-take — filed

@@ -75,6 +75,14 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
     /// The highest round among the session's open asks hidden in the spec
     /// review author loop (`SpecLoopRoundSQL` in Go); 0 = none in the loop.
     package var specReviewRound: Int
+    /// `terminal_sessions.parent_session_id` (migration 00196): the session
+    /// that started this one as its sub-session; nil for a top-level row or
+    /// a database without the column.
+    package var parentSessionID: Int64?
+    /// The session's delivered agent messages that may still sit typed in
+    /// its prompt (`typed_not_submitted`, `prompt_cleared_at` NULL; spec
+    /// 2026-11-18 §6.6); 0 for a database without them.
+    package var promptMessages: Int
 
     package init(
         id: Int64,
@@ -99,8 +107,12 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         agentCwdAt: String? = nil,
         kind: String? = nil,
         agentWatchIssue: String? = nil,
-        specReviewRound: Int = 0
+        specReviewRound: Int = 0,
+        parentSessionID: Int64? = nil,
+        promptMessages: Int = 0
     ) {
+        self.parentSessionID = parentSessionID
+        self.promptMessages = promptMessages
         self.id = id
         self.projectID = projectID
         self.title = title
@@ -156,6 +168,8 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         case kind
         case agentWatchIssue = "agent_watch_issue"
         case specReviewRound = "spec_review_round"
+        case parentSessionID = "parent_session_id"
+        case promptMessages = "prompt_messages"
     }
 }
 
@@ -182,6 +196,9 @@ package struct SessionAgentStatus: Equatable, Sendable {
     /// The row's `finished_at` (nil while not finished): the sessions
     /// panel's finished group orders by it (#480).
     package let finishedAt: String?
+    /// An agent's message may still sit typed in the session's prompt
+    /// (spec 2026-11-18 §6.6): the row and the pane say so.
+    package let messageInPrompt: Bool
 
     package init(
         sessionID: Int64,
@@ -192,8 +209,10 @@ package struct SessionAgentStatus: Equatable, Sendable {
         at: String?,
         runMarked: Bool = false,
         finishSummary: String = "",
-        finishedAt: String? = nil
+        finishedAt: String? = nil,
+        messageInPrompt: Bool = false
     ) {
+        self.messageInPrompt = messageInPrompt
         self.sessionID = sessionID
         self.workbenchID = workbenchID
         self.workbenchName = workbenchName
@@ -215,14 +234,18 @@ package struct SessionAgentStatus: Equatable, Sendable {
     /// background count's end is `policy`'s alone, read at `now` (#411),
     /// unless `displayOver` — two failed staleness probes in a row for this
     /// count (spec 2026-10-10-session-background-agents §10): then the count
-    /// reads as over, with no write.
+    /// reads as over, with no write. `liveChildren`: the row's live
+    /// sub-sessions (`liveChildren(_:liveIDs:)`); a live row resting idle,
+    /// or finished with no open ask, while one is live is
+    /// `subSessionsWorking` (PROJ-11, spec 2026-11-18 §6.5; Go `Resolve`).
     package static func effective(
         row: SessionAgentStateRow,
         live: Bool,
         startedAt: Date?,
         now: Date,
         policy: SessionBackgroundPolicy = .current,
-        displayOver: Bool = false
+        displayOver: Bool = false,
+        liveChildren: Int = 0
     ) -> SessionSwitcherPresentation.State {
         let hook = live ? trustedHook(row, startedAt: startedAt) : nil
         let failed = hook == .waiting && row.agentFailedAt != nil && row.agentFailedAt == row.agentStateAt
@@ -240,13 +263,31 @@ package struct SessionAgentStatus: Equatable, Sendable {
         } else {
             kind = restingKind(row, turnEnded: hook == .waiting, live: live)
         }
+        // Background shells alone do not hold the wait on children back: the
+        // turn rests as it would without them (Go `Resolve`).
+        let resting = kind == .background && background?.agents == 0
+            ? restingKind(row, turnEnded: true, live: live) : kind
+        let waitsOnChildren = live && liveChildren > 0
+            && (resting == .stopped || (resting == .finished && row.openAsks == 0))
         return SessionSwitcherPresentation.State(
-            kind: kind, live: live, openAsks: row.openAsks, error: failed ? row.agentError : "",
+            kind: waitsOnChildren ? .subSessionsWorking : kind, live: live, openAsks: row.openAsks,
+            error: failed ? row.agentError : "",
             oldestAskID: row.openAsks > 0 ? row.oldestOpenAskID : nil,
             backgroundAgents: background?.agents ?? 0, backgroundShells: background?.shells ?? 0,
             openQuestionAsks: row.openQuestionAsks, openReviewAsks: row.openReviewAsks,
-            watchIssue: row.agentWatchIssue, specReviewRound: row.specReviewRound
+            watchIssue: row.agentWatchIssue, specReviewRound: row.specReviewRound,
+            liveSubSessions: liveChildren
         )
+    }
+
+    /// Each parent's live sub-sessions among `rows` (spec 2026-11-18 §6.6:
+    /// live = the host runs it; Go `CountLiveChildren`), by parent id.
+    package static func liveChildren(_ rows: [SessionAgentStateRow], liveIDs: Set<Int64>) -> [Int64: Int] {
+        var counts: [Int64: Int] = [:]
+        for row in rows where liveIDs.contains(row.id) {
+            if let parent = row.parentSessionID { counts[parent, default: 0] += 1 }
+        }
+        return counts
     }
 
     /// The order's tail, once no hook state of the run claims the row:
@@ -300,7 +341,8 @@ package struct SessionAgentStatus: Equatable, Sendable {
     package var isAtPrompt: Bool {
         guard state.live, at != nil else { return false }
         switch state.kind {
-        case .stopped, .failed, .finished, .waitingOnAsk, .readyToCheck, .background, .specReview: return true
+        case .stopped, .failed, .finished, .waitingOnAsk, .readyToCheck, .background, .specReview,
+             .subSessionsWorking: return true
         case .notStarted, .running, .working, .needsApproval: return false
         }
     }
@@ -334,6 +376,7 @@ package struct SessionAgentStatus: Equatable, Sendable {
         displayOver: Set<Int64> = []
     ) -> [Int64: Self] {
         var result: [Int64: Self] = [:]
+        let children = liveChildren(rows, liveIDs: liveIDs)
         for row in rows {
             let live = liveIDs.contains(row.id)
             let trusted = live && trustedHook(row, startedAt: startedAt[row.id]) != nil
@@ -346,11 +389,12 @@ package struct SessionAgentStatus: Equatable, Sendable {
                 workbenchName: row.workbenchName,
                 title: row.title,
                 state: effective(row: row, live: live, startedAt: startedAt[row.id], now: now, policy: policy,
-                                 displayOver: displayOver.contains(row.id)),
+                                 displayOver: displayOver.contains(row.id), liveChildren: children[row.id] ?? 0),
                 at: trusted ? row.agentStateAt : nil,
                 runMarked: marked,
                 finishSummary: row.finishSummary,
-                finishedAt: row.finishedAt
+                finishedAt: row.finishedAt,
+                messageInPrompt: row.promptMessages > 0
             )
         }
         return result

@@ -19,6 +19,16 @@ package enum SessionMessageQueries {
             """, arguments: arguments))
     }
 
+    /// The messages that may still sit typed in session `sessionID`'s prompt
+    /// (`waitingInPrompt`'s rows), oldest first: what Dismiss clears.
+    package static func waitingInPromptIDs(_ db: Database, sessionID: Int64) throws -> [Int64] {
+        try Int64.fetchAll(db, sql: """
+            SELECT id FROM session_messages
+            WHERE state = 'delivered' AND reason = ? AND prompt_cleared_at IS NULL AND to_session_id = ?
+            ORDER BY id
+            """, arguments: [SessionMessage.typedNotSubmitted, sessionID])
+    }
+
     /// The messages `fromSessionID` sent that still wait for delivery, oldest first.
     package static func queued(_ db: Database, fromSessionID: Int64) throws -> [SessionMessage] {
         try SessionMessage.fetchAll(db, sql: """

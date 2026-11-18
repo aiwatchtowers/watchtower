@@ -24,6 +24,9 @@ final class FakeSessionHostTransport: SessionHostTransport {
     /// Answers as a v1 host does: a hello of any other version is refused
     /// with an Error frame and a closed connection.
     var v1Host = false
+    /// The optional requests its HelloOK names (Go `HelloMsg.Features`);
+    /// nil = a host that predates them.
+    var helloFeatures: [String]?
     private var onFrame: ((SessionHostFrame) -> Void)?
     private var onClose: (() -> Void)?
 
@@ -50,7 +53,7 @@ final class FakeSessionHostTransport: SessionHostTransport {
             }
         case .stop where v1Host, .deliver where v1Host, .promptHint where v1Host:
             break // a v1 host skips frame types it does not know
-        case .hello: push(.json(.helloOK, SessionHostHello(version: helloVersion, pid: 99)))
+        case .hello: push(.json(.helloOK, SessionHostHello(version: helloVersion, pid: 99, features: helloFeatures)))
         case .stop: push(.json(.stopping, ["already_exited": false]))
         case .list where failedLists > 0:
             failedLists -= 1

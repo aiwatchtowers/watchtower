@@ -627,6 +627,9 @@ final class WorkbenchesViewModel {
     /// The root Put on the Bench… pointed at (`already_here`, a new folder),
     /// highlighted in FILES until another one is.
     var highlightedFolderRoot: [Int64: Int64] = [:]
+    /// The FILES root the owner last opened (a folder id), per workbench:
+    /// ⌘T starts there while no session is on screen (spec §6.4).
+    var selectedFolderRoot: [Int64: Int64] = [:]
     /// The FILES root a file was opened from when it is not the page
     /// session's (#2003), per workbench; stale once the session changes.
     var selectedFilesRoot: [Int64: FilesRootSelection] = [:]
@@ -1174,7 +1177,7 @@ final class WorkbenchesViewModel {
         if installed {
             await startNewSession(project: project, title: TerminalSessionNaming.setupTitle,
                                   prompt: TerminalLaunch.firstRunPrompt,
-                                  agent: setupAgent(projectID: project.id))
+                                  agent: setupAgent(projectID: project.id), folder: .home)
         }
     }
 

@@ -356,7 +356,10 @@ func stopOf(k sessionKind) (event, body string, ok bool) {
 		return eventSessionStopped, "Waiting for you", true
 	case kindFailed:
 		return eventSessionFailed, "Failed", true
-	case kindNotStarted, kindRunning, kindWorking, kindNeedsApproval, kindWaitingOnAsk, kindBackground, kindReadyToCheck, kindSpecReview:
+	// Sub-sessions working is no stop (PROJ-11, spec 2026-11-18 §6.5): the
+	// parent waits on its children; the stop comes when the last one ends.
+	case kindNotStarted, kindRunning, kindWorking, kindNeedsApproval, kindWaitingOnAsk, kindBackground, kindReadyToCheck,
+		kindSpecReview, kindSubSessionsWorking:
 	}
 	return "", "", false
 }

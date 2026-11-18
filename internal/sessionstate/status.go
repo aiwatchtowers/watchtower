@@ -48,6 +48,12 @@ type Row struct {
 	// stamp layout; "" = the session is not live. Load leaves it empty: only
 	// the host knows the run.
 	RunStartedAt string
+	// LiveChildren is how many of the session's sub-sessions
+	// (terminal_sessions.parent_session_id = ID, not being deleted) are live:
+	// the session host has a run for them (spec 2026-11-18 §6.6 "live").
+	// Load leaves it 0: only a caller that knows the host's runs fills it
+	// (CountLiveChildren).
+	LiveChildren int
 	// DisplayOver is the Desktop's "shown over" background count (#411: two
 	// failed staleness probes in a row), which only the Desktop knows and
 	// reports to the hub (desktop_view); Load leaves it false. A count shown
@@ -71,6 +77,10 @@ const (
 	StateReadyToCheck  State = "ready_to_check"  // open asks, none a question
 	StateFinished      State = "finished"
 	StateSpecReview    State = "spec_review" // an ask in the spec review author loop, turn over
+	// StateSubSessionsWorking: a live session whose own turn ended (idle, or
+	// finished with no open ask) while at least one of its sub-sessions is
+	// live (PROJ-11, spec 2026-11-18 §6.5 "a parent waiting for its children").
+	StateSubSessionsWorking State = "sub_sessions_working"
 )
 
 // backgroundGrace is how long a background count of zero still shows as
@@ -88,7 +98,33 @@ const BackgroundShellCap = 2 * time.Hour
 // open asks are not run-scoped. A count the Desktop shows over
 // (Row.DisplayOver) is not agents working, as SessionAgentStatus.effective's
 // displayOver.
+//
+// A live session that rests idle, or finished with no open ask, while
+// sub-sessions of it are live (Row.LiveChildren) is sub_sessions_working: its
+// turn is its children's, not the owner's. Once the last child is no longer
+// live it shows its own state again.
+// Background shells alone (no background agents) do not hold that back: the
+// turn rests as it would without them, so a parent with a dev server running
+// is still waiting on its children (no stop notice meanwhile).
 func Resolve(r Row, now time.Time) State {
+	s := resolveOwn(r, now)
+	if r.LiveChildren == 0 || r.RunStartedAt == "" {
+		return s
+	}
+	resting := s
+	if s == StateAgentsWorking && !BackgroundAgentsRun(r, now) {
+		bare := r
+		bare.AgentBackgroundShells = nil
+		resting = resolveOwn(bare, now)
+	}
+	if resting == StateStopped || (resting == StateFinished && r.OpenAsks == 0) {
+		return StateSubSessionsWorking
+	}
+	return s
+}
+
+// resolveOwn is the session's own state, its sub-sessions aside.
+func resolveOwn(r Row, now time.Time) State {
 	live := r.RunStartedAt != ""
 	hook := trustedHook(r)
 	failed := hook == "waiting" && r.AgentFailedAt != nil && r.AgentStateAt != nil && *r.AgentFailedAt == *r.AgentStateAt
@@ -149,7 +185,8 @@ func IsIdle(r Row, s State) bool {
 		return runMarked(r)
 	}
 	switch s {
-	case StateStopped, StateFinished, StateWaitingForYou, StateReadyToCheck, StateSpecReview, StateError:
+	case StateStopped, StateFinished, StateWaitingForYou, StateReadyToCheck, StateSpecReview, StateError,
+		StateSubSessionsWorking:
 		return true
 	case StateNotStarted, StateRunning, StateMarkedIdle, StateWorking, StateAgentsWorking, StateNeedsApproval:
 	}
@@ -160,6 +197,12 @@ func IsIdle(r Row, s State) bool {
 // main turn is over and background agents run. agents_working is in IsWorking
 // and not in IsIdle.
 func IsWorking(s State) bool { return s == StateWorking || s == StateAgentsWorking }
+
+// MayEscalate reports whether the session's unanswered chat question may be
+// raised to an owner ask now: never while a sub-session of it is live
+// (PROJ-11, spec 2026-11-18 §6.5) — the parent waits on its children, not on
+// the owner; once the last child stops the escalation's own rules apply.
+func MayEscalate(r Row) bool { return r.LiveChildren == 0 }
 
 // NeedsApproval reports whether a permission dialog waits (the lineCheck test
 // on the needs-approval kind).
@@ -260,4 +303,36 @@ FROM terminal_sessions t WHERE t.id = ? AND t.`+db.NotDeletingSQL, sessionID).Sc
 		return Row{}, fmt.Errorf("load session %d state: %w", sessionID, err)
 	}
 	return r, nil
+}
+
+// RowsQuerier is the read CountLiveChildren needs; *sql.DB, *sql.Tx and
+// *sql.Conn satisfy it.
+type RowsQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// CountLiveChildren is Row.LiveChildren for session parentID: its direct
+// sub-sessions (parent_session_id, not being deleted) for which live reports
+// a run in the session host (spec 2026-11-18 §6.6).
+func CountLiveChildren(ctx context.Context, q RowsQuerier, parentID int64, live func(int64) bool) (int, error) {
+	rows, err := q.QueryContext(ctx,
+		`SELECT id FROM terminal_sessions WHERE parent_session_id = ? AND `+db.NotDeletingSQL, parentID)
+	if err != nil {
+		return 0, fmt.Errorf("reading the sub-sessions of %d: %w", parentID, err)
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return 0, fmt.Errorf("reading the sub-sessions of %d: %w", parentID, err)
+		}
+		if live(id) {
+			n++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("reading the sub-sessions of %d: %w", parentID, err)
+	}
+	return n, nil
 }

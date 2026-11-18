@@ -165,8 +165,10 @@ struct WorkbenchFilesSection: View {
             showInFinder: { NSWorkspace.shared.activateFileViewerSelecting([url]) },
             retryInstall: { Task { await vm.retryFolderInstall(projectID: projectID) } }
         )
-        // New Session Here starts in the folder once session start takes
-        // one (Task 15). Until then the item shows disabled.
+        // A new session of the default agent in this folder (§6.4).
+        actions.newSessionHere = {
+            Task { await vm.newSession(projectID: projectID, folder: .filesRoot(vm.folderRoot(item.folder))) }
+        }
         actions.locate = { locate(item.folder) }
         // The bench's only folder cannot leave it (a missing one is located instead).
         if vm.canRemoveFolder(projectID: projectID) {

@@ -267,7 +267,7 @@ func (s *TerminalSessionSource) counts(ctx context.Context, tx *sql.Tx) (map[int
 	for _, p := range published {
 		c := out[p.workbenchID]
 		switch p.state.kind {
-		case kindWorking, kindRunning, kindBackground, kindSpecReview:
+		case kindWorking, kindRunning, kindBackground, kindSpecReview, kindSubSessionsWorking:
 			c.Working++
 		case kindWaitingOnAsk, kindReadyToCheck:
 			c.Waiting++
@@ -303,9 +303,20 @@ func (s *TerminalSessionSource) published(ctx context.Context, tx *sql.Tx) ([]pu
 	hidden, over := s.o.View()
 	now := s.o.Now()
 	seen := map[int64]int{}
-	var out []publishedSession
+	// A row is resolved once every row is read: a parent's state needs its
+	// live sub-sessions (Row.LiveChildren, spec 2026-11-18 §6.5), counted
+	// over every agent row of the scan — published or not.
+	type pending struct {
+		p          publishedSession
+		row        sessionstate.Row
+		agentError string
+		watchIssue string
+		oldest     *int64
+	}
+	var rows []pending
+	liveChildren := map[int64]int{}
 	err = scanRows(ctx, tx, `
-SELECT s.id, s.project_id, s.kind, s.title, s.target_id, s.created_at, s.last_active_at,
+SELECT s.id, s.project_id, s.kind, s.title, s.target_id, s.created_at, s.last_active_at, s.parent_session_id,
        s.agent_state, s.agent_state_at, s.finished_at, s.finish_summary, s.agent_failed_at, s.agent_error,
        s.agent_background, s.agent_background_at, s.agent_background_shells, COALESCE(s.agent_watch_issue, ''),
        (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open' AND `+askVisible+`),
@@ -321,19 +332,22 @@ ORDER BY s.last_active_at DESC, s.id DESC`, nil, func(r *sql.Rows) error {
 		var (
 			p                            publishedSession
 			kind, agentError, watchIssue string
-			target, oldest               sql.NullInt64
+			target, oldest, parent       sql.NullInt64
 			row                          sessionstate.Row
 		)
-		if err := r.Scan(&p.id, &p.workbenchID, &kind, &p.title, &target, &p.createdAt, &p.lastActiveAt,
+		if err := r.Scan(&p.id, &p.workbenchID, &kind, &p.title, &target, &p.createdAt, &p.lastActiveAt, &parent,
 			&row.AgentState, &row.AgentStateAt, &row.FinishedAt, &p.finishSummary, &row.AgentFailedAt, &agentError,
 			&row.AgentBackground, &row.AgentBackgroundAt, &row.AgentBackgroundShells, &watchIssue,
 			&row.OpenAsks, &oldest, &row.OpenQuestionAsks, &row.OpenReviewAsks, &row.SpecReviewRound); err != nil {
 			return err
 		}
+		start, isLive := live.Runs[p.id]
+		if isLive && parent.Valid {
+			liveChildren[parent.Int64]++
+		}
 		if !workbenches[p.workbenchID] || hidden[p.id] {
 			return nil
 		}
-		start, isLive := live.Runs[p.id]
 		rank := seen[p.workbenchID]
 		seen[p.workbenchID] = rank + 1
 		if rank >= newestSessionsPerWorkbench && !isLive {
@@ -348,14 +362,20 @@ ORDER BY s.last_active_at DESC, s.id DESC`, nil, func(r *sql.Rows) error {
 		if isLive {
 			row.RunStartedAt = db.AgentStateStamp(start)
 		}
-		p.state = resolveState(row, now, agentError, nullInt(oldest))
-		p.state.watchIssue = watchIssue
-		p.stateAt = stateAt(row, p.state)
-		out = append(out, p)
+		rows = append(rows, pending{p: p, row: row, agentError: agentError, watchIssue: watchIssue, oldest: nullInt(oldest)})
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("reading the sessions: %w", err)
+	}
+	out := make([]publishedSession, 0, len(rows))
+	for _, r := range rows {
+		p := r.p
+		r.row.LiveChildren = liveChildren[p.id]
+		p.state = resolveState(r.row, now, r.agentError, r.oldest)
+		p.state.watchIssue = r.watchIssue
+		p.stateAt = stateAt(r.row, p.state)
+		out = append(out, p)
 	}
 	return out, nil
 }
@@ -411,6 +431,9 @@ const (
 	kindBackground
 	kindReadyToCheck
 	kindSpecReview // an ask in the spec review author loop, turn over (#1945)
+	// kindSubSessionsWorking: turn over while sub-sessions of it are live
+	// (PROJ-11, spec 2026-11-18 §6.5).
+	kindSubSessionsWorking
 )
 
 // sessionState is SessionSwitcherPresentation.State: the resolved kind with
@@ -485,6 +508,8 @@ func resolveState(r sessionstate.Row, now time.Time, agentError string, oldest *
 		st.kind = kindFinished
 	case sessionstate.StateSpecReview:
 		st.kind = kindSpecReview
+	case sessionstate.StateSubSessionsWorking:
+		st.kind = kindSubSessionsWorking
 	}
 	return st
 }
@@ -498,11 +523,11 @@ func (st sessionState) asksAreOnlyReviews() bool {
 	return st.asksAreOnlyChecks() && st.openReview == st.openAsks
 }
 
-// wireKind is TerminalSessionSlice.wire(kind): agents working has no wire
-// kind of its own and goes out as working.
+// wireKind is TerminalSessionSlice.wire(kind): agents working and
+// sub-sessions working have no wire kind of their own and go out as working.
 func (st sessionState) wireKind() string {
 	switch st.kind {
-	case kindWorking, kindBackground:
+	case kindWorking, kindBackground, kindSubSessionsWorking:
 		return "working"
 	case kindRunning:
 		return "running"
@@ -528,7 +553,7 @@ func (st sessionState) wireKind() string {
 // tone is SessionStatePresentation.color.
 func (st sessionState) tone() string {
 	switch st.kind {
-	case kindWorking, kindRunning, kindBackground, kindSpecReview:
+	case kindWorking, kindRunning, kindBackground, kindSpecReview, kindSubSessionsWorking:
 		return "green"
 	case kindWaitingOnAsk, kindNeedsApproval:
 		return "orange"
@@ -577,6 +602,8 @@ func (st sessionState) glyph() string {
 		return "pause.fill"
 	case kindSpecReview:
 		return "doc.text.magnifyingglass"
+	case kindSubSessionsWorking:
+		return "hourglass"
 	case kindFailed:
 		return "exclamationmark"
 	case kindRunning, kindNotStarted:
@@ -613,6 +640,8 @@ func (st sessionState) caption() string {
 		return "Finished"
 	case kindStopped:
 		return "Idle"
+	case kindSubSessionsWorking:
+		return "Sub-sessions working"
 	case kindSpecReview:
 		if st.specRound > 0 {
 			return "Spec review · round " + strconv.Itoa(st.specRound)

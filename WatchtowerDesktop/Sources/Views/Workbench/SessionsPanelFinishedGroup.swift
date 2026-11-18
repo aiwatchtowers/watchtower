@@ -17,6 +17,9 @@ struct SessionsPanelSessionRow: View {
     /// The panel has the keyboard (`SessionsPanelKeyView`).
     let panelHasKeyboard: Bool
 
+    /// One nesting level's indent.
+    static let nestIndent = Spacing.large
+
     var body: some View {
         TerminalSessionRow(
             row: row,
@@ -33,8 +36,23 @@ struct SessionsPanelSessionRow: View {
             deleteButtonTakesKeyboard: vm.requestPanelKeyboard,
             showsDelete: hoveredRow == row.id || hasCursor,
             hasCursor: hasCursor,
-            opensIn: row.session.kind.isAgent ? WorkspaceView(vm.layout(projectID: projectID).pane(forSession: row.id)) : nil
+            opensIn: row.session.kind.isAgent ? WorkspaceView(vm.layout(projectID: projectID).pane(forSession: row.id)) : nil,
+            folderLabel: SessionNestingPresentation.folderLabel(
+                folderID: row.session.workbenchFolderID, folders: vm.benchFolders[projectID]
+            ),
+            messageInPrompt: vm.sessionStatuses[row.id]?.messageInPrompt ?? false
         )
+        // A sub-session sits one step in per level, a rule beside it (§6.5).
+        .padding(.leading, CGFloat(row.depth) * Self.nestIndent)
+        .overlay(alignment: .leading) {
+            if row.depth > 0 {
+                Rectangle()
+                    .fill(.separator)
+                    .frame(width: 1)
+                    .padding(.leading, CGFloat(row.depth) * Self.nestIndent - Self.nestIndent / 2)
+                    .accessibilityHidden(true)
+            }
+        }
         // Deleted, its background cleanup queued or running (board #1716):
         // no resume, no menu. A Clean Up… apply leaves it clickable.
         .disabled(!vm.canResume(row.id))
