@@ -122,6 +122,7 @@ func TestWatchmanJudgePrompt_HandoffLabelIsNotAClaim(t *testing.T) {
 		`the options may only confirm the owner's own action ("signed in", "connected it")`,
 		"not choosing any of them is not a claim that it was done",
 		`That handoff is "justified".`,
+		"a rationale that states the owner-only action as already done is still unjustified",
 	} {
 		assert.Contains(t, judge, want)
 	}
