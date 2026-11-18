@@ -266,6 +266,16 @@ func (db *DB) ApproveReviewRoundTx(tx *sql.Tx, projectID, id int64, resolveOpen 
 	return true, nil
 }
 
+// ReviewRoundTx reads round id inside tx (the Watchman twin's re-check of
+// the round's place before it writes).
+func (db *DB) ReviewRoundTx(tx *sql.Tx, id int64) (*ReviewRound, error) {
+	r, err := scanReviewRound(tx.QueryRow(`SELECT `+reviewRoundCols+` FROM review_rounds WHERE id = ?`, id))
+	if err != nil {
+		return nil, fmt.Errorf("review round %d: %w", id, err)
+	}
+	return r, nil
+}
+
 // ReviewRoundCommentCountTx counts round id's comments of any status inside
 // tx.
 func (db *DB) ReviewRoundCommentCountTx(tx *sql.Tx, id int64) (int, error) {

@@ -173,21 +173,87 @@ func TestTwin_ReviewCodeApproveWhenNotProtected(t *testing.T) {
 }
 
 func TestTwin_ReviewCodeMainBaseParks(t *testing.T) {
-	for name, set := range map[string]func(e *reviewEnv){
-		"base is the default branch": func(e *reviewEnv) { e.base = "main" },
-		"no PR":                      func(e *reviewEnv) { e.base, e.baseErr = "", errors.New("no pull requests found") },
-		"no PR reader":               func(e *reviewEnv) { e.twin.d.PRBase = nil },
+	for name, c := range map[string]struct {
+		set    func(e *reviewEnv)
+		reason string
+	}{
+		"base is the default branch": {func(e *reviewEnv) { e.base = "main" }, MainMergeReason},
+		"no PR":                      {func(e *reviewEnv) { e.base, e.baseErr = "", errors.New("no pull requests found") }, reasonPRBaseUnknown},
+		"no PR reader":               {func(e *reviewEnv) { e.twin.d.PRBase = nil }, reasonPRBaseUnknown},
 	} {
 		t.Run(name, func(t *testing.T) {
 			e := newReviewEnv(t)
-			set(e)
+			c.set(e)
 			itemID := e.queueReview()
 			e.run()
-			e.wantParkedReview(itemID, MainMergeReason)
+			e.wantParkedReview(itemID, c.reason)
 			if rounds := e.rounds(); len(rounds) != 1 || rounds[0].Status != "open" {
 				t.Fatalf("rounds = %+v, want the round left open for the owner", rounds)
 			}
 		})
+	}
+}
+
+// The session's tree moves while the twin decides: nothing is approved or
+// sent on the tree it checked; the item goes back to be reviewed again.
+func TestTwin_ReviewCodeTreeMovedDuringDecideIsNotApproved(t *testing.T) {
+	for _, choice := range ReviewOptions {
+		t.Run(choice, func(t *testing.T) {
+			e := newReviewEnv(t)
+			calls := 0
+			e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
+				calls++
+				if calls == 1 {
+					e.baseMu.Lock()
+					e.place.Round.TreeSHA = "t2"
+					e.baseMu.Unlock()
+				}
+				return reviewDecision(choice), nil
+			}
+			itemID := e.queueReview()
+			e.run()
+			for _, r := range e.rounds() {
+				if r.Status != "open" && r.TreeSHA == "t1" {
+					t.Fatalf("round %d written at the tree that moved: %+v", r.ID, r)
+				}
+			}
+			if it := e.item(itemID); it.State == "done" && e.roundOf(itemID) != 0 {
+				var tree string
+				e.must(e.db.QueryRow(`SELECT tree_sha FROM review_rounds WHERE id = ?`, e.roundOf(itemID)).Scan(&tree))
+				if tree != "t2" {
+					t.Fatalf("item finished on tree %q, want only the new tree", tree)
+				}
+			} else if it.State != "queued" || it.Attempts != 0 {
+				t.Fatalf("item = %s attempts %d, want queued unspent", it.State, it.Attempts)
+			}
+		})
+	}
+}
+
+// The owner's Refresh repoints the twin's open round while it decides: the
+// write's re-check in its transaction refuses, nothing is approved.
+func TestTwin_ReviewCodeRoundRepointedDuringDecideIsNotApproved(t *testing.T) {
+	e := newReviewEnv(t)
+	calls := 0
+	e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
+		calls++
+		if calls == 1 {
+			open, err := e.db.OpenReviewRound(e.wb, e.session)
+			e.must(err)
+			open.TreeSHA = "t9"
+			e.must(e.db.RepointReviewRound(*open))
+		}
+		return reviewDecision(ReviewApprove), nil
+	}
+	itemID := e.queueReview()
+	e.run()
+	for _, r := range e.rounds() {
+		if r.Outcome == db.ReviewOutcomeApproved && r.TreeSHA == "t9" {
+			t.Fatalf("round %d approved at a tree the twin never checked", r.ID)
+		}
+	}
+	if it := e.item(itemID); it.State == "queued" && it.Attempts != 0 {
+		t.Fatalf("attempts = %d, want the attempt given back", it.Attempts)
 	}
 }
 
@@ -658,21 +724,63 @@ func TestGHPRBase(t *testing.T) {
 }
 
 // The rendered diff keeps what ProtectedChange reads: file headers, hunk
-// headers and every line; the stat names each file.
+// headers and every line; the stat names each file. A truncated diff, or a
+// file whose changes are not shown, cannot be checked: an Approve parks.
 func TestRenderDiff(t *testing.T) {
 	d := reviewdiff.Diff{Files: []reviewdiff.File{
 		{Path: "internal/x/x_test.go", Status: "modified", Additions: 1, Deletions: 1, Hunks: []reviewdiff.Hunk{
 			{Header: "@@ -10,3 +10,3 @@ func TestProj21_Decider(t *testing.T) {", Lines: []string{" \tx := 1", "-\ta(x)", "+\tb(x)"}}}},
 		{Path: "docs/new.md", OldPath: "docs/old.md", Status: "renamed"},
 	}, Truncated: true}
-	paths, unified, stat := renderDiff(d)
+	paths, unified, stat, unchecked := renderDiff(d)
 	if strings.Join(paths, ",") != "internal/x/x_test.go,docs/new.md,docs/old.md" {
 		t.Fatalf("paths = %q", paths)
 	}
 	if _, protected := ProtectedChange(paths, unified); !protected {
 		t.Fatalf("a guard test's hunk header is protected:\n%s", unified)
 	}
-	if !strings.Contains(stat, "modified internal/x/x_test.go +1 -1") || !strings.Contains(stat, "truncated") {
-		t.Fatalf("stat = %q", stat)
+	if !strings.Contains(stat, "modified internal/x/x_test.go +1 -1") || !strings.Contains(stat, "truncated") || unchecked == "" {
+		t.Fatalf("stat = %q, unchecked = %q", stat, unchecked)
+	}
+
+	for name, d := range map[string]reviewdiff.Diff{
+		"truncated": {Files: []reviewdiff.File{{Path: "a.go", Status: "modified", Additions: 1,
+			Hunks: []reviewdiff.Hunk{{Header: "@@ -1 +1 @@", Lines: []string{"+x"}}}}}, Truncated: true},
+		"too large": {Files: []reviewdiff.File{{Path: "big.go", Status: "modified", Additions: 6000, CollapsedReason: "too_large"}}},
+		"no hunks":  {Files: []reviewdiff.File{{Path: "b.go", Status: "modified", Additions: 3}}},
+	} {
+		paths, unified, stat, unchecked := renderDiff(d)
+		place := ReviewPlace{Paths: paths, Diff: unified, Stat: stat, Unchecked: unchecked}
+		if park, _ := protectedPlace(place); park != reasonDiffUnchecked {
+			t.Fatalf("%s: park = %q, want the diff-too-large park", name, park)
+		}
+	}
+	paths, unified, _, unchecked = renderDiff(reviewdiff.Diff{Files: []reviewdiff.File{{Path: "a.go", Status: "modified", Additions: 1,
+		Hunks: []reviewdiff.Hunk{{Header: "@@ -1 +1 @@", Lines: []string{"+x"}}}}}})
+	if park, _ := protectedPlace(ReviewPlace{Paths: paths, Diff: unified, Unchecked: unchecked}); park != "" {
+		t.Fatalf("an ordinary full diff parks: %q", park)
+	}
+}
+
+// The findings' text reaches the model redacted, as the situation does; the
+// keys stay as they are, so the marks still name them.
+func TestTwin_ReviewDocRedactsFindings(t *testing.T) {
+	e := newTwinEnv(t)
+	askID, itemID := e.reviewAsk(planDoc)
+	r := specreview.Result{BlindSpots: []specreview.BlindSpot{{Key: "bs:1", Text: "the plan stores password=hunter2pass in the config"}}}
+	b, err := json.Marshal(r)
+	e.must(err)
+	e.specReview(askID, "done", "", string(b))
+	e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
+		return docDecision(ReviewChanges, watchman.TwinMarkReply{Key: "bs:1", State: "comment", Body: "drop it"}), nil
+	}
+	e.run()
+	wantOutcome(t, e.item(itemID), OutcomeChanges)
+	got := e.decided[0].Findings
+	if len(got) != 1 || got[0].Key != "bs:1" || strings.Contains(got[0].Text, "hunter2pass") || !strings.Contains(got[0].Text, "[secret]") {
+		t.Fatalf("findings = %+v, want the text redacted and the key kept", got)
+	}
+	if m := e.marks(askID); m["bs:1"].State != "comment" {
+		t.Fatalf("marks = %+v, want the mark on the kept key", m)
 	}
 }

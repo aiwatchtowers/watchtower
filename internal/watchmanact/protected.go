@@ -72,9 +72,10 @@ var noChangeRe = regexp.MustCompile(`(?i)\b(unchanged|not changed|no change|does
 // behavior contract (D46): anywhere in it a docs/inventory/ path or a guard
 // test name; or a line (a list item, a table row, a prose line — never a
 // paragraph) naming a contract id of inventoryDir's headings or a family
-// wildcard of their prefixes (REVIEW-0x), unless that line names exactly one
-// id and says it is not changed. A "PROJ-12/21" shorthand is two ids; a
-// wildcard is never exactly one. An inventoryDir that exists but cannot be
+// wildcard of their prefixes (REVIEW-0x), matched in any case, unless that
+// line names exactly one id and is one clause saying it is not changed (no
+// ";", ".", ":", ",", "but" or "and" on it but a closing mark). A
+// "PROJ-12/21" shorthand is two ids; a wildcard is never exactly one. An inventoryDir that exists but cannot be
 // read, or holds files with no contract heading, parks ("inventory
 // unreadable"); an absent one gives no ids.
 func ProtectedDoc(inventoryDir, snapshot string) (string, bool) {
@@ -101,7 +102,7 @@ func ProtectedDoc(inventoryDir, snapshot string) (string, bool) {
 		if ids == 0 && !wild {
 			continue
 		}
-		if ids == 1 && !wild && noChangeRe.MatchString(line) {
+		if ids == 1 && !wild && noChangeRe.MatchString(line) && singleClause(line) {
 			continue
 		}
 		return fmt.Sprintf("line %d names a behavior contract", i+1), true
@@ -149,7 +150,27 @@ func contractRes(prefixes map[string]bool) (id, wild *regexp.Regexp) {
 	// Longest first, so TGT-BRIEF is tried before TGT.
 	slices.SortFunc(alts, func(a, b string) int { return cmp.Or(len(b)-len(a), strings.Compare(a, b)) })
 	group := `(?:` + strings.Join(alts, "|") + `)`
-	id = regexp.MustCompile(`\b` + group + `-[0-9]+((?:/[0-9]+)*)\b`)
-	wild = regexp.MustCompile(`\b` + group + `-[0-9]*x\b`)
+	id = regexp.MustCompile(`(?i)\b` + group + `-[0-9]+((?:/[0-9]+)*)\b`)
+	wild = regexp.MustCompile(`(?i)\b` + group + `-[0-9]*x\b`)
 	return id, wild
+}
+
+// listMarkRe is a leading list or quote mark: "- ", "* ", "1. ", "> ".
+var listMarkRe = regexp.MustCompile(`^\s*(?:[-*+>]|[0-9]+[.)])\s+`)
+
+// clauseSepRe separates clauses: punctuation, "but", "and".
+var clauseSepRe = regexp.MustCompile(`(?i)[;.:,]|\b(?:but|and)\b`)
+
+// singleClause reports a line that is one clause: after its list mark and
+// any closing punctuation, nothing separates it into two (table pipes and
+// emphasis marks are not clauses).
+func singleClause(line string) bool {
+	t := strings.TrimRight(listMarkRe.ReplaceAllString(line, ""), " \t.;:,|*_`")
+	n := 0
+	for _, part := range clauseSepRe.Split(t, -1) {
+		if strings.Trim(part, " \t|*_`#>") != "" {
+			n++
+		}
+	}
+	return n == 1
 }

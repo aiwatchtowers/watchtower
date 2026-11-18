@@ -9,6 +9,7 @@ import (
 	"log"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -65,6 +66,8 @@ const reviewWait = time.Minute
 // Copy: MainMergeReason is spec copy; the rest is the builder's.
 const (
 	MainMergeReason        = "merging to main is yours"
+	reasonPRBaseUnknown    = "the PR base could not be read — the owner decides the merge target"
+	reasonDiffUnchecked    = "the diff is too large to check for protected changes — the owner reviews it"
 	reasonRoundCap         = "Watchman sent 3 review rounds on this session without an approval"
 	reasonOwnerRoundOpen   = "the owner has a review round of this session open with comments"
 	reasonFindingsUnread   = "the spec review's findings could not be read"
@@ -78,20 +81,46 @@ const (
 // owner sent, approved or commented on the round first.
 var errRoundClosed = errors.New("the review round is no longer the twin's to write")
 
+// errRoundMoved reports a round whose place or tree moved after the twin
+// checked it (a Refresh or a repoint by the owner): nothing is written and
+// the item is reviewed again on the new tree.
+var errRoundMoved = errors.New("the review round moved after the twin checked it")
+
 // ReviewPlace is a session's review place as it stands, for a twin round:
 // Round carries the place, base, tree and head a new round is created on;
 // Empty a diff with no changes; Branch the branch whose PR an Approve is
 // for; Paths the changed paths (both sides of a rename); Diff the unified
 // diff; Stat its per-file stat; Overview the reviewer's cached AI overview
-// ("" when none).
+// ("" when none). Unchecked says why the diff cannot be checked for
+// protected changes (truncated, a file too large to show); GuardEdit names
+// a guard test whose body a hunk changes, found by reading the test files
+// (both "" when none).
 type ReviewPlace struct {
-	Round    db.ReviewRound
-	Empty    bool
-	Branch   string
-	Paths    []string
-	Diff     string
-	Stat     string
-	Overview string
+	Round     db.ReviewRound
+	Empty     bool
+	Branch    string
+	Paths     []string
+	Diff      string
+	Stat      string
+	Overview  string
+	Unchecked string
+	GuardEdit string
+}
+
+// protectedPlace is the park of an Approve on place, with what was found
+// (both "" when none): a change to a behavior contract or a guard test, or
+// a diff too large to check (fail closed).
+func protectedPlace(place ReviewPlace) (park, why string) {
+	if why, ok := ProtectedChange(place.Paths, place.Diff); ok {
+		return ProtectedReason, why
+	}
+	if place.GuardEdit != "" {
+		return ProtectedReason, place.GuardEdit
+	}
+	if place.Unchecked != "" {
+		return reasonDiffUnchecked, place.Unchecked
+	}
+	return "", ""
 }
 
 // deferItem gives the item back to the queue for reviewWait, its attempt
@@ -130,7 +159,8 @@ func (j *job) decideReviewDoc(ctx context.Context, p asks.Payload) {
 	}
 	var findings []watchman.Finding
 	for _, f := range specreview.MarkableFindings(result, loop) {
-		findings = append(findings, watchman.Finding{Key: f.Key, Text: f.Text})
+		// Redacted like the situation; the key stays as it is (marks name it).
+		findings = append(findings, watchman.Finding{Key: f.Key, Text: watchman.Redact(f.Text)})
 	}
 	if !j.decide(ctx, p, watchman.Item{Category: watchman.CategoryReviewDoc, Options: ReviewOptions, Findings: findings}) {
 		return
@@ -275,8 +305,50 @@ func (t *Twin) handleReviewCode(parent context.Context, it db.WatchmanItem) {
 	case dec.Choice == ReviewApprove:
 		j.approveRound(ctx, round, place)
 	default:
-		j.sendChanges(ctx, round)
+		if j.placeStill(ctx, round) {
+			j.sendChanges(ctx, round)
+		}
 	}
+}
+
+// placeStill re-reads the session's review place after the decision (git,
+// outside any transaction): true when it is still the round's tree and
+// place. A place that moved (new commits, a Refresh, a repoint) releases
+// the item to be reviewed again on the new tree; a read that fails is a
+// failed attempt.
+func (j *job) placeStill(ctx context.Context, round *db.ReviewRound) bool {
+	fresh, err := j.t.d.ReviewPlace(ctx, j.it.WorkbenchID, j.it.SessionID)
+	if err != nil {
+		j.fail(ctx, err)
+		return false
+	}
+	if fresh.Empty || !sameRoundPlace(&fresh.Round, round) {
+		log.Printf("watchman twin: item %d: the session's changes moved while it was reviewed; reviewed again", j.it.ID)
+		j.release()
+		return false
+	}
+	return true
+}
+
+// sameRoundPlace reports whether rounds a and b stand on the same place,
+// base and tree.
+func sameRoundPlace(a, b *db.ReviewRound) bool {
+	return a.TreeSHA == b.TreeSHA && a.BaseSHA == b.BaseSHA && a.Source == b.Source &&
+		a.FolderRoot == b.FolderRoot && a.Branch == b.Branch
+}
+
+// checkRoundTx re-reads the round inside the write's transaction: an open
+// round whose place or tree is no longer what the twin checked is
+// errRoundMoved (a round no longer open is left to the write's own guard).
+func (j *job) checkRoundTx(tx *sql.Tx, round *db.ReviewRound) error {
+	cur, err := j.t.d.DB.ReviewRoundTx(tx, round.ID)
+	if err != nil {
+		return err
+	}
+	if cur.Status == "open" && !sameRoundPlace(cur, round) {
+		return errRoundMoved
+	}
+	return nil
 }
 
 // reviewRefCurrent reports whether the item still reviews what follows the
@@ -356,13 +428,13 @@ func reviewSituation(summary string, place ReviewPlace) string {
 // behavior contract or a guard test, or a PR whose base is unknown or the
 // default branch.
 func (j *job) approveRound(ctx context.Context, round *db.ReviewRound, place ReviewPlace) {
-	if why, protected := ProtectedChange(place.Paths, place.Diff); protected {
+	if park, why := protectedPlace(place); park != "" {
 		log.Printf("watchman twin: item %d: %s", j.it.ID, why)
-		j.park(ctx, ProtectedReason)
+		j.park(ctx, park)
 		return
 	}
 	if j.t.d.PRBase == nil {
-		j.park(ctx, MainMergeReason)
+		j.park(ctx, reasonPRBaseUnknown)
 		return
 	}
 	bctx, cancel := context.WithTimeout(ctx, prBaseBudget)
@@ -372,16 +444,26 @@ func (j *job) approveRound(ctx context.Context, round *db.ReviewRound, place Rev
 		j.fail(ctx, ctx.Err())
 		return
 	}
-	if err != nil || base == "" || def == "" || base == def {
+	switch {
+	case err != nil || base == "" || def == "":
 		if err != nil {
 			log.Printf("watchman twin: item %d: reading the PR base: %v", j.it.ID, err)
 		}
+		j.park(ctx, reasonPRBaseUnknown)
+		return
+	case base == def:
 		j.park(ctx, MainMergeReason)
+		return
+	}
+	if !j.placeStill(ctx, round) {
 		return
 	}
 	o := j.outcome(OutcomeApproved)
 	o.RoundID = round.ID
 	err = j.t.d.DB.WithTx(func(tx *sql.Tx) error {
+		if err := j.checkRoundTx(tx, round); err != nil {
+			return err
+		}
 		ok, err := j.t.d.DB.ApproveReviewRoundTx(tx, j.it.WorkbenchID, round.ID, false)
 		if err != nil {
 			return err
@@ -407,6 +489,9 @@ func (j *job) sendChanges(ctx context.Context, round *db.ReviewRound) {
 	sent := 0
 	err := j.t.d.DB.WithTx(func(tx *sql.Tx) error {
 		d := j.t.d.DB
+		if err := j.checkRoundTx(tx, round); err != nil {
+			return err
+		}
 		n, err := d.ReviewRoundCommentCountTx(tx, round.ID)
 		if err != nil {
 			return err
@@ -437,7 +522,7 @@ func (j *job) roundWritten(ctx context.Context, err error, roundID int64, line s
 	switch {
 	case errors.Is(err, errLeaseLost):
 		log.Printf("watchman twin: item %d: lease lost, nothing written", j.it.ID)
-	case errors.Is(err, errKindChanged):
+	case errors.Is(err, errKindChanged), errors.Is(err, errRoundMoved):
 		j.release()
 	case errors.Is(err, errRoundClosed):
 		j.roundClosed(ctx, roundID)
@@ -474,60 +559,56 @@ func (j *job) roundClosed(ctx context.Context, roundID int64) {
 // --- live review place and PR base ---------------------------------------
 
 // LiveReviewPlace is TwinDeps.ReviewPlace over the session's review place
-// as `workbench review start` resolves it (tools.ResolveReviewSource): the
-// round's place and snapshot, the diff from its base, and the reviewer's
-// overview cached for that tree and the session's intent. A folder that is
-// not a repository has nothing to review (Empty).
+// as the finish gate reads it (tools.SnapshotReviewSession), so the twin and
+// the gate agree on its tree and on an empty diff: the round's place and
+// snapshot, the diff from its base, the guard tests a hunk edits (read from
+// the changed test files), and the reviewer's overview cached for that tree
+// and the session's intent. A folder that is not a repository has nothing
+// to review (Empty).
 func LiveReviewPlace(d *db.DB) func(ctx context.Context, workbenchID, sessionID int64) (ReviewPlace, error) {
 	return func(ctx context.Context, workbenchID, sessionID int64) (ReviewPlace, error) {
 		p, err := d.GetWorkbench(workbenchID)
 		if err != nil {
 			return ReviewPlace{}, err
 		}
-		src, repo, err := tools.ResolveReviewSource(ctx, d, p, sessionID)
+		snap, err := tools.SnapshotReviewSession(ctx, d, p, sessionID)
 		if errors.Is(err, reviewdiff.ErrNotRepository) {
 			return ReviewPlace{Empty: true}, nil
 		}
-		if err != nil {
-			return ReviewPlace{}, err
+		if err != nil || snap.Empty {
+			return ReviewPlace{Empty: snap.Empty}, err
 		}
-		tree, base, err := src.Read(ctx, repo)
-		if err != nil {
-			return ReviewPlace{}, err
-		}
-		same, err := repo.SameTree(ctx, base.SHA, tree)
-		if err != nil || same {
-			return ReviewPlace{Empty: same}, err
-		}
-		head, err := src.Head(ctx, repo)
-		if err != nil {
-			return ReviewPlace{}, err
-		}
-		branch := src.Branch()
+		branch := snap.Branch
 		if branch == "" {
-			if branch, err = repo.HeadBranch(ctx); err != nil {
+			if branch, err = snap.Repo.HeadBranch(ctx); err != nil {
 				return ReviewPlace{}, err
 			}
 		}
-		diff, err := repo.Diff(ctx, base.SHA, tree)
+		diff, err := snap.Repo.Diff(ctx, snap.Base, snap.Tree)
 		if err != nil {
 			return ReviewPlace{}, err
 		}
 		place := ReviewPlace{
-			Round: db.ReviewRound{Source: src.Source(), Branch: src.Branch(), FolderRoot: src.Folder,
-				BaseSHA: base.SHA, BaseLabel: base.Label, TreeSHA: tree, HeadSHA: head},
+			Round: db.ReviewRound{Source: snap.Source, Branch: snap.Branch, FolderRoot: snap.Folder,
+				BaseSHA: snap.Base, BaseLabel: snap.BaseLabel, TreeSHA: snap.Tree, HeadSHA: snap.Head},
 			Branch: branch,
 		}
-		place.Paths, place.Diff, place.Stat = renderDiff(diff)
-		place.Overview = cachedOverview(ctx, d, p, sessionID, tree, base.SHA)
+		place.Paths, place.Diff, place.Stat, place.Unchecked = renderDiff(diff)
+		read := func(tree, path string) (reviewdiff.Side, error) { return snap.Repo.File(ctx, tree, path) }
+		if place.GuardEdit, err = guardEdits(read, snap.Base, snap.Tree, diff); err != nil {
+			return ReviewPlace{}, err
+		}
+		place.Overview = cachedOverview(ctx, d, p, sessionID, snap.Tree, snap.Base)
 		return place, nil
 	}
 }
 
 // renderDiff is a diff's changed paths (both sides of a rename), its
-// unified text (file headers and hunks) and its per-file stat. A truncated
-// diff says so in the stat.
-func renderDiff(d reviewdiff.Diff) (paths []string, unified, stat string) {
+// unified text (file headers and hunks) and its per-file stat; unchecked
+// says why the text does not hold every changed line (a truncated diff, a
+// file collapsed as too large or with changes but no hunks), "" when it
+// does.
+func renderDiff(d reviewdiff.Diff) (paths []string, unified, stat, unchecked string) {
 	var u, st strings.Builder
 	for _, f := range d.Files {
 		paths = append(paths, f.Path)
@@ -546,11 +627,115 @@ func renderDiff(d reviewdiff.Diff) (paths []string, unified, stat string) {
 			}
 		}
 		fmt.Fprintf(&st, "%s %s +%d -%d\n", f.Status, f.Path, f.Additions, f.Deletions)
+		if unchecked == "" && (f.CollapsedReason == "too_large" || (f.Additions+f.Deletions > 0 && len(f.Hunks) == 0)) {
+			unchecked = "the changes of " + f.Path + " are not shown"
+		}
 	}
 	if d.Truncated {
 		st.WriteString("(the diff is truncated)\n")
+		unchecked = "the diff is truncated"
 	}
-	return paths, u.String(), st.String()
+	return paths, u.String(), st.String(), unchecked
+}
+
+// isTestFile reports a Go or Swift test file, where guard tests live.
+func isTestFile(path string) bool {
+	if strings.HasSuffix(path, "_test.go") {
+		return true
+	}
+	return strings.HasSuffix(path, ".swift") && (strings.HasSuffix(path, "Tests.swift") || strings.Contains("/"+path, "/Tests/"))
+}
+
+// guardEdits names the first guard test whose function a hunk of a changed
+// test file touches — its new lines inside a guard test of the file at
+// tree, or its old lines inside one at base — "" when none. read reads a
+// file at a tree; a test file it cannot read as text (too large, binary)
+// counts as touched (fail closed).
+func guardEdits(read func(tree, path string) (reviewdiff.Side, error), base, tree string, d reviewdiff.Diff) (string, error) {
+	for _, f := range d.Files {
+		if !isTestFile(f.Path) && !isTestFile(f.OldPath) {
+			continue
+		}
+		old := f.OldPath
+		if old == "" {
+			old = f.Path
+		}
+		for _, side := range []struct {
+			tree, path string
+			newSide    bool
+		}{{tree, f.Path, true}, {base, old, false}} {
+			s, err := read(side.tree, side.path)
+			if err != nil {
+				return "", err
+			}
+			if !s.Exists {
+				continue
+			}
+			if s.TooLarge || s.Binary {
+				return side.path + " cannot be read to check its guard tests", nil
+			}
+			ranges := guardRanges(s.Text)
+			for _, h := range f.Hunks {
+				start, n := h.OldStart, h.OldLines
+				if side.newSide {
+					start, n = h.NewStart, h.NewLines
+				}
+				end := start + max(n, 1) - 1
+				for _, r := range ranges {
+					if start <= r.end && r.start <= end {
+						return "the change edits guard test " + r.name + " in " + side.path, nil
+					}
+				}
+			}
+		}
+	}
+	return "", nil
+}
+
+// guardRange is a guard test's lines in a file, 1-based and inclusive.
+type guardRange struct {
+	name       string
+	start, end int
+}
+
+// guardNameInDeclRe is the guard test's name in its declaration.
+var guardNameInDeclRe = regexp.MustCompile(`[Tt]est[A-Za-z]+[0-9]{2}_\w*`)
+
+// guardRanges finds each guard test's function: from its declaration (any
+// indentation) to the closing brace at the declaration's indentation, or
+// to the line before a line indented less, or to the end of the file.
+func guardRanges(text string) []guardRange {
+	lines := strings.Split(text, "\n")
+	var out []guardRange
+	for i, line := range lines {
+		if !guardDeclRe.MatchString(line) {
+			continue
+		}
+		indent := indentOf(line)
+		r := guardRange{name: guardNameInDeclRe.FindString(line), start: i + 1, end: len(lines)}
+		for k := i + 1; k < len(lines); k++ {
+			l := lines[k]
+			if strings.TrimSpace(l) == "" {
+				continue
+			}
+			in := indentOf(l)
+			if in == indent && strings.HasPrefix(strings.TrimSpace(l), "}") {
+				r.end = k + 1
+				break
+			}
+			if in < indent {
+				r.end = k
+				break
+			}
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// indentOf is a line's leading whitespace width (a tab counts as one).
+func indentOf(line string) int {
+	return len(line) - len(strings.TrimLeft(line, " \t"))
 }
 
 // cachedOverview renders the reviewer's overview cached for the session's
