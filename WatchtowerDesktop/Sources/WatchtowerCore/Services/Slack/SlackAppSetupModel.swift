@@ -224,7 +224,13 @@ package final class SlackAppSetupModel {
     package let mode: Mode
     /// Called once a create or adopt run ends, after the setup records are
     /// re-read; a run that ends on a form (adopt, App ID, pending) does not call it.
+    /// `startLink`, `checkAgain` and the pending runs never call it. A run that
+    /// ends on a form leaves `phase == .editing` with the new `form`, which the
+    /// wizard observes.
     @ObservationIgnored package var onFinished: ((SlackSetupOutcome) -> Void)?
+    /// A status read has succeeded: `records` (and `record(appID:)`) say what
+    /// this Mac has, not merely that nothing was read yet.
+    package private(set) var recordsRead = false
     /// The running create made the app (`ok`, `link_failed`), as opposed to
     /// finding a setup record (`exists`).
     @ObservationIgnored private var createdApp = false
@@ -394,7 +400,14 @@ package final class SlackAppSetupModel {
         let args = Self.pendingArgs(team: target.teamID) + ["--attach", "--app-id", ids[0], "--client-id", ids[1]]
         Task { [self] in
             if let result = await stream(args, token: nil) {
-                if result.result == "ok" {
+                if result.result == "ok", mode == .wizard {
+                    // The wizard has no link step (Publish writes it): the app is reused.
+                    phase = .finished(.notConnected(result.target(fallback: target)))
+                    let outcome = finishedOutcome
+                    await reloadRecords()
+                    if let outcome { onFinished?(outcome) }
+                    return
+                } else if result.result == "ok" {
                     reset(.addLink(result.target(fallback: target)))
                 } else {
                     finishPendingProblem(result, workspace: target.workspace)
@@ -420,7 +433,10 @@ package final class SlackAppSetupModel {
             for try await line in streamer.lines(args: Self.statusArgs, stdin: nil) { last = line }
             guard let last, let data = last.data(using: .utf8) else { return nil }
             let read = try JSONDecoder().decode(StatusDocument.self, from: data).setups ?? []
-            if generation == readGeneration { records = read }
+            if generation == readGeneration {
+                records = read
+                recordsRead = true
+            }
             return read
         } catch {
             print("[SlackAppSetup] status read failed: \(error.localizedDescription)")
@@ -429,7 +445,9 @@ package final class SlackAppSetupModel {
     }
 
     /// The setup record of an app as the last status read has it; nil when
-    /// this Mac has none (the wizard's Slack step then starts at Look again).
+    /// this Mac has none (the wizard's Slack step then starts at Look again),
+    /// or when no read has succeeded yet (`recordsRead`: then nothing is known).
+    /// A pending create's record has no App ID, so an empty one names none.
     package func record(appID: String) -> SlackSetupRecord? {
         guard !appID.isEmpty else { return nil }
         return records.first { $0.appID == appID }
@@ -461,8 +479,10 @@ package final class SlackAppSetupModel {
         Task { [self] in
             await body(token)
             heldToken = nil
+            // Taken before the read: a new run may start while it is pending.
+            let outcome = reports ? finishedOutcome : nil
             await reloadRecords()
-            if reports, let outcome = finishedOutcome { onFinished?(outcome) }
+            if let outcome { onFinished?(outcome) }
         }
     }
 
@@ -471,6 +491,8 @@ package final class SlackAppSetupModel {
         guard case let .finished(outcome) = phase else { return nil }
         switch outcome {
         case let .success(target), let .notConnected(target), let .approval(target), let .linkFailed(target):
+            // An app the wizard could not find again is no answer.
+            guard !target.appID.isEmpty else { return .failed(.stopped(Self.noAnswer)) }
             return createdApp ? .created(appID: target.appID) : .reused(appID: target.appID)
         case let .problem(problem):
             return .failed(problem)
@@ -514,14 +536,14 @@ package final class SlackAppSetupModel {
             }
             await finishSetup(target)
         case "exists":
-            // The record row's Continue setup path: never a second create.
-            await reloadRecords()
             if mode == .wizard {
-                // A create that ran before (the wizard resumed): reuse its app.
-                let record = records.first { $0.teamID == target.teamID }
-                phase = .finished(.notConnected(record?.target ?? target))
+                // A create that ran before (the wizard resumed): reuse its app,
+                // which the answer names (the record's ids).
+                phase = .finished(.notConnected(target))
                 return
             }
+            // The record row's Continue setup path: never a second create.
+            await reloadRecords()
             if let record = records.first(where: { $0.teamID == target.teamID }) {
                 target.linkWritten = record.linkWritten
                 if record.connected {
@@ -562,12 +584,17 @@ package final class SlackAppSetupModel {
     }
 
     private func runAdopt(token: String, appID: String) async {
-        // The wizard reuses an app by its App ID from the create form: the
-        // workspace is then the token's.
-        let adopt = if case let .adopt(shown) = form {
-            shown
+        let adopt: Adopt
+        if case let .adopt(shown) = form {
+            adopt = shown
+        } else if mode == .wizard {
+            // The wizard reuses an app by its App ID from the create form:
+            // the workspace is then the token's.
+            adopt = Adopt(target: SlackSetupTarget(teamID: "", teamName: ""), needsAppID: true)
         } else {
-            Adopt(target: SlackSetupTarget(teamID: "", teamName: ""), needsAppID: true)
+            // The sheet offers Update the app only on the adopt form.
+            phase = .finished(.problem(.stopped(Self.noAnswer)))
+            return
         }
         // --enable-pkce: Update the app is pressed only on a screen showing
         // adoptPKCEWarning (the adopt body or the App ID check).

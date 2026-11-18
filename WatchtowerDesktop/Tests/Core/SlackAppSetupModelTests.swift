@@ -906,7 +906,6 @@ final class SlackAppSetupModelTests: XCTestCase {
         return (model, fake, connector, box)
     }
 
-
     /// The run reports after its status read, so wait for the report itself.
     private func reported(_ box: SlackSetupOutcomeBox) async {
         await untilObserved { !box.outcomes.isEmpty }
@@ -939,8 +938,13 @@ final class SlackAppSetupModelTests: XCTestCase {
     }
 
     func testMissingRecordRestartsAtLook() async {
-        let (model, fake, _, _) = makeWizard([reply(statusDoc())])
+        // A failed read is "not known", never "missing": the step must not restart on it.
+        let (model, fake, _, _) = makeWizard([FakeCLILineStream.Reply(lines: [], exitCode: 1, stderr: "database is locked")])
         await model.reloadRecords()
+        XCTAssertFalse(model.recordsRead)
+        fake.enqueue(reply(statusDoc()))
+        await model.reloadRecords()
+        XCTAssertTrue(model.recordsRead)
         XCTAssertNotNil(model.record(appID: "A0ACME"))
         // The record is gone (cleared, another Mac's draft): nothing to resume.
         fake.enqueue(noSetups)
@@ -951,13 +955,72 @@ final class SlackAppSetupModelTests: XCTestCase {
 
     func testResumeAfterCreateOffersReuse() async {
         // The app quit after a create; the resumed step's create finds the record.
-        let (model, fake, connector, box) = makeWizard([reply(result("exists")), reply(statusDoc()), reply(statusDoc())])
+        let (model, fake, connector, box) = makeWizard([reply(result("exists")), reply(statusDoc())])
         model.startCreate(token: token)
         await reported(box)
         XCTAssertEqual(box.outcomes, [.reused(appID: "A0ACME")], "never a second app")
-        XCTAssertEqual(fake.invocations.filter { $0.args == createArgs }.count, 1)
+        XCTAssertEqual(fake.invocations.map(\.args), [createArgs, Model.statusArgs], "one create, one status read")
         XCTAssertTrue(connector.calls.isEmpty)
         XCTAssertEqual(model.record(appID: "A0ACME")?.teamID, "T0ACME")
+    }
+
+    func testWizardRunWithoutAnAppIDIsNoAnswer() async {
+        let (model, _, _, box) = makeWizard([reply(result("ok", appID: "")), noSetups])
+        model.startCreate(token: token)
+        await reported(box)
+        XCTAssertEqual(box.outcomes, [.failed(.stopped(Model.noAnswer))], "an empty App ID is never reported as an app")
+    }
+
+    func testOutcomeIsTheRunsEvenWhenTheNextRunStartsDuringItsRead() async {
+        let (model, fake, _, box) = makeWizard([reply(result("ok"))])
+        model.startCreate(token: token)
+        let read = await fake.session(number: 1) // the run's status read, held open
+        XCTAssertFalse(model.isRunning)
+        fake.enqueue(reply(result("bad_token")))
+        fake.enqueue(noSetups)
+        model.startCreate(token: token) // Try again while the read is pending
+        read.emit(statusDoc())
+        read.exit()
+        await untilObserved { box.outcomes.count == 2 }
+        // Each run reports its own outcome once, in whichever order the reads end.
+        XCTAssertTrue(box.outcomes.contains(.created(appID: "A0ACME")), "\(box.outcomes)")
+        XCTAssertTrue(box.outcomes.contains(.failed(.badToken)), "\(box.outcomes)")
+    }
+
+    func testWizardCreateExistingAppEndsOnTheAdoptForm() async {
+        let (model, _, _, box) = makeWizard([reply(result("existing_app")), reply(statusDoc())])
+        model.startCreate(token: token)
+        await untilObserved { !model.records.isEmpty }
+        XCTAssertTrue(box.outcomes.isEmpty, "the wizard reads the form")
+        guard case .adopt = model.form else { return XCTFail("\(model.form)") }
+        XCTAssertEqual(model.phase, .editing)
+    }
+
+    func testWizardAdoptExistsIsReused() async {
+        let (model, _, _, box) = makeWizard([reply(result("exists")), reply(statusDoc()), reply(statusDoc())])
+        model.startAdopt(token: token, appID: "A0ACME")
+        await reported(box)
+        XCTAssertEqual(box.outcomes, [.reused(appID: "A0ACME")])
+    }
+
+    func testWizardPendingAttachIsReused() async {
+        let (model, fake, _, box) = makeWizard([reply(result("pending_create", appID: "", clientID: "")), noSetups])
+        model.startCreate(token: token)
+        await untilObserved { if case .pending = model.form { true } else { false } }
+        await fake.signal.until { fake.invocations.count >= 2 } // the create's status read took its reply
+        fake.enqueue(reply(result("ok")))
+        fake.enqueue(reply(statusDoc()))
+        model.attachPending(appID: "A0ACME", clientID: "1111.2222")
+        await reported(box)
+        XCTAssertEqual(box.outcomes, [.reused(appID: "A0ACME")], "no link step in the wizard")
+    }
+
+    func testSheetAdoptOutsideTheAdoptFormStops() async {
+        let (model, fake, _) = make([noSetups])
+        model.startAdopt(token: token, appID: "A0ACME")
+        await settled(model)
+        XCTAssertEqual(model.phase, .finished(.problem(.stopped(Model.noAnswer))), "never left running")
+        XCTAssertFalse(fake.invocations.contains { $0.args.starts(with: ["slack", "app", "adopt"]) })
     }
 
     func testWizardReuseByAppIDFromTheCreateForm() async {
