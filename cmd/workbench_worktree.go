@@ -204,13 +204,20 @@ func sessionCwdIn(ctx context.Context, main workbenchgit.Options, worktreeTop st
 // that step starts codex's app-server) for the worktree folder, under the
 // same workbench id.
 func installWorktreeIntegration(ctx context.Context, id int64, folder string, agent agentkind.Kind) error {
+	// Only a worktree git just made (create, or ensure re-adding it) gets
+	// here: its registration is the add alone unless one is left over.
+	return installIntegration(ctx, id, folder, agent, true)
+}
+
+// installIntegration is installWorktreeIntegration for any place: newFolder
+// says it was just made (devpack's NewFolder); an existing place (the
+// launch backstop's reinstall) takes the full registration path.
+func installIntegration(ctx context.Context, id int64, folder string, agent agentkind.Kind, newFolder bool) error {
 	o, err := workbenchSetupOptions(&db.Workbench{ID: id, FolderPath: folder})
 	if err != nil {
 		return err
 	}
-	// Only a worktree git just made (create, or ensure re-adding it) gets
-	// here: its registration is the add alone unless one is left over.
-	o.NewFolder = true
+	o.NewFolder = newFolder
 	_, err = devpack.InstallWorkbench(ctx, o)
 	cfg, cfgErr := config.Load(flagConfig)
 	if cfgErr != nil {
