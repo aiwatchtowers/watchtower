@@ -77,7 +77,8 @@ var slackTokenWriters = []string{
 	"cmd/slack.go:connectSlackAccount",
 	"cmd/slack.go:removeSlackAccount",
 	"cmd/slack_legacy.go:ensureLegacySlackAccount",
-	"cmd/slack_connect.go:writeConnectedAccount", // Task 7's connect write, once it lands
+	"cmd/slack_connect.go:writeNewSlackAccount", // the connect flow's new row
+	"cmd/slack_connect.go:writeSlackGrant",      // the connect flow's re-bind / reconnect
 	"internal/slackauth/fresh.go:freshLocked",
 	"internal/purge/run.go:deleteTokens",
 }
@@ -118,7 +119,8 @@ func TestSlackTokenWriters_AllLocked(t *testing.T) {
 	}
 	// The guard must see the writers it lists, or it checks nothing.
 	for _, want := range []string{"cmd/slack.go:connectSlackAccount", "cmd/slack_legacy.go:ensureLegacySlackAccount",
-		"internal/slackauth/fresh.go:freshLocked", "internal/purge/run.go:deleteTokens", "cmd/slack.go:removeSlackAccount"} {
+		"internal/slackauth/fresh.go:freshLocked", "internal/purge/run.go:deleteTokens", "cmd/slack.go:removeSlackAccount",
+		"cmd/slack_connect.go:writeNewSlackAccount", "cmd/slack_connect.go:writeSlackGrant"} {
 		assert.Contains(t, found, want)
 	}
 }
@@ -279,7 +281,7 @@ func siteLocked(stack []ast.Node, store *ast.Ident, lockCalled map[string]bool) 
 }
 
 // slackRowAppWriters write an account row's client and app ids.
-var slackRowAppWriters = []string{"recordSlackClientID", "SetSlackAccountApp", "SetSlackAccountClientID", "repairRow"}
+var slackRowAppWriters = []string{"recordSlackClientID", "SetSlackAccountApp", "SetSlackAccountClientID", "repairRow", "writeSlackGrantRow"}
 
 // calleeName is f's name: an identifier or a selector's last part.
 func calleeName(f ast.Expr) string {

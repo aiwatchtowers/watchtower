@@ -243,23 +243,22 @@ func writeNewSlackAccount(ctx context.Context, cfg *config.Config, database *db.
 		return 0, "", fmt.Errorf("creating account: %w", err)
 	}
 	store := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), id)
-	err = func() error {
-		unlock, err := store.Lock(ctx)
-		if err != nil {
-			return err
-		}
-		defer unlock()
+	err = withSlackTokenLock(ctx, store, func() error {
 		tok := slackGrantToken(g, identity, time.Now())
 		if err := store.Save(tok); err != nil {
 			return fmt.Errorf("saving token: %w", err)
 		}
-		return writeSlackGrantRow(database, id, identity, watchtowerslack.Namespace(id, identity.UserID), tok)
-	}()
+		if err := writeSlackGrantRow(database, id, identity, watchtowerslack.Namespace(id, identity.UserID), tok); err != nil {
+			// The token was saved for this row only: a rolled-back row keeps no token.
+			if delErr := store.Delete(); delErr != nil {
+				err = errors.Join(err, fmt.Errorf("removing the token of rolled-back slack account %d: %w", id, delErr))
+			}
+			return err
+		}
+		return nil
+	})
 	if err != nil {
 		rollbackSlackAccount(database, id, warn)
-		if delErr := store.Delete(); delErr != nil {
-			err = errors.Join(err, fmt.Errorf("removing the token of rolled-back slack account %d: %w", id, delErr))
-		}
 		return 0, "", err
 	}
 	afterSlackConnect(database, identity.TeamID, warn)
@@ -284,37 +283,36 @@ func writeSlackGrant(ctx context.Context, cfg *config.Config, database *db.DB, i
 	}
 
 	store := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), id)
-	unlock, err := store.Lock(ctx)
+	var reboundFrom string
+	err = withSlackTokenLock(ctx, store, func() error {
+		// Right before the first write: a purge that started while the grant
+		// was checked would delete what this writes (PURGE-02).
+		if err := refuseLoginDuringPurge(database, "slack", id); err != nil {
+			return err
+		}
+		if moved {
+			covered, err := rewindMovedSlackAccount(database, id)
+			if err != nil {
+				return fmt.Errorf("rewinding the search of slack account %d: %w", id, err)
+			}
+			if !covered {
+				fmt.Fprintf(warn, "warning: slack account %d is back on its workspace, but the next sync may not fetch the days it missed\n", id)
+			}
+		}
+		reboundFrom = acct.ClientID
+		if old, _ := store.Load(); reboundFrom == "" && old != nil {
+			reboundFrom = old.ClientID
+		}
+		if reboundFrom == g.ClientID {
+			reboundFrom = ""
+		}
+		tok := slackGrantToken(g, identity, time.Now())
+		if err := store.Save(tok); err != nil {
+			return fmt.Errorf("saving token: %w", err)
+		}
+		return writeSlackGrantRow(database, id, identity, user, tok)
+	})
 	if err != nil {
-		return "", err
-	}
-	defer unlock()
-	// Right before the first write: a purge that started while the grant
-	// was checked would delete what this writes (PURGE-02).
-	if err := refuseLoginDuringPurge(database, "slack", id); err != nil {
-		return "", err
-	}
-	if moved {
-		covered, err := rewindMovedSlackAccount(database, id)
-		if err != nil {
-			return "", fmt.Errorf("rewinding the search of slack account %d: %w", id, err)
-		}
-		if !covered {
-			fmt.Fprintf(warn, "warning: slack account %d is back on its workspace, but the next sync may not fetch the days it missed\n", id)
-		}
-	}
-	reboundFrom := acct.ClientID
-	if old, _ := store.Load(); reboundFrom == "" && old != nil {
-		reboundFrom = old.ClientID
-	}
-	if reboundFrom == g.ClientID {
-		reboundFrom = ""
-	}
-	tok := slackGrantToken(g, identity, time.Now())
-	if err := store.Save(tok); err != nil {
-		return "", fmt.Errorf("saving token: %w", err)
-	}
-	if err := writeSlackGrantRow(database, id, identity, user, tok); err != nil {
 		return "", err
 	}
 	return reboundFrom, nil
