@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"watchtower/internal/ai"
 	"watchtower/internal/aiconsent"
 	"watchtower/internal/auditlog"
 	"watchtower/internal/config"
@@ -268,8 +269,18 @@ func runREPL(cmd *cobra.Command, args []string) error {
 		Domain:     domain,
 		TeamID:     teamID,
 		Workspace:  workspace,
-		AIProvider: newAIClient(cfg, cfg.DBPath()),
+		AIProvider: replAIProvider(cfg),
 	}
 
 	return repl.Run(deps)
+}
+
+// replAIProvider is the REPL's client. It lives for the whole session, so
+// nothing is refused once at build time: every call asks consent (BGAI-01)
+// and the configured provider's policy first — also ahead of the reserve
+// routing, which on a resumed turn checks only the session's provider — then
+// the long-lived checkedAIClient routes it. The call's ctx and the current
+// state decide (spec §4.3).
+func replAIProvider(cfg *config.Config) ai.Provider {
+	return policyCheckedProvider{inner: checkedAIClient(cfg, cfg.DBPath()), provider: cfg.AI.Provider}
 }
