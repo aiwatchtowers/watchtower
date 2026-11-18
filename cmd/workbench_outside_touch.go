@@ -139,11 +139,11 @@ func countOutsideTouch(stdin io.Reader, rowID int64, rawWorkbenchID string) (str
 	if path == "" {
 		return "", nil
 	}
-	skip := outsideSkipDirs()
-	// First without the bench, so a path in no repository (or skipped)
-	// never opens the database; then again against the bench's folders.
-	local := outsideLocalMount()
-	if _, ok := outsideRoot(path, nil, skip, local); !ok {
+	// Without the bench, so a path in no repository (or skipped) never
+	// opens the database; the bench's folders are checked against the same
+	// root afterwards.
+	resolved, root, ok := outsideRoot(path, outsideSkipDirs(), outsideLocalMount())
+	if !ok {
 		return "", nil
 	}
 	database, err := openHookDB()
@@ -156,8 +156,7 @@ func countOutsideTouch(stdin io.Reader, rowID int64, rawWorkbenchID string) (str
 	if err != nil || bench == nil {
 		return "", err
 	}
-	root, ok := outsideRoot(path, bench, skip, local)
-	if !ok || benchCovers(root, root, others) {
+	if onTheBench(path, resolved, root, bench) || benchCovers(root, root, others) {
 		return "", nil
 	}
 	declined, err := database.FolderDeclined(ctx, database, workbenchID, root)
@@ -217,33 +216,90 @@ func touchedPath(in outsideTouchInput) string {
 	return hookPath(p)
 }
 
-// outsideRoot maps path to the repository root it lies in when that root is
-// outside the bench (spec §6.7, §7 "hook" row): never for a path in a bench
-// folder (or a worktree inside one), in a skip dir (~/.claude, the temp and
-// scratchpad dirs), or on a mount localMount calls non-local — checked
-// before any syscall on the path —; the walk up for `.git` is capped
-// (workbenchfolders.RepoRoot). A root that is or holds a bench folder or a
-// skip dir (a home-directory repository) is no outside root either, and a
-// linked worktree counts as its main repository.
-func outsideRoot(path string, bench, skip []string, localMount func(string) bool) (root string, ok bool) {
+// outsideRoot maps path to the repository root it lies in (spec §6.7, §7
+// "hook" row), before the bench is known: never for a path in a skip dir
+// (~/.claude, the temp and scratchpad dirs, spelled or resolved) or one that
+// is, or resolves through a symlink onto, a mount localMount calls
+// non-local — every component's mount is checked before the component is
+// probed (resolveLocal), so a network share is never touched —; the walk up
+// for `.git` runs on the resolved path and is capped
+// (workbenchfolders.RepoRoot). A root that is or holds a skip dir (a
+// home-directory repository) is no outside root, and a linked worktree
+// counts as its main repository. resolved is the symlink-free path; the
+// bench's own checks (onTheBench) follow once its folders are read.
+func outsideRoot(path string, skip []string, localMount func(string) bool) (resolved, root string, ok bool) {
 	if !filepath.IsAbs(path) {
-		return "", false
+		return "", "", false
 	}
 	path = filepath.Clean(path)
-	if benchCovers(path, path, bench) || benchCovers(path, path, skip) || !localMount(path) {
-		return "", false
+	if benchCovers(path, path, skip) {
+		return "", "", false
 	}
-	root, ok = workbenchfolders.RepoRoot(path)
-	if !ok {
-		return "", false
+	resolved, ok = resolveLocal(path, localMount)
+	if !ok || benchCovers(resolved, resolved, skip) {
+		return "", "", false
 	}
-	if r, err := filepath.EvalSymlinks(root); err == nil {
-		root = r
+	root, ok = workbenchfolders.RepoRoot(resolved)
+	if !ok || benchCovers(root, root, skip) {
+		return "", "", false
 	}
-	if benchCovers(root, root, bench) || benchCovers(root, root, skip) {
-		return "", false
+	return resolved, root, true
+}
+
+// onTheBench reports whether path (spelled or resolved) or its root lies in
+// a folder of dirs, or root holds one.
+func onTheBench(path, resolved, root string, dirs []string) bool {
+	return benchCovers(path, root, dirs) || benchCovers(resolved, root, dirs)
+}
+
+// maxLinkHops bounds the symlinks resolveLocal follows (a loop ends there).
+const maxLinkHops = 40
+
+// resolveLocal resolves path's symlinks component by component — Lstat and
+// Readlink only, never a Stat through a link — and answers false as soon as
+// a component, before it is probed, or a link's target lies on a mount
+// localMount calls non-local. A missing tail (a file about to be written)
+// is kept as spelled.
+func resolveLocal(path string, localMount func(string) bool) (string, bool) {
+	rest := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	cur := "/"
+	hops := 0
+	for len(rest) > 0 {
+		comp := rest[0]
+		rest = rest[1:]
+		if comp == "" || comp == "." {
+			continue
+		}
+		next := filepath.Join(cur, comp) // ".." is lexical: cur holds no link
+		if !localMount(next) {
+			return "", false
+		}
+		fi, err := os.Lstat(next)
+		if err != nil {
+			return filepath.Join(append([]string{next}, rest...)...), true
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			cur = next
+			continue
+		}
+		if hops++; hops > maxLinkHops {
+			return "", false
+		}
+		target, err := os.Readlink(next)
+		if err != nil {
+			return "", false
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(cur, target)
+		}
+		target = filepath.Clean(target)
+		if !localMount(target) {
+			return "", false
+		}
+		rest = append(strings.Split(strings.TrimPrefix(target, "/"), "/"), rest...)
+		cur = "/"
 	}
-	return root, true
+	return cur, true
 }
 
 // benchCovers reports whether path is one of dirs or inside one, or root

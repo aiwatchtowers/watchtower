@@ -39,7 +39,7 @@ const MaxSettle = CheckTimeout
 // a line left typed.
 const HeldPromptHasText = "prompt_has_text"
 
-// HeldDialog: under HoldIfPromptText a permission dialog was up when the
+// HeldDialog is the hold reason when, under HoldIfPromptText, a permission dialog was up when the
 // line came: nothing is written, so the paste can never answer it (PROJ-16,
 // PROJ-23), however the dialog opened after the caller's own state read.
 const HeldDialog = "held_dialog"

@@ -117,6 +117,39 @@ func TestSuggestDeclinedPath(t *testing.T) {
 	assert.False(t, storedAsk(t, fx.d, fx.b, askID(t, out)).SessionID.Valid, "no calling session: none bound")
 }
 
+// Watchtower's own state dirs are refused as `workbench folder add` refuses
+// them (one shared list), and a linked worktree of a bench folder is
+// already on the bench — no ask is filed for either.
+func TestSuggestRefusesStateDirsAndBenchWorktrees(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	reg := startRegistry(t, fx.d, 0, SessionDeps{})
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	t.Setenv("HOME", home)
+	state := filepath.Join(home, ".config", "watchtower", "repo")
+	require.NoError(t, os.MkdirAll(filepath.Join(state, ".git"), 0o755))
+
+	_, err = proposeIn(t, reg, fx.a, SuggestWorkbenchFolderTool, fmt.Sprintf(`{"path":%q,"why":"w","reason":"r"}`, state))
+	require.Error(t, err)
+	assert.Contains(t, refusal(t, err), "not_allowed: ")
+
+	bench := outsideRepo(t, "app")
+	_, err = fx.d.Exec(`INSERT INTO workbench_folders (workbench_id, folder_path, position, added_by, name)
+		VALUES (?, ?, 1, 'owner', 'app')`, fx.a, bench)
+	require.NoError(t, err)
+	wt := outsideRepo(t, "wt")
+	require.NoError(t, os.RemoveAll(filepath.Join(wt, ".git")))
+	require.NoError(t, os.WriteFile(filepath.Join(wt, ".git"),
+		[]byte("gitdir: "+filepath.Join(bench, ".git", "worktrees", "wt")+"\n"), 0o600))
+	_, err = proposeIn(t, reg, fx.a, SuggestWorkbenchFolderTool, fmt.Sprintf(`{"path":%q,"why":"w","reason":"r"}`, wt))
+	require.Error(t, err)
+	assert.Equal(t, fmt.Sprintf("already_here: %s is a worktree of %s, already on this bench as app.", wt, bench), refusal(t, err))
+
+	var n int
+	require.NoError(t, fx.d.QueryRow(`SELECT COUNT(*) FROM owner_asks WHERE kind = 'folder'`).Scan(&n))
+	assert.Zero(t, n, "no ask filed")
+}
+
 // Spec §6.13: a folder on another bench is no refusal — the ask carries
 // that bench, so the card offers the merge.
 func TestSuggestOtherBenchCarriesTheBench(t *testing.T) {
