@@ -55,6 +55,19 @@ final class AgentActionCardDecisionTests: XCTestCase {
         XCTAssertEqual(AgentActionCard.settledRow(for: action(), services: wired, offersRetry: false, state: noGrant), .none)
     }
 
+    /// Not delivered wins over the screen's own row (an Inbox target button's Try again), so the one live button is
+    /// the outbox's named Retry, never a press the center ignores (§12.4).
+    func testNotDeliveredWinsOverTheScreensRow() {
+        let undelivered = ChatApprovalState(showsButtons: true, canAnswer: false, line: nil,
+                                            undelivered: .init(line: "Not delivered", retryTitle: "Retry Try again"))
+        let stuck = action(tool: "create_target", status: "executing", error: "")
+        XCTAssertEqual(AgentActionCard.decisionRowKind(for: stuck, state: undelivered, hasOverride: true), .undelivered)
+        XCTAssertEqual(AgentActionCard.decisionRowKind(for: stuck, state: nil, hasOverride: true), .custom)
+        XCTAssertEqual(AgentActionCard.decisionRowKind(for: stuck, state: nil, hasOverride: false), .standard)
+        XCTAssertEqual(AgentActionCard.decisionRowKind(for: action(status: "applied", error: ""), state: undelivered,
+                                                       hasOverride: false), .standard, "a settled row has nothing to resend")
+    }
+
     /// The line shows on a pending row, and on a settled one only while it offers (or notes) Retry or Dismiss.
     func testLineShowsOnSettledRowsWithAnOffer() {
         let busy = ChatApprovalState(showsButtons: true, canAnswer: false, line: "Retrying…", inFlight: true)

@@ -153,18 +153,34 @@ extension AgentActionCard {
 
     // MARK: - The row
 
+    /// Which row the card draws under its body: a Not delivered press's named Retry wins over everything (its
+    /// outbox action is the one to resend, mobile Inbox spec §12.4), then the screen's own row (the Inbox target
+    /// button's), then the card's decision row.
+    public enum DecisionRowKind: Equatable {
+        case undelivered
+        case custom
+        case standard
+    }
+
+    public static func decisionRowKind(
+        for action: ChatAgentAction, state: ChatApprovalState?, hasOverride: Bool
+    ) -> DecisionRowKind {
+        if state?.undelivered != nil, !action.isTerminal { return .undelivered }
+        return hasOverride ? .custom : .standard
+    }
+
     @ViewBuilder
     func decision(connector: ConnectorCallProposal?) -> some View {
-        if let custom = services.decisionOverride?(action) {
+        let custom = services.decisionOverride?(action)
+        switch Self.decisionRowKind(for: action, state: state, hasOverride: custom != nil) {
+        case .undelivered:
+            if let undelivered = state?.undelivered { undeliveredRow(undelivered) }
+        case .custom:
             custom
-        } else {
-            if let undelivered = state?.undelivered, !action.isTerminal {
-                undeliveredRow(undelivered)
-            } else {
-                decisionRow(connector: connector)
-                if let line = Self.shownLine(for: action, services: services, offersRetry: offersRetry, state: state) {
-                    Text(line).font(.caption).foregroundStyle(.secondary).lineLimit(4)
-                }
+        case .standard:
+            decisionRow(connector: connector)
+            if let line = Self.shownLine(for: action, services: services, offersRetry: offersRetry, state: state) {
+                Text(line).font(.caption).foregroundStyle(.secondary).lineLimit(4)
             }
         }
     }

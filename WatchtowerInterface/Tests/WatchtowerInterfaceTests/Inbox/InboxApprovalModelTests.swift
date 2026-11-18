@@ -41,16 +41,16 @@ final class InboxApprovalModelTests: XCTestCase {
         XCTAssertNil(plain.editNote)
     }
 
-    func testFailedOffersRetryAndDismissButNotOnASupersededRow() throws {
+    /// Retry on a failed row, never on a superseded one. Dismiss is the shared card's own rule (`AgentActionCard.settledOffer`,
+    /// a session call whose outcome is unknown, mobile Inbox spec §12.2): this model has none.
+    func testFailedOffersRetryButNotOnASupersededRow() throws {
         let failed = try Fix.approval {
             $0.status = "failed"
             $0.error = "the team was archived"
         }
         let model = InboxApprovalModel(card: failed, platform: .phone, grants: .all)
         XCTAssertTrue(model.canRetry)
-        XCTAssertTrue(model.canDismiss)
         XCTAssertFalse(model.canApprove)
-        XCTAssertEqual(model.failedLine, "Failed: the team was archived")
         XCTAssertFalse(InboxApprovalModel(card: failed, platform: .phone, grants: noGrants).canRetry)
         let superseded = try Fix.approval {
             $0.status = "failed"

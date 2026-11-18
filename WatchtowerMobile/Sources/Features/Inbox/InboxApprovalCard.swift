@@ -17,6 +17,26 @@ struct InboxApprovalCard: View {
     var host: TowerHost = .mac
     var timeZone: TimeZone = .current
 
+    /// The card as the tab draws it: the hub away (Waiting to send), its name and kind from the tab's inputs.
+    init(center: InboxCenter, card: InboxCardModel, inputs: InboxInputs) {
+        self.init(center: center, card: card, grants: inputs.grants, now: inputs.now, hubAway: inputs.macAway != nil,
+                  hubName: inputs.hubName, host: inputs.host)
+    }
+
+    init(
+        center: InboxCenter, card: InboxCardModel, grants: Grants, now: Date, hubAway: Bool = false, hubName: String = "",
+        host: TowerHost = .mac, timeZone: TimeZone = .current
+    ) {
+        self.center = center
+        self.card = card
+        self.grants = grants
+        self.now = now
+        self.hubAway = hubAway
+        self.hubName = hubName
+        self.host = host
+        self.timeZone = timeZone
+    }
+
     var body: some View {
         if card.card.cardKind == .reminder {
             InboxReminderCard(center: center, card: card, now: now, timeZone: timeZone)
@@ -58,8 +78,9 @@ struct InboxApprovalCard: View {
                 InboxApprovalState.make(card: card, rowState: center.rowState(card.id), grants: grants, hubAway: hubAway,
                                         hubName: hubName, now: now, host: host)
             },
-            retry: { _ in if model.canRetry { press(.retry) } },
+            retry: { _ in if InboxApprovalState.mayRetry(card, grants: grants) { press(.retry) } },
             dismiss: { _ in if grants.permissions { press(.dismiss) } },
+            sessionHoldsCall: InboxApprovalState.sessionHolds,
             title: { _ in InboxApprovalState.title(card) },
             details: { _ in
                 InboxApprovalState.summary(card).map {

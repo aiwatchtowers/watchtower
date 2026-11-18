@@ -205,13 +205,13 @@ final class InboxTabWiringTests: XCTestCase {
         XCTAssertEqual(AgentActionCard.availability(services.state?(action)), .live)
 
         services.decide(action, .approve(patch: nil))
-        try await poll({ hub.requests.count == 1 }, "Approve queued")
+        try await pollBounded({ hub.requests.count == 1 }, "Approve queued")
         let busy = try XCTUnwrap(services.state?(action))
         XCTAssertEqual(busy.line, InboxText.approving)
         XCTAssertEqual(AgentActionCard.availability(busy), .disabled, "Approve and Reject stay, off")
 
         hub.transport.settle(actionID: "act-1", .refused(code: .argsChanged, sentence: "This proposal changed — look again."))
-        try await poll({ services.state?(action)?.gestureError != nil }, "refused")
+        try await pollBounded({ services.state?(action)?.gestureError != nil }, "refused")
         XCTAssertEqual(services.state?(action)?.gestureError, "This proposal changed — look again.")
         XCTAssertEqual(AgentActionCard.availability(services.state?(action)), .live, "the decision row is back")
 

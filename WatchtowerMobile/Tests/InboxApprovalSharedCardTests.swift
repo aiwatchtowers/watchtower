@@ -60,8 +60,14 @@ final class InboxApprovalStateTests: XCTestCase {
     private var pending: InboxCard { DemoSeed.Inbox.approvalCards(now: now)[0] }
     private var failed: InboxCard { DemoSeed.Inbox.approvalCards(now: now)[2] }
 
-    private func state(_ card: InboxCard, _ row: InboxRowState? = nil, grants: Grants = .all, away: Bool = false) -> ChatApprovalState {
-        InboxApprovalState.make(card: card, rowState: row, grants: grants, hubAway: away, hubName: "Acme Mac", now: now)
+    private func state(
+        _ card: InboxCard,
+        _ row: InboxRowState? = nil,
+        grants: Grants = .all,
+        away: Bool = false,
+        host: TowerHost = .mac
+    ) -> ChatApprovalState {
+        InboxApprovalState.make(card: card, rowState: row, grants: grants, hubAway: away, hubName: "Acme Mac", now: now, host: host)
     }
 
     private func request(_ verb: ApprovalVerb) -> ActRequest {
@@ -124,6 +130,40 @@ final class InboxApprovalStateTests: XCTestCase {
         XCTAssertFalse(s.canAnswer)
     }
 
+    /// On a server tower every note names the tower (§12.3); a recipe draft still opens on the Mac.
+    func testOnAServerTowerTheNotesNameTheTower() {
+        let tower = TowerHost.server(device: nil)
+        let noGrant = Grants(permissions: false, typing: true)
+        XCTAssertEqual(state(pending, grants: noGrant, host: tower).approveNote, "Approve on your tower")
+        XCTAssertEqual(state(failed, grants: noGrant, host: tower).settledNote, "Retry on your tower")
+        XCTAssertEqual(state(pending, grants: noGrant).approveNote, "Approve on the Mac")
+        var draft = pending
+        draft.approval?.tool = "save_automation"
+        XCTAssertEqual(state(draft, grants: noGrant, host: tower).approveNote, "Open Draft — on your Mac")
+    }
+
+    /// Every refusal the tower words (inboxfeed.Sentence) shows as it came, and the row is live again.
+    func testEveryRefusalSentenceShows() {
+        for sentence in [
+            "Couldn't approve it: this card changed — look again.",
+            "This proposal changed on the Mac — look again before approving.",
+            "Couldn't approve it: edit this proposal on the Mac.",
+            "Couldn't dismiss it: this card doesn't offer that here."
+        ] {
+            let s = state(pending, .refused(sentence, .resend(request(.approve), dismiss: nil)))
+            XCTAssertEqual(s.gestureError, sentence)
+            XCTAssertTrue(s.canAnswer)
+        }
+    }
+
+    /// A pending (or approved, running) connector call in Needs approval is held by its live chat session.
+    func testAConnectorCallInNeedsApprovalIsHeld() {
+        for status in ["pending", "approved", "executing"] {
+            XCTAssertTrue(InboxApprovalState.sessionHolds(ChatAgentAction(id: 1, tool: ConnectorCallProposal.tool, status: status)))
+        }
+        XCTAssertFalse(InboxApprovalState.sessionHolds(ChatAgentAction(id: 1, tool: ConnectorCallProposal.tool, status: "failed")))
+    }
+
     func testARecipeDraftOpensOnTheMac() {
         var draft = pending
         draft.approval?.tool = "save_automation"
@@ -149,7 +189,7 @@ final class InboxApprovalServicesTests: XCTestCase {
         let (services, action) = try services(center, "a103")
         XCTAssertEqual(AgentActionCard.settledOffer(for: action), .retry)
         services.retry?(action)
-        try await poll({ hub.requests.count == 1 }, "Retry queued")
+        try await pollBounded({ hub.requests.count == 1 }, "Retry queued")
         XCTAssertEqual(hub.requests.first?.target, "a103")
         XCTAssertEqual(hub.requests.first?.params.approvalVerb, .retry)
     }
@@ -160,13 +200,98 @@ final class InboxApprovalServicesTests: XCTestCase {
         let (ungranted, action) = try services(center, DemoSeed.Inbox.slackProposal, grants: Grants(permissions: false, typing: false))
         ungranted.decide(action, .approve(patch: nil))
         ungranted.decide(action, .reject)
-        try await poll({ hub.requests.count == 1 }, "Reject queued")
+        try await pollBounded({ hub.requests.count == 1 }, "Reject queued")
         XCTAssertEqual(hub.requests.map(\.params.approvalVerb), [.reject], "no Approve without the grant")
         let (granted, _) = try services(center, "a102")
         granted.decide(ChatAgentAction(inboxCard: try XCTUnwrap(center.feed?.cards.first { $0.id == "a102" })), .approve(patch: nil))
-        try await poll({ hub.requests.count == 2 }, "Approve queued")
+        try await pollBounded({ hub.requests.count == 2 }, "Approve queued")
         XCTAssertEqual(hub.requests.last?.params.approvalVerb, .approve)
         XCTAssertEqual(hub.requests.last?.params.argsSHA256, "args-102")
+    }
+
+    /// A pending claude.ai connector call reads "Awaiting your approval" and offers Approve with the grant, as the old
+    /// card did — never "Chat session ended" on a live call (#1006 review I1).
+    func testAPendingConnectorCallOffersApprove() async throws {
+        var seeded = feed
+        let index = try XCTUnwrap(seeded.cards.firstIndex { $0.id == DemoSeed.Inbox.replyProposal })
+        seeded.cards[index].approval = DemoSeed.Inbox.approval(
+            ConnectorCallProposal.tool, "Run a connector", "Linear", "args-102",
+            args: #"{"server": "Linear", "tool": "create_issue", "input": {"title": "x"}}"#)
+        let hub = FakeInboxHub(feed: seeded)
+        let center = try await startedInboxCenter(hub)
+        let (services, action) = try services(center, DemoSeed.Inbox.replyProposal)
+        let holds = services.sessionHoldsCall?(action) ?? false
+        XCTAssertTrue(holds)
+        XCTAssertEqual(ConnectorCallProposal.statusLabel(for: action, sessionHolds: holds), "Awaiting your approval")
+        XCTAssertTrue(ConnectorCallProposal.canApprove(action, sessionHolds: holds))
+        services.decide(action, .approve(patch: nil))
+        try await pollBounded({ hub.requests.count == 1 }, "Approve queued")
+        XCTAssertEqual(hub.requests.first?.params.approvalVerb, .approve)
+    }
+
+    /// Retry follows the card's rule: never on an older button proposal or without the grant.
+    func testRetryFollowsTheCardsRule() throws {
+        var failed = try XCTUnwrap(feed.cards.first { $0.id == "a103" })
+        XCTAssertTrue(InboxApprovalState.mayRetry(failed, grants: .all))
+        XCTAssertFalse(InboxApprovalState.mayRetry(failed, grants: Grants(permissions: false, typing: true)))
+        failed.approval?.superseded = true
+        XCTAssertFalse(InboxApprovalState.mayRetry(failed, grants: .all))
+        let pending = try XCTUnwrap(feed.cards.first { $0.id == DemoSeed.Inbox.slackProposal })
+        XCTAssertFalse(InboxApprovalState.mayRetry(pending, grants: .all))
+    }
+
+    /// The tab's inputs reach the card: with the Mac away a press reads "Waiting to send" (§12.6).
+    func testTheHubAwayReachesTheCardAsWaitingToSend() async throws {
+        let hub = FakeInboxHub(feed: feed)
+        let center = try await startedInboxCenter(hub)
+        let card = try XCTUnwrap(center.feed?.cards.first { $0.id == DemoSeed.Inbox.slackProposal })
+        let model = InboxCardModel(card: card, platform: .phone, grants: .all, blocksReadable: true, now: now, hidden: center.hidden)
+        let inputs = InboxInputs(capability: "on", hubName: "Acme Mac", macAway: now, grants: .all, now: now, host: .mac)
+        let view = InboxApprovalCard(center: center, card: model, inputs: inputs)
+        XCTAssertTrue(view.hubAway)
+        let services = InboxApprovalCard.services(center: center, card: card, grants: view.grants, hubAway: view.hubAway,
+                                                  hubName: view.hubName, now: now, host: view.host)
+        let action = ChatAgentAction(inboxCard: card)
+        services.decide(action, .approve(patch: nil))
+        try await pollBounded({ hub.requests.count == 1 }, "Approve queued")
+        XCTAssertEqual(services.state?(action)?.line, "Waiting to send — it applies when Acme Mac wakes.")
+    }
+
+    /// A Not delivered approve from the replica: its named Retry alone, which re-sends the same outbox action, and it
+    /// wins over the target row (§12.4, §12.6).
+    func testNotDeliveredFromTheReplicaResendsTheSameAction() async throws {
+        let hub = FakeInboxHub(feed: feed)
+        let center = try await startedInboxCenter(hub)
+        var retried: [String] = []
+        center.use(dismiss: { _ in }, retryUndelivered: { retried.append($0) })
+        let approve = ActRequest(requestID: "first", target: DemoSeed.Inbox.slackProposal, verb: .approval,
+                                 params: ActParams(approvalVerb: .approve, argsSHA256: "args-101"))
+        center.receive(InboxReplicaSnapshot(actions: [
+            try FakeInboxHub.failedRow(approve, id: "act-undelivered", reason: nil, message: nil, undelivered: true)
+        ]))
+        let (services, action) = try services(center, DemoSeed.Inbox.slackProposal)
+        let state = try XCTUnwrap(services.state?(action))
+        XCTAssertEqual(state.undelivered?.line, InboxPhoneText.notDelivered(hub: ""))
+        XCTAssertEqual(state.undelivered?.retryTitle, "Retry Approve")
+        XCTAssertEqual(AgentActionCard.decisionRowKind(for: action, state: state, hasOverride: true), .undelivered)
+        services.resend?(action)
+        try await pollBounded({ retried.count == 1 }, "the named Retry re-sent the action")
+        XCTAssertEqual(retried, ["act-undelivered"])
+        XCTAssertTrue(hub.requests.isEmpty, "no new press")
+    }
+
+    /// An `already` answer hides the card like `ok` (§12.5), also when it lands with no press waiting.
+    func testAnAlreadyAnswerHidesTheCard() async throws {
+        let hub = FakeInboxHub(feed: feed)
+        let center = try await startedInboxCenter(hub)
+        let approve = ActRequest(requestID: "late", target: DemoSeed.Inbox.slackProposal, verb: .approval,
+                                 params: ActParams(approvalVerb: .approve, argsSHA256: "args-101"))
+        var echo = ActionRequestPayload(id: "act-late", kind: .inboxAct, entityID: nil, params: try HubTransport.wireParams(approve),
+                                        createdAt: now, deviceID: "phone")
+        echo.status = .applied
+        echo.result = ["already": .bool(true), "status": .string("applied")]
+        center.receiveApplied(echo)
+        XCTAssertTrue(center.hidden.isHidden(DemoSeed.Inbox.slackProposal))
     }
 
     func testNoDismissOnAnOrdinaryFailedRow() throws {

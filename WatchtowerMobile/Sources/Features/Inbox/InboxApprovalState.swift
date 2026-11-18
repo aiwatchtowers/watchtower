@@ -18,6 +18,7 @@ enum InboxApprovalState {
     ) -> ChatApprovalState {
         let model = InboxApprovalModel(card: card, platform: .phone, grants: grants, now: now)
         let action = ChatAgentAction(inboxCard: card)
+        let approveNote = Self.approveNote(card, model: model, host: host)
         let settledNote: String? = switch AgentActionCard.settledOffer(for: action) {
         case .retry where !grants.permissions: ChatText.retryElsewhere(host)
         case .dismiss where !grants.permissions: ChatText.dismissElsewhere(host)
@@ -27,21 +28,42 @@ enum InboxApprovalState {
         case let .busy(request)?:
             let line = hubAway ? InboxPhoneText.waitingToSendLine(hub: hubName) : InboxPhoneText.busyLine(for: request)
             return ChatApprovalState(showsButtons: true, canAnswer: false, line: line, inFlight: !hubAway,
-                                     approveNote: model.approveNote, settledNote: settledNote)
+                                     approveNote: approveNote, settledNote: settledNote)
         case let .refused(sentence, .outbox)?:
-            return ChatApprovalState(showsButtons: true, canAnswer: false, line: nil, approveNote: model.approveNote,
+            return ChatApprovalState(showsButtons: true, canAnswer: false, line: nil, approveNote: approveNote,
                                      settledNote: settledNote,
                                      undelivered: .init(line: sentence, retryTitle: rowState?.retryTitle ?? InboxText.retry))
         case let .refused(sentence, .resend)?:
             return ChatApprovalState(showsButtons: true, canAnswer: true, line: model.editNote, gestureError: sentence,
-                                     approveNote: model.approveNote, settledNote: settledNote)
+                                     approveNote: approveNote, settledNote: settledNote)
         case .unknown?:
             return ChatApprovalState(showsButtons: true, canAnswer: false, line: InboxText.didntConfirmPhone,
-                                     approveNote: model.approveNote, settledNote: settledNote)
+                                     approveNote: approveNote, settledNote: settledNote)
         case nil:
             return ChatApprovalState(showsButtons: true, canAnswer: true, line: model.editNote,
-                                     approveNote: model.approveNote, settledNote: settledNote)
+                                     approveNote: approveNote, settledNote: settledNote)
         }
+    }
+
+    /// Approve's note: "Open Draft — on your Mac" for a recipe draft, else where to approve without the grant,
+    /// naming the Mac or the tower (§12.3, `ChatText.approveElsewhere`).
+    static func approveNote(_ card: InboxCard, model: InboxApprovalModel, host: TowerHost) -> String? {
+        guard let note = model.approveNote else { return nil }
+        return card.approval?.tool == "save_automation" ? note : ChatText.approveElsewhere(host)
+    }
+
+    /// Retry is offered by the card's own rule (`AgentActionCard.settledOffer`) on an entry that is not an older
+    /// button proposal, and sent only with the `permissions` grant.
+    static func mayRetry(_ card: InboxCard, grants: Grants) -> Bool {
+        grants.permissions && card.approval?.superseded != true
+            && AgentActionCard.settledOffer(for: ChatAgentAction(inboxCard: card)) == .retry
+    }
+
+    /// A claude.ai connector call in Needs approval: a pending (or approved, running) row exists only while its chat
+    /// session holds it — the chat's gate fails the row when the session dies — so the Inbox reads it as held:
+    /// Approve with the grant, never "Chat session ended" on a live call (#1006 review I1).
+    static func sessionHolds(_ action: ChatAgentAction) -> Bool {
+        ["pending", "approved", "executing"].contains(action.status)
     }
 
     /// The card's title: the feed's own for a recipe draft (`save_automation`, as the Mac's card names it), else the

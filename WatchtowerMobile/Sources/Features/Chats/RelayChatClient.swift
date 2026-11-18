@@ -34,7 +34,28 @@ final class RelayChatClient: ChatClient {
     /// The approvals whose answer is on its way (agent action ids): their buttons are off.
     private(set) var answering: Set<Int64> = []
     /// The last refusal of an answer, by agent action id.
-    private(set) var approvalFailures: [Int64: ChatActionFailure] = [:]
+    private(set) var approvalFailures: [Int64: ScopedFailure] = [:]
+
+    /// An answer's failure, kept only while the action is as it was when the answer went (its status, error and
+    /// dismissal): once the feed moves, "Didn't confirm" or the refusal clears and the card offers what the action
+    /// offers now (mobile Inbox spec §12.9).
+    struct ScopedFailure: Equatable {
+        let failure: ChatActionFailure
+        let fingerprint: String
+    }
+
+    /// What an answer's failure is scoped to.
+    static func fingerprint(status: String, error: String, dismissedAt: String) -> String {
+        "\(status)|\(dismissedAt)|\(error)"
+    }
+
+    /// The action's failure while the feed still shows it as it was when the answer went.
+    func failure(for payload: ChatApprovalPayload) -> ChatActionFailure? {
+        guard let scoped = approvalFailures[payload.id],
+              scoped.fingerprint == Self.fingerprint(status: payload.status, error: payload.error, dismissedAt: payload.dismissedAt)
+        else { return nil }
+        return scoped.failure
+    }
     /// The opened chats whose feed did not come within `recordPatience` of their request.
     private(set) var unanswered: Set<Int64> = []
 
@@ -481,14 +502,16 @@ final class RelayChatClient: ChatClient {
         answering.insert(action.id)
         approvalFailures[action.id] = nil
         defer { answering.remove(action.id) }
+        let fingerprint = Self.fingerprint(status: action.status, error: action.error, dismissedAt: action.dismissedAt)
         let params = ChatActionAnswerParams(actionID: action.id, decision: Self.wire(decision), argsSHA256: digest)
         switch await sender.request(params) {
         case .applied:
             break
         case let .failed(failure):
-            approvalFailures[action.id] = failure
+            approvalFailures[action.id] = ScopedFailure(failure: failure, fingerprint: fingerprint)
         case .lost:
-            approvalFailures[action.id] = ChatActionFailure(reason: nil, message: ChatSendCoordinator.couldNotSend)
+            approvalFailures[action.id] = ScopedFailure(
+                failure: ChatActionFailure(reason: nil, message: ChatSendCoordinator.couldNotSend), fingerprint: fingerprint)
         }
     }
 
@@ -516,7 +539,7 @@ final class RelayChatClient: ChatClient {
     func approvalCard(_ payload: ChatApprovalPayload, permissions: Bool, host: TowerHost, retryDismiss: Bool = false) -> ChatApprovalCardModel {
         ChatApprovalCardModel(
             payload: payload, permissions: permissions, online: isConnected, inFlight: answering.contains(payload.id),
-            failure: approvalFailures[payload.id], host: host, retryDismiss: retryDismiss
+            failure: failure(for: payload), host: host, retryDismiss: retryDismiss
         )
     }
 

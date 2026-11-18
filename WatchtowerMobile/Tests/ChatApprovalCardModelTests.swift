@@ -92,11 +92,14 @@ final class ChatApprovalCardModelTests: XCTestCase {
         XCTAssertNil(model.state.gestureError)
     }
 
-    /// A repeated Dismiss answers `already` (applied): no error; the card reads dismissed once the feed has it.
-    func testAlreadyDismissedShowsNoError() {
-        let model = card(Self.outcomeUnknown)
-        XCTAssertNil(model.state.gestureError)
-        XCTAssertNil(model.refusal)
+    func testOnAServerTowerTheLinesNameTheTower() {
+        let tower = ChatApprovalCardModel(payload: ChatApprovalPayload(action: Self.outcomeUnknown), permissions: false,
+                                          online: true, inFlight: false, failure: nil, host: .server(device: nil), retryDismiss: true)
+        XCTAssertEqual(tower.settledNote, "Dismiss on your tower")
+        let unconfirmed = ChatApprovalCardModel(
+            payload: ChatApprovalPayload(action: Self.failed), permissions: true, online: true, inFlight: false,
+            failure: ChatActionFailure(reason: .outcomeUnknown, message: ""), host: .server(device: nil), retryDismiss: true)
+        XCTAssertEqual(unconfirmed.state.line, "Didn't confirm — check on your tower.")
     }
 
     func testAPendingActionKeepsTodaysLook() {
@@ -143,11 +146,53 @@ final class ChatConversationApprovalTests: XCTestCase {
     func testRetryAndDismissWired() async throws {
         let wired = services(retryDismiss: true)
         wired.retry?(ChatAgentAction(payload: ChatApprovalPayload(action: ChatApprovalCardModelTests.failed)))
-        try await poll({ (try? self.recorder.params(ChatActionAnswerParams.self).count) == 1 }, "retry sent")
+        try await pollBounded({ (try? self.recorder.params(ChatActionAnswerParams.self).count) == 1 }, "retry sent")
         wired.dismiss?(ChatAgentAction(payload: ChatApprovalPayload(action: ChatApprovalCardModelTests.outcomeUnknown)))
-        try await poll({ (try? self.recorder.params(ChatActionAnswerParams.self).count) == 2 }, "dismiss sent")
+        try await pollBounded({ (try? self.recorder.params(ChatActionAnswerParams.self).count) == 2 }, "dismiss sent")
         XCTAssertEqual(try recorder.params(ChatActionAnswerParams.self).map(\.decision), [.retry, .dismiss])
         XCTAssertEqual(try recorder.params(ChatActionAnswerParams.self).map(\.actionID), [41, 42])
+    }
+
+    private func echo(_ index: Int, result: [String: JSONValue]) -> ActionRequestPayload {
+        var echo = ActionRequestPayload(id: RecordingChatSender.actionID(index), kind: .chatActionAnswer, entityID: nil,
+                                        createdAt: ChatFixture.now)
+        echo.status = .applied
+        echo.result = result
+        return echo
+    }
+
+    /// A repeated Dismiss answers `already` (applied, no write): the card shows no error (§12.9).
+    func testAlreadyDismissedShowsNoError() async throws {
+        let unknown = ChatAgentAction(payload: ChatApprovalPayload(action: ChatApprovalCardModelTests.outcomeUnknown))
+        let answer = Task { await center.client.decide(unknown, .dismiss, permissions: true, retryDismiss: true) }
+        try await pollBounded({ (try? self.recorder.params(ChatActionAnswerParams.self).count) == 1 }, "dismiss sent")
+        center.receiveApplied(echo(1, result: ["status": .string("failed"), "dismissed": .bool(true), "already": .bool(true)]))
+        await answer.value
+        let model = center.client.approvalCard(unknown, permissions: true, host: .mac, retryDismiss: true)
+        XCTAssertNil(model.refusal)
+        XCTAssertNil(model.state.gestureError)
+        XCTAssertNil(model.state.line)
+    }
+
+    /// "Didn't confirm" holds until the feed moves: the same action as when the answer went keeps the button off; a
+    /// new state of it (another error, a dismissal) clears the line and offers what it offers now (§12.9).
+    func testDidntConfirmClearsWhenTheFeedMoves() async throws {
+        let failed = ChatAgentAction(payload: ChatApprovalPayload(action: ChatApprovalCardModelTests.failed))
+        let answer = Task { await center.client.decide(failed, .retry, permissions: true, retryDismiss: true) }
+        try await pollBounded({ (try? self.recorder.params(ChatActionAnswerParams.self).count) == 1 }, "retry sent")
+        var snapshot = center.snapshot
+        snapshot.failures = [RecordingChatSender.actionID(1): ChatActionFailure(reason: .outcomeUnknown, message: "")]
+        center.apply(snapshot)
+        await answer.value
+        let held = center.client.approvalCard(failed, permissions: true, host: .mac, retryDismiss: true)
+        XCTAssertEqual(held.state.line, "Didn't confirm — check on the Mac.")
+        XCTAssertFalse(held.state.canAnswer)
+        let moved = ChatAgentAction(payload: ChatApprovalPayload(action: ChatFeed.Action(
+            id: 41, tool: "create_jira_issue", title: "", argsDisplay: "{}", argsSHA256: "b2", status: "failed", external: true,
+            error: "jira: 502 Bad Gateway")))
+        let fresh = center.client.approvalCard(moved, permissions: true, host: .mac, retryDismiss: true)
+        XCTAssertNil(fresh.state.line)
+        XCTAssertTrue(fresh.state.canAnswer)
     }
 
     func testNothingGoesWithoutTheCapabilityOrTheGrantOrToTheWrongRow() async throws {
