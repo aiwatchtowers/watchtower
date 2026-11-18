@@ -27,9 +27,11 @@ final class SlackAuthFlowState {
     let daemonManager = DaemonManager()
 }
 
-/// Slack detail pane in the Connections tab — the legacy single-workspace
-/// connect/reconnect/disconnect block plus the multi-account Slack Workspaces
-/// list (`slack_accounts` table, migration 00048).
+/// Slack detail pane in the Connections tab (screens spec
+/// `2026-11-15-slack-full-live-screens-design.md` §1): the Slack mode with
+/// its Live block on top, then the legacy single-workspace
+/// connect/reconnect/disconnect block, the multi-account Slack Workspaces
+/// list (`slack_accounts` table, migration 00048) and the reaction commands.
 struct SlackConnectionDetail: View {
     @Environment(AppState.self) private var appState
     /// The organization's policy forbids this source (#608): nothing new
@@ -44,15 +46,19 @@ struct SlackConnectionDetail: View {
     @State private var accountBeingRenamed: AccountRenameTarget?
 
     var body: some View {
-        Form {
-            workspaceSection
-            Section { FileVaultLine() }
-            slackAccountsSection
-            reactionDictionarySection
+        ScrollView {
+            VStack(alignment: .leading, spacing: Spacing.large) {
+                modeSection
+                workspaceSection
+                FileVaultLine()
+                slackAccountsSection
+                reactionDictionarySection
+            }
+            .controlSize(.small)
+            .padding(Spacing.page)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .formStyle(.grouped)
-        .padding(.horizontal)
-        .padding(.top, 4)
+        .detailBackground()
         // Keyed on the pool, so a pane opened before the database exists
         // re-configures once it does instead of keeping a nil pool.
         .task(id: appState.databaseManager?.dbPool.path) {
@@ -74,18 +80,38 @@ struct SlackConnectionDetail: View {
         }
     }
 
+    /// The chip, the summary and the Live block; the ages re-read the clock
+    /// once a minute.
+    @ViewBuilder private var modeSection: some View {
+        if let center = appState.slackLiveStatusCenter {
+            TimelineView(.everyMinute) { context in
+                SlackModeSection(
+                    presentation: SlackModePresentation(
+                        accounts: appState.slackAccountsViewModel?.accounts ?? [],
+                        sharedAppAccountIDs: [],
+                        liveStatuses: center.statuses,
+                        isRunning: center.isRunning,
+                        hasRead: center.hasRead,
+                        lastError: center.lastError,
+                        now: context.date),
+                    checkAgain: { center.checkAgain() },
+                    tryAgain: { Task { await center.reload() } })
+            }
+        }
+    }
+
     private var workspaceSection: some View {
-        Section("Workspace") {
+        SettingsSection(title: "Workspace") {
             HStack {
                 Image(systemName: slackAuth.isConnected ? "checkmark.circle.fill" : "bolt.horizontal.circle")
-                    .foregroundStyle(slackAuth.isConnected ? AnyShapeStyle(.green) : AnyShapeStyle(.secondary))
+                    .foregroundStyle(slackAuth.isConnected ? AnyShapeStyle(Tone.success) : AnyShapeStyle(.secondary))
                 Text(slackAuth.isConnected ? "Slack connected" : "Slack not connected")
                 Spacer()
 
                 Button {
                     reconnectSlack()
                 } label: {
-                    HStack(spacing: 4) {
+                    HStack(spacing: Spacing.small) {
                         if flow.reconnecting {
                             ProgressView()
                                 .controlSize(.small)
@@ -95,6 +121,7 @@ struct SlackConnectionDetail: View {
                             : (slackAuth.isConnected ? "Reconnect Slack" : "Connect Slack"))
                     }
                 }
+                .buttonStyle(.kitSecondary)
                 .disabled(flow.reconnecting || flow.disconnecting)
                 .managedByOrganization(sourceBlocked)
 
@@ -102,13 +129,14 @@ struct SlackConnectionDetail: View {
                     Button("Cancel") {
                         cancelSlackReconnect()
                     }
+                    .buttonStyle(.kitSecondary)
                 }
 
                 if slackAuth.disconnectTarget != nil {
                     Button(role: .destructive) {
                         showSlackDisconnectConfirm = true
                     } label: {
-                        HStack(spacing: 4) {
+                        HStack(spacing: Spacing.small) {
                             if flow.disconnecting {
                                 ProgressView()
                                     .controlSize(.small)
@@ -116,6 +144,7 @@ struct SlackConnectionDetail: View {
                             Text(flow.disconnecting ? "Disconnecting..." : "Disconnect")
                         }
                     }
+                    .buttonStyle(.kitDestructive)
                     .disabled(flow.reconnecting || flow.disconnecting)
                 }
             }
@@ -123,10 +152,10 @@ struct SlackConnectionDetail: View {
             if let result = flow.reconnectResult {
                 HStack {
                     Image(systemName: flow.reconnectSuccess ? "checkmark.circle.fill" : "xmark.circle.fill")
-                        .foregroundStyle(flow.reconnectSuccess ? .green : .red)
+                        .foregroundStyle(flow.reconnectSuccess ? Tone.success : Tone.error)
                     Text(result)
                         .font(.caption)
-                        .foregroundStyle(flow.reconnectSuccess ? .green : .red)
+                        .foregroundStyle(flow.reconnectSuccess ? Tone.success : Tone.error)
                         .lineLimit(3)
                         .textSelection(.enabled)
                 }
@@ -135,7 +164,7 @@ struct SlackConnectionDetail: View {
             if let err = slackAuth.error {
                 Text(err)
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Tone.error)
             }
 
             if let notice = slackAuth.revokeNotice {
@@ -205,7 +234,7 @@ struct SlackConnectionDetail: View {
     /// single-account Slack "Disconnect" in `workspaceSection` runs the same
     /// remove (`auth logout` → `removeSlackAccount`) and shows the same text.
     private var slackAccountsSection: some View {
-        Section("Slack Workspaces") {
+        SettingsSection(title: "Slack Workspaces") {
             if let vm = appState.slackAccountsViewModel {
                 if vm.accounts.isEmpty {
                     Text("No Slack workspaces connected.")
@@ -214,7 +243,7 @@ struct SlackConnectionDetail: View {
                 } else {
                     ForEach(vm.accounts) { account in
                         HStack {
-                            VStack(alignment: .leading, spacing: 3) {
+                            VStack(alignment: .leading, spacing: Spacing.tight) {
                                 Text(account.displayName)
                                 if !account.teamDomain.isEmpty {
                                     Text("\(account.teamDomain).slack.com")
@@ -224,7 +253,7 @@ struct SlackConnectionDetail: View {
                                 if let note = account.syncNote {
                                     Label(note, systemImage: "exclamationmark.triangle")
                                         .font(.caption)
-                                        .foregroundStyle(.orange)
+                                        .foregroundStyle(Tone.warning)
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
                                 if let line = AccountPurgeLine.make(
@@ -237,7 +266,7 @@ struct SlackConnectionDetail: View {
                             Spacer()
                             Circle()
                                 .fill(slackAccountStatusColor(account))
-                                .frame(width: 8, height: 8)
+                                .frame(width: IconSize.stateDot, height: IconSize.stateDot)
                                 .help(accountStatusHelp(account))
                             Toggle("Enabled", isOn: Binding(
                                 get: { account.enabled },
@@ -253,6 +282,7 @@ struct SlackConnectionDetail: View {
                             Button(account.isOK ? "Reconnect" : "Re-login") {
                                 Task { await vm.relogin(account) }
                             }
+                            .buttonStyle(.kitSecondary)
                             .managedByOrganization(sourceBlocked)
                             .help(
                                 reloginBlocked(account.id)
@@ -262,13 +292,13 @@ struct SlackConnectionDetail: View {
                             Button("Rename…") {
                                 accountBeingRenamed = AccountRenameTarget(id: account.id, currentName: account.displayName)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.kitQuiet)
                             .disabled(vm.isConnecting)
                             Button("Remove") {
                                 slackAccountPendingRemoval = account
                             }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(.red)
+                            .buttonStyle(.kitQuiet)
+                            .foregroundStyle(Tone.error)
                             .disabled(vm.isConnecting)
                         }
                     }
@@ -321,7 +351,7 @@ struct SlackConnectionDetail: View {
         if let err = vm.error {
             Text(err)
                 .font(.caption)
-                .foregroundStyle(.red)
+                .foregroundStyle(Tone.error)
         }
 
         if let notice = vm.revokeNotice {
@@ -331,13 +361,14 @@ struct SlackConnectionDetail: View {
         Button("Add Slack Workspace") {
             showAddSlackAccountSheet = true
         }
+        .buttonStyle(.kitSecondary)
         .managedByOrganization(sourceBlocked)
         .disabled(vm.isConnecting)
     }
 
     /// The dictionary editor lives only on the Reactions built-in's card (ask #366, C3).
     private var reactionDictionarySection: some View {
-        Section("Reaction commands") {
+        SettingsSection(title: "Reaction commands") {
             HStack {
                 Text("Reaction commands live in Automations → Built in → Reactions")
                     .font(.caption)
@@ -347,6 +378,7 @@ struct SlackConnectionDetail: View {
                     appState.openBuiltinAutomation(BuiltinAutomationCard.reactionsID)
                     appState.bringMainWindowForward()
                 }
+                .buttonStyle(.kitSecondary)
             }
         }
     }
@@ -358,10 +390,10 @@ struct SlackConnectionDetail: View {
     }
 
     private func slackAccountStatusColor(_ account: SlackAccount) -> Color {
-        if account.isOK { return .green }
-        if account.isRevoked { return .red }
-        if account.isPurged { return .gray }
-        return .orange
+        if account.isOK { return Tone.success }
+        if account.isRevoked { return Tone.error }
+        if account.isPurged { return Tone.status("gray") }
+        return Tone.warning
     }
 
     private func accountStatusHelp(_ account: SlackAccount) -> String {
