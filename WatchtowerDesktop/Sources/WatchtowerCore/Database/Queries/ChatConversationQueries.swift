@@ -14,17 +14,6 @@ package enum ChatConversationQueries {
         """)
     }
 
-    package static func search(_ db: Database, query: String) throws -> [ChatConversation] {
-        let pattern = "%\(query)%"
-        return try ChatConversation.fetchAll(
-            db,
-            sql: """
-                SELECT * FROM chat_conversations WHERE context_type IS NULL AND title LIKE ? ORDER BY updated_at DESC
-                """,
-            arguments: [pattern]
-        )
-    }
-
     package static func fetchByContext(_ db: Database, type: String, id: String) throws -> ChatConversation? {
         try ChatConversation.fetchOne(
             db,
@@ -78,17 +67,6 @@ package enum ChatConversationQueries {
         return Date(timeIntervalSince1970: newest)
     }
 
-    /// True exactly when the conversation still has its prefix title and has
-    /// just finished its first assistant reply (spec §4.4).
-    package static func needsAITitle(_ db: Database, id: Int64) throws -> Bool {
-        let completed = try Int.fetchOne(db, sql: """
-            SELECT COUNT(*) FROM chat_messages m
-            JOIN chat_conversations c ON c.id = m.conversation_id
-            WHERE c.id = ? AND c.title_source = 'prefix' AND m.role = 'assistant' AND m.status = 'complete'
-            """, arguments: [id]) ?? 0
-        return completed == 1
-    }
-
     /// An "untouched" main chat: standalone, in the landing's project (or
     /// outside any, `project_id IS ?`), not archived, never pinned or renamed
     /// by the owner, with no message and no attachment — what the Chat
@@ -102,17 +80,6 @@ package enum ChatConversationQueries {
         AND NOT EXISTS (SELECT 1 FROM chat_messages m WHERE m.conversation_id = c.id)
         AND NOT EXISTS (SELECT 1 FROM chat_attachments a WHERE a.conversation_id = c.id)
         """
-
-    /// The landing's draft while it is still untouched, for reuse. `createdAt`
-    /// must match too: the draft is persisted across launches, and a reset
-    /// database at the same path can reissue the id to an unrelated chat.
-    package static func fetchUntouched(
-        _ db: Database, id: Int64, createdAt: Double, projectID: Int64? = nil
-    ) throws -> ChatConversation? {
-        try ChatConversation.fetchOne(db, sql: """
-            SELECT c.* FROM chat_conversations c WHERE c.id = ? AND c.created_at = ? AND \(untouchedPredicate)
-            """, arguments: [id, createdAt, projectID])
-    }
 
     /// Which of `ids` are still conversations (a chat mention's "Chat
     /// deleted" check).

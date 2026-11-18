@@ -25,25 +25,7 @@ package enum ChatTreeQueries {
         }
     }
 
-    package static func siblings(_ db: Database, messageID: Int64) throws -> [ChatMessageRecord] {
-        try ChatMessageRecord.fetchAll(db, sql: """
-            SELECT * FROM chat_messages
-            WHERE conversation_id = (SELECT conversation_id FROM chat_messages WHERE id = ?)
-              AND parent_id IS (SELECT parent_id FROM chat_messages WHERE id = ?)
-            ORDER BY id
-            """, arguments: [messageID, messageID])
-    }
-
-    /// The most recently written message of any branch — what a resumed
-    /// provider session last saw, when that turn ran on the same provider.
-    package static func newestMessage(_ db: Database, conversationID: Int64) throws -> ChatMessageRecord? {
-        try ChatMessageRecord.fetchOne(
-            db, sql: "SELECT * FROM chat_messages WHERE conversation_id = ? ORDER BY id DESC LIMIT 1",
-            arguments: [conversationID]
-        )
-    }
-
-    // MARK: - Tree
+    // MARK: - Private
 
     package static func allMessages(_ db: Database, conversationID: Int64) throws -> [ChatMessageRecord] {
         try ChatMessageRecord.fetchAll(

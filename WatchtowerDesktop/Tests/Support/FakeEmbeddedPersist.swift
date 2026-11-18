@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import WatchtowerCore
+import WatchtowerChatText
 
 /// What `ai query --persist` writes for an embedded chat's turn
 /// (`chatstore.EmbeddedTurn`), for `ScriptedAIService`: the owner row and the
