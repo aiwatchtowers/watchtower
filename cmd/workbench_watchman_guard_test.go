@@ -504,6 +504,31 @@ func TestWatchmanGuard_SharedUnknownResetParks(t *testing.T) {
 	}
 }
 
+// The guard runs on every tool call of an armed session: ordinary shell
+// shapes the table cannot see into are allowed; one that names a
+// hard-limit action is still denied (round 5).
+func TestWatchmanGuard_HiddenShapesNeedALimitWord(t *testing.T) {
+	_, folder := guardSession(t, true)
+	var store *countingGuardStore
+	deps := guardDeps(t, &store)
+	for _, tc := range []struct{ command, want string }{
+		{"git commit -m \"$(cat <<'EOF'\nFix the export\nEOF\n)\"", ""},
+		{`gh pr create --title "Fix" --body "$(cat body.md)"`, ""},
+		{"for f in *.go; do gofmt -l $f; done", ""},
+		{"make build &", ""},
+		{"echo $(date)", ""},
+		{"(cd sub && make)", ""},
+		{`curl 'https://example.com/?a=1&b=2'`, ""},
+		{"gh pr view 1 # merge", ""},
+		{"x $(git push origin HEAD:main)", "Parked for the owner: unreadable — continue with other work"},
+		{"true & gh pr merge 1", "Parked for the owner: unreadable — continue with other work"},
+		{`echo "open`, "Parked for the owner: unreadable — continue with other work"},
+	} {
+		out, _ := runGuardHook(deps, guardInput(t, "Bash", map[string]string{"command": tc.command}, folder))
+		assert.Equal(t, tc.want, guardDenial(t, out), tc.command)
+	}
+}
+
 func TestWatchmanGuard_PanicDeniesOnlyWhenArmed(t *testing.T) {
 	call := func(folder string) string {
 		return guardInput(t, "Bash", map[string]string{"command": "go test ./..."}, folder)

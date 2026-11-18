@@ -46,6 +46,13 @@ type PermissionAsk struct {
 	// rows). It places a shell command's relative paths only; it is no
 	// directory change (a cd or -C in the command is).
 	Cwd string
+	// Lenient is the guard hook's mode (it runs on every tool call of an
+	// armed session): a shape this reader cannot see into (a subshell, a
+	// command substitution, a loop body, a background job...) parks only
+	// when the command text also names a hard-limit action (limitWords),
+	// and the merge backstop reads the command without its comments. The
+	// twin and the backtest are strict (false): every hidden shape parks.
+	Lenient bool
 }
 
 // BranchInfo is the branch a session works on and the branches it shares
@@ -108,6 +115,9 @@ type shellCmd struct {
 	// option (env -C, sudo -D) points the command at another repository
 	// or directory.
 	elsewhere bool
+	// chdir: a wrapper option (env -C, sudo -D) runs the command in another
+	// directory (a GIT_DIR-style assignment does not).
+	chdir bool
 }
 
 // gitDirVars are the environment variables that point git at another
@@ -146,6 +156,11 @@ var wrappers = map[string]map[string]bool{
 // unresolved stands for a command that cannot be read (a wrapper around
 // nothing readable, an unterminated quote); it parks.
 const unresolved = "<unresolved>"
+
+// hiddenMark stands for a shape whose real command this reader cannot see
+// into (hiddenText, hiddenShape): it parks a strict request, and a lenient
+// one only with a hard-limit word in its command text (matchUnreadable).
+const hiddenMark = "<hidden>"
 
 // commandPart is one simple command of a line and the separator before it.
 type commandPart struct{ text, sep string }
@@ -291,7 +306,8 @@ func stripWrappers(words []string, c *shellCmd) []string {
 			opt := words[0]
 			words = words[1:]
 			name, _, _ := strings.Cut(opt, "=")
-			c.elsewhere = c.elsewhere || (valued[name] && chdirOpts[name])
+			moved := valued[name] && chdirOpts[name]
+			c.elsewhere, c.chdir = c.elsewhere || moved, c.chdir || moved
 			if valued[opt] && len(words) > 0 {
 				words = words[1:]
 			}
@@ -339,14 +355,16 @@ func isShellDashC(w string) bool {
 // shellInner returns the string words run as commands: a shell's -c
 // string or eval's argument. isShell is false when words do not run a
 // string; inner is "" when they do but it cannot be read (always for
-// source and .).
-func shellInner(words []string) (inner string, isShell bool) {
+// source and .). hidden marks the unreadable cases that are a hidden shape
+// (a file sourced, a $ or backtick in the string) rather than a malformed
+// call.
+func shellInner(words []string) (inner string, isShell, hidden bool) {
 	var rest []string
 	switch prog := words[0]; {
 	case prog == "eval":
 		rest = words[1:]
 	case prog == "source" || prog == ".":
-		return "", true
+		return "", true, true
 	case shells[prog]:
 		i, dashC := 1, false
 		for ; i < len(words) && (strings.HasPrefix(words[i], "-") || strings.HasPrefix(words[i], "+")) && words[i] != "--"; i++ {
@@ -358,38 +376,34 @@ func shellInner(words []string) (inner string, isShell bool) {
 		}
 		if !dashC {
 			// A -c the options above did not reach cannot be read.
-			return "", slices.ContainsFunc(words[1:], isShellDashC)
+			return "", slices.ContainsFunc(words[1:], isShellDashC), false
 		}
 		rest = words[min(i, len(words)):]
 	default:
-		return "", false
+		return "", false, false
 	}
-	if len(rest) != 1 || strings.ContainsAny(rest[0], "$`") {
-		return "", true
+	switch {
+	case len(rest) != 1:
+		return "", true, false
+	case strings.ContainsAny(rest[0], "$`"):
+		return "", true, true
 	}
-	return rest[0], true
+	return rest[0], true, false
 }
 
 // compoundStarts are the first words of shell syntax this reader does not
 // follow (subshells, groups, negation, the bodies of if/for/while).
 var compoundStarts = map[string]bool{"(": true, "{": true, "!": true, "then": true, "do": true, "else": true, "elif": true}
 
-// hiddenShape reports a command whose real command this reader cannot see,
-// so it parks: shell syntax it does not follow (a compound start, a command
-// substitution, a here-string, a lone & sending a job to the background), a
-// shell reading its commands from a pipe, a gh alias definition, or a gh
-// api call whose body comes from a file.
+// hiddenShape reports a command whose real command this reader cannot
+// see: a shell reading its commands from a pipe (a script operand is no
+// such thing), a gh alias definition, or a gh api call whose body comes
+// from a file. hiddenText covers the shell syntax.
 func hiddenShape(c shellCmd, sep string) bool {
-	if compoundStarts[c.w[0]] || strings.HasPrefix(c.w[0], "(") {
-		return true
-	}
-	for _, w := range c.w {
-		if strings.Contains(w, "$(") || strings.Contains(w, "`") || strings.Contains(w, "<<<") || loneAmpersand(w) {
-			return true
-		}
-	}
 	if sep == "|" && shells[c.w[0]] {
-		if _, isShell := shellInner(c.w); !isShell {
+		if _, isShell, _ := shellInner(c.w); !isShell && !slices.ContainsFunc(c.w[1:], func(w string) bool {
+			return !strings.HasPrefix(w, "-") && !strings.HasPrefix(w, "+")
+		}) {
 			return true
 		}
 	}
@@ -404,22 +418,51 @@ func hiddenShape(c shellCmd, sep string) bool {
 	return false
 }
 
-// loneAmpersand reports a & in w that is neither a redirection (2>&1,
-// &>file, >&2) nor part of && (a shell -c string's own list): a job sent to
-// the background.
-func loneAmpersand(w string) bool {
-	for i := 0; i < len(w); i++ {
-		if w[i] != '&' {
-			continue
-		}
-		if i+1 < len(w) && w[i+1] == '&' {
-			i++
-			continue
-		}
-		if (i > 0 && (w[i-1] == '>' || w[i-1] == '<')) || (i+1 < len(w) && w[i+1] == '>') {
-			continue
-		}
+// hiddenText reports shell syntax in one command's raw text (quotes kept)
+// that this reader does not follow: a compound start (a subshell, a group,
+// negation, an if/for/while body) as the first word, or — outside single
+// quotes, where everything is literal — a command substitution ($( or a
+// backtick, also inside double quotes), a here-string <<< or a lone &
+// sending a job to the background (not &&, 2>&1, &> or >&2, and not inside
+// any quotes). It reads the text before the wrappers are stripped, so an
+// assignment's substitution (x=$(...)) is seen too.
+func hiddenText(text string) bool {
+	if f := strings.Fields(text); len(f) > 0 && (compoundStarts[f[0]] || strings.HasPrefix(f[0], "(")) {
 		return true
+	}
+	var quote byte
+	for i := 0; i < len(text); i++ {
+		ch := text[i]
+		switch {
+		case quote == '\'':
+			if ch == '\'' {
+				quote = 0
+			}
+			continue
+		case ch == '\\':
+			i++ // escaped: literal
+			continue
+		case ch == '`' || (ch == '$' && i+1 < len(text) && text[i+1] == '('):
+			return true
+		case quote == '"':
+			if ch == '"' {
+				quote = 0
+			}
+			continue
+		case ch == '\'' || ch == '"':
+			quote = ch
+			continue
+		case strings.HasPrefix(text[i:], "<<<"):
+			return true
+		case ch == '&':
+			switch {
+			case i+1 < len(text) && text[i+1] == '&':
+				i++
+			case i+1 < len(text) && text[i+1] == '>', i > 0 && (text[i-1] == '>' || text[i-1] == '<'):
+			default:
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -437,6 +480,10 @@ func commandsIn(summary, cwd string, depth int) ([]shellCmd, string) {
 			out = append(out, shellCmd{w: []string{unresolved}, cwd: cwd})
 			continue
 		}
+		// A hidden shape is marked and the command still read as it stands.
+		if hiddenText(part.text) {
+			out = append(out, shellCmd{w: []string{hiddenMark}, cwd: cwd})
+		}
 		c := shellCmd{cwd: cwd}
 		words = stripWrappers(words, &c)
 		if len(words) == 0 {
@@ -445,16 +492,19 @@ func commandsIn(summary, cwd string, depth int) ([]shellCmd, string) {
 		words[0] = path.Base(words[0])
 		c.w = words
 		if hiddenShape(c, part.sep) {
-			out = append(out, shellCmd{w: []string{unresolved}, cwd: cwd})
-			continue
+			out = append(out, shellCmd{w: []string{hiddenMark}, cwd: cwd})
 		}
-		if inner, isShell := shellInner(words); isShell {
+		if inner, isShell, hidden := shellInner(words); isShell {
 			if inner == "" || c.xargs || depth >= maxShellDepth {
-				out = append(out, shellCmd{w: []string{unresolved}, cwd: cwd})
+				mark := unresolved
+				if hidden && !c.xargs {
+					mark = hiddenMark
+				}
+				out = append(out, shellCmd{w: []string{mark}, cwd: cwd})
 				continue
 			}
 			innerCwd := cwd
-			if c.elsewhere { // env -C, sudo -D...: the string runs elsewhere
+			if c.chdir { // env -C, sudo -D...: the string runs elsewhere
 				innerCwd = cwdUnknown
 			}
 			sub, subCwd := commandsIn(inner, innerCwd, depth+1)
@@ -650,8 +700,28 @@ func rebaseOnDefault(args []string) bool {
 }
 
 // matchUnreadable: a command that cannot be read, so cannot be judged.
+// A hidden shape parks a strict request, and a lenient one (the guard) only
+// when its command text names a hard-limit action.
 func matchUnreadable(r PermissionAsk) bool {
-	return anyCmd(r, func(c shellCmd) bool { return c.w[0] == unresolved })
+	return anyCmd(r, func(c shellCmd) bool {
+		return c.w[0] == unresolved || (c.w[0] == hiddenMark && (!r.Lenient || limitWords.MatchString(commandText(r.Summary))))
+	})
+}
+
+// limitWords are the words of the actions the hard-limit table covers (a
+// merge, push, tag, release, send-pack, reset, forced branch move,
+// update-ref, rm -r/-f, an upload, a message or comment others see): a
+// hidden shape in the guard's mode parks only with one of them in sight.
+var limitWords = regexp.MustCompile(`(?i)(^|[^a-z0-9_])(merges?|mergepullrequest|automerge|push|tags?|release|send-pack|reset|update-ref|altool|testflight|itmstransporter|pilot|upload_to_testflight|mail|mailx|sendmail|mutt|comment|review)([^a-z0-9_]|$)|rm\s+-[a-z]*[rf]|(branch|checkout|switch)\s+-[a-z]*[fdmcb]`)
+
+// commandText is summary without its comments and description lines.
+func commandText(summary string) string {
+	parts := splitCommands(summary)
+	lines := make([]string, 0, len(parts))
+	for _, p := range parts {
+		lines = append(lines, p.text)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // mergeWords and mergeTools are the backstop's two halves: a merge word
@@ -663,11 +733,18 @@ var (
 )
 
 // mergeBackstop is the coarse check after the parser (fail closed): a
-// shell request whose whole text, comments included, has a merge word and
-// a tool that can merge a pull request parks, however the command is
-// shaped.
+// shell request whose text has a merge word and a tool that can merge a
+// pull request parks, however the command is shaped. A strict request is
+// read whole, comments included; a lenient one (the guard) without them.
 func mergeBackstop(r PermissionAsk) bool {
-	return isBash(r) && mergeWords.MatchString(r.Summary) && mergeTools.MatchString(r.Summary)
+	if !isBash(r) {
+		return false
+	}
+	text := r.Summary
+	if r.Lenient {
+		text = commandText(text)
+	}
+	return mergeWords.MatchString(text) && mergeTools.MatchString(text)
 }
 
 // prMergePath is a GitHub REST path that merges a pull request.

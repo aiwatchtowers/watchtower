@@ -555,3 +555,68 @@ func TestParkedBy_HiddenShapesAndMergeBackstop(t *testing.T) {
 		{"timeout harmless", bash("timeout 10m go test ./..."), ""},
 	})
 }
+
+// Round 5: hidden shapes are read on the raw text with quote context and
+// before the wrappers; the guard's lenient mode parks one only with a
+// hard-limit word in the command text, and its backstop skips comments.
+func TestParkedBy_HiddenShapesStrictAndLenient(t *testing.T) {
+	lenient := func(cmd string) PermissionAsk {
+		r := bash(cmd)
+		r.Lenient = true
+		return r
+	}
+	heredocCommit := "git commit -m \"$(cat <<'EOF'\nFix the export\n\nCo-Authored-By: someone\nEOF\n)\""
+	ordinary := []string{
+		heredocCommit,
+		`gh pr create --title "Fix" --body "$(cat body.md)"`,
+		"for f in *.go; do gofmt -l $f; done",
+		"while read -r l; do echo $l; done < list.txt",
+		"make build &",
+		"echo $(date)",
+		"(cd sub && make)",
+		"FOO=$(date) true",
+		"source venv/bin/activate && go test ./...",
+	}
+	var cases []struct {
+		name  string
+		ask   PermissionAsk
+		limit HardLimit
+	}
+	add := func(name string, ask PermissionAsk, limit HardLimit) {
+		cases = append(cases, struct {
+			name  string
+			ask   PermissionAsk
+			limit HardLimit
+		}{name, ask, limit})
+	}
+	for _, cmd := range ordinary {
+		add("strict "+cmd, bash(cmd), LimitUnreadable)
+		add("lenient "+cmd, lenient(cmd), "")
+	}
+	for _, cmd := range []string{"x $(git push origin HEAD:main)", "x=$(git push origin HEAD:main)", "true & gh pr merge 1", "(git push --force origin feat)"} {
+		add("strict "+cmd, bash(cmd), LimitUnreadable)
+		add("lenient "+cmd, lenient(cmd), LimitUnreadable)
+	}
+	// Quote context: single quotes are literal, & inside quotes is no job.
+	for _, cmd := range []string{
+		`echo '$(not run) and a backtick: ` + "`x`" + `'`,
+		`curl 'https://example.com/?a=1&b=2'`,
+		`git commit -m "fish & chips"`,
+		`echo 'a <<< b'`,
+	} {
+		add("strict quoted "+cmd, bash(cmd), "")
+	}
+	// The backstop reads comments only in strict mode.
+	add("strict comment merge", bash("gh pr view 1 # merge"), LimitMainRef)
+	add("lenient comment merge", lenient("gh pr view 1 # merge"), "")
+	add("lenient description merge", lenient("gh pr view 1\n# before the merge"), "")
+	add("lenient command merge", lenient("gh pr merge 1"), LimitMainRef)
+	// A script operand is no command on stdin.
+	add("pipe into bash script", bash("make gen | bash scripts/apply.sh"), "")
+	add("pipe into bash", bash("make gen | bash"), LimitUnreadable)
+	add("pipe into sh -s", bash("make gen | sh -s"), LimitUnreadable)
+	// GIT_DIR points git elsewhere but moves no directory.
+	add("GIT_DIR bash -c relative delete", bash("GIT_DIR=/x/.git bash -c 'rm -rf build'"), "")
+	add("GIT_DIR bash -c reset", bash("GIT_DIR=/x/.git bash -c 'git reset --hard HEAD~1'"), LimitResetShared)
+	expectParked(t, cases)
+}
