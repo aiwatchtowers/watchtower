@@ -42,7 +42,10 @@ final class WatchmanArmingCopyTests: XCTestCase {
         XCTAssertEqual(Copy.armFailed("no row"), "Couldn't hand it to Watchman: no row")
         XCTAssertEqual(Copy.takeBackFailed("busy"), "Couldn't take it back: busy")
         XCTAssertTrue(Copy.handHelp.contains("Inbox → Watchman"))
-        XCTAssertTrue(Copy.viaTargetHelp.contains("take it back on the target's panel"))
+        XCTAssertEqual(Copy.viaTargetHelp(target: 4, direct: false), "Handed over through #4 — take #4 back on its panel")
+        XCTAssertEqual(Copy.viaTargetHelp(target: 4, direct: true),
+                       "Handed over through #4 and directly — take #4 back on its panel, then this session here")
+        XCTAssertEqual(Copy.sessionsChanged, "The running sessions changed since this opened — this is the new set.")
         XCTAssertTrue(Copy.sidecarNote.hasPrefix("Handed to Watchman"))
     }
 

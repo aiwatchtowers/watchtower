@@ -14,6 +14,9 @@ struct WatchmanArmSheet: View {
         VStack(alignment: .leading, spacing: Spacing.large) {
             VStack(alignment: .leading, spacing: Spacing.small) {
                 Text(content.title).font(.title3.weight(.semibold))
+                if let notice = content.notice {
+                    line(icon: "arrow.triangle.2.circlepath", tone: Tone.warning, text: notice)
+                }
                 Text(content.body).font(.callout).fixedSize(horizontal: false, vertical: true)
             }
             VStack(alignment: .leading, spacing: Spacing.medium) {

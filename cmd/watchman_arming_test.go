@@ -47,6 +47,7 @@ func armSession(t *testing.T, wb int64, kind string, target any, finished bool) 
 func resetWatchmanArmFlags() {
 	watchmanArmFlagSession, watchmanArmFlagTarget = 0, 0
 	watchmanArmFlagAllRunning, watchmanArmFlagCheck, watchmanArmFlagJSON = false, false, false
+	watchmanArmFlagOnly = nil
 	watchmanDisarmFlagSession, watchmanDisarmFlagTarget = 0, 0
 	watchmanDisarmFlagAll, watchmanDisarmFlagJSON = false, false
 }
@@ -160,7 +161,7 @@ func TestWatchmanArm_JSONKeysPinned(t *testing.T) {
 	_, out, err := armCLI(t, "arm", "--session", strconv.FormatInt(s1, 10), "--json")
 	require.NoError(t, err, out)
 	assert.Equal(t, []string{"analytics_turned_on", "armed", "error", "estimate", "first_time", "hooks_warning", "learning_started", "ok",
-		"protection_warning", "sidecar_error"}, jsonKeys(t, out))
+		"protection_warning", "sessions", "sidecar_error"}, jsonKeys(t, out))
 	var raw struct {
 		Armed []map[string]json.RawMessage `json:"armed"`
 	}
@@ -171,7 +172,7 @@ func TestWatchmanArm_JSONKeysPinned(t *testing.T) {
 	_, out, err = armCLI(t, "arm", "--session", strconv.FormatInt(s1, 10), "--check", "--json")
 	require.NoError(t, err, out)
 	assert.Equal(t, []string{"analytics_turned_on", "armed", "error", "estimate", "first_time", "hooks_warning", "learning_started", "ok",
-		"protection_warning", "sidecar_error"}, jsonKeys(t, out))
+		"protection_warning", "sessions", "sidecar_error"}, jsonKeys(t, out))
 
 	_, out, err = armCLI(t, "disarm", "--session", strconv.FormatInt(s1, 10), "--json")
 	require.NoError(t, err, out)
@@ -181,7 +182,7 @@ func TestWatchmanArm_JSONKeysPinned(t *testing.T) {
 	_, out, err = armCLI(t, "arm", "--session", "999", "--json")
 	require.Error(t, err)
 	assert.Equal(t, []string{"analytics_turned_on", "armed", "error", "estimate", "first_time", "hooks_warning", "learning_started", "ok",
-		"protection_warning", "sidecar_error"}, jsonKeys(t, out))
+		"protection_warning", "sessions", "sidecar_error"}, jsonKeys(t, out))
 }
 
 func TestWatchmanArm_RefusedUnderAgent(t *testing.T) {
@@ -331,6 +332,29 @@ func TestWatchmanArm_AllRunningArmsEachLiveSession(t *testing.T) {
 	assert.Equal(t, []int64{s1, s2}, sc.Sessions)
 	assert.Equal(t, []string{f1, f2}, sc.Worktrees)
 	assert.Equal(t, filepath.Clean(f1), f1)
+}
+
+// TestWatchmanArm_AllRunningOnlyArmsTheConfirmedSet: --check reports the
+// sessions it covers; --only arms just those, so a session started after
+// the owner saw the sheet is left out.
+func TestWatchmanArm_AllRunningOnlyArmsTheConfirmedSet(t *testing.T) {
+	wb, _ := watchmanFixture(t)
+	s1, _ := armSession(t, wb, "claude", nil, false)
+	r, out, err := armCLI(t, "arm", "--all-running", "--check", "--json")
+	require.NoError(t, err, out)
+	assert.Equal(t, []int64{s1}, r.Sessions)
+	s2, _ := armSession(t, wb, "claude", nil, false) // started while the sheet is open
+	r, out, err = armCLI(t, "arm", "--all-running", "--only", strconv.FormatInt(s1, 10), "--json")
+	require.NoError(t, err, out)
+	assert.Equal(t, []int64{s1}, r.Sessions)
+	rows := armingRows(t)
+	require.Len(t, rows, 1)
+	assert.Equal(t, s1, rows[0].RefID)
+	assert.NotEqual(t, s2, rows[0].RefID)
+
+	_, out, err = armCLI(t, "arm", "--session", strconv.FormatInt(s2, 10), "--only", "1", "--json")
+	require.Error(t, err, out)
+	assert.Contains(t, out, "--only goes with --all-running")
 }
 
 // countArmingNudges replaces the daemon nudge with a counter.

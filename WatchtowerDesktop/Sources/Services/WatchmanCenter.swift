@@ -201,7 +201,9 @@ final class WatchmanCenter {
             return false
         case let .reply(reply) where reply.needsSheet:
             let title = workbench.map(WatchmanArmingCopy.sheetTitle(workbench:)) ?? WatchmanArmingCopy.sheetTitleAllRunning
-            sheet = WatchmanArmSheetRequest(scope: scope, content: WatchmanArmSheetContent(title: title, reply: reply))
+            sheet = WatchmanArmSheetRequest(
+                scope: scope, title: title, sessions: reply.sessions,
+                content: WatchmanArmSheetContent(title: title, reply: reply))
             return true
         case .reply:
             await arm(scope)
@@ -216,10 +218,30 @@ final class WatchmanCenter {
     }
 
     /// The arm sheet's Hand to Watchman: arms its scope and closes it.
+    /// Every running session (the tray) is checked again first: when the
+    /// running set changed since the sheet opened, the sheet shows the new
+    /// set and asks again; otherwise exactly the confirmed sessions are armed
+    /// (`--only`), so a session started meanwhile is never armed unseen.
     func confirmSheet() async {
         guard let request = sheet else { return }
-        sheet = nil
-        await arm(request.scope)
+        guard request.scope == .allRunning else {
+            sheet = nil
+            await arm(request.scope)
+            return
+        }
+        switch await check(.allRunning) {
+        case let .failed(message):
+            sheet = nil
+            armNotices[.allRunning] = WatchmanArmingCopy.armFailed(message)
+        case let .reply(reply) where Set(reply.sessions) != Set(request.sessions):
+            sheet = WatchmanArmSheetRequest(
+                scope: .allRunning, title: request.title, sessions: reply.sessions,
+                content: WatchmanArmSheetContent(title: request.title, reply: reply,
+                                                 notice: WatchmanArmingCopy.sessionsChanged))
+        case .reply:
+            sheet = nil
+            await arm(.allRunning, only: request.sessions)
+        }
     }
 
     /// `watchman arm --check`: writes nothing.
@@ -236,10 +258,11 @@ final class WatchmanCenter {
     /// failure, or what the reply has to say (warnings, the D21 line, the
     /// sidecar note); an unreadable reply after exit 0 lets the status say.
     @discardableResult
-    func arm(_ scope: WatchmanArmScope) async -> WatchmanArmReply? {
+    func arm(_ scope: WatchmanArmScope, only: [Int64] = []) async -> WatchmanArmReply? {
         armingHere.insert(scope)
         armNotices[scope] = nil
-        let outcome = await call(["watchman", "arm"] + scope.flags() + ["--json"], timeout: Self.armTimeout)
+        let onlyFlags = only.isEmpty ? [] : ["--only", only.map(String.init).joined(separator: ",")]
+        let outcome = await call(["watchman", "arm"] + scope.flags() + onlyFlags + ["--json"], timeout: Self.armTimeout)
         armingHere.remove(scope)
         let reply = try? JSONDecoder().decode(WatchmanArmReply.self, from: outcome.stdout)
         if let failure = outcome.failure {
@@ -327,6 +350,9 @@ final class WatchmanCenter {
 /// The arm sheet of one control: the scope it arms and what it shows.
 struct WatchmanArmSheetRequest: Identifiable, Equatable {
     let scope: WatchmanArmScope
+    let title: String
+    /// The sessions the check covered: the set the owner confirms.
+    let sessions: [Int64]
     let content: WatchmanArmSheetContent
     var id: WatchmanArmScope { scope }
 }

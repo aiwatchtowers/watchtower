@@ -71,8 +71,11 @@ final class WatchmanStatusDecodingTests: XCTestCase {
         XCTAssertEqual(status.armed.map(\.scope), [.session, .target])
         XCTAssertEqual(status.armed.last, WatchmanArmedEntry(
             scope: .target, id: 4, armedAt: AutomationDates.parse("2026-11-02T13:00:00Z")))
-        XCTAssertEqual(status.armedSessions, [1: WatchmanArmedSession(
-            id: 1, target: 0, armedAt: AutomationDates.parse("2026-11-02T12:00:00Z"))])
+        XCTAssertEqual(status.armedSessions, [
+            1: WatchmanArmedSession(id: 1, target: 0, armedAt: AutomationDates.parse("2026-11-02T12:00:00Z")),
+            // Covered by target 4: its arming time.
+            2: WatchmanArmedSession(id: 2, target: 4, armedAt: AutomationDates.parse("2026-11-02T13:00:00Z"))
+        ])
         XCTAssertTrue(status.isArmed(session: 1))
         XCTAssertTrue(status.isArmed(target: 4))
         XCTAssertFalse(status.isArmed(target: 1))
@@ -251,5 +254,28 @@ final class WatchmanStatusDecodingTests: XCTestCase {
         XCTAssertEqual(reply.warnings, ["main is not protected", "a", "b"])
         let bare = try JSONDecoder().decode(WatchmanArmReply.self, from: Data(#"{"ok":false,"error":"busy"}"#.utf8))
         XCTAssertEqual(bare, WatchmanArmReply(ok: false, error: "busy"))
+    }
+
+    /// `armed_sessions` is read tolerantly: a bare id (an older CLI) is a
+    /// session armed by its own row, an unknown entry is skipped, and a
+    /// malformed key reads as none without losing the rest of the status.
+    func testArmedSessionsDecodeTolerantly() throws {
+        func decode(_ json: String) throws -> WatchmanStatus {
+            try JSONDecoder().decode(WatchmanStatus.self, from: Data(json.utf8))
+        }
+        let legacy = try decode(#"{"ok":true,"workbenches":[],"mode":"sleep","armed_sessions":[3,5,"x",{"id":7,"target":4}]}"#)
+        XCTAssertEqual(legacy.armedSessions, [3: WatchmanArmedSession(id: 3), 5: WatchmanArmedSession(id: 5),
+                                              7: WatchmanArmedSession(id: 7, target: 4)])
+        XCTAssertTrue(legacy.isArmed(session: 3))
+
+        let malformed = try decode(#"""
+            {"ok":true,"workbenches":[],"mode":"sleep","mode_since":"2026-11-17T01:40:00Z",
+             "armed":[{"scope":"session","id":3}],"armed_sessions":"broken","daemon_running":true}
+            """#)
+        XCTAssertEqual(malformed.armedSessions, [:])
+        XCTAssertEqual(malformed.mode, .sleep)
+        XCTAssertEqual(malformed.armed.count, 1)
+        XCTAssertEqual(malformed.daemon, .running)
+        XCTAssertTrue(malformed.isArmed(session: 3), "the arming row still says so")
     }
 }

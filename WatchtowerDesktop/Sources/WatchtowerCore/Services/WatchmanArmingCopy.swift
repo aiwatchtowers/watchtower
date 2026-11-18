@@ -12,8 +12,13 @@ package enum WatchmanArmingCopy {
     package static let handHelp = "Watchman answers for this session until you take it back; "
         + "every decision lands in Inbox → Watchman"
     package static let takeBackHelp = "Take this session back from Watchman"
-    /// A session handed over with its target: taken back on the target.
-    package static let viaTargetHelp = "Handed to Watchman with its target — take it back on the target's panel"
+    /// A session under an armed target, maybe also handed over itself: every
+    /// source that keeps it Watchman's, and where each is taken back.
+    package static func viaTargetHelp(target: Int64, direct: Bool) -> String {
+        direct
+            ? "Handed over through #\(target) and directly — take #\(target) back on its panel, then this session here"
+            : "Handed over through #\(target) — take #\(target) back on its panel"
+    }
 
     /// "Sleep since 01:40"; just "Sleep" without a time.
     package static func sleepSince(_ since: Date?, calendar: Calendar = .current) -> String {
@@ -111,6 +116,8 @@ package enum WatchmanArmingCopy {
 
     /// The tray's sheet: every running session, maybe on several workbenches.
     package static let sheetTitleAllRunning = "Hand all running sessions to Watchman?"
+    /// The tray's sheet after the running set changed while it was open.
+    package static let sessionsChanged = "The running sessions changed since this opened — this is the new set."
 
     /// "Learning from your history: ~1 850 decisions, est. 1.6 M tokens".
     package static func historyLine(_ estimate: WatchmanEstimate?) -> String {
@@ -136,6 +143,8 @@ package struct WatchmanArmSheetContent: Equatable, Sendable {
     package let title: String
     package let body: String
     package let lines: [Line]
+    /// Above the body: why the sheet asks again.
+    package let notice: String?
     /// Branch protection first, then one line per repository the git guard
     /// cannot be installed in.
     package let warnings: [String]
@@ -146,9 +155,10 @@ package struct WatchmanArmSheetContent: Equatable, Sendable {
         self.init(title: WatchmanArmingCopy.sheetTitle(workbench: workbench), reply: reply)
     }
 
-    package init(title: String, reply: WatchmanArmReply) {
+    package init(title: String, reply: WatchmanArmReply, notice: String? = nil) {
         typealias Copy = WatchmanArmingCopy
         self.title = title
+        self.notice = notice
         body = Copy.sheetBody
         var lines: [Line] = []
         if reply.firstTime {

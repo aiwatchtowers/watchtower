@@ -252,13 +252,26 @@ func TestStatus_Fixture(t *testing.T) {
 	require.NoError(t, err)
 	_ = off
 
+	// Target 4 holds sub-task 5; a session on 5 is covered by the target's arming.
+	_, err = d.Exec(`INSERT INTO targets (id, text, period_start, period_end, parent_id, project_id) VALUES
+		(4, 'acme group', '2026-11-01', '2026-11-30', NULL, ?), (5, 'acme task', '2026-11-01', '2026-11-30', 4, ?)`, on, on)
+	require.NoError(t, err)
 	require.NoError(t, d.UpsertWatchmanArming(db.WatchmanArming{Scope: "target", RefID: 4, ArmedAt: learnT0.Add(4 * time.Hour), ArmedBy: "cli"}))
 	armed := addSession(t, d, on, "agent-armed")
 	require.NoError(t, d.UpsertWatchmanArming(db.WatchmanArming{Scope: "session", RefID: armed, ArmedAt: learnT0.Add(3 * time.Hour), ArmedBy: "cli"}))
+	covered, err := d.CreateTerminalSession(context.Background(), db.NewTerminalSession{
+		WorkbenchID: on, Kind: "claude", Title: "s", FolderPath: t.TempDir(), ClaudeSessionID: "agent-covered", TargetID: 5,
+	})
+	require.NoError(t, err)
 
 	git := func(context.Context, string, ...string) ([]byte, error) { return []byte("5\n"), nil }
 	rep, err := Status(context.Background(), d, 0, StatusOptions{Running: true, DaemonRunning: true, Git: git})
 	require.NoError(t, err)
+	// A session armed only by its row, and one covered by target 4 (its time).
+	require.Equal(t, []ArmedSession{
+		{ID: armed, Target: 0, ArmedAt: learnT0.Add(3 * time.Hour).UTC().Format(time.RFC3339)},
+		{ID: covered, Target: 4, ArmedAt: learnT0.Add(4 * time.Hour).UTC().Format(time.RFC3339)},
+	}, rep.ArmedSessions)
 	got, err := json.MarshalIndent(rep, "", "  ")
 	require.NoError(t, err)
 	got = append(got, '\n')

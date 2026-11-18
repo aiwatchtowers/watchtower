@@ -198,7 +198,7 @@ final class WatchmanArmingTests: XCTestCase {
 
         await center.confirmSheet()
         XCTAssertEqual(runner.verbs.last, ["watchman", "arm", "--all-running", "--json"])
-        XCTAssertEqual(runner.verbs.count, 2)
+        XCTAssertEqual(runner.verbs.count, 3, "check, the check again on confirm, arm")
         XCTAssertEqual(center.armNotices[.allRunning], Copy.analyticsLine)
 
         // Learned, no warning: no sheet, armed at once.
@@ -347,5 +347,40 @@ final class WatchmanArmingTests: XCTestCase {
         runner.reply("check", "not json")
         await center.handTo(.session(6), workbench: "acme-api")
         XCTAssertEqual(center.armNotices[.session(6)], Copy.armFailed(Copy.replyUnreadable))
+    }
+
+    /// A session starting while the tray's sheet is open is never armed
+    /// unseen: confirm checks again, shows the new set, and arms only the
+    /// set confirmed.
+    func testTraySheetRefreshesWhenTheRunningSetChanges() async throws {
+        let runner = ArmingRunner(status: Self.unarmed)
+        runner.reply("check", #"{"ok":true,"first_time":true,"sessions":[5],"estimate":null}"#)
+        let center = await center(runner)
+        _ = await center.handAllRunning()
+        XCTAssertEqual(center.sheet?.sessions, [5])
+
+        // Session 6 started meanwhile.
+        runner.reply("check", #"{"ok":true,"first_time":true,"sessions":[5,6],"estimate":null}"#)
+        await center.confirmSheet()
+        let refreshed = try XCTUnwrap(center.sheet, "the sheet asks again")
+        XCTAssertEqual(refreshed.sessions, [5, 6])
+        XCTAssertEqual(refreshed.content.notice, Copy.sessionsChanged)
+        XCTAssertFalse(runner.verbs.contains { !$0.contains("--check") }, "nothing armed yet")
+
+        // Confirmed as shown: exactly that set.
+        await center.confirmSheet()
+        XCTAssertNil(center.sheet)
+        XCTAssertEqual(runner.verbs.last, ["watchman", "arm", "--all-running", "--only", "5,6", "--json"])
+    }
+
+    /// The via-target tooltip names every source that keeps the session.
+    func testViaTargetHelpNamesEverySource() throws {
+        let status = try WatchmanStatusFixtures.decode(#"""
+            {"ok":true,"workbenches":[],"mode":"sleep",
+             "armed":[{"scope":"target","id":4},{"scope":"session","id":9}],
+             "armed_sessions":[{"id":9,"target":4},{"id":8,"target":4}]}
+            """#)
+        XCTAssertEqual(WatchmanArmControl.viaTargetHelp(.session(9), in: status), Copy.viaTargetHelp(target: 4, direct: true))
+        XCTAssertEqual(WatchmanArmControl.viaTargetHelp(.session(8), in: status), Copy.viaTargetHelp(target: 4, direct: false))
     }
 }

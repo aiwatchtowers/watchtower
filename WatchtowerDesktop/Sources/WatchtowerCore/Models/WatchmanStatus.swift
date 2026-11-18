@@ -16,7 +16,9 @@ package struct WatchmanStatus: Decodable, Equatable, Sendable {
     package let modeSince: Date?
     /// `armed`: every arming row, oldest first.
     package let armed: [WatchmanArmedEntry]
-    /// `armed_sessions` by session id: the live sessions the twin decides
+    /// `armed_sessions` by session id (tolerant: an entry of any other shape
+    /// reads as a session armed by its own row, or is skipped; a malformed
+    /// key reads as none): the live sessions the twin decides
     /// for, armed directly or under an armed target (Go resolves the subtree).
     package let armedSessions: [Int64: WatchmanArmedSession]
 
@@ -59,7 +61,8 @@ package struct WatchmanStatus: Decodable, Equatable, Sendable {
         mode = WatchmanMode(rawValue: rawMode) ?? .off
         modeSince = AutomationDates.parse(try container.decodeIfPresent(String.self, forKey: .modeSince))
         armed = try container.decodeIfPresent([WatchmanArmedEntry].self, forKey: .armed) ?? []
-        armedSessions = Self.byID(try container.decodeIfPresent([WatchmanArmedSession].self, forKey: .armedSessions) ?? [])
+        let lossy = try? container.decodeIfPresent([LossyArmedSession].self, forKey: .armedSessions)
+        armedSessions = Self.byID(lossy.flatMap { $0 }?.compactMap(\.value) ?? [])
     }
 
     private static func byID(_ sessions: [WatchmanArmedSession]) -> [Int64: WatchmanArmedSession] {
@@ -113,6 +116,22 @@ package struct WatchmanArmedSession: Decodable, Equatable, Sendable {
         id = try container.decode(Int64.self, forKey: .id)
         target = try container.decodeIfPresent(Int64.self, forKey: .target) ?? 0
         armedAt = AutomationDates.parse(try container.decodeIfPresent(String.self, forKey: .armedAt))
+    }
+}
+
+/// One `armed_sessions` entry read whatever its shape: the object, a bare
+/// session id (an older CLI: a direct row), or nothing.
+private struct LossyArmedSession: Decodable {
+    let value: WatchmanArmedSession?
+
+    init(from decoder: Decoder) throws {
+        if let session = try? WatchmanArmedSession(from: decoder) {
+            value = session
+        } else if let id = try? decoder.singleValueContainer().decode(Int64.self) {
+            value = WatchmanArmedSession(id: id)
+        } else {
+            value = nil
+        }
     }
 }
 
@@ -174,6 +193,9 @@ package struct WatchmanArmReply: Decodable, Equatable, Sendable {
     package let learningStarted: Bool
     /// The learning estimate (`--check` on a first time only).
     package let estimate: WatchmanEstimate?
+    /// The session ids this arm (or check) covers by a session row; empty
+    /// for a target.
+    package let sessions: [Int64]
     /// The branch-protection check's line; empty when protected.
     package let protectionWarning: String
     /// One line per repository the git guard cannot be installed in.
@@ -183,7 +205,7 @@ package struct WatchmanArmReply: Decodable, Equatable, Sendable {
     package let sidecarError: String
 
     enum CodingKeys: String, CodingKey {
-        case ok, error, estimate
+        case ok, error, estimate, sessions
         case firstTime = "first_time"
         case analyticsTurnedOn = "analytics_turned_on"
         case learningStarted = "learning_started"
@@ -199,6 +221,7 @@ package struct WatchmanArmReply: Decodable, Equatable, Sendable {
         analyticsTurnedOn: Bool = false,
         learningStarted: Bool = false,
         estimate: WatchmanEstimate? = nil,
+        sessions: [Int64] = [],
         protectionWarning: String = "",
         hooksWarning: String = "",
         sidecarError: String = ""
@@ -209,6 +232,7 @@ package struct WatchmanArmReply: Decodable, Equatable, Sendable {
         self.analyticsTurnedOn = analyticsTurnedOn
         self.learningStarted = learningStarted
         self.estimate = estimate
+        self.sessions = sessions
         self.protectionWarning = protectionWarning
         self.hooksWarning = hooksWarning
         self.sidecarError = sidecarError
@@ -222,6 +246,7 @@ package struct WatchmanArmReply: Decodable, Equatable, Sendable {
         analyticsTurnedOn = try container.decodeIfPresent(Bool.self, forKey: .analyticsTurnedOn) ?? false
         learningStarted = try container.decodeIfPresent(Bool.self, forKey: .learningStarted) ?? false
         estimate = try container.decodeIfPresent(WatchmanEstimate.self, forKey: .estimate)
+        sessions = (try? container.decodeIfPresent([Int64].self, forKey: .sessions)) ?? []
         protectionWarning = try container.decodeIfPresent(String.self, forKey: .protectionWarning) ?? ""
         hooksWarning = try container.decodeIfPresent(String.self, forKey: .hooksWarning) ?? ""
         sidecarError = try container.decodeIfPresent(String.self, forKey: .sidecarError) ?? ""

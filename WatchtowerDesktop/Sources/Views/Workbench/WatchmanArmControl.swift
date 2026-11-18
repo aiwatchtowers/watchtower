@@ -63,6 +63,15 @@ struct WatchmanArmControl: View {
 
     private var arming: Arming { Self.arming(scope, in: center.lastStatus) }
     private var busy: Bool { center.armingHere.contains(scope) }
+    private var viaTargetHelp: String { Self.viaTargetHelp(scope, in: center.lastStatus) }
+
+    /// The via-target tooltip: the covering target, and whether the session
+    /// also has its own row.
+    static func viaTargetHelp(_ scope: WatchmanArmScope, in status: WatchmanStatus?) -> String {
+        guard case let .session(id) = scope, let status, let entry = status.armedSessions[id] else { return "" }
+        let direct = status.armed.contains { $0.scope == .session && $0.id == id }
+        return Copy.viaTargetHelp(target: entry.target, direct: direct)
+    }
     private var since: Date? { Self.since(scope, in: center.lastStatus) }
     /// The warning lines under a control: the daemon is stopped while it is
     /// handed over (nothing decides), then the last call's notice.
@@ -101,7 +110,7 @@ struct WatchmanArmControl: View {
             case .viaTarget:
                 Chip(text: Copy.stripArmed(since: since, calendar: calendar), color: Self.tone, dot: true)
                     .fixedSize()
-                    .help(Copy.viaTargetHelp)
+                    .help(viaTargetHelp)
             case .unarmed:
                 handButton.help(Copy.handHelp)
             }
