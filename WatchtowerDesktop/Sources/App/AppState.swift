@@ -380,8 +380,8 @@ final class AppState {
     /// The account purge ledger (board #601): red lines, Home banner, notices.
     var accountPurgeCenter: AccountPurgeCenter?
     let fileVault = FileVaultWatch() // `fdesetup status` at launch and on activation (#1769)
-    /// The Slack Live probe's verdicts (Connections → Slack).
-    var slackLiveStatusCenter: SlackLiveStatusCenter?
+    var slackLiveStatusCenter: SlackLiveStatusCenter? // the Slack Live probe's verdicts (Connections → Slack)
+    var slackConnectListener: SlackConnectListenerHost? // `slack connect serve` on 18551 (#1709); none under XCTest
     /// The live workbench sessions' agent states (board #312), polled while a `claude` session runs, whatever tab is shown.
     private(set) var sessionAgentStateCenter: SessionAgentStateCenter?
     /// The Go hub over its control socket (heartbeat, view inputs, status; go hub plan 3 Task 14); none under XCTest.

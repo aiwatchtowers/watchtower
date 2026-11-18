@@ -233,9 +233,8 @@ func (r *Registry) Callback(state, code, slackErr string) (Result, error) {
 
 	if !r.finish(f) {
 		// Cancelled during the exchange. A token Slack issued anyway is
-		// dropped here, never handed out; revocation, if any, belongs to
-		// the account write (plan B Task 7, writeConnectedAccount).
-		// TODO(#1709 Task 7): decide whether a dropped grant is revoked.
+		// dropped here, never handed out or stored, and not revoked (the
+		// same reasoning as plan B A21: a revoke only adds a failure mode).
 		return withOutcome(res, OutcomeCancelled, ""), nil
 	}
 	switch {

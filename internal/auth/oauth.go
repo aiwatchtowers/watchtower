@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -50,6 +51,34 @@ var (
 	DefaultClientID     string
 	DefaultClientSecret string
 )
+
+// RetiredSharedClientID is the client id of the retired public shared Slack
+// app. Only the public build profile sets it, at build time:
+//
+//	-X watchtower/internal/auth.RetiredSharedClientID=...
+//
+// An account is on the shared app iff its client id equals this id; every
+// other id is a company app. Empty means no account is on the shared app.
+var RetiredSharedClientID string
+
+// BuiltinApp returns the Slack app this build signs in with: the env
+// WATCHTOWER_OAUTH_CLIENT_ID / WATCHTOWER_OAUTH_CLIENT_SECRET, each falling
+// back to the baked DefaultClientID / DefaultClientSecret. ok is true only
+// when both the id and the secret are set; the config carries whatever is
+// set either way.
+func BuiltinApp() (cfg OAuthConfig, ok bool) {
+	cfg = OAuthConfig{
+		ClientID:     os.Getenv("WATCHTOWER_OAUTH_CLIENT_ID"),
+		ClientSecret: os.Getenv("WATCHTOWER_OAUTH_CLIENT_SECRET"),
+	}
+	if cfg.ClientID == "" {
+		cfg.ClientID = DefaultClientID
+	}
+	if cfg.ClientSecret == "" {
+		cfg.ClientSecret = DefaultClientSecret
+	}
+	return cfg, cfg.ClientID != "" && cfg.ClientSecret != ""
+}
 
 // UserScopes are the Slack user token scopes required by Watchtower — the
 // app manifest's (internal/slackmanifest), its single source.

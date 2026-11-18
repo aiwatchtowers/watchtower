@@ -52,6 +52,7 @@ import (
 	"watchtower/internal/skills"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/slackauth"
+	"watchtower/internal/slackmode"
 	"watchtower/internal/sync"
 	"watchtower/internal/targets"
 	"watchtower/internal/tracks"
@@ -684,6 +685,11 @@ func runSync(cmd *cobra.Command, args []string) error {
 	if !syncFlagUsersOnly {
 		if _, err := ensureLegacySlackAccount(ctx, cfg, database, logger); err != nil {
 			logger.Printf("slack: failed to seed legacy account: %v", err)
+		}
+		// A17: rows connected before the client id was recorded get it once;
+		// a failure is retried at the next start.
+		if _, err := slackmode.BackfillClientIDs(database); err != nil {
+			logger.Printf("slack: %v", err)
 		}
 	}
 	// Wire one Slack sync orchestrator per connected, enabled slack_accounts row.

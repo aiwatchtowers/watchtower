@@ -215,7 +215,16 @@ var sourceGuardExempt = map[string]bool{
 	"linear teams deselect": true,
 }
 
-// sourceGuarded records the commands applySourceGuards wrapped, by source.
+// sourceGuardedInside are source commands that check the policy themselves,
+// per flow, instead of refusing to start: `slack connect serve` is the
+// Watchtower app's long-lived listener child and answers a forbidden source
+// with failed/policy at each link, start, confirm and account write.
+// Each key needs a behaviour test (TestPolicyLogin_EverySourceCommandIsGuarded
+// lists them).
+var sourceGuardedInside = map[string]bool{"slack connect serve": true}
+
+// sourceGuarded records the commands applySourceGuards wrapped, by source;
+// sourceGuardedInside keys are never wrapped and never recorded here.
 var sourceGuarded = map[*cobra.Command]string{}
 
 var sourceGuardsOnce sync.Once
@@ -228,7 +237,7 @@ func applySourceGuards() {
 	sourceGuardsOnce.Do(func() {
 		var walk func(c *cobra.Command, src string)
 		walk = func(c *cobra.Command, src string) {
-			if c.RunE != nil && !sourceGuardExempt[sourceCommandKey(c)] {
+			if key := sourceCommandKey(c); c.RunE != nil && !sourceGuardExempt[key] && !sourceGuardedInside[key] {
 				c.RunE = guardSource(src, c.RunE)
 				sourceGuarded[c] = src
 			}

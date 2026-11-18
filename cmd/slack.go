@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/oauthpage"
 	"watchtower/internal/slackauth"
+	"watchtower/internal/slackmode"
 
 	watchtowerslack "watchtower/internal/slack"
 
@@ -79,6 +81,8 @@ func init() {
 	slackLoginCmd.Flags().Bool("no-open", false, "print the authorize URL instead of opening a browser")
 	slackLoginCmd.Flags().Bool("app-return", false, "bring the Watchtower app back to the front when done")
 	slackLoginCmd.Flags().Int64("account", 0, "existing account id to re-consent (default: account #1, created if it doesn't exist)")
+
+	slackAccountsCmd.Flags().Bool("json", false, "print the accounts as one JSON document")
 
 	slackAddCmd.Flags().String("label", "", "display name for this workspace")
 	slackAddCmd.Flags().Bool("no-open", false, "print the authorize URL instead of opening a browser")
@@ -167,15 +171,8 @@ func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.D
 	// First of the writes, so a failure leaves the row moved and the next
 	// sign-in tries again; once the row is home, nothing would.
 	if moved {
-		covered, err := rewindMovedSlackAccount(database, id)
-		if err != nil {
-			return slackIdentity{}, fmt.Errorf("rewinding the search of slack account %d: %w", id, err)
-		}
-		if !covered {
-			// Nothing to rewind to (rewindMovedSlackAccount): the days the
-			// other team's searches passed over may stay missing.
-			fmt.Fprintf(warnOut, "warning: slack account %d is back on its workspace, but the next sync may not fetch "+
-				"the days it missed; fetch them with `watchtower slack backfill --account %d --from YYYY-MM-DD --to YYYY-MM-DD`\n", id, id)
+		if err := rewindMovedSlackAccountOrWarn(database, id, warnOut); err != nil {
+			return slackIdentity{}, err
 		}
 	}
 
@@ -218,6 +215,10 @@ func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.D
 			rollbackSlackAccount(database, id, warnOut)
 		}
 		return slackIdentity{}, err
+	}
+	// A17: other rows still without a client id get one at every connect.
+	if _, err := slackmode.BackfillClientIDs(database); err != nil {
+		fmt.Fprintf(warnOut, "warning: %v\n", err)
 	}
 
 	if err := database.SetSlackAccountAuthState(id, "ok", ""); err != nil {
@@ -308,8 +309,8 @@ func slackOtherTeamError(identity slackIdentity, home db.SlackHomeTeam) error {
 	if got == "" {
 		got = identity.TeamID
 	}
-	return fmt.Errorf("sign in to %q, this account's Slack workspace (you chose %q); "+
-		"to also connect the one you chose, use Add Slack Workspace (`watchtower slack add`)", home.DisplayName(), got)
+	return &slackTeamMismatchError{msg: fmt.Sprintf("sign in to %q, this account's Slack workspace (you chose %q); "+
+		"to also connect the one you chose, use Add Slack Workspace (`watchtower slack add`)", home.DisplayName(), got)}
 }
 
 // refuseDuplicateSlackTeam refuses a new account for a team another live
@@ -333,6 +334,23 @@ func refuseDuplicateSlackTeam(database *db.DB, id int64, identity slackIdentity)
 			return fmt.Errorf("slack workspace %q is already connected as account %d; use Re-login on it instead",
 				home.DisplayName(), a.ID)
 		}
+	}
+	return nil
+}
+
+// rewindMovedSlackAccountOrWarn rewinds a moved account's search
+// (rewindMovedSlackAccount) and warns on warnOut when the missed days may
+// stay missing.
+func rewindMovedSlackAccountOrWarn(database *db.DB, id int64, warnOut io.Writer) error {
+	covered, err := rewindMovedSlackAccount(database, id)
+	if err != nil {
+		return fmt.Errorf("rewinding the search of slack account %d: %w", id, err)
+	}
+	if !covered {
+		// Nothing to rewind to (rewindMovedSlackAccount): the days the
+		// other team's searches passed over may stay missing.
+		fmt.Fprintf(warnOut, "warning: slack account %d is back on its workspace, but the next sync may not fetch "+
+			"the days it missed; fetch them with `watchtower slack backfill --account %d --from YYYY-MM-DD --to YYYY-MM-DD`\n", id, id)
 	}
 	return nil
 }
@@ -466,6 +484,17 @@ func runSlackLogin(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 	}
+	if !isNewRow {
+		acct, err := database.GetSlackAccount(accountID)
+		if err != nil {
+			return fmt.Errorf("account %d not found: %w", accountID, err)
+		}
+		// An account on a company app signs in again through that app's
+		// connect flow (PKCE, no secret), never through the build's app.
+		if slackmode.Relogin(acct, auth.RetiredSharedClientID, slackBuiltinClientID()) == slackmode.ReloginConnect {
+			return slackLoginConnect(cmd, cfg, database, acct)
+		}
+	}
 
 	noOpen, _ := cmd.Flags().GetBool("no-open")
 	appReturn, _ := cmd.Flags().GetBool("app-return")
@@ -494,18 +523,75 @@ func runSlackAccounts(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
+	// A17: rows connected before the client id was recorded get it here.
+	if _, err := slackmode.BackfillClientIDs(database); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %v\n", err)
+	}
+
 	accounts, err := database.ListSlackAccounts()
 	if err != nil {
 		return fmt.Errorf("listing accounts: %w", err)
 	}
 
 	out := cmd.OutOrStdout()
+	if asJSON, _ := cmd.Flags().GetBool("json"); asJSON {
+		return writeSlackAccountsJSON(out, accounts)
+	}
 	if len(accounts) == 0 {
 		fmt.Fprintln(out, "No Slack accounts connected.")
 		fmt.Fprintln(out, "Run 'watchtower slack add' to connect one.")
 		return nil
 	}
 	printSlackAccounts(out, accounts)
+	return nil
+}
+
+// slackAccountsDoc is the `slack accounts --json` document.
+type slackAccountsDoc struct {
+	// BuiltinApp is true when the build has a Slack app to sign in with (a
+	// baked or env client id and secret, auth.BuiltinApp).
+	BuiltinApp bool                   `json:"builtin_app"`
+	Accounts   []slackAccountJSONItem `json:"accounts"`
+}
+
+type slackAccountJSONItem struct {
+	ID       int64  `json:"id"`
+	TeamID   string `json:"team_id"`
+	TeamName string `json:"team_name"`
+	Label    string `json:"label"`
+	Status   string `json:"status"`
+	Enabled  bool   `json:"enabled"`
+	ClientID string `json:"client_id"`
+	// SharedApp: the account is on the retired shared app
+	// (slackmode.SharedApp); false for a removed row.
+	SharedApp bool `json:"shared_app"`
+	// Relogin is slackmode.Relogin: "builtin" | "connect" | "move".
+	Relogin string `json:"relogin"`
+}
+
+// writeSlackAccountsJSON writes every account, removed rows included (the
+// Desktop filters them).
+func writeSlackAccountsJSON(out io.Writer, accounts []db.SlackAccount) error {
+	builtinID := slackBuiltinClientID()
+	retired := auth.RetiredSharedClientID
+	doc := slackAccountsDoc{BuiltinApp: builtinID != "", Accounts: make([]slackAccountJSONItem, 0, len(accounts))}
+	for _, a := range accounts {
+		doc.Accounts = append(doc.Accounts, slackAccountJSONItem{
+			ID:        a.ID,
+			TeamID:    a.TeamID,
+			TeamName:  a.TeamName,
+			Label:     a.Label,
+			Status:    a.Status,
+			Enabled:   a.Enabled,
+			ClientID:  a.ClientID,
+			SharedApp: a.Status != "removed" && slackmode.SharedApp(a, retired),
+			Relogin:   slackmode.Relogin(a, retired, builtinID),
+		})
+	}
+	enc := json.NewEncoder(out)
+	if err := enc.Encode(doc); err != nil {
+		return fmt.Errorf("writing accounts: %w", err)
+	}
 	return nil
 }
 

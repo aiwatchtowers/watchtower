@@ -1,0 +1,19 @@
+{"event":"listening","port":18551}
+{"event":"link","flow":"flow-1","team_id":"T0ACME","client_id":"4000.0004"}
+{"event":"busy","flow":"flow-1"}
+{"event":"browser","flow":"flow-1"}
+{"event":"connected","flow":"flow-1","account_id":1,"team_id":"T0ACME","team_name":"Acme","rebound_from":"1000.0001"}
+{"event":"browser","flow":"flow-2"}
+{"event":"failed","flow":"flow-2","reason":"denied","message":"Slack access was not granted. Nothing was connected."}
+{"event":"browser","flow":"flow-3"}
+{"event":"failed","flow":"flow-3","reason":"exchange","message":"Slack did not finish the sign-in (slack oauth.v2.access: invalid_code). Try again from Watchtower."}
+{"event":"browser","flow":"flow-4"}
+{"event":"failed","flow":"flow-4","reason":"team_mismatch","message":"You signed in to a different Slack workspace than the one this connection is for. Nothing was connected."}
+{"event":"browser","flow":"flow-5"}
+{"event":"failed","flow":"flow-5","reason":"other_user","message":"signed in as someone else; nothing was changed"}
+{"event":"browser","flow":"flow-6"}
+{"event":"failed","flow":"flow-6","reason":"cancelled","message":"This connection was cancelled in Watchtower."}
+{"event":"failed","flow":"","reason":"other","message":"This is not a Watchtower Slack link or code."}
+{"event":"failed","flow":"","reason":"purge_running","message":"slack account 2: watchtower is deleting this account's data; log in again once it finishes (see 'watchtower accounts purges')"}
+{"event":"failed","flow":"","reason":"policy","message":"policy: source slack is not allowed by your organization (allowed: google)"}
+{"event":"port_busy","port":18551}
