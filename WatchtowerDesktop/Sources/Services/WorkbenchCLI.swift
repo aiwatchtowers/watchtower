@@ -776,10 +776,11 @@ struct InstructionForgetResult: Decodable, Equatable {
 /// `watchtower workbench session start --json` (Go hub 3 Task 8): the row Go
 /// wrote, answered at once (instant start, #942) — `state` is `starting`
 /// while a detached finish places and launches it, or `running` for a
-/// reopened one. Exactly the pinned keys. `folderID`/`folder` are the bench
-/// folder the session started for (its stored name, #2003), `place` the
-/// placement asked for, `worktree` the worktree's path once the row is
-/// placed in one ("" otherwise).
+/// reopened one. The four original keys are required; `folderID`/`folder`
+/// (the bench folder the session started for, its stored name, #2003),
+/// `place` (the placement asked for) and `worktree` (the worktree's path
+/// once placed in one) are read when present — an older CLI's successful
+/// start must never read as a failure, or a retry would start it twice.
 struct SessionStartResult: Decodable, Equatable {
     let sessionID: Int64
     let state: String
@@ -797,6 +798,38 @@ struct SessionStartResult: Decodable, Equatable {
         case worktreeBranch = "worktree_branch"
         case folderID = "folder_id"
         case folder, place, worktree
+    }
+
+    init(
+        sessionID: Int64,
+        state: String,
+        folderPath: String,
+        worktreeBranch: String,
+        folderID: Int64 = 0,
+        folder: String = "",
+        place: String = "",
+        worktree: String = ""
+    ) {
+        self.sessionID = sessionID
+        self.state = state
+        self.folderPath = folderPath
+        self.worktreeBranch = worktreeBranch
+        self.folderID = folderID
+        self.folder = folder
+        self.place = place
+        self.worktree = worktree
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sessionID = try c.decode(Int64.self, forKey: .sessionID)
+        state = try c.decode(String.self, forKey: .state)
+        folderPath = try c.decode(String.self, forKey: .folderPath)
+        worktreeBranch = try c.decode(String.self, forKey: .worktreeBranch)
+        folderID = try c.decodeIfPresent(Int64.self, forKey: .folderID) ?? 0
+        folder = try c.decodeIfPresent(String.self, forKey: .folder) ?? ""
+        place = try c.decodeIfPresent(String.self, forKey: .place) ?? ""
+        worktree = try c.decodeIfPresent(String.self, forKey: .worktree) ?? ""
     }
 }
 

@@ -339,7 +339,13 @@ final class StartNewSessionViaCLITests: XCTestCase {
                                                    folderID: 3, folder: "acme", place: "auto", worktree: ""))
         XCTAssertThrowsError(try JSONDecoder().decode(SessionStartResult.self, from: Data("""
             {"session_id":7,"state":"starting","folder_path":"/tmp/acme"}
-            """.utf8)), "a missing pinned key is an error")
+            """.utf8)), "a missing original key is an error")
+        // An older CLI (before #2003) printed only the four original keys:
+        // its successful start still decodes, so no retry starts it twice.
+        let older = try JSONDecoder().decode(SessionStartResult.self, from: Data("""
+            {"session_id":7,"state":"starting","folder_path":"/tmp/acme","worktree_branch":""}
+            """.utf8))
+        XCTAssertEqual(older, SessionStartResult(sessionID: 7, state: "starting", folderPath: "/tmp/acme", worktreeBranch: ""))
     }
 
     /// Work on It, a session() step and a start with a first prompt: the

@@ -1407,6 +1407,28 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertEqual(vm.asks.closedUnreadable[.init(projectID: p, sessionID: nil)], "1 ask could not be read (#\(bad)).")
     }
 
+    /// A folder put on the bench moves the fingerprint, so a review's
+    /// `<folder>/<rel>` label follows it (#2003).
+    func testAFolderPutOnTheBenchRefreshesTheDocLabels() async throws {
+        let (p, _, _) = try await seed()
+        let vm = makeVM()
+        _ = await vm.asks.refreshIfChanged(projectID: p)
+        XCTAssertEqual(vm.asks.benchFolders[p]?.displayPath("docs/spec.md", folderID: nil), "docs/spec.md")
+        let unchanged = await vm.asks.refreshIfChanged(projectID: p)
+        XCTAssertFalse(unchanged)
+
+        try await pool.write { d in
+            try d.execute(sql: """
+                INSERT INTO workbench_folders (workbench_id, folder_path, position, added_by, name)
+                VALUES (?, '/tmp/hub', 1, 'owner', 'hub')
+                """, arguments: [p])
+        }
+        let afterAdd = await vm.asks.refreshIfChanged(projectID: p)
+        XCTAssertTrue(afterAdd, "a new folder moves the fingerprint")
+        let home = (folder.path as NSString).lastPathComponent
+        XCTAssertEqual(vm.asks.benchFolders[p]?.displayPath("docs/spec.md", folderID: nil), "\(home)/docs/spec.md")
+    }
+
     func testThePollReloadsOnlyWhenTheFingerprintChanges() async throws {
         let (p, _, askID) = try await seed()
         let vm = makeVM()

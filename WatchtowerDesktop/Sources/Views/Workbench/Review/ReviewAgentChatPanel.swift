@@ -58,6 +58,9 @@ struct ReviewAgentChatPanel: View {
     let focusOnOpen: Bool
     /// The panel is on screen: `focusOnOpen` was used.
     let onShown: () -> Void
+    /// The reviewed session's folder and, for a folder other than home, its
+    /// own status (#2003); nil until read.
+    @State private var reviewedFolder: ReviewerSurface.ReviewedFolder?
 
     /// What the author side shows: the Workchat with its composer, or one line.
     enum Content: Equatable {
@@ -88,8 +91,8 @@ struct ReviewAgentChatPanel: View {
                     ReviewerPanel(center: reviewer, model: model, context: ReviewerSurface.context(
                         projectID: chat.projectID, sessionID: chat.sessionID,
                         folderID: chat.vm.session(chat.sessionID, projectID: chat.projectID)?.workbenchFolderID,
-                        round: model.round,
-                        place: identity.place, mainStatus: identity.mainStatus
+                        round: model.round, place: identity.place,
+                        mainStatus: ReviewerSurface.folderStatus(reviewedFolder, homeStatus: identity.mainStatus)
                     ))
                 } else {
                     author
@@ -99,6 +102,9 @@ struct ReviewAgentChatPanel: View {
             }
         }
         .onAppear(perform: onShown)
+        .task(id: ReviewedFolderKey(sessionID: chat.sessionID, roundID: model.round?.id)) {
+            reviewedFolder = await chat.vm.reviewedFolder(sessionID: chat.sessionID, projectID: chat.projectID)
+        }
     }
 
     @ViewBuilder private var author: some View {
@@ -115,4 +121,10 @@ struct ReviewAgentChatPanel: View {
                 .padding(Spacing.medium)
         }
     }
+}
+
+/// When the reviewed folder's status is read again: per session and round.
+private struct ReviewedFolderKey: Hashable {
+    let sessionID: Int64
+    let roundID: Int64?
 }

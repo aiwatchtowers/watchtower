@@ -34,5 +34,8 @@ final class CodeRootFolderTests: XCTestCase {
         XCTAssertTrue(homeTree.defaultsKeySuffix.hasPrefix(".wt."), "a home worktree's key is unchanged")
         XCTAssertEqual(hubTree.defaultsKeySuffix, ".f5" + homeTree.defaultsKeySuffix)
         XCTAssertNotEqual(homeTree, hubTree)
+        let homeByID = CodeRoot(workbenchID: 7, worktree: tree, folderID: home.id, homeFolderID: home.id)
+        XCTAssertEqual(homeByID, homeTree, "a home-folder worktree named by its id keeps today's key")
+        XCTAssertEqual(CodeRoot(workbenchID: 7, worktree: tree, folderID: hub.id, homeFolderID: home.id), hubTree)
     }
 }

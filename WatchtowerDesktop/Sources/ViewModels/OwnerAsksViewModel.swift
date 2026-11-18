@@ -574,7 +574,14 @@ final class OwnerAsksViewModel {
         let answered: String? = row[3]
         let delivered: String? = row[4]
         let unbound: Int? = row[5]
-        return "\(count)|\(maxID ?? 0)|\(open ?? 0)|\(answered ?? "")|\(delivered ?? "")|\(unbound ?? 0)"
+        // The bench's folders and its home (#2003): a review's `<folder>/<rel>`
+        // label follows a folder put on or taken off the bench.
+        let folders = try String.fetchOne(db, sql: """
+            SELECT COALESCE((SELECT group_concat(id || ':' || name || ':' || (removed_at IS NULL), ',')
+                             FROM (SELECT id, name, removed_at FROM workbench_folders WHERE workbench_id = ? ORDER BY id)), '')
+                   || '|' || COALESCE((SELECT folder_path FROM projects WHERE id = ?), '')
+            """, arguments: [projectID, projectID]) ?? ""
+        return "\(count)|\(maxID ?? 0)|\(open ?? 0)|\(answered ?? "")|\(delivered ?? "")|\(unbound ?? 0)|\(folders)"
     }
 
     // MARK: - Keyboard (board #412)

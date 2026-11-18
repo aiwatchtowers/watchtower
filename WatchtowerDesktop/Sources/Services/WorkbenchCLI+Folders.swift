@@ -12,6 +12,8 @@ enum WorkbenchRefusalCode: String, CaseIterable, Equatable, Sendable {
     case notInstalled = "not_installed"
     case folderMissing = "folder_missing"
     case folderRemoved = "folder_removed"
+    /// `locate` of a folder still at its stored path: nothing to repoint.
+    case folderPresent = "folder_present"
     case sessionsRunning = "sessions_running"
     case lastFolder = "last_folder"
     case limit
