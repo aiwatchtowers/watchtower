@@ -15,6 +15,7 @@ import (
 	"watchtower/internal/auth"
 	"watchtower/internal/calendar"
 	"watchtower/internal/company"
+	"watchtower/internal/companybundle"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/imap"
@@ -385,6 +386,24 @@ func TestBridge_KeepsAStoredCompanyApp(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, corpJiraID, got.ClientID)
 	assert.Equal(t, clientSourceAccountFile, src)
+}
+
+// A stored bundle with the baked Jira client id but another secret does not
+// get the account: tying it would refresh with that secret.
+func TestBridge_SameIDOtherSecretIsNotTied(t *testing.T) {
+	c := newCorpWorkspace(t)
+	stored := companybundle.Bundle{V: 1, Company: corpCompany, Atlassian: &companybundle.Atlassian{
+		ClientID: corpJiraID, ClientSecret: "rotated-secret", Site: "https://corp.atlassian.net"}}
+	saveCompany(t, c.ws, stored)
+	res, err := c.bridge(t)
+	require.NoError(t, err)
+	assert.Contains(t, res.Skipped, bridgeSkipJSON{Source: "jira", ID: c.ids["jira"], Reason: "company_app_differs"})
+	setPublicBaked(t)
+	j, err := c.database.GetJiraAccount(c.ids["jira"])
+	require.NoError(t, err)
+	got, _, err := resolveJiraOAuthConfigForAccount(c.ws, j)
+	require.NoError(t, err)
+	assert.Equal(t, corpJiraSec, got.ClientSecret, "the record keeps the secret the account works with")
 }
 
 // A build deny host the link policy refuses but a bundle cannot carry fails

@@ -394,14 +394,15 @@ func bridgeTie(a bridgeAccount, eff companybundle.Bundle, baked corpBaked) (bool
 			return false, "other_team"
 		}
 	case "google":
-		if eff.Google == nil || eff.Google.ClientID != id {
+		// The secret too: a tie makes the bundle's pair the one refreshed with.
+		if eff.Google == nil || eff.Google.ClientID != id || eff.Google.ClientSecret != baked.googleSecret {
 			return false, "company_app_differs"
 		}
 	case "jira":
 		if eff.Atlassian == nil {
 			return false, "no_site"
 		}
-		if eff.Atlassian.ClientID != id {
+		if eff.Atlassian.ClientID != id || eff.Atlassian.ClientSecret != baked.jiraSecret {
 			return false, "company_app_differs"
 		}
 	case "linear":
@@ -475,7 +476,15 @@ func runCompanyBridge(workspaceDir string, database *db.DB, companyName string, 
 		}
 		if prev == nil {
 			res.Stored = "created"
-			undo = append(undo, func() error { return removeIfExists(filepath.Join(store.Dir, slug+".json")) })
+			// Only while the file still holds what this run wrote: a confirm
+			// that landed meanwhile is not this run's to remove.
+			undo = append(undo, func() error {
+				now, ok, err := store.Get(slug, "")
+				if err != nil || !ok || !reflect.DeepEqual(now.Bundle, merged) {
+					return err
+				}
+				return removeIfExists(filepath.Join(store.Dir, slug+".json"))
+			})
 		} else {
 			res.Stored = "updated"
 			was := *prev

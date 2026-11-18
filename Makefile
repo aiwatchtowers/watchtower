@@ -18,12 +18,12 @@ endif
 ifeq ($(strip $(BUILD_FLAVOR)),)
 $(error build profile '$(ENV_FILE)' must set BUILD_FLAVOR)
 endif
+endif
 # Mirror of build-app.sh's company-name block: a flavored build other than dev
-# names the company its baked clients are bridged to (#1887 T11a).
+# (ambient or from a profile) names the company its baked clients are bridged to (#1887 T11a).
 ifneq ($(filter-out dev,$(strip $(BUILD_FLAVOR))),)
 ifeq ($(strip $(BUILD_COMPANY_NAME)),)
 $(error BUILD_COMPANY_NAME is required for the corp flavor)
-endif
 endif
 endif
 export ENV_FILE
