@@ -17,14 +17,19 @@ import (
 const OAuthAccessURL = "https://slack.com/api/oauth.v2.access"
 
 // refreshExpiryField names the refresh token's lifetime (seconds) in the
-// refresh response. Spike Q9 has not confirmed the name yet; Task 16
-// finalises it here, in one place.
+// refresh response: the name oauth.v2.access's reference lists
+// (https://docs.slack.dev/reference/methods/oauth.v2.access). Slack does not
+// document when it is sent; without it the token gets
+// slackRefreshTokenDefaultTTL.
 const refreshExpiryField = "refresh_token_expires_in"
 
-// Error codes after which only a new sign-in helps (spike Q9; Task 16).
+// Error codes of oauth.v2.access after which only a new sign-in helps: the
+// refresh token is invalid (spent, or past its 30 days), expired, or the
+// token was revoked (https://docs.slack.dev/reference/methods/oauth.v2.access).
 const (
 	codeInvalidRefreshToken = "invalid_refresh_token"
 	codeTokenRevoked        = "token_revoked"
+	codeTokenExpired        = "token_expired"
 )
 
 // maxRefreshResponse caps the bytes read from the refresh response.
@@ -55,13 +60,13 @@ type RefreshError struct{ Code string }
 func (e *RefreshError) Error() string { return "slack token refresh: " + e.Code }
 
 // IsReloginError reports whether err is a refusal only a new sign-in fixes:
-// the refresh token is invalid or the token was revoked.
+// the refresh token is invalid or expired, or the token was revoked.
 func IsReloginError(err error) bool {
 	var re *RefreshError
 	if !errors.As(err, &re) {
 		return false
 	}
-	return re.Code == codeInvalidRefreshToken || re.Code == codeTokenRevoked
+	return re.Code == codeInvalidRefreshToken || re.Code == codeTokenRevoked || re.Code == codeTokenExpired
 }
 
 // NewRefresher returns the real refresher: a form POST of grant_type,

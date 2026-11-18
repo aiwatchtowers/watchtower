@@ -15,8 +15,9 @@ import (
 	"watchtower/internal/slack"
 )
 
-// refreshAhead refreshes an access token this long before it expires.
-// Plan B Task 16 adjusts it from the spike (Q9).
+// refreshAhead refreshes an access token this long before it expires; a
+// rotated access token always lives 12 hours
+// (https://docs.slack.dev/authentication/using-token-rotation).
 var refreshAhead = time.Hour
 
 // refreshTokenAhead refreshes while the refresh token itself has this long
@@ -24,12 +25,16 @@ var refreshAhead = time.Hour
 var refreshTokenAhead = 7 * 24 * time.Hour
 
 // slackAccessTokenDefaultTTL is a new access token's lifetime when Slack's
-// answer does not state it: 12 hours (the spike saw expires_in=43200).
+// answer does not state it: 12 hours, "always 43,200 seconds"
+// (https://docs.slack.dev/authentication/using-token-rotation; the spike saw
+// the same).
 const slackAccessTokenDefaultTTL = 12 * time.Hour
 
 // slackRefreshTokenDefaultTTL is a rotated refresh token's lifetime when
-// Slack's answer does not state it: 30 days for an app with PKCE on (the
-// plan B spike, Task 1). Task 16 confirms it.
+// Slack's answer does not state it: "all refresh tokens issued to
+// PKCE-enabled apps expire after 30 days"
+// (https://docs.slack.dev/changelog/2026/03/30/pkce). Every app Watchtower
+// connects through has PKCE on (create sets it, adopt turns it on).
 const slackRefreshTokenDefaultTTL = 30 * 24 * time.Hour
 
 // lockWait bounds the wait for another process's refresh — the one-minute

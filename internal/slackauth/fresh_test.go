@@ -313,6 +313,7 @@ func TestSlackRefresh_DecodesUserAndErrors(t *testing.T) {
 		},
 		{name: "invalid", body: `{"ok":false,"error":"invalid_refresh_token"}`, wantErr: true, relogin: true},
 		{name: "revoked", body: `{"ok":false,"error":"token_revoked"}`, wantErr: true, relogin: true},
+		{name: "expired", body: `{"ok":false,"error":"token_expired"}`, wantErr: true, relogin: true},
 		{name: "other", body: `{"ok":false,"error":"invalid_client_id"}`, wantErr: true},
 		{name: "no token", body: `{"ok":true}`, wantErr: true},
 	} {
