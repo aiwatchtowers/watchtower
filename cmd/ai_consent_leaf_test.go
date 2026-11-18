@@ -26,6 +26,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/planusage"
+	"watchtower/internal/policy"
 	"watchtower/internal/policy/policytest"
 	"watchtower/internal/providers/transport"
 	"watchtower/internal/tools"
@@ -351,4 +352,30 @@ func TestREPLClient_ChecksConsentPerCall(t *testing.T) {
 	_, _, err = client.QuerySync(context.Background(), "", "hi", "")
 	require.NoError(t, err, "allowed later: the same client runs")
 	assert.Equal(t, int32(3), calls.Load())
+}
+
+// A long-lived holder checks the configured provider's policy per call
+// (mdm-policy.md): with the reserve on, a resumed REPL turn is refused when
+// the policy now forbids the configured provider, though the reserve is
+// allowed.
+func TestREPLClient_ResumedTurnChecksConfiguredProviderPolicy(t *testing.T) {
+	aiconsenttest.Use(t, "cli", nil, true)
+	t.Setenv("HOME", t.TempDir())
+	bin, marker := writeMarkerStub(t)
+	cfg := &config.Config{ClaudePath: bin, CodexPath: bin, ActiveWorkspace: "test"}
+	cfg.AI.Provider = "claude"
+	cfg.AI.Fallback.Enabled, cfg.AI.Fallback.Provider = true, "codex"
+	client := replAIProvider(cfg)
+
+	policytest.Set(t, map[string]any{"AllowedAIProviders": []any{"codex"}})
+	_, _, err := client.QuerySync(context.Background(), "", "hi", "session-1")
+	require.ErrorIs(t, err, policy.ErrNotAllowed)
+	chunks, errs, ids := client.Query(context.Background(), "", "hi", "session-1")
+	for range chunks {
+	}
+	for range ids {
+	}
+	require.ErrorIs(t, <-errs, policy.ErrNotAllowed)
+	_, statErr := os.Stat(marker)
+	assert.True(t, errors.Is(statErr, os.ErrNotExist), "no provider process started")
 }
