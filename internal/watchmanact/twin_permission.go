@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
-	"strconv"
 	"strings"
 	"time"
 
@@ -90,11 +89,11 @@ func (j *job) permission(ctx context.Context) {
 
 // decidePermission is the twin's decision on request req of item it, with
 // no write: parked (deny) when the request hits a hard limit or an owner's
-// limit, was clipped, or its places, the owner's limits or (for `gh pr
-// merge`) the PR's base cannot be read; otherwise the model decides between
-// allow and deny, and an allow is checked again on fresh reads (the live
-// branch, its shared branches and PR bases, the owner's limits may have
-// moved while the model ran). A model that hands it to the owner is handed
+// limit (every PR merge does: merging is the owner's in phase 2), was
+// clipped, or its places or the owner's limits cannot be read; otherwise
+// the model decides between allow and deny, and an allow is checked again
+// on fresh reads (the live branch, its shared branches and the owner's
+// limits may have moved while the model ran). A model that hands it to the owner is handed
 // (deny). The error is the model's.
 func (t *Twin) decidePermission(ctx context.Context, it db.WatchmanItem, req *db.PermissionRequest) (db.WatchmanOutcome, error) {
 	now := t.d.Clock()
@@ -150,8 +149,8 @@ func (t *Twin) limitPark(ctx context.Context, it db.WatchmanItem, req *db.Permis
 
 // permissionAsk is request req as the hard-limit table reads it: the
 // session's folder and worktrees and its workbench's folder; a shell
-// command also gets the session's live branch, the branches it shares
-// (liveShared) and the live base of a PR it merges. The error names what
+// command a branch-dependent row can hit also gets the session's live
+// branch and the branches it shares (liveBranchInfo). The error names what
 // could not be read.
 func (t *Twin) permissionAsk(ctx context.Context, req *db.PermissionRequest) (watchman.PermissionAsk, error) {
 	s, err := t.d.DB.GetTerminalSession(req.TerminalSessionID)
@@ -180,12 +179,6 @@ func (t *Twin) permissionAsk(ctx context.Context, req *db.PermissionRequest) (wa
 	if req.ToolName == "Bash" && watchman.BranchDependent(ask) {
 		dir := s.FolderPath
 		ask.Branch = t.liveBranchInfo(ctx, dir)
-		ask.PRBase = func(pr int) (string, bool) {
-			if pr <= 0 {
-				return "", false
-			}
-			return t.prBase(ctx, dir, pr)
-		}
 	}
 	return ask, nil
 }
@@ -282,19 +275,6 @@ func (t *Twin) prOnTop(ctx context.Context, dir, branch string) (bool, error) {
 		return false, err
 	}
 	return len(prs) > 0, nil
-}
-
-// prBase is PR pr's base branch, read live with gh in dir; known=false on
-// any failure (the merge then parks).
-func (t *Twin) prBase(ctx context.Context, dir string, pr int) (string, bool) {
-	ctx, cancel := context.WithTimeout(ctx, permissionLiveReadLimit)
-	defer cancel()
-	out, err := t.d.Run(ctx, dir, "gh", "pr", "view", strconv.Itoa(pr), "--json", "baseRefName", "--jq", ".baseRefName")
-	base := strings.TrimSpace(string(out))
-	if err != nil || base == "" || strings.ContainsAny(base, " \t\n") {
-		return "", false
-	}
-	return base, true
 }
 
 // closePermission writes the twin's allow or deny on the request with the

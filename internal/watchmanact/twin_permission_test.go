@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -18,22 +17,18 @@ import (
 // permRun is the fake git and gh of a permission's live reads: the
 // session's branch by call (branches[n] for the nth read, the last
 // repeated); the base of the current branch's PR (headBase, "" = no PR,
-// gh's own answer; ownErr fails that lookup); each numbered PR's base by
-// call (bases[n] for the nth `gh pr view <n>`, the last repeated); the open
-// PRs on the current branch (onTop; topErr fails that lookup); ghErr fails
-// every gh call.
+// gh's own answer; ownErr fails that lookup); the open PRs on the current
+// branch (onTop; topErr fails that lookup); ghErr fails every gh call.
 type permRun struct {
 	mu       sync.Mutex
 	branches []string
 	headBase string
 	ownErr   error
-	bases    []string
 	onTop    int
 	topErr   error
 	ghErr    error
 	calls    []string
 	nBranch  int
-	nBase    int
 }
 
 func (r *permRun) run(_ context.Context, dir, name string, args ...string) ([]byte, error) {
@@ -62,9 +57,6 @@ func (r *permRun) run(_ context.Context, dir, name string, args ...string) ([]by
 			return nil, errors.New("no pull requests found for branch")
 		}
 		return []byte(r.headBase + "\n"), nil
-	case strings.HasPrefix(line, "pr view"):
-		r.nBase++
-		return []byte(r.bases[min(r.nBase, len(r.bases))-1] + "\n"), nil
 	}
 	return nil, errors.New("unexpected gh " + line)
 }
@@ -136,7 +128,7 @@ func TestWATCHMAN01_TwinNeverDecidesHardLimit(t *testing.T) {
 		covered[c.limit] = true
 		t.Run(c.name, func(t *testing.T) {
 			e := newTwinEnv(t)
-			e.withPermRun(&permRun{branches: []string{"feature/x"}, bases: []string{"main"}})
+			e.withPermRun(&permRun{branches: []string{"feature/x"}})
 			_, err := e.db.AddWatchmanExtraLimit(watchman.ExtraLimitCommand, "make deploy-prod")
 			e.must(err)
 			reqID, itemID := e.permission(c.tool, c.summary, false)
@@ -332,56 +324,32 @@ func TestTwin_PermissionRetakenAfterRestart(t *testing.T) {
 	e.wantPermission(reqID, db.PermissionAllowed, askanswer.ByWatchman)
 }
 
+// The PR's base is never read: in phase 2 every merge is the owner's, in
+// every form, whatever gh can tell (gh failing included).
 func TestTwin_PermissionUnknownPRBaseParks(t *testing.T) {
-	e := newTwinEnv(t)
-	run := &permRun{branches: []string{"feature/x"}, ghErr: errors.New("gh: not logged in")}
-	e.withPermRun(run)
-	reqID, itemID := e.permission("Bash", "gh pr merge 12 --squash", false)
-	e.run()
-	it := e.item(itemID)
-	wantOutcome(t, it, OutcomeParked)
-	if it.ParkReason != limitReason(watchman.LimitMainRef) {
-		t.Fatalf("park reason = %q", it.ParkReason)
+	for _, command := range []string{
+		"gh pr merge 12 --squash",
+		"gh pr -R acme/other merge 12",
+		"gh api -X PUT repos/acme/x/pulls/12/merge",
+		"hub merge https://github.com/acme/x/pull/12",
+	} {
+		t.Run(command, func(t *testing.T) {
+			e := newTwinEnv(t)
+			run := &permRun{branches: []string{"feature/x"}, ghErr: errors.New("gh: not logged in")}
+			e.withPermRun(run)
+			reqID, itemID := e.permission("Bash", command, false)
+			e.run()
+			it := e.item(itemID)
+			wantOutcome(t, it, OutcomeParked)
+			if it.ParkReason != limitReason(watchman.LimitMainRef) {
+				t.Fatalf("park reason = %q", it.ParkReason)
+			}
+			e.wantPermission(reqID, db.PermissionDenied, askanswer.ByWatchman)
+			if e.decideCalls() != 0 || len(run.calls) != 0 {
+				t.Fatalf("Decide ran (%d) or live reads were made (%q) for a merge", e.decideCalls(), run.calls)
+			}
+		})
 	}
-	e.wantPermission(reqID, db.PermissionDenied, askanswer.ByWatchman)
-	if e.decideCalls() != 0 {
-		t.Fatal("Decide ran on a merge whose base is unknown")
-	}
-	if !slices.Contains(run.calls, "/tmp/acme: gh pr view 12 --json baseRefName --jq .baseRefName") {
-		t.Fatalf("live reads = %q, want gh pr view in the session folder", run.calls)
-	}
-}
-
-// A merge into a feature branch is the model's; the allow is checked again
-// on a fresh read of the base, which parks it when the PR was retargeted
-// onto main meanwhile.
-func TestTwin_PermissionAllowCheckedAgainAfterTheModel(t *testing.T) {
-	t.Run("base unchanged", func(t *testing.T) {
-		e := newTwinEnv(t)
-		e.withPermRun(&permRun{branches: []string{"feature/x"}, bases: []string{"feature/watchman"}})
-		e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
-			return permDecision(PermissionAllow), nil
-		}
-		reqID, itemID := e.permission("Bash", "gh pr merge 12 --squash", false)
-		e.run()
-		wantOutcome(t, e.item(itemID), OutcomeAnswered)
-		e.wantPermission(reqID, db.PermissionAllowed, askanswer.ByWatchman)
-	})
-	t.Run("retargeted onto main", func(t *testing.T) {
-		e := newTwinEnv(t)
-		e.withPermRun(&permRun{branches: []string{"feature/x"}, bases: []string{"feature/watchman", "main"}})
-		e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
-			return permDecision(PermissionAllow), nil
-		}
-		reqID, itemID := e.permission("Bash", "gh pr merge 12 --squash", false)
-		e.run()
-		it := e.item(itemID)
-		wantOutcome(t, it, OutcomeParked)
-		if it.ParkReason != limitReason(watchman.LimitMainRef) || it.Choice != PermissionAllow {
-			t.Fatalf("item = %+v, want parked main_ref with the choice kept", it)
-		}
-		e.wantPermission(reqID, db.PermissionDenied, askanswer.ByWatchman)
-	})
 }
 
 // The owner's limits cannot be read: fail closed.

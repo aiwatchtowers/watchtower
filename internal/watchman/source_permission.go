@@ -54,8 +54,6 @@ func permissionAskOf(r db.WatchmanPermissionRow) PermissionAsk {
 	return PermissionAsk{
 		Tool: r.ToolName, Summary: r.Summary, SummaryClipped: r.SummaryClipped, WorkbenchFolder: r.WorkbenchFolder,
 		Worktrees: append([]string{r.SessionFolder}, r.Worktrees...),
-		// PRBase stays nil: no row the writers produce maps a PR number to its
-		// base branch ('into:' rows carry no pr_number), so every `gh pr merge`
-		// is parked.
+		// Every PR merge parks (matchMainRef), so no base is needed.
 	}
 }

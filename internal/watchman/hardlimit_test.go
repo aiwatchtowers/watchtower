@@ -11,14 +11,6 @@ func bash(cmd string) PermissionAsk {
 }
 
 func TestParkedBy(t *testing.T) {
-	prBase := func(m map[int]string) func(int) (string, bool) {
-		return func(n int) (string, bool) { b, ok := m[n]; return b, ok }
-	}
-	withPR := func(cmd string, m map[int]string) PermissionAsk {
-		r := bash(cmd)
-		r.PRBase = prBase(m)
-		return r
-	}
 	edit := func(tool, p string) PermissionAsk {
 		return PermissionAsk{Tool: tool, Summary: p, WorkbenchFolder: "/w", Worktrees: []string{"/w/a"}}
 	}
@@ -46,36 +38,51 @@ func TestParkedBy(t *testing.T) {
 		{"send-pack tag", bash("git send-pack origin refs/tags/v1:refs/tags/v1"), LimitSendPack},
 		{"send-pack force update", bash("git send-pack --force origin +feat:refs/heads/feat"), LimitSendPack},
 		{"send-pack behind git globals", bash("git -C ../acme send-pack origin feat"), LimitSendPack},
-		{"pr merge into main", withPR("gh pr merge 12 --squash", map[int]string{12: "main"}), LimitMainRef},
-		{"pr merge into feature", withPR("gh pr merge 12", map[int]string{12: "feature/watchman"}), ""},
-		{"pr merge unknown base", withPR("gh pr merge 12", nil), LimitMainRef},
+		{"pr merge into main", bash("gh pr merge 12 --squash"), LimitMainRef},
+		{"pr merge into feature", bash("gh pr merge 12"), LimitMainRef},
+		{"pr merge unknown base", bash("gh pr merge 12"), LimitMainRef},
 		{"pr merge no resolver", bash("gh pr merge 12"), LimitMainRef},
 		// The base is read in the session folder: a merge in another
 		// repository parks whatever that read says (Task 10 review).
-		{"pr merge --repo", withPR("gh pr merge 12 --repo acme/other", map[int]string{12: "feature/watchman"}), LimitMainRef},
-		{"pr merge --repo=", withPR("gh pr merge 12 --repo=acme/other", map[int]string{12: "feature/watchman"}), LimitMainRef},
-		{"pr merge -R", withPR("gh pr merge -R acme/other 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
-		{"pr merge -Rrepo", withPR("gh pr merge 12 -Racme/other", map[int]string{12: "feature/watchman"}), LimitMainRef},
-		{"pr merge -sR", withPR("gh pr merge 12 -sR acme/other", map[int]string{12: "feature/watchman"}), LimitMainRef},
-		{"pr merge after cd", withPR("cd ../other && gh pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
-		{"pr merge env -C", withPR("env -C ../other gh pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
-		{"pr merge GH_REPO", withPR("GH_REPO=acme/other gh pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
-		{"pr merge export GH_REPO", withPR("export GH_REPO=acme/other; gh pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
-		{"pr merge GH_HOST", withPR("GH_HOST=ghe.example.com gh pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
-		{"pr merge URL", withPR("gh pr merge https://github.com/acme/other/pull/12", map[int]string{12: "feature/watchman"}), LimitMainRef},
-		{"pr merge squash into feature", withPR("gh pr merge 12 --squash --delete-branch", map[int]string{12: "feature/watchman"}), ""},
-		{"gh -R before pr", withPR("gh -R acme/other pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
-		{"gh --repo before pr", withPR("gh --repo acme/other pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
-		{"gh --repo= before pr", withPR("gh --repo=acme/other pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
-		{"gh -Rx before pr", withPR("gh -Racme/other pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
-		{"gh flag value named pr", withPR("gh -R pr pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef}, //nolint:dupword // the flag value "pr" is the point
-		{"pushd then pr merge", withPR("pushd ../other && gh pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
-		{"checkout then pr merge", withPR("git checkout other && gh pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
-		{"gh pr checkout then pr merge", withPR("gh pr checkout 7 && gh pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
-		{"env GH_REPO pr merge", withPR("env GH_REPO=acme/other gh pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
-		{"export GH_HOST then pr merge", withPR("export GH_HOST=ghe.example.com && gh pr merge 12", map[int]string{12: "feature/watchman"}), LimitMainRef},
-		// GH_REPO in the description lines is no assignment.
-		{"GH_REPO in the description", withPR("gh pr merge 12\n# merges it; GH_REPO stays unset", map[int]string{12: "feature/watchman"}), ""},
+		{"pr merge --repo", bash("gh pr merge 12 --repo acme/other"), LimitMainRef},
+		{"pr merge --repo=", bash("gh pr merge 12 --repo=acme/other"), LimitMainRef},
+		{"pr merge -R", bash("gh pr merge -R acme/other 12"), LimitMainRef},
+		{"pr merge -Rrepo", bash("gh pr merge 12 -Racme/other"), LimitMainRef},
+		{"pr merge -sR", bash("gh pr merge 12 -sR acme/other"), LimitMainRef},
+		{"pr merge after cd", bash("cd ../other && gh pr merge 12"), LimitMainRef},
+		{"pr merge env -C", bash("env -C ../other gh pr merge 12"), LimitMainRef},
+		{"pr merge GH_REPO", bash("GH_REPO=acme/other gh pr merge 12"), LimitMainRef},
+		{"pr merge export GH_REPO", bash("export GH_REPO=acme/other; gh pr merge 12"), LimitMainRef},
+		{"pr merge GH_HOST", bash("GH_HOST=ghe.example.com gh pr merge 12"), LimitMainRef},
+		{"pr merge URL", bash("gh pr merge https://github.com/acme/other/pull/12"), LimitMainRef},
+		{"pr merge squash into feature", bash("gh pr merge 12 --squash --delete-branch"), LimitMainRef},
+		{"gh -R before pr", bash("gh -R acme/other pr merge 12"), LimitMainRef},
+		{"gh --repo before pr", bash("gh --repo acme/other pr merge 12"), LimitMainRef},
+		{"gh --repo= before pr", bash("gh --repo=acme/other pr merge 12"), LimitMainRef},
+		{"gh -Rx before pr", bash("gh -Racme/other pr merge 12"), LimitMainRef},
+		{"gh flag value named pr", bash("gh -R pr pr merge 12"), LimitMainRef}, //nolint:dupword // the flag value "pr" is the point
+		{"pushd then pr merge", bash("pushd ../other && gh pr merge 12"), LimitMainRef},
+		{"checkout then pr merge", bash("git checkout other && gh pr merge 12"), LimitMainRef},
+		{"gh pr checkout then pr merge", bash("gh pr checkout 7 && gh pr merge 12"), LimitMainRef},
+		{"env GH_REPO pr merge", bash("env GH_REPO=acme/other gh pr merge 12"), LimitMainRef},
+		{"export GH_HOST then pr merge", bash("export GH_HOST=ghe.example.com && gh pr merge 12"), LimitMainRef},
+		// Phase 2: every PR merge is the owner's, whatever its base or form
+		// (Task 10 review round 3).
+		{"gh pr -R merge", bash("gh pr -R acme/other merge 12"), LimitMainRef},
+		{"gh pr --repo= merge", bash("gh pr --repo=acme/other merge 12"), LimitMainRef},
+		{"gh pr --repo merge", bash("gh pr --repo acme/other merge 12"), LimitMainRef},
+		{"standalone GH_REPO line then merge", bash("GH_REPO=acme/other\ngh pr merge 12"), LimitMainRef},
+		{"gh api pulls merge", bash("gh api -X PUT repos/acme/x/pulls/12/merge"), LimitMainRef},
+		{"gh api pulls merge with braces", bash("gh api --method PUT repos/{owner}/{repo}/pulls/12/merge -f merge_method=squash"), LimitMainRef},
+		{"gh api graphql mergePullRequest", bash(`gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: "x"}) { clientMutationId } }'`), LimitMainRef},
+		{"curl pulls merge", bash("curl -X PUT https://api.github.com/repos/acme/x/pulls/12/merge"), LimitMainRef},
+		{"hub merge", bash("hub merge https://github.com/acme/x/pull/12"), LimitMainRef},
+		{"gh api pulls read", bash("gh api repos/acme/x/pulls/12"), ""},
+		{"gh pr view", bash("gh pr -R acme/x view 12"), ""},
+		{"gh pr -R comment", bash("gh pr -R acme/x comment 3 -b hi"), LimitOutward},
+		{"gh pr --repo= review", bash("gh pr --repo=acme/x review 3 --approve"), LimitOutward},
+		{"gh issue -R comment", bash("gh issue -R acme/x comment 3 -b hi"), LimitOutward},
+		{"gh release -R create", bash("gh release -R acme/x create v1"), LimitRelease},
 		{"gh -R before pr comment", bash("gh -R acme/other pr comment 3 -b hi"), LimitOutward},
 		{"tag and push", bash("git tag v1 && git push --tags"), LimitTag},
 		{"tag list", bash("git tag -l"), ""},
@@ -182,11 +189,11 @@ func TestParkedBy(t *testing.T) {
 		{"fastlane pilot", bash("fastlane pilot upload"), LimitTestFlight},
 		{"make testflight", bash("make mobile-testflight"), LimitTestFlight},
 		{"make test", bash("make test"), ""},
-		{"pr merge flag value", withPR("gh pr merge --body 5 12", map[int]string{12: "feature/x"}), ""},
-		{"pr merge flag value unknown", withPR("gh pr merge --body 5 12", map[int]string{5: "feature/x"}), LimitMainRef},
-		{"pr merge url", withPR("gh pr merge https://github.com/a/b/pull/12", map[int]string{12: "feature/x"}), LimitMainRef},
-		{"pr merge branch", withPR("gh pr merge feat", map[int]string{12: "feature/x"}), LimitMainRef},
-		{"pr merge bare", withPR("gh pr merge", map[int]string{12: "feature/x"}), LimitMainRef},
+		{"pr merge flag value", bash("gh pr merge --body 5 12"), LimitMainRef},
+		{"pr merge flag value unknown", bash("gh pr merge --body 5 12"), LimitMainRef},
+		{"pr merge url", bash("gh pr merge https://github.com/a/b/pull/12"), LimitMainRef},
+		{"pr merge branch", bash("gh pr merge feat"), LimitMainRef},
+		{"pr merge bare", bash("gh pr merge"), LimitMainRef},
 		{"edit in workbench folder", edit("Write", "/w/docs/x.md"), ""},
 		{"escaped quote hides no path", bash(`rm O\'Brien /tmp/obsolete`), LimitDeleteOutside},
 		{"escaped quote inside", bash(`rm -f O\'Brien /w/a/x`), ""},
@@ -453,9 +460,39 @@ func TestBranchDependent(t *testing.T) {
 		"go vet && git push origin feat": true,
 		"git update-ref HEAD abc":        true,
 		"git checkout -B feat":           true,
-		"gh -R acme/x pr merge 12":       true,
+		"gh -R acme/x pr merge 12":       false,
 	} {
 		require.Equal(t, want, BranchDependent(bash(cmd)), cmd)
 	}
 	require.False(t, BranchDependent(PermissionAsk{Tool: "Edit", Summary: "git reset --hard"}))
+}
+
+// A shell running a string is a wrapper (Task 10 review round 3): its one
+// literal string is parsed in place; anything else cannot be read.
+func TestParkedBy_ShellStringsAreWrappers(t *testing.T) {
+	expectParked(t, []struct {
+		name  string
+		ask   PermissionAsk
+		limit HardLimit
+	}{
+		{"bash -c push main", bash(`bash -c 'git push origin main'`), LimitMainRef},
+		{"sh -c pr merge", bash(`sh -c "gh pr merge 12"`), LimitMainRef},
+		{"zsh -lc force push", bash(`zsh -lc 'go vet && git push -f origin feat'`), LimitForcePush},
+		{"eval release", bash(`eval 'gh release create v1'`), LimitRelease},
+		{"nested shells", bash(`bash -c "sh -c 'git push --tags'"`), LimitTag},
+		{"env -C bash -c reset", bash(`env -C /other bash -c 'git reset --hard HEAD~1'`), LimitResetShared},
+		{"eval cd carries on", bash(`eval 'cd /tmp' && rm -rf build`), LimitDeleteOutside},
+		{"bash -c harmless", bash(`bash -c 'go test ./...'`), ""},
+		{"eval harmless", bash(`eval 'go vet ./...'`), ""},
+		{"bash script file", bash(`bash scripts/check.sh`), ""},
+		{"bash -c with a variable", bash(`bash -c "$CMD"`), LimitUnreadable},
+		{"bash -c with a backtick", bash("bash -c 'git push origin `cat ref`'"), LimitUnreadable},
+		{"bash -c with extra args", bash(`bash -c 'git push "$0" main' origin`), LimitUnreadable},
+		{"eval of many words", bash(`eval git push origin main`), LimitUnreadable},
+		{"bash -c without a string", bash(`bash -c`), LimitUnreadable},
+		{"source a file", bash(`source scripts/env.sh && go test ./...`), LimitUnreadable},
+		{"dot a file", bash(`. ./env.sh`), LimitUnreadable},
+		{"xargs sh -c", bash(`echo x | xargs sh -c 'git push origin feat'`), LimitUnreadable},
+		{"too deep", bash(`bash -c "bash -c 'bash -c \"bash -c go\"'"`), LimitUnreadable},
+	})
 }

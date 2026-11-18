@@ -4,8 +4,8 @@ import (
 	"cmp"
 	"encoding/json"
 	"path"
+	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 
 	"watchtower/internal/db"
@@ -39,9 +39,6 @@ type PermissionAsk struct {
 	// may be what a hard limit covers, so the request parks.
 	SummaryClipped bool
 	Worktrees      []string
-	// PRBase reports the base branch of a pull request; known=false when
-	// the base is not recorded. Nil means never known.
-	PRBase func(pr int) (base string, known bool)
 	// Branch is the session's branch when the request was read; nil = not
 	// recorded (stored rows).
 	Branch *BranchInfo
@@ -111,19 +108,6 @@ type shellCmd struct {
 	// option (env -C, sudo -D) points the command at another repository
 	// or directory.
 	elsewhere bool
-	// ghElsewhere: a GH_REPO or GH_HOST assignment points gh at another
-	// repository or host.
-	ghElsewhere bool
-}
-
-// ghRepoVars are the environment variables that point gh at another
-// repository or host.
-var ghRepoVars = []string{"GH_REPO", "GH_HOST"}
-
-// isGhRepoName reports NAME or NAME=value for a ghRepoVars name.
-func isGhRepoName(w string) bool {
-	name, _, _ := strings.Cut(w, "=")
-	return slices.Contains(ghRepoVars, name)
 }
 
 // gitDirVars are the environment variables that point git at another
@@ -286,7 +270,6 @@ func stripWrappers(words []string, c *shellCmd) []string {
 		w := words[0]
 		if i := strings.Index(w, "="); i > 0 && !strings.ContainsAny(w[:i], "/-") {
 			c.elsewhere = c.elsewhere || isGitDirAssignment(w)
-			c.ghElsewhere = c.ghElsewhere || isGhRepoName(w)
 			words = words[1:]
 			continue
 		}
@@ -320,9 +303,56 @@ func stripWrappers(words []string, c *shellCmd) []string {
 // splitCommands drops with every other comment. Only a cd joined to the
 // next command by && carries its directory on; after any other separator
 // the directory is unknown.
+//
+// A shell that runs a string (bash/sh/zsh/dash/ksh -c, eval) is a wrapper:
+// its one literal inner string is parsed as commands in its place (an eval
+// carries a cd on); anything else — more words, a $ or a backtick in the
+// string, a source or . of a file, nesting past maxShellDepth — cannot be
+// read and parks.
 func commands(summary string) []shellCmd {
+	out, _ := commandsIn(summary, "", 0)
+	return out
+}
+
+// maxShellDepth bounds shells nested in shells.
+const maxShellDepth = 3
+
+// shells are the programs whose -c option runs a string.
+var shells = map[string]bool{"bash": true, "sh": true, "zsh": true, "dash": true, "ksh": true}
+
+// shellInner returns the string words run as commands: a shell's -c
+// string or eval's argument. isShell is false when words do not run a
+// string; inner is "" when they do but it cannot be read (always for
+// source and .).
+func shellInner(words []string) (inner string, isShell bool) {
+	var rest []string
+	switch prog := words[0]; {
+	case prog == "eval":
+		rest = words[1:]
+	case prog == "source" || prog == ".":
+		return "", true
+	case shells[prog]:
+		i, dashC := 1, false
+		for ; i < len(words) && strings.HasPrefix(words[i], "-") && words[i] != "--"; i++ {
+			dashC = dashC || (!strings.HasPrefix(words[i], "--") && strings.Contains(words[i], "c"))
+		}
+		if !dashC {
+			return "", false
+		}
+		rest = words[i:]
+	default:
+		return "", false
+	}
+	if len(rest) != 1 || strings.ContainsAny(rest[0], "$`") {
+		return "", true
+	}
+	return rest[0], true
+}
+
+// commandsIn is commands for a string run from directory cwd at shell
+// nesting depth; it also returns the directory it ends in.
+func commandsIn(summary, cwd string, depth int) ([]shellCmd, string) {
 	var out []shellCmd
-	cwd := ""
 	for _, part := range splitCommands(summary) {
 		if part.sep != "&&" && part.sep != "" && cwd != "" {
 			cwd = cwdUnknown
@@ -339,6 +369,21 @@ func commands(summary string) []shellCmd {
 		}
 		words[0] = path.Base(words[0])
 		c.w = words
+		if inner, isShell := shellInner(words); isShell {
+			if inner == "" || c.xargs || depth >= maxShellDepth {
+				out = append(out, shellCmd{w: []string{unresolved}, cwd: cwd})
+				continue
+			}
+			sub, subCwd := commandsIn(inner, cwd, depth+1)
+			for _, ic := range sub {
+				ic.elsewhere = ic.elsewhere || c.elsewhere
+				out = append(out, ic)
+			}
+			if words[0] == "eval" { // eval runs in this shell: its cd stays
+				cwd = subCwd
+			}
+			continue
+		}
 		if words[0] == "cd" {
 			switch {
 			case len(words) != 2:
@@ -354,7 +399,7 @@ func commands(summary string) []shellCmd {
 		}
 		out = append(out, c)
 	}
-	return out
+	return out, cwd
 }
 
 // gitValuedGlobals are git's global options that take an operand, attached
@@ -392,16 +437,34 @@ var ghValued = map[string]bool{"-R": true, "--repo": true, "--hostname": true}
 // ghGlobals skips the options before gh's command, with their operands, so
 // a flag's value is never read as the command; it returns the command's
 // index (1 when no option precedes it).
-func ghGlobals(w []string) int {
-	i := 1
-	for i < len(w) && strings.HasPrefix(w[i], "-") {
-		name, _, attached := strings.Cut(w[i], "=")
+func ghGlobals(w []string) int { return 1 + skipGhOptions(w[1:]) }
+
+// skipGhOptions returns the index of the first word of args that is no
+// gh option nor an option's operand.
+func skipGhOptions(args []string) int {
+	i := 0
+	for i < len(args) && strings.HasPrefix(args[i], "-") {
+		name, _, attached := strings.Cut(args[i], "=")
 		if !attached && ghValued[name] {
 			i++
 		}
 		i++
 	}
 	return i
+}
+
+// ghCmd returns the verb of `gh [options] <group> [options] <verb> ...`;
+// ok is false when c is not such a command.
+func (c shellCmd) ghCmd(group string) (verb string, ok bool) {
+	rest, ok := c.sub("gh", group)
+	if !ok {
+		return "", false
+	}
+	i := skipGhOptions(rest)
+	if i >= len(rest) {
+		return "", false
+	}
+	return rest[i], true
 }
 
 // sub returns the arguments after `<prog> <subcommand>` of c, skipping
@@ -503,55 +566,39 @@ func rebaseOnDefault(args []string) bool {
 	return len(pos) > 0 && isDefaultBranch(stripRemote(pos[0]))
 }
 
-// prMergeNumber is the PR number of `gh pr merge` arguments; ok is false
-// when the PR is named by URL or branch, or not at all.
-func prMergeNumber(args []string) (int, bool) {
-	valued := map[string]bool{"--body": true, "-b": true, "--body-file": true, "-F": true, "--subject": true, "-t": true, "--match-head-commit": true, "--author-email": true, "-A": true, "--repo": true, "-R": true}
-	for i := 0; i < len(args); i++ {
-		switch a := args[i]; {
-		case valued[a]:
-			i++
-		case strings.HasPrefix(a, "-"):
-		default:
-			n, err := strconv.Atoi(a)
-			return n, err == nil
-		}
-	}
-	return 0, false
-}
-
-// prMergeElsewhere reports a gh pr merge whose repository may not be the
-// session folder's, so a base read there says nothing about it: any option
-// before `pr` (gh -R x pr merge), a --repo/-R option in any form after it,
-// a cd, a wrapper's directory change or a GH_REPO/GH_HOST assignment on the
-// command, or moved (an earlier command moved the context: movesContext, an
-// export of GH_REPO/GH_HOST). A PR URL is no number, so prMergeNumber
-// already fails it. A GH_REPO already in the agent's environment is not
-// seen here.
-func prMergeElsewhere(c shellCmd, args []string, moved bool) bool {
-	if moved || c.cwd != "" || c.elsewhere || c.ghElsewhere || ghGlobals(c.w) > 1 {
-		return true
-	}
-	return slices.ContainsFunc(args, func(a string) bool {
-		return a == "--repo" || strings.HasPrefix(a, "--repo=") ||
-			(strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.Contains(a, "R"))
-	})
-}
-
 // matchUnreadable: a command that cannot be read, so cannot be judged.
 func matchUnreadable(r PermissionAsk) bool {
 	return anyCmd(r, func(c shellCmd) bool { return c.w[0] == unresolved })
 }
 
-// matchMainRef: a push to, a rebase onto, or a PR merge into the default
-// branch. A plain `git push` with no refspec is not matched: its
-// destination is unknown here, and parking every plain push would drop
-// most push decisions (the live pre-push hook covers it).
+// prMergePath is a GitHub REST path that merges a pull request.
+var prMergePath = regexp.MustCompile(`(?i)/pulls/[^/\s]+/merge\b`)
+
+// isPRMerge reports a command that merges a pull request, in any form:
+// gh pr merge (options anywhere), hub merge, a call on a .../pulls/<n>/merge
+// path (gh api, curl...) or the GraphQL mergePullRequest mutation.
+func isPRMerge(c shellCmd) bool {
+	if verb, ok := c.ghCmd("pr"); ok && verb == "merge" {
+		return true
+	}
+	if _, ok := c.sub("hub", "merge"); ok {
+		return true
+	}
+	return slices.ContainsFunc(c.w, func(w string) bool {
+		return prMergePath.MatchString(w) || strings.Contains(w, "mergePullRequest")
+	})
+}
+
+// matchMainRef: a push to, a rebase onto the default branch, or any PR
+// merge — in phase 2 merging is the owner's whatever the base: a base read
+// can be pointed at another repository too many ways (-R, GH_REPO, a cd,
+// aliases) to be trusted. A plain `git push` with no refspec is not
+// matched: its destination is unknown here, and parking every plain push
+// would drop most push decisions (the live pre-push hook covers it).
 func matchMainRef(r PermissionAsk) bool {
-	moved := false
 	return anyCmd(r, func(c shellCmd) bool {
-		if movesContext(c) || (c.w[0] == "export" && slices.ContainsFunc(c.w[1:], isGhRepoName)) {
-			moved = true
+		if isPRMerge(c) {
+			return true
 		}
 		if _, pos, ok := pushArgs(c); ok {
 			for _, spec := range pos[min(1, len(pos)):] { // pos[0] is the remote
@@ -563,14 +610,6 @@ func matchMainRef(r PermissionAsk) bool {
 		}
 		if args, ok := c.sub("git", "rebase"); ok {
 			return rebaseOnDefault(args)
-		}
-		if args, ok := c.sub("gh", "pr"); ok && len(args) > 0 && args[0] == "merge" {
-			pr, ok := prMergeNumber(args[1:])
-			if !ok || r.PRBase == nil || prMergeElsewhere(c, args[1:], moved) {
-				return true
-			}
-			base, known := r.PRBase(pr)
-			return !known || isDefaultBranch(base)
 		}
 		return false
 	})
@@ -607,8 +646,8 @@ func matchTag(r PermissionAsk) bool {
 
 func matchRelease(r PermissionAsk) bool {
 	return anyCmd(r, func(c shellCmd) bool {
-		args, ok := c.sub("gh", "release")
-		return ok && len(args) > 0 && args[0] != "list" && args[0] != "view" && args[0] != "download"
+		verb, ok := c.ghCmd("release")
+		return ok && verb != "list" && verb != "view" && verb != "download"
 	})
 }
 
@@ -658,7 +697,7 @@ var branchVerbs = []string{"reset", "branch", "update-ref", "checkout", "switch"
 
 // BranchDependent reports a shell request that can hit a row reading the
 // live branch, the shared branches or a PR's base (a ref-moving git
-// command, a push, a gh pr merge): only such a request needs those reads.
+// command or a push): only such a request needs those reads.
 func BranchDependent(r PermissionAsk) bool {
 	return anyCmd(r, func(c shellCmd) bool {
 		for _, v := range branchVerbs {
@@ -666,8 +705,7 @@ func BranchDependent(r PermissionAsk) bool {
 				return true
 			}
 		}
-		args, ok := c.sub("gh", "pr")
-		return ok && len(args) > 0 && args[0] == "merge"
+		return false
 	})
 }
 
@@ -726,7 +764,7 @@ func movesContext(c shellCmd) bool {
 	if c.w[0] == "export" && slices.ContainsFunc(c.w[1:], isGitDirAssignment) {
 		return true
 	}
-	if args, ok := c.sub("gh", "pr"); ok && len(args) > 0 && args[0] == "checkout" {
+	if verb, ok := c.ghCmd("pr"); ok && verb == "checkout" {
 		return true
 	}
 	return c.w[0] == "pushd" || c.w[0] == "popd"
@@ -953,11 +991,11 @@ func matchOutward(r PermissionAsk) bool {
 		case "mail", "mailx", "sendmail", "mutt":
 			return true
 		}
-		if args, ok := c.sub("gh", "pr"); ok && len(args) > 0 && (args[0] == "comment" || args[0] == "review") {
+		if verb, ok := c.ghCmd("pr"); ok && (verb == "comment" || verb == "review") {
 			return true
 		}
-		args, ok := c.sub("gh", "issue")
-		return ok && len(args) > 0 && args[0] == "comment"
+		verb, ok := c.ghCmd("issue")
+		return ok && verb == "comment"
 	})
 }
 
