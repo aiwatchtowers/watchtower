@@ -1243,7 +1243,8 @@ func (d *Daemon) phaseImapSync(ctx context.Context) {
 //
 // The one failure a pass DOES persist is jira.ErrAuthRevoked: the grant itself
 // is gone, Sync aborts on it, and the row needs status "revoked" for the
-// Settings Re-login button to appear. Every other Sync error is logged and
+// Settings Re-login button to appear; and jira.ErrClientRejected, recorded as
+// "error" with its client code (recordJiraClientRejected). Every other Sync error is logged and
 // left off the row entirely — a rate limit, a dropped connection or a failing
 // local read says nothing about the grant, and stamping it would strand a red
 // badge that only a re-login could clear. A cancelled context (shutdown, or
@@ -1310,6 +1311,8 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 						d.logger.Printf("jira: account %d: record auth state: %v", s.AccountID(), dbErr)
 					}
 				}
+			case errors.Is(err, jira.ErrClientRejected):
+				d.recordJiraClientRejected(s.AccountID())
 			}
 			continue
 		}
@@ -3022,6 +3025,31 @@ func (d *Daemon) markAccessOK(source string, id int64) {
 	}
 	if err := d.db.MarkAccountAccessOK(source, id); err != nil {
 		d.logger.Printf("%s: account %d: record access: %v", source, id, err)
+	}
+}
+
+// recordJiraClientRejected marks a Jira account whose OAuth client Atlassian
+// refused: status 'error' (never 'revoked', so PURGE-01 schedules no purge),
+// code invalid_client for an account tied to a company, unknown_client for
+// one on no company (#1887 P5). Only a new sign-in clears it.
+func (d *Daemon) recordJiraClientRejected(id int64) {
+	if d.db == nil {
+		return
+	}
+	acct, err := d.db.GetJiraAccount(id)
+	if err != nil {
+		d.logger.Printf("jira: account %d: read account: %v", id, err)
+		return
+	}
+	if acct.Status == "revoked" {
+		// A revoked grant stays revoked: its purge notice must not be reset.
+		// (A revocation another process records between this read and the
+		// write below is overwritten — a narrow race, accepted: the account
+		// still shows Re-login needed.)
+		return
+	}
+	if err := d.db.SetJiraAccountAuthState(id, "error", jira.ClientRejectedCode(acct.CompanySlug)); err != nil {
+		d.logger.Printf("jira: account %d: record auth state: %v", id, err)
 	}
 }
 

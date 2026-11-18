@@ -100,6 +100,7 @@ type confluenceEnv struct {
 func setupConfluenceEnv(t *testing.T, scope string) *confluenceEnv {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WATCHTOWER_JIRA_CLIENT_ID", "test-client") // a build that has an Atlassian client
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.WriteFile(configPath, []byte("active_workspace: test\n"), 0o600))
 	origConfig := flagConfig

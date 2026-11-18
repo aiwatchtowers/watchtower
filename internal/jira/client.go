@@ -46,7 +46,10 @@ type Client struct {
 	// has read the stale token and is about to wait for the first one.
 	beforeTokenLock func()
 
-	oauthCfg    JiraOAuthConfig
+	oauthCfg JiraOAuthConfig
+	// oauthSource, when set, gives the client to refresh with at refresh
+	// time (SetOAuthSource) instead of oauthCfg.
+	oauthSource func() (JiraOAuthConfig, error)
 	tokenStore  *TokenStore
 	httpClient  *http.Client
 	rateLimiter *RateLimiter
@@ -85,6 +88,27 @@ func (c *Client) tokenEndpoint() string {
 		return c.tokenURL
 	}
 	return jiraTokenEndpoint
+}
+
+// SetOAuthSource makes every refresh ask source for the OAuth client, so a
+// long-lived client (the daemon's) follows a re-login through a company's
+// new app instead of the client it was built with. A source error refreshes
+// nothing and is returned as is (the source wraps ErrClientRejected when the
+// account needs a new sign-in).
+func (c *Client) SetOAuthSource(source func() (JiraOAuthConfig, error)) {
+	c.oauthSource = source
+}
+
+// refresh exchanges refreshToken through the current OAuth client.
+func (c *Client) refresh(ctx context.Context, refreshToken string) (*OAuthToken, error) {
+	cfg := c.oauthCfg
+	if c.oauthSource != nil {
+		var err error
+		if cfg, err = c.oauthSource(); err != nil {
+			return nil, fmt.Errorf("resolving the OAuth client: %w", err)
+		}
+	}
+	return refreshTokenAt(ctx, cfg, refreshToken, c.tokenEndpoint())
 }
 
 // SetLogger replaces the client's logger.
@@ -275,7 +299,7 @@ func (c *Client) getAccessToken(ctx context.Context) (string, error) {
 	if !token.IsExpired() {
 		return token.AccessToken, nil
 	}
-	newToken, err := refreshTokenAt(ctx, c.oauthCfg, token.RefreshToken, c.tokenEndpoint())
+	newToken, err := c.refresh(ctx, token.RefreshToken)
 	if err != nil {
 		return "", err
 	}
@@ -317,7 +341,7 @@ func (c *Client) refreshIfCurrent(ctx context.Context, usedToken string) error {
 		return nil
 	}
 
-	newToken, err := refreshTokenAt(ctx, c.oauthCfg, token.RefreshToken, c.tokenEndpoint())
+	newToken, err := c.refresh(ctx, token.RefreshToken)
 	if err != nil {
 		return err
 	}

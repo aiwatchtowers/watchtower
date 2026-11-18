@@ -100,6 +100,7 @@ func TestReadJiraSiteAnswer_EOFIsEmptyOtherErrorsFail(t *testing.T) {
 // connect leaves no row and no token behind.
 func TestRunJiraAdd_NoSiteChosenLeavesNoAccount(t *testing.T) {
 	database := jiraCmdFixture(t)
+	t.Setenv("WATCHTOWER_JIRA_CLIENT_ID", "test-client") // a build that has an Atlassian client
 	scriptLogin(t, nil)
 	orig := jiraFetchResources
 	jiraFetchResources = func(context.Context, string) ([]jira.CloudResource, error) { return twoJiraSites(), nil }

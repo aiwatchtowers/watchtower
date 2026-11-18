@@ -136,13 +136,13 @@ func (s *Syncer) syncHistory(ctx context.Context) error {
 		return nil
 	}
 	if err := s.syncLinkedIssues(ctx); err != nil {
-		if errors.Is(err, ErrAuthRevoked) || ctx.Err() != nil {
+		if accountLost(err) || ctx.Err() != nil {
 			return err
 		}
 		s.logger.Printf("linked issue sync: %v", err)
 	}
 	if err := s.syncChangelogs(ctx); err != nil {
-		if errors.Is(err, ErrAuthRevoked) || ctx.Err() != nil {
+		if accountLost(err) || ctx.Err() != nil {
 			return err
 		}
 		s.logger.Printf("changelog sync: %v", err)
@@ -170,7 +170,7 @@ func (s *Syncer) syncLinkedIssues(ctx context.Context) error {
 		batch := keys[start:min(start+changelogBatch, len(keys))]
 		issues, issueErrs, err := s.client.BulkFetchIssues(ctx, batch, linkedIssueFields)
 		if err != nil {
-			if errors.Is(err, ErrAuthRevoked) || ctx.Err() != nil {
+			if accountLost(err) || ctx.Err() != nil {
 				return err
 			}
 			if firstErr == nil {
@@ -268,7 +268,7 @@ func (s *Syncer) syncChangelogs(ctx context.Context) error {
 	tally := changelogTally{splitCallsLeft: splitCallsPerPass}
 	for start := 0; start < len(due); start += changelogBatch {
 		if err := s.syncChangelogBatch(ctx, due[start:min(start+changelogBatch, len(due))], &tally); err != nil {
-			if errors.Is(err, ErrAuthRevoked) || ctx.Err() != nil {
+			if accountLost(err) || ctx.Err() != nil {
 				return err
 			}
 			if firstErr == nil {
@@ -299,7 +299,7 @@ type changelogTally struct {
 // rejects is narrowed down by splitRejected.
 func (s *Syncer) syncChangelogBatch(ctx context.Context, batch []db.JiraChangelogDue, tally *changelogTally) error {
 	err := s.storeChangelogBatch(ctx, batch, tally)
-	if err == nil || len(batch) == 1 || !isRequestRejected(err) || errors.Is(err, ErrAuthRevoked) || ctx.Err() != nil {
+	if err == nil || len(batch) == 1 || !isRequestRejected(err) || accountLost(err) || ctx.Err() != nil {
 		return err // an outage is not split: it would only multiply the calls
 	}
 	return s.splitRejected(ctx, batch, tally)
@@ -324,14 +324,14 @@ func (s *Syncer) splitRejected(ctx context.Context, batch []db.JiraChangelogDue,
 		err := s.storeChangelogBatch(ctx, h, tally)
 		switch {
 		case err == nil:
-		case errors.Is(err, ErrAuthRevoked) || ctx.Err() != nil:
+		case accountLost(err) || ctx.Err() != nil:
 			return err
 		case !isRequestRejected(err):
 		case len(h) == 1:
 			s.logger.Printf("changelog sync: %s: %v", h[0].Key, err)
 		default:
 			err = s.splitRejected(ctx, h, tally)
-			if errors.Is(err, ErrAuthRevoked) || ctx.Err() != nil {
+			if accountLost(err) || ctx.Err() != nil {
 				return err
 			}
 		}

@@ -32,7 +32,13 @@ func jiraAccountClient(cfg *config.Config, account db.JiraAccount) (*jira.Client
 	if account.CloudID == "" {
 		return nil, fmt.Errorf("jira account #%d has no cloud id; run 'watchtower jira login --account %d'", account.ID, account.ID)
 	}
-	return jira.NewClient(account.CloudID, resolveJiraOAuthConfig(), store), nil
+	jiraCfg, _, err := resolveJiraOAuthConfigForAccount(cfg.WorkspaceDir(), account)
+	if err != nil {
+		return nil, err
+	}
+	client := jira.NewClient(account.CloudID, jiraCfg, store)
+	client.SetOAuthSource(jiraAccountRowOAuthSource(cfg.WorkspaceDir(), account))
+	return client, nil
 }
 
 // jiraClientFactory serves create_jira_issue.

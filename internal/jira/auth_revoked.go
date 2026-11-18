@@ -50,6 +50,57 @@ func isInvalidGrant(body []byte) bool {
 	return strings.Contains(string(body), "invalid_grant")
 }
 
+// ErrClientRejected is returned when Atlassian's token endpoint refuses the
+// OAuth client itself on a refresh (invalid_client, or an unauthorized_client
+// that does not name the refresh token): the company rotated the secret,
+// deleted the app, or this account's token was issued by a client this
+// install no longer has. Only a new sign-in through the right client fixes
+// it, but the person did not revoke the grant: callers record it as status
+// 'error' with ClientRejectedCode, never 'revoked', so no 72 h purge is
+// scheduled (PURGE-01). Like ErrAuthRevoked it ends the account's pass.
+var ErrClientRejected = errors.New("atlassian rejected the OAuth client")
+
+// Account error codes for a rejected client (#1887 P5), stored in
+// jira_accounts.error with status 'error'.
+const (
+	// CodeInvalidClient: the account is tied to a company bundle whose
+	// client Atlassian refused — the company changed its app.
+	CodeInvalidClient = "invalid_client"
+	// CodeUnknownClient: an account on no company whose client is refused
+	// or missing — it signed in through an app this install no longer knows.
+	CodeUnknownClient = "unknown_client"
+)
+
+// ClientRejectedCode is the error code for a rejected client on an account
+// tied to companySlug ("" = none).
+func ClientRejectedCode(companySlug string) string {
+	if companySlug != "" {
+		return CodeInvalidClient
+	}
+	return CodeUnknownClient
+}
+
+// isClientRejected reports a token-endpoint body that refuses the client:
+// invalid_client, or unauthorized_client (callers ask isInvalidGrant first,
+// which takes the unauthorized_client that names the refresh token). Decoded
+// JSON only: a proxy page is not Atlassian's word on the client.
+func isClientRejected(body []byte) bool {
+	var resp struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return false
+	}
+	return resp.Error == "invalid_client" || resp.Error == "unauthorized_client"
+}
+
+// accountLost reports an error that ends the account's pass: the grant is
+// revoked, or the client is rejected — every remaining request would fail
+// the same way.
+func accountLost(err error) bool {
+	return errors.Is(err, ErrAuthRevoked) || errors.Is(err, ErrClientRejected)
+}
+
 // refreshTokenInvalid reports whether text carries Atlassian's "the refresh
 // token is invalid" phrasing, in either the underscored or spaced spelling.
 func refreshTokenInvalid(s string) bool {
