@@ -107,9 +107,10 @@ package enum WatchmanArmingCopy {
     package static let analyticsLine = "Agent analytics turned on — Watchman learns from your sessions"
     package static let learningNote = "Until learning finishes, Watchman parks everything for you"
     package static let limitsLine = "Merging to main, messages to people and releases stay yours: Watchman parks them."
-    /// The accepted residual risks of spec §5 item 4: one line pointing to
-    /// the guide's full list.
-    package static let residualRisk = "Some ways around the guard remain — see Hand a session to Watchman in the guide."
+    /// The accepted residual risks of spec §5 item 4: the spec's two
+    /// examples, then a pointer to the guide's full list.
+    package static let residualRisk = "Not caught: deleting files outside the worktree from a script, "
+        + "or messaging people from a script with its own token; more in Hand a session to Watchman in the guide."
     /// The branch-protection check's line as the CLI prints it (spec §5 item 2).
     package static let protectionWarning = "main is not protected on GitHub — an agent's gh pr merge cannot be stopped here"
     package static let notNow = "Not now"

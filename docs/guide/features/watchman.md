@@ -17,7 +17,7 @@ kind: feature
 since: next
 -->
 
-Watchman reads only your own decisions in one workbench: asks you answered, your comments and verdicts in diff and spec reviews, permission prompts you allowed or denied, your own lines to agents (needs **Agent analytics** on, and Start Learning turns it on), and your own commits (made with the folder's git email) and merged pull requests in the workbench folder. Automations, dismissed asks, colleagues' and agents' commits are left out. Secrets are blanked and each stored text is cut to 2,048 characters.
+Watchman reads only your own decisions in one workbench: asks you answered, your comments and verdicts in diff and spec reviews, permission prompts you allowed or denied, your own lines to agents (needs **Agent analytics** on, and Start Learning turns it on), and your own commits (made with the folder's git email) and merged pull requests in the workbench folder. Automations, dismissed asks, colleagues' and agents' commits are left out. Secrets are blanked; each text is cut to 2,048 characters.
 
 Each decision is filed under one of eight categories: design, scope, UX text, tests, code review, document review, permission and finish. Where a source does not say which, a light AI model labels it, so learning costs tokens; one it cannot place is not stored.
 
@@ -53,7 +53,7 @@ since: next
 
 Under **What Watchman learned**, **Edit** opens a category's rules (one per line, at most 20); **Save** pins them, so the weekly rebuild leaves them alone until you press **Unpin**. The sleep window edits the same way, as `HH:MM-HH:MM`. Under **Your hard limits**, **Add a Limit…** takes a command's first words (`terraform apply`) or a tool's name (`create_jira_issue`), and Watchman parks it for you. **Remove** takes only your own rows; the built-in ones stay.
 
-From a terminal, `watchtower watchman learn --workbench N` prints the estimate (add `--start` to begin), `watchman profile --workbench N` shows the learned rules and sleep window, `watchman limits list|add|remove` manages your limits, and `watchman backtest --workbench N` runs a backtest once learning is done (`--force` runs it earlier). An AI agent's session is refused.
+From a terminal, `watchtower watchman learn --workbench N` prints the estimate (add `--start` to begin), `watchman profile --workbench N` shows what it learned, `watchman limits list|add|remove` manages your limits, and `watchman backtest --workbench N` runs a backtest once learning is done (`--force` runs it earlier). From an AI agent's session, `learn --start`, `backtest`, `profile set|unpin`, `limits add|remove`, `arm` and `disarm` are refused.
 
 ### Hand a session to Watchman
 <!-- learn
@@ -108,9 +108,9 @@ since: next
 
 - **No night yet** in the journal: no session was handed to Watchman yet.
 - **Not measured** on a category: too few decisions yet. It fills as you keep working.
-- Finish looks thin: a handover ask is learned as an ordinary question and is not always filed under finish.
-- A commit by an agent that left out its `Co-Authored-By` line can count as yours.
-- Your sleep window is a rough guess from sparse activity; an edge near 20:00 or 12:00 can be off.
+- Finish looks thin: handover asks are learned as ordinary questions.
+- An agent's commit without its `Co-Authored-By` line can count as yours.
+- Your sleep window is a rough guess when you are rarely active.
 - A backtest that says busy is already running elsewhere.
 
 ## Related
