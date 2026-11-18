@@ -158,6 +158,132 @@ func (db *DB) QueueWatchmanItem(it WatchmanItem) (id int64, inserted bool, err e
 	return id, false, nil
 }
 
+// WatchmanAskItemKind is the item kind of an ask of askKind: a review is
+// review_doc, a check is check, a question (and anything else) is ask.
+func WatchmanAskItemKind(askKind string) string {
+	switch askKind {
+	case "review":
+		return "review_doc"
+	case "check":
+		return "check"
+	}
+	return "ask"
+}
+
+// WatchmanAskText is the text an ask's item shows, before redaction.
+func WatchmanAskText(title, summary string) string {
+	return strings.TrimSpace(strings.TrimSpace(title) + "\n" + strings.TrimSpace(summary))
+}
+
+// WatchmanPermissionText is the text a permission request's item shows,
+// before redaction.
+func WatchmanPermissionText(tool, summary string) string {
+	return strings.TrimSpace("Tool: " + tool + "\n" + strings.TrimSpace(summary))
+}
+
+// QueueWatchmanWaitPoint queues it when its session is armed — for an ask,
+// a session no automation started — and returns what QueueWatchmanItem
+// does; id 0 and nothing written when the session is not the twin's. The
+// arming read and the insert are two statements: a disarm between them
+// leaves a queued item the twin does not act on (WATCHMAN-04).
+func (db *DB) QueueWatchmanWaitPoint(it WatchmanItem) (id int64, inserted bool, err error) {
+	if it.SessionID == 0 {
+		return 0, false, nil
+	}
+	armed, err := db.WatchmanSessionArmed(it.SessionID)
+	if err != nil || !armed {
+		return 0, false, err
+	}
+	if it.RefKind == "ask" {
+		var automation bool
+		if err := db.QueryRow(`SELECT automation_run_id IS NOT NULL FROM terminal_sessions WHERE id = ?`, it.SessionID).Scan(&automation); err != nil {
+			return 0, false, fmt.Errorf("reading session %d: %w", it.SessionID, err)
+		}
+		if automation {
+			return 0, false, nil
+		}
+	}
+	return db.QueueWatchmanItem(it)
+}
+
+// WatchmanItemByRef is the item of kind for wait point (refKind, refID);
+// nil when there is none.
+func (db *DB) WatchmanItemByRef(refKind string, refID int64, kind string) (*WatchmanItem, error) {
+	it, err := scanWatchmanItem(db.QueryRow(`SELECT `+watchmanItemCols+` FROM watchman_items
+		WHERE ref_kind = ? AND ref_id = ? AND kind = ?`, refKind, refID, kind))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading watchman item %s/%d: %w", refKind, refID, err)
+	}
+	return it, nil
+}
+
+// ScanWatchmanWaitPoints queues the wait points of armed sessions that have
+// no item: open asks (none of an automation's) and pending permission
+// requests — the recovery of a writer whose insert failed (spec §7).
+// question turns an item's text into its stored question (redacted and
+// clipped; internal/db cannot import the redactor). n is how many it queued.
+func (db *DB) ScanWatchmanWaitPoints(now time.Time, question func(string) string) (n int, err error) {
+	sessions, err := db.WatchmanArmedSessions()
+	if err != nil {
+		return 0, err
+	}
+	var missed []WatchmanItem
+	for _, s := range sessions {
+		items, err := db.watchmanMissedWaitPoints(s.SessionID)
+		if err != nil {
+			return 0, err
+		}
+		missed = append(missed, items...)
+	}
+	for _, it := range missed {
+		it.Question, it.CreatedAt = question(it.Question), now
+		if _, inserted, err := db.QueueWatchmanItem(it); err != nil {
+			return n, err
+		} else if inserted {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// watchmanMissedWaitPoints lists session's open asks (not an automation's)
+// and pending permission requests with no item of any kind, their Question
+// the unredacted text.
+func (db *DB) watchmanMissedWaitPoints(session int64) ([]WatchmanItem, error) {
+	rows, err := db.Query(`SELECT 'ask', a.id, a.project_id, COALESCE(a.target_id, 0), a.kind, a.title, a.summary
+		FROM owner_asks a JOIN terminal_sessions s ON s.id = a.session_id
+		WHERE a.session_id = ? AND a.status = 'open' AND a.automation_run_id IS NULL AND s.automation_run_id IS NULL
+		  AND NOT EXISTS (SELECT 1 FROM watchman_items w WHERE w.ref_kind = 'ask' AND w.ref_id = a.id)
+		UNION ALL
+		SELECT 'permission', r.id, r.workbench_id, 0, '', r.tool_name, r.summary
+		FROM permission_requests r
+		WHERE r.terminal_session_id = ? AND r.status = 'pending'
+		  AND NOT EXISTS (SELECT 1 FROM watchman_items w WHERE w.ref_kind = 'permission' AND w.ref_id = r.id)
+		ORDER BY 1, 2`, session, session)
+	if err != nil {
+		return nil, fmt.Errorf("scanning watchman wait points of session %d: %w", session, err)
+	}
+	defer rows.Close()
+	var out []WatchmanItem
+	for rows.Next() {
+		it := WatchmanItem{SessionID: session}
+		var askKind, a, b string
+		if err := rows.Scan(&it.RefKind, &it.RefID, &it.WorkbenchID, &it.TargetID, &askKind, &a, &b); err != nil {
+			return nil, err
+		}
+		if it.RefKind == "ask" {
+			it.Kind, it.Question = WatchmanAskItemKind(askKind), WatchmanAskText(a, b)
+		} else {
+			it.Kind, it.Question = "permission", WatchmanPermissionText(a, b)
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
 // LeaseWatchmanItem takes the oldest queued item (not_before reached) or
 // deciding item whose lease expired that eligible accepts, and moves it to
 // deciding with attempts+1 and lease_until = now+lease. Nil when none. The

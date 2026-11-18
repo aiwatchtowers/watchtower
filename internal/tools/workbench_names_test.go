@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
-	"watchtower/internal/workbenchfiles"
 )
 
 // Spec 2026-10-02 §5.2: the five renamed tools map back from their old
@@ -21,7 +20,7 @@ import (
 // resolved, never registered or served.
 func TestCanonicalToolName_MapsTheRenamedWorkbenchTools(t *testing.T) {
 	var names []string
-	for _, tool := range WorkbenchTools(workbenchfiles.Store{}, nil) {
+	for _, tool := range WorkbenchTools(WorkbenchDeps{}) {
 		names = append(names, tool.Name)
 	}
 	require.Len(t, names, 21)

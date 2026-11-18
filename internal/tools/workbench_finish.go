@@ -81,8 +81,10 @@ type finishSessionArgs struct {
 var errNoTerminalSession = &ValidationError{Msg: "finish_session needs a Watchtower terminal session"}
 
 // NewFinishSession marks this terminal session finished with the agent's
-// summary. sessionEnv returns the terminal session env (TerminalSessionEnv).
-func NewFinishSession(sessionEnv func() string) *Tool {
+// summary. sessionEnv returns the terminal session env (TerminalSessionEnv);
+// wake asks the daemon to run the Watchman twin after an armed session's
+// finish queued its review (nil = none).
+func NewFinishSession(sessionEnv func() string, wake func()) *Tool {
 	return &Tool{
 		Name: "finish_session",
 		Description: "Mark this terminal session finished once the work it was started for is done or handed to the " +
@@ -115,7 +117,7 @@ func NewFinishSession(sessionEnv func() string) *Tool {
 			if err != nil {
 				return err
 			}
-			return checkFinishGates(ctx, d, p, session, a)
+			return checkFinishGates(ctx, d, p, session, a, wake)
 		},
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			var a finishSessionArgs
