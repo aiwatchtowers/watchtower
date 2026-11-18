@@ -129,7 +129,7 @@ func noteFailureLocked(msg string) {
 
 // parseAnswer reads ai.background_runs from the file. Keys match without
 // regard to case, as viper reads them. failed = the file could not be read or
-// parsed; msg is the line to log ("" for a clean read, an absent key
+// parsed, or a key is set more than once in different case; msg is the line to log ("" for a clean read, an absent key
 // included; set for an unknown value, which reads as not answered).
 func parseAnswer(path string) (a Answer, msg string, failed bool) {
 	data, err := os.ReadFile(path)
@@ -140,8 +140,15 @@ func parseAnswer(path string) (a Answer, msg string, failed bool) {
 	if err := yaml.Unmarshal(data, &root); err != nil {
 		return AnswerNone, fmt.Sprintf("aiconsent: cannot parse %s (%v); background AI reads as paused", path, err), true
 	}
-	aiMap, _ := lookupFold(root, "ai").(map[string]any)
-	raw := lookupFold(aiMap, "background_runs")
+	ai, ok := lookupFold(root, "ai")
+	if !ok {
+		return AnswerNone, ambiguousMsg("ai", path), true
+	}
+	aiMap, _ := ai.(map[string]any)
+	raw, ok := lookupFold(aiMap, "background_runs")
+	if !ok {
+		return AnswerNone, ambiguousMsg("ai.background_runs", path), true
+	}
 	if raw == nil {
 		return AnswerNone, "", false
 	}
@@ -153,14 +160,28 @@ func parseAnswer(path string) (a Answer, msg string, failed bool) {
 	return AnswerNone, fmt.Sprintf(`aiconsent: ai.background_runs = %v in %s is not "allowed" or "paused"; background AI reads as not answered`, raw, path), false
 }
 
-func lookupFold(m map[string]any, key string) any {
-	if v, ok := m[key]; ok {
-		return v
-	}
+// lookupFold finds key without regard to case, as viper reads keys. More than
+// one key that matches (`AI` and `Ai`, or `ai` and `AI`) is ambiguous: viper
+// and the Desktop could pick different ones, so it is an error and the answer
+// reads as paused (fail closed). The Desktop's ConfigService.foldKey is the
+// twin. ok = false when ambiguous.
+func lookupFold(m map[string]any, key string) (v any, ok bool) {
+	var (
+		found any
+		n     int
+	)
 	for k, v := range m {
 		if strings.EqualFold(k, key) {
-			return v
+			found = v
+			n++
 		}
 	}
-	return nil
+	if n > 1 {
+		return nil, false
+	}
+	return found, true
+}
+
+func ambiguousMsg(key, path string) string {
+	return fmt.Sprintf("aiconsent: %s appears more than once in %s (keys differing only in case); background AI reads as paused", key, path)
 }

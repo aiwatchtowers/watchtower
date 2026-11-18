@@ -18,6 +18,17 @@ final class DesignShotsTests: XCTestCase {
         super.tearDown()
     }
 
+    /// Every background AI consent frame (#1886) has its shot.
+    func testEveryBackgroundAIConsentFrameHasAShot() {
+        let names = Set(BackgroundAIConsentShotFixtures.shots.map(\.name))
+        for step in BackgroundAIConsentShotFixtures.Step.allCases {
+            XCTAssertTrue(names.contains("ai-consent-step-\(step.rawValue)"))
+        }
+        for state in BackgroundAIConsentShotFixtures.Settings.allCases {
+            XCTAssertTrue(names.contains("ai-consent-settings-\(state.rawValue)"))
+        }
+    }
+
     func testShotNamesAreUnique() {
         let shots = DesignShotCatalog.all
         XCTAssertFalse(shots.isEmpty, "the catalog registers no shots")

@@ -46,10 +46,10 @@ final class AppState {
     /// binary store has been synced — see `initialize()`.
     let daemonManager = DaemonManager()
     let uiVisibility = UIVisibilityCenter() // board #731, `applyUIVisibility`
-    /// The organization policy forced through the MDM (#608). Read only once
-    /// `initialize()` starts it, so a test that never initializes never reads
-    /// this Mac's managed preferences.
+    /// The organization policy forced through the MDM (#608). Read only once `initialize()` starts it,
+    /// so a test that never initializes never reads this Mac's managed preferences.
     let managedPolicy: ManagedPolicyCenter
+    @ObservationIgnored private(set) lazy var backgroundAIRefresher = makeBackgroundAIRefresher() // #1886, started with the policy
     var isDBAvailable: Bool { databaseManager != nil }
 
     /// Live per-feature readiness behind the tabs' empty states, here so a
@@ -836,7 +836,7 @@ final class AppState {
         isLoading = true
         Constants.prewarmResolvedEnvironment()
         // Before anything a key decides starts (the mobile hub, the pickers).
-        managedPolicy.start(activation: NSApplication.didBecomeActiveNotification)
+        startPolicyAndConsentRefresh()
         // Text older versions handed the CLI through temp files (now stdin).
         Task.detached(priority: .utility) {
             StaleTempSweep.run(in: FileManager.default.temporaryDirectory)
