@@ -45,9 +45,6 @@ const (
 	CodeAppIDMismatch = "app_id_mismatch" // --app-id is not this workspace's connected Watchtower app
 )
 
-// Stage of a pending record (Status), besides the screens §3.4 stages.
-const StagePendingCreate = "pending_create"
-
 // Step names and states (one JSON line each).
 const (
 	StepCheckToken = "check_token"
@@ -503,10 +500,11 @@ func (r *Runner) Link(ctx context.Context, cfgToken, team string) (Result, error
 
 // Stages of a setup record (screens §3.4).
 const (
-	StageInstall     = "install"      // app created, nobody connected through it yet
-	StageApproval    = "approval"     // Slack reported an admin approval request
-	StageLinkMissing = "link_missing" // connected, the About page has no link
-	StageDone        = "done"
+	StagePendingCreate = "pending_create" // the create's answer was lost: no app id yet
+	StageInstall       = "install"        // app created, nobody connected through it yet
+	StageApproval      = "approval"       // Slack reported an admin approval request
+	StageLinkMissing   = "link_missing"   // connected, the About page has no link
+	StageDone          = "done"
 )
 
 // SetupStatus is one record with its derived state.
