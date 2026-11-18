@@ -80,7 +80,7 @@ final class CodeFilesRootLineTests: XCTestCase {
 
     func testCopy() {
         XCTAssertEqual(CodeFilesRootLine.dirtyHelp, "Uncommitted changes")
-        XCTAssertEqual(CodeFilesRootLine.emptyFolder, "This folder is empty.")
+        XCTAssertEqual(CodeFilesRootLine.emptyFolder, "No files to show.")
         XCTAssertEqual(CodeFilesRootLine.accessibilityValue(expanded: true), "Expanded")
         XCTAssertEqual(CodeFilesRootLine.accessibilityValue(expanded: false), "Collapsed")
     }

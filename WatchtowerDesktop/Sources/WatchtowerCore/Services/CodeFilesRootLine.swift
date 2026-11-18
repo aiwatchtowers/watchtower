@@ -8,7 +8,7 @@ import Foundation
 /// stays, marked out of date, as the header marks it.
 package struct CodeFilesRootLine: Equatable, Sendable {
     package static let dirtyHelp = "Uncommitted changes"
-    package static let emptyFolder = "This folder is empty."
+    package static let emptyFolder = "No files to show."
     package static let staleLabel = "Status may be out of date"
 
     package let name: String
