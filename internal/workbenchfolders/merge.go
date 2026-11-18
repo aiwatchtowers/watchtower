@@ -25,9 +25,10 @@ type MergeReport struct {
 	MovedFolders []db.WorkbenchFolder
 	// Targets is how many targets moved.
 	Targets int
-	// Reinstall is every moved live folder, then every place the merged
-	// bench's agent sessions ran in that is still on disk and none of those
-	// folders — their worktrees (spec §6.13); never nil.
+	// Reinstall is every moved live folder, then every linked worktree of
+	// one of them that the merged bench's agent sessions ran in or reported
+	// and that is still on disk (spec §6.13); never nil. Nothing else: a
+	// repository outside the bench is never written.
 	Reinstall []string
 }
 
@@ -518,8 +519,8 @@ func sessionCwds(ctx context.Context, tx *sql.Tx, wb int64) ([]string, error) {
 	return out, nil
 }
 
-// reinstallPlaces is the moved folders, then each cwd still on disk that is
-// none of them, once each.
+// reinstallPlaces is the moved folders, then each cwd that is a linked
+// worktree of one of them (isWorktreeOf), once each.
 func reinstallPlaces(folders []db.WorkbenchFolder, cwds []string) []string {
 	out := []string{}
 	seen := map[string]bool{}
@@ -533,9 +534,31 @@ func reinstallPlaces(folders []db.WorkbenchFolder, cwds []string) []string {
 		add(f.FolderPath)
 	}
 	for _, p := range cwds {
-		if info, err := os.Stat(p); err == nil && info.IsDir() {
+		if isWorktreeOf(p, folders) {
 			add(p)
 		}
 	}
 	return out
+}
+
+// isWorktreeOf reports whether dir is a linked worktree (its `.git` a file
+// naming `<repo>/.git/worktrees/<name>`) whose main repository is one of
+// folders. Anything else a session ran in or reported — another repository,
+// a folder that left the bench, one on a third bench — is not the merge's:
+// no install goes there, and none is taken out.
+func isWorktreeOf(dir string, folders []db.WorkbenchFolder) bool {
+	fi, err := os.Lstat(filepath.Join(dir, ".git"))
+	if err != nil || !fi.Mode().IsRegular() {
+		return false
+	}
+	main, ok := worktreeMain(dir)
+	if !ok {
+		return false
+	}
+	for _, f := range folders {
+		if strings.EqualFold(filepath.Clean(main), filepath.Clean(f.FolderPath)) {
+			return true
+		}
+	}
+	return false
 }

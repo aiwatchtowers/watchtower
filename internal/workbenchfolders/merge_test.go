@@ -435,15 +435,30 @@ func TestMergeReinstallsWorktreesOfMovedSessions(t *testing.T) {
 	a := bench(t, d, "acme", dir(t, "acme"))
 	bDir := dir(t, "tools")
 	b := bench(t, d, "tools", bDir)
-	wt := filepath.Join(bDir, ".claude", "worktrees", "fix-login")
-	require.NoError(t, os.MkdirAll(wt, 0o755))
-	reported := dir(t, "elsewhere", "tools-wt")
+	// A linked worktree of B's folder: its .git file names <bDir>/.git/worktrees/<name>.
+	worktree := func(path, main string) string {
+		require.NoError(t, os.MkdirAll(path, 0o755))
+		name := filepath.Base(path)
+		require.NoError(t, os.WriteFile(filepath.Join(path, ".git"), []byte("gitdir: "+filepath.Join(main, ".git", "worktrees", name)+"\n"), 0o644))
+		return path
+	}
+	wt := worktree(filepath.Join(bDir, ".claude", "worktrees", "fix-login"), bDir)
+	elsewhere := worktree(dir(t, "elsewhere", "tools-wt"), bDir) // outside the folder, still B's repository
 	gone := filepath.Join(bDir, ".claude", "worktrees", "gone")
+	unrelated := dir(t, "other-repo") // a repository a session merely touched
+	require.NoError(t, os.MkdirAll(filepath.Join(unrelated, ".git"), 0o755))
+	removed := dir(t, "old-folder") // a folder that left B's bench
+	_, err := d.Exec(`INSERT INTO workbench_folders (workbench_id, folder_path, position, added_by, name, removed_at)
+		VALUES (?, ?, 5, 'owner', 'old-folder', '2026-11-01T00:00:00Z')`, b, removed)
+	require.NoError(t, err)
 
 	sess := seedSession(t, d, homeOf(t, d, b))
-	_, err := d.Exec(`UPDATE terminal_sessions SET folder_path = ?, finished_at = '2026-11-01T00:00:00.000Z' WHERE id = ?`, wt, sess)
+	_, err = d.Exec(`UPDATE terminal_sessions SET folder_path = ?, finished_at = '2026-11-01T00:00:00.000Z' WHERE id = ?`, wt, sess)
 	require.NoError(t, err)
-	for _, root := range []string{reported, gone, bDir} {
+	other := seedSession(t, d, homeOf(t, d, b))
+	_, err = d.Exec(`UPDATE terminal_sessions SET folder_path = ?, finished_at = '2026-11-01T00:00:00.000Z' WHERE id = ?`, removed, other)
+	require.NoError(t, err)
+	for _, root := range []string{elsewhere, gone, bDir, unrelated} {
 		_, err = d.Exec(`INSERT INTO terminal_session_worktrees (session_id, root, first_at) VALUES (?, ?, '2026-11-01T00:00:00.000Z')`, sess, root)
 		require.NoError(t, err)
 	}
@@ -452,7 +467,8 @@ func TestMergeReinstallsWorktreesOfMovedSessions(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, rep.Reinstall)
 	assert.Equal(t, bDir, rep.Reinstall[0], "the moved folder first")
-	assert.ElementsMatch(t, []string{bDir, wt, reported}, rep.Reinstall, "every still-existing worktree, once; a gone one skipped")
+	assert.ElementsMatch(t, []string{bDir, wt, elsewhere}, rep.Reinstall,
+		"the moved folder and its existing worktrees only: not a gone one, another repository or a removed folder")
 }
 
 func TestMergeRefusesItself(t *testing.T) {

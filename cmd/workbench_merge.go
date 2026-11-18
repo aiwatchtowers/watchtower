@@ -16,6 +16,7 @@ import (
 	"watchtower/internal/agentkind"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/fsutil"
 	"watchtower/internal/kb"
 	"watchtower/internal/sessionhost"
 	"watchtower/internal/sessionstart"
@@ -285,15 +286,7 @@ var copyStoredImage = func(src, dst string) error {
 	if err != nil {
 		return err //nolint:wrapcheck // the caller names the image
 	}
-	tmp := dst + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err //nolint:wrapcheck // the caller names the image
-	}
-	if err := os.Rename(tmp, dst); err != nil {
-		_ = os.Remove(tmp)
-		return err //nolint:wrapcheck // the caller names the image
-	}
-	return nil
+	return fsutil.WriteFileAtomic(dst, data, 0o600) //nolint:wrapcheck // the caller names the image
 }
 
 // storedImage is one project_target_images row's id and stored copy.

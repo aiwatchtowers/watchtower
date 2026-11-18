@@ -25,6 +25,9 @@ final class WorkbenchInstallCheckTests: XCTestCase {
         try settings([9]).write(to: file)
         XCTAssertTrue(WorkbenchInstallCheck.needsReinstall(folder: dir.path, workbenchID: 1), "the merged bench's install")
         try settings([9, 1]).write(to: file)
-        XCTAssertFalse(WorkbenchInstallCheck.needsReinstall(folder: dir.path, workbenchID: 1))
+        XCTAssertTrue(WorkbenchInstallCheck.needsReinstall(folder: dir.path, workbenchID: 1),
+                      "a merged bench's id beside the row's own: Go repairs it")
+        try settings([1]).write(to: file)
+        XCTAssertFalse(WorkbenchInstallCheck.needsReinstall(folder: dir.path, workbenchID: 1), "only the row's own")
     }
 }

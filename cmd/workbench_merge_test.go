@@ -203,7 +203,10 @@ func TestWorkbenchMergeImageCopyFailureKeepsTheRowsWhole(t *testing.T) {
 func TestWorkbenchMergeReinstallsEveryReturnedWorktree(t *testing.T) {
 	f := newMergeFixture(t)
 	wt := filepath.Join(f.toolsDir, ".claude", "worktrees", "fix")
-	require.NoError(t, os.MkdirAll(filepath.Join(wt, ".git", "info"), 0o755))
+	require.NoError(t, os.MkdirAll(wt, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(wt, ".git"),
+		[]byte("gitdir: "+filepath.Join(f.toolsDir, ".git", "worktrees", "fix")+"\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(f.toolsDir, ".git", "worktrees", "fix"), 0o755))
 	_, err := f.database.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id, finished_at, last_active_at)
 		VALUES (?, 'claude', 'work', ?, 'sid', '2026-11-01T00:00:00.000Z', '2026-11-01T00:00:00Z')`, f.tools, wt)
 	require.NoError(t, err)
