@@ -58,6 +58,12 @@ func TestCompanyDraft_RoundTrip(t *testing.T) {
 	assert.Equal(t, draftT0, got.StartedAt)
 	assert.Equal(t, "publish", got.Step)
 
+	// No services yet is an empty list, never null.
+	require.NoError(t, s.SaveDraft(Draft{Company: "Acme"}))
+	raw, err := os.ReadFile(filepath.Join(s.Dir, "draft.json"))
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"services": []`)
+
 	// The draft is never taken for a company file.
 	entries, errs, err := s.LoadAll("")
 	require.NoError(t, err)
@@ -67,19 +73,24 @@ func TestCompanyDraft_RoundTrip(t *testing.T) {
 
 func TestCompanyDraft_NeverStoresSlackToken(t *testing.T) {
 	for name, raw := range map[string]string{
-		"token field":      `{"company":"Acme","services":["slack"],"step":"slack","slack":{"app_id":"A0ACME","config_token":"abc"}}`,
-		"top-level token":  `{"company":"Acme","services":[],"step":"","token":"abc"}`,
-		"token as a value": `{"company":"Acme","services":[],"step":"","google":{"client_id":"xoxe.xoxp-1-abc","client_secret":""}}`,
+		"token field":       `{"company":"Acme","services":["slack"],"step":"slack","slack":{"app_id":"A0ACME","config_token":"abc"}}`,
+		"top-level token":   `{"company":"Acme","services":[],"step":"","token":"abc"}`,
+		"token as a value":  `{"company":"Acme","services":[],"step":"","google":{"client_id":"xoxe.xoxp-1-abc","client_secret":""}}`,
+		"spaced token":      `{"company":"Acme","services":[],"step":"","google":{"client_id":"x","client_secret":"  xoxe-1-abc"}}`,
+		"escaped token":     `{"company":"Acme","services":[],"step":"","deny_hosts":["xoxe.xoxp-1"]}`,
+		"other Slack token": `{"company":"Acme","services":[],"step":"","linear":{"client_id":"xoxb-1-abc"}}`,
 	} {
 		_, err := ParseDraftJSON([]byte(raw))
 		assert.ErrorIs(t, err, ErrSlackTokenInDraft, name)
 	}
+	_, err := ParseDraftJSON([]byte(`{"company":"Xoxe Labs","services":[],"step":""}`))
+	assert.NoError(t, err, "a name is not a token")
 
 	s := NewStore(t.TempDir())
 	d := sampleDraft()
 	d.Atlassian.ClientSecret = "xoxe-1-sample" // pasted into the wrong field
 	assert.ErrorIs(t, s.SaveDraft(d), ErrSlackTokenInDraft)
-	_, err := os.Stat(filepath.Join(s.Dir, "draft.json"))
+	_, err = os.Stat(filepath.Join(s.Dir, "draft.json"))
 	assert.ErrorIs(t, err, os.ErrNotExist, "nothing written")
 }
 
@@ -110,11 +121,55 @@ func TestCompanyDraft_CorruptRenamed(t *testing.T) {
 	assert.Equal(t, DraftUnreadable, state)
 	assert.Equal(t, bad, again)
 
-	// An unknown service is unreadable too.
-	writeRawDraft(t, s, `{"company":"Acme","services":["notion"],"step":""}`)
-	_, state, _, err = s.LoadDraft(draftT0.Add(2 * time.Hour))
+	// An unknown service, a null and trailing data are unreadable too.
+	for i, raw := range []string{`{"company":"Acme","services":["notion"],"step":""}`, `null`, `{"company":"Acme"}]`} {
+		writeRawDraft(t, s, raw)
+		_, state, _, err = s.LoadDraft(draftT0.Add(time.Duration(i+2) * time.Hour))
+		require.NoError(t, err)
+		assert.Equal(t, DraftUnreadable, state, raw)
+	}
+
+	// A save never overwrites a damaged draft (its typed secrets).
+	writeRawDraft(t, s, "broken")
+	assert.Error(t, s.SaveDraft(sampleDraft()))
+	raw, err = os.ReadFile(filepath.Join(s.Dir, "draft.json"))
 	require.NoError(t, err)
-	assert.Equal(t, DraftUnreadable, state)
+	assert.Equal(t, "broken", string(raw))
+}
+
+// TestCompanyDraft_LinkIsNotFollowed: a draft.json that is a symlink is
+// removed, never renamed with its target's mode changed.
+func TestCompanyDraft_LinkIsNotFollowed(t *testing.T) {
+	s := NewStore(t.TempDir())
+	require.NoError(t, os.MkdirAll(s.Dir, 0o700))
+	target := filepath.Join(t.TempDir(), "elsewhere")
+	require.NoError(t, os.WriteFile(target, []byte("x"), 0o644))
+	require.NoError(t, os.Symlink(target, filepath.Join(s.Dir, "draft.json")))
+
+	_, state, _, err := s.LoadDraft(draftT0)
+	require.NoError(t, err)
+	assert.Equal(t, DraftNone, state)
+	assert.Equal(t, os.FileMode(0o644), fileMode(t, target), "the target is untouched")
+	_, err = os.Lstat(filepath.Join(s.Dir, "draft.json"))
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
+// TestCompanyDraft_IOErrorIsNotSetAside: a draft that cannot be read now
+// (no permission) is an error and stays where it is.
+func TestCompanyDraft_IOErrorIsNotSetAside(t *testing.T) {
+	s := NewStore(t.TempDir())
+	writeRawDraft(t, s, `{"company":"Acme","services":[],"step":""}`)
+	path := filepath.Join(s.Dir, "draft.json")
+	require.NoError(t, os.Chmod(path, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+
+	_, _, _, err := s.LoadDraft(draftT0)
+	assert.Error(t, err)
+	bad, err := s.badDrafts()
+	require.NoError(t, err)
+	assert.Empty(t, bad)
+	_, err = os.Lstat(path)
+	assert.NoError(t, err)
 }
 
 func TestCompanyDraft_OnlyNewestBadKept(t *testing.T) {

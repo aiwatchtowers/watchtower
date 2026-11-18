@@ -111,7 +111,7 @@ type companyDraftResult struct {
 	Draft   *company.Draft     `json:"draft"`
 	BadFile string             `json:"bad_file"`
 	// Checked are the steps whose check passed with the values they hold.
-	Checked []string `json:"checked_vendors"`
+	CheckedVendors []string `json:"checked_vendors"`
 }
 
 func showCompanyDraft(store company.Store, now time.Time) (companyDraftResult, error) {
@@ -119,10 +119,10 @@ func showCompanyDraft(store company.Store, now time.Time) (companyDraftResult, e
 	if err != nil {
 		return companyDraftResult{}, err
 	}
-	res := companyDraftResult{State: state, BadFile: bad, Checked: []string{}}
+	res := companyDraftResult{State: state, BadFile: bad, CheckedVendors: []string{}}
 	if state == company.DraftOK {
 		res.Draft = &d
-		res.Checked = d.CheckedVendors()
+		res.CheckedVendors = d.CheckedVendors()
 	}
 	return res, nil
 }
@@ -148,9 +148,6 @@ type companyDiscoverResult struct {
 }
 
 func discoverCompanyClients(ctx context.Context, workspaceDir string, database *db.DB, forced string) (companyDiscoverResult, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	c, err := company.Discover(ctx, workspaceDir, database, forced)
 	if err != nil {
 		return companyDiscoverResult{}, err

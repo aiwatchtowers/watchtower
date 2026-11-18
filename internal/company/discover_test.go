@@ -135,6 +135,25 @@ func TestDiscover_DuplicateKeepsFirstSource(t *testing.T) {
 	assert.True(t, got[0].HasSecret)
 }
 
+// TestDiscover_PersonalProjectNeverCandidate: a Google account on the
+// person's own project (its credentials file and its row's client id) is
+// never offered as a company's client.
+func TestDiscover_PersonalProjectNeverCandidate(t *testing.T) {
+	ws := t.TempDir()
+	setSharedGoogle(t, "")
+	const own = "5678-efgh.apps.googleusercontent.com"
+	require.NoError(t, NewStore(ws).Save("me", companybundle.Bundle{V: 1, Company: "Me", Personal: true,
+		Google: &companybundle.Google{ClientID: own, ClientSecret: "p"}}))
+	d := db.OpenTestDB(t)
+	g, err := d.CreateGoogleAccount(db.GoogleAccount{Email: "me@example.com", ClientID: own, CompanySlug: "me"})
+	require.NoError(t, err)
+	writeClientFile(t, ws, "google_credentials_"+itoa(g)+".json", map[string]string{"client_id": own, "client_secret": "p"})
+
+	got, err := Discover(context.Background(), ws, d, "")
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
 func itoa(n int64) string {
 	b, _ := json.Marshal(n)
 	return string(b)

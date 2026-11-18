@@ -21,6 +21,9 @@ import (
 var companyDraftT0 = time.Date(2026, 11, 17, 9, 30, 0, 0, time.UTC)
 
 func TestCompanyList_DraftState(t *testing.T) {
+	prev := companyNow
+	companyNow = func() time.Time { return companyDraftT0 }
+	t.Cleanup(func() { companyNow = prev })
 	store := company.NewStore(t.TempDir())
 	state := func() string {
 		t.Helper()
@@ -36,6 +39,21 @@ func TestCompanyList_DraftState(t *testing.T) {
 	assert.Equal(t, "unreadable", state(), "an unreadable draft is never folded into none")
 	require.NoError(t, store.DiscardDraft())
 	assert.Equal(t, "none", state())
+
+	// A draft that cannot be read now (no permission) is left in place and
+	// never hides the companies.
+	require.NoError(t, store.Save("acme", companybundle.Bundle{V: 1, Company: "Acme"}))
+	path := filepath.Join(store.Dir, "draft.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"company":"Acme","services":[],"step":""}`), 0o000))
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+	res, err := listCompanies(store, "")
+	require.NoError(t, err)
+	assert.Len(t, res.Companies, 1)
+	assert.Equal(t, "unreadable", res.Draft.State)
+	require.Len(t, res.Errors, 1)
+	assert.Equal(t, "draft.json", res.Errors[0].File)
+	_, err = os.Lstat(path)
+	assert.NoError(t, err, "not set aside")
 }
 
 func TestCompanyDraft_SaveShowDiscardCLI(t *testing.T) {

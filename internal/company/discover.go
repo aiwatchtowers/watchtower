@@ -1,6 +1,7 @@
 package company
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -78,8 +79,14 @@ func Discover(ctx context.Context, workspaceDir string, database *db.DB, forced 
 	if err != nil {
 		return nil, err
 	}
+	// A personal project's client (and the accounts on it) is the person's
+	// own, never offered as a company's whatever source finds it.
+	personal := map[string]bool{}
 	for _, e := range entries {
 		if e.Bundle.Personal {
+			for _, c := range bundleCandidates(e.Bundle, "", "") {
+				personal[candidateKey(c)] = true
+			}
 			continue
 		}
 		out = append(out, bundleCandidates(e.Bundle, SourceStored, e.Bundle.Company)...)
@@ -105,7 +112,7 @@ func Discover(ctx context.Context, workspaceDir string, database *db.DB, forced 
 			})
 		}
 	}
-	return dedupeCandidates(out), nil
+	return dedupeCandidates(out, personal), nil
 }
 
 func savedSetupLabel(company string) string {
@@ -163,7 +170,7 @@ func discoverAccounts(database *db.DB) ([]accountRef, error) {
 	}
 	for _, a := range google {
 		if !gone(a.Status) {
-			out = append(out, accountRef{vendor: "google", id: a.ID, label: firstNonEmpty(a.Label, a.Email), clientID: a.ClientID})
+			out = append(out, accountRef{vendor: "google", id: a.ID, label: cmp.Or(a.Label, a.Email), clientID: a.ClientID})
 		}
 	}
 	jiraAccounts, err := database.ListJiraAccounts()
@@ -172,7 +179,7 @@ func discoverAccounts(database *db.DB) ([]accountRef, error) {
 	}
 	for _, a := range jiraAccounts {
 		if !gone(a.Status) {
-			out = append(out, accountRef{vendor: "atlassian", id: a.ID, label: firstNonEmpty(a.Label, a.SiteName, a.SiteURL)})
+			out = append(out, accountRef{vendor: "atlassian", id: a.ID, label: cmp.Or(a.Label, a.SiteName, a.SiteURL)})
 		}
 	}
 	linearAccounts, err := database.ListLinearAccounts()
@@ -181,7 +188,7 @@ func discoverAccounts(database *db.DB) ([]accountRef, error) {
 	}
 	for _, a := range linearAccounts {
 		if !gone(a.Status) {
-			out = append(out, accountRef{vendor: "linear", id: a.ID, label: firstNonEmpty(a.Label, a.OrgName)})
+			out = append(out, accountRef{vendor: "linear", id: a.ID, label: cmp.Or(a.Label, a.OrgName)})
 		}
 	}
 	email, err := database.ListEmailAccounts()
@@ -190,7 +197,7 @@ func discoverAccounts(database *db.DB) ([]accountRef, error) {
 	}
 	for _, a := range email {
 		if a.Provider == "outlook" && !gone(a.Status) {
-			out = append(out, accountRef{vendor: "microsoft", id: a.ID, label: firstNonEmpty(a.EmailAddress, a.Label)})
+			out = append(out, accountRef{vendor: "microsoft", id: a.ID, label: cmp.Or(a.EmailAddress, a.Label)})
 		}
 	}
 	return out, nil
@@ -228,10 +235,13 @@ func clientFileCandidate(workspaceDir string, a accountRef) (Candidate, bool) {
 	}, true
 }
 
-// dedupeCandidates drops our shared clients and repeats (same vendor and
-// client id, or app id), keeping the first and OR-ing HasSecret; vendors in
-// the wizard's order.
-func dedupeCandidates(in []Candidate) []Candidate {
+// candidateKey identifies a client: vendor and client id, or app id.
+func candidateKey(c Candidate) string { return c.Vendor + "\x00" + c.ClientID + "\x00" + c.AppID }
+
+// dedupeCandidates drops our shared clients, the excluded (personal) ones
+// and repeats, keeping the first and OR-ing HasSecret; vendors in the
+// wizard's order.
+func dedupeCandidates(in []Candidate, excluded map[string]bool) []Candidate {
 	shared := sharedClientIDs()
 	out := []Candidate{}
 	at := map[string]int{}
@@ -239,7 +249,10 @@ func dedupeCandidates(in []Candidate) []Candidate {
 		if c.ClientID != "" && c.ClientID == shared[c.Vendor] {
 			continue
 		}
-		key := c.Vendor + "\x00" + c.ClientID + "\x00" + c.AppID
+		key := candidateKey(c)
+		if excluded[key] {
+			continue
+		}
 		if i, ok := at[key]; ok {
 			out[i].HasSecret = out[i].HasSecret || c.HasSecret
 			continue
@@ -251,13 +264,4 @@ func dedupeCandidates(in []Candidate) []Candidate {
 		return slices.Index(draftVendors, a.Vendor) - slices.Index(draftVendors, b.Vendor)
 	})
 	return out
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }

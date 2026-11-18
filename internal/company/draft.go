@@ -77,31 +77,64 @@ const (
 // token: it is used once and never stored.
 var ErrSlackTokenInDraft = errors.New("the Slack configuration token is never stored in the draft")
 
-// slackTokenPrefix starts every Slack configuration (and refresh) token.
-const slackTokenPrefix = "xoxe"
+// errDraftDamaged marks a draft.json that is there but does not decode or
+// validate: it is set aside, unlike an I/O error, which is returned.
+var errDraftDamaged = errors.New("damaged draft")
 
 func (s Store) draftPath() string { return filepath.Join(s.Dir, draftFile) }
 
-// ParseDraftJSON decodes a draft from the wizard: unknown fields (a token
-// field among them) are refused, and so is any value that is a Slack token.
+// isSlackToken reports a Slack token (configuration xoxe.…/xoxe-…, or any
+// other xox?- token) pasted into a field, surrounding spaces ignored.
+func isSlackToken(v string) bool {
+	v = strings.TrimSpace(v)
+	if strings.HasPrefix(v, "xoxe.") {
+		return true
+	}
+	return len(v) > 5 && strings.HasPrefix(v, "xox") && v[4] == '-' && v[3] >= 'a' && v[3] <= 'z'
+}
+
+// hasSlackToken walks every string of a decoded JSON value.
+func hasSlackToken(v any) bool {
+	switch v := v.(type) {
+	case string:
+		return isSlackToken(v)
+	case []any:
+		return slices.ContainsFunc(v, hasSlackToken)
+	case map[string]any:
+		for _, x := range v {
+			if hasSlackToken(x) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ParseDraftJSON decodes a draft from the wizard: one JSON object, unknown
+// fields refused (a token field with ErrSlackTokenInDraft), and so is any
+// value that is a Slack token.
 func ParseDraftJSON(raw []byte) (Draft, error) {
 	if len(raw) > maxFileBytes {
 		return Draft{}, errors.New("draft too large")
 	}
-	if strings.Contains(strings.ToLower(string(raw)), `"`+slackTokenPrefix) {
+	var generic any
+	if err := json.Unmarshal(raw, &generic); err != nil {
+		return Draft{}, fmt.Errorf("decoding draft: %w", err)
+	}
+	if _, ok := generic.(map[string]any); !ok {
+		return Draft{}, errors.New("decoding draft: not a JSON object")
+	}
+	if hasSlackToken(generic) {
 		return Draft{}, ErrSlackTokenInDraft
 	}
 	var d Draft
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&d); err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "token") {
+		if field, ok := strings.CutPrefix(err.Error(), `json: unknown field "`); ok && strings.Contains(strings.ToLower(field), "token") {
 			return Draft{}, ErrSlackTokenInDraft
 		}
 		return Draft{}, fmt.Errorf("decoding draft: %w", err)
-	}
-	if dec.More() {
-		return Draft{}, errors.New("decoding draft: trailing data")
 	}
 	return d, nil
 }
@@ -127,25 +160,29 @@ func (d Draft) validate() error {
 	return nil
 }
 
-// readDraft reads draft.json; a missing file is fs.ErrNotExist, anything else
-// that fails is unreadable.
+// readDraft reads draft.json: a missing file is fs.ErrNotExist, one that does
+// not decode or validate (or is not a regular file) wraps errDraftDamaged,
+// anything else is an I/O error.
 func readDraft(path string) (Draft, error) {
 	fi, err := os.Lstat(path)
 	if err != nil {
 		return Draft{}, err
 	}
 	if !fi.Mode().IsRegular() {
-		return Draft{}, errors.New("not a regular file")
+		return Draft{}, fmt.Errorf("%w: not a regular file", errDraftDamaged)
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return Draft{}, err
 	}
 	d, err := ParseDraftJSON(raw)
-	if err != nil {
-		return Draft{}, err
+	if err == nil {
+		err = d.validate()
 	}
-	return d, d.validate()
+	if err != nil {
+		return Draft{}, fmt.Errorf("%w: %w", errDraftDamaged, err)
+	}
+	return d, nil
 }
 
 // badDrafts lists the set-aside drafts, oldest name first (the stamp sorts).
@@ -207,27 +244,59 @@ func (s Store) LoadDraft(now time.Time) (Draft, DraftState, string, error) {
 			return Draft{}, DraftNone, "", nil
 		}
 		return Draft{}, DraftUnreadable, bad[len(bad)-1], nil
+	case !errors.Is(err, errDraftDamaged):
+		return Draft{}, DraftNone, "", fmt.Errorf("reading the company draft: %w", err)
+	}
+	name, err := s.setDraftAside(now)
+	if err != nil {
+		return Draft{}, DraftNone, "", err
+	}
+	if name == "" {
+		return Draft{}, DraftNone, "", nil
+	}
+	return Draft{}, DraftUnreadable, name, nil
+}
+
+// setDraftAside renames a damaged draft.json to draft.json.bad-<now, UTC>
+// (0600) and deletes older set-aside drafts; held under the draft lock. A
+// draft.json that is not a regular file (a link, a directory) holds nothing
+// typed: it is removed, never followed, and the newest older set-aside
+// draft (if any) is named.
+func (s Store) setDraftAside(now time.Time) (string, error) {
+	fi, err := os.Lstat(s.draftPath())
+	if err != nil {
+		return "", fmt.Errorf("setting the unreadable draft aside: %w", err)
+	}
+	if !fi.Mode().IsRegular() {
+		if err := os.Remove(s.draftPath()); err != nil {
+			return "", fmt.Errorf("removing draft.json, not a regular file: %w", err)
+		}
+		bad, err := s.badDrafts()
+		if err != nil || len(bad) == 0 {
+			return "", err
+		}
+		return bad[len(bad)-1], nil
 	}
 	name := badDraftPrefix + now.UTC().Format(badDraftStamp)
 	path := filepath.Join(s.Dir, name)
 	if err := os.Rename(s.draftPath(), path); err != nil {
-		return Draft{}, DraftNone, "", fmt.Errorf("setting the unreadable draft aside: %w", err)
+		return "", fmt.Errorf("setting the unreadable draft aside: %w", err)
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
-		return Draft{}, DraftNone, "", fmt.Errorf("setting the unreadable draft aside: %w", err)
+		return "", fmt.Errorf("setting the unreadable draft aside: %w", err)
 	}
 	bad, err := s.badDrafts()
 	if err != nil {
-		return Draft{}, DraftNone, "", err
+		return "", err
 	}
 	for _, b := range bad {
 		if b != name {
 			if err := os.Remove(filepath.Join(s.Dir, b)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-				return Draft{}, DraftNone, "", fmt.Errorf("deleting an older unreadable draft: %w", err)
+				return "", fmt.Errorf("deleting an older unreadable draft: %w", err)
 			}
 		}
 	}
-	return Draft{}, DraftUnreadable, name, nil
+	return name, nil
 }
 
 // SaveDraft writes d as draft.json (0600) through a temp file and a rename.
@@ -244,11 +313,20 @@ func (s Store) SaveDraft(d Draft) error {
 	}
 	defer unlock()
 	d.Checked = nil
-	if cur, err := readDraft(s.draftPath()); err == nil {
+	cur, err := readDraft(s.draftPath())
+	switch {
+	case err == nil:
 		d.Checked = cur.Checked
 		if !cur.StartedAt.IsZero() {
 			d.StartedAt = cur.StartedAt
 		}
+	case !errors.Is(err, fs.ErrNotExist):
+		// A damaged draft is set aside by LoadDraft (which the wizard
+		// runs first), never overwritten with its typed secrets.
+		return fmt.Errorf("the stored company draft cannot be read; load it first: %w", err)
+	}
+	if d.Services == nil {
+		d.Services = []string{}
 	}
 	return s.writeDraft(d)
 }
@@ -378,11 +456,7 @@ func CheckHash(vendor string, d Draft) string {
 	if vals == nil {
 		return ""
 	}
-	raw, err := json.Marshal(append([]string{vendor}, vals...))
-	if err != nil {
-		return ""
-	}
-	sum := sha256.Sum256(raw)
+	sum := sha256.Sum256([]byte(strings.Join(append([]string{vendor}, vals...), "\x00")))
 	return hex.EncodeToString(sum[:])
 }
 

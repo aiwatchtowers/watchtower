@@ -409,7 +409,7 @@ Order: slack, google, atlassian, microsoft, linear (spec §3 step 2). A policy-f
 ```go
 type Draft struct {
     Company, Slug string; Services []string; Step string; StartedAt time.Time
-    Slack DraftSlack /* {AppID string} */; Google *companybundle.Google; Atlassian *companybundle.Atlassian
+    Slack DraftSlack; Google *companybundle.Google; Atlassian *companybundle.Atlassian
     Linear *companybundle.Linear; Microsoft *companybundle.Microsoft; DenyHosts []string
     Skipped []string; Checked map[string]string // vendor → sha256 of the checked values
     MicrosoftWaiting bool
