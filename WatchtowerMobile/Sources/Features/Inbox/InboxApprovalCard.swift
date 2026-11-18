@@ -24,8 +24,14 @@ struct InboxApprovalCard: View {
     }
 
     init(
-        center: InboxCenter, card: InboxCardModel, grants: Grants, now: Date, hubAway: Bool = false, hubName: String = "",
-        host: TowerHost = .mac, timeZone: TimeZone = .current
+        center: InboxCenter,
+        card: InboxCardModel,
+        grants: Grants,
+        now: Date,
+        hubAway: Bool = false,
+        hubName: String = "",
+        host: TowerHost = .mac,
+        timeZone: TimeZone = .current
     ) {
         self.center = center
         self.card = card

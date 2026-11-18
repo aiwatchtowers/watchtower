@@ -529,7 +529,7 @@ Every addition defaults to today's behaviour. The strings live in the phone's te
 
 #### 12.7 Shots
 
-After the build, `make mobile-shots SHOTS_ONLY=inbox-approval` renders these names from the real card (the `MockRow`s are gone) and they are compared by eye with this folder. The Mac's `approval-*` DesignShots are rendered before and after and must match. The phone chat's frames (`chat-approval-failed`, `-dismiss`, `-sending`, `-refused`, `-unconfirmed`, §12.9) render from the same test and are compared the same way. `ScreenshotTourTests`' `inbox-*` §3 frame is updated to the new card. Mockup §3 in `docs/design/mockups/mobile-inbox/index.html` now shows these frames, so they are the one source of truth for the approval card.
+After the build, `make mobile-shots SHOTS_ONLY=inbox-approval` renders these names from the real card (the `MockRow`s are gone) and they are compared by eye with this folder. The Mac's `approval-*` DesignShots are rendered before and after and must match. The phone chat's frames (`chat-approval-failed`, `-dismiss`, `-sending`, `-refused`, `-unconfirmed`, §12.9) render from the same test and are compared the same way. `ScreenshotTourTests`' `inbox-*` §3 frame is updated to the new card. Mockup §3 in `docs/design/mockups/mobile-inbox/index.html` now shows these frames, so they are the one source of truth for the approval card. After the build (PR #1006) the seven frames whose stand-in rows differed from the real card were re-rendered from it. They show the chosen busy look (ask #1549 Q2 = A): the disabled Retry or Dismiss stays next to the spinner, with its line under it.
 
 #### 12.8 Decided questions (asks #1549, #1553)
 
