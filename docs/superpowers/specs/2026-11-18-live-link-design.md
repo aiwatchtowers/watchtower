@@ -70,15 +70,25 @@ appears, a moved card moves, an answered ask shows its answer), marked pending. 
 slice records (data zone) are different zones and may arrive in either order, so the echo alone never clears an
 overlay:
 
-- echo `applied` → the overlay waits for the first slice record of the same entity (by entity id) that arrives after
-  the echo; that record replaces it. If none arrives within 30 s of the echo (the apply changed nothing visible), the
-  overlay is dropped and the replica shows as is.
+An overlay is dropped as soon as the **replica already shows the expected effect**, whichever of the echo and the
+slice record came first:
+
+- **Change of an existing entity** (move, status, priority, ask answer, comment on a target): the overlay is dropped
+  when the replica's value equals the requested one (the status is `done`, the ask is no longer open, the comment
+  with this action's `client_key` is listed). If the echo says `applied` but the replica's value differs (someone
+  changed it again right after), the overlay is dropped at the first slice record of that entity after the echo, or
+  30 s after the echo if none comes.
+- **Create** (a new target): there is no id at tap time. The overlay is keyed by the action id; the `applied` echo
+  carries the new `target_id` (`handlers/board.go:251` already returns it), and the overlay is dropped once the
+  replica has a record for that id — at once if the slice came first. Before the echo, a replica target that appeared
+  after the tap with the same title and parent hides the overlay (no duplicate card); the echo then confirms the
+  match.
 - echo refused / the action fails → the overlay is removed at once and the existing refusal line with Dismiss shows.
 - no echo while the tower's heartbeat is stale → the caption turns to "Waiting for your tower"; after 10 min the
   overlay is dropped and today's pending row takes over (an offline tower).
 
-Writers of what a screen shows: the overlay (phone) and the replica (hub's records); the replica wins once a slice
-record for that entity newer than the echo is in.
+Writers of what a screen shows: the overlay (phone) and the replica (hub's records); the replica wins as soon as it
+shows the expected effect, or, for an applied action whose effect was overtaken, at its next record of that entity.
 
 **How it looks** — [2026-11-18-live-link-mockups.html](2026-11-18-live-link-mockups.html), one frame per state: new
 task just tapped, card moved and waiting for its slice, confirmed, tower slow/offline, refused, ask answered. The
@@ -122,8 +132,12 @@ towers keep replication as it is, plus R5 (optimistic apply works on any transpo
 | Event arrives before the save's answer | records applied by `seq`; the answer then only confirms | event-before-answer order |
 | Hub dies after reading the action, before apply | applied after restart from the mailbox (exactly-once ledger); the phone's overlay stays pending meanwhile | restart between read and apply |
 | Action refused by the hub | overlay removed, refusal line shown | refused echo |
-| Echo arrives before the slice record | overlay kept until the entity's slice record; no flicker back to the old value | echo-then-slice and slice-then-echo orders |
-| Echo applied, no slice change | overlay dropped 30 s after the echo | no-op apply |
+| Echo arrives before the slice record | overlay kept until the replica shows the effect; no flicker back | echo-then-slice |
+| Slice record arrives before the echo | overlay dropped at once when the replica shows the effect | slice-then-echo (no 30 s wait) |
+| Create: slice before echo | the new card replaces the overlay by title and parent; the echo's `target_id` confirms | create, slice-then-echo; no duplicate card |
+| Create: echo before slice | overlay kept until the replica has the echo's `target_id` | create, echo-then-slice |
+| Effect overtaken by another change | overlay dropped at the entity's next record after the echo | concurrent Mac change |
+| Echo applied, effect never visible | overlay dropped 30 s after the echo | no-op apply |
 | Tower offline for long | overlay dropped after 10 min, waiting chip stays; the action applies when the tower is back | 10-min expiry |
 | Save larger than the frame budget | split by record; an oversized record has no body, receiver reads it | 300 KiB save; one 300 KiB record |
 | Old relay (no capability) | single-record inline only, as today; everything still works | old-relay stub |
