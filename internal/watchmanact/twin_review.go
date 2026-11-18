@@ -301,7 +301,7 @@ func (t *Twin) handleReviewCode(parent context.Context, it db.WatchmanItem) {
 		if r := strings.TrimSpace(dec.Rationale); r != "" {
 			reason += ": " + watchman.Clip(r, errorTextLimit)
 		}
-		j.park(ctx, reason)
+		j.parkReview(ctx, round, place, reason)
 	case dec.Choice == ReviewApprove:
 		j.approveRound(ctx, round, place)
 	default:
@@ -439,12 +439,12 @@ func (j *job) approveRound(ctx context.Context, round *db.ReviewRound, place Rev
 		}
 		why = park
 	}
-	if !j.placeStill(ctx, round, place) {
-		return
-	}
 	if park != "" {
 		log.Printf("watchman twin: item %d: %s", j.it.ID, why)
-		j.park(ctx, park)
+		j.parkReview(ctx, round, place, park)
+		return
+	}
+	if !j.placeStill(ctx, round, place) {
 		return
 	}
 	o := j.outcome(OutcomeApproved)
@@ -463,6 +463,36 @@ func (j *job) approveRound(ctx context.Context, round *db.ReviewRound, place Rev
 		return j.finishTx(tx, o)
 	})
 	j.roundWritten(ctx, err, round.ID, reviewdiff.ApprovedLine(round.ID))
+}
+
+// parkReview parks a review decided on round at place, on what the twin
+// checked only: the place is read again first (placeStill), and the park is
+// finished in a transaction that re-reads the round (checkRoundTx) — a tree,
+// place or branch that moved, or a round repointed meanwhile, waits
+// reviewWait with the attempt unspent instead of parking on a stale diff.
+func (j *job) parkReview(ctx context.Context, round *db.ReviewRound, place ReviewPlace, reason string) {
+	if !j.placeStill(ctx, round, place) {
+		return
+	}
+	o := j.outcome(OutcomeParked)
+	o.ParkReason = reason
+	j.parked = &o
+	err := j.t.d.DB.WithTx(func(tx *sql.Tx) error {
+		if err := j.checkRoundTx(tx, round); err != nil {
+			return err
+		}
+		return j.finishTx(tx, o)
+	})
+	switch {
+	case errors.Is(err, errLeaseLost):
+		log.Printf("watchman twin: item %d: lease lost, nothing written", j.it.ID)
+	case errors.Is(err, errKindChanged):
+		j.release()
+	case errors.Is(err, errRoundMoved):
+		j.deferItem()
+	case err != nil:
+		j.fail(ctx, err)
+	}
 }
 
 // prBasePark reads the PR base of place's branch: "" when the Approve may

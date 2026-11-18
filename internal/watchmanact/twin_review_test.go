@@ -268,6 +268,51 @@ func TestTwin_ReviewCodeDiffParkRevalidatesThePlace(t *testing.T) {
 	e.wantWaiting(itemID)
 }
 
+// The place moves while the twin decides to hand the review back: no park
+// on the stale diff; the item waits.
+func TestTwin_ReviewCodeHandoffParkRevalidatesThePlace(t *testing.T) {
+	e := newReviewEnv(t)
+	e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
+		e.baseMu.Lock()
+		e.place.Round.TreeSHA = "t2"
+		e.baseMu.Unlock()
+		d := reviewDecision(ReviewApprove)
+		d.Handoff = watchman.HandoffOwnerOnly
+		return d, nil
+	}
+	itemID := e.queueReview()
+	e.run()
+	e.wantWaiting(itemID)
+}
+
+// The owner repoints the round while the twin decides to park it (a
+// protected change, a main base, a hand-back): the park's transaction
+// re-reads the round and writes nothing; the item waits.
+func TestTwin_ReviewCodeParkOnRepointedRoundWaits(t *testing.T) {
+	for name, set := range map[string]func(e *reviewEnv, d *watchman.Decision){
+		"protected": func(e *reviewEnv, _ *watchman.Decision) { e.place.Paths = []string{"docs/inventory/watchman.md"} },
+		"main base": func(e *reviewEnv, _ *watchman.Decision) { e.base = "main" },
+		"handoff":   func(_ *reviewEnv, d *watchman.Decision) { d.Handoff = watchman.HandoffOwnerOnly },
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newReviewEnv(t)
+			d := reviewDecision(ReviewApprove)
+			set(e, &d)
+			e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
+				open, err := e.db.OpenReviewRound(e.wb, e.session)
+				e.must(err)
+				open.HeadSHA, open.BaseLabel = "h1", "main"
+				open.Branch = "task/moved" // the owner's repoint: another place
+				e.must(e.db.RepointReviewRound(*open))
+				return d, nil
+			}
+			itemID := e.queueReview()
+			e.run()
+			e.wantWaiting(itemID)
+		})
+	}
+}
+
 // The owner's Refresh repoints the twin's open round while it decides: the
 // write's re-check in its transaction refuses, nothing is approved.
 func TestTwin_ReviewCodeRoundRepointedDuringDecideIsNotApproved(t *testing.T) {
