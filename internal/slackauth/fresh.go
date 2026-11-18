@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"watchtower/internal/db"
@@ -21,6 +22,11 @@ var refreshAhead = time.Hour
 // refreshTokenAhead refreshes while the refresh token itself has this long
 // left, so a Mac that syncs rarely never lets it lapse (parent spec §5.5).
 var refreshTokenAhead = 7 * 24 * time.Hour
+
+// slackRefreshTokenDefaultTTL is a rotated refresh token's lifetime when
+// Slack's answer does not state it: 30 days for an app with PKCE on (the
+// plan B spike, Task 1). Task 16 confirms it.
+const slackRefreshTokenDefaultTTL = 30 * 24 * time.Hour
 
 // lockWait bounds the wait for another process's refresh — the one-minute
 // wait of the other token writers.
@@ -94,7 +100,13 @@ func freshLocked(ctx context.Context, store *slack.TokenStore, database *db.DB, 
 		// Nothing to refresh with; the token is used as is until it fails.
 		return tok, nil
 	}
-	got, err := refresh(ctx, clientID, tok.RefreshToken)
+	// Slack rotates the refresh token on use: once it answers, only the new
+	// one works, so a cancel of the caller (Sync Now, a sleep, Ctrl-C) must
+	// not drop the answer before it is saved. The caller's ctx bounded only
+	// the lock wait; the refresh and the save run to the end.
+	refreshCtx, cancelRefresh := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
+	defer cancelRefresh()
+	got, err := refresh(refreshCtx, clientID, tok.RefreshToken)
 	if err != nil {
 		if IsReloginError(err) {
 			if dbErr := database.SetSlackAccountAuthState(accountID, "error", ReloginMessage); dbErr != nil {
@@ -104,29 +116,56 @@ func freshLocked(ctx context.Context, store *slack.TokenStore, database *db.DB, 
 		}
 		return nil, fmt.Errorf("refreshing slack account %d: %w", accountID, err)
 	}
+	next := refreshedToken(tok, got, clientID, at)
+	save := func() error {
+		if saveFault != nil {
+			if err := saveFault(); err != nil {
+				return err
+			}
+		}
+		return store.Save(next)
+	}
+	if err := save(); err != nil {
+		// One more try: the old file's refresh token is likely spent.
+		if retryErr := save(); retryErr != nil {
+			log.Printf("slack account %d: the rotated token was not persisted: %v", accountID, retryErr)
+			return nil, fmt.Errorf("saving the refreshed slack token of account %d: %w", accountID, errors.Join(err, retryErr))
+		}
+	}
+	// The file is the truth; a stale column is only a display lag.
+	if err := database.SetSlackRefreshExpiry(accountID, next.RefreshExpiresAt); err != nil {
+		log.Printf("slack account %d: recording the refresh token's expiry: %v", accountID, err)
+	}
+	return next, nil
+}
+
+// saveFault, a test seam, fails a save of a refreshed token before it is
+// written; nil outside tests.
+var saveFault func() error
+
+// refreshedToken is tok after Slack's refresh answer got at at. An expiry
+// Slack did not state is kept from tok — except a new refresh token without
+// a stated lifetime, which gets slackRefreshTokenDefaultTTL.
+func refreshedToken(tok *slack.Token, got Refreshed, clientID string, at time.Time) *slack.Token {
 	next := *tok
 	next.AccessToken = got.AccessToken
-	if got.RefreshToken != "" {
-		next.RefreshToken = got.RefreshToken
-	}
-	next.ExpiresAt = time.Time{}
 	if got.ExpiresIn > 0 {
 		next.ExpiresAt = at.Add(time.Duration(got.ExpiresIn) * time.Second).UTC()
 	}
-	next.RefreshExpiresAt = time.Time{}
-	if got.RefreshExpiresIn > 0 {
+	rotatedRefresh := got.RefreshToken != "" && got.RefreshToken != tok.RefreshToken
+	if rotatedRefresh {
+		next.RefreshToken = got.RefreshToken
+	}
+	switch {
+	case got.RefreshExpiresIn > 0:
 		next.RefreshExpiresAt = at.Add(time.Duration(got.RefreshExpiresIn) * time.Second).UTC()
+	case rotatedRefresh:
+		next.RefreshExpiresAt = at.Add(slackRefreshTokenDefaultTTL).UTC()
 	}
 	if next.ClientID == "" {
 		next.ClientID = clientID
 	}
-	if err := store.Save(&next); err != nil {
-		return nil, fmt.Errorf("saving the refreshed slack token of account %d: %w", accountID, err)
-	}
-	if err := database.SetSlackRefreshExpiry(accountID, next.RefreshExpiresAt); err != nil {
-		return nil, err
-	}
-	return &next, nil
+	return &next
 }
 
 // refreshDue reports whether a rotated token must be refreshed at now: the

@@ -2,8 +2,10 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"time"
 
+	"watchtower/internal/slackauth"
 	"watchtower/internal/sync"
 )
 
@@ -141,18 +143,28 @@ func isManualSync(ctx context.Context) bool {
 // freshenSlackTokens reads every account's token through the freshener at
 // the start of the Slack phase — also for an account the cadence skips this
 // cycle, so a rarely-due account's refresh token never lapses (plan B Task 8)
-// — and hands a changed token to the account's client. A failure is logged;
-// the run then goes on with the token it has (a dead sign-in is marked on its
-// row by the freshener).
-func (d *Daemon) freshenSlackTokens(ctx context.Context) {
+// — and hands a changed token to the account's client. It returns the
+// accounts whose sign-in is dead (slackauth.ErrReloginNeeded): they sit this
+// cycle out, so a run on the stale token cannot overwrite the Re-login state,
+// and are read again next cycle, when a new sign-in may have replaced the
+// file. Any other failure is logged and the run goes on with the token it has.
+func (d *Daemon) freshenSlackTokens(ctx context.Context) (relogin map[int64]bool) {
 	if d.slackTokenFreshener == nil {
-		return
+		return nil
 	}
 	for _, o := range d.orchestrators {
 		if d.purgeHeld("slack", o.AccountID()) {
 			continue
 		}
 		token, err := d.slackTokenFreshener(ctx, o.AccountID())
+		if errors.Is(err, slackauth.ErrReloginNeeded) {
+			if relogin == nil {
+				relogin = map[int64]bool{}
+			}
+			relogin[o.AccountID()] = true
+			d.logger.Printf("slack account %d: %v; not synced until it is signed in again", o.AccountID(), err)
+			continue
+		}
 		if err != nil {
 			d.logger.Printf("slack account %d: reading its token: %v", o.AccountID(), err)
 			continue
@@ -161,4 +173,5 @@ func (d *Daemon) freshenSlackTokens(ctx context.Context) {
 			o.SlackClient().SetToken(token)
 		}
 	}
+	return relogin
 }

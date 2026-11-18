@@ -960,7 +960,7 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 	if !d.sourceAllowed("slack") {
 		return nil, nil
 	}
-	d.freshenSlackTokens(ctx)
+	relogin := d.freshenSlackTokens(ctx)
 	// The accounts whose Slack run is due (the adaptive cadence). A skipped
 	// account writes nothing, is no sync error and does not freeze the Inbox:
 	// detection reads when a message was stored, so what its later run
@@ -970,6 +970,9 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 	due := make([]*sync.Orchestrator, 0, len(d.orchestrators))
 	var skipped []int64
 	for _, o := range d.orchestrators {
+		if relogin[o.AccountID()] {
+			continue // its sign-in is dead (freshenSlackTokens)
+		}
 		if !d.slackCadence(o.AccountID()).due(now, manual) {
 			skipped = append(skipped, o.AccountID())
 			continue

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	watchtowerslack "watchtower/internal/slack"
+	"watchtower/internal/slackauth"
 	"watchtower/internal/sync"
 )
 
@@ -333,4 +335,43 @@ func TestSlackRefresh_SkippedCadenceStillRefreshes(t *testing.T) {
 	defer mu.Unlock()
 	require.NotEmpty(t, seenTokens)
 	assert.Equal(t, "xoxe.xoxp-fresh", seenTokens[0])
+}
+
+// An account whose sign-in is dead is not synced on its stale token (which
+// would overwrite the Re-login state); a later cycle that finds a new
+// sign-in syncs it again.
+func TestSlackRefresh_ReloginSkipsTheRun(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	mux := http.NewServeMux()
+	mux.HandleFunc("/search.messages", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	var searches atomic.Int32
+	orch, database := newStatusTrackingOrchestrator(t, mux, &searches)
+	cfg := &config.Config{ActiveWorkspace: "ws", Sync: config.SyncConfig{PollInterval: cadenceBase}}
+	d := New(cfg)
+	d.SetLogger(log.New(os.Stderr, "[test-relogin] ", 0))
+	d.SetOrchestrators([]*sync.Orchestrator{orch})
+	require.NoError(t, os.MkdirAll(cfg.WorkspaceDir(), 0o700))
+	require.NoError(t, database.SetSlackAccountAuthState(orch.AccountID(), "error", slackauth.ReloginMessage))
+
+	dead := true
+	d.SetSlackTokenFreshener(func(context.Context, int64) (string, error) {
+		if dead {
+			return "", fmt.Errorf("%w: invalid_refresh_token", slackauth.ErrReloginNeeded)
+		}
+		return "xoxp-new-sign-in", nil
+	})
+
+	_, _ = d.phaseSlackSync(withManualSync(context.Background()))
+	assert.Zero(t, searches.Load(), "no run on the dead token, even on Sync Now")
+	acct, err := database.GetSlackAccount(orch.AccountID())
+	require.NoError(t, err)
+	assert.Equal(t, "error", acct.Status)
+	assert.Equal(t, slackauth.ReloginMessage, acct.Error, "the Re-login state stays")
+
+	dead = false
+	_, _ = d.phaseSlackSync(withManualSync(context.Background()))
+	assert.NotZero(t, searches.Load(), "a new sign-in syncs again")
 }

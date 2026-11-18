@@ -447,3 +447,119 @@ func TestSlackRefresh_LegacyTokenFileNeverBlanksRow(t *testing.T) {
 func tryLock(s *slack.TokenStore) (func(), bool, error) {
 	return fsutil.TryLockFile(s.Path() + ".lock")
 }
+
+// A cancel of the caller after Slack rotated the token must not lose the
+// answer: the refresh and the save run on a context the caller cannot cancel.
+func TestSlackRefresh_CallerCancelStillSaves(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, "111.222", "")
+	f.save(t, rotated(t0.Add(10*time.Minute), t0.Add(20*24*time.Hour)))
+	r := &fakeRefresher{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	refresh := func(rctx context.Context, clientID, refreshToken string) (Refreshed, error) {
+		cancel() // Sync Now pressed again, the Mac sleeps, Ctrl-C …
+		assert.NoError(t, rctx.Err(), "the refresh's own context survives the caller's cancel")
+		_, hasDeadline := rctx.Deadline()
+		assert.True(t, hasDeadline, "bounded by refreshTimeout")
+		return r.refresh(rctx, clientID, refreshToken)
+	}
+	tok, err := LoadFresh(ctx, f.dir, f.db, f.id, refresh, clockAt(t0))
+	require.NoError(t, err)
+	assert.Equal(t, "xoxe.xoxp-new", tok.AccessToken)
+	saved, err := f.store().Load()
+	require.NoError(t, err)
+	assert.Equal(t, "xoxe-1-new", saved.RefreshToken, "the rotated refresh token is on disk")
+}
+
+// Expiries Slack's answer does not state: a new refresh token gets the
+// 30-day default, an unrotated one keeps its expiry, and a missing
+// expires_in keeps the access token's.
+func TestSlackRefresh_UnstatedExpiries(t *testing.T) {
+	t.Parallel()
+	oldAccess := t0.Add(10 * time.Minute)
+	oldRefresh := t0.Add(5 * 24 * time.Hour)
+	for _, tc := range []struct {
+		name                    string
+		got                     Refreshed
+		wantAccess, wantRefresh time.Time
+		wantRefreshToken        string
+	}{
+		{
+			name:       "rotated without a lifetime",
+			got:        Refreshed{AccessToken: "a2", RefreshToken: "r2", ExpiresIn: 43200},
+			wantAccess: t0.Add(12 * time.Hour), wantRefresh: t0.Add(30 * 24 * time.Hour), wantRefreshToken: "r2",
+		},
+		{
+			name:       "same refresh token",
+			got:        Refreshed{AccessToken: "a2", RefreshToken: "xoxe-1-old", ExpiresIn: 43200},
+			wantAccess: t0.Add(12 * time.Hour), wantRefresh: oldRefresh, wantRefreshToken: "xoxe-1-old",
+		},
+		{
+			name:       "no refresh token in the answer",
+			got:        Refreshed{AccessToken: "a2", ExpiresIn: 43200},
+			wantAccess: t0.Add(12 * time.Hour), wantRefresh: oldRefresh, wantRefreshToken: "xoxe-1-old",
+		},
+		{
+			name:       "no expires_in",
+			got:        Refreshed{AccessToken: "a2", RefreshToken: "r2", RefreshExpiresIn: 3600},
+			wantAccess: oldAccess, wantRefresh: t0.Add(time.Hour), wantRefreshToken: "r2",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, "111.222", "")
+			f.save(t, rotated(oldAccess, oldRefresh))
+			refresh := func(context.Context, string, string) (Refreshed, error) { return tc.got, nil }
+			tok, err := LoadFresh(context.Background(), f.dir, f.db, f.id, refresh, clockAt(t0))
+			require.NoError(t, err)
+			assert.True(t, tc.wantAccess.Equal(tok.ExpiresAt), "access expiry %v", tok.ExpiresAt)
+			assert.True(t, tc.wantRefresh.Equal(tok.RefreshExpiresAt), "refresh expiry %v", tok.RefreshExpiresAt)
+			assert.Equal(t, tc.wantRefreshToken, tok.RefreshToken)
+			assert.Equal(t, tc.wantRefresh.UTC().Format(time.RFC3339), f.row(t).RefreshTokenExpiresAt, "the column is never blanked")
+		})
+	}
+}
+
+// A save that fails once after a successful refresh is tried again under the
+// lock. Not parallel: it sets the saveFault seam.
+func TestSlackRefresh_SaveRetriedOnce(t *testing.T) {
+	f := newFixture(t, "111.222", "")
+	f.save(t, rotated(t0.Add(10*time.Minute), t0.Add(20*24*time.Hour)))
+	t.Cleanup(func() { saveFault = nil })
+	attempts := 0
+	saveFault = func() error {
+		attempts++
+		if attempts == 1 {
+			return errors.New("disk hiccup")
+		}
+		return nil
+	}
+	r := &fakeRefresher{}
+	tok, err := LoadFresh(context.Background(), f.dir, f.db, f.id, r.refresh, clockAt(t0))
+	require.NoError(t, err)
+	assert.Equal(t, 2, attempts)
+	assert.Equal(t, "xoxe.xoxp-new", tok.AccessToken)
+	saved, err := f.store().Load()
+	require.NoError(t, err)
+	assert.Equal(t, "xoxe-1-new", saved.RefreshToken)
+}
+
+// The row's expiry column failing after the file is saved does not fail the
+// read: the file is the source of truth.
+func TestSlackRefresh_RowExpiryFailureStillReturnsToken(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, "111.222", "")
+	f.save(t, rotated(t0.Add(10*time.Minute), t0.Add(20*24*time.Hour)))
+	r := &fakeRefresher{}
+	refresh := func(ctx context.Context, clientID, refreshToken string) (Refreshed, error) {
+		_, err := f.db.Exec(`DELETE FROM slack_accounts WHERE id = ?`, f.id)
+		require.NoError(t, err)
+		return r.refresh(ctx, clientID, refreshToken)
+	}
+	tok, err := LoadFresh(context.Background(), f.dir, f.db, f.id, refresh, clockAt(t0))
+	require.NoError(t, err)
+	assert.Equal(t, "xoxe.xoxp-new", tok.AccessToken)
+	saved, err := f.store().Load()
+	require.NoError(t, err)
+	assert.Equal(t, "xoxe.xoxp-new", saved.AccessToken)
+}

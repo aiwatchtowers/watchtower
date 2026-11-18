@@ -687,7 +687,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		}
 	}
 	// Wire one Slack sync orchestrator per connected, enabled slack_accounts row.
-	orchestrators := wireSlackSyncers(database, cfg, logger)
+	orchestrators := wireSlackSyncers(ctx, database, cfg, logger)
 
 	if syncFlagUsersOnly {
 		return runSyncUsersOnly(ctx, cmd.OutOrStdout(), cfg, database, orchestrators, syncFlagAccount)
@@ -1370,7 +1370,7 @@ func remeasureCoachBaselines(cfg *config.Config, database *db.DB, al *agentlogdb
 // aborting the rest — the wireImapSyncers/wireGoogleSyncers fan-out pattern.
 // Returns an empty slice when no account is connected (Slack simply doesn't
 // sync; the other sources still run).
-func wireSlackSyncers(database *db.DB, cfg *config.Config, logger *log.Logger) []*sync.Orchestrator {
+func wireSlackSyncers(ctx context.Context, database *db.DB, cfg *config.Config, logger *log.Logger) []*sync.Orchestrator {
 	accounts, err := database.ListEnabledSlackAccounts()
 	if err != nil {
 		logger.Printf("slack: failed to list accounts: %v", err)
@@ -1382,7 +1382,7 @@ func wireSlackSyncers(database *db.DB, cfg *config.Config, logger *log.Logger) [
 	keyDetector := newIssueKeyDetector(cfg, database, logger)
 	var orchestrators []*sync.Orchestrator
 	for _, acct := range accounts {
-		token, err := loadSlackToken(context.Background(), cfg, database, acct.ID)
+		token, err := loadSlackToken(ctx, cfg, database, acct.ID)
 		if errors.Is(err, slackauth.ErrReloginNeeded) {
 			// LoadFresh marked the row for Re-login already.
 			logger.Printf("slack: account %d: %v", acct.ID, err)

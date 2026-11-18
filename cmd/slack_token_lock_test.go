@@ -1,12 +1,15 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -15,11 +18,13 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/fsutil"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/slackauth"
 )
@@ -70,7 +75,7 @@ func TestEnsureLegacySlackAccount_SavesUnderLock(t *testing.T) {
 // Task 8). A new writer joins this list only with the lock.
 var slackTokenWriters = []string{
 	"cmd/slack.go:connectSlackAccount",
-	"cmd/slack.go:deleteSlackTokenLocked",
+	"cmd/slack.go:removeSlackAccount",
 	"cmd/slack_legacy.go:ensureLegacySlackAccount",
 	"cmd/slack_connect.go:writeConnectedAccount", // Task 7's connect write, once it lands
 	"internal/slackauth/fresh.go:freshLocked",
@@ -113,7 +118,7 @@ func TestSlackTokenWriters_AllLocked(t *testing.T) {
 	}
 	// The guard must see the writers it lists, or it checks nothing.
 	for _, want := range []string{"cmd/slack.go:connectSlackAccount", "cmd/slack_legacy.go:ensureLegacySlackAccount",
-		"internal/slackauth/fresh.go:freshLocked", "internal/purge/run.go:deleteTokens", "cmd/slack.go:deleteSlackTokenLocked"} {
+		"internal/slackauth/fresh.go:freshLocked", "internal/purge/run.go:deleteTokens", "cmd/slack.go:removeSlackAccount"} {
 		assert.Contains(t, found, want)
 	}
 }
@@ -158,13 +163,37 @@ func slackTokenWritersIn(t *testing.T, path string) []tokenWriter {
 		return false
 	}
 	var out []tokenWriter
+	// Every function body: declarations and package-level func literals
+	// (a seam like `var save = func(...) {...}` is a writer too).
+	type body struct {
+		name   string
+		params *ast.FieldList
+		block  *ast.BlockStmt
+	}
+	var bodies []body
 	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Body == nil {
-			continue
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
+			if d.Body != nil {
+				bodies = append(bodies, body{d.Name.Name, d.Type.Params, d.Body})
+			}
+		case *ast.GenDecl:
+			for _, spec := range d.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, v := range vs.Values {
+					if lit, ok := v.(*ast.FuncLit); ok && i < len(vs.Names) {
+						bodies = append(bodies, body{vs.Names[i].Name, lit.Type.Params, lit.Body})
+					}
+				}
+			}
 		}
+	}
+	for _, fn := range bodies {
 		stores := map[string]bool{}
-		for _, f := range fn.Type.Params.List {
+		for _, f := range fn.params.List {
 			if isSlackStore(f.Type) {
 				for _, n := range f.Names {
 					stores[n.Name] = true
@@ -174,7 +203,7 @@ func slackTokenWritersIn(t *testing.T, path string) []tokenWriter {
 		writes, locked, rowUnlocked := false, true, false
 		lockCalled := map[string]bool{} // stores with an X.Lock(...) call so far
 		var stack []ast.Node
-		ast.Inspect(fn.Body, func(n ast.Node) bool {
+		ast.Inspect(fn.block, func(n ast.Node) bool {
 			if n == nil {
 				stack = stack[:len(stack)-1]
 				return true
@@ -218,7 +247,7 @@ func slackTokenWritersIn(t *testing.T, path string) []tokenWriter {
 			return true
 		})
 		if writes {
-			out = append(out, tokenWriter{name: fn.Name.Name, locks: locked && !rowUnlocked})
+			out = append(out, tokenWriter{name: fn.name, locks: locked && !rowUnlocked})
 		}
 	}
 	return out
@@ -293,7 +322,7 @@ func TestWireSlackSyncers_RefreshFailures(t *testing.T) {
 		}
 	}
 	t.Cleanup(func() { slackTokenRefresher = original })
-	orchs := wireSlackSyncers(database, cfg, quietTestLogger())
+	orchs := wireSlackSyncers(context.Background(), database, cfg, quietTestLogger())
 	require.Len(t, orchs, 1, "a transient refresh failure keeps the account wired")
 	acct, err := database.GetSlackAccount(offline)
 	require.NoError(t, err)
@@ -304,10 +333,54 @@ func TestWireSlackSyncers_RefreshFailures(t *testing.T) {
 			return slackauth.Refreshed{}, &slackauth.RefreshError{Code: "invalid_refresh_token"}
 		}
 	}
-	orchs = wireSlackSyncers(database, cfg, quietTestLogger())
+	orchs = wireSlackSyncers(context.Background(), database, cfg, quietTestLogger())
 	assert.Empty(t, orchs, "a dead refresh token is not wired")
 	acct, err = database.GetSlackAccount(offline)
 	require.NoError(t, err)
 	assert.Equal(t, "error", acct.Status)
 	assert.Equal(t, slackauth.ReloginMessage, acct.Error)
+}
+
+// A remove holds the account's token lock from the token read through the
+// revoke and the delete, so a refresh racing it cannot rotate in a token
+// that was never revoked; once it is done, a refresh finds no file.
+func TestSlackRemove_HoldsTheTokenLockThroughRevoke(t *testing.T) {
+	cfg, store, id := setupSlackRemove(t)
+	require.NoError(t, store.Save(&watchtowerslack.Token{
+		AccessToken: "xoxe.xoxp-acme", TeamID: "T1", RefreshToken: "xoxe-1-r",
+		ExpiresAt: time.Now().Add(-time.Minute), ClientID: "111.222",
+	}))
+	var heldDuringRevoke []bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		unlock, ok, err := fsutil.TryLockFile(store.Path() + ".lock")
+		if err == nil && ok {
+			unlock()
+		}
+		heldDuringRevoke = append(heldDuringRevoke, err == nil && !ok)
+		_, _ = w.Write([]byte(`{"ok":true,"revoked":true}`))
+	}))
+	t.Cleanup(srv.Close)
+	old := slackRevokeAPIURL
+	slackRevokeAPIURL = srv.URL + "/"
+	t.Cleanup(func() { slackRevokeAPIURL = old })
+
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+	require.NoError(t, runSlackRemove(cmd, []string{strconv.FormatInt(id, 10)}))
+	assert.Equal(t, []bool{true}, heldDuringRevoke, "auth.revoke runs under the account's token lock")
+
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	original := slackTokenRefresher
+	slackTokenRefresher = func() slackauth.Refresher {
+		return func(context.Context, string, string) (slackauth.Refreshed, error) {
+			t.Error("a refresh after the remove must find no token to rotate")
+			return slackauth.Refreshed{}, errors.New("unexpected")
+		}
+	}
+	t.Cleanup(func() { slackTokenRefresher = original })
+	tok, err := loadSlackToken(context.Background(), cfg, database, id)
+	require.NoError(t, err)
+	assert.Nil(t, tok)
 }
