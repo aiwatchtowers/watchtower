@@ -285,6 +285,11 @@ type Approval struct {
 	ArgsComplete bool   `json:"args_complete,omitempty"`
 	// External is the tool's external flag (it writes outside Watchtower).
 	External bool `json:"external,omitempty"`
+	// NeedsWorkspace is set on a Slack send still waiting for the
+	// workspace to send from, decided from the whole stored args
+	// (tools.SlackSendNeedsWorkspace): the phone offers no Approve even
+	// when its display args were clipped. Additive and optional on the wire.
+	NeedsWorkspace bool `json:"needs_workspace,omitempty"`
 }
 
 // DiffKind is one diff line's kind.

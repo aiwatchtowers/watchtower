@@ -49,6 +49,19 @@ final class RelayChatClient: ChatClient {
         "\(status)|\(dismissedAt)|\(error)"
     }
 
+    /// A stored failure goes for good once the feed shows its action in another state (§12.9): a later return to the
+    /// same status and error is a new state of the action, not the one the answer failed on.
+    private func dropMovedFailures(_ snapshot: ChatsSnapshot) {
+        guard !approvalFailures.isEmpty else { return }
+        for entry in snapshot.feeds.values {
+            for action in entry.feed.actions {
+                guard let scoped = approvalFailures[action.id] else { continue }
+                let now = Self.fingerprint(status: action.status, error: action.error, dismissedAt: action.dismissedAt)
+                if now != scoped.fingerprint { approvalFailures[action.id] = nil }
+            }
+        }
+    }
+
     /// The action's failure while the feed still shows it as it was when the answer went.
     func failure(for payload: ChatApprovalPayload) -> ChatActionFailure? {
         guard let scoped = approvalFailures[payload.id],
@@ -294,6 +307,7 @@ final class RelayChatClient: ChatClient {
     /// as gone, and a page or a search waiting for its record hears it.
     func snapshotChanged() {
         let snapshot = self.snapshot
+        dropMovedFailures(snapshot)
         let gone = Set(feedRequests.compactMap { conversation, action in
             snapshot.failures[action]?.reason == .notFound ? conversation : nil
         })

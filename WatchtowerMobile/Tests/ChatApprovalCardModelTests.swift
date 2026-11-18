@@ -195,6 +195,34 @@ final class ChatConversationApprovalTests: XCTestCase {
         XCTAssertTrue(fresh.state.canAnswer)
     }
 
+    /// A feed that moves (the retry runs) and comes back to the same failed status and error is a new state: the
+    /// stored "Didn't confirm" is gone for good and Retry is live (§12.9).
+    func testDidntConfirmDoesNotComeBackWhenTheFeedReturnsToTheSameState() async throws {
+        let failedAction = ChatApprovalCardModelTests.failed
+        let failed = ChatAgentAction(payload: ChatApprovalPayload(action: failedAction))
+        let answer = Task { await center.client.decide(failed, .retry, permissions: true, retryDismiss: true) }
+        try await pollBounded({ (try? self.recorder.params(ChatActionAnswerParams.self).count) == 1 }, "retry sent")
+        var snapshot = center.snapshot
+        snapshot.failures = [RecordingChatSender.actionID(1): ChatActionFailure(reason: .outcomeUnknown, message: "")]
+        center.apply(snapshot)
+        await answer.value
+        XCTAssertEqual(center.client.approvalCard(failed, permissions: true, host: .mac, retryDismiss: true).state.line,
+                       "Didn't confirm — check on the Mac.")
+
+        let executing = ChatFeed.Action(id: 41, tool: "create_jira_issue", title: "", argsDisplay: "{}", argsSHA256: "b2",
+                                        status: "executing", external: true)
+        func show(_ action: ChatFeed.Action) {
+            var next = center.snapshot
+            next.feeds[7] = ChatFixture.entry(ChatFixture.feed(messages: [ChatFixture.message(1, "user")], actions: [action]))
+            center.apply(next)
+        }
+        show(executing)
+        show(failedAction)
+        let back = center.client.approvalCard(failed, permissions: true, host: .mac, retryDismiss: true)
+        XCTAssertNil(back.state.line)
+        XCTAssertTrue(back.state.canAnswer)
+    }
+
     func testNothingGoesWithoutTheCapabilityOrTheGrantOrToTheWrongRow() async throws {
         let failed = ChatAgentAction(payload: ChatApprovalPayload(action: ChatApprovalCardModelTests.failed))
         let unknown = ChatAgentAction(payload: ChatApprovalPayload(action: ChatApprovalCardModelTests.outcomeUnknown))

@@ -167,6 +167,7 @@ func (s *snapshot) approvalOf(a actionRow) *api.Approval {
 		ArgsSHA256: tools.ArgsSHA256(a.ArgsJSON), Status: a.Status, Error: a.Error,
 		Proposer: s.proposer(a), Reason: a.Reason, EditOnMac: t.EditOnMac && a.Status == "pending",
 		Disclosure: t.Disclosure, RecipeText: t.RecipeText, Diff: t.Diff, External: a.External,
+		NeedsWorkspace: a.Status == "pending" && tools.SlackSendNeedsWorkspace(a.Tool, a.ArgsJSON),
 	}
 	ap.ArgsDisplay, ap.ArgsComplete = tools.ArgsDisplay(a.ArgsJSON)
 	if ap.Diff == nil {

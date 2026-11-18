@@ -18,7 +18,7 @@ enum InboxApprovalState {
     ) -> ChatApprovalState {
         let model = InboxApprovalModel(card: card, platform: .phone, grants: grants, now: now)
         let action = ChatAgentAction(inboxCard: card)
-        let approveNote = Self.approveNote(card, model: model, host: host)
+        let approveNote = Self.approveNote(card, model: model, host: host, hubName: hubName)
         let settledNote: String? = switch AgentActionCard.settledOffer(for: action) {
         case .retry where !grants.permissions: ChatText.retryElsewhere(host)
         case .dismiss where !grants.permissions: ChatText.dismissElsewhere(host)
@@ -47,7 +47,13 @@ enum InboxApprovalState {
 
     /// Approve's note: "Open Draft — on your Mac" for a recipe draft, else where to approve without the grant,
     /// naming the Mac or the tower (§12.3, `ChatText.approveElsewhere`).
-    static func approveNote(_ card: InboxCard, model: InboxApprovalModel, host: TowerHost) -> String? {
+    /// A Slack send still waiting for its workspace (`needs_workspace`, decided by the hub from the whole args, even
+    /// when the display args reached the phone clipped) offers no Approve: "Choose a workspace on <hub> before
+    /// approving", as the shared card says when it can read the args.
+    static func approveNote(_ card: InboxCard, model: InboxApprovalModel, host: TowerHost, hubName: String = "") -> String? {
+        if card.approval?.needsWorkspace == true, card.approval?.status == "pending" {
+            return ChatHostText.phone(hubName).chooseSlackWorkspace
+        }
         guard let note = model.approveNote else { return nil }
         return card.approval?.tool == "save_automation" ? note : ChatText.approveElsewhere(host)
     }

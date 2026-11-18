@@ -308,3 +308,40 @@ func TestBuild_ArgsDisplayOnlyOnTheClippedFeed(t *testing.T) {
 		t.Fatalf("the Mac's feed carries display args: %d bytes", len(a.ArgsDisplay))
 	}
 }
+
+// TestBuild_ClippedSlackDraftStillNeedsItsWorkspace: a Slack draft with no
+// workspace chosen whose multibyte text runs past ArgsDisplayClipBytes keeps
+// needs_workspace, decided from the whole stored args, so the phone offers
+// no Approve the hub would refuse; a draft with its target pinned does not.
+func TestBuild_ClippedSlackDraftStillNeedsItsWorkspace(t *testing.T) {
+	text := strings.Repeat("日本語", 1300) // 3900 characters, 11 700 bytes
+	d := seeded(t, []string{
+		`INSERT INTO agent_actions (id, tool, args_json, reason, status, created_at)
+			VALUES (1, 'send_slack_message', '{"text":"` + text + `","candidates":[{"account_id":1,"workspace":"acme","label":"#eng"},` +
+			`{"account_id":2,"workspace":"example","label":"#eng"}]}', 'r', 'pending', '2026-11-16T09:00:00Z')`,
+		`INSERT INTO agent_actions (id, tool, args_json, reason, status, created_at)
+			VALUES (2, 'send_slack_message', '{"text":"hi","target":{"account_id":1,"workspace":"acme","label":"#eng"}}',
+			'r', 'pending', '2026-11-16T09:01:00Z')`,
+	})
+	feed, err := Build(context.Background(), d, Options{Clip: true, Now: testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]*api.Approval{}
+	for _, c := range feed.Cards {
+		byID[c.ID] = c.Approval
+	}
+	draft, pinned := byID["a1"], byID["a2"]
+	if draft == nil || pinned == nil {
+		t.Fatal("missing cards")
+	}
+	if draft.ArgsComplete || len(draft.ArgsDisplay) > ArgsDisplayClipBytes {
+		t.Fatalf("the draft's display args were not clipped: %d bytes", len(draft.ArgsDisplay))
+	}
+	if !draft.NeedsWorkspace {
+		t.Fatal("a clipped draft with no workspace lost needs_workspace")
+	}
+	if pinned.NeedsWorkspace {
+		t.Fatal("a pinned send needs no workspace")
+	}
+}

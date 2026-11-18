@@ -164,6 +164,19 @@ final class InboxApprovalStateTests: XCTestCase {
         XCTAssertFalse(InboxApprovalState.sessionHolds(ChatAgentAction(id: 1, tool: ConnectorCallProposal.tool, status: "failed")))
     }
 
+    /// A Slack draft whose workspace is not chosen, its display args clipped past reading: the hub's
+    /// `needs_workspace` keeps Approve off, with where to choose; Reject stays live.
+    func testAClippedSlackDraftWithoutItsWorkspaceOffersNoApprove() {
+        var draft = pending
+        draft.approval?.argsDisplay = "{\n  \"text\": \"日本語日本語"
+        draft.approval?.argsComplete = false
+        draft.approval?.needsWorkspace = true
+        let s = state(draft)
+        XCTAssertEqual(s.approveNote, "Choose a workspace on Acme Mac before approving")
+        XCTAssertTrue(s.canAnswer, "Reject stays live")
+        XCTAssertNil(state(pending).approveNote)
+    }
+
     func testARecipeDraftOpensOnTheMac() {
         var draft = pending
         draft.approval?.tool = "save_automation"
