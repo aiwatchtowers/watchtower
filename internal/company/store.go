@@ -1,0 +1,265 @@
+// Package company keeps the confirmed company bundles of this install
+// (<workspace>/company/<slug>.json) and compares an incoming bundle with a
+// stored one. The bundle format itself is internal/companybundle.
+package company
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
+	"time"
+	"unicode"
+
+	"watchtower/internal/companybundle"
+	"watchtower/internal/fsutil"
+)
+
+// ForcedSource is LoadError.File for a forced MDM bundle that fails to parse.
+const ForcedSource = "CompanyBundle (managed preference)"
+
+// draftSlug is the wizard draft's stem (draft.json), never a company.
+const draftSlug = "draft"
+
+// maxFileBytes caps a stored file; a bundle is a few hundred bytes.
+const maxFileBytes = 64 << 10
+
+// saveLockWait bounds how long Save waits for another writer of the file.
+const saveLockWait = 30 * time.Second
+
+// slugRE is a stored file's stem: what companybundle.Slug makes, plus the
+// store's numeric clash suffix.
+var slugRE = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
+// ErrSlugTaken is Save over a file that holds another company (or that is
+// damaged): the store never overwrites a company it cannot read as the same.
+var ErrSlugTaken = errors.New("company file belongs to another company")
+
+// Entry is one effective company: its stored file, or the forced MDM bundle
+// (Forced) that wins over the stored file of the same company name.
+type Entry struct {
+	Slug   string
+	Bundle companybundle.Bundle
+	Forced bool
+}
+
+// LoadError is a company file (or the forced bundle) that failed to read; the
+// other companies still load.
+type LoadError struct {
+	File string
+	Err  string
+}
+
+// Store is the company directory of one workspace.
+type Store struct{ Dir string }
+
+// NewStore returns the store under <workspaceDir>/company.
+func NewStore(workspaceDir string) Store {
+	return Store{Dir: filepath.Join(workspaceDir, "company")}
+}
+
+// CleanCode drops every whitespace character (spaces, tabs, line breaks)
+// from a pasted connect code: a mail client wraps a long code. The wire form
+// is base64url, which never contains one.
+func CleanCode(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// diskState is what one read of the directory found.
+type diskState struct {
+	entries []Entry         // readable files, by slug
+	errs    []LoadError     // damaged files
+	taken   map[string]bool // every stem in use, damaged ones included
+}
+
+// read lists the company files. A missing directory is no company.
+func (s Store) read() (diskState, error) {
+	st := diskState{taken: map[string]bool{draftSlug: true}}
+	des, err := os.ReadDir(s.Dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return st, nil
+	}
+	if err != nil {
+		return st, fmt.Errorf("reading company directory: %w", err)
+	}
+	for _, de := range des {
+		name := de.Name()
+		slug, ok := strings.CutSuffix(name, ".json")
+		if !ok || slug == draftSlug || strings.HasPrefix(name, ".") {
+			continue
+		}
+		st.taken[slug] = true
+		b, err := readFile(filepath.Join(s.Dir, name), slug)
+		if err != nil {
+			st.errs = append(st.errs, LoadError{File: name, Err: err.Error()})
+			continue
+		}
+		st.entries = append(st.entries, Entry{Slug: slug, Bundle: b})
+	}
+	return st, nil
+}
+
+// readFile reads and validates one stored bundle.
+func readFile(path, slug string) (companybundle.Bundle, error) {
+	if !slugRE.MatchString(slug) {
+		return companybundle.Bundle{}, errors.New("not a company file name")
+	}
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return companybundle.Bundle{}, err
+	}
+	if !fi.Mode().IsRegular() {
+		return companybundle.Bundle{}, errors.New("not a regular file")
+	}
+	if fi.Size() > maxFileBytes {
+		return companybundle.Bundle{}, errors.New("file too large")
+	}
+	raw, err := os.ReadFile(path) //nolint:gosec // path is <company dir>/<slug>.json, slug checked above
+	if err != nil {
+		return companybundle.Bundle{}, err
+	}
+	return companybundle.ParseJSON(raw, companybundle.OriginLocal)
+}
+
+// overlay applies the forced bundle: it replaces the stored entry of the
+// same company name, or joins as a new entry under a free slug. A forced
+// bundle that fails to parse is a LoadError and overlays nothing.
+func overlay(st *diskState, forcedWire string) {
+	if strings.TrimSpace(forcedWire) == "" {
+		return
+	}
+	fb, err := companybundle.Parse(forcedWire, companybundle.OriginMDM)
+	if err != nil {
+		st.errs = append(st.errs, LoadError{File: ForcedSource, Err: err.Error()})
+		return
+	}
+	for i := range st.entries {
+		if st.entries[i].Bundle.Company == fb.Company {
+			st.entries[i].Bundle, st.entries[i].Forced = fb, true
+			return
+		}
+	}
+	slug := freeSlug(fb.Company, st.taken)
+	st.taken[slug] = true
+	st.entries = append(st.entries, Entry{Slug: slug, Bundle: fb, Forced: true})
+}
+
+// freeSlug is companybundle.Slug(company), with -2, -3… while taken.
+func freeSlug(company string, taken map[string]bool) string {
+	base := companybundle.Slug(company)
+	if !taken[base] {
+		return base
+	}
+	for n := 2; ; n++ {
+		if s := fmt.Sprintf("%s-%d", base, n); !taken[s] {
+			return s
+		}
+	}
+}
+
+// LoadAll returns every company, the forced MDM bundle (forcedWire, "" for
+// none) winning over the stored file of the same company name. It is a pure
+// read: it never creates, changes or deletes a file. A damaged file is a
+// LoadError; the other companies still load. Entries are in slug order.
+func (s Store) LoadAll(forcedWire string) ([]Entry, []LoadError, error) {
+	st, err := s.read()
+	if err != nil {
+		return nil, nil, err
+	}
+	overlay(&st, forcedWire)
+	slices.SortFunc(st.entries, func(a, b Entry) int { return strings.Compare(a.Slug, b.Slug) })
+	return st.entries, st.errs, nil
+}
+
+// Get returns the company stored (or forced) under slug. A damaged file under
+// slug is an error.
+func (s Store) Get(slug, forcedWire string) (Entry, bool, error) {
+	entries, errs, err := s.LoadAll(forcedWire)
+	if err != nil {
+		return Entry{}, false, err
+	}
+	for _, e := range entries {
+		if e.Slug == slug {
+			return e, true, nil
+		}
+	}
+	for _, le := range errs {
+		if le.File == slug+".json" {
+			return Entry{}, false, fmt.Errorf("company file %s: %s", le.File, le.Err)
+		}
+	}
+	return Entry{}, false, nil
+}
+
+// SlugFor returns the slug of company: the one it is stored (or forced)
+// under, else a free one — never the slug of another company, of a damaged
+// file, or of the forced bundle of another company.
+func (s Store) SlugFor(company, forcedWire string) (string, error) {
+	st, err := s.read()
+	if err != nil {
+		return "", err
+	}
+	overlay(&st, forcedWire)
+	for _, e := range st.entries {
+		if e.Bundle.Company == company {
+			return e.Slug, nil
+		}
+	}
+	return freeSlug(company, st.taken), nil
+}
+
+// Save writes b as <slug>.json (0600, directory 0700) under the file's flock,
+// through a temp file and a rename. It refuses a file that holds another
+// company or that it cannot read (ErrSlugTaken): the slug of a different
+// company comes from SlugFor.
+func (s Store) Save(slug string, b companybundle.Bundle) error {
+	if !slugRE.MatchString(slug) || slug == draftSlug {
+		return fmt.Errorf("invalid company slug %q", slug)
+	}
+	raw, err := json.Marshal(b)
+	if err != nil {
+		return fmt.Errorf("encoding company bundle: %w", err)
+	}
+	n, err := companybundle.ParseJSON(raw, companybundle.OriginLocal)
+	if err != nil {
+		return fmt.Errorf("company bundle: %w", err)
+	}
+	data, err := json.MarshalIndent(n, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encoding company bundle: %w", err)
+	}
+	if err := fsutil.MakePrivateDir(s.Dir); err != nil {
+		return fmt.Errorf("creating company directory: %w", err)
+	}
+	path := filepath.Join(s.Dir, slug+".json")
+	ctx, cancel := context.WithTimeout(context.Background(), saveLockWait)
+	defer cancel()
+	unlock, err := fsutil.LockFile(ctx, path+".lock")
+	if err != nil {
+		return fmt.Errorf("locking company file %s: %w", slug, err)
+	}
+	defer unlock()
+	if _, err := os.Lstat(path); err == nil {
+		cur, err := readFile(path, slug)
+		if err != nil {
+			return fmt.Errorf("%w: %s.json is unreadable (%v)", ErrSlugTaken, slug, err)
+		}
+		if cur.Company != n.Company {
+			return fmt.Errorf("%w: %s.json holds %q", ErrSlugTaken, slug, cur.Company)
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("company file %s: %w", slug, err)
+	}
+	return fsutil.WriteFileAtomic(path, append(data, '\n'), 0o600)
+}
