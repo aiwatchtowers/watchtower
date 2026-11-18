@@ -22,10 +22,17 @@ package enum TerminalSessionQueries {
     private static let now = "strftime('%Y-%m-%dT%H:%M:%SZ','now')"
 
     /// A `TerminalSession` read's columns: the row, plus its automation
-    /// run's trigger (`automationRunTrigger`) for the origin its agent and
-    /// its AI title carry. `table` is the row's table name or alias.
+    /// run's trigger (`automationRunTrigger`) and whether that run was
+    /// claimed (`automationRunClaimed`: out of the queue with a start time,
+    /// and not the paused hold's cancel; Go `sessionstart.runClaimed`) for
+    /// the origin its agent and its AI title carry. `table` is the row's
+    /// table name or alias.
     package static func sessionColumns(_ table: String = "terminal_sessions") -> String {
-        "\(table).*, (SELECT r.trigger FROM automation_runs r WHERE r.id = \(table).automation_run_id) AS automation_run_trigger"
+        let run = "FROM automation_runs r WHERE r.id = \(table).automation_run_id"
+        let claimed = "r.status <> 'queued' AND r.started_at IS NOT NULL "
+            + "AND NOT (r.status = 'cancelled' AND r.error = '\(CLIRunnerError.backgroundAIPausedText)')"
+        return "\(table).*, (SELECT r.trigger \(run)) AS automation_run_trigger, "
+            + "(SELECT \(claimed) \(run)) AS automation_run_claimed"
     }
 
     package struct NewSession: Sendable {

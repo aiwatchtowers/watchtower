@@ -87,4 +87,45 @@ final class TerminalTitleServiceTests: XCTestCase {
         XCTAssertTrue(WorkbenchesViewModel.countsAsTitleAttempt(CLIRunnerError.nonZeroExit(code: 1, stderr: "boom")))
         XCTAssertTrue(WorkbenchesViewModel.countsAsTitleAttempt(CLIRunnerError.binaryNotFound))
     }
+
+    /// One row of `internal/aiconsent/testdata/run_session_origin.json`, the
+    /// fixture Go's `sessionstart.originEnv` is pinned to as well.
+    private struct OriginCase: Decodable {
+        let name, trigger, status, error, want: String
+        let started: Bool
+    }
+
+    /// BGAI-01 (Go↔Swift twins): a run's session is admitted only once its
+    /// run was claimed under consent; a queued run's, or one the paused hold
+    /// cancelled before it started, is background and not admitted.
+    func testTheSessionOriginFollowsTheSharedFixture() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerDesktop
+            .deletingLastPathComponent() // repo root
+            .appendingPathComponent("internal/aiconsent/testdata/run_session_origin.json")
+        let cases = try JSONDecoder().decode([OriginCase].self, from: Data(contentsOf: url))
+        XCTAssertFalse(cases.isEmpty)
+        let db = try TestDatabase.create()
+        for (i, c) in cases.enumerated() {
+            let (session, runID) = try db.write { db -> (TerminalSession, Int64) in
+                let project = try TestDatabase.insertWorkbench(db, name: "acme-\(i)", folder: "/tmp/acme-\(i)")
+                let automation = try TestDatabase.insertAutomation(db, slug: "case-\(i)")
+                let run = try TestDatabase.insertAutomationRun(
+                    db, automationID: automation, trigger: c.trigger, status: c.status, error: c.error,
+                    startedAt: c.started ? "2026-11-18T09:00:00Z" : nil
+                )
+                let row = try TerminalSessionQueries.create(db, .init(
+                    projectID: project, kind: .claude, title: "s", folderPath: "/tmp/acme-\(i)",
+                    claudeSessionID: "s-\(i)", automationRunID: run))
+                return (row, run)
+            }
+            let want: [String] = switch c.want {
+            case "admitted": ["WATCHTOWER_AI_ORIGIN=background", "WATCHTOWER_AI_ADMITTED=run:\(runID)"]
+            case "background": ["WATCHTOWER_AI_ORIGIN=background"]
+            default: []
+            }
+            XCTAssertEqual(session.agentOriginEnvironment, want, c.name)
+        }
+    }
 }

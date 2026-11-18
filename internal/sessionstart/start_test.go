@@ -509,7 +509,7 @@ func TestSessionOfABackgroundRunIsAdmittedAsItsRun(t *testing.T) {
 	res, err := w.db.Exec(`INSERT INTO automations (slug, scope, path) VALUES ('a', 'personal', '/p/a.md')`)
 	require.NoError(t, err)
 	aid, _ := res.LastInsertId()
-	res, err = w.db.Exec(`INSERT INTO automation_runs (automation_id, trigger, status) VALUES (?, 'schedule', 'running')`, aid)
+	res, err = w.db.Exec(`INSERT INTO automation_runs (automation_id, trigger, status, started_at) VALUES (?, 'schedule', 'running', '2026-11-18T09:00:00Z')`, aid)
 	require.NoError(t, err)
 	run, _ := res.LastInsertId()
 
@@ -530,6 +530,11 @@ func TestSessionOfABackgroundRunIsAdmittedAsItsRun(t *testing.T) {
 		AutomationRunEnv: strconv.FormatInt(run, 10),
 	}, false)
 	require.NoError(t, aiconsent.Check(context.Background()), "the run's session child is admitted while paused")
+
+	// A run never claimed (cancelled by the paused hold): its session's
+	// child is background, not admitted, and refused while paused.
+	aiconsenttest.Use(t, "", map[string]string{aiconsent.EnvOrigin: "background"}, false)
+	require.ErrorIs(t, aiconsent.Check(context.Background()), aiconsent.ErrPaused)
 }
 
 func TestOriginEnvFollowsTheRun(t *testing.T) {
@@ -538,7 +543,7 @@ func TestOriginEnvFollowsTheRun(t *testing.T) {
 	require.NoError(t, err)
 	aid, _ := res.LastInsertId()
 	runOf := func(trigger string) int64 {
-		res, err := d.Exec(`INSERT INTO automation_runs (automation_id, trigger, status) VALUES (?, ?, 'running')`, aid, trigger)
+		res, err := d.Exec(`INSERT INTO automation_runs (automation_id, trigger, status, started_at) VALUES (?, ?, 'running', '2026-11-18T09:00:00Z')`, aid, trigger)
 		require.NoError(t, err)
 		id, _ := res.LastInsertId()
 		return id
@@ -553,6 +558,38 @@ func TestOriginEnvFollowsTheRun(t *testing.T) {
 		assert.Nil(t, originEnv(ctx, d, runOf(trigger)), trigger)
 	}
 	assert.Nil(t, originEnv(aiconsent.WithOwnerStarted(ctx), d, 0), "the owner's own session")
+	// Every row of the shared fixture (the Desktop reads it too): admitted
+	// only once claimed under consent; queued or cancelled before its start
+	// (the paused hold included) is background, not admitted.
+	data, err := os.ReadFile(filepath.Join("..", "aiconsent", "testdata", "run_session_origin.json"))
+	require.NoError(t, err)
+	var cases []struct {
+		Name, Trigger, Status, Error, Want string
+		Started                            bool
+	}
+	require.NoError(t, json.Unmarshal(data, &cases))
+	require.NotEmpty(t, cases)
+	for i, c := range cases {
+		res, err := d.Exec(`INSERT INTO automations (slug, scope, path) VALUES (?, 'personal', ?)`,
+			fmt.Sprintf("case-%d", i), fmt.Sprintf("/p/case-%d.md", i))
+		require.NoError(t, err)
+		caseAuto, _ := res.LastInsertId()
+		var started any
+		if c.Started {
+			started = "2026-11-18T09:00:00Z"
+		}
+		res, err = d.Exec(`INSERT INTO automation_runs (automation_id, trigger, status, started_at, error) VALUES (?, ?, ?, ?, ?)`,
+			caseAuto, c.Trigger, c.Status, started, c.Error)
+		require.NoError(t, err, c.Name)
+		id, _ := res.LastInsertId()
+		want := map[string][]string{
+			"admitted":   {aiconsent.EnvOrigin + "=background", aiconsent.EnvAdmitted + "=run:" + strconv.FormatInt(id, 10)},
+			"background": {aiconsent.EnvOrigin + "=background"},
+			"owner":      nil,
+		}[c.Want]
+		assert.Equal(t, want, originEnv(ctx, d, id), c.Name)
+	}
+
 	// A run that cannot be read: the starting process's own origin.
 	assert.Nil(t, originEnv(aiconsent.WithOwnerStarted(ctx), d, 999999))
 	assert.Equal(t, []string{aiconsent.EnvOrigin + "=background", aiconsent.EnvAdmitted + "=phase:x"},
