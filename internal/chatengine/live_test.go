@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -133,24 +132,18 @@ func say(t *testing.T, w *os.File, lines ...string) {
 }
 
 // awaitAck waits for the stub's ack: everything scripted before it was
-// emitted by the session. The ack FIFO carries one ack per writer, and the
-// stub may still hold the previous ack's writer open after its line was
-// read: an open that met only that stale writer sees EOF with no line once
-// the stub closes it, so it opens again and waits for the next writer
-// (#1899).
+// emitted by the session. It opens the ack FIFO read-write: the stub may
+// still hold the previous ack's writer open after its line was read, and a
+// read-only open that met only that stale writer would see EOF once the
+// stub closes it (#1899). Holding a write end itself, the reader never sees
+// a no-writers EOF and waits for the next ack's line.
 func awaitAck(t *testing.T, fifo string) {
 	t.Helper()
-	for {
-		f, err := os.Open(fifo + ".ack")
-		require.NoError(t, err)
-		line, err := bufio.NewReader(f).ReadString('\n')
-		_ = f.Close()
-		if errors.Is(err, io.EOF) && line == "" {
-			continue // the previous ack's writer closed
-		}
-		require.NoError(t, err)
-		return
-	}
+	f, err := os.OpenFile(fifo+".ack", os.O_RDWR, 0)
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+	_, err = bufio.NewReader(f).ReadString('\n')
+	require.NoError(t, err)
 }
 
 func (g *liveRig) turn(e *Engine, conv int64, text string) chatstore.Started {
