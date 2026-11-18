@@ -22,8 +22,8 @@ type Grant struct {
 	AccessToken  string
 	RefreshToken string
 	// ExpiresIn and RefreshExpiresIn are seconds from now; 0 when Slack did
-	// not say (no token rotation, or no refresh-token lifetime in the
-	// response — plan B spike Q9 settles which Slack sends).
+	// not say (no token rotation; Slack documents no refresh-token lifetime
+	// in the response, so the caller assumes PKCE's 30 days).
 	ExpiresIn        int64
 	RefreshExpiresIn int64
 	ClientID         string
@@ -38,11 +38,14 @@ type Grant struct {
 // It never sends a client secret.
 type Exchanger func(ctx context.Context, clientID, code, verifier, redirectURI string) (Grant, error)
 
-// NewExchanger returns the real exchanger: a form POST of client_id, code,
-// code_verifier and redirect_uri to endpoint (OAuthAccessURL outside tests).
+// NewExchanger returns the real exchanger: a form POST of grant_type
+// authorization_code, client_id, code, code_verifier and redirect_uri to
+// endpoint (OAuthAccessURL outside tests).
 // It never follows a redirect — a 307/308 would replay the code and the
-// verifier to wherever it points — whatever client is passed in. The form
-// shape is provisional until plan B Task 16 applies the spike's answers.
+// verifier to wherever it points — whatever client is passed in. The form is
+// PKCE's secret-less exchange
+// (https://docs.slack.dev/authentication/using-pkce,
+// https://docs.slack.dev/reference/methods/oauth.v2.access).
 func NewExchanger(client *http.Client, endpoint string) Exchanger {
 	noRedirects := http.Client{}
 	if client != nil {
@@ -52,6 +55,7 @@ func NewExchanger(client *http.Client, endpoint string) Exchanger {
 	client = &noRedirects
 	return func(ctx context.Context, clientID, code, verifier, redirectURI string) (Grant, error) {
 		form := url.Values{
+			"grant_type":    {"authorization_code"},
 			"client_id":     {clientID},
 			"code":          {code},
 			"code_verifier": {verifier},

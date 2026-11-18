@@ -35,7 +35,8 @@ func TestExchange_NoSecretInForm(t *testing.T) {
 		t.Fatalf("request = %s %s", method, contentType)
 	}
 	want := map[string]string{
-		"client_id": "1111.2222", "code": "code-1", "code_verifier": "verifier-1", "redirect_uri": RedirectURL,
+		"grant_type": "authorization_code", "client_id": "1111.2222", "code": "code-1", "code_verifier": "verifier-1",
+		"redirect_uri": RedirectURL,
 	}
 	for k, v := range want {
 		if got := form.Get(k); got != v {

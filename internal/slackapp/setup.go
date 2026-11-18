@@ -82,8 +82,9 @@ type Result struct {
 	Err error
 }
 
-// Slack codes, mapped to result kinds. Provisional where the spike has no
-// answer yet; plan B Task 16 finalises them.
+// Slack codes, mapped to result kinds: the error tables of
+// apps.manifest.create/update/export (docs.slack.dev/reference/methods) and
+// the plan B spike.
 var (
 	badTokenCodes = map[string]bool{
 		"invalid_auth": true, "not_authed": true, "token_expired": true, "token_revoked": true,

@@ -188,8 +188,8 @@ func TestAppSetup_CreateFailures(t *testing.T) {
 		// here — not the adopt's "not a collaborator".
 		"no permission": {&SlackError{Code: "no_permission"}, KindNotAllowed},
 		"access denied": {&SlackError{Code: "access_denied"}, KindNotAllowed},
-		"refused":     {&SlackError{Code: "invalid_manifest", Details: []string{"x at /y"}}, KindRefused},
-		"network":     {&net.OpError{Op: "dial", Net: "tcp", Err: errors.New("no route to host")}, KindNetwork},
+		"refused":       {&SlackError{Code: "invalid_manifest", Details: []string{"x at /y"}}, KindRefused},
+		"network":       {&net.OpError{Op: "dial", Net: "tcp", Err: errors.New("no route to host")}, KindNetwork},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t)
