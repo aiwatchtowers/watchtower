@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import WatchtowerCore
+import WatchtowerTestSupport
 
 /// A `watchtower` stand-in for the consent answer: records argv, can fail
 /// with a stderr, and can hold a call until released.
@@ -205,18 +206,20 @@ final class BackgroundAIConsentModelTests: XCTestCase {
     func testSetupReadsThePersistedConfig() {
         let names = { (id: String) in id == "ollama" ? "Ollama / Local" : id }
         let peer = { (id: String) -> String? in id == "claude" ? "codex" : id == "codex" ? "claude" : nil }
-        let empty = BackgroundAIConsentSetup.read([:], displayName: names, reservePeer: peer)
+        let catalog = AIModelCatalog(providers: ProviderCatalogFixture.providers())
+        let plans = catalog.subscription
+        let empty = BackgroundAIConsentSetup.read([:], displayName: names, subscription: plans, reservePeer: peer)
         XCTAssertEqual(empty, BackgroundAIConsentSetup(agent: .claude, reserve: nil, pollMinutes: 15, backfillDays: 30))
 
         let codex = BackgroundAIConsentSetup.read(
             ["ai": ["provider": "codex", "fallback": ["enabled": true]], "sync": ["poll_interval": "5m", "backfill_days": 7]],
-            displayName: names, reservePeer: peer
+            displayName: names, subscription: plans, reservePeer: peer
         )
         XCTAssertEqual(codex, BackgroundAIConsentSetup(agent: .codex, reserve: .claude, pollMinutes: 5, backfillDays: 7))
 
         let off = BackgroundAIConsentSetup.read(
             ["ai": ["provider": "ollama", "fallback": ["enabled": false, "provider": "codex"]]],
-            displayName: names, reservePeer: peer
+            displayName: names, subscription: plans, reservePeer: peer
         )
         XCTAssertEqual(off.agent, .other(name: "Ollama / Local"))
         XCTAssertNil(off.reserve, "no reserve line while the automatic reserve is off")
@@ -229,13 +232,27 @@ final class BackgroundAIConsentModelTests: XCTestCase {
         XCTAssertEqual(model.whatRuns, BackgroundAIConsentCopy.whatRuns(pollMinutes: 5, backfillDays: 7))
         XCTAssertEqual(model.planLines, [
             BackgroundAIConsentCopy.plan(.codex), BackgroundAIConsentCopy.reserve(from: .codex, to: .claude)
-        ])
+        ].compactMap { $0 })
+        XCTAssertEqual(model.planLines.count, 2)
     }
 
     func testAgentFromProvider() {
         typealias Agent = BackgroundAIConsentCopy.Agent
-        XCTAssertEqual(Agent(provider: "claude", displayName: "Claude"), .claude)
-        XCTAssertEqual(Agent(provider: "codex", displayName: "Codex"), .codex)
-        XCTAssertEqual(Agent(provider: "ollama", displayName: "Ollama / Local"), .other(name: "Ollama / Local"))
+        let catalog = AIModelCatalog(providers: ProviderCatalogFixture.providers())
+        func agent(_ id: String) -> Agent {
+            Agent(provider: id, displayName: catalog.displayName(id), subscription: catalog.subscription)
+        }
+        XCTAssertEqual(agent("claude").name, "Claude Code")
+        XCTAssertEqual(agent("codex").name, "Codex")
+        XCTAssertEqual(agent("claude"), .claude)
+        XCTAssertEqual(agent("codex"), .codex)
+        XCTAssertEqual(agent("ollama"), .other(name: "Ollama / Local"))
+        XCTAssertEqual(agent("acme"), .other(name: "acme"), "an unknown id is named by itself")
+        // Before the catalog is read: no subscription, the fallback name.
+        let unread = AIModelCatalog(providers: [])
+        XCTAssertEqual(
+            Agent(provider: "claude", displayName: unread.displayName("claude"), subscription: unread.subscription),
+            .other(name: "Claude")
+        )
     }
 }

@@ -3,6 +3,7 @@ import DesignKit
 import SwiftUI
 import WatchtowerCore
 @testable import WatchtowerDesktop
+import WatchtowerTestSupport
 
 /// Design-only scenes for the background AI consent (#1886, spec
 /// `docs/superpowers/specs/2026-11-17-background-ai-consent-design.md`).
@@ -198,8 +199,8 @@ private struct ConsentBodyMock: View {
             Text(Copy.title).font(.title2.weight(.semibold))
             Text(Copy.intro(agent)).fixedSize(horizontal: false, vertical: true)
             Text(Copy.plan(agent)).fixedSize(horizontal: false, vertical: true)
-            if let reserve {
-                Text(Copy.reserve(from: agent, to: reserve))
+            if let reserve, let line = Copy.reserve(from: agent, to: reserve) {
+                Text(line)
                     .fixedSize(horizontal: false, vertical: true)
             }
             VStack(alignment: .leading, spacing: Spacing.regular) {

@@ -158,7 +158,11 @@ struct BackgroundAIConsentStep: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .onAppear {
+        .task {
+            // The agent's plan copy comes from the provider catalog: a first
+            // run that reaches this step before the launch read finished
+            // waits for one read (a missing CLI fails it quickly).
+            if !appState.aiModelCatalog.isLoaded { await appState.aiModelCatalog.load() }
             guard case .pending = load else { return }
             load.load { appState.makeBackgroundAIConsentModel() }
         }

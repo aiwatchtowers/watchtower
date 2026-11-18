@@ -41,7 +41,10 @@ final class ConfigWritersTests: XCTestCase {
                 writerHits += hits.count
                 continue
             }
-            XCTAssertEqual(hits, [], "\(name): writes config.yaml outside ConfigFileWriter (use ConfigFileLock.withLock + ConfigFileWriter.write)")
+            XCTAssertEqual(
+                hits, [],
+                "\(name): writes config.yaml outside ConfigFileWriter (use ConfigFileLock.withLock + ConfigFileWriter.writeConfigFile)"
+            )
         }
         XCTAssertGreaterThan(writerHits, 0, "the scan sees ConfigFileWriter's own write")
     }

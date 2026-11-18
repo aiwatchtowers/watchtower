@@ -33,9 +33,9 @@ package final class RecordingConfigFileAccess: @unchecked Sendable {
                 record(Self.isLocked(path) ? "read(locked)" : "read")
                 return try live.read(path)
             },
-            write: { [self] text, path, token in
+            writeConfigFile: { [self] text, path, token in
                 record(Self.isLocked(path) ? "write(locked)" : "write")
-                try live.write(text, path, token)
+                try live.writeConfigFile(text, path, token)
             }
         )
     }

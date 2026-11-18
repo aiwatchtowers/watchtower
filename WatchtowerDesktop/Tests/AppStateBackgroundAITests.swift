@@ -9,6 +9,7 @@ import WatchtowerTestSupport
 @MainActor
 final class AppStateBackgroundAITests: XCTestCase {
     private func appState(config: String?, policy: [String: Any] = [:]) throws -> (AppState, String) {
+        ProviderCatalogFixture.seedShared() // the agents' plans come from the catalog, as after the launch read
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("wt-bgai-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
@@ -22,7 +23,7 @@ final class AppStateBackgroundAITests: XCTestCase {
 
     private func write(_ text: String, to path: String) throws {
         try ConfigFileLock.withLock(configPath: path) { token in
-            try ConfigFileWriter.write(text, configPath: path, token: token)
+            try ConfigFileWriter.writeConfigFile(text, configPath: path, token: token)
         }
     }
 

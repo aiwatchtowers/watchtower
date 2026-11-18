@@ -78,7 +78,7 @@ struct ConfigServiceTests {
         let service = ConfigService(configPath: path)
         // `watchtower ai background allow` and `jira login` write behind the loaded instance.
         try ConfigFileLock.withLock(configPath: path) { token in
-            try ConfigFileWriter.write(
+            try ConfigFileWriter.writeConfigFile(
                 "sync: {workers: 2}\nai: {background_runs: allowed}\njira: {enabled: true}\n",
                 configPath: path, token: token
             )
@@ -214,7 +214,7 @@ struct ConfigServiceTests {
         let edited = ConfigService(configPath: path)
         edited.aiProvider = "ollama"
         try ConfigFileLock.withLock(configPath: path) { token in
-            try ConfigFileWriter.write("ai: {provider: codex, background_runs: allowed}\n", configPath: path, token: token)
+            try ConfigFileWriter.writeConfigFile("ai: {provider: codex, background_runs: allowed}\n", configPath: path, token: token)
         }
         for service in [clean, edited] { service.reloadBackgroundRuns() }
         #expect(clean.savedAIProvider == "codex")
@@ -223,7 +223,7 @@ struct ConfigServiceTests {
         #expect(clean.aiProvider == "claude", "only the answer and the saved provider are re-read")
 
         try ConfigFileLock.withLock(configPath: path) { token in
-            try ConfigFileWriter.write("ai: [unclosed\n", configPath: path, token: token)
+            try ConfigFileWriter.writeConfigFile("ai: [unclosed\n", configPath: path, token: token)
         }
         clean.reloadBackgroundRuns()
         #expect(clean.savedAIProvider == "codex", "an unreadable file keeps the last one")
@@ -235,7 +235,7 @@ struct ConfigServiceTests {
         let service = ConfigService(configPath: path)
         service.aiModel = "edited"
         try ConfigFileLock.withLock(configPath: path) { token in
-            try ConfigFileWriter.write("ai: {model: m, background_runs: allowed}\n", configPath: path, token: token)
+            try ConfigFileWriter.writeConfigFile("ai: {model: m, background_runs: allowed}\n", configPath: path, token: token)
         }
         service.reloadBackgroundRuns()
         #expect(service.backgroundRuns == "allowed")
@@ -243,14 +243,14 @@ struct ConfigServiceTests {
 
         let clean = ConfigService(configPath: path)
         try ConfigFileLock.withLock(configPath: path) { token in
-            try ConfigFileWriter.write("ai: {model: m, background_runs: paused}\n", configPath: path, token: token)
+            try ConfigFileWriter.writeConfigFile("ai: {model: m, background_runs: paused}\n", configPath: path, token: token)
         }
         clean.reloadBackgroundRuns()
         #expect(clean.backgroundRuns == "paused")
         #expect(!clean.hasUnsavedEdits, "the answer is not a Settings edit")
 
         try ConfigFileLock.withLock(configPath: path) { token in
-            try ConfigFileWriter.write("ai: [unclosed\n", configPath: path, token: token)
+            try ConfigFileWriter.writeConfigFile("ai: [unclosed\n", configPath: path, token: token)
         }
         clean.reloadBackgroundRuns()
         #expect(clean.backgroundRuns == nil)

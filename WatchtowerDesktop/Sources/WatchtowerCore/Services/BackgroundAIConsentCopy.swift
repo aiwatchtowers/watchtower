@@ -5,40 +5,32 @@ import Foundation
 /// plus the phone lines of §6.5 the Mac's design shots draw (the phone's own
 /// copy lives in WatchtowerKit). Pinned by `BackgroundAIConsentCopyTests`.
 package enum BackgroundAIConsentCopy {
-    /// The agent the consent screen names: the configured `ai.provider`.
-    package enum Agent: Equatable, Sendable {
-        case claude, codex
-        /// Any other provider (Ollama, an OpenAI-compatible server), by its
-        /// display name.
-        case other(name: String)
+    /// The agent the consent screen names: the configured `ai.provider`,
+    /// by the provider catalog's row (`ai models --json`). A provider whose
+    /// runs draw on the owner's own plan carries the registry's
+    /// `Subscription`; any other (Ollama, an OpenAI-compatible server) is
+    /// named by its display name.
+    package struct Agent: Equatable, Sendable {
+        package let name: String
+        package let subscription: AIModelCatalog.Subscription?
 
-        /// The agent of provider id `provider` (`ai.provider`); any other
-        /// provider by `displayName`.
-        package init(provider: String, displayName: String) {
-            switch provider {
-            case "claude": self = .claude
-            case "codex": self = .codex
-            default: self = .other(name: displayName)
-            }
+        package init(name: String, subscription: AIModelCatalog.Subscription?) {
+            self.name = subscription?.agentName ?? name
+            self.subscription = subscription
         }
 
-        package var name: String {
-            switch self {
-            case .claude: "Claude Code"
-            case .codex: "Codex"
-            case .other(let name): name
-            }
+        /// The agent of provider id `provider`: its catalog subscription,
+        /// else `displayName`.
+        package init(provider: String, displayName: String, subscription: (String) -> AIModelCatalog.Subscription?) {
+            self.init(name: displayName, subscription: subscription(provider))
         }
+
+        /// A provider with no subscription, by its display name.
+        package static func other(name: String) -> Self { Self(name: name, subscription: nil) }
 
         /// The plan the runs draw on, for the Settings caption; nil for a
         /// provider with no subscription.
-        package var planName: String? {
-            switch self {
-            case .claude: "your Claude subscription"
-            case .codex: "your ChatGPT plan"
-            case .other: nil
-            }
-        }
+        package var planName: String? { subscription?.plan }
     }
 
     // MARK: The consent screen (onboarding step and upgrade sheet)
@@ -53,23 +45,18 @@ package enum BackgroundAIConsentCopy {
     }
 
     package static func plan(_ agent: Agent) -> String {
-        switch agent {
-        case .claude:
-            "These runs use your own Claude subscription and count toward its usage limits, the same as when "
-                + "you use Claude Code yourself. Watchtower never pays for, sees or shares your sign-in."
-        case .codex:
-            "These runs use your own ChatGPT plan and count toward its Codex usage limits, the same as when "
-                + "you use Codex yourself. Watchtower never pays for, sees or shares your sign-in."
-        case .other(let name):
-            "These runs use \(name), the model server set in Settings → AI."
+        guard let sub = agent.subscription else {
+            return "These runs use \(agent.name), the model server set in Settings → AI."
         }
+        return "These runs use \(sub.usage). Watchtower never pays for, sees or shares your sign-in."
     }
 
-    /// Shown only while the automatic reserve is on (Settings → AI).
-    package static func reserve(from preferred: Agent, to reserve: Agent) -> String {
-        let plan = reserve == .codex ? "your ChatGPT plan" : "your Claude subscription"
-        let limit = preferred == .claude ? "Claude's" : "Codex's"
-        return "When \(limit) usage limit is reached, runs switch to \(reserve.name) and use \(plan)."
+    /// Shown only while the automatic reserve is on (Settings → AI), and
+    /// only between two different agents that both run on the owner's plan;
+    /// nil otherwise.
+    package static func reserve(from preferred: Agent, to reserve: Agent) -> String? {
+        guard let from = preferred.subscription, let plan = reserve.planName, preferred != reserve else { return nil }
+        return "When \(from.limit) usage limit is reached, runs switch to \(reserve.name) and use \(plan)."
     }
 
     package static let whatRunsTitle = "What can run on its own"

@@ -77,7 +77,7 @@ final class ConfigFileLockTests: XCTestCase {
     func testWriterWritesOwnerOnlyAndAtomically() throws {
         let configPath = tempConfigPath("nested/config.yaml")
         try ConfigFileLock.withLock(configPath: configPath) { token in
-            try ConfigFileWriter.write("a: 1\n", configPath: configPath, token: token)
+            try ConfigFileWriter.writeConfigFile("a: 1\n", configPath: configPath, token: token)
         }
         XCTAssertEqual(try String(contentsOfFile: configPath, encoding: .utf8), "a: 1\n")
         let mode = try FileManager.default.attributesOfItem(atPath: configPath)[.posixPermissions] as? Int
@@ -95,12 +95,12 @@ final class ConfigFileLockTests: XCTestCase {
         let other = (configPath as NSString).deletingLastPathComponent + "/other.yaml"
         var kept: ConfigFileLock.Token?
         try ConfigFileLock.withLock(configPath: configPath) { token in
-            XCTAssertThrowsError(try ConfigFileWriter.write("a: 1\n", configPath: other, token: token)) {
+            XCTAssertThrowsError(try ConfigFileWriter.writeConfigFile("a: 1\n", configPath: other, token: token)) {
                 XCTAssertEqual($0 as? ConfigFileWriter.WriteError, .notLocked)
             }
             kept = token
         }
-        XCTAssertThrowsError(try ConfigFileWriter.write("a: 1\n", configPath: configPath, token: XCTUnwrap(kept))) {
+        XCTAssertThrowsError(try ConfigFileWriter.writeConfigFile("a: 1\n", configPath: configPath, token: XCTUnwrap(kept))) {
             XCTAssertEqual($0 as? ConfigFileWriter.WriteError, .notLocked, "a stale token writes nothing")
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: other))

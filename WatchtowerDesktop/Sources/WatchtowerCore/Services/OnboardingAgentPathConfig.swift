@@ -44,7 +44,7 @@ package enum OnboardingAgentPathConfig {
                 }
                 return text
             }
-            try access.write(settingPath(path, for: agent, in: existing), configPath, token)
+            try access.writeConfigFile(settingPath(path, for: agent, in: existing), configPath, token)
         }
     }
 }

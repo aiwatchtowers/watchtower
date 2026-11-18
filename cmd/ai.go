@@ -499,6 +499,19 @@ type aiModelsProvider struct {
 	ResolvedStrong string   `json:"resolved_strong"`
 	Models         []string `json:"models,omitempty"`
 	Error          string   `json:"error,omitempty"`
+	// Subscription is the registry's plan facts (providers.Subscription)
+	// for a provider that runs on the owner's own plan: the Desktop's
+	// background AI consent copy reads them from here, never from a Swift
+	// copy keyed by provider name (LLMTRANSPORT-01).
+	Subscription *aiModelsSubscription `json:"subscription,omitempty"`
+}
+
+// aiModelsSubscription is providers.Subscription on the wire.
+type aiModelsSubscription struct {
+	AgentName string `json:"agent_name"`
+	Plan      string `json:"plan"`
+	Usage     string `json:"usage"`
+	Limit     string `json:"limit"`
 }
 
 // aiModelsOutput is the JSON envelope of `ai models --json`.
@@ -525,6 +538,9 @@ func runAIModels(cmd *cobra.Command, _ []string) error {
 		entry := aiModelsProvider{Provider: p}
 		entry.ResolvedLight, entry.ResolvedStrong = providers.ResolveModelsFor(cfg, p.ID)
 		entry.Models = p.KnownModels
+		if sub := p.Subscription; sub != (providers.Subscription{}) {
+			entry.Subscription = &aiModelsSubscription{AgentName: sub.AgentName, Plan: sub.Plan, Usage: sub.Usage, Limit: sub.Limit}
+		}
 		if p.LiveModels {
 			// Best-effort: an unreachable server yields an empty list plus an
 			// error string, never a failing command.

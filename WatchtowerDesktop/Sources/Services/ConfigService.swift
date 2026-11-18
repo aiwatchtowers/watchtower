@@ -702,7 +702,7 @@ final class ConfigService {
         try fileAccess.withLock(configPath) { token in
             var yaml = try lockedYAMLOnDisk() ?? rawYAML
             try change(&yaml)
-            try fileAccess.write(try Yams.dump(object: yaml, allowUnicode: true), configPath, token)
+            try fileAccess.writeConfigFile(try Yams.dump(object: yaml, allowUnicode: true), configPath, token)
             written = yaml
         }
         return written

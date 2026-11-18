@@ -41,7 +41,9 @@ struct BackgroundAISettingsSection: View {
         let provider = config.savedAIProvider.flatMap { $0.isEmpty ? nil : $0 } ?? "claude"
         return .make(
             state: appState.backgroundAI,
-            agent: BackgroundAIConsentCopy.Agent(provider: provider, displayName: catalog.displayName(provider)),
+            agent: BackgroundAIConsentCopy.Agent(
+                provider: provider, displayName: catalog.displayName(provider), subscription: catalog.subscription
+            ),
             isSaving: settings.isSaving,
             error: settings.errorLine,
             configUnreadable: appState.backgroundAIConfigUnreadable

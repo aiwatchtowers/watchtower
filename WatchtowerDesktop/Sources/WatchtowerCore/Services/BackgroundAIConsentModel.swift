@@ -52,7 +52,9 @@ package final class BackgroundAIConsentModel {
     /// Whose plan the runs use, then the reserve line while the automatic
     /// reserve is on.
     package var planLines: [String] {
-        [BackgroundAIConsentCopy.plan(agent)] + (reserve.map { [BackgroundAIConsentCopy.reserve(from: agent, to: $0)] } ?? [])
+        var lines = [BackgroundAIConsentCopy.plan(agent)]
+        if let reserve, let line = BackgroundAIConsentCopy.reserve(from: agent, to: reserve) { lines.append(line) }
+        return lines
     }
 
     /// `ai background allow --yes`; true once it is saved.
@@ -135,10 +137,12 @@ package struct BackgroundAIConsentSetup: Equatable, Sendable {
     package let backfillDays: Int
 
     /// `yaml` is the parsed file (empty when absent or unreadable).
-    /// `displayName` and `reservePeer` come from the provider catalog.
+    /// `displayName`, `subscription` and `reservePeer` come from the
+    /// provider catalog.
     package static func read(
         _ yaml: [String: Any],
         displayName: (String) -> String,
+        subscription: (String) -> AIModelCatalog.Subscription?,
         reservePeer: (String) -> String?
     ) -> Self {
         let ai = yaml["ai"] as? [String: Any] ?? [:]
@@ -146,7 +150,7 @@ package struct BackgroundAIConsentSetup: Equatable, Sendable {
         let fallback = ai["fallback"] as? [String: Any] ?? [:]
         let provider = (ai["provider"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "claude"
         func agent(_ id: String) -> BackgroundAIConsentCopy.Agent {
-            BackgroundAIConsentCopy.Agent(provider: id, displayName: displayName(id))
+            BackgroundAIConsentCopy.Agent(provider: id, displayName: displayName(id), subscription: subscription)
         }
         let reserveID = (fallback["enabled"] as? Bool ?? false)
             ? (fallback["provider"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? reservePeer(provider)

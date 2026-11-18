@@ -136,12 +136,12 @@ final class OnboardingAgentPathConfigTests: XCTestCase {
         let racing = ConfigFileAccess(
             withLock: { path, body in
                 try live.withLock(path) { token in
-                    try live.write("active_workspace: acme\nai:\n  background_runs: allowed\n", path, token)
+                    try live.writeConfigFile("active_workspace: acme\nai:\n  background_runs: allowed\n", path, token)
                 }
                 try live.withLock(path, body)
             },
             read: live.read,
-            write: live.write
+            writeConfigFile: live.writeConfigFile
         )
 
         try OnboardingAgentPathConfig.save("/opt/claude", for: .claude, configPath: configPath, access: racing)

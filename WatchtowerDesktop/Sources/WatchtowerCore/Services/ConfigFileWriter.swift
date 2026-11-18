@@ -13,7 +13,7 @@ package enum ConfigFileWriter {
         case system(Int32)
     }
 
-    package static func write(_ text: String, configPath: String, token: ConfigFileLock.Token) throws {
+    package static func writeConfigFile(_ text: String, configPath: String, token: ConfigFileLock.Token) throws {
         guard token.covers(configPath) else { throw WriteError.notLocked }
         let staged = configPath + ".tmp-\(UUID().uuidString)"
         let fd = open(staged, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o600)
@@ -37,16 +37,16 @@ package struct ConfigFileAccess: Sendable {
     /// The file's bytes, nil when there is no file; throws when it exists but
     /// cannot be read.
     package var read: @Sendable (_ configPath: String) throws -> Data?
-    package var write: @Sendable (_ text: String, _ configPath: String, _ token: ConfigFileLock.Token) throws -> Void
+    package var writeConfigFile: @Sendable (_ text: String, _ configPath: String, _ token: ConfigFileLock.Token) throws -> Void
 
     package init(
         withLock: @escaping @Sendable (String, (ConfigFileLock.Token) throws -> Void) throws -> Void,
         read: @escaping @Sendable (String) throws -> Data?,
-        write: @escaping @Sendable (String, String, ConfigFileLock.Token) throws -> Void
+        writeConfigFile: @escaping @Sendable (String, String, ConfigFileLock.Token) throws -> Void
     ) {
         self.withLock = withLock
         self.read = read
-        self.write = write
+        self.writeConfigFile = writeConfigFile
     }
 
     package static let live = Self(
@@ -55,6 +55,6 @@ package struct ConfigFileAccess: Sendable {
             guard FileManager.default.fileExists(atPath: path) else { return nil }
             return try Data(contentsOf: URL(fileURLWithPath: path))
         },
-        write: { text, path, token in try ConfigFileWriter.write(text, configPath: path, token: token) }
+        writeConfigFile: { text, path, token in try ConfigFileWriter.writeConfigFile(text, configPath: path, token: token) }
     )
 }

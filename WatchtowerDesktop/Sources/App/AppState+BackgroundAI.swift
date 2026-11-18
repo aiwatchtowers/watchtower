@@ -133,7 +133,7 @@ extension AppState {
         }
         let catalog = AIModelCatalog.shared
         let setup = BackgroundAIConsentSetup.read(
-            yaml, displayName: catalog.displayName, reservePeer: catalog.reservePeer(of:)
+            yaml, displayName: catalog.displayName, subscription: catalog.subscription, reservePeer: catalog.reservePeer(of:)
         )
         return BackgroundAIConsentModel(runner: runner, configPath: path, setup: setup)
     }

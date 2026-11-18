@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import WatchtowerCore
+import WatchtowerTestSupport
 
 final class BackgroundAIConsentPromptTests: XCTestCase {
     private typealias Prompt = BackgroundAIConsentPrompt

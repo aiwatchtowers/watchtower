@@ -1,5 +1,6 @@
 import XCTest
 @testable import WatchtowerCore
+import WatchtowerTestSupport
 
 /// Pins the background AI consent strings (spec §5.1, §6.1–§6.5 of
 /// `docs/superpowers/specs/2026-11-17-background-ai-consent-design.md`) so

@@ -1,5 +1,6 @@
 import XCTest
 @testable import WatchtowerCore
+import WatchtowerTestSupport
 
 /// Settings → System → AI → Background AI (#1886, spec §6.1): one row per state of
 /// the table, the switch and its caption.
