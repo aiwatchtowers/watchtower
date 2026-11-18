@@ -38,6 +38,7 @@ A second, smaller defect: Go `sessionstate.Load` (hub actions: session input, as
 | D10 | Quick delete off (✕ asks first, like a session with an open ask); Home lists it among the active states, after Agents working, opening the terminal pane | ask #1497 |
 | D11 | Phone: no phone code change. A live session in Spec review lands under Working through the Sessions tab's existing default (live → working), the hub's `session_counts` counts it in `working` (green, like running and agents working), and Now's ended list leaves it out (it filters on stopped/finished/failed). A not-live one falls to the default's ended group, the same on old and new phones — the corner case the owner chose not to handle | follows D2 (ask #1492) and D4 (ask #1497) |
 | D12 | The "hidden by the author loop" predicate lives once in `internal/db` (`db.AskInSpecLoopSQL(alias)`); `OwnerAskFilter.ExcludeSpecLoop`, the hub's `askVisible`, `sessionstate.Load` and `handlers/ask.go` all use it | decided by the agent (refactor, no behaviour change) |
+| D13 | The hub's session timeline records a milestone with the constant text "Spec review" when the state is entered (no round in it, so a new round adds none), like every other state; without it the last milestone could stay "Ready for review" from the filing window | decided by the agent while implementing (task review I1; mirrors the approved D1/D2 state, no new behaviour) |
 
 ## 4. The rule
 
