@@ -270,7 +270,7 @@ func TestAppSetup_ConcurrentRunBusy(t *testing.T) {
 	defer unlock()
 	for name, run := range map[string]func() (Result, error){
 		"create": func() (Result, error) { return h.r.Create(context.Background(), cfgToken) },
-		"adopt":  func() (Result, error) { return h.r.Adopt(context.Background(), cfgToken, "", "") },
+		"adopt":  func() (Result, error) { return h.r.Adopt(context.Background(), cfgToken, "", "", "") },
 		"link":   func() (Result, error) { return h.r.Link(context.Background(), cfgToken, "") },
 	} {
 		res, err := run()
@@ -334,7 +334,7 @@ func TestAdopt_OK(t *testing.T) {
 	h := newHarness(t)
 	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
 	h.api.manifests["A0CORP"] = theirManifest()
-	res, err := h.r.Adopt(context.Background(), cfgToken, "", "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "", "")
 	require.NoError(t, err)
 	assert.Equal(t, Result{Kind: KindOK, TeamID: "T0ACME", TeamName: "Acme", AppID: "A0CORP", AppName: "Acme Watchtower", ClientID: "5555.6666", LinkWritten: true}, res)
 	assert.Equal(t, []Step{
@@ -356,7 +356,7 @@ func TestAdopt_AppIDFlag(t *testing.T) {
 	h := newHarness(t)
 	h.account(t, "T0ACME", "5555.6666", "", "ok")
 	h.api.manifests["A0FLAG"] = theirManifest()
-	res, err := h.r.Adopt(context.Background(), cfgToken, "A0FLAG", "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "A0FLAG", "")
 	require.NoError(t, err)
 	assert.Equal(t, KindConfirmApp, res.Kind, "a flag-only App ID is confirmed by name first")
 	assert.Equal(t, "A0FLAG", res.AppID)
@@ -368,13 +368,13 @@ func TestAdopt_AppIDFlag(t *testing.T) {
 		{StepReadApp, StateRunning}, {StepReadApp, StateDone},
 	}, h.steps)
 
-	res, err = h.r.Adopt(context.Background(), cfgToken, "A0FLAG", "A0OTHER")
+	res, err = h.r.Adopt(context.Background(), cfgToken, "", "A0FLAG", "A0OTHER")
 	require.NoError(t, err)
 	assert.Equal(t, KindConfirmApp, res.Kind, "a confirmation of another id changes nothing")
 	assert.Zero(t, h.api.updates)
 
 	h.steps = nil
-	res, err = h.r.Adopt(context.Background(), cfgToken, "A0FLAG", "A0FLAG")
+	res, err = h.r.Adopt(context.Background(), cfgToken, "", "A0FLAG", "A0FLAG")
 	require.NoError(t, err)
 	assert.Equal(t, KindOK, res.Kind)
 	assert.Equal(t, "A0FLAG", res.AppID)
@@ -391,7 +391,7 @@ func TestAdopt_RowAppIDSkipsConfirm(t *testing.T) {
 	h := newHarness(t)
 	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
 	h.api.manifests["A0CORP"] = theirManifest()
-	res, err := h.r.Adopt(context.Background(), cfgToken, "A0CORP", "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "A0CORP", "")
 	require.NoError(t, err)
 	assert.Equal(t, KindOK, res.Kind)
 	assert.Equal(t, 1, h.api.updates)
@@ -400,7 +400,7 @@ func TestAdopt_RowAppIDSkipsConfirm(t *testing.T) {
 func TestAdopt_ConfirmUnknownApp(t *testing.T) {
 	h := newHarness(t)
 	h.account(t, "T0ACME", "5555.6666", "", "ok")
-	res, err := h.r.Adopt(context.Background(), cfgToken, "A0GONE", "A0GONE")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "A0GONE", "A0GONE")
 	require.NoError(t, err)
 	assert.Equal(t, KindAppNotFound, res.Kind)
 	assert.Zero(t, h.api.updates)
@@ -409,7 +409,7 @@ func TestAdopt_ConfirmUnknownApp(t *testing.T) {
 func TestAdopt_NeedAppID(t *testing.T) {
 	h := newHarness(t)
 	h.account(t, "T0ACME", "5555.6666", "", "ok")
-	res, err := h.r.Adopt(context.Background(), cfgToken, "", "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "", "")
 	require.NoError(t, err)
 	assert.Equal(t, KindNeedAppID, res.Kind)
 	assert.Equal(t, "5555.6666", res.ClientID)
@@ -419,7 +419,7 @@ func TestAdopt_NeedAppID(t *testing.T) {
 
 func TestAdopt_NoApp(t *testing.T) {
 	h := newHarness(t)
-	res, err := h.r.Adopt(context.Background(), cfgToken, "A0X", "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "A0X", "")
 	require.NoError(t, err)
 	assert.Equal(t, KindNoApp, res.Kind)
 	assert.Zero(t, h.api.exports)
@@ -429,7 +429,7 @@ func TestAdopt_NotCollaborator(t *testing.T) {
 	h := newHarness(t)
 	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
 	h.api.exportErr = &SlackError{Method: "apps.manifest.export", Code: "no_permission"}
-	res, err := h.r.Adopt(context.Background(), cfgToken, "", "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "", "")
 	require.NoError(t, err)
 	assert.Equal(t, KindNotCollaborator, res.Kind)
 	assert.Equal(t, "no_permission", res.Code)
@@ -443,7 +443,7 @@ func TestAdopt_AppNotFound(t *testing.T) {
 		h := newHarness(t)
 		h.account(t, "T0ACME", "5555.6666", "A0GONE", "ok")
 		h.api.exportErr = &SlackError{Code: code}
-		res, err := h.r.Adopt(context.Background(), cfgToken, "", "")
+		res, err := h.r.Adopt(context.Background(), cfgToken, "", "", "")
 		require.NoError(t, err)
 		assert.Equal(t, KindAppNotFound, res.Kind, code)
 		assert.Empty(t, h.setups(t))
@@ -455,7 +455,7 @@ func TestAdopt_UpdateFailsNoRecord(t *testing.T) {
 	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
 	h.api.manifests["A0CORP"] = theirManifest()
 	h.api.updateErrs = []error{&SlackError{Code: "invalid_manifest"}}
-	res, err := h.r.Adopt(context.Background(), cfgToken, "", "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "", "")
 	require.NoError(t, err)
 	assert.Equal(t, KindRefused, res.Kind)
 	assert.Equal(t, "invalid_manifest", res.Code)
@@ -466,7 +466,7 @@ func TestAdopt_SecretNeverStored(t *testing.T) {
 	h := newHarness(t)
 	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
 	h.api.manifests["A0CORP"] = theirManifest() // carries credentials.client_secret
-	res, err := h.r.Adopt(context.Background(), cfgToken, "", "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "", "")
 	require.NoError(t, err)
 	require.Equal(t, KindOK, res.Kind)
 	_, creds := h.api.lastUpdate["credentials"]
@@ -591,7 +591,7 @@ func TestAdopt_StorageAfterUpdate(t *testing.T) {
 	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
 	h.api.manifests["A0CORP"] = theirManifest()
 	h.api.afterUpdate = func() { _ = h.db.Close() }
-	res, err := h.r.Adopt(context.Background(), cfgToken, "", "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "", "")
 	require.NoError(t, err)
 	assert.Equal(t, KindStorage, res.Kind)
 	assert.Error(t, res.Err)
@@ -610,7 +610,7 @@ func TestAdopt_AppIDFlagChecks(t *testing.T) {
 			h.account(t, "T0ACME", "5555.6666", tc.rowAppID, "ok")
 			h.api.manifests["A0CORP"] = theirManifest()
 			h.api.manifests["A0OTHER"] = theirManifest()
-			res, err := h.r.Adopt(context.Background(), cfgToken, tc.flag, "")
+			res, err := h.r.Adopt(context.Background(), cfgToken, "", tc.flag, "")
 			require.NoError(t, err)
 			assert.Equal(t, KindNeedAppID, res.Kind)
 			assert.Equal(t, tc.code, res.Code)
@@ -622,7 +622,7 @@ func TestAdopt_AppIDFlagChecks(t *testing.T) {
 	h := newHarness(t)
 	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
 	h.api.manifests["A0CORP"] = theirManifest()
-	res, err := h.r.Adopt(context.Background(), cfgToken, "A0CORP", "")
+	res, err := h.r.Adopt(context.Background(), cfgToken, "", "A0CORP", "")
 	require.NoError(t, err)
 	assert.Equal(t, KindOK, res.Kind, "the row's own App ID repeated is fine")
 }
@@ -711,4 +711,22 @@ func TestPending_Busy(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, KindBusy, res.Kind)
 	require.Len(t, h.setups(t), 1)
+}
+
+// TestAdopt_WrongTeam: the sheet names the workspace it offers to update; a
+// token of another workspace reads and changes nothing.
+func TestAdopt_WrongTeam(t *testing.T) {
+	h := newHarness(t)
+	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
+	h.api.manifests["A0CORP"] = theirManifest()
+	res, err := h.r.Adopt(context.Background(), cfgToken, "T0OTHER", "", "")
+	require.NoError(t, err)
+	assert.Equal(t, Result{Kind: KindWrongTeam, TeamID: "T0ACME", TeamName: "Acme"}, res)
+	assert.Zero(t, h.api.exports)
+	assert.Zero(t, h.api.updates)
+	assert.Empty(t, h.setups(t))
+
+	res, err = h.r.Adopt(context.Background(), cfgToken, "T0ACME", "", "")
+	require.NoError(t, err)
+	assert.Equal(t, KindOK, res.Kind, "the named team matches: the update runs")
 }
