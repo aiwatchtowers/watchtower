@@ -184,6 +184,10 @@ func TestAppSetup_CreateFailures(t *testing.T) {
 		kind string
 	}{
 		"not allowed": {&SlackError{Code: "restricted_action"}, KindNotAllowed},
+		// apps.manifest.create's no_permission: the token may not make apps
+		// here — not the adopt's "not a collaborator".
+		"no permission": {&SlackError{Code: "no_permission"}, KindNotAllowed},
+		"access denied": {&SlackError{Code: "access_denied"}, KindNotAllowed},
 		"refused":     {&SlackError{Code: "invalid_manifest", Details: []string{"x at /y"}}, KindRefused},
 		"network":     {&net.OpError{Op: "dial", Net: "tcp", Err: errors.New("no route to host")}, KindNetwork},
 	} {
@@ -342,8 +346,8 @@ func TestAdopt_OK(t *testing.T) {
 		{StepUpdateApp, StateRunning}, {StepUpdateApp, StateDone},
 	}, h.steps)
 	assert.Contains(t, h.api.lastUpdate.LongDescription(), "client=5555.6666")
-	_, pkce := h.api.lastUpdate["oauth_config"].(map[string]any)["pkce_enabled"]
-	assert.False(t, pkce, "PKCE stays off by default")
+	assert.Equal(t, true, h.api.lastUpdate["oauth_config"].(map[string]any)["pkce_enabled"],
+		"adopt turns PKCE on: the About link it writes needs it (Task 16)")
 	s := h.setups(t)
 	require.Len(t, s, 1)
 	assert.Equal(t, db.SlackAppSetup{TeamID: "T0ACME", TeamName: "Acme", AppID: "A0CORP", ClientID: "5555.6666", LinkWritten: true,
@@ -634,6 +638,21 @@ func TestAppSetup_UnknownCreateCodeStaysPending(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, KindPendingCreate, res.Kind, "an unknown code may have made the app")
 	require.Len(t, h.setups(t), 1)
+}
+
+// TestAppSetup_CreateCodesThatMayHaveMadeTheApp pins the codes of
+// apps.manifest.create's error table that say part of the call may have run:
+// each keeps the pending record (no second app), never the not-created path.
+func TestAppSetup_CreateCodesThatMayHaveMadeTheApp(t *testing.T) {
+	for _, code := range []string{"fatal_error", "internal_error", "failed_adding_collaborator",
+		"failed_creating_app", "failed_datastore_operation", "failed_generating_app_token",
+		"service_unavailable", "some_future_code"} {
+		assert.False(t, notCreated(&SlackError{Code: code}), code)
+	}
+	for _, code := range []string{"invalid_auth", "invalid_manifest", "invalid_app", "restricted_action",
+		"no_permission", "ratelimited", "missing_scope", "not_in_team"} {
+		assert.True(t, notCreated(&SlackError{Code: code}), code)
+	}
 }
 
 func pendingHarness(t *testing.T) *harness {

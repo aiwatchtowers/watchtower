@@ -124,7 +124,7 @@ func theirManifest() Manifest {
 
 func TestAdopt_MergeKeepsTheirFields(t *testing.T) {
 	theirs := theirManifest()
-	m, err := MergeManifest(theirs, acme, false)
+	m, err := MergeManifest(theirs, acme)
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"https://127.0.0.1:18491/callback", slackconnect.RedirectURL}, redirects(t, m))
@@ -136,8 +136,7 @@ func TestAdopt_MergeKeepsTheirFields(t *testing.T) {
 	assert.Len(t, scopes, len(slackmanifest.UserScopes())+1, "channels:history is not added twice")
 	oauth := m["oauth_config"].(map[string]any)
 	assert.Equal(t, []any{"chat:write"}, oauth["scopes"].(map[string]any)["bot"])
-	_, pkce := oauth["pkce_enabled"]
-	assert.False(t, pkce, "PKCE is left alone unless asked")
+	assert.Equal(t, true, oauth["pkce_enabled"], "the About link's secret-less exchange needs PKCE (Task 16)")
 	assert.Equal(t, false, m["settings"].(map[string]any)["token_rotation_enabled"], "rotation is never touched")
 	assert.Equal(t, "acmebot", m["features"].(map[string]any)["bot_user"].(map[string]any)["display_name"])
 	info := m["display_information"].(map[string]any)
@@ -147,10 +146,6 @@ func TestAdopt_MergeKeepsTheirFields(t *testing.T) {
 	_, creds := m["credentials"]
 	assert.False(t, creds)
 	assert.Equal(t, "old text", theirs.LongDescription(), "the input is not changed")
-
-	withPKCE, err := MergeManifest(theirs, acme, true)
-	require.NoError(t, err)
-	assert.Equal(t, true, withPKCE["oauth_config"].(map[string]any)["pkce_enabled"])
 }
 
 func TestManifest_WithLongDescriptionOnly(t *testing.T) {

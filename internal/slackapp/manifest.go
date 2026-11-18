@@ -82,17 +82,22 @@ func BuildManifest(l Link) (Manifest, error) {
 
 // MergeManifest brings a company's existing app in line with ours without
 // replacing it (A20): it adds our redirect URL and any missing user scopes,
-// writes long_description (with l's connect block) and keeps every other
-// field — their redirect URLs, bot user, scopes we do not use, names and
-// settings. It never touches settings.token_rotation_enabled (Slack refuses
-// turning rotation off once on: cannot_disable_once_enabled).
+// turns PKCE on, writes long_description (with l's connect block) and keeps
+// every other field — their redirect URLs, bot user, scopes we do not use,
+// names and settings. It never touches settings.token_rotation_enabled (Slack
+// refuses turning rotation off once on: cannot_disable_once_enabled).
 //
-// enablePKCE sets oauth_config.pkce_enabled; it defaults to false at every
-// caller because enabling PKCE is one-way (the app becomes a public client
-// and its refresh tokens last 30 days), and whether adopt should do it is
-// decided after a live check (plan B Task 16). A manifest that carries a
-// credentials object loses it: secrets are never sent back or kept.
-func MergeManifest(theirs Manifest, l Link, enablePKCE bool) (Manifest, error) {
+// PKCE is always turned on (plan B Task 16): the connect link written to the
+// About page exchanges its code without a client secret, which Slack refuses
+// with bad_client_secret unless oauth_config.pkce_enabled is set, so an
+// adopted app without it would publish a link that cannot work. Turning it
+// on is one-way and makes every refresh token the app issues expire after 30
+// days; PKCE arguments stay optional for the app's existing web-URL OAuth
+// flows (https://docs.slack.dev/authentication/using-pkce,
+// https://docs.slack.dev/changelog/2026/03/30/pkce). The adopt sheet says so
+// before Update the app. A manifest that carries a credentials object loses
+// it: secrets are never sent back or kept.
+func MergeManifest(theirs Manifest, l Link) (Manifest, error) {
 	m, err := WithLongDescription(theirs, l)
 	if err != nil {
 		return nil, err
@@ -111,9 +116,7 @@ func MergeManifest(theirs Manifest, l Link, enablePKCE bool) (Manifest, error) {
 		}
 	}
 	scopes["user"] = toAny(user)
-	if enablePKCE {
-		oauth["pkce_enabled"] = true
-	}
+	oauth["pkce_enabled"] = true
 	return m, nil
 }
 

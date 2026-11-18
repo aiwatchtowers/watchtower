@@ -89,7 +89,11 @@ var (
 		"invalid_auth": true, "not_authed": true, "token_expired": true, "token_revoked": true,
 		"account_inactive": true, "not_allowed_token_type": true,
 	}
-	notAllowedCodes = map[string]bool{"restricted_action": true}
+	// The workspace does not let this user make or change apps.
+	notAllowedCodes = map[string]bool{
+		"restricted_action": true, "access_denied": true, "feature_not_enabled": true,
+		"team_access_not_granted": true,
+	}
 	// no_permission: the creator's config token on someone else's app (Q11).
 	notCollaboratorCodes = map[string]bool{"no_permission": true}
 	appNotFoundCodes     = map[string]bool{"invalid_app_id": true, "app_not_found": true}
@@ -130,12 +134,32 @@ func failure(err error) Result {
 }
 
 // notCreatedCodes are the ok:false codes of apps.manifest.create that
-// certainly made no app: the token was refused, the manifest was refused,
-// the workspace refused, or the call was rate limited before running.
+// certainly made no app: the call, the token, the caller or the manifest was
+// refused before anything was made. Taken from the method's error table
+// (https://docs.slack.dev/reference/methods/apps.manifest.create), plus
+// restricted_action (an admin's app-creation restriction). Left out on
+// purpose, because Slack may have made the app: fatal_error and
+// internal_error ("part of the operation may have succeeded"),
+// failed_adding_collaborator, failed_creating_app,
+// failed_datastore_operation, failed_generating_app_token,
+// service_unavailable and any code not listed here.
 var notCreatedCodes = map[string]bool{
+	// The token or the caller.
 	"invalid_auth": true, "not_authed": true, "token_expired": true, "token_revoked": true,
-	"account_inactive": true, "not_allowed_token_type": true, "invalid_manifest": true,
-	"restricted_action": true, "ratelimited": true, "missing_scope": true,
+	"account_inactive": true, "not_allowed_token_type": true, "missing_scope": true,
+	"no_permission": true, "access_denied": true, "team_access_not_granted": true,
+	"not_in_team": true, "two_factor_setup_required": true, "ekm_access_denied": true,
+	"enterprise_is_restricted": true, "org_login_required": true, "accesslimited": true,
+	// The workspace or an admin.
+	"restricted_action": true, "feature_not_enabled": true, "invalid_team_id": true,
+	// The request or the manifest.
+	"invalid_manifest": true, "invalid_app": true, "socket_mode_not_enabled": true,
+	"invalid_arguments": true, "invalid_arg_name": true, "invalid_array_arg": true,
+	"invalid_charset": true, "invalid_form_data": true, "invalid_post_type": true,
+	"missing_argument": true, "missing_post_type": true, "request_timeout": true,
+	"unknown_method": true, "method_deprecated": true, "deprecated_endpoint": true,
+	// Refused before running.
+	"ratelimited": true,
 }
 
 // notCreated reports that a failed apps.manifest.create certainly made no
@@ -161,9 +185,6 @@ type Runner struct {
 	// RetiredClientID is the retired public shared app's client id; an
 	// account on it is not on a company app. "" = nothing is shared.
 	RetiredClientID string
-	// EnablePKCEOnAdopt lets Adopt set pkce_enabled on the existing app.
-	// One-way on Slack's side; false until plan B Task 16 decides.
-	EnablePKCEOnAdopt bool
 	// Emit receives every step; nil drops them.
 	Emit func(Step)
 }
@@ -330,6 +351,12 @@ func (r *Runner) createApp(ctx context.Context, cfgToken string, link Link) (app
 			return "", "", &Result{Kind: KindPendingCreate, Error: pendingCreateHelp + " (" + err.Error() + ")"}
 		}
 		f := failure(err)
+		if f.Kind == KindNotCollaborator {
+			// no_permission on a create: the token may not make apps here
+			// (apps.manifest.create's error table); there is no app to
+			// collaborate on yet.
+			f.Kind = KindNotAllowed
+		}
 		if dErr := r.DB.DeleteSlackAppSetup(link.TeamID); dErr != nil {
 			f = storage(dErr)
 		}
@@ -474,7 +501,7 @@ func (r *Runner) Adopt(ctx context.Context, cfgToken, team, appIDFlag, confirmAp
 					return f
 				}
 			}
-			m, err := MergeManifest(theirs, link, r.EnablePKCEOnAdopt)
+			m, err := MergeManifest(theirs, link)
 			if err != nil {
 				f := storage(err)
 				return &f
