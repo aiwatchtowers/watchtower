@@ -265,6 +265,9 @@ func (s Store) save(slug string, b companybundle.Bundle, prev *companybundle.Bun
 	if err != nil {
 		return fmt.Errorf("encoding company bundle: %w", err)
 	}
+	if len(data) >= maxFileBytes {
+		return fmt.Errorf("company bundle too large to store (%d bytes)", len(data))
+	}
 	if err := fsutil.MakePrivateDir(s.Dir); err != nil {
 		return fmt.Errorf("creating company directory: %w", err)
 	}

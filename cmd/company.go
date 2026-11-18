@@ -393,12 +393,12 @@ type companyConfirmResult struct {
 }
 
 // confirmCompany stores wire after the owner's confirmation. A bundle that
-// changes a stored company's clients is stored only with replace, which
-// first marks the changed vendors' accounts Re-login (so a failed write is
-// retried by the next confirm, not lost). The write lands only over the file
-// this decision read (SaveIfUnchanged): a concurrent confirm that wrote first
-// makes this one an error, and the accounts it marked need the login the
-// other write's Replace asks for anyway. A forced MDM bundle is never
+// changes a stored company's clients is stored only with replace, and only
+// over the file this decision read (SaveIfUnchanged: a concurrent confirm
+// that wrote first makes this one an error and marks nothing); then the
+// changed vendors' accounts are marked Re-login. A failed marking is an
+// error after the write; those accounts' next refresh, now through the new
+// client, is refused and still asks for the login (invalid_client). A forced MDM bundle is never
 // written and always wins: confirming it (source mdm) only names its slug,
 // and a link or code for the same company changes nothing ("unchanged").
 func confirmCompany(store company.Store, database *db.DB, wire string, origin companybundle.Origin, replace bool, forced string) (companyConfirmResult, error) {
@@ -423,21 +423,21 @@ func confirmCompany(store company.Store, database *db.DB, wire string, origin co
 		res.Result = "needs_replace"
 		return res, nil
 	}
-	if len(m.changes) > 0 {
-		marked, err := database.MarkCompanyAccounts(m.slug, companyChangedSources(m.changes), companyChangedAppCode)
-		if err != nil {
-			return companyConfirmResult{}, err
-		}
-		for _, r := range marked {
-			res.Marked = append(res.Marked, companyMarkedJSON{Source: r.Source, ID: r.ID})
-		}
-	}
 	var prev *companybundle.Bundle
 	if m.stored {
 		prev = &m.current.Bundle
 	}
 	if err := store.SaveIfUnchanged(m.slug, prev, m.bundle); err != nil {
 		return companyConfirmResult{}, err
+	}
+	if len(m.changes) > 0 {
+		marked, err := database.MarkCompanyAccounts(m.slug, companyChangedSources(m.changes), companyChangedAppCode)
+		if err != nil {
+			return companyConfirmResult{}, fmt.Errorf("stored %s, but marking its accounts for a new login failed: %w", m.slug, err)
+		}
+		for _, r := range marked {
+			res.Marked = append(res.Marked, companyMarkedJSON{Source: r.Source, ID: r.ID})
+		}
 	}
 	res.Result = "stored"
 	return res, nil

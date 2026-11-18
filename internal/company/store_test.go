@@ -3,6 +3,7 @@ package company
 import (
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -315,6 +316,17 @@ func TestCompanyStore_SaveIfUnchanged(t *testing.T) {
 	got, _, err := s.Get("acme", "")
 	require.NoError(t, err)
 	assert.Equal(t, b, got.Bundle)
+}
+
+func TestCompanyStore_SaveRefusesWhatItCouldNotRead(t *testing.T) {
+	s := newStore(t)
+	b := sample("Acme")
+	for i := range 4000 {
+		b.LinkDenyHosts = append(b.LinkDenyHosts, fmt.Sprintf("host%d.example.com", i))
+	}
+	require.Error(t, s.Save("acme", b))
+	_, err := os.Stat(filepath.Join(s.Dir, "acme.json"))
+	assert.True(t, os.IsNotExist(err))
 }
 
 func TestCompanyStore_ForcedOverlaysEveryFileOfTheCompany(t *testing.T) {
