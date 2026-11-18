@@ -66,6 +66,20 @@ type block struct {
 	Input     json.RawMessage `json:"input"`
 	ToolUseID string          `json:"tool_use_id"`
 	Content   json.RawMessage `json:"content"`
+	IsError   bool            `json:"is_error"`
+}
+
+// recordPeerResults hands the tool_results of a user record to the peer tracker.
+func (st *state) recordPeerResults(rec record, at time.Time) {
+	var blocks []block
+	if json.Unmarshal(rec.Message.Content, &blocks) != nil {
+		return
+	}
+	for _, b := range blocks {
+		if b.Type == "tool_result" {
+			st.peers.result(b.ToolUseID, resultText(b.Content), b.IsError, at)
+		}
+	}
 }
 
 // state is the mutable parse state of one pass over a transcript file.
@@ -74,7 +88,7 @@ type state struct {
 	conv      string
 	byMsg     map[string]int // assistant message id -> index in res.Entries
 	markers   map[string]int // Agent tool_use id -> index in res.Entries
-	peerCalls map[string]int // start_session tool_use id -> index in res.Entries
+	peers     peerTracker    // send_to_session / start_session calls and their results
 	sidechain bool           // reading a subagent file: its records are the feed
 	hasTask   bool
 	handback  string
@@ -93,9 +107,10 @@ func parse(r io.Reader, startOffset int64, conv string, limit int) (*Result, err
 }
 
 func newState(conv string, startOffset int64, sidechain bool) *state {
+	res := &Result{Offset: startOffset, Unknown: map[string]int{}}
 	return &state{
-		res:  &Result{Offset: startOffset, Unknown: map[string]int{}},
-		conv: conv, byMsg: map[string]int{}, markers: map[string]int{}, peerCalls: map[string]int{}, sidechain: sidechain,
+		res:  res,
+		conv: conv, byMsg: map[string]int{}, markers: map[string]int{}, peers: newPeerTracker(res, conv), sidechain: sidechain,
 	}
 }
 
@@ -158,7 +173,9 @@ func (st *state) handleUser(rec record, at time.Time) {
 		return
 	}
 	st.recordParentReport(rec)
-	st.recordPeerResult(rec)
+	if !st.sidechain {
+		st.recordPeerResults(rec, at)
+	}
 	if st.sidechain {
 		// only the first plain-string record is the task
 		var task string
@@ -365,7 +382,7 @@ func (st *state) assistant(rec record, at time.Time) {
 		st.marker(b, at)
 	}
 	for _, b := range peers {
-		st.peerCall(b, at)
+		st.peers.call(b.ID, b.Name, b.Input, at)
 	}
 }
 

@@ -155,11 +155,18 @@ func runWorkbenchSessionFeed(cmd *cobra.Command, _ []string) error {
 func namePeers(ctx context.Context, database *db.DB, entries []sessionFeedEntryJSON) {
 	for _, e := range entries {
 		p := e.Peer
-		if p == nil || p.Direction != sessionfeed.PeerOut || p.Kind != sessionfeed.PeerMessage || p.SessionID <= 0 {
+		if p == nil || p.Direction != sessionfeed.PeerOut || p.SessionID <= 0 {
+			continue
+		}
+		// A started sub-session read from its result alone has no title yet.
+		if p.Kind == sessionfeed.PeerStarted && p.Title != "" {
 			continue
 		}
 		if s, err := sessionagent.LoadSession(database, p.SessionID); err == nil {
 			p.Title = s.Title
+		}
+		if p.Kind == sessionfeed.PeerStarted {
+			continue
 		}
 		if fid, err := database.SessionFolderID(ctx, p.SessionID); err == nil {
 			if f, err := database.WorkbenchFolderByID(ctx, fid); err == nil {

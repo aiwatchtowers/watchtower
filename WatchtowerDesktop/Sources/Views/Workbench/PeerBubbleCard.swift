@@ -10,6 +10,7 @@ extension Tone {
         case .peer: .purple
         case .success: success
         case .waiting: warning
+        case .failed: error
         }
     }
 }

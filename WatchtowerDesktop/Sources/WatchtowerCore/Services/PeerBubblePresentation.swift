@@ -6,8 +6,8 @@ import Foundation
 /// The `peer` entries come from Go (`internal/sessionfeed`); the waiting card
 /// comes from the sender's queued `session_messages` rows.
 package enum PeerBubblePresentation {
-    /// The card's hue: peer traffic, a sub-session that finished, a message that waits.
-    package enum Tone: Equatable, Sendable { case peer, success, waiting }
+    /// The card's hue: peer traffic, a sub-session that finished, a message that waits, a call that was refused.
+    package enum Tone: Equatable, Sendable { case peer, success, waiting, failed }
 
     package struct Bubble: Equatable, Sendable {
         package var header: String
@@ -34,13 +34,27 @@ package enum PeerBubblePresentation {
         case ("in", "finished"):
             return Bubble(header: "✓ Sub-session \(quoted(peer)) finished · \(peer.folder)", body: entry.text, tone: .success)
         case ("out", "started"):
-            return Bubble(header: "↗ Sub-session \(quoted(peer)) started · \(peer.folder)\(worktreeSuffix(peer))",
-                          body: startedBody, tone: .peer)
+            return started(peer)
         case ("out", "message"):
+            if !peer.error.isEmpty {
+                return Bubble(header: "↗ To \(quoted(peer)) — not sent: \(peer.error)", body: entry.text, tone: .failed)
+            }
             return Bubble(header: "↗ To \(quoted(peer)) · \(peer.folder)", body: entry.text, tone: .peer)
         default:
             return nil
         }
+    }
+
+    /// The card of a `start_session` call: refused, started, or not answered yet (its result is read later).
+    private static func started(_ peer: SessionFeedPeer) -> Bubble {
+        let name = peer.title.isEmpty ? "Sub-session" : "Sub-session “\(peer.title)”"
+        if !peer.error.isEmpty {
+            return Bubble(header: "↗ \(name) not started: \(peer.error)", body: "", tone: .failed)
+        }
+        if peer.sessionID == 0 {
+            return Bubble(header: "↗ \(name) starting · \(peer.folder)", body: "", tone: .peer)
+        }
+        return Bubble(header: "↗ \(name) started · \(peer.folder)\(worktreeSuffix(peer))", body: startedBody, tone: .peer)
     }
 
     /// What a started sub-session's card says under its header.
@@ -48,19 +62,20 @@ package enum PeerBubblePresentation {
 
     /// Why a queued message still waits.
     package enum Hold: Equatable, Sendable {
-        case permissionPrompt, busy, ownerTyping
+        case permissionPrompt, busy, ownerTyping, unknown
 
-        /// The hold of a receiver by what the Desktop reads of it: a session at a permission prompt, a working one,
-        /// else an idle one the owner is typing in (the deliverer holds a message for nothing else).
+        /// The hold of a receiver by what the Desktop reads of it: a session at a permission prompt, a working one;
+        /// any other state gives no evidence of why the message waits (the deliverer does not persist its hold).
         package static func of(receiverNeedsApproval: Bool, receiverWorking: Bool) -> Self {
             if receiverNeedsApproval { return .permissionPrompt }
-            return receiverWorking ? .busy : .ownerTyping
+            return receiverWorking ? .busy : .unknown
         }
     }
 
     package static let permissionReason = "The session is at a permission prompt; the message goes once it is answered."
     package static let busyReason = "The session is busy; the message goes when it is idle."
     package static let ownerTypingReason = "The owner is typing in this session; the message goes after that."
+    package static let unknownHoldReason = "The message goes when the session can take it."
     package static let daemonStoppedReason = "Watchtower's background sync is stopped; the message goes when it runs."
     package static let openAction = "Open"
 
@@ -71,6 +86,7 @@ package enum PeerBubblePresentation {
         case .permissionPrompt: permissionReason
         case .busy: busyReason
         case .ownerTyping: ownerTypingReason
+        case .unknown: unknownHoldReason
         }
     }
 

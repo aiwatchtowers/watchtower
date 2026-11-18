@@ -63,7 +63,8 @@ final class PeerBubblePresentationTests: XCTestCase {
         let cases: [(PeerBubblePresentation.Hold, String)] = [
             (.permissionPrompt, "The session is at a permission prompt; the message goes once it is answered."),
             (.busy, "The session is busy; the message goes when it is idle."),
-            (.ownerTyping, "The owner is typing in this session; the message goes after that.")
+            (.ownerTyping, "The owner is typing in this session; the message goes after that."),
+            (.unknown, "The message goes when the session can take it.")
         ]
         for (hold, reason) in cases {
             XCTAssertEqual(PeerBubblePresentation.waiting(title: "Download PDF button", hold: hold, daemonRunning: true),
@@ -72,7 +73,7 @@ final class PeerBubblePresentationTests: XCTestCase {
     }
 
     func testWaitingReasonWhenTheDaemonIsStopped() {
-        for hold in [PeerBubblePresentation.Hold.permissionPrompt, .busy, .ownerTyping] {
+        for hold in [PeerBubblePresentation.Hold.permissionPrompt, .busy, .ownerTyping, .unknown] {
             XCTAssertEqual(PeerBubblePresentation.waitingReason(hold: hold, daemonRunning: false),
                            "Watchtower's background sync is stopped; the message goes when it runs.")
         }
@@ -81,6 +82,23 @@ final class PeerBubblePresentationTests: XCTestCase {
     func testHoldOfReceiver() {
         XCTAssertEqual(PeerBubblePresentation.Hold.of(receiverNeedsApproval: true, receiverWorking: true), .permissionPrompt)
         XCTAssertEqual(PeerBubblePresentation.Hold.of(receiverNeedsApproval: false, receiverWorking: true), .busy)
-        XCTAssertEqual(PeerBubblePresentation.Hold.of(receiverNeedsApproval: false, receiverWorking: false), .ownerTyping)
+        XCTAssertEqual(PeerBubblePresentation.Hold.of(receiverNeedsApproval: false, receiverWorking: false), .unknown,
+                       "an idle receiver gives no evidence of the hold")
+    }
+
+    func testRefusedCallsNeverReadAsStartedOrSent() {
+        let refusedStart = PeerBubblePresentation.bubble(for: entry(
+            .init(direction: "out", kind: "started", title: title, folder: "hub", error: "limit: too many")))
+        XCTAssertEqual(refusedStart, .init(header: "↗ Sub-session “PDF export API” not started: limit: too many", body: "", tone: .failed))
+        let untitled = PeerBubblePresentation.bubble(for: entry(.init(direction: "out", kind: "started", folder: "hub", error: "not_installed")))
+        XCTAssertEqual(untitled?.header, "↗ Sub-session not started: not_installed")
+        let refusedSend = PeerBubblePresentation.bubble(for: entry(
+            .init(direction: "out", kind: "message", sessionID: 7, title: title, folder: "hub", error: "session 7 is not running"), text: "hi"))
+        XCTAssertEqual(refusedSend, .init(header: "↗ To “PDF export API” — not sent: session 7 is not running", body: "hi", tone: .failed))
+    }
+
+    func testStartWithoutAnswerYetIsStarting() {
+        let b = PeerBubblePresentation.bubble(for: entry(.init(direction: "out", kind: "started", title: title, folder: "hub")))
+        XCTAssertEqual(b, .init(header: "↗ Sub-session “PDF export API” starting · hub", body: "", tone: .peer))
     }
 }

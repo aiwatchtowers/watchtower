@@ -42,6 +42,8 @@ type PeerRef struct {
 	Title     string `json:"title"`
 	Folder    string `json:"folder"`
 	Worktree  string `json:"worktree"`
+	// Error is why a call of this session was refused ("" when it was not).
+	Error string `json:"error"`
 }
 
 // EventType values for KindEvent entries: Claude Code notices written as user records.

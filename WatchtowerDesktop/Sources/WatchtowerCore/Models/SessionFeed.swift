@@ -54,18 +54,29 @@ package struct SessionFeedPeer: Decodable, Equatable, Sendable {
     package var title: String
     package var folder: String
     package var worktree: String
+    /// Why the call was refused; "" when it was not.
+    package var error: String
 
-    package init(direction: String, kind: String, sessionID: Int64 = 0, title: String = "", folder: String = "", worktree: String = "") {
+    package init(
+        direction: String,
+        kind: String,
+        sessionID: Int64 = 0,
+        title: String = "",
+        folder: String = "",
+        worktree: String = "",
+        error: String = ""
+    ) {
         self.direction = direction
         self.kind = kind
         self.sessionID = sessionID
         self.title = title
         self.folder = folder
         self.worktree = worktree
+        self.error = error
     }
 
     private enum CodingKeys: String, CodingKey {
-        case direction, kind, title, folder, worktree
+        case direction, kind, title, folder, worktree, error
         case sessionID = "session_id"
     }
 
@@ -77,6 +88,7 @@ package struct SessionFeedPeer: Decodable, Equatable, Sendable {
         title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
         folder = try c.decodeIfPresent(String.self, forKey: .folder) ?? ""
         worktree = try c.decodeIfPresent(String.self, forKey: .worktree) ?? ""
+        error = try c.decodeIfPresent(String.self, forKey: .error) ?? ""
     }
 }
 
