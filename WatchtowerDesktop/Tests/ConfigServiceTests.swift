@@ -140,6 +140,34 @@ struct ConfigServiceTests {
         #expect(ConfigService(configPath: path).backgroundRuns == "paused")
     }
 
+    @Test("Keys set twice in different case are ambiguous: the answer reads unreadable (paused), as in Go")
+    func testAmbiguousKeyCaseIsUnreadable() throws {
+        for yaml in [
+            "AI: {background_runs: allowed}\nAi: {background_runs: paused}\n",
+            "ai: {background_runs: allowed}\nAI: {model: m}\n",
+            "ai: {Background_Runs: allowed, BACKGROUND_RUNS: paused}\n"
+        ] {
+            let service = ConfigService(configPath: makeTempConfig(yaml))
+            #expect(service.backgroundRuns == nil, "\(yaml)")
+            #expect(service.backgroundRunsUnreadable, "\(yaml)")
+        }
+    }
+
+    @Test("Save refuses an ambiguous or non-mapping AI section instead of overwriting it")
+    func testSaveRefusesAmbiguousOrNonMappingAISection() throws {
+        for yaml in [
+            "AI: [one, two]\nsync: {workers: 2}\n",
+            "AI: just text\nsync: {workers: 2}\n",
+            "AI: {background_runs: paused}\nAi: {model: m}\nsync: {workers: 2}\n"
+        ] {
+            let path = makeTempConfig(yaml)
+            let service = ConfigService(configPath: path)
+            service.syncWorkers = 5
+            #expect(throws: ConfigUnreadableError.self, "\(yaml)") { try service.save() }
+            #expect(try String(contentsOfFile: path, encoding: .utf8) == yaml, "nothing written")
+        }
+    }
+
     @Test("A config.yaml that cannot be reached or read is unreadable, never absent")
     func testBackgroundRunsUnreadableFileOrDirectory() throws {
         let path = makeTempConfig("ai: {background_runs: paused}\n")

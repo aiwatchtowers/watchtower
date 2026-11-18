@@ -207,7 +207,7 @@ final class ConfigService {
             briefingHour = (briefing["hour"] as? Int) ?? 8
         }
 
-        if let ai = Self.aiSection(yaml) {
+        if let ai = try? Self.aiSection(yaml) {
             loadFallback(ai)
             prepareProviderModels(ai)
             aiModel = ai["model"] as? String
@@ -282,31 +282,41 @@ final class ConfigService {
             backgroundRuns = nil
             backgroundRunsUnreadable = false
         case .mapping(let yaml):
-            backgroundRuns = Self.backgroundRuns(in: yaml)
-            backgroundRunsUnreadable = false
+            do {
+                backgroundRuns = try Self.backgroundRuns(in: yaml)
+                backgroundRunsUnreadable = false
+            } catch {
+                backgroundRuns = nil
+                backgroundRunsUnreadable = true
+            }
         case .unreadable:
             backgroundRuns = nil
             backgroundRunsUnreadable = true
         }
     }
 
-    /// The key of `m` that viper reads as `key`, as Go's `lookupFold`: the
-    /// exact key first, else a case-insensitive match (the first in sorted
-    /// order, so the pick is stable).
-    static func foldKey(_ m: [String: Any], _ key: String) -> String? {
-        if m[key] != nil { return key }
-        return m.keys.filter { $0.caseInsensitiveCompare(key) == .orderedSame }.min()
+    /// The key of `m` that matches `key` without regard to case, as viper
+    /// reads keys; nil when none does. More than one match (`AI` and `Ai`, or
+    /// `ai` and `AI`) is ambiguous and throws: Go and the Desktop could pick
+    /// different ones, so both fail closed. Twin of Go's `aiconsent.lookupFold`.
+    static func foldKey(_ m: [String: Any], _ key: String) throws -> String? {
+        let matches = m.keys.filter { $0.caseInsensitiveCompare(key) == .orderedSame }
+        guard matches.count <= 1 else {
+            throw ConfigUnreadableError(reason: "\(key) appears more than once (keys differing only in case)")
+        }
+        return matches.first
     }
 
-    /// The `ai` section, found as Go finds it.
-    static func aiSection(_ yaml: [String: Any]) -> [String: Any]? {
-        foldKey(yaml, "ai").flatMap { yaml[$0] as? [String: Any] }
+    /// The `ai` section, found as Go finds it; nil when absent or not a mapping.
+    static func aiSection(_ yaml: [String: Any]) throws -> [String: Any]? {
+        try foldKey(yaml, "ai").flatMap { yaml[$0] as? [String: Any] }
     }
 
     /// `ai.background_runs` as a string, keys matched as Go's `lookupFold`
-    /// matches them; a non-string value reads as nil (absent).
-    private static func backgroundRuns(in yaml: [String: Any]) -> String? {
-        guard let ai = aiSection(yaml), let key = foldKey(ai, "background_runs") else { return nil }
+    /// matches them; a non-string value reads as nil (absent). Throws when a
+    /// key is ambiguous.
+    private static func backgroundRuns(in yaml: [String: Any]) throws -> String? {
+        guard let ai = try aiSection(yaml), let key = try foldKey(ai, "background_runs") else { return nil }
         return ai[key] as? String
     }
 
@@ -519,11 +529,23 @@ final class ConfigService {
         }
     }
 
+    /// The AI section to update, under its existing key whatever its case
+    /// (`AI:` hand-edited): a second lowercase `ai` map would shadow the
+    /// owner's background_runs. A section that is ambiguous or not a mapping
+    /// throws, so save() refuses rather than overwrite it.
+    private static func aiSectionForWrite(_ yaml: [String: Any]) throws -> (key: String, section: [String: Any]) {
+        let key = try foldKey(yaml, "ai") ?? "ai"
+        let value = yaml[key]
+        if value == nil || value is NSNull { return (key, [:]) }
+        guard let section = value as? [String: Any] else {
+            throw ConfigUnreadableError(reason: "\(key) is not a mapping")
+        }
+        return (key, section)
+    }
+
     private func applyAISection(to yaml: inout [String: Any]) throws {
-        // Update the section where it is, whatever its case (`AI:` hand-edited):
-        // a second lowercase `ai` map would shadow the owner's background_runs.
-        let aiKey = Self.foldKey(yaml, "ai") ?? "ai"
-        var ai = (yaml[aiKey] as? [String: Any]) ?? [:]
+        let (aiKey, section) = try Self.aiSectionForWrite(yaml)
+        var ai = section
         var buckets = ai["providers"] as? [String: [String: Any]] ?? [:]
         let selected = aiProvider ?? "claude"
         applyFallback(to: &ai)
@@ -689,14 +711,14 @@ final class ConfigService {
         routingApplication.saved()
 
         rawYAML = yaml
-        loadFallback(Self.aiSection(yaml) ?? [:])
+        loadFallback((try? Self.aiSection(yaml)) ?? [:])
         adoptBackgroundRuns(.mapping(yaml))
         lastSaveChangedPurge = purgeChanged
         diskPurgeRevokedData = purgeRevokedData
         // Adopt what is on disk now, so a switch the CLI turned on behind this
         // instance also shows as on.
         adoptGoogleSyncSwitches(from: yaml)
-        if let ai = Self.aiSection(yaml) {
+        if let ai = try? Self.aiSection(yaml) {
             providerBuckets = ai["providers"] as? [String: [String: Any]] ?? [:]
             loadProviderModels()
         }
