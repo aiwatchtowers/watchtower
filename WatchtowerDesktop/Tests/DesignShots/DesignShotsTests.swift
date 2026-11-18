@@ -89,6 +89,11 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(SlackFullLiveShotFixtures.shots)
     }
 
+    /// The company setup screens spec's mockups (#1887).
+    func testCompanySetupShotsRender() throws {
+        try renderShots(CompanySetupShotFixtures.shots)
+    }
+
     private func renderShots(_ shots: [DesignShot]) throws {
         guard let outputDir = ProcessInfo.processInfo.environment["DESKTOP_SHOTS_DIR"]
             .flatMap({ $0.isEmpty ? nil : URL(fileURLWithPath: $0, isDirectory: true) })

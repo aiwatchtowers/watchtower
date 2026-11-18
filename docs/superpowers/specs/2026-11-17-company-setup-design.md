@@ -42,7 +42,7 @@ After this work:
 | D23 | Token accounts erase closed Atlassian people too, through a 7-day profile lookup, with the same erase as PDR (§6) | ask #1476 |
 | D24 | New MDM keys: `AllowAtlassianAPIToken` (bool, default true) and `AllowOwnGoogleProject` (bool, default true; the personal Google project path, §4, stays allowed unless IT turns it off). No key forcing company apps only | ask #1476 ("свой проект можно + настройка MDM") |
 | D15 | Sharing on our shared Atlassian app is turned off 30 days after company setup ships | ask #1455 |
-| D14 | Screens (wizard with the existing-app fork, confirmation, Connections rows, banners, the Atlassian API-token form, the MDM help links) get their own screens spec with DesignShotCatalog mockups for every state, as #1709 does for Slack. This spec holds no screen and no UI task: it fixes the behaviour, the data and the UI texts (in the models, tested — T3); the screens spec is a prerequisite of every UI task and the screen tasks are planned from it | decided by the agent |
+| D14 | Screens (wizard with the existing-app fork, confirmation, Connections rows, banners, the Atlassian API-token form, the MDM help links) get their own screens spec with DesignShotCatalog mockups for every state, as #1709 does for Slack. This spec holds no screen and no UI task: it fixes the behaviour, the data and the UI texts (in the models, tested — T3); the screens spec is a prerequisite of every UI task and the screen tasks are planned from it. Screens spec: [`2026-11-18-company-setup-screens-design.md`](2026-11-18-company-setup-screens-design.md) | decided by the agent |
 
 ## 1. The company bundle
 
