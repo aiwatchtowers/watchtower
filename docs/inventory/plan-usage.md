@@ -18,11 +18,13 @@
 
 **Observable:** Plan limits come only from the installed `claude` command's `get_usage` answer; no source reads the Claude Code Keychain item or credentials file, and no Watchtower code calls Anthropic's usage endpoint. The reader starts `claude` with a pinned argv in a neutral folder and writes only the one `get_usage` control request.
 
+The credential guard is the static scan `TestPlanUsage01_NoClaudeCredentialReader`: no non-test Go file of the module and no Swift file of a `*/Sources` tree names a Claude credential store, the token header or the usage endpoint. `TestPlanUsage01_ReaderArgvAndHome` guards the reader's argv, working folder, stdin and that it starts nothing besides `claude`; its decoys cannot see a read made from Go code.
+
 **Why locked:** Claude Code's terms forbid collecting or intermediating Claude credentials.
 
 **Test guards:**
-- `internal/planusage/nocredentials_test.go::TestPlanUsage01_NoClaudeCredentialReader`
-- `internal/claude/usage_test.go::TestPlanUsage01_ReaderArgvAndHome`
+- `internal/planusage/nocredentials_test.go::TestPlanUsage01_NoClaudeCredentialReader` (credentials: static scan)
+- `internal/claude/usage_test.go::TestPlanUsage01_ReaderArgvAndHome` (argv, working folder, HOME, stdin)
 
 **Locked since:** 2026-10-15 (rewritten 2026-11-18)
 
@@ -71,7 +73,7 @@
 
 ## Changelog
 
-- 2026-11-18: PLANUSAGE-01 and PLANUSAGE-02 rewritten (plan limits without the token, spec `docs/superpowers/specs/2026-11-17-plan-limits-without-token-design.md`, approved in ask #1448): the token reader and its guards `TestPlanUsage01_ExpiredTokenMakesNoRequest` / `TestPlanUsage02_TokenNeverPersisted` are deleted with the code; new guards are strictly stronger. LLMUSAGE-01 unchanged: `knownNonLLMExec` swaps `planusage.DefaultCredentialSource` for `claude.usageProcess`; no guard relaxed.
+- 2026-11-18: PLANUSAGE-01 and PLANUSAGE-02 rewritten (plan limits without the token, spec `docs/superpowers/specs/2026-11-17-plan-limits-without-token-design.md`, approved in ask #1448): the token reader and its guards `TestPlanUsage01_ExpiredTokenMakesNoRequest` / `TestPlanUsage02_TokenNeverPersisted` are deleted with the code; new guards are strictly stronger. LLMUSAGE-01 unchanged: `knownNonLLMExec` swaps `planusage.DefaultCredentialSource` for `claude.usageProcess` and adds `claude.loginShellPATHUntil` (the usage reader's bounded login-shell PATH lookup, no model call); no guard relaxed.
 - 2026-11-06: **LLMUSAGE-01 amended** (transport independence task A3, N3 signed off in ask #514) — provider values: runtime B over Ollama records `ollama`, `http` is retired and read as `ollama` through `providers.LedgerLabel`; no migration, no row rewritten. The token split moved into `llmusage.Tokens`, embedded in `Call` with the same flat keys. No guard relaxed; guards added: `TestLLMUSAGE01_AgentloopRecordsOllamaLabel`, `TestLLMUSAGE01_LedgerLabelHTTPReadsAsOllama`, `TestLLMUSAGE01_UsageLLMSpoolHTTPReadsAsOllama`, `TestLLMUSAGE01_CallTokenKeysStayFlat`.
 - 2026-10-28: LLMUSAGE-01 added by the LLM usage ledger (spec `docs/superpowers/specs/2026-10-27-llm-usage-ledger-design.md`, note `docs/features/llm-usage-ledger.md`); the file also covers `internal/llmusage/`.
 - 2026-10-15: PLANUSAGE-03 wording — the key's reset time is rounded to the minute, past windows never notify; same contract.

@@ -600,9 +600,13 @@ func TestReadUsage_LargeStderrDoesNotBlock(t *testing.T) {
 	}
 }
 
-// PLANUSAGE-01: the reader starts claude with exactly the pinned argv, in the
-// neutral temp folder, writes nothing but the one request, and touches no
-// credential tool or file.
+// PLANUSAGE-01 (argv/HOME/stdin guard): the reader starts claude with exactly
+// the pinned argv, in the neutral temp folder, and writes nothing but the one
+// request. The decoys only show that the reader starts nothing besides bin
+// (no `security`/`curl` off PATH) and leaves a credentials file in the
+// child's HOME untouched; they cannot see a read from Go code, which is
+// TestPlanUsage01_NoClaudeCredentialReader's job (the static scan in
+// internal/planusage).
 func TestPlanUsage01_ReaderArgvAndHome(t *testing.T) {
 	out := t.TempDir()
 	home := t.TempDir()
