@@ -194,13 +194,19 @@ func confirmBackgroundAI(in io.Reader, out io.Writer, cfg *config.Config) (bool,
 	return false, nil
 }
 
+// subscriptionOf is the registry's plan facts of provider id; nil for an
+// unknown id or a provider with no plan of the owner's.
+func subscriptionOf(id string) *providers.Subscription {
+	if p, ok := providers.Lookup(id); ok {
+		return p.Subscription
+	}
+	return nil
+}
+
 // consentAgentName is the agent the consent text names (spec §5.1).
 func consentAgentName(id string) string {
-	switch id {
-	case "claude":
-		return "Claude Code"
-	case "codex":
-		return "Codex"
+	if sub := subscriptionOf(id); sub != nil {
+		return sub.AgentName
 	}
 	if name := providers.ByID(id).DisplayName; name != "" {
 		return name
@@ -211,11 +217,8 @@ func consentAgentName(id string) string {
 // consentPlanName is the plan a subscription agent's runs draw on; "" for a
 // provider with none.
 func consentPlanName(id string) string {
-	switch id {
-	case "claude":
-		return "your Claude subscription"
-	case "codex":
-		return "your ChatGPT plan"
+	if sub := subscriptionOf(id); sub != nil {
+		return sub.Plan
 	}
 	return ""
 }
@@ -230,22 +233,14 @@ func consentText(agent, reserve string, pollMinutes, backfillDays int) string {
 	b.WriteString("Watchtower uses " + name + " on this Mac to write your digests, briefings, tracks and people cards, " +
 		"and to run your automations. Most of this starts on its own, on a schedule or after each sync, " +
 		"without you asking each time.\n\n")
-	switch agent {
-	case "claude":
-		b.WriteString("These runs use your own Claude subscription and count toward its usage limits, the same as when " +
-			"you use Claude Code yourself. Watchtower never pays for, sees or shares your sign-in.\n")
-	case "codex":
-		b.WriteString("These runs use your own ChatGPT plan and count toward its Codex usage limits, the same as when " +
-			"you use Codex yourself. Watchtower never pays for, sees or shares your sign-in.\n")
-	default:
+	sub := subscriptionOf(agent)
+	if sub != nil {
+		b.WriteString("These runs use " + sub.Usage + ". Watchtower never pays for, sees or shares your sign-in.\n")
+	} else {
 		b.WriteString("These runs use " + name + ", the model server set in Settings → AI.\n")
 	}
-	if plan := consentPlanName(reserve); plan != "" && consentPlanName(agent) != "" && reserve != agent {
-		limit := "Claude's"
-		if agent == "codex" {
-			limit = "Codex's"
-		}
-		b.WriteString("When " + limit + " usage limit is reached, runs switch to " + consentAgentName(reserve) +
+	if plan := consentPlanName(reserve); plan != "" && sub != nil && reserve != agent {
+		b.WriteString("When " + sub.Limit + " usage limit is reached, runs switch to " + consentAgentName(reserve) +
 			" and use " + plan + ".\n")
 	}
 	b.WriteString("\nWhat can run on its own\n")

@@ -43,6 +43,26 @@ type Provider struct {
 	// TestDiagnostics_ProviderNamesPinned.
 	ReportName   string `json:"-"`
 	ReportOption string `json:"-"`
+	// Subscription is set for a provider whose runs draw on the owner's own
+	// plan; nil for one with none (a model server). It feeds the background
+	// AI consent text of `watchtower ai background allow` (spec
+	// 2026-11-17-background-ai-consent-design.md §5.1).
+	Subscription *Subscription `json:"-"`
+}
+
+// Subscription is how the consent text names a provider that runs on the
+// owner's own plan.
+type Subscription struct {
+	// AgentName is the agent the owner runs ("Claude Code").
+	AgentName string
+	// Plan is the plan its runs draw on ("your Claude subscription").
+	Plan string
+	// Usage completes "These runs use …": the plan and the limits the runs
+	// count toward.
+	Usage string
+	// Limit names whose usage limit a switch to the reserve follows
+	// ("Claude's").
+	Limit string
 }
 
 // registry order is the display order in UIs.
@@ -56,6 +76,13 @@ var registry = []Provider{
 		KnownModels:   []string{"haiku", "sonnet", "opus"},
 		ReportName:    "Claude Code",
 		ReportOption:  "Claude Code",
+		Subscription: &Subscription{
+			AgentName: "Claude Code",
+			Plan:      "your Claude subscription",
+			Usage: "your own Claude subscription and count toward its usage limits, " +
+				"the same as when you use Claude Code yourself",
+			Limit: "Claude's",
+		},
 	},
 	{
 		ID:          "codex",
@@ -69,6 +96,13 @@ var registry = []Provider{
 		DefaultStrong: "gpt-5.6-sol",
 		ReportName:    "Codex",
 		ReportOption:  "Codex",
+		Subscription: &Subscription{
+			AgentName: "Codex",
+			Plan:      "your ChatGPT plan",
+			Usage: "your own ChatGPT plan and count toward its Codex usage limits, " +
+				"the same as when you use Codex yourself",
+			Limit: "Codex's",
+		},
 	},
 	{
 		ID:          "ollama",
@@ -134,6 +168,17 @@ func All() []Provider {
 	out := make([]Provider, len(registry))
 	copy(out, registry)
 	return out
+}
+
+// Lookup returns the provider registered under id exactly; ok is false for
+// an unknown or empty id (ByID would fall back to claude).
+func Lookup(id string) (p Provider, ok bool) {
+	for _, r := range registry {
+		if r.ID == id {
+			return r, true
+		}
+	}
+	return Provider{}, false
 }
 
 // ByID looks a provider up by id. An unknown or empty id resolves to claude,
