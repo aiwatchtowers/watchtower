@@ -268,6 +268,100 @@ func (p *Pipeline) OwnerKnown() (bool, error) {
 	return len(owners) > 0, err
 }
 
+// classifyUsers splits users into full-data (individual AI) and low-data
+// (batched AI) by their situations and message count.
+func classifyUsers(todo []db.UserStats, allSituations map[string][]db.ChannelSituations) ([]db.UserStats, []batchUserEntry) {
+	var fullDataUsers []db.UserStats
+	var batchEntries []batchUserEntry
+	for _, stats := range todo {
+		userSits := allSituations[stats.UserID]
+		sitCount := 0
+		for _, cs := range userSits {
+			sitCount += len(cs.Situations)
+		}
+		if sitCount >= MinSituations || stats.MessageCount >= MinSituationMessages {
+			fullDataUsers = append(fullDataUsers, stats)
+		} else {
+			batchEntries = append(batchEntries, batchUserEntry{stats: stats, situations: userSits, sitCount: sitCount})
+		}
+	}
+	return fullDataUsers, batchEntries
+}
+
+// windowWork reads what a window's run needs: who still needs a card, the
+// situations and the number of active users. A true fourth result ends the
+// run here with its outcome set (no owner, no data, everyone covered).
+func (p *Pipeline) windowWork(from, to float64) ([]db.UserStats, map[string][]db.ChannelSituations, int, bool, error) {
+	var covered map[string]bool
+	if !p.ForceRegenerate {
+		t1 := time.Now()
+		var err error
+		covered, err = p.coveredUsers(from, to)
+		if err != nil {
+			return nil, nil, 0, false, err
+		}
+		p.logger.Printf("people: GetPeopleCardsForWindow took %s (%d users already covered)", time.Since(t1).Round(time.Millisecond), len(covered))
+	}
+
+	p.progress(0, 0, "Computing user statistics...")
+
+	t1 := time.Now()
+	allStats, owners, err := p.cardStats(from, to)
+	p.logger.Printf("people: ComputeAllUserStats took %s (%d users)", time.Since(t1).Round(time.Millisecond), len(allStats))
+	if err != nil {
+		return nil, nil, 0, false, err
+	}
+	if len(owners) == 0 {
+		p.progress(0, 0, "No owner identity: connect Slack to make people cards")
+		p.logger.Println("people: no owner identity (no Slack account with a known user); no cards")
+		p.lastOutcome = OutcomeNoOwner
+		return nil, nil, 0, true, nil
+	}
+	if len(allStats) == 0 {
+		p.progress(0, 0, "No active users with enough messages")
+		p.logger.Println("people: no active users with enough messages")
+		p.lastOutcome = OutcomeNoData
+		return nil, nil, 0, true, nil
+	}
+	// todo is who still needs a card.
+	todo := allStats
+	if len(covered) > 0 {
+		todo = withoutCovered(allStats, covered)
+		if len(todo) == 0 {
+			p.logger.Printf("people: window already has AI cards for all %d users, skipping", len(covered))
+			p.lastOutcome = OutcomeCovered
+			return nil, nil, 0, true, nil
+		}
+		p.logger.Printf("people: %d user(s) still need a card for this window", len(todo))
+	}
+
+	// Load all situations for v2 pipeline
+	t1 = time.Now()
+	allSituations, err := p.db.GetSituationsForWindow(from, to)
+	p.logger.Printf("people: GetSituationsForWindow took %s (%d users with situations)", time.Since(t1).Round(time.Millisecond), len(allSituations))
+	if err != nil {
+		// The daemon's run must fail here: read as "no situations" it would
+		// be a no-data outcome — no attempt, a "done" row, retried forever.
+		if !p.ForceRegenerate {
+			return nil, nil, 0, false, fmt.Errorf("loading situations: %w", err)
+		}
+		p.logger.Printf("people: warning: failed to load situations (forced run continues): %v", err)
+		allSituations = make(map[string][]db.ChannelSituations)
+	}
+
+	// In automatic mode (daemon), skip if no situations exist yet (e.g. first
+	// run before digests generated). Without situations all cards would be
+	// insufficient_data — wasteful. CLI with ForceRegenerate still runs.
+	if !p.ForceRegenerate && len(allSituations) == 0 {
+		p.progress(0, 0, "No situations from digests yet, skipping people cards")
+		p.logger.Println("people: no situations available, skipping (run digests first)")
+		p.lastOutcome = OutcomeNoData
+		return nil, nil, 0, true, nil
+	}
+
+	return todo, allSituations, len(allStats), false, nil
+}
+
 // RunForWindow executes the people card pipeline for a specific time window.
 func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, error) {
 	p.lastOutcome = OutcomeGenerated
@@ -281,97 +375,16 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 	p.loadCaches()
 	p.logger.Printf("people: loadCaches took %s", time.Since(t0).Round(time.Millisecond))
 
-	var covered map[string]bool
-	if !p.ForceRegenerate {
-		t1 := time.Now()
-		var err error
-		covered, err = p.coveredUsers(from, to)
-		if err != nil {
-			return 0, err
-		}
-		p.logger.Printf("people: GetPeopleCardsForWindow took %s (%d users already covered)", time.Since(t1).Round(time.Millisecond), len(covered))
-	}
-
-	p.progress(0, 0, "Computing user statistics...")
-
-	t1 := time.Now()
-	allStats, owners, err := p.cardStats(from, to)
-	p.logger.Printf("people: ComputeAllUserStats took %s (%d users)", time.Since(t1).Round(time.Millisecond), len(allStats))
-	if err != nil {
+	todo, allSituations, nStats, stop, err := p.windowWork(from, to)
+	if stop || err != nil {
 		return 0, err
 	}
-	if len(owners) == 0 {
-		p.progress(0, 0, "No owner identity: connect Slack to make people cards")
-		p.logger.Println("people: no owner identity (no Slack account with a known user); no cards")
-		p.lastOutcome = OutcomeNoOwner
-		return 0, nil
-	}
-	if len(allStats) == 0 {
-		p.progress(0, 0, "No active users with enough messages")
-		p.logger.Println("people: no active users with enough messages")
-		p.lastOutcome = OutcomeNoData
-		return 0, nil
-	}
-	// todo is who still needs a card.
-	todo := allStats
-	if len(covered) > 0 {
-		todo = withoutCovered(allStats, covered)
-		if len(todo) == 0 {
-			p.logger.Printf("people: window already has AI cards for all %d users, skipping", len(covered))
-			p.lastOutcome = OutcomeCovered
-			return 0, nil
-		}
-		p.logger.Printf("people: %d user(s) still need a card for this window", len(todo))
-	}
 
-	// Load all situations for v2 pipeline
-	t1 = time.Now()
-	allSituations, err := p.db.GetSituationsForWindow(from, to)
-	p.logger.Printf("people: GetSituationsForWindow took %s (%d users with situations)", time.Since(t1).Round(time.Millisecond), len(allSituations))
-	if err != nil {
-		// The daemon's run must fail here: read as "no situations" it would
-		// be a no-data outcome — no attempt, a "done" row, retried forever.
-		if !p.ForceRegenerate {
-			return 0, fmt.Errorf("loading situations: %w", err)
-		}
-		p.logger.Printf("people: warning: failed to load situations (forced run continues): %v", err)
-		allSituations = make(map[string][]db.ChannelSituations)
-	}
-
-	// In automatic mode (daemon), skip if no situations exist yet (e.g. first
-	// run before digests generated). Without situations all cards would be
-	// insufficient_data — wasteful. CLI with ForceRegenerate still runs.
-	if !p.ForceRegenerate && len(allSituations) == 0 {
-		p.progress(0, 0, "No situations from digests yet, skipping people cards")
-		p.logger.Println("people: no situations available, skipping (run digests first)")
-		p.lastOutcome = OutcomeNoData
-		return 0, nil
-	}
-
-	p.logger.Printf("people: %d users, %d users with situations", len(allStats), len(allSituations))
+	p.logger.Printf("people: %d users, %d users with situations", nStats, len(allSituations))
 
 	totalUsers := len(todo)
 
-	// Classify users into full-data (individual AI) and batch (low-data, batched AI).
-	var fullDataUsers []db.UserStats
-	var batchEntries []batchUserEntry
-	for _, stats := range todo {
-		userSits := allSituations[stats.UserID]
-		sitCount := 0
-		for _, cs := range userSits {
-			sitCount += len(cs.Situations)
-		}
-		hasEnoughData := sitCount >= MinSituations || stats.MessageCount >= MinSituationMessages
-		if hasEnoughData {
-			fullDataUsers = append(fullDataUsers, stats)
-		} else {
-			batchEntries = append(batchEntries, batchUserEntry{
-				stats:      stats,
-				situations: userSits,
-				sitCount:   sitCount,
-			})
-		}
-	}
+	fullDataUsers, batchEntries := classifyUsers(todo, allSituations)
 
 	p.logger.Printf("people: %d full-data users, %d low-data users (batch)", len(fullDataUsers), len(batchEntries))
 
