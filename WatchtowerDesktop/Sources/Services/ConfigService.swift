@@ -91,8 +91,10 @@ final class ConfigService {
     /// config.yaml exists but could not be read or parsed at the last read of
     /// `backgroundRuns`, so the answer is unknown (reads paused, as in Go).
     private(set) var backgroundRunsUnreadable = false
-    /// `ai.provider` as last loaded or saved, never the unsaved edit: the
-    /// agent Settings → AI → Background AI names.
+    /// `ai.provider` as on disk at the last read of the background AI answer
+    /// (load, save, `reloadBackgroundRuns`), never the unsaved edit: the
+    /// agent Settings → AI → Background AI names. An unreadable file keeps
+    /// the last one.
     private(set) var savedAIProvider: String?
     let routingApplication: ProviderRoutingApplication
 
@@ -284,10 +286,12 @@ final class ConfigService {
         case .absent, .empty:
             backgroundRuns = nil
             backgroundRunsUnreadable = false
+            savedAIProvider = nil
         case .mapping(let yaml):
             do {
                 backgroundRuns = try Self.backgroundRuns(in: yaml)
                 backgroundRunsUnreadable = false
+                savedAIProvider = try Self.aiSection(yaml)?["provider"] as? String
             } catch {
                 backgroundRuns = nil
                 backgroundRunsUnreadable = true
@@ -347,7 +351,6 @@ final class ConfigService {
         editedModelTiers = []
         editedProviderBuckets = [:]
         loadedFields = editableFields
-        savedAIProvider = aiProvider
     }
 
     private func modelTierEdited(_ tier: String) -> Bool {

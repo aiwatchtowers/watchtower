@@ -207,6 +207,28 @@ struct ConfigServiceTests {
         #expect(!service.hasUnsavedEdits, "the saved provider is bookkeeping, not a setting")
     }
 
+    @Test("reloadBackgroundRuns picks up a provider changed on disk and keeps the unsaved provider edit")
+    func testReloadBackgroundRunsRefreshesSavedProvider() throws {
+        let path = makeTempConfig("ai: {provider: claude}\n")
+        let clean = ConfigService(configPath: path)
+        let edited = ConfigService(configPath: path)
+        edited.aiProvider = "ollama"
+        try ConfigFileLock.withLock(configPath: path) { token in
+            try ConfigFileWriter.write("ai: {provider: codex, background_runs: allowed}\n", configPath: path, token: token)
+        }
+        for service in [clean, edited] { service.reloadBackgroundRuns() }
+        #expect(clean.savedAIProvider == "codex")
+        #expect(edited.savedAIProvider == "codex")
+        #expect(edited.aiProvider == "ollama", "the unsaved edit stays")
+        #expect(clean.aiProvider == "claude", "only the answer and the saved provider are re-read")
+
+        try ConfigFileLock.withLock(configPath: path) { token in
+            try ConfigFileWriter.write("ai: [unclosed\n", configPath: path, token: token)
+        }
+        clean.reloadBackgroundRuns()
+        #expect(clean.savedAIProvider == "codex", "an unreadable file keeps the last one")
+    }
+
     @Test("reloadBackgroundRuns picks up an answer written behind the instance and keeps unsaved edits")
     func testReloadBackgroundRunsKeepsEdits() throws {
         let path = makeTempConfig("ai: {model: m}\n")
