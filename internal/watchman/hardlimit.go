@@ -100,7 +100,24 @@ type shellCmd struct {
 	w     []string
 	cwd   string // "" = never cd'd; cwdUnknown = a cd that cannot be resolved
 	xargs bool   // the arguments come from stdin as well
+	// elsewhere: an env assignment (GIT_DIR, GIT_WORK_TREE...) or a wrapper
+	// option (env -C, sudo -D) points the command at another repository
+	// or directory.
+	elsewhere bool
 }
+
+// gitDirVars are the environment variables that point git at another
+// repository or work tree.
+var gitDirVars = []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"}
+
+// isGitDirAssignment reports NAME=value for a gitDirVars name.
+func isGitDirAssignment(w string) bool {
+	name, _, ok := strings.Cut(w, "=")
+	return ok && slices.Contains(gitDirVars, name)
+}
+
+// chdirOpts are the wrapper options that change the directory.
+var chdirOpts = map[string]bool{"-C": true, "--chdir": true, "-D": true}
 
 const cwdUnknown = "?"
 
@@ -248,6 +265,7 @@ func stripWrappers(words []string, c *shellCmd) []string {
 	for len(words) > 0 {
 		w := words[0]
 		if i := strings.Index(w, "="); i > 0 && !strings.ContainsAny(w[:i], "/-") {
+			c.elsewhere = c.elsewhere || isGitDirAssignment(w)
 			words = words[1:]
 			continue
 		}
@@ -263,6 +281,8 @@ func stripWrappers(words []string, c *shellCmd) []string {
 		for len(words) > 0 && strings.HasPrefix(words[0], "-") {
 			opt := words[0]
 			words = words[1:]
+			name, _, _ := strings.Cut(opt, "=")
+			c.elsewhere = c.elsewhere || (valued[name] && chdirOpts[name])
 			if valued[opt] && len(words) > 0 {
 				words = words[1:]
 			}
@@ -316,19 +336,41 @@ func commands(summary string) []shellCmd {
 	return out
 }
 
+// gitValuedGlobals are git's global options that take an operand, attached
+// with = or as the next word. --exec-path takes one only attached (alone it
+// prints the path and exits).
+var gitValuedGlobals = map[string]bool{"-c": true, "-C": true, "--git-dir": true, "--work-tree": true, "--namespace": true, "--config-env": true, "--super-prefix": true}
+
+// gitGlobals skips the global options of w (a git command line, or any
+// program's), with their operands. sub is the index of the subcommand;
+// elsewhere reports -C, --git-dir or --work-tree, which point git at
+// another repository or work tree.
+func gitGlobals(w []string) (sub int, elsewhere bool) {
+	i := 1
+	for i < len(w) && strings.HasPrefix(w[i], "-") {
+		name, _, attached := strings.Cut(w[i], "=")
+		switch name {
+		case "-C", "--git-dir", "--work-tree":
+			elsewhere = true
+		}
+		if strings.HasPrefix(name, "-C") && len(name) > 2 { // -C<path>
+			elsewhere = true
+		}
+		if !attached && gitValuedGlobals[name] {
+			i++
+		}
+		i++
+	}
+	return i, elsewhere
+}
+
 // sub returns the arguments after `<prog> <subcommand>` of c, skipping
 // git's global options; ok is false when c is not that command.
 func (c shellCmd) sub(prog, subcommand string) (args []string, ok bool) {
 	if c.w[0] != prog {
 		return nil, false
 	}
-	i := 1
-	for i < len(c.w) && strings.HasPrefix(c.w[i], "-") {
-		if c.w[i] == "-C" || c.w[i] == "-c" {
-			i++
-		}
-		i++
-	}
+	i, _ := gitGlobals(c.w)
 	if i >= len(c.w) || c.w[i] != subcommand {
 		return nil, false
 	}
@@ -558,10 +600,14 @@ func expandFlags(args []string) []string {
 }
 
 // splitFlags splits expanded arguments into a set of flags and the
-// positional words.
+// positional words; every word after -- is positional.
 func splitFlags(args []string) (flags map[string]bool, pos []string) {
 	flags = map[string]bool{}
-	for _, a := range expandFlags(args) {
+	expanded := expandFlags(args)
+	for i, a := range expanded {
+		if a == "--" {
+			return flags, append(pos, expanded[i+1:]...)
+		}
 		if strings.HasPrefix(a, "-") && a != "-" {
 			flags[a] = true
 		} else {
@@ -573,13 +619,16 @@ func splitFlags(args []string) (flags map[string]bool, pos []string) {
 
 // movesContext reports a command after which the branch or repository a
 // later git command works on is no longer the recorded one: any git
-// checkout/switch, gh pr checkout, pushd/popd. A cd shows as the command's
-// cwd, git -C/--git-dir/--work-tree via gitElsewhere.
+// checkout, switch, rebase or worktree, gh pr checkout, pushd/popd, an
+// export of a gitDirVars name. A cd shows as the command's cwd, git
+// -C/--git-dir/--work-tree and GIT_DIR=... via gitElsewhere.
 func movesContext(c shellCmd) bool {
-	if _, ok := c.sub("git", "checkout"); ok {
-		return true
+	for _, sub := range []string{"checkout", "switch", "rebase", "worktree"} {
+		if _, ok := c.sub("git", sub); ok {
+			return true
+		}
 	}
-	if _, ok := c.sub("git", "switch"); ok {
+	if c.w[0] == "export" && slices.ContainsFunc(c.w[1:], isGitDirAssignment) {
 		return true
 	}
 	if args, ok := c.sub("gh", "pr"); ok && len(args) > 0 && args[0] == "checkout" {
@@ -588,21 +637,57 @@ func movesContext(c shellCmd) bool {
 	return c.w[0] == "pushd" || c.w[0] == "popd"
 }
 
-// gitElsewhere reports a git command pointed at another repository or work
-// tree by a global option.
+// gitElsewhere reports a command pointed at another repository or work
+// tree: by a git global option, a GIT_DIR-style assignment or a wrapper's
+// directory option.
 func gitElsewhere(c shellCmd) bool {
+	if c.elsewhere {
+		return true
+	}
 	if c.w[0] != "git" {
 		return false
 	}
-	for _, a := range c.w[1:] {
-		if !strings.HasPrefix(a, "-") {
-			return false
+	_, elsewhere := gitGlobals(c.w)
+	return elsewhere
+}
+
+// forceCreateTarget is the branch a git checkout/switch -B, -C or
+// --force-create (re)creates, its operand attached (-Bmain,
+// --force-create=main) or the next word; ok is false for any other
+// checkout. Words after -- are paths.
+func forceCreateTarget(args []string) (branch string, ok bool) {
+	next := func(i int) (string, bool) {
+		if i+1 < len(args) {
+			return args[i+1], true
 		}
-		if a == "-C" || a == "--git-dir" || a == "--work-tree" || strings.HasPrefix(a, "--git-dir=") || strings.HasPrefix(a, "--work-tree=") {
-			return true
+		return "", false
+	}
+	for i, a := range args {
+		switch {
+		case a == "--":
+			return "", false
+		case a == "--force-create":
+			return next(i)
+		case strings.HasPrefix(a, "--force-create="):
+			return strings.TrimPrefix(a, "--force-create="), true
+		case strings.HasPrefix(a, "--"):
+		case len(a) > 1 && a[0] == '-':
+			// A short-flag cluster: -B/-C take the rest as their operand,
+			// or the next word; -b/-c (create without force) end it too.
+			for j := 1; j < len(a); j++ {
+				switch a[j] {
+				case 'B', 'C':
+					if j+1 < len(a) {
+						return a[j+1:], true
+					}
+					return next(i)
+				case 'b', 'c':
+					j = len(a)
+				}
+			}
 		}
 	}
-	return false
+	return "", false
 }
 
 // matchResetShared: a forced move of a branch others build on.
@@ -615,8 +700,9 @@ func gitElsewhere(c shellCmd) bool {
 // Commands that move the current branch (reset --hard, update-ref HEAD, a
 // forced git branch rename with one name) park when the current branch is
 // shared or unknown: the recorded Branch says it is shared or its read
-// failed, or the request has a checkout/switch, a cd or a git -C before or
-// in the command, so the recorded branch no longer tells. A stored row
+// failed, or the request has a movesContext command or a cd before it, or
+// the command itself is gitElsewhere, so the recorded branch no longer
+// tells. A stored row
 // (Branch nil) with none of those parks only a reset --hard onto a remote
 // ref.
 func matchResetShared(r PermissionAsk) bool {
@@ -629,9 +715,8 @@ func matchResetShared(r PermissionAsk) bool {
 		currentShared := recordedShared || moved || c.cwd != "" || gitElsewhere(c)
 		for _, sub := range []string{"checkout", "switch"} {
 			if args, ok := c.sub("git", sub); ok {
-				flags, pos := splitFlags(args)
-				forced := flags["-B"] || flags["-C"] || flags["--force-create"]
-				return forced && len(pos) > 0 && r.isShared(pos[0]) // the branch it (re)creates
+				branch, forced := forceCreateTarget(args)
+				return forced && r.isShared(branch)
 			}
 		}
 		if args, ok := c.sub("git", "branch"); ok {
