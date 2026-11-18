@@ -20,6 +20,16 @@ extension AppState {
         startSlackConnectListener()
     }
 
+    /// Onboarding ended with a connect flow on screen (a link clicked after
+    /// its Connect step): Connections → Slack, where the flow's sheet lives.
+    /// True when it routed there.
+    @discardableResult
+    func showPendingSlackConnect() -> Bool {
+        guard !needsOnboarding, slackConnectFlow?.showsSheet == true else { return false }
+        openConnections(.slack)
+        return true
+    }
+
     /// The connect listener (`slack connect serve`, plan B #1709), once per
     /// process after the database opened; never under XCTest. On quit its
     /// stdin is closed, so the child frees port 18551 and exits.

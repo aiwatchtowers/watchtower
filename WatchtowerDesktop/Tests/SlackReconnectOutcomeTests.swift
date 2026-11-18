@@ -67,4 +67,33 @@ final class SlackReconnectOutcomeTests: XCTestCase {
         XCTAssertNotNil(appState.slackAccountsViewModel)
         XCTAssertNil(appState.slackConnectListener, "never under XCTest")
     }
+
+    /// Fix round 2: a link clicked after onboarding's Connect step is shown
+    /// once onboarding ends: Connections → Slack, where the confirm lives.
+    func testPendingLinkShowsAfterOnboardingEnds() {
+        let appState = AppState.isolated()
+        let host = SlackConnectListenerHost(streamer: FakeCLILineStream())
+        let flow = appState.makeSlackConnectFlow(host: host)
+        appState.slackConnectFlow = flow
+        appState.needsOnboarding = true
+        host.onEvent?(.link(flow: "f1", teamID: "T0ACME", clientID: "1111.2222"))
+        XCTAssertTrue(flow.showsSheet)
+        XCTAssertNotEqual(appState.selectedDestination, .connections, "onboarding stays on screen")
+
+        appState.needsOnboarding = false
+        XCTAssertEqual(appState.selectedDestination, .connections)
+        XCTAssertEqual(appState.selectedConnection, .slack)
+    }
+
+    /// No pending flow: ending onboarding routes nowhere.
+    func testNoPendingLinkLeavesTheDestination() {
+        let appState = AppState.isolated()
+        appState.slackConnectFlow = appState.makeSlackConnectFlow(
+            host: SlackConnectListenerHost(streamer: FakeCLILineStream()))
+        appState.needsOnboarding = true
+        let before = appState.selectedDestination
+        appState.needsOnboarding = false
+        XCTAssertEqual(appState.selectedDestination, before)
+        XCTAssertFalse(appState.showPendingSlackConnect())
+    }
 }

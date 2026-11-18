@@ -111,7 +111,7 @@ final class AppState {
     var isLoading: Bool = true
 
     /// Whether onboarding (Goals → Connect) is on screen.
-    var needsOnboarding: Bool = false
+    var needsOnboarding: Bool = false { didSet { if oldValue, !needsOnboarding { showPendingSlackConnect() } } }
 
     /// Persistent onboarding state machine — tracks which step the user is on across app restarts.
     let onboarding: OnboardingStateMachineV2
@@ -1305,7 +1305,7 @@ final class AppState {
 
     /// A first run of onboarding opens Home, whatever the goals.
     private func landOnHome() {
-        selectedDestination = .home
+        if !showPendingSlackConnect() { selectedDestination = .home }
     }
 
     /// Called when onboarding flow completes successfully.

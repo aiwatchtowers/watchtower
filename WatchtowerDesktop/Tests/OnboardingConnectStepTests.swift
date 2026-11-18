@@ -37,8 +37,25 @@ final class OnboardingConnectStepTests: XCTestCase {
     /// Fix round 1: an About link clicked during onboarding opens the Slack
     /// sheet (its confirm) when it is closed.
     func testLinkDuringOnboardingOpensTheSlackSheet() {
-        XCTAssertTrue(OnboardingConnectStepView.flowOpensSlackSheet(flowShowsSheet: true, sheetOpen: false))
-        XCTAssertFalse(OnboardingConnectStepView.flowOpensSlackSheet(flowShowsSheet: true, sheetOpen: true))
-        XCTAssertFalse(OnboardingConnectStepView.flowOpensSlackSheet(flowShowsSheet: false, sheetOpen: false))
+        typealias View = OnboardingConnectStepView
+        XCTAssertEqual(View.sheet(nil, flowShowsSheet: true), .slackConnect)
+        XCTAssertNil(View.sheet(nil, flowShowsSheet: false))
+        XCTAssertEqual(View.sheet(.slackConnect, flowShowsSheet: true), .slackConnect)
+    }
+
+    /// Fix round 2: a link that came while another source's sheet was up
+    /// shows once that sheet closes (the view re-checks on every sheet change).
+    func testLinkWaitsForAnotherSheetToClose() {
+        typealias View = OnboardingConnectStepView
+        XCTAssertEqual(View.sheet(.google, flowShowsSheet: true), .google, "never over another sheet")
+        XCTAssertEqual(View.sheet(nil, flowShowsSheet: true), .slackConnect, "the Google sheet closed")
+    }
+
+    /// Fix round 2: a sheet that opened during the card's flags read (a
+    /// link's confirm) is not replaced by the card's choice.
+    func testFlagsReadKeepsASheetThatOpenedMeanwhile() {
+        typealias View = OnboardingConnectStepView
+        XCTAssertEqual(View.sheet(.slackConnect, afterFlagsRead: .slack), .slackConnect)
+        XCTAssertEqual(View.sheet(nil, afterFlagsRead: .slack), .slack)
     }
 }

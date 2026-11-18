@@ -23,10 +23,17 @@ struct OnboardingConnectStepView: View {
         hasConnectFlow && flags?.builtinApp != true
     }
 
-    /// A clicked About link (or any flow step) while the Slack sheet is
-    /// closed opens it, so its confirm is seen on this step.
-    static func flowOpensSlackSheet(flowShowsSheet: Bool, sheetOpen: Bool) -> Bool {
-        flowShowsSheet && !sheetOpen
+    /// A clicked About link (or any flow step) opens the Slack sheet once no
+    /// sheet is up, so its confirm is seen on this step: at once, or when
+    /// another source's sheet closes.
+    static func sheet(_ current: Sheet?, flowShowsSheet: Bool) -> Sheet? {
+        current ?? (flowShowsSheet ? .slackConnect : nil)
+    }
+
+    /// The card's choice after its flags read: a sheet that opened meanwhile
+    /// (a link's confirm) stays.
+    static func sheet(_ current: Sheet?, afterFlagsRead chosen: Sheet) -> Sheet {
+        current ?? chosen
     }
 
     /// Opens with Calendar and Gmail both checked, whatever the goals.
@@ -50,7 +57,7 @@ struct OnboardingConnectStepView: View {
     @State private var databaseError: String?
     @State private var isContinuing = false
 
-    private enum Sheet: Identifiable {
+    enum Sheet: Identifiable {
         case slack
         case slackConnect
         case google
@@ -147,19 +154,21 @@ struct OnboardingConnectStepView: View {
             showFlowSheetIfNeeded() // a link that arrived on an earlier step
         }
         .onChange(of: appState.slackConnectFlow?.showsSheet) { _, _ in showFlowSheetIfNeeded() }
+        .onChange(of: sheet) { _, _ in showFlowSheetIfNeeded() }
     }
 
     /// Reads the flags first when no read has succeeded yet, then picks the sheet.
     private func openSlackSheet() async {
         if let vm = appState.slackAccountsViewModel, vm.accountFlags == nil { await vm.refreshFlags() }
-        sheet = Self.slackOpensConnectSection(flags: appState.slackAccountsViewModel?.accountFlags,
-                                              hasConnectFlow: appState.slackConnectFlow != nil) ? .slackConnect : .slack
+        let chosen: Sheet = Self.slackOpensConnectSection(
+            flags: appState.slackAccountsViewModel?.accountFlags,
+            hasConnectFlow: appState.slackConnectFlow != nil) ? .slackConnect : .slack
+        sheet = Self.sheet(sheet, afterFlagsRead: chosen)
     }
 
     private func showFlowSheetIfNeeded() {
-        guard Self.flowOpensSlackSheet(flowShowsSheet: appState.slackConnectFlow?.showsSheet ?? false,
-                                       sheetOpen: sheet != nil) else { return }
-        sheet = .slackConnect
+        let next = Self.sheet(sheet, flowShowsSheet: appState.slackConnectFlow?.showsSheet ?? false)
+        if next != sheet { sheet = next }
     }
 
     /// The connect section in a sheet (A13); a written account reloads the
