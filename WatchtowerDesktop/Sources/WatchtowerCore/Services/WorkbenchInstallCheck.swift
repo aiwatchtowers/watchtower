@@ -2,10 +2,11 @@ import Foundation
 
 /// The Desktop's half of the launch backstop after a bench merge (#2003, spec
 /// §6.13, D37): before the Desktop launches an agent itself (resume, Start
-/// fresh), it reads which workbench the folder's hooks name. Only a folder
-/// installed for another workbench, never for the row's own, asks Go to
-/// reinstall (`workbench session ensure-install`); a folder with no install
-/// launches as it always did. Go's twin is `devpack.InstalledWorkbenchIDs`.
+/// fresh), it reads which workbench the folder's hooks name. A folder whose
+/// install names another workbench — alone or beside the row's own — asks Go
+/// to reinstall (`workbench session ensure-install`); a folder with no
+/// install, or with only the row's, launches as it always did. Go's twin is
+/// `devpack.InstalledWorkbenchIDs`.
 package enum WorkbenchInstallCheck {
     /// The state hook's command tail: ` workbench session-state --workbench <id>`.
     private static let marker = " workbench session-state --workbench "
