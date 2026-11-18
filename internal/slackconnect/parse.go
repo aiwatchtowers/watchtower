@@ -28,9 +28,12 @@ const Port = 18551
 // 18551 busy nothing can finish a connect (A9). The
 // IP literal, not "localhost", is what the listener binds and checks in Host
 // (RFC 8252 §8.3).
-var RedirectURL = "http://127.0.0.1:" + strconv.Itoa(Port) + callbackPath
+var RedirectURL = linkScheme + "://127.0.0.1:" + strconv.Itoa(Port) + callbackPath
 
 const (
+	// linkScheme is the loopback scheme of the connect link and the
+	// redirect URL (a URL scheme, not an LLM transport).
+	linkScheme   = "http"
 	connectPath  = "/slack/connect"
 	callbackPath = "/callback"
 )
@@ -61,7 +64,7 @@ var (
 // parameter, ids that do not match Slack's shapes — is ErrNotConnectInput.
 func ParseConnectInput(s string) (Target, error) {
 	s = strings.TrimSpace(s)
-	if strings.HasPrefix(s, "http://") || strings.Contains(s, "/") {
+	if strings.HasPrefix(s, linkScheme+"://") || strings.Contains(s, "/") {
 		return parseLink(s)
 	}
 	team, client, ok := strings.Cut(s, ":")
@@ -73,7 +76,7 @@ func ParseConnectInput(s string) (Target, error) {
 
 func parseLink(s string) (Target, error) {
 	u, err := url.Parse(s)
-	if err != nil || u.Scheme != "http" || u.User != nil || u.Host != linkHost() ||
+	if err != nil || u.Scheme != linkScheme || u.User != nil || u.Host != linkHost() ||
 		u.Path != connectPath || u.Fragment != "" || u.RawFragment != "" || u.Opaque != "" {
 		return Target{}, ErrNotConnectInput
 	}
@@ -96,7 +99,7 @@ func linkHost() string { return "127.0.0.1:" + strconv.Itoa(Port) }
 // ConnectLink is the link a company's app carries on its About page.
 func ConnectLink(t Target) string {
 	q := url.Values{"team": {t.TeamID}, "client": {t.ClientID}}
-	return "http://" + linkHost() + connectPath + "?" + q.Encode()
+	return linkScheme + "://" + linkHost() + connectPath + "?" + q.Encode()
 }
 
 // ConnectCode is the short form of the link: <team id>:<client id>.
