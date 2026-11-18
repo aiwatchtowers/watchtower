@@ -140,7 +140,8 @@ func (l *logTap) len() int {
 	return l.buf.Len()
 }
 
-// outStreams is every byte the hub sent, one stream per connection.
+// outStreams is every byte the hub sent, one stream per connection, plus
+// each WebSocket message it sent, unmasked.
 func (w *wireTap) outStreams() [][]byte {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -148,6 +149,7 @@ func (w *wireTap) outStreams() [][]byte {
 	for _, c := range w.conns {
 		c.mu.Lock()
 		out = append(out, bytes.Clone(c.out.Bytes()))
+		out = append(out, wsMessagesSent(c.out.Bytes())...)
 		c.mu.Unlock()
 	}
 	return out

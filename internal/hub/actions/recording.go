@@ -131,7 +131,12 @@ func (p *Processor) retryUploads(ctx context.Context, b mailbox, ps *pass) error
 // phone decodes started_at, ended_at, duration_sec and sample_format as
 // required keys, and the sidecar keeps ids only. It counts against the
 // pass's budget (errBudget past it; the rest is settled next pass). A due upload whose record is gone is settled without an
-// echo; one the phone wrote again is left to the mailbox read.
+// echo; one the phone wrote again is left to the mailbox read. v1 limit:
+// the read back runs under p.mu, the one mailbox read that does (its
+// callers drain held actions under it, one of them inside a page's apply,
+// and this drain keeps p.mu to the end, unlike claim, which lets it go only
+// for its own received-echo write); it happens only after a
+// restart, while such uploads are due.
 func (p *Processor) recoverHeld(ctx context.Context, b mailbox, ps *pass) error {
 	rows, err := p.cfg.Store.HeldUploads()
 	if err != nil || len(rows) == 0 {

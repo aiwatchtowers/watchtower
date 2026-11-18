@@ -309,10 +309,47 @@ final class ActionLatencyTests: XCTestCase {
         XCTAssertEqual(kept.map(\.at).min(), now.addingTimeInterval(-4_999), "the oldest rows went first")
     }
 
+    /// Live link R7: a wake (became active → all zones read) is one content-free row of its own, pruned like the
+    /// action samples.
+    func testWakeSampleRecorded() throws {
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener(store: try TestE2E.phoneStore()))
+        store.recordWake(ms: 420, transport: .relay, at: base)
+        store.recordWake(ms: -5, transport: .relay, at: base.addingTimeInterval(1))
+
+        XCTAssertEqual(try store.wakeSamples(since: .distantPast), [WakeSample(at: base, transport: .relay, wakeMs: 420)],
+                       "a negative span (a clock moved) records nothing")
+        let columns = try store.reader.read { db in try db.columns(in: "latency_wake").map(\.name) }
+        XCTAssertEqual(columns, ["at", "transport", "wake_ms"])
+        XCTAssertEqual(try store.latencySamples(since: .distantPast), [], "the action samples are untouched")
+
+        store.recordWake(ms: 10, transport: .cloudKit, at: base.addingTimeInterval(ReplicaStore.latencyWindow + 10))
+        XCTAssertEqual(try store.wakeSamples(since: .distantPast).map(\.wakeMs), [10], "rows past the window are pruned")
+    }
+
     func testASampleHoldsNoIDOrKind() throws {
         let store = try ReplicaStore.inMemory(opener: TestE2E.opener(store: try TestE2E.phoneStore()))
         let columns = try store.reader.read { db in try db.columns(in: "latency_samples").map(\.name) }
         XCTAssertEqual(columns, ["at", "transport", "answer_ms", "result_ms"])
+    }
+
+    // MARK: - Confirm (live link R7)
+
+    /// Tap → `applied` echo, one content-free row per confirmed action: when, which transport, the action kind and
+    /// the milliseconds; it is pruned like the samples.
+    func testAConfirmRowHoldsTransportKindAndMs() throws {
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener(store: try TestE2E.phoneStore()))
+        store.recordConfirm(kind: .boardTargetStatus, ms: 180, transport: .relay, at: base)
+        store.recordConfirm(kind: .askAnswer, ms: 90, transport: .cloudKit, at: base.addingTimeInterval(1))
+        XCTAssertEqual(try store.confirmSamples(since: .distantPast), [
+            ConfirmSample(at: base, transport: .relay, kind: "board_target_status", confirmMs: 180),
+            ConfirmSample(at: base.addingTimeInterval(1), transport: .cloudKit, kind: "ask_answer", confirmMs: 90)
+        ])
+        let columns = try store.reader.read { db in try db.columns(in: "latency_confirm").map(\.name) }
+        XCTAssertEqual(columns, ["at", "transport", "kind", "confirm_ms"])
+
+        let later = base.addingTimeInterval(ReplicaStore.latencyWindow + 10)
+        store.recordConfirm(kind: .boardTargetCreate, ms: 200, transport: .relay, at: later)
+        XCTAssertEqual(try store.confirmSamples(since: .distantPast).map(\.at), [later], "rows past the window go")
     }
 
     func testAStampFailureDoesNotFailTheAction() async throws {

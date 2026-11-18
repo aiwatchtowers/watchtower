@@ -25,6 +25,11 @@ struct WorkbenchReplicaSnapshot: Equatable {
     /// The outbox overlay: the phone's actions the Mac has not yet applied
     /// (pending) or refused (failed), oldest first.
     var pending: [PendingAction] = []
+    /// The phone's optimistic writes shown over the replica (live link R5, `applying(_:)`); empty in a read.
+    var overlays: [PendingOverlay] = []
+    /// The phone's creates and comments whose records already show before their echo (action id → that record):
+    /// their pending rows go where the record shows.
+    var matchedRecords: [String: Int64] = [:]
     /// Undecodable records per kind in this read; kinds without any are
     /// absent.
     var skippedRecords: [SliceKind: Int] = [:]
@@ -169,11 +174,17 @@ struct WorkbenchReplicaSnapshot: Equatable {
 }
 
 /// Live replica state for one tab root: one observation over the change
-/// stamps of its kinds and the outbox overlay.
+/// stamps of its kinds and the outbox overlay, with the hub's optimistic
+/// overlays (live link R5) applied on top.
 @MainActor
 @Observable
 final class WorkbenchReplicaModel {
     private(set) var snapshot = WorkbenchReplicaSnapshot()
+    /// The last read, before overlays: what `OverlayBook.reconcile` checks.
+    @ObservationIgnored private var replica = WorkbenchReplicaSnapshot()
+    @ObservationIgnored private var overlays: OverlayBook?
+    /// Re-applies the overlays when the next one runs out of time (no replica change needs to come first).
+    @ObservationIgnored private var deadlineTask: Task<Void, Never>?
     /// `snapshot.waitingCount(typing:)` across all workbenches: the Now
     /// tab's badge. Its own property, so the tab bar re-renders only when
     /// it changes.
@@ -212,8 +223,19 @@ final class WorkbenchReplicaModel {
 
     /// `typing`: read under observation, so a toggle, a link change or a freeze re-counts the badge (the hub
     /// session passes its own; tests and the demo default to no typing).
-    func start(store: ReplicaStore, gate: ReplicaObservationGate? = nil, typing: @escaping TypingSource = { (nil, false) }) {
+    /// `overlays`: the hub's optimistic writes, shown over every read; a change in the book applies them again at
+    /// once.
+    func start(
+        store: ReplicaStore,
+        gate: ReplicaObservationGate? = nil,
+        overlays: OverlayBook? = nil,
+        typing: @escaping TypingSource = { (nil, false) }
+    ) {
         guard cancellable == nil else { return }
+        if let overlays {
+            self.overlays = overlays
+            overlays.onChange = { [weak self] in self?.publish() }
+        }
         typingSource = typing
         observeTyping()
         let cache = decodeCache
@@ -229,13 +251,38 @@ final class WorkbenchReplicaModel {
     /// Logs the skipped records only when their count changes, not on
     /// every replica write.
     private func receive(_ value: WorkbenchReplicaSnapshot) {
-        if value.skippedRecords != snapshot.skippedRecords {
+        if value.skippedRecords != replica.skippedRecords {
             for (kind, count) in value.skippedRecords.sorted(by: { $0.key.rawValue < $1.key.rawValue }) {
                 Self.logger.warning("\(count) undecodable \(kind.rawValue, privacy: .public) records skipped")
             }
         }
-        snapshot = value
+        replica = value
+        publish()
+    }
+
+    /// The read with the live overlays applied; publishes only a change.
+    private func publish(now: Date = Date()) {
+        var next = replica
+        if let overlays {
+            next = replica.applying(overlays.reconcile(with: replica, now: now), matched: overlays.matched)
+            scheduleDeadline(overlays.nextDeadline)
+        }
+        if next != snapshot { snapshot = next }
         recount()
+    }
+
+    private func scheduleDeadline(_ deadline: Date?) {
+        deadlineTask?.cancel()
+        guard let deadline else {
+            deadlineTask = nil
+            return
+        }
+        let delay = max(0, deadline.timeIntervalSinceNow)
+        deadlineTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            self?.publish()
+        }
     }
 
     /// Re-reads `typingSource` and observes it again for its next change.

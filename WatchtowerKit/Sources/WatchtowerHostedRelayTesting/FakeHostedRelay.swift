@@ -8,6 +8,8 @@ import WatchtowerRelayProto
 /// time from a `ManualRelayClock`, so TTLs run when the test advances it.
 /// "Vouched hubs" follows relay@bcca870 (`vouch_hub`, the pending vouch, `HUB_NOT_VOUCHED`
 /// and the hub gate; `FakeHostedRelay+Accounts.swift`).
+/// Zone events follow relay@771a99e (`ZoneChanged.records`, the frame budget, `HelloOk.capabilities`;
+/// `FakeHostedRelay+Network.swift`).
 ///
 /// The network seams (`http`, `sockets`, the blob store) are in `FakeHostedRelay+Network.swift`,
 /// the faults in `FakeHostedRelay+Faults.swift`.
@@ -100,7 +102,7 @@ public final class FakeHostedRelay: @unchecked Sendable {
         }
         response.id = request.id
         if case .error(let error) = response.result, error.code == .unauthenticated { status = 401 }
-        fanOut(since: before, inline: inlineRecord(response))
+        fanOut(since: before, saved: savedRecords(response))
         if let op = request.op, takeCrashAfter(Self.name(op)) { crashNow() }
         return (status, response)
     }

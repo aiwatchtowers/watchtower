@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/rand/v2"
 	"net/http"
 	"slices"
@@ -31,6 +32,10 @@ const handshakeTimeout = 10 * time.Second
 // ErrDisconnected is returned by Send while the connection is down or when it drops before the
 // response arrived; the request may or may not have been executed.
 var ErrDisconnected = errors.New("relay: websocket disconnected")
+
+// ErrNotSent is the ErrDisconnected of a request refused before any of it was written (no socket
+// at the time): the server never saw it, so it may be sent another way. It matches ErrDisconnected.
+var ErrNotSent = fmt.Errorf("%w: request not sent", ErrDisconnected)
 
 // errUnauthenticated: the server refused the session at hello.
 var errUnauthenticated = errors.New("relay: websocket unauthenticated")
@@ -208,13 +213,15 @@ func (k *Conn) Subscribe(ctx context.Context, zones ...string) error {
 	return err
 }
 
-// Send performs one operation over the WebSocket. Errors are as for Client.Do, plus ErrDisconnected;
-// an operation answered UNAVAILABLE is retried as in Client.Do.
+// Send performs one operation over the WebSocket. Errors are as for Client.Do, plus ErrDisconnected
+// (ErrNotSent when no attempt of the request was ever written); an operation answered UNAVAILABLE is retried as
+// in Client.Do.
 func (k *Conn) Send(ctx context.Context, req *relayv1.Request) (*relayv1.Response, error) {
-	return k.c.retryUnavailable(ctx, func() (*relayv1.Response, error) { return k.sendOnce(ctx, req) })
+	written := false // whether an attempt of this Send reached a socket: then the server may have seen it
+	return k.c.retryUnavailable(ctx, func() (*relayv1.Response, error) { return k.sendOnce(ctx, req, &written) })
 }
 
-func (k *Conn) sendOnce(ctx context.Context, req *relayv1.Request) (*relayv1.Response, error) {
+func (k *Conn) sendOnce(ctx context.Context, req *relayv1.Request, written *bool) (*relayv1.Response, error) {
 	req = proto.Clone(req).(*relayv1.Request)
 	req.Id = k.nextID.Add(1)
 	b, err := proto.Marshal(&relayv1.Frame{Kind: &relayv1.Frame_Request{Request: req}})
@@ -229,8 +236,12 @@ func (k *Conn) sendOnce(ctx context.Context, req *relayv1.Request) (*relayv1.Res
 	}
 	k.mu.Unlock()
 	if ws == nil {
-		return nil, ErrDisconnected
+		if *written {
+			return nil, ErrDisconnected
+		}
+		return nil, ErrNotSent
 	}
+	*written = true
 	defer func() {
 		k.mu.Lock()
 		delete(k.pending, req.Id)

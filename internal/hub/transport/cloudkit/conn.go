@@ -283,6 +283,7 @@ func (c *Client) eventOf(ev *bridgepb.Event) (transport.Event, bool) {
 // class, so the queue stays bounded by the zones, the error classes and one
 // pull_now.
 func (c *Client) emit(e transport.Event) {
+	e.ArrivedAt = c.c.Clock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
