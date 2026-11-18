@@ -10,7 +10,8 @@ final class SessionDeletePolicyTests: XCTestCase {
         switch kind {
         case .finished, .stopped, .failed:
             return true
-        case .notStarted, .running, .working, .needsApproval, .waitingOnAsk, .readyToCheck, .background, .specReview:
+        case .notStarted, .running, .working, .needsApproval, .waitingOnAsk, .readyToCheck, .background, .specReview,
+             .subSessionsWorking:
             return false
         }
     }

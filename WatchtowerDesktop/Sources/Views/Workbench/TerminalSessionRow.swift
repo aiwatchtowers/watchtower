@@ -35,6 +35,13 @@ struct TerminalSessionRow: View {
     /// The mode a workbench agent session opens in (#711): `.terminal` or
     /// `.chat` (Workchat); nil = no glyph (a standalone terminal or a shell).
     var opensIn: WorkspaceView?
+    /// The session's bench folder on a bench of several (spec 2026-11-18
+    /// §6.2, `SessionNestingPresentation.folderLabel`); nil on a one-folder
+    /// bench, whose rows look as they did.
+    var folderLabel: String?
+    /// An agent's message may still sit typed in the session's prompt
+    /// (§6.6): the state line says so in the warning tone.
+    var messageInPrompt = false
 
     private var session: TerminalSession { row.session }
 
@@ -47,6 +54,7 @@ struct TerminalSessionRow: View {
     /// the fields `opener` draws; a new one there is added here too.
     private var hasDetailText: Bool {
         row.caption != nil || row.place != nil || row.badge != nil || row.agentTag != nil || opensIn != nil
+            || folderLabel != nil
     }
 
     var body: some View {
@@ -170,7 +178,7 @@ struct TerminalSessionRow: View {
         HStack(spacing: 6) {
             VStack(alignment: .leading, spacing: 1) {
                 if row.showsStateLabel, let caption = row.caption {
-                    SessionStateLabel(state: row.state, caption: caption)
+                    stateLine(caption)
                     if let reportLine {
                         HStack(spacing: 4) {
                             if let reportProgress, reportMergedProgress > 0 {
@@ -200,7 +208,7 @@ struct TerminalSessionRow: View {
                         .lineLimit(1)
                         .accessibilityHidden(row.state.kind != .notStarted)
                 }
-                if let place = row.place { SessionPlaceLine(label: place) }
+                placeLine
                 if let badge = row.badge {
                     Text(badge).font(.caption2).foregroundStyle(.secondary)
                 }
@@ -214,6 +222,39 @@ struct TerminalSessionRow: View {
                     .help("Opens in \(opensIn.title)")
                     .accessibilityLabel("Opens in \(opensIn.title)")
             }
+        }
+    }
+
+    /// The state label, a parent's `· N sub-sessions` and, while an
+    /// agent's message sits in the prompt, its warning (§6.5, §6.6).
+    private func stateLine(_ caption: String) -> some View {
+        HStack(spacing: 3) {
+            SessionStateLabel(state: row.state, caption: caption)
+            if let suffix = SessionNestingPresentation.subSessionsSuffix(row.state.liveSubSessions) {
+                Text(suffix).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+            if messageInPrompt {
+                Text(SessionNestingPresentation.promptWaiting)
+                    .font(.caption2)
+                    .foregroundStyle(Tone.warning)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        }
+    }
+
+    /// Where the agent works, after its folder on a bench of several.
+    @ViewBuilder private var placeLine: some View {
+        if let folderLabel {
+            HStack(spacing: 4) {
+                SessionFolderLabel(name: folderLabel)
+                if let place = row.place {
+                    Text("·").font(.caption2).foregroundStyle(.tertiary).accessibilityHidden(true)
+                    SessionPlaceLine(label: place)
+                }
+            }
+        } else if let place = row.place {
+            SessionPlaceLine(label: place)
         }
     }
 

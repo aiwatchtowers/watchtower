@@ -882,7 +882,8 @@ enum WorkbenchCLIError: LocalizedError, Equatable {
     case refused(String)
     /// `workbench session start` refused the start (exit 1, `"<code>:
     /// <sentence>"` on stderr): a folder not installed, missing or removed,
-    /// a parent of another workbench. No row was written.
+    /// a parent of another workbench. No row was written. `message` is the
+    /// sentence alone — what the owner sees.
     case startRefused(code: WorkbenchRefusalCode, message: String)
 
     var errorDescription: String? {
@@ -1201,7 +1202,9 @@ struct WorkbenchCLI {
         } catch CLIRunnerError.nonZeroExit(code: 1, let stderr) {
             let message = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
             guard let code = WorkbenchRefusalCode(prefixOf: message) else { throw CLIRunnerError.nonZeroExit(code: 1, stderr: stderr) }
-            throw WorkbenchCLIError.startRefused(code: code, message: message)
+            // The owner sees the sentence alone, never the code before it.
+            let sentence = message.dropFirst(code.rawValue.count + 1).trimmingCharacters(in: .whitespaces)
+            throw WorkbenchCLIError.startRefused(code: code, message: sentence.isEmpty ? message : sentence)
         }
         return try JSONDecoder().decode(SessionStartResult.self, from: data)
     }

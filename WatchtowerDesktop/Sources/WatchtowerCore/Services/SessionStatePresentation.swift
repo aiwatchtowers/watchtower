@@ -15,7 +15,7 @@ package enum SessionStatePresentation {
 
     package static func color(for state: State) -> Tone {
         switch state.kind {
-        case .working, .running, .background, .specReview: .green
+        case .working, .running, .background, .specReview, .subSessionsWorking: .green
         case .waitingOnAsk, .needsApproval: .orange
         case .readyToCheck: .purple
         case .finished: state.openAsks > 0 ? .orange : .blue
@@ -34,6 +34,8 @@ package enum SessionStatePresentation {
         case .waitingOnAsk: "questionmark"
         case .readyToCheck: "checklist"
         case .specReview: "doc.text.magnifyingglass"
+        // As Agents working with shells only: the turn ended, others work.
+        case .subSessionsWorking: "hourglass"
         case .needsApproval: "hand.raised.fill"
         case .finished: "checkmark"
         case .stopped: "pause.fill"
@@ -81,6 +83,8 @@ package enum SessionStatePresentation {
             "Idle"
         case .background:
             backgroundCaption(state)
+        case .subSessionsWorking:
+            subSessionsWorkingCaption
         case .failed:
             errorCaption(state.error)
         case .running:
@@ -89,6 +93,10 @@ package enum SessionStatePresentation {
             "Not running"
         }
     }
+
+    /// A parent whose turn ended while its sub-sessions work (PROJ-11,
+    /// spec 2026-11-18 §6.5); Go's hub caption is the same.
+    package static let subSessionsWorkingCaption = "Sub-sessions working"
 
     /// "Spec review · round 2": the session's spec waits on the reviewer
     /// or on its author (board #1945); the round alone when it is unknown.

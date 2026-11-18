@@ -171,7 +171,7 @@ extension WorkbenchesViewModel {
 
     /// The session whose place sets the page's root (D6; with only the Files
     /// pane on screen, the workbench's active live session), nil without one.
-    private func pageSessionID(projectID: Int64) -> Int64? {
+    func pageSessionID(projectID: Int64) -> Int64? {
         let focused = activeSessionID(projectID: projectID).map { [$0] } ?? []
         return CodeRootPolicy.activeSessionID(layout: layout(projectID: projectID), focusOrder: focused)
     }

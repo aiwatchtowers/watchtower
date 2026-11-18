@@ -101,11 +101,22 @@ package struct SessionPanelSections: Equatable, Sendable {
             if heldInGroup(session.id, section: section, sticky: sticky) { groupSessions.append(session) } else { mainSessions.append(session) }
         }
         groupSessions.sort { finishedFirst($0, $1, statuses: statuses) }
+        // Sub-sessions under their parent within each list (spec 2026-11-18
+        // §6.5); a child whose parent sits in the other list stays at the top.
+        let nestedMain = SessionNestingPresentation.nest(mainSessions)
+        let nestedGroup = SessionNestingPresentation.nest(groupSessions)
+        mainSessions = nestedMain.map(\.row)
+        groupSessions = nestedGroup.map(\.row)
+        let depths = Dictionary((nestedMain + nestedGroup).map { ($0.row.id, $0.depth) }) { first, _ in first }
         let numbered = mainSessions.map(\.id) + (expanded ? groupSessions.map(\.id) : [])
         let rows = SessionSwitcherPresentation.rows(
             mainSessions + groupSessions, liveIDs: liveIDs, statuses: statuses, now: now, shortcutOrder: numbered,
             places: places
-        )
+        ).map { row in
+            var nested = row
+            nested.depth = depths[row.id] ?? 0
+            return nested
+        }
         let mainRows = Array(rows.prefix(mainSessions.count))
         let groupRows = Array(rows.dropFirst(mainSessions.count))
         let pinned = expanded ? nil : groupRows.first { $0.id == sticky?.sessionID }

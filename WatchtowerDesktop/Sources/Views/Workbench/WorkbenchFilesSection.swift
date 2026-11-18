@@ -133,10 +133,12 @@ struct WorkbenchFilesSection: View {
             toggle: { vm.toggleFolderRoot(item.folder.id, projectID: projectID) },
             showInFinder: { NSWorkspace.shared.activateFileViewerSelecting([url]) },
             retryInstall: { Task { await vm.retryFolderInstall(projectID: projectID) } },
-            // New Session Here starts in the folder once session start takes
-            // one (Task 15); Remove and Locate are the remove/locate flows
-            // (Task 16). Until then the items show disabled.
-            newSessionHere: nil,
+            // A new session of the default agent in this folder (§6.4).
+            // Remove and Locate are the remove/locate flows (Task 16); until
+            // then those items show disabled.
+            newSessionHere: {
+                Task { await vm.newSession(projectID: projectID, folder: .filesRoot(vm.folderRoot(item.folder))) }
+            },
             removeFromBench: nil,
             locate: nil
         )
