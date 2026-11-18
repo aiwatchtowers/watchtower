@@ -3170,3 +3170,12 @@ Entry format:
 - weak-dimension: 7. The new stuck predicate has three inputs (Failed, Skipped, errEpochMoved). Tests cover a refused save, a skipped record and a refused delete, but not a failed source or the epoch exclusion.
 - rule-gap (candidate, dim 9): *a rate limiter keyed on a formatted log line keeps per-cycle variable parts (counts, kind lists, ids) out of the key, or the limit silently stops holding.*
 - outcome: TBD
+
+## 2026-11-18 — feature/1945-spec-review-state (8622a46e8: session state "Spec review · round N" from the author loop, Go sessionstate + hub slice + Swift resolver, shared status fixtures) — verdict: changes-needed
+
+- contested: C1, the hub not republishing `terminal_session` on a `spec_reviews`-only write. Partly older than the branch: on main the slice already counted visible asks through `askVisible` while `ChangeTables` mapped `spec_reviews` only to owner_ask and ask_alert. Held major anyway. The branch makes the published state itself depend on `spec_reviews`. Filing an ask and queueing its review are two commits (`InsertOwnerAsk`, then `launchSpecReview`), and `RevealSpecLoop`/`LeaveSpecLoop` are UPDATEs on `spec_reviews` alone. So the phone shows "waiting on ask" for up to the 60 s full diff, and the timeline milestone for leaving the loop is stamped late. [8]
+- false-positive: none dismissed outright. F2 (a not-live spec-review session counted as Working while the phone groups it as Ended) sits inside the D11 corner case the owner chose not to handle, so it was deferred, not dropped. [6]
+- miss: the spec's §5.1 list of Kind-set consumers missed `ReviewChangesPaneView.turnOver`. Before the branch, a hidden author-loop ask resolved to `.stopped`, which is in the set. Now it resolves to `.specReview`, which is not, so the Branch review pane stops auto-refreshing at turn end. The prosecutor and codex both caught it. [8]
+- weak-dimension: 8. Adding an enum case needs a grep for every `Set<…Kind>` and `switch` over the enum, not only the consumers the spec lists. For a hub projection, every table its SQL reads needs a `ChangeTables` entry.
+- rule-gap (candidate, dim 8): *a hub slice whose SQL reads table T has T → that kind in `sources.ChangeTables`, and a state the fast lane must see has its inputs in `readSessionFacts`; a new subquery over a table missing from the map is the tell.*
+- outcome: TBD

@@ -179,7 +179,7 @@ final class SpecReviewLoopCenter {
         pollTask = nil
     }
 
-    /// One pass: re-reads the pending rounds, then types each
+    /// One pass: re-reads the pending rounds and `hidden`, then types each
     /// round not typed yet. Not private: tests drive it.
     func poll() async {
         let pending: [SpecReviewLoopQueries.PendingRound]

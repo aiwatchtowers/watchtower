@@ -1099,6 +1099,31 @@
    }
   },
   {
+   "name": "live, no trusted hook + loop round 1",
+   "row": {
+    "kind": "claude",
+    "agent_state": null,
+    "agent_state_at": null,
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "spec_review_round": 1,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "spec_review",
+    "hooks_reported": false,
+    "idle": false,
+    "working": false,
+    "needs_approval": false,
+    "background_shells": 0
+   }
+  },
+  {
    "name": "not live, loop round 2",
    "row": {
     "kind": "claude",

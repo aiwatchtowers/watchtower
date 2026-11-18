@@ -292,6 +292,25 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         }
     }
 
+    /// #1945: a session in the spec review author loop decodes as a known
+    /// `.specReview`, its caption carrying the round and no ask named.
+    func testTerminalSessionInSpecReviewDecodes() throws {
+        var json = try object("terminal_session")
+        json["state_kind"] = "spec_review"
+        json["state_caption"] = "Spec review · round 2"
+        json["state_glyph"] = "doc.text.magnifyingglass"
+        json["state_tone"] = "green"
+        json["open_asks"] = 0
+        json.removeValue(forKey: "oldest_ask_id")
+        let session = try TerminalSessionState.decode(payload: try data(json))
+        XCTAssertEqual(session.stateKind, .specReview)
+        XCTAssertTrue(session.stateKind.isKnown)
+        XCTAssertEqual(session.stateCaption, "Spec review · round 2")
+        XCTAssertEqual(session.stateTone, .green)
+        XCTAssertEqual(session.openAsks, 0)
+        XCTAssertNil(session.oldestAskID)
+    }
+
     /// A record from a Mac older than G5 has no `watch_issue`: it still
     /// decodes, as watched.
     func testTerminalSessionWithoutWatchIssueDecodes() throws {

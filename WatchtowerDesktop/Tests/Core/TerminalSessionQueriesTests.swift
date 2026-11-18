@@ -198,6 +198,42 @@ final class TerminalSessionQueriesTests: XCTestCase {
         }
     }
 
+    /// The loop round's edges; Go TestSpecLoopRoundSQL plants the same rows.
+    func testSpecLoopRoundEdges() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let project = try TestDatabase.insertWorkbench(db, name: "acme")
+            let none = try TerminalSessionQueries.create(db, claude(project))
+            let closed = try TerminalSessionQueries.create(db, claude(project))
+            let owner = try TerminalSessionQueries.create(db, claude(project))
+            let two = try TerminalSessionQueries.create(db, claude(project))
+            func ask(_ session: Int64, _ status: String, _ loop: String, _ round: Int) throws {
+                let id = try TestDatabase.insertOwnerAsk(
+                    db, projectID: project, sessionID: session, kind: "review", docPath: "docs/spec.md",
+                    status: status, answer: status == "answered" ? #"{"verdict":"approve"}"# : "")
+                try db.execute(sql: """
+                    INSERT INTO spec_reviews (ask_id, status, queued_at, loop, round)
+                    VALUES (?, 'running', '2026-10-01T00:00:00Z', ?, ?)
+                    """, arguments: [id, loop, round])
+            }
+            try ask(closed.id, "answered", "author", 5)
+            try ask(closed.id, "withdrawn", "author", 6)
+            try ask(owner.id, "open", "owner", 4)
+            try ask(two.id, "open", "author", 1)
+            try ask(two.id, "open", "author", 3)
+            let rows = try TerminalSessionQueries.fetchAgentStates(db, liveIDs: [])
+            func row(_ id: Int64) -> (round: Int?, asks: Int?) {
+                let r = rows.first { $0.id == id }
+                return (r?.specReviewRound, r?.openAsks)
+            }
+            XCTAssertEqual(row(none.id).round, 0, "no rows")
+            XCTAssertEqual(row(closed.id).round, 0, "closed asks' loop rows are ignored")
+            XCTAssertEqual(row(owner.id).round, 0, "an owner-loop row is ignored")
+            XCTAssertEqual(row(owner.id).asks, 1, "the owner-loop ask is visible")
+            XCTAssertEqual(row(two.id).round, 3, "the highest open round")
+        }
+    }
+
     func testMirrorHasTerminalSessionsTable() throws {
         let queue = try TestDatabase.create()
         try queue.read { db in XCTAssertTrue(try db.tableExists("terminal_sessions")) }

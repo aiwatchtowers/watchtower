@@ -94,8 +94,7 @@ func dateWarned(field, record string) bool {
 // Swift Date: UTC "YYYY-MM-DD HH:MM:SS.SSS".
 func sqliteDate(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05.000") }
 
-// askVisible is OwnerAskQueries.notInSpecLoop over alias "a": it drops the spec
-// review author loop's hidden asks from an owner-facing read of owner_asks
-// aliased "a".
-// askVisible is computed once and never reassigned.
+// askVisible is db.AskInSpecLoopSQL("a") negated, OwnerAskQueries.notInSpecLoop:
+// it drops the spec review author loop's hidden asks from a read of owner_asks
+// aliased "a"; computed once, never reassigned.
 var askVisible = "NOT " + db.AskInSpecLoopSQL("a")

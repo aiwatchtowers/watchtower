@@ -255,8 +255,8 @@ func (s *TerminalSessionSource) payload(p publishedSession, closedAsks int) sess
 }
 
 // counts is the workbench slice's session_counts over the published
-// sessions: working counts working, running and agents working (all green),
-// waiting counts waiting on an ask and ready to check, not_running counts
+// sessions: working counts working, running, agents working and spec review
+// (all green, #1945), waiting counts waiting on an ask and ready to check, not_running counts
 // not started.
 func (s *TerminalSessionSource) counts(ctx context.Context, tx *sql.Tx) (map[int64]sessionCounts, error) {
 	published, err := s.published(ctx, tx)
