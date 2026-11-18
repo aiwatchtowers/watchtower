@@ -50,13 +50,15 @@ package enum WatchmanFeedbackQueries {
         return db.changesCount > 0
     }
 
-    /// Mark done on a waiting item (parked, handed, a guard denial): it
-    /// leaves Waiting for you. Not feedback: learning never reads it.
+    /// Mark done on a waiting item (parked, handed, a guard denial, a
+    /// handover whose next session did not start): it leaves Waiting for
+    /// you. Not feedback: learning never reads it.
     @discardableResult
     package static func ownerDone(_ db: Database, itemID: Int64, now: Date = Date()) throws -> Bool {
         try db.execute(sql: """
             UPDATE watchman_items SET owner_done_at = ?
-            WHERE id = ? AND owner_done_at IS NULL AND state = 'done' AND outcome IN ('parked', 'handed')
+            WHERE id = ? AND owner_done_at IS NULL AND state = 'done'
+              AND (outcome IN ('parked', 'handed') OR \(WatchmanItem.failedStepSQL))
             """, arguments: [AutomationDates.format(now), itemID])
         return db.changesCount > 0
     }

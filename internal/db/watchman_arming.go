@@ -72,14 +72,23 @@ func (db *DB) ClearWatchmanArming() (n int64, err error) {
 }
 
 // PruneWatchmanArming removes arming rows nothing can be decided for any
-// more: a session row whose session is gone, finished or being deleted, and
-// a target row whose target is gone. A target with no live session stays
-// armed (a new session under it is handed to the twin). n is how many went.
+// more: a session row whose session is gone, finished or being deleted —
+// unless the session finished normally (still there, not being deleted) and
+// its handover is still the twin's (queued, deciding, or answered
+// "Continue" with its next session still owed) — and a target row whose
+// target is gone. A target with no live session stays armed (a new
+// session under it is handed to the twin). n is how many went.
 func (db *DB) PruneWatchmanArming() (n int64, err error) {
 	res, err := db.Exec(`DELETE FROM watchman_arming WHERE
 		(scope = 'session' AND NOT EXISTS (SELECT 1 FROM terminal_sessions ts
-			WHERE ts.id = watchman_arming.ref_id AND ts.finished_at IS NULL AND ts.` + NotDeletingSQL + `))
-		OR (scope = 'target' AND NOT EXISTS (SELECT 1 FROM targets t WHERE t.id = watchman_arming.ref_id))`)
+			WHERE ts.id = watchman_arming.ref_id AND ts.finished_at IS NULL AND ts.`+NotDeletingSQL+`)
+		 AND NOT (EXISTS (SELECT 1 FROM terminal_sessions ts
+				WHERE ts.id = watchman_arming.ref_id AND ts.finished_at IS NOT NULL AND ts.`+NotDeletingSQL+`)
+			AND EXISTS (SELECT 1 FROM watchman_items wi
+				WHERE wi.session_id = watchman_arming.ref_id AND wi.kind = 'handover'
+				  AND (wi.state IN ('queued', 'deciding') OR (wi.state = 'done' AND wi.error IN (?, ?))))))
+		OR (scope = 'target' AND NOT EXISTS (SELECT 1 FROM targets t WHERE t.id = watchman_arming.ref_id))`,
+		WatchmanStartPending, WatchmanStartClaimed)
 	if err != nil {
 		return 0, fmt.Errorf("pruning watchman arming: %w", err)
 	}

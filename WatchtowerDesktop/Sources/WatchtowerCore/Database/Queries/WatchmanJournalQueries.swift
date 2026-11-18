@@ -11,7 +11,7 @@ package enum WatchmanJournalQueries {
     private static let itemColumns = """
         i.id, i.workbench_id, p.name AS workbench_name, i.session_id, i.target_id, i.kind, i.state, i.outcome,
         i.question, i.choice, i.rationale, i.precedent_ids, i.confidence, i.category, i.unsure, i.park_reason,
-        i.delivery, i.cost_usd, i.created_at, i.decided_at, i.feedback, i.feedback_text, i.check_done_at,
+        i.delivery, i.error, i.cost_usd, i.created_at, i.decided_at, i.feedback, i.feedback_text, i.check_done_at,
         i.owner_done_at, i.correction_sent_at
         """
 
@@ -90,8 +90,7 @@ package enum WatchmanJournalQueries {
         let enabledAt = try String.fetchOne(db, sql: "SELECT MAX(enabled_at) FROM watchman_workbenches")
         guard let updatedAt = latest?.items.last?.createdAt ?? AutomationDates.parse(enabledAt) else { return nil }
         let waiting = try Int.fetchOne(db, sql: """
-            SELECT COUNT(*) FROM watchman_items
-            WHERE state = 'done' AND outcome IN ('parked', 'handed') AND feedback = '' AND owner_done_at IS NULL
+            SELECT COUNT(*) FROM watchman_items WHERE \(WatchmanItem.waitingSQL)
             """) ?? 0
         return WatchmanInboxSummary(latest: latest.map(WatchmanNightCounts.init), waiting: waiting, updatedAt: updatedAt)
     }

@@ -274,7 +274,7 @@ private struct WatchmanNightPage: View {
         VStack(alignment: .leading, spacing: Spacing.compact) {
             ForEach(lines) { line in
                 HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                    Image(systemName: icon).foregroundStyle(tone)
+                    Image(systemName: line.icon ?? icon).foregroundStyle(tone)
                     VStack(alignment: .leading, spacing: Spacing.tight) {
                         Text(line.title).font(.callout).fixedSize(horizontal: false, vertical: true)
                         if let note = line.note { Text(note).font(.caption).foregroundStyle(.secondary) }

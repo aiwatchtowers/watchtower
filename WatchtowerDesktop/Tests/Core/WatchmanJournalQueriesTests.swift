@@ -28,15 +28,16 @@ final class WatchmanJournalQueriesTests: XCTestCase {
         checkDone: String? = nil,
         cost: Double = 0,
         question: String = "Q",
-        parkReason: String = ""
+        parkReason: String = "",
+        error: String = ""
     ) throws -> Int64 {
         let ref = try Int64.fetchOne(db, sql: "SELECT COALESCE(MAX(ref_id), 0) + 1 FROM watchman_items") ?? 1
         try db.execute(sql: """
             INSERT INTO watchman_items (workbench_id, kind, ref_kind, ref_id, state, outcome, unsure, feedback,
-                check_done_at, cost_usd, question, park_reason, created_at)
-            VALUES (?, ?, 'ask', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                check_done_at, cost_usd, question, park_reason, error, created_at)
+            VALUES (?, ?, 'ask', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, arguments: [workbench, kind, ref, state, outcome, unsure, feedback, checkDone, cost, question,
-                             parkReason, created])
+                             parkReason, error, created])
         return db.lastInsertedRowID
     }
 
@@ -255,5 +256,30 @@ final class WatchmanJournalQueriesTests: XCTestCase {
             try WatchmanJournalQueries.homeNight($0, now: self.date("2026-11-16T15:00:00Z"), calendar: calendar)
         }
         XCTAssertEqual(counts, WatchmanNightCounts(start: date("2026-11-15T11:00:00Z"), decided: 1, unsure: 1, waiting: 0))
+    }
+
+    /// A handover whose next session did not start waits for the owner, its
+    /// error as the reason; one whose start is still owed is a decision.
+    func testFailedHandoverStartWaits() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let wb = try TestDatabase.insertWorkbench(db)
+            try item(db, workbench: wb, created: "2026-11-16T01:00:00Z", kind: "handover", question: "failed",
+                     error: "starting the next session: host busy")
+            try item(db, workbench: wb, created: "2026-11-16T01:10:00Z", kind: "handover", question: "owed",
+                     error: "next session not started yet")
+            try db.execute(sql: "INSERT INTO watchman_workbenches (workbench_id, enabled_at) VALUES (?, '2026-11-10T00:00:00Z')",
+                           arguments: [wb])
+        }
+        let night = try XCTUnwrap(nights(queue).first)
+        XCTAssertEqual(night.waiting.map(\.question), ["failed"])
+        XCTAssertEqual(night.decided.map(\.question), ["owed"])
+        XCTAssertEqual(night.waiting.first.map(WatchmanJournalCopy.waitingReason), "starting the next session: host busy")
+        let calendar = calendar
+        let summary = try XCTUnwrap(queue.read { try WatchmanJournalQueries.inboxSummary($0, calendar: calendar) })
+        XCTAssertEqual(summary.waiting, 1)
+        let failed = try XCTUnwrap(night.waiting.first)
+        XCTAssertTrue(try queue.write { try WatchmanFeedbackQueries.ownerDone($0, itemID: failed.id) })
+        XCTAssertEqual(try nights(queue).first?.waiting.count, 0, "Mark done takes it out of Waiting for you")
     }
 }

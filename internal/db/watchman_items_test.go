@@ -520,7 +520,7 @@ func TestNoteWatchmanItemDelivery_OnlyDoneItems(t *testing.T) {
 	d := openTestDB(t)
 	wmTestWorkbench(t, d, 1)
 	id := wmQueueAsk(t, d, 5)
-	require.NoError(t, d.NoteWatchmanItemDelivery(id, "no_session", ""))
+	require.NoError(t, d.NoteWatchmanItemDelivery(id, "no_session"))
 	var delivery string
 	require.NoError(t, d.QueryRow(`SELECT delivery FROM watchman_items WHERE id = ?`, id).Scan(&delivery))
 	require.Equal(t, "", delivery, "a queued item is not noted")
@@ -528,11 +528,13 @@ func TestNoteWatchmanItemDelivery_OnlyDoneItems(t *testing.T) {
 	it, err := d.LeaseWatchmanItem(now, 10*time.Minute, wmAll)
 	require.NoError(t, err)
 	require.True(t, wmFinish(t, d, id, *it.LeaseUntil, WatchmanOutcome{Outcome: "answered"}))
-	require.NoError(t, d.NoteWatchmanItemDelivery(id, "no_session", "starting the next session: boom"))
+	_, err = d.Exec(`UPDATE watchman_items SET error = 'owed' WHERE id = ?`, id)
+	require.NoError(t, err)
+	require.NoError(t, d.NoteWatchmanItemDelivery(id, "no_session"))
 	var errText string
 	require.NoError(t, d.QueryRow(`SELECT delivery, error FROM watchman_items WHERE id = ?`, id).Scan(&delivery, &errText))
 	require.Equal(t, "no_session", delivery)
-	require.Equal(t, "starting the next session: boom", errText)
+	require.Equal(t, "owed", errText, "the delivery note never touches error")
 }
 
 func TestParkWatchmanGuard_EachDenialIsItsOwnItemOnItsNight(t *testing.T) {
@@ -673,8 +675,9 @@ func TestDoneWatchmanItemsWithError_ListsAndClears(t *testing.T) {
 	d := openTestDB(t)
 	wmTestWorkbench(t, d, 1)
 	id := wmQueueAsk(t, d, 5)
-	_, err := d.Exec(`UPDATE watchman_items SET kind = 'handover' WHERE id = ?`, id)
+	_, err := d.Exec(`UPDATE watchman_items SET kind = 'handover', session_id = 77 WHERE id = ?`, id)
 	require.NoError(t, err)
+	wmArmSession(t, d, 77) // the claim requires the arming
 	now := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
 	it, err := d.LeaseWatchmanItem(now, 10*time.Minute, wmAll)
 	require.NoError(t, err)
@@ -721,4 +724,159 @@ func TestWatchmanItemArmed_SessionOrTargetAncestor(t *testing.T) {
 	armed, err = d.WatchmanItemArmed(s, 0)
 	require.NoError(t, err)
 	require.True(t, armed, "the session armed directly")
+}
+
+// The claim re-checks the arming in its own statement: no row, no claim.
+func TestClaimWatchmanItemStep_NeedsTheArming(t *testing.T) {
+	d := openTestDB(t)
+	wmTestWorkbench(t, d, 1)
+	id := wmQueueAsk(t, d, 5)
+	_, err := d.Exec(`UPDATE watchman_items SET kind = 'handover', session_id = 77, state = 'done', outcome = 'answered', error = ? WHERE id = ?`,
+		WatchmanStartPending, id)
+	require.NoError(t, err)
+	_, claimed, err := d.ClaimWatchmanItemStep(id, WatchmanStartPending, WatchmanStartClaimed)
+	require.NoError(t, err)
+	require.False(t, claimed, "not armed")
+	wmArmSession(t, d, 77)
+	_, claimed, err = d.ClaimWatchmanItemStep(id, WatchmanStartPending, WatchmanStartClaimed)
+	require.NoError(t, err)
+	require.True(t, claimed)
+}
+
+// A finished session's arming row stays while its handover is the twin's
+// (queued, deciding, or a start still owed), and goes after.
+func TestPruneWatchmanArming_KeepsAnOpenHandoversSession(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	s := newTestSession(t, d, wb)
+	wmArmSession(t, d, s)
+	id, _, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "handover", RefKind: "ask", RefID: 9, Question: "q"})
+	require.NoError(t, err)
+	_, err = d.Exec(`UPDATE terminal_sessions SET finished_at = '2026-11-18T02:00:00Z' WHERE id = ?`, s)
+	require.NoError(t, err)
+	rows := func() int {
+		n, err := d.PruneWatchmanArming()
+		require.NoError(t, err)
+		var left int
+		require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM watchman_arming WHERE scope = 'session' AND ref_id = ?`, s).Scan(&left))
+		_ = n
+		return left
+	}
+	require.Equal(t, 1, rows(), "queued handover")
+	_, err = d.Exec(`UPDATE watchman_items SET state = 'done', outcome = 'answered', error = ? WHERE id = ?`, WatchmanStartPending, id)
+	require.NoError(t, err)
+	require.Equal(t, 1, rows(), "start owed")
+	_, err = d.Exec(`UPDATE watchman_items SET error = '' WHERE id = ?`, id)
+	require.NoError(t, err)
+	require.Equal(t, 0, rows(), "nothing owed any more")
+}
+
+// A handover of a finished session is leased by its arming row.
+func TestLeaseArmedWatchmanItem_HandoverOfAFinishedSession(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	s := newTestSession(t, d, wb)
+	wmArmSession(t, d, s)
+	_, _, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "ask", RefKind: "ask", RefID: 8, Question: "q"})
+	require.NoError(t, err)
+	_, _, err = d.QueueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "handover", RefKind: "ask", RefID: 9, Question: "q"})
+	require.NoError(t, err)
+	_, err = d.Exec(`UPDATE terminal_sessions SET finished_at = '2026-11-18T02:00:00Z' WHERE id = ?`, s)
+	require.NoError(t, err)
+	_, err = d.PruneWatchmanArming()
+	require.NoError(t, err)
+	it, err := d.LeaseArmedWatchmanItem(time.Now(), time.Minute, wmAll)
+	require.NoError(t, err)
+	require.NotNil(t, it)
+	require.Equal(t, "handover", it.Kind, "the ask of the finished session is not leased, its handover is")
+	again, err := d.LeaseArmedWatchmanItem(time.Now(), time.Minute, wmAll)
+	require.NoError(t, err)
+	require.Nil(t, again)
+}
+
+// A session being deleted, or gone, keeps no arming row, open handover or not.
+func TestPruneWatchmanArming_DeletedSessionGoesWithItsHandover(t *testing.T) {
+	for _, gone := range []string{"deleting", "deleted"} {
+		t.Run(gone, func(t *testing.T) {
+			d := openTestDB(t)
+			wb := newTestWorkbench(t, d)
+			s := newTestSession(t, d, wb)
+			wmArmSession(t, d, s)
+			_, _, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "handover", RefKind: "ask", RefID: 9, Question: "q"})
+			require.NoError(t, err)
+			if gone == "deleting" {
+				_, err = d.Exec(`UPDATE terminal_sessions SET finished_at = '2026-11-18T02:00:00Z', delete_requested_at = '2026-11-18T02:01:00Z' WHERE id = ?`, s)
+			} else {
+				_, err = d.Exec(`DELETE FROM terminal_sessions WHERE id = ?`, s)
+			}
+			require.NoError(t, err)
+			_, err = d.PruneWatchmanArming()
+			require.NoError(t, err)
+			var left int
+			require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM watchman_arming WHERE ref_id = ?`, s).Scan(&left))
+			require.Zero(t, left)
+		})
+	}
+}
+
+// A handover whose item names no target is still covered through its
+// session's target.
+func TestWatchmanItemArmed_SessionsTargetCovers(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	tg := insertWorkbenchTargetRow(t, d, wb, "Export")
+	s := newTestSession(t, d, wb)
+	_, err := d.Exec(`UPDATE terminal_sessions SET target_id = ?, finished_at = '2026-11-18T02:00:00Z' WHERE id = ?`, tg, s)
+	require.NoError(t, err)
+	require.NoError(t, d.UpsertWatchmanArming(WatchmanArming{Scope: "target", RefID: tg, ArmedAt: time.Now(), ArmedBy: "cli"}))
+	armed, err := d.WatchmanItemArmed(s, 0)
+	require.NoError(t, err)
+	require.True(t, armed)
+	_, _, err = d.QueueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "handover", RefKind: "ask", RefID: 9, Question: "q"})
+	require.NoError(t, err)
+	it, err := d.LeaseArmedWatchmanItem(time.Now(), time.Minute, wmAll)
+	require.NoError(t, err)
+	require.NotNil(t, it, "leased through the session's armed target")
+}
+
+// A session being deleted lends no coverage through its target.
+func TestWatchmanItemArmed_DeletingSessionsTargetDoesNotCover(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	tg := insertWorkbenchTargetRow(t, d, wb, "Export")
+	s := newTestSession(t, d, wb)
+	_, err := d.Exec(`UPDATE terminal_sessions SET target_id = ?, finished_at = '2026-11-18T02:00:00Z',
+		delete_requested_at = '2026-11-18T02:01:00Z' WHERE id = ?`, tg, s)
+	require.NoError(t, err)
+	require.NoError(t, d.UpsertWatchmanArming(WatchmanArming{Scope: "target", RefID: tg, ArmedAt: time.Now(), ArmedBy: "cli"}))
+	armed, err := d.WatchmanItemArmed(s, 0)
+	require.NoError(t, err)
+	require.False(t, armed)
+	_, _, err = d.QueueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "handover", RefKind: "ask", RefID: 9, Question: "q"})
+	require.NoError(t, err)
+	it, err := d.LeaseArmedWatchmanItem(time.Now(), time.Minute, wmAll)
+	require.NoError(t, err)
+	require.Nil(t, it)
+}
+
+// Starting needs the destination covered: the source session's target does
+// not authorise a start on another target.
+func TestWatchmanStartArmed_DestinationOnly(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	a := insertWorkbenchTargetRow(t, d, wb, "A")
+	b := insertWorkbenchTargetRow(t, d, wb, "B")
+	s := newTestSession(t, d, wb)
+	_, err := d.Exec(`UPDATE terminal_sessions SET target_id = ? WHERE id = ?`, a, s)
+	require.NoError(t, err)
+	require.NoError(t, d.UpsertWatchmanArming(WatchmanArming{Scope: "target", RefID: a, ArmedAt: time.Now(), ArmedBy: "cli"}))
+	lease, err := d.WatchmanItemArmed(s, b)
+	require.NoError(t, err)
+	require.True(t, lease, "the lease may use the source session's target")
+	start, err := d.WatchmanStartArmed(s, b)
+	require.NoError(t, err)
+	require.False(t, start, "the start needs B covered")
+	start, err = d.WatchmanStartArmed(s, a)
+	require.NoError(t, err)
+	require.True(t, start)
 }

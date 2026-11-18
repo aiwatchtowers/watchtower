@@ -25,6 +25,8 @@ type twinSessions struct {
 	mu    sync.Mutex
 	live  map[int64]bool
 	lines []askanswer.DeliverRequest
+	// onDeliver runs inside Deliver, after the answer's commit.
+	onDeliver func()
 }
 
 func (s *twinSessions) Live(_ context.Context, id int64) (askanswer.LiveRun, bool, error) {
@@ -38,8 +40,12 @@ func (s *twinSessions) Live(_ context.Context, id int64) (askanswer.LiveRun, boo
 
 func (s *twinSessions) Deliver(_ context.Context, r askanswer.DeliverRequest) (askanswer.DeliverResult, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.lines = append(s.lines, r)
+	hook := s.onDeliver
+	s.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	return askanswer.DeliverResult{Outcome: askanswer.DeliverSubmitted}, nil
 }
 
@@ -1033,7 +1039,9 @@ func TestTwin_HandoverStartStopsWhenDisarmed(t *testing.T) {
 	if e.item(itemID).Error != pendingStart {
 		t.Fatalf("error = %q", e.item(itemID).Error)
 	}
-	e.disarm()
+	e.finishSession()
+	e.prune()
+	e.disarm() // Take back deletes the row the prune kept
 	e.run()
 	if n := e.startCount(); n != 1 || e.item(itemID).Error != startTakenBack {
 		t.Fatalf("starts = %d, error %q; want no start after Take back", n, e.item(itemID).Error)
@@ -1068,5 +1076,176 @@ func TestTwin_OwnerFirstOnAContinueOwesNoStart(t *testing.T) {
 	wantOutcome(t, it, OutcomeOwnerFirst)
 	if it.Error != "" || e.startCount() != 0 {
 		t.Fatalf("error = %q, starts %d; want no start owed", it.Error, e.startCount())
+	}
+}
+
+// finishSession ends the env's session as finish_session's exit does.
+func (e *twinEnv) finishSession() {
+	_, err := e.db.Exec(`UPDATE terminal_sessions SET finished_at = ? WHERE id = ?`, db.AgentStateStamp(time.Now()), e.session)
+	e.must(err)
+	e.port.mu.Lock()
+	delete(e.port.live, e.session)
+	e.port.mu.Unlock()
+}
+
+// prune is the daemon upkeep's arming prune.
+func (e *twinEnv) prune() {
+	_, err := e.db.PruneWatchmanArming()
+	e.must(err)
+}
+
+// The main path: the session finishes, upkeep prunes, the first start fails
+// — the next pass still starts the next session (the arming row is kept).
+func TestTwin_HandoverStartSurvivesFinishAndPrune(t *testing.T) {
+	fail := true
+	e, itemID := continueEnv(t, func() error {
+		if fail {
+			return errors.New("host busy")
+		}
+		return nil
+	})
+	e.run()
+	e.finishSession()
+	e.prune()
+	fail = false
+	e.run()
+	if n, got := e.startCount(), e.item(itemID).Error; n != 2 || got != "" {
+		t.Fatalf("starts = %d, error %q; want the second start after finish and prune", n, got)
+	}
+	e.prune()
+	var left int
+	e.must(e.db.QueryRow(`SELECT COUNT(*) FROM watchman_arming WHERE scope = 'session' AND ref_id = ?`, e.session).Scan(&left))
+	if left != 0 {
+		t.Fatal("the arming row outlived the handover")
+	}
+}
+
+// A handover still queued when its session finished is leased and decided.
+func TestTwin_HandoverQueuedAtFinishIsDecided(t *testing.T) {
+	e, itemID := continueEnv(t, func() error { return nil })
+	e.finishSession()
+	e.prune()
+	if n := e.run(); n != 1 {
+		t.Fatalf("RunOnce = %d, want the handover leased", n)
+	}
+	wantOutcome(t, e.item(itemID), OutcomeAnswered)
+	if e.startCount() != 1 {
+		t.Fatalf("starts = %d", e.startCount())
+	}
+}
+
+// A Take back between the arming check and the claim: the claim's own
+// arming check refuses it, nothing starts.
+func TestTwin_HandoverStartDisarmBeforeClaim(t *testing.T) {
+	e, itemID := continueEnv(t, func() error { return nil })
+	prev := beforeStartClaim
+	beforeStartClaim = func() { e.disarm() }
+	t.Cleanup(func() { beforeStartClaim = prev })
+	e.run()
+	if n, got := e.startCount(), e.item(itemID).Error; n != 0 || got != startTakenBack {
+		t.Fatalf("starts = %d, error %q; want none, taken back", n, got)
+	}
+}
+
+// A pass that claims, starts and clears the start while the answer's line is
+// typed: the delivery note does not bring the owed start back.
+func TestTwin_DeliveryNoteKeepsAStartDone(t *testing.T) {
+	e, itemID := continueEnv(t, func() error { return nil })
+	e.port.mu.Lock()
+	e.port.onDeliver = func() { e.twin.retryStarts(context.Background()) }
+	e.port.mu.Unlock()
+	e.run()
+	e.run()
+	if n, got := e.startCount(), e.item(itemID).Error; n != 1 || got != "" {
+		t.Fatalf("starts = %d, error %q; want one start", n, got)
+	}
+}
+
+// A deleted session's arming row is pruned even with a start owed: the start
+// ends taken back, nothing starts.
+func TestTwin_HandoverStartOfADeletedSessionIsTakenBack(t *testing.T) {
+	e, itemID := continueEnv(t, func() error { return errors.New("host busy") })
+	e.run()
+	_, err := e.db.Exec(`UPDATE terminal_sessions SET finished_at = ?, delete_requested_at = ? WHERE id = ?`,
+		db.AgentStateStamp(time.Now()), db.AgentStateStamp(time.Now()), e.session)
+	e.must(err)
+	e.prune()
+	e.run()
+	if n, got := e.startCount(), e.item(itemID).Error; n != 1 || got != startTakenBack {
+		t.Fatalf("starts = %d, error %q; want no second start, taken back", n, got)
+	}
+}
+
+// targetOnlyEnv arms target A only (the session's), with the handover ask
+// naming dest; the session is not armed directly.
+func targetOnlyEnv(t *testing.T, dest func(e *twinEnv) int64) (*twinEnv, int64) {
+	e := newTwinEnv(t)
+	e.disarm()
+	e.must(e.db.UpsertWatchmanArming(db.WatchmanArming{Scope: "target", RefID: e.target, ArmedAt: time.Now(), ArmedBy: "cli"}))
+	askID, itemID := e.fileAsk(asks.KindQuestion, "Left: the CSV import", oneQuestion, "handover")
+	to := dest(e)
+	_, err := e.db.Exec(`UPDATE owner_asks SET target_id = ? WHERE id = ?`, to, askID)
+	e.must(err)
+	_, err = e.db.Exec(`UPDATE watchman_items SET target_id = ? WHERE id = ?`, to, itemID)
+	e.must(err)
+	e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
+		return decision(HandoverContinue), nil
+	}
+	return e, itemID
+}
+
+func newTarget(e *twinEnv, text string) int64 {
+	res, err := e.db.Exec(`INSERT INTO targets (text, level, custom_label, period_start, period_end, source_type, project_id)
+		VALUES (?, 'custom', 'project', '2026-11-18', '2026-11-18', 'chat', ?)`, text, e.wb)
+	e.must(err)
+	id, _ := res.LastInsertId()
+	return id
+}
+
+// The source session's armed target A lets the twin decide the handover,
+// but not start a session on target B nobody handed to Watchman.
+func TestTwin_HandoverStartNeedsTheDestinationArmed(t *testing.T) {
+	e, itemID := targetOnlyEnv(t, func(e *twinEnv) int64 { return newTarget(e, "B") })
+	if n := e.run(); n != 1 {
+		t.Fatalf("RunOnce = %d, want the handover leased through A", n)
+	}
+	it := e.item(itemID)
+	wantOutcome(t, it, OutcomeAnswered)
+	if e.startCount() != 0 || it.Error != startTakenBack {
+		t.Fatalf("starts = %d, error %q; want no start on B", e.startCount(), it.Error)
+	}
+}
+
+// A session being deleted lends no coverage: its owed start (destination
+// unarmed, coverage only through the session's target) ends taken back.
+func TestTwin_HandoverStartOfADeletingSessionViaTargetIsTakenBack(t *testing.T) {
+	var dest int64
+	e, itemID := targetOnlyEnv(t, func(e *twinEnv) int64 { dest = newTarget(e, "B"); return dest })
+	_, err := e.db.Exec(`UPDATE watchman_arming SET ref_id = ? WHERE scope = 'target'`, dest) // B armed for the decision
+	e.must(err)
+	fail := true
+	e.twin.d.StartSession = func(context.Context, int64, int64, string) error {
+		e.mu.Lock()
+		e.started = append(e.started, startCall{})
+		e.mu.Unlock()
+		if fail {
+			return errors.New("host busy")
+		}
+		return nil
+	}
+	e.run()
+	if e.item(itemID).Error != pendingStart {
+		t.Fatalf("error = %q", e.item(itemID).Error)
+	}
+	// B taken back, A armed again: only the deleting session's target is left.
+	_, err = e.db.Exec(`UPDATE watchman_arming SET ref_id = ? WHERE scope = 'target'`, e.target)
+	e.must(err)
+	_, err = e.db.Exec(`UPDATE terminal_sessions SET finished_at = ?, delete_requested_at = ? WHERE id = ?`,
+		db.AgentStateStamp(time.Now()), db.AgentStateStamp(time.Now()), e.session)
+	e.must(err)
+	fail = false
+	e.run()
+	if n, got := e.startCount(), e.item(itemID).Error; n != 1 || got != startTakenBack {
+		t.Fatalf("starts = %d, error %q; want taken back", n, got)
 	}
 }

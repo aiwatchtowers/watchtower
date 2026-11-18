@@ -425,7 +425,10 @@ func (db *DB) LeaseArmedWatchmanItem(now time.Time, lease time.Duration, eligibl
 func (db *DB) leaseWatchmanItem(now time.Time, lease time.Duration, eligible func(WatchmanItem) bool, armedOnly bool) (*WatchmanItem, error) {
 	armed := ""
 	if armedOnly {
-		armed = ` AND session_id IN (SELECT id FROM (` + armedSessionsFrom + `))`
+		// A handover outlives its session (finish_session ends it): it is
+		// leased by its arming row; every other kind needs a live armed session.
+		armed = ` AND (CASE WHEN kind = 'handover' THEN ` + watchmanHandoverArmed + `
+			ELSE session_id IN (SELECT id FROM (` + armedSessionsFrom + `)) END)`
 	}
 	nowS := wmTime(now)
 	until := now.Add(lease)
@@ -608,10 +611,14 @@ func (db *DB) SetWatchmanItemError(id int64, was, errText string) (bool, error) 
 // ClaimWatchmanItemStep is SetWatchmanItemError for a step that is tried a
 // bounded number of times: it also counts the try in attempts (reset by
 // ResetWatchmanItemAttemptsTx when the step became owed) and returns the
-// count; claimed false when the error was no longer was.
+// count. The claim also requires the start's arming (watchmanStartArmed: the
+// session's row or an armed target covering the destination) in the same
+// statement; claimed false when the
+// error was no longer was or the item is no longer armed.
 func (db *DB) ClaimWatchmanItemStep(id int64, was, errText string) (tries int, claimed bool, err error) {
 	err = db.WithTx(func(tx *sql.Tx) error {
-		res, err := tx.Exec(`UPDATE watchman_items SET error = ?, attempts = attempts + 1 WHERE id = ? AND state = 'done' AND error = ?`,
+		res, err := tx.Exec(`UPDATE watchman_items SET error = ?, attempts = attempts + 1
+			WHERE id = ? AND state = 'done' AND error = ? AND `+watchmanStartArmed,
 			errText, id, was)
 		if err != nil {
 			return err
@@ -637,10 +644,39 @@ func (db *DB) ResetWatchmanItemAttemptsTx(tx *sql.Tx, id int64) error {
 	return nil
 }
 
-// WatchmanItemArmed reports whether the twin may still act for an item of
-// session and target: the session armed directly, or the target or one of
-// its ancestors armed (the session itself may have ended).
-func (db *DB) WatchmanItemArmed(sessionID, targetID int64) (bool, error) {
+// The error of a "Continue" handover whose next session is owed: pending
+// until a start claims it, claimed while that start runs.
+const (
+	WatchmanStartPending = "next session not started yet"
+	WatchmanStartClaimed = "next session starting"
+)
+
+// watchmanArmedTargets is every target an armed target covers (its subtree).
+const watchmanArmedTargets = `WITH RECURSIVE sub(id) AS (
+			SELECT ref_id FROM watchman_arming WHERE scope = 'target'
+			UNION
+			SELECT t.id FROM targets t JOIN sub ON t.parent_id = sub.id
+		) SELECT id FROM sub`
+
+// watchmanHandoverArmed is a watchman_items row's arming as a handover
+// reads it, finished session or not: its session's own arming row, or an
+// armed target covering the item's target or its session's target.
+const watchmanHandoverArmed = `(watchman_items.session_id IN (SELECT ref_id FROM watchman_arming WHERE scope = 'session')
+	OR watchman_items.target_id IN (` + watchmanArmedTargets + `)
+	OR (SELECT ts.target_id FROM terminal_sessions ts WHERE ts.id = watchman_items.session_id AND ts.` + NotDeletingSQL + `)
+		IN (` + watchmanArmedTargets + `))`
+
+// watchmanStartArmed authorises starting a handover's next session on the
+// item's target (its destination): the session's own arming row, or an armed
+// target covering that destination — never the source session's target.
+const watchmanStartArmed = `(watchman_items.session_id IN (SELECT ref_id FROM watchman_arming WHERE scope = 'session')
+	OR watchman_items.target_id IN (` + watchmanArmedTargets + `))`
+
+// WatchmanStartArmed reports whether the twin may start the next session of
+// a handover of session on target (its destination): the session armed
+// directly, or target or one of its ancestors armed. The source session's
+// own target does not count (WatchmanItemArmed's lease fallback).
+func (db *DB) WatchmanStartArmed(sessionID, targetID int64) (bool, error) {
 	var n int
 	err := db.QueryRow(`WITH RECURSIVE up(id) AS (
 			SELECT ? WHERE ? > 0
@@ -651,6 +687,28 @@ func (db *DB) WatchmanItemArmed(sessionID, targetID int64) (bool, error) {
 		WHERE (scope = 'session' AND ref_id = ?) OR (scope = 'target' AND ref_id IN (SELECT id FROM up))`,
 		targetID, targetID, sessionID).Scan(&n)
 	if err != nil {
+		return false, fmt.Errorf("checking watchman start arming of session %d / target %d: %w", sessionID, targetID, err)
+	}
+	return n > 0, nil
+}
+
+// WatchmanItemArmed reports whether the twin may still act for an item of
+// session and target: the session armed directly, or the item's target, the
+// session's target or one of their ancestors armed (the session itself may
+// have ended).
+func (db *DB) WatchmanItemArmed(sessionID, targetID int64) (bool, error) {
+	var n int
+	err := db.QueryRow(`WITH RECURSIVE up(id) AS (
+			SELECT ? WHERE ? > 0
+			UNION
+			SELECT target_id FROM terminal_sessions WHERE id = ? AND target_id IS NOT NULL AND `+NotDeletingSQL+`
+			UNION
+			SELECT t.parent_id FROM targets t JOIN up ON t.id = up.id WHERE t.parent_id IS NOT NULL
+		)
+		SELECT COUNT(*) FROM watchman_arming
+		WHERE (scope = 'session' AND ref_id = ?) OR (scope = 'target' AND ref_id IN (SELECT id FROM up))`,
+		targetID, targetID, sessionID, sessionID).Scan(&n)
+	if err != nil {
 		return false, fmt.Errorf("checking watchman arming of session %d / target %d: %w", sessionID, targetID, err)
 	}
 	return n > 0, nil
@@ -658,10 +716,11 @@ func (db *DB) WatchmanItemArmed(sessionID, targetID int64) (bool, error) {
 
 // NoteWatchmanItemDelivery records, on a done item, how its answer reached
 // the session (the answer's line is typed after the commit that finished the
-// item) and an error of a step after it ("" keeps none).
-func (db *DB) NoteWatchmanItemDelivery(id int64, delivery, errText string) error {
-	if _, err := db.Exec(`UPDATE watchman_items SET delivery = ?, error = ? WHERE id = ? AND state = 'done'`,
-		delivery, errText, id); err != nil {
+// item). It never touches error: the finish set it, and a start may have
+// moved it since.
+func (db *DB) NoteWatchmanItemDelivery(id int64, delivery string) error {
+	if _, err := db.Exec(`UPDATE watchman_items SET delivery = ? WHERE id = ? AND state = 'done'`,
+		delivery, id); err != nil {
 		return fmt.Errorf("noting watchman item %d delivery: %w", id, err)
 	}
 	return nil

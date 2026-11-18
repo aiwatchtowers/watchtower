@@ -67,7 +67,13 @@ final class WatchmanJournalViewModel {
         let meta: String
         /// Mark done is offered (a check nobody ran).
         var canMarkDone = false
+        /// The line's own symbol; nil = its section's.
+        var icon: String?
     }
+
+    /// The symbol of a superseded item's line (its ask was withdrawn), apart
+    /// from the owner-answered one.
+    static let supersededIcon = "arrow.uturn.backward.circle"
 
     /// The Correct… sheet's draft.
     struct CorrectDraft: Identifiable, Equatable {
@@ -366,7 +372,9 @@ final class WatchmanJournalViewModel {
     /// Mark done on a check nobody ran (it was run), or on a waiting item
     /// (the owner dealt with it): either leaves its list.
     func markDone(_ itemID: Int64) async {
-        let waiting = item(itemID)?.isWaitingKind == true
+        // Every Waiting for you item (parked, handed, a failed handover start)
+        // is cleared with owner_done_at; only a check takes check_done_at.
+        let waiting = item(itemID).map { $0.isWaitingKind || $0.hasFailedStep } == true
         await save(waiting ? .ownerDone(itemID) : .checkDone(itemID))
     }
 
@@ -574,7 +582,8 @@ final class WatchmanJournalViewModel {
 
     private func ownerFirstLine(_ item: WatchmanItem) -> Line {
         Line(id: item.id, title: WatchmanJournalCopy.question(item), note: WatchmanJournalCopy.outcome(item),
-             meta: WatchmanJournalCopy.place(item, calendar: calendar))
+             meta: WatchmanJournalCopy.place(item, calendar: calendar),
+             icon: item.outcome == "superseded" ? Self.supersededIcon : nil)
     }
 
     private func checkLine(_ item: WatchmanItem) -> Line {

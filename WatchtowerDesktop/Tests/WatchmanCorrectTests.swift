@@ -261,6 +261,23 @@ final class WatchmanCorrectTests: XCTestCase {
         XCTAssertEqual(recorder.writes, [.ownerDone(1830)])
     }
 
+    /// A handover whose next session did not start waits too: Mark done
+    /// clears it with owner_done_at, never check_done_at.
+    func testMarkDoneClearsAFailedHandoverStart() async {
+        let recorder = Recorder()
+        var failed = item(1832, outcome: "answered")
+        failed.kind = "handover"
+        failed.errorText = "starting the next session: host busy"
+        let night = WatchmanNight(date: date("2026-11-16T12:00:00Z"), waiting: [failed])
+        var actions = WatchmanJournalViewModel.Actions.none
+        actions.write = { recorder.writes.append($0); return true }
+        let vm = WatchmanJournalViewModel(read: { .init(nights: [night], deciding: []) }, actions: actions)
+        vm.apply(.success(.init(nights: [night], deciding: [])))
+        XCTAssertEqual(vm.page?.waiting.first?.reason, "starting the next session: host busy")
+        await vm.markDone(1832)
+        XCTAssertEqual(recorder.writes, [.ownerDone(1832)])
+    }
+
     /// Fix 2: a correction stored but never delivered (the app quit) is Not
     /// sent on a fresh journal, with Retry; once delivered it is stored as sent.
     func testUnsentCorrectionAfterRelaunchOffersRetry() async {
