@@ -148,7 +148,9 @@ start there until installed, `Install Watchtower in <name> first`).
 
 ### 6.2 FILES
 FILES shows one root per folder, in position order (`CodeRoot` gains the folder id). A root row:
-folder icon, name (last path component; a duplicate name gets its parent dir as a caption),
+folder icon, name (the folder's stored `name`, unique per bench — the last path component, or
+`<parent>-<last>` when taken; it is what `start_session(folder)`, doc paths and recipe prefixes
+use, so a name never resolves to two folders),
 right-aligned `⎇ branch ● ↑N ↓N` from that folder's git status (the root row lands first in
 #2017 for the one-folder case). With an open session, its
 folder's root is expanded and shows the session's worktree when placed in one
@@ -334,8 +336,8 @@ the spec-review document reads use the session's folder as the main repository. 
 `create_targets`/`update_target` accept `folder` (name or path of a bench folder); when a branch
 or PR is set without it, the caller session's folder is stored. Drift (PROJ-07) runs git/`gh` in the target's folder (NULL → home folder). The merged progress
 share belongs to the session report (`internal/sessionreport`), so it runs in the session's
-folder (§6.9). Cards show a folder chip
-before the branch when the bench has more than one folder.
+folder (§6.9). Cards show a folder chip after the status chip when the bench has more than one folder (the
+card has no branch chip).
 
 ### 6.11 Documents, search, automations
 Docs indexing (PROJ-08) and the search scope cover every folder (key and per-folder cap in
@@ -421,7 +423,8 @@ Suggestion card: when the suggested folder is on bench B, the card reads
 - `session_messages`: MCP inserts; the daemon alone moves `state`. Exactly one daemon runs (its
   existing single-instance lock).
 - `owner_asks` kind `folder`: MCP inserts; the Desktop answers (existing ask writers).
-- `workbench_folder_declines`: the Desktop's answer handler only.
+- `workbench_folder_declines`: the Desktop's answer handler only, through `workbench folder
+  decline` (the write itself is Go).
 - `session_outside_touches`: the PostToolUse hook (counts) and the ask answer handler (`quiet` on
   Not Now); upserts, last write wins — a lost count only delays the nudge by one touch.
 
@@ -552,6 +555,9 @@ Every string above lives in a presentation model with a test (owner rule).
 | D39 | A `typed` delivery is final (never re-pasted); the sender is told it waits in the prompt | decided by the agent |
 | D40 | A message left in a prompt is flagged on the row and pane; finish reports never expire while the parent exists | decided by the agent |
 | D41 | New read-only session-host request `PromptState` (a `prompt_state` feature in HelloOK, protocol version unchanged, 2 s deadline); older hosts fall back to hook/run end + a manual Dismiss | decided by the agent |
+| D42 | MCP errors to agents read `"<code>: <sentence>"` with the codes named in this spec | decided by the agent (plan) |
+| D43 | Folders carry a stored unique `name`; review threads, PR states and ask doc paths carry the folder id | owner, plan review ask #1564 |
+| D44 | Sending while the daemon is stopped queues the message and warns `daemon_not_running`; the waiting bubble says the background sync is stopped | owner, plan review ask #1564 |
 
 ## Left to the builder
 Exact migration number; how `CodeRoot` encodes the folder id in its defaults key; the hub's
