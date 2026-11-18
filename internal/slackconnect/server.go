@@ -111,11 +111,13 @@ func (l *listener) serveConnect(w http.ResponseWriter, r *http.Request) {
 	id, err := l.reg.Begin(t, true)
 	switch {
 	case errors.Is(err, ErrFlowRunning):
-		if l.send(r, Event{Kind: EventBusy, Flow: id}) {
-			writePage(w, http.StatusConflict, oauthpage.Error(
-				"Another Slack connection is in progress in Watchtower. Finish or cancel it there, then open this link again.",
-				false))
+		if !l.send(r, Event{Kind: EventBusy, Flow: id}) {
+			writeNotTaken(w)
+			return
 		}
+		writePage(w, http.StatusConflict, oauthpage.Error(
+			"Another Slack connection is in progress in Watchtower. Finish or cancel it there, then open this link again.",
+			false))
 		return
 	case err != nil:
 		writePage(w, http.StatusInternalServerError, oauthpage.Error("Watchtower could not start the connection.", false))
@@ -123,8 +125,7 @@ func (l *listener) serveConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	if !l.send(r, Event{Kind: EventLink, Flow: id, Target: t}) {
 		l.reg.Cancel(id)
-		writePage(w, http.StatusServiceUnavailable, oauthpage.Error(
-			"Watchtower did not take this link. Open Watchtower, then open the link again.", false))
+		writeNotTaken(w)
 		return
 	}
 	writePage(w, http.StatusOK, oauthpage.SwitchToApp())
@@ -193,6 +194,13 @@ func (l *listener) sendUntilStop(ev Event) bool {
 	case <-l.stop:
 		return false
 	}
+}
+
+// writeNotTaken answers a link the owner did not take (it stopped, or the
+// tab went away while the owner was busy).
+func writeNotTaken(w http.ResponseWriter) {
+	writePage(w, http.StatusServiceUnavailable, oauthpage.Error(
+		"Watchtower did not take this link. Open Watchtower, then open the link again.", false))
 }
 
 func writePage(w http.ResponseWriter, status int, page string) {

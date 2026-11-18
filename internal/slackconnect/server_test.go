@@ -346,3 +346,52 @@ func TestSlackConnectListener_StoppedOwnerReleasesHandler(t *testing.T) {
 		t.Fatalf("the refused link left a flow: %v", err)
 	}
 }
+
+func TestSlackConnectListener_BusyLinkWithStoppedOwner(t *testing.T) {
+	reg, _, _ := newTestRegistry(t)
+	events := make(chan Event) // nobody reads
+	stop := make(chan struct{})
+	close(stop)
+	const host = "127.0.0.1:1"
+	h := Handler(reg, events, host, stop)
+	running, _ := reg.Begin(testTarget, false)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"http://"+host+"/slack/connect?team="+testTarget.TeamID+"&client="+testTarget.ClientID, nil)
+	req.Host = host
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "did not take this link") {
+		t.Fatalf("busy link with a stopped owner = %d:\n%s", rec.Code, rec.Body.String())
+	}
+	if _, ok := reg.WaitingSince(running); !ok {
+		t.Fatal("the busy link ended the running flow")
+	}
+}
+
+func TestSlackConnectListener_StopWhileWaitingForReply(t *testing.T) {
+	reg, _, _ := newTestRegistry(t)
+	events := make(chan Event, 1)
+	stop := make(chan struct{})
+	const host = "127.0.0.1:1"
+	h := Handler(reg, events, host, stop)
+	id, _ := reg.Begin(testTarget, false)
+	authURL, _ := reg.BrowserURL(id)
+
+	done := make(chan struct{})
+	rec := httptest.NewRecorder()
+	go func() {
+		defer close(done)
+		h.ServeHTTP(rec, callbackRequest(context.Background(), host,
+			"state="+url.QueryEscape(stateOf(t, authURL))+"&code=abc"))
+	}()
+	ev := <-events // the owner took the event and stops before replying
+	if ev.Reply == nil {
+		t.Fatal("connected callback has no Reply")
+	}
+	close(stop)
+	<-done
+	if !strings.Contains(rec.Body.String(), "Check Watchtower for the result") {
+		t.Fatalf("page after stop:\n%s", rec.Body.String())
+	}
+}
