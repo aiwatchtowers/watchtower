@@ -495,6 +495,29 @@ func (db *DB) RequeueWatchmanItem(id int64, lease time.Time, notBefore time.Time
 	return n > 0, err
 }
 
+// DropWatchmanItem deletes a deciding item under the caller's lease — its
+// wait point went away before the twin answered (the ask was withdrawn or
+// superseded), so there is nothing to journal; false when the lease is stale.
+func (db *DB) DropWatchmanItem(id int64, lease time.Time) (bool, error) {
+	res, err := db.Exec(`DELETE FROM watchman_items WHERE id = ? AND state = 'deciding' AND lease_until = ?`, id, wmTime(lease))
+	if err != nil {
+		return false, fmt.Errorf("dropping watchman item %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// NoteWatchmanItemDelivery records, on a done item, how its answer reached
+// the session (the answer's line is typed after the commit that finished the
+// item) and an error of a step after it ("" keeps none).
+func (db *DB) NoteWatchmanItemDelivery(id int64, delivery, errText string) error {
+	if _, err := db.Exec(`UPDATE watchman_items SET delivery = ?, error = ? WHERE id = ? AND state = 'done'`,
+		delivery, errText, id); err != nil {
+		return fmt.Errorf("noting watchman item %d delivery: %w", id, err)
+	}
+	return nil
+}
+
 // SetWatchmanItemKind changes the kind of a still queued item.
 func (db *DB) SetWatchmanItemKind(refKind string, refID int64, from, to string) (bool, error) {
 	res, err := db.Exec(`UPDATE watchman_items SET kind = ? WHERE ref_kind = ? AND ref_id = ? AND kind = ? AND state = 'queued'`,

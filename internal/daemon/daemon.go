@@ -130,6 +130,8 @@ type Daemon struct {
 	triggerCh           <-chan struct{}
 	automationWakeCh    <-chan struct{}  // AutomationWakeSignal watcher (WatchAutomationWake)
 	watchmanWakeCh      chan struct{}    // the twin's wake, ticked by every AutomationWakeSignal (forwardWakes)
+	watchmanTwin        WatchmanTwin     // nil = the twin worker is not wired (SetWatchmanTwin)
+	watchmanTwinCycle   chan struct{}    // each cycle's nudge to the twin worker (nudgeWatchmanTwin)
 	automationScheduler AutomationRunner // nil = automations not wired
 	automationExecutor  AutomationRunner
 	automationEvents    AutomationEvents // nil = no event automations
@@ -595,6 +597,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// their Wake.
 	stopWakes := d.startWakeForwarder(ctx)
 	defer stopWakes()
+	// The twin worker, woken by the forwarder: stopped (and its deciding
+	// items waited for) before the forwarder.
+	stopTwin := d.startWatchmanTwin(ctx)
+	defer stopTwin()
 	stopPlanUsage := d.startPlanUsage(ctx)
 	defer stopPlanUsage()
 
@@ -647,6 +653,9 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	// Every cycle, before the fetches: the keep-awake hold while anything
 	// is handed to Watchman, the arm sidecar, the slept-through gaps.
 	d.phaseWatchmanUpkeep(ctx)
+	// The twin's pass (scan, then lease) runs on its own goroutine: the
+	// cycle only nudges it.
+	d.nudgeWatchmanTwin()
 	d.setSection(sectionSlackFetch)
 	d.markFetchProgress()
 	d.sampleLockStats(fetchCtx)

@@ -18,6 +18,7 @@ import (
 
 	"encoding/json"
 	"watchtower/internal/agentlogdb"
+	"watchtower/internal/askanswer"
 	"watchtower/internal/briefing"
 	"watchtower/internal/caldav"
 	"watchtower/internal/calendar"
@@ -34,6 +35,7 @@ import (
 	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
 	"watchtower/internal/hub"
+	"watchtower/internal/hub/actions/handlers"
 	"watchtower/internal/hub/platform"
 	"watchtower/internal/imap"
 	"watchtower/internal/inbox"
@@ -45,6 +47,7 @@ import (
 	"watchtower/internal/media"
 	"watchtower/internal/powerstate"
 	"watchtower/internal/prompts"
+	"watchtower/internal/sessionstart"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/sync"
 	"watchtower/internal/targets"
@@ -950,6 +953,8 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	d.SetWatchmanHooks(func(ctx context.Context, worktree string) error {
 		return watchmanact.EnsureHooks(ctx, worktree, cfg.WorkspaceDir())
 	})
+	// The twin worker: its own Answerer and session port, beside the hub's.
+	defer wireWatchmanTwin(d, cfg, database)()
 	d.SetWatchmanBacktestLaunch(func(workbenchID int64) error {
 		exe, err := watchmanBacktestExe()
 		if err != nil {
@@ -1043,6 +1048,29 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	// Go hub, phase 1: only behind WATCHTOWER_HUB_DIR in a hubtest-* workspace.
 	defer startGoHub(ctx, cfg, database, logger)()
 	return d.Run(ctx)
+}
+
+// watchmanHeldKey is the twin's held answer lines' key (its own ledger file
+// in the workspace; the hub's stays under askanswer.HeldMetaKey in its store).
+const watchmanHeldKey = "watchman_held_asks"
+
+// wireWatchmanTwin gives the daemon the twin worker (spec
+// 2026-11-16-watchman-design §§3, 4): an Answerer of its own over a session
+// port of its own — the hub, on or off, keeps its own — whose held lines
+// live in the workspace, and the session start of a handover the twin
+// continues (no arming: a new session is armed only through its target's).
+// The returned func closes the port.
+func wireWatchmanTwin(d *daemon.Daemon, cfg *config.Config, database *db.DB) (closePort func()) {
+	port := sessionstart.NewPort(sessionStartDeps(cfg, database), nil)
+	answerer := askanswer.New(askanswer.Deps{
+		DB: database, Sessions: port,
+		Held: watchmanact.FileHeldStore{Dir: cfg.WorkspaceDir()}, HeldKey: watchmanHeldKey,
+	})
+	d.SetWatchmanTwin(answerer, func(ctx context.Context, workbenchID, targetID int64, brief string) error {
+		_, err := port.Start(ctx, handlers.StartRequest{Workbench: workbenchID, Target: &targetID, Brief: brief})
+		return err
+	})
+	return func() { _ = port.Close() }
 }
 
 // startGoHub starts the Go hub beside the daemon when hub.Resolve says so

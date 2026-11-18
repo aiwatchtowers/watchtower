@@ -495,3 +495,42 @@ func TestPromoteWatchmanHandover_InsertKeepsGuards(t *testing.T) {
 		require.Nil(t, it, name)
 	}
 }
+
+func TestDropWatchmanItem_OnlyUnderTheLease(t *testing.T) {
+	d := openTestDB(t)
+	wmTestWorkbench(t, d, 1)
+	id := wmQueueAsk(t, d, 5)
+	now := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	first, err := d.LeaseWatchmanItem(now, 10*time.Minute, wmAll)
+	require.NoError(t, err)
+	second, err := d.LeaseWatchmanItem(now.Add(11*time.Minute), 10*time.Minute, wmAll)
+	require.NoError(t, err)
+	ok, err := d.DropWatchmanItem(id, *first.LeaseUntil)
+	require.NoError(t, err)
+	require.False(t, ok, "a stale lease drops nothing")
+	ok, err = d.DropWatchmanItem(id, *second.LeaseUntil)
+	require.NoError(t, err)
+	require.True(t, ok)
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM watchman_items WHERE id = ?`, id).Scan(&n))
+	require.Equal(t, 0, n)
+}
+
+func TestNoteWatchmanItemDelivery_OnlyDoneItems(t *testing.T) {
+	d := openTestDB(t)
+	wmTestWorkbench(t, d, 1)
+	id := wmQueueAsk(t, d, 5)
+	require.NoError(t, d.NoteWatchmanItemDelivery(id, "no_session", ""))
+	var delivery string
+	require.NoError(t, d.QueryRow(`SELECT delivery FROM watchman_items WHERE id = ?`, id).Scan(&delivery))
+	require.Equal(t, "", delivery, "a queued item is not noted")
+	now := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	it, err := d.LeaseWatchmanItem(now, 10*time.Minute, wmAll)
+	require.NoError(t, err)
+	require.True(t, wmFinish(t, d, id, *it.LeaseUntil, WatchmanOutcome{Outcome: "answered"}))
+	require.NoError(t, d.NoteWatchmanItemDelivery(id, "no_session", "starting the next session: boom"))
+	var errText string
+	require.NoError(t, d.QueryRow(`SELECT delivery, error FROM watchman_items WHERE id = ?`, id).Scan(&delivery, &errText))
+	require.Equal(t, "no_session", delivery)
+	require.Equal(t, "starting the next session: boom", errText)
+}
