@@ -142,11 +142,15 @@ func countOutsideTouch(stdin io.Reader, rowID int64, rawWorkbenchID string) (str
 	// Without the bench, so a path in no repository (or skipped) never
 	// opens the database; the bench's folders are checked against the same
 	// root afterwards.
-	resolved, root, ok := outsideRoot(path, outsideSkipDirs(), outsideLocalMount())
-	if !ok {
+	localMount := outsideLocalMount()
+	resolved, root, ok := outsideRoot(path, outsideSkipDirs(), localMount)
+	if !ok || sessionRepo(in.Cwd, localMount) == root {
+		// The repository the session runs in is the bench's own (its
+		// folder or a worktree of it) — the common touch, answered
+		// without the database.
 		return "", nil
 	}
-	database, err := openHookDB()
+	database, err := outsideTouchOpenDB()
 	if err != nil {
 		return "", err
 	}
@@ -184,6 +188,29 @@ func countOutsideTouch(stdin io.Reader, rowID int64, rawWorkbenchID string) (str
 		return "", err
 	}
 	return root, nil
+}
+
+// outsideTouchOpenDB opens the hook's database (a test seam: the in-repo
+// touch never opens it).
+var outsideTouchOpenDB = openHookDB
+
+// sessionRepo is the repository root of the hook input's cwd — the place the
+// session runs in — resolved the way outsideRoot resolves a touched path
+// (never through a non-local mount); "" when there is none.
+func sessionRepo(cwd string, localMount func(string) bool) string {
+	cwd = hookPath(cwd)
+	if cwd == "" {
+		return ""
+	}
+	resolved, ok := resolveLocal(cwd, localMount)
+	if !ok {
+		return ""
+	}
+	root, ok := workbenchfolders.RepoRoot(resolved)
+	if !ok {
+		return ""
+	}
+	return root
 }
 
 // touchedPath is the path the tool call names: file_path (Read, Edit,

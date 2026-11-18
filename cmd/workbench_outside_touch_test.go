@@ -114,6 +114,37 @@ func TestOutsideTouchNudgesOnTheThird(t *testing.T) {
 	assert.Equal(t, 2, outsideCount(t, fx.database, fx.row, site))
 }
 
+// A touch in the repository the session runs in (the input's cwd: the
+// bench's own) is answered without opening the database; a touch elsewhere
+// still opens it.
+func TestOutsideTouchInTheSessionRepoOpensNoDatabase(t *testing.T) {
+	fx := newOutsideFixture(t)
+	opened := 0
+	prev := outsideTouchOpenDB
+	outsideTouchOpenDB = func() (*db.DB, error) {
+		opened++
+		return prev()
+	}
+	t.Cleanup(func() { outsideTouchOpenDB = prev })
+	payload := func(path string) string {
+		in, _ := json.Marshal(map[string]any{
+			"hook_event_name": "PostToolUse", "cwd": fx.app,
+			"tool_name": "Read", "tool_input": map[string]any{"file_path": path},
+		})
+		return string(in)
+	}
+
+	out, errOut := runOutsideHook(t, fx.wb, payload(filepath.Join(fx.app, "main.go")))
+	assert.Empty(t, out)
+	assert.Empty(t, errOut)
+	assert.Zero(t, opened, "the session's own repository never opens the database")
+
+	lib := repoDir(t, "lib")
+	runOutsideHook(t, fx.wb, payload(filepath.Join(lib, "a.go")))
+	assert.Equal(t, 1, opened)
+	assert.Equal(t, 1, outsideCount(t, fx.database, fx.row, lib))
+}
+
 func TestOutsideTouchSkips(t *testing.T) {
 	for _, tc := range []struct {
 		name string
