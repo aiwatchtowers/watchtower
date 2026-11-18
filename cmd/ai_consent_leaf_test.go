@@ -3,12 +3,14 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -263,4 +265,72 @@ func TestBGAI02_DaemonChatTitleIsOwnerCall(t *testing.T) {
 	_, _, _, err = gen.Generate(aiconsent.WithOwnerStarted(context.Background()), "", "", "")
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), calls.Load())
+}
+
+// realConsentEnv makes a startCLI child read consent from its config.yaml
+// instead of the test binary's AllowByDefault (TestMain).
+const realConsentEnv = "WT_CMD_TEST_REAL_CONSENT"
+
+// BGAI-01 end to end: a CLI a background unit started (EnvOrigin=background,
+// not admitted) with background AI paused in its config refuses `ai query`
+// through the real entry point (Execute → initProcessOrigin →
+// wireAIConsent → newQueryClient): no provider process starts.
+func TestBGAI01_BackgroundCLIAIQueryRefusedEndToEnd(t *testing.T) {
+	policytest.Set(t, nil)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(aiconsent.EnvOrigin, "background")
+	t.Setenv(aiconsent.EnvAdmitted, "")
+	t.Setenv(realConsentEnv, "1")
+	bin, marker := writeMarkerStub(t)
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, fmt.Appendf(nil, `active_workspace: test-ws
+workspaces:
+  test-ws:
+    slack_token: "xoxp-test-token"
+claude_path: %q
+ai:
+  provider: claude
+  background_runs: paused
+`, bin), 0o600))
+
+	p := startCLI(t, "ai", "query", "--config", cfgPath, "--db-path", filepath.Join(dir, "wt.db"), "--", "hi")
+	_ = p.stdin.Close()
+	var out []string
+	for line := range p.lines {
+		out = append(out, line)
+	}
+	require.NoError(t, p.wait(), p.stderr.String()) // `ai query` reports on stdout
+	assert.Contains(t, strings.Join(out, "\n"), aiconsent.ErrPaused.Error())
+	_, statErr := os.Stat(marker)
+	assert.True(t, errors.Is(statErr, os.ErrNotExist), "no provider process started")
+}
+
+// The REPL keeps one client for its session: it asks consent at every call,
+// so a session whose process turns out background refuses while paused, and
+// an admitted or owner ctx still reaches the model.
+func TestREPLClient_ChecksConsentPerCall(t *testing.T) {
+	policytest.Set(t, nil)
+	srv, calls := fakeChatServer(t)
+	cfg := &config.Config{ActiveWorkspace: "test"}
+	cfg.AI.Provider, cfg.AI.OllamaURL = "ollama", srv.URL
+	aiconsenttest.Use(t, "cli", nil, false)
+	client := replAIProvider(cfg)
+
+	aiconsenttest.Use(t, "cli", backgroundEnv, false)
+	_, _, err := client.QuerySync(context.Background(), "", "hi", "")
+	require.ErrorIs(t, err, aiconsent.ErrPaused)
+	chunks, errs, ids := client.Query(context.Background(), "", "hi", "")
+	for range chunks {
+	}
+	for range ids {
+	}
+	require.ErrorIs(t, <-errs, aiconsent.ErrPaused)
+	assert.Equal(t, int32(0), calls.Load())
+
+	_, _, err = client.QuerySync(aiconsent.WithAdmitted(context.Background(), "run:7"), "", "hi", "")
+	require.NoError(t, err)
+	_, _, err = client.QuerySync(aiconsent.WithOwnerStarted(context.Background()), "", "hi", "")
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), calls.Load())
 }

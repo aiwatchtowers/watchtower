@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/aiconsent/aiconsenttest"
 	"watchtower/internal/auditlog"
 	"watchtower/internal/chat/listenstub"
@@ -77,6 +78,11 @@ func TestMain(m *testing.M) {
 	// The test binary as the real CLI (os.Args[1:] are its arguments), for
 	// tests that need a process: signals, stdin EOF, exit codes.
 	if os.Getenv(runCLIEnv) == "1" {
+		// The consent end-to-end test's CLI reads ai.background_runs from
+		// its config.yaml, as the shipped binary does (test binary only).
+		if os.Getenv(realConsentEnv) == "1" {
+			aiconsent.SetCurrentOverrideForTest(nil)
+		}
 		// The owner-confirm argv test's listener is this test binary, not
 		// the signed app: its subprocess trusts the peer (test binary only).
 		if os.Getenv(trustTestPeerEnv) == "1" {
@@ -123,9 +129,6 @@ func TestMain(m *testing.M) {
 	// No git a cmd test starts may leave maintenance writing into a
 	// t.TempDir repository after it returns.
 	gittest.DisableBackgroundGit()
-	// Background AI reads allowed (the shipped default is fail-closed paused);
-	// the consent tests set their own state (aiconsenttest.Use).
-	aiconsenttest.AllowByDefault()
 	// Most cmd tests open a fresh database file through the config; seeding
 	// it from the migrated template instead of running goose from scratch
 	// (~0.5 s per Open) took this package from past the 10-minute default
