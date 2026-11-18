@@ -47,17 +47,18 @@ var bgaiSpawnRoots = []spawnRoot{
 }
 
 // bgaiSpawnExempt is every spawn that needs no origin, keyed by its program
-// literal or its function (pkg.Func, pkg.(*Type).Method) → why.
+// literal or its function (pkg.Func, pkg.Type.Method, pkg.(*Type).Method) → why.
 var bgaiSpawnExempt = map[string]string{
-	"ps":                 "process identity, no model",
-	"/bin/sh":            "shellEnv sets the origin",
-	"hub.bridgeLauncher": "the CloudKit bridge helper (WatchtowerCloudBridge.app): no model",
+	"ps":                                 "process identity, no model",
+	"hub.bridgeLauncher":                 "the CloudKit bridge helper (WatchtowerCloudBridge.app): no model",
+	"automations.processShellRunner.Run": "shell() commands: shellEnv sets the run's origin in ShellCommand.Env",
 }
 
 // bgaiSpawnUnwalked are packages background work reaches that this checker
 // does not walk, each with the reason their children are covered.
 var bgaiSpawnUnwalked = map[string]string{
-	"internal/sessionstart": "`AutomationRunEnv` marker: the origin is the run's trigger (§4.3)",
+	"internal/sessionstart": "`AutomationRunEnv` marker: the origin is the run's trigger (§4.3); " +
+		"the hub's sessions are started by the owner from the phone, an owner gesture",
 }
 
 // TestBGAI01_EveryDaemonSpawnSetsOrigin fails when a process start under
@@ -95,7 +96,8 @@ func TestBGAI01_EveryDaemonSpawnSetsOrigin(t *testing.T) {
 }
 
 // TestBGAI01_SpawnCheckerCatchesNewSpawn runs the checker over testdata: the
-// one bare spawn in bad is reported, nothing in good is.
+// bare spawn and the bad half of mixed in bad are reported, nothing in good
+// is.
 func TestBGAI01_SpawnCheckerCatchesNewSpawn(t *testing.T) {
 	exempt := map[string]string{"ps": "no model"}
 	res, err := checkSpawns([]spawnRoot{{filepath.Join("testdata", "spawns", "bad"), spawnBackground}}, exempt)
@@ -106,7 +108,8 @@ func TestBGAI01_SpawnCheckerCatchesNewSpawn(t *testing.T) {
 	for _, f := range res.findings {
 		got = append(got, f.fn+" "+f.call)
 	}
-	if want := []string{"spawns.bareSpawn exec.Command"}; !slices.Equal(got, want) {
+	want := []string{"spawns.bareSpawn exec.Command", "spawns.mixed os.StartProcess", "spawns.mixed exec.Cmd{}"}
+	if !slices.Equal(got, want) {
 		t.Fatalf("bad: reported %q; want %q", got, want)
 	}
 	res, err = checkSpawns([]spawnRoot{{filepath.Join("testdata", "spawns", "good"), spawnBackground}}, exempt)
@@ -344,42 +347,48 @@ func fileSpawnFindings(fset *token.FileSet, f *ast.File, kind spawnKind, exempt 
 	var out []spawnFinding
 	for _, b := range declBodies(f) {
 		key := b.key
-		// The Env each variable is given (v.Env = …), and the Env fields of
-		// exec.Cmd / os.ProcAttr literals.
+		// Each spawn is judged by its own env: the Env given to the variable
+		// it is assigned to (v.Env = …, or the Env field of the exec.Cmd /
+		// os.ProcAttr literal assigned to v), or its own literal's Env field.
+		// Variables are keyed by name within one declaration, so two spawns
+		// that reuse one name share its Env assignments.
 		envOf := map[string][]ast.Expr{}
-		var attrEnvs []ast.Expr
-		spawnVar := map[*ast.CallExpr]string{}
+		spawnVar := map[ast.Node]string{}
 		ast.Inspect(b.node, func(n ast.Node) bool {
-			switch x := n.(type) {
-			case *ast.AssignStmt:
-				for i, lhs := range x.Lhs {
-					if i >= len(x.Rhs) {
-						break
-					}
-					if sel, ok := lhs.(*ast.SelectorExpr); ok && sel.Sel.Name == "Env" {
-						if id, ok := sel.X.(*ast.Ident); ok {
-							envOf[id.Name] = append(envOf[id.Name], x.Rhs[i])
-						}
-					}
-					if id, ok := lhs.(*ast.Ident); ok {
-						if call, ok := x.Rhs[i].(*ast.CallExpr); ok {
-							spawnVar[call] = id.Name
-						}
+			as, isAssign := n.(*ast.AssignStmt)
+			if !isAssign || len(as.Lhs) != len(as.Rhs) {
+				return true
+			}
+			for i, lhs := range as.Lhs {
+				if sel, ok := lhs.(*ast.SelectorExpr); ok && sel.Sel.Name == "Env" {
+					if id, ok := sel.X.(*ast.Ident); ok {
+						envOf[id.Name] = append(envOf[id.Name], as.Rhs[i])
 					}
 				}
-			case *ast.CompositeLit:
-				if isPkgSel(x.Type, execName, "Cmd") || isPkgSel(x.Type, osName, "ProcAttr") {
-					for _, el := range x.Elts {
-						if kv, ok := el.(*ast.KeyValueExpr); ok {
-							if k, ok := kv.Key.(*ast.Ident); ok && k.Name == "Env" {
-								attrEnvs = append(attrEnvs, kv.Value)
-							}
-						}
+				id, ok := lhs.(*ast.Ident)
+				if !ok {
+					continue
+				}
+				rhs := unwrapAddr(as.Rhs[i])
+				spawnVar[rhs] = id.Name
+				if cl, ok := rhs.(*ast.CompositeLit); ok {
+					if e := litEnvField(cl); e != nil {
+						envOf[id.Name] = append(envOf[id.Name], e)
 					}
 				}
 			}
 			return true
 		})
+		// envOKFor: the spawn's own literal Env field, else its variable's.
+		envOKFor := func(n ast.Node) bool {
+			if cl, ok := n.(*ast.CompositeLit); ok {
+				if e := litEnvField(cl); e != nil && envOK(e) {
+					return true
+				}
+			}
+			name, ok := spawnVar[n]
+			return ok && slices.ContainsFunc(envOf[name], envOK)
+		}
 		ast.Inspect(b.node, func(n ast.Node) bool {
 			var (
 				call    string
@@ -391,13 +400,20 @@ func fileSpawnFindings(fset *token.FileSet, f *ast.File, kind spawnKind, exempt 
 				switch {
 				case isPkgSel(x.Fun, execName, "Command") && len(x.Args) > 0:
 					call, progArg = "exec.Command", x.Args[0]
-					ok = slices.ContainsFunc(envOf[spawnVar[x]], envOK)
+					ok = envOKFor(x)
 				case isPkgSel(x.Fun, execName, "CommandContext") && len(x.Args) > 1:
 					call, progArg = "exec.CommandContext", x.Args[1]
-					ok = slices.ContainsFunc(envOf[spawnVar[x]], envOK)
-				case isPkgSel(x.Fun, osName, "StartProcess") && len(x.Args) > 0:
+					ok = envOKFor(x)
+				case isPkgSel(x.Fun, osName, "StartProcess") && len(x.Args) > 2:
+					// Judged by its own attr argument: a literal, or the
+					// variable holding one.
 					call, progArg = "os.StartProcess", x.Args[0]
-					ok = slices.ContainsFunc(attrEnvs, envOK)
+					attr := unwrapAddr(x.Args[2])
+					if id, isID := attr.(*ast.Ident); isID {
+						ok = slices.ContainsFunc(envOf[id.Name], envOK)
+					} else {
+						ok = envOKFor(attr)
+					}
 				default:
 					return true
 				}
@@ -406,7 +422,7 @@ func fileSpawnFindings(fset *token.FileSet, f *ast.File, kind spawnKind, exempt 
 					return true
 				}
 				call = "exec.Cmd{}"
-				ok = slices.ContainsFunc(attrEnvs, envOK)
+				ok = envOKFor(x)
 			default:
 				return true
 			}
@@ -543,6 +559,26 @@ func callbackNamesOrigin(lit *ast.FuncLit, consent string) bool {
 		return !found
 	})
 	return found
+}
+
+// unwrapAddr is e without a leading &.
+func unwrapAddr(e ast.Expr) ast.Expr {
+	if u, ok := e.(*ast.UnaryExpr); ok && u.Op == token.AND {
+		return u.X
+	}
+	return e
+}
+
+// litEnvField is the Env field's value of a composite literal (nil = none).
+func litEnvField(cl *ast.CompositeLit) ast.Expr {
+	for _, el := range cl.Elts {
+		if kv, ok := el.(*ast.KeyValueExpr); ok {
+			if k, ok := kv.Key.(*ast.Ident); ok && k.Name == "Env" {
+				return kv.Value
+			}
+		}
+	}
+	return nil
 }
 
 func asExpr(n ast.Node) ast.Expr {

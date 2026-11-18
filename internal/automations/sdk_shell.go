@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -157,7 +159,21 @@ func shellEnv(env *Env) []string {
 		}
 	}
 	out = append(out, RunEnvMarker+"="+strconv.FormatInt(env.Binding().AutomationRunID, 10))
-	return append(out, aiconsent.ChildEnv(env.Ctx)...)
+	return append(out, shellOriginEnv(env)...)
+}
+
+// shellOriginEnv is the run's AI origin for a shell() child. The admitted
+// mark passes only from a run that was admitted under consent for AI — one
+// whose manifest grants a model call (Manifest.UsesAI: a background run of
+// such a recipe is held while paused). A recipe without AI is claimed while
+// paused too, so its child stays background, not admitted: a model command
+// it runs (`watchtower …`) is checked against the consent of its own call.
+func shellOriginEnv(env *Env) []string {
+	origin := aiconsent.ChildEnv(env.Ctx)
+	if env.Manifest.UsesAI() {
+		return origin
+	}
+	return slices.DeleteFunc(origin, func(kv string) bool { return strings.HasPrefix(kv, aiconsent.EnvAdmitted+"=") })
 }
 
 // shellDeadline is the wall-clock moment the run's active time runs out

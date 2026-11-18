@@ -92,6 +92,39 @@ func TestSpecReviewSweep_HoldsWhilePaused(t *testing.T) {
 	assert.Equal(t, "failed", row.Status)
 }
 
+// D20: a pause written while the sweep relaunches holds the rows after it:
+// they stay queued with their attempt unspent.
+func TestSpecReviewSweep_PauseMidLoopHoldsTheRest(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	fc := newFakeConsent(consentAllowed)
+	d.SetConsent(fc.read)
+	var launched []int64
+	d.SetSpecReviewLaunch(func(_ context.Context, id int64) error {
+		launched = append(launched, id)
+		fc.set(consentPausedByOwner)
+		return nil
+	})
+	ids := []int64{
+		specReviewAsk(t, database, time.Now().Add(-5*time.Minute)),
+		specReviewAsk(t, database, time.Now().Add(-5*time.Minute)),
+		specReviewAsk(t, database, time.Now().Add(-5*time.Minute)),
+	}
+
+	d.phaseSpecReviewSweep(context.Background())
+
+	require.Len(t, launched, 1)
+	for _, id := range ids {
+		row, err := database.GetSpecReview(id)
+		require.NoError(t, err)
+		assert.Equal(t, "queued", row.Status)
+		if id == launched[0] {
+			assert.Equal(t, 2, row.Attempt, "the launched row spent its attempt")
+		} else {
+			assert.Equal(t, 1, row.Attempt, "a row after the pause spends no attempt")
+		}
+	}
+}
+
 // D20: allowed, each relaunch runs admitted as its own unit, which the
 // launcher passes to the reviewer.
 func TestSpecReviewSweep_RelaunchIsAdmitted(t *testing.T) {

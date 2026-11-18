@@ -49,8 +49,8 @@ var specReviewBeforeRelaunch func(askID int64)
 // The author loops and the threads' questions to the author are swept first,
 // with or without a launcher. A relaunch starts the reviewer agent, so while
 // background AI is paused the queued rows are left whole — not re-queued,
-// claimed or failed, no attempt spent (D20 of #1886); allowed, each relaunch
-// runs admitted as the unit "review:<ask id>".
+// claimed or failed, no attempt spent (D20 of #1886), read again before each
+// row; allowed, each relaunch runs admitted as the unit "review:<ask id>".
 func (d *Daemon) phaseSpecReviewSweep(ctx context.Context) {
 	if d.db == nil || ctx.Err() != nil {
 		return
@@ -81,12 +81,11 @@ func (d *Daemon) phaseSpecReviewSweep(ctx context.Context) {
 		}
 		d.revealSpecLoop(r.AskID, specreview.EndReviewerFailed, now)
 	}
-	if !d.consentNow().Allowed() {
-		return
-	}
 	launched := 0
 	for _, id := range queued {
-		if ctx.Err() != nil || launched >= specReviewMaxRelaunch {
+		// Read before every row: a pause written mid-loop holds the rows
+		// after it (no re-queue, no attempt spent).
+		if ctx.Err() != nil || launched >= specReviewMaxRelaunch || !d.consentNow().Allowed() {
 			return
 		}
 		if specReviewBeforeRelaunch != nil {

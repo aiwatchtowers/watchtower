@@ -279,17 +279,39 @@ func TestShell_EnvHasRunMarkerAndNoSecrets(t *testing.T) {
 }
 
 // BGAI-01 (#1886): a shell() child of a background run carries the run's
-// origin after the run marker, so a model call it makes is the run's; an
-// owner run's child carries none and is told by the marker's trigger.
+// origin after the run marker. The admitted mark passes only from a recipe
+// that grants AI (its background run was admitted under consent); a
+// shell-only recipe is claimed while paused too, so its child is background
+// and not admitted. An owner run's child carries none (the marker's trigger
+// tells it).
 func TestShellEnv_CarriesOrigin(t *testing.T) {
 	run := &db.AutomationRun{ID: 42}
-	got := automations.ShellEnv(&automations.Env{Ctx: aiconsent.WithAdmitted(context.Background(), "run:42"), Run: run})
-	tail := got[len(got)-3:]
-	want := []string{"WATCHTOWER_AUTOMATION_RUN_ID=42", "WATCHTOWER_AI_ORIGIN=background", "WATCHTOWER_AI_ADMITTED=run:42"}
-	if !slices.Equal(tail, want) {
-		t.Fatalf("env tail = %q; want %q", tail, want)
+	scope := automations.Scope{Kind: automations.ScopeWorkbench, WorkbenchID: shellWorkbenchID}
+	manifest := func(perms ...string) *automations.Manifest {
+		m, err := automations.ParseManifest(perms, nil, scope)
+		if err != nil {
+			t.Fatalf("ParseManifest: %v", err)
+		}
+		return m
 	}
-	owner := automations.ShellEnv(&automations.Env{Ctx: aiconsent.WithOwnerStarted(context.Background()), Run: run})
+	admitted := aiconsent.WithAdmitted(context.Background(), "run:42")
+
+	got := automations.ShellEnv(&automations.Env{Ctx: admitted, Run: run, Manifest: manifest(`shell:"env"`, "llm:light")})
+	want := []string{"WATCHTOWER_AUTOMATION_RUN_ID=42", "WATCHTOWER_AI_ORIGIN=background", "WATCHTOWER_AI_ADMITTED=run:42"}
+	if tail := got[len(got)-3:]; !slices.Equal(tail, want) {
+		t.Fatalf("AI recipe: env tail = %q; want %q", tail, want)
+	}
+
+	got = automations.ShellEnv(&automations.Env{Ctx: admitted, Run: run, Manifest: manifest(`shell:"env"`)})
+	want = []string{"WATCHTOWER_AUTOMATION_RUN_ID=42", "WATCHTOWER_AI_ORIGIN=background"}
+	if tail := got[len(got)-2:]; !slices.Equal(tail, want) {
+		t.Fatalf("shell-only recipe: env tail = %q; want %q", tail, want)
+	}
+	if slices.ContainsFunc(got, func(kv string) bool { return strings.HasPrefix(kv, "WATCHTOWER_AI_ADMITTED=") }) {
+		t.Fatalf("a shell-only recipe's child is admitted: %q", got)
+	}
+
+	owner := automations.ShellEnv(&automations.Env{Ctx: aiconsent.WithOwnerStarted(context.Background()), Run: run, Manifest: manifest(`shell:"env"`)})
 	if slices.ContainsFunc(owner, func(kv string) bool { return strings.HasPrefix(kv, "WATCHTOWER_AI_") }) {
 		t.Fatalf("an owner run's shell env carries an origin: %q", owner)
 	}
