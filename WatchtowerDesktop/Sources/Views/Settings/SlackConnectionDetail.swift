@@ -52,6 +52,7 @@ struct SlackConnectionDetail: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.large) {
+                sharedAppBanner
                 modeSection
                 SlackSetupRecordRows(model: appState.slackAppSetup, blocked: sourceBlocked)
                 connectSection
@@ -116,10 +117,23 @@ struct SlackConnectionDetail: View {
         }
     }
 
+    /// §5: while an account syncs through the retired shared app. Its
+    /// **Paste a connect link** asks for the connect section as a Reconnect
+    /// with no app to sign in with does: unfolded, field focused.
+    @ViewBuilder private var sharedAppBanner: some View {
+        if let center = appState.slackLiveStatusCenter,
+           let banner = modePresentation(center, now: Date()).sharedAppBanner {
+            SlackSharedAppBanner(
+                banner: banner, blocked: sourceBlocked,
+                setUpForCompany: { appState.slackAppSetup.present() },
+                pasteLink: { appState.slackConnectFlow?.reconnect(.connectSection) })
+        }
+    }
+
     private func modePresentation(_ center: SlackLiveStatusCenter, now: Date) -> SlackModePresentation {
         SlackModePresentation(
             accounts: appState.slackAccountsViewModel?.accounts ?? [],
-            sharedAppAccountIDs: [],
+            sharedAppAccountIDs: appState.slackAccountsViewModel?.sharedAppAccountIDs ?? [],
             liveStatuses: center.statuses,
             isRunning: center.isRunning,
             hasRead: center.hasRead,
@@ -136,7 +150,8 @@ struct SlackConnectionDetail: View {
             portBusy: appState.slackConnectListener?.state == .portBusy,
             expanded: connectExpanded,
             organizationApps: appState.managedPolicy.policy.slackApps,
-            accounts: appState.slackAccountsViewModel?.accounts ?? [])
+            accounts: appState.slackAccountsViewModel?.accounts ?? [],
+            builtinApp: appState.slackAccountsViewModel?.builtinApp ?? true)
     }
 
     @ViewBuilder private var connectSection: some View {
@@ -320,18 +335,7 @@ struct SlackConnectionDetail: View {
                     ForEach(vm.accounts) { account in
                         HStack {
                             VStack(alignment: .leading, spacing: Spacing.tight) {
-                                Text(account.displayName)
-                                if !account.teamDomain.isEmpty {
-                                    Text("\(account.teamDomain).slack.com")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                if let note = account.syncNote {
-                                    Label(note, systemImage: "exclamationmark.triangle")
-                                        .font(.caption)
-                                        .foregroundStyle(Tone.warning)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
+                                SlackAccountTitle(account: account, sharedAppLine: sharedAppLine(account, vm))
                                 if let line = AccountPurgeLine.make(
                                     center: appState.accountPurgeCenter, source: "slack", accountID: Int64(account.id),
                                     isPurged: account.isPurged
@@ -355,7 +359,9 @@ struct SlackConnectionDetail: View {
                             .disabled(vm.isConnecting || account.isPurged)
                             // Always offered: a healthy account re-consents to pick up a
                             // newly requested permission (sending, chat:write).
-                            Button(account.isOK ? "Reconnect" : "Re-login") {
+                            // Move to Full (on the retired app) opens the connect section (A7).
+                            Button(SlackModePresentation.reloginTitle(isOK: account.isOK,
+                                                                      relogin: vm.relogin(of: account.id))) {
                                 Task { await vm.relogin(account) }
                             }
                             .buttonStyle(.kitSecondary)
@@ -435,22 +441,21 @@ struct SlackConnectionDetail: View {
             SlackRevokeNoticeLine(text: notice)
         }
 
-        HStack(spacing: Spacing.regular) {
-            Button("Add Slack Workspace") {
-                showAddSlackAccountSheet = true
-            }
-            .buttonStyle(.kitSecondary)
-            .managedByOrganization(sourceBlocked)
-            .disabled(vm.isConnecting || appState.slackConnectFlow?.isRunning == true)
+        SlackWorkspacesAddRow(
+            section: connectPresentation, blocked: sourceBlocked,
+            addDisabled: vm.isConnecting || appState.slackConnectFlow?.isRunning == true,
+            add: { showAddSlackAccountSheet = true },
+            openFold: {
+                connectExpanded = true
+                connectFieldFocused = true
+            })
+    }
 
-            if let section = connectPresentation, section.showsFoldButton, section.isFolded {
-                Button(section.foldButton) {
-                    connectExpanded = true
-                    connectFieldFocused = true
-                }
-                .buttonStyle(.kitQuiet)
-            }
-        }
+    /// The shared-app line of an account Go reports on the retired app
+    /// (enabled, not removed); nil for any other.
+    private func sharedAppLine(_ account: SlackAccount, _ vm: SlackAccountsViewModel) -> String? {
+        guard account.enabled, !account.isGone, vm.sharedAppAccountIDs.contains(account.id) else { return nil }
+        return SlackModePresentation.sharedAppAccountLine(lastSync: vm.lastSyncs[account.id], now: Date())
     }
 
     /// The dictionary editor lives only on the Reactions built-in's card (ask #366, C3).

@@ -16,9 +16,11 @@ extension SlackModePresentationTests {
         portBusy: Bool = false,
         expanded: Bool = false,
         apps: [ManagedPolicy.SlackApp]? = nil,
-        accounts: [SlackAccount] = []
+        accounts: [SlackAccount] = [],
+        builtinApp: Bool = true
     ) -> SlackModePresentation.ConnectSection {
-        .init(display: display, portBusy: portBusy, expanded: expanded, organizationApps: apps, accounts: accounts)
+        .init(display: display, portBusy: portBusy, expanded: expanded, organizationApps: apps, accounts: accounts,
+              builtinApp: builtinApp)
     }
 
     func testConnectSectionStrings() {
@@ -86,5 +88,20 @@ extension SlackModePresentationTests {
         XCTAssertEqual(rows.map(\.title), ["Workspace T0BETA", "Workspace T0GAMA"])
         XCTAssertEqual(rows.first?.target, SlackConnectTarget(teamID: "T0BETA", clientID: "3333.4444"))
         XCTAssertEqual(section(apps: nil).organizationRows, [], "no key, no rows")
+    }
+
+    /// A8: **Add Slack Workspace** only while the build has its own app; once
+    /// it has none, **Connect another workspace…** (Full) or the open section
+    /// is the way in.
+    func testAddAccountFollowsBuiltinApp() {
+        XCTAssertTrue(section(.full, builtinApp: true).showsAddAccount)
+        for display in [SlackModePresentation.Display.full, .fullLive, .live, .off, .sharedApp] {
+            XCTAssertFalse(section(display, builtinApp: false).showsAddAccount, "\(display)")
+        }
+        let full = section(.full, builtinApp: false)
+        XCTAssertTrue(full.showsFoldButton)
+        XCTAssertTrue(full.isFolded)
+        XCTAssertEqual(full.foldButton, "Connect another workspace…")
+        XCTAssertFalse(section(.sharedApp, builtinApp: false).isFolded, "the section is open on the shared app")
     }
 }

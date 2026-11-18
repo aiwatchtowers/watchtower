@@ -343,3 +343,94 @@ extension SlackAccountsViewModelTests {
         XCTAssertNil(vm.error)
     }
 }
+
+// MARK: - Flags from `slack accounts --json` (plan B Task 15)
+
+extension SlackAccountsViewModelTests {
+    private func flagsCLI(_ doc: String) throws -> String {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let stub = dir.appendingPathComponent("watchtower")
+        try "#!/bin/sh\ncat <<'JSON'\n\(doc)\nJSON\n".write(to: stub, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
+        return stub.path
+    }
+
+    private static let sharedDoc = #"{"builtin_app":false,"accounts":[{"id":1,"team_id":"T0ACME","client_id":"9.9","#
+        + #""shared_app":true,"relogin":"move"},{"id":2,"team_id":"T0BETA","client_id":"1.2","#
+        + #""shared_app":false,"relogin":"connect"}]}"#
+
+    /// Each refresh merges Go's flags by account id.
+    func testRefreshMergesFlagsByID() async throws {
+        let cli = try flagsCLI(Self.sharedDoc)
+        let vm = SlackAccountsViewModel(dbPool: try makePool(), daemon: FakeDaemonRestarter(), cliPath: { cli },
+                                        readsAccountFlags: true)
+        XCTAssertTrue(vm.builtinApp, "unknown counts as the build's own app")
+        await vm.refreshAsync()
+        XCTAssertEqual(vm.sharedAppAccountIDs, [1])
+        XCTAssertFalse(vm.builtinApp)
+        XCTAssertEqual(vm.relogin(of: 1), "move")
+        XCTAssertEqual(vm.relogin(of: 2), "connect")
+        XCTAssertNil(vm.relogin(of: 3))
+    }
+
+    /// A failed read keeps the last flags; with none yet, nothing is shared
+    /// (no banner) and `builtin_app` stays unknown.
+    func testFlagsReadFailureKeepsLast() async throws {
+        let good = try flagsCLI(Self.sharedDoc)
+        var cli = "/usr/bin/false"
+        let vm = SlackAccountsViewModel(dbPool: try makePool(), daemon: FakeDaemonRestarter(), cliPath: { cli },
+                                        readsAccountFlags: true)
+        await vm.refreshAsync()
+        XCTAssertEqual(vm.sharedAppAccountIDs, [], "no banner on a first failed read")
+        XCTAssertTrue(vm.builtinApp, "unknown keeps Add Slack Workspace")
+        XCTAssertNil(vm.readError, "the flags are not the account read")
+
+        cli = good
+        await vm.refreshAsync()
+        XCTAssertEqual(vm.sharedAppAccountIDs, [1])
+
+        cli = "/usr/bin/false"
+        await vm.refreshAsync()
+        XCTAssertEqual(vm.sharedAppAccountIDs, [1], "a failed read keeps the last flags")
+        XCTAssertFalse(vm.builtinApp)
+        cli = "/usr/bin/true" // exit 0, no JSON
+        await vm.refreshAsync()
+        XCTAssertEqual(vm.relogin(of: 1), "move")
+        XCTAssertNil(vm.error)
+    }
+
+    /// Off by default: a test VM never runs the CLI for flags.
+    func testFlagsNotReadByDefault() async throws {
+        let cli = try flagsCLI(Self.sharedDoc)
+        let vm = SlackAccountsViewModel(dbPool: try makePool(), daemon: FakeDaemonRestarter()) { cli }
+        await vm.refreshAsync()
+        XCTAssertNil(vm.accountFlags)
+    }
+
+    /// The Re-login route's read updates the row's flags too.
+    func testRouteReadUpdatesFlags() async throws {
+        let cli = try flagsCLI(Self.sharedDoc)
+        let vm = SlackAccountsViewModel(dbPool: try makePool(), daemon: FakeDaemonRestarter()) { cli }
+        _ = await vm.reloginRoute(accountID: 1)
+        XCTAssertEqual(vm.relogin(of: 1), "move")
+        XCTAssertEqual(vm.sharedAppAccountIDs, [1])
+    }
+
+    /// The shared-app line's age: each account's newest channel sync.
+    func testLastSyncPerAccount() async throws {
+        let pool = try makePool()
+        try await pool.write { db in
+            for (channel, stamp) in [("1:C1", "2026-11-18T10:00:00Z"), ("1:C2", "2026-11-18T11:00:00Z"),
+                                     ("2:C1", ""), ("C9", "2026-11-18T12:00:00Z")] {
+                try db.execute(sql: "INSERT INTO sync_state (channel_id, last_sync_at) VALUES (?, ?)",
+                               arguments: [channel, stamp])
+            }
+        }
+        let vm = SlackAccountsViewModel(dbPool: pool)
+        await vm.refreshAsync()
+        XCTAssertEqual(vm.lastSyncs.keys.sorted(), [1])
+        XCTAssertEqual(vm.lastSyncs[1], TimeFormatting.parseISO("2026-11-18T11:00:00Z"))
+    }
+}

@@ -91,8 +91,17 @@ extension AppState {
             service: service,
             accounts: connectionAccounts(service),
             readError: connectionReadError(service),
-            blocked: !PolicySourceMap.allowed(service.rawValue, policy: managedPolicy.policy)
+            blocked: !PolicySourceMap.allowed(service.rawValue, policy: managedPolicy.policy),
+            notice: service == .slack ? slackOverviewNotice : nil
         )
+    }
+
+    /// "Shared app retiring" while an account syncs through the retired
+    /// shared app (screens spec §5); not a problem.
+    private var slackOverviewNotice: String? {
+        guard let vm = slackAccountsViewModel else { return nil }
+        return SlackModePresentation.overviewStatusLine(
+            accounts: vm.accounts, sharedAppAccountIDs: vm.sharedAppAccountIDs)
     }
 
     private func connectionReadError(_ service: ConnectionService) -> String? {

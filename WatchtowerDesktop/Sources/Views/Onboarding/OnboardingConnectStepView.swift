@@ -14,6 +14,14 @@ struct OnboardingConnectStepView: View {
         AddSlackAccountView(daemonPolicy: daemonPolicy)
     }
 
+    /// A13: a build with no Slack app of its own (`builtin_app` false) opens
+    /// the connect section instead of the Add sheet, which would have no app
+    /// to sign in with. No connect flow (its listener did not start) keeps
+    /// the Add sheet.
+    static func slackOpensConnectSection(builtinApp: Bool, hasConnectFlow: Bool) -> Bool {
+        !builtinApp && hasConnectFlow
+    }
+
     /// Opens with Calendar and Gmail both checked, whatever the goals.
     static func googleSheet() -> AddGoogleAccountView {
         AddGoogleAccountView(daemonPolicy: daemonPolicy)
@@ -37,6 +45,7 @@ struct OnboardingConnectStepView: View {
 
     private enum Sheet: Identifiable {
         case slack
+        case slackConnect
         case google
         case jira
         case linear
@@ -44,6 +53,7 @@ struct OnboardingConnectStepView: View {
         var id: String {
             switch self {
             case .slack: "slack"
+            case .slackConnect: "slackConnect"
             case .google: "google"
             case .jira: "jira"
             case .linear: "linear"
@@ -118,6 +128,7 @@ struct OnboardingConnectStepView: View {
         .sheet(item: $sheet) { sheet in
             switch sheet {
             case .slack: Self.slackSheet()
+            case .slackConnect: slackConnectSheet
             case .google: Self.googleSheet()
             case .jira: Self.jiraSheet()
             case .linear: Self.linearSheet()
@@ -126,6 +137,37 @@ struct OnboardingConnectStepView: View {
         .task {
             await openDatabase()
             appState.resumePeopleRosterIfNeeded()
+        }
+    }
+
+    private var slackSheetKind: Sheet {
+        Self.slackOpensConnectSection(builtinApp: appState.slackAccountsViewModel?.builtinApp ?? true,
+                                      hasConnectFlow: appState.slackConnectFlow != nil) ? .slackConnect : .slack
+    }
+
+    /// The connect section in a sheet (A13); a written account reloads the
+    /// list through the flow's `onConnected` (deferred restart in onboarding).
+    @ViewBuilder private var slackConnectSheet: some View {
+        if let flow = appState.slackConnectFlow {
+            SlackOnboardingConnectSheet(
+                section: SlackModePresentation.ConnectSection(
+                    display: .off,
+                    portBusy: appState.slackConnectListener?.state == .portBusy,
+                    expanded: true,
+                    organizationApps: appState.managedPolicy.policy.slackApps,
+                    accounts: appState.slackAccountsViewModel?.accounts ?? [],
+                    builtinApp: false),
+                flow: flow,
+                setupPresented: appState.slackAppSetup.isPresented,
+                blocked: !appState.managedPolicy.policy.sourceAllowed("slack"),
+                setUpForCompany: { appState.slackAppSetup.present() },
+                close: { sheet = nil })
+                .frame(width: 520)
+                .interactiveDismissDisabled(flow.isRunning)
+                .onAppear { appState.slackConnectListener?.ensureRunning() } // A10: retry a busy port
+                .sheet(isPresented: Bindable(appState.slackAppSetup).isPresented) {
+                    SlackAppSetupSheet(model: appState.slackAppSetup).frame(width: 520)
+                }
         }
     }
 
@@ -146,7 +188,7 @@ struct OnboardingConnectStepView: View {
                 connected: activeSlackAccounts.first?.displayName,
                 available: appState.slackAccountsViewModel != nil,
                 error: appState.slackAccountsViewModel?.error,
-                connect: { sheet = .slack },
+                connect: { sheet = slackSheetKind },
                 remove: activeSlackAccounts.first.map { account in
                     { await appState.slackAccountsViewModel?.remove(account, daemonPolicy: Self.daemonPolicy) }
                 },

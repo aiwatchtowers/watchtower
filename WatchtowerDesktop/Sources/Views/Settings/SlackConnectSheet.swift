@@ -103,6 +103,23 @@ struct SlackConnectSection: View {
 
     var body: some View {
         SettingsSection(title: section.title, caption: section.caption) {
+            SlackConnectFields(section: section, flow: flow, blocked: blocked, setUpForCompany: setUpForCompany,
+                               fieldFocused: $fieldFocused)
+        }
+    }
+}
+
+/// The connect section's rows without its header: Connections → Slack puts
+/// them in a `SettingsSection`, onboarding's Slack sheet in a card (A13).
+struct SlackConnectFields: View {
+    let section: SlackModePresentation.ConnectSection
+    @Bindable var flow: SlackConnectFlowModel
+    var blocked = false
+    var setUpForCompany: (() -> Void)?
+    @FocusState.Binding var fieldFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.regular) {
             disclosureLine
             if !section.organizationRows.isEmpty { organizationRows }
             if let busy = section.portBusyLine {

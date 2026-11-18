@@ -43,11 +43,13 @@ final class SlackAccountsViewModel {
     init(
         dbPool: DatabasePool,
         daemon: any DaemonRestarting = LiveDaemonRestarter(),
-        cliPath: @escaping () -> String? = Constants.findCLIPath
+        cliPath: @escaping () -> String? = Constants.findCLIPath,
+        readsAccountFlags: Bool = false
     ) {
         self.dbPool = dbPool
         self.daemon = daemon
         self.cliPath = cliPath
+        self.readsAccountFlags = readsAccountFlags
     }
 
     // MARK: - Refresh
@@ -69,13 +71,82 @@ final class SlackAccountsViewModel {
     /// detached `Task`.
     func refreshAsync() async {
         do {
-            let rows = try await dbPool.read { db in try SlackAccountQueries.fetchAll(db) }
+            let (rows, syncs) = try await dbPool.read { db in
+                (try SlackAccountQueries.fetchAll(db), try SlackAccountQueries.fetchLastSyncs(db))
+            }
             self.accounts = rows
+            lastSyncs = syncs
             readError = nil
             await onAccountsChanged?()
         } catch {
             self.error = "Failed to load accounts: \(error.localizedDescription)"
             readError = self.error
+        }
+        if readsAccountFlags { await refreshFlags() }
+    }
+
+    // MARK: - Flags from `slack accounts --json` (plan B Task 15)
+
+    /// Each account's newest successful channel sync, for the shared-app line.
+    private(set) var lastSyncs: [Int: Date] = [:]
+    /// The last `slack accounts --json` read that succeeded: Go's verdict on
+    /// the shared app, each account's Re-login route and whether the build
+    /// has its own Slack app. nil until one succeeds; a failed read keeps it.
+    private(set) var accountFlags: SlackAccountsDocument?
+    /// Every refresh also reads the flags; on in the app, off by default so a
+    /// test never runs a real CLI.
+    @ObservationIgnored var readsAccountFlags: Bool
+    /// Reads finish out of order: only a newer read's answer replaces the flags.
+    @ObservationIgnored private var flagReads = 0
+    @ObservationIgnored private var appliedFlagRead = 0
+
+    /// Accounts Go reports on the retired shared app (`shared_app`); empty
+    /// before the first successful read, so no banner on a failed one.
+    var sharedAppAccountIDs: Set<Int> {
+        Set(accountFlags?.accounts.filter(\.sharedApp).map { Int($0.id) } ?? [])
+    }
+
+    /// `builtin_app`: the build has a Slack app of its own. Before the first
+    /// successful read it counts as true, the build's behaviour before plan B
+    /// (Add Slack Workspace, the Add sheet in onboarding).
+    var builtinApp: Bool { accountFlags?.builtinApp ?? true }
+
+    /// Account `id`'s Re-login route ("builtin" | "connect" | "move"); nil
+    /// when not read.
+    func relogin(of id: Int) -> String? {
+        accountFlags?.accounts.first { $0.id == Int64(id) }?.relogin
+    }
+
+    /// Reads `slack accounts --json` and keeps its answer; a failure keeps
+    /// the last flags (logged, never shown: the pane works without them).
+    func refreshFlags() async {
+        flagReads += 1
+        let read = flagReads
+        switch await readAccountsDocument() {
+        case let .success(doc):
+            applyFlags(doc, read: read)
+        case let .failure(failure):
+            CLILog.warning(args: SlackAccountsDocument.args, stderr: failure.message)
+        }
+    }
+
+    private func applyFlags(_ doc: SlackAccountsDocument, read: Int) {
+        guard read > appliedFlagRead else { return }
+        appliedFlagRead = read
+        accountFlags = doc
+    }
+
+    private func readAccountsDocument() async -> Result<SlackAccountsDocument, RouteReadError> {
+        guard let cliPath = cliPath() else { return .failure(RouteReadError("Watchtower CLI not found")) }
+        let result = await Self.runCLI(path: cliPath, arguments: SlackAccountsDocument.args)
+        guard result.exitCode == 0 else {
+            return .failure(RouteReadError("Could not read the Slack accounts: "
+                + (result.stderr.isEmpty ? "exit \(result.exitCode)" : String(result.stderr.prefix(200)))))
+        }
+        do {
+            return .success(try JSONDecoder().decode(SlackAccountsDocument.self, from: Data(result.stdout.utf8)))
+        } catch {
+            return .failure(RouteReadError("Could not read the Slack accounts: \(error.localizedDescription)"))
         }
     }
 
@@ -148,20 +219,14 @@ final class SlackAccountsViewModel {
     /// sign-in starts meanwhile; leaves `error` to the caller.
     func reloginRoute(accountID: Int64) async -> Result<SlackReloginRoute, RouteReadError> {
         guard !isConnecting else { return .failure(RouteReadError("Another connection is already in progress.")) }
-        guard let cliPath = cliPath() else { return .failure(RouteReadError("Watchtower CLI not found")) }
         isConnecting = true
-        let result = await Self.runCLI(path: cliPath, arguments: SlackAccountsDocument.args)
+        flagReads += 1
+        let read = flagReads
+        let result = await readAccountsDocument()
         isConnecting = false
-        guard result.exitCode == 0 else {
-            return .failure(RouteReadError("Could not read the Slack accounts: "
-                + (result.stderr.isEmpty ? "exit \(result.exitCode)" : String(result.stderr.prefix(200)))))
-        }
-        do {
-            let doc = try JSONDecoder().decode(SlackAccountsDocument.self, from: Data(result.stdout.utf8))
-            return .success(SlackReloginRoute.route(accountID: accountID, in: doc))
-        } catch {
-            return .failure(RouteReadError("Could not read the Slack accounts: \(error.localizedDescription)"))
-        }
+        // The route's read is the freshest answer: the row's button follows it.
+        if case let .success(doc) = result { applyFlags(doc, read: read) }
+        return result.map { SlackReloginRoute.route(accountID: accountID, in: $0) }
     }
 
     /// Why the Re-login route could not be read, in the owner's words.

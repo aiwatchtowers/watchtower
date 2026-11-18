@@ -50,6 +50,9 @@ package struct SlackModePresentation: Equatable, Sendable {
     package let showsCheckAgain: Bool
     package let checkAgainEnabled: Bool
     package let showsTryAgain: Bool
+    /// §5: the banner over the pane while an account syncs through the
+    /// retired shared app; nil otherwise.
+    package let sharedAppBanner: SharedAppBanner?
 
     package let title = "Slack mode"
     package let liveTitle = "Live"
@@ -83,6 +86,8 @@ package struct SlackModePresentation: Equatable, Sendable {
         case .live, .off: shared.isEmpty ? (mode == .live ? .live : .off) : .sharedApp
         }
         sharedLabel = shared.first.map(Self.label) ?? ""
+        // It goes once Slack stops the token: the row then shows its Re-login.
+        sharedAppBanner = shared.first { $0.isOK }.map { SharedAppBanner(label: Self.label($0)) }
 
         let rows = Self.liveRows(Self.newestBatches(liveStatuses), accounts: accounts, now: now)
         liveRows = rows
@@ -198,7 +203,7 @@ package struct SlackModePresentation: Equatable, Sendable {
 
     /// An account's name in a sentence: its label or team name, else the team
     /// id, never blank.
-    private static func label(_ account: SlackAccount) -> String {
+    static func label(_ account: SlackAccount) -> String {
         let name = account.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         if !name.isEmpty { return name }
         let team = account.teamName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -254,11 +259,16 @@ package struct SlackModePresentation: Equatable, Sendable {
     /// "checked just now" under 1 min, "N min" under 60 min, "N h" under
     /// 48 h, then "N d". Never a bare "on" (parent spec §1).
     package static func age(from date: Date, now: Date) -> String {
+        "checked " + ago(from: date, now: now)
+    }
+
+    /// "just now", "N min ago", "N h ago", "N d ago" (the thresholds of `age`).
+    static func ago(from date: Date, now: Date) -> String {
         let seconds = max(0, now.timeIntervalSince(date))
-        if seconds < 60 { return "checked just now" }
-        if seconds < 3600 { return "checked \(Int(seconds / 60)) min ago" }
-        if seconds < 48 * 3600 { return "checked \(Int(seconds / 3600)) h ago" }
-        return "checked \(Int(seconds / 86400)) d ago"
+        if seconds < 60 { return "just now" }
+        if seconds < 3600 { return "\(Int(seconds / 60)) min ago" }
+        if seconds < 48 * 3600 { return "\(Int(seconds / 3600)) h ago" }
+        return "\(Int(seconds / 86400)) d ago"
     }
 
     private static func problem(_ error: SlackLiveError) -> String {

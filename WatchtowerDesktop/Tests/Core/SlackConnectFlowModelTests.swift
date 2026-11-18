@@ -504,4 +504,16 @@ final class SlackConnectFlowModelTests: XCTestCase {
         let refused = await connector.connectForSetup(teamID: "T0ACME", clientID: "1111.2222")
         XCTAssertEqual(refused, .notConnected)
     }
+
+    /// A13: the onboarding sheet's own strings (the field and its buttons are
+    /// the connect section's, pinned in `testConnectSectionStrings`).
+    func testOnboardingStrings() {
+        XCTAssertEqual(SlackConnectFlowModel.onboardingTitle, "Connect Slack")
+        XCTAssertEqual(SlackConnectFlowModel.onboardingCaption, "Watchtower connects through your workspace's own "
+            + "Slack app. Open Watchtower in Slack, go to its About tab and click the connect link, or paste the "
+            + "link or code here.")
+        XCTAssertEqual(SlackConnectFlowModel.onboardingLiveHint, "No app in your workspace? Chats can still read "
+            + "Slack through Live in your Claude or ChatGPT account.")
+        XCTAssertEqual(SlackConnectFlowModel.onboardingSkip, "Skip")
+    }
 }

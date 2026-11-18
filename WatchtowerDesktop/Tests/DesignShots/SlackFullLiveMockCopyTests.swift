@@ -1,4 +1,5 @@
 import WatchtowerCore
+@testable import WatchtowerDesktop
 import XCTest
 
 /// Pins the Slack Full / Live screens spec's string table
@@ -44,6 +45,24 @@ final class SlackFullLiveMockCopyTests: XCTestCase {
         XCTAssertTrue(Copy.notCollaborator.contains("collaborators"))
         XCTAssertTrue(Copy.onboardingCaption.contains("paste the link or code"))
         XCTAssertEqual(Copy.onboardingTitle, "Connect Slack")
+    }
+
+    /// Plan B Task 15: the shipped shared-app and onboarding strings are the
+    /// mockups' (the shots now draw the real views).
+    func testShippedSharedAppAndOnboardingCopy() {
+        typealias Copy = SlackFullLiveMockCopy
+        let banner = SlackPaneModeFixture.presentation(.sharedApp).sharedAppBanner
+        XCTAssertEqual(banner?.title, Copy.sharedTitle)
+        XCTAssertEqual(banner?.body, Copy.sharedBody)
+        XCTAssertEqual(banner?.setUpForCompany, Copy.setUpForCompany)
+        XCTAssertEqual(banner?.pasteLink, Copy.pasteALink)
+        XCTAssertEqual(SlackModePresentation.sharedAppTag, Copy.chipShared)
+        XCTAssertEqual(SlackModePresentation.sharedAppAccountLine(
+            lastSync: SlackPaneModeFixture.now.addingTimeInterval(-180), now: SlackPaneModeFixture.now), Copy.accountShared)
+        XCTAssertEqual(SlackConnectFlowModel.onboardingTitle, Copy.onboardingTitle)
+        XCTAssertEqual(SlackConnectFlowModel.onboardingCaption, Copy.onboardingCaption)
+        XCTAssertEqual(SlackConnectFlowModel.onboardingLiveHint, Copy.onboardingLiveHint)
+        XCTAssertEqual(SlackConnectFlowModel.onboardingSkip, Copy.skip)
     }
 
     func testEveryFrameHasAShot() {

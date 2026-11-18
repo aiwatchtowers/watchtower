@@ -463,6 +463,19 @@ package final class SlackConnectFlowModel {
     private var pasteInvalid: String { Self.pasteInvalid }
     private var listenerDown: String { Self.listenerDown }
 
+    // MARK: - The onboarding sheet (plan B A13)
+
+    /// Onboarding's Slack card opens the connect section in a sheet when the
+    /// build has no Slack app of its own (`builtin_app` false). The field,
+    /// its **Connect**, the MDM rows, the port-busy line and **Set up for my
+    /// company** are the section's (`SlackModePresentation.ConnectSection`).
+    package static let onboardingTitle = "Connect Slack"
+    package static let onboardingCaption = "Watchtower connects through your workspace's own Slack app. "
+        + "Open Watchtower in Slack, go to its About tab and click the connect link, or paste the link or code here."
+    package static let onboardingLiveHint = "No app in your workspace? Chats can still read Slack through Live "
+        + "in your Claude or ChatGPT account."
+    package static let onboardingSkip = "Skip"
+
     /// The sheet of the current step; nil while idle.
     package var sheet: SlackConnectSheetContent? { SlackConnectSheetContent(step: step) }
 

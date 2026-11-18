@@ -1682,7 +1682,7 @@ final class AppState {
     }
 
     func initSlackAccounts(dbPool: DatabasePool) {
-        let vm = SlackAccountsViewModel(dbPool: dbPool)
+        let vm = SlackAccountsViewModel(dbPool: dbPool, readsAccountFlags: !Self.runsUnderXCTest)
         vm.onAccountsChanged = { [weak self, weak vm] in
             if let vm { self?.slackAccountsDidChange(vm.accounts) }
             await self?.accountsChanged()

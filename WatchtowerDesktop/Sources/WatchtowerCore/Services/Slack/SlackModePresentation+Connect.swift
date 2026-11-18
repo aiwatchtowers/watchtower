@@ -19,6 +19,10 @@ extension SlackModePresentation {
         package let isFolded: Bool
         /// Full: the quiet button under Workspaces that opens the fold.
         package let showsFoldButton: Bool
+        /// **Add Slack Workspace** (the build's own app) only while the build
+        /// has one (`builtin_app`, A8); once it does not, a workspace connects
+        /// through this section.
+        package let showsAddAccount: Bool
 
         package let title = "Connect your workspace's app"
         package let caption = "Open Watchtower's app in Slack, go to its About tab and click the connect link. "
@@ -41,12 +45,15 @@ extension SlackModePresentation {
         ///   - organizationApps: MDM `SlackApps`; nil when the key is absent.
         ///   - accounts: an entry whose team is connected with its client id
         ///     (any row not removed or purged) has no row.
+        ///   - builtinApp: `builtin_app` of `slack accounts --json` (true until
+        ///     it is read).
         package init(
             display: Display,
             portBusy: Bool,
             expanded: Bool,
             organizationApps: [ManagedPolicy.SlackApp]?,
-            accounts: [SlackAccount]
+            accounts: [SlackAccount],
+            builtinApp: Bool
         ) {
             let live = accounts.filter { !$0.isGone }
             let open = (organizationApps ?? []).filter { app in
@@ -64,6 +71,7 @@ extension SlackModePresentation {
             // The busy line must be seen, so the fold opens by itself (§4.4).
             isFolded = full && !expanded && !portBusy
             showsFoldButton = full
+            showsAddAccount = builtinApp
         }
     }
 }

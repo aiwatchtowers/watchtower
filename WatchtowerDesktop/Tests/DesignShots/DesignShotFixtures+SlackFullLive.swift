@@ -111,7 +111,10 @@ private struct SlackPaneMock: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.large) {
-            if pane == .sharedApp { sharedBanner }
+            if let banner = SlackPaneModeFixture.presentation(pane).sharedAppBanner {
+                // The real banner (`SlackSharedAppBanner`, screens spec §5).
+                SlackSharedAppBanner(banner: banner, setUpForCompany: {}, pasteLink: {})
+            }
             modeSection
             SlackSetupRecordRows(model: SlackSetupShotFixture.rowsModel(pane))
             if showsConnect { connectSection }
@@ -128,50 +131,43 @@ private struct SlackPaneMock: View {
         SlackModeSection(presentation: SlackPaneModeFixture.presentation(pane), checkAgain: {}, tryAgain: {})
     }
 
+    /// The section after retirement: the build has no Slack app (`builtin_app`
+    /// false), so **Connect another workspace…** replaces Add (A8).
+    private var section: SlackModePresentation.ConnectSection {
+        SlackModePresentation.ConnectSection(
+            display: SlackPaneModeFixture.presentation(pane).display,
+            portBusy: pane == .portBusy,
+            expanded: false,
+            organizationApps: pane == .organization ? [ManagedPolicy.SlackApp(teamID: "T0ACME", clientID: "1111.2222")] : nil,
+            accounts: [],
+            builtinApp: false)
+    }
+
     /// The real connect section (`SlackConnectSection`) on fixture data.
     private var connectSection: some View {
         SlackConnectSection(
-            section: SlackModePresentation.ConnectSection(
-                display: SlackPaneModeFixture.presentation(pane).display,
-                portBusy: pane == .portBusy,
-                expanded: false,
-                organizationApps: pane == .organization ? [ManagedPolicy.SlackApp(teamID: "T0ACME", clientID: "1111.2222")] : nil,
-                accounts: []),
+            section: section,
             flow: SlackConnectShotFlow.make(paste: pane == .pasteInvalid ? "https://acme.slack.com/apps/A0ACME" : nil),
             setUpForCompany: {},
             fieldFocused: $fieldFocused)
     }
 
-    private var sharedBanner: some View {
-        VStack(alignment: .leading, spacing: Spacing.regular) {
-            HStack(spacing: Spacing.regular) {
-                Image(systemName: "clock.badge.exclamationmark").foregroundStyle(Tone.warning)
-                Text(Copy.sharedTitle).font(.headline)
-            }
-            Text(Copy.sharedBody).font(.callout).fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: Spacing.regular) {
-                Button(Copy.setUpForCompany) {}.buttonStyle(.kitSecondary)
-                Button(Copy.pasteALink) {}.buttonStyle(.kitQuiet)
-            }
-        }
-        .padding(Spacing.medium)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Tone.warning.opacity(ChipTint.fillOpacity), in: RoundedRectangle(cornerRadius: Radius.row))
-    }
-
+    /// The real row title (`SlackAccountTitle`: tag and shared-app line) and
+    /// the real add row (`SlackWorkspacesAddRow`); the row's switch and
+    /// buttons are the shipped ones, left out here.
     private var workspaces: some View {
-        SettingsSection(title: Copy.workspacesTitle) {
-            HStack(spacing: Spacing.regular) {
-                Image(systemName: "number").foregroundStyle(.secondary)
-                Text("acme").font(.body)
-                if pane == .sharedApp { OutlineTag(text: Copy.chipShared) }
-                Spacer(minLength: Spacing.medium)
-                Text(pane == .sharedApp ? Copy.accountShared : Copy.accountFull)
-                    .font(.caption).foregroundStyle(.secondary)
+        SettingsSection(title: "Slack Workspaces") {
+            HStack {
+                SlackAccountTitle(
+                    account: SlackPaneModeFixture.acme,
+                    sharedAppLine: pane == .sharedApp
+                        ? SlackModePresentation.sharedAppAccountLine(
+                            lastSync: SlackPaneModeFixture.now.addingTimeInterval(-180), now: SlackPaneModeFixture.now)
+                        : nil)
+                Spacer()
+                Circle().fill(Tone.success).frame(width: IconSize.stateDot, height: IconSize.stateDot)
             }
-            if pane != .sharedApp {
-                Button(Copy.connectAnother) {}.buttonStyle(.kitQuiet)
-            }
+            SlackWorkspacesAddRow(section: section, add: {}, openFold: {})
         }
     }
 }
@@ -266,64 +262,23 @@ enum SlackSetupShotFixture {
 
 // MARK: - Onboarding: connect Slack without a build-baked app (plan B, A13)
 
+/// The real onboarding sheet (`SlackOnboardingConnectSheet`) for each frame.
 private struct SlackOnboardingConnectMock: View {
     let frame: SlackFullLiveShotFixtures.Onboarding
 
-    private var pasteText: String { frame == .pasteInvalid ? "https://acme.slack.com/apps/A0ACME" : "" }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.large) {
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                Text(Copy.onboardingTitle).font(.title3.weight(.semibold))
-                Text(Copy.onboardingCaption)
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            VStack(alignment: .leading, spacing: Spacing.medium) {
-                if frame == .organization {
-                    VStack(alignment: .leading, spacing: Spacing.compact) {
-                        Text(Copy.orgTitle).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                        HStack {
-                            Label(Copy.orgRow, systemImage: "building.2").font(.callout)
-                            Spacer(minLength: Spacing.medium)
-                            Button(Copy.connect) {}.buttonStyle(.kitPrimary)
-                        }
-                    }
-                }
-                if frame == .portBusy {
-                    HStack(alignment: .top, spacing: Spacing.regular) {
-                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Tone.warning)
-                        Text(Copy.portBusy).font(.caption).fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                HStack(spacing: Spacing.regular) {
-                    TextField(Copy.pastePlaceholder, text: .constant(pasteText)).textFieldStyle(.kit)
-                    Button(Copy.connect) {}
-                        .buttonStyle(.kitSecondary)
-                        .disabled(pasteText.isEmpty)
-                }
-                if frame == .pasteInvalid {
-                    Text(Copy.pasteInvalid)
-                        .font(.caption).foregroundStyle(Tone.error).fixedSize(horizontal: false, vertical: true)
-                }
-                HStack(spacing: Spacing.regular) {
-                    Text(Copy.noAppYet).font(.caption).foregroundStyle(.secondary)
-                    Button(Copy.setUpForCompany) {}.buttonStyle(.kitQuiet)
-                }
-            }
-            .padding(Spacing.medium)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .card()
-            Text(Copy.onboardingLiveHint)
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            HStack {
-                Spacer()
-                Button(Copy.skip) {}.buttonStyle(.kitSecondary)
-            }
-        }
-        .controlSize(.small)
-        .padding(Spacing.page)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground()
+        SlackOnboardingConnectSheet(
+            section: SlackModePresentation.ConnectSection(
+                display: .off,
+                portBusy: frame == .portBusy,
+                expanded: true,
+                organizationApps: frame == .organization
+                    ? [ManagedPolicy.SlackApp(teamID: "T0ACME", clientID: "1111.2222")] : nil,
+                accounts: [],
+                builtinApp: false),
+            flow: SlackConnectShotFlow.make(paste: frame == .pasteInvalid ? "https://acme.slack.com/apps/A0ACME" : nil),
+            setUpForCompany: {},
+            close: {})
     }
 }
 
@@ -481,10 +436,11 @@ private struct LiveArtifactKeepMock: View {
 enum SlackPaneModeFixture {
     static let now = Date(timeIntervalSince1970: 1_800_000_000)
 
+    static let acme = SlackAccount(row: Row([
+        "id": 1, "team_id": "T0ACME", "team_name": "acme", "status": "ok", "enabled": true
+    ]))
+
     static func presentation(_ pane: SlackFullLiveShotFixtures.Pane) -> SlackModePresentation {
-        let acme = SlackAccount(row: Row([
-            "id": 1, "team_id": "T0ACME", "team_name": "acme", "status": "ok", "enabled": true
-        ]))
         let hasAccount: Set<SlackFullLiveShotFixtures.Pane> =
             [.full, .fullLive, .loading, .checking, .probeFailed, .readFailed, .sharedApp]
         var lastError: SlackLiveError?

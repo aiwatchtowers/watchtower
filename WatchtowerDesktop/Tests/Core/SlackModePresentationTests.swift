@@ -112,6 +112,49 @@ final class SlackModePresentationTests: XCTestCase {
                        "a company-app account makes the mode Full")
     }
 
+    /// §5: the banner, the account tag and line, and Move to Full.
+    func testSharedAppBanner() {
+        let banner = make(accounts: [account(id: 4)], shared: [4]).sharedAppBanner
+        XCTAssertEqual(banner?.title, "Watchtower's shared Slack app is retiring")
+        XCTAssertEqual(banner?.body, "acme still syncs through it until Slack turns it off. Move to Full with your "
+            + "workspace's own app, or use Live through your Claude or ChatGPT account.")
+        XCTAssertEqual(banner?.setUpForCompany, "Set up for my company")
+        XCTAssertEqual(banner?.pasteLink, "Paste a connect link")
+        XCTAssertNotNil(make(accounts: [account(id: 4), account(id: 5, teamID: "T0OTHER")], shared: [4]).sharedAppBanner,
+                        "shown while any account syncs through it, also when another makes the mode Full")
+        XCTAssertNil(make(accounts: [account(id: 4)]).sharedAppBanner, "no flag, no banner")
+        XCTAssertNil(make(accounts: [account(id: 4, enabled: false)], shared: [4]).sharedAppBanner)
+        XCTAssertNil(make(accounts: [account(id: 4, status: "removed")], shared: [4]).sharedAppBanner)
+        XCTAssertNil(make(accounts: [account(id: 4, status: "revoked")], shared: [4]).sharedAppBanner,
+                     "Slack stopped the token: the row's Re-login state takes over")
+
+        XCTAssertEqual(SlackModePresentation.sharedAppTag, "Shared app")
+        XCTAssertEqual(SlackModePresentation.sharedAppAccountLine(lastSync: now.addingTimeInterval(-180), now: now),
+                       "Syncing through the shared app · last sync 3 min ago")
+        XCTAssertEqual(SlackModePresentation.sharedAppAccountLine(lastSync: nil, now: now),
+                       "Syncing through the shared app")
+        XCTAssertEqual(SlackModePresentation.reloginTitle(isOK: true, relogin: "move"), "Move to Full")
+        XCTAssertEqual(SlackModePresentation.reloginTitle(isOK: false, relogin: "move"), "Move to Full")
+        XCTAssertEqual(SlackModePresentation.reloginTitle(isOK: true, relogin: "connect"), "Reconnect")
+        XCTAssertEqual(SlackModePresentation.reloginTitle(isOK: false, relogin: "builtin"), "Re-login")
+        XCTAssertEqual(SlackModePresentation.reloginTitle(isOK: true, relogin: nil), "Reconnect", "flags not read yet")
+    }
+
+    /// §5: the overview card reads "Shared app retiring"; the account is OK,
+    /// so the card's status (and the badge) stay the accounts' own.
+    func testSharedAppIsNotAttention() {
+        let acme = account(id: 4)
+        XCTAssertEqual(SlackModePresentation.overviewStatusLine(accounts: [acme], sharedAppAccountIDs: [4]),
+                       "Shared app retiring")
+        XCTAssertNil(SlackModePresentation.overviewStatusLine(accounts: [acme], sharedAppAccountIDs: []))
+        XCTAssertNil(SlackModePresentation.overviewStatusLine(
+            accounts: [account(id: 4, enabled: false)], sharedAppAccountIDs: [4]))
+        XCTAssertNil(SlackModePresentation.overviewStatusLine(
+            accounts: [account(id: 4, status: "revoked")], sharedAppAccountIDs: [4]), "a stopped token is a problem")
+        XCTAssertTrue(acme.isOK, "nothing about the shared app turns the account into a problem")
+        XCTAssertEqual(make(accounts: [acme], shared: [4]).chipTone, .warning, "a warning, never an error")
+    }
+
     // MARK: - §1.2 Live rows
 
     func testRowsClaudeFirstThenCodex() {
