@@ -56,12 +56,13 @@ func queueWatchmanAsk(d *db.DB, ask db.OwnerAsk, id int64, wake func()) {
 }
 
 // checkWatchmanGate is finish_session's gate for an armed session, after the
-// existing gates passed: a handover ask's item becomes the twin's handover,
-// then watchmanReviewGate on the session's review place as it stands. An
-// unarmed session (or an arming that cannot be read) passes unchanged. No
-// diff to review — no repository, an empty diff, a folder the session left —
-// passes; so does a snapshot that cannot be read (logged): the finish stays
-// as without Watchman.
+// existing gates passed: watchmanReviewGate on the session's review place as
+// it stands, then — only once it passes — a handover ask becomes the twin's
+// handover (markWatchmanHandover), so a refused finish leaves it an ordinary
+// ask. An unarmed session (or an arming that cannot be read) passes
+// unchanged. No diff to review — no repository, an empty diff, a folder the
+// session left — passes; so does a snapshot that cannot be read (logged): the
+// finish stays as without Watchman.
 func checkWatchmanGate(ctx context.Context, d *db.DB, p *db.Workbench, session, ticket int64, a finishSessionArgs, wake func()) error {
 	armed, err := d.WatchmanSessionArmed(session)
 	if err != nil {
@@ -71,11 +72,18 @@ func checkWatchmanGate(ctx context.Context, d *db.DB, p *db.Workbench, session, 
 	if !armed {
 		return nil
 	}
-	if a.HandoverAskID != 0 {
-		if _, err := d.SetWatchmanItemKind("ask", a.HandoverAskID, "ask", "handover"); err != nil {
-			watchmanLog("ask %d was not marked Watchman's handover: %v", a.HandoverAskID, err)
-		}
+	if err := watchmanReviewOfChanges(ctx, d, p, session, ticket, a, wake); err != nil {
+		return err
 	}
+	if a.HandoverAskID != 0 {
+		markWatchmanHandover(d, p.ID, session, ticket, a.HandoverAskID, wake)
+	}
+	return nil
+}
+
+// watchmanReviewOfChanges snapshots the session's review place and runs
+// watchmanReviewGate on it; nil = pass.
+func watchmanReviewOfChanges(ctx context.Context, d *db.DB, p *db.Workbench, session, ticket int64, a finishSessionArgs, wake func()) error {
 	gitCtx, cancel := context.WithTimeout(ctx, finishGateBudget)
 	defer cancel()
 	snap, err := SnapshotReviewSession(gitCtx, d, p, session)
@@ -100,44 +108,66 @@ func checkWatchmanGate(ctx context.Context, d *db.DB, p *db.Workbench, session, 
 	}
 	it := db.WatchmanItem{WorkbenchID: p.ID, SessionID: session, TargetID: ticket, Kind: "review_code",
 		Question: watchman.ItemQuestion(a.Summary)}
-	if pass, msg := watchmanReviewGate(d, it, snap.Tree, wake); !pass {
-		return &ValidationError{Msg: msg}
-	}
-	return nil
+	return watchmanReviewGate(d, it, snap.Tree, wake)
 }
 
-// watchmanReviewGate passes when the session's last sent round is approved
-// (by the owner or the twin) at tree, the session's changes as they stand,
-// or when the twin is done with the review item of what followed that round
-// (it parked the review). Otherwise it queues that item — kept when queued
-// already — and refuses. The item is the session's own (ref session) before
-// any round, then one per last round (ref round): a review that asked for
-// changes is followed by a review of what came after it. A database failure
-// is logged and passes, as without Watchman. it carries the item's
-// workbench, session, target and question.
-func watchmanReviewGate(d *db.DB, it db.WatchmanItem, tree string, wake func()) (pass bool, msg string) {
+// markWatchmanHandover makes handover ask askID the twin's handover item: its
+// queued ask item changes kind, and with no item at all (its own insert
+// failed earlier) one is queued as a handover. An item already deciding or
+// done is left. Failures are logged.
+func markWatchmanHandover(d *db.DB, workbenchID, session, ticket, askID int64, wake func()) {
+	changed, err := d.SetWatchmanItemKind("ask", askID, "ask", "handover")
+	if err != nil {
+		watchmanLog("ask %d was not marked Watchman's handover: %v", askID, err)
+		return
+	}
+	if changed {
+		return
+	}
+	ask, err := d.GetOwnerAsk(workbenchID, askID)
+	if err != nil {
+		watchmanLog("ask %d was not queued as Watchman's handover: %v", askID, err)
+		return
+	}
+	if ask.TargetID.Valid {
+		ticket = ask.TargetID.Int64
+	}
+	queueWatchmanItem(d, db.WatchmanItem{WorkbenchID: workbenchID, SessionID: session, TargetID: ticket,
+		Kind: "handover", RefKind: "ask", RefID: askID,
+		Question: watchman.ItemQuestion(db.WatchmanAskText(ask.Title, ask.Summary))}, wake)
+}
+
+// watchmanReviewGate passes (nil) when the session's last sent round is
+// approved (by the owner or the twin) at tree, the session's changes as they
+// stand, or when the twin parked the review item of what followed that round.
+// Otherwise it queues that item — kept when queued already — and refuses. The
+// item is the session's own (ref session) before any round, then one per last
+// round (ref round): a review that asked for changes is followed by a review
+// of what came after it. A database read that fails refuses with a retryable
+// error, like the other gates; a queue that does not happen (insert failure,
+// a disarm in between) passes, as without Watchman (spec §7). it carries the
+// item's workbench, session, target and question.
+func watchmanReviewGate(d *db.DB, it db.WatchmanItem, tree string, wake func()) error {
 	last, err := d.LastSentReviewRound(it.WorkbenchID, it.SessionID)
 	if err != nil {
-		watchmanLog("finish of session %d: reading its last review round: %v", it.SessionID, err)
-		return true, ""
+		return fmt.Errorf("finish check: reading this session's last review round: %w — call finish_session again", err)
 	}
 	it.RefKind, it.RefID = "session", it.SessionID
 	if last != nil {
 		if last.TreeSHA == tree && last.Outcome == db.ReviewOutcomeApproved {
-			return true, ""
+			return nil
 		}
 		it.RefKind, it.RefID = "round", last.ID
 	}
 	have, err := d.WatchmanItemByRef(it.RefKind, it.RefID, it.Kind)
 	if err != nil {
-		watchmanLog("finish of session %d: reading its Watchman review: %v", it.SessionID, err)
-		return true, ""
+		return fmt.Errorf("finish check: reading Watchman's review of this session: %w — call finish_session again", err)
 	}
 	switch {
-	case have != nil && have.State == "done":
-		return true, ""
+	case have != nil && have.State == "done" && have.Outcome == "parked":
+		return nil
 	case have == nil && !queueWatchmanItem(d, it, wake):
-		return true, ""
+		return nil
 	}
-	return false, watchmanReviewingRefusal
+	return &ValidationError{Msg: watchmanReviewingRefusal}
 }

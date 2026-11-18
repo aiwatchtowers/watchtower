@@ -182,10 +182,12 @@ func WatchmanPermissionText(tool, summary string) string {
 }
 
 // QueueWatchmanWaitPoint queues it when its session is armed — for an ask,
-// a session no automation started — and returns what QueueWatchmanItem
-// does; id 0 and nothing written when the session is not the twin's. The
-// arming read and the insert are two statements: a disarm between them
-// leaves a queued item the twin does not act on (WATCHMAN-04).
+// one neither an automation run filed nor a session an automation started
+// (the scan's filter) — unless the wait point already has an item of any
+// kind; id is that item's then, inserted false. id 0 and nothing written
+// when the wait point is not the twin's. The arming read and the insert are
+// two statements: a disarm between them leaves a queued item the twin does
+// not act on (WATCHMAN-04).
 func (db *DB) QueueWatchmanWaitPoint(it WatchmanItem) (id int64, inserted bool, err error) {
 	if it.SessionID == 0 {
 		return 0, false, nil
@@ -196,14 +198,52 @@ func (db *DB) QueueWatchmanWaitPoint(it WatchmanItem) (id int64, inserted bool, 
 	}
 	if it.RefKind == "ask" {
 		var automation bool
-		if err := db.QueryRow(`SELECT automation_run_id IS NOT NULL FROM terminal_sessions WHERE id = ?`, it.SessionID).Scan(&automation); err != nil {
-			return 0, false, fmt.Errorf("reading session %d: %w", it.SessionID, err)
+		if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM terminal_sessions WHERE id = ? AND automation_run_id IS NOT NULL)
+			OR EXISTS (SELECT 1 FROM owner_asks WHERE id = ? AND automation_run_id IS NOT NULL)`, it.SessionID, it.RefID).Scan(&automation); err != nil {
+			return 0, false, fmt.Errorf("reading ask %d's automation: %w", it.RefID, err)
 		}
 		if automation {
 			return 0, false, nil
 		}
 	}
-	return db.QueueWatchmanItem(it)
+	return db.queueWatchmanItemOnce(it)
+}
+
+// watchmanScanBeforeInsert runs between the scan's read and its inserts; a
+// seam for the race test.
+var watchmanScanBeforeInsert = func() {}
+
+// queueWatchmanItemOnce inserts it queued unless (ref_kind, ref_id) already
+// has an item of any kind — one statement, so a writer racing the scan, or
+// an item whose kind changed (a handover), never gets a second row. When
+// one exists, its id (the oldest) is returned with inserted false.
+func (db *DB) queueWatchmanItemOnce(it WatchmanItem) (id int64, inserted bool, err error) {
+	created := it.CreatedAt
+	if created.IsZero() {
+		created = time.Now()
+	}
+	q := []rune(it.Question)
+	if len(q) > watchmanQuestionMax {
+		q = q[:watchmanQuestionMax]
+	}
+	res, err := db.Exec(`INSERT INTO watchman_items (workbench_id, session_id, target_id, kind, ref_kind, ref_id, not_before, question, created_at)
+		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+		WHERE NOT EXISTS (SELECT 1 FROM watchman_items WHERE ref_kind = ? AND ref_id = ?)
+		ON CONFLICT(ref_kind, ref_id, kind) DO NOTHING`,
+		it.WorkbenchID, wmNullID(it.SessionID), wmNullID(it.TargetID), it.Kind, it.RefKind, it.RefID, wmNullTime(it.NotBefore), string(q), wmTime(created),
+		it.RefKind, it.RefID)
+	if err != nil {
+		return 0, false, fmt.Errorf("queueing watchman item %s/%d: %w", it.RefKind, it.RefID, err)
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		id, err = res.LastInsertId()
+		return id, true, err
+	}
+	err = db.QueryRow(`SELECT id FROM watchman_items WHERE ref_kind = ? AND ref_id = ? ORDER BY id LIMIT 1`, it.RefKind, it.RefID).Scan(&id)
+	if err != nil {
+		return 0, false, fmt.Errorf("reading queued watchman item %s/%d: %w", it.RefKind, it.RefID, err)
+	}
+	return id, false, nil
 }
 
 // WatchmanItemByRef is the item of kind for wait point (refKind, refID);
@@ -238,9 +278,10 @@ func (db *DB) ScanWatchmanWaitPoints(now time.Time, question func(string) string
 		}
 		missed = append(missed, items...)
 	}
+	watchmanScanBeforeInsert()
 	for _, it := range missed {
 		it.Question, it.CreatedAt = question(it.Question), now
-		if _, inserted, err := db.QueueWatchmanItem(it); err != nil {
+		if _, inserted, err := db.queueWatchmanItemOnce(it); err != nil {
 			return n, err
 		} else if inserted {
 			n++

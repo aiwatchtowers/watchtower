@@ -157,3 +157,68 @@ func TestFinishSession_ArmedHandoverMarksItem(t *testing.T) {
 	assert.Nil(t, asAsk)
 	assert.Equal(t, 1, watchmanItemCount(t, fx.d))
 }
+
+// Only a parked review item passes on its own: one the owner answered first
+// (or any other done outcome) waits for a round approved at the tree.
+func TestProj14_FinishArmedDoneNotParkedRefuses(t *testing.T) {
+	fx, wb, session, reg, _ := armedRepoSession(t)
+	_, err := proposeIn(t, reg, wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
+	refusal(t, err)
+	_, err = fx.d.Exec(`UPDATE watchman_items SET state = 'done', outcome = 'owner_first' WHERE ref_kind = 'session' AND ref_id = ?`, session)
+	require.NoError(t, err)
+	_, err = proposeIn(t, reg, wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
+	assert.Equal(t, watchmanReviewingRefusal, refusal(t, err))
+	assertNotFinished(t, fx.d, session, 0)
+}
+
+// A review-gate read that fails refuses with a retryable error, like the
+// other gates; nothing is finished.
+func TestProj14_FinishArmedReadFailureRefuses(t *testing.T) {
+	fx, wb, session, reg, _ := armedRepoSession(t)
+	_, err := fx.d.Exec(`ALTER TABLE watchman_items RENAME TO watchman_items_gone`)
+	require.NoError(t, err)
+	_, err = proposeIn(t, reg, wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "call finish_session again")
+	assertNotFinished(t, fx.d, session, 0)
+}
+
+// A finish the review gate refuses leaves the handover ask an ordinary ask:
+// the agent keeps working and the twin answers it as a question.
+func TestFinishSession_RefusedFinishKeepsAskKind(t *testing.T) {
+	fx, wb, _, reg, _ := armedRepoSession(t)
+	id := askID(t, mustApply(t, reg, wb, "ask_owner", `{"kind":"question","title":"Images later?",`+
+		`"questions":[{"question":"Leave images?","options":[{"label":"Yes"},{"label":"No"}]}],"reason":"r"}`))
+	_, err := proposeIn(t, reg, wb, "finish_session", fmt.Sprintf(`{"summary":"A done.","handover_ask_id":%d,"reason":"r"}`, id))
+	assert.Equal(t, watchmanReviewingRefusal, refusal(t, err))
+	it, err := fx.d.WatchmanItemByRef("ask", id, "ask")
+	require.NoError(t, err)
+	assert.NotNil(t, it, "still an ordinary ask")
+}
+
+// The ask's own insert failed: the finish queues it directly as a handover.
+func TestFinishSession_ArmedHandoverQueuedAfterFailedInsert(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	session := seedTerminalSession(t, fx.d, fx.a)
+	armSession(t, fx.d, session)
+	var wakes atomic.Int32
+	reg := watchmanRegistry(t, fx.d, session, &wakes)
+	captureWatchmanLog(t)
+	_, err := fx.d.Exec(`CREATE TRIGGER wm_fail BEFORE INSERT ON watchman_items BEGIN SELECT RAISE(ABORT, 'database is locked'); END`)
+	require.NoError(t, err)
+	id := askID(t, mustApply(t, reg, fx.a, "ask_owner", fmt.Sprintf(`{"kind":"question","title":"Images later?",`+
+		`"questions":[{"question":"Leave images?","options":[{"label":"Yes"},{"label":"No"}]}],"target_id":%d,"reason":"r"}`, fx.aTarget)))
+	require.Zero(t, watchmanItemCount(t, fx.d))
+	_, err = fx.d.Exec(`DROP TRIGGER wm_fail`)
+	require.NoError(t, err)
+
+	mustApply(t, reg, fx.a, "finish_session", fmt.Sprintf(`{"summary":"A done.","target_id":%d,"handover_ask_id":%d,"reason":"r"}`, fx.aTarget, id))
+	it, err := fx.d.WatchmanItemByRef("ask", id, "handover")
+	require.NoError(t, err)
+	require.NotNil(t, it)
+	assert.Equal(t, "queued", it.State)
+	assert.Equal(t, fx.aTarget, it.TargetID)
+	assert.Equal(t, "Images later?", it.Question)
+	assert.Equal(t, 1, watchmanItemCount(t, fx.d))
+	assert.Equal(t, int32(1), wakes.Load())
+}

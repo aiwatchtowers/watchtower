@@ -340,3 +340,61 @@ func TestWatchmanAskItemKind(t *testing.T) {
 	require.Equal(t, "review_doc", WatchmanAskItemKind("review"))
 	require.Equal(t, "check", WatchmanAskItemKind("check"))
 }
+
+// A writer that queues the ask between the scan's read and its insert — even
+// under another kind (a handover) — wins: the scan adds no second row.
+func TestScanWatchmanWaitPoints_RaceWithWriterKeepsOneRow(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	s := newTestSession(t, d, wb)
+	wmArmSession(t, d, s)
+	ask := questionAsk(wb, "Images later?")
+	ask.SessionID = nullID(s)
+	askID := mustInsertAsk(t, d, ask)
+	prev := watchmanScanBeforeInsert
+	watchmanScanBeforeInsert = func() {
+		_, ins, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "handover", RefKind: "ask", RefID: askID})
+		require.NoError(t, err)
+		require.True(t, ins)
+	}
+	t.Cleanup(func() { watchmanScanBeforeInsert = prev })
+
+	n, err := d.ScanWatchmanWaitPoints(time.Now(), func(s string) string { return s })
+	require.NoError(t, err)
+	require.Zero(t, n)
+	var total int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM watchman_items WHERE ref_kind = 'ask' AND ref_id = ?`, askID).Scan(&total))
+	require.Equal(t, 1, total)
+}
+
+// The writers use the scan's automation filter: an ask an automation run
+// filed is not queued even from a session no automation started.
+func TestQueueWatchmanWaitPoint_AutomationRunAskSkipped(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	s := newTestSession(t, d, wb)
+	wmArmSession(t, d, s)
+	_, run := seedRunningAutomationRun(t, d)
+	ask := questionAsk(wb, "Run's own")
+	ask.SessionID = nullID(s)
+	ask.AutomationRunID = nullID(run)
+	askID := mustInsertAsk(t, d, ask)
+	id, _, err := d.QueueWatchmanWaitPoint(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "ask", RefKind: "ask", RefID: askID})
+	require.NoError(t, err)
+	require.Zero(t, id)
+}
+
+// A wait point with an item of another kind keeps that one item.
+func TestQueueWatchmanWaitPoint_AnyKindKeepsOneRow(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	s := newTestSession(t, d, wb)
+	wmArmSession(t, d, s)
+	first, ins, err := d.QueueWatchmanWaitPoint(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "ask", RefKind: "ask", RefID: 7})
+	require.NoError(t, err)
+	require.True(t, ins)
+	id, ins, err := d.QueueWatchmanWaitPoint(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "handover", RefKind: "ask", RefID: 7})
+	require.NoError(t, err)
+	require.False(t, ins)
+	require.Equal(t, first, id)
+}
