@@ -79,7 +79,7 @@ enum SlackFullLiveShotFixtures {
             DesignShot(name: "slack-fl-needs-full-statistics", size: NSSize(width: 720, height: 360)) {
                 AnyView(NeedsFullSlackDigestsMock(tab: "statistics"))
             },
-            DesignShot(name: "slack-fl-needs-full-home-card", size: NSSize(width: 420, height: 0)) {
+            DesignShot(name: "slack-fl-needs-full-home-card", size: NSSize(width: 640, height: 0)) {
                 AnyView(NeedsFullSlackHomeCardMock())
             },
             DesignShot(name: "slack-fl-needs-full-knowledge", size: NSSize(width: 640, height: 0)) {
@@ -540,16 +540,19 @@ private struct NeedsFullSlackDigestsMock: View {
     }
 }
 
-/// The real Home → Getting ready row of Digests under `needsFullSlack`.
+/// The real Home → Getting ready zone with Slack Live only: one grouped row
+/// (owner, ask #1572).
 private struct NeedsFullSlackHomeCardMock: View {
     var body: some View {
-        GettingReadyRowView(
-            card: GettingReadyCard(
-                feature: .digests,
-                copy: EmptyStateCopyTable.featureCard(.digests, briefingHour: 8),
-                readiness: .needsFullSlack)
-        ) { _ in }
-        .controlSize(.small)
+        GettingReadyZoneView(
+            zone: .shown(cards: [], sourceRows: [
+                GettingReadySourceRow(
+                    source: .fullSlack, features: [.slackSync, .digests, .tracks, .peopleCards, .ideas, .inbox])
+            ]),
+            firstSync: nil,
+            onLink: { _ in },
+            onHide: {}
+        )
         .padding(Spacing.large)
         .detailBackground()
     }

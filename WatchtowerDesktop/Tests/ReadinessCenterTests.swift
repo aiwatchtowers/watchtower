@@ -126,6 +126,36 @@ final class ReadinessCenterTests: XCTestCase {
         XCTAssertNotEqual(center.readiness(for: .digests), .needsFullSlack, "a synced account is Full")
     }
 
+    /// A change of the Live verdicts after the first read (a chat or an
+    /// automation wrote the row) calls `onSlackLiveChange`, so the sidebar
+    /// re-reads; the first read and an unrelated change do not.
+    func testSlackLiveChangeCallsTheHook() async throws {
+        let pool = try makePool()
+        let ticks = HandOpenedSleeps()
+        let center = ReadinessCenter(environment: FakeReadinessEnvironment())
+        let calls = HookCalls()
+        center.onSlackLiveChange = { calls.count += 1 }
+        center.tickSleep = { _ in await ticks.sleep() }
+        center.start(pool: pool)
+        defer { center.stop() }
+        await waitUntil(center) { !$0.isEmpty }
+        await center.rereadDatabase()
+        try insertDigest(pool)
+        await waitUntil(center) { $0[.digests] == .ready }
+        XCTAssertEqual(calls.count, 0, "the first read and a content change are not a Live change")
+
+        let chat = try DatabasePool(path: try XCTUnwrap(poolPaths.last))
+        try await chat.write { db in
+            try db.execute(sql: """
+                INSERT INTO slack_live_status (team_id, provider, status, error_class, connector_id, checked_at)
+                VALUES ('T1', 'claude', 'ok', '', '', '2026-11-18T09:00:00.000000000Z')
+                """)
+        }
+        try chat.close()
+        await center.rereadDatabase()
+        await untilObserved { calls.count == 1 }
+    }
+
     func testObservationStartsWithMissingTable() async throws {
         let pool = try makePool()
         try await pool.write { db in try db.execute(sql: "DROP TABLE stream_digests") }
@@ -269,4 +299,11 @@ final class ReadinessCenterTests: XCTestCase {
         await waitUntil(appState.readinessCenter) { !$0.isEmpty }
         XCTAssertEqual(appState.readinessCenter.readiness.count, ReadinessFeature.allCases.count)
     }
+}
+
+/// Counts hook calls; observable, so a test can wait on it.
+@MainActor
+@Observable
+private final class HookCalls {
+    var count = 0
 }

@@ -68,6 +68,10 @@ final class ReadinessCenter {
     @ObservationIgnored private var pool: DatabasePool?
     @ObservationIgnored private var observationTask: Task<Void, Never>?
     @ObservationIgnored private var tickTask: Task<Void, Never>?
+    /// Called when a read finds the Slack Live verdicts changed (a chat or an
+    /// automation wrote `slack_live_status`): the sidebar's sources re-read,
+    /// so Catch-Up and Statistics follow the same Live the readiness does.
+    @ObservationIgnored var onSlackLiveChange: (@MainActor () async -> Void)?
     /// The tick's wait between re-reads; tests replace it to tick by hand.
     @ObservationIgnored var tickSleep: @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     /// Bumped by `start`/`stop`: a value from an earlier observation is dropped.
@@ -100,7 +104,7 @@ final class ReadinessCenter {
                     .removeDuplicates()
                 for try await value in observation.values(in: pool) {
                     guard let self, self.generation == current else { return }
-                    self.snapshot = value
+                    self.apply(value)
                     self.refresh()
                 }
             } catch {
@@ -129,6 +133,14 @@ final class ReadinessCenter {
                    slackLiveVerdicts: try ReadinessQueries.slackLiveVerdicts(db))
     }
 
+    /// Takes a fresh snapshot; a change of the Live verdicts after the first
+    /// read calls `onSlackLiveChange`.
+    private func apply(_ value: DBSnapshot) {
+        let liveChanged = snapshot.map { $0.slackLiveVerdicts != value.slackLiveVerdicts } ?? false
+        snapshot = value
+        if liveChanged, let onSlackLiveChange { Task { await onSlackLiveChange() } }
+    }
+
     /// Re-reads the DB now instead of at the next tick: another process
     /// wrote what the observation cannot see (the Live probe's
     /// `slack_live_status`, screens spec §6). A no-op before `start`.
@@ -143,7 +155,7 @@ final class ReadinessCenter {
         do {
             let value = try await pool.read(Self.readSnapshot)
             guard generation == current else { return }
-            if value != snapshot { snapshot = value }
+            if value != snapshot { apply(value) }
         } catch {
             NSLog("ReadinessCenter: re-reading readiness: %@", error.localizedDescription)
         }

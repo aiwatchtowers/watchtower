@@ -1,4 +1,3 @@
-import DesignKit
 import SwiftUI
 import WatchtowerCore
 
@@ -71,7 +70,8 @@ struct GettingReadyZoneView: View {
                 GettingReadyReadyLine(cards: ready, onLink: onLink)
             }
             ForEach(sourceRows, id: \.source) { row in
-                GettingReadySourceRowView(text: Self.connectLine(row), source: row.source, onLink: onLink)
+                GettingReadySourceRowView(
+                    text: Self.connectLine(row), source: row.source, offersConnect: row.offersConnect, onLink: onLink)
                     .homeZoneInset()
             }
         }
@@ -103,7 +103,7 @@ struct GettingReadyZoneView: View {
                 titles.append(title)
             }
         }
-        return "\(row.source.actionTitle) to get \(joinedNames(titles))"
+        return GettingReadyPolicy.connectLine(source: row.source, tabTitles: titles)
     }
 
     /// Jira fills four tabs; an Inbox feature names its Inbox entry ("Your
@@ -118,12 +118,6 @@ struct GettingReadyZoneView: View {
         case nil: break
         }
         return AppState.homeDestination(for: feature).map { [$0.title] } ?? []
-    }
-
-    /// "A", "A and B", "A, B and C".
-    private static func joinedNames(_ items: [String]) -> String {
-        guard let last = items.last, items.count > 1 else { return items.first ?? "" }
-        return items.dropLast().joined(separator: ", ") + " and " + last
     }
 }
 
@@ -242,12 +236,6 @@ struct GettingReadyRowView: View {
             }
             .buttonStyle(.link)
         }
-        if card.readiness == .needsFullSlack {
-            // Slack Live only (screens spec §2.2): Home keeps its own
-            // prominent action, so this one is secondary.
-            Button(ReadinessSource.fullSlack.actionTitle) { onLink(.connect(.fullSlack)) }
-                .buttonStyle(.kitSecondary)
-        }
     }
 
     static func color(_ tone: ReadinessTone) -> Color {
@@ -288,6 +276,7 @@ private struct GettingReadyReadyLine: View {
 private struct GettingReadySourceRowView: View {
     let text: String
     let source: ReadinessSource
+    var offersConnect = true
     let onLink: (HomeLink) -> Void
 
     var body: some View {
@@ -295,7 +284,9 @@ private struct GettingReadySourceRowView: View {
             Text(text)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Button(source.actionTitle) { onLink(.connect(source)) }
+            if offersConnect {
+                Button(source.actionTitle) { onLink(.connect(source)) }
+            }
         }
         .padding(.horizontal, Spacing.large)
         .padding(.vertical, Spacing.cozy)

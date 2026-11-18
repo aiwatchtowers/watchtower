@@ -123,7 +123,7 @@ Tests: `FeatureReadinessTests.testNeedsFullSlackForSlackFeatures`, `testNeedsFul
 | Inbox, Inbox → Messages | `inbox` (anySource) | Live only and no mail, calendar, Jira or Linear |
 | Morning brief (Briefings), Day plan | `briefing`, `dayPlan` (anySource) | same |
 | Memory | `memory` (anySource) | same |
-| Home → Getting ready | every card above | the card's line and a **Connect workspace app** button (`.kitSecondary`, Home has its own prominent action) |
+| Home → Getting ready | every feature above | **one grouped row**, like the Off-mode "Connect Slack to get …" row: "Connect your workspace's app to get Digests, Tracks, People … — Live answers in Chats only." (`GettingReadyPolicy.connectLine`) and one **Connect workspace app** button, hidden when the organization's policy forbids Slack (the line stays). The row opens the zone and keeps it from completing while Slack is Live only. — ask #1572 (was: one card per feature) |
 | Statistics | `slackSync` (slack) | Live only — the tab stays visible with Live alone (sidebar rule below) |
 | Knowledge (search) | `knowledgeIndex` (none) | no readiness change; while the mode is Live a note sits under the search field: "Slack is not in Knowledge: Live answers are not kept. Connect your workspace's app to add synced Slack." with a quiet **Connect workspace app**. Its string lives in `SlackModePresentation.knowledgeNote` |
 
@@ -319,7 +319,7 @@ Design-only SwiftUI scenes in `DesignShotCatalog` (`SlackFullLiveShotFixtures`, 
 | [`slack-fl-needs-full-digests-narrow`](../../design/mockups/slack-full-live/slack-fl-needs-full-digests-narrow-light.png) | the same at 360 pt |
 | [`slack-fl-needs-full-catchup`](../../design/mockups/slack-full-live/slack-fl-needs-full-catchup-light.png) | `needsFullSlack` on Catch-Up (visible with Live only) |
 | [`slack-fl-needs-full-statistics`](../../design/mockups/slack-full-live/slack-fl-needs-full-statistics-light.png) | `needsFullSlack` on Statistics (visible with Live only) |
-| [`slack-fl-needs-full-home-card`](../../design/mockups/slack-full-live/slack-fl-needs-full-home-card-light.png) | Home → Getting ready card |
+| [`slack-fl-needs-full-home-card`](../../design/mockups/slack-full-live/slack-fl-needs-full-home-card-light.png) | Home → Getting ready: the one Live-only row (ask #1572), rendered from the real view |
 | [`slack-fl-needs-full-knowledge`](../../design/mockups/slack-full-live/slack-fl-needs-full-knowledge-light.png) | the Knowledge note |
 | [`slack-fl-artifact-keep-disabled`](../../design/mockups/slack-full-live/slack-fl-artifact-keep-disabled-light.png) | **shipped:** disabled Add to Knowledge, the reason as hover help |
 
@@ -400,6 +400,7 @@ All accepted in ask #1315; 2 and 19 explicitly chosen; 10 reversed by the owner 
 25. `ReadinessCenter` re-evaluates on a `SlackLiveStatusCenter` change and reads `slack_live_status` in its snapshot. — ask #1315
 26. The phone's Live-only row follows `accountsSQL`'s own account rule (`status != 'removed'`), not `enabled`. — ask #1315
 27. A public release refuses to build without `RETIRED_SLACK_CLIENT_ID` (`retired-slack-id-check` in `scripts/build-app.sh`); an unset id at run time narrows detection to empty `client_id` and logs once. — ask #1315
+28. Home shows Live only as one grouped Getting ready row with one **Connect workspace app** button, not a card per Slack feature. — ask #1572
 
 ## 12. Out of scope
 

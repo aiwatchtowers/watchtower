@@ -14,6 +14,9 @@ extension AppState {
             await readinessCenter.rereadDatabase()
         }
         slackLiveStatusCenter = center
+        // A Live write the center did not make (a chat, an automation)
+        // reaches the readiness's tick first; the sidebar follows it.
+        readinessCenter.onSlackLiveChange = { [weak self] in await self?.refreshConnectedSources() }
         Task { await center.reload() }
         startSlackConnectListener()
     }

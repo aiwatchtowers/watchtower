@@ -224,7 +224,7 @@ func DBAccounts(d *db.DB) func(ctx context.Context) ([]wire.HeartbeatAccount, er
 		if slices.ContainsFunc(out, func(a wire.HeartbeatAccount) bool { return a.Kind == "slack" }) {
 			return out, nil
 		}
-		probes, err := d.ListSlackLiveStatus()
+		probes, err := d.ListSlackLiveStatusContext(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("slices: reading the Slack Live status: %w", err)
 		}

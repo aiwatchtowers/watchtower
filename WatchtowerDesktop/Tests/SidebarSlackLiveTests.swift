@@ -68,6 +68,25 @@ final class SidebarSlackLiveTests: XCTestCase {
             disabledFeatures: [], connected: appState.featureVisibility.connectedSources))
     }
 
+    /// A Live write the center did not make (a chat) reaches the readiness
+    /// first; the sidebar's sources follow it without opening the pane.
+    func testReadinessLiveChangeRefreshesConnectedSources() async throws {
+        let appState = AppState.isolated()
+        appState.databaseManager = dbManager
+        appState.initSlackLive(dbPool: dbManager.dbPool, cliRunner: nil)
+        appState.readinessCenter.start(pool: dbManager.dbPool)
+        defer { appState.readinessCenter.stop() }
+        await untilObserved { !appState.readinessCenter.readiness.isEmpty }
+        await appState.refreshConnectedSources()
+        XCTAssertFalse(appState.featureVisibility.connectedSources.slackLive)
+
+        try await insertStatus("ok", team: "T1", at: "2026-11-18T09:00:00.000000000Z")
+        await appState.readinessCenter.rereadDatabase()
+        await untilObserved { appState.featureVisibility.connectedSources.slackLive }
+        XCTAssertTrue(SidebarDestination.catchUp.isVisible(
+            disabledFeatures: [], connected: appState.featureVisibility.connectedSources))
+    }
+
     private func insertStatus(_ status: String, team: String, at: String) async throws {
         try await dbManager.dbPool.write { db in
             try db.execute(sql: """
