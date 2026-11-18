@@ -776,12 +776,14 @@ func (t *Transport) Pull(ctx context.Context, zone string, apply func(transport.
 //   - every seq after the token up to ev.Seq is one the hub's own Save got:
 //     the token moves to ev.Seq, nothing is read (the relay tells the writer
 //     of its own writes too);
-//   - only ev.Seq is not the hub's own and the event carries its record
-//     inline: apply sees that one-record page, then the token moves to it.
+//   - the event carries its records inline (relay records_inline, or the
+//     old single record) and they cover every seq after the token up to
+//     ev.Seq that is not the hub's own: apply sees one page of those records
+//     (the own ones left out), then the token moves to ev.Seq.
 //
-// Anything else — a write by someone else in between, a record too large to
-// come inline, a delete, a resync marker (Seq 0), a zone never read (token
-// 0) — is Pull of that zone.
+// Anything else — a write the records do not cover (an event lost before
+// this one, a record too large to come inline), a delete, a resync marker
+// (Seq 0), a zone never read (token 0) — is Pull of that zone.
 //
 // Own seqs are noted when Save returns. An event can overtake that (a Save
 // from another goroutine whose event arrives first, a Save that failed as a
@@ -804,13 +806,49 @@ func (t *Transport) PullEvent(ctx context.Context, ev transport.Event, apply fun
 	switch next := t.firstForeign(zone, since, ev.Seq); {
 	case next > ev.Seq:
 		return t.setToken(zone, ev.Seq)
-	case next == ev.Seq && ev.Inline != nil && ev.Inline.NewSeq == ev.Seq:
-		if err := apply(*ev.Inline); err != nil {
-			return err
+	case ev.Inline != nil && ev.Inline.NewSeq == ev.Seq:
+		if page, ok := t.inlinePage(zone, since, next, ev.Inline); ok {
+			if err := apply(page); err != nil {
+				return err
+			}
+			return t.setToken(zone, ev.Seq)
 		}
-		return t.setToken(zone, ev.Seq)
 	}
 	return t.Pull(ctx, zone, apply)
+}
+
+// inlinePage is the page PullEvent applies from in, an event's inline
+// records, for zone read up to since whose first seq after since that is not
+// the hub's own is next: in's records after since that are not the hub's own
+// writes. ok only when in's records are contiguous, start at or before next
+// and end at in.NewSeq, so they cover every write after the token the hub did
+// not make.
+func (t *Transport) inlinePage(zone string, since, next uint64, in *transport.Batch) (transport.Batch, bool) {
+	n := len(in.Changed)
+	if n == 0 || len(in.Deleted) != 0 || in.Changed[n-1].RecordSeq != in.NewSeq {
+		return transport.Batch{}, false
+	}
+	first := in.Changed[0].RecordSeq
+	if first == 0 || first > next {
+		return transport.Batch{}, false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	own := t.own[zone]
+	page := transport.Batch{NewSeq: in.NewSeq}
+	for i, s := range in.Changed {
+		if s.RecordSeq != first+uint64(i) {
+			return transport.Batch{}, false
+		}
+		if s.RecordSeq <= since {
+			continue
+		}
+		if _, found := slices.BinarySearch(own, s.RecordSeq); found {
+			continue
+		}
+		page.Changed = append(page.Changed, s)
+	}
+	return page, true
 }
 
 // OwnWrites reports whether every seq after zone's stored token up to ev.Seq
@@ -877,23 +915,32 @@ func (t *Transport) firstForeign(zone string, since, upTo uint64) uint64 {
 	return next
 }
 
-// inlineOf is the record a ZoneChanged carries as a one-record page at the
-// event's seq; nil when it carries none, or one written at another seq.
+// inlineOf is the records a ZoneChanged carries — records (relay
+// records_inline), or the old single record of a relay before it — as one
+// page at the event's seq, oldest first, each with its RecordSeq; nil when it
+// carries none, a deletion, or records that are not contiguous up to the
+// event's seq (PullEvent then reads).
 func inlineOf(zc *relayv1.ZoneChanged) *transport.Batch {
-	r := zc.GetRecord()
-	if r == nil || zc.GetSeq() == 0 || r.GetRecordSeq() != zc.GetSeq() {
+	recs := zc.GetRecords()
+	if len(recs) == 0 && zc.GetRecord() != nil {
+		recs = []*relayv1.Record{zc.GetRecord()}
+	}
+	seq := zc.GetSeq()
+	if len(recs) == 0 || uint64(len(recs)) > seq {
 		return nil
 	}
-	b := &transport.Batch{NewSeq: zc.GetSeq()}
-	if r.GetDeleted() {
-		b.Deleted = []string{r.GetName()}
-		return b
+	first := seq - uint64(len(recs)) + 1
+	b := &transport.Batch{NewSeq: seq}
+	for i, r := range recs {
+		if r.GetDeleted() || r.GetRecordSeq() != first+uint64(i) {
+			return nil
+		}
+		s := stored(r)
+		if s.Zone == "" {
+			s.Zone = zc.GetZone()
+		}
+		b.Changed = append(b.Changed, *s)
 	}
-	s := stored(r)
-	if s.Zone == "" {
-		s.Zone = zc.GetZone()
-	}
-	b.Changed = []transport.Stored{*s}
 	return b
 }
 

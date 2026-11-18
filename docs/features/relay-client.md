@@ -41,7 +41,7 @@ The Desktop links no protobuf. After ask #802 it runs no relay code, and protobu
 
 ## Proto pin (R1, R14)
 
-The Kit's pin is relay `main` at `bcca870` (relay PR #5, vouched hubs; it contains PR #3's `Changes.resync`, board #1430). The Go hub's copy moves on its own (board #1345; R14: the pins are not forced equal), so the two may differ; `make relay-proto` prints both.
+The Kit's pin is relay `main` at `bcca870` (relay PR #5, vouched hubs; it contains PR #3's `Changes.resync`, board #1430). The Go hub's copy moves on its own (board #1345; R14: the pins are not forced equal), so the two may differ; `make relay-proto` prints both. The Go copy is at `771a99e` (relay PR #10, live link #1992: `ZoneChanged.records`, `HelloOk.capabilities` = `records_inline`, `client.ErrNotSent`).
 
 `WatchtowerKit/Sources/WatchtowerRelayProto/VERSION` has two lines:
 

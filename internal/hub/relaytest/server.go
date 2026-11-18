@@ -147,6 +147,7 @@ type Server struct {
 	lastDevice string             // the device that subscribed last (Push)
 	ready      chan struct{}      // closed at the first subscribe
 	wsDown     bool               // SetWebSocketDown: WebSockets cut and refused
+	oldEvents  bool               // DisableRecordsInline: a relay before records_inline
 }
 
 type zone struct {
@@ -391,6 +392,16 @@ func (s *Server) EnforceMailboxRead() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.enforceMailboxRead = true
+}
+
+// DisableRecordsInline makes this a relay before records_inline (relay PR
+// #10): HelloOk lists no capability and a ZoneChanged carries only the old
+// single record, for a call that wrote exactly one record of at most 64 KiB
+// to the zone. Call it before the first WebSocket.
+func (s *Server) DisableRecordsInline() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.oldEvents = true
 }
 
 // SetPageLimit caps the records of one changes page.
@@ -1133,25 +1144,45 @@ func (s *Server) liveControlLocked(device string, kind relayv1.ControlKind, deta
 }
 
 // zoneChangedLocked tells every device's current socket subscribed to
-// zoneName that it changed, the writer's too, as the relay does; rec (nil =
-// none) goes inline; s.mu is held.
-func (s *Server) zoneChangedLocked(_, zoneName string, seq uint64, rec *relayv1.Record) {
+// zoneName that it changed up to seq, the writer's too, as the relay does;
+// records go with it, and rec (nil = none) as the old single record; s.mu is
+// held.
+func (s *Server) zoneChangedLocked(_, zoneName string, seq uint64, rec *relayv1.Record, records []*relayv1.Record) {
 	for _, c := range s.conns {
 		if !c.closed && c.zones[zoneName] {
 			c.enqueueLocked(frame{b: eventFrame(&relayv1.Event{Kind: &relayv1.Event_ZoneChanged{
-				ZoneChanged: &relayv1.ZoneChanged{Zone: zoneName, Seq: seq, Record: rec}}})})
+				ZoneChanged: &relayv1.ZoneChanged{Zone: zoneName, Seq: seq, Record: rec, Records: records}}})})
 		}
 	}
 }
 
-// maxInlineRecord is the largest envelope the relay carries in an event
-// (64 KiB).
-const maxInlineRecord = 64 << 10
+// capabilities is what HelloOk lists (relay ws.ts CAPABILITIES).
+var capabilities = []string{"records_inline"}
+
+const (
+	// maxInlineRecord is the largest envelope the old single record field
+	// carries (64 KiB).
+	maxInlineRecord = 64 << 10
+	// maxInlineFrame is the most framed bytes (frameBytes) of the records
+	// one event carries (relay MAX_INLINE_FRAME_BYTES, 256 KiB).
+	maxInlineFrame = 256 << 10
+)
+
+// frameBytes is what a record of zone costs in an event (relay
+// recordFrameBytes): envelope, name, zone and attachment id, plus 32.
+func frameBytes(zone string, r *relayv1.Record) int {
+	return len(r.GetEnvelope()) + len(r.GetName()) + len(zone) + len(r.GetAttachmentId()) + 32
+}
 
 // changed collects one write call's changes per zone, in zone order of
-// first write, so the call announces each zone once, as the relay does: one
-// ZoneChanged at the zone's last seq, with the record inline only when the
-// call wrote exactly that one record there (and it fits).
+// first write, and announces them as the relay does (relay zone.ts
+// announce): the saved records, in seq order, go with the change, split by
+// record into several ZoneChanged where their framed sizes pass 256 KiB; a
+// record over that alone goes in an event of its own without its body, and a
+// call with a delete in the zone goes as one bare event at the zone's last
+// seq. The old single record goes with an event of exactly one record of at
+// most 64 KiB. The relay's lane merging of a slow recipient's changes is not
+// modelled: each event is queued as it is.
 type changed struct {
 	zones []string
 	last  map[string]uint64
@@ -1172,11 +1203,46 @@ func (c *changed) add(zone string, seq uint64, rec *relayv1.Record) {
 // announce sends the collected changes; s.mu is held.
 func (c *changed) announce(s *Server, writer string) {
 	for _, z := range c.zones {
-		var inline *relayv1.Record
-		if recs := c.recs[z]; len(recs) == 1 && recs[0] != nil && len(recs[0].GetEnvelope()) <= maxInlineRecord {
-			inline = proto.Clone(recs[0]).(*relayv1.Record)
+		recs := c.recs[z]
+		if slices.Contains(recs, nil) {
+			s.zoneChangedLocked(writer, z, c.last[z], nil, nil)
+			continue
 		}
-		s.zoneChangedLocked(writer, z, c.last[z], inline)
+		if s.oldEvents {
+			var single *relayv1.Record
+			if len(recs) == 1 && len(recs[0].GetEnvelope()) <= maxInlineRecord {
+				single = proto.Clone(recs[0]).(*relayv1.Record)
+			}
+			s.zoneChangedLocked(writer, z, c.last[z], single, nil)
+			continue
+		}
+		var chunk []*relayv1.Record
+		bytes := 0
+		flush := func() {
+			if len(chunk) == 0 {
+				return
+			}
+			var single *relayv1.Record
+			if len(chunk) == 1 && len(chunk[0].GetEnvelope()) <= maxInlineRecord {
+				single = chunk[0]
+			}
+			s.zoneChangedLocked(writer, z, chunk[len(chunk)-1].GetRecordSeq(), single, chunk)
+			chunk, bytes = nil, 0
+		}
+		for _, r := range recs {
+			size := frameBytes(z, r)
+			if size > maxInlineFrame {
+				flush()
+				s.zoneChangedLocked(writer, z, r.GetRecordSeq(), nil, nil)
+				continue
+			}
+			if bytes+size > maxInlineFrame {
+				flush()
+			}
+			chunk = append(chunk, proto.Clone(r).(*relayv1.Record))
+			bytes += size
+		}
+		flush()
 	}
 }
 
@@ -1253,7 +1319,13 @@ func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 	}
 	var hello relayv1.Frame
 	_ = proto.Unmarshal(b, &hello)
-	helloOK, _ := proto.Marshal(&relayv1.Frame{Kind: &relayv1.Frame_HelloOk{HelloOk: &relayv1.HelloOk{ConnectionId: "c"}}})
+	s.mu.Lock()
+	caps := capabilities
+	if s.oldEvents {
+		caps = nil
+	}
+	s.mu.Unlock()
+	helloOK, _ := proto.Marshal(&relayv1.Frame{Kind: &relayv1.Frame_HelloOk{HelloOk: &relayv1.HelloOk{ConnectionId: "c", Capabilities: caps}}})
 	if ws.Write(ctx, websocket.MessageBinary, helloOK) != nil {
 		return
 	}
