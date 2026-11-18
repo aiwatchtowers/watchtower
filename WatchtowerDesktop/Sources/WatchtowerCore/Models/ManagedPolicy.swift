@@ -17,6 +17,9 @@ package struct ManagedPolicy: Equatable, Sendable {
         case allowedAIProviders = "AllowedAIProviders"
         case allowClaudeAITools = "AllowClaudeAITools"
         case purgeRevokedData = "PurgeRevokedData"
+        case companyBundle = "CompanyBundle"
+        case allowAtlassianAPIToken = "AllowAtlassianAPIToken"
+        case allowOwnGoogleProject = "AllowOwnGoogleProject"
         case requireDatabaseEncryption = "RequireDatabaseEncryption"
         case retentionDays = "RetentionDays"
         case bulkReadLimits = "BulkReadLimits"
@@ -45,6 +48,11 @@ package struct ManagedPolicy: Equatable, Sendable {
     package var allowedAIProviders: [String]?
     package var allowClaudeAITools: Bool? // swiftlint:disable:this discouraged_optional_boolean
     package var purgeRevokedData: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    /// The forced company bundle's wire form as delivered, kept only when
+    /// `CompanyBundle.parse` accepts it for MDM.
+    package var companyBundle: String?
+    package var allowAtlassianAPIToken: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    package var allowOwnGoogleProject: Bool? // swiftlint:disable:this discouraged_optional_boolean
     package var reservedNotEnforced: [String] = []
     package var problems: [Problem] = []
 
@@ -91,6 +99,7 @@ package struct ManagedPolicy: Equatable, Sendable {
         if let v = raw[Key.purgeRevokedData.rawValue] {
             p.purgeRevokedData = p.boolean(.purgeRevokedData, v, restrictive: true)
         }
+        p.normalizeCompanyKeys(raw)
         for key in Key.reserved {
             guard let v = raw[key.rawValue] else { continue }
             p.reservedNotEnforced.append(key.rawValue)
@@ -142,6 +151,35 @@ package struct ManagedPolicy: Equatable, Sendable {
         return b
     }
 
+    /// The company setup keys (#1887): the forced bundle and the two
+    /// booleans, false on a wrong type.
+    private mutating func normalizeCompanyKeys(_ raw: [String: Any]) {
+        if let v = raw[Key.companyBundle.rawValue] {
+            companyBundle = forcedBundle(v)
+        }
+        if let v = raw[Key.allowAtlassianAPIToken.rawValue] {
+            allowAtlassianAPIToken = boolean(.allowAtlassianAPIToken, v, restrictive: false)
+        }
+        if let v = raw[Key.allowOwnGoogleProject.rawValue] {
+            allowOwnGoogleProject = boolean(.allowOwnGoogleProject, v, restrictive: false)
+        }
+    }
+
+    /// The forced bundle only when it is a string `CompanyBundle.parse`
+    /// accepts from MDM; anything else is absent (no company) with a wrong
+    /// type or an invalid entry, as in Go.
+    private mutating func forcedBundle(_ v: Any) -> String? {
+        guard let s = v as? String else {
+            report(.companyBundle, "wrong_type")
+            return nil
+        }
+        guard case .success = CompanyBundle.parse(s, origin: .mdm) else {
+            report(.companyBundle, "invalid_entry")
+            return nil
+        }
+        return s
+    }
+
     /// Membership by UTF-8 bytes, as Go compares strings (never Swift's
     /// canonical equivalence: "\u{212A}" is not "K").
     static func byteIn(_ s: String, _ set: [String]) -> Bool {
@@ -181,6 +219,10 @@ package struct ManagedPolicy: Equatable, Sendable {
 
     package var claudeAIToolsAllowed: Bool { allowClaudeAITools ?? true }
 
+    package var atlassianAPITokenAllowed: Bool { allowAtlassianAPIToken ?? true }
+
+    package var ownGoogleProjectAllowed: Bool { allowOwnGoogleProject ?? true }
+
     /// Whether the key decides its controls (they are locked).
     package func isLocked(_ key: Key) -> Bool {
         switch key {
@@ -191,6 +233,9 @@ package struct ManagedPolicy: Equatable, Sendable {
         case .allowedAIProviders: allowedAIProviders != nil
         case .allowClaudeAITools: allowClaudeAITools != nil
         case .purgeRevokedData: purgeRevokedData != nil
+        case .companyBundle: companyBundle != nil
+        case .allowAtlassianAPIToken: allowAtlassianAPIToken != nil
+        case .allowOwnGoogleProject: allowOwnGoogleProject != nil
         case .requireDatabaseEncryption, .retentionDays, .bulkReadLimits: reservedNotEnforced.contains(key.rawValue)
         }
     }

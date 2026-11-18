@@ -41,7 +41,8 @@ func TestPolicyShow_JSONKeys(t *testing.T) {
 	keys, ok := m["keys"].(map[string]any)
 	require.True(t, ok)
 	wantKeys(t, keys, "AllowedSources", "MobileSync", "AllowedQuickConnections", "AllowAutomationShell",
-		"AllowedAIProviders", "AllowClaudeAITools", "PurgeRevokedData")
+		"AllowedAIProviders", "AllowClaudeAITools", "PurgeRevokedData",
+		"CompanyBundle", "AllowAtlassianAPIToken", "AllowOwnGoogleProject")
 	assert.Equal(t, true, m["managed"])
 	assert.Equal(t, "com.watchtower.desktop", m["domain"])
 	assert.Equal(t, "off", keys["MobileSync"])

@@ -21,6 +21,9 @@ A full example with every key and placeholder values is in the repository at `do
 | `AllowedAIProviders` | array of `claude`, `codex`, `ollama` | The only providers any part of Watchtower may use. A configured provider outside the list fails each AI call with the policy error; it never switches to another provider by itself. |
 | `AllowClaudeAITools` | boolean | `false` turns off claude.ai publishing and connectors in the chat. |
 | `PurgeRevokedData` | boolean | Forces [deleting a revoked account's data](../concepts/revoked-access.md) on or off. |
+| `CompanyBundle` | string: your company's connect code | Your company's apps for every connector, without the link. It wins over a stored copy of the same company; when you change an app in it, that app's accounts ask for a new sign-in at the next start. It never deletes an account. |
+| `AllowAtlassianAPIToken` | boolean | `false` hides connecting Jira with an API token; token accounts stop syncing and keep their data. |
+| `AllowOwnGoogleProject` | boolean | `false` hides **Use my own Google project**; accounts on a person's own project stop syncing and keep their data. Company and shared Google accounts are not affected. |
 
 A key with the wrong type counts as its most restrictive value (for example an integer `1` where a boolean belongs counts as `false`), and the problem is listed in the policy.
 
@@ -40,7 +43,7 @@ Watchtower restricts the provider; the account the provider's own tool signs in 
 
 ## Checking a Mac
 
-Run `watchtower policy show` for the effective policy in plain words, or `watchtower policy show --json` for scripts (keys `managed`, `domain`, `keys`, `reserved_not_enforced`, `errors`). In the app, the same list is under **Settings → System → Privacy → Organization policy**.
+Run `watchtower policy show` for the effective policy in plain words, or `watchtower policy show --json` for scripts (keys `managed`, `domain`, `keys`, `reserved_not_enforced`, `errors`). In the app, the same list is under **Settings → System → Privacy → Organization policy**. `watchtower policy keys` lists every key with its type, default and effect (`--json` for scripts).
 
 ## Related
 

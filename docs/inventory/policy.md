@@ -10,21 +10,22 @@
 > `WatchtowerDesktop/Sources/WatchtowerCore/{Models/ManagedPolicy.swift,Services/ManagedPolicy*.swift}`,
 > read this file first.
 
-**Module:** `internal/policy/` (keys, `Normalize`, helpers, the CoreFoundation reader, the 30 s cache), `cmd/policy.go` (`policy show`), the Swift twin `ManagedPolicy` / `ManagedPolicyReader` / `ManagedPolicyCenter` in WatchtowerCore, and the shared fixture `internal/policy/testdata/policy_cases.json`. Feature note: `docs/features/mdm-policy.md`. Board #608, spec `docs/superpowers/specs/2026-10-25-mdm-policy-design.md` (approved 2026-10-25, asks #569 and #572).
+**Module:** `internal/policy/` (keys, `Normalize`, helpers, the CoreFoundation reader, the 30 s cache), `cmd/policy.go` (`policy show`, `policy keys`), the Swift twin `ManagedPolicy` / `ManagedPolicyReader` / `ManagedPolicyCenter` in WatchtowerCore, and the shared fixture `internal/policy/testdata/policy_cases.json`. Feature note: `docs/features/mdm-policy.md`. Board #608, spec `docs/superpowers/specs/2026-10-25-mdm-policy-design.md` (approved 2026-10-25, asks #569 and #572).
 **Last full audit:** 2026-10-25
 
 ## POLICY-01 — Forced values only, wrong types fail closed
 
 **Status:** Enforced
 
-**Observable:** Only a value the configuration profile forces for `com.watchtower.desktop` is policy. A value written with `defaults write` into the same domain changes nothing and never shows **Managed by your organization**. A key with a wrong type (a boolean given as the integer `1`, a string where an array belongs, a forced key whose value cannot be read) acts as its most restrictive value: no source, no Quick Connection, no provider, MobileSync `off`, shell and claude.ai tools not allowed, purge on. Unknown array entries are dropped; a list of only unknown entries is the empty list. No profile means no restriction, for every build.
+**Observable:** Only a value the configuration profile forces for `com.watchtower.desktop` is policy. A value written with `defaults write` into the same domain changes nothing and never shows **Managed by your organization**. A key with a wrong type (a boolean given as the integer `1`, a string where an array belongs, a forced key whose value cannot be read) acts as its most restrictive value: no source, no Quick Connection, no provider, MobileSync `off`, shell and claude.ai tools not allowed, purge on, no company bundle, Atlassian API tokens and own Google projects not allowed. A `CompanyBundle` the bundle parser refuses from MDM (damaged, too long, carrying `personal`, a newer version) is no company. Unknown array entries are dropped; a list of only unknown entries is the empty list. No profile means no restriction, for every build.
 
 **Mechanism:** Go reads through CoreFoundation (`CFPreferencesAppValueIsForced` per key, then `CFPreferencesCopyAppValue`; CFBoolean told apart from CFNumber by type id; anything unreadable is `unsupported{}`). The reader is installed only by `main` (`policy.UseSystemReader`), never in a test binary. Swift reads the same API (`ManagedPolicyReader`, a forced key without a value is `NSNull`), and the app's reader is empty under XCTest. `Normalize` / `ManagedPolicy.normalize` apply the same fail-closed rules and report each defect.
 
 **Why locked:** A person could otherwise fake or lift a company's restriction with `defaults write`, and a malformed profile would silently allow what it meant to forbid.
 
 **Test guards:**
-- `internal/policy/policy_test.go`: `TestPolicy01_WrongTypesFailClosed`.
+- `internal/policy/policy_test.go`: `TestPolicy01_WrongTypesFailClosed`, `TestPolicy01_RefusedCompanyBundleIsAbsent`.
+- `WatchtowerDesktop/Tests/Core/ManagedPolicyTests.swift`: `companyKeysFailClosed`.
 - `internal/policy/reader_darwin_test.go`: `TestPolicy01_UnforcedValueIgnored`, `TestPolicy01_ForcedValuesAreRead`.
 - `internal/policy/collision_test.go`: `TestPolicy01_KeysNeverCollideWithAppDefaults`.
 - `WatchtowerDesktop/Tests/Core/ManagedPolicyReaderTests.swift` (support).
@@ -35,7 +36,7 @@
 
 **Status:** Enforced
 
-**Observable:** The Desktop locks exactly what the CLI and the daemon refuse, for every profile: the same normalized keys, problems and Quick Connection matches (https only, host and port, the path on a `/` boundary, dot segments and encoded separators refused, byte comparisons).
+**Observable:** The Desktop locks exactly what the CLI and the daemon refuse, for every profile: the same normalized keys (the company setup keys `CompanyBundle`, `AllowAtlassianAPIToken`, `AllowOwnGoogleProject` included, the bundle checked by `companybundle.Parse` and `CompanyBundle.parse`), problems and Quick Connection matches (https only, host and port, the path on a `/` boundary, dot segments and encoded separators refused, byte comparisons).
 
 **Mechanism:** One fixture, `internal/policy/testdata/policy_cases.json`, run by both sides; the Swift URL matcher mirrors Go's `net/url` by hand (EscapedPath, host and port rules, control characters).
 
@@ -67,6 +68,7 @@
 
 ## Changelog
 
+- 2026-11-18 (company setup #1887 Task 8, spec `docs/superpowers/specs/2026-11-17-company-setup-design.md` D9, D24; approved in asks #1476 and D9): strengthening, no guard relaxed. POLICY-01 and POLICY-02 gain the keys `CompanyBundle` (string, the bundle's wire form; wrong type or a bundle `companybundle.Parse` refuses from MDM → absent with a problem), `AllowAtlassianAPIToken` and `AllowOwnGoogleProject` (booleans, default true, wrong type → false). Fixture rows `company_keys_valid`, `company_keys_wrong_type`, `company_bundle_personal_refused`, `company_bundle_damaged`; new guards `TestPolicy01_RefusedCompanyBundleIsAbsent` and Swift `companyKeysFailClosed`. Their enforcement (POLICY-03) lands with the API-token and own-Google-project tasks.
 - 2026-11-03 (go hub plan 3 Task 24, spec `docs/superpowers/specs/2026-10-31-go-hub-design.md` §13 "Ported guards", approved with the spec; asks #807, #812, #813, #814): the Swift hub is deleted, and POLICY-03's Swift guards in `MobileHubPolicyTests.swift` go with it. Same-meaning Go twins: `testOffStopsHubKeepsSetting` → `internal/hub/hub_test.go::TestPolicy03_OffStopsHubKeepsSetting` and `internal/hub/resolve_desktop_test.go::TestPolicy03_OffStopsDesktopHostHubKeepsSetting`; `testLooseningDoesNotStartHubWhenSettingOff` and `testRetiredLooseningNeverStartsTheSwiftHub` → `internal/hub/hub_test.go::TestPolicy03_LooseningDoesNotStartHubWhenSettingOff` (no Swift hub is left to start). **Retired, no Go twin (owner decision, ask #969 Q1):** `testRetiredOffWipesAPendingSwiftStateAndKeepsSetting` and `testRetiredWipeNeverCreatesOrRepairsKeys` (the `MobileSync = off` wipe of a Swift state not yet handed over) are deleted with the Swift hub and not replaced: there is no `hub adopt --policy-wipe` and no zone deletion. When `MobileSync = off` arrives before the hand-over, what the Swift hub published to iCloud stays there until the owner handles it himself. This is a retirement of those two guards only; every other POLICY-03 guard keeps its meaning. The Mechanism sentence names the Go hub's `hub_meta.enabled`; the Observable text is unchanged.
 - 2026-11-03 (go hub plan 3 Task 23, PR #610, ask #956): strengthening, no guard relaxed. The owner's Mobile off now unlinks every phone (as the Swift hub's off did); the policy's off is not the owner's and keeps them: `TestPolicy03_OffStopsHubKeepsSetting` also asserts the linked phone stays after `MobileSync = off`. Text unchanged.
 - 2026-11-02 (go hub plan 3 Task 22, PR #605 review): strengthening, no guard relaxed. Two guards for the production branch (the Swift hub retired, the Go hub's hand-over): `MobileSync = off` still wipes a Swift state that has not been handed over yet, and loosening never starts the Swift hub. The two earlier Swift guards stay, on the Swift hub's own branch, until Task 24 maps them to the Go twins.

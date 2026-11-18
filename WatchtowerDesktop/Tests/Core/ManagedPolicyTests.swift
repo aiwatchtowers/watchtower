@@ -27,7 +27,10 @@ struct ManagedPolicyTests {
             "AllowAutomationShell": opt(p.allowAutomationShell),
             "AllowedAIProviders": opt(p.allowedAIProviders),
             "AllowClaudeAITools": opt(p.allowClaudeAITools),
-            "PurgeRevokedData": opt(p.purgeRevokedData)
+            "PurgeRevokedData": opt(p.purgeRevokedData),
+            "CompanyBundle": opt(p.companyBundle),
+            "AllowAtlassianAPIToken": opt(p.allowAtlassianAPIToken),
+            "AllowOwnGoogleProject": opt(p.allowOwnGoogleProject)
         ]
         return [
             "managed": p.managed, "domain": Constants.bundleID, "keys": keys,
@@ -82,6 +85,23 @@ struct ManagedPolicyTests {
         #expect(ManagedPolicy.normalize(["AllowAutomationShell": true]).shellAllowed)
     }
 
+    @Test("the company keys fail closed on a wrong type; a refused bundle is no company")
+    func companyKeysFailClosed() {
+        let p = ManagedPolicy.normalize([
+            "CompanyBundle": NSNumber(value: 1), "AllowAtlassianAPIToken": NSNumber(value: 1), "AllowOwnGoogleProject": "true"
+        ])
+        #expect(p.companyBundle == nil)
+        #expect(!p.atlassianAPITokenAllowed)
+        #expect(!p.ownGoogleProjectAllowed)
+        #expect(p.problems.map(\.problem) == ["wrong_type", "wrong_type", "wrong_type"])
+        #expect(p.isLocked(.allowAtlassianAPIToken))
+        // {"v":1,"company":"Acme","personal":true}: MDM never carries `personal`.
+        let personal = ManagedPolicy.normalize(["CompanyBundle": "eyJ2IjoxLCJjb21wYW55IjoiQWNtZSIsInBlcnNvbmFsIjp0cnVlfQ"])
+        #expect(personal.companyBundle == nil)
+        #expect(personal.problems == [ManagedPolicy.Problem(key: "CompanyBundle", problem: "invalid_entry")])
+        #expect(!personal.isLocked(.companyBundle))
+    }
+
     @Test("the keys are Go's keys")
     func keysAreSameAsGo() throws {
         let f = try Self.fixture()
@@ -102,6 +122,9 @@ struct ManagedPolicyTests {
         #expect(p.mobileSyncMode == "allowed")
         #expect(p.providerAllowed("codex"))
         #expect(p.claudeAIToolsAllowed)
+        #expect(p.atlassianAPITokenAllowed)
+        #expect(p.ownGoogleProjectAllowed)
+        #expect(p.companyBundle == nil)
         #expect(ManagedPolicy.Key.allCases.allSatisfy { !p.isLocked($0) })
     }
 

@@ -13,7 +13,10 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -58,7 +61,10 @@
             "ollama"
           ],
           "AllowClaudeAITools": false,
-          "PurgeRevokedData": true
+          "PurgeRevokedData": true,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -79,7 +85,10 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -105,7 +114,10 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -134,7 +146,10 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -160,7 +175,10 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -191,7 +209,10 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -217,7 +238,10 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -238,7 +262,10 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -264,7 +291,10 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -290,7 +320,10 @@
           "AllowAutomationShell": false,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -316,7 +349,10 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": false,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -342,7 +378,10 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": true
+          "PurgeRevokedData": true,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -368,7 +407,10 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": false
+          "PurgeRevokedData": false,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -394,7 +436,10 @@
             "claude"
           ],
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -422,7 +467,10 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": [],
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -454,7 +502,10 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -480,7 +531,10 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -501,7 +555,10 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [
           "RetentionDays"
@@ -528,7 +585,10 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [
           "RequireDatabaseEncryption",
@@ -562,7 +622,10 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": []
@@ -585,7 +648,10 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": true
+          "PurgeRevokedData": true,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -628,7 +694,10 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -669,7 +738,10 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
@@ -705,12 +777,138 @@
           "AllowAutomationShell": null,
           "AllowedAIProviders": null,
           "AllowClaudeAITools": null,
-          "PurgeRevokedData": null
+          "PurgeRevokedData": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
         },
         "reserved_not_enforced": [],
         "errors": [
           {
             "key": "AllowedQuickConnections",
+            "problem": "invalid_entry"
+          }
+        ]
+      }
+    },
+    {
+      "name": "company_keys_valid",
+      "raw": {
+        "CompanyBundle": "eyJ2IjoxLCJjb21wYW55IjoiQWNtZSIsImF0bGFzc2lhbiI6eyJjbGllbnRfaWQiOiJhY21lQ2xpZW50SWQwMSIsImNsaWVudF9zZWNyZXQiOiJhY21lLXNlY3JldCIsInNpdGUiOiJodHRwczovL2FjbWUuYXRsYXNzaWFuLm5ldCIsImNvbmZsdWVuY2UiOnRydWV9fQ",
+        "AllowAtlassianAPIToken": false,
+        "AllowOwnGoogleProject": true
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "CompanyBundle": "eyJ2IjoxLCJjb21wYW55IjoiQWNtZSIsImF0bGFzc2lhbiI6eyJjbGllbnRfaWQiOiJhY21lQ2xpZW50SWQwMSIsImNsaWVudF9zZWNyZXQiOiJhY21lLXNlY3JldCIsInNpdGUiOiJodHRwczovL2FjbWUuYXRsYXNzaWFuLm5ldCIsImNvbmZsdWVuY2UiOnRydWV9fQ",
+          "AllowAtlassianAPIToken": false,
+          "AllowOwnGoogleProject": true
+        },
+        "reserved_not_enforced": [],
+        "errors": []
+      }
+    },
+    {
+      "name": "company_keys_wrong_type",
+      "raw": {
+        "CompanyBundle": 1,
+        "AllowAtlassianAPIToken": 1,
+        "AllowOwnGoogleProject": "yes"
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": false,
+          "AllowOwnGoogleProject": false
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "CompanyBundle",
+            "problem": "wrong_type"
+          },
+          {
+            "key": "AllowAtlassianAPIToken",
+            "problem": "wrong_type"
+          },
+          {
+            "key": "AllowOwnGoogleProject",
+            "problem": "wrong_type"
+          }
+        ]
+      }
+    },
+    {
+      "name": "company_bundle_personal_refused",
+      "raw": {
+        "CompanyBundle": "eyJ2IjoxLCJjb21wYW55IjoiQWNtZSIsInBlcnNvbmFsIjp0cnVlfQ"
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "CompanyBundle",
+            "problem": "invalid_entry"
+          }
+        ]
+      }
+    },
+    {
+      "name": "company_bundle_damaged",
+      "raw": {
+        "CompanyBundle": "not a bundle"
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null,
+          "CompanyBundle": null,
+          "AllowAtlassianAPIToken": null,
+          "AllowOwnGoogleProject": null
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "CompanyBundle",
             "problem": "invalid_entry"
           }
         ]
