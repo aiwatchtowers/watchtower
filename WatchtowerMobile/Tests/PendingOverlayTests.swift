@@ -247,6 +247,15 @@ final class PendingOverlayTests: XCTestCase {
         XCTAssertEqual(back.targets.first { $0.id == 416 }?.status, .todo)
     }
 
+    /// CI fix, round 5: the demo targets' dates follow `now`, not the real clock. A record that differs between
+    /// two reads of the same replica reads as "overtaken" and drops an echoed overlay.
+    func testTheDemoTargetsFollowTheGivenClock() throws {
+        let targets = try demoSnapshot(now: t0).targets
+        XCTAssertFalse(targets.isEmpty)
+        XCTAssertEqual(Set(targets.map(\.createdAt)), [t0.addingTimeInterval(-172_800)])
+        XCTAssertEqual(Set(targets.map(\.updatedAt)), [t0.addingTimeInterval(-3_600)])
+    }
+
     /// Fix round 2, 1: a newer write whose save throws leaves the older, acked write showing.
     func testAFailedNewerSaveLeavesTheOlderWriteShowing() async throws {
         let book = book()
