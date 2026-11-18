@@ -15,9 +15,9 @@ import (
 // a nested call fails at once instead of deadlocking on its own flock.
 var ErrWriteLockHeld = errors.New("config.yaml write lock already held by this process")
 
-// errWriteNotLocked is a low-level writer's refusal of a path its token does
+// ErrWriteNotLocked is a low-level writer's refusal of a path its token does
 // not cover.
-var errWriteNotLocked = errors.New("config write lock not held for this path")
+var ErrWriteNotLocked = errors.New("config write lock not held for this path")
 
 // WriteLock is the token WithWriteLock hands its callback. It has no exported
 // constructor, and every low-level config.yaml writer (cmd's

@@ -523,7 +523,7 @@ func readConfigForWrite(configPath string) (*viper.Viper, error) {
 // cover is refused.
 func writeConfigAtomic(lk *config.WriteLock, v *viper.Viper, configPath string) error {
 	if !lk.Covers(configPath) {
-		return fmt.Errorf("writing config %s: config write lock not held for this path", configPath)
+		return fmt.Errorf("writing config %s: %w", configPath, config.ErrWriteNotLocked)
 	}
 	// Viper folded keys that differ only in case when it read the file: an
 	// ambiguous background AI answer is refused, never persisted folded.

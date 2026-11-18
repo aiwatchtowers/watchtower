@@ -566,3 +566,89 @@ func TestAIBackground_AllowRefusesBadWorkspace(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "allowed", storedAnswer(t, path))
 }
+
+// consentGolden is one case of the consent text the CLI and the Desktop
+// share (internal/aiconsent/testdata/consent_text.json, read by the Swift
+// BackgroundAIConsentCopyTests too): the screen's lines in order.
+type consentGolden struct {
+	Agent         string   `json:"agent"`
+	Reserve       string   `json:"reserve"`
+	PollMinutes   int      `json:"poll_minutes"`
+	BackfillDays  int      `json:"backfill_days"`
+	Title         string   `json:"title"`
+	Intro         string   `json:"intro"`
+	Plan          string   `json:"plan"`
+	ReserveLine   *string  `json:"reserve_line"`
+	WhatRunsTitle string   `json:"what_runs_title"`
+	WhatRuns      []string `json:"what_runs"`
+	UserStarted   string   `json:"user_started"`
+	ChangeLater   string   `json:"change_later"`
+}
+
+// render lays the golden's lines out as consentText does.
+func (g consentGolden) render() string {
+	var b strings.Builder
+	b.WriteString(g.Title + "\n\n" + g.Intro + "\n\n" + g.Plan + "\n")
+	if g.ReserveLine != nil {
+		b.WriteString(*g.ReserveLine + "\n")
+	}
+	b.WriteString("\n" + g.WhatRunsTitle + "\n")
+	for _, row := range g.WhatRuns {
+		b.WriteString("  • " + row + "\n")
+	}
+	b.WriteString("\n" + g.UserStarted + "\n" + g.ChangeLater + "\n")
+	return b.String()
+}
+
+// parseConsentText splits consentText's output back into a golden.
+func parseConsentText(t *testing.T, g consentGolden, text string) consentGolden {
+	t.Helper()
+	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	require.GreaterOrEqual(t, len(lines), 15, text)
+	g.Title, g.Intro, g.Plan = lines[0], lines[2], lines[4]
+	i := 5
+	if lines[i] != "" {
+		line := lines[i]
+		g.ReserveLine = &line
+		i++
+	}
+	g.WhatRunsTitle = lines[i+1]
+	i += 2
+	g.WhatRuns = nil
+	for ; strings.HasPrefix(lines[i], "  • "); i++ {
+		g.WhatRuns = append(g.WhatRuns, strings.TrimPrefix(lines[i], "  • "))
+	}
+	g.UserStarted, g.ChangeLater = lines[i+1], lines[i+2]
+	return g
+}
+
+// TestAIBackground_ConsentTextSharedGolden pins the CLI's consent text to
+// the golden the Desktop's copy is pinned to (Go↔Swift twins, spec §5.1).
+func TestAIBackground_ConsentTextSharedGolden(t *testing.T) {
+	file := filepath.Join("..", "internal", "aiconsent", "testdata", "consent_text.json")
+	if *updateSessionReportGolden {
+		var out []consentGolden
+		for _, c := range []struct {
+			agent, reserve string
+			poll, backfill int
+		}{
+			{"claude", "", 15, 30}, {"codex", "claude", 5, 7}, {"claude", "codex", 5, 7},
+			{"ollama", "", 5, 7}, {"ollama", "codex", 15, 30}, {"claude", "ollama", 15, 30}, {"codex", "codex", 15, 30},
+		} {
+			g := consentGolden{Agent: c.agent, Reserve: c.reserve, PollMinutes: c.poll, BackfillDays: c.backfill}
+			out = append(out, parseConsentText(t, g, consentText(c.agent, c.reserve, c.poll, c.backfill)))
+		}
+		data, err := json.MarshalIndent(out, "", "  ")
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(file, append(data, '\n'), 0o644))
+		return
+	}
+	data, err := os.ReadFile(file)
+	require.NoError(t, err, "run with -update to write the shared golden")
+	var cases []consentGolden
+	require.NoError(t, json.Unmarshal(data, &cases))
+	require.NotEmpty(t, cases)
+	for _, g := range cases {
+		assert.Equal(t, g.render(), consentText(g.Agent, g.Reserve, g.PollMinutes, g.BackfillDays), "%s/%s", g.Agent, g.Reserve)
+	}
+}

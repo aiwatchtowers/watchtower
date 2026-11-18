@@ -442,6 +442,19 @@ func (e *Executor) heldForConsent(owner bool, r *db.AutomationRun, a *db.Automat
 	return true, nil
 }
 
+// gateInline is an inline claim's checks before it claims run: the consent
+// hold (heldForConsent, owner = ctx serves the owner's gesture) and the
+// live-Slack limit (limitLiveSlack). ended = the run was ended unstarted
+// (or moved by another claimer meanwhile): the caller answers with its row.
+func (e *Executor) gateInline(ctx context.Context, run *db.AutomationRun, a *db.Automation, now time.Time) (owner, ended bool, err error) {
+	owner = ownerStarted(ctx)
+	if held, err := e.heldForConsent(owner, run, a, now); err != nil || held {
+		return owner, held, err
+	}
+	limited, err := e.limitLiveSlack(run, a, now)
+	return owner, limited, err
+}
+
 // ownerStarted reports whether ctx serves the owner's gesture: its own
 // origin mark, else the process default (aiconsent.OriginOf).
 func ownerStarted(ctx context.Context) bool {
@@ -508,15 +521,10 @@ func (e *Executor) ExecuteInlinePinned(ctx context.Context, runID int64, approva
 		}
 		return e.db.GetAutomationRun(runID)
 	}
-	owner := ownerStarted(ctx)
-	if held, err := e.heldForConsent(owner, run, a, now); err != nil {
+	owner, ended, err := e.gateInline(ctx, run, a, now)
+	if err != nil {
 		return nil, fmt.Errorf("automation run %d: %w", runID, err)
-	} else if held {
-		return e.db.GetAutomationRun(runID)
-	}
-	if limited, err := e.limitLiveSlack(run, a, now); err != nil {
-		return nil, fmt.Errorf("automation run %d: %w", runID, err)
-	} else if limited {
+	} else if ended {
 		return e.db.GetAutomationRun(runID)
 	}
 	claimed, err := e.claim(runID, a, now, 0)
@@ -574,18 +582,13 @@ func (e *Executor) ExecuteBuiltinInline(ctx context.Context, runID int64) (*db.A
 	// owner-started ctx (D3) and pass. A slot's sync run is checked here,
 	// at claim time, whatever the slot read before; once claimed, its calls
 	// are admitted as run:<id> (runOrigin) and finish after a pause (D12).
-	owner := ownerStarted(ctx)
-	if held, err := e.heldForConsent(owner, run, a, now); err != nil {
+	// Defensive on the live-Slack limit: a slot recipe cannot list
+	// slack:live (refused at parse with trigger.sync and in built-ins), but
+	// an index row that did would still be held to the hourly limit.
+	owner, ended, err := e.gateInline(ctx, run, a, now)
+	if err != nil {
 		return nil, fmt.Errorf("automation run %d: %w", runID, err)
-	} else if held {
-		return e.db.GetAutomationRun(runID)
-	}
-	// Defensive: a slot recipe cannot list slack:live (refused at parse
-	// with trigger.sync and in built-ins), but an index row that did would
-	// still be held to the hourly limit.
-	if limited, err := e.limitLiveSlack(run, a, now); err != nil {
-		return nil, fmt.Errorf("automation run %d: %w", runID, err)
-	} else if limited {
+	} else if ended {
 		return e.db.GetAutomationRun(runID)
 	}
 	claimed, err := e.claim(runID, a, now, 0)

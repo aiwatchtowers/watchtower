@@ -296,7 +296,7 @@ func boolYAML(b bool) string {
 // version is left as-is. It refuses a path lk does not cover.
 func writeFeatureMigrationConfigBytes(lk *WriteLock, data []byte, configPath string) error {
 	if !lk.Covers(configPath) {
-		return fmt.Errorf("writing config %s: %w", configPath, errWriteNotLocked)
+		return fmt.Errorf("writing config %s: %w", configPath, ErrWriteNotLocked)
 	}
 	dir := filepath.Dir(configPath)
 
