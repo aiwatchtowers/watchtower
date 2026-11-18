@@ -42,7 +42,7 @@ package enum SessionAutoCleanupOutcome: Equatable, Sendable {
     package static func group(reason: SessionCleanupReason) -> CleanupItemGroup {
         guard case let .known(code) = reason else { return .couldNot }
         switch code {
-        case .uncommittedChanges, .unpushedCommits, .operationInProgress, .locked, .containsWorktree,
+        case .uncommittedChanges, .ignoredFiles, .unpushedCommits, .operationInProgress, .locked, .containsWorktree,
              // Merged into what cannot be told (ask #1240): kept, named in
              // the notice, and it does not keep the row.
              .defaultBranchUnknown:

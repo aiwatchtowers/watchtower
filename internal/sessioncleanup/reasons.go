@@ -14,6 +14,7 @@ func allReasonCodes() []string {
 		ReasonWorkbenchFolder,
 		ReasonLocked,
 		ReasonUncommittedChanges,
+		ReasonIgnoredFiles,
 		ReasonProcessRunning,
 		ReasonProcessUnknown,
 		ReasonSessionInIt,
