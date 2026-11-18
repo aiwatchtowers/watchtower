@@ -307,6 +307,25 @@ class HostedRelayScenarioCase: XCTestCase {
         }
     }
 
+    /// Yields (pumping the fake's clock) until `condition`, for at most `turns` turns: a condition that never
+    /// comes fails the test instead of hanging the run. No wall-clock wait.
+    @discardableResult
+    func settle(
+        _ what: String,
+        turns: Int = 200_000,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        _ condition: () async -> Bool
+    ) async -> Bool {
+        for _ in 0..<turns {
+            if await condition() { return true }
+            pump()
+            await Task.yield()
+        }
+        XCTFail("never settled: \(what)", file: file, line: line)
+        return false
+    }
+
     /// Spins (pumping the fake's clock) until `session`'s socket is live, with no wall-clock cap.
     func waitUntilLive(_ session: HostedRelaySession) async {
         while await session.connection?.isLive != true {

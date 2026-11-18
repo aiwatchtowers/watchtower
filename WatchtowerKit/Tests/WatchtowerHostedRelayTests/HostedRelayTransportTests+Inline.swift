@@ -52,9 +52,7 @@ extension HostedRelayTransportTests {
         await transport.start()
         await waitUntilLive(await transport.session)
         await eventually { ((try? self.changesSinces(zone).count) ?? 0) >= 2 }
-        while await transport.pullTask != nil {
-            await Task.yield()
-        }
+        await settle("the start's pulls are over") { await transport.pullTask == nil }
         XCTAssertEqual(try changesSinces(zone), [0, 1])
         return (transport, store, log, mac)
     }
@@ -131,10 +129,34 @@ extension HostedRelayTransportTests {
         let fetches = log.fetches
 
         await transport.handle(.zoneChanged(zone: zone, seq: 3, records: saved))
-        await transport.handle(.zoneChanged(zone: zone, seq: 2))
+        await transport.handle(.zoneChanged(zone: zone, seq: 3))
         XCTAssertEqual(try names(store), ["a", "b", "c"], "nothing twice")
         XCTAssertEqual(log.fetches, fetches, "nothing new: the engine is not told")
-        XCTAssertEqual(try changesSinces(zone), [0], "no read at all")
+        XCTAssertEqual(try changesSinces(zone), [0], "an event at the cursor is already read: no read at all")
+    }
+
+    /// An event below the cursor does not continue it: the zone is read (spec R3), with or without records, so a
+    /// zone the relay rebuilt below the cursor is still noticed (`TOKEN_EXPIRED`, then the resync from 0).
+    func testAnEventBelowTheCursorIsARead() async throws {
+        let relay = try relay
+        let (transport, store, _, mac) = try await readToOne()
+        let zone = dataZone(mac)
+        let saved = try await macSaveAll(mac, zone, ["b", "c"])
+        try await transport.pull(only: [.data])
+        XCTAssertEqual(try changesSinces(zone), [0, 1])
+
+        await transport.handle(.zoneChanged(zone: zone, seq: 2))
+        XCTAssertEqual(try changesSinces(zone), [0, 1, 3], "a bare event below the cursor reads")
+        await transport.handle(.zoneChanged(zone: zone, seq: 2, records: [saved[0]]))
+        XCTAssertEqual(try changesSinces(zone), [0, 1, 3, 3], "so does one with records")
+        XCTAssertEqual(try names(store), ["a", "b", "c"], "nothing twice")
+
+        // The relay answers that read TOKEN_EXPIRED when the cursor is beyond its zone: the lane resyncs from 0.
+        relay.failNext("changes", with: .tokenExpired)
+        await transport.handle(.zoneChanged(zone: zone, seq: 1))
+        XCTAssertEqual(
+            Array(try changesFlags(zone).suffix(2)), [ChangesFlag(since: 3, resync: false), ChangesFlag(since: 0, resync: true)])
+        XCTAssertEqual(try store.relayCursor(zone: .data), 3)
     }
 
     /// A record with an attachment is read: the read downloads the file.
@@ -211,9 +233,7 @@ extension HostedRelayTransportTests {
         let applied = await transport.applyInline(zone: .data, seq: 2, records: saved)
         XCTAssertFalse(applied, "a pull is in flight")
         let event = Task { await transport.handle(.zoneChanged(zone: zone, seq: 2, records: saved)) }
-        while await !transport.zonesToPull.contains(.data) {
-            await Task.yield()
-        }
+        await settle("the event joined the pull") { await transport.zonesToPull.contains(.data) }
         intercepting.release()
         await pull.value
         await event.value

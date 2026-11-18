@@ -19,7 +19,7 @@ public actor HostedRelaySession {
     static let logger = Logger(subsystem: "WatchtowerKit", category: "HostedRelay")
     /// `events` keeps the newest this many while nobody reads.
     static let eventBuffer = 256
-    /// The most record bytes (envelopes) of zone events one owner's inbox holds unread: an event past it is
+    /// The most record bytes (framed as the relay counts them, `recordBytes`) of zone events one owner's inbox holds unread: an event past it is
     /// delivered without its records, so its owner reads the zone (the relay's own lane bound, `MAX_LANE_BYTES`).
     static let inboxRecordBytes = 1 << 20
 
@@ -328,10 +328,17 @@ public actor HostedRelaySession {
         owners[id]?.waiting.withLock { $0 } ?? 0
     }
 
-    /// The envelope bytes of a zone event's records (0 for any other event).
+    /// What a record costs in an event besides its strings (the relay's `RECORD_OVERHEAD_BYTES`).
+    static let recordOverheadBytes = 32
+
+    /// The bytes of a zone event's records as the relay frames them (its `recordFrameBytes`: envelope, name,
+    /// zone and attachment id plus a fixed overhead, so many tiny records count too); 0 for any other event.
     private static func recordBytes(_ event: HostedRelayClientEvent) -> Int {
         guard case .zoneChanged(_, _, let records) = event else { return 0 }
-        return records.reduce(0) { $0 + $1.envelope.count }
+        return records.reduce(0) { sum, record in
+            sum + record.envelope.count + record.name.utf8.count + record.zone.utf8.count
+                + record.attachmentID.utf8.count + recordOverheadBytes
+        }
     }
 
     private func deliver(_ event: HostedRelayClientEvent, to ids: [ObjectIdentifier]) {

@@ -99,9 +99,10 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
         }
         // A small one after them fits again: once it waits too, the session has routed all seven.
         _ = try await self.save(macs[0], zone, "tail")
-        while await session.unreadRecordBytes(owner: ObjectIdentifier(probe)) != 4 * body.count + "tail".utf8.count {
-            pump()
-            await Task.yield()
+        let frame = { (name: String, envelope: Int) in envelope + name.utf8.count + zone.utf8.count + 32 }
+        let waiting = 4 * frame("r1", body.count) + frame("tail", "tail".utf8.count)
+        await settle("the session routed all seven") {
+            await session.unreadRecordBytes(owner: ObjectIdentifier(probe)) == waiting
         }
         release.fire()
         await eventually { probe.zoneEvents.contains { $0.seq == 7 } }
@@ -111,6 +112,57 @@ final class HostedRelaySessionTests: HostedRelayScenarioCase {
             return records.count
         }
         XCTAssertEqual(counts, [1, 1, 1, 1, 1, 0, 1], "the sixth is over the bound; the small seventh fits")
+    }
+
+    /// The bound counts a record as the relay frames it (envelope + name + zone + attachment id + 32 bytes), so
+    /// events of many records with empty envelopes are bounded too.
+    func testTheUnreadBoundCountsFramedBytesNotOnlyEnvelopes() async throws {
+        let (phone, _, macs) = try await paired(macs: [1])
+        let session = HostedRelaySession(client: phone)
+        let zone = dataZone(macs[0])
+        let probe = Probe()
+        probes.append((session, probe))
+        let busy = Latch()
+        let release = Latch()
+        await session.attach(owner: ObjectIdentifier(probe), zones: [zone]) { event in
+            probe.record(event)
+            if case .zoneChanged(_, let seq, _) = event, seq > 0, !busy.fired {
+                busy.fire()
+                await release.wait()
+            }
+        }
+        await eventually { probe.zoneEvents.contains { $0.zone == zone } }
+        // Each save: as many empty records as frame 200 KiB (one event, within the relay's 256 KiB budget).
+        // Long names keep the record count, and so the test, small.
+        let pad = String(repeating: "n", count: 500)
+        let perRecord = "r0-00000".utf8.count + pad.utf8.count + zone.utf8.count + 32
+        let count = (200 << 10) / perRecord
+        for index in 0..<7 {
+            var save = Relay_V1_Save()
+            save.items = (0..<count).map { number in
+                var item = Relay_V1_SaveItem()
+                item.record.zone = zone
+                item.record.name = "r\(index)-" + String(repeating: "0", count: 5 - String(number).count) + String(number) + pad
+                return item
+            }
+            _ = try await macs[0].save(save)
+            if index == 0 { await eventually { busy.fired } }
+        }
+        // The first is being handled, five wait (about 1000 KiB), the seventh is over the 1 MiB bound; a small
+        // one after them fits again: once it waits too, the session has routed them all.
+        _ = try await self.save(macs[0], zone, "tail")
+        let waiting = 5 * count * perRecord + 2 * "tail".utf8.count + zone.utf8.count + 32
+        await settle("the session routed all eight") {
+            await session.unreadRecordBytes(owner: ObjectIdentifier(probe)) == waiting
+        }
+        release.fire()
+        await eventually { probe.zoneEvents.contains { $0.seq == UInt64(7 * count + 1) } }
+
+        let counts = probe.events.compactMap { event -> Int? in
+            guard case let .zoneChanged(_, seq, records) = event, seq > 0 else { return nil }
+            return records.count
+        }
+        XCTAssertEqual(counts, [count, count, count, count, count, count, 0, 1])
     }
 
     func testRemovingATransportKeepsTheOthersSubscribed() async throws {

@@ -33,8 +33,8 @@ extension HostedRelayTransport {
 
     /// Buffers a zone event's own records in place of a `changes` read (live link R1); true when `zone` needs no
     /// read for this event. Only while no pull is in flight (a pull reads from the cursor this would move), no
-    /// resync or first load is owed, and the transport is neither stopped nor held; an event at or below the cursor
-    /// is already read. The records must be the writes up to `seq`, contiguous by `record_seq`, starting no later
+    /// resync or first load is owed, and the transport is neither stopped nor held; an event at the cursor is
+    /// already read, one below it is a read (the relay may have rebuilt the zone). The records must be the writes up to `seq`, contiguous by `record_seq`, starting no later
     /// than the cursor's next seq: any gap, a tombstone, a record-less event (a deletion, an over-budget save, a
     /// phone over its traffic budget, a folded buffer) is a read. So is a record with an attachment: the read
     /// downloads it. Synchronous on the actor: nothing runs between the cursor check and the page's transaction.
@@ -43,7 +43,9 @@ extension HostedRelayTransport {
         do {
             let cursor = try store.relayCursor(zone: zone)
             guard cursor > 0, try !store.relayResyncPending(zone) else { return false }
-            if seq <= cursor { return true }
+            if seq == cursor { return true }
+            // Below the cursor is not a continuation (R3): the read tells a rebuilt zone (`TOKEN_EXPIRED`).
+            guard seq > cursor else { return false }
             guard let first = records.first?.recordSeq, first > 0, first <= cursor + 1,
                   records.enumerated().allSatisfy({ offset, record in
                       record.recordSeq == first + UInt64(offset) && !record.deleted && record.attachmentID.isEmpty
