@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"fmt"
 	"time"
 )
@@ -39,6 +40,18 @@ func (db *DB) UpsertWatchmanArming(a WatchmanArming) error {
 	return nil
 }
 
+// ArmWatchman inserts the row unless (scope, ref_id) is already armed, which
+// keeps its armed_at and armed_by; inserted reports a new row.
+func (db *DB) ArmWatchman(a WatchmanArming) (inserted bool, err error) {
+	res, err := db.Exec(`INSERT INTO watchman_arming (scope, ref_id, armed_at, armed_by) VALUES (?, ?, ?, ?)
+		ON CONFLICT(scope, ref_id) DO NOTHING`, a.Scope, a.RefID, wmArmTime(a.ArmedAt), a.ArmedBy)
+	if err != nil {
+		return false, fmt.Errorf("arming watchman %s %d: %w", a.Scope, a.RefID, err)
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
 // DeleteWatchmanArming removes one row; false when there was none.
 func (db *DB) DeleteWatchmanArming(scope string, refID int64) (bool, error) {
 	res, err := db.Exec(`DELETE FROM watchman_arming WHERE scope = ? AND ref_id = ?`, scope, refID)
@@ -47,6 +60,30 @@ func (db *DB) DeleteWatchmanArming(scope string, refID int64) (bool, error) {
 	}
 	n, err := res.RowsAffected()
 	return n > 0, err
+}
+
+// ClearWatchmanArming removes every row; n is how many there were.
+func (db *DB) ClearWatchmanArming() (n int64, err error) {
+	res, err := db.Exec(`DELETE FROM watchman_arming`)
+	if err != nil {
+		return 0, fmt.Errorf("disarming watchman: %w", err)
+	}
+	return res.RowsAffected()
+}
+
+// PruneWatchmanArming removes arming rows nothing can be decided for any
+// more: a session row whose session is gone, finished or being deleted, and
+// a target row whose target is gone. A target with no live session stays
+// armed (a new session under it is handed to the twin). n is how many went.
+func (db *DB) PruneWatchmanArming() (n int64, err error) {
+	res, err := db.Exec(`DELETE FROM watchman_arming WHERE
+		(scope = 'session' AND NOT EXISTS (SELECT 1 FROM terminal_sessions ts
+			WHERE ts.id = watchman_arming.ref_id AND ts.finished_at IS NULL AND ts.` + NotDeletingSQL + `))
+		OR (scope = 'target' AND NOT EXISTS (SELECT 1 FROM targets t WHERE t.id = watchman_arming.ref_id))`)
+	if err != nil {
+		return 0, fmt.Errorf("pruning watchman arming: %w", err)
+	}
+	return res.RowsAffected()
 }
 
 // ListWatchmanArming returns every arming row, oldest first.
@@ -81,16 +118,33 @@ const armedSessionsFrom = `
 	)
 	SELECT ts.id, ts.project_id, ts.folder_path, p.folder_path, COALESCE(ts.target_id, 0)
 	FROM terminal_sessions ts JOIN projects p ON p.id = ts.project_id
-	WHERE ts.finished_at IS NULL AND ts.delete_requested_at IS NULL AND ts.kind <> 'shell'
+	WHERE ts.finished_at IS NULL AND ts.` + NotDeletingSQL + ` AND ts.kind <> 'shell'
 	  AND (EXISTS (SELECT 1 FROM watchman_arming a WHERE a.scope = 'session' AND a.ref_id = ts.id)
 	       OR ts.target_id IN (SELECT id FROM sub))`
 
-// WatchmanArmedSessions lists the live sessions the twin may decide for.
-func (db *DB) WatchmanArmedSessions() ([]ArmedSession, error) {
-	rows, err := db.Query(armedSessionsFrom + ` ORDER BY ts.id`)
+// WatchmanLiveSessions lists the live workbench agent sessions — the ones
+// that can be armed — by id.
+func (db *DB) WatchmanLiveSessions() ([]ArmedSession, error) {
+	rows, err := db.Query(`SELECT ts.id, ts.project_id, ts.folder_path, p.folder_path, COALESCE(ts.target_id, 0)
+		FROM terminal_sessions ts JOIN projects p ON p.id = ts.project_id
+		WHERE ts.finished_at IS NULL AND ts.` + NotDeletingSQL + ` AND ts.kind <> 'shell' ORDER BY ts.id`)
 	if err != nil {
-		return nil, fmt.Errorf("listing watchman armed sessions: %w", err)
+		return nil, fmt.Errorf("listing live workbench sessions: %w", err)
 	}
+	return scanArmedSessions(rows)
+}
+
+// WatchmanTargetWorkbench is the workbench target id lives on; 0 when it
+// lives on no workbench, sql.ErrNoRows when there is no such target.
+func (db *DB) WatchmanTargetWorkbench(id int64) (int64, error) {
+	var wb sql.NullInt64
+	if err := db.QueryRow(`SELECT project_id FROM targets WHERE id = ?`, id).Scan(&wb); err != nil {
+		return 0, fmt.Errorf("reading target %d: %w", id, err)
+	}
+	return wb.Int64, nil
+}
+
+func scanArmedSessions(rows *sql.Rows) ([]ArmedSession, error) {
 	defer rows.Close()
 	var out []ArmedSession
 	for rows.Next() {
@@ -101,6 +155,15 @@ func (db *DB) WatchmanArmedSessions() ([]ArmedSession, error) {
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+// WatchmanArmedSessions lists the live sessions the twin may decide for.
+func (db *DB) WatchmanArmedSessions() ([]ArmedSession, error) {
+	rows, err := db.Query(armedSessionsFrom + ` ORDER BY ts.id`)
+	if err != nil {
+		return nil, fmt.Errorf("listing watchman armed sessions: %w", err)
+	}
+	return scanArmedSessions(rows)
 }
 
 // WatchmanSessionArmed reports whether sessionID is one of the armed sessions.

@@ -281,6 +281,9 @@ type Daemon struct {
 	// runLoop starts no scheduled cycle while it says no. nil = always a
 	// full wake.
 	fullWake func() (caps uint32, full bool)
+
+	// watchmanUpkeep is phaseWatchmanUpkeep's state (watchman_upkeep.go).
+	watchmanUpkeep watchmanUpkeepState
 }
 
 // New creates a Daemon. Slack orchestrators are attached separately via
@@ -636,6 +639,9 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	// First of all: this cycle's AI usage counts the calls other processes
 	// spooled since the last one.
 	d.phaseLLMLedger(ctx)
+	// Every cycle, before the fetches: the keep-awake hold while anything
+	// is handed to Watchman, the arm sidecar, the slept-through gaps.
+	d.phaseWatchmanUpkeep(ctx)
 	d.setSection(sectionSlackFetch)
 	d.markFetchProgress()
 	d.sampleLockStats(fetchCtx)

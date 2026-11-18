@@ -34,6 +34,7 @@ import (
 	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
 	"watchtower/internal/hub"
+	"watchtower/internal/hub/platform"
 	"watchtower/internal/imap"
 	"watchtower/internal/inbox"
 	"watchtower/internal/issuekey"
@@ -941,6 +942,9 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 		}
 		return LaunchSpecReview(exe, askID, filepath.Join(cfg.WorkspaceDir(), "logs"))
 	})
+	// While anything is handed to Watchman the daemon keeps the Mac awake
+	// under its own reason (daemon.WatchmanAwakeReason).
+	d.SetWatchmanAwake(platform.NewAwake().Hold)
 	d.SetWatchmanBacktestLaunch(func(workbenchID int64) error {
 		exe, err := watchmanBacktestExe()
 		if err != nil {
