@@ -1335,29 +1335,6 @@ CREATE TABLE IF NOT EXISTS "chat_project_sources" (
     label      TEXT NOT NULL DEFAULT '',
     UNIQUE(project_id, kind, ref)
 );
-CREATE TABLE IF NOT EXISTS owner_asks (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id       INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    session_id       INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL,
-    target_id        INTEGER REFERENCES targets(id) ON DELETE SET NULL,
-    kind             TEXT NOT NULL CHECK(kind IN ('review','check','question')),
-    title            TEXT NOT NULL CHECK(title != ''),
-    summary          TEXT NOT NULL DEFAULT '',
-    changes          TEXT NOT NULL DEFAULT '',   -- review re-round: what changed, agent-written
-    payload          TEXT NOT NULL DEFAULT '{}', -- JSON: focus[], questions[], checklist[]
-    doc_path         TEXT NOT NULL DEFAULT '',   -- review only: rel path inside the folder
-    doc_snapshot     TEXT NOT NULL DEFAULT '',   -- review only: file text at ask time
-    previous_ask_id  INTEGER REFERENCES owner_asks(id) ON DELETE SET NULL,
-    status           TEXT NOT NULL DEFAULT 'open'
-                     CHECK(status IN ('open','answered','delivered','withdrawn')),
-    withdrawn_reason TEXT NOT NULL DEFAULT '' CHECK(withdrawn_reason IN ('','agent','superseded')),
-    answer           TEXT NOT NULL DEFAULT '',   -- JSON, Desktop-written
-    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    answered_at      TEXT NOT NULL DEFAULT '',
-    delivered_at     TEXT NOT NULL DEFAULT '', level TEXT NOT NULL DEFAULT 'full' CHECK (level IN ('quick','full')), origin TEXT NOT NULL DEFAULT 'agent' CHECK (origin IN ('agent','chat')), chat_asked_at TEXT NOT NULL DEFAULT '', withdrawn_at TEXT NOT NULL DEFAULT '', automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, doc_type TEXT NOT NULL DEFAULT '',
-    CHECK ((kind = 'review') = (doc_path != '')),
-    CHECK ((status IN ('answered','delivered')) = (answer != ''))
-);
 CREATE TABLE IF NOT EXISTS "project_comments" (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -1377,18 +1354,6 @@ CREATE TABLE IF NOT EXISTS terminal_session_targets (
     first_at   TEXT NOT NULL,
     last_at    TEXT NOT NULL, status_at TEXT,
     PRIMARY KEY (session_id, target_id)
-);
-CREATE TABLE IF NOT EXISTS workbench_pr_states (
-    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    ref         TEXT NOT NULL,
-    state       TEXT NOT NULL CHECK(state IN ('merged','open','closed','none','unknown')),
-    pr_number   INTEGER,
-    title       TEXT NOT NULL DEFAULT '',
-    additions   INTEGER,
-    deletions   INTEGER,
-    merged_at   TEXT NOT NULL DEFAULT '',
-    checked_at  TEXT NOT NULL,
-    PRIMARY KEY (project_id, ref)
 );
 CREATE TABLE IF NOT EXISTS owner_presence (
     id         INTEGER PRIMARY KEY CHECK (id = 1),
@@ -1422,7 +1387,7 @@ CREATE TABLE IF NOT EXISTS "terminal_sessions" (
     agent_turns       TEXT,
     agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT, worktree_branch TEXT, worktree_base TEXT, automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, target_bound_at TEXT, agent_watch_issue TEXT
     CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), agent_watch_issue_at TEXT, start_notice TEXT, agent_background_shells INTEGER
-    CHECK (agent_background_shells IS NULL OR agent_background_shells >= 0), delete_requested_at TEXT,
+    CHECK (agent_background_shells IS NULL OR agent_background_shells >= 0), delete_requested_at TEXT, workbench_folder_id INTEGER REFERENCES workbench_folders(id) ON DELETE SET NULL, parent_session_id INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL,
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 );
@@ -1935,7 +1900,7 @@ CREATE TABLE IF NOT EXISTS "targets" (
     next_step_attempted_at TEXT NOT NULL DEFAULT '',
     project_id          INTEGER REFERENCES projects(id) ON DELETE CASCADE,
     status_actor        TEXT DEFAULT NULL
-                        CHECK(status_actor IS NULL OR status_actor IN ('agent','owner','system')), branch TEXT NOT NULL DEFAULT '', pr TEXT NOT NULL DEFAULT '', board_column_id INTEGER NULL REFERENCES workbench_board_columns(id) ON DELETE SET NULL,
+                        CHECK(status_actor IS NULL OR status_actor IN ('agent','owner','system')), branch TEXT NOT NULL DEFAULT '', pr TEXT NOT NULL DEFAULT '', board_column_id INTEGER NULL REFERENCES workbench_board_columns(id) ON DELETE SET NULL, workbench_folder_id INTEGER REFERENCES workbench_folders(id) ON DELETE SET NULL,
     CHECK(status != 'in_review' OR project_id IS NOT NULL)
 );
 CREATE TABLE IF NOT EXISTS "day_plan_items" (
@@ -2405,13 +2370,6 @@ CREATE TABLE IF NOT EXISTS review_overview_parts (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   PRIMARY KEY (project_id, part_hash)
 );
-CREATE TABLE IF NOT EXISTS review_reviewer_threads (
-  project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  branch          TEXT NOT NULL CHECK (branch != ''),
-  conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
-  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-  PRIMARY KEY (project_id, branch)
-);
 CREATE TABLE IF NOT EXISTS inbox_folders (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     kind       TEXT NOT NULL CHECK (kind IN ('root','approvals','owner')),
@@ -2496,6 +2454,94 @@ CREATE TABLE IF NOT EXISTS agent_session_tombstones (
 CREATE TABLE IF NOT EXISTS people_card_exclusions (
     user_id    TEXT PRIMARY KEY,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE TABLE IF NOT EXISTS workbench_folders (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    folder_path  TEXT NOT NULL,
+    position     INTEGER NOT NULL,
+    added_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    added_by     TEXT NOT NULL CHECK (added_by IN ('owner','agent_suggestion')),
+    removed_at   TEXT,
+    name         TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS "owner_asks" (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id       INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    session_id       INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL,
+    target_id        INTEGER REFERENCES targets(id) ON DELETE SET NULL,
+    kind             TEXT NOT NULL CHECK(kind IN ('review','check','question','folder')),
+    title            TEXT NOT NULL CHECK(title != ''),
+    summary          TEXT NOT NULL DEFAULT '',
+    changes          TEXT NOT NULL DEFAULT '',
+    payload          TEXT NOT NULL DEFAULT '{}',
+    doc_path         TEXT NOT NULL DEFAULT '',
+    doc_snapshot     TEXT NOT NULL DEFAULT '',
+    previous_ask_id  INTEGER REFERENCES owner_asks(id) ON DELETE SET NULL,
+    status           TEXT NOT NULL DEFAULT 'open'
+                     CHECK(status IN ('open','answered','delivered','withdrawn')),
+    withdrawn_reason TEXT NOT NULL DEFAULT '' CHECK(withdrawn_reason IN ('','agent','superseded')),
+    answer           TEXT NOT NULL DEFAULT '',
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    answered_at      TEXT NOT NULL DEFAULT '',
+    delivered_at     TEXT NOT NULL DEFAULT '',
+    level            TEXT NOT NULL DEFAULT 'full' CHECK (level IN ('quick','full')),
+    origin           TEXT NOT NULL DEFAULT 'agent' CHECK (origin IN ('agent','chat')),
+    chat_asked_at    TEXT NOT NULL DEFAULT '',
+    withdrawn_at     TEXT NOT NULL DEFAULT '',
+    automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL,
+    doc_type         TEXT NOT NULL DEFAULT '',
+    doc_folder_id    INTEGER REFERENCES workbench_folders(id) ON DELETE SET NULL,
+    CHECK ((kind = 'review') = (doc_path != '')),
+    CHECK ((status IN ('answered','delivered')) = (answer != ''))
+);
+CREATE TABLE IF NOT EXISTS "review_reviewer_threads" (
+  project_id          INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  workbench_folder_id INTEGER NOT NULL REFERENCES workbench_folders(id) ON DELETE CASCADE,
+  branch              TEXT NOT NULL CHECK (branch != ''),
+  conversation_id     INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+  created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  PRIMARY KEY (project_id, workbench_folder_id, branch)
+);
+CREATE TABLE IF NOT EXISTS "workbench_pr_states" (
+    project_id          INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    workbench_folder_id INTEGER NOT NULL REFERENCES workbench_folders(id) ON DELETE CASCADE,
+    ref                 TEXT NOT NULL,
+    state               TEXT NOT NULL CHECK(state IN ('merged','open','closed','none','unknown')),
+    pr_number           INTEGER,
+    title               TEXT NOT NULL DEFAULT '',
+    additions           INTEGER,
+    deletions           INTEGER,
+    merged_at           TEXT NOT NULL DEFAULT '',
+    checked_at          TEXT NOT NULL,
+    PRIMARY KEY (project_id, workbench_folder_id, ref)
+);
+CREATE TABLE IF NOT EXISTS workbench_folder_declines (
+    workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    folder_path  TEXT NOT NULL COLLATE NOCASE,
+    declined_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    PRIMARY KEY (workbench_id, folder_path)
+);
+CREATE TABLE IF NOT EXISTS session_messages (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    workbench_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    from_session_id   INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL,
+    to_session_id     INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL,
+    kind              TEXT NOT NULL CHECK (kind IN ('message','finished','failure')),
+    text              TEXT NOT NULL,
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    state             TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','delivering','delivered','failed')),
+    reason            TEXT NOT NULL DEFAULT '',
+    delivered_at      TEXT,
+    prompt_cleared_at TEXT
+);
+CREATE TABLE IF NOT EXISTS session_outside_touches (
+    session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
+    repo_root  TEXT NOT NULL,
+    touches    INTEGER NOT NULL DEFAULT 0,
+    nudged_at  TEXT,
+    quiet      INTEGER NOT NULL DEFAULT 0 CHECK (quiet IN (0,1)),
+    PRIMARY KEY (session_id, repo_root)
 );
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
@@ -2742,8 +2788,6 @@ CREATE INDEX IF NOT EXISTS idx_project_target_images_project ON project_target_i
 CREATE INDEX IF NOT EXISTS idx_jira_issue_changelog_issue ON jira_issue_changelog(account_id, issue_key, changed_at);
 CREATE INDEX IF NOT EXISTS idx_jira_issue_links_target ON jira_issue_links(account_id, target_key);
 CREATE INDEX IF NOT EXISTS idx_jira_issue_links_source ON jira_issue_links(account_id, source_key);
-CREATE INDEX IF NOT EXISTS idx_owner_asks_project ON owner_asks(project_id, status, created_at);
-CREATE INDEX IF NOT EXISTS idx_owner_asks_session ON owner_asks(session_id);
 CREATE INDEX IF NOT EXISTS idx_project_comments_project ON project_comments(project_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_project_comments_target  ON project_comments(target_id);
 CREATE INDEX IF NOT EXISTS idx_project_comments_parent  ON project_comments(parent_id);
@@ -2859,6 +2903,14 @@ CREATE INDEX IF NOT EXISTS coach_proposals_conversation ON coach_proposals(conve
 CREATE INDEX IF NOT EXISTS skill_pack_overlays_skill ON skill_pack_overlays(skill, id);
 CREATE INDEX IF NOT EXISTS idx_messages_synced_at ON messages(CASE WHEN synced_at = 0 THEN ts_unix ELSE synced_at END);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_messages_client_key ON chat_messages(conversation_id, client_key) WHERE client_key IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workbench_folders_live_path ON workbench_folders(folder_path COLLATE NOCASE) WHERE removed_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workbench_folders_live_name ON workbench_folders(workbench_id, name COLLATE NOCASE) WHERE removed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_workbench_folders_bench ON workbench_folders(workbench_id, position);
+CREATE INDEX IF NOT EXISTS idx_terminal_sessions_parent ON terminal_sessions(parent_session_id);
+CREATE INDEX IF NOT EXISTS idx_owner_asks_project ON owner_asks(project_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_owner_asks_session ON owner_asks(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_messages_state ON session_messages(state);
+CREATE INDEX IF NOT EXISTS idx_session_messages_to ON session_messages(to_session_id, state);
 CREATE TRIGGER IF NOT EXISTS kb_chunks_ai AFTER INSERT ON kb_chunks BEGIN
     INSERT INTO kb_fts(rowid, title, body, meta) VALUES (NEW.id, NEW.title, NEW.body, NEW.meta);
 END;
@@ -3259,10 +3311,6 @@ CREATE TRIGGER IF NOT EXISTS history_backfill_daily_reset AFTER DELETE ON histor
 BEGIN
  DELETE FROM history_backfill_daily WHERE OLD.source_kind='slack' AND account_id=OLD.account_id AND chunk_from >= OLD.floor_ts AND chunk_to <= OLD.upper_ts;
 END;
-CREATE TRIGGER IF NOT EXISTS review_reviewer_threads_ad AFTER DELETE ON review_reviewer_threads
-BEGIN
-  DELETE FROM chat_conversations WHERE id = OLD.conversation_id AND context_type = 'review_reviewer';
-END;
 CREATE TRIGGER IF NOT EXISTS agent_session_tombstones_bd BEFORE DELETE ON terminal_sessions
 BEGIN
     INSERT OR IGNORE INTO agent_session_tombstones (agent_session_id, deleted_at)
@@ -3271,6 +3319,10 @@ BEGIN
     INSERT OR IGNORE INTO agent_session_tombstones (agent_session_id, deleted_at)
     SELECT OLD.claude_session_id, strftime('%Y-%m-%dT%H:%M:%SZ','now')
     WHERE OLD.claude_session_id IS NOT NULL;
+END;
+CREATE TRIGGER IF NOT EXISTS review_reviewer_threads_ad AFTER DELETE ON review_reviewer_threads
+BEGIN
+  DELETE FROM chat_conversations WHERE id = OLD.conversation_id AND context_type = 'review_reviewer';
 END;
 """#
 }

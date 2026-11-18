@@ -15,7 +15,16 @@ extension TestDatabase {
             sql: "INSERT INTO projects (name, folder_path) VALUES (?, ?)",
             arguments: [name, folder]
         )
-        return db.lastInsertedRowID
+        let id = db.lastInsertedRowID
+        // Its home folder row, as the CLI's CreateWorkbench writes it (00196).
+        try db.execute(
+            sql: """
+                INSERT INTO workbench_folders (workbench_id, folder_path, position, added_by, name)
+                VALUES (?, ?, 0, 'owner', ?)
+                """,
+            arguments: [id, folder, (folder as NSString).lastPathComponent]
+        )
+        return id
     }
 
     @discardableResult

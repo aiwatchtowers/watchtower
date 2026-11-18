@@ -106,7 +106,12 @@ func refresh(ctx context.Context, d *db.DB, workbenchID int64, refs []string,
 	if err != nil {
 		return RefreshResult{Note: "PR states not refreshed: " + err.Error()}, nil, nil
 	}
-	cache, err = d.PRStates(workbenchID)
+	// The home folder's cache until the session's folder is passed in (#2003 Task 6).
+	folderID, err := d.HomeFolderID(ctx, workbenchID)
+	if err != nil {
+		return RefreshResult{Note: "PR states not refreshed: " + err.Error()}, nil, nil
+	}
+	cache, err = d.PRStates(workbenchID, folderID)
 	if err != nil {
 		return RefreshResult{Note: "PR states not refreshed: " + err.Error()}, nil, nil
 	}
@@ -133,8 +138,8 @@ func refresh(ctx context.Context, d *db.DB, workbenchID int64, refs []string,
 	ctx, cancel := context.WithTimeout(ctx, opts.Budget)
 	defer cancel()
 	deadline := start.Add(opts.Budget)
-	r := refresher{d: d, workbenchID: workbenchID, folder: wb.FolderPath, cache: cache, opts: opts, deadline: deadline,
-		unchecked: map[string]bool{}}
+	r := refresher{d: d, workbenchID: workbenchID, folderID: folderID, folder: wb.FolderPath, cache: cache, opts: opts,
+		deadline: deadline, unchecked: map[string]bool{}}
 	r.open(ctx, stale)
 	for i, ref := range stale {
 		// A ref whose read the budget cut short counts as not checked.
@@ -185,6 +190,7 @@ func staleAfter(state string) time.Duration {
 type refresher struct {
 	d           *db.DB
 	workbenchID int64
+	folderID    int64 // the workbench folder the cache rows are of
 	folder      string
 	cache       map[string]db.PRState
 	opts        RefreshOptions
@@ -301,7 +307,7 @@ func (r *refresher) check(ctx context.Context, ref string) bool {
 	if !ok {
 		return true
 	}
-	row.WorkbenchID, row.Ref = r.workbenchID, ref
+	row.WorkbenchID, row.FolderID, row.Ref = r.workbenchID, r.folderID, ref
 	row.CheckedAt = r.opts.Now().UTC().Format(time.RFC3339)
 	if r.unchecked[ref] {
 		// A failed read that keeps its row (readInto): stamped, but due again.

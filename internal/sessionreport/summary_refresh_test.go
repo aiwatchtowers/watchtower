@@ -194,7 +194,7 @@ func TestRefreshedSummaries_PhaseOnlyFailureLeavesTheRowUnmarked(t *testing.T) {
 func TestRefresh_AFailedReadGoesLast(t *testing.T) {
 	d, id, _, _ := repoBoard(t)
 	failing, ok := "into:nope:wt/m", "into:feature/x:wt/m"
-	require.NoError(t, d.UpsertPRState(db.PRState{WorkbenchID: id, Ref: failing, State: "merged",
+	require.NoError(t, d.UpsertPRState(db.PRState{WorkbenchID: id, FolderID: homeID(t, d, id), Ref: failing, State: "merged",
 		CheckedAt: dueAgain("merged", refreshNow)}))
 	seed(t, d, id, ok, "open", 2*time.Minute)
 	require.Less(t, states(t, d, id)[failing].CheckedAt, states(t, d, id)[ok].CheckedAt, "the failed row's stamp is older")
