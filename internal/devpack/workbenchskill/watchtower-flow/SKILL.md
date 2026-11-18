@@ -1,7 +1,7 @@
 ---
 name: watchtower-flow
 description: Use in a folder bound to a Watchtower workbench (the watchtower-workbench MCP server is connected) whenever a feature is agreed, a spec or plan is written or revised, a plan is executed task by task, or a group of targets is worked. Watchtower's default methodology, on top of the watchtower-workbench skill.
-x-watchtower-pack: v12
+x-watchtower-pack: v13
 ---
 
 # Watchtower Flow
@@ -52,3 +52,5 @@ Questions and decisions are asks, not comments. No progress chatter, no "startin
 `in_review` means agents are reviewing the work — a code review, a document review by reviewer agents. It never means waiting for the owner: work that waits for the owner has an open ask, and is `blocked` only when nothing on it can proceed.
 
 The owner's own review is the diff reviewer's round: when one arrives `approved` (`Review round #N approved …`), the branch is accepted — finish it (PR and merge, targets `done`, cleanup, `finish_session`) without asking for another review.
+
+In a session handed to Watchman, a Watchman **Approve** on the review round counts as the owner's approval for merging this session's PR into its feature or umbrella branch, never into `main`; check CI is green first.

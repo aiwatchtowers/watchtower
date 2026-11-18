@@ -119,7 +119,7 @@ func TestShippedCoreDigestsAreTheFixtures(t *testing.T) {
 		"watchtower-workbench-v14.md": v14CoreSHA256, "watchtower-workbench-v15.md": v15CoreSHA256,
 		"watchtower-workbench-v16.md": v16CoreSHA256, "watchtower-workbench-v17.md": v17CoreSHA256,
 		"watchtower-workbench-v18.md": v18CoreSHA256, "watchtower-workbench-v19.md": v19CoreSHA256,
-		"watchtower-workbench-v20.md": v20CoreSHA256} {
+		"watchtower-workbench-v20.md": v20CoreSHA256, "watchtower-workbench-v21.md": v21CoreSHA256} {
 		b, err := os.ReadFile(filepath.Join("testdata", fixture))
 		require.NoError(t, err)
 		sum := sha256.Sum256(b)
@@ -127,12 +127,12 @@ func TestShippedCoreDigestsAreTheFixtures(t *testing.T) {
 	}
 }
 
-// Spec §4.3: the shipped v8 … v20 bytes count as ours even
+// Spec §4.3: the shipped v8 … v21 bytes count as ours even
 // without the sidecar.
 func TestInstallWorkbench_AdoptsTheShippedSingleFileWithoutASidecar(t *testing.T) {
 	for _, fixture := range []string{"watchtower-workbench-v8.md", "watchtower-workbench-v9.md", "watchtower-workbench-v10.md",
 		"watchtower-workbench-v11.md", "watchtower-workbench-v12.md", "watchtower-workbench-v13.md",
-		"watchtower-workbench-v14.md", "watchtower-workbench-v15.md", "watchtower-workbench-v16.md", "watchtower-workbench-v17.md", "watchtower-workbench-v18.md", "watchtower-workbench-v19.md", "watchtower-workbench-v20.md"} {
+		"watchtower-workbench-v14.md", "watchtower-workbench-v15.md", "watchtower-workbench-v16.md", "watchtower-workbench-v17.md", "watchtower-workbench-v18.md", "watchtower-workbench-v19.md", "watchtower-workbench-v20.md", "watchtower-workbench-v21.md"} {
 		t.Run(fixture, func(t *testing.T) {
 			shipped, err := os.ReadFile(filepath.Join("testdata", fixture))
 			require.NoError(t, err)
