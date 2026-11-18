@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -440,4 +442,121 @@ func TestWatchmanArm_SidecarLockFailureStillOK(t *testing.T) {
 	require.Len(t, r.Armed, 1)
 	assert.Equal(t, s1, r.Armed[0].ID)
 	assert.Equal(t, 1, *nudges)
+}
+
+// gitRepoSession makes an armable session whose folder is a git repository
+// (the developer's global git config kept out).
+func gitRepoSession(t *testing.T, wb int64) (id int64, folder string) {
+	t.Helper()
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(t.TempDir(), "gitconfig"))
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	id, folder = armSession(t, wb, "claude", nil, false)
+	out, err := exec.Command("git", "init", "-q", folder).CombinedOutput()
+	require.NoError(t, err, string(out))
+	return id, folder
+}
+
+// worktreeHooksPath is the folder's worktree-level core.hooksPath; "" = unset.
+func worktreeHooksPath(t *testing.T, folder string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", folder, "config", "--worktree", "--get", "core.hooksPath").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func testHooksDir(t *testing.T) string {
+	t.Helper()
+	cfg, err := workspaceConfigFromFlags()
+	require.NoError(t, err)
+	return watchmanact.HooksDir(cfg.WorkspaceDir())
+}
+
+// withFakeGh puts a gh on PATH that names main the default branch and
+// answers its protection: "unprotected" is GitHub's 404, "protected"
+// requires an approving review.
+func withFakeGh(t *testing.T, mode string) {
+	t.Helper()
+	dir := t.TempDir()
+	script := `#!/bin/sh
+case $* in
+*"--jq .default_branch") echo main ;;
+*/protection)
+	if [ "` + mode + `" = protected ]; then
+		echo '{"required_pull_request_reviews":{"required_approving_review_count":1}}'
+	else
+		echo '{"message":"Branch not protected","status":"404"}'
+		exit 1
+	fi
+	;;
+*) exit 2 ;;
+esac
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o755)) // #nosec G306 -- an executable fake
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	prev := watchmanProtectionRun
+	watchmanProtectionRun = execCommandOutput
+	t.Cleanup(func() { watchmanProtectionRun = prev })
+}
+
+func TestWatchmanArm_InstallsHooks(t *testing.T) {
+	wb, _ := watchmanFixture(t)
+	s1, folder := gitRepoSession(t, wb)
+	_, out, err := armCLI(t, "arm", "--session", strconv.FormatInt(s1, 10))
+	require.NoError(t, err, out)
+	assert.Equal(t, testHooksDir(t), worktreeHooksPath(t, folder))
+	for _, name := range watchmanact.ClientHookNames {
+		assert.FileExists(t, filepath.Join(testHooksDir(t), name))
+	}
+	// --check installs nothing.
+	s2, folder2 := gitRepoSession(t, wb)
+	_, out, err = armCLI(t, "arm", "--session", strconv.FormatInt(s2, 10), "--check")
+	require.NoError(t, err, out)
+	assert.Empty(t, worktreeHooksPath(t, folder2))
+}
+
+func TestWatchmanArm_ProtectionWarningInJSON(t *testing.T) {
+	wb, _ := watchmanFixture(t)
+	s1, _ := armSession(t, wb, "claude", nil, false)
+	withFakeGh(t, "unprotected")
+	for _, check := range []bool{true, false} {
+		args := []string{"arm", "--session", strconv.FormatInt(s1, 10), "--json"}
+		if check {
+			args = append(args, "--check")
+		}
+		r, out, err := armCLI(t, args...)
+		require.NoError(t, err, out)
+		assert.Equal(t, "main is not protected on GitHub — an agent's gh pr merge cannot be stopped here", r.ProtectionWarning, "check=%v", check)
+	}
+	// Text mode says it too.
+	out, err := runWatchman(t, "arm", "--session", strconv.FormatInt(s1, 10), "--check")
+	resetWatchmanArmFlags()
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "main is not protected on GitHub")
+
+	withFakeGh(t, "protected")
+	r, out, err := armCLI(t, "arm", "--session", strconv.FormatInt(s1, 10), "--check", "--json")
+	require.NoError(t, err, out)
+	assert.Empty(t, r.ProtectionWarning)
+}
+
+func TestWatchmanDisarm_RestoresHooks(t *testing.T) {
+	wb, _ := watchmanFixture(t)
+	s1, folder1 := gitRepoSession(t, wb)
+	s2, folder2 := gitRepoSession(t, wb)
+	for _, s := range []int64{s1, s2} {
+		_, out, err := armCLI(t, "arm", "--session", strconv.FormatInt(s, 10))
+		require.NoError(t, err, out)
+	}
+	require.Equal(t, testHooksDir(t), worktreeHooksPath(t, folder1))
+
+	_, out, err := armCLI(t, "disarm", "--session", strconv.FormatInt(s1, 10))
+	require.NoError(t, err, out)
+	assert.Empty(t, worktreeHooksPath(t, folder1), "the disarmed worktree kept Watchman's hooks")
+	assert.Equal(t, testHooksDir(t), worktreeHooksPath(t, folder2), "a still-armed worktree lost its hooks")
+
+	_, out, err = armCLI(t, "disarm", "--all")
+	require.NoError(t, err, out)
+	assert.Empty(t, worktreeHooksPath(t, folder2))
 }

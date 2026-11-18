@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"os/exec"
 	"slices"
 	"time"
 
@@ -19,8 +21,7 @@ import (
 // Arming is the delegation (spec 2026-11-16-watchman-design §2, D47): an
 // armed session, or every session under an armed target, is decided by the
 // twin until the owner takes it back. The Desktop arms only through these
-// verbs, so arming, the sidecar and (Task 6) the hooks have one
-// implementation.
+// verbs, so arming, the sidecar and the git hooks have one implementation.
 
 var (
 	watchmanArmFlagSession    int64
@@ -66,7 +67,7 @@ func init() {
 
 // watchmanArmJSON is `watchman arm --json` (keys pinned by
 // TestWatchmanArm_JSONKeysPinned; the Desktop's arm sheet reads it).
-// ProtectionWarning is filled by the branch-protection check (Task 6).
+// ProtectionWarning is the branch-protection check's warning ("" = none).
 type watchmanArmJSON struct {
 	OK                bool                     `json:"ok"`
 	Armed             []watchman.ArmedEntry    `json:"armed"`
@@ -97,6 +98,73 @@ var watchmanArmingNudge = func(cmd *cobra.Command, cfg *config.Config) {
 	if _, err := signalSyncNow(cfg); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: the daemon was not asked to pick the change up now (it does at its next cycle): %v\n", err)
 	}
+}
+
+// watchmanProtectionRun runs gh for the branch-protection check: stdout,
+// also on a failure (where gh puts an API error's body). cmd tests stub it
+// (TestMain); a test that wants a fake gh on PATH puts execCommandOutput back.
+var watchmanProtectionRun = execCommandOutput
+
+// execCommandOutput runs name args… in dir and returns its stdout.
+func execCommandOutput(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+	c := exec.CommandContext(ctx, name, args...) // #nosec G204 -- fixed binary (gh), explicit args
+	c.Dir = dir
+	return c.Output()
+}
+
+// watchmanProtectionBudget bounds the branch-protection check's gh calls.
+const watchmanProtectionBudget = 15 * time.Second
+
+// watchmanProtectionWarning checks each workbench repository's default
+// branch protection (spec §5 item 2) and returns the first warning; ""
+// when every one needs an approving review to merge.
+func watchmanProtectionWarning(ctx context.Context, database *db.DB, workbenches []int64) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, watchmanProtectionBudget)
+	defer cancel()
+	for _, id := range workbenches {
+		wb, err := database.GetWorkbench(id)
+		if err != nil {
+			return "", fmt.Errorf("reading workbench %d: %w", id, err)
+		}
+		if w := watchmanact.CheckProtection(ctx, watchmanProtectionRun, wb.FolderPath).Warning; w != "" {
+			return w, nil
+		}
+	}
+	return "", nil
+}
+
+// watchmanEnsureHooks gives every armed session's worktree Watchman's git
+// hooks (spec §5 item 1). A failure is a warning: the daemon's upkeep
+// installs them again each cycle.
+func watchmanEnsureHooks(cmd *cobra.Command, workspace string, database *db.DB) {
+	sessions, err := database.WatchmanArmedSessions()
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: the git hooks were not installed (the daemon installs them at its next cycle): %v\n", err)
+		return
+	}
+	done := map[string]bool{}
+	for _, s := range sessions {
+		if done[s.Folder] {
+			continue
+		}
+		done[s.Folder] = true
+		if err := watchmanact.EnsureHooks(cmd.Context(), s.Folder, workspace); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: the git hooks for session %d were not installed (the daemon installs them at its next cycle): %v\n", s.SessionID, err)
+		}
+	}
+}
+
+// watchmanArmedFolders is the worktrees of the armed sessions.
+func watchmanArmedFolders(database *db.DB) (map[string]bool, error) {
+	sessions, err := database.WatchmanArmedSessions()
+	if err != nil {
+		return nil, err
+	}
+	folders := map[string]bool{}
+	for _, s := range sessions {
+		folders[s.Folder] = true
+	}
+	return folders, nil
 }
 
 // sidecarWarning is the text form of a failed sidecar rewrite.
@@ -135,6 +203,9 @@ func runWatchmanArm(cmd *cobra.Command, _ []string) error {
 	}
 	sidecarWarning(cmd, out.SidecarError)
 	w := cmd.OutOrStdout()
+	if out.ProtectionWarning != "" {
+		defer fmt.Fprintln(w, out.ProtectionWarning)
+	}
 	if watchmanArmFlagCheck {
 		if out.Estimate != nil {
 			fmt.Fprintf(w, "The first time on this workbench: Watchman learns ~%d decisions first (~%d tokens on the light model).\n",
@@ -209,6 +280,9 @@ func watchmanArm(cmd *cobra.Command, out *watchmanArmJSON) error {
 		}
 	}
 	out.FirstTime = len(first) > 0
+	if out.ProtectionWarning, err = watchmanProtectionWarning(cmd.Context(), database, workbenches); err != nil {
+		return err
+	}
 
 	if watchmanArmFlagCheck {
 		if out.FirstTime {
@@ -267,6 +341,7 @@ func watchmanArm(cmd *cobra.Command, out *watchmanArmJSON) error {
 		}
 	}
 	out.Armed = watchman.ArmedEntries(arming)
+	watchmanEnsureHooks(cmd, cfg.WorkspaceDir(), database)
 	return nil
 }
 
@@ -361,7 +436,9 @@ func runWatchmanDisarm(cmd *cobra.Command, _ []string) error {
 }
 
 // watchmanDisarm removes the named arming row (or every row with --all),
-// then rewrites the sidecar.
+// rewrites the sidecar, and gives the worktrees no longer armed their
+// previous git hooks back (a failure is a warning: the hooks pass through
+// while not armed).
 func watchmanDisarm(cmd *cobra.Command, out *watchmanDisarmJSON) error {
 	if err := refuseUnderAgent("take a session back from Watchman"); err != nil {
 		return err
@@ -378,6 +455,10 @@ func watchmanDisarm(cmd *cobra.Command, out *watchmanDisarmJSON) error {
 		return fmt.Errorf("opening database: %w", err)
 	}
 	defer database.Close()
+	armedBefore, err := watchmanArmedFolders(database)
+	if err != nil {
+		return err
+	}
 	changed := int64(1) // disarmOne fails when there was no row
 	switch {
 	case watchmanDisarmFlagAll:
@@ -400,10 +481,33 @@ func watchmanDisarm(cmd *cobra.Command, out *watchmanDisarmJSON) error {
 		}
 	}
 	out.Armed = watchman.ArmedEntries(arming)
+	watchmanRestoreHooks(cmd, cfg.WorkspaceDir(), database, armedBefore)
 	if changed > 0 {
 		watchmanArmingNudge(cmd, cfg)
 	}
 	return nil
+}
+
+// watchmanRestoreHooks restores the git hooks of the worktrees armed before
+// the disarm and not after it.
+func watchmanRestoreHooks(cmd *cobra.Command, workspace string, database *db.DB, armedBefore map[string]bool) {
+	armedNow, err := watchmanArmedFolders(database)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: the git hooks were not restored (they pass through while not armed): %v\n", err)
+		return
+	}
+	folders := make([]string, 0, len(armedBefore))
+	for f := range armedBefore {
+		if !armedNow[f] {
+			folders = append(folders, f)
+		}
+	}
+	slices.Sort(folders)
+	for _, f := range folders {
+		if err := watchmanact.RestoreHooks(cmd.Context(), f, workspace); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: the git hooks of %s were not restored (they pass through while not armed): %v\n", f, err)
+		}
+	}
 }
 
 func disarmOne(database *db.DB, scope string, id int64) error {
