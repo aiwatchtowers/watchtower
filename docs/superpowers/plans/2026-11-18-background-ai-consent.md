@@ -24,7 +24,7 @@
 - Daemon log line, once per state change: `background AI: paused (not answered yet) — sync keeps running; allow it in Watchtower or with "watchtower ai background allow"`; reason `owner` says `paused by you`, `organization` says `turned off by your organization`.
 - The plan-limit read (plan-usage poller, Codex rate-limit read) is never gated (D17).
 - No telemetry: the only trace is `watchtower.log` (D16).
-- Every write of `config.yaml` (Go `config set`/`setConfigKey`/`setAIConfigKey`/the schema-format bump, Swift `ConfigService.save`) re-reads and writes under an exclusive `flock(2)` on `<config.yaml>.lock` (spec §11; Decision 7).
+- Every writer of `config.yaml` re-reads and writes it under one exclusive `flock(2)` on `<config.yaml>.lock`, through one funnel per language: Go `config.WithWriteLock`, Swift `ConfigFileLock.withLock` + `ConfigFileWriter`. The full writer list is in Decision 7 (spec §11).
 - UI strings live in models with tests (`BackgroundAIConsentCopy` in WatchtowerCore; the phone's `BackgroundAIConsentCopy` in WatchtowerKit). The exact strings are spec §5.1, §6.1–§6.5. They already sit in `WatchtowerDesktop/Tests/DesignShots/BackgroundAIConsentMockCopy.swift` and move from there unchanged.
 - Colours only through `Tone` (`WatchtowerKit/Sources/WatchtowerDesign/Tone.swift`); error lines use `Tone.error`. Desktop screens are built from `WatchtowerDesktop/Sources/DesignKit/` and checked against the named `ai-consent-*` mockups.
 - Tests never wait on wall-clock time: injected clocks, `aiconsent.Reader` fakes, `testing/synctest`. A test that spawns a process kills its process group and waits for it in `t.Cleanup`.
@@ -53,11 +53,33 @@ Source "agent, plan" = written with the plan; "agent, review #1484" = changed or
 4. **Where `UsesAI` per primitive lives (§4.2).** `automations.Manifest.UsesAI` needs it, and `builtin` imports `automations`. The declaration is `automations.PrimitiveUsesAI`, beside `BuiltinPrimitiveNames`. `TestBuiltin_EveryPrimitiveDeclaresAI` lives in `internal/automations/builtin` as the spec names it. Source: agent, plan.
 5. **The Desktop needs the same rule** for the Automations notice and chip. This is a dual path with the shared fixture `internal/automations/testdata/uses_ai_cases.json`, run by Go `TestManifest_UsesAISharedFixture` and Swift `AutomationAIUseTests.sharedFixture`. Source: agent, plan.
 6. **Policy field.** The spec's `Policy.AllowBackgroundAI` is `Policy.Keys.AllowBackgroundAI *bool` (`Keyset`). Source: agent, plan.
-7. **The config file lock (§11), followed as written.** No lock exists today: `writeConfigAtomic` writes a temp file and renames it, and `ConfigService.save` re-reads and writes. The plan adds one exclusive `flock(2)` on `<config.yaml>.lock`, taken around read-modify-write by every Go writer (`withConfigLock` in `cmd/config.go`) and by `ConfigService.save` (`ConfigFileLock` in WatchtowerCore). Without it, a Desktop save racing the CLI could write back a snapshot taken before `allow`, and the answer would be lost. Readers take no lock (the rename is atomic). Source: agent, review #1484 (replaces "last write wins").
+7. **The config file lock (§11), followed as written: one locked funnel per language.** No lock exists today. Recon (2026-11-18) of every writer of `config.yaml`:
+
+   | Writer | Language | Writes |
+   |---|---|---|
+   | `config init` (`cmd/config.go`, the defaults write) | Go | the starter file |
+   | `runConfigSet`, `setAIConfigKey` (`cmd/config.go`) | Go | one key (`config set`; the Desktop calls it for Settings) |
+   | `setConfigKey` (`cmd/features.go`) | Go | one key (`features enable/disable`, and `ai background allow\|pause` here) |
+   | the schema-format bump (`cmd/root.go`) | Go | `db.schema_format` |
+   | Jira writers (`cmd/jira.go`, two) | Go | Jira site and board keys |
+   | `cmd/linear.go` | Go | Linear keys |
+   | `cmd/slack_legacy.go` | Go | legacy Slack workspace keys |
+   | `writeConfigFile` (`cmd/workspace.go`) | Go | workspace keys |
+   | `writeFeatureMigrationConfigBytes` (`internal/config/feature_migrate.go`, run from config loading) | Go | the one-time feature-key migration |
+   | `ConfigService.save` (`WatchtowerDesktop/Sources/Services/ConfigService.swift`) | Swift | the keys Settings and Connections manage |
+   | `OnboardingAgentPathConfig.save` (`WatchtowerCore/Services/OnboardingAgentPathConfig.swift`) | Swift | the agent CLI path picked in onboarding |
+
+   The Kit and the phone have no `config.yaml` and write none.
+
+   **Funnel.** Go: `config.WithWriteLock(configPath, func(lk *config.WriteLock) error)` (`internal/config/writelock.go`) takes the flock and passes a token that has no exported constructor. `writeConfigAtomic`, `writeConfigFile` and `writeFeatureMigrationConfigBytes` all require the token as their first parameter, so the compiler rejects a write outside the lock. Swift: `ConfigFileLock.withLock(configPath:) { token in … }` and `ConfigFileWriter.write(_:configPath:token:)`, the only Swift code that writes config bytes (atomic temp file + rename, created `0600`). `ConfigService.save` and `OnboardingAgentPathConfig.save` both use it. Each writer re-reads the file **inside** the lock and changes only its own keys.
+
+   **Who wins.** Writers are serialized. A writer never writes back a key it did not set from a stale snapshot, so two writers of different keys both survive. For the same key, the later lock holder wins. `ai.background_runs` has one writer (`ai background`), so a Desktop save can never overwrite the answer. The lock is not re-entrant: a nested `WithWriteLock` on the same path in one process returns `config.ErrWriteLockHeld` at once, never deadlocks. Readers take no lock (the rename is atomic).
+
+   **Guards.** `TestConfigWriters_OnlyThroughWriteLock` (Go, `go/ast`): `WriteConfigAs`, `os.WriteFile` and `os.Rename` on a config path appear only inside the three token-taking writers. `ConfigWritersTests.testOnlyConfigFileWriterWritesConfig` (Swift scan of `WatchtowerDesktop/Sources`): no `write(toFile:`, `write(to:`, `FileHandle(forWritingAtPath:`, `createFile(atPath:`, `open(`/`rename(` whose arguments mention `configPath` or `configURL`, outside `ConfigFileWriter.swift`. Cost if wrong: a writer the scans miss could still drop a key in a race; the compiler token covers every Go writer regardless. Source: agent, review #1484 (round 2: every writer, one funnel).
 8. **Test homes that do not exist.** `HomeContent` is a View, so the Home card model is `HomeBackgroundAICard` (Core), tested in `HomeBackgroundAICardTests`. `GettingReadyPolicyTests` is the existing `GettingReadyTests`. `HeartbeatPayloadTests` is new. The phone's Home is the **Now** tab (`NowView`). Source: agent, plan.
 9. **Fail-closed default for consent readers.** The daemon, `Scheduler`, `Bus`, `Executor` and `builtin.Runner` take an optional injected `aiconsent.Reader`. A nil reader reads `aiconsent.Current`, never "ungated", so a component built anywhere is gated. `aiconsent.Current()` with no config path reads as paused. The test packages that build these components call `aiconsenttest.AllowByDefault()` in `TestMain` (`cmd`, `internal/daemon`, `internal/automations`, `internal/automations/builtin`, plus any other package whose existing tests go red only because of the default). Their assertions stay unchanged. `TestBGAI01_NilReaderFailsClosed` pins the default. Source: agent, review #1484 (replaces "nil = ungated").
 10. **The reviewer child (D20).** The reviewer agent is not called through a generator leaf, so `runSpecReviewRun` calls `aiconsent.Check` before `specreview.Run` claims the row. Refused → the row stays queued. Source: agent, plan.
-11. **Desktop launch sites carry an origin, guarded statically.** Recon (2026-11-18) re-checked every Desktop CLI launch of a model-running command (`BriefingViewModel`, `DayPlanViewModel`, `CatchUpViewModel`, `CoachCenter.runNow`, `TargetNextStepService`, `TargetSuggestLinksService`, `TargetExtractService`, `TrackComposeService`, `TrackScanService`, `MeetingTopicsExtractService`, `MeetingRecapService`, `TranscriptSaveService`, `TranscriptChaptersCenter`, `TranscriptNotesCenter`, `MeetingPrepViewModel`, `WorkbenchCLI` session start and spec-review start). All of them follow a gesture: a click, opening a view the owner chose, or a recording the owner made (spec §2.2). The Desktop's timers (`CoachCenter` and `CatchUpViewModel` polls, `SessionBackgroundProber`, `SessionCleanupCenter`, `SessionReportCenter`, `DaemonManager`, `ConfigService` routing status) run only commands that call no model. The plan adds `CLIRunner` origin support (`.background` sets `WATCHTOWER_AI_ORIGIN=background`). The guard `DesktopModelLaunchSitesTests` fails on any Desktop file that launches a command from the shared list `internal/aiconsent/testdata/model_commands.json` without a classified entry (owner + the gesture, or background + `origin: .background`). Go `TestModelCommands_ExistInCLI` keeps that list's paths real. The list is hand-kept: a new model-running command must be added to it, and the feature note says so. The hub's own spawns are covered by the Go spawn checker (Decision 3). Source: agent, review #1484.
+11. **Desktop launch sites carry an origin, guarded statically.** Recon (2026-11-18) re-checked every Desktop CLI launch of a model-running command (`BriefingViewModel`, `DayPlanViewModel`, `CatchUpViewModel`, `CoachCenter.runNow`, `TargetNextStepService`, `TargetSuggestLinksService`, `TargetExtractService`, `TrackComposeService`, `TrackScanService`, `MeetingTopicsExtractService`, `MeetingRecapService`, `TranscriptSaveService`, `TranscriptChaptersCenter`, `TranscriptNotesCenter`, `MeetingPrepViewModel`, `WorkbenchCLI` session start and spec-review start). All of them follow a gesture: a click, opening a view the owner chose, or a recording the owner made (spec §2.2). The Desktop's timers (`CoachCenter` and `CatchUpViewModel` polls, `SessionBackgroundProber`, `SessionCleanupCenter`, `SessionReportCenter`, `DaemonManager`, `ConfigService` routing status) run only commands that call no model. Task 18 makes the origin explicit three ways. Compiler: model commands launch only through `runModel(args:origin:…)`, which has no default origin. Runtime: every generic `CLIRunner` entry refuses a final argv that matches the shared list `internal/aiconsent/testdata/model_commands.json`, however the args were built. Scan: launches of the CLI binary that bypass `CLIRunner` must be listed with a reason. Round 2 replaced the literal-only scan with this. Go `TestModelCommands_ExistInCLI` keeps that list's paths real. The list is hand-kept: a new model-running command must be added to it, and the feature note says so. The hub's own spawns are covered by the Go spawn checker (Decision 3). Source: agent, review #1484.
 12. **An answer given outside the Desktop** (`watchtower ai background allow|pause` in a terminal, or a profile change). The Desktop re-reads `config.yaml` on `NSApplication.didBecomeActiveNotification`, the same trigger `ManagedPolicyCenter` uses, and after its own CLI call. `BackgroundAIConsentRefresher` (Core) owns this. An upgrade sheet that is open closes once `prompt` turns false. A sheet opened from Settings, Home or an empty state closes once the state turns `allowed`. No file watcher is added: the owner who answered in a terminal comes back to the app, and that activation re-reads. Source: agent, review #1484.
 
 ---
@@ -68,20 +90,22 @@ Source "agent, plan" = written with the plan; "agent, review #1484" = changed or
 |---|---|
 | Consent core (Go) | Create `internal/aiconsent/{aiconsent.go,current.go,origin.go,aiconsent_test.go,origin_test.go,testdata/consent_cases.json}` |
 | Policy | `internal/policy/policy.go`, `testdata/policy_cases.json`, `policy_test.go`, `collision_test.go`; Swift `WatchtowerCore/Models/ManagedPolicy.swift`, `Views/Settings/OrganizationPolicySection.swift`, `Tests/Core/ManagedPolicyTests.swift` |
-| CLI | Create `cmd/ai_background.go`, `cmd/ai_background_test.go`, `internal/aiconsent/testdata/model_commands.json`; modify `cmd/config.go` (+ `withConfigLock`), `cmd/status.go`, `cmd/root.go` |
+| CLI | Create `cmd/ai_background.go`, `cmd/ai_background_test.go`, `internal/aiconsent/testdata/model_commands.json`; modify `cmd/config.go`, `cmd/status.go`, `cmd/root.go` |
 | Leaves | `cmd/provider_policy.go`, `internal/agentloop/client.go`, `cmd/automations_backends.go`, `internal/chatengine/{session.go,reattach.go}` (owner env for turn children) |
 | Daemon | Create `internal/daemon/ai_consent.go`; modify `daemon.go`, `media.go`, `coach.go`, `history_backfill.go`, `spec_review_sweep.go`, `morning_brief.go`/`builtin_slots.go` (ctx only) |
 | Automations | `internal/automations/{manifest.go,scheduler.go,bus.go,executor.go,sdk_shell.go}`, `builtin/{registry.go,runner.go,watchslot.go}`, `internal/db/automation_runs.go`, `testdata/uses_ai_cases.json` |
 | Spawns | `cmd/workbench_spec_review_launch.go`, `cmd/workbench_spec_review.go`, `cmd/sync.go` (`SetSpecReviewLaunch`), create `internal/daemon/bgai_spawn_test.go` + `testdata/spawns/` |
 | Hub/phone | `internal/hub/wire/payloads.go`, `wire/contract_test.go` (+ its fixture), `internal/hub/slices/heartbeat.go`, `internal/hub/runtime.go`; Kit `WatchtowerSync/Relay/HeartbeatPayload.swift`, create `WatchtowerKit/Sources/WatchtowerKit/Copy/BackgroundAIConsentCopy.swift`; phone `Features/Now/NowView.swift` |
 | Desktop | Create `WatchtowerCore/Models/BackgroundAIConsent.swift`, `WatchtowerCore/Services/BackgroundAIConsentCopy.swift`, `BackgroundAIConsentModel.swift`, `BackgroundAIConsentPrompt.swift`, `BackgroundAISettingsPresentation.swift`, `HomeBackgroundAICard.swift`, `Automations/AutomationAIUse.swift`; `Views/Onboarding/BackgroundAIConsentView.swift`, `Views/Settings/BackgroundAISettingsSection.swift`; modify `Services/ConfigService.swift`, `App/AppState.swift`, `OnboardingStateMachineV2.swift`, `Readiness.swift`, `FeatureReadiness.swift`, `GettingReadyPolicy.swift`, `Views/Components/FeatureEmptyState.swift`, `Views/Home/HomeView.swift`, `Views/Settings/ProviderSettings.swift`, `Automations/AutomationListSections.swift`, the Automations list view |
-| Desktop launch guard | `WatchtowerCore/Services/CLIRunner.swift` (origin), create `Tests/Core/DesktopModelLaunchSitesTests.swift`, `Tests/Core/Support/DesktopModelLaunchSites.swift` |
+| Desktop launch guard | `WatchtowerCore/Services/CLIRunner.swift` (`runModel`, origin, runtime refusal), create `WatchtowerCore/Services/ModelCommands.swift`, `Tests/Core/DesktopModelLaunchSitesTests.swift`, `Tests/Core/Support/DesktopProcessLaunchSites.swift`; the 17 model call sites |
+| Config writers funnel | Create `internal/config/writelock.go`, `WatchtowerCore/Services/{ConfigFileLock,ConfigFileWriter}.swift`; modify every writer in Decision 7 |
 | Docs | `docs/inventory/{background-ai.md,README.md,policy.md,automations.md,features.md,history-backfill.md}`, `docs/features/*`, `docs/guide/*`, `CLAUDE.md`, `docs/examples/watchtower-policy.mobileconfig` |
 
 ## Lanes
 
-- **Lane G1 (Go core, serial):** Task 1 → Task 2 → Task 3.
-- **After Task 2, in parallel:** Lane G2 Task 4; Lane G3 Task 5; then Task 8 after Tasks 4 and 5; Lane G4 Task 6 → Task 7; Lane H Task 10 → Task 11 (phone); Lane S Task 12 → Task 13 → {Task 14, Task 15} (two lanes).
+- **Lane G1 (Go core, serial):** Task 1 → Task 2 → Task 3 (Task 3 also waits for Task 19).
+- **Lane W:** Task 19 (config writers funnel, Go + Swift) runs from the start, in parallel with Task 1.
+- **After Task 2, in parallel:** Lane G2 Task 4; Lane G3 Task 5; then Task 8 after Tasks 4 and 5; Lane G4 Task 6 → Task 7; Lane H Task 10 → Task 11 (phone); Lane S Task 12 (after Task 19) → Task 13 → {Task 14, Task 15} (two lanes).
 - **Task 16** after Task 6 and Task 13. **Task 18** (Desktop launch guard) after Task 3 and Task 12. **Task 9** (full-cycle guards and the BGAI inventory) after Tasks 3, 5, 7 and 8. **Task 17** (docs and guide) last.
 - Lanes never share a working tree. Swift lanes use their own `.build` copies (CLAUDE.md, cache hygiene).
 
@@ -171,17 +195,17 @@ Rules: the package is a leaf. It imports only `internal/policy` and the stdlib p
 
 ### Task 3: `watchtower ai background`, `config set` refusal, `status` line, process wiring
 
-**Depends on:** Task 2
+**Depends on:** Task 2, Task 19
 
 **Files:**
 - Create: `cmd/ai_background.go`, `cmd/ai_background_test.go`
-- Modify: `cmd/ai.go` (`aiCmd.AddCommand(aiBackgroundCmd)`), `cmd/config.go` (`runConfigSet` refusal; `knownConfigKeys` untouched; `func withConfigLock(configPath string, fn func() error) error` takes `syscall.Flock(LOCK_EX)` on `<configPath>.lock` (created `0600`) and wraps the read-modify-write of `setConfigKey`, `setAIConfigKey`, `runConfigSet` and the schema-format bump), `cmd/status.go` (one line), `cmd/root.go` (`Execute`: `aiconsent.InitProcess(role, os.Getenv)`; root pre-run: `aiconsent.SetConfigPath(<resolved config path>)` and `aiconsent.SetRunTriggerLookup(<reads automation_runs.trigger by id through a read-only db handle opened lazily>)`)
+- Modify: `cmd/ai.go` (`aiCmd.AddCommand(aiBackgroundCmd)`), `cmd/config.go` (`runConfigSet` refusal; `knownConfigKeys` untouched; writes go through Task 19's locked funnel), `cmd/status.go` (one line), `cmd/root.go` (`Execute`: `aiconsent.InitProcess(role, os.Getenv)`; root pre-run: `aiconsent.SetConfigPath(<resolved config path>)` and `aiconsent.SetRunTriggerLookup(<reads automation_runs.trigger by id through a read-only db handle opened lazily>)`)
 
 - Create: `internal/aiconsent/testdata/model_commands.json`: the CLI command paths that can call a model, as arrays (`["digest","generate"]`, `["briefing","generate"]`, `["day-plan","generate"]`, `["catchup","run"]`, `["coach","run"]`, `["targets","next-step"]`, `["targets","suggest-links"]`, `["targets","extract"]`, `["tracks","create"]`, `["tracks","scan"]`, `["meeting-prep"]` (every subcommand), `["ai","query"]`, `["ai","session"]`, `["workbench","session","start"]`, `["workbench","spec-review","start"]`, `["workbench","spec-review","run"]`, plus every other command whose RunE builds a generator or AI client, found by `grep -ln 'cliPooledGenerator\|cliGenerator\|newAIClient\|checkedGenerator\|cliBoundedGenerator' cmd/*.go`)
 
 **Interfaces:**
 - Consumes: Task 2.
-- Produces: the CLI verbs (spec §9); `withConfigLock`; `model_commands.json` (read by Task 18). `aiBackgroundStatusJSON{Effective string "effective"; Reason string "reason"; Answer string "answer"; Policy *bool "policy"}`. `consentText(agent, reserve string, pollMinutes, backfillDays int) string` holds the Go copy of the spec §5.1 text. `var signalDaemonFn = signalSyncNow` and `var stdinIsTTY func() bool` are test seams. `allow` writes through `setConfigKey(configPath, "ai.background_runs", "allowed")`.
+- Produces: the CLI verbs (spec §9); `model_commands.json` (read by Task 18). `aiBackgroundStatusJSON{Effective string "effective"; Reason string "reason"; Answer string "answer"; Policy *bool "policy"}`. `consentText(agent, reserve string, pollMinutes, backfillDays int) string` holds the Go copy of the spec §5.1 text. `var signalDaemonFn = signalSyncNow` and `var stdinIsTTY func() bool` are test seams. `allow` writes through `setConfigKey(configPath, "ai.background_runs", "allowed")`.
 
 - [ ] **Step 1: Failing tests** (`cmd/ai_background_test.go`, temp config via `t.TempDir()`, policy through the `policytest` seam):
   - `TestAIBackground_StatusJSONKeys`: the keys are exactly `effective, reason, answer, policy`. An unanswered install gives `"paused","unanswered","",null`.
@@ -193,12 +217,10 @@ Rules: the package is a leaf. It imports only `internal/policy` and the stdlib p
   - `TestAIBackground_TTYPromptDefaultsNo`: TTY, input `"\n"` → nothing written. Input `"y\n"` → written. The printed text contains the spec §5.1 title and the Claude plan line for `ai.provider: claude`.
   - `TestConfigSet_RefusesBackgroundRunsKey`: `config set ai.background_runs allowed` (any case) → error containing `watchtower ai background allow|pause`, nothing written.
   - `TestStatus_BackgroundAILine`: the four spec §9 lines for unanswered, allowed, owner-paused and organization.
-  - `TestConfigLock_ExcludesSecondHolder`: while `withConfigLock` runs its fn, a second `flock(LOCK_EX|LOCK_NB)` on the same lock file fails with `EWOULDBLOCK`; after it returns, the second lock succeeds.
-  - `TestSetConfigKey_LocksAroundReadAndWrite`: a recording `lockConfig` seam sees the order `lock, read, write, unlock` for `setConfigKey`, `setAIConfigKey` and `runConfigSet`.
   - `TestModelCommands_ExistInCLI`: every path in `model_commands.json` resolves through `rootCmd.Find`, and every command file the grep above finds is listed.
 - [ ] **Step 2: Run** `go test ./cmd -run 'TestAIBackground|TestConfigSet_Refuses|TestStatus_BackgroundAI'` → FAIL.
 - [ ] **Step 3: Implement** the verbs, the refusal (before the type parse in `runConfigSet`), the status line and the root wiring.
-- [ ] **Step 4: Verify** with `go test ./cmd -run 'TestAIBackground|TestConfigSet|TestConfigLock|TestSetConfigKey|TestModelCommands|TestStatus|TestCLIAudit|InitTestTemplate|LLMUSAGE|LLMTRANSPORT'`, then `go test ./internal/aiconsent`, then `make lint-diff`. All PASS.
+- [ ] **Step 4: Verify** with `go test ./cmd -run 'TestAIBackground|TestConfigSet|TestModelCommands|TestStatus|TestCLIAudit|InitTestTemplate|LLMUSAGE|LLMTRANSPORT'`, then `go test ./internal/aiconsent`, then `make lint-diff`. All PASS.
 - [ ] **Step 5: Commit** `feat(cli): watchtower ai background allow|pause|status (#1886)`.
 
 ---
@@ -435,7 +457,7 @@ Rules: the package is a leaf. It imports only `internal/policy` and the stdlib p
 
 ### Task 12: Desktop consent core — Swift resolve, copy, config read, AppState
 
-**Depends on:** Task 1, Task 2
+**Depends on:** Task 1, Task 2, Task 19
 
 **Files:**
 - Create: `WatchtowerDesktop/Sources/WatchtowerCore/Models/BackgroundAIConsent.swift`: `package enum BackgroundAIConsent { package enum Effective: String { case allowed, paused }; package enum Reason: String { case unanswered, owner, organization }; package struct State: Equatable, Sendable { effective, reason, prompt, locked; package static let allowedByOwner }; package static func resolve(answer: String?, policy: Bool?) -> State }`
@@ -443,9 +465,8 @@ Rules: the package is a leaf. It imports only `internal/policy` and the stdlib p
 - Delete: `WatchtowerDesktop/Tests/DesignShots/BackgroundAIConsentMockCopy.swift`, `BackgroundAIConsentMockCopyTests.swift`. Point `DesignShotFixtures+BackgroundAIConsent.swift` at `BackgroundAIConsentCopy`.
 - Create: `WatchtowerDesktop/Tests/Core/BackgroundAIConsentTests.swift`, `BackgroundAIConsentCopyTests.swift` (the moved and extended copy tests)
 - Modify: `WatchtowerDesktop/Sources/Services/ConfigService.swift`: `private(set) var backgroundRuns: String?`, read in `reload()` from `yaml["ai"]["background_runs"]`, never written by `save()`
-- Create: `WatchtowerDesktop/Sources/WatchtowerCore/Services/ConfigFileLock.swift`: `package enum ConfigFileLock { static func withLock<T>(configPath: String, _ body: () throws -> T) throws -> T }`, an exclusive `flock(2)` on `<configPath>.lock` (Decision 7). `ConfigService.save()` runs its re-read and write inside it, through an injectable `lock` seam.
 - Create: `WatchtowerDesktop/Sources/WatchtowerCore/Services/BackgroundAIConsentRefresher.swift`: `@MainActor package final class BackgroundAIConsentRefresher { init(center: NotificationCenter, activation: Notification.Name, reload: @escaping @MainActor () -> Void); func start(); func stop() }` (Decision 12). `AppState` starts it with `NSApplication.didBecomeActiveNotification` and `reload = reloadBackgroundAI`.
-- Modify: `WatchtowerDesktop/Tests/ConfigServiceTests.swift` (`testSaveKeepsBackgroundRunsKey`, `testSaveHoldsConfigLockAroundReadAndWrite`); create `Tests/Core/ConfigFileLockTests.swift`, `Tests/Core/BackgroundAIConsentRefresherTests.swift`
+- Modify: `WatchtowerDesktop/Tests/ConfigServiceTests.swift` (`testSaveKeepsBackgroundRunsKey`); create `Tests/Core/BackgroundAIConsentRefresherTests.swift`
 - Modify: `WatchtowerDesktop/Sources/App/AppState.swift`: `var backgroundAI: BackgroundAIConsent.State`, recomputed from `configService.backgroundRuns` and `managedPolicyCenter.policy.allowBackgroundAI` whenever either changes; `func reloadBackgroundAI()` re-reads the config
 
 **Interfaces:**
@@ -456,10 +477,8 @@ Rules: the package is a leaf. It imports only `internal/policy` and the stdlib p
   - `BackgroundAIConsentTests.sharedFixture`: reads `internal/aiconsent/testdata/consent_cases.json` (path resolved like `ManagedPolicyTests.fixture()`). The wrong-type row goes through `ManagedPolicy` decoding first, then `resolve` gives each row's `want`.
   - `BackgroundAIConsentCopyTests`: the old mock tests plus the Codex and other-provider plan lines, the reserve line in both directions, `whatRuns(pollMinutes: 15, backfillDays: 30)`, and the Settings captions per agent.
   - `ConfigServiceTests.testSaveKeepsBackgroundRunsKey`: the file has `ai.background_runs: allowed`. Load, change another AI key, `save()` → the key is still `allowed`.
-  - `ConfigServiceTests.testSaveHoldsConfigLockAroundReadAndWrite`: a recording lock seam sees `lock`, then the file read, then the write, then `unlock`.
-  - `ConfigFileLockTests.testSecondNonBlockingLockFails`: inside `withLock`, a second `flock(LOCK_EX|LOCK_NB)` on the lock file fails; after it returns, the second lock succeeds.
   - `BackgroundAIConsentRefresherTests.testActivationRereadsAnswer`: posting the activation name on a private `NotificationCenter` calls `reload` once. After `stop()` it is not called.
-- [ ] **Step 2: Run** `make test-swift FILTER='BackgroundAIConsentTests|BackgroundAIConsentCopyTests|ConfigServiceTests|ConfigFileLockTests|BackgroundAIConsentRefresherTests'` → FAIL.
+- [ ] **Step 2: Run** `make test-swift FILTER='BackgroundAIConsentTests|BackgroundAIConsentCopyTests|ConfigServiceTests|BackgroundAIConsentRefresherTests'` → FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Verify** that those filters plus `DesignShotsTests` PASS, then `make lint-swift`.
 - [ ] **Step 5: Commit** `feat(desktop): background AI consent state and copy (#1886)`.
@@ -579,28 +598,66 @@ Rules: the package is a leaf. It imports only `internal/policy` and the stdlib p
 
 ---
 
-### Task 18: Desktop launch sites carry an origin (static guard)
+### Task 18: Desktop model launches need an explicit origin (compiler + runtime + scan)
 
 **Depends on:** Task 3, Task 12
 
+Three nets, from strongest (Decision 11):
+1. **Compiler.** A model command can only be launched through `CLIRunnerProtocol.runModel(args:origin:…)`, which has **no default** for `origin`. Every existing model call site changes to it with `origin: .owner` (the 17 files of Decision 11).
+2. **Runtime, on the real argv.** `CLIRunner.run(args:…)`, `capture` and every other generic entry point matches the final argv, however it was built, against `ModelCommands` (decoded from the bundled copy of `internal/aiconsent/testdata/model_commands.json`). A match throws `CLIRunnerError.modelCommandNeedsOrigin(path)` before launching. A dynamically built or constant-built model call that skips `runModel` fails in its first test or first use, never runs unclassified. `FakeCLIRunner` and `HeldCLIRunner` apply the same check, so service tests catch it.
+3. **Scan, for launches that bypass `CLIRunner`.** Files that reference `Constants.findCLIPath()` and also create a `Process` (`Process()`, `.executableURL`) must have an entry in `DesktopProcessLaunchSites.sites`, with a reason (`DaemonManager`: `sync` control, no model; `CatchUpViewModel`'s `CLIRun`: owner, the Run button; the chat session pool: owner turns; …). A launch in that list that runs a model command must set `WATCHTOWER_AI_ORIGIN` when it is background.
+
 **Files:**
-- Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Services/CLIRunner.swift`: `package enum CLIOrigin { case owner, background }`. `CLIRunnerProtocol` gains `func run(args: [String], origin: CLIOrigin) async throws -> Data`, with a protocol-extension default that calls `run(args:)` for `.owner`. `CLIRunner` implements `.background` by adding `WATCHTOWER_AI_ORIGIN=background` to the resolved environment.
-- Create: `WatchtowerDesktop/Tests/Core/Support/DesktopModelLaunchSites.swift`: `enum DesktopModelLaunchSites { static let sites: [String: Classification] }`, keyed by Sources-relative file path, with `Classification = .owner(gesture: String) | .background`. Seed it with the files and gestures of Decision 11.
-- Create: `WatchtowerDesktop/Tests/Core/DesktopModelLaunchSitesTests.swift`
+- Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Services/CLIRunner.swift`: `package enum CLIOrigin { case owner, background }`; `CLIRunnerProtocol` gains `func runModel(args: [String], origin: CLIOrigin, timeout: TimeInterval?, stdin: Data?) async throws -> Data`; `CLIRunnerError.modelCommandNeedsOrigin(String)`. `.background` adds `WATCHTOWER_AI_ORIGIN=background` to the resolved environment.
+- Create: `WatchtowerDesktop/Sources/WatchtowerCore/Services/ModelCommands.swift` (`static func match(_ argv: [String]) -> String?`, skipping leading `--config <path>`/`--db <path>` flags). Add the JSON as a Core resource copied from `internal/aiconsent/testdata/model_commands.json`; `ModelCommandsTests.testBundledListMatchesGoFixture` compares the two byte for byte.
+- Modify: the 17 model call sites of Decision 11 (`runModel(…, origin: .owner)`), `Tests/Helpers/HeldCLIRunner.swift` and the fake runner
+- Create: `WatchtowerDesktop/Tests/Core/Support/DesktopProcessLaunchSites.swift`, `Tests/Core/DesktopModelLaunchSitesTests.swift`
 
 **Interfaces:**
 - Consumes: `internal/aiconsent/testdata/model_commands.json` (Task 3).
-- Produces: `CLIOrigin`, `CLIRunnerProtocol.run(args:origin:)`.
+- Produces: `CLIOrigin`, `CLIRunnerProtocol.runModel(args:origin:timeout:stdin:)`, `ModelCommands.match`.
 
 - [ ] **Step 1: Failing tests:**
-  - `DesktopModelLaunchSitesTests.testEveryModelLaunchIsClassified`: scan every `.swift` file under `WatchtowerDesktop/Sources` for string-array literals (`[" … "]`, after `args:`, `arguments:`, `var args =` or `let args =`) whose leading string tokens match a path in `model_commands.json`. Every matching file must have an entry in `sites`, and the failure names the file and the command.
-  - `testBackgroundSitesPassBackgroundOrigin`: every `.background` file contains `origin: .background`.
-  - `testNoStaleEntries`: every key in `sites` still exists and still matches a model command.
-  - `CLIRunnerTests.testBackgroundOriginSetsEnv`: a `.background` run against a fake environment provider puts `WATCHTOWER_AI_ORIGIN=background` in the child environment; `.owner` does not. Assert on the built `Process` through the existing environment seam; nothing is launched.
-- [ ] **Step 2: Run** `make test-swift FILTER='DesktopModelLaunchSitesTests|CLIRunnerTests'` → FAIL.
-- [ ] **Step 3: Implement.** No existing call site changes (all are owner today, Decision 11).
-- [ ] **Step 4: Verify** that those filters PASS, then `make lint-swift`.
-- [ ] **Step 5: Commit** `test(desktop): every Desktop model launch is classified by origin (#1886)`.
+  - `CLIRunnerTests.testGenericRunRefusesModelCommand`: `run(args: ["--config", "/x", "digest", "generate"])` throws `.modelCommandNeedsOrigin("digest generate")`, and no `Process` is built (environment seam). Args built by joining a constant and a computed suffix give the same result.
+  - `CLIRunnerTests.testRunModelBackgroundSetsEnv`: `.background` puts `WATCHTOWER_AI_ORIGIN=background` in the child environment; `.owner` does not.
+  - `FakeCLIRunnerTests.testFakeRefusesModelCommandWithoutOrigin`.
+  - `ModelCommandsTests.testBundledListMatchesGoFixture`, `testMatchSkipsGlobalFlags`.
+  - `DesktopModelLaunchSitesTests.testEveryProcessLaunchOfTheCLIIsListed` and `testNoStaleEntries`.
+  - `DesktopModelLaunchSitesTests.testLiteralModelArgsUseRunModel` (the round-1 string scan, kept as an extra net): a string-array literal starting with a model command path appears only in a `runModel(` call.
+- [ ] **Step 2: Run** `make test-swift FILTER='CLIRunnerTests|FakeCLIRunnerTests|ModelCommandsTests|DesktopModelLaunchSitesTests'` → FAIL.
+- [ ] **Step 3: Implement**, then move every model call site to `runModel(…, origin: .owner)`. Run the services' existing tests: a call site that still uses `run(args:)` for a model command now throws in its test.
+- [ ] **Step 4: Verify** with `make test-swift FILTER='CLIRunner|FakeCLIRunner|ModelCommands|DesktopModelLaunchSites|Briefing|DayPlan|CatchUp|Coach|TargetNextStep|TargetSuggestLinks|TargetExtract|TrackCompose|TrackScan|MeetingTopics|MeetingRecap|TranscriptSave|MeetingPrep|WorkbenchCLI'` PASS, then `make lint-swift`.
+- [ ] **Step 5: Commit** `feat(desktop): model CLI launches need an explicit origin (#1886)`.
+
+---
+
+### Task 19: One locked writer funnel for `config.yaml` (Go + Swift)
+
+**Depends on:** none
+
+**Files:**
+- Create: `internal/config/writelock.go`: `type WriteLock struct{ path string; f *os.File }`; `func WithWriteLock(configPath string, fn func(lk *WriteLock) error) error` (creates `<configPath>.lock` `0600`, `syscall.Flock(LOCK_EX)`, records the path in a process-wide held set; a nested call on a held path returns `ErrWriteLockHeld`); `var ErrWriteLockHeld = errors.New("config.yaml write lock already held by this process")`; `func (lk *WriteLock) Covers(path string) bool`
+- Modify: `cmd/config.go` `writeConfigAtomic(lk *config.WriteLock, v *viper.Viper, configPath string) error` (refuses `!lk.Covers(configPath)`); `cmd/workspace.go` `writeConfigFile` (same signature); `internal/config/feature_migrate.go` `writeFeatureMigrationConfigBytes(lk *WriteLock, data []byte, configPath string)`. Wrap the read-modify-write of every Go writer of Decision 7 in `config.WithWriteLock`, so each re-reads inside the lock.
+- Create: `WatchtowerDesktop/Sources/WatchtowerCore/Services/ConfigFileLock.swift` (`package enum ConfigFileLock { package struct Token; static func withLock<T>(configPath: String, _ body: (Token) throws -> T) throws -> T }`, `flock(2)` on the same `<configPath>.lock`), `ConfigFileWriter.swift` (`static func write(_ text: String, configPath: String, token: ConfigFileLock.Token) throws`: temp file `0600` + `rename`)
+- Modify: `ConfigService.save()` and `OnboardingAgentPathConfig.save(_:for:configPath:)` to re-read and write inside `withLock` through `ConfigFileWriter`
+- Tests: create `internal/config/writelock_test.go`, `cmd/config_writers_test.go`; create `WatchtowerDesktop/Tests/Core/ConfigFileLockTests.swift`, `Tests/Core/ConfigWritersTests.swift`; modify `WatchtowerDesktop/Tests/ConfigServiceTests.swift`, `Tests/Core/OnboardingAgentPathConfigTests.swift`
+
+**Interfaces:**
+- Produces: `config.WithWriteLock`, `config.WriteLock`, `config.ErrWriteLockHeld`; Swift `ConfigFileLock`, `ConfigFileWriter`.
+
+- [ ] **Step 1: Failing tests:**
+  - `TestWithWriteLock_ExcludesSecondHolder`: inside `fn`, a second `flock(LOCK_EX|LOCK_NB)` on the lock file (its own fd) fails with `EWOULDBLOCK`; after return it succeeds.
+  - `TestWithWriteLock_NestedCallFailsFast`: a nested `WithWriteLock` on the same path returns `ErrWriteLockHeld` without blocking (run inside `synctest.Test`; the bubble would report a deadlock).
+  - `TestConfigWriters_OnlyThroughWriteLock` (`cmd`): `go/ast` over non-test files of `cmd` and `internal/config`. `WriteConfigAs`, `os.WriteFile` and `os.Rename` calls whose arguments mention a config path appear only in `writeConfigAtomic`, `writeConfigFile` and `writeFeatureMigrationConfigBytes`.
+  - `TestSetConfigKey_RereadsInsideLock`: a key written to the file by another writer after `setConfigKey` was called, but before it took the lock, survives. Order it with a `beforeLock` seam, no time.
+  - `ConfigFileLockTests.testSecondNonBlockingLockFails`, `testGoAndSwiftShareTheLockFile` (the lock path is `configPath + ".lock"`, the same string the Go fixture names).
+  - `ConfigServiceTests.testSaveHoldsConfigLockAroundReadAndWrite` (a recording lock seam sees lock → read → write → unlock); `ConfigServiceTests.testSaveKeepsKeysWrittenByOthers`.
+  - `OnboardingAgentPathConfigTests.testSaveReadsAndWritesUnderLock`, `testSaveKeepsBackgroundRunsKey` (the scenario from review #1484: `ai.background_runs: allowed` written between onboarding's load and its save survives).
+  - `ConfigWritersTests.testOnlyConfigFileWriterWritesConfig` (the Swift scan of Decision 7).
+- [ ] **Step 2: Run** `go test ./internal/config ./cmd -run 'WriteLock|ConfigWriters|SetConfigKey_Rereads'` and `make test-swift FILTER='ConfigFileLockTests|ConfigServiceTests|OnboardingAgentPathConfigTests|ConfigWritersTests'` → FAIL.
+- [ ] **Step 3: Implement** the Go funnel, moving every writer of Decision 7 onto it; the compiler lists any writer missed. Then the Swift funnel.
+- [ ] **Step 4: Verify** with `go test ./internal/config`, then `go test ./cmd -run 'WriteLock|ConfigWriters|SetConfigKey|Config|Jira|Linear|Workspace|Features|TestCLIAudit|InitTestTemplate|LLMUSAGE|LLMTRANSPORT'`, then `make lint-diff`, then the Swift filters above and `make lint-swift`. All PASS.
+- [ ] **Step 5: Commit** `feat(config): one locked writer funnel for config.yaml (#1886)`.
 
 ---
 
@@ -616,7 +673,7 @@ Rules: the package is a leaf. It imports only `internal/policy` and the stdlib p
 | §4.3 backstop in every process's leaves | 4 | `TestPolicyCheckedGenerator_RefusesBackgroundOriginInAnyProcess`, `TestAgentloop_RefusesUnadmittedBackground`, `TestCLIAgentRunner_PausedSpawnsNothing` |
 | §2.2 typed commands never gated (BGAI-02) | 4 | `TestBGAI02_TypedCommandNotGated` |
 | §2.2 chats hosted by the daemon are gestures; the hub's own work stays gated | 4, 8 | `TestBGAI02_ChatEngineChildIsOwner`, `TestBGAI02_HubAndChatEngineMakeNoInProcessModelCall`, `TestBGAI02_DaemonUnmarkedCallStaysGated`, `TestBGAI01_EveryDaemonSpawnSetsOrigin` (chatengine and hub roots) |
-| §2.3 Desktop launches: gestures only, any background one carries the origin | 3, 18 | `TestModelCommands_ExistInCLI`, `DesktopModelLaunchSitesTests`, `CLIRunnerTests.testBackgroundOriginSetsEnv` |
+| §2.3 Desktop launches: gestures only, any background one carries the origin | 3, 18 | `TestModelCommands_ExistInCLI`, `CLIRunnerTests.testGenericRunRefusesModelCommand`, `testRunModelBackgroundSetsEnv`, `FakeCLIRunnerTests.testFakeRefusesModelCommandWithoutOrigin`, `ModelCommandsTests`, `DesktopModelLaunchSitesTests` |
 | D17 plan-limit read exempt | 4 | `TestPlanUsagePoller_NotGatedByConsent` |
 | §4.1 phase gate, D12 running phase finishes | 5 | `TestBGAI01_PauseMidCycleFinishesPhaseSkipsNext` |
 | §4.3 `ErrPaused` is a skip, not an error row | 5 | `TestBGAI01_PauseMidCycleSkipsWithoutErrorRow` |
@@ -644,7 +701,7 @@ Rules: the package is a leaf. It imports only `internal/policy` and the stdlib p
 | §6.5 / D19 heartbeat key, absent from old hub | 10 | `TestHeartbeat_CarriesBackgroundAI`, `TestBackgroundAIValue`, `TestHubContractFixture`, `HeartbeatPayloadTests.testBackgroundAIKeyIsOptional` |
 | §6.5 phone line | 11 | `BackgroundAIConsentCopyTests.testPhoneLines`, `NowWiringTests.testBackgroundAILineFollowsHeartbeat` |
 | §5.1 copy | 12 | `BackgroundAIConsentCopyTests` (Desktop) |
-| §11 stale `ConfigService.save` keeps the answer; two writers share the file lock | 3, 12 | `ConfigServiceTests.testSaveKeepsBackgroundRunsKey`, `testSaveHoldsConfigLockAroundReadAndWrite`, `ConfigFileLockTests`, `TestConfigLock_ExcludesSecondHolder`, `TestSetConfigKey_LocksAroundReadAndWrite` |
+| §11 every `config.yaml` writer shares the file lock; a stale snapshot never drops the answer | 19, 12 | `TestWithWriteLock_ExcludesSecondHolder`, `TestWithWriteLock_NestedCallFailsFast`, `TestConfigWriters_OnlyThroughWriteLock`, `TestSetConfigKey_RereadsInsideLock`, `ConfigFileLockTests`, `ConfigServiceTests.testSaveHoldsConfigLockAroundReadAndWrite`, `OnboardingAgentPathConfigTests.testSaveKeepsBackgroundRunsKey`, `ConfigWritersTests.testOnlyConfigFileWriterWritesConfig`, `ConfigServiceTests.testSaveKeepsBackgroundRunsKey` |
 | An answer given in a terminal reaches the Desktop | 12, 13 | `BackgroundAIConsentRefresherTests.testActivationRereadsAnswer`, `BackgroundAIConsentPromptTests.testClosesWhenAnsweredElsewhere` |
 | §5 model: allow/pause args, saving, error; §11 write fails | 13 | `BackgroundAIConsentModelTests` |
 | §5.2 / D8 onboarding step, skipped when decided; §11 re-run | 13 | `OnboardingStateMachineV2Tests.testConsentStepSkippedWhenDecided`, `testParkedOnConnectResumesThroughConsent`, `testUnknownRawValueStillStartsAtGoals` |
