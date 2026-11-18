@@ -1383,6 +1383,7 @@ extension WorkbenchesViewModel {
         if restorable, let center = terminalCenter,
            let plan = await rowToLaunch(row, fresh: fresh, center: center, ticket: ticket) {
             let row = plan.row
+            await ensureInstallBeforeLaunch(row)
             let mode = await center.launch(
                 row, fresh: fresh, prompt: prompt, codexResume: plan.codexResume, setup: setup
             )

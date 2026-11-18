@@ -10,13 +10,17 @@ struct FolderSuggestionActions {
     var done: () -> Void = {}
     /// `Retry` under a failed add whose answer was not saved.
     var retry: () -> Void = {}
+    /// `Merge Benches…` on the merge variant (§6.13): opens the confirmation.
+    var mergeBenches: () -> Void = {}
 }
 
 /// The agent's folder suggestion in "Waiting for you" (#2003, spec §6.7):
 /// `Put <name> on the bench?`, where it comes from, then `Put on Bench` ·
 /// `Not Now` on one line and the quiet `Never for This Folder` under them
 /// (the panel is too narrow for three). While the add runs it says so; a
-/// failed add shows its reason and `OK`.
+/// failed add shows its reason and `OK`. A folder on another bench makes it
+/// the merge variant (§6.13): `<name> is on the “<B>” bench`, then
+/// `Merge Benches…` · `Not Now`.
 struct FolderSuggestionCard: View {
     typealias Copy = FolderSuggestionPresentation
 
@@ -57,6 +61,13 @@ struct FolderSuggestionCard: View {
 
     @ViewBuilder private var buttons: some View {
         switch card.phase {
+        case .ready where card.otherBench != nil:
+            HStack(spacing: Spacing.small) {
+                Button(BenchMergePresentation.mergeBenches, action: actions.mergeBenches).buttonStyle(.kitPrimary).fixedSize()
+                Button(BenchMergePresentation.notNow, action: actions.notNow).buttonStyle(.kitSecondary).fixedSize()
+            }
+            .controlSize(.small)
+            .disabled(answering)
         case .ready:
             VStack(alignment: .leading, spacing: Spacing.small) {
                 HStack(spacing: Spacing.small) {
@@ -93,7 +104,7 @@ struct FolderSuggestionAskCard: View {
         FolderSuggestionCard(
             card: FolderSuggestionPresentation.card(
                 suggestion, sessionTitle: ask.sessionID.flatMap { vm.session($0, projectID: ask.projectID)?.title },
-                phase: asks.folderPhases[ask.id] ?? .ready
+                phase: asks.folderPhases[ask.id] ?? .ready, otherBench: asks.folderMergeBench[ask.id], askBench: ask.projectID
             ),
             error: asks.answerErrors[ask.id],
             answering: asks.isFolderCardWorking(ask.id),
@@ -102,7 +113,8 @@ struct FolderSuggestionAskCard: View {
                 notNow: { Task { await asks.notNow(ask) } },
                 never: { Task { await asks.never(ask) } },
                 done: { asks.folderCardDone(ask.id) },
-                retry: { Task { await asks.retryFolderAnswer(ask) } }
+                retry: { Task { await asks.retryFolderAnswer(ask) } },
+                mergeBenches: { Task { await asks.mergeBenches(ask) } }
             )
         )
         .sensitiveLocationAlert($sensitiveLocation, cancelLabel: FolderSuggestionPresentation.cancel) {

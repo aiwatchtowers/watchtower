@@ -206,7 +206,7 @@ extension WorkbenchesViewModel {
 
     /// `workbench folder add`: a new folder is highlighted and opened in
     /// FILES; `already_here` highlights the folder it already is; any other
-    /// refusal (`other_bench` until the merge flow, `nested`, …) and a
+    /// refusal (`nested`, …; `other_bench` offers the merge, §6.13) and a
     /// failed call say why under the FILES header. An install that failed
     /// leaves the folder on the bench with the install icon and Retry
     /// (spec §7 row 2); nothing is rolled back.
@@ -230,6 +230,11 @@ extension WorkbenchesViewModel {
             return
         }
         if result.ok || result.code == .alreadyHere { return }
+        // Another bench's folder: offer to merge that bench into this one (§6.13).
+        if result.code == .otherBench, let other = result.otherBench {
+            await offerMerge(fromID: other.id, fromName: other.name, into: projectID, path: folder.path)
+            return
+        }
         putOnBenchErrors[projectID] = WorkbenchFolderPresentation.putOnBenchFailed(name: name, reason: result.reason)
     }
 

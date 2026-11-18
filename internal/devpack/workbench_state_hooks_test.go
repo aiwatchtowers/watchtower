@@ -421,3 +421,29 @@ func TestInstallStateHooksRepairsASixHookFolder(t *testing.T) {
 		t.Fatalf("after the repair: HasStateHooks = %v err=%v", full, err)
 	}
 }
+
+// InstalledWorkbenchIDs reads which workbench a folder is installed for: a
+// merged bench's folder still names the old id until it is reinstalled
+// (spec 2026-11-18 §6.13, the launch backstop).
+func TestInstalledWorkbenchIDs(t *testing.T) {
+	dir := t.TempDir()
+	if ids, err := InstalledWorkbenchIDs(dir); err != nil || len(ids) != 0 {
+		t.Fatalf("no settings: ids=%v err=%v", ids, err)
+	}
+	if _, err := InstallStateHooks(dir, "/Applications/Watch Tower/watchtower", 7); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InstallStateHooks(dir, "watchtower", 12); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := InstalledWorkbenchIDs(dir)
+	if err != nil || !slices.Equal(ids, []int64{7, 12}) {
+		t.Fatalf("ids=%v err=%v, want [7 12]", ids, err)
+	}
+	if _, err := RemoveStateHooks(dir, 7); err != nil {
+		t.Fatal(err)
+	}
+	if ids, err := InstalledWorkbenchIDs(dir); err != nil || !slices.Equal(ids, []int64{12}) {
+		t.Fatalf("after removing 7: ids=%v err=%v", ids, err)
+	}
+}

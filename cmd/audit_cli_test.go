@@ -442,6 +442,7 @@ var cliNoContentCommands = map[string]bool{
 	"workbench git switch":             true,
 	"workbench launch-args":            true,
 	"workbench list":                   true,
+	"workbench merge":                  true, // folder paths and names, counts
 	"workbench message dismiss":        true, // prints an id only
 	"workbench message send":           true, // prints an id and a state only
 	"workbench methodology":            true,
@@ -465,6 +466,7 @@ var cliNoContentCommands = map[string]bool{
 	"workbench session-report":         true,
 	"workbench session-target":         true,
 	"workbench session-state":          true,
+	"workbench session ensure-install": true, // prints ok and a flag only
 	"workbench session start":          true,
 	"workbench session stop":           true,
 	"workbench spec-review run":        true, // detached reviewer child: prints nothing, writes only the DB

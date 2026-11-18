@@ -114,6 +114,7 @@ struct WorkbenchesView: View {
         }
         .onChange(of: appState.pendingWorkbenchRoute) { _, _ in consumeRoute() }
         .sensitiveLocationAlert($sensitiveLocation, onConfirm: startPending) { pendingFolder = nil }
+        .benchMergeDialogs(vm: vm)
     }
 
     @ViewBuilder

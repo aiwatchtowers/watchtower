@@ -177,16 +177,124 @@ final class WorkbenchesViewModelFoldersTests: XCTestCase {
         XCTAssertNil(vm.putOnBenchErrors[bench])
     }
 
-    func testAnotherBenchsFolderSaysWhy() async throws {
+    // MARK: - Merging benches (§6.13)
+
+    /// Another bench "tools" on /tmp/billing with two targets.
+    private func toolsBench() throws -> Int64 {
+        try pool.write { db in
+            let tools = try TestDatabase.insertWorkbench(db, name: "tools", folder: "/tmp/billing")
+            for text in ["one", "two"] { try TestDatabase.insertWorkbenchTarget(db, projectID: tools, text: text) }
+            return tools
+        }
+    }
+
+    private static func otherBenchJSON(_ tools: Int64) -> Result<Data, Error> {
+        .success(Data(#"""
+            {"ok":false,"error_code":"other_bench","error":"other_bench: /tmp/billing is on the workbench \"tools\".",
+             "other_bench":{"id":\#(tools),"name":"tools"}}
+            """#.utf8))
+    }
+
+    func testOtherBenchOnAddOpensMergeConfirm() async throws {
+        let tools = try toolsBench()
         let runner = runner()
-        runner.answer("folder add", .success(Data(#"""
-            {"ok":false,"error_code":"other_bench","error":"billing is on the “tools” bench.",
-             "other_bench":{"id":9,"name":"tools"}}
+        runner.answer("folder add", Self.otherBenchJSON(tools))
+        let vm = makeVM(runner)
+        await vm.addFolderToBench(URL(fileURLWithPath: "/tmp/billing"), projectID: bench)
+        XCTAssertNil(vm.putOnBenchErrors[bench], "no refusal: the merge is offered")
+        let offer = try XCTUnwrap(vm.mergeOffer)
+        XCTAssertEqual(offer.title, "Merge “tools” into “acme”?")
+        XCTAssertEqual(offer.text, "tools's board (2 targets), asks and sessions move to acme, and tools leaves the workbench list. "
+            + "Folders that move: billing.")
+
+        vm.cancelMerge()
+        XCTAssertNil(vm.mergeOffer)
+        XCTAssertFalse(runner.invocations.contains { $0.starts(with: ["workbench", "merge"]) }, "Cancel changes nothing")
+    }
+
+    /// Never a merge into itself; a bench gone from the list says so.
+    func testNoOfferForItselfOrAGoneBench() async throws {
+        let vm = makeVM(runner())
+        await vm.offerMerge(fromID: bench, fromName: "acme", into: bench, path: "/tmp/acme-app")
+        XCTAssertNil(vm.mergeOffer)
+        XCTAssertNil(vm.putOnBenchErrors[bench])
+
+        await vm.offerMerge(fromID: 999, fromName: "tools", into: bench, path: "/tmp/billing")
+        XCTAssertNil(vm.mergeOffer)
+        XCTAssertEqual(vm.putOnBenchErrors[bench],
+                       "Couldn’t merge “tools”: that workbench is not on the workbench list any more.")
+    }
+
+    /// Merge carries the offer the alert showed: closing the alert clears
+    /// `mergeOffer` before the button's task runs. A later step that failed
+    /// leaves a warning line (the merge itself is done).
+    func testMergeRunsForThePresentedOfferAndWarnsOnALaterFailure() async throws {
+        let tools = try toolsBench()
+        let runner = runner()
+        runner.answer("folder add", Self.otherBenchJSON(tools))
+        runner.answer("merge --from", .success(Data(#"""
+            {"ok":true,"error_code":"","error":"","targets":2,"moved_folders":[],"reinstall":{"ok":true,"failed":[]},
+             "images_ok":false,"images_error":"disk full","index_ok":false,"index_error":"locked"}
             """#.utf8)))
         let vm = makeVM(runner)
         await vm.addFolderToBench(URL(fileURLWithPath: "/tmp/billing"), projectID: bench)
-        XCTAssertEqual(vm.putOnBenchErrors[bench], "Couldn’t put billing on the bench: billing is on the “tools” bench.")
-        XCTAssertNil(vm.highlightedFolderRoot[bench])
+        let offer = try XCTUnwrap(vm.mergeOffer)
+        vm.cancelMerge() // the alert's isPresented setter as it closes
+        await vm.confirmMerge(offer)
+        XCTAssertTrue(runner.invocations.contains { $0.starts(with: ["workbench", "merge"]) })
+        XCTAssertEqual(vm.mergeWarnings[bench], "Merged “tools”, but moving its target images and updating search failed.")
+        XCTAssertNil(vm.putOnBenchErrors[bench])
+    }
+
+    func testMergeRefusedShowsTheCount() async throws {
+        let tools = try toolsBench()
+        let runner = runner()
+        runner.answer("folder add", Self.otherBenchJSON(tools))
+        runner.answer("merge --from", .success(Data(#"""
+            {"ok":false,"error_code":"sessions_running","error":"sessions_running: 2 sessions are running in tools. Finish them first.",
+             "running":2,"moved_folders":[],"targets":0,"reinstall":{"ok":false,"failed":[]}}
+            """#.utf8)))
+        let vm = makeVM(runner)
+        await vm.addFolderToBench(URL(fileURLWithPath: "/tmp/billing"), projectID: bench)
+        await vm.confirmMerge()
+        let refusal = try XCTUnwrap(vm.mergeRefusal)
+        XCTAssertEqual(refusal.title, "Can’t merge “tools” yet")
+        XCTAssertEqual(refusal.text, "2 sessions are running in tools. Finish them first.")
+        XCTAssertNil(vm.putOnBenchErrors[bench])
+        vm.dismissMergeRefusal()
+        XCTAssertNil(vm.mergeRefusal)
+    }
+
+    /// §7 "merge", Swift half: a reinstall that failed in a moved folder
+    /// leaves its FILES root with the install icon and Retry; the merge
+    /// itself is done.
+    func testReinstallFailureShowsRetry() async throws {
+        let tools = try toolsBench()
+        let runner = runner()
+        runner.answer("folder add", Self.otherBenchJSON(tools))
+        let vm = makeVM(runner)
+        await vm.addFolderToBench(URL(fileURLWithPath: "/tmp/billing"), projectID: bench)
+        // Go's merge: the folder row moves to this bench, its reinstall fails.
+        let moved = try await pool.write { [bench] db in
+            let id = try XCTUnwrap(Int64.fetchOne(db, sql: "SELECT id FROM workbench_folders WHERE workbench_id = ?", arguments: [tools]))
+            try db.execute(sql: "UPDATE workbench_folders SET workbench_id = ?, position = 1 WHERE id = ?", arguments: [bench, id])
+            try db.execute(sql: "UPDATE targets SET project_id = ? WHERE project_id = ?", arguments: [bench, tools])
+            try db.execute(sql: "DELETE FROM projects WHERE id = ?", arguments: [tools])
+            return id
+        }
+        runner.answer("merge --from", .success(Data(#"""
+            {"ok":true,"error_code":"","error":"","targets":2,
+             "moved_folders":[\#(Self.folderJSON(id: moved, path: "/tmp/billing", name: "billing", installed: false))],
+             "reinstall":{"ok":false,"failed":[{"path":"/tmp/billing","error":"settings.json is not writable"}]}}
+            """#.utf8)))
+        await vm.confirmMerge()
+
+        XCTAssertNil(vm.putOnBenchErrors[bench])
+        let project = try project()
+        let root = try XCTUnwrap(vm.filesRoots(project: project, active: project.mainCodeRoot).first { $0.id == moved })
+        XCTAssertEqual(root.state, .installMissing, "the install icon with Retry")
+        XCTAssertTrue(root.isHighlighted, "the folder put on the bench is pointed at")
+        XCTAssertFalse(vm.summaries.contains { $0.id == tools }, "the merged bench left the list")
     }
 
     func testAnAddWithoutAFolderIsNoFailure() async throws {

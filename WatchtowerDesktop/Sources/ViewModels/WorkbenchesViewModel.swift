@@ -637,6 +637,16 @@ final class WorkbenchesViewModel {
     var putOnBenchErrors: [Int64: String] = [:]
     /// Workbenches with a Put on the Bench… add in flight.
     var puttingOnBench: Set<Int64> = []
+    /// The merge confirmation on screen (spec §6.13): another bench's
+    /// folder was put on this one.
+    var mergeOffer: BenchMergeOffer?
+    /// A merge refused while the merged bench has live sessions.
+    var mergeRefusal: BenchMergeRefusal?
+    /// Workbenches a merge into is in flight for.
+    var merging: Set<Int64> = []
+    /// A merge done but a later step of it failed, per workbench: the
+    /// warning line under the FILES header.
+    var mergeWarnings: [Int64: String] = [:]
     /// A seam for tests: whether a folder's directory exists.
     @ObservationIgnored var folderExists: (String) -> Bool = { CodeRootPolicy.directoryExists(URL(fileURLWithPath: $0)) }
     /// A seam for tests: the sessions running now (Remove from Bench… counts
@@ -768,6 +778,9 @@ final class WorkbenchesViewModel {
         asks.addSuggestedFolder = { [weak self] path, projectID in
             guard let self else { throw FolderSuggestionError.noCLI }
             return try await self.addSuggestedFolder(path: path, projectID: projectID)
+        }
+        asks.offerMerge = { [weak self] ask, bench, path in
+            await self?.offerMerge(fromID: bench.id, fromName: bench.name, into: ask.projectID, path: path, askID: ask.id)
         }
         // A line (an answer's) is held while its session waits on a permission
         // prompt and goes once the states show it answered (PROJ-12); its

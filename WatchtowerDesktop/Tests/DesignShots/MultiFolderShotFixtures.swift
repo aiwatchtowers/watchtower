@@ -58,20 +58,6 @@ enum MultiFolderMockCopy {
     static let movedOrDeleted = "~/code/hub was moved or deleted."
     static let gitUnavailable = "Git unavailable"
     static let notARepository = "Not a repository"
-    static let suggestTitle = "Put billing on the bench?"
-    static let suggestSubtitle = "From “Export reports to PDF” · the agent worked in ~/code/billing 3 times"
-    static let putOnBench = "Put on Bench"
-    static let notNow = "Not Now"
-    static let never = "Never for This Folder"
-    static let putting = "Putting on the bench…"
-    static let mergeSuggestSubtitle = "billing is on the “tools” bench"
-    static let mergeBenches = "Merge Benches…"
-    static let suggestFailed = "Couldn’t put billing on the bench: the folder was moved or deleted."
-    static let mergeTitle = "Merge “tools” into “acme”?"
-    static let mergeMessage = "tools's board (12 targets), asks and sessions move to acme, "
-        + "and tools leaves the workbench list. Folders that move: billing."
-    static let mergeRefusedTitle = "Can’t merge “tools” yet"
-    static let mergeRefused = "2 sessions are running in tools. Finish them first."
     static let removeTitle = "Remove hub from the bench?"
     static let removeMessage = "Watchtower's install in this folder is removed. Your files and git are not touched."
     static let sessionsRunning = "2 sessions are running in hub. Finish them first."
@@ -466,14 +452,12 @@ private struct MultiFolderSuggestCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.tight) {
             Text("Waiting for you (1)").sidebarSectionLabel()
-            if state == .merge {
-                mergeCard // §6.13's variant: Task 19 builds it.
-            } else {
-                // The production card (§6.7), on the presentation model's words.
-                FolderSuggestionCard(card: FolderSuggestionPresentation.card(
-                    Self.suggestion, sessionTitle: "Export reports to PDF", phase: phase, home: "/Users/owner"
-                ))
-            }
+            // The production card (§6.7; §6.13's merge variant), on the
+            // presentation model's words.
+            FolderSuggestionCard(card: FolderSuggestionPresentation.card(
+                Self.suggestion, sessionTitle: "Export reports to PDF", phase: phase,
+                otherBench: state == .merge ? .init(id: 9, name: MultiFolderMockCopy.otherBench) : nil, home: "/Users/owner"
+            ))
         }
         .padding(Spacing.medium)
         .panelBackground()
@@ -488,57 +472,6 @@ private struct MultiFolderSuggestCard: View {
         case .busy: .busy
         case .error: .failed(FolderSuggestionPresentation.failed(name: "billing", reason: "the folder was moved or deleted."))
         case .ready, .merge: .ready
-        }
-    }
-
-    private var mergeCard: some View {
-        VStack(alignment: .leading, spacing: Spacing.compact) {
-            HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
-                Image(systemName: "plus.rectangle.on.folder").foregroundStyle(Color.accentColor).frame(width: 16)
-                VStack(alignment: .leading, spacing: Spacing.tight) {
-                    Text(MultiFolderMockCopy.suggestTitle)
-                    subtitle.font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            actions.padding(.leading, 16 + Spacing.compact)
-        }
-        .padding(Spacing.regular)
-        .card(fill: Fill.selected)
-    }
-
-    @ViewBuilder private var subtitle: some View {
-        switch state {
-        case .error: Text(MultiFolderMockCopy.suggestFailed)
-        case .merge: Text(MultiFolderMockCopy.mergeSuggestSubtitle)
-        default: Text(MultiFolderMockCopy.suggestSubtitle)
-        }
-    }
-
-    @ViewBuilder private var actions: some View {
-        switch state {
-        case .ready:
-            // The panel is 220 pt wide by default: the quiet Never goes under the two buttons.
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                HStack(spacing: Spacing.small) {
-                    Button(MultiFolderMockCopy.putOnBench) {}.buttonStyle(.kitPrimary).fixedSize()
-                    Button(MultiFolderMockCopy.notNow) {}.buttonStyle(.kitSecondary).fixedSize()
-                }
-                Button(MultiFolderMockCopy.never) {}.buttonStyle(.kitQuiet).fixedSize()
-            }
-            .controlSize(.small)
-        case .busy:
-            HStack(spacing: Spacing.compact) {
-                ProgressView().controlSize(.mini)
-                Text(MultiFolderMockCopy.putting).font(.caption).foregroundStyle(.secondary)
-            }
-        case .error:
-            Button("OK") {}.buttonStyle(.kitSecondary).controlSize(.small)
-        case .merge:
-            HStack(spacing: Spacing.small) {
-                Button(MultiFolderMockCopy.mergeBenches) {}.buttonStyle(.kitPrimary).fixedSize()
-                Button(MultiFolderMockCopy.notNow) {}.buttonStyle(.kitSecondary).fixedSize()
-            }
-            .controlSize(.small)
         }
     }
 }
@@ -601,24 +534,31 @@ private struct MultiFolderRemoveDialog: View {
 private struct MultiFolderMergeDialog: View {
     let refused: Bool
 
+    private static let offer = BenchMergeOffer(
+        fromID: 9, fromName: MultiFolderMockCopy.otherBench, intoID: 1, intoName: MultiFolderMockCopy.bench,
+        targets: 12, folders: ["billing"], path: "/Users/owner/code/billing", askID: nil
+    )
+    private static let refusal = BenchMergeRefusal(fromName: MultiFolderMockCopy.otherBench, running: 2)
+
     var body: some View {
         VStack(spacing: Spacing.medium) {
             Image(systemName: refused ? "exclamationmark.triangle" : "arrow.triangle.merge")
                 .font(.largeTitle)
                 .foregroundStyle(refused ? AnyShapeStyle(Tone.warning) : AnyShapeStyle(.secondary))
+            // The production presentation's words (BenchMergeDialogs).
             VStack(spacing: Spacing.small) {
-                Text(refused ? MultiFolderMockCopy.mergeRefusedTitle : MultiFolderMockCopy.mergeTitle).font(.headline)
-                Text(refused ? MultiFolderMockCopy.mergeRefused : MultiFolderMockCopy.mergeMessage)
+                Text(refused ? Self.refusal.title : Self.offer.title).font(.headline)
+                Text(refused ? Self.refusal.text : Self.offer.text)
                     .font(.callout).foregroundStyle(.secondary)
             }
             .multilineTextAlignment(.center)
             .fixedSize(horizontal: false, vertical: true)
             if refused {
-                Button("OK") {}.buttonStyle(.kitPrimary)
+                Button(BenchMergePresentation.ok) {}.buttonStyle(.kitPrimary)
             } else {
                 HStack(spacing: Spacing.regular) {
-                    Button("Cancel") {}.buttonStyle(.kitSecondary)
-                    Button("Merge") {}.buttonStyle(.kitPrimary)
+                    Button(BenchMergePresentation.cancel) {}.buttonStyle(.kitSecondary)
+                    Button(BenchMergePresentation.merge) {}.buttonStyle(.kitPrimary)
                 }
             }
         }

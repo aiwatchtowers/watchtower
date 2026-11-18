@@ -432,5 +432,6 @@ func sessionStartDeps(cfg *config.Config, database *db.DB) sessionstart.Deps {
 		return devpack.CodexLaunchArgs(cfg, bin, workbenchID, codexFindBinary) //nolint:wrapcheck // devpack's own errors (ErrCodexNotFound) are matched
 	}
 	d.Integrate = installWorktreeIntegration
+	d.Reinstall = sessionReinstall(cfg)
 	return d
 }

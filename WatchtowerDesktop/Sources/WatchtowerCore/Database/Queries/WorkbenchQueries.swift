@@ -43,6 +43,12 @@ package enum WorkbenchQueries {
         try Workbench.fetchOne(db, sql: "SELECT * FROM projects WHERE id = ?", arguments: [id])
     }
 
+    /// Every target on the workbench's board, archived ones too: what a
+    /// merge moves (#2003, spec §6.13).
+    package static func targetCount(_ db: Database, workbenchID: Int64) throws -> Int {
+        try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM targets WHERE project_id = ?", arguments: [workbenchID]) ?? 0
+    }
+
     /// The header menu's "Archive Closed Targets After" (board #301): days a
     /// closed target waits before the board archives it, 0 = never. The
     /// column's CHECK bounds it (0…365) for both languages.

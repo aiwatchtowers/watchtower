@@ -36,8 +36,9 @@ const (
 // Refusal is a folder write or lookup the rules refuse. Folder is the folder
 // it is about (already_here, nested, folder_removed, folder_present,
 // sessions_running, last_folder); OtherBench the workbench a folder already
-// belongs to (other_bench). For sessions_running Detail is the count of
-// running sessions; for every other code it is the sentence.
+// belongs to (other_bench), or the bench a merge is refused for
+// (sessions_running). For sessions_running Detail is the count of running
+// sessions; for every other code it is the sentence.
 type Refusal struct {
 	Code, Detail string
 	Folder       *db.WorkbenchFolder
@@ -47,6 +48,9 @@ type Refusal struct {
 // Error is "<code>: <sentence>" (spec D42), the text every caller — the CLI,
 // MCP, a start — shows; sessions_running's sentence is spec §6.3's.
 func (r *Refusal) Error() string {
+	if r.Code == CodeSessionsRunning && r.OtherBench != nil {
+		return r.runningInBench()
+	}
 	if r.Code == CodeSessionsRunning && r.Folder != nil {
 		if r.Detail == "1" {
 			return fmt.Sprintf("%s: 1 session is running in %s. Finish it first.", r.Code, r.Folder.Name)
@@ -567,12 +571,20 @@ type querier interface {
 // liveFolders reads the live folders of workbenchID (0 = of every bench)
 // through tx, by id, leaving out folder except (0 = none).
 func liveFolders(ctx context.Context, tx querier, workbenchID, except int64) ([]db.WorkbenchFolder, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT id, workbench_id, folder_path, name, position, added_at, added_by, removed_at
+	rows, err := tx.QueryContext(ctx, `SELECT `+folderCols+`
 		FROM workbench_folders WHERE removed_at IS NULL AND (? = 0 OR workbench_id = ?) AND id <> ? ORDER BY id`,
 		workbenchID, workbenchID, except)
 	if err != nil {
 		return nil, fmt.Errorf("reading the workbench folders: %w", err)
 	}
+	return scanFolders(rows)
+}
+
+// folderCols are the workbench_folders columns scanFolders reads.
+const folderCols = `id, workbench_id, folder_path, name, position, added_at, added_by, removed_at`
+
+// scanFolders reads rows of folderCols and closes them.
+func scanFolders(rows *sql.Rows) ([]db.WorkbenchFolder, error) {
 	defer rows.Close()
 	var out []db.WorkbenchFolder
 	for rows.Next() {

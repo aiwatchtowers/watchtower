@@ -88,6 +88,11 @@ type Deps struct {
 	// just made (`workbench worktree create`'s install: the skill, the
 	// hooks and its own `claude mcp add`); nil installs nothing.
 	Integrate func(ctx context.Context, workbenchID int64, folder string, agent agentkind.Kind) error
+	// Reinstall puts workbench workbenchID's integration in dir, a place a
+	// launch found installed for another workbench (EnsureInstall), after
+	// taking out the install of each of stale (ids whose workbench is
+	// gone); nil skips the backstop.
+	Reinstall func(ctx context.Context, workbenchID int64, dir string, agent agentkind.Kind, stale []int64) error
 	// SkillKnowsGroups reports whether the folder's agent skill knows the
 	// group work-on prompt (`integrate status`); nil = it does (the shipped
 	// skill does, as the Desktop assumes while the status is unknown).
@@ -905,6 +910,7 @@ func (s *newStart) finish(ctx context.Context) error {
 	if beforeLaunch != nil {
 		beforeLaunch(s.id)
 	}
+	_, _ = EnsureInstall(ctx, s.d, s.id, s.wb.id, dir, s.agent) // logged; the launch goes on
 	m := Mode{Agent: string(s.agent), SessionID: s.claudeID, AutomationRunID: s.automationRun}
 	if s.prompt != "" {
 		p := s.prompt
@@ -1298,6 +1304,7 @@ func reopen(ctx context.Context, d Deps, r existingRow) (handlers.StartResult, e
 		WHERE id = ?`, r.id); err != nil {
 		return handlers.StartResult{}, fmt.Errorf("opening session %d: %w", r.id, err)
 	}
+	_, _ = EnsureInstall(ctx, d, r.id, r.workbench, r.folder, agent) // logged; the launch goes on
 	m := Mode{Agent: r.kind, SessionID: r.agentSessionID, Resume: r.agentSessionID != ""}
 	run, err := launch(ctx, d, c, r.id, r.folder, m, codex, "", "")
 	if err == nil {

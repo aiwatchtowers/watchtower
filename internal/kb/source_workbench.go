@@ -264,6 +264,26 @@ func DropWorkbenchFolderDocs(ctx context.Context, d *db.DB, workbenchID, folderI
 	return n, nil
 }
 
+// DropWorkbenchDocs removes every index entry of a workbench, every folder's
+// (a merged bench's, spec §6.13: its folders' documents are indexed again
+// under the bench they moved to), returning how many went.
+func DropWorkbenchDocs(ctx context.Context, d *db.DB, workbenchID int64) (int, error) {
+	ids, err := docIDsWithPrefix(ctx, d, workbenchDocKind.containerPrefix(workbenchID))
+	if err != nil {
+		return 0, fmt.Errorf("kb: listing the documents of workbench %d: %w", workbenchID, err)
+	}
+	n := 0
+	err = withTx(ctx, d, func(tx *sql.Tx) error {
+		var perr error
+		n, perr = pruneUnlistedDocs(ctx, tx, ids, nil, nil)
+		return perr
+	})
+	if err != nil {
+		return 0, fmt.Errorf("kb: dropping the documents of workbench %d: %w", workbenchID, err)
+	}
+	return n, nil
+}
+
 // workbenchDocNames maps the live folders of workbench workbenchID to their
 // stored names when it has more than one, else nil: a document's path is
 // shown as <folder>/<rel> only then (spec §6.11).

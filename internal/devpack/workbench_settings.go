@@ -470,6 +470,47 @@ func HasCoreStateHooks(dir string, workbenchID int64) (bool, error) {
 	return true, nil
 }
 
+// InstalledWorkbenchIDs is every workbench id whose UserPromptSubmit state
+// hook — the first core state hook — is in dir's settings, in file order:
+// which workbench a folder is installed for (a merged bench's folder, or one
+// of its worktrees, still carries the old id until it is reinstalled).
+func InstalledWorkbenchIDs(dir string) ([]int64, error) {
+	file := settingsLocalPath(dir)
+	settings, _, existed, err := readSettings(file)
+	if err != nil || !existed {
+		return nil, err
+	}
+	spec := coreStateHookSpecs[0]
+	_, groups, err := rawEventGroups(settings, file, spec.event)
+	if err != nil {
+		return nil, err
+	}
+	var ids []int64
+	marker := " " + spec.subcommand + " "
+	for _, g := range groups {
+		m, hs, ok := groupHooks(g)
+		if !ok || !inOurGroup(m, spec) {
+			continue
+		}
+		for _, h := range hs {
+			cmd, ok := hookCommand(h)
+			if !ok {
+				continue
+			}
+			i := strings.LastIndex(cmd, marker)
+			if i < 0 {
+				continue
+			}
+			rest, _ := strings.CutSuffix(cmd[i+len(marker):], spec.flags)
+			id, perr := strconv.ParseInt(rest, 10, 64)
+			if perr == nil && looksLikeOurHook(cmd, spec, id) && !slices.Contains(ids, id) {
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids, nil
+}
+
 func hasHooks(dir string, specs []hookSpec, workbenchID int64) (bool, error) {
 	for _, spec := range specs {
 		ok, err := hasHook(dir, spec, workbenchID)
