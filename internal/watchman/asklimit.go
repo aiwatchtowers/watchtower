@@ -1,6 +1,9 @@
 package watchman
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+)
 
 // LimitInventory is approving a change to a behavior-inventory contract or a
 // guard test (docs/inventory, Test<Module>NN_): CLAUDE.md requires the owner.
@@ -36,10 +39,17 @@ var askLimits = []struct {
 // twin's choice) names, if any. Run on the question before the model and on
 // question + choice after (spec §4).
 func AskParkedBy(text string) (HardLimit, bool) {
+	plain := markdownMarks.Replace(text)
 	for _, l := range askLimits {
-		if l.re.MatchString(text) {
+		// Both forms: the plain one so "into `main`" or "**master**" match,
+		// the raw one so identifiers with "_" (send_slack_message, a guard
+		// test's name) still do.
+		if l.re.MatchString(plain) || l.re.MatchString(text) {
 			return l.limit, true
 		}
 	}
 	return "", false
 }
+
+// markdownMarks strips Markdown code, emphasis and quote marks.
+var markdownMarks = strings.NewReplacer("`", "", "*", "", "_", "", `"`, "", "'", "", "“", "", "”", "", "‘", "", "’", "", "«", "", "»", "")

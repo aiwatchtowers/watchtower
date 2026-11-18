@@ -18,9 +18,18 @@ import (
 type fakeTwin struct {
 	runs, held atomic.Int32
 	waited     atomic.Bool
+	gen        atomic.Value // the routing generation the last pass saw
 }
 
-func (f *fakeTwin) RunOnce(context.Context) int { f.runs.Add(1); return 0 }
+type routingGenKey struct{}
+
+func (f *fakeTwin) RunOnce(ctx context.Context) int {
+	f.runs.Add(1)
+	if g, ok := ctx.Value(routingGenKey{}).(int32); ok {
+		f.gen.Store(g)
+	}
+	return 0
+}
 func (f *fakeTwin) Wait()                       { f.waited.Store(true) }
 func (f *fakeTwin) DeliverHeld(context.Context) { f.held.Add(1) }
 
@@ -72,4 +81,28 @@ func TestWatchmanTwinPhase_NotWiredIsOff(t *testing.T) {
 	stop := d.startWatchmanTwin(context.Background())
 	d.nudgeWatchmanTwin() // no channel: a no-op
 	stop()
+}
+
+// Every pass binds the routing current at its start, so a reload between
+// passes reaches the twin's next decisions.
+func TestWatchmanTwinPhase_BindsRoutingEachPass(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		d, _, _ := newBackfillDaemon(t)
+		twin := &fakeTwin{}
+		d.watchmanTwin = twin
+		var generation atomic.Int32
+		generation.Store(1)
+		d.routingJob = func(ctx, fetchCtx context.Context) (context.Context, context.Context) {
+			g := generation.Load()
+			return context.WithValue(ctx, routingGenKey{}, g), context.WithValue(fetchCtx, routingGenKey{}, g)
+		}
+		stop := d.startWatchmanTwin(context.Background())
+		defer stop()
+		synctest.Wait()
+		require.Equal(t, int32(1), twin.gen.Load())
+		generation.Store(2) // a routing reload
+		d.nudgeWatchmanTwin()
+		synctest.Wait()
+		require.Equal(t, int32(2), twin.gen.Load())
+	})
 }

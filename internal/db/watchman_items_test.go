@@ -594,3 +594,94 @@ func TestMigration00201_GuardRefKindKeepsRows(t *testing.T) {
 	require.NoError(t, d.QueryRow(`SELECT question FROM watchman_items WHERE id = ?`, id).Scan(&q))
 	require.Equal(t, "q", q)
 }
+
+// A disarm between the twin's arming read and its lease leaves the item
+// queued: the lease's compare-and-set re-checks the arming.
+func TestLeaseArmedWatchmanItem_DisarmBeforeTheLeaseLeavesQueued(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	s := newTestSession(t, d, wb)
+	wmArmSession(t, d, s)
+	id, _, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "ask", RefKind: "ask", RefID: 9, Question: "q"})
+	require.NoError(t, err)
+	now := time.Now()
+	it, err := d.LeaseArmedWatchmanItem(now, time.Minute, func(WatchmanItem) bool {
+		_, err := d.DeleteWatchmanArming("session", s) // Take back, after the caller's read
+		require.NoError(t, err)
+		return true
+	})
+	require.NoError(t, err)
+	require.Nil(t, it)
+	var state string
+	require.NoError(t, d.QueryRow(`SELECT state FROM watchman_items WHERE id = ?`, id).Scan(&state))
+	require.Equal(t, "queued", state)
+	wmArmSession(t, d, s)
+	it, err = d.LeaseArmedWatchmanItem(now, time.Minute, wmAll)
+	require.NoError(t, err)
+	require.NotNil(t, it)
+}
+
+func TestReleaseWatchmanItem_GivesTheAttemptBack(t *testing.T) {
+	d := openTestDB(t)
+	wmTestWorkbench(t, d, 1)
+	id := wmQueueAsk(t, d, 5)
+	now := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	it, err := d.LeaseWatchmanItem(now, 10*time.Minute, wmAll)
+	require.NoError(t, err)
+	ok, err := d.ReleaseWatchmanItem(id, *it.LeaseUntil)
+	require.NoError(t, err)
+	require.True(t, ok)
+	var state string
+	var attempts int
+	require.NoError(t, d.QueryRow(`SELECT state, attempts FROM watchman_items WHERE id = ?`, id).Scan(&state, &attempts))
+	require.Equal(t, "queued", state)
+	require.Equal(t, 0, attempts)
+}
+
+// finish_session marking an ask the handover while the twin decides it as
+// a question changes the deciding item's kind (the twin re-reads it).
+func TestPromoteWatchmanHandover_DecidingItemBecomesHandover(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	s := newTestSession(t, d, wb)
+	wmArmSession(t, d, s)
+	ask := questionAsk(wb, "Left: images")
+	ask.SessionID = nullID(s)
+	askID := mustInsertAsk(t, d, ask)
+	_, _, err := d.QueueWatchmanItem(WatchmanItem{WorkbenchID: wb, SessionID: s, Kind: "ask", RefKind: "ask", RefID: askID, Question: "q"})
+	require.NoError(t, err)
+	_, err = d.LeaseArmedWatchmanItem(time.Now(), time.Minute, wmAll)
+	require.NoError(t, err)
+	promoted, inserted, err := d.PromoteWatchmanHandover(WatchmanItem{WorkbenchID: wb, SessionID: s, RefID: askID, Question: "q"})
+	require.NoError(t, err)
+	require.True(t, promoted)
+	require.False(t, inserted)
+	var kind, state string
+	require.NoError(t, d.QueryRow(`SELECT kind, state FROM watchman_items WHERE ref_id = ?`, askID).Scan(&kind, &state))
+	require.Equal(t, "handover", kind)
+	require.Equal(t, "deciding", state)
+}
+
+func TestDoneWatchmanItemsWithError_ListsAndClears(t *testing.T) {
+	d := openTestDB(t)
+	wmTestWorkbench(t, d, 1)
+	id := wmQueueAsk(t, d, 5)
+	_, err := d.Exec(`UPDATE watchman_items SET kind = 'handover' WHERE id = ?`, id)
+	require.NoError(t, err)
+	now := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	it, err := d.LeaseWatchmanItem(now, 10*time.Minute, wmAll)
+	require.NoError(t, err)
+	require.True(t, wmFinish(t, d, id, *it.LeaseUntil, WatchmanOutcome{Outcome: "answered", Error: "owed"}))
+	got, err := d.DoneWatchmanItemsWithError("handover", "owed")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	ok, err := d.ClearWatchmanItemError(id, "other")
+	require.NoError(t, err)
+	require.False(t, ok)
+	ok, err = d.ClearWatchmanItemError(id, "owed")
+	require.NoError(t, err)
+	require.True(t, ok)
+	got, err = d.DoneWatchmanItemsWithError("handover", "owed")
+	require.NoError(t, err)
+	require.Empty(t, got)
+}

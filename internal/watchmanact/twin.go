@@ -57,6 +57,10 @@ type TwinDeps struct {
 type Twin struct {
 	d  TwinDeps
 	wg sync.WaitGroup
+	// starting holds the handover items whose next session is being started
+	// in this process, so a pass never starts one twice.
+	mu       sync.Mutex
+	starting map[int64]bool
 }
 
 // NewTwin builds the twin worker.
@@ -64,7 +68,7 @@ func NewTwin(d TwinDeps) *Twin {
 	if d.Clock == nil {
 		d.Clock = time.Now
 	}
-	return &Twin{d: d}
+	return &Twin{d: d, starting: map[int64]bool{}}
 }
 
 // twinKinds are the item kinds this worker leases: question asks, checks and
@@ -72,14 +76,18 @@ func NewTwin(d TwinDeps) *Twin {
 // denials are journal-only and never leased.
 var twinKinds = map[string]bool{"ask": true, "check": true, "handover": true}
 
-// RunOnce leases items while fewer than MaxDeciding are deciding — only
-// items of a session that is armed now (Mode Sleep, D47; an arming read that
-// fails leases nothing, WATCHMAN-04) — and decides each in its own
-// goroutine. It returns how many it started; Wait waits for them.
+// RunOnce first starts the next sessions of handovers answered "Continue"
+// whose start is still owed (a crash between the answer and the start), then
+// leases items while fewer than MaxDeciding are deciding — only items of a
+// session that is armed now (Mode Sleep, D47; an arming read that fails
+// leases nothing, and the lease re-checks the arming, WATCHMAN-04) — and
+// decides each in its own goroutine. It returns how many it started; Wait
+// waits for them.
 func (t *Twin) RunOnce(ctx context.Context) int {
 	if ctx.Err() != nil {
 		return 0
 	}
+	t.retryStarts(ctx)
 	now := t.d.Clock()
 	sessions, err := t.d.DB.WatchmanArmedSessions()
 	if err != nil {
@@ -107,7 +115,7 @@ func (t *Twin) RunOnce(ctx context.Context) int {
 		if n >= MaxDeciding {
 			break
 		}
-		it, err := t.d.DB.LeaseWatchmanItem(now, LeaseFor, eligible)
+		it, err := t.d.DB.LeaseArmedWatchmanItem(now, LeaseFor, eligible)
 		if err != nil {
 			log.Printf("watchman twin: %v", err)
 			break
@@ -135,15 +143,23 @@ func (t *Twin) DeliverHeld(ctx context.Context) { t.d.Answerer.DeliverHeld(ctx) 
 // LeaseFor): the answer's transaction rolls back, nothing is written.
 var errLeaseLost = errors.New("the item's lease was lost")
 
+// errKindChanged reports an item whose kind changed while it was decided
+// (finish_session made the ask its handover): the answer's transaction rolls
+// back and the item is released to be decided again as its new kind.
+var errKindChanged = errors.New("the item's kind changed")
+
 // job is one leased item being decided.
 type job struct {
-	t     *Twin
-	it    db.WatchmanItem
-	lease time.Time
-	ask   *db.OwnerAsk
-	dec   *watchman.Decision
-	// parking is set while the item is being parked.
-	parking bool
+	t *Twin
+	// parent is the worker's context: cancelled, the worker is stopping
+	// (shutdown, restart) — never a park, never a spent attempt.
+	parent context.Context
+	it     db.WatchmanItem
+	lease  time.Time
+	ask    *db.OwnerAsk
+	dec    *watchman.Decision
+	// parked is the outcome of a park in progress (nil when not parking).
+	parked *db.WatchmanOutcome
 }
 
 func (j *job) now() time.Time { return j.t.d.Clock() }
@@ -164,57 +180,81 @@ func (j *job) outcome(outcome string) db.WatchmanOutcome {
 // answer stores ans on the ask and finishes the item with o in the same
 // transaction (WATCHMAN-02), then records the line's delivery. A lost
 // compare-and-set writes nothing and is journalled (owner first); a lost
-// lease writes nothing at all. ok reports a stored answer.
-func (j *job) answer(ctx context.Context, ans *askanswer.AnswerRequest, o db.WatchmanOutcome) (delivery string, ok bool) {
+// lease writes nothing at all. stored reports a stored answer.
+func (j *job) answer(ctx context.Context, ans *askanswer.AnswerRequest, o db.WatchmanOutcome) (stored bool) {
 	ans.Ask = j.ask
-	ans.Also = func(tx *sql.Tx) error {
-		done, err := j.t.d.DB.FinishWatchmanItemTx(tx, j.it.ID, j.lease, o)
-		if err == nil && !done {
-			err = errLeaseLost
-		}
-		return err
-	}
+	ans.Also = func(tx *sql.Tx) error { return j.finishTx(tx, o) }
 	res, err := j.t.d.Answerer.Answer(ctx, *ans)
 	switch {
 	case errors.Is(err, errLeaseLost):
 		log.Printf("watchman twin: item %d: lease lost, nothing written", j.it.ID)
-		return "", false
+		return false
+	case errors.Is(err, errKindChanged):
+		j.release()
+		return false
 	case err != nil:
 		j.fail(ctx, err)
-		return "", false
+		return false
 	case !res.Stored:
 		j.lostRace(o)
-		return "", false
+		return false
 	}
-	if err := j.t.d.DB.NoteWatchmanItemDelivery(j.it.ID, res.Delivery, ""); err != nil {
+	if err := j.t.d.DB.NoteWatchmanItemDelivery(j.it.ID, res.Delivery, o.Error); err != nil {
 		log.Printf("watchman twin: %v", err)
 	}
-	return res.Delivery, true
+	return true
+}
+
+// finishTx finishes the item with o inside tx under the lease, after
+// re-reading its kind there (a write transaction: finish_session cannot
+// change it between the read and the finish).
+func (j *job) finishTx(tx *sql.Tx, o db.WatchmanOutcome) error {
+	kind, err := j.t.d.DB.WatchmanItemKindTx(tx, j.it.ID)
+	if err != nil {
+		return err
+	}
+	if kind != j.it.Kind {
+		return errKindChanged
+	}
+	done, err := j.t.d.DB.FinishWatchmanItemTx(tx, j.it.ID, j.lease, o)
+	if err == nil && !done {
+		err = errLeaseLost
+	}
+	return err
 }
 
 // finishAlone finishes the item without an answer (the owner answered first,
 // or an ask the twin cannot answer with a text).
 func (j *job) finishAlone(o db.WatchmanOutcome) {
-	err := j.t.d.DB.WithTx(func(tx *sql.Tx) error {
-		done, err := j.t.d.DB.FinishWatchmanItemTx(tx, j.it.ID, j.lease, o)
-		if err == nil && !done {
-			err = errLeaseLost
-		}
-		return err
-	})
-	if err != nil {
+	err := j.t.d.DB.WithTx(func(tx *sql.Tx) error { return j.finishTx(tx, o) })
+	switch {
+	case errors.Is(err, errKindChanged):
+		j.release()
+	case err != nil:
 		log.Printf("watchman twin: item %d: finishing: %v", j.it.ID, err)
 	}
 }
 
 // lostRace closes an item whose answer lost the compare-and-set: the owner
-// answered first (journalled, nothing delivered) — or the ask was withdrawn
-// or superseded meanwhile, and the item goes (no decision to journal).
+// answered first (journalled, nothing delivered, a park's reason and text
+// dropped) — or the ask was withdrawn or superseded meanwhile: before any
+// decision the item goes (nothing to journal), after one it is finished
+// superseded with its choice kept.
 func (j *job) lostRace(o db.WatchmanOutcome) {
+	parked := o.Outcome == OutcomeParked
+	o.ParkReason = ""
 	ask, err := j.t.d.DB.GetOwnerAskByID(j.it.RefID)
 	if errors.Is(err, db.ErrAskNotFound) || (err == nil && ask.Status == "withdrawn") {
-		j.drop()
+		if j.dec == nil {
+			j.drop()
+			return
+		}
+		o.Outcome = OutcomeSuperseded
+		j.finishAlone(o)
 		return
+	}
+	if parked {
+		o.Choice, o.Rationale = "", ""
 	}
 	o.Outcome = OutcomeOwnerFirst
 	j.finishAlone(o)
@@ -228,14 +268,32 @@ func (j *job) drop() {
 }
 
 // fail is an attempt that did not decide: queued again now, or parked once
-// it was the MaxAttempts-th (a park whose own write fails is queued again).
+// it was the MaxAttempts-th. A stopping worker releases the item instead
+// (no park, the attempt given back). A park whose answer cannot be written
+// is queued again, and from the MaxAttempts-th attempt finished parked
+// without its answer (the ask stays the owner's).
 func (j *job) fail(ctx context.Context, err error) {
-	text := watchman.Clip(err.Error(), errorTextLimit)
-	if j.it.Attempts >= MaxAttempts && j.ask != nil && !j.parking {
-		j.park(ctx, failedReason(text))
+	if j.parent.Err() != nil {
+		j.release()
 		return
 	}
-	j.requeue(j.now(), text)
+	text := watchman.Clip(err.Error(), errorTextLimit)
+	switch {
+	case j.parked != nil && j.it.Attempts >= MaxAttempts:
+		j.finishAlone(*j.parked)
+	case j.parked == nil && j.it.Attempts >= MaxAttempts && j.ask != nil:
+		j.park(ctx, failedReason(text))
+	default:
+		j.requeue(j.now(), text)
+	}
+}
+
+// release gives the item back to the queue as if this attempt never ran.
+func (j *job) release() {
+	log.Printf("watchman twin: item %d: released", j.it.ID)
+	if _, err := j.t.d.DB.ReleaseWatchmanItem(j.it.ID, j.lease); err != nil {
+		log.Printf("watchman twin: %v", err)
+	}
 }
 
 // requeue hands the item back to the queue, not before notBefore.

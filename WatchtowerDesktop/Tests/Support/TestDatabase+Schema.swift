@@ -2595,7 +2595,7 @@ CREATE TABLE IF NOT EXISTS "watchman_items" (
     ref_kind      TEXT NOT NULL CHECK (ref_kind IN ('ask','permission','session','round','guard')),
     ref_id        INTEGER NOT NULL,
     state         TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','deciding','done')),
-    outcome       TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('','answered','handed','parked','owner_first','approved','changes')),
+    outcome       TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('','answered','handed','parked','owner_first','approved','changes','superseded')),
     attempts      INTEGER NOT NULL DEFAULT 0,
     lease_until   TEXT,
     not_before    TEXT,

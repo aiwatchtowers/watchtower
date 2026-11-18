@@ -481,17 +481,27 @@ func TestTwin_LabelErrorParks(t *testing.T) {
 
 func TestTwin_ChoiceParkedAfterModel(t *testing.T) {
 	e := newTwinEnv(t)
-	// A free answer (an option naming main would park it before the model).
-	payload := `{"questions":[{"id":"a","question":"What next?","options":[]}]}`
+	// An option naming main is not a decision: the twin may choose it or not.
+	payload := `{"questions":[{"id":"a","question":"What next?","options":[{"label":"Merge into main"},{"label":"Wait"}]}]}`
 	askID, itemID := e.fileAsk(asks.KindQuestion, "What next?", payload, "ask")
 	e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
-		return decision("Merge the branch into main"), nil
+		return decision("Merge into main"), nil
 	}
 	e.run()
 	e.wantParked(askID, itemID, "a merge, push or rebase onto main")
 	if e.decideCalls() != 1 {
-		t.Fatalf("Decide ran %d times, want 1", e.decideCalls())
+		t.Fatalf("Decide ran %d times, want 1 (the option did not park before the model)", e.decideCalls())
 	}
+	if strings.Contains(e.labelled[0], "Merge into main") {
+		t.Fatalf("the before-check read the options: %q", e.labelled[0])
+	}
+
+	// Choosing the other option is answered.
+	e3 := newTwinEnv(t)
+	_, itemID = e3.fileAsk(asks.KindQuestion, "What next?", payload, "ask")
+	e3.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) { return decision("Wait"), nil }
+	e3.run()
+	wantOutcome(t, e3.item(itemID), OutcomeAnswered)
 
 	// The label call on question + choice parks too (the Go table is clean).
 	e2 := newTwinEnv(t)
@@ -790,5 +800,162 @@ func TestLiveDecide_CategorisesAQuestionFirst(t *testing.T) {
 	l.labels = []watchman.Label{{Category: "nonsense"}}
 	if _, err := LiveDecide(context.Background(), d, gen, nil, l, watchman.Item{WorkbenchID: wb, Situation: "Which store?"}); err == nil {
 		t.Fatal("an item with no usable category was decided")
+	}
+}
+
+func TestTwin_SupersededAfterDecideKeepsChoice(t *testing.T) {
+	e := newTwinEnv(t)
+	askID, itemID := e.question("Which store?")
+	e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
+		// The agent files a newer ask while the model runs: this one is superseded.
+		_, err := e.db.Exec(`UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = 'superseded' WHERE id = ?`, askID)
+		e.must(err)
+		return decision("SQLite"), nil
+	}
+	e.run()
+	it := e.item(itemID)
+	wantOutcome(t, it, OutcomeSuperseded)
+	if it.Choice != "SQLite" || e.port.delivered() != 0 {
+		t.Fatalf("item = %+v, %d lines; want the choice kept, nothing delivered", it, e.port.delivered())
+	}
+}
+
+func TestTwin_ShutdownNeverParksNorSpendsAnAttempt(t *testing.T) {
+	e := newTwinEnv(t)
+	askID, itemID := e.question("Which store?")
+	_, err := e.db.Exec(`UPDATE watchman_items SET attempts = 2 WHERE id = ?`, itemID) // this is attempt 3
+	e.must(err)
+	ctx, cancel := context.WithCancel(context.Background())
+	e.decideFn = func(ctx context.Context, _ watchman.Item) (watchman.Decision, error) {
+		cancel() // the daemon stops mid-call
+		<-ctx.Done()
+		return watchman.Decision{}, ctx.Err()
+	}
+	if n := e.twin.RunOnce(ctx); n != 1 {
+		t.Fatalf("RunOnce = %d", n)
+	}
+	e.twin.Wait()
+	if it := e.item(itemID); it.State != "queued" || it.Attempts != 2 {
+		t.Fatalf("item = %s/%d, want queued with attempt 3 given back", it.State, it.Attempts)
+	}
+	if status, _ := e.askAnswer(askID); status != "open" {
+		t.Fatalf("ask = %s, want open (nothing written)", status)
+	}
+}
+
+func TestTwin_HandoverStartRetriedAfterACrash(t *testing.T) {
+	e := newTwinEnv(t)
+	_, itemID := e.fileAsk(asks.KindQuestion, "Left: the CSV import", oneQuestion, "handover")
+	e.decideFn = func(context.Context, watchman.Item) (watchman.Decision, error) {
+		return decision(HandoverContinue), nil
+	}
+	fail := true
+	e.twin.d.StartSession = func(_ context.Context, wb, target int64, brief string) error {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		e.started = append(e.started, startCall{wb, target, brief})
+		if fail {
+			return errors.New("the process died before the start")
+		}
+		return nil
+	}
+	e.run()
+	it := e.item(itemID)
+	wantOutcome(t, it, OutcomeAnswered)
+	if it.Error != pendingStart {
+		t.Fatalf("error = %q, want the owed start", it.Error)
+	}
+	fail = false
+	e.run() // the next pass
+	if len(e.started) != 2 || e.item(itemID).Error != "" {
+		t.Fatalf("starts = %d, error %q; want the start retried and cleared", len(e.started), e.item(itemID).Error)
+	}
+	e.run()
+	if len(e.started) != 2 {
+		t.Fatal("a started session was started again")
+	}
+}
+
+// finish_session makes the ask its handover while the twin decides it as a
+// question: the answer is rolled back and the item decided again as a handover.
+func TestTwin_HandoverMarkedWhileDecidingIsDecidedAsHandover(t *testing.T) {
+	e := newTwinEnv(t)
+	askID, itemID := e.question("Left: the CSV import")
+	first := true
+	e.decideFn = func(_ context.Context, it watchman.Item) (watchman.Decision, error) {
+		if first {
+			first = false
+			_, _, err := e.db.PromoteWatchmanHandover(db.WatchmanItem{WorkbenchID: e.wb, SessionID: e.session, RefID: askID, Question: "q"})
+			e.must(err)
+			return decision("SQLite"), nil
+		}
+		return decision(HandoverAccept), nil
+	}
+	e.run()
+	if it := e.item(itemID); it.State != "queued" || it.Attempts != 0 {
+		t.Fatalf("item = %s/%d, want released", it.State, it.Attempts)
+	}
+	if status, _ := e.askAnswer(askID); status != "open" {
+		t.Fatalf("ask = %s: answered as a question", status)
+	}
+	e.run()
+	wantOutcome(t, e.item(itemID), OutcomeAnswered)
+	if got := e.decided[1]; got.Category != watchman.CategoryFinish {
+		t.Fatalf("second decision = %+v, want the handover path", got)
+	}
+}
+
+func TestTwin_LateLabelAnswerStillParks(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newTwinEnv(t)
+		askID, itemID := e.question("Which store?")
+		e.parkedFn = func(ctx context.Context, _ string) (bool, string, error) {
+			<-ctx.Done()
+			return false, "", nil // a "clear" that came after the timeout
+		}
+		e.run()
+		e.wantParked(askID, itemID, reasonLabelFailed)
+		if e.decideCalls() != 0 {
+			t.Fatal("Decide ran after a late label answer")
+		}
+	})
+}
+
+func TestTwin_ParkWhoseAnswerKeepsFailingEndsParked(t *testing.T) {
+	e := newTwinEnv(t)
+	askID, itemID := e.question("Merge feature/x into main now?")
+	_, err := e.db.Exec(`CREATE TRIGGER no_answers BEFORE UPDATE ON owner_asks BEGIN SELECT RAISE(ABORT, 'database is locked'); END`)
+	e.must(err)
+	for attempt := 1; attempt <= MaxAttempts; attempt++ {
+		if n := e.run(); n != 1 {
+			t.Fatalf("attempt %d: RunOnce = %d", attempt, n)
+		}
+	}
+	it := e.item(itemID)
+	wantOutcome(t, it, OutcomeParked)
+	if it.ParkReason != "a merge, push or rebase onto main" {
+		t.Fatalf("park reason = %q", it.ParkReason)
+	}
+	if status, _ := e.askAnswer(askID); status != "open" {
+		t.Fatalf("ask = %s, want open (the owner's)", status)
+	}
+	if n := e.run(); n != 0 {
+		t.Fatal("a finished park was leased again")
+	}
+}
+
+func TestTwin_OwnerFirstAfterAParkClearsIt(t *testing.T) {
+	e := newTwinEnv(t)
+	askID, itemID := e.question("Which store?")
+	e.parkedFn = func(context.Context, string) (bool, string, error) {
+		_, err := e.db.Exec(`UPDATE owner_asks SET status = 'answered', answer = '{"answers":[{"id":"a","labels":["Files"],"other":""}]}', answered_at = '2026-11-18T08:00:00Z' WHERE id = ?`, askID)
+		e.must(err)
+		return true, "the label says the owner decides", nil
+	}
+	e.run()
+	it := e.item(itemID)
+	wantOutcome(t, it, OutcomeOwnerFirst)
+	if it.ParkReason != "" || it.Choice != "" || it.Rationale != "" {
+		t.Fatalf("item = %+v, want the park cleared", it)
 	}
 }

@@ -92,10 +92,15 @@ func (d *Daemon) nudgeWatchmanTwin() {
 
 // phaseWatchmanTwin is one pass of the twin worker: queue the wait points of
 // armed sessions no writer queued (spec §7), retry the twin's held lines,
-// then lease what may decide now. Logs carry counts, never text.
+// then lease what may decide now. Each pass binds the current routing (as a
+// cycle does), so a routing reload reaches the next decisions. Logs carry
+// counts, never text.
 func (d *Daemon) phaseWatchmanTwin(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
+	}
+	if d.routingJob != nil {
+		ctx, _ = d.routingJob(ctx, ctx)
 	}
 	if n, err := d.db.ScanWatchmanWaitPoints(time.Now(), watchman.ItemQuestion); err != nil {
 		d.logger.Printf("watchman twin: scanning wait points: %v", err)

@@ -37,6 +37,11 @@ func TestAskParkedBy(t *testing.T) {
 		{"inventory of files", "Keep an inventory of files in the README?", ""},
 		{"guard test name", "Can I relax TestWATCHMAN04_NothingActsOnUnarmedSession?", LimitInventory},
 		{"ordinary test name", "Can I rename TestHelper_parses?", ""},
+		{"markdown code main", "Shall I merge feature/x into `main`?", LimitMainRef},
+		{"markdown bold master", "Ready to push the fix to **master**?", LimitMainRef},
+		{"quoted main", "Should I rebase onto \"main\"?", LimitMainRef},
+		{"markdown feature branch", "Shall I merge `main` into `feature/x`?", ""},
+		{"quoted feature branch", "Ready to push the fix to 'feature/main-fix'?", ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

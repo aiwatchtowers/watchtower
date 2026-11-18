@@ -20,6 +20,8 @@ const (
 	OutcomeHanded     = "handed"
 	OutcomeParked     = "parked"
 	OutcomeOwnerFirst = "owner_first"
+	// OutcomeSuperseded: the ask was withdrawn or replaced after the twin decided it.
+	OutcomeSuperseded = "superseded"
 )
 
 // Copy (spec 2026-11-16-watchman-design, verbatim).
@@ -52,7 +54,11 @@ const (
 	reasonNoTarget       = "the session has no target to continue on"
 	reasonParkForMorning = "the twin left this handover for the morning"
 	refusedPrefix        = "the AI provider refused: "
-	handoverBriefHead    = "The previous session on this target handed its work over to a new session:\n\n"
+	// pendingStart is a "Continue" handover's error until its next session
+	// started: written with the answer, cleared by the start (retried by
+	// every pass).
+	pendingStart      = "next session not started yet"
+	handoverBriefHead = "The previous session on this target handed its work over to a new session:\n\n"
 )
 
 // limitReasons are the park reasons of the ask-text hard limits.
@@ -75,7 +81,7 @@ func limitReason(l watchman.HardLimit) string {
 // handle decides one leased item. Its context ends with the lease: an
 // attempt that runs past it writes nothing (the item was retaken).
 func (t *Twin) handle(ctx context.Context, it db.WatchmanItem) {
-	j := &job{t: t, it: it, lease: *it.LeaseUntil}
+	j := &job{t: t, parent: ctx, it: it, lease: *it.LeaseUntil}
 	ctx, cancel := context.WithDeadline(ctx, j.lease)
 	defer cancel()
 	ask, err := t.d.DB.GetOwnerAskByID(it.RefID)
@@ -142,14 +148,21 @@ func (t *Twin) stillLearning(workbenchID int64) (bool, error) {
 	return pending > 0, nil
 }
 
-// text is the ask's whole text, as the Go table reads it; situation the
-// redacted text the models see.
-func (j *job) text(p asks.Payload) string {
-	return watchman.AskSituation(j.ask.Title, j.ask.Summary, j.ask.Changes, p.Questions)
+// situation is the redacted ask text the model decides on (title, summary,
+// changes, questions with their options).
+func (j *job) situation(p asks.Payload) string {
+	return watchman.Redact(watchman.AskSituation(j.ask.Title, j.ask.Summary, j.ask.Changes, p.Questions))
 }
 
-func (j *job) situation(p asks.Payload) string {
-	return watchman.Redact(j.text(p))
+// checkText is what the hard-limit checks read before the model: the title
+// and the questions' text only — an option the agent offers, or the changes
+// field, is not a decision yet (the choice is checked after the model).
+func (j *job) checkText(p asks.Payload) string {
+	parts := []string{strings.TrimSpace(j.ask.Title)}
+	for _, q := range p.Questions {
+		parts = append(parts, strings.TrimSpace(q.Question))
+	}
+	return strings.Join(parts, "\n")
 }
 
 // decideQuestion is a question ask: parked by the Go table or the label
@@ -179,17 +192,14 @@ func (j *job) decideHandover(ctx context.Context, p asks.Payload) {
 			j.park(ctx, reasonNoTarget)
 			return
 		}
-		delivery, ok := j.answerText(ctx, p, HandoverContinue, j.outcome(OutcomeAnswered))
-		if !ok {
+		// The start is owed from the answer's own transaction on, so a crash
+		// before it is retried by the next pass (retryStarts).
+		o := j.outcome(OutcomeAnswered)
+		o.Error = pendingStart
+		if !j.answerText(ctx, p, HandoverContinue, o) {
 			return
 		}
-		brief := handoverBriefHead + db.WatchmanAskText(j.ask.Title, j.ask.Summary)
-		if err := j.t.d.StartSession(ctx, j.it.WorkbenchID, j.it.TargetID, brief); err != nil {
-			log.Printf("watchman twin: item %d: the next session did not start", j.it.ID)
-			if err := j.t.d.DB.NoteWatchmanItemDelivery(j.it.ID, delivery, watchman.Clip("starting the next session: "+err.Error(), errorTextLimit)); err != nil {
-				log.Printf("watchman twin: %v", err)
-			}
-		}
+		j.t.startNext(ctx, j.it, j.ask)
 	case HandoverPark:
 		reason := strings.TrimSpace(j.dec.Rationale)
 		if reason == "" {
@@ -207,12 +217,12 @@ func (j *job) decideHandover(ctx context.Context, p asks.Payload) {
 // answers with the choice; false when the item was parked, handed, queued
 // again or lost.
 func (j *job) decide(ctx context.Context, p asks.Payload, it watchman.Item) bool {
-	text, situation := j.text(p), j.situation(p)
+	text, situation := j.checkText(p), j.situation(p)
 	if l, ok := watchman.AskParkedBy(text); ok {
 		j.park(ctx, limitReason(l))
 		return false
 	}
-	if j.labelParks(ctx, situation) {
+	if j.labelParks(ctx, watchman.Redact(text)) {
 		return false
 	}
 	it.WorkbenchID, it.Situation, it.DecidedBefore = j.it.WorkbenchID, situation, j.now()
@@ -226,7 +236,7 @@ func (j *job) decide(ctx context.Context, p asks.Payload, it watchman.Item) bool
 		j.park(ctx, limitReason(l))
 		return false
 	}
-	if j.labelParks(ctx, situation+"\n"+watchman.Redact(dec.Choice)) {
+	if j.labelParks(ctx, watchman.Redact(text+"\n"+dec.Choice)) {
 		return false
 	}
 	if dec.Handoff == watchman.HandoffOwnerOnly {
@@ -238,8 +248,9 @@ func (j *job) decide(ctx context.Context, p asks.Payload, it watchman.Item) bool
 }
 
 // labelParks runs the light-tier check on text and parks when it says so,
-// fails or runs past labelTimeout (fail closed). A shutdown is not a park:
-// the item is queued again. true when the item was handled.
+// fails or runs past labelTimeout — even with a late answer (fail closed). A
+// stopping worker is not a park: the item is released. true when the item
+// was handled.
 func (j *job) labelParks(ctx context.Context, text string) bool {
 	lctx, cancel := context.WithTimeout(ctx, labelTimeout)
 	defer cancel()
@@ -248,7 +259,7 @@ func (j *job) labelParks(ctx context.Context, text string) bool {
 	case ctx.Err() != nil:
 		j.fail(ctx, ctx.Err())
 		return true
-	case err != nil:
+	case err != nil, lctx.Err() != nil:
 		j.park(ctx, reasonLabelFailed)
 		return true
 	case parked:
@@ -293,9 +304,9 @@ func providerRefused(f *providers.Failure) bool {
 // item parked; an ask that takes no text answer (a review) keeps waiting for
 // the owner, the item finished parked all the same.
 func (j *job) park(ctx context.Context, reason string) {
-	j.parking = true
 	o := j.outcome(OutcomeParked)
 	o.ParkReason = reason
+	j.parked = &o
 	var p asks.Payload
 	if err := json.Unmarshal([]byte(j.ask.Payload), &p); err != nil {
 		j.finishAlone(o)
@@ -306,11 +317,54 @@ func (j *job) park(ctx context.Context, reason string) {
 
 // answerText answers the ask with one text (textAnswer) and finishes the
 // item with o; an ask a text cannot answer is finished without one.
-func (j *job) answerText(ctx context.Context, p asks.Payload, text string, o db.WatchmanOutcome) (string, bool) {
+func (j *job) answerText(ctx context.Context, p asks.Payload, text string, o db.WatchmanOutcome) bool {
 	ans, ok := textAnswer(j.ask.Kind, p, text)
 	if !ok {
 		j.finishAlone(o)
-		return "", false
+		return false
 	}
 	return j.answer(ctx, &askanswer.AnswerRequest{Answer: ans}, o)
+}
+
+// startNext starts the next session of a handover answered "Continue" on
+// its target, with the handover text as the brief, and clears the owed
+// start on success; a failure leaves it owed for the next pass. One start
+// per item at a time in this process.
+func (t *Twin) startNext(ctx context.Context, it db.WatchmanItem, ask *db.OwnerAsk) {
+	t.mu.Lock()
+	if t.starting[it.ID] {
+		t.mu.Unlock()
+		return
+	}
+	t.starting[it.ID] = true
+	t.mu.Unlock()
+	defer func() {
+		t.mu.Lock()
+		delete(t.starting, it.ID)
+		t.mu.Unlock()
+	}()
+	brief := handoverBriefHead + db.WatchmanAskText(ask.Title, ask.Summary)
+	if err := t.d.StartSession(ctx, it.WorkbenchID, it.TargetID, brief); err != nil {
+		log.Printf("watchman twin: item %d: the next session did not start, retried next pass", it.ID)
+		return
+	}
+	if _, err := t.d.DB.ClearWatchmanItemError(it.ID, pendingStart); err != nil {
+		log.Printf("watchman twin: %v", err)
+	}
+}
+
+// retryStarts starts the next sessions still owed.
+func (t *Twin) retryStarts(ctx context.Context) {
+	items, err := t.d.DB.DoneWatchmanItemsWithError("handover", pendingStart)
+	if err != nil {
+		log.Printf("watchman twin: %v", err)
+		return
+	}
+	for _, it := range items {
+		ask, err := t.d.DB.GetOwnerAskByID(it.RefID)
+		if err != nil || it.TargetID == 0 {
+			continue
+		}
+		t.startNext(ctx, it, ask)
+	}
 }
