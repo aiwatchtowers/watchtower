@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/aiconsent/aiconsenttest"
 	"watchtower/internal/config"
 	"watchtower/internal/dayplan"
 	"watchtower/internal/db"
@@ -33,6 +34,8 @@ import (
 
 func TestMain(m *testing.M) {
 	runFakeCLIIfAsked()
+	// Background AI reads allowed unless a test injects a consent reader.
+	aiconsenttest.AllowByDefault()
 	gittest.DisableBackgroundGit() // the coach's commit-check tests create repositories
 	// Allow sub-second poll intervals in tests for fast execution.
 	minPollInterval = 1 * time.Millisecond

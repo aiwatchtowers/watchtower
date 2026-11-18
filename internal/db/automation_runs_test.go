@@ -719,6 +719,28 @@ func TestCancelQueuedNotRunnable(t *testing.T) {
 	wantErrIs(t, "second cancel", d.CancelQueuedNotRunnable(run, runTestNow), ErrRunNotQueued)
 }
 
+// TestCancelQueuedBackgroundPaused_OnlyQueued: a queued run ends
+// cancelled/cancelled with the paused text; a claimed one is left alone.
+func TestCancelQueuedBackgroundPaused_OnlyQueued(t *testing.T) {
+	d := openTestDB(t)
+	a := seedRunAutomation(t, d, "digest", 2)
+	run, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerSchedule})
+	if err := d.CancelQueuedBackgroundPaused(run, runTestNow); err != nil {
+		t.Fatal(err)
+	}
+	r := wantAutomationRun(t, d, run, RunCancelled, ErrKindCancelled)
+	if r.Error != "Background AI is paused" || r.FinishedAt == nil {
+		t.Fatalf("error = %q, finished_at = %v; want the paused text and a finish time", r.Error, r.FinishedAt)
+	}
+	wantErrIs(t, "second cancel", d.CancelQueuedBackgroundPaused(run, runTestNow), ErrRunNotQueued)
+
+	running, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerEvent})
+	mustClaimAutomationRun(t, d, running)
+	wantErrIs(t, "claimed run", d.CancelQueuedBackgroundPaused(running, runTestNow), ErrRunNotQueued)
+	wantAutomationRun(t, d, running, RunRunning, "")
+	wantErrIs(t, "missing run", d.CancelQueuedBackgroundPaused(running+100, runTestNow), ErrAutomationRunNotFound)
+}
+
 func TestAuto08_RestartMarksInterrupted(t *testing.T) {
 	d := openTestDB(t)
 	a := seedRunAutomation(t, d, "digest", 4)
