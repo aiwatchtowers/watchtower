@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -229,16 +230,26 @@ func (p *Port) PromptState(ctx context.Context, sessionID int64, run uint64) (ho
 	}
 	r, err := c.PromptState(ctx, sessionhost.PromptStateMsg{Row: info.Row, Run: info.Run, Launch: info.Launch})
 	p.prompt.done(c, err)
-	var he *sessionhost.HostError
-	if errors.As(err, &he) {
-		// The host found no running launch of the run: it exited (or was
-		// forgotten) since the list.
+	if hostSaysNotRunning(err) {
+		// The run exited (or was forgotten, or relaunched) since the list.
 		return false, false, ErrNotRunning
 	}
 	if err != nil {
 		return false, false, fmt.Errorf("reading session %d's prompt: %w", sessionID, err)
 	}
 	return r.HoldsText, r.Known, nil
+}
+
+// hostSaysNotRunning reports the host's refusal of a request for a run it
+// has no running launch of (Server.running's three answers); any other
+// Error frame is not one.
+func hostSaysNotRunning(err error) bool {
+	var he *sessionhost.HostError
+	if !errors.As(err, &he) {
+		return false
+	}
+	m := he.Message
+	return strings.Contains(m, ": no session row ") || strings.Contains(m, " is not running") || strings.Contains(m, " is launch ")
 }
 
 // Start starts a session (Start) and answers once its launch was checked,
@@ -325,8 +336,14 @@ func (s *slot) get(ctx context.Context) (*sessionhost.Client, error) {
 	if s.closed {
 		return nil, errPortClosed
 	}
-	if s.c != nil {
+	if s.c != nil && !s.c.Dead() {
 		return s.c, nil
+	}
+	if s.c != nil {
+		// Dead after a caller's failure that has not dropped it (done never
+		// waits for the slot): replaced here.
+		_ = s.c.Close()
+		s.c = nil
 	}
 	if s.socketErr != nil {
 		return nil, s.socketErr
@@ -350,12 +367,18 @@ func (s *slot) get(ctx context.Context) (*sessionhost.Client, error) {
 
 // done drops c once the client closed it (a failure that left its stream
 // out of step): the next call dials again. Other errors (the host's own
-// answer, a database or build error of the caller) keep it.
+// answer, a database or build error of the caller) keep it. It never waits:
+// while another caller holds the slot (a redial, say), the dead client is
+// left to get, which replaces a dead client itself.
 func (s *slot) done(c *sessionhost.Client, _ error) {
 	if !c.Dead() {
 		return
 	}
-	_ = s.lock(context.Background())
+	select {
+	case s.turn <- struct{}{}:
+	default:
+		return
+	}
 	defer s.unlock()
 	if s.c == c {
 		_ = s.c.Close()

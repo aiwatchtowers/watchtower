@@ -143,6 +143,98 @@ func TestPortPromptStateOfARunThatExitedIsNotRunning(t *testing.T) {
 	})
 }
 
+// Any other refusal of the host stays its error, still unknown.
+func TestPortPromptStateKeepsTheHostsOtherErrors(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		p := fakePort(fakeHost{}, fakeHost{
+			features:  []string{sessionhost.FeaturePromptState},
+			promptErr: "prompt_state: bad request: unexpected end of JSON input",
+		})
+		defer func() { _ = p.Close() }()
+		_, known, err := p.PromptState(context.Background(), 1, 1)
+		var he *sessionhost.HostError
+		assert.True(t, errors.As(err, &he), "the host's own error: %v", err)
+		assert.NotErrorIs(t, err, ErrNotRunning)
+		assert.False(t, known)
+	})
+}
+
+// slowDial is a slot dial whose first call answers at once and every later
+// one only after slowDialTook (a host being started, a loaded machine).
+const slowDialTook = 10 * time.Second
+
+func slowDial(h fakeHost) (dial func(context.Context) (*sessionhost.Client, error), dials *int) {
+	n := 0
+	fast := h.dialer()
+	return func(ctx context.Context) (*sessionhost.Client, error) {
+		n++
+		if n > 1 {
+			time.Sleep(slowDialTook)
+		}
+		return fast(ctx)
+	}, &n
+}
+
+// A caller whose client died (at its deadline) never waits in done for
+// another caller's redial holding the slot: done returns at once, and the
+// redial replaces the dead client itself.
+func TestPortSlotDoneNeverWaitsForARedial(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newSlot("unused.sock", nil, "", true)
+		dial, dials := slowDial(fakeHost{features: []string{sessionhost.FeaturePromptState}})
+		s.dial = dial
+		defer s.close()
+		dead, err := s.get(context.Background())
+		require.NoError(t, err)
+		_ = dead.Close() // as a read that ran out its deadline leaves it
+
+		redialled := make(chan *sessionhost.Client, 1)
+		go func() {
+			c, err := s.get(context.Background())
+			assert.NoError(t, err)
+			redialled <- c
+		}()
+		synctest.Wait() // the redial holds the slot
+
+		start := time.Now()
+		s.done(dead, context.DeadlineExceeded)
+		assert.Equal(t, time.Duration(0), time.Since(start), "done waited for the redial")
+
+		fresh := <-redialled
+		assert.NotSame(t, dead, fresh)
+		assert.False(t, fresh.Dead())
+		assert.Equal(t, 2, *dials)
+		assert.Equal(t, slowDialTook, time.Since(start))
+	})
+}
+
+// A read waiting for the slot behind another caller's slow dial leaves at
+// its own deadline, unknown.
+func TestPortPromptStateBehindASlowDialLeavesAtItsDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		p := fakePort(fakeHost{}, fakeHost{})
+		dial, _ := slowDial(fakeHost{features: []string{sessionhost.FeaturePromptState}})
+		first, err := dial(context.Background()) // spend the fast first dial: every dial now is slow
+		require.NoError(t, err)
+		_ = first.Close()
+		p.prompt.dial = dial
+		defer func() { _ = p.Close() }()
+		dialled := make(chan struct{})
+		go func() {
+			defer close(dialled)
+			_, _ = p.prompt.get(context.Background())
+		}()
+		synctest.Wait() // the slow dial holds the slot
+
+		start := time.Now()
+		_, known, err := p.PromptState(context.Background(), 1, 1)
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
+		assert.False(t, known)
+		assert.Equal(t, sessionhost.PromptStateTimeout, time.Since(start))
+		<-dialled
+	})
+}
+
 // A host without the feature is never asked: ErrFeatureMissing, unknown.
 func TestPortPromptStateWithoutTheFeatureIsUnknown(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
