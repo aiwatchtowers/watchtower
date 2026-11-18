@@ -343,6 +343,7 @@ func TestPortStartFailuresAreNeverStarted(t *testing.T) {
 // amended); a failed start with no parent tells no one.
 func TestFailedSubSessionStartTellsTheParent(t *testing.T) {
 	w := newWorld(t)
+	w.installHome()
 	ctx := context.Background()
 	parent, err := w.db.CreateTerminalSession(ctx, db.NewTerminalSession{WorkbenchID: w.wb, Kind: "codex", Title: "Lead", FolderPath: w.folder})
 	require.NoError(t, err)

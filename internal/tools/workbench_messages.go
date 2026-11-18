@@ -11,20 +11,27 @@ import (
 	"watchtower/internal/workbenchfolders"
 )
 
-// MessageDeps is what the agent-message tools need from the process that
-// mounts them (cmd wires the session host and the daemon): Live reads
-// whether a session runs in the host, DaemonRunning whether a daemon runs to
+// SessionDeps is what the agent-message and sub-session tools need from the
+// process that mounts them (cmd wires the session host, the daemon and the
+// CLI): Live reads whether a session runs in the host, Runs every session
+// that does (none when no host runs), DaemonRunning whether a daemon runs to
 // deliver (never taking the sync lock), Wake signals that daemon to deliver
-// now. A nil Live refuses every send; a nil DaemonRunning never warns; a nil
-// Wake leaves delivery to the daemon's tick.
-type MessageDeps struct {
+// now, and StartSession runs `workbench session start` with args and the
+// brief on its stdin, answering its stdout (the --json answer, also on a
+// refusal's exit) and an error carrying its stderr when it failed. A nil
+// Live refuses every send; a nil Runs refuses start_session and
+// list_sessions; a nil DaemonRunning never warns; a nil Wake leaves delivery
+// to the daemon's tick; a nil StartSession refuses start_session.
+type SessionDeps struct {
 	Live          sessionmsg.LiveFunc
+	Runs          func(ctx context.Context) (map[int64]bool, error)
 	DaemonRunning func() (bool, error)
 	Wake          func()
+	StartSession  func(ctx context.Context, args []string, brief string) ([]byte, error)
 }
 
 // live is m.Live, or a refusal of every read when there is none.
-func (m MessageDeps) live() sessionmsg.LiveFunc {
+func (m SessionDeps) live() sessionmsg.LiveFunc {
 	if m.Live != nil {
 		return m.Live
 	}
@@ -35,7 +42,7 @@ func (m MessageDeps) live() sessionmsg.LiveFunc {
 
 // queued is the follow-up of a row the tool just queued: the daemon is woken,
 // or out carries the daemon_not_running warning when none runs to deliver it.
-func (m MessageDeps) queued(out map[string]any) {
+func (m SessionDeps) queued(out map[string]any) {
 	if m.DaemonRunning == nil {
 		return
 	}
@@ -63,7 +70,7 @@ var errNoMessageSession = &ValidationError{Msg: "send_to_session needs a Watchto
 // NewSendToSession queues a message from this terminal session to another
 // live agent session of the workbench (spec 2026-11-18 §6.6, PROJ-23); the
 // daemon types it in.
-func NewSendToSession(sessionEnv func() string, deps MessageDeps) *Tool {
+func NewSendToSession(sessionEnv func() string, deps SessionDeps) *Tool {
 	return &Tool{
 		Name: "send_to_session",
 		Description: "Send a message to another live agent session of this workbench (a sub-session you started, " +

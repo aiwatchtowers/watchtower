@@ -127,6 +127,14 @@ func Header(from db.TerminalSession, folder string) string {
 		from.ID, oneLine(from.Title), oneLine(folder))
 }
 
+// SubSessionHeader is the fixed first line of the brief a sub-session
+// starts with (spec 2026-11-18 §6.5): its parent parentID, titled
+// parentTitle, working in the bench folder folder.
+func SubSessionHeader(parentID int64, parentTitle, folder string) string {
+	return fmt.Sprintf("You are a sub-session of #%d “%s” (folder %s). Message it with send_to_session(%d, …). "+
+		"When done, call finish_session — your summary is sent to #%d.", parentID, oneLine(parentTitle), oneLine(folder), parentID, parentID)
+}
+
 // Body is the pasted text of a message: header, the sender's text, and
 // how to reply.
 func Body(fromID int64, header, text string) string {

@@ -116,7 +116,7 @@ func runWorkbenchMessageSend(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	defer database.Close()
-	deps := workbenchMessageDeps(cfg)
+	deps := workbenchSessionDeps(cfg)
 	id, state, err := sessionmsg.Send(cmdContext(cmd), database, deps.Live, from, messageFlagTo, string(b))
 	if err != nil {
 		return messageRefused(cmd, err)
@@ -198,28 +198,42 @@ func runWorkbenchMessageDismiss(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// workbenchMessageDeps is how this process reaches the session host and the
-// daemon for agent messages: liveness from the host's list (never starting
-// a host), the daemon by its pid file alone (never the sync lock), and its
-// wake signal when it advertises the messages wake.
-func workbenchMessageDeps(cfg *config.Config) tools.MessageDeps {
-	return tools.MessageDeps{
+// workbenchSessionDeps is how this process reaches the session host, the
+// daemon and the CLI for agent messages and sub-sessions: liveness from the
+// host's list (never starting a host), the daemon by its pid file alone
+// (never the sync lock), its wake signal when it advertises the messages
+// wake, and `workbench session start` as a child process (the one start
+// path).
+func workbenchSessionDeps(cfg *config.Config) tools.SessionDeps {
+	return tools.SessionDeps{
 		Live: func(ctx context.Context, sessionID int64) (bool, error) {
-			p := sessionstart.NewPort(sessionStartDeps(cfg, nil), nil)
-			defer func() { _ = p.Close() }()
-			runs, err := p.Runs(ctx)
-			if errors.Is(err, sessionstart.ErrHostNotRunning) {
-				return false, nil
-			}
-			if err != nil {
-				return false, fmt.Errorf("reading the session host: %w", err)
-			}
-			_, ok := runs[sessionID]
-			return ok, nil
+			runs, err := hostRuns(ctx, cfg)
+			return runs[sessionID], err
 		},
+		Runs:          func(ctx context.Context) (map[int64]bool, error) { return hostRuns(ctx, cfg) },
 		DaemonRunning: func() (bool, error) { return daemon.DaemonRunning(cfg.WorkspaceDir()) },
 		Wake:          func() { wakeSessionMessages(cfg) },
+		StartSession:  runSubSessionStart,
 	}
+}
+
+// hostRuns is every session with a run in the session host; none when no
+// host runs (a read never starts one).
+func hostRuns(ctx context.Context, cfg *config.Config) (map[int64]bool, error) {
+	p := sessionstart.NewPort(sessionStartDeps(cfg, nil), nil)
+	defer func() { _ = p.Close() }()
+	runs, err := p.Runs(ctx)
+	if errors.Is(err, sessionstart.ErrHostNotRunning) {
+		return map[int64]bool{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading the session host: %w", err)
+	}
+	out := make(map[int64]bool, len(runs))
+	for id := range runs {
+		out[id] = true
+	}
+	return out, nil
 }
 
 // wakeSessionMessages sends the running daemon its wake signal when it

@@ -27,8 +27,8 @@ func newMessageWorld(*testing.T) *messageWorld { return &messageWorld{} }
 
 func (w *messageWorld) startDaemon(*testing.T) { w.running = true }
 
-func (w *messageWorld) deps(live ...int64) MessageDeps {
-	return MessageDeps{
+func (w *messageWorld) deps(live ...int64) SessionDeps {
+	return SessionDeps{
 		Live: func(_ context.Context, id int64) (bool, error) {
 			for _, l := range live {
 				if l == id {
@@ -42,7 +42,7 @@ func (w *messageWorld) deps(live ...int64) MessageDeps {
 	}
 }
 
-func messageRegistry(t *testing.T, d *db.DB, env int64, deps MessageDeps) *Registry {
+func messageRegistry(t *testing.T, d *db.DB, env int64, deps SessionDeps) *Registry {
 	t.Helper()
 	reg := New(d)
 	for _, tool := range workbenchTools(workbenchfiles.New(t.TempDir()), func() string { return strconv.FormatInt(env, 10) }, nil, deps) {

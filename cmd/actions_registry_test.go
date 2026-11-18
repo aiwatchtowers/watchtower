@@ -290,6 +290,7 @@ func pinProjectSurface(t *testing.T, reg *tools.Registry, main, target, reaction
 		"create_targets", "update_target", "list_comments", "add_comment", "resolve_comment",
 		"ask_owner", "get_ask", "get_review", "get_spec_review", "list_asks", "withdraw_ask", "finish_session", "set_session_target",
 		"annotate_changes", "reply_review_comment", "answer_review_question", "send_to_session",
+		"start_session", "list_sessions",
 	}
 	project := surfaceToolNames(reg, "project")
 	for _, p := range workbenchTools {
@@ -402,7 +403,7 @@ func pinAutomationWriteTools(t *testing.T, reg *tools.Registry, automation map[s
 	}
 	for _, name := range []string{"connect_jira_board", "dismiss_tracks", "edit_confluence_page", "brief_context",
 		"create_targets", "update_target", "add_comment", "ask_owner", "finish_session", "set_session_target", "update_workbench",
-		"annotate_changes", "reply_review_comment", "answer_review_question", "send_to_session"} {
+		"annotate_changes", "reply_review_comment", "answer_review_question", "send_to_session", "start_session"} {
 		assert.False(t, automation[name], "%s is never offered to automations", name)
 	}
 }
