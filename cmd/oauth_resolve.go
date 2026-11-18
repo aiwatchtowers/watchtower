@@ -420,12 +420,13 @@ func resolveMicrosoftOAuthConfigForCompany(workspaceDir, slug string) (imap.Micr
 // account accountID as its row stands now, in the resolver order
 // (accountClient.resolve): its company's bundle → outlook_client_<id>.json →
 // env → baked.
-func resolveMicrosoftOAuthConfigForAccount(cfg *config.Config, database *db.DB, accountID int64) (imap.MicrosoftOAuthConfig, clientSource, error) {
+func resolveMicrosoftOAuthConfigForAccount(cfg *config.Config, database *db.DB, accountID int64) (imap.MicrosoftOAuthConfig, error) {
 	account, err := database.GetEmailAccount(accountID)
 	if err != nil {
-		return imap.MicrosoftOAuthConfig{}, "", fmt.Errorf("outlook account %d: %w", accountID, err)
+		return imap.MicrosoftOAuthConfig{}, fmt.Errorf("outlook account %d: %w", accountID, err)
 	}
-	return resolveOutlookAccountClient(cfg.WorkspaceDir(), account)
+	msCfg, _, err := resolveOutlookAccountClient(cfg.WorkspaceDir(), account)
+	return msCfg, err
 }
 
 // resolveOutlookAccountClient is resolveMicrosoftOAuthConfigForAccount over a

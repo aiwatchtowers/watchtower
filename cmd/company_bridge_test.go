@@ -147,7 +147,7 @@ func (c *corpWorkspace) clients(t *testing.T) map[string]string {
 	lcfg, err := linearAccountOAuthSource(c.cfg, c.database, c.ids["linear"])()
 	require.NoError(t, err)
 	out["linear"] = lcfg.ClientID
-	mcfg, _, err := resolveMicrosoftOAuthConfigForAccount(c.cfg, c.database, c.ids["outlook"])
+	mcfg, err := resolveMicrosoftOAuthConfigForAccount(c.cfg, c.database, c.ids["outlook"])
 	require.NoError(t, err)
 	out["outlook"] = strings.ToLower(mcfg.ClientID) + "@" + mcfg.TenantID
 	return out
@@ -247,7 +247,7 @@ func TestBridge_TiesEveryBakedAccount(t *testing.T) {
 	setPublicBaked(t)
 	assert.Equal(t, before, c.clients(t))
 	// An untied account on a baked client keeps it too, through its record.
-	personal, _, err := resolveMicrosoftOAuthConfigForAccount(c.cfg, c.database, c.ids["outlook_personal"])
+	personal, err := resolveMicrosoftOAuthConfigForAccount(c.cfg, c.database, c.ids["outlook_personal"])
 	require.NoError(t, err)
 	assert.Equal(t, imap.MicrosoftOAuthConfig{ClientID: corpMicrosoftID}, personal)
 }

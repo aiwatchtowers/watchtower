@@ -1901,7 +1901,7 @@ func outlookAuthenticator(cfg *config.Config, database *db.DB, acct db.EmailAcco
 // (Re-login needed) — never a refresh through the client the daemon started
 // with.
 func refreshOutlookAccount(ctx context.Context, cfg *config.Config, database *db.DB, id int64, refreshToken string) (accessToken, newRefreshToken string, err error) {
-	msCfg, _, err := resolveMicrosoftOAuthConfigForAccount(cfg, database, id)
+	msCfg, err := resolveMicrosoftOAuthConfigForAccount(cfg, database, id)
 	if needsCompanyRelogin(err) {
 		return "", "", fmt.Errorf("%w: %w", oauthclient.ErrClientRejected, err)
 	}
