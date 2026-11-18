@@ -133,6 +133,8 @@ func (t *Twin) handle(ctx context.Context, it db.WatchmanItem) {
 	switch it.Kind {
 	case "check":
 		j.answerText(ctx, p, CheckAnswerText, j.outcome(OutcomeAnswered))
+	case "review_doc":
+		j.decideReviewDoc(ctx, p)
 	case "handover":
 		j.decideHandover(ctx, p)
 	default:
@@ -313,12 +315,17 @@ func providerRefused(f *providers.Failure) bool {
 }
 
 // park answers the ask "Parked for the owner: <reason>" and finishes the
-// item parked; an ask that takes no text answer (a review) keeps waiting for
-// the owner, the item finished parked all the same.
+// item parked; an ask that takes no text answer (a review), or a diff
+// review with no ask, keeps waiting for the owner, the item finished parked
+// all the same.
 func (j *job) park(ctx context.Context, reason string) {
 	o := j.outcome(OutcomeParked)
 	o.ParkReason = reason
 	j.parked = &o
+	if j.ask == nil { // a diff review: no ask to answer
+		j.finishAlone(o)
+		return
+	}
 	var p asks.Payload
 	if err := json.Unmarshal([]byte(j.ask.Payload), &p); err != nil {
 		j.finishAlone(o)

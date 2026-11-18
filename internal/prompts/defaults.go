@@ -180,7 +180,7 @@ var DefaultVersions = map[string]int{
 	CoachPropose:               2,  // v2: the exact allow-rule table, claude_md_user allowed (4000 ceiling), ROLLED BACK group (v1: agent coach — edits to the owner's setup from repeated signals, strong tier)
 	MediaDescribe:              1,  // v1: an attached image to a title, description, verbatim text and keys (strong tier, image input)
 	MediaSummarizeLink:         1,  // v1: a fetched public page to a title and a short summary (light tier)
-	WatchmanDecide:             3,  // v3: "handoff" none|owner_only — hand back only a step that needs the owner's own hands (token, sign-in, a command on his side, his device, a payment); never state an owner-only action as done; no new work on a plain status report (ask #1486, D35, D37); v2: a situation with several questions is answered per question, one "<question>: <answer>" line each; "(recommended)" is only the agent's suggestion (ask #1423); v1: Watchman twin — decide one workbench item the way the owner would, from his precedents, profile and instructions (strong tier)
+	WatchmanDecide:             4,  // v4: a review_doc item carries the spec review's "findings" (key, text) and the reply gains "marks" [{key, state ok|comment|not_useful, body}] the twin writes as the owner's marks with its verdict; Go drops unknown keys (Watchman phase 2 Task 12); v3: "handoff" none|owner_only — hand back only a step that needs the owner's own hands (token, sign-in, a command on his side, his device, a payment); never state an owner-only action as done; no new work on a plain status report (ask #1486, D35, D37); v2: a situation with several questions is answered per question, one "<question>: <answer>" line each; "(recommended)" is only the agent's suggestion (ask #1423); v1: Watchman twin — decide one workbench item the way the owner would, from his precedents, profile and instructions (strong tier)
 	WatchmanJudge:              5,  // v5: a handoff is judged on whether the step needs the owner's hands; confirmation-only option labels are not claims (phase-1b triage); v4: a handed item gets one justified/unjustified verdict instead of grades (a handoff claiming an owner-only action done is unjustified); the §9.1 rubric (a recommended or reasonable other path is acceptable unless irreversible and contradicting the situation; release version, cheap reversible CI action, work order never bad alone; equal cases equal grades, with worked examples); D37 claims and unasked work are bad (ask #1486); v3: grades same/acceptable/bad per question, strong tier, sees the twin's confidence (ask #1423); v2: the situation is passed too; v1: same/different, light tier
 	WatchmanLabel:              2,  // v2: the reply is an array of objects — "category" only for items with need_category, plus "decision" (answers a question or proposal of the agent) and "parked" (merge/push/rebase onto main, release, tag, TestFlight, an outward message, an inventory contract approval) for every item (ask #1486, D34); v1: Watchman learning — put each of the owner's past decisions in one of the eight categories (light tier)
 	WatchmanProfile:            1,  // v1: Watchman profile — distil a category's past owner decisions into at most 20 rules (strong tier)
@@ -1928,6 +1928,7 @@ The user message holds one JSON object inside <data>…</data> with:
 - "precedents": the owner's past decisions most similar to this one, each with "id", "situation", "choice", "owner_words" (what he wrote, may be empty) and "decided_at".
 - "profile": the owner's distilled rules for this category, may be empty.
 - "instructions": the owner's standing instructions to agents, may be empty.
+- "findings": only for a "review_doc" item — the spec review's findings on the document, each with "key" and "text"; absent otherwise.
 
 How to decide:
 - Precedents that match the situation closely weigh most; newer ones win over older ones when they disagree. The owner's own words explain why he chose.
@@ -1944,9 +1945,13 @@ When to hand the decision to the owner:
 - You never state an owner-only action as done: never write that a token was issued or deleted, that he signed in, ran a command or paid ("old token deleted").
 - On a plain status report (the agent reports and asks nothing), answer only what was asked: add no new work the owner would have to call off ("start Task 9").
 
+Marks on a document review:
+- For a "review_doc" item with "findings", also return "marks": one entry per finding you would mark the way the owner marks a review card, as {"key": "<the finding's key, copied verbatim>", "state": "ok" | "comment" | "not_useful", "body": "…"}. "ok" — the owner agrees with the finding as it stands; "comment" — he would add a remark to the author, written in "body"; "not_useful" — he would dismiss it. "body" is empty unless "state" is "comment". Leave out a finding you would not mark. With "changes" as the choice, at least one mark is a "comment" saying what to change.
+- For every other item "marks" is [].
+
 Return ONLY a JSON object (no markdown fences, no prose outside the JSON) with exactly this shape:
 
-{"choice": "…", "rationale": "…", "precedent_ids": [12, 40], "confidence": "medium", "category": "design", "importance": "low", "handoff": "none"}
+{"choice": "…", "rationale": "…", "precedent_ids": [12, 40], "confidence": "medium", "category": "design", "importance": "low", "handoff": "none", "marks": []}
 
 Rules:
 - "rationale": one to three sentences on why the owner would choose this, citing what in his precedents or rules points there, in the language of the owner's words in the precedents (English when there are none).

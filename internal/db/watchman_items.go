@@ -566,6 +566,37 @@ func (db *DB) ReleaseWatchmanItem(id int64, lease time.Time, costUSD float64) (b
 	return n > 0, err
 }
 
+// DeferWatchmanItem hands a deciding item back to the queue, not before
+// notBefore, as if this attempt never ran (attempts-1): the item waits for
+// something outside the twin (a spec review still running, the owner
+// writing review comments). False when the lease is stale.
+func (db *DB) DeferWatchmanItem(id int64, lease, notBefore time.Time) (bool, error) {
+	res, err := db.Exec(`UPDATE watchman_items SET state = 'queued', lease_until = NULL, attempts = MAX(attempts - 1, 0),
+			not_before = ?
+		WHERE id = ? AND state = 'deciding' AND lease_until = ?`, wmTime(notBefore), id, wmTime(lease))
+	if err != nil {
+		return false, fmt.Errorf("deferring watchman item %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// WatchmanTwinReviewRounds counts the review rounds the twin sent on
+// sessionID asking for changes since its last Approve there (review_code
+// items finished changes after the newest one finished approved).
+func (db *DB) WatchmanTwinReviewRounds(sessionID int64) (int, error) {
+	var n int
+	err := db.QueryRow(`SELECT COUNT(*) FROM watchman_items
+		WHERE session_id = ? AND kind = 'review_code' AND state = 'done' AND outcome = 'changes'
+		  AND id > COALESCE((SELECT MAX(id) FROM watchman_items
+			WHERE session_id = ? AND kind = 'review_code' AND state = 'done' AND outcome = 'approved'), 0)`,
+		sessionID, sessionID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("counting Watchman's review rounds of session %d: %w", sessionID, err)
+	}
+	return n, nil
+}
+
 // WatchmanItemKindTx is item id's kind inside tx (the finish transaction's
 // re-read).
 func (db *DB) WatchmanItemKindTx(tx *sql.Tx, id int64) (string, error) {

@@ -23,7 +23,9 @@ type WatchmanTwin interface {
 // §4) over its own Answerer (its own held-line key; the hub keeps another)
 // and start, the session start of a handover the twin continues. Call it
 // after SetDB. The decisions run on watchmanTwinGenerator: strong tier for
-// watchman.decide, light for the watchman.label park check.
+// watchman.decide, light for the watchman.label park check. A diff review
+// reads the session's review place (LiveReviewPlace) and its PR's base
+// through gh (GHPRBase).
 func (d *Daemon) SetWatchmanTwin(a *askanswer.Answerer, start func(ctx context.Context, workbenchID, targetID int64, brief string) error) {
 	d.watchmanTwin = watchmanact.NewTwin(watchmanact.TwinDeps{
 		DB:       d.db,
@@ -37,6 +39,8 @@ func (d *Daemon) SetWatchmanTwin(a *askanswer.Answerer, start func(ctx context.C
 			return watchmanact.LabelParked(labeler)(ctx, text)
 		},
 		StartSession: start,
+		ReviewPlace:  watchmanact.LiveReviewPlace(d.db),
+		PRBase:       watchmanact.GHPRBase(watchmanact.ExecRun),
 	})
 }
 

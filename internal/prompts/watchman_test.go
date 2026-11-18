@@ -14,7 +14,7 @@ func TestWatchmanDecidePromptRegistered(t *testing.T) {
 	assert.Equal(t, "watchman.decide", id)
 	assert.NotEmpty(t, Defaults[id])
 	assert.True(t, contains(AllIDs, id))
-	assert.Equal(t, 3, DefaultVersions[id])
+	assert.Equal(t, 4, DefaultVersions[id])
 	assert.NotEmpty(t, Descriptions[id])
 	assert.NotContains(t, Defaults[id], "%")
 	for _, want := range []string{`"choice"`, `"rationale"`,
@@ -24,6 +24,17 @@ func TestWatchmanDecidePromptRegistered(t *testing.T) {
 	}
 	for _, agent := range []string{"Claude", "Codex"} {
 		assert.NotContains(t, Defaults[id], agent)
+	}
+}
+
+// TestWatchmanDecidePrompt_V4Marks pins v4's marks: a review_doc item's
+// "findings" input and the reply's "marks" shape (key, the three states,
+// body), empty for every other item.
+func TestWatchmanDecidePrompt_V4Marks(t *testing.T) {
+	assert.Equal(t, 4, DefaultVersions[WatchmanDecide])
+	for _, want := range []string{`"findings"`, `"marks"`, `{"key": "<the finding's key, copied verbatim>", "state": "ok" | "comment" | "not_useful", "body": "…"}`,
+		`For every other item "marks" is []`, `"handoff": "none", "marks": []}`} {
+		assert.Contains(t, Defaults[WatchmanDecide], want)
 	}
 }
 
