@@ -28,11 +28,16 @@ var policyShowCmd = &cobra.Command{
 		"one line per key (\"not set\" = no restriction), the reserved keys not enforced in this version,\n" +
 		"and any problems with the profile. Only forced (managed) values count; a value written with\n" +
 		"`defaults write` is ignored. --json prints one JSON document as the last stdout line with the keys\n" +
-		"managed, domain, keys, reserved_not_enforced, errors.",
+		"managed, domain, keys, reserved_not_enforced, errors. keys.CompanyBundle is the forced company's\n" +
+		"name, never the bundle (it carries client secrets).",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		p := policy.Current()
 		if policyShowFlagJSON {
+			if p.Keys.CompanyBundle != nil {
+				name := plainCompanyBundle(p.Keys.CompanyBundle)
+				p.Keys.CompanyBundle = &name
+			}
 			b, err := json.Marshal(p)
 			if err != nil {
 				return err

@@ -337,7 +337,11 @@ func inspectCompany(store company.Store, database *db.DB, wire, forced string) (
 	}
 	res := newCompanyInspectResult()
 	res.Company, res.Slug, res.State, res.Forced = m.bundle.Company, m.slug, "new", m.current.Forced
-	res.Vendors = append(res.Vendors, m.bundle.Vendors()...)
+	effective := m.bundle
+	if m.current.Forced { // the forced bundle wins over the incoming one
+		effective = m.current.Bundle
+	}
+	res.Vendors = append(res.Vendors, effective.Vendors()...)
 	if m.stored {
 		res.State = "same"
 		if len(m.changes) > 0 {

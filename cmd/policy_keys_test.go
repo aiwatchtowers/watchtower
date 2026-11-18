@@ -88,6 +88,10 @@ func TestPolicyShow_CompanyBundleNamesCompanyOnly(t *testing.T) {
 	assert.Contains(t, out, "AllowAtlassianAPIToken: not set\n")
 	assert.NotContains(t, out, wire)
 	assert.NotContains(t, out, "sample-secret")
+
+	keys, ok := policyShowJSON(t)["keys"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "Acme", keys["CompanyBundle"], "--json names the company, never the bundle")
 }
 
 func anyMap(m map[string]string) map[string]any {

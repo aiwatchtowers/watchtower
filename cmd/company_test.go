@@ -378,6 +378,12 @@ func TestCompanyInspect_ForcedCompanyIsSame(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "unchanged", c.Result)
 	}
+
+	// The vendors shown are the forced bundle's, not the link's.
+	slackOnly := companybundle.Bundle{V: 1, Company: "Acme", Slack: companySample("Acme").Slack}
+	res, err := inspectCompany(store, d, companyWire(t, slackOnly), forced)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"slack", "google", "atlassian", "microsoft", "linear"}, res.Vendors)
 }
 
 // TestCompanyForcedBundle_ReadsPolicy pins the CLI's forced bundle to the
