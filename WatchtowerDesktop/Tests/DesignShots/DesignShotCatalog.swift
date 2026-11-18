@@ -60,6 +60,13 @@ enum DesignShotCatalog {
             DesignShot(name: "session-rows-title-narrow", size: NSSize(width: 214, height: 0)) {
                 DesignShotFixtures.sessionRowsTitle(width: 190)
             },
+            // Board #1945: Spec review beside Working, Ready for review, Idle.
+            DesignShot(name: "session-state-spec-review", size: NSSize(width: 300, height: 0)) {
+                SpecReviewStateShotFixtures.rows(width: 276)
+            },
+            DesignShot(name: "session-state-spec-review-narrow", size: NSSize(width: 214, height: 0)) {
+                SpecReviewStateShotFixtures.rows(width: 190)
+            },
             DesignShot(name: "chat-rows", size: NSSize(width: 560, height: 280)) {
                 AnyView(DesignShotFixtures.chatRows().padding(12).shotFrame().detailBackground())
             },
