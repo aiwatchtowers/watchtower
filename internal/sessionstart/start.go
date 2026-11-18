@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -503,16 +504,20 @@ func Finish(ctx context.Context, d Deps, sessionID int64, place, brief string, p
 }
 
 // refuseIfRunning is ErrAlreadyLaunched when the host runs the row already,
-// read before Finish writes anything to it. A host that cannot be reached at
-// all runs nothing (every agent runs in the host): Finish goes on and
-// finish's own lease fails the row as it always did ("the session host is
-// not running"). A connected host whose list cannot be read is only an
-// error, never a row write: a dropped connection is no proof the agent
-// exited (PROJ-20). finish checks again under the placement lock.
+// read before Finish writes anything to it. A host that is absent runs
+// nothing (every agent runs in the host): Finish goes on and finish's own
+// lease fails the row as it always did ("the session host is not running").
+// Any other failure — a handshake or version refusal after connecting
+// (ErrHostV1, a hello timeout) or a list read that fails — is only an error,
+// never a row write: a host that exists may own the run (PROJ-20). finish
+// checks again under the placement lock.
 func (s *newStart) refuseIfRunning(ctx context.Context) error {
 	c, done, err := s.d.lease(ctx)
 	if err != nil {
-		return nil //nolint:nilerr // unreachable: nothing runs the row; finish fails it
+		if hostAbsent(err) {
+			return nil
+		}
+		return err
 	}
 	list, err := c.List(ctx)
 	done(err)
@@ -523,6 +528,16 @@ func (s *newStart) refuseIfRunning(ctx context.Context) error {
 		return ErrAlreadyLaunched
 	}
 	return nil
+}
+
+// hostAbsent reports a lease error that shows no host serves the socket:
+// the dial found no socket file (ENOENT) or nothing listening on it
+// (ECONNREFUSED), also after Ensure's start attempt timed out on them, or
+// Linux's systemd-run refused to start one (*sessionhost.UserManagerError,
+// which Ensure returns only after nothing answered).
+func hostAbsent(err error) bool {
+	var um *sessionhost.UserManagerError
+	return errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ECONNREFUSED) || errors.As(err, &um)
 }
 
 func parseChoice(place string) (Choice, error) {

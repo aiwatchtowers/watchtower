@@ -335,17 +335,34 @@ func TestFinishProbeErrorLeavesTheRow(t *testing.T) {
 	assert.Equal(t, before, w.row(id))
 }
 
-// A host that cannot be reached at all runs nothing: Finish fails the row
-// as it always did.
-func TestFinishWithTheHostDownFailsTheRow(t *testing.T) {
+// An absent host (no socket file) runs nothing: Finish fails the row as it
+// always did. The lease dials the missing socket directly, so no host start
+// is attempted.
+func TestFinishWithTheHostAbsentFailsTheRow(t *testing.T) {
 	w := newWorld(t)
 	id := w.begin(handlers.StartRequest{Workbench: w.wb})
 	d := w.deps()
-	d.Socket = droppingSocket(t)
-	require.ErrorContains(t, Finish(context.Background(), d, id, "auto", "", false), "the session host is not running")
+	missing := filepath.Join(t.TempDir(), "absent.sock")
+	d.host = func(ctx context.Context) (*sessionhost.Client, func(error), error) {
+		c, err := sessionhost.Dial(ctx, missing)
+		return c, func(error) {}, err
+	}
+	require.Error(t, Finish(context.Background(), d, id, "auto", "", false))
 	r := w.row(id)
 	assert.True(t, r.failed)
 	assert.Equal(t, "the session host is not running", r.agentError)
+}
+
+// A host that accepts the connection but fails the hello may still own the
+// run: Finish returns the error and writes nothing.
+func TestFinishHelloFailureLeavesTheRow(t *testing.T) {
+	w := newWorld(t)
+	id := w.begin(handlers.StartRequest{Workbench: w.wb})
+	before := w.row(id)
+	d := w.deps()
+	d.Socket = droppingSocket(t)
+	require.Error(t, Finish(context.Background(), d, id, "auto", "", false))
+	assert.Equal(t, before, w.row(id))
 }
 
 // The bench's worktree_setup runs only in worktrees of the home folder (v1
