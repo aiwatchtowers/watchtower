@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/auth"
 	"watchtower/internal/slackapp"
 )
 
@@ -76,9 +77,8 @@ func init() {
 var (
 	slackAppAPI = func() slackapp.API { return slackapp.NewClient(slackapp.DefaultBaseURL) }
 	// slackAppRetiredClientID is the retired public shared app's client id;
-	// an account on it is not on a company app. Plan B Task 3 adds
-	// auth.RetiredSharedClientID; until it lands nothing counts as shared.
-	slackAppRetiredClientID = func() string { return "" }
+	// an account on it is not on a company app.
+	slackAppRetiredClientID = func() string { return auth.RetiredSharedClientID }
 )
 
 // slackAppSetupLock is the setup's lock file in the workspace directory.
@@ -170,6 +170,10 @@ func runSlackAppSetup(cmd *cobra.Command, run func(context.Context, *slackapp.Ru
 	if err != nil {
 		return err
 	}
+	if res.Err != nil {
+		// The Go detail of a storage failure: stderr only, never the result line.
+		fmt.Fprintf(cmd.ErrOrStderr(), "slack app setup: %v\n", res.Err)
+	}
 	if asJSON {
 		return enc.Encode(slackAppResultJSON{Result: res.Kind, TeamID: res.TeamID, TeamName: res.TeamName,
 			AppID: res.AppID, ClientID: res.ClientID, LinkWritten: res.LinkWritten, Code: res.Code, Error: res.Error})
@@ -190,6 +194,9 @@ func printSlackAppResult(out io.Writer, res slackapp.Result) error {
 	detail := res.Code
 	if res.Error != "" {
 		detail = res.Error
+	}
+	if res.AppID != "" {
+		detail += fmt.Sprintf(" (app %s, client id %s)", res.AppID, res.ClientID)
 	}
 	if detail != "" {
 		detail = ": " + detail

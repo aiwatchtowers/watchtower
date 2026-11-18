@@ -187,3 +187,19 @@ func TestBackfillSlackClientIDs_OnlyEmptyRows(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "111.222", a.ClientID)
 }
+
+func TestSlackAppSetups_PendingFillAndDelete(t *testing.T) {
+	d := openTestDB(t)
+	require.NoError(t, d.InsertSlackAppSetup(SlackAppSetup{TeamID: "T0ACME", TeamName: "Acme"}))
+	require.NoError(t, d.SetSlackAppSetupApp("T0ACME", "A0APP1", "111.222"))
+	got, err := d.GetSlackAppSetup("T0ACME")
+	require.NoError(t, err)
+	assert.Equal(t, "A0APP1", got.AppID)
+	assert.Equal(t, "111.222", got.ClientID)
+	require.Error(t, d.SetSlackAppSetupApp("T0NONE", "A0X", "1.2"))
+
+	require.NoError(t, d.DeleteSlackAppSetup("T0ACME"))
+	require.NoError(t, d.DeleteSlackAppSetup("T0ACME"), "a missing row is no error")
+	_, err = d.GetSlackAppSetup("T0ACME")
+	assert.True(t, errors.Is(err, sql.ErrNoRows))
+}

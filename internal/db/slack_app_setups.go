@@ -88,6 +88,20 @@ func (db *DB) SetSlackAppSetupLinkWritten(team string) error {
 	return db.updateSlackAppSetup(team, `link_written = 1`)
 }
 
+// SetSlackAppSetupApp fills the app and client id of team's pending setup
+// (inserted with empty ids before apps.manifest.create).
+func (db *DB) SetSlackAppSetupApp(team, appID, clientID string) error {
+	return db.updateSlackAppSetup(team, `app_id = ?, client_id = ?`, appID, clientID)
+}
+
+// DeleteSlackAppSetup removes team's setup record; a missing one is no error.
+func (db *DB) DeleteSlackAppSetup(team string) error {
+	if _, err := db.Exec(`DELETE FROM slack_app_setups WHERE team_id = ?`, team); err != nil {
+		return fmt.Errorf("deleting slack app setup for %s: %w", team, err)
+	}
+	return nil
+}
+
 // SetSlackAppSetupInstallRequested records when Slack reported an admin
 // approval request for team's app; the zero time clears it.
 func (db *DB) SetSlackAppSetupInstallRequested(team string, at time.Time) error {

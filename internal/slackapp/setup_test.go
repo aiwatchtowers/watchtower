@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,6 +37,8 @@ type fakeAPI struct {
 	creates, updates, exports     int
 	lastUpdate                    Manifest
 	afterCreate                   func()
+	afterUpdate                   func()
+	createLost                    error // Slack made the app, the answer was lost
 	tokens                        []string
 }
 
@@ -60,6 +63,9 @@ func (f *fakeAPI) Create(_ context.Context, _ string, m Manifest) (string, strin
 	if f.afterCreate != nil {
 		f.afterCreate()
 	}
+	if f.createLost != nil {
+		return "", "", f.createLost
+	}
 	return "A0NEW", "1111.2222", nil
 }
 
@@ -77,6 +83,9 @@ func (f *fakeAPI) Update(ctx context.Context, _, appID string, m Manifest) error
 	}
 	f.lastUpdate = m
 	f.manifests[appID] = m
+	if f.afterUpdate != nil {
+		f.afterUpdate()
+	}
 	return nil
 }
 
@@ -176,7 +185,7 @@ func TestAppSetup_CreateFailures(t *testing.T) {
 	}{
 		"not allowed": {&SlackError{Code: "restricted_action"}, KindNotAllowed},
 		"refused":     {&SlackError{Code: "invalid_manifest", Details: []string{"x at /y"}}, KindRefused},
-		"network":     {errors.New("dial tcp: no route"), KindNetwork},
+		"network":     {&net.OpError{Op: "dial", Net: "tcp", Err: errors.New("no route to host")}, KindNetwork},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t)
@@ -464,4 +473,118 @@ func dumpDB(t *testing.T, d *db.DB) string {
 		}()
 	}
 	return b.String()
+}
+
+func TestAppSetup_LostCreateAnswerNeverCreatesTwice(t *testing.T) {
+	for name, lost := range map[string]error{
+		"timeout":    context.DeadlineExceeded,
+		"bad answer": errors.New("slack apps.manifest.create: the answer is not JSON"),
+		"cut":        &net.OpError{Op: "read", Net: "tcp", Err: errors.New("connection reset by peer")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			h.api.createLost = lost
+			res, err := h.r.Create(context.Background(), cfgToken)
+			require.NoError(t, err)
+			assert.Equal(t, KindPendingCreate, res.Kind)
+			assert.Contains(t, res.Error, "api.slack.com/apps")
+			assert.Equal(t, StepCreateApp, h.steps[len(h.steps)-1].Name)
+			assert.Equal(t, StateFailed, h.steps[len(h.steps)-1].State)
+			s := h.setups(t)
+			require.Len(t, s, 1, "the pending record stays")
+			assert.Empty(t, s[0].AppID)
+			assert.Equal(t, StagePendingCreate, h.stage(t))
+
+			h.api.createLost = nil
+			res, err = h.r.Create(context.Background(), cfgToken)
+			require.NoError(t, err)
+			assert.Equal(t, KindPendingCreate, res.Kind)
+			assert.Equal(t, 1, h.api.creates, "never a second create")
+			res, err = h.r.Link(context.Background(), cfgToken, "")
+			require.NoError(t, err)
+			assert.Equal(t, KindPendingCreate, res.Kind)
+			assert.Zero(t, h.api.updates)
+		})
+	}
+}
+
+func TestAppSetup_RefusedCreateDropsThePendingRecord(t *testing.T) {
+	h := newHarness(t)
+	h.api.createErr = &SlackError{Code: "invalid_manifest"}
+	res, err := h.r.Create(context.Background(), cfgToken)
+	require.NoError(t, err)
+	assert.Equal(t, KindRefused, res.Kind)
+	assert.Empty(t, h.setups(t))
+	h.api.createErr = nil
+	res, err = h.r.Create(context.Background(), cfgToken)
+	require.NoError(t, err)
+	assert.Equal(t, KindOK, res.Kind, "a refused create can be retried")
+}
+
+func TestAppSetup_StorageAfterCreate(t *testing.T) {
+	h := newHarness(t)
+	h.api.afterCreate = func() { _ = h.db.Close() }
+	res, err := h.r.Create(context.Background(), cfgToken)
+	require.NoError(t, err, "a result line, not a bare error")
+	assert.Equal(t, KindStorage, res.Kind)
+	assert.Equal(t, "A0NEW", res.AppID, "the created app's ids still reach the owner")
+	assert.Equal(t, "1111.2222", res.ClientID)
+	assert.Error(t, res.Err)
+	assert.Empty(t, res.Error, "the Go detail is not the owner's message")
+}
+
+func TestAppSetup_StorageAfterLinkWrite(t *testing.T) {
+	h := newHarness(t)
+	h.api.afterUpdate = func() { _ = h.db.Close() }
+	res, err := h.r.Create(context.Background(), cfgToken)
+	require.NoError(t, err)
+	assert.Equal(t, KindStorage, res.Kind, "not network: Slack was reached")
+	assert.Error(t, res.Err)
+}
+
+func TestAdopt_StorageAfterUpdate(t *testing.T) {
+	h := newHarness(t)
+	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
+	h.api.manifests["A0CORP"] = theirManifest()
+	h.api.afterUpdate = func() { _ = h.db.Close() }
+	res, err := h.r.Adopt(context.Background(), cfgToken, "")
+	require.NoError(t, err)
+	assert.Equal(t, KindStorage, res.Kind)
+	assert.Error(t, res.Err)
+}
+
+func TestAdopt_AppIDFlagChecks(t *testing.T) {
+	notOurs := Manifest{
+		"display_information": map[string]any{"name": "Expenses"},
+		"oauth_config":        map[string]any{"redirect_urls": []any{"https://expenses.example.com/oauth"}},
+	}
+	for name, tc := range map[string]struct {
+		rowAppID, flag, code string
+	}{
+		"bad format":           {"", "a0lower", CodeAppIDFormat},
+		"client id typed":      {"", "1111.2222", CodeAppIDFormat},
+		"differs from the row": {"A0CORP", "A0OTHER", CodeAppIDMismatch},
+		"not a watchtower app": {"", "A0EXPENSES", CodeAppIDMismatch},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			h.account(t, "T0ACME", "5555.6666", tc.rowAppID, "ok")
+			h.api.manifests["A0CORP"] = theirManifest()
+			h.api.manifests["A0OTHER"] = theirManifest()
+			h.api.manifests["A0EXPENSES"] = notOurs
+			res, err := h.r.Adopt(context.Background(), cfgToken, tc.flag)
+			require.NoError(t, err)
+			assert.Equal(t, KindNeedAppID, res.Kind)
+			assert.Equal(t, tc.code, res.Code)
+			assert.NotEmpty(t, res.Error)
+			assert.Zero(t, h.api.updates, "nothing written")
+			assert.Empty(t, h.setups(t))
+		})
+	}
+	h := newHarness(t)
+	h.account(t, "T0ACME", "5555.6666", "A0CORP", "ok")
+	h.api.manifests["A0CORP"] = theirManifest()
+	res, err := h.r.Adopt(context.Background(), cfgToken, "A0CORP")
+	require.NoError(t, err)
+	assert.Equal(t, KindOK, res.Kind, "the row's own App ID repeated is fine")
 }

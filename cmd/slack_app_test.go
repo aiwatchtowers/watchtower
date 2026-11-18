@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/auth"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/slackapp"
@@ -31,6 +32,7 @@ const (
 // create answer carries a client secret, signing secret and verification token.
 type fakeSlackAppServer struct {
 	mu       sync.Mutex
+	garbled  bool // the create answer is unreadable (made the app, answer lost)
 	manifest string
 	calls    []string
 }
@@ -52,6 +54,10 @@ func (f *fakeSlackAppServer) serve(t *testing.T) {
 			_, _ = w.Write([]byte(`{"ok":true,"team_id":"T0ACME","team":"Acme","expires_in":43200}`))
 		case "apps.manifest.create":
 			f.manifest = r.PostForm.Get("manifest")
+			if f.garbled {
+				_, _ = w.Write([]byte(`{"ok":true,"app_id":"A0NEW","credentials":{"client_secret":"` + slackAppTestSecret))
+				return
+			}
 			_, _ = fmt.Fprintf(w, `{"ok":true,"app_id":"A0NEW","credentials":{"client_id":"1111.2222","client_secret":%q,"verification_token":"vt-%s","signing_secret":"ss-%s"},"oauth_authorize_url":"https://slack.com/oauth/v2/authorize?client_id=1111.2222","team_id":"T0ACME","team_domain":"acme"}`,
 				slackAppTestSecret, slackAppTestSecret, slackAppTestSecret)
 		case "apps.manifest.export":
@@ -243,4 +249,35 @@ func TestAppSetup_BadTokenCLI(t *testing.T) {
 	err := runSlackAppCreate(h, nil)
 	require.Error(t, err, "without --json a failed setup exits non-zero")
 	assert.Contains(t, err.Error(), "bad_token")
+}
+
+func TestAppSetup_LostCreateAnswerCLI(t *testing.T) {
+	setupSlackAppWorkspace(t)
+	fake := &fakeSlackAppServer{garbled: true}
+	fake.serve(t)
+	for range 2 {
+		c, out, errOut := slackAppTestCmd(slackAppTestToken+"\n", map[string]string{"json": "true"})
+		require.NoError(t, runSlackAppCreate(c, nil))
+		lines := jsonLines(t, out.String())
+		assert.Equal(t, "pending_create", lines[len(lines)-1]["result"])
+		assert.NotContains(t, out.String()+errOut.String(), slackAppTestSecret)
+	}
+	creates := 0
+	for _, m := range fake.calls {
+		if m == "apps.manifest.create" {
+			creates++
+		}
+	}
+	assert.Equal(t, 1, creates, "the second run never creates")
+
+	sc, sout, _ := slackAppTestCmd("", map[string]string{"json": "true"})
+	require.NoError(t, runSlackAppStatus(sc, nil))
+	assert.Contains(t, sout.String(), `"stage":"pending_create"`)
+}
+
+func TestAppSetup_RetiredIDWired(t *testing.T) {
+	old := auth.RetiredSharedClientID
+	auth.RetiredSharedClientID = "9999.0000"
+	t.Cleanup(func() { auth.RetiredSharedClientID = old })
+	assert.Equal(t, "9999.0000", slackAppRetiredClientID())
 }

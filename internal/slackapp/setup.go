@@ -5,6 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
+	"regexp"
+	"strings"
 
 	"watchtower/internal/db"
 	"watchtower/internal/fsutil"
@@ -12,22 +16,37 @@ import (
 
 // Result kinds of a setup run (the final JSON line's "result").
 const (
-	KindOK              = "ok"
-	KindExists          = "exists"           // the team already has a setup record: nothing created
-	KindExistingApp     = "existing_app"     // the team has a live account on a company app: adopt it instead (ask #1425)
+	KindOK          = "ok"
+	KindExists      = "exists"       // the team already has a setup record: nothing created
+	KindExistingApp = "existing_app" // the team has a live account on a company app: adopt it instead (ask #1425)
+	// KindPendingCreate: an apps.manifest.create was sent but its answer was
+	// lost (timeout, cut connection), so Slack may have made the app. Never
+	// a second create: the owner checks api.slack.com/apps for "Watchtower".
+	KindPendingCreate   = "pending_create"
 	KindNoApp           = "no_app"           // adopt: the team has no live account on a company app
 	KindNoRecord        = "no_record"        // link: the team has no setup record
 	KindWrongTeam       = "wrong_team"       // link: --team names another workspace than the token
-	KindNeedAppID       = "need_app_id"      // adopt: the App ID is unknown; pass --app-id (A19)
+	KindNeedAppID       = "need_app_id"      // adopt: the App ID is unknown or does not fit (Code says which; A19)
 	KindNotCollaborator = "not_collaborator" // the token's owner is not a collaborator on the app (Q11)
 	KindAppNotFound     = "app_not_found"
 	KindBadToken        = "bad_token"
 	KindNotAllowed      = "not_allowed" // the workspace does not let this user create apps
-	KindNetwork         = "network"
+	KindNetwork         = "network"     // Slack could not be reached; nothing was changed on Slack's side
 	KindRefused         = "refused"     // any other Slack refusal; Code holds Slack's code
 	KindLinkFailed      = "link_failed" // the app was created, the About link was not written
+	KindStorage         = "storage"     // Slack did its part, the local database write failed (Err holds why)
 	KindBusy            = "busy"        // another setup run holds the lock
 )
+
+// Codes of a KindNeedAppID result.
+const (
+	CodeAppIDMissing  = "app_id_missing"  // no App ID known and none given
+	CodeAppIDFormat   = "app_id_format"   // --app-id is not an App ID
+	CodeAppIDMismatch = "app_id_mismatch" // --app-id is not this workspace's connected Watchtower app
+)
+
+// Stage of a pending record (Status), besides the screens §3.4 stages.
+const StagePendingCreate = "pending_create"
 
 // Step names and states (one JSON line each).
 const (
@@ -50,13 +69,16 @@ type Step struct {
 // Result is how a run ended.
 type Result struct {
 	Kind        string
-	Code        string // Slack's error code (refused and the other Slack refusals)
-	Error       string // what went wrong (network)
+	Code        string // Slack's error code, or a CodeAppID* for KindNeedAppID
+	Error       string // what went wrong, for the owner (network, pending_create, need_app_id)
 	TeamID      string
 	TeamName    string
 	AppID       string
 	ClientID    string
 	LinkWritten bool
+	// Err is the Go error behind KindStorage; for stderr only, never in the
+	// JSON result line.
+	Err error
 }
 
 // Slack codes, mapped to result kinds. Provisional where the spike has no
@@ -72,8 +94,20 @@ var (
 	appNotFoundCodes     = map[string]bool{"invalid_app_id": true, "app_not_found": true}
 )
 
-// failure maps a Slack call's error onto a Result.
+// storageError marks a local database failure after Slack's part succeeded.
+type storageError struct{ err error }
+
+func (e storageError) Error() string { return e.err.Error() }
+func (e storageError) Unwrap() error { return e.err }
+
+func storage(err error) Result { return Result{Kind: KindStorage, Err: err} }
+
+// failure maps a step's error onto a Result.
 func failure(err error) Result {
+	var st storageError
+	if errors.As(err, &st) {
+		return storage(st.err)
+	}
 	var se *SlackError
 	if !errors.As(err, &se) {
 		return Result{Kind: KindNetwork, Error: err.Error()}
@@ -92,6 +126,18 @@ func failure(err error) Result {
 		r.Kind = KindRefused
 	}
 	return r
+}
+
+// notCreated reports that a failed apps.manifest.create certainly made no
+// app: Slack answered ok:false, or the connection was never made. Anything
+// else (a timeout, a cut connection, an unreadable answer) may have.
+func notCreated(err error) bool {
+	var se *SlackError
+	if errors.As(err, &se) {
+		return true
+	}
+	var op *net.OpError
+	return errors.As(err, &op) && op.Op == "dial"
 }
 
 // Runner runs the setup verbs. One run at a time per workspace: Create,
@@ -116,12 +162,13 @@ func (r *Runner) emit(name, state string) {
 	}
 }
 
-// step runs fn as step name, emitting running and then done or failed.
-func (r *Runner) step(name string, fn func() error) error {
+// step runs fn as step name, emitting running and then done (fn returned
+// nil) or failed.
+func (r *Runner) step(name string, fn func() *Result) *Result {
 	r.emit(name, StateRunning)
-	if err := fn(); err != nil {
+	if res := fn(); res != nil {
 		r.emit(name, StateFailed)
-		return err
+		return res
 	}
 	r.emit(name, StateDone)
 	return nil
@@ -142,16 +189,15 @@ func (r *Runner) locked(fn func() (Result, error)) (Result, error) {
 
 // team runs the check_token step.
 func (r *Runner) team(ctx context.Context, cfgToken string) (id, name string, fail *Result) {
-	err := r.step(StepCheckToken, func() error {
+	fail = r.step(StepCheckToken, func() *Result {
 		var err error
-		id, name, err = r.API.Team(ctx, cfgToken)
-		return err
+		if id, name, err = r.API.Team(ctx, cfgToken); err != nil {
+			f := failure(err)
+			return &f
+		}
+		return nil
 	})
-	if err != nil {
-		f := failure(err)
-		return "", "", &f
-	}
-	return id, name, nil
+	return id, name, fail
 }
 
 // record returns team's setup record; ok=false when there is none.
@@ -164,6 +210,20 @@ func (r *Runner) record(team string) (db.SlackAppSetup, bool, error) {
 		return db.SlackAppSetup{}, false, err
 	}
 	return s, true, nil
+}
+
+// pendingCreateHelp is the owner's way out of KindPendingCreate.
+const pendingCreateHelp = "Slack may have created the app without telling us: look for \"Watchtower\" on api.slack.com/apps before trying again"
+
+// existingRecord is the answer for a team that already has a record: a
+// pending one (no app id yet) is KindPendingCreate, any other KindExists.
+func existingRecord(s db.SlackAppSetup) Result {
+	if s.AppID == "" {
+		res := recordResult(KindPendingCreate, s)
+		res.Error = pendingCreateHelp
+		return res
+	}
+	return recordResult(KindExists, s)
 }
 
 func recordResult(kind string, s db.SlackAppSetup) Result {
@@ -187,19 +247,22 @@ func (r *Runner) companyAccount(team string) (db.SlackAccount, bool, error) {
 }
 
 // Create makes Watchtower's app in the token's workspace: check_token →
-// create_app → write_link. A team with a setup record answers KindExists and
-// a team with a live company-app account KindExistingApp; neither creates
-// anything. The record is inserted right after Slack's create answer, before
-// anything else can fail, so a run cut off later resumes instead of creating
-// a second app.
+// create_app → write_link. A team with a setup record answers KindExists
+// (KindPendingCreate while its create is unresolved) and a team with a live
+// company-app account KindExistingApp; neither creates anything. A pending
+// record (no ids) is inserted before apps.manifest.create and filled from
+// its answer, so neither a run cut off after the create nor a lost answer
+// ever leads to a second app.
 func (r *Runner) Create(ctx context.Context, cfgToken string) (Result, error) {
 	return r.locked(func() (Result, error) {
 		teamID, teamName, fail := r.team(ctx, cfgToken)
 		if fail != nil {
 			return *fail, nil
 		}
-		if s, ok, err := r.record(teamID); err != nil || ok {
-			return recordResult(KindExists, s), err
+		if s, ok, err := r.record(teamID); err != nil {
+			return Result{}, err
+		} else if ok {
+			return existingRecord(s), nil
 		}
 		acct, ok, err := r.companyAccount(teamID)
 		if err != nil {
@@ -212,39 +275,22 @@ func (r *Runner) Create(ctx context.Context, cfgToken string) (Result, error) {
 
 		link := Link{TeamID: teamID, TeamName: teamName}
 		var appID string
-		var res *Result
-		err = r.step(StepCreateApp, func() error {
-			m, err := BuildManifest(link)
-			if err != nil {
-				return err
-			}
-			appID, link.ClientID, err = r.API.Create(ctx, cfgToken, m)
-			if err != nil {
-				f := failure(err)
-				res = &f
-				return err
-			}
-			return r.DB.InsertSlackAppSetup(db.SlackAppSetup{TeamID: teamID, TeamName: teamName,
-				AppID: appID, ClientID: link.ClientID})
+		fail = r.step(StepCreateApp, func() *Result {
+			var res *Result
+			appID, link.ClientID, res = r.createApp(ctx, cfgToken, link)
+			return res
 		})
-		if res != nil {
-			res.TeamID, res.TeamName = teamID, teamName
-			return *res, nil
-		}
-		if err != nil {
-			if appID != "" {
-				return Result{}, fmt.Errorf("slack app %s was created but its setup record was not saved: %w", appID, err)
-			}
-			return Result{}, err
+		if fail != nil {
+			fail.TeamID, fail.TeamName = teamID, teamName
+			return *fail, nil
 		}
 
 		done := Result{Kind: KindOK, TeamID: teamID, TeamName: teamName, AppID: appID, ClientID: link.ClientID}
-		if err := r.step(StepWriteLink, func() error { return r.writeLink(ctx, cfgToken, appID, link) }); err != nil {
-			done.Kind = KindLinkFailed
-			if f := failure(err); f.Kind != KindNetwork {
-				done.Code = f.Code
+		if fail := r.step(StepWriteLink, func() *Result { return r.writeLink(ctx, cfgToken, appID, link) }); fail != nil {
+			if fail.Kind == KindStorage {
+				done.Kind, done.Err = KindStorage, fail.Err
 			} else {
-				done.Error = f.Error
+				done.Kind, done.Code, done.Error = KindLinkFailed, fail.Code, fail.Error
 			}
 			return done, nil
 		}
@@ -253,37 +299,121 @@ func (r *Runner) Create(ctx context.Context, cfgToken string) (Result, error) {
 	})
 }
 
+// createApp is the create_app step: pending record, apps.manifest.create,
+// then the record's ids.
+func (r *Runner) createApp(ctx context.Context, cfgToken string, link Link) (appID, clientID string, fail *Result) {
+	m, err := BuildManifest(link)
+	if err != nil {
+		f := storage(err)
+		return "", "", &f
+	}
+	if err := r.DB.InsertSlackAppSetup(db.SlackAppSetup{TeamID: link.TeamID, TeamName: link.TeamName}); err != nil {
+		f := storage(err)
+		return "", "", &f
+	}
+	appID, clientID, err = r.API.Create(ctx, cfgToken, m)
+	if err != nil {
+		if !notCreated(err) {
+			// Slack may have made the app: the pending record stays.
+			return "", "", &Result{Kind: KindPendingCreate, Error: pendingCreateHelp + " (" + err.Error() + ")"}
+		}
+		f := failure(err)
+		if dErr := r.DB.DeleteSlackAppSetup(link.TeamID); dErr != nil {
+			f = storage(dErr)
+		}
+		return "", "", &f
+	}
+	if err := r.DB.SetSlackAppSetupApp(link.TeamID, appID, clientID); err != nil {
+		f := storage(err)
+		f.AppID, f.ClientID = appID, clientID
+		return "", "", &f
+	}
+	return appID, clientID, nil
+}
+
 // writeLink re-reads appID's manifest, replaces only its About text with
 // link's connect block and writes it back (a human edit in between is kept),
 // then marks the record's link as written.
-func (r *Runner) writeLink(ctx context.Context, cfgToken, appID string, link Link) error {
+func (r *Runner) writeLink(ctx context.Context, cfgToken, appID string, link Link) *Result {
 	theirs, err := r.API.Export(ctx, cfgToken, appID)
+	if err == nil {
+		var m Manifest
+		if m, err = WithLongDescription(theirs, link); err != nil {
+			f := storage(err)
+			return &f
+		}
+		err = r.API.Update(ctx, cfgToken, appID, m)
+	}
 	if err != nil {
-		return err
+		f := failure(err)
+		return &f
 	}
-	m, err := WithLongDescription(theirs, link)
-	if err != nil {
-		return err
+	if err := r.DB.SetSlackAppSetupLinkWritten(link.TeamID); err != nil {
+		f := storage(err)
+		return &f
 	}
-	if err := r.API.Update(ctx, cfgToken, appID, m); err != nil {
-		return err
+	return nil
+}
+
+var appIDPattern = regexp.MustCompile(`^A[A-Z0-9]+$`)
+
+// looksLikeWatchtower reports whether an exported manifest is plausibly the
+// workspace's Watchtower app: it registers a loopback redirect URL (every
+// Watchtower app does) or is named Watchtower. Slack offers no way to tie
+// an App ID to a client id, so this is the proof an --app-id can get.
+func looksLikeWatchtower(m Manifest) bool {
+	info, _ := m["display_information"].(map[string]any)
+	if name, _ := info["name"].(string); strings.Contains(strings.ToLower(name), "watchtower") {
+		return true
 	}
-	return r.DB.SetSlackAppSetupLinkWritten(link.TeamID)
+	oauth, _ := m["oauth_config"].(map[string]any)
+	for _, raw := range toStrings(oauth["redirect_urls"]) {
+		if u, err := url.Parse(raw); err == nil && (u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost") {
+			return true
+		}
+	}
+	return false
+}
+
+// adoptAppID picks the App ID adopt works on (A19): the account row's, else
+// appIDFlag. fromFlag reports that the flag supplied it (then the exported
+// manifest must look like a Watchtower app); fail is a KindNeedAppID.
+func adoptAppID(acct db.SlackAccount, appIDFlag string) (appID string, fromFlag bool, fail *Result) {
+	need := func(code, msg string) (string, bool, *Result) {
+		return "", false, &Result{Kind: KindNeedAppID, Code: code, Error: msg}
+	}
+	if appIDFlag != "" && !appIDPattern.MatchString(appIDFlag) {
+		return need(CodeAppIDFormat, fmt.Sprintf("%q is not an App ID (it starts with A, e.g. A0123ABCD; Basic Information page)", appIDFlag))
+	}
+	if acct.AppID != "" {
+		if appIDFlag != "" && appIDFlag != acct.AppID {
+			return need(CodeAppIDMismatch, "App ID doesn't match this workspace's connected app ("+acct.AppID+")")
+		}
+		return acct.AppID, false, nil
+	}
+	if appIDFlag == "" {
+		return need(CodeAppIDMissing, "the App ID of the workspace's Watchtower app is not known: give it (Basic Information page)")
+	}
+	return appIDFlag, true, nil
 }
 
 // Adopt brings the team's existing company app (the one its live account is
 // on) in line with our manifest instead of creating a second app (ask
 // #1425): check_token → update_app (export, MergeManifest, update). The App
-// ID comes from the account row, else appIDFlag, else KindNeedAppID (A19).
-// The record (link written) is inserted only after the update succeeded.
+// ID comes from the account row, else appIDFlag (A19); a flag that is not an
+// App ID, differs from the row's, or names an app that does not look like a
+// Watchtower app is KindNeedAppID and nothing is written. The record (link
+// written) is inserted only after the update succeeded.
 func (r *Runner) Adopt(ctx context.Context, cfgToken, appIDFlag string) (Result, error) {
 	return r.locked(func() (Result, error) {
 		teamID, teamName, fail := r.team(ctx, cfgToken)
 		if fail != nil {
 			return *fail, nil
 		}
-		if s, ok, err := r.record(teamID); err != nil || ok {
-			return recordResult(KindExists, s), err
+		if s, ok, err := r.record(teamID); err != nil {
+			return Result{}, err
+		} else if ok {
+			return existingRecord(s), nil
 		}
 		acct, ok, err := r.companyAccount(teamID)
 		if err != nil {
@@ -295,40 +425,43 @@ func (r *Runner) Adopt(ctx context.Context, cfgToken, appIDFlag string) (Result,
 			return base, nil
 		}
 		base.ClientID = acct.ClientID
-		base.AppID = acct.AppID
-		if base.AppID == "" {
-			base.AppID = appIDFlag
-		}
-		if base.AppID == "" {
-			base.Kind = KindNeedAppID
+		appID, fromFlag, fail := adoptAppID(acct, appIDFlag)
+		if fail != nil {
+			base.Kind, base.Code, base.Error = fail.Kind, fail.Code, fail.Error
 			return base, nil
 		}
+		base.AppID = appID
 
 		link := Link{TeamID: teamID, TeamName: teamName, ClientID: acct.ClientID}
-		var res *Result
-		err = r.step(StepUpdateApp, func() error {
-			theirs, err := r.API.Export(ctx, cfgToken, base.AppID)
-			if err == nil {
-				var m Manifest
-				if m, err = MergeManifest(theirs, link, r.EnablePKCEOnAdopt); err != nil {
-					return err
-				}
-				err = r.API.Update(ctx, cfgToken, base.AppID, m)
-			}
+		fail = r.step(StepUpdateApp, func() *Result {
+			theirs, err := r.API.Export(ctx, cfgToken, appID)
 			if err != nil {
 				f := failure(err)
-				res = &f
-				return err
+				return &f
 			}
-			return r.DB.InsertSlackAppSetup(db.SlackAppSetup{TeamID: teamID, TeamName: teamName,
-				AppID: base.AppID, ClientID: acct.ClientID, LinkWritten: true})
+			if fromFlag && !looksLikeWatchtower(theirs) {
+				return &Result{Kind: KindNeedAppID, Code: CodeAppIDMismatch,
+					Error: "App ID doesn't match this workspace's connected app: " + appID + " is not a Watchtower app"}
+			}
+			m, err := MergeManifest(theirs, link, r.EnablePKCEOnAdopt)
+			if err != nil {
+				f := storage(err)
+				return &f
+			}
+			if err := r.API.Update(ctx, cfgToken, appID, m); err != nil {
+				f := failure(err)
+				return &f
+			}
+			if err := r.DB.InsertSlackAppSetup(db.SlackAppSetup{TeamID: teamID, TeamName: teamName,
+				AppID: appID, ClientID: acct.ClientID, LinkWritten: true}); err != nil {
+				f := storage(err)
+				return &f
+			}
+			return nil
 		})
-		if res != nil {
-			base.Kind, base.Code, base.Error = res.Kind, res.Code, res.Error
+		if fail != nil {
+			base.Kind, base.Code, base.Error, base.Err = fail.Kind, fail.Code, fail.Error, fail.Err
 			return base, nil
-		}
-		if err != nil {
-			return Result{}, err
 		}
 		base.Kind = KindOK
 		base.LinkWritten = true
@@ -354,11 +487,13 @@ func (r *Runner) Link(ctx context.Context, cfgToken, team string) (Result, error
 		if !ok {
 			return Result{Kind: KindNoRecord, TeamID: teamID, TeamName: teamName}, nil
 		}
+		if s.AppID == "" {
+			return existingRecord(s), nil
+		}
 		link := Link{TeamID: s.TeamID, TeamName: s.TeamName, ClientID: s.ClientID}
-		if err := r.step(StepWriteLink, func() error { return r.writeLink(ctx, cfgToken, s.AppID, link) }); err != nil {
-			f := failure(err)
-			res := recordResult(f.Kind, s)
-			res.Code, res.Error = f.Code, f.Error
+		if fail := r.step(StepWriteLink, func() *Result { return r.writeLink(ctx, cfgToken, s.AppID, link) }); fail != nil {
+			res := recordResult(fail.Kind, s)
+			res.Code, res.Error, res.Err = fail.Code, fail.Error, fail.Err
 			return res, nil
 		}
 		s.LinkWritten = true
@@ -401,12 +536,14 @@ func Status(d *db.DB) ([]SetupStatus, error) {
 		st := SetupStatus{TeamID: s.TeamID, TeamName: s.TeamName, AppID: s.AppID, ClientID: s.ClientID,
 			LinkWritten: s.LinkWritten, InstallRequested: s.InstallRequestedAt != ""}
 		for _, a := range accounts {
-			if a.Status == "ok" && a.ClientID == s.ClientID {
+			if s.ClientID != "" && a.Status == "ok" && a.ClientID == s.ClientID {
 				st.Connected = true
 				break
 			}
 		}
 		switch {
+		case s.AppID == "":
+			st.Stage = StagePendingCreate
 		case !st.Connected && st.InstallRequested:
 			st.Stage = StageApproval
 		case !st.Connected:
