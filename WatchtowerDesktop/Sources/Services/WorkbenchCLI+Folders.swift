@@ -35,7 +35,8 @@ enum WorkbenchRefusalCode: String, CaseIterable, Equatable, Sendable {
     }
 
     /// A refusal's sentence for the owner: Go's `"<code>: <sentence>"` text
-    /// without its code; the code itself when there is no text.
+    /// without its code; the code itself when there is no text, and
+    /// `noReason` when there is neither.
     static func sentence(_ error: String, code: String) -> String {
         if error.isEmpty { return code.isEmpty ? WorkbenchFolderPresentation.noReason : code }
         guard !code.isEmpty, error.hasPrefix(code + ":") else { return error }

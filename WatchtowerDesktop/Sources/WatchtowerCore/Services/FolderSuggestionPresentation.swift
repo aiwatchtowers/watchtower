@@ -10,8 +10,12 @@ package enum FolderSuggestionPresentation {
     package enum Phase: Equatable, Sendable {
         case ready
         case busy
-        /// The failure line (`failed(name:reason:)`), shown on the card.
+        /// The failure line (`failed(name:reason:)`), shown on the card;
+        /// the agent has it as its answer.
         case failed(String)
+        /// The failure line whose answer could not be saved: `Retry`
+        /// sends it again; no `OK` until it is saved.
+        case unsent(String)
     }
 
     /// What one card shows.
@@ -31,6 +35,8 @@ package enum FolderSuggestionPresentation {
     package static let never = "Never for This Folder"
     package static let busy = "Putting on the bench…"
     package static let ok = "OK"
+    /// Sends a failure answer that was not saved, again.
+    package static let retry = "Retry"
     /// The TCC warning's cancel on a card (Put on Bench was the only folder).
     package static let cancel = "Cancel"
 
@@ -72,9 +78,10 @@ package enum FolderSuggestionPresentation {
     ) -> Card {
         let name = folderName(suggestion.path)
         let subtitle: String
-        if case let .failed(line) = phase {
+        switch phase {
+        case let .failed(line), let .unsent(line):
             subtitle = line
-        } else {
+        case .ready, .busy:
             subtitle = Self.subtitle(sessionTitle: sessionTitle, path: suggestion.path, touches: suggestion.touches, home: home)
         }
         return Card(title: title(name: name), subtitle: subtitle, phase: phase, otherBench: suggestion.otherBench?.name)

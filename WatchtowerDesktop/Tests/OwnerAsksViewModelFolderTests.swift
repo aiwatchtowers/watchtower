@@ -35,7 +35,7 @@ final class OwnerAsksViewModelFolderTests: XCTestCase {
 
     // MARK: - Fixtures
 
-    private func makeVM(_ runner: BenchFoldersGitRunner) -> WorkbenchesViewModel {
+    private func makeVM(_ runner: any CLIRunnerProtocol) -> WorkbenchesViewModel {
         let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults)
         vm.folderExists = { _ in true }
         vm.asks.hasHookState = { _ in true }
@@ -199,5 +199,138 @@ final class OwnerAsksViewModelFolderTests: XCTestCase {
         XCTAssertEqual(vm.asks.answerErrors[ask.id], "--folder must be absolute")
         let row = try await stored(ask.id)
         XCTAssertEqual(row.status, "open", "no decline, no answer: the card stays")
+    }
+
+    // MARK: - One action per card
+
+    /// Never is still declining when Put on Bench is clicked: the card was
+    /// claimed before Never's first await, so nothing is added and only
+    /// the decline answers.
+    func testNeverThenPutOnBenchRunsOnlyNever() async throws {
+        let inner = runner()
+        inner.answer("folder decline", Self.ack(ok: true))
+        let gated = GatedRunner(inner: inner, gated: ["workbench", "folder", "decline"])
+        let vm = makeVM(gated)
+        let ask = try await folderAsk(vm)
+
+        let never = Task { await vm.asks.never(ask) }
+        await inner.until { $0.contains { $0.starts(with: ["workbench", "folder", "decline"]) } }
+        XCTAssertTrue(vm.asks.isFolderCardWorking(ask.id), "the buttons wait")
+        await vm.asks.putSuggestedFolderOnBench(ask)
+        await vm.asks.notNow(ask)
+        gated.release()
+        await never.value
+
+        XCTAssertFalse(inner.invocations.contains { $0.starts(with: ["workbench", "folder", "add"]) }, "never added and declined")
+        XCTAssertFalse(inner.invocations.contains { $0.starts(with: ["workbench", "folder", "quiet"]) })
+        let row = try await stored(ask.id)
+        XCTAssertEqual(row.note, "The owner does not want billing on this bench.")
+        XCTAssertFalse(vm.asks.isFolderCardWorking(ask.id))
+    }
+
+    /// A failed add whose answer could not be saved keeps the card open with
+    /// an answer-only Retry; OK shows only once the answer is saved.
+    func testUnsavedFailureAnswerOffersRetry() async throws {
+        let runner = runner()
+        runner.answer("folder add", .success(Data(
+            #"{"ok":false,"error_code":"not_found","error":"not_found: the folder was moved or deleted."}"#.utf8)))
+        let vm = makeVM(runner)
+        let ask = try await folderAsk(vm)
+        try await pool.write { db in
+            try db.execute(sql: """
+                CREATE TEMP TRIGGER refuse_answer BEFORE UPDATE ON owner_asks
+                BEGIN SELECT RAISE(ABORT, 'disk full'); END
+                """)
+        }
+
+        await vm.asks.putSuggestedFolderOnBench(ask)
+
+        let line = "Couldn’t put billing on the bench: the folder was moved or deleted."
+        XCTAssertEqual(vm.asks.folderPhases[ask.id], .unsent(line))
+        XCTAssertEqual(FolderSuggestionPresentation.card(try XCTUnwrap(ask.folderSuggestion), sessionTitle: nil,
+                                                         phase: .unsent(line)).subtitle, line)
+        XCTAssertEqual(FolderSuggestionPresentation.retry, "Retry")
+        XCTAssertTrue(vm.asks.heldFolderCards(projectID: bench).isEmpty, "no OK card while the agent has nothing")
+        let unsaved = try await stored(ask.id)
+        XCTAssertEqual(unsaved.status, "open")
+        let adds = runner.invocations.filter { $0.starts(with: ["workbench", "folder", "add"]) }.count
+
+        try await pool.write { try $0.execute(sql: "DROP TRIGGER refuse_answer") }
+        await vm.asks.retryFolderAnswer(ask)
+
+        XCTAssertEqual(runner.invocations.filter { $0.starts(with: ["workbench", "folder", "add"]) }.count, adds,
+                       "Retry sends the answer only")
+        XCTAssertEqual(vm.asks.folderPhases[ask.id], .failed(line))
+        let saved = try await stored(ask.id)
+        XCTAssertEqual(saved.status, "answered")
+        XCTAssertEqual(saved.note, line)
+    }
+
+    /// A folder card is a keyboard stop like every row (A / ⌃⌘A / J/K /
+    /// Return): it moves and opens; no digit answers it.
+    func testAFolderCardIsAKeyboardStop() async throws {
+        let vm = makeVM(runner())
+        let ask = try await folderAsk(vm)
+        final class Box { var opened = 0; var moves: [Bool] = [] }
+        let box = Box()
+        let keys = OwnerAskCardKeys(vm: vm, ask: ask) {
+            true
+        } open: {
+            box.opened += 1
+        } move: { forward in
+            box.moves.append(forward)
+            return true
+        } textHasKeyboard: {
+            false
+        }
+
+        XCTAssertFalse(keys.press(OwnerAskKeyMap.Press(characters: "1", keyCode: nil, shift: false, otherModifiers: false,
+                                                       isRepeat: false)), "no Quick row: a digit answers nothing")
+        XCTAssertTrue(keys.press(OwnerAskKeyMap.Press(characters: "j", keyCode: nil, shift: false, otherModifiers: false,
+                                                      isRepeat: false)))
+        XCTAssertTrue(keys.press(OwnerAskKeyMap.Press(key: .returnKey)))
+        XCTAssertEqual(box.moves, [true])
+        XCTAssertEqual(box.opened, 1)
+        let row = try await stored(ask.id)
+        XCTAssertEqual(row.status, "open")
+    }
+}
+
+/// `BenchFoldersGitRunner` whose `gated` verb waits for `release()` after
+/// it was recorded: an action held mid-call, no clock.
+private final class GatedRunner: CLIRunnerProtocol, @unchecked Sendable {
+    private let inner: BenchFoldersGitRunner
+    private let gated: [String]
+    private let lock = NSLock()
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var released = false
+
+    init(inner: BenchFoldersGitRunner, gated: [String]) {
+        self.inner = inner
+        self.gated = gated
+    }
+
+    func run(args: [String]) async throws -> Data {
+        let data = try await inner.run(args: args)
+        if args.starts(with: gated) {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let go = lock.withLock { () -> Bool in
+                    if released { return true }
+                    waiter = continuation
+                    return false
+                }
+                if go { continuation.resume() }
+            }
+        }
+        return data
+    }
+
+    func release() {
+        let waiting = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            released = true
+            defer { waiter = nil }
+            return waiter
+        }
+        waiting?.resume()
     }
 }

@@ -66,7 +66,22 @@ extension WorkbenchesViewModel {
         return nil
     }
 
-    /// Locate… after the folder panel: `workbench folder locate` re-points
+    /// Locate… after the folder panel: Open Folder…'s TCC-sensitive location
+    /// asks first, unchanged; any other place is located now.
+    @discardableResult
+    func locate(
+        _ folder: WorkbenchFolder,
+        to url: URL,
+        home: String = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath().path
+    ) async -> PutOnBenchStep {
+        if let location = WorkbenchFolderPolicy.tccSensitiveLocation(path: url.path, home: home) {
+            return .confirmLocation(location)
+        }
+        await locateFolder(folder, to: url)
+        return .done
+    }
+
+    /// `workbench folder locate` re-points
     /// the missing folder (Go validates the path as an add) and reinstalls
     /// there; then FILES again. A refusal or failure is a line under the
     /// FILES header; a failed reinstall leaves the install icon and Retry.

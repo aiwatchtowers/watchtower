@@ -182,6 +182,41 @@ final class WorkbenchFolderRemoveTests: XCTestCase {
         XCTAssertEqual(vm.putOnBenchErrors[bench], "Couldn’t locate hub: /tmp/acme-app/hub is inside acme-app.")
     }
 
+    /// A bench whose only folder moved still shows its root row (Folder not
+    /// found + Locate…); Remove is off for the last folder. A healthy single
+    /// folder keeps today's tree.
+    func testOnlyFolderMissingShowsItsRootWithLocate() async throws {
+        let vm = await makeVM(runner())
+        let fetched = try await pool.read { [bench] in try WorkbenchQueries.fetch($0, id: bench) }
+        let project = try XCTUnwrap(fetched)
+        XCTAssertFalse(WorkbenchesViewModel.showsRootRows(vm.filesRoots(project: project, active: project.mainCodeRoot)))
+
+        vm.folderExists = { _ in false }
+        await vm.reload()
+        let roots = vm.filesRoots(project: project, active: project.mainCodeRoot)
+        XCTAssertEqual(roots.map(\.state), [.notFound])
+        XCTAssertTrue(WorkbenchesViewModel.showsRootRows(roots), "the row carries Locate…")
+        XCTAssertFalse(vm.canRemoveFolder(projectID: bench), "the only folder cannot leave the bench")
+
+        _ = try addFolder("/tmp/acme-hub", name: "hub", position: 1)
+        await vm.reload()
+        XCTAssertTrue(vm.canRemoveFolder(projectID: bench))
+    }
+
+    /// Locate… asks Open Folder…'s TCC question first for a sensitive place.
+    func testLocateIntoASensitiveLocationAsksFirst() async throws {
+        let hub = try addFolder("/tmp/acme-hub", name: "hub", position: 1)
+        let runner = runner()
+        let vm = await makeVM(runner)
+        let target = URL(fileURLWithPath: "/Users/owner/Documents/hub")
+
+        let step = await vm.locate(try folder(vm, hub), to: target, home: "/Users/owner")
+
+        let location = try XCTUnwrap(WorkbenchFolderPolicy.tccSensitiveLocation(path: target.path, home: "/Users/owner"))
+        XCTAssertEqual(step, .confirmLocation(location))
+        XCTAssertFalse(runner.invocations.contains { $0.starts(with: ["workbench", "folder", "locate"]) }, "nothing before the owner confirms")
+    }
+
     // MARK: - Repair (parked from Task 12)
 
     /// A folder set up before the outside-bench hook is offered Repair; an

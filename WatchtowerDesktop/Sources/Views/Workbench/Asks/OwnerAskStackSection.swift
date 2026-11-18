@@ -43,8 +43,10 @@ struct OwnerAskStackSection: View {
                         VStack(alignment: .leading, spacing: 2) {
                             ForEach(stack.asks) { ask in
                                 if let suggestion = ask.folderSuggestion {
-                                    // The agent's folder suggestion answers on its own card (#2003, §6.7).
+                                    // The agent's folder suggestion answers on its own card (#2003, §6.7);
+                                    // it is a keyboard stop like every other row (A, ⌃⌘A, J/K, Return).
                                     FolderSuggestionAskCard(vm: vm, ask: ask, suggestion: suggestion)
+                                        .modifier(OwnerAskCardFocus(focus: $focusedAsk, value: ask.id, keys: cardKeys(ask, stack: stack)))
                                         .padding(.horizontal, Spacing.small)
                                 } else {
                                     OwnerAskStackRow(
