@@ -65,6 +65,7 @@ This plan **does not rebuild them**; it builds on plan B's contracts as that pla
 |---|---|---|
 | `company/<slug>.json` | `company confirm` (link, code), `company check` (first and later checks), `company publish`, `company confirm --replace`, the bridge (Task 28), `google add --client-id` (personal) | per-file flock (`<slug>.json.lock`); last confirmed write wins; a check over a stored vendor's changed client is a Replace and needs `--replace`; MDM never writes — the forced overlay wins at read |
 | `company/draft.json` (+ `.bad-*`) | only `company draft save|discard`, `company check` (the checked hash), `company publish` (delete) | `draft.json.lock`; one wizard run at a time (`AppState.companySetup`) |
+| `company/.forced-<slug>.seen` (0600, the last forced MDM bundle seen) | only `Store.LoadAll` when it sees a forced bundle at launch (Task 5), after marking the changed vendors' accounts Re-login in the same pass; written last (temp+rename) so a crash before it repeats the marking idempotently | one writer; the forced bundle itself always wins over the stored file at read |
 | Slack setup record | plan B `slack app create|adopt|link` only | the record owns the Slack app; the draft keeps only `slack.app_id` |
 | `*_accounts.company_slug` | account add from a bundle (`--company`), `company check`, `company confirm --replace` (marks), bridge | one write transaction each; Swift never writes; the bridge runs before the daemon starts |
 | `jira_accounts.auth_kind`, API token file | `jira add --api-token-stdin` and its re-auth only | sync reads, never writes |
@@ -488,15 +489,15 @@ func AboutText(company, link, code string) string
 
 **Depends on:** Task 6, Task 7a
 
-**Files:** Create `internal/atlassianpdr/pdr.go`, `pdr_test.go`, `erase.go`, `erase_test.go`; Create `internal/db/atlassian_people.go` (+ test); Modify `internal/memory/` (new `forget.go`, `forget_test.go`); Modify `internal/daemon/daemon.go` (phase after `phaseExternalSync`, line ~683) + `internal/daemon/atlassian_pdr_test.go`.
+**Files:** Create `internal/atlassianpdr/pdr.go`, `pdr_test.go`, `erase.go`, `erase_test.go`; Create `internal/db/atlassian_people.go` (+ test); Modify `internal/daemon/daemon.go` (phase after `phaseExternalSync`, line ~683) + `internal/daemon/atlassian_pdr_test.go`.
 
 **Interfaces:**
 ```go
 const ReportURL = "https://api.atlassian.com/app/report-accounts/"; const ChunkSize = 90; const Every = 7 * 24 * time.Hour
 type Status string // "closed", "updated", "ok"
 type Reporter interface{ Report(ctx context.Context, ids []string, updatedAt map[string]time.Time) (map[string]Status, error) }
-func Run(ctx context.Context, d *db.DB, v *memory.Vault, accountID int64, r Reporter, now time.Time) (Result, error)
-func EraseClosed(ctx context.Context, d *db.DB, v *memory.Vault, accountID int64, ids []string) error // one write tx per account
+func Run(ctx context.Context, d *db.DB, accountID int64, r Reporter, now time.Time) (Result, error)
+func EraseClosed(ctx context.Context, d *db.DB, accountID int64, ids []string) error // one write tx per account
 // internal/db
 func (db *DB) AtlassianPersonIDs(accountID int64) ([]string, error)       // jira_user_map, issue/comment/changelog authors, ext_users
 func (db *DB) EraseAtlassianPeople(tx *sql.Tx, accountID int64, ids []string) error
@@ -508,7 +509,7 @@ func (db *DB) EraseAtlassianPeople(tx *sql.Tx, accountID int64, ids []string) er
 - [ ] **Step 2:** `go test ./internal/atlassianpdr ./internal/db ./internal/daemon -run 'PDR|AtlassianPe'` → FAIL; implement; → PASS; `make lint-diff`.
 - [ ] **Step 3: Commit** `feat(jira): Atlassian Personal Data Reporting erases closed accounts (#1887)`.
 
-**Guards:** `go test ./internal/memory`, `go test ./internal/kb -run Dirty`, `go test ./internal/db -run 'Purge02|TestAllTablesExist'`, `go test ./internal/daemon -run 'Phase|Cycle'`.
+**Guards:** `go test ./internal/kb -run Dirty`, `go test ./internal/db -run 'Purge02|TestAllTablesExist'`, `go test ./internal/daemon -run 'Phase|Cycle'`.
 
 ### Task 17: Atlassian API token (T13, D20, D22, D23)
 
@@ -746,12 +747,19 @@ What moved where (spec §5): clients → the bundle (Task 28); `PURGE_DEFAULT` �
 **Files:** in the website's own repository (not this one): a page rendering its table from this repo's `docs/mdm/keys.json` at build, with type, default, effect per key and a sample `.mobileconfig`. In this repo: set `policy.ITGuideURL` and `docs/mdm/site.json` to the published URL (one commit).
 
 - [ ] **Step 1:** build the page; publish; record the URL.
-- [ ] **Step 2:** set the constant; `go test ./internal/policy ./cmd -run 'PolicyKeys|PolicyShow'`, `make test-swift FILTER=ManagedPolicyHelpTests` → PASS.
+- [ ] **Step 2:** set the constant and remove the `t.Skip` from `TestITGuideURL_NotPlaceholder`; `go test ./internal/policy ./cmd -run 'PolicyKeys|PolicyShow|ITGuideURL'` → PASS with the test running (not `SKIP`), `make test-swift FILTER=ManagedPolicyHelpTests` → PASS.
 - [ ] **Step 3: Commit** `feat(policy): IT guide URL (#1887)`.
 
 Owner actions outside code (not tasks): turn Sharing off on the shared Atlassian app 30 days after ship (D15); rotate nothing else.
 
 ---
+
+## Umbrella merge checklist (before `feature/1887-company-setup` → main)
+
+- [ ] `go test ./internal/policy -run ITGuideURL -v` shows `--- PASS: TestITGuideURL_NotPlaceholder` (not `SKIP`): Task 31 has landed and the URL is the published page.
+- [ ] `docs/mdm/keys.json` golden passes and the website renders the same key list.
+- [ ] Full gate: `make test`, `make test-swift`, `make lint-all`.
+- [ ] Gate G2 satisfied (plan B tasks in main, main merged into the umbrella).
 
 ## Lanes
 
