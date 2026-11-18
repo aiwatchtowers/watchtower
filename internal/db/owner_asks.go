@@ -299,6 +299,14 @@ func AskInSpecLoopSQL(alias string) string {
 	return "EXISTS (SELECT 1 FROM spec_reviews r WHERE r.ask_id = " + alias + ".id AND r.loop = 'author')"
 }
 
+// SpecLoopRoundSQL is a scalar subquery: the highest spec review round among
+// the open asks hidden in the author loop of the session whose id sessionCol
+// names (0 = none). Its aliases (sr, a2) cannot clash with a caller's "a".
+func SpecLoopRoundSQL(sessionCol string) string {
+	return "(SELECT COALESCE(MAX(sr.round), 0) FROM spec_reviews sr JOIN owner_asks a2 ON a2.id = sr.ask_id" +
+		" WHERE a2.session_id = " + sessionCol + " AND a2.status = 'open' AND sr.loop = 'author')"
+}
+
 // ListOwnerAsks returns workbench workbenchID's asks matching f, answered first,
 // then open, then the rest, newest first within each; DocSnapshot is left empty.
 func (db *DB) ListOwnerAsks(workbenchID int64, f OwnerAskFilter) ([]OwnerAsk, error) {

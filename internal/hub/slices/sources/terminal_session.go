@@ -314,8 +314,7 @@ SELECT s.id, s.project_id, s.kind, s.title, s.target_id, s.created_at, s.last_ac
         WHERE a.session_id = s.id AND a.status = 'open' AND `+askVisible+` AND a.kind = 'question'),
        (SELECT COUNT(*) FROM owner_asks a
         WHERE a.session_id = s.id AND a.status = 'open' AND `+askVisible+` AND a.kind = 'review'),
-       (SELECT COALESCE(MAX(sr.round), 0) FROM spec_reviews sr JOIN owner_asks a ON a.id = sr.ask_id
-        WHERE a.session_id = s.id AND a.status = 'open' AND sr.loop = 'author')
+       `+db.SpecLoopRoundSQL("s.id")+`
 FROM terminal_sessions s
 WHERE s.project_id IS NOT NULL AND s.kind IN `+agentkind.SQLKinds()+` AND s.`+db.NotDeletingSQL+`
 ORDER BY s.last_active_at DESC, s.id DESC`, nil, func(r *sql.Rows) error {

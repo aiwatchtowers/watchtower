@@ -251,8 +251,7 @@ SELECT t.kind, t.agent_state, t.agent_state_at, t.finished_at, t.agent_failed_at
        (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = t.id AND a.status = 'open' AND NOT `+db.AskInSpecLoopSQL("a")+`),
        (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = t.id AND a.status = 'open' AND NOT `+db.AskInSpecLoopSQL("a")+` AND a.kind = 'question'),
        (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = t.id AND a.status = 'open' AND NOT `+db.AskInSpecLoopSQL("a")+` AND a.kind = 'review'),
-       (SELECT COALESCE(MAX(sr.round), 0) FROM spec_reviews sr JOIN owner_asks a ON a.id = sr.ask_id
-        WHERE a.session_id = t.id AND a.status = 'open' AND sr.loop = 'author')
+       `+db.SpecLoopRoundSQL("t.id")+`
 FROM terminal_sessions t WHERE t.id = ? AND t.`+db.NotDeletingSQL, sessionID).Scan(
 		&r.Kind, &r.AgentState, &r.AgentStateAt, &r.FinishedAt, &r.AgentFailedAt,
 		&r.AgentBackground, &r.AgentBackgroundAt, &r.AgentBackgroundShells, &r.ChatQuestionAt, &r.AgentCwdAt,
