@@ -536,7 +536,8 @@ private struct MultiFolderMergeDialog: View {
 
     private static let offer = BenchMergeOffer(
         fromID: 9, fromName: MultiFolderMockCopy.otherBench, intoID: 1, intoName: MultiFolderMockCopy.bench,
-        targets: 12, folders: ["billing"], path: "/Users/owner/code/billing", askID: nil
+        targets: 12, folders: ["billing"], path: "/Users/owner/code/billing", askID: nil,
+        dropped: ["session instructions", "worktree setup"]
     )
     private static let refusal = BenchMergeRefusal(fromName: MultiFolderMockCopy.otherBench, running: 2)
 

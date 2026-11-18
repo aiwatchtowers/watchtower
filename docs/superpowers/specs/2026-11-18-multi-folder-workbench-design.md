@@ -364,7 +364,11 @@ Putting on the bench a folder that belongs to another bench B (from Put on the B
 suggestion card) offers to **merge B into this bench A** instead of refusing.
 
 Confirmation: title `Merge “<B>” into “<A>”?`, text `<B>'s board (<n> targets; `1 target` for one), asks and
-sessions move to <A>, and <B> leaves the workbench list. Folders that move: <list>.`, buttons
+sessions move to <A>, and <B> leaves the workbench list. Folders that move: <list>.`, plus, only when
+B has a non-empty value in any of `session_instructions`, `target_procedure`, `worktree_setup`, one more
+line `“<B>”’s own <list> will be dropped; “<A>”’s stay.` (ask #1598: B's owner-written settings go with
+its row; <list> joins the present ones from `session instructions`, `target procedure`, `worktree setup`
+with `, ` and ` and `), buttons
 `Cancel` · `Merge` (primary). Refused while B has a live session (title `Can’t merge “<B>” yet`,
 text `<n> sessions are running in <B>. Finish them first.` / singular, `OK`) — a running agent's
 MCP server and hooks carry B's id. A merge into itself cannot happen (the folder is already

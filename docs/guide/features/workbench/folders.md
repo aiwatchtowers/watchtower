@@ -76,7 +76,7 @@ A Codex agent is not reminded, so it suggests a folder only when it sees the nee
 
 ### Merge two benches
 
-If the folder you add already belongs to another bench, Watchtower offers **Merge “<B>” into “<A>”?** instead. **Merge** moves that bench's board, asks, sessions and folders into this one, and it leaves the workbench list. Its board columns and its **Never for This Folder** choices are dropped; each target lands in this board's first column for its status. On a suggestion card the same choice reads **Merge Benches…**; Watchtower checks first which bench the folder is on now. While a session of the other bench runs, the merge waits with **Can’t merge “<B>” yet**.
+If the folder you add already belongs to another bench, Watchtower offers **Merge “<B>” into “<A>”?** instead. **Merge** moves that bench's board, asks, sessions and folders into this one, and it leaves the workbench list. Its board columns and its **Never for This Folder** choices are dropped; each target lands in this board's first column for its status. If the other bench has its own session instructions, target procedure or worktree setup, the confirmation says they will be dropped and this bench's stay. On a suggestion card the same choice reads **Merge Benches…**; Watchtower checks first which bench the folder is on now. While a session of the other bench runs, the merge waits with **Can’t merge “<B>” yet**.
 
 ## When it's empty or wrong
 
