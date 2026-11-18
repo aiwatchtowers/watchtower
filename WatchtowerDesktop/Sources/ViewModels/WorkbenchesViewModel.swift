@@ -634,6 +634,13 @@ final class WorkbenchesViewModel {
     var putOnBenchErrors: [Int64: String] = [:]
     /// Workbenches with a Put on the Bench… add in flight.
     var puttingOnBench: Set<Int64> = []
+    /// The merge confirmation on screen (spec §6.13): another bench's
+    /// folder was put on this one.
+    var mergeOffer: BenchMergeOffer?
+    /// A merge refused while the merged bench has live sessions.
+    var mergeRefusal: BenchMergeRefusal?
+    /// Workbenches a merge into is in flight for.
+    var merging: Set<Int64> = []
     /// A seam for tests: whether a folder's directory exists.
     @ObservationIgnored var folderExists: (String) -> Bool = { CodeRootPolicy.directoryExists(URL(fileURLWithPath: $0)) }
     /// A seam for tests: the sessions running now (Remove from Bench… counts
