@@ -185,7 +185,7 @@ func (r *rig) runFakeWith(seen func(*fakeTime), sources ...Source) *runner {
 	ft := newFakeTime()
 	seen(ft)
 	p := r.publisherWith(Config{Clock: ft.Now}, sources...)
-	p.mono, p.timer = ft.Now, ft.Timer
+	ft.drive(p)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- p.Run(ctx) }()

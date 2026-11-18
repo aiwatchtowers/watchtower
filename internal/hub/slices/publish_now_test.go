@@ -40,7 +40,7 @@ func (r *rig) runFakeSaves(sources ...Source) (*runner, *saveTimes) {
 	ft := newFakeTime()
 	saves := &saveTimes{}
 	p := r.publisherWith(Config{Clock: ft.Now, Latency: saves}, sources...)
-	p.mono, p.timer = ft.Now, ft.Timer
+	ft.drive(p)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- p.Run(ctx) }()
