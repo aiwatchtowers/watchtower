@@ -85,7 +85,7 @@ var errNoTerminalSession = &ValidationError{Msg: "finish_session needs a Watchto
 // summary; a sub-session's summary is also queued to its parent (spec
 // 2026-11-18 §6.6 "Finish"). sessionEnv returns the terminal session env
 // (TerminalSessionEnv); msgs reaches the daemon that delivers it.
-func NewFinishSession(sessionEnv func() string, msgs MessageDeps) *Tool {
+func NewFinishSession(sessionEnv func() string, msgs SessionDeps) *Tool {
 	return &Tool{
 		Name: "finish_session",
 		Description: "Mark this terminal session finished once the work it was started for is done or handed to the " +
@@ -176,7 +176,7 @@ func scopeFinishSession(ctx context.Context, d *db.DB, b Binding, a finishSessio
 // session's open asks — a finished session may still wait on the owner. A
 // failed count after the write is an error; the agent's retry rewrites the
 // same finish.
-func finishSession(ctx context.Context, d *db.DB, b Binding, a finishSessionArgs, sessionEnv func() string, msgs MessageDeps) (any, error) {
+func finishSession(ctx context.Context, d *db.DB, b Binding, a finishSessionArgs, sessionEnv func() string, msgs SessionDeps) (any, error) {
 	summary, err := finishSummary(a.Summary)
 	if err != nil {
 		return nil, err
@@ -215,7 +215,7 @@ func finishSession(ctx context.Context, d *db.DB, b Binding, a finishSessionArgs
 // with no parent tells no one; a parent deleted meanwhile drops the line
 // (logged, never re-routed up the chain). The finish itself is already
 // stored, so a failure here is a warning, never an error.
-func tellParentOfFinish(ctx context.Context, d *db.DB, sessionID int64, summary string, msgs MessageDeps, out map[string]any) {
+func tellParentOfFinish(ctx context.Context, d *db.DB, sessionID int64, summary string, msgs SessionDeps, out map[string]any) {
 	child, ok, err := sessionmsg.LoadSession(ctx, d, sessionID)
 	if err != nil || !ok || !child.ParentSessionID.Valid {
 		reportParentFailure(out, err)
