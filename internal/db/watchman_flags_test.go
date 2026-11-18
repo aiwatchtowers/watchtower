@@ -55,12 +55,15 @@ func TestSetWatchmanPrecedentFlags_NilKeepsNullButMarksTried(t *testing.T) {
 	require.Equal(t, 1, after)
 	got, err := d.WatchmanBacktestCandidates(1, "design", 10)
 	require.NoError(t, err)
+	found := false
 	for _, p := range got {
 		if p.ID == id {
+			found = true
 			require.Nil(t, p.IsDecision)
 			require.Nil(t, p.Parked)
 		}
 	}
+	require.True(t, found, "the tried row stays a candidate")
 }
 
 func TestWatchmanBacktestCandidates_SkipsNonDecisionsAndParked(t *testing.T) {
@@ -116,4 +119,20 @@ func TestWatchmanBacktestRow_HandedRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
 	require.Equal(t, 4, rows[0].Handed)
+}
+
+func TestWatchmanUpsert_IncomingFlagSetsFlagsAt(t *testing.T) {
+	d := openTestDB(t)
+	wmTestWorkbench(t, d, 1)
+	t0 := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	p := WatchmanPrecedent{WorkbenchID: 1, Source: "ask", SourceKey: "a", Category: "design", DecidedAt: t0, Weight: 1}
+	wmUpsert(t, d, p)
+	var at *string
+	require.NoError(t, d.QueryRow(`SELECT flags_at FROM watchman_precedents`).Scan(&at))
+	require.Nil(t, at)
+	p.IsDecision = wmBool(true)
+	wmUpsert(t, d, p)
+	require.NoError(t, d.QueryRow(`SELECT flags_at FROM watchman_precedents`).Scan(&at))
+	require.NotNil(t, at)
+	require.NotEmpty(t, *at)
 }
