@@ -17,8 +17,8 @@ import (
 	"time"
 
 	"watchtower/internal/agentkind"
-	"watchtower/internal/auth"
 	"watchtower/internal/aiconsent"
+	"watchtower/internal/auth"
 	"watchtower/internal/config"
 	"watchtower/internal/hub"
 	"watchtower/internal/providers"
