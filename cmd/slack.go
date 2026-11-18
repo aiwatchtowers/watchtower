@@ -535,7 +535,7 @@ func runSlackAccounts(cmd *cobra.Command, _ []string) error {
 
 	out := cmd.OutOrStdout()
 	if asJSON, _ := cmd.Flags().GetBool("json"); asJSON {
-		return writeSlackAccountsJSON(out, accounts)
+		return writeSlackAccountsJSON(out, database, accounts)
 	}
 	if len(accounts) == 0 {
 		fmt.Fprintln(out, "No Slack accounts connected.")
@@ -567,25 +567,34 @@ type slackAccountJSONItem struct {
 	SharedApp bool `json:"shared_app"`
 	// Relogin is slackmode.Relogin: "builtin" | "connect" | "move".
 	Relogin string `json:"relogin"`
+	// HomeTeamID is the team a connect re-login signs into
+	// (slackAccountConnectTeam): the home team of the account's stored
+	// data, else team_id. The Desktop's Re-login start targets it.
+	HomeTeamID string `json:"home_team_id"`
 }
 
 // writeSlackAccountsJSON writes every account, removed rows included (the
 // Desktop filters them).
-func writeSlackAccountsJSON(out io.Writer, accounts []db.SlackAccount) error {
+func writeSlackAccountsJSON(out io.Writer, database *db.DB, accounts []db.SlackAccount) error {
 	builtinID := slackBuiltinClientID()
 	retired := auth.RetiredSharedClientID
 	doc := slackAccountsDoc{BuiltinApp: builtinID != "", Accounts: make([]slackAccountJSONItem, 0, len(accounts))}
 	for _, a := range accounts {
+		home, err := slackAccountConnectTeam(database, a)
+		if err != nil {
+			return fmt.Errorf("reading the home team of slack account %d: %w", a.ID, err)
+		}
 		doc.Accounts = append(doc.Accounts, slackAccountJSONItem{
-			ID:        a.ID,
-			TeamID:    a.TeamID,
-			TeamName:  a.TeamName,
-			Label:     a.Label,
-			Status:    a.Status,
-			Enabled:   a.Enabled,
-			ClientID:  a.ClientID,
-			SharedApp: a.Status != "removed" && slackmode.SharedApp(a, retired),
-			Relogin:   slackmode.Relogin(a, retired, builtinID),
+			ID:         a.ID,
+			TeamID:     a.TeamID,
+			TeamName:   a.TeamName,
+			Label:      a.Label,
+			Status:     a.Status,
+			Enabled:    a.Enabled,
+			ClientID:   a.ClientID,
+			SharedApp:  a.Status != "removed" && slackmode.SharedApp(a, retired),
+			Relogin:    slackmode.Relogin(a, retired, builtinID),
+			HomeTeamID: home,
 		})
 	}
 	enc := json.NewEncoder(out)
@@ -722,7 +731,14 @@ func removeSlackAccount(ctx context.Context, cfg *config.Config, database *db.DB
 	store := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), id)
 	logger := log.New(logOut, "[slack] ", log.LstdFlags)
 	err = withSlackTokenLock(ctx, store, func() error {
-		tok, loadErr := store.Load()
+		// A rotating token is refreshed first when due, so the revoke goes
+		// out with an access token Slack still accepts (review m8). A failed
+		// refresh revokes what the file holds.
+		tok, loadErr := slackauth.LoadFreshHeld(ctx, store, database, id, slackTokenRefresher(), time.Now)
+		if loadErr != nil {
+			logger.Printf("revoking slack account %d: refreshing its token: %v", id, loadErr)
+			tok, loadErr = store.Load()
+		}
 		switch {
 		case loadErr != nil:
 			logger.Printf("revoking slack account %d: reading its token: %v", id, loadErr)
@@ -736,10 +752,14 @@ func removeSlackAccount(ctx context.Context, cfg *config.Config, database *db.DB
 				fmt.Fprintln(warnOut, slackRevokeWarning)
 			}
 		}
-		return store.Delete()
+		if err := store.Delete(); err != nil {
+			return fmt.Errorf("deleting token file: %w", err)
+		}
+		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("deleting token file: %w", err)
+		// The lock wait (another process's refresh) or the delete above.
+		return fmt.Errorf("removing the token of slack account %d: %w", id, err)
 	}
 	return database.SetSlackAccountRemoved(id)
 }

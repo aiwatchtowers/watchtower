@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	watchtowerslack "watchtower/internal/slack"
+	"watchtower/internal/slackconnect"
 	"watchtower/internal/sync"
 )
 
@@ -184,6 +185,24 @@ func TestConnectSlackAccount_RepairOnTheWatermarkDayWarnsOnce(t *testing.T) {
 	acct, err := env.db.GetSlackAccount(env.id)
 	require.NoError(t, err)
 	assert.Equal(t, "2026-03-05", acct.SearchLastDate)
+}
+
+// The connect flow's write repairs a moved account the same way and warns
+// with the same backfill pointer (review m7).
+func TestWriteSlackGrant_RepairOnTheWatermarkDayWarnsWithBackfill(t *testing.T) {
+	env := newTeamGuardEnv(t, "T_OTHER", "Dev Sandbox")
+	require.NoError(t, env.db.SetSlackAccountSearchWatermark(env.id, "2026-03-05"))
+	env.addMessage(t, time.Date(2026, 3, 5, 12, 0, 0, 0, time.Local))
+
+	var warn bytes.Buffer
+	_, err := writeSlackGrant(context.Background(), env.cfg, env.db, env.id,
+		slackIdentity{TeamID: "T_HOME", TeamName: "Acme", UserID: "U_OWNER"},
+		slackconnect.Grant{AccessToken: "xoxp-new", ClientID: "5555.6666", TeamID: "T_HOME", UserID: "U_OWNER"}, &warn)
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(warn.String(), "watchtower slack backfill --account 1"), warn.String())
+	acct, err := env.db.GetSlackAccount(env.id)
+	require.NoError(t, err)
+	assert.Equal(t, "T_HOME", acct.TeamID)
 }
 
 // `slack add` of a team another live account already holds would sync the

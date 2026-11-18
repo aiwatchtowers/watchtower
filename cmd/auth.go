@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -13,6 +14,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/oauthpage"
+	"watchtower/internal/slackmode"
 
 	"github.com/spf13/cobra"
 )
@@ -71,6 +73,9 @@ func init() {
 }
 
 func runAuthLogin(cmd *cobra.Command, _ []string) error {
+	if err := refuseAuthLoginOffBuiltinApp(flagConfig); err != nil {
+		return err
+	}
 	oauthCfg, err := resolveOAuthConfig()
 	if err != nil {
 		return err
@@ -256,6 +261,54 @@ func saveAuthResult(cmd *cobra.Command, result *auth.OAuthResult, clientID strin
 	}
 
 	return &authResultInfo{workspace, result.TeamID, result.UserID}, nil
+}
+
+// refuseAuthLoginOffBuiltinApp refuses `auth login` when the account it
+// re-consents (#1 of the active workspace) does not sign in through the
+// build's app (slackmode.Relogin connect or move): the legacy login would
+// overwrite a company app's client id and rotating token with the build's
+// (review m6). No workspace or database yet, or no account #1, lets it run.
+func refuseAuthLoginOffBuiltinApp(configPath string) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		if errors.Is(err, config.ErrNoWorkspace) {
+			return nil
+		}
+		return err
+	}
+	if _, err := os.Stat(cfg.DBPath()); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+	acct, err := database.GetSlackAccount(1)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reading slack account 1: %w", err)
+	}
+	if acct.Status == "removed" {
+		return nil
+	}
+	switch slackmode.Relogin(acct, auth.RetiredSharedClientID, slackBuiltinClientID()) {
+	case slackmode.ReloginConnect:
+		return errors.New("slack account 1 signs in through its workspace's own Slack app; " +
+			"run `watchtower slack login --account 1` instead")
+	case slackmode.ReloginMove:
+		return errors.New("slack account 1 is on the retired shared Slack app; move it to its workspace's own app " +
+			"with the link or code from that app (`watchtower slack connect --code ...` or Connections → Slack)")
+	}
+	return nil
 }
 
 // slackLoginWorkspace returns the existing workspace a Slack login into team
