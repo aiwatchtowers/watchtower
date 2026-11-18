@@ -11,7 +11,7 @@ final class WorkbenchCLIFolderTests: XCTestCase {
 
     func testFolderResultDecodesEveryCode() throws {
         let codes = ["already_here", "other_bench", "nested", "not_found", "not_installed", "folder_missing", "folder_removed",
-                     "sessions_running", "last_folder", "limit", "too_long", "not_running", "not_same_workbench", "self",
+                     "folder_present", "sessions_running", "last_folder", "limit", "too_long", "not_running", "not_same_workbench", "self",
                      "declined", "not_allowed", "bad_args"]
         XCTAssertEqual(Set(WorkbenchRefusalCode.allCases.map(\.rawValue)), Set(codes))
         for code in codes {

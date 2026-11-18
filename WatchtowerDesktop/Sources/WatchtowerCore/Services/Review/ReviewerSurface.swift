@@ -87,8 +87,28 @@ package enum ReviewerSurface {
     /// The key prefix of a thread that has no branch (a detached HEAD).
     private static let sessionKeyPrefix = "session:"
 
+    /// The reviewed session's folder (#2003): the home folder, whose status
+    /// the page already keeps, or another bench folder with its own status
+    /// as last read (nil = not read, or the read failed).
+    package enum ReviewedFolder: Equatable, Sendable {
+        case home
+        case other(WorkbenchGitStatus?)
+    }
+
+    /// The status `context` keys a folder round by: the reviewed folder's
+    /// own — never home's for another folder, so a round with no branch of
+    /// its own never lands in home's thread. nil while the folder is unknown.
+    package static func folderStatus(_ folder: ReviewedFolder?, homeStatus: WorkbenchGitStatus?) -> WorkbenchGitStatus? {
+        switch folder {
+        case .home: homeStatus
+        case let .other(status): status
+        case nil: nil
+        }
+    }
+
     /// Where the reviewer of a session's round works; nil until the thread
     /// key is known (no round yet, or the folder's branch not read yet).
+    /// `mainStatus` is the reviewed folder's status (`folderStatus`).
     package static func context(
         projectID: Int64,
         sessionID: Int64,

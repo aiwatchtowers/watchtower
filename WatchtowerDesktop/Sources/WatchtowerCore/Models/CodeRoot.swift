@@ -45,11 +45,11 @@ package struct CodeRoot: Hashable, Sendable {
         isMain = true
     }
 
-    /// A linked worktree of a workbench folder's repository (`folderID` nil:
-    /// the home folder's).
-    package init(workbenchID: Int64, worktree folder: URL, folderID: Int64? = nil) {
+    /// A linked worktree of a workbench folder's repository (`folderID` nil
+    /// or `homeFolderID`: the home folder's, so its key is today's).
+    package init(workbenchID: Int64, worktree folder: URL, folderID: Int64? = nil, homeFolderID: Int64? = nil) {
         self.workbenchID = workbenchID
-        self.folderID = folderID
+        self.folderID = folderID == homeFolderID ? nil : folderID
         self.folder = Self.lexicalFolder(folder)
         isMain = false
     }
