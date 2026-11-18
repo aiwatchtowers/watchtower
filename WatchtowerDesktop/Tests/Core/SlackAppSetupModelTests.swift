@@ -481,7 +481,8 @@ final class SlackAppSetupModelTests: XCTestCase {
         XCTAssertTrue(connector.calls.isEmpty)
         XCTAssertEqual(model.notice?.title, "Watchtower's app already exists in acme")
         XCTAssertEqual(model.notice?.body, "Update it to the current version: Watchtower adds the connect link to its "
-            + "About page and the sign-in settings it needs. Nothing changes for colleagues already connected.")
+            + "About page and the sign-in settings it needs. Watchtower turns on PKCE sign-in for this app, which "
+            + "cannot be undone; Slack may ask colleagues already connected to allow Watchtower again.")
         XCTAssertEqual(labels(model), ["Cancel", "Update the app"])
         XCTAssertTrue(model.showsTokenForm)
         XCTAssertFalse(model.showsAppIDField)

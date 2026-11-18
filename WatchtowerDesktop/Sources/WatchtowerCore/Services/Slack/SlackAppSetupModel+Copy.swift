@@ -163,7 +163,8 @@ extension SlackAppSetupModel {
     }
 
     package static let adoptBody = "Update it to the current version: Watchtower adds the connect link to its About page "
-        + "and the sign-in settings it needs. Nothing changes for colleagues already connected."
+        + "and the sign-in settings it needs. Watchtower turns on PKCE sign-in for this app, which cannot be undone; "
+        + "Slack may ask colleagues already connected to allow Watchtower again."
 
     package static func adoptTitle(_ workspace: String) -> String {
         "Watchtower's app already exists in \(workspace)"
