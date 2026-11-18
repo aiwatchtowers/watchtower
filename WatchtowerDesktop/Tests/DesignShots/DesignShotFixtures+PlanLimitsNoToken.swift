@@ -8,13 +8,17 @@ import SwiftUI
 /// `docs/superpowers/specs/2026-11-17-plan-limits-without-token-design.md`).
 /// Built from the production Plans pieces (`PlansProviderCard`,
 /// `PlansChartCard`, `PlansScreenPresentation`, `PlansPopupPresentation`) on
-/// `PlansShotFixtures` snapshots; only the Claude card's message comes from
-/// `PlanLimitsNoTokenMockCopy`, because today's `errorText` words these codes
-/// for Codex. Nothing here is wired into the app.
+/// `PlansShotFixtures` snapshots. The Claude message is production's
+/// (`PlansPresentation.errorText` from `SubscriptionUsagePolicy.messages`);
+/// the scenes still set it from `PlanLimitsNoTokenMockCopy`, the spec's pinned
+/// table, which `PlanLimitsNoTokenMockCopyTests` cross-checks against
+/// production, so a drift fails a test instead of hiding in a shot. The cloud
+/// frames share the `apiKey` layout and tone; only the provider name differs.
+/// Nothing here is wired into the app.
 @MainActor
 enum PlanLimitsNoTokenShotFixtures {
     enum Frame: String, CaseIterable {
-        case cliMissing, cliOutdated, notSignedIn, apiKey, readFailed
+        case cliMissing, cliOutdated, notSignedIn, apiKey, cloudBedrock, cloudVertex, cloudFoundry, readFailed
     }
 
     static let now = PlansShotFixtures.now
@@ -26,6 +30,9 @@ enum PlanLimitsNoTokenShotFixtures {
         case .cliOutdated: "unsupported_cli"
         case .notSignedIn: "no_credentials"
         case .apiKey: "unsupported_auth"
+        case .cloudBedrock: "cloud_bedrock"
+        case .cloudVertex: "cloud_vertex"
+        case .cloudFoundry: "cloud_foundry"
         case .readFailed: "network"
         }
     }
@@ -37,6 +44,8 @@ enum PlanLimitsNoTokenShotFixtures {
         case .cliOutdated: PlanLimitsNoTokenMockCopy.cliOutdated
         case .notSignedIn: PlanLimitsNoTokenMockCopy.notSignedIn
         case .apiKey: PlanLimitsNoTokenMockCopy.apiKey
+        case .cloudBedrock, .cloudVertex, .cloudFoundry:
+            PlanLimitsNoTokenMockCopy.cloudProviders[reason(frame)].map(PlanLimitsNoTokenMockCopy.cloudProvider)
         case .readFailed: nil
         }
     }
@@ -47,7 +56,7 @@ enum PlanLimitsNoTokenShotFixtures {
         let good = PlansShotFixtures.snapshot(.claude)
         let failed = frame == .readFailed
         return PlanUsageStatus(state: failed ? "error" : "unavailable", reason: reason(frame),
-                               plan: [.notSignedIn, .apiKey].contains(frame) ? "" : good.plan,
+                               plan: [.notSignedIn, .apiKey, .cloudBedrock, .cloudVertex, .cloudFoundry].contains(frame) ? "" : good.plan,
                                fetchedAt: good.fetchedAt.map { $0.addingTimeInterval(failed ? -1080 : 0) },
                                lastError: "", limits: good.limits, breakdown: good.breakdown, provider: .claude,
                                identityKnown: true, plot: good.plot, history: good.history,

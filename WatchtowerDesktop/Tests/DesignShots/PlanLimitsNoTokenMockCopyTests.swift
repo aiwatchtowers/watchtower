@@ -2,8 +2,8 @@ import WatchtowerCore
 import XCTest
 
 /// Pins the plan limits without a token spec's string table (#1885) so the
-/// mockups and the spec text cannot drift. The implementation moves these
-/// strings into `PlansPresentation.errorText` and pins them there.
+/// mockups and the spec text cannot drift, and cross-checks it against
+/// production's `PlansPresentation.errorText` for Claude.
 @MainActor
 final class PlanLimitsNoTokenMockCopyTests: XCTestCase {
     func testClaudeMessagesNameClaudeCodeAndTheFix() {
@@ -29,6 +29,17 @@ final class PlanLimitsNoTokenMockCopyTests: XCTestCase {
             let text = Copy.cloudProvider(name)
             XCTAssertTrue(text.contains(name), code)
             XCTAssertNotEqual(text, Copy.apiKey, code)
+        }
+    }
+
+    /// Production words every Claude frame exactly as the spec's table does.
+    func testProductionWordingMatchesMockCopy() {
+        for frame in PlanLimitsNoTokenShotFixtures.Frame.allCases where frame != .readFailed {
+            XCTAssertEqual(PlansPresentation.errorText(PlanLimitsNoTokenShotFixtures.reason(frame), provider: .claude),
+                           PlanLimitsNoTokenShotFixtures.mockMessage(frame), frame.rawValue)
+        }
+        for (code, name) in PlanLimitsNoTokenMockCopy.cloudProviders {
+            XCTAssertEqual(PlansPresentation.errorText(code, provider: .claude), PlanLimitsNoTokenMockCopy.cloudProvider(name), code)
         }
     }
 

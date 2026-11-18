@@ -67,12 +67,13 @@ package enum PlansPresentation {
     }
 
     package static func errorText(_ code: String, provider: PlanUsageProvider) -> String {
+        let messages = provider.subscription.messages
+        if let cloud = messages.cloudProviders[code] { return cloud }
         switch code {
-        case "cli_missing": return "Install Codex, then retry."
-        case "unsupported_cli": return "Update Codex to read subscription limits, then retry."
-        case "unsupported_auth": return "Sign in to Codex with a ChatGPT account, then retry."
-        case "no_credentials", "token_expired", "http_401":
-            return "Open \(provider.subscription.signInApplication) and sign in, then retry."
+        case "cli_missing": return messages.cliMissing
+        case "unsupported_cli": return messages.unsupportedCLI
+        case "unsupported_auth": return messages.unsupportedAuth
+        case "no_credentials", "token_expired", "http_401": return messages.noCredentials
         case "feature_disabled": return reasonText("disabled")
         case "busy": return "Another refresh is running. Try again shortly."
         case "timeout": return "The refresh timed out. Try again."
