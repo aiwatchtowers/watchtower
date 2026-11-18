@@ -84,6 +84,13 @@ final class ConfigService {
     /// config only at startup, so Settings restarts it after such a Save.
     private(set) var lastSaveChangedPurge = false
     var parseError: String?
+    /// `ai.background_runs`, the owner's background AI answer, raw as read
+    /// (nil when absent). Read only: its one writer is
+    /// `watchtower ai background allow|pause`, and `save()` never writes it.
+    private(set) var backgroundRuns: String?
+    /// config.yaml exists but could not be read or parsed at the last read of
+    /// `backgroundRuns`, so the answer is unknown (reads paused, as in Go).
+    private(set) var backgroundRunsUnreadable = false
     let routingApplication: ProviderRoutingApplication
 
     private let configPath: String
@@ -153,6 +160,9 @@ final class ConfigService {
         resetProviderOperations()
         routingApplication.configurationReloaded()
         defer { resetModelEditTracking() }
+        // Unknown until the file parses; a missing file is a clean "not answered".
+        backgroundRuns = nil
+        backgroundRunsUnreadable = FileManager.default.fileExists(atPath: configPath)
         guard let str = readConfigText() else { return }
 
         do {
@@ -162,6 +172,8 @@ final class ConfigService {
                 // empty config, as the Go CLI reads it — not an error.
                 if let loaded, !(loaded is NSNull) {
                     parseError = "config.yaml is not a YAML mapping"
+                } else {
+                    backgroundRunsUnreadable = false
                 }
                 return
             }
@@ -230,14 +242,7 @@ final class ConfigService {
                 ideasMineIntervalHours = (ideas["mine_interval_hours"] as? Int) ?? 6
             }
 
-            if let dayPlan = yaml["day_plan"] as? [String: Any] {
-                dayPlanEnabled = (dayPlan["enabled"] as? Bool) ?? true
-                workingHoursStart = (dayPlan["working_hours_start"] as? String) ?? "09:00"
-                workingHoursEnd = (dayPlan["working_hours_end"] as? String) ?? "19:00"
-                maxTimeblocks = (dayPlan["max_timeblocks"] as? Int) ?? 3
-                minBacklog = (dayPlan["min_backlog"] as? Int) ?? 3
-                maxBacklog = (dayPlan["max_backlog"] as? Int) ?? 8
-            }
+            loadDayPlan(yaml)
 
             purgeRevokedData = (yaml["privacy"] as? [String: Any])?["purge_revoked_data"] as? Bool
             diskPurgeRevokedData = purgeRevokedData
@@ -248,8 +253,57 @@ final class ConfigService {
         }
     }
 
+    private func loadDayPlan(_ yaml: [String: Any]) {
+        guard let dayPlan = yaml["day_plan"] as? [String: Any] else { return }
+        dayPlanEnabled = (dayPlan["enabled"] as? Bool) ?? true
+        workingHoursStart = (dayPlan["working_hours_start"] as? String) ?? "09:00"
+        workingHoursEnd = (dayPlan["working_hours_end"] as? String) ?? "19:00"
+        maxTimeblocks = (dayPlan["max_timeblocks"] as? Int) ?? 3
+        minBacklog = (dayPlan["min_backlog"] as? Int) ?? 3
+        maxBacklog = (dayPlan["max_backlog"] as? Int) ?? 8
+    }
+
+    /// Re-reads only `ai.background_runs` (plan Decision 12: on activation
+    /// and after the Desktop's own allow/pause call). Unsaved Settings edits
+    /// stay; `parseError` is left to `reload()`.
+    func reloadBackgroundRuns() {
+        backgroundRuns = nil
+        guard let data = FileManager.default.contents(atPath: configPath) else {
+            backgroundRunsUnreadable = FileManager.default.fileExists(atPath: configPath)
+            return
+        }
+        guard let text = String(data: data, encoding: .utf8) else {
+            backgroundRunsUnreadable = true
+            return
+        }
+        do {
+            let loaded = try Yams.load(yaml: text)
+            if let yaml = loaded as? [String: Any] {
+                backgroundRuns = Self.backgroundRuns(in: yaml)
+                backgroundRunsUnreadable = false
+            } else {
+                // An empty document is an empty config, as `reload()` reads it.
+                backgroundRunsUnreadable = loaded != nil && !(loaded is NSNull)
+            }
+        } catch {
+            backgroundRunsUnreadable = true
+        }
+    }
+
+    /// `ai.background_runs` as a string, keys matched without regard to case
+    /// as Go's viper reads them; a non-string value reads as nil (absent).
+    private static func backgroundRuns(in yaml: [String: Any]) -> String? {
+        func fold(_ m: [String: Any], _ key: String) -> Any? {
+            m[key] ?? m.first { $0.key.caseInsensitiveCompare(key) == .orderedSame }?.value
+        }
+        guard let ai = fold(yaml, "ai") as? [String: Any] else { return nil }
+        return fold(ai, "background_runs") as? String
+    }
+
     private func adoptRawConfiguration(_ yaml: [String: Any]) {
         rawYAML = yaml
+        backgroundRuns = Self.backgroundRuns(in: yaml)
+        backgroundRunsUnreadable = false
         activeWorkspace = yaml["active_workspace"] as? String
     }
 
@@ -625,6 +679,8 @@ final class ConfigService {
 
         rawYAML = yaml
         loadFallback(yaml["ai"] as? [String: Any] ?? [:])
+        backgroundRuns = Self.backgroundRuns(in: yaml)
+        backgroundRunsUnreadable = false
         lastSaveChangedPurge = purgeChanged
         diskPurgeRevokedData = purgeRevokedData
         // Adopt what is on disk now, so a switch the CLI turned on behind this
@@ -725,6 +781,7 @@ final class ConfigService {
     /// Bookkeeping, not settings: left out of the edit check.
     private static let nonEditableFields: Set<String> = [
         "configPath", "fileAccess", "routingApplication", "_rawYAML", "_parseError", "_lastSaveChangedPurge",
+        "_backgroundRuns", "_backgroundRunsUnreadable",
         "_diskCalendarEnabled", "_diskGmailEnabled", "_diskPurgeRevokedData", "loadedFields",
         "_providerBuckets", "_editedProviderBuckets", "editedModelTiers",
         "_providerConnection", "_providerHealth", "providerConnection", "providerHealth", "loadedFallbackEnabled", "loadedFallbackProvider"

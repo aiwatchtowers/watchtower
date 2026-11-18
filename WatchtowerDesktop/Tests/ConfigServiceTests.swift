@@ -91,6 +91,66 @@ struct ConfigServiceTests {
         #expect((yaml["sync"] as? [String: Any])?["workers"] as? Int == 5)
     }
 
+    @Test("Save never writes ai.background_runs: the answer survives a Settings save")
+    func testSaveKeepsBackgroundRunsKey() throws {
+        let path = makeTempConfig("ai: {background_runs: allowed, model: old-model}\n")
+        let service = ConfigService(configPath: path)
+        #expect(service.backgroundRuns == "allowed")
+        #expect(!service.backgroundRunsUnreadable)
+        service.aiModel = "new-model"
+        try service.save()
+        let yaml = try #require(try Yams.load(yaml: String(contentsOfFile: path, encoding: .utf8)) as? [String: Any])
+        let ai = try #require(yaml["ai"] as? [String: Any])
+        #expect(ai["background_runs"] as? String == "allowed")
+        #expect(ai["model"] as? String == "new-model")
+        #expect(service.backgroundRuns == "allowed")
+    }
+
+    @Test("ai.background_runs reads raw, absent as nil; an unreadable file is flagged, a missing one is not")
+    func testBackgroundRunsRead() throws {
+        #expect(ConfigService(configPath: makeTempConfig("ai: {background_runs: paused}\n")).backgroundRuns == "paused")
+        #expect(ConfigService(configPath: makeTempConfig("ai: {background_runs: maybe}\n")).backgroundRuns == "maybe")
+        let absent = ConfigService(configPath: makeTempConfig("ai: {model: m}\n"))
+        #expect(absent.backgroundRuns == nil)
+        #expect(!absent.backgroundRunsUnreadable)
+        let broken = ConfigService(configPath: makeTempConfig("ai: [unclosed\n"))
+        #expect(broken.backgroundRuns == nil)
+        #expect(broken.backgroundRunsUnreadable)
+        let scalar = ConfigService(configPath: makeTempConfig("just a string\n"))
+        #expect(scalar.backgroundRunsUnreadable)
+        let missing = ConfigService(configPath: makeTempConfig("") + ".missing")
+        #expect(missing.backgroundRuns == nil)
+        #expect(!missing.backgroundRunsUnreadable)
+    }
+
+    @Test("reloadBackgroundRuns picks up an answer written behind the instance and keeps unsaved edits")
+    func testReloadBackgroundRunsKeepsEdits() throws {
+        let path = makeTempConfig("ai: {model: m}\n")
+        let service = ConfigService(configPath: path)
+        service.aiModel = "edited"
+        try ConfigFileLock.withLock(configPath: path) { token in
+            try ConfigFileWriter.write("ai: {model: m, background_runs: allowed}\n", configPath: path, token: token)
+        }
+        service.reloadBackgroundRuns()
+        #expect(service.backgroundRuns == "allowed")
+        #expect(service.aiModel == "edited")
+
+        let clean = ConfigService(configPath: path)
+        try ConfigFileLock.withLock(configPath: path) { token in
+            try ConfigFileWriter.write("ai: {model: m, background_runs: paused}\n", configPath: path, token: token)
+        }
+        clean.reloadBackgroundRuns()
+        #expect(clean.backgroundRuns == "paused")
+        #expect(!clean.hasUnsavedEdits, "the answer is not a Settings edit")
+
+        try ConfigFileLock.withLock(configPath: path) { token in
+            try ConfigFileWriter.write("ai: [unclosed\n", configPath: path, token: token)
+        }
+        clean.reloadBackgroundRuns()
+        #expect(clean.backgroundRuns == nil)
+        #expect(clean.backgroundRunsUnreadable)
+    }
+
     @Test("Save over a config that exists but does not parse throws and writes nothing")
     func testSaveRefusesUnparsableConfig() throws {
         let path = makeTempConfig("ai: {background_runs: allowed}\nsync: {workers: 2}\n")
