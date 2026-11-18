@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"watchtower/internal/oauthclient"
 )
 
 // gmailAPIBase is overridable in tests via httptest.Server.
@@ -82,6 +84,9 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 	if resp.StatusCode != http.StatusOK {
 		if isInvalidGrant(body) {
 			return fmt.Errorf("%w: %s", ErrAuthRevoked, body)
+		}
+		if oauthclient.IsRejectedBody(body) {
+			return fmt.Errorf("%w (%d): %s", oauthclient.ErrClientRejected, resp.StatusCode, body)
 		}
 		return &StatusError{Op: "token refresh failed", Code: resp.StatusCode, Body: string(body)}
 	}

@@ -38,6 +38,7 @@ import (
 	"watchtower/internal/linear"
 	"watchtower/internal/media"
 	"watchtower/internal/memory"
+	"watchtower/internal/oauthclient"
 
 	"watchtower/internal/automations/authoring"
 	"watchtower/internal/customtracks"
@@ -1374,11 +1375,13 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 // phaseLinearSync pulls Linear issues for every connected account respecting
 // the configured interval. One account's error is logged and confined to that
 // account. A pass never writes a blanket "ok" back (a nil error does not prove
-// health; only a login clears the state); the one failure it persists is
-// linear.ErrAuthRevoked, which needs status "revoked" for the Re-login button.
-// Other errors (rate limit, network) say nothing about the grant and are only
-// logged, and a cancelled context (shutdown, or runLoop cancelling the
-// cycle's fetches) is checked first.
+// health; only a login clears the state); the failures it persists are
+// linear.ErrAuthRevoked, which needs status "revoked" for the Re-login button,
+// and oauthclient.ErrClientRejected, recorded as "error" with its client code
+// (recordClientRejected; #1887, never revoked). Other errors (rate limit,
+// network) say nothing about the grant and are only logged, and a cancelled
+// context (shutdown, or runLoop cancelling the cycle's fetches) is checked
+// first.
 func (d *Daemon) phaseLinearSync(ctx context.Context) {
 	if len(d.linearSyncers) == 0 {
 		return
@@ -1419,6 +1422,8 @@ func (d *Daemon) phaseLinearSync(ctx context.Context) {
 						d.logger.Printf("linear: account %d: record auth state: %v", s.AccountID(), dbErr)
 					}
 				}
+			case errors.Is(err, oauthclient.ErrClientRejected):
+				d.recordClientRejected("linear", s.AccountID())
 			}
 			continue
 		}
@@ -3054,6 +3059,21 @@ func (d *Daemon) recordJiraClientRejected(id int64) {
 	}
 	if err := d.db.SetJiraAccountAuthState(id, "error", jira.ClientRejectedCode(acct.CompanySlug)); err != nil {
 		d.logger.Printf("jira: account %d: record auth state: %v", id, err)
+	}
+}
+
+// recordClientRejected marks source's account id whose OAuth client the
+// vendor refused (oauthclient.ErrClientRejected): status 'error' with
+// invalid_client (tied to a company) or unknown_client (on none), never
+// 'revoked', so PURGE-01 schedules no purge; a revoked, removed or purged row
+// is left as it is (db.MarkAccountClientRejected). Only a new sign-in clears
+// it.
+func (d *Daemon) recordClientRejected(source string, id int64) {
+	if d.db == nil {
+		return
+	}
+	if _, err := d.db.MarkAccountClientRejected(source, id); err != nil {
+		d.logger.Printf("%s: account %d: record auth state: %v", source, id, err)
 	}
 }
 

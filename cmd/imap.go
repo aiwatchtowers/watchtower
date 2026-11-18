@@ -181,9 +181,7 @@ func runImapRemove(cmd *cobra.Command, args []string) error {
 	if err := database.DeleteEmailAccount(id); err != nil {
 		return fmt.Errorf("removing account: %w", err)
 	}
-	if err := imap.NewCredentialStore(cfg.WorkspaceDir(), id).Delete(); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to remove credentials file: %v\n", err)
-	}
+	removeOutlookAccountFiles(cfg.WorkspaceDir(), id, cmd.ErrOrStderr())
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Removed account %d.\n", id)
 	return nil

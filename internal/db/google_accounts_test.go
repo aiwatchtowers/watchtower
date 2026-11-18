@@ -63,6 +63,20 @@ func TestGoogleAccount_UpdateConnection(t *testing.T) {
 	assert.True(t, got.GmailEnabled)
 }
 
+func TestGoogleAccount_SetClient(t *testing.T) {
+	d := openTestDB(t)
+	id, err := d.CreateGoogleAccount(GoogleAccount{Email: "a@example.com"})
+	require.NoError(t, err)
+
+	require.NoError(t, d.SetGoogleAccountClient(id, "acme-client", "acme"))
+	got, err := d.GetGoogleAccount(id)
+	require.NoError(t, err)
+	assert.Equal(t, "acme-client", got.ClientID)
+	assert.Equal(t, "acme", got.CompanySlug)
+
+	assert.Error(t, d.SetGoogleAccountClient(id+1, "x", ""))
+}
+
 // TestGoogleAccount_SetAuthState_MissingRow mirrors SetEmailAccountAuthState's
 // RowsAffected()==0 error shape (email_accounts.go:195) for a missing row.
 func TestGoogleAccount_SetAuthState_MissingRow(t *testing.T) {

@@ -103,6 +103,22 @@ func (db *DB) UpdateGoogleAccountConnection(id int64, email string, calendarEnab
 	return nil
 }
 
+// SetGoogleAccountClient records, in one statement, the OAuth client id an
+// account's grant was issued to and the company it belongs to (empty: none):
+// a sign-in through a company's app (`google add --company`, which also
+// re-ties a row of the same Google user, and the re-login of a tied account).
+func (db *DB) SetGoogleAccountClient(id int64, clientID, companySlug string) error {
+	res, err := db.Exec(`UPDATE google_accounts SET client_id = ?, company_slug = ?, updated_at = `+nowSQL+`
+		WHERE id = ?`, clientID, companySlug, id)
+	if err != nil {
+		return fmt.Errorf("setting google account %d client: %w", id, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("setting google account client: no google_accounts row %d", id)
+	}
+	return nil
+}
+
 // DeleteGoogleAccount removes a connected Google account along with its
 // calendar_calendars rows and their calendar_events, so a removed account
 // leaves no ghost events behind (mirroring DeleteCalendarAccount). Its

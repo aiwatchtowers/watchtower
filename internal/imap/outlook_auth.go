@@ -19,6 +19,7 @@ import (
 	"github.com/emersion/go-imap/v2/imapclient"
 
 	"watchtower/internal/auth"
+	"watchtower/internal/oauthclient"
 	"watchtower/internal/oauthpage"
 )
 
@@ -54,13 +55,23 @@ func ValidateGrantedScopes(granted string) error {
 	return nil
 }
 
-// Microsoft identity platform OAuth endpoints (the "common" tenant accepts
-// both personal Outlook.com/Hotmail accounts and work/school Office365
-// accounts) — vars so tests can point at httptest.Server.
-var (
-	microsoftAuthEndpoint  = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
-	microsoftTokenEndpoint = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
-)
+// microsoftLoginBase is the Microsoft identity platform's host — a var so
+// tests can point it at an httptest.Server.
+var microsoftLoginBase = "https://login.microsoftonline.com"
+
+// microsoftEndpoints are the authorize and token endpoints of tenantID: a
+// company's Entra tenant (its bundle's tenant_id, a GUID or a verified
+// domain, #1887 D16), or "common" when empty — the shared client's tenant,
+// which accepts both personal Outlook.com/Hotmail accounts and work/school
+// Office365 accounts.
+func microsoftEndpoints(tenantID string) (authURL, tokenURL string) {
+	tenant := "common"
+	if tenantID != "" {
+		tenant = url.PathEscape(tenantID)
+	}
+	base := microsoftLoginBase + "/" + tenant + "/oauth2/v2.0/"
+	return base + "authorize", base + "token"
+}
 
 // DefaultMicrosoftClientID is injected at build time via -ldflags (see
 // scripts/build-app.sh), mirroring calendar.DefaultGoogleClientID /
@@ -75,6 +86,9 @@ var DefaultMicrosoftClientID string
 // for native/desktop apps instead.
 type MicrosoftOAuthConfig struct {
 	ClientID string
+	// TenantID is a company's Entra tenant (its bundle's tenant_id); empty
+	// signs in through "common" (microsoftEndpoints).
+	TenantID string
 }
 
 // MicrosoftOAuthToken represents the Microsoft identity platform's token
@@ -130,7 +144,8 @@ func buildMicrosoftAuthURL(cfg MicrosoftOAuthConfig, redirectURI, state, codeCha
 		"code_challenge_method": {"S256"},
 		"response_mode":         {"query"},
 	}
-	return microsoftAuthEndpoint + "?" + params.Encode()
+	authURL, _ := microsoftEndpoints(cfg.TenantID)
+	return authURL + "?" + params.Encode()
 }
 
 // exchangeMicrosoftCode exchanges an authorization code for tokens via raw
@@ -143,7 +158,7 @@ func exchangeMicrosoftCode(ctx context.Context, cfg MicrosoftOAuthConfig, code, 
 		"client_id":     {cfg.ClientID},
 		"code_verifier": {codeVerifier},
 	}
-	return postMicrosoftToken(ctx, data)
+	return postMicrosoftToken(ctx, cfg, data)
 }
 
 // RefreshAccessToken exchanges a refresh token for a new access token.
@@ -157,24 +172,26 @@ func RefreshAccessToken(ctx context.Context, cfg MicrosoftOAuthConfig, refreshTo
 		"client_id":     {cfg.ClientID},
 		"scope":         {ScopeOutlookIMAP},
 	}
-	token, err := postMicrosoftToken(ctx, data)
+	token, err := postMicrosoftToken(ctx, cfg, data)
 	if err != nil {
 		return "", "", err
 	}
 	return token.AccessToken, token.RefreshToken, nil
 }
 
-func postMicrosoftToken(ctx context.Context, data url.Values) (*MicrosoftOAuthToken, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, microsoftTokenEndpoint, strings.NewReader(data.Encode()))
+func postMicrosoftToken(ctx context.Context, cfg MicrosoftOAuthConfig, data url.Values) (*MicrosoftOAuthToken, error) {
+	_, tokenURL := microsoftEndpoints(cfg.TenantID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(data.Encode()))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	hc := &http.Client{Timeout: 30 * time.Second}
-	// #nosec G704 -- the request URL is microsoftTokenEndpoint, a package
-	// constant overridable only by tests (httptest.Server); no caller input
-	// reaches it, so this isn't an SSRF sink despite the taint analysis.
+	// #nosec G704 -- the request URL is microsoftLoginBase (a package
+	// constant overridable only by tests) plus a path-escaped tenant from a
+	// validated company bundle (a GUID or a domain); the host is fixed, so
+	// this isn't an SSRF sink despite the taint analysis.
 	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("token request: %w", err)
@@ -183,6 +200,12 @@ func postMicrosoftToken(ctx context.Context, data url.Values) (*MicrosoftOAuthTo
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
+		if data.Get("grant_type") == "refresh_token" && oauthclient.IsRejectedBody(body) {
+			// The client, not the grant: the company changed or deleted its
+			// app registration (AADSTS700016, AADSTS7000215…) — Re-login
+			// needed (#1887 P5).
+			return nil, fmt.Errorf("%w (%d): %s", oauthclient.ErrClientRejected, resp.StatusCode, body)
+		}
 		return nil, fmt.Errorf("token request failed (%d): %s", resp.StatusCode, body)
 	}
 

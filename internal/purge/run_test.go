@@ -65,11 +65,11 @@ func TestPurge02_RunFinishesPurged(t *testing.T) {
 		{"jira", []string{
 			`INSERT INTO jira_accounts (id, cloud_id, status) VALUES (1, 'c1', 'revoked')`,
 			`INSERT INTO jira_boards (account_id, id, name) VALUES (1, 7, 'A'), (1, 8, 'B')`,
-		}, []string{"jira_token_1.json"}, `SELECT status, enabled FROM jira_accounts WHERE id = 1`, 2},
+		}, []string{"jira_token_1.json", "jira_client_1.json"}, `SELECT status, enabled FROM jira_accounts WHERE id = 1`, 2},
 		{"linear", []string{
 			`INSERT INTO linear_accounts (id, org_id, status) VALUES (1, 'o1', 'revoked')`,
 			`INSERT INTO linear_teams (account_id, id, key, name) VALUES (1, 't1', 'ENG', 'Eng'), (1, 't2', 'OPS', 'Ops')`,
-		}, []string{"linear_token_1.json"}, `SELECT status, enabled FROM linear_accounts WHERE id = 1`, 2},
+		}, []string{"linear_token_1.json", "linear_client_1.json"}, `SELECT status, enabled FROM linear_accounts WHERE id = 1`, 2},
 	}
 	for _, c := range cases {
 		t.Run(c.source, func(t *testing.T) {

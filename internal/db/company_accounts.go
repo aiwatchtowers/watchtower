@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+
+	"watchtower/internal/oauthclient"
 )
 
 // Company ties on account rows (#1887, migration 00198): company_slug names
@@ -139,6 +141,29 @@ func (db *DB) MarkCompanyAccounts(slug string, sources []string, code string) ([
 		return nil, fmt.Errorf("marking company accounts: commit: %w", err)
 	}
 	return out, nil
+}
+
+// MarkAccountClientRejected records that the vendor refused the OAuth client
+// of source's account id: status 'error' with oauthclient.RejectedCode of the
+// row's own company_slug (invalid_client when tied, unknown_client when not),
+// in one statement, so a re-tie between a read and the write cannot pick the
+// wrong code. Like MarkCompanyAccounts it marks only a live row — a revoked
+// row keeps its purge clock (PURGE-01), a removed or purged row stays — and
+// reports whether it marked one.
+func (db *DB) MarkAccountClientRejected(source string, id int64) (bool, error) {
+	t, err := companyTable(source)
+	if err != nil {
+		return false, err
+	}
+	res, err := db.Exec(`UPDATE `+t.table+` SET status = 'error',
+		error = CASE WHEN company_slug <> '' THEN ? ELSE ? END`+t.markSet+`
+		WHERE id = ?`+t.filter+markableStatusSQL,
+		oauthclient.CodeInvalidClient, oauthclient.CodeUnknownClient, id)
+	if err != nil {
+		return false, fmt.Errorf("marking %s account %d client rejected: %w", source, id, err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 // queryCompanyAccountRefs runs query, which answers (id, status, error) rows

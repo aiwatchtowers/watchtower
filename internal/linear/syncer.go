@@ -3,7 +3,6 @@ package linear
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -112,8 +111,8 @@ func paginate(ctx context.Context, fetch func(ctx context.Context, after *string
 }
 
 // Sync runs one pass over every selected team; returns issues upserted. A team
-// error is recorded on that team and the pass continues; ErrAuthRevoked aborts
-// the pass at once. Returns the first error seen.
+// error is recorded on that team and the pass continues; a lost account
+// (ErrAuthRevoked, a rejected client) aborts the pass at once. Returns the first error seen.
 func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	if err := s.refreshTeams(ctx); err != nil {
 		return 0, err
@@ -132,7 +131,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	}
 	if err := s.reconcileMoved(ctx, teams, preWatermark); err != nil {
 		s.logger.Printf("moved issues: %v", err)
-		if errors.Is(err, ErrAuthRevoked) || ctx.Err() != nil {
+		if accountLost(err) || ctx.Err() != nil {
 			return total, err
 		}
 		if firstErr == nil {
@@ -140,7 +139,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		}
 	}
 	if err := s.syncUsers(ctx); err != nil {
-		if errors.Is(err, ErrAuthRevoked) {
+		if accountLost(err) {
 			return total, err
 		}
 		s.logger.Printf("users: %v", err)
@@ -155,7 +154,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 }
 
 // syncSelectedTeams syncs every selected team. A team error is recorded on
-// that team and kept as firstErr; ErrAuthRevoked or a cancelled context stops
+// that team and kept as firstErr; a lost account or a cancelled context stops
 // the loop and comes back as abort.
 func (s *Syncer) syncSelectedTeams(ctx context.Context, teams []db.LinearTeam) (total int, firstErr, abort error) {
 	// The workspace labels are mirrored once per pass, by the first team
@@ -175,7 +174,7 @@ func (s *Syncer) syncSelectedTeams(ctx context.Context, teams []db.LinearTeam) (
 		if rerr := s.db.RecordLinearSyncError(s.accountID, t.ID, err.Error()); rerr != nil {
 			s.logger.Printf("team %s: %v", t.Key, rerr)
 		}
-		if errors.Is(err, ErrAuthRevoked) || ctx.Err() != nil {
+		if accountLost(err) || ctx.Err() != nil {
 			return total, firstErr, err
 		}
 		if firstErr == nil {

@@ -83,7 +83,7 @@ func linearWriteClientFactory(cfg *config.Config, database *db.DB) tools.LinearW
 		if !linear.NewTokenStore(cfg.WorkspaceDir(), account.ID).Exists() {
 			return nil, fmt.Errorf("linear account #%d has no token; run 'watchtower linear login --account %d'", account.ID, account.ID)
 		}
-		client := linearClient(cfg, account.ID)
+		client := linearClient(cfg, database, account.ID)
 		return linearWriter{Client: client, syncer: linear.NewSyncer(client, database, account.ID, cfg.Linear.BackfillDays)}, nil
 	}
 }
