@@ -779,14 +779,15 @@ func lenientScanText(summary string) string {
 }
 
 // plainPart reports one part (its heredoc bodies blanked) that cannot run
-// a blanked body: no hidden shape, no output redirect, and the command —
+// a blanked body: no hidden shape, no output redirect, no ( outside quotes
+// (a zsh glob qualifier *(e:…:) or (+fn) runs code), and the command —
 // written as is, no wrapper, assignment or path in front — is a plain
 // message taker (plainMessageTaker) or on the allowlist (plainCommand).
 func plainPart(text string) bool {
 	if strings.TrimSpace(text) == "" {
 		return true
 	}
-	if hiddenText(text) || hasRedirect(text) {
+	if hiddenText(text) || unquotedAny(text, ">(") {
 		return false
 	}
 	words, ok := splitWords(text)
@@ -796,8 +797,9 @@ func plainPart(text string) bool {
 	return plainMessageTaker(words) || plainCommand(words)
 }
 
-// hasRedirect reports a > outside quotes (an output redirect).
-func hasRedirect(text string) bool {
+// unquotedAny reports any byte of chars outside quotes (not escaped): a >
+// is an output redirect, a ( a glob qualifier or subshell.
+func unquotedAny(text, chars string) bool {
 	var quote byte
 	for i := 0; i < len(text); i++ {
 		ch := text[i]
@@ -814,7 +816,7 @@ func hasRedirect(text string) bool {
 			}
 		case ch == '\'' || ch == '"':
 			quote = ch
-		case ch == '>':
+		case strings.IndexByte(chars, ch) >= 0:
 			return true
 		}
 	}
@@ -866,6 +868,11 @@ func plainCommand(w []string) bool {
 		return len(args) > 0 && slices.Contains([]string{"add", "status", "diff", "log", "show"}, args[0]) &&
 			noneOf("--output", "--ext-diff", "--textconv", "-c")
 	case "go":
+		for i, a := range args { // go takes --flag as -flag
+			if strings.HasPrefix(a, "--") {
+				args[i] = a[1:]
+			}
+		}
 		return len(args) > 0 && slices.Contains([]string{"test", "build", "vet"}, args[0]) &&
 			noneOf("-exec", "-toolexec", "-o", "-vettool")
 	case "gofmt":
@@ -878,24 +885,30 @@ func plainCommand(w []string) bool {
 	return false
 }
 
-// rmOutside reports an rm — anywhere in a part's words, so one behind a
-// wrapper or a background & counts — whose operand, quotes and escapes
-// removed, is an absolute, home or parent path (.. as a whole segment:
-// ..cache is local).
+// rmOutside reports an rm at command position — after the known wrappers
+// (sudo, xargs, env...), in each part and each segment of it behind a
+// background & — whose operand, quotes and escapes removed, is an
+// absolute, home or parent path (.. as a whole segment: ..cache is
+// local). An "rm" word elsewhere (an echo's argument) is no rm.
 func rmOutside(text string) bool {
 	for _, p := range splitCommands(text) {
 		words, ok := splitWords(p.text)
 		if !ok {
 			continue
 		}
-		for i, w := range words {
-			if path.Base(w) != "rm" {
+		for len(words) > 0 {
+			seg := words
+			if i := slices.Index(words, "&"); i >= 0 {
+				seg, words = words[:i], words[i+1:]
+			} else {
+				words = nil
+			}
+			var c shellCmd
+			seg = stripWrappers(slices.Clone(seg), &c)
+			if len(seg) < 2 || path.Base(seg[0]) != "rm" {
 				continue
 			}
-			for _, a := range words[i+1:] {
-				if a == "&" || a == ";" || a == "|" {
-					break
-				}
+			for _, a := range seg[1:] {
 				if strings.HasPrefix(a, "/") || strings.HasPrefix(a, "~") || a == ".." || strings.HasPrefix(a, "../") {
 					return true
 				}

@@ -749,6 +749,21 @@ func TestParkedBy_HeredocIdiomAndMoreHiddenShapes(t *testing.T) {
 	both("rm of ..\\/x", "make x & rm ..\\/x", LimitUnreadable)
 	both("rm of quoted .. then /x", "make x & rm \"..\"\\/x", LimitUnreadable)
 	both("rm of \\/etc", "make x & rm \\/etc/hosts", LimitUnreadable)
+	// Round 9: a zsh glob qualifier runs code, so ( outside quotes is no
+	// plain part; go's --flags are its -flags; rm counts only at command
+	// position.
+	both("ls glob qualifier", "git commit -m "+body+" && ls *(e:'git log -1 --format=%B|sh':)", LimitUnreadable)
+	both("git add glob qualifier", "git add *(+fn) && git commit -m "+body, LimitUnreadable)
+	both("ls glob, plain", "ls *.go && git commit -m "+msg, "")
+	both("go test --exec", "go test --exec sh ./... && git commit -m "+body, LimitUnreadable)
+	both("go test --toolexec=", "go test --toolexec=x ./... && git commit -m "+body, LimitUnreadable)
+	both("go vet --vettool=", "go vet --vettool=x ./... && git commit -m "+body, LimitUnreadable)
+	both("go build --o", "go build --o x . && git commit -m "+body, LimitUnreadable)
+	both("go test --count", "go test --count=1 ./... && git commit -m "+msg, "")
+	both("rm as an echo argument", `echo "$(pwd)" rm example /tmp`, "")
+	both("sudo rm behind &", "make x & sudo rm /tmp/x", LimitUnreadable)
+	both("rm after a hidden part", "echo $(date) && rm \\/tmp/x", LimitUnreadable)
+	both("xargs rm behind &", "make x & xargs rm ~/y", LimitUnreadable)
 	expectParked(t, cases)
 	// The strict backstop alone (the unreadable row comes first above).
 	r := bash(prBody)

@@ -542,6 +542,11 @@ func TestWatchmanGuard_HiddenShapesNeedALimitWord(t *testing.T) {
 		{"git commit -m \"$(cat <<'EOF'\ngit push origin main\nEOF\n)\" && git log -1 --format=%B > x.sh && chmod +x x.sh && ./x.sh", "Parked for the owner: unreadable — continue with other work"},
 		{"git add -A && git commit -m \"$(cat <<'EOF'\nrelease notes, push after the review\nEOF\n)\" && go test ./...", ""},
 		{"cd /w && git commit -m \"$(cat <<'EOF'\nrelease notes\nEOF\n)\"", ""},
+		// Round 9: a zsh glob qualifier, go's --exec, rm only as a command.
+		{"git commit -m \"$(cat <<'EOF'\ngit push origin main\nEOF\n)\" && ls *(e:'git log -1 --format=%B|sh':)", "Parked for the owner: unreadable — continue with other work"},
+		{"go test --exec sh ./... && git commit -m \"$(cat <<'EOF'\ngit push origin main\nEOF\n)\"", "Parked for the owner: unreadable — continue with other work"},
+		{`echo "$(pwd)" rm example /tmp`, ""},
+		{"make x & sudo rm /tmp/x", "Parked for the owner: unreadable — continue with other work"},
 		{"x $(git push origin HEAD:main)", "Parked for the owner: unreadable — continue with other work"},
 		{"true & gh pr merge 1", "Parked for the owner: unreadable — continue with other work"},
 		{`echo "open`, "Parked for the owner: unreadable — continue with other work"},
