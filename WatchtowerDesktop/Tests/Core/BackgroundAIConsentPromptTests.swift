@@ -93,25 +93,53 @@ final class BackgroundAIConsentPromptTests: XCTestCase {
     }
 
     /// A wanted sheet that never mounted is re-asserted with the same kind
-    /// and model; a mounted one is only brought forward, never replaced.
+    /// and a model rebuilt from the saved config (the first was never seen);
+    /// a mounted one is only brought forward, never replaced.
     @MainActor
     func testReEntryRetriesOnlyAnUnmountedSheet() {
         var sheet = BackgroundAIConsentSheet()
         let first = model()
         due(&sheet, made: first)
-        guard case let .retry(kind, held) = sheet.present(configUnreadable: false, makeModel: { self.model() }) else {
+        let rebuilt = model()
+        guard case let .retry(kind, held) = sheet.present(configUnreadable: false, makeModel: { rebuilt }) else {
             return XCTFail("an unmounted sheet is retried")
         }
         XCTAssertEqual(kind, .upgrade)
-        XCTAssertTrue(held === first)
+        XCTAssertTrue(held === rebuilt, "rebuilt from the saved config, not the unseen model")
         sheet.close()
         sheet.reopen(kind, model: held)
         XCTAssertEqual(sheet.opened, .upgrade)
-        XCTAssertTrue(sheet.model === first)
+        XCTAssertTrue(sheet.model === rebuilt)
 
         sheet.markMounted()
         XCTAssertEqual(sheet.present(configUnreadable: false) { self.model() }, .alreadyVisible)
-        XCTAssertTrue(sheet.model === first, "a visible sheet keeps its model")
+        XCTAssertTrue(sheet.model === rebuilt, "a visible sheet keeps its model")
+    }
+
+    /// An unmounted retry whose config became unreadable shows the error.
+    @MainActor
+    func testUnmountedRetryWithAnUnreadableConfigShowsTheError() {
+        var sheet = BackgroundAIConsentSheet()
+        due(&sheet)
+        XCTAssertEqual(sheet.present(configUnreadable: false) { nil }, .configError)
+        XCTAssertNil(sheet.opened)
+        XCTAssertTrue(sheet.showsConfigError)
+    }
+
+    /// Onboarding's step re-reads config.yaml after `.unreadable` and never
+    /// replaces a loaded model.
+    @MainActor
+    func testStepLoadRereadsAndKeepsALoadedModel() {
+        var load = BackgroundAIConsentStepLoad.pending
+        load.load { nil }
+        guard case .unreadable = load else { return XCTFail("unreadable") }
+        let fixed = model()
+        load.load { fixed }
+        guard case .ready(let shown) = load else { return XCTFail("ready after the re-read") }
+        XCTAssertTrue(shown === fixed)
+        load.load { self.model() }
+        guard case .ready(let kept) = load else { return XCTFail("still ready") }
+        XCTAssertTrue(kept === fixed, "a loaded model is never replaced")
     }
 
     @MainActor

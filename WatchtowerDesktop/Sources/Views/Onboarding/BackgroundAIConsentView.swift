@@ -131,12 +131,8 @@ struct BackgroundAIConsentStep: View {
     /// with a retry of the finish only.
     let onAnswered: @MainActor () async -> Bool
 
-    private enum Load {
-        case pending, ready(BackgroundAIConsentModel), unreadable
-    }
-
     @Environment(AppState.self) private var appState
-    @State private var load = Load.pending
+    @State private var load = BackgroundAIConsentStepLoad.pending
 
     var body: some View {
         Group {
@@ -149,14 +145,22 @@ struct BackgroundAIConsentStep: View {
                 VStack(alignment: .leading, spacing: Spacing.medium) {
                     Text(BackgroundAIConsentCopy.configUnreadableTitle).font(.title2.weight(.semibold))
                     Text(BackgroundAIConsentCopy.configUnreadable).foregroundStyle(Tone.error)
-                    Button(BackgroundAIConsentCopy.back, action: onBack).buttonStyle(.kitQuiet)
+                    HStack(spacing: Spacing.regular) {
+                        Button(BackgroundAIConsentCopy.back, action: onBack).buttonStyle(.kitQuiet)
+                        Spacer()
+                        // Re-reads config.yaml once the owner fixed it.
+                        Button(BackgroundAIConsentCopy.finishRetry) {
+                            load.load { appState.makeBackgroundAIConsentModel() }
+                        }
+                        .buttonStyle(.kitPrimary)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .onAppear {
             guard case .pending = load else { return }
-            load = appState.makeBackgroundAIConsentModel().map(Load.ready) ?? .unreadable
+            load.load { appState.makeBackgroundAIConsentModel() }
         }
     }
 }

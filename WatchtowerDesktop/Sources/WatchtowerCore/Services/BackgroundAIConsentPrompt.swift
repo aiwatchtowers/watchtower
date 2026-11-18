@@ -51,7 +51,8 @@ package struct BackgroundAIConsentSheet {
         /// Already on screen: only bring its window forward.
         case alreadyVisible
         /// Wanted but never mounted: the caller re-asserts it with
-        /// `close()` now and `reopen(_:model:)` a turn later.
+        /// `close()` now and `reopen(_:model:)` a turn later, with a model
+        /// rebuilt from the saved config (the old one was never seen).
         case retry(BackgroundAIConsentPrompt.Opened, BackgroundAIConsentModel)
 
         package static func == (lhs: Self, rhs: Self) -> Bool {
@@ -88,8 +89,14 @@ package struct BackgroundAIConsentSheet {
     package mutating func present(
         configUnreadable: Bool, makeModel: () -> BackgroundAIConsentModel?
     ) -> Presentation {
-        if let opened, let model {
-            return isMounted ? .alreadyVisible : .retry(opened, model)
+        if let opened, model != nil {
+            if isMounted { return .alreadyVisible }
+            guard !configUnreadable, let rebuilt = makeModel() else {
+                close()
+                showsConfigError = true
+                return .configError
+            }
+            return .retry(opened, rebuilt)
         }
         guard !configUnreadable, let made = makeModel() else {
             showsConfigError = true
@@ -128,5 +135,21 @@ package struct BackgroundAIConsentSheet {
         opened = kind
         self.model = model
         isMounted = false
+    }
+}
+
+/// Onboarding's consent step: its model once config.yaml was read, or the
+/// config error with a re-read. A loaded model is never replaced (it may be
+/// saving).
+@MainActor
+package enum BackgroundAIConsentStepLoad {
+    case pending
+    case ready(BackgroundAIConsentModel)
+    case unreadable
+
+    /// Reads (or re-reads after `.unreadable`); a no-op once `.ready`.
+    package mutating func load(_ makeModel: () -> BackgroundAIConsentModel?) {
+        if case .ready = self { return }
+        self = makeModel().map(Self.ready) ?? .unreadable
     }
 }

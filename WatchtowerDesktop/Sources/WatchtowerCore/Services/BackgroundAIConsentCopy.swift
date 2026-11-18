@@ -95,7 +95,8 @@ package enum BackgroundAIConsentCopy {
     package static let back = "Back"
     package static let saving = "Saving your choice…"
     /// The answer is saved but what follows it (onboarding's finish) failed:
-    /// only that runs again.
+    /// only that runs again. Also the step's re-read of an unreadable
+    /// config.yaml.
     package static let finishRetry = "Try again"
 
     package static func saveFailed(_ error: String) -> String {
