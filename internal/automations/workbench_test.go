@@ -258,37 +258,60 @@ func TestDuplicateRecipeNameGetsTheFolderPrefix(t *testing.T) {
 
 // A folder whose .watchtower/automations is a symlink has its rows keyed by
 // the resolved path (an explicit, owner-started rescan follows the link); a
-// sibling folder's rescan, comparing stored paths only, must not take them
-// for strays and retire them.
+// sibling folder's rescan must not take a live linked folder's rows for
+// strays and retire them — but a linked folder that left the bench has its
+// recipes retired.
 func TestSiblingRescanKeepsALinkedFolderRecipes(t *testing.T) {
 	f := newSchedFixture(t, exStart)
 	wb, home := newWorkbench(t, f.d)
 	hub, _ := putFolderOnBench(t, f.d, wb, "hub")
+	old, oldID := putFolderOnBench(t, f.d, wb, "old")
 	text := wbRecipeText("Drafts release notes.", `log("v1")`)
 	writeWorkbenchRecipe(t, home, "release", text)
-	target, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
+	linkRecipes := func(folder, slug string) string {
+		target, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(target, slug+".md"), []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(folder, ".watchtower"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, automations.WorkbenchDir(folder)); err != nil {
+			t.Fatal(err)
+		}
+		rescanWorkbench(t, f.ix, wb, folder) // the Desktop's pass, through the link
+		if a := workbenchRow(t, f.d, wb, slug); a.Path != filepath.Join(target, slug+".md") || a.RemovedAt != nil {
+			t.Fatalf("fixture: the linked folder's recipe: path %s removed %v", a.Path, a.RemovedAt)
+		}
+		return target
 	}
-	if err := os.WriteFile(filepath.Join(target, "deploy.md"), []byte(text), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(hub, ".watchtower"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(target, automations.WorkbenchDir(hub)); err != nil {
-		t.Fatal(err)
-	}
-	rescanWorkbench(t, f.ix, wb, hub) // the Desktop's pass, through the link
-	if a := workbenchRow(t, f.d, wb, "deploy"); a.Path != filepath.Join(target, "deploy.md") || a.RemovedAt != nil {
-		t.Fatalf("fixture: the linked folder's recipe: path %s removed %v", a.Path, a.RemovedAt)
-	}
+	linkRecipes(hub, "deploy")
+	linkRecipes(old, "cleanup")
 
 	if rep := rescanWorkbench(t, f.ix, wb, home); rep.Removed != 0 {
 		t.Fatalf("the home rescan removed rows: %+v", rep)
 	}
+	for _, slug := range []string{"deploy", "cleanup"} {
+		if a := workbenchRow(t, f.d, wb, slug); a.RemovedAt != nil {
+			t.Fatalf("a sibling folder's rescan retired the linked folder's recipe %s", slug)
+		}
+	}
+
+	// old leaves the bench: the next rescan of another folder retires its
+	// recipe; the live linked folder's stays.
+	if _, err := f.d.Exec(`UPDATE workbench_folders SET removed_at = '2026-11-18T00:00:00Z' WHERE id = ?`, oldID); err != nil {
+		t.Fatal(err)
+	}
+	writeWorkbenchRecipe(t, home, "release", wbRecipeText("Drafts release notes.", `log("v2")`))
+	rescanWorkbench(t, f.ix, wb, home)
+	if a := workbenchRow(t, f.d, wb, "cleanup"); a.RemovedAt == nil {
+		t.Fatal("the removed linked folder's recipe is still live")
+	}
 	if a := workbenchRow(t, f.d, wb, "deploy"); a.RemovedAt != nil {
-		t.Fatal("a sibling folder's rescan retired the linked folder's recipe")
+		t.Fatal("the live linked folder's recipe was retired")
 	}
 	workbenchRow(t, f.d, wb, "release")
 }
