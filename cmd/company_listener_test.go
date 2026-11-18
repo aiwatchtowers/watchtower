@@ -165,7 +165,7 @@ func TestCompanyListener_RefusedNothingReachesApp(t *testing.T) {
 		{"two bundles", "?b=" + rawWire(`{"v":1,"company":"Acme"}`) + "&b=" + rawWire(`{"v":1,"company":"Beta"}`), companybundle.RefusalDamaged},
 		{"unknown field", "?b=" + rawWire(`{"v":1,"company":"Acme","extra":1}`), companybundle.RefusalDamaged},
 		{"too long", "?b=" + strings.Repeat("A", companybundle.MaxEncodedLen+1), companybundle.RefusalTooLong},
-		{"site not https", "?b=" + rawWire(`{"v":1,"company":"Acme","atlassian":{"client_id":"acmeClientId01",` +
+		{"site not https", "?b=" + rawWire(`{"v":1,"company":"Acme","atlassian":{"client_id":"acmeClientId01",`+
 			`"client_secret":"s","site":"http://acme.atlassian.net","confluence":false}}`), companybundle.RefusalSiteNotHTTPS},
 		{"personal", "?b=" + rawWire(`{"v":1,"company":"Acme","personal":true}`), companybundle.RefusalPersonal},
 	}
