@@ -525,48 +525,39 @@ private struct SlackConnectSheetMock: View {
 
 // MARK: - needsFullSlack
 
-/// The real `FeatureEmptyState` of the Digests tab; the new readiness line
-/// and its button stand in `extra` until `Readiness.needsFullSlack` exists.
+/// The real `FeatureEmptyState` of a Slack tab under `Readiness.needsFullSlack`
+/// (screens spec §2.1): its line and its one Connect workspace app button.
 private struct NeedsFullSlackDigestsMock: View {
     var tab = "digests"
 
     var body: some View {
-        if let row = EmptyStateCopyTable.copy(for: tab, briefingHour: 8) {
-            // `needsFullSlack` replaces the tab's own action (as `needsSource` does today).
-            let copy = EmptyStateCopy(
-                icon: row.icon, title: row.title, landsHere: row.landsHere, feature: row.feature, primaryAction: nil)
+        if let copy = EmptyStateCopyTable.copy(for: tab, briefingHour: 8) {
             FeatureEmptyState(
-                copy: copy, readiness: nil, syncLine: nil, turnOnError: nil, isTurningOn: false,
-                onAction: { _ in },
-                extra: {
-                    Text(Copy.needsFullLine).font(.callout).multilineTextAlignment(.center)
-                    Button(Copy.needsFullAction) {}.buttonStyle(.kitPrimary)
-                }
-            )
+                copy: copy, readiness: .needsFullSlack, syncLine: nil, turnOnError: nil, isTurningOn: false
+            ) { _ in }
             .detailBackground()
         }
     }
 }
 
+/// The real Home → Getting ready row of Digests under `needsFullSlack`.
 private struct NeedsFullSlackHomeCardMock: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.regular) {
-            HStack(spacing: Spacing.regular) {
-                Image(systemName: "doc.text.magnifyingglass").foregroundStyle(.secondary)
-                Text("Digests").font(.headline)
-            }
-            Text(Copy.needsFullLine).font(.callout).fixedSize(horizontal: false, vertical: true)
-            Button(Copy.needsFullAction) {}.buttonStyle(.kitSecondary)
-        }
+        GettingReadyRowView(
+            card: GettingReadyCard(
+                feature: .digests,
+                copy: EmptyStateCopyTable.featureCard(.digests, briefingHour: 8),
+                readiness: .needsFullSlack)
+        ) { _ in }
         .controlSize(.small)
-        .padding(Spacing.medium)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .card()
         .padding(Spacing.large)
         .detailBackground()
     }
 }
 
+/// No Knowledge search view exists in the Desktop yet (the knowledge index
+/// is read by the chats' `search_knowledge`): the note's string is
+/// `SlackModePresentation.knowledgeNote`, laid out as the mockup did.
 private struct NeedsFullSlackKnowledgeMock: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.medium) {
@@ -579,7 +570,7 @@ private struct NeedsFullSlackKnowledgeMock: View {
             .card()
             HStack(alignment: .top, spacing: Spacing.regular) {
                 Image(systemName: "info.circle").foregroundStyle(.secondary)
-                Text(Copy.knowledgeNote)
+                Text(SlackPaneModeFixture.presentation(.live).knowledgeNote ?? "")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

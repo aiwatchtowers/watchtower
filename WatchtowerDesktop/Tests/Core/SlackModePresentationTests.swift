@@ -266,4 +266,23 @@ final class SlackModePresentationTests: XCTestCase {
 
         XCTAssertEqual(make(lastError: error).liveBlock, .readFailed, "nothing read yet: only the warning")
     }
+
+    // MARK: - §2.2 the Knowledge note
+
+    func testKnowledgeNoteOnlyInLive() {
+        let live = make(rows: [row("claude", "ok", team: "T0ACME")])
+        XCTAssertEqual(live.display, .live)
+        XCTAssertEqual(live.knowledgeNote,
+                       "Slack is not in Knowledge: Live answers are not kept. "
+                           + "Connect your workspace's app to add synced Slack.")
+        XCTAssertEqual(live.knowledgeNoteAction, "Connect workspace app")
+
+        let full = make(accounts: [account()], rows: [row("claude", "ok", team: "T0ACME")])
+        XCTAssertEqual(full.display, .fullLive)
+        XCTAssertNil(full.knowledgeNote, "synced Slack is in Knowledge")
+        XCTAssertNil(make().knowledgeNote, "Off: nothing to explain")
+        let shared = make(accounts: [account()], shared: [1], rows: [row("claude", "ok", team: "T0ACME")])
+        XCTAssertEqual(shared.display, .sharedApp)
+        XCTAssertNil(shared.knowledgeNote, "the shared app still syncs")
+    }
 }

@@ -6,6 +6,13 @@ extension AppState {
     /// The Slack Live probe's status mirror, rebuilt with the database.
     func initSlackLive(dbPool: DatabasePool, cliRunner: (any CLIRunnerProtocol)?) {
         let center = SlackLiveStatusCenter(dbPool: dbPool, runner: cliRunner)
+        // Off ↔ Live moves Catch-Up and Statistics and every Slack
+        // feature's readiness (screens spec §2.2, §6).
+        center.onStatusesChange = { [weak self] in
+            guard let self else { return }
+            await refreshConnectedSources()
+            await readinessCenter.rereadDatabase()
+        }
         slackLiveStatusCenter = center
         Task { await center.reload() }
         startSlackConnectListener()

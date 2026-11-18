@@ -57,11 +57,15 @@ final class ReadinessCenter {
         var runningBackfillStarts: [Date]
         var memoryHasRun: Bool
         var jiraBoardsSelected: Bool
+        /// The Slack Live verdicts behind `ReadinessInputs.slackLiveOnly`.
+        var slackLiveVerdicts: [String]
     }
 
     @ObservationIgnored private let environment: any ReadinessEnvironment
     @ObservationIgnored private let tickInterval: Duration
     @ObservationIgnored private var snapshot: DBSnapshot?
+    /// The pool `start` reads, for `rereadDatabase()`.
+    @ObservationIgnored private var pool: DatabasePool?
     @ObservationIgnored private var observationTask: Task<Void, Never>?
     @ObservationIgnored private var tickTask: Task<Void, Never>?
     /// The tick's wait between re-reads; tests replace it to tick by hand.
@@ -82,6 +86,7 @@ final class ReadinessCenter {
     /// starts the tick. A second call restarts both.
     func start(pool: DatabasePool) {
         stop()
+        self.pool = pool
         let current = generation
         observationTask = Task { [weak self] in
             do {
@@ -120,7 +125,16 @@ final class ReadinessCenter {
                    latestRuns: try ReadinessQueries.latestRuns(db),
                    runningBackfillStarts: try ReadinessQueries.runningBackfillStarts(db),
                    memoryHasRun: try ReadinessQueries.memoryHasRun(db),
-                   jiraBoardsSelected: try ReadinessQueries.jiraBoardsSelected(db))
+                   jiraBoardsSelected: try ReadinessQueries.jiraBoardsSelected(db),
+                   slackLiveVerdicts: try ReadinessQueries.slackLiveVerdicts(db))
+    }
+
+    /// Re-reads the DB now instead of at the next tick: another process
+    /// wrote what the observation cannot see (the Live probe's
+    /// `slack_live_status`, screens spec §6). A no-op before `start`.
+    func rereadDatabase() async {
+        guard let pool else { return }
+        await reread(pool, generation: generation)
     }
 
     /// The tick's one-shot read: picks up the daemon's writes, and a table a
@@ -145,6 +159,7 @@ final class ReadinessCenter {
         tickTask?.cancel()
         tickTask = nil
         snapshot = nil
+        pool = nil
     }
 
     /// Re-reads the non-DB inputs and re-evaluates. A no-op until the first
@@ -195,7 +210,9 @@ final class ReadinessCenter {
             runningBackfillStarts: snapshot.runningBackfillStarts,
             memoryHasRun: snapshot.memoryHasRun,
             backfillOff: environment.backfillDays.map { $0 <= 0 } ?? false,
-            jiraBoardsSelected: snapshot.jiraBoardsSelected
+            jiraBoardsSelected: snapshot.jiraBoardsSelected,
+            slackLiveOnly: SlackMode.derive(
+                full: environment.connected.slack, liveStatuses: snapshot.slackLiveVerdicts) == .live
         )
     }
 }

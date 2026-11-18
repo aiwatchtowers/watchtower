@@ -1,3 +1,4 @@
+import DesignKit
 import SwiftUI
 import WatchtowerCore
 
@@ -240,6 +241,12 @@ struct GettingReadyRowView: View {
                 onLink(.connect(source))
             }
             .buttonStyle(.link)
+        }
+        if card.readiness == .needsFullSlack {
+            // Slack Live only (screens spec §2.2): Home keeps its own
+            // prominent action, so this one is secondary.
+            Button(ReadinessSource.fullSlack.actionTitle) { onLink(.connect(.fullSlack)) }
+                .buttonStyle(.kitSecondary)
         }
     }
 

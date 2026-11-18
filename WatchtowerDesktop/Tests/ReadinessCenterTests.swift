@@ -84,6 +84,48 @@ final class ReadinessCenterTests: XCTestCase {
         await waitUntil(center) { $0[.digests] == .ready }
     }
 
+    /// The Live probe is a CLI child (another process) the observation never
+    /// sees: `rereadDatabase()` — what a change of the Live center's
+    /// statuses calls — re-evaluates Off ↔ Live at once (screens spec §6).
+    func testLiveStatusChangeReevaluates() async throws {
+        let pool = try makePool()
+        let environment = FakeReadinessEnvironment()
+        environment.connected = .none
+        let ticks = HandOpenedSleeps()
+        let center = ReadinessCenter(environment: environment)
+        center.tickSleep = { _ in await ticks.sleep() }
+        center.start(pool: pool)
+        defer { center.stop() }
+        await waitUntil(center) { !$0.isEmpty }
+        XCTAssertEqual(center.readiness(for: .digests), .needsSource(.slack))
+        XCTAssertEqual(center.readiness(for: .inbox), .needsSource(.anySource))
+
+        let probe = try DatabasePool(path: try XCTUnwrap(poolPaths.last))
+        try await probe.write { db in
+            try db.execute(sql: """
+                INSERT INTO slack_live_status (team_id, provider, status, error_class, connector_id, checked_at)
+                VALUES ('T1', 'claude', 'ok', '', '', '2026-11-18T09:00:00.000000000Z')
+                """)
+        }
+        await center.rereadDatabase()
+        XCTAssertEqual(center.readiness(for: .digests), .needsFullSlack)
+        XCTAssertEqual(center.readiness(for: .inbox), .needsFullSlack)
+
+        try await probe.write { db in
+            try db.execute(sql: """
+                INSERT INTO slack_live_status (team_id, provider, status, error_class, connector_id, checked_at)
+                VALUES ('', 'claude', 'not_connected', '', '', '2026-11-18T10:00:00.000000000Z')
+                """)
+        }
+        try probe.close()
+        await center.rereadDatabase()
+        XCTAssertEqual(center.readiness(for: .digests), .needsSource(.slack), "Live → Off")
+
+        environment.connected = ConnectedSources(slack: true)
+        center.refresh()
+        XCTAssertNotEqual(center.readiness(for: .digests), .needsFullSlack, "a synced account is Full")
+    }
+
     func testObservationStartsWithMissingTable() async throws {
         let pool = try makePool()
         try await pool.write { db in try db.execute(sql: "DROP TABLE stream_digests") }
