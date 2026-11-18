@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/memfake"
@@ -537,19 +538,40 @@ func TestProcessor_EventFlushNotBehindAnotherMailboxsWrite(t *testing.T) {
 	<-writing
 	// Two events of the other phone, each read, applied and echoed while the
 	// first phone's write still waits: an event pass writes its own
-	// mailbox's queue only, never waiting on another's.
+	// mailbox's queue only, never waiting on another's. One that waits on a
+	// queue's lock fails at once (queueWait), the held write released.
+	var freed sync.Once
+	free := func() { freed.Do(func() { close(release) }) }
+	defer free()
+	waitedOn := make(chan string, 4)
+	w.proc.queueWait = func(queue string) { waitedOn <- queue }
+	type result struct {
+		r   PassReport
+		err error
+	}
 	for range 2 {
 		seq, err := other.Act("board_comment_add")
 		if err != nil {
 			t.Fatal(err)
 		}
-		r, err := w.proc.PassEvent(w.ctx, transport.Event{Zone: other.Zone()})
-		if err != nil || r.Applied != 1 || r.ControlsWritten != 1 {
-			t.Fatalf("event pass of action %d: %+v, %v", seq, r, err)
+		done := make(chan result, 1)
+		go func() {
+			r, err := w.proc.PassEvent(w.ctx, transport.Event{Zone: other.Zone()})
+			done <- result{r, err}
+		}()
+		select {
+		case res := <-done:
+			if res.err != nil || res.r.Applied != 1 || res.r.ControlsWritten != 1 {
+				t.Fatalf("event pass of action %d: %+v, %v", seq, res.r, res.err)
+			}
+		case q := <-waitedOn:
+			free()
+			<-done
+			t.Fatalf("the event pass of action %d waited on queue %s", seq, q)
 		}
 		<-written
 	}
-	close(release)
+	free()
 	if err := <-passed; err != nil {
 		t.Fatal(err)
 	}
@@ -609,4 +631,47 @@ func TestProcessor_NoLateEchoWriteAfterPauseFor(t *testing.T) {
 	if want := []string{"save", "paused"}; !slices.Equal(order, want) {
 		t.Fatalf("order %v, want %v", order, want)
 	}
+}
+
+// deadlineSaves is the memfake whose Save, while hang is set, stands for a
+// write that never answers: it notes the caller's deadline and returns as
+// that deadline would end it.
+type deadlineSaves struct {
+	*memfake.Fake
+	hang        bool
+	deadline    time.Time
+	hasDeadline bool
+}
+
+func (d *deadlineSaves) Save(ctx context.Context, items []transport.SaveItem) ([]transport.Outcome, error) {
+	if d.hang {
+		d.deadline, d.hasDeadline = ctx.Deadline()
+		return nil, context.DeadlineExceeded
+	}
+	return d.Fake.Save(ctx, items)
+}
+
+// TestProcessor_LateEchoWriteIsBounded: a late echo's write runs under
+// LateEchoWriteTimeout even when its caller's context has no deadline (a
+// held line's writer), so a write that never answers cannot hold PauseFor;
+// the echo stays queued and the next pass writes it.
+func TestProcessor_LateEchoWriteIsBounded(t *testing.T) {
+	w := newWorld(t, transport.KindRelay)
+	seen := heldThenLate(w)
+	seq := w.act("session_input")
+	w.settle()
+	ds := &deadlineSaves{Fake: w.fake, hang: true}
+	w.use(ds)
+	if err := w.proc.LateEcho(context.Background(), *seen, Outcome{Status: wire.StatusApplied}); err != nil {
+		t.Fatal(err)
+	}
+	if left := time.Until(ds.deadline); !ds.hasDeadline || left <= 0 || left > LateEchoWriteTimeout {
+		t.Fatalf("the late echo's write had deadline %v (set %v), want within %v", ds.deadline, ds.hasDeadline, LateEchoWriteTimeout)
+	}
+	if n := w.pending(); n != 1 {
+		t.Fatalf("%d rows queued after the unanswered write, want the echo", n)
+	}
+	ds.hang = false
+	w.settle()
+	w.wantEcho(seq, wire.StatusApplied, "")
 }

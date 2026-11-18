@@ -6,11 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/wire"
 )
+
+// LateEchoWriteTimeout bounds a late echo's write (the transports' own
+// per-op bound: CloudKit's write timeout, the relay's HTTP one): its caller
+// may have no deadline (a held line's writer), and the write holds PauseFor
+// while it runs. An unwritten echo stays queued for the next pass.
+const LateEchoWriteTimeout = 30 * time.Second
 
 // ErrNotDecided refuses a late echo of an action the ledger does not hold as
 // done with a held echo under the phone's current link: a removed or
@@ -52,7 +59,9 @@ func (p *Processor) LateEcho(ctx context.Context, r Request, o Outcome) error {
 		// Queued: the first pass after the pause writes it.
 		return nil
 	}
-	if err := p.flushBox(ctx, b); err != nil {
+	wctx, cancel := context.WithTimeout(ctx, LateEchoWriteTimeout)
+	defer cancel()
+	if err := p.flushBox(wctx, b); err != nil {
 		log.Printf("hub: flushing device %s's mailbox after a late echo: %s", b.id, errClass(err))
 	}
 	return nil

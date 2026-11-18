@@ -1198,8 +1198,11 @@ func zoneKind(zone, data string) string {
 // named its relay id has its mailbox refused until the relay puts the hub
 // in its slot, often within the same second, and its transport_switch must
 // not wait linkEvery (#1761). A refusal after that still backs off, from
-// the doubled wait, so admissions never make it spin. A subscription that
-// takes means the relay is reachable.
+// the doubled wait, so admissions never make it spin. A subscription the
+// relay confirmed means it is reachable; one the transport only queued for
+// its next connect (transport.ErrWatchQueued, disconnected) counts as
+// watched but says nothing of reach, so it never clears an outage the event
+// lane noted.
 func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
 	if _, ok := h.relayT().(relayAdmission); ok {
 		v := h.relayVouched()
@@ -1226,7 +1229,9 @@ func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
 		if r != nil && now.Before(r.next) {
 			continue
 		}
-		if err := zw.WatchZone(ctx, z); err != nil {
+		err := zw.WatchZone(ctx, z)
+		queued := errors.Is(err, transport.ErrWatchQueued)
+		if err != nil && !queued {
 			if r == nil {
 				r = &subRetry{}
 				h.subRetry[z] = r
@@ -1237,14 +1242,16 @@ func (h *hubRuntime) watchZones(ctx context.Context, zw zoneWatcher) {
 			r.next = now.Add(min(wait, maxSubBackoff))
 			continue
 		}
-		if r != nil && h.paying != nil {
+		if r != nil && h.paying != nil && !queued {
 			// The relay takes a zone it refused: a phone holds the hub in
 			// a slot now, and may pay.
 			h.paying.Recheck()
 		}
 		delete(h.subRetry, z)
 		h.watched[z] = true
-		h.setUnreachable(false)
+		if !queued {
+			h.setUnreachable(false)
+		}
 	}
 }
 
