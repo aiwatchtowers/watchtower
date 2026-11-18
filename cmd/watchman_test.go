@@ -227,7 +227,7 @@ func TestWatchmanStatus_JSONKeysPinned(t *testing.T) {
 	var cats []map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(bt["categories"], &cats))
 	require.Len(t, cats, 1)
-	assert.Equal(t, []string{"acceptable", "agree", "bad", "baseline", "category", "cost_usd", "rec_baseline", "status", "total",
+	assert.Equal(t, []string{"acceptable", "agree", "bad", "baseline", "category", "cost_usd", "handed", "rec_baseline", "status", "total",
 		"wrong_high"}, mapKeys(cats[0]))
 	var src map[string]map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(w["sources"], &src))

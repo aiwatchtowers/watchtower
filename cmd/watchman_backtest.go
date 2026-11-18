@@ -60,14 +60,19 @@ func init() {
 			"A judge reads each of its decisions next to yours and the situation and grades it: same as yours, " +
 			"acceptable (a different path you could live with) or bad (you would have had to undo it); " +
 			"an ask with several questions counts each question. " +
-			"A category is strong when at most 5 % of its decisions are bad and none of the bad ones was taken " +
+			"Watchman hands a decision back to you only when it needs your own hands (a token, a sign-in, a command on your side, " +
+			"your device, a payment); the judge rules whether that was right: if so, the decision is counted as handed to you, " +
+			"not scored; if not, it counts as one bad decision. " +
+			"A category is strong when at most 5 % of its scored decisions are bad and none of the bad ones was taken " +
 			"while Watchman was sure; matching you exactly is not required. " +
-			"Fewer than 30 decisions is not measured (no AI call). The verdict is go when 3 categories are strong, " +
+			"Fewer than 30 decisions is not measured (no AI call), and neither is a category left with fewer than 20 scored " +
+			"decisions once the handed ones are taken out. The verdict is go when 3 categories are strong, " +
 			"permission, design or scope among them. Also shown: how often you picked the option the agent " +
 			"recommended. Review approvals, hunk undos, merges and your own rewrites are not " +
 			"measured in phase 1; review_code is measured on your review comments only. " +
 			"Each decision is one strong-model call, plus a strong-model judge call unless it picked exactly your option, " +
-			"so a full run costs real money (the cost shown is an estimate); the daemon reruns it weekly in the background.",
+			"so a full run costs real money (the cost shown is an estimate); the daemon reruns it weekly in the background. " +
+			"Each run writes a report of the judge's grades and reasons per decision (no texts) to the workspace folder.",
 		Args: cobra.NoArgs,
 		RunE: runWatchmanBacktest,
 	}
@@ -81,16 +86,19 @@ func init() {
 // watchmanBacktestJSON is `watchman backtest --json` (keys pinned by
 // TestWatchmanBacktest_JSONKeysPinned). A failed run prints the same object
 // with ok false, status failed and its error; the finished categories are
-// kept.
+// kept. ReportPath is the run report (watchman.BacktestReportPath), "" with
+// ReportError set when it could not be written.
 type watchmanBacktestJSON struct {
-	OK         bool                      `json:"ok"`
-	Workbench  int64                     `json:"workbench"`
-	BacktestID int64                     `json:"backtest_id"`
-	Status     string                    `json:"status"`
-	Verdict    string                    `json:"verdict"`
-	CostUSD    float64                   `json:"cost_usd"`
-	Categories []watchmanBacktestRowJSON `json:"categories"`
-	Error      string                    `json:"error,omitempty"`
+	OK          bool                      `json:"ok"`
+	Workbench   int64                     `json:"workbench"`
+	BacktestID  int64                     `json:"backtest_id"`
+	Status      string                    `json:"status"`
+	Verdict     string                    `json:"verdict"`
+	CostUSD     float64                   `json:"cost_usd"`
+	Categories  []watchmanBacktestRowJSON `json:"categories"`
+	ReportPath  string                    `json:"report_path"`
+	ReportError string                    `json:"report_error"`
+	Error       string                    `json:"error,omitempty"`
 }
 
 type watchmanBacktestRowJSON struct {
@@ -104,6 +112,7 @@ type watchmanBacktestRowJSON struct {
 	Baseline    float64 `json:"baseline"`
 	RecBaseline float64 `json:"rec_baseline"`
 	Status      string  `json:"status"`
+	Handed      int     `json:"handed"` // handed to the owner, not scored
 }
 
 // watchmanBacktestNotMeasuredNote names what the phase-1 backtest leaves out
@@ -141,26 +150,26 @@ func runWatchmanBacktest(cmd *cobra.Command, _ []string) error {
 	}
 	gen := watchmanGeneratorFactory(cfg)
 	store := prompts.New(database, nil)
-	id, runErr := watchman.Backtest(cmd.Context(), database, gen, watchman.NewLLMJudge(gen, store), store, wb, time.Now())
+	run, runErr := watchman.Backtest(cmd.Context(), database, gen, watchman.NewLLMJudge(gen, store), store, wb, cfg.WorkspaceDir(), time.Now())
 	if errors.Is(runErr, watchman.ErrBusy) {
 		if watchmanBacktestFlagJSON {
 			_ = writeJSON(cmd.OutOrStdout(), map[string]any{"ok": false, "error": "busy"})
 		}
 		return fmt.Errorf("a Watchman backtest is already running (the daemon's weekly one or another): try again when it ends")
 	}
-	if id == 0 { // the run failed before its row was written
+	if run.ID == 0 { // the run failed before its row was written
 		return runErr
 	}
-	b, rows, err := database.WatchmanBacktestByID(wb, id)
+	b, rows, err := database.WatchmanBacktestByID(wb, run.ID)
 	if err != nil || b == nil {
 		return errors.Join(runErr, err)
 	}
 	res := watchmanBacktestJSON{OK: runErr == nil, Workbench: wb, BacktestID: b.ID, Status: b.Status, Verdict: b.Verdict,
-		CostUSD: b.CostUSD, Categories: []watchmanBacktestRowJSON{}, Error: b.Error}
+		CostUSD: b.CostUSD, Categories: []watchmanBacktestRowJSON{}, ReportPath: run.ReportPath, ReportError: run.ReportError, Error: b.Error}
 	for _, r := range rows {
 		res.Categories = append(res.Categories, watchmanBacktestRowJSON{Category: r.Category, Total: r.Total, Agree: r.Agree,
 			Acceptable: r.Acceptable, Bad: r.Bad, WrongHigh: r.WrongHigh, CostUSD: r.CostUSD, Baseline: r.Baseline,
-			RecBaseline: r.RecBaseline, Status: r.Status})
+			RecBaseline: r.RecBaseline, Status: r.Status, Handed: r.Handed})
 	}
 	if runErr == nil {
 		// The daemon's weekly launch reads this stamp: a finished run, manual
@@ -180,19 +189,29 @@ func runWatchmanBacktest(cmd *cobra.Command, _ []string) error {
 	for _, r := range rows {
 		switch r.Status {
 		case watchman.BacktestNotMeasured:
-			fmt.Fprintf(out, "%-12s not measured (%d of %d decisions)\n", r.Category, r.Total, watchman.HiddenPerCategory)
+			if r.Handed > 0 {
+				fmt.Fprintf(out, "%-12s not measured: %d of %d handed to you (%d scored, %d needed)\n",
+					r.Category, r.Handed, watchman.HiddenPerCategory, r.Total, watchman.MinScored)
+			} else {
+				fmt.Fprintf(out, "%-12s not measured (%d of %d decisions)\n", r.Category, r.Total, watchman.HiddenPerCategory)
+			}
 		default:
-			fmt.Fprintf(out, "%-12s %s: %d same / %d acceptable / %d bad (%d bad while sure) · recommended-pick %.0f %% (~$%.2f)\n",
-				r.Category, r.Status, r.Agree, r.Acceptable, r.Bad, r.WrongHigh, r.RecBaseline*100, r.CostUSD)
+			fmt.Fprintf(out, "%-12s %s: %d same / %d acceptable / %d bad (%d bad while sure) · %d handed · recommended-pick %.0f %% (~$%.2f)\n",
+				r.Category, r.Status, r.Agree, r.Acceptable, r.Bad, r.WrongHigh, r.Handed, r.RecBaseline*100, r.CostUSD)
 		}
 	}
 	fmt.Fprintln(out, watchmanBacktestNotMeasuredNote)
 	if runErr != nil {
 		fmt.Fprintf(out, "The backtest stopped (cost so far ~$%.2f, an estimate); the categories above are kept.\n", b.CostUSD)
-		return runErr
+	} else {
+		fmt.Fprintf(out, "Verdict: %s (cost ~$%.2f, an estimate from the token counts where the provider reports none)\n", b.Verdict, b.CostUSD)
 	}
-	fmt.Fprintf(out, "Verdict: %s (cost ~$%.2f, an estimate from the token counts where the provider reports none)\n", b.Verdict, b.CostUSD)
-	return nil
+	if run.ReportPath != "" {
+		fmt.Fprintf(out, "Report: %s\n", run.ReportPath)
+	} else if run.ReportError != "" {
+		fmt.Fprintf(out, "Report not written: %s\n", run.ReportError)
+	}
+	return runErr
 }
 
 // watchmanBacktestArgs is the detached child's argv after the binary.
