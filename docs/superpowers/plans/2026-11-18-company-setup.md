@@ -309,6 +309,7 @@ func microsoftEndpoints(tenantID string) (authURL, tokenURL string)
 - Create: `docs/mdm/keys.json`, `docs/mdm/site.json` (`{"url": policy.ITGuideURL}`, golden-tested so Swift reads the one value); `cmd/policy_keys_test.go`
 - Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Models/ManagedPolicy.swift` (+ reader), `WatchtowerDesktop/Tests/Core/ManagedPolicyTests.swift`
 - Modify: `cmd/company.go` (`companyForcedBundle` reads the policy)
+- Modify: `internal/daemon/daemon.go` (`(*Daemon).Run`, before the first cycle: `company.ApplyForcedChanges(d.db, company.NewStore(workspace), policy.Current().CompanyBundle())`; an error is logged and the daemon carries on — accounts then fall back to the `invalid_client` text, never a crash), `internal/daemon/daemon_test.go`
 
 **Interfaces:**
 ```go
@@ -325,8 +326,8 @@ const itGuidePlaceholder = "https://example.com/mdm"
 - `CompanyBundle` with a wrong type or a bundle `companybundle.Parse(_, OriginMDM)` refuses → most restrictive = absent + a `Problem`; booleans wrong type → `false` + `Problem` (POLICY-01).
 
 - [ ] **Step 1: Fixture rows** in `policy_cases.json`: each new key forced valid; wrong type; `CompanyBundle` with `personal:true` → refused; absent → defaults true/true/"".
-- [ ] **Step 2: Failing tests:** Go `TestPolicyCases` (existing, extended), `TestPolicyKeys_JSONEqualsDocsFile` (golden: `docs/mdm/keys.json` == `policy keys --json` output; `-update` rewrites), `TestPolicyShow_NamesITGuide`, `TestITGuideURL_NotPlaceholder` (fails while `ITGuideURL == itGuidePlaceholder`; marked `t.Skip` with reason "Task 31 sets the URL" until Task 31, whose Step 1 removes the skip — so the umbrella PR cannot merge into main with the placeholder: the umbrella merge checklist lists "TestITGuideURL_NotPlaceholder runs unskipped"); Swift `ManagedPolicyTests.testSharedFixture` (existing, extended).
-- [ ] **Step 3:** `go test ./internal/policy ./cmd -run 'Policy'` → FAIL; implement; → PASS. `make test-swift FILTER=ManagedPolicyTests` → PASS; `make lint-swift`; `make lint-diff`.
+- [ ] **Step 2: Failing tests:** Go `TestPolicyCases` (existing, extended), `TestPolicyKeys_JSONEqualsDocsFile` (golden: `docs/mdm/keys.json` == `policy keys --json` output; `-update` rewrites), `TestPolicyShow_NamesITGuide`, `TestDaemonRun_AppliesForcedChangesBeforeFirstCycle` (fake policy with a forced Acme whose Atlassian client differs from `.seen` → after `Run` starts, Acme's Atlassian account is Re-login before the first cycle's Jira sync runs; called once per start, not per cycle), `TestDaemonRun_ForcedChangesErrorDoesNotStopDaemon`, `TestITGuideURL_NotPlaceholder` (fails while `ITGuideURL == itGuidePlaceholder`; marked `t.Skip` with reason "Task 31 sets the URL" until Task 31, whose Step 1 removes the skip — so the umbrella PR cannot merge into main with the placeholder: the umbrella merge checklist lists "TestITGuideURL_NotPlaceholder runs unskipped"); Swift `ManagedPolicyTests.testSharedFixture` (existing, extended).
+- [ ] **Step 3:** `go test ./internal/policy ./cmd -run 'Policy'` and `go test ./internal/daemon -run DaemonRun_` → FAIL; implement; → PASS. `make test-swift FILTER=ManagedPolicyTests` → PASS; `make lint-swift`; `make lint-diff`.
 - [ ] **Step 4: Inventory:** `docs/inventory/policy.md` POLICY-01/02 list the three keys; changelog line (approved: asks #1476, D9).
 - [ ] **Step 5: Commit** `feat(policy): CompanyBundle, AllowAtlassianAPIToken, AllowOwnGoogleProject (#1887)`.
 
