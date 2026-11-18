@@ -351,6 +351,9 @@ type kindSaves struct {
 	kinds []Kind
 }
 
+// NudgeCycleDone completes SaveLatency (Task 3); these tests count saves only.
+func (s *kindSaves) NudgeCycleDone(_, _ string, _, _ time.Time) {}
+
 func (s *kindSaves) Saved(_, kind string, _, _ time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
