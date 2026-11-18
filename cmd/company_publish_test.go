@@ -28,15 +28,16 @@ const publishTestToken = "xoxe.xoxp-1-publish-config-token"
 // publishFakeSlack is Slack's auth.test and apps.manifest.export/update for
 // the app A0ACME in T0ACME.
 type publishFakeSlack struct {
-	teamID     string
-	manifest   slackapp.Manifest
-	updateErr  error
-	teamErr    error
-	creates    int
-	updates    int
-	calls      int
-	lastLong   string
-	seenTokens []string
+	teamID      string
+	manifest    slackapp.Manifest
+	updateErr   error
+	teamErr     error
+	creates     int
+	updates     int
+	calls       int
+	lastLong    string
+	seenTokens  []string
+	afterUpdate func()
 }
 
 func (f *publishFakeSlack) Team(_ context.Context, tok string) (string, string, error) {
@@ -62,7 +63,45 @@ func (f *publishFakeSlack) Update(_ context.Context, _, _ string, m slackapp.Man
 	}
 	f.manifest = m
 	f.lastLong = m.LongDescription()
+	if f.afterUpdate != nil {
+		f.afterUpdate()
+	}
 	return nil
+}
+
+// A draft saved while Slack was being updated is not the one published:
+// it is kept.
+func TestPublish_NewerDraftIsKept(t *testing.T) {
+	h := newPublishHarness(t)
+	h.draft(t, nil)
+	h.api.afterUpdate = func() {
+		h.draft(t, func(d *company.Draft) { d.DenyHosts = []string{"later.example.com"} })
+	}
+	res := h.publish(t, companyPublishInput{Company: "Acme", ConfigToken: publishTestToken})
+	require.Equal(t, publishOK, res.Result)
+	assert.NotEmpty(t, res.DraftError)
+	d, st, _, err := h.store.LoadDraft(companyDraftT0)
+	require.NoError(t, err)
+	require.Equal(t, company.DraftOK, st)
+	assert.Equal(t, []string{"later.example.com"}, d.DenyHosts)
+}
+
+func TestPublish_InputRefusals(t *testing.T) {
+	for _, in := range []string{"null", "", "[]", `{"company":"Acme"} {"company":"B"}`, `{"company":"Acme","token":"x"}`} {
+		_, err := readPublishInput(strings.NewReader(in))
+		assert.Error(t, err, in)
+	}
+	in, err := readPublishInput(strings.NewReader(" {\"company\":\" Acme \"}\n"))
+	require.NoError(t, err)
+	assert.Equal(t, "Acme", in.Company)
+
+	h := newPublishHarness(t)
+	h.draft(t, func(d *company.Draft) { d.Services = []string{"linear"} })
+	res := h.publish(t, companyPublishInput{Company: publishTestToken})
+	assert.Equal(t, publishRefused, res.Result)
+	assert.Equal(t, publishReasonNoCompany, res.Reason)
+	_, ok := h.stored(t)
+	assert.False(t, ok)
 }
 
 func (f *publishFakeSlack) Export(_ context.Context, _, appID string) (slackapp.Manifest, error) {

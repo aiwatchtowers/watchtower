@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -180,6 +181,9 @@ func readPublishInput(r io.Reader) (companyPublishInput, error) {
 		// The decoder's message never quotes a value, so the token stays out.
 		return companyPublishInput{}, fmt.Errorf("publish request on stdin: %w", err)
 	}
+	if !bytes.HasPrefix(bytes.TrimSpace(raw), []byte("{")) || dec.More() {
+		return companyPublishInput{}, errors.New("publish request on stdin: give exactly one JSON object")
+	}
 	in.Company = strings.TrimSpace(in.Company)
 	in.ConfigToken = strings.TrimSpace(in.ConfigToken)
 	return in, nil
@@ -217,6 +221,11 @@ func publishCompany(ctx context.Context, deps companyPublishDeps, in companyPubl
 	}
 	if name == "" {
 		return refusedPublish(publishReasonNoCompany, "the company name is empty"), nil
+	}
+	// A configuration token pasted into the name field would land in the
+	// bundle and the public code.
+	if strings.HasPrefix(name, "xox") {
+		return refusedPublish(publishReasonNoCompany, "that is a Slack token, not a company name"), nil
 	}
 	active := func(v string) bool { return slices.Contains(d.Services, v) && !slices.Contains(d.Skipped, v) }
 	if active("atlassian") && !d.IsChecked("atlassian") {
@@ -310,6 +319,12 @@ func publishCompany(ctx context.Context, deps companyPublishDeps, in companyPubl
 		}
 		deps.emitStep(publishStepWriteLink, slackapp.StateDone)
 		res.Result = publishOK
+	}
+	// The draft published is the one deleted: one saved meanwhile (one wizard
+	// runs at a time, so only a stray writer) is kept for the next Publish.
+	if now, _, _, err := deps.store.LoadDraft(deps.now); err == nil && !reflect.DeepEqual(now, d) {
+		res.DraftError = "the setup changed while it was published; it is kept"
+		return res, nil
 	}
 	if err := deps.store.DiscardDraft(); err != nil {
 		// Published all the same; the wizard says the draft is still there
