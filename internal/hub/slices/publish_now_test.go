@@ -398,3 +398,116 @@ func TestPublisher_PublishNowJoinsRunningCycle(t *testing.T) {
 		t.Fatalf("%s still waits for a publish after the cycle took it", late)
 	}
 }
+
+// midCycleRig is a publisher over a source for every kind; hook runs inside
+// the read of the kind at index at of the publish order.
+func midCycleRig(t *testing.T, at int, hook func(p *Publisher, order []Kind)) (*rig, *Publisher, []Kind, *kindSaves) {
+	t.Helper()
+	r := newRig(t, transport.KindRelay)
+	saves := &kindSaves{}
+	var sources []Source
+	srcs := map[Kind]*fakeSource{}
+	for _, k := range AllKinds {
+		s := &fakeSource{kind: k}
+		s.set(item("1", `{"v":1}`))
+		srcs[k] = s
+		sources = append(sources, s)
+	}
+	p := r.publisherWith(Config{Latency: saves}, sources...)
+	order := p.sourceKinds()
+	srcs[order[at]].during = func() { hook(p, order) }
+	return r, p, order, saves
+}
+
+func (s *kindSaves) has(k Kind) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Contains(s.kinds, k)
+}
+
+// A kind Run still holds (a retry or spacing that has not run out) is not
+// taken mid-cycle: it waits for its time, dirty.
+func TestPublisher_PublishNowHeldKindNotTakenMidCycle(t *testing.T) {
+	_, p, order, saves := midCycleRig(t, 1, func(p *Publisher, order []Kind) { p.PublishNow(order[5]) })
+	late := order[5]
+	p.setHolds(map[Kind]time.Time{late: time.Now().Add(time.Hour)})
+	if _, err := p.Cycle(context.Background(), order[:2]); err != nil {
+		t.Fatalf("Cycle: %v", err)
+	}
+	if saves.has(late) || !p.DirtyForTest(late) {
+		t.Fatalf("held %s: saved %v, dirty %v; want not saved and still dirty", late, saves.has(late), p.DirtyForTest(late))
+	}
+}
+
+// A kind already tried this cycle is not tried again by a nudge: it stays
+// dirty for Run.
+func TestPublisher_PublishNowKindAlreadyTriedLeftForRun(t *testing.T) {
+	_, p, _, saves := midCycleRig(t, slices.Index(publishOrder, "target"), func(p *Publisher, _ []Kind) { p.PublishNow("owner_ask") })
+	if _, err := p.Cycle(context.Background(), []Kind{"owner_ask", "target"}); err != nil {
+		t.Fatalf("Cycle: %v", err)
+	}
+	n := 0
+	for _, k := range saves.kinds {
+		if k == "owner_ask" {
+			n++
+		}
+	}
+	if n != 1 || !p.DirtyForTest("owner_ask") {
+		t.Fatalf("owner_ask saved %d times, dirty %v; want once and still dirty", n, p.DirtyForTest("owner_ask"))
+	}
+}
+
+// With no phone linked a cycle publishes only the unlinked kinds: a nudge
+// for any other kind is not taken.
+func TestPublisher_PublishNowUnlinkedRuleKeptMidCycle(t *testing.T) {
+	r, p, _, saves := midCycleRig(t, slices.Index(publishOrder, KindDeviceGrant), func(p *Publisher, _ []Kind) { p.PublishNow("target") })
+	r.setLinked(false)
+	if _, err := p.Cycle(context.Background(), nil); err != nil {
+		t.Fatalf("Cycle: %v", err)
+	}
+	if saves.has("target") || !p.DirtyForTest("target") {
+		t.Fatalf("unlinked: target saved %v, dirty %v; want not saved and still dirty", saves.has("target"), p.DirtyForTest("target"))
+	}
+}
+
+// A kind a nudge brings into a cycle is settled by Run like the kinds it
+// asked for: its expired hold and backoff are spent, so nothing reads it
+// again.
+func TestPublisher_JoinedKindSettledLikeTheRest(t *testing.T) {
+	r := newRig(t, transport.KindRelay)
+	a := &fakeSource{kind: "owner_ask"}
+	x := &fakeSource{kind: "target"}
+	x.set(item("1", `{"v":1}`))
+	r.tr.FailNext("save", transport.ErrUnavailable) // the start cycle's save of x
+	ru := r.runFake(a, x)                           // x held for RetryFirst, backoff set
+	if n := len(x.readTimes()); n != 1 {
+		t.Fatalf("x read %d times at start, want 1", n)
+	}
+	a.set(item("1", `{"v":1}`))
+	fired := false
+	a.during = func() {
+		if fired {
+			return
+		}
+		fired = true
+		ru.ft.advance(RetryFirst) // x's hold runs out while the cycle runs
+		ru.p.PublishNow("target")
+	}
+	ru.publishNow("owner_ask")
+	if _, ok := r.live()[r.wireName("target-1")]; !ok {
+		t.Fatal("x not saved by the cycle it joined")
+	}
+	ru.step(RelaySpacing)
+	ru.step(RelaySpacing)
+	ru.step(RelaySpacing)
+	// Settled: a later failure backs off from the first step again (1 s),
+	// not from the doubled backoff the start cycle's failure left.
+	x.set(item("1", `{"v":2}`))
+	r.tr.FailNext("save", transport.ErrUnavailable)
+	ru.publishNow("target")
+	failed := len(x.readTimes())
+	ru.step(RetryFirst)
+	if n := len(x.readTimes()); n != failed+1 {
+		t.Fatalf("x read %d times after the retry wait, want %d: it kept the stale doubled backoff", n, failed+1)
+	}
+}

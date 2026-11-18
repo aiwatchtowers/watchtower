@@ -154,6 +154,9 @@ type CycleReport struct {
 	Unfinished     []Kind
 	Errors         map[Kind]error
 	Stop           error
+	// Joined is the kinds a PublishNow brought into the cycle after it
+	// began (not among the kinds it was asked for).
+	Joined []Kind
 }
 
 // Publisher is the slice publisher. PublishSoon is safe from any goroutine;
@@ -200,7 +203,7 @@ type Publisher struct {
 	nowDirty   map[Kind]bool   // PublishNow's kinds, due at once
 	// runHeld is Run's held map (monotonic time each deferred or retried
 	// kind may go) while it runs a cycle: Cycle's mid-cycle take of a
-	// PublishNow honours it. Nil outside Run's cycles.
+	// PublishNow honours it. Nil unless Run is in, or waiting for, a cycle.
 	runHeld     map[Kind]time.Time
 	lastPublish time.Time
 	// stuck is each kind whose last attempt did not go through whole, from
@@ -644,6 +647,13 @@ func (p *Publisher) Run(ctx context.Context) error {
 			if tried == nil {
 				tried = p.sourceKinds()
 			}
+			// A kind a PublishNow brought in mid-cycle is settled like the
+			// kinds asked for: its expired hold and retry are spent.
+			for _, k := range rep.Joined {
+				delete(held, k)
+				delete(retrying, k)
+			}
+			tried = append(slices.Clone(tried), rep.Joined...)
 			for _, k := range tried {
 				if _, deferred := rep.Deferred[k]; !deferred && !slices.Contains(rep.Unfinished, k) {
 					delete(backoff, k)
@@ -750,6 +760,7 @@ func (p *Publisher) Cycle(ctx context.Context, kinds []Kind) (CycleReport, error
 		errs             []error
 		tried, published int
 	)
+	take := func(kind Kind) bool { return linked || slices.Contains(UnlinkedKinds, kind) }
 	for i := 0; i < len(todo); i++ {
 		k := todo[i]
 		// A PublishNow that came in while the earlier kinds were saved goes
@@ -757,8 +768,8 @@ func (p *Publisher) Cycle(ctx context.Context, kinds []Kind) (CycleReport, error
 		// answer is not held to the end of a full diff); a kind already
 		// tried this cycle waits for Run.
 		if i > 0 {
-			take := func(k Kind) bool { return linked || slices.Contains(UnlinkedKinds, k) }
 			if extra := p.takeNowDuring(todo[:i], take); len(extra) > 0 {
+				rep.Joined = append(rep.Joined, extra...)
 				rest := slices.DeleteFunc(slices.Clone(todo[i:]), func(k Kind) bool { return slices.Contains(extra, k) })
 				todo = append(append(todo[:i:i], extra...), rest...)
 				k = todo[i]
