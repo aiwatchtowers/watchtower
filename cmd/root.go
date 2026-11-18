@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"watchtower/internal/aiconsent"
 	"watchtower/internal/auditlog"
 	"watchtower/internal/config"
 	"watchtower/internal/daemon"
@@ -86,7 +87,7 @@ func ensureSchemaFormat(_ *cobra.Command, _ []string) error {
 
 // Execute runs the root command and returns the exit code.
 func Execute() int {
-	role := roleFor(os.Args[1:])
+	role := initProcessOrigin(os.Args[1:], os.Getenv)
 	lockmetrics.SetProcessRole(role)
 	llmusage.SetProcess(role, surfaceFor(role, os.Args[1:]))
 	auditlog.SetProcess(auditPath(role))
@@ -110,6 +111,58 @@ func Execute() int {
 	}
 	return 0
 }
+
+// initProcessOrigin names this process from its arguments and sets its
+// default AI origin from that role and the environment: the daemon is
+// background, a child a background unit started inherits background through
+// the environment, everything else is the owner's (aiconsent.InitProcess).
+//
+// It also points the consent reader at the default config path (the
+// --config flag is not parsed yet); wireAIConsent re-points it at the
+// resolved path once cobra has parsed the flags.
+func initProcessOrigin(args []string, getenv func(string) string) string {
+	aiconsent.SetConfigPath(flagConfig)
+	role := roleFor(args)
+	aiconsent.InitProcess(role, getenv)
+	return role
+}
+
+// wireAIConsent points the consent reader at the resolved config file and
+// tells a process started under an automation run marker how to read its
+// run's trigger. It runs for every command (cobra.OnInitialize), including
+// the ones whose own PersistentPreRunE replaces the root's — so the daemon
+// (sync --daemon) and the hub and chat engine it hosts read the same file.
+// main.go -> Execute is the only process entry.
+func wireAIConsent() {
+	aiconsent.SetConfigPath(flagConfig)
+	aiconsent.SetRunTriggerLookup(lookupRunTrigger)
+}
+
+// lookupRunTrigger reads automation_runs.trigger for runID through a
+// read-only handle opened on first use (aiconsent resolves the marker once).
+func lookupRunTrigger(runID int64) (string, error) {
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return "", fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	database, err := db.OpenExisting(cfg.DBPath(), runTriggerBusy)
+	if err != nil {
+		return "", fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+	var trigger string
+	if err := database.QueryRow(`SELECT trigger FROM automation_runs WHERE id = ?`, runID).Scan(&trigger); err != nil {
+		return "", fmt.Errorf("reading run %d: %w", runID, err)
+	}
+	return trigger, nil
+}
+
+// runTriggerBusy bounds the wait for another process's lock on the one
+// trigger read.
+const runTriggerBusy = 2 * time.Second
 
 // printFinalError prints the command's final error. It is for the owner (a
 // terminal, or the Desktop that shows a failed command's stderr), so CLI
@@ -148,6 +201,7 @@ var startTempSweep = func() { go sweepStaleTemp() }
 func shouldSweepTemp(role string) bool { return role != "cli:diagnostics" }
 
 func init() {
+	cobra.OnInitialize(wireAIConsent)
 	rootCmd.SilenceErrors = true
 	rootCmd.SilenceUsage = true
 	rootCmd.PersistentFlags().StringVar(&flagWorkspace, "workspace", "", "workspace name to use")
