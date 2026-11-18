@@ -238,7 +238,11 @@ func listCompanies(store company.Store, forced string) (companyListResult, error
 		return companyListResult{}, err
 	}
 	res := companyListResult{Companies: []companyListItem{}, Errors: []companyLoadErrorJSON{}}
-	res.Draft.State = "none" // Task 12 reads the wizard draft
+	_, state, _, err := store.LoadDraft(companyNow())
+	if err != nil {
+		return companyListResult{}, err
+	}
+	res.Draft.State = string(state)
 	for _, e := range entries {
 		res.Companies = append(res.Companies, companyListItem{
 			Slug: e.Slug, Company: e.Bundle.Company, Forced: e.Forced, Personal: e.Bundle.Personal,

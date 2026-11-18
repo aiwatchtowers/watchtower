@@ -208,6 +208,10 @@ var cliNoContentCommands = map[string]bool{
 	"coach run":                        true,
 	"coach status":                     true,
 	"company confirm":                  true,
+	"company discover":                 true, // app ids and where they came from, no synced content
+	"company draft discard":            true,
+	"company draft save":               true,
+	"company draft show":               true, // the wizard's own typed setup, no synced content
 	"company inspect":                  true,
 	"company list":                     true,
 	"config init":                      true,

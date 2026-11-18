@@ -104,3 +104,34 @@ func TestDaemonRun_ForcedChangesErrorDoesNotStopDaemon(t *testing.T) {
 	assert.GreaterOrEqual(t, syncCount.Load(), int32(1), "the daemon still syncs")
 	assert.Contains(t, logs.String(), "company: applying the forced bundle:")
 }
+
+// TestDaemon_CleansStaleBadDraftAtStart: a wizard draft set aside as
+// unreadable more than 30 days ago is deleted when the daemon starts (a
+// fake clock: 29 days keeps it); Run calls the cleanup once, before the
+// first cycle.
+func TestDaemon_CleansStaleBadDraftAtStart(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	d := newQuietDaemon(t)
+	store := company.NewStore(d.config.WorkspaceDir())
+	require.NoError(t, os.MkdirAll(store.Dir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(store.Dir, "draft.json"), []byte("{"), 0o600))
+	t0 := time.Date(2026, 11, 1, 8, 0, 0, 0, time.UTC)
+	_, state, bad, err := store.LoadDraft(t0)
+	require.NoError(t, err)
+	require.Equal(t, company.DraftUnreadable, state)
+
+	d.cleanStaleBadDrafts(t0.Add(29 * 24 * time.Hour))
+	_, err = os.Stat(filepath.Join(store.Dir, bad))
+	require.NoError(t, err, "29 days: kept")
+	d.cleanStaleBadDrafts(t0.Add(31 * 24 * time.Hour))
+	_, err = os.Stat(filepath.Join(store.Dir, bad))
+	assert.ErrorIs(t, err, os.ErrNotExist, "31 days: deleted")
+
+	file, err := parser.ParseFile(token.NewFileSet(), "daemon.go", nil, 0)
+	require.NoError(t, err)
+	order := topLevelCallOrder(daemonFunc(t, file, "Run", true))
+	at, ok := order["cleanStaleBadDrafts"]
+	require.True(t, ok, "Run must call cleanStaleBadDrafts")
+	assert.Less(t, at, order["runLoop"])
+	assert.False(t, calledMethods(daemonFunc(t, file, "runSync", true))["cleanStaleBadDrafts"], "once per start")
+}
