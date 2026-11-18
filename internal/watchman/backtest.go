@@ -58,7 +58,8 @@ func BacktestStampPath(workspaceDir string, workbenchID int64) string {
 
 // BacktestReportPath is the run report of backtest backtestID in the
 // workspace folder: one JSON line per hidden item with its grades and the
-// judge's reasons, never the situation or the answers. Local workspace data.
+// judge's reasons, no situation or answer fields; the judge's reasons are
+// redacted and clipped. Local workspace data.
 func BacktestReportPath(workspaceDir string, backtestID int64) string {
 	return filepath.Join(workspaceDir, "watchman", "backtest-"+strconv.FormatInt(backtestID, 10)+".jsonl")
 }
@@ -93,8 +94,8 @@ var backtestClock = time.Now
 // other item, a different fixed option included, goes to the judge with the
 // situation. An ask with several questions is graded per question, each one
 // scored decision. An item the twin hands to the owner (HandoffOwnerOnly)
-// always goes to the judge, which rules on the handoff: justified hands
-// every question of the item (counted apart, not scored), unjustified is one
+// always goes to the judge, which rules on the handoff: justified hands the
+// item (one handed item, its questions not scored), unjustified is one
 // bad decision for the whole item, never bad while sure (§9.1, D40). A
 // category with fewer than MinScored scored decisions is not measured. A
 // reply the twin cannot get right (ErrBadReply) is bad;
@@ -232,7 +233,7 @@ func (bt backtestRun) category(c string, k int) (db.WatchmanBacktestRow, error) 
 		}
 		for _, g := range o.grades {
 			if g == gradeHanded {
-				row.Handed++ // counted apart, not scored
+				row.Handed++ // one handed item, counted apart, not scored
 				continue
 			}
 			row.Total++
@@ -251,7 +252,7 @@ func (bt backtestRun) category(c string, k int) (db.WatchmanBacktestRow, error) 
 			}
 		}
 		bt.report.write(backtestReportLine{Category: c, Source: p.Source, SourceKey: p.SourceKey, Handoff: o.handoff,
-			Grades: o.grades, HandoffVerdict: o.verdict, Why: o.why, Confidence: o.confidence})
+			Grades: o.grades, HandoffVerdict: o.verdict, Why: reportReasons(o.why, len(o.grades)), Confidence: o.confidence})
 		recPicks += asked[i].recommendedPicks
 		decisions += max(1, len(asked[i].questions))
 		if err := bt.d.SetWatchmanBacktestProgress(bt.id,
@@ -298,12 +299,13 @@ func (bt backtestRun) retryOnce(call func() error) error {
 // bad while sure (the twin's confidence did not cause it).
 const gradeOmitted = "omitted"
 
-// gradeHanded marks a question of an item the twin justly handed to the
-// owner: counted apart, not scored. The judge never gives it.
+// gradeHanded marks an item the twin justly handed to the owner: one handed
+// item, however many questions it has, none of them scored (so the handed
+// count never exceeds the 30 hidden). The judge never gives it.
 const gradeHanded = "handed"
 
-// itemOutcome is one hidden item's grades (one per question, or one for an
-// unjustified handoff), whether the twin was sure (confidence high; never
+// itemOutcome is one hidden item's grades (one per question, or one for a
+// handoff), whether the twin was sure (confidence high; never
 // for an unjustified handoff), and what the run report shows of it: the
 // twin's handoff and confidence, the judge's handoff verdict and reasons.
 type itemOutcome struct {
@@ -358,7 +360,7 @@ func (bt backtestRun) item(c string, p db.WatchmanPrecedent, opts, questions []s
 	if handed {
 		o.verdict, o.why = res.Handoff, []string{res.HandoffWhy}
 		if res.Handoff == HandoffJustified {
-			o.grades = slices.Repeat([]string{gradeHanded}, n)
+			o.grades = []string{gradeHanded}
 			return o, nil
 		}
 		// One wrong handoff is one bad decision however many questions the
@@ -598,8 +600,22 @@ func usageCost(u *digest.Usage) float64 {
 	return usd
 }
 
+// reportReasonMax is the most runes of one judge reason in the run report.
+const reportReasonMax = 200
+
+// reportReasons lines the judge's reasons up with n grades ("" for a grade
+// with none: an exact match, an unusable reply), each redacted and clipped:
+// the reasons are the model's free text and may quote the situation.
+func reportReasons(why []string, n int) []string {
+	out := make([]string, n)
+	for i := range min(n, len(why)) {
+		out[i] = Clip(Redact(why[i]), reportReasonMax)
+	}
+	return out
+}
+
 // backtestReportLine is one hidden item in the run report (keys read by the
-// owner; no situation or answer text).
+// owner; no situation or answer fields).
 type backtestReportLine struct {
 	Category       string   `json:"category"`
 	Source         string   `json:"source"`
@@ -613,14 +629,16 @@ type backtestReportLine struct {
 
 // backtestReport writes the run report line by line. Writing it never fails
 // or discards the paid run: on the first error (the folder cannot be made,
-// a write fails) the report is abandoned — the partial file removed, one
-// log line with the count written — and close reports why. A nil report
-// (no workspace folder) writes nothing.
+// the file cannot be created, a write fails) the report is abandoned — a
+// file this run created is removed, one log line with the stage and the
+// count written — and close reports why. A nil report (no workspace folder)
+// writes nothing.
 type backtestReport struct {
-	f     *os.File
-	path  string
-	lines int
-	err   error
+	f       *os.File
+	path    string
+	created bool // this run created the file: only then is it removed
+	lines   int
+	err     error
 }
 
 func openBacktestReport(workspaceDir string, backtestID int64) *backtestReport {
@@ -629,15 +647,17 @@ func openBacktestReport(workspaceDir string, backtestID int64) *backtestReport {
 	}
 	r := &backtestReport{path: BacktestReportPath(workspaceDir, backtestID)}
 	if err := os.MkdirAll(filepath.Dir(r.path), 0o700); err != nil {
-		r.abandon(err)
+		r.abandon("making its folder", err)
 		return r
 	}
-	f, err := os.OpenFile(r.path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	// O_EXCL: a run id is fresh, so anything already at the path is not
+	// this run's and is never truncated or removed.
+	f, err := os.OpenFile(r.path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
-		r.abandon(err)
+		r.abandon("creating it", err)
 		return r
 	}
-	r.f = f
+	r.f, r.created = f, true
 	return r
 }
 
@@ -650,21 +670,25 @@ func (r *backtestReport) write(line backtestReportLine) {
 		_, err = r.f.Write(append(b, '\n'))
 	}
 	if err != nil {
-		r.abandon(err)
+		r.abandon("writing a line", err)
 		return
 	}
 	r.lines++
 }
 
-// abandon drops the report after err: the file is closed and removed.
-func (r *backtestReport) abandon(err error) {
-	r.err = fmt.Errorf("writing the backtest report: %w", err)
+// abandon drops the report after err at stage: the file is closed and, when
+// this run created it, removed. The log line carries the stage and the
+// count only (no path, no error text); close hands the error to the owner.
+func (r *backtestReport) abandon(stage string, err error) {
+	r.err = fmt.Errorf("writing the backtest report (%s): %w", stage, err)
 	if r.f != nil {
 		_ = r.f.Close() // known-safe ignore: the file is removed next
 		r.f = nil
 	}
-	_ = os.Remove(r.path) // known-safe ignore: best effort (it may not exist); the error is reported
-	log.Printf("watchman backtest: run report abandoned after %d lines: %v", r.lines, err)
+	if r.created {
+		_ = os.Remove(r.path) // known-safe ignore: best effort; the error is reported
+	}
+	log.Printf("watchman backtest: run report abandoned while %s after %d lines", stage, r.lines)
 }
 
 // close finishes the report: its path, or "" and why it was abandoned.
@@ -675,7 +699,7 @@ func (r *backtestReport) close() (path, errText string) {
 	if f := r.f; f != nil {
 		r.f = nil
 		if err := f.Close(); err != nil {
-			r.abandon(err)
+			r.abandon("closing it", err)
 		}
 	}
 	if r.err != nil {

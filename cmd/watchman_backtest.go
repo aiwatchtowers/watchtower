@@ -61,8 +61,8 @@ func init() {
 			"acceptable (a different path you could live with) or bad (you would have had to undo it); " +
 			"an ask with several questions counts each question. " +
 			"Watchman hands a decision back to you only when it needs your own hands (a token, a sign-in, a command on your side, " +
-			"your device, a payment); the judge rules whether that was right: if so, the decision is counted as handed to you, " +
-			"not scored; if not, it counts as one bad decision. " +
+			"your device, a payment); the judge rules whether that was right: if so, the item is counted as handed to you " +
+			"and none of its questions is scored; if not, it counts as one bad decision. " +
 			"A category is strong when at most 5 % of its scored decisions are bad and none of the bad ones was taken " +
 			"while Watchman was sure; matching you exactly is not required. " +
 			"Fewer than 30 decisions is not measured (no AI call), and neither is a category left with fewer than 20 scored " +
@@ -70,9 +70,10 @@ func init() {
 			"permission, design or scope among them. Also shown: how often you picked the option the agent " +
 			"recommended. Review approvals, hunk undos, merges and your own rewrites are not " +
 			"measured in phase 1; review_code is measured on your review comments only. " +
-			"Each decision is one strong-model call, plus a strong-model judge call unless it picked exactly your option, " +
+			"Each decision is one strong-model call, plus a strong-model judge call unless it picked exactly your option and did not hand it to you, " +
 			"so a full run costs real money (the cost shown is an estimate); the daemon reruns it weekly in the background. " +
-			"Each run writes a report of the judge's grades and reasons per decision (no texts) to the workspace folder.",
+			"Each run writes a report of the judge's grades and reasons per decision to the workspace folder " +
+			"(the reasons redacted and clipped; no situations or answers).",
 		Args: cobra.NoArgs,
 		RunE: runWatchmanBacktest,
 	}
@@ -112,7 +113,7 @@ type watchmanBacktestRowJSON struct {
 	Baseline    float64 `json:"baseline"`
 	RecBaseline float64 `json:"rec_baseline"`
 	Status      string  `json:"status"`
-	Handed      int     `json:"handed"` // handed to the owner, not scored
+	Handed      int     `json:"handed"` // hidden items handed to the owner (≤ 30), their questions not scored
 }
 
 // watchmanBacktestNotMeasuredNote names what the phase-1 backtest leaves out

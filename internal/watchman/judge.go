@@ -3,6 +3,7 @@ package watchman
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -118,7 +119,8 @@ func (j llmJudge) Grade(ctx context.Context, in JudgeInput) (JudgeResult, *diges
 		case HandoffJustified, HandoffUnjustified:
 			return JudgeResult{Handoff: r.Handoff, HandoffWhy: strings.TrimSpace(r.Why)}, usage, nil
 		}
-		return JudgeResult{}, usage, fmt.Errorf("watchman judge: the reply has no handoff verdict (got %q)", r.Handoff)
+		// The raw value is model text: never echoed into the error.
+		return JudgeResult{}, usage, errors.New("watchman judge: the reply has no known handoff verdict")
 	}
 	if len(r.Grades) == 0 {
 		return JudgeResult{}, usage, fmt.Errorf("watchman judge: the reply has no \"grades\"")

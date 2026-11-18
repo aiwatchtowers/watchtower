@@ -82,8 +82,9 @@ type BacktestStatus struct {
 }
 
 // CategoryResult is one category's backtest row: Total scored decisions
-// graded same (Agree), Acceptable or Bad by the judge; Handed the decisions
-// the twin justly handed to the owner (not scored).
+// graded same (Agree), Acceptable or Bad by the judge; Handed the hidden
+// items the twin justly handed to the owner (at most 30; their questions are
+// not scored).
 type CategoryResult struct {
 	Category    string  `json:"category"`
 	Total       int     `json:"total"`

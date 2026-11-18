@@ -105,6 +105,7 @@ func TestWatchmanPrompts_PinPhase1bRules(t *testing.T) {
 		`An answer that states an owner-only action as done ("old token deleted") is "bad"; so is an answer to a plain status report ` +
 			`(the agent asked nothing) that adds new work the owner would have to call off ("start Task 9").`,
 		"Equal owner and twin answers in equal situations get equal grades.",
+		`A handoff whose reasoning states an owner-only action as already done ("token already revoked") is "unjustified".`,
 		"Worked examples (equal cases, equal grades)"} {
 		assert.Contains(t, judge, want)
 	}

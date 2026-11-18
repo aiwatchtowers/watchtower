@@ -725,7 +725,8 @@ func TestJudge_HandoffReplyWithoutVerdictIsError(t *testing.T) {
 	for _, bad := range []string{`{"grades":[{"q":"","grade":"same","why":"x"}]}`, `{"handoff":"maybe","why":"x"}`, `{"why":"x"}`} {
 		gen := &decideGen{out: bad}
 		_, usage, err := NewLLMJudge(gen, nil).Grade(context.Background(), in)
-		require.ErrorContains(t, err, "no handoff verdict", bad)
+		require.ErrorContains(t, err, "no known handoff verdict", bad)
+		require.NotContains(t, err.Error(), "maybe", "the raw model value is never echoed")
 		require.NotNil(t, usage)
 	}
 }
@@ -881,7 +882,7 @@ func firstN(n int) func(decideInput) string {
 }
 
 // TestBacktest_JustifiedHandoffIsHanded: a justified handoff of a
-// three-question ask hands all three questions; none is scored.
+// three-question ask is one handed item; none of its questions is scored.
 func TestBacktest_JustifiedHandoffIsHanded(t *testing.T) {
 	d, wb := btDB(t)
 	btAddAsks(t, d, wb, CategoryDesign, 30, btT0, threeQuestionPayload, threeQuestionAnswer)
@@ -895,7 +896,7 @@ func TestBacktest_JustifiedHandoffIsHanded(t *testing.T) {
 	}
 	_, rows := btRows(t, d, wb)
 	r := rows[CategoryDesign]
-	require.Equal(t, 30, r.Handed, "3 per handed item")
+	require.Equal(t, 10, r.Handed, "one per handed item, however many questions")
 	require.Equal(t, 60, r.Total, "only the 20 judged items are scored")
 	require.Equal(t, 60, r.Agree)
 	require.Equal(t, BacktestStrong, r.Status)
@@ -1063,4 +1064,58 @@ func TestBacktest_WritesReportWithJudgeReasons(t *testing.T) {
 		}
 		require.Equal(t, want, line, k)
 	}
+}
+
+// TestBacktest_ReportReasonsRedactedClippedAndAligned: a judge reason is
+// redacted and clipped to 200 runes; an exact match gets "" so the reasons
+// line up with the grades.
+func TestBacktest_ReportReasonsRedactedClippedAndAligned(t *testing.T) {
+	d, wb := btDB(t)
+	ps := btAdd(t, d, wb, SourcePermission, CategoryPermission, 30, btT0, "allow")
+	other := ps[29].Situation // the newest: the report's first line
+	gen := &btGen{decide: func(in decideInput) (string, string, error) {
+		if in.Situation == other {
+			return "deny", "low", nil
+		}
+		return "allow", "low", nil
+	}}
+	secret := "ghp_" + strings.Repeat("A1", 15)
+	long := "the twin pasted " + secret + " " + strings.Repeat("x", 500)
+	judge := &btJudge{grade: gradeAll(GradeAcceptable), why: func(JudgeInput) []string { return []string{long} }}
+	ws := t.TempDir()
+	res, err := Backtest(context.Background(), d, gen, judge, nil, wb, ws, btT0.Add(100*time.Hour))
+	require.NoError(t, err)
+	raw, err := os.ReadFile(res.ReportPath)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), secret)
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	require.Len(t, lines, 30)
+	var first, second backtestReportLine
+	require.NoError(t, json.Unmarshal([]byte(lines[0]), &first))
+	require.NoError(t, json.Unmarshal([]byte(lines[1]), &second))
+	require.Len(t, first.Why, 1)
+	require.Contains(t, first.Why[0], "[secret]")
+	require.LessOrEqual(t, len([]rune(first.Why[0])), 200)
+	require.Equal(t, []string{GradeSame}, second.Grades)
+	require.Equal(t, []string{""}, second.Why, "an exact match has no reason, padded to the grades")
+}
+
+// TestBacktest_ReportNeverRemovesWhatItDidNotCreate: something already at
+// the report path is neither overwritten nor removed; the run is kept.
+func TestBacktest_ReportNeverRemovesWhatItDidNotCreate(t *testing.T) {
+	d, wb := btDB(t)
+	btAdd(t, d, wb, SourcePermission, CategoryPermission, 30, btT0, "allow")
+	ws := t.TempDir()
+	// The run's id is the first backtest id: 1.
+	occupied := BacktestReportPath(ws, 1)
+	require.NoError(t, os.MkdirAll(occupied, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(occupied, "keep"), []byte("x"), 0o600))
+	res, err := Backtest(context.Background(), d, &btGen{}, &btJudge{}, nil, wb, ws, btT0.Add(100*time.Hour))
+	require.NoError(t, err)
+	require.Equal(t, int64(1), res.ID)
+	require.Empty(t, res.ReportPath)
+	require.Contains(t, res.ReportError, "creating it")
+	require.FileExists(t, filepath.Join(occupied, "keep"))
+	b, _ := btRows(t, d, wb)
+	require.Equal(t, "done", b.Status)
 }
