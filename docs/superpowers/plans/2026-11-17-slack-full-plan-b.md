@@ -63,6 +63,23 @@
 | Q13 | PKCE without a secret on an app that **has** a client secret and was created without PKCE (the corp app): does secret-less exchange work after adopt adds the loopback redirect, or does the app need a setting? | _pending_ | Task 16: adopt's manifest change; if impossible, corp keeps its baked id until a new app exists — **stop and ask the owner** |
 | Q14 | Turning on token rotation on an existing app (adopt): can it be turned off again, and what happens to existing non-rotating tokens? | _pending_ | adopt leaves the app's rotation setting as it is (A20); recorded for the feature note |
 
+**Spike results (2026-11-18, test workspace; live calls + docs.slack.dev).** These override provisional values in Tasks 6–9 and are applied in Task 16:
+
+- **PKCE needs `oauth_config.pkce_enabled: true` in the manifest** (docs.slack.dev/authentication/using-pkce). Without it a secret-less `oauth.v2.access` answers `bad_client_secret`. The switch is one-way (the app becomes a public client; undo only via Slack support); refresh tokens then expire after 30 days; loopback redirects count as desktop redirects, which require `code_challenge`+`code_challenge_method=S256` and cannot request bot scopes. Task 9's `BuildManifest` sets it. Whether adopt sets it on an existing company app stays behind a flag (default off) until Task 16 checks that old tokens survive.
+- **Q1** `apps.manifest.create` accepts the manifest (17 user scopes, no bot, rotation on, loopback redirect); response keys `app_id`, `credentials{client_id, client_secret, …}`, `oauth_authorize_url`, `team_id`, `team_domain`; errors `invalid_auth`, `not_authed`, `invalid_manifest` + `errors[]`.
+- **Q2** `auth.test` with the config token returns `team_id`, `team`, `expires_in`.
+- **Q3** PKCE authorize works (live, `team:read`); the exchange works once `pkce_enabled` is on (docs). A rotating exchange returns `authed_user.expires_in=43200`, `refresh_token`, and a top-level `app_id`.
+- **Q4** Redirect match includes scheme and port; no loopback port wildcard is documented — keep the exact registered port (18551). Without PKCE a `http://127.0.0.1` redirect is treated as a server redirect (must be https) — the likely cause of the "Invalid permissions requested" seen when the full scope list was requested without PKCE. All 17 scopes are valid user scopes (none deprecated or Marketplace-only).
+- **Q5/Q7** Not settled by docs: with app approval on, members request and admins approve; no callback is documented → the flow waits (A22) and shows Slack's own page. Live check in Task 16.
+- **Q6** `long_description` 175–4000 characters, Slack mrkdwn; About-tab rendering checked in Task 16.
+- **Q8/Q11** `apps.manifest.update` replaces the whole manifest; a description-only update keeps `app_id` (`permissions_updated:false`); scope/redirect changes → `permissions_updated:true` and need a reinstall. Non-collaborator → `no_permission`; unknown id → `invalid_app_id`; deleted app → `app_not_found`. Nothing documents a `client_id` change or token revocation on update.
+- **Q9** Refresh: `grant_type=refresh_token`, `refresh_token`, `client_id` (no secret, no PKCE params); new `access_token`, `expires_in`, new `refresh_token`; each refresh token is single-use after a short grace period (at most 2 active) → refresh must be serialised across processes (Task 8's flock) and the new token saved before use. No refresh-token expiry field is documented → track 30 days locally.
+- **Q10** `conversations.history` Tier 3 for internal apps; the 2025-05-29 limits (15 messages, 1 req/min) apply to non-Marketplace commercially distributed apps, "internal customer-built applications are not impacted".
+- **Q12** `oauth.v2.access` carries a top-level `app_id` → the App ID field (A19) is needed only for rows connected before this plan.
+- **Q13** Every app has a secret; PKCE is the manifest flag above.
+- **Q14** Rotation can be turned on but never off (`cannot_disable_once_enabled`) → adopt never touches it (A20 confirmed).
+- **`team=`** is a hint, dropped if the user is not signed in to that workspace; pass a `T…` id (an `E…` id asks for an org-level install).
+
 ## Owner rulings in ask #1414
 
 - **Move off the shared app:** ask #1414 chose «Новая строка, как в спеке»; **overturned by ask #1425: «Перепривязать строку»** — the existing `slack_accounts` row is re-bound to the new client id (new token, same account id, history kept); nothing is soft-removed or purged (Task 7, A6).
