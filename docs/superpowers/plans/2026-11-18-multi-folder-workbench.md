@@ -4,7 +4,7 @@
 
 **Goal:** A workbench holds 1..N equal folders (each its own git), sessions run in one folder, agents start sub-sessions in other folders and message each other, and every git feature works per folder.
 
-**Architecture:** One goose migration adds `workbench_folders` (soft-removed rows, one live row per path globally), folder/parent columns on sessions and targets, the `folder` ask kind, declines, `session_messages` and the hook counter. Go owns every write to folder membership (`internal/workbenchfolders`, CLI `workbench folder …`, `workbench merge`); every single-folder reader (`projects.folder_path`) is moved to "the session's / target's folder". Agent messages are delivered by the daemon through a line gate extracted from the hub (`internal/sessionline`) and the session host's `Deliver`, with a new read-only `PromptState` request advertised by a hello `features` list. The Desktop reads the new tables through GRDB and calls the CLI for every write.
+**Architecture:** One goose migration adds `workbench_folders` (soft-removed rows, one live row per path globally), folder/parent columns on sessions and targets, the `folder` ask kind, declines, `session_messages` and the hook counter. Go owns every write to folder membership (`internal/workbenchfolders`, CLI `workbench folder …`, `workbench merge`); every single-folder reader (`projects.folder_path`) is moved to "the session's / target's folder". Agent messages are delivered by the daemon through a line gate extracted from the hub (`internal/sessionline`) and the session host's `Deliver`, with a new read-only `PromptState` request advertised by a hello `features` list. The Desktop reads the new tables through GRDB and writes the NEW tables only through the CLI (folders, declines, messages — including the prompt-flag Dismiss via `workbench message dismiss --id N`); its existing GRDB writes (the owner's target edits, now including the target's folder field) keep their current path.
 
 **Tech Stack:** Go 1.26 (cobra, `database/sql` over the in-repo SQLCipher driver, goose), SwiftUI macOS 14+ with GRDB, WatchtowerKit (phone mirror), the session host protocol v2 (`internal/sessionhost`).
 
@@ -20,7 +20,7 @@
 - After each Swift UI task: `make desktop-shots DESKTOP_SHOTS=<dir>` and compare the named `workbench-multifolder-*` shots with the committed PNGs in `docs/design/mockups/multi-folder/` (light and dark). The shot fixtures in `WatchtowerDesktop/Tests/DesignShots/MultiFolderShotFixtures.swift` are static mocks: a UI task re-points its shots at the real view with the same `acme` data and keeps the shot names.
 - A one-folder workbench looks and behaves as today except the FILES root row, the Put on the Bench… icon and the hint (spec §2 anti-goals).
 - Folder icon everywhere a folder is shown (D32). Put on the Bench… icon `plus.rectangle.on.folder`; Open Folder… keeps `folder.badge.plus` (D28).
-- Errors to agents (MCP) are `*tools.ValidationError` whose message starts with the spec's code: `"<code>: <sentence>"` (codes: `already_here`, `other_bench`, `nested`, `not_found`, `not_installed`, `folder_missing`, `folder_removed`, `sessions_running`, `last_folder`, `limit`, `too_long`, `not_running`, `not_same_workbench`, `self`, `declined`). CLI `--json` results carry `ok`, `error_code`, `error` like `escalateResult` in `cmd/workbench_escalate.go:96`.
+- Errors to agents (MCP) — decided in the plan (spec D42) — are `*tools.ValidationError` whose message starts with the spec's code: `"<code>: <sentence>"` (codes: `already_here`, `other_bench`, `nested`, `not_found`, `not_installed`, `folder_missing`, `folder_removed`, `sessions_running`, `last_folder`, `limit`, `too_long`, `not_running`, `not_same_workbench`, `self`, `declined`). CLI `--json` results carry `ok`, `error_code`, `error` like `escalateResult` in `cmd/workbench_escalate.go:96`.
 - Go `[]T` fields in any JSON the Desktop or phone decodes are initialised to `[]T{}` with an empty-state wire test (review-rules, dual-path).
 - Write transactions are short `BEGIN IMMEDIATE`; installs, git, `gh`, indexing and Deliver run outside them (CLAUDE.md, Database & Migrations).
 - Tests never wait on wall-clock (fake clocks, `testing/synctest`); tests that spawn processes kill the process group in `t.Cleanup`; a package whose tests create git repositories calls `gittest.DisableBackgroundGit()` in `TestMain` (`internal/sessionstart`, `internal/sessionhost`, `internal/daemon` and the new packages have no `testmain_test.go` yet — add one where a task adds git-repo tests).
@@ -31,11 +31,11 @@
 
 ## Review Focus
 
-1. **Two folders with the same branch name** (`main` in app and hub): tables keyed by `(project_id, branch|ref)` — `review_reviewer_threads`, `workbench_pr_states` — assume one repository per workbench. Expected: a review or PR state of hub never overwrites app's. Test added to Task 6 (`TestReviewerThreadsKeyedPerFolder`) and Task 19 (merge keeps both on a key collision or logs the one it drops).
+1. **Two folders with the same branch name** (`main` in app and hub): tables keyed by `(project_id, branch|ref)` — `review_reviewer_threads`, `workbench_pr_states` — assume one repository per workbench. Task 1 adds `workbench_folder_id` to both keys. Expected: a review or PR state of hub never overwrites app's. Test owned by Task 5 (`TestReviewerThreadsAndPRStatesKeyedPerFolder`).
 2. **Path spellings of one folder** (case, trailing slash, `~`, a symlink to a bench folder, a worktree of a bench folder): every add and every lookup treats them as the same folder. Test in Task 2 (`TestAddTreatsSpellingsAsOneFolder`).
 3. **The home folder leaves the bench** while automations, the briefing and older clients read `projects.folder_path`: the next folder by position becomes home in the same transaction, and recipes indexed from the removed folder stop running. Tests in Task 2 (`TestRemoveHomeMovesFolderPath`) and Task 8 (`TestRemovedFolderRecipesAreDropped`).
 4. **A message to the wrong kind of target**: itself, a shell row, a standalone terminal (`project_id` NULL), a session of another workbench, a deleted id. Expected: refused at send with a code, nothing queued, nothing pasted. Test in Task 10 (`TestSendRefusesEveryNonPeerTarget`).
-5. **A chain of sub-sessions losing its middle**: grandchild finishes after its parent was deleted. Expected: the finish message is dropped and logged, never re-routed to the grandparent; depth and the six-per-root limit count through the chain. Test in Task 11 (`TestFinishOfAnOrphanedGrandchildIsDropped`, `TestLimitCountsTheWholeTree`).
+5. **A chain of sub-sessions losing its middle**: grandchild finishes after its parent was deleted. Expected: the finish message is dropped and logged, never re-routed to the grandparent; depth and the six-per-root limit count through the chain. Tests in Task 10 (`TestFinishOfAnOrphanedGrandchildIsDropped`) and Task 11 (`TestLimitCountsTheWholeTree`).
 
 ---
 
@@ -64,7 +64,10 @@
 
 **Interfaces:**
 - Produces (Go, `internal/db`):
-  - `type WorkbenchFolder struct { ID, WorkbenchID int64; FolderPath string; Position int; AddedAt, AddedBy string; RemovedAt sql.NullString }`
+  - `type WorkbenchFolder struct { ID, WorkbenchID int64; FolderPath, Name string; Position int; AddedAt, AddedBy string; RemovedAt sql.NullString }`
+  - `func UniqueFolderName(path string, taken func(name string) bool) string` — last path component; if taken, `<parent>-<last>`; then `<parent>-<last>-2`, `-3`… (NOCASE). Used by `CreateWorkbench`, `Add` (Task 2) and `Merge` (Task 19).
+  - `OwnerAsk` gains `DocFolderID sql.NullInt64` (NULL = home folder); `DocPath` stays relative to that folder
+  - `func (db *DB) ReviewerThreadKey`/PR-state accessors take `folderID int64` beside the workbench id (the existing functions for `review_reviewer_threads` and `workbench_pr_states` gain the parameter; grep their callers in `internal/reviewai`, `internal/sessionreport`, `internal/tools`)
   - `func (db *DB) WorkbenchFolders(ctx context.Context, workbenchID int64, withRemoved bool) ([]WorkbenchFolder, error)` (position order; `[]WorkbenchFolder{}` when none)
   - `func (db *DB) WorkbenchFolderByID(ctx context.Context, id int64) (*WorkbenchFolder, error)`
   - `func (db *DB) LiveFolderByPath(ctx context.Context, q Querier, path string) (*WorkbenchFolder, error)` (NOCASE, `removed_at IS NULL`; `ErrWorkbenchNotFound` when none)
@@ -80,6 +83,9 @@
   - `TestAllTablesExist` lists `workbench_folders`, `workbench_folder_declines`, `session_messages`, `session_outside_touches`.
   - `TestMigration00196_BackfillsOneFolderPerWorkbench`: two workbenches before the migration → after it, exactly one live row each, `position = 0`, `added_by = 'owner'`, path = `projects.folder_path`; every `terminal_sessions` row with a `project_id` has `workbench_folder_id` = that row; standalone rows (NULL `project_id`) keep NULL; `targets.workbench_folder_id` stays NULL.
   - `TestMigration00196_OwnerAsksRebuildKeepsChildren`: rows in the tables that reference `owner_asks(id)` (created by `00158`, `00162`, `00178`) survive the rebuild byte-identical; a `kind='folder'` insert succeeds; the `(kind = 'review') = (doc_path != '')` CHECK still refuses a review without `doc_path`.
+  - `TestMigration00196_OwnerAsksGainDocFolder`: old review asks have `doc_folder_id` NULL and their `doc_path` unchanged (resolves against the home folder).
+  - `TestMigration00196_OldReviewThreadsAndPRStatesResolveForTheHomeFolder`: rows of `review_reviewer_threads` and `workbench_pr_states` written before the migration carry the bench's home folder id and are found by a lookup with that id; a second row with the same `(project_id, branch|ref)` and another folder id inserts without conflict.
+  - `TestMigration00196_BackfillsFolderNames` and `TestUniqueFolderName_Clash`: two folders `~/code/app` and `~/work/app` on one bench → `app` and `work-app`; a third `~/work2/work/app`… → `work-app-2`; names compare NOCASE among live rows of the bench only; a removed row's name can be reused.
   - `TestMigration00196_DropsWorkbenchDocIndexRows`: `kb_documents` rows with id `wbdoc:%` and their `kb_chunks` are gone; other sources untouched.
   - `TestWorkbenchFolders_OneLivePathGlobally`: a second live row with the same path in another case (`/X/App` vs `/x/app`) fails the partial unique index; after `removed_at` is set the same path can be inserted for another workbench.
   - `TestClaimSessionMessage_OnlyOnce`: two claims of one queued row → first true, second false; a claimed row is `delivering`.
@@ -90,14 +96,15 @@
 
 - [ ] **Step 2: Run them — expect FAIL (tables missing)**
 
-Run: `go test ./internal/db/ -run 'TestAllTablesExist|TestMigration00196|TestWorkbenchFolders|TestClaimSessionMessage|TestFailInFlight|TestCountOutsideTouch|TestWorkbenchByFolder|TestCreateWorkbench'`
+Run: `go test ./internal/db/ -run 'TestAllTablesExist|TestMigration00196|TestWorkbenchFolders|TestUniqueFolderName|TestClaimSessionMessage|TestFailInFlight|TestCountOutsideTouch|TestWorkbenchByFolder|TestCreateWorkbench'`
 
 - [ ] **Step 3: Write the migration**
 
 Spec §4 items 1–8, with these code-driven decisions:
-- `workbench_folders`: `id INTEGER PRIMARY KEY AUTOINCREMENT`, `workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE`, `folder_path TEXT NOT NULL`, `position INTEGER NOT NULL`, `added_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))`, `added_by TEXT NOT NULL CHECK(added_by IN ('owner','agent_suggestion'))`, `removed_at TEXT`; `CREATE UNIQUE INDEX idx_workbench_folders_live_path ON workbench_folders(folder_path COLLATE NOCASE) WHERE removed_at IS NULL`; `CREATE INDEX idx_workbench_folders_bench ON workbench_folders(workbench_id, position)`.
+- `workbench_folders`: `id INTEGER PRIMARY KEY AUTOINCREMENT`, `workbench_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE`, `folder_path TEXT NOT NULL`, `position INTEGER NOT NULL`, `added_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))`, `added_by TEXT NOT NULL CHECK(added_by IN ('owner','agent_suggestion'))`, `removed_at TEXT`, `name TEXT NOT NULL` (backfill = last path component; one folder per bench today, so no clash); `CREATE UNIQUE INDEX idx_workbench_folders_live_path ON workbench_folders(folder_path COLLATE NOCASE) WHERE removed_at IS NULL`; `CREATE UNIQUE INDEX idx_workbench_folders_live_name ON workbench_folders(workbench_id, name COLLATE NOCASE) WHERE removed_at IS NULL`; `CREATE INDEX idx_workbench_folders_bench ON workbench_folders(workbench_id, position)`.
+- `review_reviewer_threads` (PK `(project_id, branch)`) and `workbench_pr_states` (PK `(project_id, ref)`) gain `workbench_folder_id INTEGER NOT NULL REFERENCES workbench_folders(id) ON DELETE CASCADE`, backfilled with the bench's home folder row, and the PKs become `(project_id, workbench_folder_id, branch)` / `(project_id, workbench_folder_id, ref)`. A PK cannot be altered, so both are rebuilt inside the same `BEGIN IMMEDIATE … COMMIT` block as `owner_asks` (create-new / insert-select joining the home folder / drop / rename / every index from schema.sql). No `<folder_id>:<branch>` string refs anywhere.
 - `terminal_sessions` and `targets` gain columns by `ALTER TABLE … ADD COLUMN … REFERENCES … ON DELETE SET NULL` (no rebuild needed); `CREATE INDEX idx_terminal_sessions_parent ON terminal_sessions(parent_session_id)`.
-- `owner_asks.kind` CHECK becomes `('review','check','question','folder')`. This is the **first rebuild of `owner_asks`** (its CHECK was created in `00100_owner_asks.sql`; later files only added columns) and it has FK children, so follow `00150_builtin_automations.sql` exactly: `-- +goose NO TRANSACTION`, `PRAGMA foreign_keys = OFF;`, one `StatementBegin` block `BEGIN IMMEDIATE; CREATE TABLE owner_asks_new (… every current column from schema.sql …); INSERT … SELECT; DROP; ALTER … RENAME; every index from schema.sql; COMMIT;`, `PRAGMA foreign_keys = ON;`. Because the file is NO TRANSACTION, the other statements of §4 go in the same `BEGIN IMMEDIATE … COMMIT` block. The Down rebuilds back and deletes `kind='folder'` rows first.
+- `owner_asks.kind` CHECK becomes `('review','check','question','folder')`, and the rebuilt table gains `doc_folder_id INTEGER REFERENCES workbench_folders(id) ON DELETE SET NULL` (NULL = home folder; `doc_path` stays relative to its folder always). This is the **first rebuild of `owner_asks`** (its CHECK was created in `00100_owner_asks.sql`; later files only added columns) and it has FK children, so follow `00150_builtin_automations.sql` exactly: `-- +goose NO TRANSACTION`, `PRAGMA foreign_keys = OFF;`, one `StatementBegin` block `BEGIN IMMEDIATE; CREATE TABLE owner_asks_new (… every current column from schema.sql …); INSERT … SELECT; DROP; ALTER … RENAME; every index from schema.sql; COMMIT;`, `PRAGMA foreign_keys = ON;`. Because the file is NO TRANSACTION, the other statements of §4 go in the same `BEGIN IMMEDIATE … COMMIT` block. The Down rebuilds back and deletes `kind='folder'` rows first.
 - `session_messages` per §4 item 6 plus `CREATE INDEX idx_session_messages_state ON session_messages(state)` and `(to_session_id, state)`.
 - `session_outside_touches` per §4 item 8, `touches INTEGER NOT NULL DEFAULT 0`, `nudged_at TEXT`, `quiet INTEGER NOT NULL DEFAULT 0`.
 - `workbench_folder_declines` per §4 item 5 (`workbench_id` FK CASCADE, `folder_path TEXT NOT NULL COLLATE NOCASE`, `PRIMARY KEY (workbench_id, folder_path)`).
@@ -136,8 +143,8 @@ Run: `go test ./internal/db/` (includes `TestMigrationIdempotent`, `TestMigratio
   - `func Add(ctx context.Context, d *db.DB, workbenchID int64, path, addedBy string) (db.WorkbenchFolder, error)` — validates and inserts in one `BEGIN IMMEDIATE`; codes `not_found`, `already_here`, `other_bench`, `nested`
   - `func Remove(ctx context.Context, d *db.DB, folderID int64, live func(ctx context.Context, folderID int64) (int, error)) (db.WorkbenchFolder, error)` — codes `sessions_running` (Detail carries the count), `last_folder`
   - `func Locate(ctx context.Context, d *db.DB, folderID int64, newPath string) (db.WorkbenchFolder, error)` — same validation as Add
-  - `func Resolve(ctx context.Context, d *db.DB, workbenchID int64, ref string) (db.WorkbenchFolder, error)` — `ref` is "" (home), a folder id, a name (last path component, NOCASE), or a path; codes `not_found`, `folder_removed`
-  - `func Name(f db.WorkbenchFolder) string` (last path component)
+  - `func Resolve(ctx context.Context, d *db.DB, workbenchID int64, ref string) (db.WorkbenchFolder, error)` — `ref` is "" (home), a folder id, the stored `name` (NOCASE, unique among the bench's live folders, so never ambiguous), or a path; codes `not_found`, `folder_removed`
+  - `Add` and `Locate` set `name` with `db.UniqueFolderName` inside the same transaction (Locate keeps the old name). The stored name is what doc display, recipe prefixes, `start_session(folder)` and every UI label use.
 - Produces (CLI, all `--json`): `workbench folder add --workbench N --folder P`, `remove --workbench N --folder F`, `locate --workbench N --folder F --to P`, `list --workbench N [--with-removed]`. JSON: `{"ok":bool,"error_code":string,"error":string,"folder":{id,path,name,position,home,installed,removed},"other_bench":{id,name}?,"install":{ok,error}}`; `list` → `{"folders":[…]}` (never `null`).
 
 - [ ] **Step 1: Write the failing tests** (`internal/workbenchfolders/folders_test.go`)
@@ -146,6 +153,7 @@ Run: `go test ./internal/db/` (includes `TestMigrationIdempotent`, `TestMigratio
   - `TestAddOfAMissingPathWritesNothing` (`not_found`; spec §7 row 1).
   - `TestAddRefusesNested`: a path inside or containing any live folder → `nested` naming that folder; an existing nested pair (seeded before the rule) still opens and lists (grandfathered).
   - `TestAddTreatsSpellingsAsOneFolder` (Review Focus 2): case variant, trailing slash, symlink to the folder → `already_here`.
+  - `TestAddNamesAClashingFolderAfterItsParent`: bench with `~/code/app` → adding `~/work/app` stores `work-app`; `Resolve(…, "work-app")` and `Resolve(…, "APP")` each return exactly one folder.
   - `TestAddBackOnTheSameBenchClearsRemovedAt`: re-adding a removed folder on its bench reuses the row (same id, `removed_at` NULL, new last position).
   - `TestRemoveRefusedWhileSessionsRun` (count 1 and 2 → Detail "1"/"2"), `TestRemoveRefusesTheLastFolder` (`last_folder`).
   - `TestRemoveHomeMovesFolderPath` (Review Focus 3): removing the home folder sets `projects.folder_path` to the next live folder by position, in the same transaction.
@@ -238,9 +246,9 @@ Path normalisation: `filepath.EvalSymlinks` + `filepath.Clean`, compared NOCASE;
   - `TestProj07_ChecksRunInTheTargetsFolder`: target A in app with a merged branch, target B in hub whose branch exists only in hub → each verdict comes from its own repository.
   - `TestProj07_RemovedFolderReportsFolderRemoved`: the brief/Stop text says `folder removed`, and the Stop hook still never traps a turn (`TestProj07_StopHookIsSilentWithoutGitDrift` and `TestProj07_StopHookFailuresAreSilent` unchanged and passing).
   - `TestCreateTargetsStoresTheCallersFolder`, `TestUpdateTargetFolderByName`, `TestUpdateTargetUnknownFolderIsRefused`.
-  - `TestReviewerThreadsKeyedPerFolder` (Review Focus 1): the `review_reviewer_threads`/`workbench_pr_states` writes for hub's `main` never overwrite app's `main` — the implementer reads both tables' writers and, if their key cannot carry the folder, stores the folder-qualified ref (`<folder_id>:<branch>`) and states the choice in the PR.
-- [ ] **Step 2: FAIL** — `go test ./internal/workbenchcheck/ ./internal/tools/ -run 'TestProj07_|TestCreateTargets|TestUpdateTarget|TestReviewerThreads'`
-- [ ] **Step 3: Implement.** The spec's "merged progress share" (§6.10) is not a board reader in code: the merged share is the session report's (`internal/sessionreport/refresh.go:136`, `folder: wb.FolderPath`) and moves to the session's folder in Task 6.
+  - `TestReviewerThreadsAndPRStatesKeyedPerFolder` (Review Focus 1, owned here): writes for hub's `main` carry hub's `workbench_folder_id` (Task 1's key) and never overwrite app's `main`; reads by `(project_id, folder_id, branch|ref)` return each folder's own row.
+- [ ] **Step 2: FAIL** — `go test ./internal/workbenchcheck/ ./internal/tools/ ./internal/sessionreport/ -run 'TestProj07_|TestCreateTargets|TestUpdateTarget|TestReviewerThreadsAndPRStates'`
+- [ ] **Step 3: Implement.** The spec's "merged progress share" (§6.10) is not a board reader in code: the merged share is the session report's (`internal/sessionreport/refresh.go:136`, `folder: wb.FolderPath`) and moves to the session's folder in Task 6. Every writer and reader of `review_reviewer_threads` and `workbench_pr_states` passes the folder id (the target's folder here; NULL target folder → home folder id).
 - [ ] **Step 4: PASS** — `go test ./internal/workbenchcheck/ ./internal/tools/ ./cmd -run 'TestProj07_|TestProj09_|TestWorkbenchCheck|TestWorkbenchBrief'`, `make lint-diff`.
 - [ ] **Step 5: Commit** — `feat(board): targets name their folder; drift per folder (#2003)`
 
@@ -250,7 +258,7 @@ Path normalisation: `filepath.EvalSymlinks` + `filepath.Clean`, compared NOCASE;
 
 ### Task 6: Review, finish gate, spec review and session report per session folder
 
-**Depends on:** Task 1
+**Depends on:** Task 1, Task 5
 
 **Files:**
 - Modify: `internal/tools/workbench_review_session.go` (`reviewSessionPlace` :27, `ResolveReviewSource` :117), `internal/tools/workbench_finish_gate.go` (`checkFinishGates` :119, `finishTicket` :148, `checkOverviewGate` :223, `leftItsWorktree` :325), `cmd/workbench_review_overview.go` (`realFolderPath` :417 → `reviewai.LockPath`), `internal/specreview/run.go` (`ReadFolder` :193), `internal/sessionreport/refresh.go:136`, `internal/agentreport/build.go` (:299, :440)
@@ -263,7 +271,7 @@ Path normalisation: `filepath.EvalSymlinks` + `filepath.Clean`, compared NOCASE;
   - `TestProj14_ParentReportExcludesSubSessionWork`: the parent's report/merged share counts only commits in the parent's folder/branch.
   - `TestReviewSourceUsesTheSessionsFolder` (a hub session's round diffs hub's repo), `TestLeftItsWorktreeInTheSessionsFolder`, `TestReviewLockPathPerFolder` (two folders → two lock paths), `TestSpecReviewReadsTheSessionsFolder`.
 - [ ] **Step 2: FAIL** — `go test ./internal/tools/ ./internal/specreview/ ./internal/sessionreport/ -run 'TestProj14_|TestReviewSource|TestLeftItsWorktree|TestReviewLock|TestSpecReviewReads'`
-- [ ] **Step 3: Implement** — every listed reader takes `SessionFolderPath` instead of `p.FolderPath`; `finishTicket` returns no ticket for a sub-session without a target.
+- [ ] **Step 3: Implement** — every listed reader takes `SessionFolderPath` instead of `p.FolderPath`; the session report's PR state (`workbench_pr_states`) and the branch reviewer's thread (`review_reviewer_threads`) are read and written with the session's folder id (Task 1 key, Task 5 accessors); `finishTicket` returns no ticket for a sub-session without a target.
 - [ ] **Step 4: PASS** — `go test ./internal/tools/ ./internal/specreview/ ./internal/sessionreport/ ./internal/agentreport/ ./internal/reviewai/` (all PROJ-14 guards: `internal/sessionreport/{merged_test,report_test}.go`, `internal/tools/workbench_{finish_gate,finish,review_lane,session_stamp,session_target}_test.go`), `make lint-diff`.
 - [ ] **Step 5: Commit** — `feat(review): review and finish gate per session folder (#2003)`
 
@@ -296,11 +304,11 @@ Path normalisation: `filepath.EvalSymlinks` + `filepath.Clean`, compared NOCASE;
 - Test: `internal/kb/source_workbench_test.go`, `internal/tools/workbench_knowledge_test.go`, `internal/tools/workbench_asks_test.go`, `internal/automations/indexer_test.go`
 
 **Interfaces:**
-- Key: `wbdoc:<project_id>:<folder_id>:<rel_path>`; `containerAnchor` stays `project_id` so PROJ-08's scope (search only from the workbench's own sessions) is unchanged. A document's display path is `<folder name>/<rel>`.
-- `ask_owner` review `doc_path`: relative → the caller session's folder; absolute → must lie in a live bench folder, else `ValidationError`. `ask.DocPath` stores `<folder name>/<rel>` when the bench has more than one folder.
-- Automations: `scheduler` rescans `WorkbenchDir(f)` for every live folder; a slug that already exists from another folder of the same bench is stored as `<folder name>/<slug>`.
+- Key: `wbdoc:<project_id>:<folder_id>:<rel_path>`; `containerAnchor` stays `project_id` so PROJ-08's scope (search only from the workbench's own sessions) is unchanged. A document's display path is `<folder name>/<rel>` (the stored `workbench_folders.name`) only when the bench has more than one folder, else `<rel>` as today.
+- `ask_owner` review `doc_path`: relative → the caller session's folder; absolute → must lie in a live bench folder, else `ValidationError`. The ask stores `doc_path` relative to its folder (always) and `doc_folder_id` (the folder's id; NULL only for the home folder of old rows) — never `<folder name>/<rel>`. Every reader of `doc_path` (`readReviewDoc` :112, the spec-review run, the Desktop's review body) resolves it against `doc_folder_id` (NULL → home).
+- Automations: `scheduler` rescans `WorkbenchDir(f)` for every live folder; a slug that already exists from another folder of the same bench is stored as `<folder name>/<slug>` (the stored name).
 
-- [ ] **Step 1: Failing tests** — `TestProj08_EveryFolderIsIndexedUnderItsWorkbench`, `TestProj08_CapIsPerFolder` (2 000 files in app do not stop hub's), `TestProj08_KnowledgeToolsShowProjectDocsOnlyToTheirProject` (existing, extended with a second folder), `TestDocPathRelativeResolvesInTheCallersFolder`, `TestDocPathAbsoluteOutsideTheBenchIsRefused`, `TestDuplicateRecipeNameGetsTheFolderPrefix`, `TestRemovedFolderRecipesAreDropped` (Review Focus 3), `TestRemovedFolderDocsAreDropped`.
+- [ ] **Step 1: Failing tests** — `TestProj08_EveryFolderIsIndexedUnderItsWorkbench`, `TestProj08_CapIsPerFolder` (2 000 files in app do not stop hub's), `TestProj08_KnowledgeToolsShowProjectDocsOnlyToTheirProject` (existing, extended with a second folder), `TestDocDisplayPathOnlyWithSeveralFolders`, `TestDocPathRelativeResolvesInTheCallersFolder` (stores `doc_folder_id` = hub's id and `doc_path` relative to hub), `TestDocPathOfAnOldAskResolvesInTheHomeFolder`, `TestDocPathAbsoluteOutsideTheBenchIsRefused`, `TestDuplicateRecipeNameGetsTheFolderPrefix`, `TestRemovedFolderRecipesAreDropped` (Review Focus 3), `TestRemovedFolderDocsAreDropped`.
 - [ ] **Step 2: FAIL** — `go test ./internal/kb/ ./internal/tools/ ./internal/automations/ -run 'TestProj08_|TestDocPath|TestDuplicateRecipe|TestRemovedFolder'`
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: PASS** — `go test ./internal/kb/ ./internal/workbenchdocs/ ./internal/tools/ ./internal/automations/ ./cmd -run 'TestProj08_|TestAutomations'` (PROJ-08 guards in `cmd/workbench_test.go`, `internal/kb/source_workbench_test.go`, `internal/tools/workbench_knowledge_test.go`), `make lint-diff`.
@@ -360,13 +368,14 @@ Path normalisation: `filepath.EvalSymlinks` + `filepath.Clean`, compared NOCASE;
   - `func Header(from db.TerminalSession, folder string) string` → `[Message from #<id> “<title>” · <folder> — another agent of this workbench, not the owner]`; `func Body(fromID int64, header, text string) string` (header, text, `(Reply with send_to_session(<id>, …))`); `func FinishLine(id int64, title, folder, summary string) string` → `[Sub-session #<id> “<title>” finished · <folder>] <summary>`; `func FailureLine(toID int64, reason string) string` → `[Message to #<id> not delivered: <reason>]`; `func TypedLine(toID int64) string` → `[Message to #<id> was typed into the session but not submitted; it waits in its prompt.]`
   - `type Deliverer struct { DB *db.DB; Port Port; Clock func() time.Time; Log func(string, ...any) }` with `type Port interface { Live(ctx, int64) (handlers.LiveRun, bool, error); Deliver(ctx, handlers.DeliverRequest) (handlers.DeliverResult, error); PromptState(ctx, int64, uint64) (bool, bool, error) }`; `func (d *Deliverer) Start(ctx context.Context) error` (runs `FailInFlightSessionMessages(ctx, "unknown_after_restart")` once, then ticks); `func (d *Deliverer) Tick(ctx context.Context)`; `func (d *Deliverer) Wake()`
   - Daemon: `func (d *Daemon) SetMessageDeliverer(m *sessionmsg.Deliverer)`; started from `Run` beside `startPlanUsage` (`internal/daemon/daemon.go:591`).
-  - MCP `send_to_session(session_id, text)` → `{message_id, state}`; CLI `workbench message send --to S --text-stdin --json` (tests and the Desktop).
+  - MCP `send_to_session(session_id, text)` → `{message_id, state, warning?}`; CLI `workbench message send --to S --text-stdin --json` (tests) and `workbench message dismiss --id N --json` (the Desktop's prompt-flag Dismiss: `ClearPromptFlag` guarded by `prompt_cleared_at IS NULL`; refused from inside a terminal session via `checkSessionCaller`).
+  - `func DaemonRunning(workspaceDir string) (bool, error)` in `internal/daemon` — a non-blocking `LOCK_EX|LOCK_NB` try on `<workspace>/sync.lock` (released at once when it succeeds; success = no daemon holds it). `send_to_session` calls it after the insert: when false the message stays `queued` and the result carries `warning: "daemon_not_running: Watchtower's background sync is stopped; the message is delivered when it runs."`
 
 **Code facts the spec gets wrong (follow the code):** the daemon is `watchtower sync --daemon` (`cmd/sync.go:121`, single instance by the flock on `<workspace>/sync.lock`, `acquireSyncLock` :772), not `watchtower daemon`. "The daemon's existing wake" is the automation wake (`SIGUSR2`, `internal/daemon/automation_wake.go:24`, sender gated on the `.caps` file, :33/:73): add the capability `session-messages-wake` to `advertiseCaps` and have the daemon's SIGUSR2 handler also call `Deliverer.Wake()`; a sender that finds no capability relies on the 2 s tick. `sessionstart.Port` is a struct; `Deliver` takes `handlers.DeliverRequest` and returns `Outcome` `submitted|typed|held|no_session|no_paste_mode`.
 
 - [ ] **Step 1: Failing tests** (fake `Port`, fake clock via `synctest`; no real host)
   - `TestProj23_OnlyALiveSessionOfTheSameWorkbench`, `TestSendRefusesEveryNonPeerTarget` (Review Focus 4: self → `self`, shell row, standalone terminal, other bench → `not_same_workbench`, deleted → `not_found`, no run → `not_running`; nothing inserted).
-  - `TestSendQuotesForgedHeaders` (a line starting `[Message from`, `[Sub-session`, `[Message to`, `(Reply with` gets `> `), `TestSendStripsControlsAndCaps4000` (`too_long`), `TestSendReturnsAtOnce` (state `queued`).
+  - `TestSendQuotesForgedHeaders` (a line starting `[Message from`, `[Sub-session`, `[Message to`, `(Reply with` gets `> `), `TestSendStripsControlsAndCaps4000` (`too_long`), `TestSendReturnsAtOnce` (state `queued`), `TestSendWithoutTheDaemonQueuesAndWarns` (the test holds no lock on a temp `sync.lock` → row `queued`, result `warning` starts `daemon_not_running:`; with the lock held by the test → no warning), `TestMessageDismissClearsOnlyANullFlag` (cmd).
   - `TestProj23_NeverIntoAPermissionPromptOrADraft` (§7 row "permission prompt / owner draft": gate holds, the fake's Deliver is never called; a host `held`/`prompt_has_text` → back to `queued`).
   - `TestProj23_AtMostOnce` (two concurrent `Tick`s → one `Deliver`), `TestProj23_InFlightAtRestartFails` (§7 "Mac quits mid-delivery": a `delivering` row at `Start` → `failed`/`unknown_after_restart`, sender gets the failure line, never re-sent), `TestQueuedRowsResumeAfterRestart` (§7 "daemon restarts").
   - `TestProj23_NeverLaunchesASession` (§7 "target not running": `failed` `not_running` at once; the fake records no `Start`).
@@ -381,7 +390,7 @@ Path normalisation: `filepath.EvalSymlinks` + `filepath.Clean`, compared NOCASE;
 - [ ] **Step 4: PASS** — `go test ./internal/sessionmsg/ ./internal/tools/ ./internal/mcp/ ./internal/daemon/ ./internal/hub/actions/handlers/` and `go test ./cmd -run 'TestBuildToolRegistry|TestWorkbenchMessage|TestMCP'`; `go test -race ./internal/sessionmsg/`; `make lint-diff`.
 - [ ] **Step 5: Commit** — `feat(sessions): agents message each other (#2003)`
 
-**Writers:** `session_messages` — MCP/CLI insert (`Send`, `finish_session`); the daemon alone moves `state`, `delivered_at`, `prompt_cleared_at`; the Desktop's Dismiss (Task 15) writes only `prompt_cleared_at` where it is NULL (`UPDATE … WHERE prompt_cleared_at IS NULL`), so a daemon clear and a Dismiss never conflict (first wins, the other changes nothing).
+**Writers:** `session_messages` — MCP/CLI insert (`Send`, `finish_session`); the daemon alone moves `state`, `delivered_at`, `prompt_cleared_at`; the Desktop's Dismiss (Task 15) goes through `workbench message dismiss` and writes only `prompt_cleared_at` where it is NULL (`UPDATE … WHERE prompt_cleared_at IS NULL`), so a daemon clear and a Dismiss never conflict (first wins, the other changes nothing).
 
 ---
 
@@ -395,7 +404,7 @@ Path normalisation: `filepath.EvalSymlinks` + `filepath.Clean`, compared NOCASE;
 
 **Interfaces:**
 - Consumes: `session start --folder --parent` (Task 3), `sessionmsg.Header` (Task 10).
-- Produces: `start_session(folder, brief, title?, target_id?, agent?)` → `{session_id, folder, place, worktree}`; agent defaults to the caller's kind; errors `not_installed`, `limit: <n> sub-sessions are live under #<root>` (depth > 3 or > 6 live under one root), `folder_missing`, `folder_removed`. `list_sessions()` → `[{session_id, title, folder, state, parent_session_id, live}]` of live sessions (never `null`). `workbench_info.folders` → `[{name, path, home, installed}]`.
+- Produces: `start_session(folder, brief, title?, target_id?, agent?)` → `{session_id, folder, place, worktree}` (`folder` resolved by `workbenchfolders.Resolve`: the stored name, id or path; results report the stored name); agent defaults to the caller's kind; errors `not_installed`, `limit: <n> sub-sessions are live under #<root>` (depth > 3 or > 6 live under one root), `folder_missing`, `folder_removed`. `list_sessions()` → `[{session_id, title, folder, state, parent_session_id, live}]` of live sessions (never `null`). `workbench_info.folders` → `[{name, path, home, installed}]`.
 - `func SubSessionHeader(parentID int64, parentTitle, folder string) string` →
   `You are a sub-session of #<id> “<title>” (folder <name>). Message it with send_to_session(<id>, …). When done, call finish_session — your summary is sent to #<id>.`
 
@@ -438,14 +447,14 @@ Path normalisation: `filepath.EvalSymlinks` + `filepath.Clean`, compared NOCASE;
 
 **Files:**
 - Create: `WatchtowerDesktop/Sources/WatchtowerCore/Models/WorkbenchFolder.swift`, `Models/SessionMessage.swift`, `Database/Queries/WorkbenchFolderQueries.swift`, `Database/Queries/SessionMessageQueries.swift`; tests `WatchtowerDesktop/Tests/Core/WorkbenchFolderQueriesTests.swift`, `Tests/Core/CodeRootFolderTests.swift`, `Tests/WorkbenchCLIFolderTests.swift`
-- Modify: `Models/TerminalSession.swift` (`workbenchFolderID`, `parentSessionID`), `Models/Target.swift` (`workbenchFolderID`), `Models/OwnerAsk.swift` (`OwnerAskKind.folder`, `FolderSuggestionPayload`), `Models/CodeRoot.swift` (folder id), `Database/Queries/TerminalSessionQueries.swift` (`NewSession.workbenchFolderID`), `Services/WorkbenchCLI.swift` (`folderAdd/Remove/Locate/List`, `SessionStartRequest.folderID/parentSessionID`, `messageQuiet`)
+- Modify: `Models/TerminalSession.swift` (`workbenchFolderID`, `parentSessionID`), `Models/Target.swift` (`workbenchFolderID`), `Models/OwnerAsk.swift` (`OwnerAskKind.folder`, `FolderSuggestionPayload`), `Models/CodeRoot.swift` (folder id), `Database/Queries/TerminalSessionQueries.swift` (`NewSession.workbenchFolderID`), `Services/WorkbenchCLI.swift` (`folderAdd/Remove/Locate/List`, `folderQuiet`, `folderDecline`, `messageDismiss`, `SessionStartRequest.folderID/parentSessionID`)
 
 **Interfaces:**
 - `package struct WorkbenchFolder: Codable, FetchableRecord, Identifiable, Hashable { id, workbenchID: Int64; folderPath: String; position: Int; addedBy: String; removedAt: String?; var name: String }`
 - `WorkbenchFolderQueries.folders(_ db: Database, workbenchID: Int64, withRemoved: Bool) throws -> [WorkbenchFolder]`
-- `SessionMessageQueries.waitingInPrompt(_ db: Database, sessionIDs: [Int64]) throws -> Set<Int64>`; `queued(_ db: Database, fromSessionID: Int64) throws -> [SessionMessage]`; `dismissPrompt(_ db: Database, messageID: Int64, at: Date) throws` (`WHERE prompt_cleared_at IS NULL`)
+- `SessionMessageQueries.waitingInPrompt(_ db: Database, sessionIDs: [Int64]) throws -> Set<Int64>`; `queued(_ db: Database, fromSessionID: Int64) throws -> [SessionMessage]` — read-only; the Desktop never writes `workbench_folders`, `workbench_folder_declines` or `session_messages` through GRDB (Architecture)
 - `CodeRoot` gains `folderID: Int64?`; `init(folder: WorkbenchFolder, workbenchID:)`; `defaultsKeySuffix` keeps `""` for the home folder (today's keys survive) and adds `.f<folderID>` for other folders (+ the existing `.wt.<hex>` for a worktree).
-- `WorkbenchCLI.folderAdd(workbenchID:path:) async throws -> FolderResult`, `folderRemove(workbenchID:folderID:)`, `folderLocate(workbenchID:folderID:to:)`, `folderList(workbenchID:) -> [FolderInfo]`; `FolderResult { ok, errorCode, error, folder, otherBench, install }`.
+- `WorkbenchCLI.folderAdd(workbenchID:path:) async throws -> FolderResult`, `folderRemove(workbenchID:folderID:)`, `folderLocate(workbenchID:folderID:to:)`, `folderList(workbenchID:) -> [FolderInfo]`, `folderQuiet(sessionID:root:)`, `folderDecline(workbenchID:path:)`, `messageDismiss(id:)` (`workbench message dismiss --id N`); `FolderResult { ok, errorCode, error, folder, otherBench, install }`.
 
 - [ ] **Step 1: Failing tests** — `testOldOwnerAskKindsStillDecode` and `testFolderAskDecodes` (a `folder` row decodes; an unknown kind is a third state, not a crash — review-rules Error handling), `testFoldersInPositionOrder`, `testHomeRootKeepsTodaysDefaultsKey`, `testSecondFolderRootHasItsOwnKey`, `testFolderResultDecodesEveryCode` (all codes from Global Constraints; `folders: []` empty state), `testNoCLIStartUsesTheHomeFolder` (the Swift insert writes the home folder id).
 - [ ] **Step 2: FAIL** — `make test-swift FILTER='WorkbenchFolderQueriesTests|CodeRootFolderTests|WorkbenchCLIFolderTests|OwnerAskDecoding'`
@@ -479,20 +488,23 @@ Path normalisation: `filepath.EvalSymlinks` + `filepath.Clean`, compared NOCASE;
 **Depends on:** Task 9, Task 10, Task 11, Task 13
 
 **Files:**
-- Create: `WatchtowerCore/Services/SessionNestingPresentation.swift`, tests `Tests/Core/SessionNestingPresentationTests.swift`, `Tests/Core/SubSessionsWorkingTests.swift`
+- Create: `WatchtowerCore/Services/SessionNestingPresentation.swift`, `WatchtowerCore/Services/NewSessionFolder.swift`, tests `Tests/Core/SessionNestingPresentationTests.swift`, `Tests/Core/SubSessionsWorkingTests.swift`, `Tests/Core/NewSessionFolderTests.swift`
+- Modify (start entry points): `ViewModels/WorkbenchesViewModel+Sessions.swift` (`newSessionOnPage` :214, `newSession` :220/:229 and the Work on It path → `SessionStartRequest.folderID`), the ⌘T command
 - Modify (Go): `internal/sessionstate/status.go` (new `StateSubSessionsWorking = "sub_sessions_working"`, `Row.LiveChildren int`), `internal/sessionstate/testdata/status_cases.json`, `internal/hub/slices/sources/terminal_session.go` (caption), `cmd/workbench_escalate.go` (no escalation while children are live)
 - Modify (Swift): `Models/SessionAgentStatus.swift`, `Services/SessionStatePresentation.swift` (:7, glyph/caption/tone), `Services/WorkbenchNotificationPolicy.swift` (`decide` :208), `Services/OwnerPresencePolicy.swift` (:29), `Services/ChatQuestionEscalationPolicy.swift`, `Views/Workbench/WorkbenchSessionsPanel.swift`, `TerminalSessionRow.swift` (`SessionStateLabel` :277), `WorkbenchSessionStrip.swift`, `SessionPlaceViews.swift`, `NewSessionMenuItems.swift`, `Services/SessionStartPlacementPresentation.swift`, `Services/SessionHost/SessionHostClient.swift` (`SessionHostHello` :46 decodes `features`)
 
 **Interfaces:**
 - `SessionNestingPresentation`: `nest(_ rows: [TerminalSession]) -> [(row: TerminalSession, depth: Int)]` (a child of a deleted parent at depth 0); `subSessionsSuffix(_ n: Int) -> String?` (`· 1 sub-session` / `· <n> sub-sessions`); `stripTrail(folder:worktree:branch:dirty:) -> String` (`📁 <folder> › ⑂ <worktree> › ⎇ <branch> ●`); `fromParent(title:) = "↖ from “<title>”"`; `promptWaiting = "· Agent message waiting in the prompt"` (Tone warning); `promptNotice = "An agent's message is in the prompt. Press Return in the terminal to send it."`, buttons `Show in Terminal`, `Dismiss` (only when the host lacks `prompt_state`); New Session submenu title `in <folder>` with `New Claude Code session`, `New Codex session`.
+- `enum NewSessionFolder { enum Context { case shortcut(currentSession: TerminalSession?, selectedRoot: CodeRoot?), workOnIt(target: Target), filesRoot(CodeRoot), menu(folderID: Int64) }; static func folderID(for: Context, homeFolderID: Int64) -> Int64 }` — ⌘T: the current session's folder, else the selected FILES root's, else home; Work on It: the target's `workbenchFolderID`, NULL → home (also when that folder was removed → home, and the start then reports nothing special); New Session Here on a root: that root; a menu item: its folder. Every start entry point (New Session (+) items, ⌘T, Work on It, New Session Here, drift Fix) calls it — no entry point picks a folder on its own.
 - Go/Swift parity: `Resolve` returns `StateSubSessionsWorking` when the row's own state is `waiting`/finished-at-prompt and `LiveChildren > 0`; caption `Sub-sessions working`, glyph and tone as Agents working (`SessionStatePresentation` hourglass, secondary).
 
 - [ ] **Step 1: Failing tests**
   - Go: `TestProj11_SubSessionsWorkingWhileAChildIsLive` (+ the new cases in `status_cases.json`: child live → sub_sessions_working; last child stops → the stored state, §7 "parent waits"), `TestNoEscalationWhileChildrenAreLive`.
-  - Swift: `testProj11_SubSessionsWorkingMatchesTheGoCases` (`SessionAgentStatusFixtureTests` reads the same JSON), `testProj11_NoOwnerPresenceNoticeWhileChildrenWork`, `testProj11_LastChildStopsShowsTheStoredState`, `testNestingDepthAndOrphans`, every string in `SessionNestingPresentation`, `testOneFolderRowsHaveNoFolderLabel` (anti-goal), `testNewSessionMenuAddsOneSubmenuPerOtherFolder`, `testPlacementSubmenusListTheFolders`, `testMessageFlagShowsWhileAnyRowIsUncleared`, `testDismissOnlyWithAnOldHost`, `testDismissWritesOnlyANullFlag`.
-- [ ] **Step 2: FAIL** — `go test ./internal/sessionstate/ -run 'TestProj11_SubSessions|TestNoEscalation'`; `make test-swift FILTER='SessionNestingPresentationTests|SubSessionsWorkingTests|SessionAgentStatusFixtureTests'`
+  - Swift: `testProj11_SubSessionsWorkingMatchesTheGoCases` (`SessionAgentStatusFixtureTests` reads the same JSON), `testProj11_NoOwnerPresenceNoticeWhileChildrenWork`, `testProj11_LastChildStopsShowsTheStoredState`, `testNestingDepthAndOrphans`, every string in `SessionNestingPresentation`, `testOneFolderRowsHaveNoFolderLabel` (anti-goal), `testNewSessionMenuAddsOneSubmenuPerOtherFolder`, `testPlacementSubmenusListTheFolders`, `testMessageFlagShowsWhileAnyRowIsUncleared`, `testDismissOnlyWithAnOldHost`, `testDismissCallsTheCLI` (fake runner records `workbench message dismiss --id N`; no GRDB write).
+  - Swift, start context (`NewSessionFolderTests`): `testNewSessionFolderFollowsTheCurrentSession` (⌘T in a hub session → hub), `testNewSessionFolderUsesTheSelectedRootWithoutASession`, `testNewSessionFolderFallsBackToHome`, `testWorkOnItUsesTheTargetsFolder`, `testWorkOnItWithoutAFolderUsesHome`, `testEveryStartEntryPointPassesTheContextFolder` (VM test: ⌘T, Work on It, New Session Here and a menu item each send the expected `folderID` in `SessionStartRequest`).
+- [ ] **Step 2: FAIL** — `go test ./internal/sessionstate/ -run 'TestProj11_SubSessions|TestNoEscalation'`; `make test-swift FILTER='SessionNestingPresentationTests|SubSessionsWorkingTests|SessionAgentStatusFixtureTests|NewSessionFolderTests'`
 - [ ] **Step 3: Implement.**
-- [ ] **Step 4: PASS with guards** — `go test ./internal/sessionstate/ ./internal/hub/... ./cmd -run 'TestProj11_|TestSessionState'`; `make test-swift FILTER='SessionAgentStatus|SessionStatePresentationTests|SessionAgentNoticePolicyTests|WorkbenchNotificationPolicyTests|OwnerPresence|ChatQuestionEscalation|SessionNesting|SubSessionsWorking|SessionStartPlacement'`; `make kit-test FILTER=WorkbenchMirrorFixtureTests`; `make lint-swift`; `make lint-diff`; shots `panel-nested`, `panel-parent-waiting`, `strip-child`, `new-session-menu`, `message-in-prompt` compared with the mockups.
+- [ ] **Step 4: PASS with guards** — `go test ./internal/sessionstate/ ./internal/hub/... ./cmd -run 'TestProj11_|TestSessionState'`; `make test-swift FILTER='SessionAgentStatus|SessionStatePresentationTests|SessionAgentNoticePolicyTests|WorkbenchNotificationPolicyTests|OwnerPresence|ChatQuestionEscalation|SessionNesting|SubSessionsWorking|SessionStartPlacement|NewSessionFolder|WorkbenchesViewModel'`; `make kit-test FILTER=WorkbenchMirrorFixtureTests`; `make lint-swift`; `make lint-diff`; shots `panel-nested`, `panel-parent-waiting`, `strip-child`, `new-session-menu`, `message-in-prompt` compared with the mockups.
 - [ ] **Step 5: Commit** — `feat(desktop): nested sub-sessions and their states (#2003)`
 
 ---
@@ -510,13 +522,13 @@ Path normalisation: `filepath.EvalSymlinks` + `filepath.Clean`, compared NOCASE;
 - Answer lines: `<name> is on the bench now. Start a sub-session there with start_session("<name>", …).`; `The owner said not now.`; `The owner does not want <name> on this bench.`; a failed add answers with the reason.
 - Remove: refused title `Can’t remove <name> from the bench`, text `1 session is running in <name>. Finish it first.` / `<n> sessions are running in <name>. Finish them first.` / `A workbench needs at least one folder.`, button `OK`; confirm title `Remove <name> from the bench?`, text `Watchtower's install in this folder is removed. Your files and git are not touched.`, buttons `Cancel` · `Remove` (destructive). Locate… runs the folder panel then `cli.folderLocate`.
 
-- [ ] **Step 1: Failing tests** — every string; `testPutOnBenchAnswersTheAgent` (CLI add then the answer line), `testNotNowQuietsTheRoot` (calls `workbench folder quiet`), `testNeverWritesADecline` (through the CLI — the Desktop's answer handler is the only writer of declines, spec §7; the plan routes it through `workbench folder decline` so Go owns the table write), `testFailedAddShowsTheReasonAndAnswers`, `testFolderBecameAnotherBenchsSwitchesToMerge` (§7 "suggestion" row, Swift half; the Go half is `TestSuggestOtherBenchCarriesTheBench` + `Add`'s `other_bench`), `testRemoveRefusedWhileSessionsRun`, `testRemoveRefusedForTheLastFolder`, `testRemoveConfirmThenCLI`, `testLocateRepointsAndReinstalls`.
+- [ ] **Step 1: Failing tests** — every string; `testPutOnBenchAnswersTheAgent` (CLI add then the answer line), `testNotNowQuietsTheRoot` (calls `workbench folder quiet`), `testNeverWritesADecline` (fake runner records `workbench folder decline`; no GRDB write — Architecture), `testFailedAddShowsTheReasonAndAnswers`, `testFolderBecameAnotherBenchsSwitchesToMerge` (§7 "suggestion" row, Swift half; the Go half is `TestSuggestOtherBenchCarriesTheBench` + `Add`'s `other_bench`), `testRemoveRefusedWhileSessionsRun`, `testRemoveRefusedForTheLastFolder`, `testRemoveConfirmThenCLI`, `testLocateRepointsAndReinstalls`.
 - [ ] **Step 2: FAIL** — `make test-swift FILTER='FolderSuggestionPresentationTests|OwnerAsksViewModelFolderTests|WorkbenchFolderRemoveTests'`
 - [ ] **Step 3: Implement** (+ Go: `workbench folder quiet --session S --root R` and `workbench folder decline --workbench N --folder P` in `cmd/workbench_folder.go`, tests `TestFolderQuiet`, `TestFolderDecline`).
 - [ ] **Step 4: PASS** — the Swift filter plus `OwnerAsksViewModelTests|OwnerAskStack`; `go test ./cmd -run 'TestFolderQuiet|TestFolderDecline'`; `make lint-swift`; `make lint-diff`; shots `suggest-card`, `suggest-card-busy`, `suggest-card-error`, `remove-confirm`, `remove-refused-sessions`, `remove-refused-last`.
 - [ ] **Step 5: Commit** — `feat(desktop): folder suggestions and removing folders (#2003)`
 
-**Writers:** `workbench_folder_declines` — the Desktop's answer handler, through `workbench folder decline` (spec §7 names the Desktop; the write itself is Go so the Go-side guard has no Swift twin).
+**Writers:** `workbench_folder_declines` — the Desktop's answer handler, through `workbench folder decline` (the CLI does the write; spec §7's writer line is updated to match). `session_outside_touches.quiet` — the Desktop's Not Now, through `workbench folder quiet`.
 
 ---
 
@@ -531,9 +543,9 @@ Path normalisation: `filepath.EvalSymlinks` + `filepath.Clean`, compared NOCASE;
 
 **Code fact the spec gets wrong:** §10 item 16 puts the feed parse in the Desktop; the transcript parser is Go (`internal/sessionfeed`, served by `workbench session-feed`). The prefixes are matched in Go and the Desktop only renders `peer` entries; the waiting bubble comes from `session_messages` (GRDB, `SessionMessageQueries.queued`).
 
-**Interfaces:** `type PeerRef struct { Direction string /* "in"|"out" */; Kind string /* "message"|"finished"|"started" */; SessionID int64; Title, Folder, Worktree string }`. Strings: `↘ From “<title>” · <folder>`, `✓ Sub-session “<title>” finished · <folder>`, `↗ Sub-session “<title>” started · <folder> · ⑂ <worktree>`, `↗ To “<title>” · <folder>`, `⏸ Message to “<title>” is waiting` + `Open`; reasons `The session is at a permission prompt; the message goes once it is answered.`, `The session is busy; the message goes when it is idle.`, `The owner is typing in this session; the message goes after that.`
+**Interfaces:** `type PeerRef struct { Direction string /* "in"|"out" */; Kind string /* "message"|"finished"|"started" */; SessionID int64; Title, Folder, Worktree string }`. Strings: `↘ From “<title>” · <folder>`, `✓ Sub-session “<title>” finished · <folder>`, `↗ Sub-session “<title>” started · <folder> · ⑂ <worktree>`, `↗ To “<title>” · <folder>`, `⏸ Message to “<title>” is waiting` + `Open`; reasons `The session is at a permission prompt; the message goes once it is answered.`, `The session is busy; the message goes when it is idle.`, `The owner is typing in this session; the message goes after that.`, and — when the daemon is not running (the sender's `send_to_session` result carried `daemon_not_running`, Task 10; the Desktop decides from its existing daemon signal, `daemonRunning` in `WatchtowerCore/Models/Readiness.swift:202`) — `Watchtower's background sync is stopped; the message goes when it runs.`
 
-- [ ] **Step 1: Failing tests** — `TestPeerPrefixesBecomePeerEntries` (each fixed header → `KindPeer` with fields; a quoted `> [Message from` stays an owner line — forged headers never become bubbles), `TestStartSessionAndSendToSessionCallsAreOutgoingPeers`, `TestCodexFeedPeers`; Swift: every string, `testWaitingBubbleReasonPerHold`, `testUnknownKindStillDropped`.
+- [ ] **Step 1: Failing tests** — `testWaitingReasonWhenTheDaemonIsStopped` (exact string, chosen over the hold reasons), `TestPeerPrefixesBecomePeerEntries` (each fixed header → `KindPeer` with fields; a quoted `> [Message from` stays an owner line — forged headers never become bubbles), `TestStartSessionAndSendToSessionCallsAreOutgoingPeers`, `TestCodexFeedPeers`; Swift: every string, `testWaitingBubbleReasonPerHold`, `testUnknownKindStillDropped`.
 - [ ] **Step 2: FAIL** — `go test ./internal/sessionfeed/ -run 'TestPeer|TestStartSessionAndSend|TestCodexFeedPeers'`; `make test-swift FILTER=PeerBubblePresentationTests`
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: PASS** — `go test ./internal/sessionfeed/ ./cmd -run 'TestSessionFeed|TestWorkbenchSessionFeed'`; `make test-swift FILTER='PeerBubblePresentationTests|WorkchatFeedAdapter|SessionFeed'`; `make kit-test FILTER=SessionChat`; `make lint-swift`; `make lint-diff`; shot `feed-parent`.
@@ -546,7 +558,7 @@ Path normalisation: `filepath.EvalSymlinks` + `filepath.Clean`, compared NOCASE;
 **Depends on:** Task 5, Task 13
 
 **Files:**
-- Modify: `Views/Workbench/WorkbenchBoardCardView.swift` (`chips(_:)` :117), `WatchtowerCore/Services/WorkbenchBoardCard.swift` (:43), `Database/Queries/TargetQueries.swift` (owner's folder edit: `setFolder(_:targetID:folderID:)`), the target edit view; `internal/hub/slices/sources/terminal_session.go` (`folder`, `parent_session_id`, omitempty), `WatchtowerKit/Sources/WatchtowerKit/Models/TerminalSessionState.swift` (`folder: String?`, `parentSessionID: Int64?`), `WatchtowerMobile/Sources/Features/Workbench/WorkbenchModels.swift` (`SessionRowModel` :6), `WorkbenchComponents.swift` (`SessionRowView` :6)
+- Modify: `Views/Workbench/WorkbenchBoardCardView.swift` (`chips(_:)` :117), `WatchtowerCore/Services/WorkbenchBoardCard.swift` (:43), `Database/Queries/TargetQueries.swift` (owner's folder edit: `setFolder(_:targetID:folderID:)` — the existing GRDB target-edit path, as for `branch`; Architecture), the target edit view; `internal/hub/slices/sources/terminal_session.go` (`folder`, `parent_session_id`, omitempty), `WatchtowerKit/Sources/WatchtowerKit/Models/TerminalSessionState.swift` (`folder: String?`, `parentSessionID: Int64?`), `WatchtowerMobile/Sources/Features/Workbench/WorkbenchModels.swift` (`SessionRowModel` :6), `WorkbenchComponents.swift` (`SessionRowView` :6)
 - Test: `Tests/Core/WorkbenchBoardCardTests.swift`, `WatchtowerKit/Tests/WatchtowerKitTests/WorkbenchMirrorFixtureTests.swift`, `WatchtowerMobile/Tests/SessionRowTests.swift`, `internal/hub/slices/sources/terminal_session_test.go`
 
 **Code fact:** the board card has no branch chip today (`chips(_:)` shows number, priority, status, Archived, children, progress, comments); the folder chip goes into `chips(_:)` after status, as the `board-card-folder` mockup shows.
@@ -569,7 +581,7 @@ Path normalisation: `filepath.EvalSymlinks` + `filepath.Clean`, compared NOCASE;
 
 **Interfaces:**
 - `func Merge(ctx context.Context, d *db.DB, from, into int64, live func(ctx context.Context, workbenchID int64) (int, error)) (MergeReport, error)`; `type MergeReport struct { MovedFolders []db.WorkbenchFolder; Targets int; Reinstall []string /* folders + still-existing worktrees */ }`; refusal `sessions_running` (count).
-- `var mergeTables = []mergeTable{…}` — one entry per table keyed by the workbench id: `targets`, `workbench_board_columns` (B's dropped; targets land in A's first column for their status, PROJ-19), `project_sources` (dedupe on `(kind, ref)`), `project_target_images`, `project_comments`, `terminal_sessions`, `owner_asks`, `coach_proposals`, `workbench_pr_states` (PK `(project_id, ref)`: keep both — Review Focus 1), `automations` (unique `(scope, project_id, slug)`: a colliding slug becomes `<folder>/<slug>`), `review_rounds`, `review_notes`, `review_overviews`, `review_overview_parts`, `review_lessons`, `review_reviewer_threads`, `instruction_suggestions`, `permission_requests.workbench_id` (no FK — updated explicitly), `workbench_folders` (positions after A's), `session_messages`, `workbench_folder_declines` (B's dropped).
+- `var mergeTables = []mergeTable{…}` — one entry per table keyed by the workbench id: `targets`, `workbench_board_columns` (B's dropped; targets land in A's first column for their status, PROJ-19), `project_sources` (dedupe on `(kind, ref)`), `project_target_images`, `project_comments`, `terminal_sessions`, `owner_asks`, `coach_proposals`, `workbench_pr_states` and `review_reviewer_threads` (their keys carry `workbench_folder_id` since Task 1 and B's folders move with them, so no collision is possible), `automations` (unique `(scope, project_id, slug)`: a colliding slug becomes `<folder name>/<slug>`), `review_rounds`, `review_notes`, `review_overviews`, `review_overview_parts`, `review_lessons`, `instruction_suggestions`, `permission_requests.workbench_id` (no FK — updated explicitly), `workbench_folders` (positions after A's; a name that clashes with a live A folder is renamed with `db.UniqueFolderName`), `session_messages`, `workbench_folder_declines` (B's dropped).
 - CLI `workbench merge --from B --into A --json` → `{ok, error_code, error, moved_folders:[…], targets, reinstall:{ok, failed:[…]}}`.
 - Backstop: before every launch (new, resume, Start fresh) compare the workbench id installed in the cwd (`devpack.HasCoreStateHooks(cwd, row.project_id)`) and reinstall when it differs, logging `install_mismatch`.
 - Copy: `Merge “<B>” into “<A>”?`; `<B>'s board (<n> targets), asks and sessions move to <A>, and <B> leaves the workbench list. Folders that move: <list>.`; `Cancel` · `Merge` (primary); refused `Can’t merge “<B>” yet` / `<n> sessions are running in <B>. Finish them first.` (singular `1 session is running in <B>. Finish it first.`) / `OK`; card variant `<name> is on the “<B>” bench`, `Merge Benches…` · `Not Now`.
@@ -581,7 +593,7 @@ Path normalisation: `filepath.EvalSymlinks` + `filepath.Clean`, compared NOCASE;
   - `TestMergeIsAllOrNothing` (§7 "crash mid-move": an injected failure on the Nth table rolls everything back).
   - `TestMergeReinstallFailureKeepsTheData` (§7: data in A, `reinstall.failed` lists the folder).
   - `TestMergeReinstallsWorktreesOfMovedSessions`, `TestLaunchReinstallsOnAnInstallMismatch` (new and resume).
-  - `TestMergeKeepsBothPRStatesOnAKeyCollision` (Review Focus 1).
+  - `TestMergeRenamesAClashingFolder` (A has `app`, B's `~/other/app` arrives as `other-app`; `Resolve` by either name stays unambiguous).
   - Swift: every string, `testOtherBenchOnAddOpensMergeConfirm`, `testMergeRefusedShowsTheCount`, `testReinstallFailureShowsRetry` (§7 Swift half).
 - [ ] **Step 2: FAIL** — `go test ./internal/workbenchfolders/ ./internal/sessionstart/ -run 'TestMerge|TestProj09_Merge|TestLaunchReinstalls'`; `make test-swift FILTER=BenchMergePresentationTests`
 - [ ] **Step 3: Implement** — one `BEGIN IMMEDIATE`: re-count B's live sessions, move every table, delete B's `projects` row; after commit, reinstall and re-index.
@@ -615,16 +627,17 @@ Path normalisation: `filepath.EvalSymlinks` + `filepath.Clean`, compared NOCASE;
 |---|---|
 | §2 G1 one-folder unchanged | 2, 13, 14 (`testOneFolderShowsOneRootAndTheHint`), 15 (`testOneFolderRowsHaveNoFolderLabel`) |
 | §2 G2–G7 | 14 (G2), 12 + 16 (G3), 3–8 (G4), 11 + 15 (G5), 10 + 17 (G6), 5 (G7) |
-| §4.1 `workbench_folders` | 1, 2 |
+| §4.1 `workbench_folders` (+ stored `name`, unique per bench) | 1, 2, 19 (rename on merge) |
 | §4.2 session columns | 1, 3 |
 | §4.3 target column | 1, 5, 18 |
-| §4.4 ask kind `folder` | 1, 12, 13, 16 |
+| §4.4 ask kind `folder` (+ `doc_folder_id`) | 1, 8, 12, 13, 16 |
 | §4.5 declines | 1, 16 |
 | §4.6 `session_messages` | 1, 10 |
 | §4.7 docs key | 1, 8 |
 | §4.8 outside touches | 1, 12 |
+| Review threads / PR states keyed per folder | 1 (key + migration test), 5 (owner of the test), 6 |
 | §4 mirrors (schema.sql, golden, Swift schema; Kit has no schema floor) | 1 |
-| §5 CLI `folder …` / `session start --folder --parent` / `message send` | 2, 3, 10 (+ 16 `quiet`, `decline`; 19 `merge`) |
+| §5 CLI `folder …` / `session start --folder --parent` / `message send`, `message dismiss` | 2, 3, 10 (+ 16 `quiet`, `decline`; 19 `merge`) |
 | §5 MCP `start_session`, `send_to_session`, `list_sessions`, `suggest_workbench_folder`, `workbench_info`, targets `folder` | 11, 10, 11, 12, 11, 5 |
 | §5 Hooks | 12 |
 | §5 Session host `PromptState` + features | 9 |
@@ -633,7 +646,7 @@ Path normalisation: `filepath.EvalSymlinks` + `filepath.Clean`, compared NOCASE;
 | §6.1 Put on the Bench | 2 (Go), 14 (Desktop) |
 | §6.2 FILES | 14 |
 | §6.3 Remove / Locate | 2, 16 |
-| §6.4 Session start | 3, 15 (menu) |
+| §6.4 Session start (context folder: ⌘T, Work on It, FILES root, menu) | 3, 15 (`NewSessionFolder`, menu, entry points) |
 | §6.5 Sub-sessions | 11, 15 |
 | §6.6 Messages, gate, trust, finish, parent waiting, finish gate, feed | 9, 10, 15, 6, 17, 20 (skill rule) |
 | §6.7 Suggest | 12, 16 |
@@ -666,7 +679,8 @@ Path normalisation: `filepath.EvalSymlinks` + `filepath.Clean`, compared NOCASE;
 | §7 merge crash | 19 `TestMergeIsAllOrNothing` |
 | §7 merge reinstall fails | 19 `TestMergeReinstallFailureKeepsTheData`, `testReinstallFailureShowsRetry` |
 | §7 hook slow path | 12 `TestOutsideTouchWalkIsCapped` |
-| §7 Writers | named under Tasks 1, 2, 3, 5, 10, 12, 16 |
+| (plan) message — daemon not running | 10 `TestSendWithoutTheDaemonQueuesAndWarns`, 17 `testWaitingReasonWhenTheDaemonIsStopped` |
+| §7 Writers (Desktop writes new tables only through the CLI) | named under Tasks 1, 2, 3, 5, 10, 12, 16; Architecture |
 | §8 PROJ-02 | 2, 7, 12 |
 | §8 PROJ-04 | 2, 12 |
 | §8 PROJ-07 | 5 |
@@ -688,8 +702,10 @@ Path normalisation: `filepath.EvalSymlinks` + `filepath.Clean`, compared NOCASE;
 - The existing PostToolUse hook may not print (PROJ-11); detection is a separate hook entry — Task 12.
 - The header's git poll is 15 s (`gitPollInterval`), not 5 s — Task 14 keeps 15 s.
 - The Workchat transcript parser is Go (`internal/sessionfeed`), not the Desktop — Task 17.
-- The board card has no branch chip; the folder chip goes into `chips(_:)` — Task 18.
+- The board card has no branch chip; the folder chip goes after status in `chips(_:)` (spec being updated to match) — Task 18.
 - `owner_asks` has never been rebuilt and has FK children — Task 1 follows the `00150` pattern with `foreign_keys = OFF`.
 - "Merged progress share" is the session report's (`internal/sessionreport/refresh.go`), so it follows the session's folder (Task 6), not the target's.
-- No MCP error-code convention exists; the plan fixes `"<code>: <sentence>"` (Global Constraints).
-- Tables keyed `(project_id, branch|ref)` assume one repository per bench — Review Focus 1.
+- No MCP error-code convention exists; the plan fixes `"<code>: <sentence>"` (Global Constraints, spec D42).
+- Tables keyed `(project_id, branch|ref)` (`review_reviewer_threads`, `workbench_pr_states`) assume one repository per bench — Task 1 adds `workbench_folder_id` to their keys; Review Focus 1.
+- Declines are written through `workbench folder decline` and the prompt-flag Dismiss through `workbench message dismiss` (spec §7 writer lines being updated to match) — Tasks 10, 16.
+- Folder names are stored (`workbench_folders.name`, unique per bench) instead of derived from the path, so a name never resolves to two folders — Tasks 1, 2, 19.
