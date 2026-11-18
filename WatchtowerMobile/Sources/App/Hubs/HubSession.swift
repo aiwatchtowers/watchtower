@@ -1301,6 +1301,9 @@ final class HubSession {
             activatedAt = nil
             if let foreground = foregroundFetch, runningFetch?.serial == foreground {
                 runningFetch?.task.cancel()
+                // The return's full fetch did not finish: it stays owed, so the next return reads in full
+                // however recent a lighter fetch (a push's) made the last sync meanwhile.
+                fullFetchOwed = true
             }
             restartLoop(firstCycle: nil)
             return
