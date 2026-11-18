@@ -1,0 +1,378 @@
+# Multi-folder workbench — design
+
+**Board:** #2003 (FILES polish split off as #2017). **Status:** draft for the owner's review.
+**Mockups:** brainstorm HTML (approved in ask #1541) → DesignShotCatalog shots in
+`docs/design/mockups/multi-folder/` (§9).
+
+## 1. Why
+
+The owner works on tasks that cross repositories: a change in app A needs a matching change in
+service B, sometimes in a site C. Today a workbench is one folder, so such a task is split
+across workbenches by hand, and nothing connects the agents doing the halves.
+
+The owner's model (asks #1532, #1534) is IntelliJ IDEA's: a workbench holds **several equal
+folders**, each with its own git; you open one and put more on the bench as you need them.
+Work stays one-folder-per-session: an agent in A that finds the task touches B **starts a
+sub-session in B**, isolated in its own worktree by the usual rules, and the agents **talk to
+each other**, for Claude Code and Codex alike.
+
+## 2. Goals, non-goals, anti-goals
+
+**Goals**
+- G1. A workbench has 1..N folders, anywhere on disk, each a root in FILES with its own branch
+  and status. Today's workbenches are the N = 1 case and look exactly as today.
+- G2. **Put on the Bench…** adds a folder — from the workbench switcher (next to Open Folder…)
+  and from the FILES header. No drag-and-drop (owner, 2026-11-18).
+- G3. An agent that keeps working in a folder outside the bench **suggests** putting it on the
+  bench; the owner answers with one tap (Put on Bench / Not Now / Never for This Folder).
+- G4. A session runs in exactly one folder of its workbench; every git feature (branch crumb,
+  worktree placement, drift, merged progress, branch review, finish gate, cleanup) works per
+  folder.
+- G5. An agent can start a **sub-session** in any folder of its workbench; it shows nested under
+  its parent.
+- G6. Any session can **message** any other live session of the same workbench (ask #1541); a
+  sub-session's finish summary reaches its parent by itself.
+- G7. A target names its folder, so its branch and PR are checked in the right repository.
+
+**Non-goals (v1)**
+- A session spanning several folders (`--add-dir`, composite worktrees) — rejected in ask #1534.
+- An umbrella folder that discovers nested repositories — rejected in ask #1532.
+- Nesting on the iPhone: the phone shows a flat list with folder labels (§6.12).
+- Messages between workbenches.
+
+**Anti-goals** (failure even if it technically works)
+- A one-folder workbench that looks or behaves differently from today.
+- A folder silently shared by two workbenches (hooks would report to the wrong board).
+- Removing a folder from the bench deleting anything in it except Watchtower's own install.
+- An agent message typed into a permission prompt or over the owner's draft.
+
+## 3. Model
+
+```
+workbench (projects)
+ ├─ folders (workbench_folders)        app ─ hub ─ site        all equal
+ ├─ board (targets)                    a target may name its folder
+ ├─ asks (owner_asks)                  + kind 'folder' (a suggestion)
+ └─ sessions (terminal_sessions)       each in ONE folder; parent_session_id for sub-sessions
+        └─ messages (session_messages) any live session → any live session of the workbench
+```
+
+- **Folder of a session** = the workbench folder it was started for. Its cwd is that folder or
+  a worktree of it (existing placement rules, decided per folder).
+- **Home folder** = the folder the workbench was opened with; kept in `projects.folder_path` for
+  compatibility (automations' default, briefing, older clients). It is not shown as special.
+  If it is removed, the next folder by position becomes the home folder (§6.3).
+
+## 4. Data
+
+One migration (next free number at implementation time; SQL, goose):
+
+1. `workbench_folders`
+   `id`, `workbench_id` (FK `projects` ON DELETE CASCADE), `folder_path` TEXT NOT NULL
+   (symlink-resolved, as `projects.folder_path`), `position` INTEGER, `added_at`, `added_by`
+   CHECK IN (`owner`,`agent_suggestion`). Unique index on `folder_path COLLATE NOCASE` — one
+   folder, one workbench, globally. Backfill: one row per workbench from `projects.folder_path`,
+   position 0.
+2. `terminal_sessions.workbench_folder_id` (FK ON DELETE SET NULL; NULL for standalone terminals)
+   and `parent_session_id` (FK `terminal_sessions` ON DELETE SET NULL). Backfill: the workbench's
+   only folder.
+3. `targets.workbench_folder_id` (FK ON DELETE SET NULL). NULL = the home folder (today's
+   behaviour). Set by `create_targets`/`update_target` (§6.10).
+4. `owner_asks.kind` gains `folder` (table rebuild per the `add-migration` skill and
+   `00150_builtin_automations.sql`, one transaction). Payload: `{"path", "repo_root", "touches",
+   "why"}`.
+5. `workbench_folder_declines` (`workbench_id`, `folder_path` NOCASE, `declined_at`; PK both) —
+   "Never for This Folder".
+6. `session_messages` (`id`, `workbench_id`, `from_session_id`, `to_session_id` — both FK SET
+   NULL, `kind` CHECK IN (`message`,`finished`), `text`, `created_at`, `state` CHECK IN
+   (`queued`,`delivered`,`failed`), `reason`, `delivered_at`). Persisted so a hub restart
+   resumes delivery. Text is not indexed and never leaves the Mac except over the existing relay
+   path the phone already uses for session lines.
+
+Mirrors: `schema.sql`, `TestAllTablesExist`, golden snapshot, `TestDatabase+Schema.swift`,
+Kit's schema floor if it reads these tables.
+
+## 5. Surfaces (CLI / MCP)
+
+| Surface | New / changed |
+|---|---|
+| CLI | `workbench folder add|remove|locate|list --workbench N [--folder P] --json`; `workbench session start … --folder F --parent S`; `workbench message send --to S` (agents use MCP; CLI for tests and the Desktop) |
+| MCP (workbench server) | `start_session(folder, brief, title?, target_id?, agent?)`, `send_to_session(session_id, text)`, `list_sessions()` (live sessions with folder, title, state, parent), `suggest_workbench_folder(path, why)`; `workbench_info` lists folders; `create_targets`/`update_target` take `folder` |
+| Hooks | PostToolUse (Claude) counts outside-bench touches (§6.7) |
+| Hub | delivers `session_messages` (§6.6) |
+
+The pack version (DEV-06 tool count) goes up by four tools.
+
+## 6. Behaviour
+
+### 6.1 Put on the Bench (owner)
+Entry points: the switcher popover item **Put on the Bench…** (subtitle `Add a folder to
+“<bench>”`) under **Open Folder…**; the FILES header icon button (folder with a plus, tooltip
+`Put on the Bench…`). Both run the existing folder panel (`runFolderPanel`, title
+`Put on the Bench`, prompt `Put on Bench`) and then `workbench folder add`.
+
+Go validates, in one `BEGIN IMMEDIATE`: the path resolves to a directory; it is not already a
+folder of this bench (→ `already_here`, the Desktop highlights that root); not a folder of
+another bench (→ `other_bench` with that bench's name); not inside or containing a folder of any
+bench (→ `nested`, naming the folder). The sensitive-location confirmation of Open Folder…
+(TCC) applies unchanged. Then, outside the transaction: the devpack install into the folder
+with the same workbench id (PROJ-04 rules), docs indexing (PROJ-08), git watching.
+
+Failure: an install that fails leaves the folder on the bench with the existing install-status
+icon and its Retry; nothing is rolled back (the folder is usable for reading; sessions refuse to
+start there until installed, `Install Watchtower in <name> first`).
+
+### 6.2 FILES
+FILES shows one root per folder, in position order (`CodeRoot` gains the folder id). A root row:
+folder icon, name (last path component; a duplicate name gets its parent dir as a caption),
+right-aligned `⎇ branch ● ↑N ↓N` from that folder's git status. With an open session, its
+folder's root is expanded and shows the session's worktree when placed in one
+(`FILES — ⑂ name` caption stays). With one folder there is no change except the quiet hint
+`Task touches another repo? Put on the Bench…` under the tree.
+
+Root states: normal; `Folder not found` (`<path> was moved or deleted.` + `Locate…` ·
+`Remove`); `Git unavailable`; `Not a repository` (no branch on the right); install missing
+(existing icon). Context menu on a root: `Show in Finder`, `New Session Here`,
+`Remove from Bench…`.
+
+### 6.3 Remove from Bench / Locate
+Remove is refused while a live session runs in the folder (`<n> sessions are running in <name>.
+Finish them first.`) and for the last folder (`A workbench needs at least one folder.`).
+Otherwise a confirmation (`Remove <name> from the bench?` / `Watchtower's install in this folder
+is removed. Your files and git are not touched.`), then in one transaction: delete the row,
+move `projects.folder_path` if it was the home folder; then uninstall the devpack from the folder
+(PROJ-02's "leaves nothing", for that folder) and drop its docs from the index. Finished
+sessions of the folder keep their history; their worktrees go through the existing cleanup
+(PROJ-18). Targets keep `workbench_folder_id` = NULL and the drift check reports `folder removed`
+for a branch it can no longer check.
+
+Locate… re-points a missing folder to a new path (same validation as add) and reinstalls.
+
+### 6.4 Session start
+`session start --folder F` (id or path; default the home folder, so every existing caller is
+unchanged). The Desktop passes the folder of the context: the FILES root the owner chose, the
+current session's folder for ⌘T, the target's folder for Work on It. The New Session (+) menu
+lists `in <folder>` items when there is more than one folder; `In Its Own Worktree ▸` and
+`In the Folder ▸` become per-folder submenus.
+
+Placement is unchanged but **per folder**: `occupied` counts only live agent rows of the same
+folder, and the worktree is made in that folder's repository. `unavailableReason` reads that
+folder's git.
+
+### 6.5 Sub-sessions
+`start_session(folder, brief, …)` (MCP) runs `session start --folder F --parent <caller row>`.
+Caller check as today (`checkSessionCaller`: same workbench). The agent kind defaults to the
+caller's. The brief the child receives starts with a fixed header
+`You are a sub-session of #<id> “<title>” (folder <name>). Message it with
+send_to_session(<id>, …). When done, call finish_session — your summary is sent to #<id>.`
+followed by the caller's brief.
+
+Limits: nesting depth ≤ 3; at most 6 live sub-sessions under one root session (`limit` error
+with the count). A folder not installed → `not_installed`. Result: `{session_id, folder, place,
+worktree}`.
+
+The panel nests children under their parent (one level of indent per depth); a child of a
+deleted parent shows at top level. The parent row's state line adds `· <n> sub-sessions`. The
+session strip of a child ends with `↖ from “<parent title>”` (click opens the parent).
+
+### 6.6 Messages
+`send_to_session(session_id, text)`: the target must be a live session of the same workbench
+(ask #1541), not the caller. Text: control characters stripped, ≤ 4 000 characters
+(`too_long`). Inserted into `session_messages` as `queued`; the tool returns `{message_id,
+state}` at once and never waits.
+
+Delivery is the hub's, through the same gate as the phone's lines (PROJ-16, `LineGate`): a
+Claude Code session takes the line while it works (Claude queues it to its next step); a Codex
+session only when idle; a permission prompt, text in the prompt or a just-submitted line hold
+it; the Return is sent only where the hooks vouch for the run (PROJ-12). The pasted text is
+`[Message from #<id> “<title>” · <folder>] <text>` + a final line
+`(Reply with send_to_session(<id>, …))`. Held lines are retried on each state read and fail
+after 24 h, or at once when the target stops or is deleted; a failure is delivered to the sender
+as `[Message to #<id> not delivered: <reason>]` through the same path.
+
+**Finish:** a sub-session's `finish_session` inserts a `finished` message to its parent:
+`[Sub-session #<id> “<title>” finished · <folder>] <summary>`. A parent that is gone drops it
+(logged).
+
+Feed (Workchat): the receiver's feed shows these lines as a peer bubble (`↘ From “<title>” ·
+<folder>`, `✓ Sub-session “<title>” finished`) by their fixed prefix; the sender's feed shows
+its `send_to_session`/`start_session` tool calls as outgoing peer bubbles (`↗ …`), and a queued
+message as `⏸ Message to “<title>” is waiting` with the reason and `Open`.
+
+### 6.7 The agent suggests a folder
+**Detection (Claude Code):** the PostToolUse hook reads the tool's path arguments
+(`Read/Edit/Write/MultiEdit/NotebookEdit` `file_path`, `Glob/Grep` `path`) — never Bash
+commands. A path outside every folder of the bench, its worktrees, `~/.claude`, the temp and
+scratchpad dirs is mapped to its repository root by walking up for `.git` (no git process). The
+hook counts touches per (session, repo root); on the **third**, once per session and root, it
+adds a context line: `You keep working in <root>, which is not on this workbench. If the task
+needs it, call suggest_workbench_folder(<root>, why).` Declined roots and roots on another bench
+are skipped. **Codex:** no detection in v1; the skill rule asks the agent to call the tool
+itself.
+
+**Tool:** `suggest_workbench_folder(path, why)` creates an ask of kind `folder` (one open per
+bench and path; a second call returns the open one; `declined` for a declined path;
+`other_bench` for a folder on another bench). The card in Waiting for you: title
+`Put <name> on the bench?`, subtitle `From “<session>” · the agent worked in <path> <n> times`,
+buttons `Put on Bench` (primary) · `Not Now` · `Never for This Folder` (quiet).
+- Put on Bench → the Desktop runs §6.1 as the owner's action (TCC confirm if needed); the answer
+  line to the agent: `<name> is on the bench now. Start a sub-session there with
+  start_session("<name>", …).` A failed add shows the reason on the card (`Already on the
+  “tools” bench · Open tools`, button `OK`) and answers the agent with it.
+- Not Now → answer line `The owner said not now.`; the hook stays quiet for that root for the
+  rest of the session.
+- Never → a `workbench_folder_declines` row; answer line `The owner does not want <name> on this
+  bench.`
+
+### 6.8 Git per folder
+Header branch crumb, branch switch (PROJ-10), fetch, refs watcher and the 5 s poll follow the
+active session's folder (or the selected FILES root); each FILES root polls its own status at
+the existing cadence. `workbench git … --folder` resolves against the folder that contains the
+path (`ResolveFolder` gets the folder list).
+
+### 6.9 Review, finish gate, cleanup
+Branch review, the diff reviewer, the finish gate's `leftItsWorktree`, the review lock path and
+the spec-review document reads use the session's folder as the main repository. Session cleanup
+(PROJ-18) plans per folder: a session's worktrees live in its folder's repository;
+`WorkbenchFolders` covers every folder; the owner's sweep runs over all folders.
+
+### 6.10 Board
+`create_targets`/`update_target` accept `folder` (name or path of a bench folder); when a branch
+or PR is set without it, the caller session's folder is stored. Drift (PROJ-07) and the merged
+progress share run git/`gh` in the target's folder (NULL → home folder). Cards show a folder chip
+before the branch when the bench has more than one folder.
+
+### 6.11 Documents, search, automations
+Docs indexing (PROJ-08) and the search scope cover every folder; a document's path in search and
+asks is shown as `<folder>/<rel>`. `ask_owner` review `doc_path`: a relative path resolves
+against the caller session's folder; an absolute one must lie in a bench folder. Automations are
+read from every folder's `.watchtower/automations`; a duplicate recipe name is shown as
+`<folder>/<name>`.
+
+### 6.12 Elsewhere
+- Delete workbench (PROJ-02): uninstalls from every folder and cleans up sessions across folders.
+- Re-run setup (`workbench resync`): every folder.
+- Phone: session rows gain the folder label; sub-sessions show flat with `from #<id>`. Kit model
+  gains `folder` and `parentSessionID` (optional, old Macs send none).
+- `workbench_info` lists folders (`name`, `path`, `home`, `installed`).
+- Briefing WORKBENCHES block: unchanged.
+
+## 7. Failures and races
+
+| Path | Failure | Behaviour | Test |
+|---|---|---|---|
+| folder add | path vanishes between panel and add | `not_found`, nothing written | Go: add of a missing path |
+| folder add | install fails half-way | folder stays, install icon + Retry; start refused `not_installed` | Go + Swift |
+| folder add | two adds of the same path race | UNIQUE index: one wins, the other gets `already_here`/`other_bench` | Go: concurrent add |
+| folder remove vs session start | start in the folder while remove commits | both in `BEGIN IMMEDIATE`; remove re-counts live rows inside its tx; start re-checks the folder row inside the row insert; first commit wins, the other gets `folder_removed` / `sessions_running` | Go race test |
+| folder missing at launch | moved/deleted | root `Folder not found`; start refused `folder_missing` | Swift presentation + Go |
+| sub-session start | host down / launch fails | existing start failure path; parent's tool result carries the error; no row left (existing) | Go |
+| message | target stops, is deleted, or 24 h pass | `failed` + failure line to the sender | Go hub test with fake clock |
+| message | hub restarts with queued lines | resumed from `session_messages` | Go |
+| message | target at a permission prompt / owner draft | held, retried on state read; never typed into either | Go gate test (reuses PROJ-16 cases) |
+| message | Mac quits mid-delivery | host keeps the run (PROJ-20); line resumes as queued; at-most-once: a line marked `delivered` only after Deliver's `submitted` | Go |
+| finish → parent | parent gone | dropped, logged | Go |
+| suggestion | owner clicks Put on Bench while the folder became another bench's | card shows `other_bench`; agent told | Swift + Go |
+| hook | repo-root walk on a slow network path | walk capped at 64 levels and skips paths under `/Volumes` network mounts; hook budget unchanged | Go |
+
+**Writers and who wins**
+- `workbench_folders`: only the Go CLI (Desktop and MCP never write it directly). Races resolved
+  by the unique index and `BEGIN IMMEDIATE`.
+- `terminal_sessions.workbench_folder_id`/`parent_session_id`: only `session start` (insert).
+- `targets.workbench_folder_id`: MCP `create_targets`/`update_target` and the owner's board edit;
+  last write wins, as for `branch`.
+- `session_messages`: MCP inserts; the hub alone moves `state`. A row is delivered by exactly one
+  hub (the hub's existing single-instance lock).
+- `owner_asks` kind `folder`: MCP inserts; the Desktop answers (existing ask writers).
+- `workbench_folder_declines`: the Desktop's answer handler only.
+
+## 8. Contracts
+
+To be approved by the owner in a separate ask before review:
+- **PROJ-02** (delete leaves nothing): extends to every folder; removing one folder leaves nothing
+  of Watchtower in that folder.
+- **PROJ-04** (install never overwrites): the install runs in every folder, same rules.
+- **PROJ-07** (drift): checks run in the target's folder; a target whose folder was removed
+  reports `folder removed` instead of a git verdict.
+- **PROJ-08** (documents searchable only from own sessions): the workbench's documents are the
+  union of its folders.
+- **PROJ-10** (header branch switch): per folder of the active session.
+- **PROJ-14** (session report): a parent's report does not include its sub-sessions' work;
+  each reports its own.
+- **PROJ-16** (phone lines): the same gate now also carries agent messages (new writer).
+- **PROJ-18** (cleanup): per folder repository; never removes anything in a folder that left the
+  bench except worktrees its own sessions created.
+- **New PROJ-23 — agent messages:** a message reaches only a live session of the same workbench,
+  through the PROJ-16 gate, never into a permission prompt or over the owner's draft, at most
+  once, and its failure is reported to the sender.
+- **New PROJ-24 — folder membership:** a folder belongs to at most one workbench; removing it
+  from the bench touches nothing but Watchtower's install.
+
+## 9. Mockups (DesignShotCatalog)
+
+`workbench-multifolder-*` shots, light and dark, `acme` data, exported to
+`docs/design/mockups/multi-folder/`:
+1. `panel-nested` — sessions with two sub-sessions, folder labels, FILES with three roots.
+2. `panel-single` — one folder: today's look + the hint.
+3. `files-root-errors` — Folder not found (+ Locate · Remove), Git unavailable, Not a repository.
+4. `switcher` — Put on the Bench… under Open Folder….
+5. `new-session-menu` — per-folder items.
+6. `suggest-card` — Put on Bench / Not Now / Never; busy (`Putting on the bench…`); error
+   (`Already on the “tools” bench`).
+7. `remove-confirm` and `remove-refused` (sessions running; last folder).
+8. `feed-parent` — started / from / finished / waiting peer bubbles.
+9. `strip-child` — `📁 hub › ⑂ export-api › ⎇ … ↖ from “…”`.
+10. `board-card-folder` — folder chip, drift `folder removed`.
+
+Every string above lives in a presentation model with a test (owner rule).
+
+## 10. Task outline (the plan details it)
+
+1. Migration + schema mirrors + `db` accessors (folders, session columns, target column, ask
+   kind, declines, messages).
+2. `workbench folder add|remove|locate|list` + devpack install/uninstall per folder.
+3. `session start --folder/--parent`; placement per folder.
+4. Git per folder (`ResolveFolder`, refresher, header data in the hub source).
+5. Drift + merged progress per target folder; `create_targets`/`update_target` `folder`.
+6. Review, finish gate, spec review reads per session folder.
+7. Cleanup per folder (PROJ-18 amendment).
+8. Docs/search/automations over all folders.
+9. MCP `start_session`, `list_sessions`, sub-session brief header, limits.
+10. `session_messages` + MCP `send_to_session` + hub delivery + finish → parent.
+11. Hook detection + `suggest_workbench_folder` + ask kind `folder`.
+12. Desktop: models (`WorkbenchFolder`, session/target columns), `CodeRoot` per folder.
+13. Desktop: FILES multi-root + root states + context menu + Put on the Bench (switcher, header).
+14. Desktop: sessions panel nesting, labels, strip `from`, New Session per folder.
+15. Desktop: suggestion card + answer actions; remove/locate flows.
+16. Desktop: Workchat peer bubbles (feed parse of the fixed prefixes).
+17. Board card folder chip; phone/Kit folder + parent fields.
+18. Docs: feature note, guide page, inventory amendments, skill rule for Codex.
+
+## Decisions
+
+| # | Decision | Source |
+|---|---|---|
+| D1 | Full parity across all git features, not an MVP | ask #1529 |
+| D2 | Equal folders like IDEA modules, not an umbrella folder | ask #1532 |
+| D3 | A session runs in one folder; cross-folder work goes through sub-sessions | ask #1534 |
+| D4 | Isolation follows the default flow (worktree when the folder is occupied) | ask #1534 |
+| D5 | Agents talk to each other, Claude Code and Codex | ask #1534 |
+| D6 | Any session may message any live session of the workbench | ask #1541 |
+| D7 | Mockups v3 approved | ask #1541 |
+| D8 | Folders live in FILES as roots; no separate section | conversation 2026-11-18 |
+| D9 | A visible add button in the switcher and the FILES header; no drag-and-drop | conversation 2026-11-18 |
+| D10 | The agent suggests putting a folder on the bench via MCP + a card | conversation 2026-11-18 |
+| D11 | The action is called **Put on the Bench…** | conversation 2026-11-18 |
+| D12 | All UI text is English; content (titles, briefs, messages) stays as written | conversation 2026-11-18 |
+| D13 | A folder belongs to at most one workbench | decided by the agent |
+| D14 | `projects.folder_path` stays as the home folder for compatibility | decided by the agent |
+| D15 | The suggestion is a new ask kind `folder` | decided by the agent |
+| D16 | Messages persisted in `session_messages`; delivered through the PROJ-16 gate | decided by the agent |
+| D17 | Detection only from tool path arguments, third touch, Claude only in v1 | decided by the agent |
+| D18 | Sub-session limits: depth 3, six live per root | decided by the agent |
+| D19 | Phone: flat list with folder labels in v1 | decided by the agent |
+| D20 | Last folder cannot be removed; removal refused while sessions run there | decided by the agent |
+
+## Left to the builder
+Exact migration number; how `CodeRoot` encodes the folder id in its defaults key; the hub's
+retry scheduling inside the existing state-read loop; the feed parser's prefix match.

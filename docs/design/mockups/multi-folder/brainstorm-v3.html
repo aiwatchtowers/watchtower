@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Мультиспейс — мокапы v3</title>
+<style>
+:root{
+  --bg:#151517; --side:#232325; --hover:#2c2c2f; --selrow:#141416; --card:#2b2b2e; --askSel:#25324a;
+  --t1:#ececef; --t2:#9a9aa1; --t3:#66666d; --hair:#38383c;
+  --acc:#4c8dff; --ok:#3fbf62; --warn:#f0902c; --pink:#d14fe0; --bad:#ff5f57; --info:#9b87ff;
+  --chip:#3a3a3e; --btn:#3a3a3e; --track:#3a3a3e;
+}
+@media (prefers-color-scheme: light){
+  :root{ --bg:#e7e7ea; --side:#f4f4f6; --hover:#e9e9ec; --selrow:#ffffff; --card:#ffffff; --askSel:#dde7fa;
+    --t1:#1d1d1f; --t2:#6e6e73; --t3:#a1a1a6; --hair:#d7d7db;
+    --acc:#2f6fdf; --ok:#2e9d55; --warn:#d97a12; --pink:#b23cc4; --bad:#d23f3f; --info:#6d55e8;
+    --chip:#e3e3e8; --btn:#e3e3e8; --track:#dcdce0; }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--t1);font:13px/1.35 -apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;padding:24px 16px 64px}
+h1{font-size:20px;margin:0 0 4px} .lead{color:var(--t2);max-width:980px;margin:0 0 20px}
+h2{font-size:15px;margin:34px 0 6px} .note{color:var(--t2);max-width:980px;margin:0 0 12px}
+.row{display:flex;flex-wrap:wrap;gap:22px;align-items:flex-start}
+.cap{font-size:11.5px;color:var(--t2);margin:6px 2px 0;max-width:360px}
+.side{width:360px;background:var(--side);border:1px solid var(--hair);border-radius:10px;padding:10px 10px 12px}
+.hdr{display:flex;align-items:center;gap:8px;padding:2px 2px 10px;font-size:16px}
+.hdr b{font-weight:700}.hdr .m{color:var(--t2)}.sp{flex:1}
+.lbl{font-size:11.5px;color:var(--t2);padding:8px 4px 4px;display:flex;align-items:center;gap:6px}
+.lbl.caps{text-transform:uppercase;letter-spacing:.04em;font-weight:600}
+.lbl .act{margin-left:auto;color:var(--t2);font-size:14px;min-width:24px;height:20px;padding:0 4px;white-space:nowrap;border-radius:5px;display:inline-flex;align-items:center;justify-content:center}
+.lbl .act.on{color:var(--acc);background:color-mix(in srgb,var(--acc) 14%,transparent)}
+.ask{padding:6px 6px;border-radius:7px;display:flex;gap:8px}
+.ask.hl{background:var(--askSel)}
+.ask .ic{color:var(--acc);flex:none;margin-top:1px}
+.ask .tt{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ask .sub{font-size:11.5px;color:var(--t2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ask .sub a{color:var(--acc)}
+.btns{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
+.b{background:var(--btn);border-radius:6px;padding:2px 10px;font-size:12px}
+.b.p{background:var(--acc);color:#fff}
+.b.q{background:none;color:var(--t2);padding:2px 4px}
+.s{display:flex;gap:10px;padding:7px 8px;border-radius:9px;margin:1px 0}
+.s.sel{background:var(--selrow)}
+.s .dot{width:8px;height:8px;border-radius:50%;margin-top:30px;flex:none}
+.s .body{flex:1;min-width:0}
+.s .tt{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.s .ln{font-size:11.5px;color:var(--t2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:5px}
+.s .right{display:flex;flex-direction:column;align-items:flex-end;gap:4px;font-size:11.5px;color:var(--acc);padding-top:26px;white-space:nowrap}
+.bar{display:inline-block;width:34px;height:4px;border-radius:2px;background:var(--track);position:relative;overflow:hidden;flex:none}
+.bar i{position:absolute;left:0;top:0;bottom:0;background:var(--acc);border-radius:2px}
+.d-ok{background:var(--ok)}.d-warn{background:var(--warn)}.d-pink{background:var(--pink)}.d-off{background:var(--t3)}
+.st-ok{color:var(--t2)}.st-warn{color:var(--warn)}
+.fl{color:var(--acc)}
+.kids{margin-left:18px;border-left:1.5px solid var(--hair);padding-left:4px}
+.kids .s .dot{margin-top:24px}
+.kids .s .right{padding-top:20px}
+.files{margin-top:6px}
+.root{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:6px;font-size:12.5px}
+.root:hover{background:var(--hover)}
+.root .chev{color:var(--t3);width:10px;font-size:10px}
+.root .n{font-weight:600}
+.root .g{margin-left:auto;color:var(--t2);font-size:11px;white-space:nowrap}
+.f{padding:2px 6px 2px 28px;font-size:12.5px;color:var(--t1)}
+.f.d{color:var(--t1)} .f.m{color:var(--warn)}
+.drop{margin:6px 4px 2px;border:1.5px dashed color-mix(in srgb,var(--acc) 60%,transparent);border-radius:8px;padding:10px;text-align:center;color:var(--acc);font-size:12px;background:color-mix(in srgb,var(--acc) 8%,transparent)}
+.hint{padding:4px 6px 2px 28px;color:var(--t2);font-size:12px}
+.hint a{color:var(--acc)}
+.err{color:var(--bad)}
+.pane{width:560px;background:var(--side);border:1px solid var(--hair);border-radius:10px;overflow:hidden}
+.strip{display:flex;align-items:center;gap:6px;padding:8px 12px;border-bottom:1px solid var(--hair);font-size:12px;color:var(--t2)}
+.strip b{color:var(--t1);font-weight:500}
+.feed{padding:12px 14px;display:flex;flex-direction:column;gap:10px}
+.msg{max-width:90%;padding:8px 10px;border-radius:10px;background:var(--card)}
+.msg .who{font-size:11px;color:var(--t2);margin-bottom:2px}
+.peer{border:1px solid color-mix(in srgb,var(--info) 45%,transparent);background:color-mix(in srgb,var(--info) 8%,var(--card))}
+.peer .who{color:var(--info);font-weight:500}
+.done{border:1px solid color-mix(in srgb,var(--ok) 45%,transparent);background:color-mix(in srgb,var(--ok) 8%,var(--card))}
+.done .who{color:var(--ok);font-weight:500}
+.mono{font-family:ui-monospace,Menlo,monospace;font-size:11.5px}
+.names{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px;max-width:1100px}
+.nm{background:var(--side);border:1px solid var(--hair);border-radius:10px;padding:12px}
+.nm .big{font-size:15px;font-weight:600;margin-bottom:4px}
+.nm .why{color:var(--t2);font-size:12px}
+.nm.rec{border-color:var(--acc)}
+.nm .pill{display:inline-block;font-size:10.5px;color:var(--acc);border:1px solid var(--acc);border-radius:9px;padding:0 6px;margin-left:6px;vertical-align:middle}
+.dec{max-width:980px;background:var(--side);border:1px solid var(--hair);border-radius:10px;padding:12px 16px}
+.dec li{margin:3px 0}
+</style>
+</head>
+<body>
+<h1>Мультиспейс: мокапы v3</h1>
+<p class="lead">Перерисовано под настоящий сайдбар. Папки живут в FILES как корни дерева, кнопка Put on the Bench… на виду в заголовке FILES, агент сам предлагает подключить папку. Действие называется <b>Put on the Bench…</b> («положить на верстак»), кнопка стоит в выпадающем списке воркбенчей и в FILES. Перетаскивания нет. Данные условные: воркбенч <b>acme</b>, папки <b>app</b>, <b>hub</b>, <b>site</b>.</p>
+
+<h2>1. Сайдбар: вложенные сессии и папки в FILES</h2>
+<div class="row">
+  <div>
+    <div class="side">
+      <div class="hdr"><span class="m">‹</span><span class="m">⊞</span><b>acme</b><span class="m">⌄</span><span class="sp"></span><span class="m">＋</span></div>
+      <div class="lbl">Waiting for you (2)</div>
+      <div class="ask hl"><span class="ic">⧉</span><div style="min-width:0;flex:1">
+        <div class="tt">Put <b>billing</b> on the bench?</div>
+        <div class="sub">From “Экспорт отчётов в PDF” · the agent worked in <span class="mono">~/code/billing</span> 6 times</div>
+        <div class="btns"><span class="b p">Put on Bench</span><span class="b">Not Now</span><span class="b q">Never for This Folder</span></div>
+      </div></div>
+      <div class="ask"><span class="ic">?</span><div style="min-width:0;flex:1">
+        <div class="tt">Кнопка PDF: где её показать?</div>
+        <div class="sub">#2011 <a>Answer 1 question</a> · site</div></div></div>
+      <div class="lbl caps">Sessions</div>
+
+      <div class="s sel"><span class="dot d-ok"></span><div class="body">
+        <div class="tt">Экспорт отчётов в PDF</div>
+        <div class="ln st-ok">Working · 2 sub-sessions</div>
+        <div class="ln"><span class="bar"><i style="width:35%"></i></span>#2010 · 1/3 · no PR yet</div>
+        <div class="ln"><span class="fl">📁 app</span> · ⎇ feature/pdf-export</div>
+        <div class="ln">#2010</div></div>
+        <div class="right"><span>▸ 2 closed</span></div></div>
+
+      <div class="kids">
+        <div class="s"><span class="dot d-ok"></span><div class="body">
+          <div class="tt">API выгрузки в hub</div>
+          <div class="ln st-ok">Working</div>
+          <div class="ln"><span class="fl">📁 hub</span> · ⑂ export-api · wt/export-api</div>
+          <div class="ln">#2012</div></div><div class="right"></div></div>
+        <div class="s"><span class="dot d-warn"></span><div class="body">
+          <div class="tt">Кнопка «Скачать PDF»</div>
+          <div class="ln st-warn">? Waiting for you · ask #2011</div>
+          <div class="ln"><span class="fl">📁 site</span> · ⑂ pdf-button · wt/pdf-button</div>
+          <div class="ln">#2013</div></div><div class="right"></div></div>
+      </div>
+
+      <div class="s"><span class="dot d-off"></span><div class="body">
+        <div class="tt">Обновить зависимости</div>
+        <div class="ln st-ok">❚❚ Idle</div>
+        <div class="ln"><span class="fl">📁 hub</span> · main folder · main</div></div>
+        <div class="right"><span>▸ 4 closed</span></div></div>
+
+      <div class="lbl caps files">Files <span class="act on" title="Put on the Bench…"><svg width="16" height="14" viewBox="0 0 16 14" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M1.5 3.2c0-.7.5-1.2 1.2-1.2h3l1.3 1.5h5.8c.7 0 1.2.5 1.2 1.2v6.6c0 .7-.5 1.2-1.2 1.2H2.7c-.7 0-1.2-.5-1.2-1.2z"/><path d="M8 6v4M6 8h4"/></svg></span></div>
+      <div class="root"><span class="chev">▾</span>📁 <span class="n">app</span><span class="g">⎇ feature/pdf-export ● ↑2</span></div>
+      <div class="f">▸ cmd</div><div class="f">▸ internal</div><div class="f m">export.go</div>
+      <div class="root"><span class="chev">▸</span>📁 <span class="n">hub</span><span class="g">⎇ main</span></div>
+      <div class="root"><span class="chev">▸</span>📁 <span class="n">site</span><span class="g">⎇ main ↓1</span></div>
+    </div>
+    <div class="cap">Подсессии стоят под родителем, у каждой строки сессии есть метка своей папки. FILES показывает корни-папки: у корня ветка и ↑↓, при открытой сессии разворачивается её папка (или её worktree). Кнопка с папкой и плюсом в заголовке FILES — это Put on the Bench….</div>
+  </div>
+
+  <div>
+    <div class="side">
+      <div class="lbl caps">Sessions</div>
+      <div class="s"><span class="dot d-ok"></span><div class="body">
+        <div class="tt">Экспорт отчётов в PDF</div>
+        <div class="ln st-ok">Working</div>
+        <div class="ln">main folder · main</div></div><div class="right"></div></div>
+      <div class="lbl caps files">Files <span class="act on" title="Put on the Bench…"><svg width="16" height="14" viewBox="0 0 16 14" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M1.5 3.2c0-.7.5-1.2 1.2-1.2h3l1.3 1.5h5.8c.7 0 1.2.5 1.2 1.2v6.6c0 .7-.5 1.2-1.2 1.2H2.7c-.7 0-1.2-.5-1.2-1.2z"/><path d="M8 6v4M6 8h4"/></svg></span></div>
+      <div class="root"><span class="chev">▾</span>📁 <span class="n">app</span><span class="g">⎇ main</span></div>
+      <div class="f">▸ cmd</div><div class="f">▸ internal</div>
+      <div class="hint">Task touches another repo? <a>Put on the Bench…</a></div>
+    </div>
+    <div class="cap">Одна папка: всё как сегодня, меток папок на строках нет. Под деревом тихая подсказка.</div>
+
+    <div class="side" style="margin-top:18px">
+      <div class="lbl caps files">Files <span class="act on" title="Put on the Bench…"><svg width="16" height="14" viewBox="0 0 16 14" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M1.5 3.2c0-.7.5-1.2 1.2-1.2h3l1.3 1.5h5.8c.7 0 1.2.5 1.2 1.2v6.6c0 .7-.5 1.2-1.2 1.2H2.7c-.7 0-1.2-.5-1.2-1.2z"/><path d="M8 6v4M6 8h4"/></svg></span></div>
+      <div class="root"><span class="chev">▸</span>📁 <span class="n">app</span><span class="g">⎇ main</span></div>
+      <div class="root"><span class="chev">▸</span>📁 <span class="n err">hub</span><span class="g err">Folder not found</span></div>
+      <div class="hint"><span class="mono">~/code/hub</span> was moved or deleted. <a>Locate…</a> · <a>Remove</a></div>
+      <div class="root"><span class="chev">▸</span>📁 <span class="n">site</span><span class="g">Git unavailable</span></div>
+    </div>
+    <div class="cap">Ошибки корня.</div>
+  </div>
+</div>
+
+<h2>2. Агент предлагает подключить папку</h2>
+<p class="note">Если сессия работает в папке вне воркбенча (читает, правит, запускает команды) не один раз, хук подсказывает агенту, а агент вызывает MCP <span class="mono">suggest_workbench_folder(path, why)</span>. В «Waiting for you» появляется карточка с кнопками Put on Bench, Not Now и Never for This Folder. После Put on Bench папка становится корнем FILES, а агенту приходит строка «папка подключена». Отказ «никогда» запоминается по папке, и предложение больше не появляется. Состояния: карточка, «Putting on the bench…», ошибка (Already on the “tools” bench → Open tools) и готово.</p>
+<div class="row">
+  <div>
+    <div class="side">
+      <div class="lbl">Waiting for you (1)</div>
+      <div class="ask hl"><span class="ic">⧉</span><div style="min-width:0;flex:1">
+        <div class="tt">Put <b>billing</b> on the bench?</div>
+        <div class="sub">Already on the “tools” bench · <a>Open tools</a></div>
+        <div class="btns"><span class="b">OK</span></div>
+      </div></div>
+    </div>
+    <div class="cap">Отказ: папка может состоять только в одном воркбенче.</div>
+  </div>
+</div>
+
+<h2>3. Подсессия и переписка агентов</h2>
+<div class="row">
+  <div>
+    <div class="pane">
+      <div class="strip">📁 <b>app</b> › ⎇ feature/pdf-export ● <span class="sp"></span> 2 sub-sessions ▾</div>
+      <div class="feed">
+        <div class="msg"><div class="who">Agent</div>Сервер в hub нужно поменять. Запускаю подсессию.</div>
+        <div class="msg peer"><div class="who">↗ Sub-session “API выгрузки в hub” started · hub · ⑂ export-api</div>Brief sent.</div>
+        <div class="msg peer"><div class="who">↘ From “API выгрузки в hub” · hub</div>Готово: ветка <span class="mono">wt/export-api</span>, ответ <span class="mono">application/pdf</span>, лимит 20 МБ.</div>
+        <div class="msg done"><div class="who">✓ Sub-session “API выгрузки в hub” finished</div>Эндпоинт и тесты на месте, PR #41 в hub.</div>
+        <div class="msg peer"><div class="who">⏸ Message to “Кнопка PDF” is waiting</div>The sub-session is at a permission prompt; the message goes after it is answered. <span style="color:var(--acc)">Open</span></div>
+      </div>
+    </div>
+    <div class="cap">Родитель. В подсессии полоса показывает «📁 hub › ⑂ export-api › ⎇ …  ↖ from “Экспорт отчётов в PDF”».</div>
+  </div>
+</div>
+
+<h2>4. Доска: папка у таргета</h2>
+<div class="row"><div>
+  <div class="side" style="width:330px">
+    <div class="msg" style="margin-bottom:8px;max-width:none"><div style="font-weight:500;margin-bottom:4px">API выгрузки</div><div class="ln" style="font-size:11.5px;color:var(--t2)"><span class="fl">📁 hub</span> · ⎇ wt/export-api · PR #41</div></div>
+    <div class="msg" style="max-width:none"><div style="font-weight:500;margin-bottom:4px">Кнопка «Скачать PDF»</div><div style="font-size:11.5px;color:var(--t2)"><span class="fl">📁 site</span> · ⎇ wt/pdf-button</div></div>
+  </div>
+  <div class="cap">Ветку и PR проверяем в папке таргета. Метка видна, только когда папок больше одной.</div>
+</div></div>
+
+<h2>5. Выпадающий список воркбенчей</h2>
+<div class="row"><div>
+  <div class="side" style="width:380px;border-radius:14px">
+    <div style="border:2px solid var(--acc);border-radius:7px;padding:5px 8px;color:var(--t3);margin-bottom:8px">Find workbench</div>
+    <div class="lbl caps">Recent</div>
+    <div class="ask hl"><span class="ic" style="color:var(--t1)">✓</span><div style="flex:1"><div class="tt">acme <span style="color:var(--t2);font-size:12px">· 📁 app, hub, site</span></div><div class="sub"><span style="background:var(--acc);color:#fff;border-radius:9px;padding:0 7px">2 new comments</span> <span style="color:var(--warn)">1 blocked</span> 3 working</div></div></div>
+    <div class="ask"><span class="ic"></span><div><div class="tt">tools</div><div class="sub">6d</div></div></div>
+    <div style="height:1px;background:var(--hair);margin:8px 4px"></div>
+    <div class="ask"><span class="ic" style="color:var(--t1)">📂</span><div class="tt">Open Folder…</div></div>
+    <div class="ask"><span class="ic" style="color:var(--acc)"><svg width="16" height="14" viewBox="0 0 16 14" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M1.5 3.2c0-.7.5-1.2 1.2-1.2h3l1.3 1.5h5.8c.7 0 1.2.5 1.2 1.2v6.6c0 .7-.5 1.2-1.2 1.2H2.7c-.7 0-1.2-.5-1.2-1.2z"/><path d="M8 6v4M6 8h4"/></svg></span><div><div class="tt" style="color:var(--acc)">Put on the Bench…</div><div class="sub">Add a folder to “acme”</div></div></div>
+    <div class="ask"><span class="ic" style="color:var(--t2)">‹</span><div class="tt">All Workbenches</div></div>
+  </div>
+  <div class="cap">«Open Folder…» открывает новый воркбенч, а «Put on the Bench…» кладёт папку в текущий. У воркбенча из нескольких папок под названием перечислены его папки.</div>
+</div></div>
+
+<h2>Решения в мокапах</h2>
+<div class="dec"><ul>
+  <li>Папок в отдельной секции нет, они корни в FILES. Put on the Bench… в выпадающем списке воркбенчей (рядом с Open Folder…) и в заголовке FILES. Перетаскивания нет (решение владельца).</li>
+  <li>Агент предлагает папку через MCP, хук ему подсказывает. Карточка в «Waiting for you», «Никогда» запоминается по папке.</li>
+  <li>Папка состоит максимум в одном воркбенче. Последнюю папку убрать нельзя.</li>
+  <li>Подсессия — обычная сессия со ссылкой на родителя, стоит под ним. Worktree по обычному правилу.</li>
+  <li>Переписка разрешена только внутри своего дерева сессий (ждёт твоего ответа в ask #1536).</li>
+  <li>Метки папок не показываются, пока в воркбенче одна папка.</li>
+  <li>Все тексты приложения на английском. Названия, брифы и сообщения агентов — это контент, они как есть (решение владельца).</li>
+</ul></div>
+</body>
+</html>
