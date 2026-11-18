@@ -3,7 +3,7 @@ import GRDB
 
 /// One wait point Watchman handled for the owner (`watchman_items`, 00198;
 /// Go `db.WatchmanItem`). The journal reads it; only the feedback columns
-/// are ever written from the Desktop (phase-2 Task 17). Times are RFC 3339
+/// are ever written from the Desktop (`WatchmanFeedbackQueries`). Times are RFC 3339
 /// UTC, as Go writes them (`wmTime`).
 package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord {
     package var id: Int64
@@ -34,6 +34,8 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
     package var decidedAt: Date?
     /// `''`, `ok`, `corrected`.
     package var feedback: String
+    /// The owner's correction (`feedback = 'corrected'`).
+    package var feedbackText: String
     package var checkDoneAt: Date?
 
     package init(
@@ -58,6 +60,7 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
         createdAt: Date,
         decidedAt: Date? = nil,
         feedback: String = "",
+        feedbackText: String = "",
         checkDoneAt: Date? = nil
     ) {
         self.id = id
@@ -81,6 +84,7 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
         self.createdAt = createdAt
         self.decidedAt = decidedAt
         self.feedback = feedback
+        self.feedbackText = feedbackText
         self.checkDoneAt = checkDoneAt
     }
 
@@ -111,6 +115,7 @@ package struct WatchmanItem: Identifiable, Equatable, Sendable, FetchableRecord 
         self.createdAt = createdAt
         decidedAt = AutomationDates.parse(row["decided_at"])
         feedback = row["feedback"]
+        feedbackText = row["feedback_text"] ?? ""
         checkDoneAt = AutomationDates.parse(row["check_done_at"])
     }
 

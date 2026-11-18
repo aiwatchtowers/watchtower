@@ -61,6 +61,19 @@ Everything Watchman handled lands in **Inbox → Watchman**, one night per entry
 
 The night's header shows its span, any stretch the Mac slept ("the Mac slept from 02:10 to 03:05, nothing ran") and what the night cost. While Watchman works, a "Deciding: …" line shows its current item; when the daemon is stopped, "Watchman is not running — the daemon is stopped" sits above the last night. A workbench menu narrows the journal to one workbench.
 
+### OK and Correct…
+<!-- learn
+id: watchman-feedback
+title: Teach Watchman from its night
+text: In **Inbox → Watchman**, press **OK** on a decision you agree with, or **Correct…** to write what you would have decided.
+area: development
+level: power
+kind: feature
+since: next
+-->
+
+**OK** keeps a decision and teaches it to Watchman. **Correct…** asks what you would have decided: the text goes to the session as a typed line, or, if the session ended, a new session starts on its target with it (not handed to Watchman). Your words are saved first, so a failed send shows "Not sent — …" with **Retry**. **Open session** shows the session; **Mark done** clears a check you ran.
+
 ## When it's empty or wrong
 
 - **No night yet** in the journal: no session was handed to Watchman yet, so nothing was decided.

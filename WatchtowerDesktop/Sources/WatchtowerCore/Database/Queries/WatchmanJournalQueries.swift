@@ -3,7 +3,7 @@ import GRDB
 
 /// The morning journal's reads over `watchman_items` and `watchman_gaps`
 /// (spec §10). Pure reads: the Desktop writes only the feedback columns,
-/// elsewhere (phase-2 Task 17).
+/// in `WatchmanFeedbackQueries`.
 package enum WatchmanJournalQueries {
     /// The tables a journal observation tracks.
     package static let observedTables = ["watchman_items", "watchman_gaps"]
@@ -11,7 +11,7 @@ package enum WatchmanJournalQueries {
     private static let itemColumns = """
         i.id, i.workbench_id, p.name AS workbench_name, i.session_id, i.target_id, i.kind, i.state, i.outcome,
         i.question, i.choice, i.rationale, i.precedent_ids, i.confidence, i.category, i.unsure, i.park_reason,
-        i.delivery, i.cost_usd, i.created_at, i.decided_at, i.feedback, i.check_done_at
+        i.delivery, i.cost_usd, i.created_at, i.decided_at, i.feedback, i.feedback_text, i.check_done_at
         """
 
     /// The newest `limit` nights that have an item, newest first. A night

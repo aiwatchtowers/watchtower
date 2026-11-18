@@ -7,7 +7,7 @@ import WatchtowerTestSupport
 
 /// Design-only scenes for Watchman (#1824, spec
 /// `docs/superpowers/specs/2026-11-16-watchman-design.md` §2, §10, §11).
-/// The `journal-*` (but the Correct… sheet), `home-row`, `inbox-entry` and
+/// The `journal-*` (the Correct… sheet too), `home-row`, `inbox-entry` and
 /// `settings-*` frames draw the real views on fixture data; the rest are
 /// design-only (the strings are `WatchmanMockCopy`).
 /// Sample data only (`acme`, made-up ids).
@@ -75,7 +75,7 @@ enum WatchmanShotFixtures {
                                                         daemon: .stopped))
             case .journalNightUnsure:
                 JournalShot(model: JournalFixture.model([JournalFixture.unsureNight] + JournalFixture.older))
-            case .journalCorrectSheet: CorrectSheetMock()
+            case .journalCorrectSheet: CorrectSheetShot()
             case .homeRow: HomeRowShot()
             case .stripArmed: SessionStripMock(armed: true)
             case .stripUnarmed: SessionStripMock(armed: false)
@@ -130,6 +130,7 @@ private enum JournalFixture {
         _ created: String,
         workbench: (Int64, String) = (1, "acme-api"),
         session: Int64 = 3,
+        target: Int64 = 0,
         kind: String = "ask",
         state: String = "done",
         outcome: String = "answered",
@@ -144,7 +145,8 @@ private enum JournalFixture {
         cost: Double = 0
     ) -> WatchmanItem {
         WatchmanItem(
-            id: id, workbenchID: workbench.0, workbenchName: workbench.1, sessionID: session, kind: kind, state: state,
+            id: id, workbenchID: workbench.0, workbenchName: workbench.1, sessionID: session, targetID: target,
+            kind: kind, state: state,
             outcome: outcome, question: question, choice: choice, rationale: rationale, precedentIDs: precedents,
             confidence: confidence, category: category, unsure: unsure, parkReason: parkReason, costUSD: cost,
             createdAt: at(created), decidedAt: state == "done" ? at(created).addingTimeInterval(60) : nil)
@@ -157,7 +159,7 @@ private enum JournalFixture {
         1834, "2026-11-17T03:47:00Z", session: 5, outcome: "handed", question: "Rotate the deploy token",
         rationale: "issue a new token in the provider's console")
     static let unsure1 = item(
-        1826, "2026-11-17T02:14:00Z", question: "Store the window per workbench or global?", choice: "Per workbench",
+        1826, "2026-11-17T02:14:00Z", target: 1826, question: "Store the window per workbench or global?", choice: "Per workbench",
         rationale: "You split settings per workbench in #1201, #1288 and kept global only what every workbench "
             + "shares. A window's place differs per folder.",
         precedents: [1201, 1288], confidence: "low", category: "design", cost: 0.9)
@@ -242,44 +244,18 @@ private struct JournalShot: View {
     }
 }
 
-/// Correct…: the owner writes what he would have decided.
-private struct CorrectSheetMock: View {
+/// The real Correct… sheet (`WatchmanCorrectSheet`) on the first unsure
+/// decision, its session ended: a new session starts with the correction.
+private struct CorrectSheetShot: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.large) {
-            Text(Copy.correctTitle).font(.title3.weight(.semibold))
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                Text(Copy.unsure1Question).font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
-                HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                    Text(Copy.choseLabel).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    Text(Copy.unsure1Choice).font(.callout)
-                }
-            }
-            .padding(Spacing.medium)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .card()
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                Text(Copy.correctQuestion).font(.headline)
-                TextField("", text: .constant(Copy.correctDraft), axis: .vertical)
-                    .textFieldStyle(.kit)
-                    .lineLimit(3...6)
-                HStack(alignment: .top, spacing: Spacing.regular) {
-                    Image(systemName: "info.circle").foregroundStyle(.secondary)
-                    Text(Copy.correctSessionEnded)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            HStack(spacing: Spacing.regular) {
-                Spacer()
-                Button(Copy.cancel) {}.buttonStyle(.kitSecondary)
-                Button(Copy.sendCorrection) {}.buttonStyle(.kitPrimary)
-            }
-        }
-        .controlSize(.small)
-        .padding(Spacing.page)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground()
+        WatchmanCorrectSheet(model: Self.model())
+    }
+
+    private static func model() -> WatchmanJournalViewModel {
+        let vm = JournalFixture.model([JournalFixture.fullNight])
+        vm.beginCorrect(JournalFixture.unsure1.id)
+        vm.correcting?.text = Copy.correctDraft
+        return vm
     }
 }
 
