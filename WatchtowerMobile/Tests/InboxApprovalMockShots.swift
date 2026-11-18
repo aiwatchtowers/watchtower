@@ -46,7 +46,7 @@ private enum InboxApprovalMocks {
                 card(jira(id: 42), label: "Without the grant", override: .approveNote("Approve on the Mac"))
             )),
             ("inbox-approval-failed", page(
-                card(failedJira(), label: "Failed — Retry", override: .retry),
+                card(failedJira(), label: "Failed — Retry", override: .retry(line: nil, enabled: true)),
                 card(failedJira(id: 42), label: "Failed, without the grant", override: .note("Retry on the Mac", retryNote: true))
             )),
             ("inbox-approval-sending", page(
@@ -89,6 +89,36 @@ private enum InboxApprovalMocks {
                                      argsJSON: #"{"text": "Pin the rollout window", "priority": "high"}"#,
                                      argsStored: false, argsSHA256: "f6", argsComplete: true, status: "executing"),
                      label: "An Inbox button's task that didn't finish", override: .tryAgain)
+            )),
+            // The phone chat's card (§12.9, ask #1553).
+            ("chat-approval-failed", chatPage(
+                card(failedJira(), label: "Failed — Retry", override: .retry(line: nil, enabled: true)),
+                card(failedJira(id: 42), label: "Failed, without the grant or on an older hub",
+                     override: .note("Retry on the Mac", retryNote: true))
+            )),
+            ("chat-approval-dismiss", chatPage(
+                card(connector(), label: "Outcome unknown — Dismiss", dismiss: true),
+                card(connector(id: 52), label: "Without the grant or on an older hub",
+                     override: .note("Dismiss on the Mac", retryNote: false)),
+                card(connector(id: 53, dismissed: true), label: "Dismissed (the feed's dismissed_at)")
+            )),
+            ("chat-approval-sending", chatPage(
+                card(failedJira(), label: "Retry on its way", override: .busy("Sending your answer…", retryNote: true)),
+                card(failedJira(id: 42), label: "The hub is away (nothing queues)", override: .retry(line: nil, enabled: false))
+            )),
+            ("chat-approval-unconfirmed", chatPage(
+                card(failedJira(id: 43), label: "Didn't confirm (the hub stopped mid-way)",
+                     override: .retry(line: "Didn't confirm — check on the Mac.", enabled: false))
+            )),
+            ("chat-approval-refused", chatPage(
+                card(failedJira(), label: "Refused with the hub's sentence",
+                     state: ChatApprovalState(showsButtons: true, canAnswer: true, line: nil,
+                                              gestureError: "Already approved"),
+                     override: .retry(line: nil, enabled: true)),
+                card(failedJira(id: 42), label: "Couldn't send",
+                     state: ChatApprovalState(showsButtons: true, canAnswer: true, line: nil,
+                                              gestureError: "Couldn't send that. Try again."),
+                     override: .retry(line: nil, enabled: true))
             ))
         ]
     }
@@ -126,10 +156,15 @@ private enum InboxApprovalMocks {
 
     // MARK: - The page and the card
 
-    static func page(_ cards: AnyView...) -> AnyView {
+    static func page(_ cards: AnyView...) -> AnyView { page(header: "Needs approval", cards) }
+
+    /// The phone chat's frames (§12.9): the same card under the chat's title.
+    static func chatPage(_ cards: AnyView...) -> AnyView { page(header: "Chat · Release plan", cards) }
+
+    static func page(header: String, _ cards: [AnyView]) -> AnyView {
         AnyView(ScrollView {
             VStack(alignment: .leading, spacing: Spacing.medium) {
-                Text("Needs approval").font(TypeScale.rowEmphasis)
+                Text(header).font(TypeScale.rowEmphasis)
                 ForEach(Array(cards.enumerated()), id: \.offset) { $0.element }
             }
             .padding(Spacing.large)
@@ -172,8 +207,9 @@ private struct MockRow: View {
         case note(String, retryNote: Bool)
         /// The press on its way: its busy title with a spinner, the rest off.
         case busy(String, retryNote: Bool)
-        /// A failed external proposal: the retry note in the secondary tone, and Retry.
-        case retry
+        /// A failed external proposal: the retry note in the secondary tone, Retry (off while nothing can be sent), and
+        /// a line under it.
+        case retry(line: String?, enabled: Bool)
         /// Not delivered: the line in red and the press's named Retry, the row's one action.
         case resend(line: String, title: String)
         /// An Inbox button's stuck task: Didn't finish and Try again.
@@ -207,10 +243,11 @@ private struct MockRow: View {
                     Text(title).font(.caption).foregroundStyle(.secondary)
                 }
             }
-        case .retry:
+        case let .retry(line, enabled):
             VStack(alignment: .leading, spacing: Spacing.regular) {
                 Self.retryNoteText
-                Button("Retry") {}
+                Button("Retry") {}.disabled(!enabled)
+                if let line { Text(line).font(.caption).foregroundStyle(.secondary) }
             }
         case let .resend(line, title):
             VStack(alignment: .leading, spacing: Spacing.regular) {
