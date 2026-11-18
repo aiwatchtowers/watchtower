@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"watchtower/internal/companybundle"
 )
 
 // stubOpenURL swaps openURL for the test so nothing ever launches the app.
@@ -175,4 +177,48 @@ func TestCheckApp_PointsToTheApp(t *testing.T) {
 	assert.Contains(t, page, "Check Watchtower for the result")
 	assert.NotContains(t, page, "href=")
 	assert.NotContains(t, page, "window.close")
+}
+
+func TestCompanyPages_Open(t *testing.T) {
+	page := CompanyOpen("Acme")
+	assert.Contains(t, page, "<h1>Continue in Watchtower</h1>")
+	assert.Contains(t, page, "<p>Watchtower is asking you to confirm Acme. You can close this tab.</p>")
+	assert.NotContains(t, page, "window.close", "nothing is connected yet; the tab stays")
+	assert.NotContains(t, page, "href=")
+
+	hostile := CompanyOpen(`<script>alert(1)</script>`)
+	assert.NotContains(t, hostile, "<script>alert(1)</script>", "the company name is escaped")
+}
+
+func TestCompanyPages_RefusedPerReason(t *testing.T) {
+	want := map[companybundle.Refusal]string{
+		companybundle.RefusalDamaged:      "The link is damaged or cut short.",
+		companybundle.RefusalTooLong:      "The link is too long to be a Watchtower company link.",
+		companybundle.RefusalSiteNotHTTPS: "The link names a site that is not https.",
+		companybundle.RefusalPersonal:     "The link carries a personal Google project, which only this Mac can set.",
+	}
+	assert.Equal(t, want, CompanyRefusedReasons)
+	for reason, line := range want {
+		page := CompanyRefused(reason)
+		assert.Contains(t, page, "<h1>This link does not work</h1>", reason)
+		assert.Contains(t, page, "<p>"+line+"</p>", reason)
+		assert.Contains(t, page,
+			"Ask your admin for a fresh link, or paste the connect code in Watchtower → Connections.", reason)
+	}
+	assert.Contains(t, CompanyRefused("something_new"), "<p>The link is damaged or cut short.</p>",
+		"a reason without a line reads as damaged")
+}
+
+func TestCompanyPages_NeedsNewer(t *testing.T) {
+	page := CompanyNeedsNewer()
+	assert.Contains(t, page, "<h1>This link needs a newer Watchtower</h1>")
+	assert.Contains(t, page, "<p>Update Watchtower from its menu, then open the link again.</p>")
+	assert.Equal(t, page, CompanyRefused(companybundle.RefusalNewerVersion))
+}
+
+func TestCompanyPages_Busy(t *testing.T) {
+	page := CompanyBusy()
+	assert.Contains(t, page, "<h1>"+CompanyBusyHeading+"</h1>")
+	assert.Contains(t, page, "<p>"+CompanyBusyMessage+"</p>")
+	assert.Contains(t, page, "You can close this tab.")
 }

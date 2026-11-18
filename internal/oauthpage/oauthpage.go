@@ -24,6 +24,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"watchtower/internal/companybundle"
 )
 
 // appReturnURL is the custom scheme the desktop app registers
@@ -129,6 +131,93 @@ func CheckApp() string {
 		Heading:   "Check Watchtower for the result",
 		Message:   "Slack sent its answer to Watchtower. The app shows whether the workspace is connected.",
 		Hint:      "You can close this tab.",
+	})
+}
+
+// The company link pages' texts (screens spec §3.4). The Desktop's
+// CompanySetupMockCopy page constants equal them; cmd's
+// TestCompanyPages_Fixture writes them to cmd/testdata/company_pages.json.
+const (
+	CompanyOpenHeading    = "Continue in Watchtower"
+	CompanyRefusedHeading = "This link does not work"
+	CompanyRefusedHint    = "Ask your admin for a fresh link, or paste the connect code in Watchtower → Connections."
+	CompanyNewerHeading   = "This link needs a newer Watchtower"
+	CompanyNewerMessage   = "Update Watchtower from its menu, then open the link again."
+	CompanyBusyHeading    = "Another link is waiting"
+	CompanyBusyMessage    = "Watchtower is already asking you to confirm a company link. " +
+		"Answer it there, then open this link again."
+	companyCloseHint = "You can close this tab."
+)
+
+// CompanyRefusedReasons is the reason line of each refusal a link can get.
+var CompanyRefusedReasons = map[companybundle.Refusal]string{
+	companybundle.RefusalDamaged:      "The link is damaged or cut short.",
+	companybundle.RefusalTooLong:      "The link is too long to be a Watchtower company link.",
+	companybundle.RefusalSiteNotHTTPS: "The link names a site that is not https.",
+	companybundle.RefusalPersonal:     "The link carries a personal Google project, which only this Mac can set.",
+}
+
+// CompanyOpenMessage is the open page's message for company.
+func CompanyOpenMessage(company string) string {
+	return "Watchtower is asking you to confirm " + company + ". " + companyCloseHint
+}
+
+// CompanyOpen renders the clean page a valid company link redirects to:
+// the link only asks Watchtower, and nothing connects until the person
+// confirms there. company is shown escaped.
+func CompanyOpen(company string) string {
+	return render(page{
+		Title:     "Confirm in Watchtower",
+		IconClass: "icon-ok",
+		Icon:      "→",
+		Heading:   CompanyOpenHeading,
+		Message:   CompanyOpenMessage(company),
+	})
+}
+
+// CompanyRefused renders the page of a company link whose bundle was
+// refused. An unknown version gets CompanyNeedsNewer; a reason without a
+// line of its own reads as damaged.
+func CompanyRefused(reason companybundle.Refusal) string {
+	if reason == companybundle.RefusalNewerVersion {
+		return CompanyNeedsNewer()
+	}
+	msg, ok := CompanyRefusedReasons[reason]
+	if !ok {
+		msg = CompanyRefusedReasons[companybundle.RefusalDamaged]
+	}
+	return render(page{
+		Title:     "Link refused",
+		IconClass: "icon-err",
+		Icon:      "✕",
+		Heading:   CompanyRefusedHeading,
+		Message:   msg,
+		Hint:      CompanyRefusedHint,
+	})
+}
+
+// CompanyNeedsNewer renders the page of a company link whose bundle
+// version this build cannot read.
+func CompanyNeedsNewer() string {
+	return render(page{
+		Title:     "Update Watchtower",
+		IconClass: "icon-err",
+		Icon:      "!",
+		Heading:   CompanyNewerHeading,
+		Message:   CompanyNewerMessage,
+	})
+}
+
+// CompanyBusy renders the page of a company link that arrived while
+// another company's link still waits for its confirm in Watchtower.
+func CompanyBusy() string {
+	return render(page{
+		Title:     "Link waiting",
+		IconClass: "icon-err",
+		Icon:      "!",
+		Heading:   CompanyBusyHeading,
+		Message:   CompanyBusyMessage,
+		Hint:      companyCloseHint,
 	})
 }
 

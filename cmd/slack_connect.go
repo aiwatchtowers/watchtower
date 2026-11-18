@@ -464,7 +464,7 @@ func runSlackConnectOnce(cmd *cobra.Command, cfg *config.Config, database *db.DB
 		return err
 	}
 	events := make(chan slackconnect.Event)
-	shutdown := serveSlackConnectListener(ln, reg, events, make(chan struct{}))
+	shutdown := serveSlackConnectListener(ln, reg, events, make(chan struct{}), nil)
 	defer shutdown(false)
 	if opts.noOpen {
 		fmt.Fprintf(errOut, "Open this URL to connect Slack:\n%s\n", authorizeURL)
@@ -555,9 +555,15 @@ const slackConnectDrain = 2 * time.Second
 // answers its page. Without it (the one-shot connect, whose owner already
 // answered its callback) the drain runs first, so the answered callback
 // writes its result page rather than "check the app"; stop is closed after.
-func serveSlackConnectListener(ln net.Listener, reg *slackconnect.Registry, events chan<- slackconnect.Event, stop chan struct{}) (shutdown func(stopFirst bool)) {
+// company, when set (serve), takes the company link's paths.
+func serveSlackConnectListener(ln net.Listener, reg *slackconnect.Registry, events chan<- slackconnect.Event,
+	stop chan struct{}, company http.Handler) (shutdown func(stopFirst bool)) {
+	handler := slackconnect.Handler(reg, events, ln.Addr().String(), stop)
+	if company != nil {
+		handler = withCompanyPaths(handler, company)
+	}
 	srv := &http.Server{
-		Handler:           slackconnect.Handler(reg, events, ln.Addr().String(), stop),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	served := make(chan struct{})
